@@ -891,6 +891,7 @@ impl Calcifer {
                         Progress {
                             stage: p.stage,
                             fraction: (p.fraction >= 0.0).then_some(p.fraction),
+                            stage_fraction: p.stage_fraction.filter(|f| *f >= 0.0),
                             completed: p.completed,
                             total: p.total,
                             bytes_done: p.bytes_done,
