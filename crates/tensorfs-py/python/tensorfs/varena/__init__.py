@@ -159,7 +159,8 @@ class PreparedRead:
 
     Call start after active work is admitted. A successful wait/poll publishes only
     completed bytes, so ordinary Region.prepare/DLPack exports remain stream-safe.
-    Cancellation drains submitted work and never publishes a partial fill.
+    cancel() requests stop; wait() or completed poll() proves the submitted work drained.
+    An unstarted cancellation settles without a later start. Partial fills are never published.
     """
 
     def __init__(self, native: Any) -> None:
