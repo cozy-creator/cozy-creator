@@ -87,7 +87,7 @@ def walk(o):
         for v in o: walk(v)
 walk(json.load(sys.stdin))' 2>/dev/null | sort -u
 }
-# hub_rent_on <provider>: an admin rental of `cpu` there (`machine rent --provider`, admin-only), ended and checked
+# hub_rent_on <provider>: a rental of `cpu` there (`machine rent --provider`, in dev builds only; the Hub decides who may), ended and checked
 # gone. A rental it cannot name from the reply is the one new in `machine list`; hub_cleanup ends any left.
 hub_rent_on() {
   local m before
@@ -113,7 +113,7 @@ while (i := t.find("{", i)) >= 0:
 if "$CLI" machine rent --help 2>/dev/null | grep -q -- --provider || "$CLI" machine rent cpu --provider runpod --help >/dev/null 2>&1; then
   for p in runpod vast; do hub_rent_on "$p"; done
 else
-  expect "hub providers" FAIL "this cozy has no admin \`machine rent --provider\`: it cannot rent on each provider"
+  expect "hub providers" FAIL "this cozy is not a dev build (cargo feature dev): it has no \`machine rent --provider\` to rent on each provider"
 fi
 [ -n "$WHO" ] || return 0
 HUB_PKG=ci-hub-$R

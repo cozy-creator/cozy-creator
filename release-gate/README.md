@@ -98,7 +98,7 @@ The runner signs in as the owner's account with its own device key: secret `COZY
     schema admits, or 401 when bearer-only). This is the one place in release-gate that speaks HTTP to the Hub by
     hand: it is the contract test.
   - Through `cozy`, on a throwaway `<account>/ci-hub-<R>`: whoami, credits, credits history, the rental catalog, the
-    rental itself and an admin rental of `cpu` on each provider (`machine rent --provider runpod|vast`, ended and
+    rental itself and a rental of `cpu` on each provider with a dev-build cozy (`machine rent --provider runpod|vast`, ended and
     checked gone: renters never pick one, th-254); a package locked, published twice, run, yanked (the simple index marks it `data-yanked`),
     resolved past, run by exact pin, and un-yanked; a model uploaded, published (listed), downloaded, yanked (listed
     yanked), downloaded by pin, un-yanked, deleted (gone). The package's releases are yanked and the model deleted.

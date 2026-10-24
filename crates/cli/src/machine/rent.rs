@@ -28,6 +28,11 @@ pub struct Rent {
     /// A Hub admin's worker image by digest (sha256:<hex>), for a gated image bake.
     #[arg(long, requires = "sku", hide = true, value_parser = image_digest)]
     image_digest: Option<String>,
+    /// Dev builds only: the provider to buy from (runpod or vast), for a release suite that rents on
+    /// each. The Hub decides who may.
+    #[cfg(feature = "dev")]
+    #[arg(long, requires = "sku", hide = true, value_parser = ["runpod", "vast"])]
+    provider: Option<String>,
 }
 
 fn image_digest(digest: &str) -> Result<String, String> {
@@ -44,8 +49,20 @@ fn image_digest(digest: &str) -> Result<String, String> {
     }
 }
 
+impl Rent {
+    #[cfg(feature = "dev")]
+    fn provider(&self) -> Option<String> {
+        self.provider.clone()
+    }
+    #[cfg(not(feature = "dev"))]
+    fn provider(&self) -> Option<String> {
+        None
+    }
+}
+
 pub async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
     let hub = ctx.hub()?;
+    let provider = rent.provider();
     let Some(sku) = rent.sku else {
         return catalog(ctx, &hub).await;
     };
@@ -59,6 +76,7 @@ pub async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
         gpus: rent.gpus,
         disk_gb: rent.disk_gb,
         image: rent.image_digest.clone(),
+        provider: provider.clone(),
         agreed,
     };
     let calcifer = ctx.calcifer().await?;
