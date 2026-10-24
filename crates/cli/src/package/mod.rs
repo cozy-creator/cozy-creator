@@ -78,6 +78,12 @@ enum Command {
         #[arg(long)]
         root: bool,
     },
+    /// Delete a package from the Hub with every release, for good: its name and versions are free
+    /// again. Machines that installed it keep their copies.
+    Delete {
+        /// [org/]name
+        package: String,
+    },
     /// Yank a release: machines that hold it keep it, only an exact pin installs it.
     Yank {
         /// [org/]name@release
@@ -103,6 +109,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         Command::List { on } => machine::list(ctx, on.map(Into::into)).await,
         Command::Lock { upgrade, root } => author::lock(ctx, &upgrade, root).await,
         Command::Publish { root } => author::publish(ctx, root).await,
+        Command::Delete { package } => author::delete(ctx, &PackageRef::parse(&package)?).await,
         Command::Yank { release, undo } => {
             author::yank(ctx, &PackageRef::parse(&release)?, undo).await
         }

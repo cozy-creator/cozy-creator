@@ -666,6 +666,21 @@ paths:
             ETag: {schema: {type: string}}
         4XX: {$ref: '#/components/responses/Error'}
         5XX: {$ref: '#/components/responses/Error'}
+    delete:
+      operationId: delete_package
+      tags: [packages]
+      summary: Deletes a package and every release; its owner, or an admin for the root.
+      security: [{bearer: []}]
+      parameters:
+      - {$ref: '#/components/parameters/Org'}
+      - {$ref: '#/components/parameters/Name'}
+      responses:
+        '200':
+          description: What the deletion removed.
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/PackageDeletion'}}
+        4XX: {$ref: '#/components/responses/Error'}
+        5XX: {$ref: '#/components/responses/Error'}
 
   /v1/packages/{org}/{name}/download:
     post:
@@ -1989,6 +2004,11 @@ components:
       properties:
         package: {$ref: '#/components/schemas/PackageSummary'}
         releases: {type: array, items: {$ref: '#/components/schemas/CatalogRelease'}}
+    PackageDeletion:
+      type: object
+      required: [package]
+      properties:
+        package: {type: string, description: "org/name; the root's org is `_`."}
     PackageDeclaredFile:
       type: object
       required: [digest, length, path]
@@ -2291,7 +2311,7 @@ components:
         accelerator_count: {type: integer, format: int64}
         code:
           type: string
-          description: placement.vram_short, placement.width_unavailable, placement.lane_unsupported, placement.python_unsupported or placement.sku_unavailable.
+          description: placement.vram_short, placement.width_unavailable, placement.disk_unavailable, placement.lane_unsupported, placement.python_unsupported or placement.sku_unavailable.
         reason: {type: string}
     RentalPlacementMachine:
       type: object
@@ -2313,7 +2333,7 @@ components:
         accelerator_count: {type: integer, format: int64}
         price_usd_micros_per_hour: {type: integer, format: int64}
         storage_usd_micros_per_hour: {type: integer, format: int64}
-        container_disk_gb: {type: integer, format: int64}
+        container_disk_gb: {type: integer, format: int64, description: "The disk these prices are for, sized for the weights the run fetches; the run's rental asks for it."}
         expected_price: {$ref: '#/components/schemas/RentalPriceEstimate'}
         lane: {type: string, description: The lane the main model resolves to on this card.}
         weight_bytes: {type: integer, format: int64, description: The weights this card's machine loads.}
