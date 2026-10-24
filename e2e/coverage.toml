@@ -110,6 +110,8 @@ test = "release: throwaway package, published"
 ["package yank"]
 test = "release: throwaway package, yanked"
 "--undo" = "release: throwaway package, un-yanked"
+["package delete"]
+test = "release: throwaway package, deleted"
 
 ["model search"]
 test = "pr: models"
