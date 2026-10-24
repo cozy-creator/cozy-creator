@@ -1,0 +1,42 @@
+{
+  "run": 17137,
+  "status": "completed",
+  "scope": "isolated child-candidate proof through default Cozy CLI",
+  "outer_software": {
+    "attempt_ordinal": 1,
+    "runtime": "0.32.1+dev.g449d60256eef",
+    "tensord": "0.11.17",
+    "tensord_commit": "054b6ab90fcd18dcfbed61dfbab91ed37660a404",
+    "tensorfs": "0.15.1"
+  },
+  "child_runtime": "0.32.1",
+  "child_tensorfs": "0.15.2",
+  "runtime_wheel_sha256": "d0e9c7b53a0b123f5c344f0373ddf500534c45ca91872ede3259e24b50da54d5",
+  "tensorfs_wheel_sha256": "04824178ad0b81acd7f9cb9fb3a5755b96ecbbe232b6479b714798dec4f94a9d",
+  "cohort": "async-local",
+  "result": {
+    "after_cancel": {
+      "canceled": true,
+      "done": true,
+      "issued_bytes": 4194304,
+      "started": true
+    },
+    "before_start": {
+      "canceled": true,
+      "done": true,
+      "issued_bytes": 0,
+      "started": false
+    },
+    "before_start_reclaimed_bytes": 268435456,
+    "cancel_to_checked_completion_ms": 1.380433,
+    "canceled_tokens_retained_without_pins": true,
+    "issued_before_cancel": {
+      "canceled": false,
+      "done": false,
+      "issued_bytes": 2097152,
+      "started": true
+    },
+    "reclaimed_bytes": 268435456
+  },
+  "passed": true
+}
