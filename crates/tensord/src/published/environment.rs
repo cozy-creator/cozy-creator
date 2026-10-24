@@ -290,9 +290,8 @@ impl Publisher {
         }
     }
 
-    /// uv as the machine runs it (`machine::uv`). `job` hears the bytes it writes about once a second; its process group
-    /// is killed when the run is canceled, or when its CPU and bytes stop moving past its measured
-    /// patience (`process::supervise`).
+    /// uv as the machine runs it (`machine::uv`). `job` hears the bytes it writes about once a
+    /// second; its process group is killed when the run is canceled (`process::supervise`).
     pub(crate) fn uv(&self, args: &[&str], env: &[(&str, &std::ffi::OsStr)], job: &Job) -> Result<(), Failure> {
         let mut command = self.sdk.uv.command().map_err(|e| ("uv_unavailable", e.to_string()))?;
         command.args(args).envs(env.iter().copied()).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
@@ -305,7 +304,7 @@ impl Publisher {
                 let _ = stderr.read_to_end(&mut kept);
                 kept
             });
-            let ended = crate::process::supervise(&mut child, job.stop.as_ref(), "uv", &|read| job.bytes(read, 0));
+            let ended = crate::process::supervise(&mut child, job.stop.as_ref(), &|read| job.bytes(read, 0));
             (ended, drained.join().unwrap_or_default())
         });
         let step = args[..2.min(args.len())].join(" ");
@@ -313,7 +312,6 @@ impl Publisher {
             Supervised::Exited(status) if status.success() => Ok(()),
             Supervised::Exited(_) => Err(("package_installation_uv_failed", format!("uv {step}:\n{}", stderr_tail(&stderr)))),
             Supervised::Canceled => Err(canceled()),
-            Supervised::Wedged(verdict) => Err(("no_progress", format!("uv {step}: {verdict}"))),
         }
     }
 }
