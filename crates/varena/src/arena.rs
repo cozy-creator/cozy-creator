@@ -441,16 +441,25 @@ impl State {
     }
 
     /// Every live block: runs (pages aside) and slots.
+    /// Blocks torch still holds: a block it freed whose release waits on another stream's epoch or
+    /// an open capture (deferred) is not live.
     fn live(&self) -> Vec<Outlived> {
+        let freed: BTreeSet<u64> = self.deferred.iter().map(|d| d.ptr).collect();
         let mut out: Vec<Outlived> = self
             .blocks
             .iter()
-            .filter(|(at, b)| !b.free && !self.pages.contains_key(*at))
+            .filter(|(at, b)| !b.free && !self.pages.contains_key(*at) && !freed.contains(*at))
             .map(|(&ptr, b)| Outlived { ptr, bytes: b.len, stream: self.spans.get(&b.span).map_or(ANY, Span::stream) })
             .collect();
         for (&at, p) in &self.pages {
             let size = CLASSES.get(p.class).copied().unwrap_or(0);
-            out.extend((0..p.slots).filter(|i| p.free & (1u128 << i) == 0).map(|i| Outlived { ptr: at + u64::from(i) * size, bytes: size, stream: p.stream }));
+            out.extend(
+                (0..p.slots)
+                    .filter(|i| p.free & (1u128 << i) == 0)
+                    .map(|i| at + u64::from(i) * size)
+                    .filter(|ptr| !freed.contains(ptr))
+                    .map(|ptr| Outlived { ptr, bytes: size, stream: p.stream }),
+            );
         }
         out
     }
