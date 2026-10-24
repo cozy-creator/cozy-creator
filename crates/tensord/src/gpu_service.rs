@@ -757,6 +757,9 @@ impl Pool {
                     .ok_or_else(|| io::Error::other("GPU root has no owned state parent"))?,
             )?;
         }
+        // Weight sources and output transport can retain many descriptors; executors inherit
+        // this process limit even though GPU handles no longer cross the seam.
+        platform::process::raise_fd_limit();
         let envelope = config.envelope();
         let incarnation = uuid::Uuid::new_v4().simple().to_string();
         crate::launch_identity::remove_stale_jit(root, &incarnation);
@@ -966,22 +969,6 @@ impl Pool {
         }
         self.ended(&plan, start);
         true
-    }
-    /// The pool's idle session of `plan` at `start` whose executor is `birth`, taken out of it.
-    fn take_idle(&self, plan: &str, start: usize, birth: &Birth) -> Option<Session> {
-        let key = session_key(plan, start);
-        let mut sessions = self.sessions.lock().unwrap();
-        let owns = |s: &Session| owns_birth(&s.executor.birth, &s.followers, birth);
-        match sessions.get(&key).is_some_and(owns) {
-            true => sessions.remove(&key),
-            false => None,
-        }
-    }
-    fn end_idle(&self, plan: &str, start: usize, session: Session) {
-        if let Err(error) = session.executor.terminate() {
-            tracing::warn!("memory: ending idle executor {}: {error}", session_key(plan, start));
-        }
-        self.ended(plan, start);
     }
     pub fn memo(&self) -> &crate::memo::Memo {
         &self.memo
@@ -2262,8 +2249,6 @@ impl Pool {
                     package_interface: interface,
                     sequence_parallel_degree: 1,
                     import_only: true,
-                    leases: None,
-                    memory_protocol: device_executor::memory_protocol(None),
                     memo: executor.memo_settings(),
                 }),
                 &mut device_executor::Baseline,
@@ -2656,6 +2641,14 @@ impl Pool {
             host: self.host.as_deref(),
         };
         if !session.loaded {
+            if degree > 0 && session.executor.hello.memory_backend != "torch" {
+                let failure = Failure::machine("memory_backend_unsupported", format!(
+                    "GPU execution requires memory_backend=\"torch\"; this executor advertises {:?}",
+                    session.executor.hello.memory_backend,
+                ));
+                defer_completion(engine, id, &session.executor.birth, &session.followers, Outcome::Failed(failure))?;
+                return Ok(true);
+            }
             let interface_path = self.interface_file(&session.executor, held)?;
             let starting = Instant::now();
             // Each executor owns its GPU allocations. The existing GPU permits schedule
@@ -2669,8 +2662,6 @@ impl Pool {
                     import_only: false,
                     call_interfaces: crate::calls::call_interfaces(held, &interface_path),
                     constructions: constructions(&plan),
-                    leases: None,
-                    memory_protocol: 0,
                     memo: session.executor.memo_settings(),
                 }),
                 &mut callbacks,
@@ -2919,12 +2910,11 @@ impl Pool {
         let lost = self.lost_followers(start, degree, &session.followers);
         let lost_state = !reply.quiescent || !reply.poisoned.is_empty() || !lost.is_empty();
         if !reply.ok || lost_state {
-            // Its GPU state lost: it may have faulted on its GPUs, so their kept pages go and its
-            // own are destroyed at its exit, never kept for another; and it is killed now, since
+            // Its GPU state is lost: its own allocations are destroyed at its exit, never kept
+            // for another executor; it is killed now, since
             // a graceful end could spin on that state and keep its GPU memory from every later call.
             // A plain failure (quiescent) is the package's on a healthy GPU: its pages stay.
             if lost_state {
-                let pids: Vec<u32> = std::iter::once(session.executor.birth.pid).chain(session.followers.iter().map(|f| f.birth().pid)).collect();
                 if let Err(error) = session.executor.kill() {
                     tracing::warn!("run {id}: killing its unsettled executor: {error}");
                 }
@@ -3090,9 +3080,7 @@ fn await_executor_exit(engine: &Arc<Engine>, births: &[Birth]) {
     }
 }
 
-fn owns_birth(leader: &Birth, followers: &[platform::process::Exact], candidate: &Birth) -> bool {
-    leader == candidate || followers.iter().any(|f| f.birth() == candidate)
-}
+
 
 fn executor_births(leader: &Birth, followers: &[platform::process::Exact]) -> Vec<Birth> {
     let mut processes = platform::process::group_members(leader);
