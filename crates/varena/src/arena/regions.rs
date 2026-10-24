@@ -73,8 +73,9 @@ impl Evicted {
 impl Torch {
     /// Evicts region `owner`'s spans once their streams passed everything enqueued so far: their
     /// chunks go back to the source, and with `swap` their bytes go to a RAM file first. The caller
-    /// guarantees no allocation, free or new use races this operation (the region is unpinned).
-    /// Only allocation streams and explicitly recorded additional streams are fenced. `None` while a
+    /// guarantees no allocation or new use races this operation (the region is unpinned).
+    /// Frees may race: their chunks stay held here until copying ends. Only allocation streams
+    /// and explicitly recorded additional streams are fenced. `None` while a
     /// capture is open: no epoch can be recorded then (R2), so the caller asks again later.
     pub fn evict(&self, owner: Owner, swap: bool) -> Result<Option<Evicted>> {
         if !matches!(owner, Owner::Region(_)) {
@@ -90,36 +91,55 @@ impl Torch {
         if !sh.quiesce(&streams)? {
             return Ok(None);
         }
-        let spans: Vec<(u64, u64)> = a.st.lock().spans.iter().filter(|(_, s)| !s.chunks.is_empty()).map(|(b, s)| (*b, s.len)).collect();
+        // Detach ownership under the arena lock, without unmapping. A racing last free sees
+        // no chunks and cannot move this span to idle while its bytes are being copied.
+        let spans: Vec<(u64, u64, Vec<Chunk>)> = {
+            let mut st = a.st.lock();
+            let bases: Vec<u64> = st.spans.iter().filter(|(_, s)| !s.chunks.is_empty()).map(|(base, _)| *base).collect();
+            let mut spans = Vec::new();
+            for base in bases {
+                let Some(span) = st.spans.get_mut(&base) else { continue };
+                let len = span.len;
+                spans.push((base, len, std::mem::take(&mut span.chunks)));
+                st.hide(base);
+            }
+            spans
+        };
+        let bytes = spans.iter().map(|(_, len, _)| len).sum();
+        let mut file = if swap {
+            match SwapFile::new(bytes) {
+                Ok(file) => Some(file),
+                Err(error) => {
+                    sh.restore_chunks(&a, spans);
+                    return Err(error);
+                }
+            }
+        } else { None };
         let mut out = Evicted::default();
-        let mut file = if swap { Some(SwapFile::new(spans.iter().map(|(_, l)| l).sum())?) } else { None };
         // Finish all fallible copies before releasing any original mapping.
-        for &(base, len) in &spans {
+        for i in 0..spans.len() {
+            let Some(&(base, len, _)) = spans.get(i) else { continue };
             if let Some(f) = file.as_mut() {
-                if let Err(error) = sh.backend.copy_out(Va { base, len }, 0, f.at(out.bytes, len)?, Event::DONE) {
+                let copied = f.at(out.bytes, len).and_then(|dst| sh.backend.copy_out(Va { base, len }, 0, dst, Event::DONE));
+                if let Err(error) = copied {
                     if let Err(drain) = sh.backend.drain() {
                         // A pending copy may still write this buffer. Existing Memory ownership
                         // loss retains the device; this buffer must also survive until exit.
                         std::mem::forget(file);
                         return Err(Error::Ownership(format!("region copy failed ({error}); completion is unknown ({drain})")));
                     }
+                    if !error.is_sticky() { sh.restore_chunks(&a, spans); }
                     return Err(error);
                 }
             }
             out.spans.push((base, len, out.bytes));
             out.bytes += len;
         }
-        for (base, len) in spans {
-            let chunks = {
+        for (base, len, chunks) in spans {
+            {
                 let mut st = a.st.lock();
-                let Some(span) = st.spans.get_mut(&base) else { continue };
-                let chunks = std::mem::take(&mut span.chunks);
-                if !chunks.is_empty() {
-                    st.mapped = st.mapped.saturating_sub(len);
-                    st.hide(base);
-                }
-                chunks
-            };
+                st.mapped = st.mapped.saturating_sub(len);
+            }
             // Failed unmaps stay mapped and counted in the existing stuck list for retry.
             sh.unmap(Va { base, len }, chunks, false, true);
         }
@@ -269,6 +289,24 @@ impl State {
 }
 
 impl Shared {
+    /// An eviction copy failed with completion proved: return its still-mapped chunks to the
+    /// arena. A span freed while detached can now follow the ordinary whole-free path.
+    fn restore_chunks(&self, arena: &Arc<Arena>, spans: Vec<(u64, u64, Vec<Chunk>)>) {
+        for (base, len, chunks) in spans {
+            let mut st = arena.st.lock();
+            let Some(span) = st.spans.get_mut(&base) else {
+                drop(st);
+                self.unmap(Va { base, len }, chunks, false, true);
+                continue;
+            };
+            span.chunks = chunks;
+            st.show(base);
+            if st.spans.get(&base).is_some_and(|span| span.live == 0) {
+                self.whole(arena, &mut st, base);
+            }
+        }
+    }
+
     /// Waits until every one of `streams` passed an epoch after its work so far; false while a capture
     /// is open. A stream whose recording was lost can prove nothing: an error.
     fn quiesce(&self, streams: &[usize]) -> Result<bool> {

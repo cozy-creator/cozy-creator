@@ -1027,6 +1027,18 @@ impl Torch {
         retried + given.into_iter().map(|s| self.sh.give(s)).sum::<u64>()
     }
 
+    pub(crate) fn capturing(&self) -> bool { self.sh.capturing() }
+
+    /// A weight demand may wait only for spans already freed, never for live allocations.
+    pub(crate) fn give_back(&self) -> Result<u64> {
+        self.check_completion()?;
+        if self.sh.capturing() { return Ok(0); }
+        let before = self.sh.mapped.load(Acquire);
+        self.sh.give_back();
+        self.check_completion()?;
+        Ok(before.saturating_sub(self.sh.mapped.load(Acquire)))
+    }
+
     /// Idle bytes: (quiet, waiting for their stream's epoch).
     pub fn idle(&self) -> (u64, u64) {
         self.sh.idle.lock().bytes()
@@ -1721,6 +1733,13 @@ impl Direct {
         self
     }
 
+    fn release_failed(&self, error: &Error) {
+        tracing::error!("varena: a standalone physical reference could not be released: {error}");
+        if error.is_sticky() || matches!(error, Error::Internal(_) | Error::Closed(_)) {
+            if let Some(memory) = self.memory.upgrade() { memory.lost_backing(error); }
+        }
+    }
+
     fn one(&self, va: Va, off: u64, len: u64) -> Result<Chunk> {
         let p = self.allowance.create(&*self.backend, len).map_err(|e| match e {
             Error::Device { code: OUT_OF_MEMORY, .. } => exhausted(len, "the device is out of memory"),
@@ -1729,8 +1748,9 @@ impl Direct {
         if let Err(e) = self.backend.map(va, off, &p, Access::ReadWrite) {
             if e.is_sticky() {
                 self.held.lock().insert(p.id, p);
-            } else {
-                let _ = self.allowance.destroy(&*self.backend, p);
+            } else if let Err(release) = self.allowance.destroy(&*self.backend, p) {
+                self.release_failed(&release);
+                return Err(release);
             }
             return Err(e);
         }
@@ -1767,7 +1787,9 @@ impl Source for Direct {
             }
             let page = self.held.lock().remove(&c.id);
             if let Some(p) = page {
-                let _ = self.allowance.destroy(&*self.backend, p);
+                if let Err(error) = self.allowance.destroy(&*self.backend, p) {
+                    self.release_failed(&error);
+                }
             }
         }
         stuck
