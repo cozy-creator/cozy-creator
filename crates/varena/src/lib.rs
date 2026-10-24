@@ -594,6 +594,9 @@ impl Drop for Fill {
         let Some(pin) = &self.pin else {
             return;
         };
+        if pin.region.arena.pid != std::process::id() {
+            return;
+        }
         // Even poison permits bookkeeping; never touch CUDA or publish partial bytes on drop.
         if let Ok(mut state) = pin.region.arena.state.lock()
             && let Some(entry) = state.entries.get_mut(&pin.region.id)
@@ -634,6 +637,9 @@ impl Pin {
 
 impl Drop for Pin {
     fn drop(&mut self) {
+        if self.region.arena.pid != std::process::id() {
+            return;
+        }
         if let Ok(mut state) = self.region.arena.state.lock()
             && let Some(entry) = state.entries.get_mut(&self.region.id)
         {
@@ -647,6 +653,9 @@ pub struct CaptureGuard {
 }
 impl Drop for CaptureGuard {
     fn drop(&mut self) {
+        if self.arena.pid != std::process::id() {
+            return;
+        }
         if let Ok(mut state) = self.arena.state.lock() {
             state.captures = state.captures.saturating_sub(1);
         }
