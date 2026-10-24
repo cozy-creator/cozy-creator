@@ -124,7 +124,10 @@ impl Inner {
             let (writer, va) = (writer.clone(), Va { base: va.base + off, len: span });
             let asked = agent.derive(dk.store(), span, Box::new(move |entry: Option<crate::lease::DerivedEntry>| {
                 if let Some(e) = entry {
-                    writer.offer(Job { key: dk, entry: e.file, entry_id: e.id, va, ready: Event::DONE });
+                    // SAFETY: Holder validates the same derived key and pins its mapped page;
+                    // a changed/unmapped identity refuses the pin. Its measured transform has
+                    // already completed, and that pin excludes writes/eviction during the copy.
+                    unsafe { writer.offer(Job { key: dk, entry: e.file, entry_id: e.id, va, ready: Event::DONE }) };
                 }
             }));
             if let Err(error) = asked {

@@ -119,19 +119,36 @@ pub struct Chunk {
 
 /// Where the arenas' chunks come from: the lease agent (its float, then the manager), or a
 /// standalone budget ([`Direct`]).
-pub trait Source: Send + Sync {
+///
+/// # Safety
+/// Successful maps and ordinary partial failures must describe every physical chunk mapped, in
+/// address order, with accurate lengths and stable ownership until unmap. An `Ownership` failure
+/// may retain uncertain mappings internally; the caller then keeps the entire reservation and
+/// source alive until process exit. Unmap must leave every
+/// returned chunk mapped and owned, and release no unreported live mapping. Hints cannot revoke
+/// a chunk that the arena still uses. The allocator trusts these facts for copies and reuse.
+#[allow(unsafe_code)]
+pub unsafe trait Source: Send + Sync {
     /// Maps chunks covering `va` (its length a multiple of [`UNIT`]; each chunk at most [`CHUNK`],
     /// in address order), pushing each onto `into` once it is mapped: on Err the caller gives back
     /// what `into` holds. It waits, with no lock of the caller's held, until they are granted, and
     /// the wait never needs Python: the caller may hold the GIL. It is never called on a capturing
     /// thread; its driver calls run in relaxed capture mode, since another thread may be
     /// capturing. It errs only at the floor: `Exhausted` (nothing revocable) or `Closed`.
-    fn map(&self, va: Va, kind: Kind, into: &mut Vec<Chunk>) -> Result<()>;
+    ///
+    /// # Safety
+    /// `va` is a live, unmapped reservation on this source's backend, with the required alignment.
+    /// The caller retains it until every returned chunk has been unmapped, including on failure.
+    unsafe fn map(&self, va: Va, kind: Kind, into: &mut Vec<Chunk>) -> Result<()>;
     /// Unmaps chunks the arenas are done with (whole free, their epochs passed) and gives them back.
     /// Returns those it could not take back (still pinned, or an unmap failed), each at its
     /// address: they stay mapped, the arena keeps their addresses reserved, and it calls again for
     /// them at its next give-back pass.
-    fn unmap(&self, va: Va, chunks: Vec<Chunk>) -> Vec<(u64, Chunk)>;
+    ///
+    /// # Safety
+    /// `chunks` are this source's mapped chunks starting at `va.base`, in address order. Every
+    /// use and copy has completed; no consumer can access them during or after successful unmap.
+    unsafe fn unmap(&self, va: Va, chunks: Vec<Chunk>) -> Vec<(u64, Chunk)>;
     /// A hint: the chunks went whole free (`idle`) or back into use. Atomics only: it is called
     /// under an arena lock.
     fn idle(&self, _chunks: &[Chunk], _idle: bool) {}
@@ -753,7 +770,14 @@ pub struct Torch {
 }
 
 impl Torch {
-    pub fn new(backend: Arc<dyn Backend>, source: Arc<dyn Source>) -> Result<Arc<Torch>> {
+    /// Creates an allocator over a custom physical source.
+    ///
+    /// # Safety
+    /// `source` maps the exact device/address space owned by `backend` and honors its reservation
+    /// and completion semantics. Mixing a host source with a CUDA backend, or different devices,
+    /// cannot satisfy this contract. Built-in Memory constructors establish this wiring internally.
+    #[allow(unsafe_code)]
+    pub unsafe fn new(backend: Arc<dyn Backend>, source: Arc<dyn Source>) -> Result<Arc<Torch>> {
         if !UNIT.is_multiple_of(backend.granularity().max(1)) {
             return Err(Error::Invalid(format!("granularity {} does not divide {UNIT}", backend.granularity())));
         }
@@ -917,6 +941,7 @@ impl Torch {
 
     /// Before a capture into `pool` begins (never on a capturing thread): `expected` bytes of it
     /// mapped and free, made room for here.
+    #[allow(unsafe_code)]
     pub fn pool_prepare(&self, pool: PoolId, expected: u64) -> Result<()> {
         let sh = &self.sh;
         if sh.capturing() {
@@ -942,7 +967,9 @@ impl Torch {
             };
             let va = sh.reserve(short)?;
             let mut chunks = Vec::new();
-            match sh.source.map(va, Kind::Pool, &mut chunks) {
+            // SAFETY: `reserve` owns this unmapped range; Torch::new's contract pairs this
+            // source with the backend. Every partial mapping is kept or returned below.
+            match unsafe { sh.source.map(va, Kind::Pool, &mut chunks) } {
                 Ok(()) => {
                     sh.mapped.fetch_add(va.len, AcqRel);
                     let mut st = a.st.lock();
@@ -1367,6 +1394,7 @@ impl Shared {
         self.dir.write().insert(base, (len, a.clone()));
     }
 
+    #[allow(unsafe_code)]
     fn alloc_in(&self, a: &Arc<Arena>, size: u64, stream: usize, capture: bool) -> Result<u64> {
         let t = tier(a.pool(), size);
         let (least, new) = span_len(t, size);
@@ -1392,7 +1420,9 @@ impl Shared {
             let mut chunks = Vec::new();
             // The source may wait: neither the host lock nor an arena lock may span it.
             let unblocked = unblocked();
-            if let Err(e) = self.source.map(va, if a.pool() { Kind::Pool } else { Kind::Torch }, &mut chunks) {
+            // SAFETY: `reserve` owns this unmapped range on the backend paired with this source;
+            // every partial mapping is recorded in `chunks` and kept or returned below.
+            if let Err(e) = unsafe { self.source.map(va, if a.pool() { Kind::Pool } else { Kind::Torch }, &mut chunks) } {
                 if e.is_sticky() {
                     // The mapping may remain: keep its VA and imported handles until exit.
                     return Err(e);
@@ -1461,8 +1491,11 @@ impl Shared {
     /// took. A chunk it could not take stays mapped: its addresses stay reserved, off every free
     /// list, and the next give-back pass retries it. `owned`: the range's addresses are freed here
     /// as its chunks go (else an evicted span keeps them); `counted`: `mapped` counts the chunks.
+    #[allow(unsafe_code)]
     pub(crate) fn unmap(&self, va: Va, chunks: Vec<Chunk>, owned: bool, counted: bool) -> u64 {
-        let stuck = if chunks.is_empty() { Vec::new() } else { self.source.unmap(va, chunks) };
+        // SAFETY: internal callers transfer ordered chunks only after their consumers/copies
+        // finish, or before unpublished mappings are exposed. Failed unmaps stay owned below.
+        let stuck = if chunks.is_empty() { Vec::new() } else { unsafe { self.source.unmap(va, chunks) } };
         let mut stuck: Vec<Stuck> = stuck.into_iter().map(|(at, chunk)| Stuck { at, chunk, owned, counted }).collect();
         stuck.sort_unstable_by_key(|s| s.at);
         let (mut at, mut given) = (va.base, 0);
@@ -1820,12 +1853,15 @@ impl Direct {
     }
 }
 
-impl Source for Direct {
+// SAFETY: each mapped chunk has one physical owner in `held`; partial maps are appended in
+// address order, and failed unmaps keep their mapped chunks and handles for the arena's retry.
+#[allow(unsafe_code)]
+unsafe impl Source for Direct {
     fn reclaim(&self, want: u64) -> bool {
         self.memory.upgrade().is_some_and(|memory| memory.reclaim_for_torch(want))
     }
 
-    fn map(&self, va: Va, _: Kind, into: &mut Vec<Chunk>) -> Result<()> {
+    unsafe fn map(&self, va: Va, _: Kind, into: &mut Vec<Chunk>) -> Result<()> {
         let mut off = 0;
         while off < va.len {
             let len = (va.len - off).min(CHUNK);
@@ -1836,7 +1872,7 @@ impl Source for Direct {
     }
 
     #[allow(unsafe_code)]
-    fn unmap(&self, va: Va, chunks: Vec<Chunk>) -> Vec<(u64, Chunk)> {
+    unsafe fn unmap(&self, va: Va, chunks: Vec<Chunk>) -> Vec<(u64, Chunk)> {
         let (mut off, mut stuck) = (0, Vec::new());
         for c in chunks {
             let at = va.base + off;

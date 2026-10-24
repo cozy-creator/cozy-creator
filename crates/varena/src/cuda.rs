@@ -246,7 +246,9 @@ impl CudaBackend {
     }
 }
 
-impl Backend for CudaBackend {
+// SAFETY: CUDA reservations, page handles and events belong to this backend's retained context.
+// VMM mappings and copy targets use those exact addresses; completion is reported by CUDA events.
+unsafe impl Backend for CudaBackend {
     fn capacity(&self) -> u64 {
         self.capacity
     }

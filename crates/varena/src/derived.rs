@@ -112,7 +112,13 @@ impl Writer {
     }
 
     /// Queues a page; it is written at the next idle moment.
-    pub fn offer(&self, job: Job) {
+    ///
+    /// # Safety
+    /// Whenever this writer's holder successfully pins `job.key`, that guard must retain
+    /// `job.va` as a readable mapping on this writer's backend until the copy finishes, excluding
+    /// concurrent writers. `job.ready` must belong to that backend and follow the page's fill.
+    /// If the page changes or leaves, the holder must refuse the pin rather than return a stale VA.
+    pub unsafe fn offer(&self, job: Job) {
         let mut q = self.sh.queue.lock();
         q.jobs.push_back(job);
         q.gen += 1;

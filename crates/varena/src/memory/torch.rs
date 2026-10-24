@@ -45,8 +45,13 @@ pub struct Allocating {
 
 impl Memory {
     /// Serves torch's allocations from `source`, once, before any is made.
-    pub fn serve_torch(&self, source: Arc<dyn Source>) -> Result<Arc<Torch>> {
-        let torch = Torch::new(self.inner.backend.clone(), source)?;
+    ///
+    /// # Safety
+    /// `source` must map this Memory's exact backend device/address space, with the same
+    /// reservation and completion semantics. Prefer the built-in standalone or leased setup.
+    pub unsafe fn serve_torch(&self, source: Arc<dyn Source>) -> Result<Arc<Torch>> {
+        // SAFETY: the caller establishes that source and this Memory's backend agree.
+        let torch = unsafe { Torch::new(self.inner.backend.clone(), source) }?;
         self.inner.torch.set(torch.clone()).map_err(|_| Error::Invalid("torch's allocations are served already".into()))?;
         Ok(torch)
     }
@@ -59,13 +64,15 @@ impl Memory {
         let wake = Box::new(move || {
             mech.post(super::Mech::Revoke);
         });
-        self.serve_torch(Arc::new(Leased { agent, backend: self.inner.backend.clone(), held: Mutex::new(HashMap::new()), wake }))
+        // SAFETY: the lease source uses this exact backend for imported chunks and mappings.
+        unsafe { self.serve_torch(Arc::new(Leased { agent, backend: self.inner.backend.clone(), held: Mutex::new(HashMap::new()), wake })) }
     }
 
     /// Standalone, chosen explicitly when no compatible manager serves this GPU: the device's
     /// own pages, within the allowance its weight pages share (rev 6).
     pub fn serve_standalone_torch(&self) -> Result<Arc<Torch>> {
-        self.serve_torch(Arc::new(Direct::new(self.inner.backend.clone(), self.inner.allowance.clone()).recover_from(Arc::downgrade(&self.inner))))
+        // SAFETY: Direct allocates and maps through this exact backend and shared allowance.
+        unsafe { self.serve_torch(Arc::new(Direct::new(self.inner.backend.clone(), self.inner.allowance.clone()).recover_from(Arc::downgrade(&self.inner)))) }
     }
 
     /// The device's torch allocator: refused until one is served.
@@ -261,12 +268,14 @@ impl Leased {
 }
 
 #[cfg(unix)]
-impl Source for Leased {
+// SAFETY: imported chunks are mapped by this Memory's backend and retained in `held`; the
+// lease table pin prevents revocation while used, and failed unmaps remain owned for retry.
+unsafe impl Source for Leased {
     fn slot(&self, chunk: &Chunk) -> Option<u32> {
         u32::try_from(chunk.id >> 32).ok()
     }
 
-    fn map(&self, va: Va, _: Kind, into: &mut Vec<Chunk>) -> Result<()> {
+    unsafe fn map(&self, va: Va, _: Kind, into: &mut Vec<Chunk>) -> Result<()> {
         let (mut tickets, mut off, mut failed) = (Vec::new(), 0, None);
         for lease in self.agent.take(va.len, crate::lease::Kind::Torch, None)? {
             let len = lease.phys.len;
@@ -315,7 +324,7 @@ impl Source for Leased {
         Ok(())
     }
 
-    fn unmap(&self, va: Va, chunks: Vec<Chunk>) -> Vec<(u64, Chunk)> {
+    unsafe fn unmap(&self, va: Va, chunks: Vec<Chunk>) -> Vec<(u64, Chunk)> {
         let (mut at, mut stuck) = (va.base, Vec::new());
         for c in chunks {
             let here = at;

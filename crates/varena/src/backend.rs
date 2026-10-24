@@ -97,7 +97,14 @@ impl Allowance {
 }
 
 /// One device's mechanism. Every call is short: no call waits on another process or a fill.
-pub trait Backend: Send + Sync {
+///
+/// # Safety
+/// Reservations, physical pages and events returned by this implementation belong to its device
+/// and remain valid until their documented release. Mappings cover the requested ranges, never
+/// unrelated memory; reported completion establishes that the corresponding work has finished.
+/// `target` must describe the same mapped storage as the reservation. Safe Memory operations
+/// rely on these guarantees when performing raw copies and reclaiming completed allocations.
+pub unsafe trait Backend: Send + Sync {
     /// The device's total bytes (the card, or a host device's limit).
     fn capacity(&self) -> u64;
     /// Bytes kept free beyond the driver's own measured use (its lazy kernel loads, cr-215): a
@@ -281,7 +288,9 @@ fn page_err(e: platform::Error) -> Error {
 
 /// One implementation on every OS, over cozy-platform's host-page seams (memfd, `shm_open`, or
 /// pagefile sections in placeholders).
-impl Backend for HostBackend {
+// SAFETY: reservations and mappings come from platform's host-page primitives; owned page
+// handles stay in `pages.live`, and host copies/events complete before they return.
+unsafe impl Backend for HostBackend {
     fn capacity(&self) -> u64 {
         self.limit
     }

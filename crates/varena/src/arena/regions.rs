@@ -350,7 +350,9 @@ impl Shared {
         }
         loop {
             let mut chunks = Vec::new();
-            match self.source.map(va, Kind::Torch, &mut chunks) {
+            // SAFETY: the evicted span retained its reservation, and the stuck check above
+            // excludes mappings whose prior unmap failed. These new mappings remain unpublished.
+            match unsafe { self.source.map(va, Kind::Torch, &mut chunks) } {
                 Ok(()) => {
                     self.mapped.fetch_add(va.len, AcqRel);
                     return Ok(chunks);
