@@ -1,11 +1,11 @@
-//! TensorD hosts varena's lease manager (design varena-leases): each envelope GPU the inventory
-//! names has one, which creates the GPU's chunks and leases them to its executors, places their
-//! components, and keeps their measured peaks (capacity min(card, `gpu_memory_limit`)). GPU
-//! permits alone schedule calls (design varena-local): measured peaks guide placement and the
-//! host rule, never a second admission queue. A GPU whose chunks TensorD cannot create has a
-//! chunk-less manager: its executors run standalone. Host RAM is the OS page cache; [`Host`]
-//! watches what the running calls must keep free of it. One thread blocks on every GPU's events
-//! and the host's short event; each GPU's [`Watch`] reads NVML while cozy holds bytes there.
+//! TensorD's books of GPU memory (design varena-local): each executor owns its GPU memory, and
+//! each envelope GPU the inventory names has a chunk-less varena manager that only keeps books:
+//! the measured peaks that guide placement, offload and the host rule (capacity min(card,
+//! `gpu_memory_limit`)). TensorD creates no chunk and opens no CUDA context. GPU permits alone
+//! schedule calls, never a second admission queue; with a GPU memory limit, the [`Charge`] page
+//! holds every executor's bytes under it. Host RAM is the OS page cache; [`Host`] watches what
+//! the running calls must keep free of it. One thread blocks on every GPU's events and the
+//! host's short event; each GPU's [`Watch`] reads NVML while cozy holds bytes there.
 use crate::machine::receipt;
 use platform::contain::host_memory;
 use platform::contain::host_pressure::{self, Growth, HostMode, Nudge};
@@ -23,16 +23,16 @@ use platform::{
     process::{Birth, Exact},
 };
 use varena::lease::{
-    manager::{Opener, Record},
+    manager::Record,
     Hosting, Identity, Manager, Mode, Peak,
 };
-use varena::{Backend, CudaBackend, GpuId};
+use varena::GpuId;
 
 /// Past this the memory log rotates to `memory.log.1`, so it holds at most twice this.
 const ROTATE_BYTES: u64 = 4 << 20;
 
-/// One envelope GPU: its lease manager (chunk-less where TensorD cannot create its chunks), the
-/// GPU model its peaks are kept under, and the watch that reads its foreign and standalone bytes.
+/// One envelope GPU: its chunk-less manager (its books), the GPU model its peaks are kept under,
+/// and the watch that reads its foreign and executors' bytes.
 pub struct Gpu {
     pub manager: Arc<Manager>,
     pub model: String,
@@ -40,12 +40,10 @@ pub struct Gpu {
     watch: Arc<Watch>,
 }
 
-/// What hosting a GPU's leases takes: who the peers on its listener are, its chunks (none where
-/// TensorD cannot create them: its executors run standalone), which processes are cozy's, and
+/// What a GPU's books take: who the peers on its listener are, which processes are cozy's, and
 /// the derived-weights disk cache every GPU's managers share.
 pub struct Leases {
     pub peers: Arc<Peers>,
-    pub open: Option<Opener>,
     pub tenants: Tenants,
     pub derived: Arc<crate::derived::Derived>,
 }
@@ -107,13 +105,12 @@ impl Gpu {
             HostMode::Shared => Mode::Shared,
             HostMode::Dedicated => Mode::Dedicated,
         };
-        let chunks = leases.open.is_some();
         let manager = varena::lease::listen(&id)
             .map_err(|error| format!("its listener: {error}"))
             .and_then(|listener| listener.ok_or_else(|| "another process serves its leases".to_string()))
             .and_then(|listener| {
                 let hosting = Arc::new(Hosted { peers: leases.peers, device: platform::gpu::Device::open(&id.uuid).ok(), derived: leases.derived });
-                Manager::create(&id, limit, mode, leases.open, listener, hosting).map_err(|error| error.to_string())
+                Manager::create(&id, limit, mode, None, listener, hosting).map_err(|error| error.to_string())
             });
         let manager = match manager {
             Ok(manager) => manager,
@@ -123,7 +120,7 @@ impl Gpu {
             }
         };
         peaks.restore(&id.model, &manager);
-        log.note(serde_json::json!({"event": "manager", "gpu": entry, "card": id.memory, "chunks": chunks}));
+        log.note(serde_json::json!({"event": "manager", "gpu": entry, "card": id.memory}));
         let watch = Watch::start(&id.uuid, manager.clone(), leases.tenants, log);
         Some(Gpu { manager, model: id.model, uuid: id.uuid, watch })
     }
@@ -384,47 +381,6 @@ fn books(processes: &BTreeMap<u32, u64>, held: &varena::lease::Holdings, was: Op
     was
 }
 
-/// GPU `uuid`'s chunks, opened in TensorD's own context at its manager's first ask and released
-/// when the manager holds no chunk and serves no executor (a context costs VRAM, and keeps a
-/// laptop's GPU awake). None (a memory-log note says why) where its compute mode admits one
-/// process at a time, whose context TensorD's would lock out, or CUDA cannot share its pages.
-/// Only NVML and CUDA's driver are read here: no context is made.
-pub fn chunks(uuid: &str, log: &MemoryLog) -> Option<Opener> {
-    let off = |why: String| log.note(serde_json::json!({"event": "leases_off", "gpu": uuid, "why": why}));
-    match platform::gpu::Device::open(uuid).and_then(|device| device.exclusive()) {
-        Ok(true) => {
-            off("its compute mode admits one process at a time".into());
-            return None;
-        }
-        Ok(false) => {}
-        Err(error) => tracing::warn!("memory: GPU {uuid}'s compute mode is unread ({error}): CUDA decides"),
-    }
-    let ordinal = shareable(uuid).inspect_err(|why| off(why.clone())).ok()?;
-    Some(Box::new(move || CudaBackend::open(ordinal).map(|backend| Arc::new(backend) as Arc<dyn Backend>)))
-}
-
-/// The CUDA ordinal of GPU `uuid` in this process (neither NVML's index nor an executor's,
-/// `CUDA_VISIBLE_DEVICES`), whose pages CUDA can create and share.
-fn shareable(uuid: &str) -> Result<i32, String> {
-    use tensorfs::io::cuda;
-    let count = cuda::device_count().map_err(|error| error.to_string())?;
-    let device = |ordinal: i32| {
-        let device = cuda::device_at(ordinal).ok()?;
-        cuda::uuid(device).is_ok_and(|named| named == uuid).then_some((ordinal, device))
-    };
-    let (ordinal, device) = (0..count).find_map(device).ok_or_else(|| format!("CUDA has no device {uuid}"))?;
-    #[cfg(unix)]
-    let handles = cuda::ATTR_POSIX_FD_SUPPORTED;
-    #[cfg(windows)]
-    let handles = cuda::ATTR_WIN32_HANDLE_SUPPORTED;
-    for (attribute, what) in [(cuda::ATTR_VMM_SUPPORTED, "virtual memory management"), (handles, "shareable handles")] {
-        if cuda::attribute(device, attribute).map_err(|error| error.to_string())? == 0 {
-            return Err(format!("CUDA device {uuid} has no {what}"));
-        }
-    }
-    Ok(ordinal)
-}
-
 /// The GPU of the group (an index into `managers`, GPU order) that keeps each set of `sets`, by
 /// `Manager::place` for `package`'s request at `shape`. A set's bytes are what its load recorded
 /// on a GPU of the group: a set never loaded goes where the most room is free. A manager that
@@ -490,6 +446,55 @@ impl Peaks {
             }
             Err(error) => tracing::warn!("memory: {model}'s peaks not saved: {error}"),
         }
+    }
+}
+
+/// The machine's GPU charge page (`varena::charge`) while a GPU memory limit is set: a section per
+/// envelope GPU at min(card, limit), passed with every Start of an executor that reads one. Its
+/// executors charge what they create; an executor's slots go once its exit is proven.
+pub struct Charge {
+    page: varena::charge::Page,
+    file: fs::File,
+    log: MemoryLog,
+}
+
+impl Charge {
+    /// None without a limit, or (a memory-log note says why) when the page cannot be made.
+    pub fn create(envelope: &[String], inventory: &[receipt::Gpu], limit: Option<u64>, log: &MemoryLog) -> Option<Charge> {
+        let limit = limit.filter(|limit| *limit > 0)?;
+        let limits: Vec<([u8; 16], u64)> = envelope
+            .iter()
+            .filter_map(|entry| row(entry, inventory))
+            .filter_map(|row| Some((varena::charge::uuid_bytes(&row.device_uuid)?, limit.min(row.memory_bytes))))
+            .collect();
+        match varena::charge::Page::create(&limits) {
+            Ok((page, file)) => {
+                log.note(serde_json::json!({"event": "charge_page", "gpus": limits.len(), "limit": limit}));
+                Some(Charge { page, file: fs::File::from(file), log: log.clone() })
+            }
+            Err(error) => {
+                log.note(serde_json::json!({"event": "no_charge_page", "why": error.to_string()}));
+                None
+            }
+        }
+    }
+
+    /// The handle a Start carries.
+    pub fn file(&self) -> &fs::File {
+        &self.file
+    }
+
+    /// `birth` exited (proven): its slots go, their bytes refunded.
+    pub fn reap(&self, birth: &Birth) {
+        let refunded = self.page.reap(birth.pid, birth.start_ticks);
+        if refunded > 0 {
+            self.log.note(serde_json::json!({"event": "charge_reaped", "pid": birth.pid, "bytes": refunded}));
+        }
+    }
+
+    /// What is left of GPU `uuid`'s limit; None for a GPU without a section.
+    pub fn left(&self, uuid: &str) -> Option<u64> {
+        Some(self.page.section(&varena::charge::uuid_bytes(uuid)?)?.left())
     }
 }
 

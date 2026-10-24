@@ -121,6 +121,10 @@ pub struct Start {
     /// Its stage memo tiers, when the machine memoizes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memo: Option<MemoSettings>,
+    /// The machine's GPU charge page (`varena::charge`) follows this frame as one descriptor:
+    /// sent only with a GPU memory limit, to an executor whose hello reads one.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub charge: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -468,6 +472,8 @@ pub struct Hello {
     /// other runs its memory alone.
     pub memory_protocol: u32,
     pub sealed: BTreeMap<String, String>,
+    /// It reads a GPU charge page passed at Start.
+    pub charge: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]

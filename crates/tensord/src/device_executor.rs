@@ -46,52 +46,11 @@ pub struct ExecutorConfig {
     pub cgroup_namespace: Option<String>,
 }
 
-/// The lease protocol (design varena-leases), where varena serves one.
-#[cfg(unix)]
-const LEASES: Option<u32> = Some(varena::lease::PROTOCOL);
-#[cfg(not(unix))]
-const LEASES: Option<u32> = None;
-
-/// How an executor's GPU memory is served, by the memory protocol its Hello speaks. An executor
-/// is never refused for it: skew degrades to standalone.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Contract {
-    /// Chunks leased over each GPU's listener.
-    Leases,
-    /// Any other protocol: its own pages, a fixed, never-asked charge on its GPU.
-    Standalone,
-}
-
-/// How an executor's memory is served, by the protocol its Hello speaks.
-pub fn contract(hello: &Hello) -> Contract {
-    match Some(hello.memory_protocol) == LEASES {
-        true => Contract::Leases,
-        false => Contract::Standalone,
-    }
-}
-
-/// Refuses a Start naming leases to an executor that does not speak them.
-fn accepts(hello: &Hello, command: &Command) -> io::Result<()> {
-    if matches!(command, Command::Start(Start { leases: Some(_), .. })) && contract(hello) != Contract::Leases {
-        return Err(io::Error::new(io::ErrorKind::Unsupported, format!(
-            "Runtime {} speaks memory protocol {}: it reads no leases",
-            hello.runtime_version, hello.memory_protocol,
-        )));
-    }
-    Ok(())
-}
-
 /// A refusal of one executor request, its detail bounded.
 pub fn refused(seq: u64, code: &str, detail: impl Into<String>) -> Answer {
     Answer::refused(seq, code, crate::triage::ends(&detail.into(), 1024))
 }
 
-
-/// A Start's `memory_protocol`: the lease protocol where it names leases this machine serves,
-/// else 0.
-pub fn memory_protocol(leases: Option<u32>) -> u32 {
-    leases.and(LEASES).unwrap_or(0)
-}
 
 /// The run a command executes and the spool its executor reads and writes.
 fn spool(command: &Command) -> Option<(&str, &Path)> {
@@ -976,8 +935,16 @@ impl DeviceExecutor {
         command: &Command,
         services: &mut impl Services,
     ) -> io::Result<Frame> {
-        // Refuse leases to an executor that does not speak them before writing the command.
-        accepts(&self.hello, command)?;
+        self.command_passing(command, None, services)
+    }
+
+    /// [`Self::command`], with `descriptor` sent right after its frame (a Start's charge page).
+    pub fn command_passing(
+        &mut self,
+        command: &Command,
+        descriptor: Option<&File>,
+        services: &mut impl Services,
+    ) -> io::Result<Frame> {
         let meter = match command {
             Command::Invoke(_) => Meter::Work,
             _ => Meter::Burn,
@@ -993,7 +960,7 @@ impl DeviceExecutor {
         )?;
         watching.watch().place(self.place.clone());
         *self.watched.lock().unwrap() = Some(watching.watch());
-        let result = self.exchange(command, services, &watching.watch());
+        let result = self.exchange(command, descriptor, services, &watching.watch());
         *self.watched.lock().unwrap() = None;
         // Whatever the run was computing when its exchange ended, its waiters compute themselves.
         if let (Some(memo), Some((run, _))) = (&self.memo, spool(command)) {
@@ -1012,11 +979,18 @@ impl DeviceExecutor {
     fn exchange(
         &mut self,
         command: &Command,
+        descriptor: Option<&File>,
         services: &mut impl Services,
         watch: &Watch,
     ) -> io::Result<Frame> {
         let bytes = command_bytes(command)?;
-        seam::write_body(&mut self.writer.lock().unwrap(), &bytes)?;
+        {
+            let mut writer = self.writer.lock().unwrap();
+            seam::write_body(&mut writer, &bytes)?;
+            if let Some(descriptor) = descriptor {
+                platform::handles::send_fd(&writer, descriptor)?;
+            }
+        }
         let mut last = Advance::default();
         loop {
             let frame = read_frame(&mut self.stream)?

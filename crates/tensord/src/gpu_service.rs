@@ -638,6 +638,8 @@ pub struct Pool {
     devices: Vec<Device>,
     /// Measured peaks, persisted per GPU model.
     peaks: memory::Peaks,
+    /// The GPU charge page while a GPU memory limit is set.
+    charge: Option<memory::Charge>,
     /// Woken by memory events alongside the GPU permits' scheduling events.
     engine: std::sync::OnceLock<Weak<Engine>>,
     /// Rows the ledgers named stalled at the last look: each is ended once.
@@ -763,20 +765,18 @@ impl Pool {
                     .ok_or_else(|| io::Error::other("GPU root has no owned state parent"))?,
             )?;
         }
-        // Chunk grants hold one descriptor per object.
-        platform::process::raise_fd_limit();
         let envelope = config.envelope();
         let incarnation = uuid::Uuid::new_v4().simple().to_string();
         crate::launch_identity::remove_stale_jit(root, &incarnation);
         remove_old_executor_roots(root);
         let peaks = memory::Peaks::at(root.join("peaks"), notes.clone());
+        let charge = memory::Charge::create(&envelope, &config.inventory, config.gpu_memory_limit, &notes);
         let tenants = memory::Tenants::default();
         let uids = [Some(platform::memory::euid()), config.identity.map(|identity| identity.uid)];
         let peers = Arc::new(memory::Peers::new(tenants.clone(), uids.into_iter().flatten().collect(), notes.clone()));
         let derived = Arc::new(crate::derived::Derived::at(root.join("derived")));
-        let leases = |entry: &str| memory::Leases {
+        let leases = |_: &str| memory::Leases {
             peers: peers.clone(),
-            open: memory::row(entry, &config.inventory).and_then(|row| memory::chunks(&row.device_uuid, &notes)),
             tenants: tenants.clone(),
             derived: derived.clone(),
         };
@@ -816,6 +816,7 @@ impl Pool {
                 allocations: crate::gpu_allocation::Allocations::new(envelope.len()),
                 devices,
                 peaks,
+                charge,
                 engine: Default::default(),
                 stalled: Mutex::default(),
                 host,
@@ -1070,6 +1071,9 @@ impl Pool {
             .filter(|birth| birth.ended().unwrap_or(false)).collect();
         if gone.is_empty() {
             return;
+        }
+        if let Some(charge) = &self.charge {
+            gone.iter().for_each(|birth| charge.reap(birth));
         }
         let key = session_key(plan, start);
         let mut levels = self.levels.lock().unwrap();
@@ -2276,8 +2280,9 @@ impl Pool {
                     sequence_parallel_degree: 1,
                     import_only: true,
                     leases: None,
-                    memory_protocol: device_executor::memory_protocol(None),
+                    memory_protocol: 0,
                     memo: executor.memo_settings(),
+                    charge: false,
                 }),
                 &mut device_executor::Baseline,
             )?;
@@ -2665,17 +2670,13 @@ impl Pool {
         if !session.loaded {
             let interface_path = self.interface_file(&session.executor, held)?;
             let starting = Instant::now();
-            // An executor speaking leases dials each GPU's manager; any other runs standalone.
-            let standalone = device_executor::contract(&session.executor.hello) == device_executor::Contract::Standalone;
-            if standalone {
-                self.standalone(&session.executor);
-            }
-            let leases = (!standalone && gpus.iter().any(|d| d.memory.is_some())).then(platform::memory::euid);
+            // Its memory is its own; under a GPU memory limit it charges the page it is passed.
+            let charge = self.charge.as_ref().filter(|_| session.executor.hello.charge);
             // Rank 0 spawns and forms every follower inside this command; its watch meters
             // the whole group's work, so formation ends only on measured lack of progress. A
             // follower that dials its lease listener meanwhile waits for its registration.
             let forming = self.tenants.forming(&session.executor.birth, ranks.saturating_sub(1) as usize);
-            let started = command_ok(session.executor.command(
+            let started = command_ok(session.executor.command_passing(
                 &Command::Start(Start {
                     devices: lane.clone(),
                     application: held.record.application.clone(),
@@ -2684,10 +2685,12 @@ impl Pool {
                     import_only: false,
                     call_interfaces: crate::calls::call_interfaces(held, &interface_path),
                     constructions: constructions(&plan),
-                    leases,
-                    memory_protocol: device_executor::memory_protocol(leases),
+                    leases: None,
+                    memory_protocol: 0,
                     memo: session.executor.memo_settings(),
+                    charge: charge.is_some(),
                 }),
+                charge.map(memory::Charge::file),
                 &mut callbacks,
             )?)?;
             session.launch.start_ms = starting.elapsed().as_secs_f64() * 1e3;
@@ -2977,16 +2980,6 @@ impl Pool {
             }
         }
         Ok(true)
-    }
-
-    /// An executor of another memory protocol runs its memory alone, unshared with the others on
-    /// these GPUs (the driver's free bytes count it): version skew degrades, with a note.
-    fn standalone(&self, executor: &DeviceExecutor) {
-        let hello = &executor.hello;
-        tracing::warn!("executor {} (Runtime {}, TensorFS {}) speaks memory protocol {}, not leases: its GPU memory runs on its own",
-            executor.birth.pid, hello.runtime_version, hello.tensorfs_version, hello.memory_protocol);
-        self.notes.note(serde_json::json!({"event": "standalone", "pid": executor.birth.pid, "runtime": hello.runtime_version,
-            "tensorfs": hello.tensorfs_version, "memory_protocol": hello.memory_protocol}));
     }
 
     /// For a group, each slot's placeable components and the GPU of the group that keeps each
