@@ -161,7 +161,7 @@ async fn calcifer(ctx: &Context) -> Vec<Check> {
             }
             (false, "not running".to_owned())
         }
-        Lock::Captive => match captive(ctx, &mut checks) {
+        Lock::Captive => match captive(ctx, &mut checks, None) {
             Some(why) => (false, why),
             None => return checks,
         },
@@ -171,13 +171,16 @@ async fn calcifer(ctx: &Context) -> Vec<Check> {
                 format!("held by pid {} at {}", holder.pid, holder.address),
             ));
             if let Some(silence) = silence(ctx, &client, &holder).await {
+                let stuck = Birth::of(holder.pid).ok();
                 if let Err(e) = end(holder.pid) {
                     checks.push(Check::bad("calcifer", format!("{silence}, and ending it failed: {e}")));
                     return checks;
                 }
                 // A process it started may still hold its lock: that too must go before one starts.
+                // A Calcifer born after it is its replacement (systemd's Restart=on-failure starts
+                // one at once), which holds the lock before it publishes its record: never ended.
                 if let Lock::Captive = client.lock_state()
-                    && captive(ctx, &mut checks).is_none()
+                    && captive(ctx, &mut checks, stuck.as_ref()).is_none()
                 {
                     return checks;
                 }
@@ -203,7 +206,7 @@ async fn calcifer(ctx: &Context) -> Vec<Check> {
         }
         // A stopped Calcifer that lingers holding the home would keep the next one out.
         if let Lock::Captive = client.lock_state()
-            && captive(ctx, &mut checks).is_none()
+            && captive(ctx, &mut checks, None).is_none()
         {
             return checks;
         }
@@ -216,11 +219,20 @@ async fn calcifer(ctx: &Context) -> Vec<Check> {
 /// runs on, for the next Calcifer to adopt). Anything else holding it (a machine an earlier
 /// Calcifer started) is ended with what it started. Each is named: why, for the start that
 /// follows. `None` (and a problem said) when one could not be ended. A lock this OS cannot name a
-/// holder of (Windows) is waited for.
-fn captive(ctx: &Context, checks: &mut Vec<Check>) -> Option<String> {
+/// holder of (Windows) is waited for. A Calcifer born after `ended` (a stuck one just ended) is its
+/// replacement starting, not captive: it is left to publish its record.
+fn captive(ctx: &Context, checks: &mut Vec<Check>, ended: Option<&Birth>) -> Option<String> {
     let lock = ctx.home.calcifer_lock();
-    let held: Vec<(u32, String)> =
-        holders(&lock).into_iter().filter(|(pid, _)| *pid != std::process::id()).collect();
+    let replacement = |pid: u32, command: &str| {
+        command.contains(" calcifer")
+            && ended.is_some_and(|ended| {
+                Birth::of(pid).is_ok_and(|born| born.boot_id == ended.boot_id && born.start_ticks > ended.start_ticks)
+            })
+    };
+    let held: Vec<(u32, String)> = holders(&lock)
+        .into_iter()
+        .filter(|(pid, command)| *pid != std::process::id() && !replacement(*pid, command))
+        .collect();
     let Some((pid, command)) = held.first().cloned() else {
         checks.push(Check::ok("lock record", format!("{} is held by no live Calcifer", lock.display())));
         return Some("a Calcifer was stopping".into());
