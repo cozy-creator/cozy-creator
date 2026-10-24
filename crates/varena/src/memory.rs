@@ -2486,6 +2486,17 @@ impl Inner {
     }
 }
 
+impl Inner {
+    /// A mapping a dropped Inner's mechanism left: unmapped once `after` proves its consumers
+    /// done, then its page goes; else both leak.
+    fn unmap_left(&self, va: Va, off: u64, span: u64, phys: Option<Physical>, after: &[Event]) {
+        // SAFETY: mapped there; its consumers ended (`after`, waited for first).
+        if after.iter().all(|e| self.backend.finish(*e).is_ok()) && unsafe { self.backend.unmap(va, off, span) }.is_ok() {
+            phys.into_iter().for_each(|p| { let _ = self.give_page(p); });
+        }
+    }
+}
+
 impl Drop for Inner {
     fn drop(&mut self) {
         self.burst.0.lock().closed = true;
@@ -2494,23 +2505,21 @@ impl Drop for Inner {
         // then its Close (taken by it alone) ends it.
         let left: Vec<(u64, Mech)> = self.mech.rx.try_iter().collect();
         self.mech.post(Mech::Close);
+        // An Inner drops only after its retirement quiesced (a quarantined one is leaked): what
+        // is left unmaps once its own events prove its consumers done, else it leaks.
         for (_, op) in left {
             match op {
                 Mech::Unmap { va, off, span, phys, ready } => {
-                    let _ = self.backend.finish(ready);
-                    let _ = self.backend.unmap(va, off, span);
-                    phys.into_iter().for_each(|p| { let _ = self.give_page(p); });
+                    // SAFETY: mapped at the page's home; its reads and landing ended (`ready`).
+                    if self.backend.finish(ready).is_ok() && unsafe { self.backend.unmap(va, off, span) }.is_ok() {
+                        phys.into_iter().for_each(|p| { let _ = self.give_page(p); });
+                    }
                     self.backend.retire(ready);
                 }
-                Mech::Renew { va, off, span, old, .. } => {
-                    let _ = self.backend.unmap(va, off, span);
-                    old.into_iter().for_each(|p| { let _ = self.give_page(p); });
-                }
-                Mech::Move { va, from, span, phys, .. } => {
-                    let _ = self.backend.unmap(va, from, span);
-                    let _ = self.give_page(phys);
-                }
-                Mech::Release(va) => self.backend.release(va),
+                Mech::Renew { va, off, span, old: phys, after, .. } => self.unmap_left(va, off, span, phys, &after),
+                Mech::Move { va, from, span, phys, after, .. } => self.unmap_left(va, from, span, Some(phys), &after),
+                // SAFETY: a set's reservation, its pages unmapped before its Release was posted.
+                Mech::Release(va) => unsafe { self.backend.release(va) },
                 Mech::Map { .. } | Mech::Close => {}
                 #[cfg(unix)]
                 Mech::Revoke | Mech::Reclaim { .. } => {}
@@ -2521,14 +2530,16 @@ impl Drop for Inner {
         for (key, home) in homes {
             let Some(phys) = home.phys else { continue };
             if let Ok((va, off, span)) = st.place(key) {
-                let _ = self.backend.unmap(va, off, span);
+                // SAFETY: the home's mapping; retirement quiesced its fills and consumers.
+                if unsafe { self.backend.unmap(va, off, span) }.is_err() { continue; }
             }
             let _ = self.give_page(phys);
         }
         let sets: Vec<SetMech> = st.sets.drain(..).flatten().collect();
         drop(st);
         for m in sets {
-            self.backend.release(m.va);
+            // SAFETY: each set's own reservation, released once; its homes were unmapped above.
+            unsafe { self.backend.release(m.va) };
         }
         // Its retired events that completed go with it (one still pending, with the backend).
         self.backend.sweep();
@@ -2744,8 +2755,9 @@ impl Inner {
             }
             Mech::Renew { key, gen, va, off, span, old, after, job } => {
                 // Its consumers finish before the unmap: this thread waits for their events.
+                // SAFETY: the home's mapping; its consumers ended (`after`, waited for first).
                 let released = after.iter().try_for_each(|e| self.backend.finish(*e))
-                    .and_then(|()| self.backend.unmap(va, off, span));
+                    .and_then(|()| unsafe { self.backend.unmap(va, off, span) });
                 if let Err(error) = released {
                     tracing::warn!("varena: renewed page ownership could not be released: {error}");
                     let st = self.state.lock();
@@ -2766,7 +2778,8 @@ impl Inner {
             }
             Mech::Unmap { va, off, span, phys, ready } => {
                 // A page read ready at issue may still be landing: its copies end first.
-                if let Err(error) = self.backend.finish(ready).and_then(|()| self.backend.unmap(va, off, span)) {
+                // SAFETY: the home's mapping; its reads and landing ended (`ready`, waited for first).
+                if let Err(error) = self.backend.finish(ready).and_then(|()| unsafe { self.backend.unmap(va, off, span) }) {
                     tracing::warn!("varena: page ownership could not be released: {error}");
                     let st = self.state.lock();
                     self.ownership_lost.store(true, Ordering::Release);
@@ -2784,7 +2797,8 @@ impl Inner {
                 self.backend.retire(ready);
             }
             Mech::Move { key, gen, va, from, off, span, phys, after, job } => self.move_slot(key, gen, va, from, off, span, phys, after, job),
-            Mech::Release(va) => self.backend.release(va),
+            // SAFETY: a set's reservation, its pages unmapped before its Release was posted.
+            Mech::Release(va) => unsafe { self.backend.release(va) },
             Mech::Close => {}
         }
     }
@@ -2821,7 +2835,9 @@ impl Inner {
 
     /// `p` mapped read-write at `va + off`; unmappable, it goes back.
     fn map_rw(self: &Arc<Self>, va: Va, off: u64, p: Physical) -> Result<Physical> {
-        match self.backend.map(va, off, &p, Access::ReadWrite) {
+        // SAFETY: the page's home in its set's reservation, unmapped (the mechanism places each
+        // home once per generation); `p` is returned to the caller, alive while mapped.
+        match unsafe { self.backend.map(va, off, &p, Access::ReadWrite) } {
             Ok(()) => Ok(p),
             Err(error @ Error::Ownership(_)) => Err(self.lost_backing(error)),
             Err(error) => match self.give_page(p) {
@@ -2841,7 +2857,8 @@ impl Inner {
             drop(st);
             if let Ok((p, ..)) = made {
                 self.commit_page(&p);
-                let released = self.backend.unmap(va, off, span).and_then(|()| self.give_page(p));
+                // SAFETY: mapped by this placement and never published: no consumer has it.
+                let released = unsafe { self.backend.unmap(va, off, span) }.and_then(|()| self.give_page(p));
                 if let Err(error) = released {
                     self.lost_backing(error);
                 }

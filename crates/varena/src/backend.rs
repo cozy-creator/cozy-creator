@@ -118,19 +118,39 @@ pub trait Backend: Send + Sync {
     /// Physical pages and their offsets are multiples of this.
     fn granularity(&self) -> u64;
     fn reserve(&self, len: u64) -> Result<Va>;
-    /// Gives back a reservation; nothing in it is mapped.
-    fn release(&self, va: Va);
+    /// Gives back a reservation.
+    ///
+    /// # Safety
+    /// `va` is one live reservation this backend's [`Backend::reserve`] returned, released once,
+    /// with nothing in it mapped; no address in it is used after.
+    unsafe fn release(&self, va: Va);
     /// New physical memory that [`Backend::export`] can share. Fails when the device is full.
     fn create(&self, len: u64) -> Result<Physical>;
     /// Drops this process's reference; the memory is freed when no mapping or handle holds it.
     fn destroy(&self, page: Physical) -> Result<()>;
-    fn map(&self, va: Va, offset: u64, page: &Physical, access: Access) -> Result<()>;
+    /// Maps `page` at `va + offset`. An `Ownership` error leaves it possibly mapped: the caller
+    /// keeps the range reserved and the page alive.
+    ///
+    /// # Safety
+    /// `va` is a live reservation of this backend, nothing maps `offset..offset + page.len` in it
+    /// now, and `page` is a live page of this backend that stays alive while mapped.
+    unsafe fn map(&self, va: Va, offset: u64, page: &Physical, access: Access) -> Result<()>;
     /// Changes the access of a mapped range (filled pages become read-only).
-    fn protect(&self, va: Va, offset: u64, len: u64, access: Access) -> Result<()>;
+    ///
+    /// # Safety
+    /// The range is mapped by this backend. Made read-only, no writer of it (a host reference, a
+    /// copy, device work on any stream) is left.
+    unsafe fn protect(&self, va: Va, offset: u64, len: u64, access: Access) -> Result<()>;
     /// The `len` bytes at `at` are written (a fill landed, a transform ran): a spilling host
     /// device starts their writeback.
     fn landed(&self, _at: u64, _len: u64) {}
-    fn unmap(&self, va: Va, offset: u64, len: u64) -> Result<()>;
+    /// Unmaps a range; the reservation stays.
+    ///
+    /// # Safety
+    /// The range is mapped by this backend, and every consumer of its bytes (a host reference, a
+    /// copy, device work on any stream) has completed: the caller waited for their events. No
+    /// address in it is used again until it is mapped again.
+    unsafe fn unmap(&self, va: Va, offset: u64, len: u64) -> Result<()>;
     /// A handle another process can import (a POSIX fd, a WIN32 handle).
     fn export(&self, page: &Physical) -> Result<Owned>;
     /// A handle another process maps read-write: a lease (a host page's export is read-only).
@@ -142,7 +162,11 @@ pub trait Backend: Send + Sync {
     /// backend's copy stream, or host memory.
     fn target(&self, va: Va, offset: u64, len: u64) -> Dst;
     /// Copies `src` into mapped bytes at `va + offset`, waiting for the copy: a swapped region back in.
-    fn copy_in(&self, _va: Va, _offset: u64, _src: &[u8]) -> Result<()> {
+    ///
+    /// # Safety
+    /// The range is mapped read-write by this backend and stays mapped until this returns, and
+    /// nothing else reads or writes it meanwhile.
+    unsafe fn copy_in(&self, _va: Va, _offset: u64, _src: &[u8]) -> Result<()> {
         Err(Error::Invalid("this backend cannot swap".into()))
     }
     /// An event after everything the copy stream holds so far.
@@ -181,7 +205,11 @@ pub trait Backend: Send + Sync {
     }
     /// Copies `dst.len()` mapped bytes at `va + offset` to host memory once `after` completed;
     /// returns once they landed. A writer's thread only (it waits on the device).
-    fn copy_out(&self, _va: Va, _offset: u64, _dst: &mut [u8], _after: Event) -> Result<()> {
+    ///
+    /// # Safety
+    /// The range is mapped by this backend and stays mapped until this returns; `after` follows
+    /// every write to it, and nothing writes it meanwhile.
+    unsafe fn copy_out(&self, _va: Va, _offset: u64, _dst: &mut [u8], _after: Event) -> Result<()> {
         Err(Error::Invalid("this backend copies nothing out".into()))
     }
 }
@@ -279,8 +307,9 @@ impl Backend for HostBackend {
         Ok(Va { base: memory::reserve(len).map_err(page_err)?, len })
     }
 
-    fn release(&self, va: Va) {
-        memory::release(va.base, va.len);
+    unsafe fn release(&self, va: Va) {
+        // SAFETY: the caller's contract: one live reservation of `reserve`, nothing mapped.
+        unsafe { memory::release(va.base, va.len) };
     }
 
     fn create(&self, len: u64) -> Result<Physical> {
@@ -309,25 +338,28 @@ impl Backend for HostBackend {
         Ok(())
     }
 
-    fn map(&self, va: Va, offset: u64, page: &Physical, access: Access) -> Result<()> {
+    unsafe fn map(&self, va: Va, offset: u64, page: &Physical, access: Access) -> Result<()> {
         let pages = self.pages.lock();
         let (handle, _) = pages.live.get(&page.id).ok_or_else(|| Error::Invalid(format!("no page {}", page.id)))?;
         if offset.saturating_add(page.len) > va.len {
             return Err(Error::Invalid("map outside the reservation".into()));
         }
-        memory::map_page(va.base + offset, handle, page.len, access == Access::ReadWrite).map_err(page_err)?;
+        // SAFETY: inside the caller's live reservation (bounds checked above) and unmapped.
+        unsafe { memory::map_page(va.base + offset, handle, page.len, access == Access::ReadWrite) }.map_err(page_err)?;
         drop(pages);
         self.pages.lock().at.insert(va.base + offset, (page.id, page.len));
         Ok(())
     }
 
-    fn protect(&self, va: Va, offset: u64, len: u64, access: Access) -> Result<()> {
-        memory::protect(va.base + offset, len, access == Access::ReadWrite).map_err(page_err)
+    unsafe fn protect(&self, va: Va, offset: u64, len: u64, access: Access) -> Result<()> {
+        // SAFETY: the caller's contract: mapped here, with no writer left when made read-only.
+        unsafe { memory::protect(va.base + offset, len, access == Access::ReadWrite) }.map_err(page_err)
     }
 
-    fn unmap(&self, va: Va, offset: u64, len: u64) -> Result<()> {
+    unsafe fn unmap(&self, va: Va, offset: u64, len: u64) -> Result<()> {
         let at = va.base + offset;
-        memory::unmap_page(at, len).map_err(page_err)?;
+        // SAFETY: the caller's contract: mapped here, every consumer of it completed.
+        unsafe { memory::unmap_page(at, len) }.map_err(page_err)?;
         let mut pages = self.pages.lock();
         let gone: Vec<u64> = pages.at.range(at..at.saturating_add(len)).map(|(a, _)| *a).collect();
         for a in gone {
@@ -377,9 +409,9 @@ impl Backend for HostBackend {
         Dst::Host { ptr: (va.base + offset) as *mut u8, len: len as usize }
     }
 
-    fn copy_in(&self, va: Va, offset: u64, src: &[u8]) -> Result<()> {
+    unsafe fn copy_in(&self, va: Va, offset: u64, src: &[u8]) -> Result<()> {
         inside(va, offset, src.len())?;
-        // SAFETY: a mapped read-write range of the caller's reservation, checked to hold `src.len()` bytes.
+        // SAFETY: the caller's mapped read-write range, nothing else touching it; checked to hold `src.len()` bytes.
         unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), (va.base + offset) as *mut u8, src.len()) };
         Ok(())
     }
@@ -419,11 +451,9 @@ impl Backend for HostBackend {
         Ok(())
     }
 
-    fn copy_out(&self, va: Va, offset: u64, dst: &mut [u8], _: Event) -> Result<()> {
-        if offset.saturating_add(dst.len() as u64) > va.len {
-            return Err(Error::Invalid("a copy outside the reservation".into()));
-        }
-        // SAFETY: the range is mapped (the caller pins it) and host events are complete when made.
+    unsafe fn copy_out(&self, va: Va, offset: u64, dst: &mut [u8], _: Event) -> Result<()> {
+        inside(va, offset, dst.len())?;
+        // SAFETY: the caller's mapped range with no writer meanwhile; host events are complete when made.
         unsafe { std::ptr::copy_nonoverlapping((va.base + offset) as *const u8, dst.as_mut_ptr(), dst.len()) };
         Ok(())
     }

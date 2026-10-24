@@ -179,9 +179,11 @@ impl Inner {
     pub(super) fn move_slot(self: &Arc<Self>, key: Key, gen: u64, va: Va, from: u64, off: u64, span: u64, phys: Physical, after: Vec<Event>, job: Job) {
         // Its bytes become another block's: a leased slot is no region's weights any more.
         self.moved_page(&phys, key);
+        // SAFETY: the old block's consumers finished (its events, waited for first); the slot's
+        // new range in the set's reservation is unmapped, and `phys` is held until unmapped.
         let moved = after.iter().try_for_each(|e| self.backend.finish(*e))
-            .and_then(|()| self.backend.unmap(va, from, span))
-            .and_then(|()| self.backend.map(va, off, &phys, Access::ReadWrite));
+            .and_then(|()| unsafe { self.backend.unmap(va, from, span) })
+            .and_then(|()| unsafe { self.backend.map(va, off, &phys, Access::ReadWrite) });
         if let Err(error) = moved {
             self.lost_backing(error);
             return;
@@ -191,7 +193,8 @@ impl Inner {
         if !st.homes.get(&key).is_some_and(|h| h.gen == gen) {
             drop(st);
             self.commit_page(&phys);
-            if let Err(error) = self.backend.unmap(va, off, span).and_then(|()| self.give_page(phys)) {
+            // SAFETY: mapped just above and never published to a home: no consumer has it.
+            if let Err(error) = unsafe { self.backend.unmap(va, off, span) }.and_then(|()| self.give_page(phys)) {
                 self.lost_backing(error);
             }
             return;

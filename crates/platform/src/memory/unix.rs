@@ -56,23 +56,37 @@ pub fn reserve(len: u64) -> Result<u64> {
     Ok(base as u64)
 }
 
-pub fn release(base: u64, len: u64) {
-    // SAFETY: a reservation [`reserve`] made.
+/// Gives back a reservation.
+///
+/// # Safety
+/// `base..base + len` is exactly one live reservation [`reserve`] returned, released once; no
+/// reference or pointer into it is used after.
+pub unsafe fn release(base: u64, len: u64) {
+    // SAFETY: the caller's reservation, unused from here on.
     unsafe { libc::munmap(base as *mut libc::c_void, len as usize) };
 }
 
 /// Maps a host page at `at`, inside a reservation.
-pub fn map_page(at: u64, page: &Owned, len: u64, write: bool) -> Result<()> {
+///
+/// # Safety
+/// `at..at + len` lies inside a live reservation of this process ([`reserve`]), at a multiple of
+/// [`granularity`], and nothing maps it now: the fixed mapping replaces whatever is there.
+pub unsafe fn map_page(at: u64, page: &Owned, len: u64, write: bool) -> Result<()> {
     let flags = libc::MAP_SHARED | libc::MAP_FIXED;
-    // SAFETY: a fixed shared mapping inside the caller's reservation.
+    // SAFETY: the caller's unmapped range of its own reservation.
     if unsafe { libc::mmap(at as *mut libc::c_void, len as usize, prot(write), flags, page.as_raw_fd(), 0) } == libc::MAP_FAILED {
         return Err(Error::os("map a page")(std::io::Error::last_os_error()));
     }
     Ok(())
 }
 
-pub fn protect(at: u64, len: u64, write: bool) -> Result<()> {
-    // SAFETY: a range of the caller's reservation.
+/// Changes a mapped range's access.
+///
+/// # Safety
+/// `at..at + len` is mapped by [`map_page`] inside the caller's reservation. Made read-only, no
+/// reference that writes into it, and no write in flight, is left.
+pub unsafe fn protect(at: u64, len: u64, write: bool) -> Result<()> {
+    // SAFETY: the caller's mapped range, with no writer left when it loses write access.
     if unsafe { libc::mprotect(at as *mut libc::c_void, len as usize, prot(write)) } != 0 {
         return Err(Error::os("protect a page")(std::io::Error::last_os_error()));
     }
@@ -80,9 +94,13 @@ pub fn protect(at: u64, len: u64, write: bool) -> Result<()> {
 }
 
 /// The range goes back to reserved and inaccessible.
-pub fn unmap_page(at: u64, len: u64) -> Result<()> {
+///
+/// # Safety
+/// `at..at + len` is a range [`map_page`] mapped inside the caller's reservation, and every
+/// access to it (references, copies, device work) has ended.
+pub unsafe fn unmap_page(at: u64, len: u64) -> Result<()> {
     let flags = libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_FIXED;
-    // SAFETY: replaces a range of the caller's reservation with inaccessible memory.
+    // SAFETY: the caller's mapped range of its own reservation, no longer accessed.
     if unsafe { libc::mmap(at as *mut libc::c_void, len as usize, libc::PROT_NONE, flags, -1, 0) } == libc::MAP_FAILED {
         return Err(Error::os("unmap a page")(std::io::Error::last_os_error()));
     }

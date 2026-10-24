@@ -191,7 +191,9 @@ impl Shared {
         let Some(pin) = self.hold.pin(&job.key) else { return Ok(()) };
         let start = Instant::now();
         let mut bytes = vec![0u8; usize::try_from(job.va.len).map_err(|_| Error::Invalid("a page beyond the address space".into()))?];
-        self.backend.copy_out(job.va, 0, &mut bytes, job.ready)?;
+        // SAFETY: the pin keeps the page mapped until this returns, `job.ready` follows its fill
+        // or transform, and a pinned derived page is read-only.
+        unsafe { self.backend.copy_out(job.va, 0, &mut bytes, job.ready) }?;
         // The bytes are ours: a revoke may take the page now, while the disk write runs.
         drop(pin);
         job.entry.write_all_at(&bytes, 0).map_err(|e| Error::io("write a derived entry", e))?;

@@ -29,8 +29,10 @@ impl SwapFile {
         let len = len.max(1).div_ceil(g) * g;
         let file = memory::page(len).map_err(host)?;
         let base = memory::reserve(len).map_err(host)?;
-        if let Err(e) = memory::map_page(base, &file, len, true) {
-            memory::release(base, len);
+        // SAFETY: the whole of the reservation just made, nothing mapped in it yet.
+        if let Err(e) = unsafe { memory::map_page(base, &file, len, true) } {
+            // SAFETY: that reservation, unmapped, released once and never used again.
+            unsafe { memory::release(base, len) };
             return Err(host(e));
         }
         Ok(SwapFile { _file: file, base, len })
@@ -47,8 +49,14 @@ impl SwapFile {
 
 impl Drop for SwapFile {
     fn drop(&mut self) {
-        let _ = memory::unmap_page(self.base, self.len);
-        memory::release(self.base, self.len);
+        // SAFETY: this file's own mapping and reservation. Every copy into or out of it returned
+        // (`at` hands out `&mut self` borrows), and a copy whose completion is unproven forgets
+        // the file instead of dropping it.
+        unsafe {
+            if memory::unmap_page(self.base, self.len).is_ok() {
+                memory::release(self.base, self.len);
+            }
+        }
     }
 }
 
@@ -120,7 +128,9 @@ impl Torch {
         for i in 0..spans.len() {
             let Some(&(base, len, _)) = spans.get(i) else { continue };
             if let Some(f) = file.as_mut() {
-                let copied = f.at(out.bytes, len).and_then(|dst| sh.backend.copy_out(Va { base, len }, 0, dst, Event::DONE));
+                // SAFETY: the span's chunks are detached but still mapped here, its streams passed
+                // their epochs (quiesce), and an unpinned region has no new use or allocation.
+                let copied = f.at(out.bytes, len).and_then(|dst| unsafe { sh.backend.copy_out(Va { base, len }, 0, dst, Event::DONE) });
                 if let Err(error) = copied {
                     if let Err(drain) = sh.backend.drain() {
                         // A pending copy may still write this buffer. Existing Memory ownership
@@ -184,7 +194,9 @@ impl Torch {
         for i in 0..got.len() {
             let Some(&(base, len, off, _)) = got.get(i) else { continue };
             if let Some(f) = evicted.swap.as_mut() {
-                let copied = f.at(off, len).and_then(|bytes| sh.backend.copy_in(Va { base, len }, 0, bytes));
+                // SAFETY: mapped read-write by `map_again` above and not yet published to the arena:
+                // nothing else can reach these addresses until this restore installs them.
+                let copied = f.at(off, len).and_then(|bytes| unsafe { sh.backend.copy_in(Va { base, len }, 0, bytes) });
                 if let Err(error) = copied {
                     if let Err(drain) = sh.backend.drain() {
                         // The copy may still read its saved buffer: retain it along with the

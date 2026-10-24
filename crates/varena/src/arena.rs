@@ -1054,7 +1054,10 @@ impl Drop for Torch {
         sh.reclaim(u64::MAX);
         let mapped = sh.mapped.load(Acquire);
         if mapped == 0 {
-            std::mem::take(&mut sh.space.lock().reserved).into_iter().for_each(|va| sh.backend.release(va));
+            // SAFETY: torch's own reservations, released once at its close; nothing in them is
+            // mapped (`mapped` is 0, stuck chunks included) and no torch block outlives the Torch.
+            #[allow(unsafe_code)]
+            std::mem::take(&mut sh.space.lock().reserved).into_iter().for_each(|va| unsafe { sh.backend.release(va) });
         } else {
             tracing::warn!("varena: torch's arenas still map {mapped} bytes at close: their address space stays reserved");
         }
@@ -1742,12 +1745,15 @@ impl Direct {
         }
     }
 
+    #[allow(unsafe_code)]
     fn one(&self, va: Va, off: u64, len: u64) -> Result<Chunk> {
         let p = self.allowance.create(&*self.backend, len).map_err(|e| match e {
             Error::Device { code: OUT_OF_MEMORY, .. } => exhausted(len, "the device is out of memory"),
             e => e,
         })?;
-        if let Err(e) = self.backend.map(va, off, &p, Access::ReadWrite) {
+        // SAFETY: the arena's fresh reservation `va` (Source::map's contract), unmapped at `off`;
+        // `p` is new and stays alive in `held` while mapped (or after an unproven failure).
+        if let Err(e) = unsafe { self.backend.map(va, off, &p, Access::ReadWrite) } {
             if e.is_sticky() {
                 self.held.lock().insert(p.id, p);
             } else if let Err(release) = self.allowance.destroy(&*self.backend, p) {
@@ -1777,12 +1783,15 @@ impl Source for Direct {
         Ok(())
     }
 
+    #[allow(unsafe_code)]
     fn unmap(&self, va: Va, chunks: Vec<Chunk>) -> Vec<(u64, Chunk)> {
         let (mut off, mut stuck) = (0, Vec::new());
         for c in chunks {
             let at = va.base + off;
             off += c.len;
-            if let Err(e) = self.backend.unmap(Va { base: at, len: c.len }, 0, c.len) {
+            // SAFETY: Source::unmap's contract: `one` mapped this chunk at `at`, and the arena
+            // gives it back only once its span's streams passed their epochs (no consumer left).
+            if let Err(e) = unsafe { self.backend.unmap(Va { base: at, len: c.len }, 0, c.len) } {
                 tracing::error!("varena: unmapping a torch chunk at {at:#x} failed: {e}");
                 stuck.push((at, c));
                 continue;

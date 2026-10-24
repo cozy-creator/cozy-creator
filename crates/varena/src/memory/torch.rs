@@ -240,7 +240,9 @@ impl Leased {
                 }
                 h.committed = true;
             }
-            self.backend.unmap(Va { base: at, len: c.len }, 0, c.len)
+            // SAFETY: Source::unmap's contract: mapped by `map` at `at`, its span's streams
+            // passed their epochs before the arena gave it back.
+            unsafe { self.backend.unmap(Va { base: at, len: c.len }, 0, c.len) }
         })();
         match step {
             Ok(()) => {
@@ -271,7 +273,9 @@ impl Source for Leased {
             let mapped = if failed.is_some() || off + len > va.len {
                 Err(Error::Internal(format!("a grant of {len} bytes past its {}-byte span", va.len)))
             } else {
-                self.backend.map(va, off, &lease.phys, Access::ReadWrite)
+                // SAFETY: the arena's fresh reservation `va` (Source::map's contract), unmapped
+                // at `off`; the grant is held in `held` while mapped.
+                unsafe { self.backend.map(va, off, &lease.phys, Access::ReadWrite) }
             };
             match mapped {
                 Ok(()) => {
