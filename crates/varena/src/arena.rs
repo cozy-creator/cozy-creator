@@ -1092,6 +1092,9 @@ impl Torch {
     pub fn trim(&self) -> Result<u64> {
         self.check_completion()?;
         let sh = &self.sh;
+        if sh.captures.load(SeqCst) != 0 {
+            return Err(Error::Invalid("idle trim cannot run during graph capture".into()));
+        }
         let before = sh.mapped.load(Acquire);
         let streams: Vec<_> = sh.clocks.read().keys().copied().collect();
         let mut arenas: Vec<_> = sh.arenas.lock().values().cloned().collect();
