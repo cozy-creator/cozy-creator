@@ -138,11 +138,6 @@ pub fn checkpoint(store: &Store, id: &str) -> io::Result<tensorfs::store::Checkp
     .map_err(io_error)
 }
 
-/// Whether the store holds `object` (no touch: a look, not a use).
-pub fn present(store: &Store, object: &ObjectRef) -> bool {
-    store.path(object).is_ok_and(|path| std::fs::metadata(path).is_ok_and(|m| m.len() == object.length))
-}
-
 /// The chunks and assets `components` read (all components when empty), each once; none when
 /// it names a component the checkpoint lacks.
 pub fn chunks(checkpoint: &tensorfs::store::Checkpoint, components: &[String]) -> Vec<ObjectRef> {

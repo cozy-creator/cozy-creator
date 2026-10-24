@@ -31,7 +31,7 @@ use super::origin::{Location, Origin};
 use super::policy::is_loopback_origin;
 use super::token::{default_for, s3_base, Request, TokenProvider};
 use crate::err::{refuse, Code, Refusal, Result};
-use crate::format::{is_digest, repo_key, repo_name, Header, ObjectRef, Repo, Tree};
+use crate::format::{is_digest, repo_name, Header, ObjectRef, Repo, Tree};
 use crate::sha256::hex_digest;
 use crate::store::Store;
 
@@ -169,15 +169,13 @@ impl Endpoint {
         check_repo_name(name)?;
         let base = match &self.at {
             At::Http(base) => base,
-            At::Dir(root, _) => {
-                let path = root.join(repo_key(name));
-                let bytes = match fs::read(&path) {
-                    Ok(bytes) => bytes,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return refuse(Code::REF_NOT_FOUND, format!("no model {name} at {}", self.url)),
-                    Err(e) => return Err(crate::err::classify_io(path.display().to_string(), e)),
+            At::Dir(..) => {
+                // The store's own record of the model: the one way refs are read and written.
+                let Some(repo) = self.store()?.get_ref(name).map_err(crate::store::Error::refusal)? else {
+                    return refuse(Code::REF_NOT_FOUND, format!("no model {name} at {}", self.url));
                 };
-                let unread = |e: crate::format::Error| Refusal { code: Code::UNKNOWN_FORMAT, detail: format!("{}: {e}", path.display()) };
-                let (release, lane, commit) = Repo::from_json(&bytes).map_err(unread)?.resolve(release, lane)
+                let unread = |e: crate::format::Error| Refusal { code: Code::UNKNOWN_FORMAT, detail: format!("{name}: {e}") };
+                let (release, lane, commit) = repo.resolve(release, lane)
                     .map_err(|e| Refusal { code: Code::REF_NOT_FOUND, detail: e.to_string() })?;
                 let tree = Tree::from_json(&self.document(&commit).await?).map_err(unread)?;
                 let header = tree.header().map_err(unread)?.1.clone();
@@ -305,7 +303,7 @@ impl Endpoint {
     /// Whether the endpoint holds `object`.
     pub async fn has(&self, object: &ObjectRef) -> Result<bool> {
         match &self.at {
-            At::Dir(root, _) => Ok(fs::metadata(root.join(object.key())).is_ok_and(|m| m.len() == object.length)),
+            At::Dir(..) => self.store()?.reuse(object).map_err(crate::store::Error::refusal),
             At::Http(base) => {
                 let url = format!("{base}/{}", object.key());
                 let reply = self.exchange(Ask { method: "HEAD", url: &url, headers: vec![], body: None, payload: None, auth: true }).await?;
@@ -394,7 +392,8 @@ impl Endpoint {
         if let Some(store) = store.get() {
             return Ok(store);
         }
-        let opened = Store::open(root).map_err(crate::store::Error::refusal)?;
+        // An endpoint's store is an origin: what it holds is published, never cache to evict.
+        let opened = Store::open(root).map_err(crate::store::Error::refusal)?.origin();
         Ok(store.get_or_init(|| opened))
     }
 
@@ -692,9 +691,8 @@ fn check_repo_name(name: &str) -> Result<()> {
     }
 }
 
-// repo_key has already folded ASCII case. Escape its segments for HTTP only; on disk the
-// same key stays raw. Keeping only the separators and URI-unreserved bytes avoids interpreting
-// literal percent signs, query/fragment delimiters or UTF-8 bytes as URL structure.
+// Escapes a route's segments: keeping only the separators and URI-unreserved bytes avoids
+// interpreting literal percent signs, query/fragment delimiters or UTF-8 bytes as URL structure.
 fn repo_url(base: &str, key: &str) -> String {
     const HEX: &[u8] = b"0123456789ABCDEF";
     let mut url = format!("{base}/");

@@ -2,11 +2,14 @@
 //! paths, one `.cozytensors` header, and `chunks/<sha256>` for the chunks and assets it cites
 //! (thin: some may be in the store instead).
 
-use std::fs::{self, File};
-use std::io;
-use std::path::Path;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::{fail, Result, Store};
+use platform::durable::FileId;
+
+use super::{fail, Error, Result, Store};
 use crate::format::{check_file, is_header, Header, ObjectRef, Tree, CHUNKS_DIR};
 
 impl Store {
@@ -75,22 +78,81 @@ impl Store {
         self.materialize(header, &dir.join(path))
     }
 
-    /// `object` at `dest`, unless a file of its length is there: hard-linked inside this store,
-    /// copied into a folder its caller owns, where an edit must not reach the stored object.
+    /// `object` at `dest`, the one store-to-folder writer: inside this store a hard link of its
+    /// blob; in a folder its caller owns a checked copy, where an edit must not reach the stored
+    /// object. A file already there stays only when it holds exactly these bytes.
     pub fn materialize(&self, object: &ObjectRef, dest: &Path) -> Result<()> {
-        if fs::metadata(dest).is_ok_and(|m| m.len() == object.length) {
+        let src = self.path(object)?;
+        if dest.starts_with(self.root()) {
+            if FileId::at(dest).ok().is_some_and(|at| FileId::at(&src).is_ok_and(|blob| blob == at)) {
+                return Ok(());
+            }
+            let (temp, file) = temp_beside(dest)?;
+            drop(file);
+            let _ = fs::remove_file(&temp);
+            if fs::hard_link(&src, &temp).is_ok() {
+                return fs::rename(&temp, dest).map_err(fail("rename into", dest));
+            }
+        } else if File::open(dest).ok().is_some_and(|mut held| same_bytes(&mut held, object)) {
             return Ok(());
         }
-        let parent = dest.parent().expect("a file has a directory");
-        fs::create_dir_all(parent).map_err(fail("create", parent))?;
-        let temp = parent.join(format!(".{}.tmp-{}", object.sha256, std::process::id()));
-        let _ = fs::remove_file(&temp);
-        let src = self.path(object)?;
-        if !dest.starts_with(self.root()) || fs::hard_link(&src, &temp).is_err() {
-            io::copy(&mut self.file(object)?, &mut File::create(&temp).map_err(fail("create", &temp))?)
-                .map_err(fail("copy", &temp))?;
+        copy_checked(&mut self.file(object)?, dest, Some(object))
+    }
+}
+
+/// A new, unique temp file beside `dest`, its directory made.
+fn temp_beside(dest: &Path) -> Result<(PathBuf, File)> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let parent = dest.parent().expect("a file has a directory");
+    fs::create_dir_all(parent).map_err(fail("create", parent))?;
+    loop {
+        let temp = parent.join(format!(".tensorfs-{}-{}.tmp", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        match OpenOptions::new().write(true).create_new(true).open(&temp) {
+            Ok(file) => return Ok((temp, file)),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(fail("create", &temp)(e)),
         }
-        fs::rename(&temp, dest).map_err(fail("rename into", dest))
+    }
+}
+
+/// Whether `file` holds exactly `object`'s bytes.
+fn same_bytes(file: &mut File, object: &ObjectRef) -> bool {
+    let mut hashing = Hashing { source: file, hash: crate::sha256::Sha256::new() };
+    io::copy(&mut hashing, &mut io::sink()).is_ok_and(|length| length == object.length)
+        && crate::sha256::hex(&hashing.hash.finish()) == object.sha256
+}
+
+/// `from` copied to `dest` by a unique temp, flushed and renamed in, its directory synced; with
+/// `expected`, the bytes are checked against it first.
+pub(crate) fn copy_checked(from: &mut File, dest: &Path, expected: Option<&ObjectRef>) -> Result<()> {
+    let (temp, mut out) = temp_beside(dest)?;
+    let mut source = Hashing { source: from, hash: crate::sha256::Sha256::new() };
+    let copied = io::copy(&mut source, &mut out).map_err(fail("copy", &temp)).and_then(|length| {
+        let got = ObjectRef { sha256: crate::sha256::hex(&source.hash.finish()), length };
+        match expected.filter(|expected| **expected != got) {
+            Some(expected) => Err(Error::Mismatch { expected: expected.clone(), got: format!("{} ({length} bytes) copied to {}", got.sha256, dest.display()) }),
+            None => out.sync_all().map_err(fail("sync", &temp)),
+        }
+    });
+    drop(out);
+    let done = copied.and_then(|()| fs::rename(&temp, dest).map_err(fail("rename into", dest)));
+    if done.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    done?;
+    super::sync_dir(dest.parent().expect("a file has a directory"))
+}
+
+struct Hashing<'a> {
+    source: &'a mut File,
+    hash: crate::sha256::Sha256,
+}
+
+impl Read for Hashing<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.source.read(buf)?;
+        self.hash.update(&buf[..n]);
+        Ok(n)
     }
 }
 

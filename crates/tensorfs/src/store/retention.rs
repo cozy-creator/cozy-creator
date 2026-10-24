@@ -250,7 +250,11 @@ impl Store {
     /// The cache's upkeep, run as bytes come in and checkpoints open: once per sweep period,
     /// expire uses past the TTL; then, while the disk is short of `incoming` bytes and a reserve,
     /// drop the least recently used. False when `incoming` still does not fit: skip the write.
+    /// An origin's handle runs none.
     pub fn maintain(&self, incoming: u64) -> Result<bool> {
+        if !self.cache {
+            return Ok(true);
+        }
         let short = || shortfall(&self.root, incoming);
         let stamp = self.root.join("uses").join(".swept");
         let due = fs::metadata(&stamp)

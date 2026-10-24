@@ -18,8 +18,10 @@ A directory (a store) keeps the repo document (`cozytensors.repo/1`) at `B/refs/
 two model routes, and a client resolves it itself (cozytensors.md §7). A static host or bucket serves objects only:
 a commit is named by its id.
 
-- `<org>/<name>` is the repo name with ASCII `A`–`Z` lowered; `<aa>` and `<bb>` are the first two pairs of the hex
-  digest. A store's directory has the same layout, so a directory, bucket or static host serves it as it is.
+- `<org>/<name>` is the repo name with ASCII `A`–`Z` lowered; a segment other than letters, digits, `.`, `_` and
+  `-` (or a device name such as `con`) is `%` and the sha256 of the lowered segment. `<aa>` and `<bb>` are the first
+  two pairs of the hex digest. A store's directory has the same layout, so a directory, bucket or static host serves
+  it as it is.
 - URL construction percent-encodes each UTF-8 name segment separately after ASCII case folding; `/` remains
   the separator. A name containing a space, `%`, `?` or `#` must not alter the URL structure
   ([RFC 3986 §3.3](https://www.rfc-editor.org/rfc/rfc3986.html#section-3.3)).
@@ -110,7 +112,7 @@ POST B/v1/models/<org>/<name>/commits {commit: {sha256, length}}      201 record
 
 | Endpoint | Reads | Writes |
 |---|---|---|
-| A directory, `file:///dir` | the files | objects by temp and rename, verified; commits in its repo document, under the store's record lock |
+| A directory, `file:///dir` | the files | objects by temp and rename, verified; commits in its repo document, under the store's record lock; an origin, so nothing expires or is evicted |
 | A static host (nginx, Caddy, `python -m http.server`) | as is | none (`405`) |
 | S3 or R2, `s3://bucket/prefix` | public, or SigV4 | SigV4: objects with `If-None-Match: *` and the checksum (the bucket verifies) |
 

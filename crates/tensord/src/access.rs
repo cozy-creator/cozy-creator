@@ -48,7 +48,7 @@ pub fn whole(store: &Store, header: &str, components: &[String]) -> bool {
         return true;
     }
     let whole = checkpoint(store, header)
-        .is_ok_and(|ck| storage::chunks(&ck, components).iter().all(|o| storage::present(store, o)));
+        .is_ok_and(|ck| storage::chunks(&ck, components).iter().all(|o| store.holds(o)));
     if whole {
         WHOLE.lock().unwrap().insert(key);
     }
@@ -149,7 +149,7 @@ impl Fetch {
                 true => vec![],
                 false => storage::chunks(&checkpoint, components),
             };
-            let absent: Vec<_> = objects.iter().filter(|o| !storage::present(self.store(), o)).cloned().collect();
+            let absent: Vec<_> = objects.iter().filter(|o| !self.store().holds(o)).cloned().collect();
             if let Some(pulled) = (!absent.is_empty()).then(|| Pulled::of(self.store(), checkpoint.id())).transpose()?.flatten() {
                 let bytes = objects.iter().map(|o| o.length).sum();
                 self.arriving.lock().unwrap().push((pulled.repository, bytes, absent));
@@ -207,7 +207,7 @@ impl Fetch {
         let mut arriving = self.arriving.lock().unwrap();
         let (mut models, mut done, mut total) = (vec![], 0, 0);
         for (repository, bytes, absent) in arriving.iter_mut() {
-            absent.retain(|object| !storage::present(self.store(), object));
+            absent.retain(|object| !self.store().holds(object));
             let missing: u64 = absent.iter().map(|o| o.length).sum();
             if missing > 0 && !models.contains(repository) {
                 models.push(repository.clone());
