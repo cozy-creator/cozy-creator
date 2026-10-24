@@ -840,6 +840,22 @@
           }
         }
       },
+      "Booting": {
+        "type": "object",
+        "description": "A starting machine's step and a counter that advances as it moves.",
+        "properties": {
+          "progress": {
+            "type": "integer",
+            "format": "int64",
+            "default": 0,
+            "minimum": 0
+          },
+          "step": {
+            "type": "string",
+            "default": ""
+          }
+        }
+      },
       "Call": {
         "type": "object",
         "description": "One settled call the run made: a child run, or an effect such as its weights publication.",
@@ -2217,6 +2233,18 @@
           "boot_id": {
             "type": "string",
             "default": ""
+          },
+          "booting": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Booting",
+                "description": "While the machine starts: the step it is on, answered before anything else, so a\nwatcher tells a slow start from none. Absent once it serves."
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "capabilities": {
             "type": "array",

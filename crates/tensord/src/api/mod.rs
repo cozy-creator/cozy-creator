@@ -14,4 +14,4 @@ pub use protocol::{capability, machine as v1};
 pub use backend::MachineBackend;
 pub(crate) use http::refused;
 pub use machine_status::CAPABILITIES;
-pub use server::{serve, MachineIdentity};
+pub use server::{booting, serve, Boot, MachineIdentity};
