@@ -661,9 +661,11 @@ class Memory:
             self._graph_pool = torch.cuda.graph_pool_handle()
         return self._graph_pool
 
-    def graph_region(self) -> GraphRegion:
+    def graph_region(self, sets: object = (), retained: object = ()) -> GraphRegion:
         """A capture pool use and its replay/drop word. Weights are prepared by a Binding around
-        each capture and replay, never pinned by the region."""
+        each capture and replay, never pinned by the region. `sets` and `retained` are accepted
+        and unused until no Runtime in a candidate passes them."""
+        del sets, retained
         return GraphRegion(self, self.native.graph_region(self.graph_pool))
 
     def _set_ids(self, models: nn.Module | Model | Sequence[nn.Module | Model]) -> list[int]:
