@@ -16,7 +16,7 @@ get() {
     attempt) jq -r '.measurements.software.attempt_ordinal // ""';;
     executor) jq -r '.measurements.execution.executor.started_unix_ms // ""';;
     gpus) jq -r '[.measurements | .. | objects | select((.gpu | type) == "number" and .gpu >= 0) | .gpu] | unique | map(tostring) | join(",")';;
-    window) jq -r '"\(.accepted_at_ms // 0) \(.settled_at_ms // 0)"';;
+    window) jq -r '"\(.accepted_at_ms // 0) \(.settled_at_ms // 0)"';; stage) jq -r '.progress.stage // ""';;
   esac < "$T/$1.json" 2>/dev/null
 }
 # submit <target> [inputs]: starts the run, followed in the background into its own NDJSON, and prints its number
@@ -30,7 +30,16 @@ submit() {
   done
 }
 until_status() {  # until_status <run> <in_progress|terminal>: the run's end, followed; or its status reached
-  if [ "$2" = terminal ]; then timeout 3600 "$CLI" "${FOLLOW[@]}" "$1" --json > "$T/$1.follow" 2>&1; return; fi
+  if [ "$2" = terminal ]; then
+    timeout 1800 "$CLI" "${FOLLOW[@]}" "$1" --json > "$T/$1.follow" 2>&1
+    case $(get "$1" status) in completed|failed|canceled|'') return;; esac
+    # A run that never ends holds the pod (10-24: a describer answered for 4 h, its executor pinned and silent): cancel it,
+    # and when that does not take, stop the suite; gate.sh's trap keeps the machine's logs and ends the pod.
+    "$CLI" run cancel "$1" -y > "$T/$1.cancel" 2>&1
+    local j; for j in $(seq 24); do case $(get "$1" status) in completed|failed|canceled) return;; esac; sleep 5; done
+    expect tensord-wedged FAIL "run $1 never ended (stage $(get "$1" stage)) and its cancel did not take: the suite stopped"
+    printf 'VERDICT FAIL (run %s wedged)\n' "$1" | tee verdict.txt; exit 1
+  fi
   local i s; for i in $(seq 300); do s=$(get "$1" status); [ "$s" = "$2" ] && return 0; case $s in completed|failed|canceled) return 1;; esac; sleep 2; done; return 1
 }
 envs() { timeout 60 "$CLI" --json machine show "$M" 2>/dev/null | jq -r '[.status.environments[] | (.package | split("/") | last) + "@" + .release] | sort | join(" ")'; }
@@ -64,13 +73,15 @@ if [ -n "$RWF$TWF" ]; then
     || expect tensord-runtime-rollback FAIL "back exit $back run $n $s1; forward exit $fwd run $m $s2"
 fi
 
-# Run lifecycle: a second run queues behind the first, a queued run cancels without running, a running one cancels,
-# and a completed run's outputs land here whole.
-a=$(submit "sdxl/generate@$NEW" prompt="$SCENE, the long run" steps:=60 seed:=$((R + 34)))
+# Run lifecycle: one run more than the machine has GPUs queues behind them, a queued run cancels without running, a
+# running one cancels, and a completed run's outputs land here whole.
+busy=(); for i in $(seq "${NGPU:-1}"); do busy+=("$(submit "sdxl/generate@$NEW" prompt="$SCENE, the long run $i" steps:=60 seed:=$((R + 50 + i)))"); done
+a=${busy[0]}
 b=$(submit "sdxl/generate@$NEW" prompt="$OBJECT, the queued run" steps:=60 seed:=$((R + 35)))
 until_status "$a" in_progress; qb=$(get "$b" status)
 "$CLI" run cancel "$b" -y > "$T/cancel-queued.log" 2>&1; until_status "$b" terminal
-"$CLI" run cancel "$a" -y > "$T/cancel-running.log" 2>&1; until_status "$a" terminal
+for x in "${busy[@]}"; do "$CLI" run cancel "$x" -y > "$T/cancel-running-$x.log" 2>&1; done
+for x in "${busy[@]}"; do until_status "$x" terminal; done
 c=$(submit "sdxl/generate@$NEW" prompt="$CHAR, the landed run" seed:=$((R + 36))); until_status "$c" terminal
 f=$(ls ~/.cozy/outputs/*/"$c"-* 2>/dev/null | grep -v '\.part$' | head -1)
 want=$(jq -r 'select(.type == "output_item.done") | .item.length' "$T/$c.follow" 2>/dev/null | tail -1)

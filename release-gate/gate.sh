@@ -88,14 +88,17 @@ fetch() {
   esac
   echo "$f"
 }
-ICLI=${ICLI:-$CLI}
-if [ "$ICLI" != "$CLI" ]; then  # the machine fetches the URLs itself
-  RWF=$RW TWF=$TW TDF=$TD
+URLS=; if [ -n "$ICLI" ]; then  # the machine fetches the URLs itself
+  URLS=1 RWF=$RW TWF=$TW TDF=$TD
 else
   RWF=$(fetch "$RW") && TWF=$(fetch "$TW") && TDF=$(fetch "$TD") || exit 1
   [ -z "$TDF" ] || { chmod +x "$TDF"; BIN=$("$TDF" --version | awk '{print $2}'); }
+  # The candidate's own cozy puts the candidate on: it reaches the boot image's older TensorD, which a CLI between
+  # them may not (cozy 0.11.16 on 0.11.12: update_field_unknown).
+  ICLI=${TDF:-$CLI}
 fi
 W=; "$ICLI" machine update --help 2>/dev/null | grep -q -- --runtime-wheel && W=-wheel
+ONCE=; "$CLI" run show --help 2>/dev/null | grep -q -- --once && ONCE=--once  # a snapshot, where run show follows
 [ -z "$RWF" ] || CAND+=("--runtime$W" "$RWF"); [ -z "$TWF" ] || CAND+=("--tensorfs$W" "$TWF"); [ -z "$TDF" ] || CAND+=(--tensord "$TDF")
 BK=$SKU${SUITES:+-${SUITES//,/-}}  # the baseline's name
 gh release download "$TAG" -R "$REPO" -D "$B" -p "gate-$BK.json" -p "ref-$SKU.*" -p "ref-$SKU-clip.mp4" 2>/dev/null
@@ -136,11 +139,25 @@ cell() {
     "$HERE/known-failing.json" | head -1)
   [ -z "$issue" ] || { log "$name: pending fix $issue, not run on $SKU"; return 0; }
   for p in "$@"; do [[ $p != prompt=* ]] || printf '%s\t%s\n' "$name" "${p#prompt=}" >> prompts.tsv; done  # quality.py
-  "$CLI" run "$target" --on "$M" --json "$@" >"$name.ndjson" 2>"$name.err"
-  local n; n=$(grep -o '"number":[0-9]*' "$name.ndjson" | head -1 | cut -d: -f2)
-  [ -n "$n" ] && timeout 120 "$CLI" run show "$n" --json >"$name.json" 2>/dev/null
+  timeout 3600 "$CLI" --json run "$target" --on "$M" "$@" >"$name.ndjson" 2>"$name.err"
+  local n st j; n=$(jq -r 'select(.run.number != null) | .run.number' "$name.ndjson" 2>/dev/null | head -1)
+  snap() { timeout 120 "$CLI" run show "$n" $ONCE --json 2>/dev/null | jq -s 'last // {}' >"$name.json"; jq -r '.status // ""' "$name.json"; }
+  if [ -n "$n" ]; then
+    st=$(snap)
+    # A run that never ends holds the pod (10-24: Fibo pinned and silent for 30 min, no watchdog): cancel it, and when
+    # that does not take, stop the gate; the trap keeps the machine's logs and ends the pod.
+    if [ "$st" = queued ] || [ "$st" = in_progress ]; then
+      "$CLI" run cancel "$n" -y >"$name.cancel" 2>&1
+      for j in $(seq 24); do st=$(snap); [ "$st" = queued ] || [ "$st" = in_progress ] || break; sleep 5; done
+      if [ "$st" = queued ] || [ "$st" = in_progress ]; then
+        printf '%s\t%s\t%s\n' "$name" "$target" "$n" >> cells.tsv
+        expect gate-wedged FAIL "$name run $n never ended and its cancel did not take: the gate stopped"
+        printf 'VERDICT FAIL (%s run %s wedged)\n' "$name" "$n" | tee verdict.txt; exit 1
+      fi
+    fi
+  fi
   printf '%s\t%s\t%s\n' "$name" "$target" "${n:-none}" >> cells.tsv
-  log "$name run ${n:-none} $(grep -o '"status":"[a-z_]*"' "$name.ndjson" | tail -1)"
+  log "$name run ${n:-none} $(jq -r '.status // "none"' "$name.json" 2>/dev/null)"
 }
 # pkg <package> <fn>: the root package's function users get, its --pins release, or the --packages checkout's dir.
 pkg() {
@@ -177,22 +194,31 @@ fi
 # --install-cli's URL payload reaches a TensorD before 0.11.16 only (a later one refuses it, invalid_payload): a machine
 # already past that (a suite's before.sh moved it) is sent the candidate's files by --cli.
 mv=$(timeout 60 "$CLI" --json machine show "$M" 2>/dev/null | jq -r '.status.version // ""')
-if [ "$ICLI" != "$CLI" ] && [ -n "$mv" ] && [ "$(printf '%s\n' 0.11.16 "$mv" | sort -V | head -1)" = 0.11.16 ]; then
+if [ -n "$URLS" ] && [ -n "$mv" ] && [ "$(printf '%s\n' 0.11.16 "$mv" | sort -V | head -1)" = 0.11.16 ]; then
   ICLI=$CLI CAND=()
   if [ -n "$RW" ]; then RWF=$(fetch "$RW") || exit 1; CAND+=(--runtime "$RWF"); fi
   if [ -n "$TW" ]; then TWF=$(fetch "$TW") || exit 1; CAND+=(--tensorfs "$TWF"); fi
   [ -z "$TD" ] || [ "$mv" = "$BIN" ] || { TDF=$(fetch "$TD") || exit 1; CAND+=(--tensord "$TDF"); }
 fi
+# notinstalled <why>: the cells would run the old software, so the gate stops here: logs kept, pod ended, FAIL.
+notinstalled() {
+  expect candidate-installed FAIL "$1"
+  printf 'FAIL candidate not installed: %s\nVERDICT FAIL (candidate not installed)\n' "$1" | tee verdict.txt
+  exit 1
+}
 if [ ${#CAND[@]} -gt 0 ]; then
   "$ICLI" machine update "$M" "${CAND[@]}" -y >update.log 2>&1; code=$?
   log "candidate on $M: exit $code $(grep -E '^status' update.log)"
-  [ "$code" = 0 ] || expect candidate-update FAIL "$(tail -c 400 update.log)"
+  [ "$code" = 0 ] || notinstalled "cozy machine update exit $code: $(tail -c 300 update.log | tr '\n' ' ')"
 fi
 timeout 60 "$CLI" machine show "$M" > machine.txt 2>&1
-if [ -n "$BIN" ]; then
-  v=$(timeout 60 "$CLI" --json machine show "$M" | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"]["version"])' 2>/dev/null)
-  [ "$v" = "$BIN" ] && expect candidate-tensord PASS "$M runs cozy $v" || expect candidate-tensord FAIL "$M runs cozy ${v:-?}, not $BIN"
-fi
+read -r v rt tfs <<< "$(timeout 60 "$CLI" --json machine show "$M" 2>/dev/null | jq -r '.status | "\(.version) \(.runtime) \(.tensorfs)"')"
+miss=
+[ -z "$BIN" ] || [ "$v" = "$BIN" ] || miss="$miss cozy ${v:-?} (not $BIN)"
+[ -z "$RT" ] || [ "$rt" = "$RT" ] || miss="$miss Runtime ${rt:-?} (not $RT)"
+[ -z "$TFS" ] || [ "$tfs" = "$TFS" ] || miss="$miss TensorFS ${tfs:-?} (not $TFS)"
+[ -z "$miss" ] || notinstalled "$M runs$miss"
+expect candidate-installed PASS "$M runs cozy $v, Runtime $rt, TensorFS $tfs"
 printf '%s\n' ${SUITES//,/ } > suites
 for s in ${SUITES//,/ }; do . "$HERE/suites/$s/cells.sh"; done
 # More cells (`--cells FILE`): `name<TAB>target<TAB>args`, args expanded here ($SCENE, $CHAR, $R, $K, $M, $CLI ...).
