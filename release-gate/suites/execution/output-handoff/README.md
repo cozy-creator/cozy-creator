@@ -53,3 +53,13 @@ installed Runtime/TensorD pair. It checks actual committed tensor bytes, a later
 replay, and a distinct recipe's separate repository. It does not claim process-restart replay or
 GPU prepared-artifact performance. This covers the TensorFS release/lane API integration needed by
 the combined candidate; no private SDK invocation or alternate store is used.
+
+`cozy run ./gpu_parent 'payload:={"value":7}' --gpus=1 --on <machine>` exercises a GPU
+parent awaiting a GPU child in a separate executor while its own CUDA tensor stays live.
+Both execute real CUDA arithmetic; the parent verifies its value after the child returns.
+This covers family admission without memory lending or replaying the parent.
+
+`cozy run ./native_loop steps=30000 --gpus=1 --on <machine>` uses the installed executor's
+real Context.plan directly. One host graph launch must perform every device increment while
+the application thread parks, with exactly two Python body calls (warmup and capture) and exact
+output. This complements the isolated candidate-child lifecycle/primitive cells.

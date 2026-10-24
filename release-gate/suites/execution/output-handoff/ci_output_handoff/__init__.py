@@ -30,6 +30,92 @@ from cozy_runtime.weights_store import Derivation
 app = App()
 
 
+class LoopRequest(msgspec.Struct, forbid_unknown_fields=True):
+    steps: Annotated[int, msgspec.Meta(ge=1, le=100000)] = 30000
+
+
+class LoopResult(msgspec.Struct):
+    passed: bool
+    steps: int
+    body_python_calls: int
+    host_graph_launches: int
+    execution_mode: str
+    value: float
+
+
+@app.entrypoint(accelerator=True)
+def native_loop(payload: LoopRequest, ctx: Context) -> LoopResult:
+    import torch
+    from cozy_runtime.compute import PreparedRepeat
+
+    if ctx.device.type != "cuda":
+        raise ValueError("the installed native loop requires CUDA")
+    state = torch.zeros(1, dtype=torch.float32, device=str(ctx.device))
+    calls = 0
+
+    def step(_index):
+        nonlocal calls
+        calls += 1
+        state.add_(1)
+
+    plan = PreparedRepeat.capture(step, state=(state,), steps=payload.steps)
+    try:
+        execution = ctx.plan(plan)
+        assert execution is not None
+        time.sleep(0.25)  # The GPU must continue while this application thread is parked.
+        value = float(execution.wait()[0].item())
+        facts = plan.facts()
+        if value != payload.steps or calls != 2 or facts["host_graph_launches"] != 1:
+            raise RuntimeError("installed native execution differs from its declared loop")
+        if facts["execution_mode"] != "cuda_conditional_while":
+            raise RuntimeError("the installed path did not use a GPU-driven loop")
+        return LoopResult(True, payload.steps, calls, 1, facts["execution_mode"], value)
+    finally:
+        plan.close()
+
+
+class FamilyRequest(msgspec.Struct, forbid_unknown_fields=True):
+    value: Annotated[int, msgspec.Meta(ge=1, le=64)] = 7
+
+
+class ChildResult(msgspec.Struct):
+    value: int
+    pid: int
+
+
+class FamilyResult(msgspec.Struct):
+    passed: bool
+    parent_pid: int
+    child_pid: int
+
+
+@app.entrypoint(internal=True, accelerator=True)
+@invocable
+async def gpu_child(ctx: Context, *, payload: FamilyRequest) -> ChildResult:
+    import torch
+
+    if ctx.device.type != "cuda":
+        raise ValueError("the family proof child requires CUDA")
+    value = torch.tensor(payload.value, dtype=torch.int64, device=str(ctx.device))
+    return ChildResult(int((value + 1).item()), os.getpid())
+
+
+@app.entrypoint(accelerator=True)
+@invocable
+async def gpu_parent(ctx: Context, *, payload: FamilyRequest) -> FamilyResult:
+    import torch
+
+    if ctx.device.type != "cuda":
+        raise ValueError("the family proof parent requires CUDA")
+    held = torch.full((32,), payload.value, dtype=torch.int64, device=str(ctx.device))
+    child = await gpu_child(ctx, payload=payload)
+    if child.value != payload.value + 1 or int(held.sum().item()) != 32 * payload.value:
+        raise RuntimeError("parent/child CUDA values differ from their expected results")
+    if child.pid == os.getpid():
+        raise RuntimeError("an inline child did not exercise separate-executor GPU admission")
+    return FamilyResult(True, os.getpid(), child.pid)
+
+
 class DeriveRequest(msgspec.Struct, forbid_unknown_fields=True):
     seed: int
     recipe: str = "v1"
