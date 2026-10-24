@@ -6,17 +6,17 @@
 
 #[cfg(unix)]
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 
 #[cfg(unix)]
 use parking_lot::Mutex;
 
-use super::{Inner, Memory, Request};
-use crate::arena::{Chunk, Direct, Kind, Owner, Route, Source, Torch};
-use crate::backend::Va;
+use super::{Memory, Request};
+use crate::arena::{Direct, Owner, Route, Source, Torch};
 #[cfg(unix)]
 use crate::{
-    backend::{Access, Backend, Physical},
+    arena::{Chunk, Kind},
+    backend::{Access, Backend, Physical, Va},
     lease::{Advice, Agent, Ticket},
 };
 use crate::{Error, Result};
@@ -65,10 +65,7 @@ impl Memory {
     /// Standalone, chosen explicitly when no compatible manager serves this GPU: the device's
     /// own pages, within the allowance its weight pages share (rev 6).
     pub fn serve_standalone_torch(&self) -> Result<Arc<Torch>> {
-        self.serve_torch(Arc::new(Standalone {
-            memory: Arc::downgrade(&self.inner),
-            direct: Direct::new(self.inner.backend.clone(), self.inner.allowance.clone()),
-        }))
+        self.serve_torch(Arc::new(Direct::new(self.inner.backend.clone(), self.inner.allowance.clone())))
     }
 
     /// The device's torch allocator: refused until one is served.
@@ -161,28 +158,6 @@ impl Memory {
     /// The region is gone: its spans leave as they come whole free; the record names survivors.
     pub fn region_close(&self, region: u64) -> Ended {
         self.inner.torch.get().map(|t| t.end(Owner::Region(region))).unwrap_or_default()
-    }
-}
-
-/// The standalone allocator shares placement policy with its weights as well as their budget.
-/// Only the source's slow path calls this, with no arena lock held and outside capture.
-struct Standalone {
-    memory: Weak<Inner>,
-    direct: Direct,
-}
-
-impl Source for Standalone {
-    fn map(&self, va: Va, kind: Kind, into: &mut Vec<Chunk>) -> Result<()> {
-        let memory = self.memory.upgrade().ok_or_else(|| Error::Closed("standalone memory".into()))?;
-        memory.guard(|| {
-            memory.check_ownership()?;
-            memory.make_room(va.len, &[], "torch", None, false)?;
-            self.direct.map(va, kind, into)
-        })
-    }
-
-    fn unmap(&self, va: Va, chunks: Vec<Chunk>) -> Vec<(u64, Chunk)> {
-        self.direct.unmap(va, chunks)
     }
 }
 
