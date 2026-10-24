@@ -154,9 +154,8 @@ pub async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// What the Hub says of a rental for a person to know: why it runs off the requester's continent,
-/// and, to an admin, that its prepaid provider account runs low. The Hub places a rental after it
-/// accepts the order, so a follower says each once it appears.
+/// What the Hub says of a rental for a person to know: why it runs off the requester's continent.
+/// The Hub places a rental after it accepts the order, so a follower says it once it appears.
 #[derive(Default)]
 pub(crate) struct Notices(Vec<String>);
 
@@ -164,11 +163,9 @@ impl Notices {
     /// The rental's notices not said yet, now counted as said.
     pub(crate) fn fresh<'a>(&mut self, machine: &'a Machine) -> Vec<&'a str> {
         let rental = machine.rental.as_ref();
-        let notes = rental
+        let fresh: Vec<&str> = rental
             .into_iter()
-            .flat_map(|r| [&r.placement_note, &r.provider_warning]);
-        let fresh: Vec<&str> = notes
-            .filter_map(|note| note.as_deref())
+            .filter_map(|r| r.placement_note.as_deref())
             .filter(|note| !self.0.iter().any(|said| said == note))
             .collect();
         self.0.extend(fresh.iter().map(|note| note.to_string()));
