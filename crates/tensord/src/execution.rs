@@ -644,6 +644,7 @@ impl Engine {
                     .revision
                     .checked_add(1)
                     .ok_or_else(|| io::Error::other("execution observation cursor exhausted"))?,
+                at_ms: crate::machine::lifecycle::now_ms() as u64,
             },
         );
         drop((progress, journal));
@@ -705,6 +706,7 @@ impl Engine {
                     .revision
                     .checked_add(1)
                     .ok_or_else(|| io::Error::other("execution observation cursor exhausted"))?,
+                at_ms: crate::machine::lifecycle::now_ms() as u64,
             },
         );
         drop((progress, journal));
@@ -754,6 +756,7 @@ impl Engine {
                     .revision
                     .checked_add(1)
                     .ok_or_else(|| io::Error::other("execution observation cursor exhausted"))?,
+                at_ms: crate::machine::lifecycle::now_ms() as u64,
             },
         );
         drop((progress, journal));

@@ -510,6 +510,9 @@ pub struct RunState {
     pub attempt: u32,
     /// Why a queued run waits, for people.
     pub waiting: String,
+    /// The runs it waits for, by id (an update waits for those in flight).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub waiting_for: Vec<String>,
     /// When it began executing (`running`), Unix ms: its time counts from here, never its queue's.
     /// 0 before it does, or from an older machine.
     pub started_at_ms: u64,
@@ -689,6 +692,9 @@ pub struct StatusFrame {
     pub idle_deadline_unix_ms: i64,
     /// The caller's live runs.
     pub runs: Vec<RunState>,
+    /// An update in progress here; none without one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update: Option<RunState>,
     /// booting, ready, releasing
     pub phase: String,
     /// os/arch

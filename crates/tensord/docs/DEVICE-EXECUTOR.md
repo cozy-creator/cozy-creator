@@ -91,22 +91,17 @@ file once as it copies it, before reporting success.
 
 ## Cancellation and lifetime
 
-Nothing is killed because time passed. The wedge rule is Runtime's `liveness`: a meter still for
-longer than eight times the longest pause it has shown, and at least six samples (30 s).
+Nothing judges a call's progress: a command runs until its reply, however long and however
+silent. A call ends with its reply, a cancel, or the machine's restart.
 
-- Every `command` runs under a watch. Non-invoke commands use CPU plus bytes moved
-  (`process::burn`); time the machine spends answering an executor request is excused, and so
-  is a caller's while any of its child runs is unfinished (`DeviceExecutor.waits`: a child
-  is watched by its own executor). A wedged executor and its process group are killed; the
-  call returns the measurement.
-- `cancel(request_id)` atomically writes the stock `executor.cancel` marker, keyed by request, so a
-  stale marker cannot cancel a later request. The executor stops at its next safe point. From
-  then on the invocation's frames are the meter; if they stop, it is killed. An invocation without
-  a cancel is never judged. Observer teardown never cancels.
-- `terminate()` closes the channel, lets the executor stop at its next exchange, kills only a
-  measured wedge, then reaps it and every member left in its process group (a group's followers),
-  and frees `retain_until_exit` resources. `shutdown()` asks first.
-  `Drop` does the same before returning, so a slot or reservation is released only after the exit. If exit cannot be observed, resources are leaked, not released.
+- `Cancellation::cancel(request)` kills the executor (its exact process and scope) at once, if it
+  still serves that request (`serve`), so a late cancel cannot end a later request. Its GPU
+  weights stay in the machine's custody: the next executor maps them without a copy. One a cancel
+  killed never goes back to the pool.
+- `terminate()` closes the channel, kills the executor, reaps it and every member left in its
+  process group (a group's followers), and frees `retain_until_exit` resources. Nothing waits on
+  an executor to stop by itself. `Drop` does the same before returning, so a slot or reservation
+  is released only after the exit. If exit cannot be observed, resources are leaked, not released.
 - Containment (`scope.rs`): with `cgroup_namespace`, each executor gets its own scope. Where the
   host delegates a writable unified hierarchy it is a cgroup-v2 below the machine's: the
   trampoline joins it before importing anything, Hello must show the executor inside it, and a
@@ -123,8 +118,7 @@ longer than eight times the longest pause it has shown, and at least six samples
   scope of this service (an earlier run's, or one dropped without an end) is killed at startup
   and at each token scope's end. Untokened processes, such as an operator's SSH jobs, are never
   touched.
-- No copy drain before a kill: a kill only follows a measured wedge, so the executor is not
-  cooperating and could not drain. Nothing it was copying is shared: GPU pages are its own;
+- No copy drain before a kill: nothing it was copying is shared: GPU pages are its own;
   host-tier layouts are sealed read-only memfds the machine filled; outputs are taken into
   custody only from a quiescent reply. Sources it read stay retained until its exit is observed.
 

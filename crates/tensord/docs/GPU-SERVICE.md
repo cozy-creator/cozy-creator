@@ -4,7 +4,7 @@
 Runtime executors. TensorD supplies model data, shared CPU buffers and each GPU's varena ledger
 (`memory::GpuLedger`, design memory-varena §5.6). Varena in each executor decides that
 executor's GPU bytes and makes room through the ledger's asks. TensorD admits starts, reaps
-exited executors' rows, and ends the ones the ledger names stalled.
+exited executors' rows. Nothing ends an executor for a stall.
 Acceptance, journal, progress and output custody stay in `Engine`; scheduling stays in `service.rs`.
 
 ## Configuration
@@ -88,11 +88,9 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
 - Groups (degree K > 1): one executor sealed to the K GPUs with the NCCL seal (`NCCL_NVLS_ENABLE=0`,
   `NCCL_P2P_LEVEL=NVL`); `Start`/`Load` carry `sequence_parallel_degree: K`. Rank 0 spawns, dials back
   and forms its followers inside `Start` (Runtime `RankGroup`); the machine never talks to a follower.
-  Every command's watch meters rank 0 plus its process-group members, so formation ends only on
-  measured lack of progress. Each GPU of the group is admitted by its own ledger (device order).
+  Each GPU of the group is admitted by its own ledger (device order).
   `Start` carries each GPU's ledger memfd and eventfd in lane order; rank 0 hands follower r
-  its pair, and each rank claims its own row. Followers' pids from `Start` are their GPUs' tenants: a stalled one
-  is ended by pid.
+  its pair, and each rank claims its own row. Followers' pids from `Start` are their GPUs' tenants.
   Teardown waits for every group member's exit. Startup fences GPU dispatch until a previous
   machine's leaders and their followers are gone. A refusal or poisoned group call fails the run
   with the executor's own code (a group's first fault names its GPU). A group forks from the generation's import-only parent like a
@@ -117,8 +115,7 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
   no row explains (other programs, executors still exiting). A watch thread reads NVML once a
   second, and wakes on the ledger's eventfd: a dead row whose process is gone is reaped, and
   returned once NVML charges the pid no more (in a container, at a reading after the exit; what it
-  still shows stays in TensorD's row). Once a wedge floor it ends the rows asked for bytes whose
-  progress did not move. When bytes free (an executor's `freed`, a returned row) the engine's
+  still shows stays in TensorD's row). When bytes free (an executor's `freed`, a returned row) the engine's
   dispatch is woken (`notify_activity`): the queue asks `fits` again and never polls. A restarted
   TensorD makes fresh ledgers: its old executors die with it (`PDEATHSIG`), and what they hold
   until then is unexplained bytes.
@@ -129,7 +126,7 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
 - Start happens only after `authorize_managed`.
 - Invoke must be quiescent. Then `postprocess` and `managed_result` run. A custody failure is
   `failed`.
-- On error the session is terminated (exit observed, wedge killed) before the run is settled:
+- On error the session is terminated (killed, exit observed) before the run is settled:
   CANCELED if a cancel was journaled, otherwise FAILED with the reason, including a pre-start exit
   with its stderr tail; nothing is requeued to fail again. A retained session can lose its channel (EPIPE,
   ECONNRESET, EOF) at PrepareRequest, which enters no handler: a killed executor closes its

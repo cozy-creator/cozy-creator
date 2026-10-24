@@ -77,8 +77,8 @@ pub(super) fn state(id: &str, state: &domain::MachineExecutionState) -> v1::RunS
         },
         sequence: state.sequence,
         attempt: state.attempt_ordinal as u32,
-        waiting: String::new(),
         started_at_ms: state.started_at_ms,
+        ..Default::default()
     }
 }
 

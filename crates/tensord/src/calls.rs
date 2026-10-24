@@ -104,11 +104,6 @@ impl Caller {
     pub(crate) fn seam(&self, frame: &Frame) -> io::Result<(Answer, Option<File>)> {
         self.calls.seam(&self.parent, frame)
     }
-    /// Its executor is still while a call it waits on runs: that call's executor is watched.
-    pub(crate) fn waits(&self, engine: &Arc<Engine>) -> crate::process::Waits {
-        let (parent, engine) = (self.parent.clone(), engine.clone());
-        Arc::new(move || parent.unfinished(&engine))
-    }
 }
 impl Drop for Caller {
     fn drop(&mut self) {

@@ -859,11 +859,13 @@ impl MachineBackend for NativeBackend {
             });
             let arriving = payload.as_ref().is_some_and(|p| p["bytes_done"].as_u64() < p["bytes_total"].as_u64());
             if let Some(payload) = payload.filter(|_| (running || preparing) && waiting.is_none() || arriving) {
-                events.push(event(
-                    record.revision,
-                    "progress",
-                    &json!({"type":"progress","payload":payload}),
-                )?);
+                // When it last moved, never when it is read: a silent run shows how long it is.
+                let mut moved = event(record.revision, "progress", &json!({"type":"progress","payload":payload}))?;
+                let at = record.progress_at_ms.max(record.started_at_ms);
+                if at > 0 {
+                    moved.at_ms = at;
+                }
+                events.push(moved);
             } else {
                 // Every cursor up to the head is answered, or a waiting client would spin.
                 let waiting = waiting.or_else(|| record.waiting_reason.clone());

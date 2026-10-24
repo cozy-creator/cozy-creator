@@ -2159,6 +2159,14 @@
             "type": "string",
             "description": "Why a queued run waits, for people.",
             "default": ""
+          },
+          "waiting_for": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The runs it waits for, by id (an update waits for those in flight).",
+            "default": []
           }
         }
       },
@@ -2352,6 +2360,18 @@
               "nvcc": "",
               "state": ""
             }
+          },
+          "update": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RunState",
+                "description": "An update in progress here; none without one."
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "version": {
             "type": "string",

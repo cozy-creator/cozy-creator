@@ -313,11 +313,6 @@ pub fn meter(pid: u32) -> Option<(u64, u64)> {
     sys::meter(pid)
 }
 
-/// `meter`'s two parts summed: Runtime's `proctree.progress_burn`.
-pub fn burn(pid: u32) -> Option<u64> {
-    meter(pid).map(|(cpu, moved)| cpu.saturating_add(moved))
-}
-
 /// The bytes a process has written: what an install lands (its downloads, unpacked wheels).
 /// `None`: unreadable.
 pub fn written_bytes(pid: u32) -> Option<u64> {

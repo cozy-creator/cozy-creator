@@ -64,9 +64,9 @@ pub struct Status {
     /// A toolchain install, not a software pair.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub toolchain: bool,
-    /// While `waiting_activation`: the admitted runs still in flight.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub waiting_for: u32,
+    /// While `waiting_activation`: the runs in flight it waits for, by their callers' ids.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waiting_on: Vec<String>,
     /// Every state it passed through: the update's run log.
     #[serde(default)]
     pub history: Vec<Step>,
@@ -84,6 +84,9 @@ pub struct Step {
     pub total: u32,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub completed: u32,
+    /// A `waiting_activation` step's runs in flight, by their callers' ids.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waiting_for: Vec<String>,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -92,6 +95,16 @@ fn is_zero(n: &u32) -> bool {
 impl Status {
     pub fn terminal(&self) -> bool {
         matches!(self.state.as_str(), "succeeded" | "rolled_back" | "failed" | "canceled")
+    }
+    /// What it waits for before it activates, for people; "" when it does not wait. Its caller
+    /// names the runs (`waiting_on`) by its own numbers.
+    pub fn waits(&self) -> String {
+        match (self.state.as_str(), self.waiting_on.len()) {
+            ("waiting_activation", 0) => "waiting for the submits in flight".into(),
+            ("waiting_activation", 1) => "waiting for a run in flight to end".into(),
+            ("waiting_activation", n) => format!("waiting for {n} runs in flight to end"),
+            _ => String::new(),
+        }
     }
     fn enter(&mut self, state: &str) {
         if self.state != state || self.history.is_empty() {
@@ -399,7 +412,8 @@ pub struct Updates {
     /// The Python executors run (`PackageSdk::python`): the SDK pair resolves for it.
     python: String,
     status: Mutex<Option<Status>>,
-    idle: Box<dyn Fn() -> bool + Send + Sync>,
+    /// The runs in flight, by number: what activating would end.
+    running: Box<dyn Fn() -> Vec<String> + Send + Sync>,
     lifecycle: Option<Arc<super::lifecycle::Lifecycle>>,
     /// The downloader published wheels land through (`pypi::wheel`).
     machine: Option<Arc<Machine>>,
@@ -413,7 +427,7 @@ impl Updates {
     pub fn open(
         paths: Paths,
         python: String,
-        idle: Box<dyn Fn() -> bool + Send + Sync>,
+        running: Box<dyn Fn() -> Vec<String> + Send + Sync>,
         lifecycle: Option<Arc<super::lifecycle::Lifecycle>>,
         machine: Option<Arc<Machine>>,
     ) -> io::Result<Arc<Self>> {
@@ -433,7 +447,7 @@ impl Updates {
             paths,
             python,
             status: Mutex::new(status),
-            idle,
+            running,
             lifecycle,
             machine,
             stop: Mutex::default(),
@@ -558,6 +572,11 @@ impl Updates {
     }
 
     /// The update `operation` names, if it is this machine's latest.
+    /// The update in progress (none without one).
+    pub fn current(&self) -> Option<Status> {
+        self.status.lock().unwrap().clone().filter(|s| !s.terminal())
+    }
+
     pub fn update(&self, operation: &str) -> Option<Status> {
         self.status
             .lock()
@@ -918,37 +937,50 @@ impl Updates {
         self.paths.engine.join(DEV).exists()
     }
 
-    /// Closes admission and waits for the work admitted before to drain, saying how many runs
-    /// it waits on as they end. A cancel ends it (Interrupted).
+    /// Holds new runs behind it (accepted, queued) and waits for the runs in flight to end, naming
+    /// them: one halted for good is its user's to cancel (`cozy run cancel` ends it at once), never
+    /// ended for the update (design stalls.md). Then it closes admission and waits for the submits
+    /// in flight to land. A cancel of the update ends it (Interrupted).
     fn drain(&self) -> io::Result<Option<super::lifecycle::Activation>> {
-        // No new work is admitted from here; work admitted before drains first.
-        let activation = self.lifecycle.as_ref().map(|l| l.activate()).transpose()
+        let activation = self.lifecycle.as_ref().map(|l| l.hold()).transpose()
             .map_err(|refused| io::Error::other(refused.to_string()))?;
-        let admitted = || self.lifecycle.as_ref().map_or(0, |l| l.admitted() as u32);
-        let total = admitted();
-        let mut seen = None;
-        while !(self.idle)() {
-            let left = admitted();
-            if seen != Some(left) {
-                seen = Some(left);
+        let admitted = || self.lifecycle.as_ref().map_or(0, |l| l.admitted());
+        let (mut seen, mut total, mut closed) = (None, 0, false);
+        loop {
+            let running = (self.running)();
+            if running.is_empty() && !closed {
+                activation.iter().for_each(super::lifecycle::Activation::close);
+                closed = true;
+            }
+            if closed && admitted() == 0 {
+                break;
+            }
+            if seen.as_ref() != Some(&running) {
+                total = total.max(running.len() as u32);
+                let left = running.len() as u32;
                 self.set(|s| {
                     s.state = "waiting_activation".into();
-                    s.waiting_for = left;
+                    s.waiting_on = running.clone();
                     s.history.push(Step {
                         state: "waiting_activation".into(),
                         at_ms: super::lifecycle::now_ms(),
                         total,
                         completed: total.saturating_sub(left),
+                        waiting_for: running.clone(),
                     });
                 })?;
+                seen = Some(running);
             }
-            // Waiting makes no progress of its own: the work it waits on is judged by its own.
             if self.status.lock().unwrap().as_ref().is_some_and(Status::terminal) {
                 return Err(io::Error::new(io::ErrorKind::Interrupted, "the update was canceled"));
             }
             std::thread::sleep(std::time::Duration::from_secs(1));
         }
-        self.set(|s| s.waiting_for = 0)?;
+        // It waits for nothing more: its caller says so.
+        self.set(|s| {
+            s.waiting_on.clear();
+            s.history.push(Step { state: "activating".into(), at_ms: super::lifecycle::now_ms(), ..Default::default() });
+        })?;
         Ok(activation)
     }
 
@@ -1101,13 +1133,12 @@ pub(super) fn compile_sdk(uv: &Path, python: &str, input: &str, stop: &Stop, whe
             })
         };
         let (out, reason) = (drain(Box::new(stdout)), drain(Box::new(stderr)));
-        let ended = crate::process::supervise(&mut child, Some(stop), "uv", &|_| ());
+        let ended = crate::process::supervise(&mut child, Some(stop), &|_| ());
         (ended, out.join().unwrap_or_default(), reason.join().unwrap_or_default())
     });
     match ended? {
         Supervised::Exited(status) if status.success() => Ok(Ok(out)),
         Supervised::Canceled => Err(io::Error::new(io::ErrorKind::Interrupted, "SDK resolution was canceled")),
-        Supervised::Wedged(verdict) => Err(io::Error::other(format!("uv pip compile: {verdict}"))),
         Supervised::Exited(_) => {
             let reason: Vec<&str> = reason.split_whitespace().filter(|w| !matches!(*w, "×" | "╰─▶")).collect();
             Ok(Err(reason.join(" ").trim_end_matches('.').to_owned()))

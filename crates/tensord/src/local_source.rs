@@ -472,12 +472,10 @@ impl LocalSources {
     }
 }
 
-/// The trusted installer's end as a run's reason: canceled with its run, wedged (no CPU or
-/// bytes moved past its measured patience), or failed.
+/// The trusted installer's end as a run's reason: canceled with its run, or failed.
 fn installer_refusal(error: protocol::error::Error) -> Refused {
     let code = match error.code.as_str() {
         crate::published::CANCELED => crate::published::CANCELED,
-        "no_progress" => "no_progress",
         _ => "package_installation_failed",
     };
     refused(code, error.message)

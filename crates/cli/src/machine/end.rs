@@ -202,8 +202,9 @@ pub async fn keepalive(ctx: &Context, name: &str) -> Result<ExitCode, Error> {
 /// restart: each named as a release version the machine fetches itself (PyPI for the wheels, the
 /// GitHub release for `cozy`), or a local path, a dev build the CLI sends (a wheel or a project to
 /// build; a `cozy` binary or the cozy-creator checkout to build). With none named, each moves to
-/// its Hub's target. A numbered run of kind update, which waits for the work the machine accepted
-/// and is followed like any run; once it succeeds, the machine must report what it asked for.
+/// its Hub's target. A numbered run of kind update, which holds new runs behind it and waits for
+/// those in flight, naming them, and is followed like any run; once it succeeds, the machine must
+/// report what it asked for.
 pub async fn update(
     ctx: &Context,
     name: &str,

@@ -170,8 +170,7 @@ fn installer(config: &InstallerConfig, root: &RootSet) -> Result<Command, Error>
 }
 
 /// Run the helper to its exit and hold the generation it published. Its process group ends
-/// with its run's cancel (`stop`), or when it stops moving past its measured patience
-/// (`process::supervise`); a long install that moves is never killed.
+/// with its run's cancel (`stop`, `process::supervise`), never because it ran long.
 fn publish(config: &InstallerConfig, mut command: Command, stop: Option<&Stop>, claim: Option<&Path>, read: &dyn Fn(u64)) -> Result<PreparedGeneration, Error> {
     let mut child = platform::process::own_group(&mut command)
         .stdin(Stdio::null())
@@ -194,7 +193,7 @@ fn publish(config: &InstallerConfig, mut command: Command, stop: Option<&Stop>, 
         std::io::copy(&mut stdout, &mut std::io::sink())?;
         Ok::<_, std::io::Error>(output)
     });
-    let ended = crate::process::supervise(&mut child, stop, "the package installer", read).map_err(storage)?;
+    let ended = crate::process::supervise(&mut child, stop, read).map_err(storage)?;
     if let Some(claim) = claim {
         let _ = fs::remove_file(claim);
     }
@@ -204,7 +203,6 @@ fn publish(config: &InstallerConfig, mut command: Command, stop: Option<&Stop>, 
         crate::process::Supervised::Canceled => {
             return Err(Error::conflict(crate::published::CANCELED, "the run was canceled while its package installed"))
         }
-        crate::process::Supervised::Wedged(verdict) => return Err(Error::conflict("no_progress", verdict)),
     };
     let tail = tail.join().unwrap_or_default();
     if !exited.success() {
