@@ -6,7 +6,7 @@
 //! run's output events or, at startup, from the store. `serve` answers
 //! `GET /v1/runs/{id}/outputs/{name}` from the exported file.
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     io::{Read as _, Seek as _, SeekFrom},
     path::{Path, PathBuf},
     sync::{
@@ -29,6 +29,7 @@ use protocol::{
         self as v1,
         client::{self, Bulk},
     },
+    tree,
 };
 use futures_util::StreamExt as _;
 use serde::Deserialize;
@@ -48,8 +49,6 @@ use crate::{
     store::{OutputRow, RunRow, State as RunState, StoreError},
 };
 
-/// A tree output's media type: its bytes are the manifest of its files.
-const TREE: &str = "application/vnd.cozy.tree-manifest";
 /// Bytes are read in ranges of `clamp(length / (RANGES_PER_LANE * LANES), 1 MiB, RANGE)`, at
 /// most `LANES` side by side on their own connections. More ranges than lanes, as an S3 client
 /// cuts parts: a lane that finishes early takes the next from the queue, so no lane trails alone.
@@ -325,7 +324,7 @@ impl Calcifer {
             tokio::fs::create_dir_all(&run.out_dir).await.map_err(|e| {
                 Failure::Again(format!("cannot create {}: {e}", run.out_dir.display()))
             })?;
-            let staged = if item.media_type == TREE {
+            let staged = if item.media_type == tree::MEDIA {
                 fetch_tree(link, &target, item, &dest, &moved).await?
             } else {
                 let appended = (run.id.clone(), item_id(run.number, item), item.rev);
@@ -474,7 +473,7 @@ pub async fn serve(
             message,
         ));
     }
-    if item.media_type == TREE {
+    if item.media_type == tree::MEDIA {
         let message = format!("output {name} of run {number} is a folder: open it on disk");
         return Err(api::refuse(Kind::Conflict, "output_is_a_tree", message));
     }
@@ -706,7 +705,10 @@ async fn fetch_tree(
     let listed = std::fs::read(&manifest).map_err(unwritable)?;
     let _ = std::fs::remove_file(&manifest);
     let mut read: HashMap<String, PathBuf> = HashMap::new();
-    for (path, digest, length) in members(&listed).map_err(Failure::Lost)? {
+    let members = tree::parse(&listed)
+        .map_err(|e| Failure::Lost(format!("the tree's manifest: {e}")))?;
+    for (path, tree::Member { length, sha256 }) in members {
+        let digest = format!("sha256:{sha256}");
         let file = stage.join(&path);
         if let Some(parent) = file.parent() {
             std::fs::create_dir_all(parent).map_err(unwritable)?;
@@ -728,60 +730,6 @@ async fn fetch_tree(
         read.insert(digest, file);
     }
     Ok(stage)
-}
-
-#[derive(Deserialize)]
-struct Manifest {
-    entries: Vec<Entry>,
-}
-
-#[derive(Deserialize)]
-struct Entry {
-    kind: String,
-    path: String,
-    blob: Option<Blob>,
-}
-
-#[derive(Deserialize)]
-struct Blob {
-    sha256: String,
-    length: u64,
-}
-
-/// The files a tree's manifest names, as (path, digest, length): relative paths that stay inside
-/// the tree, none named twice or inside another.
-fn members(manifest: &[u8]) -> Result<Vec<(String, String, u64)>, String> {
-    let manifest: Manifest =
-        serde_json::from_slice(manifest).map_err(|e| format!("the tree's manifest: {e}"))?;
-    let mut files = vec![];
-    for Entry { kind, path, blob } in manifest.entries {
-        if kind != "file" {
-            warn!("a tree entry of kind {kind:?} is skipped");
-            continue;
-        }
-        let inside = (path.split('/'))
-            .all(|part| !matches!(part, "" | "." | "..") && !part.contains(['\\', ':', '\0']));
-        if !inside {
-            return Err(format!("the tree names the path {path:?}"));
-        }
-        let blob = blob.ok_or_else(|| format!("the tree's {path} names no bytes"))?;
-        let digest: Digest = format!("sha256:{}", blob.sha256)
-            .parse()
-            .map_err(|e| format!("the tree's {path}: {e}"))?;
-        files.push((path, digest.to_string(), blob.length));
-    }
-    let paths: HashSet<&str> = files.iter().map(|(path, ..)| path.as_str()).collect();
-    if paths.len() != files.len() {
-        return Err("the tree names a path twice".into());
-    }
-    let nested = paths.iter().find(|path| {
-        path.match_indices('/')
-            .any(|(i, _)| paths.contains(&path[..i]))
-    });
-    if let Some(path) = nested {
-        return Err(format!("the tree names {path} inside another of its files"));
-    }
-    Ok(files)
 }
 
 async fn blocking<T: Send + 'static>(

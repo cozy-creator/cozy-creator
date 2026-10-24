@@ -3362,9 +3362,6 @@ pub(crate) fn remove_old_executor_roots(root: &Path) {
     }
 }
 
-/// A tree input's media type: its digest names a tree manifest (`entries` of files by path).
-pub const TREE_MEDIA: &str = "application/vnd.cozy.tree-manifest";
-
 /// A call's inputs in its spool: file inputs by field path as read-only copies, and input
 /// trees by reference (`Tree` fields) as read-only directories with their manifest digest.
 pub(crate) struct Staged {
@@ -3401,7 +3398,7 @@ pub(crate) fn stage_inputs(
             .take(96)
             .collect();
         let local = directory.join(format!("{position:03}-{field}"));
-        if input.media_type == TREE_MEDIA {
+        if input.media_type == protocol::tree::MEDIA {
             let manifest = held_bytes(cas, &input.digest, input.length)?;
             materialize_tree(cas, identity, &manifest, &local)?;
             // A payload names a tree by its field's ref or by its manifest digest.

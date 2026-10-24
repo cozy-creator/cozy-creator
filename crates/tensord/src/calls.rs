@@ -842,7 +842,7 @@ fn receive(
         }
         hold(&local, &artifact.sha256, artifact.length)?;
         let digest = format!("sha256:{}", artifact.sha256);
-        if binding.media_type == crate::gpu_service::TREE_MEDIA {
+        if binding.media_type == protocol::tree::MEDIA {
             // A tree: its manifest's members materialized as the directory the parent reads.
             let tree = directory.join(format!("{}-tree-{}", grants.len(), artifact.sha256));
             let mut content = 0;

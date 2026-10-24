@@ -258,7 +258,7 @@ impl Runs {
                 sha256: input.digest.trim_start_matches("sha256:").into(),
                 length: input.length,
             });
-            if input.media_type != crate::gpu_service::TREE_MEDIA {
+            if input.media_type != protocol::tree::MEDIA {
                 continue;
             }
             // A tree's files were written too: each its manifest names.

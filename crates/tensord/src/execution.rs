@@ -1073,10 +1073,10 @@ impl Engine {
     ) -> io::Result<ResultRecord> {
         let mut paths: Vec<_> = bindings.iter().map(|b| b.relative_path.clone()).collect();
         // A tree's member files are held beside its manifest, by digest (`tree_binding`).
-        for tree in bindings.iter().filter(|b| b.media_type == crate::gpu_service::TREE_MEDIA) {
+        for tree in bindings.iter().filter(|b| b.media_type == protocol::tree::MEDIA) {
             let mut manifest = Vec::new();
             open_artifact(source, Path::new(&tree.relative_path))?.read_to_end(&mut manifest)?;
-            paths.extend(tree_members(&manifest)?.into_iter().map(|(sha, _)| format!("sha256-{sha}")));
+            paths.extend(protocol::tree::parse(&manifest)?.into_values().map(|m| format!("sha256-{}", m.sha256)));
         }
         paths.sort();
         paths.dedup();
@@ -1279,12 +1279,6 @@ impl Drop for Spool {
 }
 
 /// Walk relative components using openat+NOFOLLOW: no symlink or parent escape races.
-/// A tree manifest's members: each file's (sha256 hex, length).
-pub(crate) fn tree_members(manifest: &[u8]) -> io::Result<Vec<(String, u64)>> {
-    let files = crate::trees::parse(manifest)?;
-    Ok(files.into_values().map(|o| (o.sha256, o.length)).collect())
-}
-
 pub(crate) fn open_artifact(root: &Path, path: &Path) -> io::Result<File> {
     let parts: Vec<_> = path
         .components()

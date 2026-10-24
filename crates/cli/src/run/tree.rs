@@ -1,9 +1,9 @@
 //! A local directory given to a Tree input: its files, and the tree document naming them that the
-//! machine materializes the tree from (TensorD's `trees::document`). Both are sent with the run
-//! like any input file. The
-//! manifests are a cache that keeps itself: each is touched when staged, one unused for `UNUSED`
-//! goes when another is staged, and none is kept while the disk is low.
+//! machine materializes the tree from (`protocol::tree`). Both are sent with the run like any
+//! input file. The manifests are a cache that keeps itself: each is touched when staged, one
+//! unused for `UNUSED` goes when another is staged, and none is kept while the disk is low.
 use std::{
+    collections::BTreeMap,
     fs::{self, File},
     io,
     path::{Path, PathBuf},
@@ -14,11 +14,8 @@ use protocol::{
     calcifer::StagedInput,
     error::{Error, Kind},
     ids::Digest,
+    tree::{self, Member},
 };
-use serde_json::json;
-
-/// How a run's spec marks an input that is a tree's manifest.
-pub const MEDIA: &str = "application/vnd.cozy.tree-manifest";
 
 /// A manifest unused this long leaves the cache the next time one is staged.
 const UNUSED: Duration = Duration::from_secs(7 * 24 * 60 * 60);
@@ -33,26 +30,21 @@ pub struct Staged {
 pub fn stage(root: &Path, memo: Option<&Path>, manifests: &Path) -> Result<Staged, Error> {
     // Calcifer reads the files, from its own directory: `./folder` is this one's.
     let root = &std::path::absolute(root).map_err(|e| unreadable(root, e))?;
-    let mut found = vec![];
-    walk(root, root, &mut found)?;
-    found.sort();
     let mut files = vec![];
-    let mut entries = vec![];
+    let mut members = BTreeMap::new();
+    let found = tree::walk(root).map_err(|e| Error::new(Kind::Usage, "tree_unreadable", e.to_string()))?;
     for (name, path) in found {
-        let length = std::fs::metadata(&path)
-            .map_err(|e| unreadable(&path, e))?
-            .len();
+        let length = fs::metadata(&path).map_err(|e| unreadable(&path, e))?.len();
         let digest = super::digests::of(memo, &path)?;
         let sha256 = hex::encode(digest.bytes());
-        entries.push(json!({"blob": {"length": length, "sha256": sha256}, "kind": "file", "path": name}));
+        members.insert(name, Member { length, sha256 });
         files.push(StagedInput {
             path,
             digest,
             length,
         });
     }
-    // Keys sorted (serde_json's map is ordered) and entries by path: one document per tree.
-    let bytes = serde_json::to_vec(&json!({ "entries": entries })).expect("a JSON value serializes");
+    let bytes = tree::document(&members);
     let digest = Digest::of(&bytes);
     let path = keep(manifests, &hex::encode(digest.bytes()), &bytes)
         .map_err(|e| unreadable(manifests, e))?;
@@ -97,26 +89,6 @@ fn low(dir: &Path) -> bool {
     let probe = dir.ancestors().find(|d| d.exists()).unwrap_or(dir);
     let reserve = |total: u64| (total / 50).clamp(1 << 30, 10 << 30);
     platform::durable::space(probe).is_ok_and(|s| s.free <= reserve(s.total))
-}
-
-/// Every file under `dir`, named by its path below `root` with `/` between its parts.
-fn walk(root: &Path, dir: &Path, found: &mut Vec<(String, PathBuf)>) -> Result<(), Error> {
-    let entries = std::fs::read_dir(dir).map_err(|e| unreadable(dir, e))?;
-    for entry in entries {
-        let path = entry.map_err(|e| unreadable(dir, e))?.path();
-        let kind = std::fs::metadata(&path).map_err(|e| unreadable(&path, e))?;
-        if kind.is_dir() {
-            walk(root, &path, found)?;
-            continue;
-        }
-        let relative = path.strip_prefix(root).expect("under its root");
-        let parts: Vec<String> = relative
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy().into_owned())
-            .collect();
-        found.push((parts.join("/"), path));
-    }
-    Ok(())
 }
 
 fn unreadable(path: &Path, e: std::io::Error) -> Error {
