@@ -12,6 +12,11 @@ from collections.abc import Iterator
 from typing import Any
 from .. import _ext
 
+try:
+    PoisonedError = _ext.VarenaPoisonedError
+except AttributeError as error:
+    raise RuntimeError("TensorFS native Varena capability is missing: VarenaPoisonedError") from error
+
 _installed = False
 
 

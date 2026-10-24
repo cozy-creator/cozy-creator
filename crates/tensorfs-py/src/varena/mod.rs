@@ -9,22 +9,25 @@ use pyo3::{
 use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
 
+pyo3::create_exception!(tensorfs, VarenaPoisonedError, PyRuntimeError);
+
 fn raise(py: Python<'_>, error: varena::Error) -> PyErr {
     let message = error.to_string();
     let class = match error {
         varena::Error::OutOfMemory { .. } => "OutOfMemoryError",
+        varena::Error::Poisoned(_) => return VarenaPoisonedError::new_err(message),
         varena::Error::DeviceFault { .. } | varena::Error::Cuda { .. } => "AcceleratorError",
         _ => return PyRuntimeError::new_err(message),
     };
     let result = (|| -> PyResult<PyErr> {
         let class = py.import("torch")?.getattr(class)?;
-        let kwargs = PyDict::new(py);
+        // Torch's exception types take the ordinary RuntimeError constructor arguments.
+        // The CUDA error code is an attribute, not an accepted constructor keyword.
+        let exception = class.call1((message.clone(),))?;
         if let varena::Error::DeviceFault { code, .. } | varena::Error::Cuda { code, .. } = error {
-            kwargs.set_item("error_code", code)?;
+            exception.setattr("error_code", code)?;
         }
-        Ok(PyErr::from_value(
-            class.call((message.clone(),), Some(&kwargs))?,
-        ))
+        Ok(PyErr::from_value(exception))
     })();
     result.unwrap_or_else(|_| PyRuntimeError::new_err(message))
 }
@@ -346,6 +349,9 @@ fn _varena_allocator_stats(device: i32) -> PyResult<std::collections::BTreeMap<&
 }
 
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    let poisoned = module.py().get_type::<VarenaPoisonedError>();
+    poisoned.setattr("sticky", true)?;
+    module.add("VarenaPoisonedError", poisoned)?;
     module.add_class::<PyArena>()?;
     module.add_class::<PyRegion>()?;
     module.add_class::<PyUse>()?;

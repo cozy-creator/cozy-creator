@@ -281,6 +281,32 @@ def exercise(device: str, seed: int, driver_room: bool = False) -> dict:
             result["allocator"] = torch.cuda.get_allocator_backend()
             assert result["allocator"] == "native"
 
+            # Native commit publishes the entire logical packed region, including alignment gaps.
+            writer = tensorfs.Writer(Path(directory) / "padding.cozytensors")
+            odd_weight = torch.arange(25, dtype=torch.float32).view(5, 5)
+            writer.component("net").put("0.weight", odd_weight)
+            odd_ck = writer.commit()
+            odd_model = model(odd_ck, 5, 1)
+            odd_owner = memory.load(odd_model, "ram")
+            odd_input = torch.ones(1, 5)
+            odd_output, _ = forward(odd_model, odd_input.to(device), "native-padding")
+            torch.testing.assert_close(odd_output, torch.nn.functional.linear(odd_input, odd_weight), rtol=0, atol=0)
+            checked_padding = False
+            for block in odd_owner.groups():
+                if block.region is not None:
+                    packed = block.region.prepare()
+                    assert not packed.needs_fill
+                    assert packed.tensor.numel() == 256
+                    assert packed.tensor[odd_weight.nbytes:].cpu().tolist() == [0] * (256 - odd_weight.nbytes)
+                    checked_padding = True
+                    del packed
+            assert checked_padding
+            result["native_padding_initialized"] = True
+            odd_owner.close()
+            odd_ck.close()
+            del odd_owner, odd_model, odd_output
+            memory.trim()
+
             # A real binder launches work after TensorFS fills, then casts into the module's
             # dtype. A cached hold must carry that readiness to a different consumer stream.
             stream_width = 1024

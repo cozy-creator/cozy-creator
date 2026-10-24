@@ -20,6 +20,13 @@ def exercise() -> dict:
     torch.set_num_threads(1)
     varena.install_allocator()
     varena.set_activation_limit(0, 224 * MIB)
+    # Real driver argument validation, not a sticky device fault: preserve CUDA error typing.
+    try:
+        varena.Arena(32767)
+    except torch.AcceleratorError as error:
+        assert error.error_code == 101
+    else:
+        raise AssertionError("invalid CUDA ordinal did not preserve a typed driver error")
     arena = varena.Arena(0)
     regions = [arena.reserve(16 * MIB) for _ in range(4)]
     pointers = [region.ptr for region in regions]
@@ -167,7 +174,7 @@ def exercise() -> dict:
             "before": before, "after_worker_allocation": after,
             "driver_free_before": driver_before, "driver_free_after": driver_after,
             "native_extension_sha256": hashlib.sha256(Path(tensorfs._ext.__file__).read_bytes()).hexdigest(), "allocation": allocation,
-            "refilled_same_pointer": refilled, "graph_capture_replay": True, "final_allocator": varena.allocator_stats(),
+            "refilled_same_pointer": refilled, "graph_capture_replay": True, "typed_invalid_device": True, "final_allocator": varena.allocator_stats(),
             "scope": "real CUDA native component; 224MiB activation admission limit; not a hard device cap"}
 
 

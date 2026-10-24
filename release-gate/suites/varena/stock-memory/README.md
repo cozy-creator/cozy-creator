@@ -5,7 +5,9 @@ Use the default Cozy CLI and an explicitly identified candidate interpreter:
 ```sh
 cozy --json run ./release-gate/suites/varena/stock-memory/native seed=741 candidate_python=/absolute/candidate/bin/python --gpus=1 --on local
 cozy --json run ./release-gate/suites/varena/stock-memory/gpu seed=741 candidate_python=/absolute/candidate/bin/python --gpus=1 --on local
+cozy --json run ./release-gate/suites/varena/stock-memory/driver seed=741 candidate_python=/absolute/candidate/bin/python --gpus=1 --on local
 cozy --json run ./release-gate/suites/varena/stock-memory/derived seed=741 candidate_python=/absolute/candidate/bin/python --gpus=1 --on local
+python release-gate/suites/varena/stock-memory/cancel_gate.py --candidate-python /absolute/candidate/bin/python --output /absolute/owned/cancel-proof
 ```
 
 `native` proves real Rust CUDA VMM ownership and native allocation recovery: 64 MiB weight
@@ -21,6 +23,11 @@ float64 binder on side streams. `derived` compares ordinary warm calls against a
 baseline for plain float32, float8-to-float32 decode, and derived transpose. It reports binder calls,
 store bytes, CUDA timing and wall timing. These are mechanism measurements, not full-model speed
 or quantized-model performance claims.
+
+`driver` additionally proves partial physical reclamation while a graph remains pinned, and
+GPU fill-identity changes preserving old escaped aliases. The Linux cancellation controller
+submits its own run, waits for a pinned native ready receipt, cancels that exact run through the
+CLI, verifies the child's native cleanup receipt and process birth/exit, and preserves its log.
 
 The candidate child imports a separately built TensorFS extension and Runtime wheel; the outer
 executor can remain on the machine's installed SDK. This is an ordinary-CLI component/consumer
