@@ -65,3 +65,32 @@ The loader bindings follow [Linux dlopen](https://man7.org/linux/man-pages/man3/
 [VirtualQuery's memory layout](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-memory_basic_information),
 and [GetModuleHandleEx module pinning](https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-getmodulehandleexa).
 No GPL allocator implementation or source was used.
+
+## Owned native refill
+
+On supported Unix CUDA builds, `Region.prepare_read(checkpoint, parts)` admits the
+region and initializes the existing TensorFS bounded staging rings and copy streams.
+Each part is `(component/key#role, byte_offset, exact_stored_length)`. Offsets must
+be nonoverlapping and inside the region; TensorFS fills every gap with zeroes.
+The region belongs to this immutable recipe. Changing source or transform identity
+requires a different region.
+
+Preparation starts no payload read. Call `start()` after active resident work has
+been admitted. The native worker owns its checkpoint, local source, part descriptors
+and Fill. It uses the existing buffered/O_DIRECT staging engine, with no Python
+transformer, credential callback or DLPack-owned destination on the worker.
+`poll()` and `wait()` report issued bytes separately from checked completion.
+Only successful checked completion publishes the region; ordinary `prepare()` and
+DLPack views can then consume it on any stream. This first interface does not publish
+pending GPU writes, so no consumer waits on an unrecorded or pooled event.
+
+`cancel()` stops new bounded pieces and joins submitted copies. Cancellation does
+not publish partial data. Ordinary input failures also require checked producer
+drain before the Fill is released. If completion is uncertain, the actual Fill,
+region and source owners are retained and the arena is poisoned against reuse.
+The existing conservative context join for unknown/escaped consumer reclamation
+is unchanged. This is producer readiness, not a substitute for consumer lifetime.
+
+The first overlap contract is a premapped/admitted raw destination beside a resident
+compute loop. Decoder/kernel preload and separate evidence are required before any
+decode-overlap claim. There is no persistent recipe index or allocator-OOM writeback.
