@@ -15,7 +15,7 @@ clap.workspace = true
 clap_complete.workspace = true
 comfy-table.workspace = true
 crossterm.workspace = true
-platform.workspace = true
+platform = { workspace = true, features = ["fetch"] }
 protocol.workspace = true
 ed25519-dalek.workspace = true
 futures-util = { workspace = true, features = ["alloc"] }
@@ -34,7 +34,6 @@ serde.workspace = true
 serde_json.workspace = true
 saphyr.workspace = true
 sha2.workspace = true
-sigstore-verify.workspace = true
 supports-hyperlinks.workspace = true
 tempfile.workspace = true
 tensorfs = { workspace = true, features = ["store"] }
@@ -45,7 +44,6 @@ toml.workspace = true
 toml_edit.workspace = true
 url.workspace = true
 zip.workspace = true
-# Every OS unpacks a release's .tar.gz for a machine of another (`cozy machine update`).
 flate2.workspace = true
 tar.workspace = true
 

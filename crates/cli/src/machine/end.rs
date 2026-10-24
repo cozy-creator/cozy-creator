@@ -255,20 +255,22 @@ pub async fn update(
             return up_to_date(ctx, &m, status);
         }
     }
-    // A TensorD before 0.11.16 takes its binary as `binary`, a file it is sent: a release is
-    // fetched here for it (version skew).
+    // A TensorD before 0.11.16 fetches no release, and takes a dev binary as `binary`.
     let status = m.status.clone().unwrap_or_default();
     let older = !names_tensord(&status.version);
+    if older && asked.iter().any(|(member, _, c)| *member == "tensord" && matches!(c, Component::Release(_))) {
+        return Err(Error::new(
+            Kind::Conflict,
+            "machine_too_old",
+            format!("{} runs cozy {}, which fetches no cozy release (0.11.16 on)", m.name, status.version),
+        )
+        .remedy("send it a cozy binary (--tensord <file>), or end it and rent another"));
+    }
     // A dev `cozy` built or picked here, which `local` then runs (Calcifer too).
     let mut dev = false;
     for (member, distribution, component) in asked {
         let key = if member == "tensord" && older { "binary" } else { member };
-        let (path, version) = match component {
-            Component::Release(version) if member == "tensord" && older => {
-                let target = dist_target(&status.platform)?;
-                let fetched = crate::update::release_binary(&version, &target).await?;
-                (kept(ctx, fetched, &format!("cozy-{version}-{target}"))?, Some(version))
-            }
+        let path = match component {
             Component::Release(version) => {
                 want.push(reports(member, &version));
                 // A wheel version PyPI lacks is, for a Hub admin, its release candidate: the
@@ -289,19 +291,17 @@ pub async fn update(
                 }
                 continue;
             }
-            Component::Build(path) => (path, None),
+            Component::Build(path) => path,
         };
         let (file, input) = wheel(&path, distribution)?;
-        dev |= member == "tensord" && version.is_none();
-        want.push(match (member, &version) {
-            ("tensord", Some(version)) => ("version", version.as_str().into()),
-            ("tensord", None) => built_version(&path).map_or(("dev", true.into()), |v| ("version", v.into())),
+        dev |= member == "tensord";
+        want.push(match member {
+            "tensord" => built_version(&path).map_or(("dev", true.into()), |v| ("version", v.into())),
             _ => reports(member, &file),
         });
-        named.push(match (&version, reports(member, &file)) {
-            (Some(version), _) => format!("{member} {version}"),
-            (None, (_, serde_json::Value::String(stamped))) if member != "tensord" => format!("{member} {stamped} (dev)"),
-            (None, _) => format!("{member} {file} (dev)"),
+        named.push(match reports(member, &file) {
+            (_, serde_json::Value::String(stamped)) if member != "tensord" => format!("{member} {stamped} (dev)"),
+            _ => format!("{member} {file} (dev)"),
         });
         inputs.push(v1::InputFile {
             field: key.into(),
@@ -375,20 +375,6 @@ fn names_tensord(version: &str) -> bool {
     semver::Version::parse(version).map_or(true, |v| (v.major, v.minor, v.patch) >= (0, 11, 16))
 }
 
-/// The dist target of a machine's `platform` (`linux/x86_64`).
-fn dist_target(platform: &str) -> Result<String, Error> {
-    let target = match platform {
-        "linux/x86_64" => "x86_64-unknown-linux-gnu",
-        "linux/aarch64" => "aarch64-unknown-linux-gnu",
-        "macos/aarch64" => "aarch64-apple-darwin",
-        "macos/x86_64" => "x86_64-apple-darwin",
-        "windows/x86_64" => "x86_64-pc-windows-msvc",
-        "windows/aarch64" => "aarch64-pc-windows-msvc",
-        other => return Err(Error::new(Kind::Unavailable, "platform_unknown", format!("no cozy release is built for {other:?}"))),
-    };
-    Ok(target.into())
-}
-
 /// `distribution` `version`'s release-candidate wheel for `platform` (`linux/x86_64`), when PyPI
 /// does not hold that version and this computer's sign-in is a Hub admin's: the GitHub
 /// prerelease (cozy-runtime `v<version>`, cozy-creator `tensorfs-v<version>`) names it in its
@@ -457,16 +443,6 @@ async fn candidate(
             )
         })?;
     Ok(Some((format!("{base}/{}", chosen.1), chosen.0.to_owned())))
-}
-
-/// A fetched release kept under this computer's cozy home until the run sends it.
-fn kept(ctx: &Context, fetched: tempfile::TempPath, name: &str) -> Result<PathBuf, Error> {
-    let dir = ctx.home.root().join("tmp");
-    let path = dir.join(name);
-    std::fs::create_dir_all(&dir)
-        .and_then(|()| fetched.persist(&path).map_err(|e| e.error))
-        .map_err(|e| Error::new(Kind::Internal, "update_failed", format!("keep {}: {e}", path.display())))?;
-    Ok(path)
 }
 
 /// The release a `cozy` binary built here says it is, when it runs here.
