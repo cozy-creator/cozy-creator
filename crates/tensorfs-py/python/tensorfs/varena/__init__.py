@@ -4,18 +4,22 @@ Installation preserves Torch's native caching allocator. Recovery covers its syn
 cudaMalloc imports on supported Linux ELF builds, from all threads. cudaMallocAsync,
 expandable segments, other CUDA libraries, and CUDA graph recovery are outside this contract.
 """
+
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from collections.abc import Iterator
 from typing import Any
+
 from .. import _ext
 
 try:
     PoisonedError = _ext.VarenaPoisonedError
 except AttributeError as error:
-    raise RuntimeError("TensorFS native Varena capability is missing: VarenaPoisonedError") from error
+    raise RuntimeError(
+        "TensorFS native Varena capability is missing: VarenaPoisonedError"
+    ) from error
 
 _installed = False
 
@@ -25,18 +29,32 @@ def install_allocator() -> None:
     global _installed
     if _installed:
         return
-    required = ("_VarenaArena", "_VarenaAllocatorCapture", "_varena_install_allocator",
-                "_varena_set_activation_limit", "_varena_allocator_stats")
+    required = (
+        "_VarenaArena",
+        "_VarenaAllocatorCapture",
+        "_varena_install_allocator",
+        "_varena_set_activation_limit",
+        "_varena_allocator_stats",
+    )
     missing = [name for name in required if not hasattr(_ext, name)]
     if missing:
-        raise RuntimeError("TensorFS native Varena capability is missing: " + ", ".join(missing))
+        raise RuntimeError(
+            "TensorFS native Varena capability is missing: " + ", ".join(missing)
+        )
     import torch
+
     if torch.cuda.get_allocator_backend() != "native":
         raise RuntimeError("Varena requires Torch's native CUDA caching allocator")
-    config = os.environ.get("PYTORCH_ALLOC_CONF", os.environ.get("PYTORCH_CUDA_ALLOC_CONF", ""))
+    config = os.environ.get(
+        "PYTORCH_ALLOC_CONF", os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
+    )
     if "expandable_segments:true" in config.lower().replace(" ", ""):
-        raise RuntimeError("Varena's allocation hook does not cover expandable segments")
-    if torch.cuda.is_initialized() and any(torch.cuda.memory_reserved(i) for i in range(torch.cuda.device_count())):
+        raise RuntimeError(
+            "Varena's allocation hook does not cover expandable segments"
+        )
+    if torch.cuda.is_initialized() and any(
+        torch.cuda.memory_reserved(i) for i in range(torch.cuda.device_count())
+    ):
         raise RuntimeError("install Varena before Torch reserves CUDA memory")
     _ext._varena_install_allocator()
     _installed = True
@@ -110,6 +128,55 @@ class Region:
     def prepare(self) -> Use:
         return Use(self._native.prepare())
 
+    def prepare_read(
+        self,
+        checkpoint: Any,
+        parts: Sequence[tuple[str, int, int]],
+        *,
+        threads: int = 2,
+    ) -> PreparedRead:
+        """Admit a fill and warm bounded staging, without starting source I/O.
+
+        Each part is (component/key#role, destination byte offset, exact stored length).
+        This region must be dedicated to that immutable source recipe. Native prefetch
+        uses local available sources only; it never calls a Python transformer/fetcher.
+        """
+        native = getattr(_ext, "_VarenaPreparedRead", None)
+        if native is None:
+            raise RuntimeError(
+                "this TensorFS build has no native owned refill capability"
+            )
+        return PreparedRead(native(self._native, checkpoint, list(parts), threads))
+
+
+def supports_refill() -> bool:
+    """Whether this prebuilt extension exposes the owning native refill interface."""
+    return hasattr(_ext, "_VarenaPreparedRead")
+
+
+class PreparedRead:
+    """Own source/staging/Fill until checked producer completion, without a context join.
+
+    Call start after active work is admitted. A successful wait/poll publishes only
+    completed bytes, so ordinary Region.prepare/DLPack exports remain stream-safe.
+    Cancellation drains submitted work and never publishes a partial fill.
+    """
+
+    def __init__(self, native: Any) -> None:
+        self._native = native
+
+    def start(self) -> None:
+        self._native.start()
+
+    def cancel(self) -> None:
+        self._native.cancel()
+
+    def poll(self) -> dict[str, int | bool]:
+        return self._native.poll()
+
+    def wait(self) -> dict[str, int | bool]:
+        return self._native.wait()
+
 
 class Use:
     """Pinned storage. Fill every byte before commit when needs_fill is true.
@@ -117,8 +184,10 @@ class Use:
     The tensor and all its aliases retain their own native physical pin, even after this
     object is destroyed. An abandoned fill stays unreadable to later prepares.
     """
+
     def __init__(self, native: Any) -> None:
         import torch
+
         self._native = native
         self.needs_fill = native.needs_fill
         self.tensor = torch.from_dlpack(native)

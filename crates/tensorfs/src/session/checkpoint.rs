@@ -404,6 +404,15 @@ impl Checkpoint {
         crate::io::source::Source::checkpoint(&self.view(), direct_io)
     }
 
+    /// Locally available immutable parts only, with no remote fetch or credential callback.
+    /// A native prefetch worker can keep this source without calling back into its frontend.
+    #[cfg(unix)]
+    pub fn local_source(&self, direct_io: bool) -> crate::io::source::Source {
+        crate::io::source::Source::checkpoint(
+            &crate::io::view::View::from(&self.data.raw), direct_io,
+        )
+    }
+
     #[cfg(unix)]
     fn view(&self) -> crate::io::view::View {
         let checkpoint = self.clone();

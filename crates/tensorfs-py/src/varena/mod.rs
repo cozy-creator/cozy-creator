@@ -1,5 +1,7 @@
 //! Process-local weight residency bindings. CUDA ownership remains in the Rust core.
 mod allocator;
+#[cfg(unix)]
+mod refill;
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     ffi,
@@ -358,6 +360,8 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyUse>()?;
     module.add_class::<PyCapture>()?;
     module.add_class::<PyAllocatorCapture>()?;
+    #[cfg(unix)]
+    module.add_class::<refill::PreparedRead>()?;
     module.add_function(wrap_pyfunction!(_varena_install_allocator, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_set_activation_limit, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_allocator_stats, module)?)?;

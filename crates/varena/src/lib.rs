@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum Error {
     #[error("CUDA capacity exhausted allocating {requested_bytes} bytes")]
     OutOfMemory { requested_bytes: usize },
@@ -417,6 +417,16 @@ pub struct Region {
 }
 
 impl Region {
+    /// Refuse further use when a native integration cannot prove completion of its writers.
+    /// The integration must also retain its actual Fill/source owners; this is not cleanup.
+    pub fn poison(&self, detail: impl Into<String>) {
+        if self.arena.pid != std::process::id() {
+            return;
+        }
+        let mut state = self.arena.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.poison.get_or_insert_with(|| detail.into());
+    }
+
     pub fn ptr(&self) -> u64 {
         self.ptr
     }
@@ -632,7 +642,7 @@ impl Fill {
         if !self.copied {
             return Err(Error::Invalid("fill has not initialized the entire region"));
         }
-        self.finish()
+        self.finish(true)
     }
 
     /// Publish a fill performed through the raw pointer by a native integration.
@@ -643,16 +653,29 @@ impl Fill {
     /// without retaining the returned Pin. Completion is joined here before publishing.
     #[allow(unsafe_code)]
     pub unsafe fn commit_external(self) -> Result<Pin> {
-        self.finish()
+        self.finish(true)
     }
 
-    fn finish(mut self) -> Result<Pin> {
+    /// Publish a native producer whose checked completion already joined every writer.
+    ///
+    /// # Safety
+    /// Every logical byte must be initialized, including padding. Completion of every
+    /// producer stream must be proven, and no writer may submit more work. Retain all
+    /// source/staging/destination owners until that proof. Unlike `commit_external`, this
+    /// does not join unrelated work in the context. It does not change consumer lifetime
+    /// or the conservative reclamation fence for foreign storage aliases.
+    #[allow(unsafe_code)]
+    pub unsafe fn commit_completed(self) -> Result<Pin> {
+        self.finish(false)
+    }
+
+    fn finish(mut self, join: bool) -> Result<Pin> {
         let region = self.region();
         let captures = capture_counts()?;
         ensure_not_capturing(&captures, region.arena.device)?;
         let mut state = region.arena.lock()?;
         let _context = region.arena.driver.enter()?;
-        if let Err(error) = region.arena.driver.synchronize() {
+        if join && let Err(error) = region.arena.driver.synchronize() {
             return Err(poison(&mut state, error));
         }
         let entry = state.entries.get_mut(&region.id).expect("fill owns region");
