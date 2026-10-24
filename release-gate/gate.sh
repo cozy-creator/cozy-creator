@@ -174,17 +174,21 @@ notinstalled() {
 if [ ${#CAND[@]} -gt 0 ]; then
   "$UP" --json machine update "$M" "${CAND[@]}" -y >update.json 2>update.log; code=$?
   log "candidate on $M: exit $code $(jq -c 'select(.machine and .tensord)' update.json 2>/dev/null)"
-  [ "$code" = 0 ] || notinstalled "cozy machine update exit $code: $(tail -c 300 update.log | tr '\n' ' ')"
+  [ "$code" = 0 ] || notinstalled "cozy machine update exit $code: $(jq -r 'select(.error) | "\(.error.code): \(.error.message)"' update.json 2>/dev/null) $(tail -c 300 update.log | tr '\n' ' ')"
 fi
 timeout 60 "$CLI" machine show "$M" > machine.txt 2>&1
-read -r v rt tfs <<< "$(timeout 60 "$CLI" --json machine show "$M" 2>/dev/null | jq -r '.status | "\(.version) \(.runtime) \(.tensorfs)"')"
+for _ in $(seq 30); do  # a fresh pod reports once up
+  IFS='|' read -r v rt tfs <<< "$(timeout 60 "$CLI" --json machine show "$M" 2>/dev/null | jq -r '.status // {} | [.version, .runtime, .tensorfs] | map(. // "") | join("|")')"
+  [ -n "$v" ] && break; sleep 5
+done
 [ -n "$v" ] && [ -n "$rt" ] && [ -n "$tfs" ] || notinstalled "$M reports no cozy, Runtime and TensorFS (cozy ${v:-?}, Runtime ${rt:-?}, TensorFS ${tfs:-?})"
 expect candidate-installed PASS "$M runs cozy $v, Runtime $rt, TensorFS $tfs"
-# The set the verdict is for: what the machine runs, and the candidate files' digests (verify.sh, promote.sh).
+# The set the verdict is for (verify.sh, promote.sh): each candidate's version, as the machine reports it, and digest.
+# Components with no candidate are not named: a suite's before.sh may move them on its SKU only.
 LABEL=cozy$v-rt$rt-tfs$tfs${PKGS:+-packages$(git -C "$PKGS" rev-parse --short HEAD)}${PINS:+-pins$(cksum <<< "$PINS" | cut -d' ' -f1)}
 echo "$LABEL" > label; log "gate $LABEL"
 digest() { [ -z "$1" ] || sha256sum "$1" | cut -d' ' -f1; }
-jq -n --arg label "$LABEL" --arg cozy "$v" --arg runtime "$rt" --arg tensorfs "$tfs" --arg cozy_sha256 "$(digest "$TDF")" \
+jq -n --arg label "$LABEL" --arg cozy "${TDF:+$v}" --arg runtime "${RWF:+$rt}" --arg tensorfs "${TWF:+$tfs}" --arg cozy_sha256 "$(digest "$TDF")" \
   --arg runtime_wheel "$(basename "${RWF:-}")" --arg runtime_sha256 "$(digest "$RWF")" --arg tensorfs_wheel "$(basename "${TWF:-}")" \
   --arg tensorfs_sha256 "$(digest "$TWF")" --arg pins "${PINS//,/ }" --arg packages_ref "${PKGS:+$(git -C "$PKGS" rev-parse HEAD)}" \
   -S '$ARGS.named | .pins |= (split(" ") | map(select(. != "")) | sort)' > candidate.json
