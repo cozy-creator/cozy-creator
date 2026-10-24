@@ -30,7 +30,7 @@ def run(payload: Probe, tel: Telemetry, device: str, mode: str = "stream") -> Re
     python = payload.candidate_python or sys.executable
     if not Path(python).is_file():
         raise ValueError("candidate_python must name an existing interpreter on this machine")
-    child = Path(__file__).with_name("probe.py")
+    child = Path(__file__).with_name({"native": "native.py", "derived": "derived.py"}.get(mode, "probe.py"))
     with tel.stage(f"stock-memory-{device}"):
         process = subprocess.Popen(
             [python, "-I", str(child), device, str(payload.seed), mode],
@@ -67,3 +67,13 @@ def gpu(payload: Probe, tel: Telemetry) -> Report:
 @app.entrypoint
 def driver(payload: Probe, tel: Telemetry) -> Report:
     return run(payload, tel, "cuda:0", "driver")
+
+
+@app.entrypoint
+def native(payload: Probe, tel: Telemetry) -> Report:
+    return run(payload, tel, "cuda:0", "native")
+
+
+@app.entrypoint
+def derived(payload: Probe, tel: Telemetry) -> Report:
+    return run(payload, tel, "cuda:0", "derived")

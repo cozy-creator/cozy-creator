@@ -1,9 +1,11 @@
 //! tensorfs-py: the `tensorfs` wheel's compiled half. It marshals; every byte-level fact comes
-//! from `tensorfs`. Frameworks own allocations; tensors cross as DLPack.
+//! from `tensorfs`. Framework tensors cross as DLPack; optional Varena owns CUDA weight pages.
 
 #![deny(unsafe_code)]
 
 mod ceiling;
+#[allow(unsafe_code)]
+mod varena;
 #[allow(unsafe_code)]
 mod cleanup;
 mod errors;
@@ -47,6 +49,7 @@ fn _ext(m: &Bound<'_, PyModule>) -> PyResult<()> {
     errors::install(m)?;
     cleanup::install(m)?;
     ceiling::install(m)?;
+    varena::install(m)?;
     executor::install(m)?;
     m.add("__version__", python_distribution_version())?;
     // The store format every process on the machine shares.

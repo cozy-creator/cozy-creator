@@ -48,6 +48,9 @@ def exercise(device: str, seed: int, driver_room: bool = False) -> dict:
     cuda = device.startswith("cuda")
     width, layers = (1024, 64) if cuda else (128, 4)
     budget = 160 * MIB if cuda and not driver_room else None
+    if cuda:
+        from cozy_runtime.internal import accel
+        accel.initialize(torch, "cuda")
     memory = residency.Memory.open(device, budget_bytes=budget)
     memory.apply_budget()
     generator = torch.Generator().manual_seed(seed)
@@ -199,7 +202,8 @@ def exercise(device: str, seed: int, driver_room: bool = False) -> dict:
                         expected_gpu = tiny(static_input)
                     stream.synchronize()
                     graph = torch.cuda.CUDAGraph()
-                    with torch.cuda.graph(graph, stream=stream):
+                    from tensorfs import varena
+                    with varena.capture(0), torch.cuda.graph(graph, stream=stream):
                         static_output = tiny(static_input)
                 if generation == 1 and driver_room:
                     pressure_width, pressure_layers = 2048, 4
@@ -237,7 +241,7 @@ def exercise(device: str, seed: int, driver_room: bool = False) -> dict:
                     pressure_ck.close()
                     result["driver_room_reclaimed"] = released
                     result["driver_room_reread_bytes"] = reread
-                with binding.replay_use(stream), torch.cuda.stream(stream):
+                with varena.capture(0), binding.replay_use(stream), torch.cuda.stream(stream):
                     graph.replay()
                     actual = static_output.clone()
                 stream.synchronize()
