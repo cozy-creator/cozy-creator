@@ -41,11 +41,11 @@ pub(super) fn owns(
 }
 
 /// An update's payload: each component a release version the machine fetches, or (with its input
-/// file) a dev build the caller staged.
+/// file) a dev build the caller staged; a wheel also `{url, sha256}`, a file the machine fetches.
 #[derive(serde::Deserialize)]
 struct Cohort {
-    runtime: Option<String>,
-    tensorfs: Option<String>,
+    runtime: Option<Member>,
+    tensorfs: Option<Member>,
     /// The `cozy` binary, TensorD: a release version, or the `tensord` input's dev binary.
     tensord: Option<String>,
     /// The `cozy` binary as a CLI before 0.11.16 sends it: the `binary` input's file.
@@ -58,6 +58,57 @@ struct Cohort {
     gpu_memory_limit: Option<u64>,
     #[serde(flatten)]
     unknown: BTreeMap<String, serde_json::Value>,
+}
+
+/// A wheel as a CLI sends it: a version or a staged file's name, or `{url, sha256}`, a release
+/// candidate's wheel (not on PyPI) the machine fetches itself and holds to that digest.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum Member {
+    Named(String),
+    Fetched {
+        url: String,
+        #[serde(default)]
+        sha256: String,
+    },
+    Other(serde_json::Value),
+}
+
+impl Member {
+    /// `field`'s choice: a name through `choose` (a staged input's file, else a release), or
+    /// `distribution`'s wheel at an https URL whose last segment is its file name.
+    fn choice(
+        member: Option<Self>,
+        field: &str,
+        distribution: &str,
+        choose: impl Fn(Option<String>) -> Result<Option<Choice>, Error>,
+    ) -> Result<Option<Choice>, Error> {
+        let refused = |why: String| Error::validation("update_url_refused", format!("the update's {field}: {why}"));
+        match member {
+            None => choose(None),
+            Some(Self::Named(named)) => choose(Some(named)),
+            Some(Self::Fetched { url, sha256 }) => {
+                let Some(path) = url.strip_prefix("https://").map(|rest| rest.split(['?', '#']).next().unwrap_or_default()) else {
+                    return Err(refused(format!("{url} is not an https URL")));
+                };
+                if sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return Err(refused(format!("{url} comes with no sha256 (64 hex digits) to hold its bytes to")));
+                }
+                let file = path.rsplit('/').next().unwrap_or_default().to_string();
+                let wheel = file.starts_with(&format!("{distribution}-"))
+                    && file.ends_with(".whl")
+                    && file.bytes().all(|c| c.is_ascii_alphanumeric() || b"._-+".contains(&c));
+                if !wheel {
+                    return Err(refused(format!("{url} names no {distribution} wheel ({distribution}-<version>-….whl)")));
+                }
+                Ok(Some(Choice { file, sha256: sha256.to_ascii_lowercase(), url, ..Default::default() }))
+            }
+            Some(Self::Other(value)) => Err(Error::validation(
+                "invalid_payload",
+                format!("the update's {field} is a version, a file name or {{url, sha256}}, not {value}"),
+            )),
+        }
+    }
 }
 
 static SUBMITTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -226,8 +277,8 @@ fn stage(
     let request = Request {
         operation: id.into(),
         pin: None,
-        runtime: choose("runtime", "", cohort.runtime)?,
-        tensorfs: choose("tensorfs", "", cohort.tensorfs)?,
+        runtime: Member::choice(cohort.runtime, "runtime", "cozy_runtime", |v| choose("runtime", "", v))?,
+        tensorfs: Member::choice(cohort.tensorfs, "tensorfs", "tensorfs", |v| choose("tensorfs", "", v))?,
         cozy: cohort.cozy,
         gpu_memory_limit: limit,
         binary,

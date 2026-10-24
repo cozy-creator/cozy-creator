@@ -106,7 +106,8 @@ impl Status {
 }
 
 /// What an update installs of one component: a release `version` the machine fetches (PyPI's
-/// wheel; for `cozy`, its GitHub release), or a dev build the caller staged (`file`, `sha256`).
+/// wheel; for `cozy`, its GitHub release), a dev build the caller staged (`file`, `sha256`), or a
+/// `file` at an https `url` the machine fetches, held to `sha256`.
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct Choice {
     #[serde(default)]
@@ -115,6 +116,8 @@ pub struct Choice {
     pub sha256: String,
     #[serde(default)]
     pub version: String,
+    #[serde(default)]
+    pub url: String,
 }
 
 /// An update failure with its own reason code.
@@ -1037,9 +1040,15 @@ impl Updates {
         compile_sdk(&self.paths.uv, &self.python, input, &stop, false)
     }
 
-    /// A staged {file, sha256}, or a release {version} the machine fetches: a wheel from PyPI,
-    /// `cozy` from its GitHub release, each held to the digest its source publishes.
+    /// A {file, sha256} at a URL or staged, or a release {version} the machine fetches: a wheel
+    /// from PyPI, `cozy` from its GitHub release, each held to the digest its source publishes.
     fn resolve(&self, distribution: &str, choice: &Choice) -> io::Result<PathBuf> {
+        if !choice.url.is_empty() {
+            let machine = self.machine.as_ref().ok_or_else(|| invalid("this machine fetches nothing"))?;
+            let stop = self.stop.lock().unwrap().clone();
+            let downloads = self.paths.update("downloads");
+            return super::pypi::wheel_at(&choice.url, &choice.sha256, &choice.file, &downloads, machine, &stop);
+        }
         if !choice.file.is_empty() {
             let path = self
                 .paths
