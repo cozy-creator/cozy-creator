@@ -656,8 +656,8 @@ All of these Python calls are synchronous.
 
 The returned data types are `Checkpoint`, `Pipeline`, `Component`, `Tensors`,
 `TensorMetadata`, `Encoding`, `Array`, `Encoded` and `VerificationReport`. Writing uses `Writer` and `ComponentWriter`;
-repository references use `Endpoint`. They are covered above. The companion `tensorfs.varena` placement API is separate and is unnecessary for
-ordinary TensorFS or Diffusers/ComfyUI use.
+repository references use `Endpoint`. They are covered above. Frameworks own tensor allocation and
+residency; use `Tensors.read_into` to fill their writable buffers or DLPack arrays.
 
 ## Errors and value types
 

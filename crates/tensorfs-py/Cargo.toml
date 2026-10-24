@@ -19,7 +19,6 @@ protocol = { workspace = true, features = ["python"] }
 tokio.workspace = true
 platform.workspace = true
 tensorfs.workspace = true
-varena = { workspace = true, features = ["python"] }
 pyo3 = "0.29.2"
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -28,7 +27,7 @@ tracing-subscriber.workspace = true
 # Native feature isolation remains available to Rust builds. The published Python
 # distribution always enables store; managed executor authority comes from its owner.
 default = ["store"]
-store = ["tensorfs/store", "varena/store"]
+store = ["tensorfs/store"]
 extension-module = ["pyo3/extension-module"]
 
 [lints]
