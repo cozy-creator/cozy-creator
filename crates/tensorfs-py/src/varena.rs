@@ -167,7 +167,7 @@ impl PySet {
             parts.push(PyPart { component, key, role, dtype, shape, region: p.region, offset: p.offset - region.offset, nbytes: p.nbytes });
         }
         let fingerprint = Fingerprint::new(&layout, &ids, fill_of(&fill), release, shard, gpu);
-        let source = source(&ck).map_err(invalid)?;
+        let source = Arc::new(ck.source(true));
         Ok(PySet { spec: SetSpec { name, layout: Arc::new(layout), source, fingerprint }, parts })
     }
 
@@ -197,16 +197,6 @@ impl PySet {
     fn spans(&self) -> Vec<u64> {
         self.spec.layout.regions.iter().map(|r| r.span).collect()
     }
-}
-
-#[cfg(unix)]
-fn source(ck: &tensorfs::Checkpoint) -> varena::Result<Arc<varena::table::Source>> {
-    Ok(Arc::new(ck.source(true)))
-}
-
-#[cfg(windows)]
-fn source(_: &tensorfs::Checkpoint) -> varena::Result<Arc<varena::table::Source>> {
-    Err(Error::Invalid("TensorFS has no read source on Windows yet".into()))
 }
 
 // ---------------------------------------------------------------- memory

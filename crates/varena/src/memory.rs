@@ -26,7 +26,6 @@ use std::time::Instant;
 use parking_lot::{Condvar, Mutex, MutexGuard};
 use platform::contain::host_memory;
 
-#[cfg(unix)]
 use tensorfs::io::source::Placement;
 use tensorfs::io::Dst;
 
@@ -851,7 +850,6 @@ struct Inner {
     quiet: Arc<Quiet>,
     ownership_lost: AtomicBool,
     public_owners: AtomicU64,
-    #[cfg(unix)]
     tally: tensorfs::io::source::IoTally,
     torch: std::sync::OnceLock<Arc<crate::arena::Torch>>,
     #[cfg(unix)]
@@ -953,7 +951,6 @@ impl Memory {
                 quiet: Arc::default(),
                 ownership_lost: AtomicBool::new(false),
                 public_owners: AtomicU64::new(0),
-                #[cfg(unix)]
                 tally: Default::default(),
                 torch: Default::default(),
                 #[cfg(unix)]
@@ -1697,7 +1694,6 @@ impl Inner {
     /// The set's regions from its store into their destinations, in one engine read, in
     /// region order: neighbours in the file and the reservation read as one run. `issued`
     /// hears of each device region (its index in `regions`) once its copies are all issued.
-    #[cfg(unix)]
     fn store(&self, spec: &SetSpec, regions: &[(u32, Dst)], issued: Option<tensorfs::io::Issued>) -> Result<()> {
         let mut order: Vec<(usize, &(u32, Dst))> = regions.iter().enumerate().collect();
         order.sort_unstable_by_key(|(_, (r, _))| *r);
@@ -1711,11 +1707,6 @@ impl Inner {
         // SAFETY: each `dst` is a mapped page only this fill writes.
         unsafe { spec.source.read_placements(&placements, threads, tensorfs::io::source::Mode::Buffered, &self.tally, issued.map(|_| &placed as tensorfs::io::Issued)) }?;
         Ok(())
-    }
-
-    #[cfg(windows)]
-    fn store(&self, spec: &SetSpec, _: &[(u32, Dst)], _: Option<tensorfs::io::Issued>) -> Result<()> {
-        match *spec.source {}
     }
 
     /// A store fill's copies of page `key` are all issued: it reads ready now, its event after
@@ -1991,7 +1982,6 @@ impl Inner {
     }
 
     /// Brings the set's stored bytes into host RAM, the page cache, ahead of its fills.
-    #[cfg(unix)]
     fn readahead(&self, set: u32) -> Result<()> {
         let spec = {
             let st = self.lock();
@@ -2001,12 +1991,6 @@ impl Inner {
         };
         let items: Vec<tensorfs::io::source::Item> = spec.layout.regions.iter().flat_map(|r| r.items.iter().cloned()).collect();
         Ok(spec.source.readahead(&items)?)
-    }
-
-    #[cfg(windows)]
-    fn readahead(&self, set: u32) -> Result<()> {
-        let st = self.lock();
-        match *st.mech(set)?.spec.source {}
     }
 
     fn resolve(st: &State, plan: &Plan) -> Vec<(Vec<u32>, u32)> {

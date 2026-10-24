@@ -137,7 +137,6 @@ impl From<tensorfs::io::Error> for Error {
     }
 }
 
-#[cfg(unix)]
 impl From<tensorfs::io::source::Error> for Error {
     fn from(e: tensorfs::io::source::Error) -> Error {
         match e {

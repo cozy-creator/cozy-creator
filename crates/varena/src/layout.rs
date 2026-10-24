@@ -21,18 +21,7 @@ pub fn align_up(x: u64, a: u64) -> u64 {
 }
 
 pub use tensorfs::io::ItemSource;
-#[cfg(unix)]
 pub use tensorfs::io::source::Item;
-
-/// TensorFS's `source::Item`, which is Unix's so far.
-#[cfg(windows)]
-#[derive(Debug, Clone)]
-pub struct Item {
-    pub offset: u64,
-    pub len: u64,
-    pub source: ItemSource,
-    pub part_end: bool,
-}
 
 #[derive(Debug, Clone)]
 pub struct Part {
