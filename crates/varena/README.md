@@ -26,7 +26,11 @@ scalar or page. Allocation has at most one finite reclaim pass and one retry aft
 `cuMemCreate` capacity failure. It calls no Python, filesystem, TensorFS, network, or remote owner.
 
 Runtime selects a preferred prefix with `set_preferred` and sets `set_streaming_limit` to its
-largest block/window. Preparing streamed groups evicts only idle nonpreferred groups. Activation
+largest block/window in CUDA-rounded bytes. Before a new allocation, the window counts only idle
+nonpreferred pages plus that new group. Already pinned common inputs and graph dependencies are
+active working memory, excluded from the idle cache limit, and remain subject to actual CUDA
+capacity. Dropping those pins can temporarily grow the idle cache; the next allocation trims it.
+Preparing streamed groups evicts only idle nonpreferred groups. Activation
 pressure via `reclaim(device, bytes)` can additionally evict the preferred suffix, permanently
 lowering its watermark. New reservations at or after the watermark cannot become preferred in
 that Arena. No scan can continually evict and rebuild the retained prefix. Pinned groups are

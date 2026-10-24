@@ -251,8 +251,9 @@ impl Arena {
         }))
     }
 
-    /// Bound the idle/active nonpreferred window. A single larger group is permitted to fit.
-    /// Preparation evicts older nonpreferred groups before allocating; preferred groups survive.
+    /// Bound the idle nonpreferred cache plus the next group, checked before allocation.
+    /// Active/graph pins are working memory and excluded; real CUDA capacity still bounds them.
+    /// A single larger group is permitted. Older idle groups go first; preferred groups survive.
     pub fn set_streaming_limit(&self, bytes: usize) -> Result<()> {
         self.lock()?.streaming_limit = bytes;
         Ok(())
@@ -481,7 +482,12 @@ impl Region {
                 let resident: usize = state
                     .entries
                     .values()
-                    .filter(|entry| !entry.preferred && entry.handle.is_some())
+                    .filter(|entry| {
+                        !entry.preferred
+                            && entry.handle.is_some()
+                            && entry.pins == 0
+                            && !entry.filling
+                    })
                     .map(|entry| entry.bytes)
                     .sum();
                 let limit = state.streaming_limit.max(self.rounded);
@@ -491,7 +497,12 @@ impl Region {
                 let remaining: usize = state
                     .entries
                     .values()
-                    .filter(|entry| !entry.preferred && entry.handle.is_some())
+                    .filter(|entry| {
+                        !entry.preferred
+                            && entry.handle.is_some()
+                            && entry.pins == 0
+                            && !entry.filling
+                    })
                     .map(|entry| entry.bytes)
                     .sum();
                 if remaining.saturating_add(self.rounded) > limit {
