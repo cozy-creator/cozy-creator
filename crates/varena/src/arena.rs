@@ -1098,11 +1098,9 @@ impl Torch {
         arenas.push(sh.process.clone());
         // First settle turns frees deferred by a completed capture into epoch waits. The
         // second runs after those epochs; neither pass treats a live allocation as idle.
-        for _ in 0..2 {
-            arenas.iter().for_each(|arena| { sh.settle(arena); });
-            if !sh.quiesce(&streams)? {
-                return Err(Error::Invalid("idle trim cannot run during graph capture".into()));
-            }
+        arenas.iter().for_each(|arena| { sh.settle(arena); });
+        if !sh.quiesce(&streams)? {
+            return Err(Error::Invalid("idle trim cannot run during graph capture".into()));
         }
         arenas.iter().for_each(|arena| { sh.settle(arena); });
         self.check_completion()?;
