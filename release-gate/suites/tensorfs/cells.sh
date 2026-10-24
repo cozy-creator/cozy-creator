@@ -89,10 +89,10 @@ done
 # Local paths go absolute: `cozy model upload ./folder` resolves them against Calcifer, not here (2026-10-24).
 if [ -n "$WHO" ] && tfs_weights "$T/up-a" "$TFS_UPLOAD_MB" && tfs_weights "$T/up-c" "$TFS_UPLOAD_MB"; then
   TFS_DEST=$WHO/ci-tfs-$R
-  tfs_step upload model upload "$T/up-a" "$TFS_DEST@a" --on "$M" -y
-  tfs_step upload-again model upload "$T/up-a" "$TFS_DEST@b" --on "$M" -y
-  tfs_cut upload-cut "uploading to" 0.3 model upload "$T/up-c" "$TFS_DEST@c" --on "$M" -y
-  tfs_step upload-resume model upload "$T/up-c" "$TFS_DEST@c" --on "$M" -y
+  tfs_step upload model upload "$T/up-a" "$TFS_DEST" --lane bf16 --on "$M" -y
+  tfs_step upload-again model upload "$T/up-a" "$TFS_DEST" --lane bf16-b --on "$M" -y
+  tfs_cut upload-cut "uploading to" 0.3 model upload "$T/up-c" "$TFS_DEST" --lane bf16-c --on "$M" -y
+  tfs_step upload-resume model upload "$T/up-c" "$TFS_DEST" --lane bf16-c --on "$M" -y
   tfs_cleanup
 else
   expect tensorfs-upload FAIL "no account (${WHO:-not signed in}) or no weights to upload"

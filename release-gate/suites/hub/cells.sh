@@ -7,8 +7,8 @@
 #                    gone, so both acquisition paths are covered (renters never pick one: th-254)
 #   package          lock and publish 0.1.0 and 0.1.1; the unversioned run takes 0.1.1; yank 0.1.1 → the simple index marks it
 #                    data-yanked, a fresh install takes 0.1.0, its exact pin still installs; un-yank → 0.1.1 again
-#   model            upload, publish 0.1.0 (listed), download; yank (listed yanked), the exact pin downloads; un-yank;
-#                    delete → gone
+#   model            upload a commit in lane f16, publish it as 0.1.0 (listed), download; the exact pin and lane
+#                    download; delete → gone
 # Each is an `expect` row: a FAIL fails the gate. The migration rehearsal on a prod dump is the release agent's
 # step before a Hub deploy (release-gate README).
 HB=$OUT/suite-hub HUB_URL=${HUB_URL:-https://tensorhub.com} HUB_REF=${HUB_REF:-master} HUB_PKG= HUB_MODEL= HUB_LIVE= HUB_RENTED=
@@ -41,12 +41,12 @@ hub_release() {
   sed -i "s/^RELEASE = \"0.1.0\"/RELEASE = \"$1\"/" "$dir/ci_hub_pkg/__init__.py"
   (cd "$dir" && hub_do "package-lock-$1" ok package lock && hub_do "package-publish-$1" ok package publish -y)
 }
-# hub_listed <check> <yanked: true|false>: `cozy model info` lists the model's release 0.1.0, yanked as given.
+# hub_listed <check>: `cozy model info` lists the model's release 0.1.0 with its one lane, f16.
 hub_listed() {
   "$CLI" --json model info "$HUB_MODEL" >"$HB/$1.out" 2>&1
-  python3 -I -c 'import json,sys; r=[x for x in json.load(open(sys.argv[1])).get("releases") or [] if x.get("release")=="0.1.0"]; sys.exit(0 if r and str(r[0].get("yanked")).lower()==sys.argv[2] else 1)' "$HB/$1.out" "$2" &&
-    expect "hub $1" PASS "model info lists 0.1.0, yanked $2" ||
-    expect "hub $1" FAIL "model info does not list 0.1.0 with yanked $2: $(tail -c 300 "$HB/$1.out")"
+  python3 -I -c 'import json,sys; r=[x for x in json.load(open(sys.argv[1])).get("releases") or [] if x.get("version")=="0.1.0"]; sys.exit(0 if r and [l["lane"] for l in r[0]["lanes"]]==["f16"] else 1)' "$HB/$1.out" &&
+    expect "hub $1" PASS "model info lists 0.1.0 with lane f16" ||
+    expect "hub $1" FAIL "model info does not list 0.1.0 with lane f16: $(tail -c 300 "$HB/$1.out")"
 }
 hub_cleanup() {
   local v
@@ -145,15 +145,12 @@ PY
 TENSORFS_HOME=$HB/tfs-store uv tool run -q --from "${TWF:-tensorfs}" tfs import "$HB/w.safetensors" --name local/ci-hub >/dev/null &&
   TENSORFS_HOME=$HB/tfs-store uv tool run -q --from "${TWF:-tensorfs}" tfs export local/ci-hub "$HB/w" >/dev/null
 HUB_MODEL=$WHO/$HUB_PKG
-hub_do model-upload ok model upload "$HB/w" "$HUB_MODEL@a" --on "$M" -y
-hub_do model-publish ok model publish "$HUB_MODEL" --release 0.1.0 --commit a
-hub_listed model-info-published false
+hub_do model-upload ok model upload "$HB/w" "$HUB_MODEL" --lane f16 --on "$M" -y
+HUB_COMMIT=$("$CLI" --json model info "$HUB_MODEL" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["commits"][0]["commit"])' 2>/dev/null)
+hub_do model-publish ok model publish "$HUB_MODEL" 0.1.0 "$HUB_COMMIT"
+hub_listed model-info-published
 hub_do model-download ok model download "$HUB_MODEL" --on "$M" -y
-hub_do model-yank ok model yank "$HUB_MODEL" --release 0.1.0
-hub_listed model-info-yanked true
-hub_do model-pinned-yanked ok model download "$HUB_MODEL@0.1.0" --on "$M" -y
-hub_do model-unyank ok model yank "$HUB_MODEL" --release 0.1.0 --undo
-hub_do model-unyanked ok model download "$HUB_MODEL" --on "$M" -y
+hub_do model-pinned ok model download "$HUB_MODEL@0.1.0" --lane f16 --on "$M" -y
 hub_do model-delete ok model delete "$HUB_MODEL" -y && HUB_MODEL=
 # Deleted: gone, as the Hub serves the model (GET /v1/models/{org}/{name}) and as `model info` shows it.
 hub_do model-gone refused model info "$WHO/$HUB_PKG"

@@ -2,8 +2,8 @@
 //! own and never takes an open checkpoint's bytes. A model TensorD keeps, it holds open.
 //!
 //! - A checkpoint's id is its cozytensors header's object (`sha256:<hex>`).
-//! - Local models are `local/<name>` repos, never evicted: one tag, `main`, at its commit.
-//! - A Hub model this machine pulled is a cached ref, a tag at its commit (`held_models::Pulled`).
+//! - Local models are `local/<name>` repos, never evicted: one commit, its newest.
+//! - A Hub model this machine pulled is a cached ref naming its commit (`held_models::Pulled`).
 use std::{
     collections::BTreeMap,
     io::{self, Write as _},
@@ -13,10 +13,7 @@ use std::{
 };
 
 pub use tensorfs::store::Store;
-use tensorfs::{
-    fetch::{pick_variant, with_tag, MAIN},
-    format::{ObjectRef, Resolution, Tree},
-};
+use tensorfs::format::{ObjectRef, Repo, Tree};
 
 /// Opens (or creates) the machine store at `root`; one in an older format is refused (its
 /// models pull again into a new one).
@@ -74,53 +71,39 @@ pub fn io_error(error: tensorfs::store::Error) -> io::Error {
     io::Error::new(kind, error.to_string())
 }
 
-/// A local model: its tag, commit (tree), variant and that variant's header.
+/// A local model: its commit (tree), that commit's lane and header.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Local {
-    pub release: String,
     pub tree: ObjectRef,
-    pub variant: String,
+    pub lane: String,
     pub header: ObjectRef,
 }
 
-/// The local model `repo` (`local/<name>`) at `revision` (none: its default, else `main`) in
-/// `variant` (its only one when `None`); None when the name holds nothing.
-pub fn local(store: &Store, repo: &str, revision: Option<&str>, variant: Option<&str>) -> io::Result<Option<Local>> {
-    let Some(named) = store.get_ref(repo).map_err(io_error)? else {
+/// The local model `repo` (`local/<name>`): its newest commit; None when the name holds nothing.
+pub fn local(store: &Store, repo: &str) -> io::Result<Option<Local>> {
+    let Some(tree) = store.get_ref(repo).map_err(io_error)?.and_then(|named| named.commits.last().cloned()) else {
         return Ok(None);
     };
-    let absent = |detail: String| io::Error::new(io::ErrorKind::NotFound, detail);
-    let resolution = match revision {
-        Some(_) => named.resolve(revision),
-        None => named.resolve(None).or_else(|| named.tag(MAIN).map(Resolution::Tag)),
-    };
-    let found = resolution.map(|r| r.find(|commit| store.tree(commit))).transpose().map_err(io_error)?.flatten();
-    let Some((tag, cited)) = found else {
-        return Err(absent(format!("{repo} has no revision {}", revision.unwrap_or(MAIN))));
-    };
-    let parsed = store.tree(&tag.commit).map_err(io_error)?;
-    let variant = pick_variant(&parsed, revision, cited, variant).map_err(|e| absent(e.to_string()))?;
-    let (variant, header) = parsed.variant(variant.as_deref()).map_err(|e| absent(e.to_string()))?;
-    Ok(Some(Local { release: tag.name.clone(), variant: variant.into(), header: header.clone(), tree: tag.commit.clone() }))
+    let parsed = store.tree(&tree).map_err(io_error)?;
+    let header = parsed.header().map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?.1.clone();
+    Ok(Some(Local { tree, lane: parsed.lane, header }))
 }
 
-/// Names `header` (with its source's repo `files`) the local model `local/<name>`: its `main`
-/// at a new commit, replacing what the name held.
-pub fn set_local(store: &Store, name: &str, header: &ObjectRef, files: &BTreeMap<String, ObjectRef>) -> io::Result<ObjectRef> {
-    let mut tree = Tree { files: files.clone() };
-    tree.set_variant("", header.clone());
+/// Names `header` (with its source's repo `files`, in lane `lane`) the local model
+/// `local/<name>`: a new commit, replacing what the name held.
+pub fn set_local(store: &Store, name: &str, header: &ObjectRef, files: &BTreeMap<String, ObjectRef>, lane: &str) -> io::Result<ObjectRef> {
+    let tree = Tree::of(lane, header.clone(), files).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
     let tree = store.put_tree(&tree).map_err(io_error)?;
     let repo = format!("local/{name}");
     store
-        .update_ref(&repo, |_| Some(with_tag(None, &repo, MAIN, &tree)))
+        .update_ref(&repo, |_| Some(Repo { commits: vec![tree.clone()], ..Repo::new(&repo) }))
         .map_err(io_error)?;
     Ok(tree)
 }
 
-/// A tree naming `header` alone, as its unnamed variant (`model.cozytensors`).
+/// An unlabelled commit of `header` alone.
 pub fn tree_of(store: &Store, header: &ObjectRef) -> io::Result<ObjectRef> {
-    let mut tree = tensorfs::format::Tree::default();
-    tree.set_variant("", header.clone());
+    let tree = Tree::of("", header.clone(), &BTreeMap::new()).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
     store.put_tree(&tree).map_err(io_error)
 }
 
@@ -145,11 +128,11 @@ pub fn held(store: &Store, id: &str) -> io::Result<ObjectRef> {
 }
 
 /// The checkpoint `id` names, held here (its structure; chunks may be absent): a header, or a
-/// tree's only variant (a run's checkpoint output names its tree).
+/// commit's (a run's checkpoint output names its commit).
 pub fn checkpoint(store: &Store, id: &str) -> io::Result<tensorfs::store::Checkpoint> {
     let object = held(store, id)?;
     match store.tree(&object) {
-        Ok(_) => store.variant(&object, None),
+        Ok(_) => store.at_commit(&object),
         Err(_) => store.checkpoint(&object),
     }
     .map_err(io_error)

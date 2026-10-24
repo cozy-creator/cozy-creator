@@ -51,9 +51,9 @@ else
     || check "model search --family: an unknown family listed models"
 fi
 cozy --json model info birefnet > "$OUT/model-info.json" && J '.releases[0].lanes | length > 0' "$OUT/model-info.json" || check "model info birefnet: no lanes"
-variant=$(jq -r '.releases[0].lanes[0].lane' "$OUT/model-info.json") || true
-cozy --json model download birefnet --lane 16 --on local > "$OUT/download.ndjson" || check "model download --lane 16 failed"
-cozy --json model download birefnet --variant "$variant" local/e2e-birefnet > "$OUT/download-variant.ndjson" || check "model download --variant $variant failed"
+lane=$(jq -r '.releases[0].lanes[0].lane' "$OUT/model-info.json") || true
+cozy --json model download birefnet --lane "$lane" --on local > "$OUT/download.ndjson" || check "model download --lane $lane failed"
+cozy --json model download birefnet local/e2e-birefnet > "$OUT/download-alias.ndjson" || check "model download birefnet local/e2e-birefnet failed"
 # A local .safetensors file, made into a model the machine keeps by name: the file is written to the machine
 # and made from its object (object://sha256:…/<name>).
 uv run -q --no-project python -I - "$OUT/tiny.safetensors" <<'PY'
@@ -65,7 +65,7 @@ PY
 cozy --json model download "$OUT/tiny.safetensors" local/e2e-tiny > "$OUT/download-file.ndjson" || check "model download ./tiny.safetensors local/e2e-tiny failed: $(grep -oE '"message": *"[^"]*"' "$OUT/download-file.ndjson" | tail -1)"
 cozy --json model list --on local > "$OUT/models.json" || check "model list --on local failed"
 grep -q e2e-tiny "$OUT/models.json" || check "model list: the local file's local/e2e-tiny is not listed"
-J 'any(.models[]; .model == "_/birefnet" and .precision == "fp16")' "$OUT/models.json" || check "model list: no fp16 _/birefnet after --lane 16"
+J --arg lane "$lane" 'any(.models[]; .model == "_/birefnet" and .lane == $lane)' "$OUT/models.json" || check "model list: no _/birefnet in lane $lane after --lane $lane"
 grep -q e2e-birefnet "$OUT/models.json" || check "model list: the local/e2e-birefnet alias is not listed"
 }
 
@@ -82,9 +82,9 @@ if (cd "$here" && cell yaml-over ./weightless/reverse --input "$OUT/reverse.yaml
 fi
 dog=$(picture dog1.jpg)
 printf 'image: %s\n' "$dog" > "$OUT/birefnet.yaml"
-if cell birefnet-yaml "$(birefnet)" --input "$OUT/birefnet.yaml" --lane 16; then
+if cell birefnet-yaml "$(birefnet)" --input "$OUT/birefnet.yaml" --lane "$lane"; then
   white_background "$(output birefnet-yaml webp)" "$dog" || check "birefnet-yaml: not a background removal"
-  J '[.. | .precision? // empty] | any(. == "fp16" or . == "bf16")' "$OUT/birefnet-yaml.json" || check "birefnet-yaml --lane 16: not a 16-bit lane"
+  J --arg lane "$lane" '[.. | .lane? // empty] | any(. == $lane)' "$OUT/birefnet-yaml.json" || check "birefnet-yaml --lane $lane: not that lane"
 fi
 }
 

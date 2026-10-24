@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use super::{
-    check_format, invalid, Body, ClassRef, Component, ConfigValue, Dtype, Encoding, Error, Header,
+    check_format, invalid, Body, ClassRef, Component, ConfigValue, Dtype, Encoding, Header,
     Location, Metadata, ObjectRef, Part, Pipeline, Result, Tensor, Value, CONFIG_FILE, HEADER_FORMAT,
 };
 
@@ -519,22 +519,7 @@ fn room(n: u64) -> usize {
 }
 
 pub(crate) fn read(bytes: &[u8]) -> Result<Header> {
-    parse(bytes).map_err(|e| if pre_cut(bytes) { Error::PreCut } else { e })
-}
-
-/// A header from before the cut: the JSON layout, or a CBOR layout without a pipeline, a
-/// well-formed `cozytensors/1` root of exactly five elements.
-fn pre_cut(bytes: &[u8]) -> bool {
-    let mut r = Reader { b: bytes, at: 0 };
-    let mut old = || -> Result<bool> {
-        if r.record(5, "the header")? > 0 {
-            return Ok(false);
-        }
-        check_format(r.text("format")?, HEADER_FORMAT)?;
-        r.skip(4, 1)?;
-        Ok(r.at == bytes.len())
-    };
-    bytes.first() == Some(&b'{') || old().unwrap_or(false)
+    parse(bytes)
 }
 
 fn parse(bytes: &[u8]) -> Result<Header> {

@@ -23,7 +23,7 @@ pub struct Call {
     pub input: Value,
     pub attention_kernel: String,
     pub gpus: u32,
-    pub bits: u32,
+    pub lane: String,
     pub inputs: Vec<crate::journal::InputFile>,
     /// GPUs its plan runs on: 0 deviceless.
     pub degree: u32,
@@ -262,7 +262,7 @@ impl Service {
         let mut invocation = held.invocation(&call.entrypoint, call.input)?;
         invocation.attention_kernel = call.attention_kernel;
         invocation.gpus = call.gpus;
-        invocation.bits = call.bits;
+        invocation.lane = call.lane;
         invocation.inputs = call.inputs;
         invocation.degree = self.weightless_degree(&held, &invocation)?;
         let record = self
@@ -286,7 +286,7 @@ impl Service {
         let mut invocation = held.invocation_of(&call.application, &call.entrypoint, call.input)?;
         invocation.attention_kernel = call.attention_kernel;
         invocation.gpus = call.gpus;
-        invocation.bits = call.bits;
+        invocation.lane = call.lane;
         invocation.inputs = call.inputs;
         invocation.degree = call.degree;
         invocation.parent = call.parent;

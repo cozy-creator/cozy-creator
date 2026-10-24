@@ -1052,6 +1052,14 @@ impl Pool {
             .map(|d| self.inventory(&d.entry).map_or("", |g| g.compute_cap.as_str())).collect();
         crate::precision::Gpus::of(&ccs)
     }
+    /// The first `degree` GPUs as the Hub resolves a model for them: each one's capability, and
+    /// the free bytes on the one with the fewest (none read: no fit check). No GPU: the CPU.
+    pub fn hardware(&self, degree: u32) -> tensorfs::fetch::Hardware {
+        let devices: Vec<&Device> = self.devices.iter().take(degree as usize).collect();
+        let gpus = devices.iter().filter_map(|d| self.inventory(&d.entry)).map(|g| g.compute_cap.clone()).filter(|cc| !cc.is_empty()).collect();
+        let free_vram = devices.iter().filter_map(|d| Some(d.memory.as_ref()?.manager.holdings().free)).min();
+        tensorfs::fetch::Hardware { gpus, free_vram, plain: false }
+    }
     fn inventory(&self, entry: &str) -> Option<&crate::machine::receipt::Gpu> {
         self.config.inventory.iter().find(|g| g.device_index.to_string() == entry || g.device_uuid == entry)
     }
@@ -2693,6 +2701,7 @@ impl Pool {
             generation: &held.record,
             spool: None,
             caller: None,
+            calls,
             formation: Some(Formation {
                 tenants: self.tenants.clone(),
                 leader: session.executor.birth.clone(),
@@ -2829,7 +2838,7 @@ impl Pool {
                 entrypoint: plan.entrypoint.clone(),
                 payload: protocol::executor::Json(record.invocation.input.clone()),
                 attention_kernel: record.invocation.attention_kernel.clone(),
-                bits: record.invocation.bits,
+                bits: 0,
                 input_metadata: record
                     .invocation
                     .inputs
@@ -2944,7 +2953,8 @@ impl Pool {
         let reply = session.executor.command(
             &Command::Invoke(Box::new(Invoke {
                 tensorfs: calls.and_then(|calls| calls.tensorfs(id, session.executor.line())),
-                destination: calls.map(|calls| calls.destination(id)).unwrap_or_default(),
+                // A weights output TensorD uploads itself, as a commit in its lane (`publish`).
+                destination: String::new(),
                 actor: record.submission.as_ref().map(|submission| submission.actor.clone()).unwrap_or_default(),
                 operation,
                 family: record.family().unwrap_or_default().into(),
@@ -2955,7 +2965,7 @@ impl Pool {
                 spool: spool.clone(),
                 deadline_s: None,
                 attention_kernel: record.invocation.attention_kernel.clone(),
-                bits: record.invocation.bits,
+                bits: 0,
                 inputs: inputs.inputs,
                 trees: inputs.trees,
                 sources: plan.sources.iter().map(|s| (s.parameter.clone(), s.manifest.clone())).collect(),
@@ -3699,6 +3709,8 @@ struct Callbacks<'a> {
     spool: Option<PathBuf>,
     /// The invoking request as a caller: its child-call frames.
     caller: Option<&'a crate::calls::Caller>,
+    /// The machine's calls: a weights output goes to its run's destination through them.
+    calls: Option<&'a Arc<crate::calls::Calls>>,
     /// Its executor's group, forming at Start.
     formation: Option<Formation>,
     /// The host watcher: each frame nudges it to look (the only wakeup where the kernel gives
@@ -3732,7 +3744,11 @@ impl Services for Callbacks<'_> {
         }
         if let Some(Request::CheckpointItem(item)) = &frame.request {
             drop(descriptor);
-            return Ok((crate::products::checkpoint(self.engine, self.generation, self.id, frame.seq, item), None));
+            let publish = |tree: &str| match self.calls {
+                Some(calls) => calls.publish(self.id, tree, &item.output),
+                None => Ok(None),
+            };
+            return Ok((crate::products::checkpoint(self.engine, self.generation, self.id, frame.seq, item, &publish), None));
         }
         drop(descriptor);
         match self.caller {

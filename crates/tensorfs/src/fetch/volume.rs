@@ -22,10 +22,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use platform::durable::Mode;
 
-use super::origin::{parse_repo, Location, Origin};
+use super::origin::{Location, Origin};
 use super::ObjectStore;
-use crate::err::{Code, Refusal, Result};
-use crate::format::{repo_key, repo_name, ObjectRef, Repo};
+use crate::err::Result;
+use crate::format::ObjectRef;
 
 /// Bytes per read or write call into the volume: each call is progress.
 pub(crate) const STEP: usize = 8 << 20;
@@ -262,28 +262,6 @@ pub(crate) async fn blocking<T: Send + 'static>(
 
 #[async_trait]
 impl Origin for VolumeOrigin {
-    async fn repo_of(&self, name: &str) -> Result<Repo> {
-        if !repo_name(name) {
-            return Err(Refusal { code: Code::KEY_GRAMMAR, detail: format!("{name:?} is not <org>/<model>") });
-        }
-        let path = self.0.root.join(repo_key(name));
-        let read =
-            tokio::task::spawn_blocking(move || fs::read(&path).map_err(|error| (path, error)))
-                .await
-                .map_err(|error| Refusal {
-                    code: Code::IO_FAILED,
-                    detail: error.to_string(),
-                })?;
-        let bytes = read.map_err(|(path, error)| Refusal {
-            code: match error.kind() {
-                std::io::ErrorKind::NotFound => Code::REF_NOT_FOUND,
-                _ => Code::IO_FAILED,
-            },
-            detail: format!("{}: {error}", path.display()),
-        })?;
-        parse_repo(name, &bytes)
-    }
-
     async fn locate(&self, objects: &[ObjectRef]) -> Result<Vec<Location>> {
         Ok(objects
             .iter()

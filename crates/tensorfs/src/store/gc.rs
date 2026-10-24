@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime};
 
 use super::retention::{self, list, Use};
 use super::{fail, invalid, is_digest, same_family, Result, Store};
-use crate::format::{self, variant_of, Header, ObjectRef, Tree, HEADER_FORMAT, TREE_FORMAT};
+use crate::format::{self, is_header, Header, ObjectRef, Tree, HEADER_FORMAT, TREE_FORMAT};
 
 /// Documents bigger than this are never read as trees or headers.
 const MAX_DOCUMENT: u64 = 256 << 20;
@@ -33,14 +33,14 @@ enum Document {
 }
 
 impl Store {
-    /// What `root` keeps alive, each once: `root`, and for a tree its files and each variant
-    /// header's chunks and assets; for a header, its chunks and assets.
+    /// What `root` keeps alive, each once: `root`, and for a tree its files and its header's
+    /// chunks and assets; for a header, its chunks and assets.
     pub fn closure(&self, root: &ObjectRef) -> Result<Vec<ObjectRef>> {
         let mut reach = BTreeSet::from([root.clone()]);
         match self.document(root)? {
             Some(Document::Tree(tree)) => {
                 for (path, file) in tree.files {
-                    if variant_of(&path).is_some() {
+                    if is_header(&path) {
                         reach.extend(self.header_objects(&file)?);
                     }
                     reach.insert(file);
@@ -53,7 +53,7 @@ impl Store {
     }
 
     /// The tree or header `object` is; `None` for any other object or an absent one. One of a
-    /// kind this build cannot walk (another major, a pre-cut header) stops GC rather than sweep
+    /// kind this build cannot walk (another major) stops GC rather than sweep
     /// what it reaches.
     fn document(&self, object: &ObjectRef) -> Result<Option<Document>> {
         let path = self.path(object)?;
@@ -67,7 +67,7 @@ impl Store {
         if length > MAX_DOCUMENT || file.read_exact(&mut first).is_err() {
             return Ok(None);
         }
-        // A tree is a JSON object; a header a CBOR array (five elements: pre-cut).
+        // A tree is a JSON object; a header a CBOR array.
         if first[0] != b'{' && !(0x85..=0x9f).contains(&first[0]) {
             return Ok(None);
         }
@@ -86,7 +86,6 @@ impl Store {
         }
         match Header::from_cbor(&bytes) {
             Ok(header) => Ok(Some(Document::Header(header))),
-            Err(format::Error::PreCut) => unwalkable("pre-cut cozytensors"),
             Err(format::Error::Format { found, .. }) if same_family(&found, HEADER_FORMAT) => {
                 unwalkable(&found)
             }

@@ -777,7 +777,7 @@
           },
           "manifest": {
             "type": "string",
-            "description": "`sha256:<hex>`, the owner's checkpoint by hash; else `model` at `release`, `lane`.",
+            "description": "`sha256:<hex>`, a commit of `model` by hash; else `model` at `release`, `lane`.",
             "default": ""
           },
           "model": {
@@ -926,47 +926,39 @@
         "properties": {
           "lane": {
             "type": "string",
-            "description": "The variant, by its path.",
+            "description": "Its commit's lane label.",
             "default": ""
           },
           "manifest": {
             "type": "string",
-            "description": "`sha256:<hex>`",
+            "description": "`sha256:<hex>` of its header.",
             "default": ""
           },
           "precision": {
             "type": "string",
-            "description": "Its header's precision lane (`int8`, `bf16`, …).",
+            "description": "Its header's precision family (`int8`, `bf16`, …).",
             "default": ""
           },
           "release": {
             "type": "string",
-            "description": "Empty for a local alias.",
+            "description": "Empty for a local alias or a commit by hash.",
             "default": ""
-          },
-          "yanked": {
-            "type": "boolean",
-            "default": false
           }
         }
       },
       "CheckpointRef": {
         "type": "object",
-        "description": "A checkpoint stored by Runtime. `revision` names its commit (`sha256:<tree>`); `tag` the\ntag the Runtime moved to it (empty: none).",
+        "description": "A weights output's commit: `revision` (`sha256:<tree>`) of `repo_id`, in `lane`.",
         "properties": {
+          "lane": {
+            "type": "string",
+            "default": ""
+          },
           "repo_id": {
             "type": "string",
             "default": ""
           },
           "revision": {
-            "type": "string",
-            "default": ""
-          },
-          "tag": {
-            "type": "string",
-            "default": ""
-          },
-          "variant": {
             "type": "string",
             "default": ""
           }
@@ -1184,6 +1176,18 @@
             "default": 0,
             "minimum": 0
           },
+          "memory": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/GpuMemory",
+                "description": "TensorD's page accounting of its memory manager on it."
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "memory_bytes": {
             "type": "integer",
             "format": "int64",
@@ -1243,6 +1247,90 @@
             "format": "int32",
             "default": 0,
             "minimum": 0
+          }
+        }
+      },
+      "GpuMemory": {
+        "type": "object",
+        "description": "A GPU's page accounting, as its memory manager holds it now.",
+        "properties": {
+          "allocated_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Allocated to live processes.",
+            "default": 0,
+            "minimum": 0
+          },
+          "books_only_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Bytes a process holds that no live manager created (a previous TensorD's).",
+            "default": 0,
+            "minimum": 0
+          },
+          "capacity_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "What it may allocate: the card or its limit, less its own context and the reserved pool.",
+            "default": 0,
+            "minimum": 0
+          },
+          "created_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "default": 0,
+            "minimum": 0
+          },
+          "created_chunks": {
+            "type": "integer",
+            "format": "int64",
+            "default": 0,
+            "minimum": 0
+          },
+          "foreign_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Bytes no cozy process holds (another app's), as its last reading measured them.",
+            "default": 0,
+            "minimum": 0
+          },
+          "free_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "`capacity_bytes` less what it allocated.",
+            "default": 0,
+            "minimum": 0
+          },
+          "page_cache_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The GPU page cache: landed weights of exited processes, kept for the next of their layout.",
+            "default": 0,
+            "minimum": 0
+          },
+          "page_cache_chunks": {
+            "type": "integer",
+            "format": "int64",
+            "default": 0,
+            "minimum": 0
+          },
+          "pressure_some_10s": {
+            "type": "number",
+            "format": "float",
+            "description": "The share of wall time at least one allocation waited (`some` pressure), over 10 s and 60 s.",
+            "default": 0.0
+          },
+          "pressure_some_60s": {
+            "type": "number",
+            "format": "float",
+            "default": 0.0
+          },
+          "processes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProcessMemory"
+            },
+            "default": []
           }
         }
       },
@@ -1490,7 +1578,7 @@
       },
       "ModelChoice": {
         "type": "object",
-        "description": "One model slot's choice, by name (th-245: the machine resolves it at the Hub). A Hub model is\n`repository` at `release` (empty: the newest) in `lane`, else in the lane the machine's rules\npick (xs-042). `manifest` names a checkpoint by hash only: the owner's private one at the Hub\n(with `repository`; the run's capability names it) or one this machine holds (without). A slot\nwith no choice takes its declared default release, a callee's included (`<package>/<path>`).",
+        "description": "One model slot's choice, by name (th-245: the machine resolves it at the Hub). A Hub model is\n`repository` at `release` (empty: the newest) in `lane`, else in the lane the Hub picks for\nthe machine's hardware. `manifest` names a commit (or a header) by hash: one of the\nrepository's at the Hub (with `repository`), or one this machine holds (without). A slot with\nno choice takes its declared default release, a callee's included (`<package>/<path>`).",
         "properties": {
           "adapters": {
             "type": "array",
@@ -1629,6 +1717,35 @@
           }
         }
       },
+      "ProcessMemory": {
+        "type": "object",
+        "description": "One process's allocated memory on a GPU.",
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "default": 0,
+            "minimum": 0
+          },
+          "chunks": {
+            "type": "integer",
+            "format": "int64",
+            "default": 0,
+            "minimum": 0
+          },
+          "executor": {
+            "type": "string",
+            "description": "Its executor group (plan and lane).",
+            "default": ""
+          },
+          "pid": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0,
+            "minimum": 0
+          }
+        }
+      },
       "Product": {
         "type": "object",
         "description": "One revision of an output: a single output is replaced by each, a list output grows. Byte\noutputs use `GET /v1/runs/{id}/outputs/{output}`; checkpoints are immutable references.",
@@ -1738,6 +1855,12 @@
             "format": "double",
             "description": "How far this stage is, when it says.",
             "default": null
+          },
+          "step_avg_ms": {
+            "type": "number",
+            "format": "double",
+            "description": "The mean of its steps after the first, which carries the stage's setup; 0 before one.",
+            "default": 0.0
           },
           "step_ms": {
             "type": "number",
@@ -1850,12 +1973,12 @@
             "$ref": "#/components/schemas/RunSpec",
             "default": {
               "attention_kernel": "",
-              "bits": 0,
               "catalog_revision": "",
               "entrypoint": "",
               "gpus": 0,
               "inputs": [],
               "kind": "call",
+              "lane": "",
               "models": [],
               "owner": "",
               "weights_destination": ""
@@ -1869,13 +1992,6 @@
           "attention_kernel": {
             "type": "string",
             "default": ""
-          },
-          "bits": {
-            "type": "integer",
-            "format": "int32",
-            "description": "The main model's weight precision: 16, 8 or 4. 0, and every other slot: the machine's rules\nchoose the lane. The package's own children inherit it; another package's take 0.",
-            "default": 0,
-            "minimum": 0
           },
           "catalog_revision": {
             "type": "string",
@@ -1916,6 +2032,11 @@
           "kind": {
             "$ref": "#/components/schemas/RunKind",
             "default": "call"
+          },
+          "lane": {
+            "type": "string",
+            "description": "The main model's lane, a label (`bf16`, `fp8`, …). Empty, and every other slot: the Hub\npicks for the machine's hardware. For a model-only warm run with a weights destination,\nthe lane its commit is labelled. The package's own children inherit it; another\npackage's take none.",
+            "default": ""
           },
           "models": {
             "type": "array",
@@ -2209,6 +2330,13 @@
             "format": "int64",
             "default": 0
           },
+          "tensord_pid": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The TensorD service's process (not its stable parent, a pod's PID 1).",
+            "default": 0,
+            "minimum": 0
+          },
           "tensorfs": {
             "type": "string",
             "default": ""
@@ -2325,13 +2453,6 @@
         "type": "object",
         "description": "One member of a caller's warm set: a function the machine keeps ready up to `level`. It is\nthe last idle thing to give its memory to a request, and comes back when room returns.",
         "properties": {
-          "bits": {
-            "type": "integer",
-            "format": "int32",
-            "description": "As [`RunSpec::bits`].",
-            "default": 0,
-            "minimum": 0
-          },
           "entrypoint": {
             "type": "string",
             "default": ""
@@ -2344,6 +2465,11 @@
           "holds": {
             "type": "string",
             "description": "Status only: the level it holds now (installed, downloaded, imported, host, gpu).",
+            "default": ""
+          },
+          "lane": {
+            "type": "string",
+            "description": "As [`RunSpec::lane`].",
             "default": ""
           },
           "level": {

@@ -1,4 +1,4 @@
-//! Refs name models. Each is one JSON file, changed under its directory's lock and replaced by a
+//! Refs record models: each model's releases and commits this store holds. Each is one JSON file, changed under its directory's lock and replaced by a
 //! temp and a rename: a reader sees the old record or the new.
 //!
 //! The lock is `flock` on an `O_CLOEXEC` descriptor: held by its open file description, waited
@@ -6,7 +6,6 @@
 //! acquisition fence also spans root publication so GC cannot delete bytes between reading
 //! metadata and naming them.
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -36,8 +35,8 @@ fn ref_segment(segment: &str) -> String {
     if is_name(&folded, 128) && !folded.ends_with('.') && !device {
         folded
     } else {
-        // '%' was never a legal legacy segment. Hashing also bounds Unicode and long
-        // names, without changing the protocol's raw repo_key or its case folding.
+        // Hashing bounds Unicode and long names, without changing the protocol's raw repo_key
+        // or its case folding.
         format!("%{}", ObjectRef::of(folded.as_bytes()).sha256)
     }
 }
@@ -68,7 +67,7 @@ impl Store {
         Ok(reached)
     }
 
-    /// Case-folded local filenames; nonportable segments use a prefix absent from legacy names.
+    /// Case-folded local filenames; a nonportable segment is its hash, prefixed `%`.
     fn ref_path(&self, name: &str) -> Result<PathBuf> {
         // The format's repository name, as the public Ref takes it; is_name remains the
         // stricter grammar for writer keys.
@@ -83,33 +82,6 @@ impl Store {
                 format!("{name:?} is not org/name"),
             )),
         }
-    }
-
-    fn legacy_ref_path(&self, name: &str, canonical: &Path) -> Option<PathBuf> {
-        // Windows must never probe a device path such as CON.json. Only POSIX could
-        // have stored these old names; reading them does not migrate user metadata.
-        if cfg!(windows) {
-            return None;
-        }
-        let (org, model) = name.split_once('/')?;
-        if !is_name(org, 128) || !is_name(model, 128) {
-            return None;
-        }
-        let path = self
-            .root
-            .join("refs")
-            .join(org.to_ascii_lowercase())
-            .join(format!("{}.json", model.to_ascii_lowercase()));
-        (path != canonical).then_some(path)
-    }
-
-    fn matching_legacy_ref(&self, name: &str, canonical: &Path) -> Result<Option<(PathBuf, Repo)>> {
-        let Some(path) = self.legacy_ref_path(name, canonical) else {
-            return Ok(None);
-        };
-        Ok(Self::parse_ref(&path)?
-            .filter(|repo| repo.name.eq_ignore_ascii_case(name))
-            .map(|repo| (path, repo)))
     }
 
     fn canonical_ref(path: &Path, name: &str) -> Result<Option<Repo>> {
@@ -134,19 +106,11 @@ impl Store {
     }
 
     pub fn get_ref(&self, name: &str) -> Result<Option<Repo>> {
-        let path = self.ref_path(name)?;
-        if let Some(repo) = Self::canonical_ref(&path, name)? {
-            return Ok(Some(repo));
-        }
-        if let Some((_, repo)) = self.matching_legacy_ref(name, &path)? {
-            return Ok(Some(repo));
-        }
-        // A concurrent explicit update may have published canonical then removed legacy.
-        Self::canonical_ref(&path, name)
+        Self::canonical_ref(&self.ref_path(name)?, name)
     }
 
-    /// Changes ref `name` to what `change` makes of it; `None` removes it. Naming a tree is a use
-    /// of it, and a `local/` ref roots it.
+    /// Changes ref `name` to what `change` makes of it; `None` removes it. Naming a commit is a
+    /// use of it, and a `local/` ref roots it.
     pub fn update_ref(
         &self,
         name: &str,
@@ -155,19 +119,12 @@ impl Store {
         let path = self.ref_path(name)?;
         let _acquisition = super::retention::acquire(self)?;
         let _lock = self.lock("refs")?;
-        let legacy = self.matching_legacy_ref(name, &path)?;
-        let old = Self::canonical_ref(&path, name)?
-            .or_else(|| legacy.as_ref().map(|(_, repo)| repo.clone()));
-        let lanes = |repo: &Option<Repo>| -> Vec<ObjectRef> {
+        let old = Self::canonical_ref(&path, name)?;
+        let commits = |repo: &Option<Repo>| -> Vec<ObjectRef> {
             repo.iter().flat_map(Repo::roots).cloned().collect()
         };
-        let before = lanes(&old);
+        let before = commits(&old);
         let Some(new) = change(old) else {
-            // Remove a matching old record first, so no crash can expose it after
-            // deleting a newer canonical record. Unrelated metadata is untouched.
-            if let Some((legacy, _)) = &legacy {
-                self.remove_record(legacy)?;
-            }
             self.remove_record(&path)?;
             return Ok(None);
         };
@@ -178,23 +135,19 @@ impl Store {
             ));
         }
         let bytes = new.to_json().map_err(|error| invalid(&path, error))?;
-        let after = lanes(&Some(new.clone()));
-        let reached = self.retain(after.iter().filter(|lane| !before.contains(lane)))?;
+        let after = commits(&Some(new.clone()));
+        let reached = self.retain(after.iter().filter(|commit| !before.contains(commit)))?;
         self.commit(&path, &bytes, true)?;
         for (root, closure) in &reached {
             self.used(root, closure)?;
         }
-        // Only an explicit mutation promotes a legacy record, after durable publish.
-        if let Some((legacy, _)) = &legacy {
-            self.remove_record(legacy)?;
-        }
         Ok(Some(new))
     }
 
+    /// Every model record, by name.
     pub fn refs(&self) -> Result<Vec<Repo>> {
         let dir = self.root.join("refs");
         let mut repos = Vec::new();
-        let mut named: BTreeMap<String, (bool, Repo)> = BTreeMap::new();
         for org in fs::read_dir(&dir).map_err(fail("list", &dir))? {
             let org = org.map_err(fail("list", &dir))?.path();
             if !org.is_dir() {
@@ -203,26 +156,10 @@ impl Store {
             for entry in fs::read_dir(&org).map_err(fail("list", &org))? {
                 let path = entry.map_err(fail("list", &org))?.path();
                 if path.extension().is_some_and(|ext| ext == "json") {
-                    if let Some(repo) = Self::parse_ref(&path)? {
-                        let canonical = self.ref_path(&repo.name)?;
-                        let is_canonical = path == canonical;
-                        if is_canonical
-                            || self.legacy_ref_path(&repo.name, &canonical).as_ref() == Some(&path)
-                        {
-                            let key = repo.name.to_ascii_lowercase();
-                            if !named.get(&key).is_some_and(|(preferred, _)| *preferred) {
-                                named.insert(key, (is_canonical, repo));
-                            }
-                        } else {
-                            // Preserve independently named metadata instead of treating an
-                            // arbitrary filename as a stale copy eligible for deletion.
-                            repos.push(repo);
-                        }
-                    }
+                    repos.extend(Self::parse_ref(&path)?);
                 }
             }
         }
-        repos.extend(named.into_values().map(|(_, repo)| repo));
         repos.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(repos)
     }

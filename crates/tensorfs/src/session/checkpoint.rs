@@ -25,7 +25,6 @@ struct Data {
     remote: Option<Remote>,
     store: Store,
     local_repo: Option<LocalRepo>,
-    variant: Option<String>,
     _extra: Option<Arc<Hold>>,
 }
 
@@ -47,7 +46,7 @@ impl fmt::Debug for Checkpoint {
 
 impl Checkpoint {
     pub(super) fn local(raw: Stored, source: Remote, path: &Path) -> Result<Self> {
-        let (header_bytes, variant) = local_header_bytes(&raw, path)?;
+        let header_bytes = local_header_bytes(&raw, path)?;
         let local_repo = if path.is_dir() {
             let mut repo = LocalRepo {
                 root: path.to_path_buf(),
@@ -70,7 +69,6 @@ impl Checkpoint {
             _extra: None,
             store,
             local_repo,
-            variant,
         };
         Ok(Self::from_data(data))
     }
@@ -82,7 +80,6 @@ impl Checkpoint {
         remote: Option<Remote>,
         extra: Vec<ObjectRef>,
         store: Store,
-        variant: Option<String>,
     ) -> Result<Self> {
         let extra = Some(store.hold(&extra)?);
         let header_bytes = store.read(raw.id())?;
@@ -93,7 +90,6 @@ impl Checkpoint {
             tree,
             remote,
             _extra: extra,
-            variant,
             store,
             local_repo: None,
         }))
@@ -134,11 +130,9 @@ impl Checkpoint {
     pub fn chunks(&self) -> &[ObjectRef] {
         &self.header().chunks
     }
-    pub fn variant(&self) -> Option<&str> {
-        self.data
-            .variant
-            .as_deref()
-            .or_else(|| self.data.named.as_ref().and_then(|r| r.variant.as_deref()))
+    /// The lane of the commit it was opened from.
+    pub fn lane(&self) -> Option<&str> {
+        self.data.named.as_ref().and_then(|r| r.lane.as_deref())
     }
     pub fn named(&self) -> Option<&Ref> {
         self.data.named.as_ref()
@@ -377,7 +371,6 @@ impl Checkpoint {
             &repo,
             &repo_objects,
             dir,
-            self.variant().unwrap_or(""),
             &self.data.header_bytes,
         )
     }
@@ -387,7 +380,7 @@ impl Checkpoint {
     }
 
     /// Inspect the header and selected full chunk/asset objects without fetching or
-    /// changing data. Repository trees/files and other variants are outside its scope.
+    /// changing data. Repository trees and files are outside its scope.
     pub fn verify(&self, selection: &Selection) -> Result<crate::VerificationReport> {
         let objects = super::selection::objects(&self.data.raw, selection)?;
         crate::verification::verify(&self.data.raw, objects)
@@ -616,7 +609,7 @@ impl Component {
     }
 }
 
-// A plain D10 folder stores repository files outside chunks/ and variant headers. Keep paths
+// A plain folder stores repository files outside chunks/ and its header. Keep paths
 // until export, rather than admitting every payload during metadata-only Client::open.
 fn local_repo_files(
     source: &LocalRepo,
@@ -648,7 +641,7 @@ fn local_repo_files(
                 .collect::<Result<Vec<_>>>()?
                 .join("/");
             format::check_file(&name)?;
-            if format::variant_of(&name).is_none() {
+            if !format::is_header(&name) {
                 out.insert(name, path);
             }
         }
@@ -656,18 +649,18 @@ fn local_repo_files(
     Ok(())
 }
 
-fn local_header_bytes(raw: &Stored, path: &Path) -> Result<(Vec<u8>, Option<String>)> {
+fn local_header_bytes(raw: &Stored, path: &Path) -> Result<Vec<u8>> {
     if path.is_file() {
         let bytes = fs::read(path).map_err(|e| super::io_failure(path.display(), e))?;
         if &ObjectRef::of(&bytes) != raw.id() {
             return fail(Kind::Integrity, "header changed during open");
         }
-        return Ok((bytes, None));
+        return Ok(bytes);
     }
     for name in crate::store::folder_files(path, "")? {
-        let Some(variant) = format::variant_of(&name) else { continue };
+        if !format::is_header(&name) { continue };
         let bytes = fs::read(path.join(&name)).map_err(|e| super::io_failure(&name, e))?;
-        if &ObjectRef::of(&bytes) == raw.id() { return Ok((bytes, Some(variant.to_owned()))); }
+        if &ObjectRef::of(&bytes) == raw.id() { return Ok(bytes); }
     }
-    fail(Kind::Integrity, "the selected header changed during open")
+    fail(Kind::Integrity, "the header changed during open")
 }

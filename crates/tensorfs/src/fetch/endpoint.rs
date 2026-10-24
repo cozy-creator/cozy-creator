@@ -1,21 +1,18 @@
 //! The distribution client (`spec/distribution.md`): one endpoint `B` serving
-//! `B/refs/<org>/<name>.json` and `B/blobs/<aa>/<bb>/<sha256>`, over HTTP(S) or a directory.
+//! `B/blobs/<aa>/<bb>/<sha256>` and a model's commits and resolution, over HTTP(S) or a directory.
 //!
-//! - **Reads.** The repo document with its ETag (conditional GET); objects as Fetcher locations,
-//!   whose redirects the client follows without credentials across origins.
+//! - **Reads.** Objects as Fetcher locations, whose redirects the client follows without
+//!   credentials across origins; [`Endpoint::resolve`] names a model's commit.
 //! - **Uploads.** Per object HEAD → PUT (to the HEAD's `Location`, else here) → HEAD; `412` means
-//!   present. [`upload_tree`] sends chunks, assets and repo files, then headers, then the tree
-//!   (the commit), then moves a tag to it.
-//! - **Refs.** [`Endpoint::update_repo`] PUTs the whole document under `If-Match` or
-//!   `If-None-Match: *` and, on `412`, reads it again: another writer's progress is re-applied
-//!   onto; a `412` over a document that has not changed is refused (no one made progress).
-//! - **A directory** writes through a store over it: objects verified, temp and rename; refs under
-//!   the store's record lock, read and replaced inside it.
+//!   present. [`upload_commit`] sends chunks, assets and repo files, then the header, then the
+//!   tree, then records the commit as the model's ([`Endpoint::commit`]).
+//! - **A directory** writes through a store over it: objects verified, temp and rename; its
+//!   records under the store's record lock.
 //! - **Weather** (transport failures, 408/425/429/5xx) is asked again at `Retry-After` or a
 //!   doubling wait, until nothing has moved for the stall rule ([`super::ask`]).
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -35,14 +32,11 @@ use super::policy::is_loopback_origin;
 use super::token::{default_for, s3_base, Request, TokenProvider};
 use crate::err::{refuse, Code, Refusal, Result};
 use crate::format::{is_digest, repo_key, repo_name, Header, ObjectRef, Repo, Tree};
-use crate::precision::{Constraints, Selection};
-use crate::sha256::{digest, hex, hex_digest};
+use crate::sha256::hex_digest;
 use crate::store::Store;
 
-/// The tag an upload moves when none is named.
-pub const MAIN: &str = "main";
-/// The most bytes a repo document may have.
-const REPO_BYTES: usize = 16 << 20;
+/// The most bytes a document or an answer may have.
+const DOCUMENT_BYTES: usize = 16 << 20;
 /// Objects an upload sends at once.
 const STREAMS: usize = 16;
 
@@ -62,31 +56,46 @@ enum At {
     Dir(PathBuf, OnceLock<Store>),
 }
 
-/// A repo document as read: unchanged since the ETag asked with, absent, or it and its ETag.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Fresh<T = Repo> {
-    Unchanged,
-    Absent,
-    Doc(T, String),
-}
-
 /// An object's bytes for an upload.
 pub enum Payload {
     Bytes(Bytes),
     File(fs::File),
 }
 
-/// What [`upload_tree`] did: the repo as published, the closure's objects, and those it sent.
+/// What [`upload_commit`] did: the commit, the closure's objects, and those it sent.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Uploaded {
-    pub repo: Repo,
-    /// The commit the tag now names: its tree before, with the upload's files on top.
     pub commit: ObjectRef,
     pub objects: usize,
     pub sent: usize,
     pub bytes: u64,
-    /// The requested repo update was already present, independent of blob deduplication.
+    /// The model already had the commit.
     pub converged: bool,
+}
+
+/// What a consumer runs on, for a resolve without a lane: each GPU's compute capability (`"8.9"`,
+/// `"apple9"`; none: the CPU), the free bytes on the smallest of them, and whether it takes plain
+/// weights only (code that runs no encoded tensor).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct Hardware {
+    pub gpus: Vec<String>,
+    pub free_vram: Option<u64>,
+    #[serde(default)]
+    pub plain: bool,
+}
+
+/// A model's commit as resolved: its release (empty: none), lane, tree and header, and why a
+/// better lane was passed over.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Resolved {
+    #[serde(default)]
+    pub release: String,
+    #[serde(default)]
+    pub lane: String,
+    pub commit: ObjectRef,
+    pub header: ObjectRef,
+    #[serde(default)]
+    pub reasons: Vec<String>,
 }
 
 /// An answer read whole.
@@ -153,143 +162,81 @@ impl Endpoint {
         self
     }
 
-    /// The repo document `name` and its ETag; `None` when there is none.
-    pub async fn repo(&self, name: &str) -> Result<Option<(Repo, String)>> {
-        self.repo_attempt(name).await.map_err(GetError::refusal)
-    }
-
-    /// Preserve credential callback origin until the caller's cache fallback decision.
-    pub(crate) async fn repo_attempt(&self, name: &str) -> std::result::Result<Option<(Repo, String)>, GetError> {
-        Ok(match self.repo_since_attempt(name, None).await? {
-            Fresh::Doc(repo, etag) => Some((repo, etag)),
-            _ => None,
-        })
-    }
-
-    /// The repo document `name`, or `Unchanged` while it still has ETag `etag`.
-    pub async fn repo_since(&self, name: &str, etag: Option<&str>) -> Result<Fresh> {
-        self.repo_since_attempt(name, etag).await.map_err(GetError::refusal)
-    }
-
-    async fn repo_since_attempt(&self, name: &str, etag: Option<&str>) -> std::result::Result<Fresh, GetError> {
-        let (bytes, etag) = match self.repo_bytes_attempt(name, etag).await? {
-            Fresh::Doc(bytes, etag) => (bytes, etag),
-            Fresh::Unchanged => return Ok(Fresh::Unchanged),
-            Fresh::Absent => return Ok(Fresh::Absent),
-        };
-        let what = format!("{}/{}", self.url, repo_key(name));
-        let repo = Repo::from_json(&bytes).map_err(|e| Refusal { code: Code::UNKNOWN_FORMAT, detail: format!("{what}: {e}") })?;
-        match repo.name.eq_ignore_ascii_case(name) {
-            true => Ok(Fresh::Doc(repo, etag)),
-            false => refuse(Code::UNKNOWN_FORMAT, format!("{what} names {:?}", repo.name)).map_err(GetError::Exchange),
-        }
-    }
-
-    /// The repo document `name` as its bytes, unparsed, or `Unchanged` while it has ETag `etag`.
-    pub async fn repo_bytes(&self, name: &str, etag: Option<&str>) -> Result<Fresh<Vec<u8>>> {
-        self.repo_bytes_attempt(name, etag).await.map_err(GetError::refusal)
-    }
-
-    async fn repo_bytes_attempt(&self, name: &str, etag: Option<&str>) -> std::result::Result<Fresh<Vec<u8>>, GetError> {
+    /// The commit of model `name` at `release` (none: the newest) in `lane`; with no lane, the
+    /// one `hardware` runs best (the Hub's choice; a directory's release has one lane, or its
+    /// model no releases: its newest commit).
+    pub async fn resolve(&self, name: &str, release: Option<&str>, lane: Option<&str>, hardware: &Hardware) -> Result<Resolved> {
         check_repo_name(name)?;
-        let key = repo_key(name);
-        let (bytes, tag) = match &self.at {
-            At::Dir(root, _) => match fs::read(root.join(&key)) {
-                Ok(bytes) => {
-                    let tag = etag_of(&bytes);
-                    (bytes, tag)
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Fresh::Absent),
-                Err(e) => return Err(crate::err::classify_io(root.join(&key).display().to_string(), e).into()),
-            },
-            At::Http(base) => {
-                let url = repo_url(base, &key);
-                let headers = etag.map(|e| ("if-none-match".to_owned(), e.to_owned())).into_iter().collect();
-                let reply = self.exchange_attempt(Ask { method: "GET", url: &url, headers, body: None, payload: None, auth: true }).await?;
-                match reply.status {
-                    200 => {
-                        let tag = reply.header("etag").map_or_else(|| etag_of(&reply.body), str::to_owned);
-                        (reply.body, tag)
-                    }
-                    304 => return Ok(Fresh::Unchanged),
-                    404 | 410 => return Ok(Fresh::Absent),
-                    _ => return Err(refusal(&reply, "GET").into()),
-                }
-            }
-        };
-        Ok(match etag == Some(tag.as_str()) {
-            true => Fresh::Unchanged,
-            false => Fresh::Doc(bytes, tag),
-        })
-    }
-
-    /// Writes `bytes` as the repo document `name` while it still has ETag `etag` (`None`: while
-    /// there is none); false when it has changed (`412`). A server checks the bytes.
-    pub async fn put_repo_bytes(&self, name: &str, bytes: Vec<u8>, etag: Option<&str>) -> Result<bool> {
-        check_repo_name(name)?;
-        let key = repo_key(name);
         let base = match &self.at {
             At::Http(base) => base,
             At::Dir(root, _) => {
-                let (root, etag) = (root.clone(), etag.map(str::to_owned));
-                let put = tokio::task::spawn_blocking(move || put_dir(&root, &key, &bytes, etag.as_deref()));
-                return put.await.map_err(|e| Refusal { code: Code::IO_FAILED, detail: e.to_string() })?;
+                let path = root.join(repo_key(name));
+                let bytes = match fs::read(&path) {
+                    Ok(bytes) => bytes,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return refuse(Code::REF_NOT_FOUND, format!("no model {name} at {}", self.url)),
+                    Err(e) => return Err(crate::err::classify_io(path.display().to_string(), e)),
+                };
+                let unread = |e: crate::format::Error| Refusal { code: Code::UNKNOWN_FORMAT, detail: format!("{}: {e}", path.display()) };
+                let (release, lane, commit) = Repo::from_json(&bytes).map_err(unread)?.resolve(release, lane)
+                    .map_err(|e| Refusal { code: Code::REF_NOT_FOUND, detail: e.to_string() })?;
+                let tree = Tree::from_json(&self.document(&commit).await?).map_err(unread)?;
+                let header = tree.header().map_err(unread)?.1.clone();
+                return Ok(Resolved { release, lane: lane.unwrap_or(tree.lane), commit, header, reasons: vec![] });
             }
         };
-        let url = repo_url(base, &key);
-        let precondition = match etag {
-            Some(etag) => ("if-match".to_owned(), etag.to_owned()),
-            None => ("if-none-match".to_owned(), "*".to_owned()),
-        };
-        let headers = vec![("content-type".to_owned(), "application/json".to_owned()), precondition];
-        let payload = hex_digest(&bytes);
-        let bytes = Bytes::from(bytes);
-        let body = move || Ok(Payload::Bytes(bytes.clone()));
-        let reply = self.exchange(Ask { method: "PUT", url: &url, headers, body: Some(&body), payload: Some(&payload), auth: true }).await?;
+        let mut url = format!("{}?", repo_url(base, &format!("v1/models/{}/resolve", name.to_ascii_lowercase())));
+        let mut query = |key: &str, value: &str| url.push_str(&format!("{key}={}&", query_escape(value)));
+        release.into_iter().for_each(|r| query("release", r));
+        lane.into_iter().for_each(|l| query("lane", l));
+        if !hardware.gpus.is_empty() {
+            query("gpus", &hardware.gpus.join(","));
+            hardware.free_vram.into_iter().for_each(|free| query("free_vram", &free.to_string()));
+        }
+        if hardware.plain {
+            query("plain", "true");
+        }
+        url.pop();
+        let reply = self.exchange(Ask { method: "GET", url: &url, headers: vec![], body: None, payload: None, auth: true }).await?;
         match reply.status {
-            200 | 201 | 204 => Ok(true),
-            // S3 answers a race of conditional writes 409 ConditionalRequestConflict.
-            412 => Ok(false),
-            409 if envelope(&reply.body).is_none() => Ok(false),
-            _ => Err(refusal(&reply, "PUT")),
+            200 => serde_json::from_slice(&reply.body).map_err(|e| Refusal { code: Code::UNKNOWN_FORMAT, detail: format!("GET {url}: {e}") }),
+            _ => Err(refusal(&reply, "GET")),
         }
     }
 
-    /// Changes the repo document `name` to what `change` makes of it (`None`: a document with
-    /// no tags, which deletes the model): a conditional write, with `change` applied again to
-    /// the document as it is whenever another writer won. A refusal (`412`) while the document is
-    /// still the one the write was based on is no one's progress: it fails with that reason.
-    pub async fn update_repo(
-        &self,
-        name: &str,
-        mut change: impl FnMut(Option<Repo>) -> Result<Option<Repo>>,
-    ) -> Result<Repo> {
-        let (mut sent, mut based): (Option<Repo>, Option<Option<String>>) = (None, None);
-        loop {
-            let (old, etag) = match self.repo(name).await? {
-                Some((repo, etag)) => (Some(repo), Some(etag)),
-                None => (None, None),
-            };
-            // A lost answer, or another writer that wrote the same: it is there.
-            if let Some(applied) = sent.as_ref().filter(|applied| old.as_ref() == Some(*applied)) {
-                return Ok(applied.clone());
+    /// Records the uploaded tree `commit` (its closure already here) as one of model `name`'s
+    /// commits: true when the model had it already.
+    pub async fn commit(&self, name: &str, commit: &ObjectRef) -> Result<bool> {
+        check_repo_name(name)?;
+        let base = match &self.at {
+            At::Http(base) => base,
+            At::Dir(..) => {
+                let (store, name, commit) = (self.store()?.clone(), name.to_owned(), commit.clone());
+                let record = tokio::task::spawn_blocking(move || {
+                    let tree = store.tree(&commit)?;
+                    tree.header().map_err(crate::store::Error::Format)?;
+                    let mut had = false;
+                    store.update_ref(&name, |old| {
+                        let mut repo = old.unwrap_or_else(|| Repo::new(&name));
+                        had = repo.commits.last() == Some(&commit);
+                        repo.add_commit(commit.clone());
+                        Some(repo)
+                    })?;
+                    Ok::<_, crate::store::Error>(had)
+                });
+                let record = record.await.map_err(|e| Refusal { code: Code::IO_FAILED, detail: e.to_string() })?;
+                return record.map_err(crate::store::Error::refusal);
             }
-            if based.as_ref() == Some(&etag) {
-                let at = etag.as_deref().unwrap_or("absent");
-                return refuse(Code::REPOSITORY_CONFLICT, format!("{name}: the write was refused (412) though the document is still {at}: no writer made progress"));
-            }
-            let new = change(old.clone())?.unwrap_or_else(|| Repo::new(name));
-            if !new.name.eq_ignore_ascii_case(name) {
-                return refuse(Code::KEY_GRAMMAR, format!("repo {:?} cannot be {name}", new.name));
-            }
-            if old.as_ref() == Some(&new) || (old.is_none() && new.tags.is_empty()) {
-                return Ok(new);
-            }
-            let bytes = new.to_json().map_err(|e| Refusal { code: Code::UNKNOWN_FORMAT, detail: e.to_string() })?;
-            if self.put_repo_bytes(name, bytes, etag.as_deref()).await? {
-                return Ok(new);
-            }
-            (sent, based) = (Some(new), Some(etag));
+        };
+        let url = repo_url(base, &format!("v1/models/{}/commits", name.to_ascii_lowercase()));
+        let body = Bytes::from(serde_json::to_vec(&serde_json::json!({"commit": commit})).expect("JSON"));
+        let payload = hex_digest(&body);
+        let make = move || Ok(Payload::Bytes(body.clone()));
+        let headers = vec![("content-type".to_owned(), "application/json".to_owned())];
+        let reply = self.exchange(Ask { method: "POST", url: &url, headers, body: Some(&make), payload: Some(&payload), auth: true }).await?;
+        match reply.status {
+            200 => Ok(true),
+            201 => Ok(false),
+            _ => Err(refusal(&reply, "POST")),
         }
     }
 
@@ -322,7 +269,7 @@ impl Endpoint {
 
     /// A small object (a tree) read whole, following redirects, and verified.
     pub async fn document(&self, object: &ObjectRef) -> Result<Vec<u8>> {
-        if object.length > REPO_BYTES as u64 {
+        if object.length > DOCUMENT_BYTES as u64 {
             return refuse(Code::SIZE_CAP, format!("{}: {} B is not a document", object.id(), object.length));
         }
         let bytes = match &self.at {
@@ -511,8 +458,8 @@ impl Endpoint {
         while let Some(frame) = answer.frame().await? {
             body.extend_from_slice(&frame);
             moved.fetch_add(frame.len() as u64, Ordering::Relaxed);
-            if body.len() > REPO_BYTES {
-                return refuse(Code::SIZE_CAP, format!("{method} {url}: an answer over {REPO_BYTES} B"));
+            if body.len() > DOCUMENT_BYTES {
+                return refuse(Code::SIZE_CAP, format!("{method} {url}: an answer over {DOCUMENT_BYTES} B"));
             }
         }
         Ok(Reply { url: url.to_owned(), status, headers, body })
@@ -521,37 +468,6 @@ impl Endpoint {
 
 #[async_trait]
 impl Origin for Endpoint {
-    async fn repo_of(&self, name: &str) -> Result<Repo> {
-        match self.repo(name).await? {
-            Some((repo, _)) => Ok(repo),
-            None => refuse(Code::REF_NOT_FOUND, format!("no repo {name} at {}", self.url)),
-        }
-    }
-
-    /// The Hub's indexed selection; `None` from a directory or an origin without the route.
-    async fn select(&self, name: &str, revision: &str, constraints: &Constraints) -> Result<Option<Selection>> {
-        check_repo_name(name)?;
-        constraints.check().map_err(|e| Refusal { code: Code::KEY_GRAMMAR, detail: e.detail })?;
-        let At::Http(base) = &self.at else { return Ok(None) };
-        let escaped = |value: &str| repo_url("", value).trim_start_matches('/').to_owned();
-        // The rule names this reader: a Hub answers an older one in its own rule (spec §7).
-        let mut url = format!("{}/select?revision={}&gpus={}&rule={}", repo_url(base, &format!("v1/models/{name}")),
-            escaped(revision), escaped(&constraints.gpus.join(",")), crate::precision::rule());
-        for (key, bits) in [("bits", constraints.bits), ("prefer", constraints.prefer), ("min_bits", constraints.min_bits)] {
-            if let Some(bits) = bits { url.push_str(&format!("&{key}={bits}")); }
-        }
-        if constraints.plain { url.push_str("&plain=true"); }
-        let reply = self.exchange(Ask { method: "GET", url: &url, headers: vec![], body: None, payload: None, auth: true }).await?;
-        match reply.status {
-            404 | 405 => Ok(None),
-            // Another rule's answer (an older Hub's) is no answer: the headers decide.
-            200 => serde_json::from_slice::<Selection>(&reply.body)
-                .map(|answer| (answer.rule == crate::precision::rule()).then_some(answer))
-                .map_err(|e| Refusal { code: Code::UNKNOWN_FORMAT, detail: format!("GET {url}: {e}") }),
-            _ => Err(refusal(&reply, "GET")),
-        }
-    }
-
     async fn locate(&self, objects: &[ObjectRef]) -> Result<Vec<Location>> {
         let mut out = Vec::with_capacity(objects.len());
         for object in objects {
@@ -574,112 +490,36 @@ impl Origin for Endpoint {
     }
 }
 
-/// `repo` (`name`'s, when there is none) with tag `tag` moved to `commit`: an existing tag keeps
-/// its place and flags, a new one is private and last.
-pub fn with_tag(repo: Option<Repo>, name: &str, tag: &str, commit: &ObjectRef) -> Repo {
-    let mut repo = repo.unwrap_or_else(|| Repo::new(name));
-    repo.set_tag(tag, commit.clone());
-    repo
-}
-
-/// What one commit made: its tree and ref, the repo document naming it, whether the tag already
-/// named that tree, and whether the tree's object was sent (the endpoint lacked it).
-pub struct Committed {
-    pub commit: ObjectRef,
-    pub tree: Tree,
-    pub repo: Repo,
-    pub converged: bool,
-    pub sent: bool,
-}
-
-/// The one commit path (git's rule, as Hugging Face's `upload_folder`): tag `tag` of repo `name`
-/// moves to its current tree (none: empty) with the paths a `delete` pattern matches removed and
-/// `files` added or replaced. Every object `files` cite must be at the endpoint already. When
-/// another writer moved the tag first, its tree is the new parent and the change is applied
-/// again, for as long as writers make progress ([`Endpoint::update_repo`]).
-pub async fn commit_onto(endpoint: &Endpoint, name: &str, tag: &str, files: &BTreeMap<String, ObjectRef>, delete: &[&str]) -> Result<Committed> {
-    if !crate::format::tag_name(tag) {
-        return refuse(Code::KEY_GRAMMAR, format!("{tag:?} is not a tag name"));
-    }
-    loop {
-        let parent = endpoint.repo(name).await?.and_then(|(r, _)| Some(r.tag(tag)?.commit.clone()));
-        let base = match &parent {
-            Some(commit) => Tree::from_json(&endpoint.document(commit).await?).map_err(|e| invalid_tree(commit, e))?,
-            None => Tree::default(),
-        };
-        let tree = base.commit(files, delete);
-        let bytes = Bytes::from(tree.to_json().map_err(|e| Refusal { code: Code::UNKNOWN_FORMAT, detail: e.to_string() })?);
-        let commit = ObjectRef::of(&bytes);
-        let sent = endpoint.upload(&commit, &move || Ok(Payload::Bytes(bytes.clone()))).await?;
-        // Other tags' edits are re-applied by update_repo; this tag moving on is a new parent.
-        let mut moved = false;
-        let named = endpoint.update_repo(name, |old| {
-            let now = old.as_ref().and_then(|r| r.tag(tag)).map(|t| &t.commit);
-            moved = now != parent.as_ref() && now != Some(&commit);
-            match moved {
-                true => refuse(Code::REPOSITORY_CONFLICT, format!("{name}@{tag} moved")),
-                false => Ok(Some(with_tag(old, name, tag, &commit))),
-            }
-        });
-        match named.await {
-            Ok(repo) => return Ok(Committed { converged: parent.as_ref() == Some(&commit), commit, tree, repo, sent }),
-            Err(_) if moved => continue,
-            Err(e) => return Err(e),
-        }
-    }
-}
-
-fn invalid_tree(commit: &ObjectRef, e: crate::format::Error) -> Refusal {
-    Refusal { code: Code::UNKNOWN_FORMAT, detail: format!("{}: {e}", commit.id()) }
-}
-
-/// Sends what `endpoint` lacks of the closure of `tree`'s files in `store` (chunks, assets and
-/// repo files, then headers), then commits those files onto tag `tag` of repo `name`
-/// ([`commit_onto`]).
-pub async fn upload_tree(endpoint: &Endpoint, name: &str, tree: &ObjectRef, store: &Store, tag: &str) -> Result<Uploaded> {
-    upload_tree_with(endpoint, name, tree, store, tag, &[], &UploadControl {
-        cancelled: &|| false,
-        progress: &|_, _| {},
-        commit: &|| true,
-    }).await
-}
-
-/// Cooperative control of one upload. `commit` is called once after the objects land,
-/// before the atomic ref update. Once it accepts, cancellation no longer interrupts the
-/// ref's conditional-update and lost-response recovery loop. Progress counts verified bytes,
-/// including objects the endpoint already holds.
+/// Cooperative control of one upload. `commit` is called once after the objects land, before
+/// the commit is recorded; once it accepts, cancellation no longer interrupts. Progress counts
+/// verified bytes, including objects the endpoint already holds.
 pub struct UploadControl<'a> {
     pub cancelled: &'a (dyn Fn() -> bool + Sync),
     pub progress: &'a (dyn Fn(u64, u64) + Sync),
     pub commit: &'a (dyn Fn() -> bool + Sync),
 }
 
-/// [`upload_tree`] deleting the paths `delete` patterns match, with cancellation before the ref
-/// update, progress, and a final commit gate.
-pub async fn upload_tree_with(endpoint: &Endpoint, name: &str, tree: &ObjectRef, store: &Store, tag: &str, delete: &[&str], control: &UploadControl<'_>) -> Result<Uploaded> {
-    if !crate::format::tag_name(tag) {
-        return refuse(Code::KEY_GRAMMAR, format!("{tag:?} is not a tag name"));
-    }
-    let stopped = || Refusal { code: Code::TRANSFER_FAILED, detail: "upload stopped before its ref update; admitted objects remain available".into() };
+/// Sends what `endpoint` lacks of commit `tree`'s closure in `store` (chunks, assets and repo
+/// files, then the header, then the tree), then records it as model `name`'s
+/// ([`Endpoint::commit`]).
+pub async fn upload_commit(endpoint: &Endpoint, name: &str, tree: &ObjectRef, store: &Store, control: &UploadControl<'_>) -> Result<Uploaded> {
+    let stopped = || Refusal { code: Code::TRANSFER_FAILED, detail: "upload stopped before its commit; admitted objects remain available".into() };
     if (control.cancelled)() {
         return Err(stopped());
     }
     let refusal = crate::store::Error::refusal;
     let parsed = store.tree(tree).map_err(refusal)?;
-    let mut leaves = Vec::new();
-    let mut headers = Vec::new();
-    for (_, header) in parsed.variants() {
-        let bytes = store.read(header).map_err(refusal)?;
-        let parsed = Header::from_cbor(&bytes).map_err(|e| Refusal { code: Code::UNKNOWN_FORMAT, detail: format!("{}: {e}", header.sha256) })?;
-        leaves.extend(parsed.objects().cloned());
-        headers.push(header.clone());
-    }
+    let unread = |e: crate::format::Error| Refusal { code: Code::UNKNOWN_FORMAT, detail: format!("{}: {e}", tree.id()) };
+    let header = parsed.header().map_err(unread)?.1.clone();
+    let mut leaves: Vec<ObjectRef> = Header::from_cbor(&store.read(&header).map_err(refusal)?).map_err(unread)?.objects().cloned().collect();
+    // The header, then the tree: a tree present implies its closure was sent.
+    let documents = [header, tree.clone()];
     leaves.extend(parsed.repo_files().map(|(_, file)| file.clone()));
     leaves.sort();
     leaves.dedup();
     let (mut sent, mut bytes) = (0, 0);
-    let objects = leaves.len() + headers.len() + 1;
-    let total = leaves.iter().chain(&headers)
+    let objects = leaves.len() + documents.len();
+    let total = leaves.iter().chain(&documents)
         .try_fold(0u64, |sum, object| sum.checked_add(object.length))
         .ok_or_else(|| Refusal { code: Code::ARITH_OVERFLOW, detail: "upload closure byte count overflows".into() })?;
     // Done: the objects it holds or that landed, and the bytes on their way meanwhile, so a slow
@@ -690,7 +530,8 @@ pub async fn upload_tree_with(endpoint: &Endpoint, name: &str, tree: &ObjectRef,
         (control.progress)(verified.saturating_add(sending).min(total), total);
     };
     (control.progress)(0, total);
-    for stage in [leaves, headers] {
+    let [header, tree_object] = documents;
+    for stage in [leaves, vec![header], vec![tree_object]] {
         let mut sending = futures::stream::iter(stage)
             .map(|object| async move {
                 let (from, at) = (store.clone(), object.clone());
@@ -721,37 +562,13 @@ pub async fn upload_tree_with(endpoint: &Endpoint, name: &str, tree: &ObjectRef,
     if (control.cancelled)() || !(control.commit)() {
         return Err(stopped());
     }
-    let done = commit_onto(endpoint, name, tag, &parsed.files, delete).await?;
-    if done.sent {
-        (sent, bytes) = (sent + 1, bytes + done.commit.length);
-    }
-    Ok(Uploaded { repo: done.repo, commit: done.commit, objects, sent, bytes, converged: done.converged })
-}
-
-/// Replaces `<root>/<key>` with `bytes` under the store's record lock while it has ETag `etag`.
-fn put_dir(root: &Path, key: &str, bytes: &[u8], etag: Option<&str>) -> Result<bool> {
-    let (path, refs) = (root.join(key), root.join("refs"));
-    let io = |what: &Path| {
-        let what = what.display().to_string();
-        move |e: std::io::Error| crate::err::classify_io(what, e)
-    };
-    fs::create_dir_all(path.parent().expect("a ref has a directory")).map_err(io(&path))?;
-    let _lock = platform::lock::dir(&refs).map_err(|e| io(&refs)(e.into()))?;
-    let now = match fs::read(&path) {
-        Ok(bytes) => Some(etag_of(&bytes)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => return Err(io(&path)(e)),
-    };
-    if now.as_deref() != etag {
-        return Ok(false);
-    }
-    platform::durable::replace(&path, bytes, 0o644).map_err(|e| io(&path)(e.into()))?;
-    Ok(true)
+    let converged = endpoint.commit(name, tree).await?;
+    Ok(Uploaded { commit: tree.clone(), objects, sent, bytes, converged })
 }
 
 /// A writer's objects on their way to an endpoint (`Writer(repo_id=…)`): each is sent (HEAD →
 /// PUT → HEAD) as soon as it is sealed while the writer goes on, at most [`IN_FLIGHT`] at once;
-/// at commit the header, then the tree (the commit), then the tag moved to it.
+/// at commit the header, then the tree, then the commit recorded.
 /// File-backed objects queue without blocking the caller's runtime. Byte-backed puts and
 /// finalization block, so the finalizer runs outside the runtime that sends.
 pub struct Stream {
@@ -846,15 +663,16 @@ impl Stream {
         first
     }
 
-    /// A writer's commit: its `header`, sent after what it cites, as `variant` with `files`
-    /// committed onto tag `tag` of repo `name` ([`commit_onto`]).
-    pub fn commit(&self, name: &str, tag: &str, variant: &str, header: Vec<u8>, files: &BTreeMap<String, ObjectRef>) -> Result<Committed> {
+    /// A writer's commit: its `header`, sent after what it cites, in lane `lane` beside `files`,
+    /// recorded as one of model `name`'s commits: its tree.
+    pub fn commit(&self, name: &str, lane: &str, header: Vec<u8>, files: &BTreeMap<String, ObjectRef>) -> Result<(ObjectRef, Tree)> {
         self.flush()?;
         let header = self.put(header)?;
+        let tree = Tree::of(lane, header, files).map_err(|e| Refusal { code: Code::KEY_GRAMMAR, detail: e.to_string() })?;
+        let commit = self.put(tree.to_json().map_err(|e| Refusal { code: Code::UNKNOWN_FORMAT, detail: e.to_string() })?)?;
         self.flush()?;
-        let mut tree = Tree { files: files.clone() };
-        tree.set_variant(variant, header);
-        self.runtime.block_on(commit_onto(&self.endpoint, name, tag, &tree.files, &[]))
+        self.runtime.block_on(self.endpoint.commit(name, &commit))?;
+        Ok((commit, tree))
     }
 }
 
@@ -892,11 +710,6 @@ fn repo_url(base: &str, key: &str) -> String {
     url
 }
 
-/// The ETag a directory (or a server that sends none) gives a document: `"sha256:<hex>"`.
-fn etag_of(bytes: &[u8]) -> String {
-    format!("\"sha256:{}\"", hex(&digest(bytes)))
-}
-
 fn held(reply: &Reply, object: &ObjectRef) -> Result<()> {
     match reply.header("content-length").and_then(|v| v.parse::<u64>().ok()) {
         Some(length) if length != object.length => refuse(
@@ -905,6 +718,14 @@ fn held(reply: &Reply, object: &ObjectRef) -> Result<()> {
         ),
         _ => Ok(()),
     }
+}
+
+/// A query value, percent-encoded but for URI-unreserved bytes.
+fn query_escape(value: &str) -> String {
+    value.bytes().map(|b| match b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+        true => char::from(b).to_string(),
+        false => format!("%{b:02X}"),
+    }).collect()
 }
 
 fn decode_hex(text: &str) -> Vec<u8> {

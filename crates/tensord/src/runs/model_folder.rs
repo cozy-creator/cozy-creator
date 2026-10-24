@@ -10,9 +10,8 @@ pub(super) struct Folder {
     pub store: Store,
     pub tree: ObjectRef,
     pub header: ObjectRef,
-    pub variants: Vec<String>,
-    // Opening every variant retains the complete tree and its present closure during upload.
-    _checkpoints: Vec<Checkpoint>,
+    // Opening the commit retains the complete tree and its present closure during upload.
+    _checkpoint: Checkpoint,
     _staging: Staging,
 }
 
@@ -94,7 +93,7 @@ pub(super) fn input<'a>(spec: &'a Spec, choice: &domain::ModelChoice) -> Result<
     let invalid = || refused("model_folder_invalid", "a folder upload names one retained tree input, without model selectors or conversion profiles");
     let destination = spec.weights_destination.trim_start_matches("model://");
     if field.is_empty() || !spec.warm || !matches!(&spec.source, Source::Models)
-        || spec.remove || spec.set.is_some() || spec.models.len() != 1 || spec.bits != 0 || spec.gpus != 0
+        || spec.remove || spec.set.is_some() || spec.models.len() != 1 || spec.gpus != 0
         || destination.is_empty() || destination.starts_with("local/")
         || !choice.repository.is_empty() || !choice.release.is_empty() || !choice.lane.is_empty()
         || choice.manifest.is_some() || !choice.profiles.is_empty() || !choice.adapters.is_empty()
@@ -144,17 +143,7 @@ pub(super) fn prepare(
     // hold another actor's tensor bytes: citing their hash in a fabricated header grants no
     // right to upload them. An unstaged object can only be reused by the endpoint's own HEAD.
     let store = Store::open(staging.root.join("store")).map_err(invalid)?;
-    let (tree, _) = store.admit_folder(&folder).map_err(invalid)?;
-    let parsed = store.tree(&tree).map_err(invalid)?;
-    let variants: Vec<String> = parsed.variants().map(|(name, _)| name.to_owned()).collect();
-    if variants.is_empty() {
-        return Err(refused("model_folder_invalid", "the folder contains no CozyTensors variant headers"));
-    }
-    let checkpoints: Vec<Checkpoint> = variants.iter()
-        .map(|variant| store.variant(&tree, Some(variant)).map_err(invalid))
-        .collect::<Result<_, _>>()?;
-    Ok(Some(Folder {
-        header: checkpoints[0].id().clone(), tree, variants, store, _checkpoints: checkpoints,
-        _staging: staging,
-    }))
+    let (tree, _) = store.admit_folder(&folder, &spec.lane).map_err(invalid)?;
+    let checkpoint = store.at_commit(&tree).map_err(invalid)?;
+    Ok(Some(Folder { header: checkpoint.id().clone(), tree, store, _checkpoint: checkpoint, _staging: staging }))
 }

@@ -16,15 +16,15 @@ use tensorfs::store::Store;
 use tensorfs::{fetch, Checkpoint, Client, Config, Convert, Download, Format, Open, Ref, Selection};
 
 const VERBS: &[&str] = &[
-    "import <source>... [--converter <c>] [--source-variant <v>] [--name local/<name>[@tag]]",
-    "download <ref> [--dir <dir>]",
-    "upload <folder> <org/name>[@tag] [--delete <glob>]...  commits the folder onto the tag (main); the token is $TENSORFS_TOKEN",
+    "import <source>... [--converter <c>] [--source-variant <v>] [--name local/<name>]",
+    "download <ref> [--lane <lane>] [--dir <dir>]",
+    "upload <folder> <org/name> --lane <lane>  a new commit of the folder; the token is $TENSORFS_TOKEN",
     "export <ref> <dir> [--safetensors [--decode] | --gguf]",
     "inspect <ref>",
     "verify <ref>",
     "ceiling [<path>] [--gpu <n>]              measure what reads from <path>'s volume (and to GPU n) reach",
     "conform endpoint <url> [--write] [--token-env <VAR>]",
-    "dev ckpt [--name local/<name>[@tag]] [--blocks <n>] [--scale <n>] [--plain] [--no-configs]",
+    "dev ckpt [--name local/<name>] [--blocks <n>] [--scale <n>] [--plain] [--no-configs]",
     "version",
 ];
 
@@ -41,18 +41,17 @@ fn usage(verb: Option<&str>) -> String {
         text.push_str(line);
     }
     text.push_str(
-        "\n<ref> is org/name[@revision][/variant], sha256:<hex>, a .cozytensors file or a folder; a revision is
-a tag, or sha256:<hex> of a commit or a variant header, and none is the highest public version, else main;
---variant picks a variant; --source-variant a source's weights variant (fp16). The store is --store,
-else $TENSORFS_HOME, else ~/.cache/tensorfs.",
+        "\n<ref> is org/name[@release], org/name@sha256:<commit>, sha256:<hex>, a .cozytensors file or a folder;
+no release is the newest; --lane picks a lane, else the endpoint picks for the CPU; --source-variant is a
+source's weights variant (fp16). The store is --store, else $TENSORFS_HOME, else ~/.cache/tensorfs.",
     );
     text
 }
 
 const SWITCHES: &[&str] = &["help", "json", "safetensors", "decode", "gguf", "plain", "no-configs", "write"];
 const VALUED: &[&str] = &[
-    "store", "endpoint", "name", "converter", "variant", "source-variant", "blocks", "scale",
-    "token-env", "dir", "gpu", "delete",
+    "store", "endpoint", "name", "converter", "lane", "source-variant", "blocks", "scale",
+    "token-env", "dir", "gpu",
 ];
 
 struct Args {
@@ -93,10 +92,6 @@ impl Args {
 
     fn get(&self, name: &str) -> Option<&str> {
         self.flags.iter().rev().find(|(n, _)| n == name).map(|(_, v)| v.as_str())
-    }
-
-    fn all(&self, name: &str) -> Vec<&str> {
-        self.flags.iter().filter(|(n, _)| n == name).map(|(_, v)| v.as_str()).collect()
     }
 
     fn on(&self, name: &str) -> bool {
@@ -174,14 +169,13 @@ fn object(o: &ObjectRef) -> Json {
 }
 
 fn identity(ck: &Checkpoint) -> Map<String, Json> {
-    let doc = json!({"header": object(ck.id()), "tree": ck.tree().map(object), "variant": ck.variant()});
+    let doc = json!({"header": object(ck.id()), "tree": ck.tree().map(object), "lane": ck.lane()});
     doc.as_object().expect("an object").clone()
 }
 
-/// A data verb's checkpoint: the variant named, else the one a CPU read takes (spec §7: no GPU
-/// requirement applies to reading on the CPU).
+/// A data verb's checkpoint: the lane named, else the one the endpoint picks for the CPU.
 async fn open(client: &Client, args: &Args, reference: &str) -> Result<Checkpoint> {
-    let options = Open { variant: args.get("variant").map(str::to_owned), gpus: Some(vec![]), ..Open::default() };
+    let options = Open { lane: args.get("lane").map(str::to_owned), gpus: Some(vec![]), ..Open::default() };
     client.open(reference, &options).await
 }
 
@@ -224,17 +218,18 @@ async fn run(args: &Args) -> Done {
             Ok(Some((Json::Object(identity(&ck)), format!("converted sha256:{}", ck.id().sha256))))
         }
         ["download", reference] => {
-            let reference: Ref = reference.parse()?;
+            let mut reference: Ref = reference.parse()?;
+            reference.lane = args.get("lane").map(str::to_owned);
             let dir = args.get("dir").map(Path::new);
             let folder = client.materialize(&reference, &Download::default(), dir, false).await?;
             Ok(Some((json!({"path": folder}), format!("downloaded into {}", folder.display()))))
         }
         ["upload", folder, reference] => {
             let reference: Ref = reference.parse()?;
-            let commit = client.upload_folder(&reference, Path::new(folder), &args.all("delete"), None).await?;
-            let tag = reference.revision.as_deref().unwrap_or(fetch::MAIN);
-            let human = format!("uploaded sha256:{}, {}@{tag}", commit.sha256, reference.repo_id);
-            Ok(Some((json!({"commit": object(&commit), "tag": tag}), human)))
+            let Some(lane) = args.get("lane") else { return fail(Kind::Invalid, "upload names its commit's --lane") };
+            let commit = client.upload_folder(&reference, Path::new(folder), lane, None).await?;
+            let human = format!("uploaded {}@sha256:{} ({lane})", reference.repo_id, commit.sha256);
+            Ok(Some((json!({"commit": object(&commit), "lane": lane}), human)))
         }
         ["export", reference, dir] => {
             let ck = open(&client, args, reference).await?;
@@ -291,10 +286,8 @@ async fn run(args: &Args) -> Done {
             let plain = args.on("plain");
             let scale = args.number("scale", 1)?.max(1);
             let header = dev::ckpt(&store, args.number("blocks", 12)?, scale, plain, !args.on("no-configs"))?;
-            let mut tree = Tree::default();
-            tree.set_variant(if plain { "bf16" } else { "mixed" }, header.clone());
-            let tree = store.put_tree(&tree)?;
-            let name = args.get("name").unwrap_or("local/ckpt@1");
+            let tree = store.put_tree(&Tree::of(if plain { "bf16" } else { "mixed" }, header.clone(), &Default::default())?)?;
+            let name = args.get("name").unwrap_or("local/ckpt");
             let commit = name_locally(&root, &store, name, &tree).await?;
             let objects = store.closure(&tree)?;
             let doc = json!({"header": object(&header), "tree": object(&tree), "commit": object(&commit), "name": name, "objects": objects.iter().map(object).collect::<Vec<_>>()});
@@ -304,17 +297,17 @@ async fn run(args: &Args) -> Done {
     }
 }
 
-/// Commits `tree`'s files on top of tag `@tag` (none: `main`) of the local repo
-/// `local/<name>`, through the store's own endpoint: the one commit path. The commit.
+/// Records commit `tree` as the local repo `local/<name>`'s newest, through the store's own
+/// endpoint: the one commit path. The commit.
 async fn name_locally(root: &Path, store: &Store, name: &str, tree: &ObjectRef) -> Result<ObjectRef> {
     let named: Ref = name.parse()?;
-    let tag = named.revision.as_deref().unwrap_or(fetch::MAIN);
-    if !named.repo_id.starts_with("local/") || named.variant.is_some() || !tensorfs::format::tag_name(tag) {
-        return fail(Kind::Invalid, format!("--name {name:?}: a local name is local/<name>[@tag]"));
+    if !named.repo_id.starts_with("local/") || named.release.is_some() {
+        return fail(Kind::Invalid, format!("--name {name:?}: a local name is local/<name>"));
     }
     let root = std::path::absolute(root).map_err(Failure::from)?;
     let local = fetch::Endpoint::new(&fetch::Client::new(fetch::SourcePolicy::default()), &root.to_string_lossy(), None)?;
-    Ok(fetch::upload_tree(&local, &named.repo_id, tree, store, tag).await?.commit)
+    let control = fetch::UploadControl { cancelled: &|| false, progress: &|_, _| {}, commit: &|| true };
+    Ok(fetch::upload_commit(&local, &named.repo_id, tree, store, &control).await?.commit)
 }
 
 fn listing(dir: &Path) -> Result<Vec<String>> {

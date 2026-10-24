@@ -1,6 +1,6 @@
-"""TensorFS: self-contained model variants, read and written by component.
+"""TensorFS: self-contained model commits, read and written by component.
 
-    ck = tensorfs.open("acme/sdxl", revision="1.0", variant="model.int8.cozytensors")
+    ck = tensorfs.open("acme/sdxl", release="1.0", lane="int8")
     unet = ck.components["unet"]
     tensors = unet.tensors.read(device="cpu")
     tokenizer_config = ck.components["tokenizer"].config

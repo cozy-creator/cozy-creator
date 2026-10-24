@@ -1,13 +1,14 @@
 //! A model at a Hub: TensorFS's distribution `Endpoint` at the Hub's origin, presenting the
-//! owner's newest ordinary bearer when the request carried one (the owner's unreleased trees),
-//! else anonymous (released content). A tag names a commit (a tree); a lane is a variant in it.
-//! Every Hub call runs on the fetch runtime.
+//! requesting user's newest ordinary bearer when the request carried one (the Hub reads its
+//! org's unreleased commits to it), else anonymous (released content). The Hub resolves a
+//! release and lane, or the machine's hardware, to one commit. Every Hub call runs on the fetch
+//! runtime.
 use std::sync::Arc;
 
 use tensorfs::{
     err::{refuse, Code, Result},
-    fetch::{Endpoint, TokenProvider},
-    format::{ObjectRef, Resolution},
+    fetch::{Endpoint, Hardware, Resolved, TokenProvider},
+    format::ObjectRef,
 };
 
 use super::{Key, Machine, Remote};
@@ -33,19 +34,14 @@ pub fn remote(machine: &Machine, source: &hub::Source) -> Result<Remote> {
     Ok(Remote { origin: Arc::new(endpoint), trust, local })
 }
 
-/// `repository`'s tag `tag` (empty: its default, the newest public version not yanked) at
-/// `source`'s Hub: its name and commit.
-pub fn release(machine: &Machine, source: &hub::Source, repository: &str, tag: &str) -> Result<(String, ObjectRef)> {
+/// `repository`'s commit at `source`'s Hub: of `release` (empty: the newest) in `lane` (empty:
+/// the one `hardware` runs best).
+pub fn resolve(machine: &Machine, source: &hub::Source, repository: &str, release: &str, lane: &str, hardware: &Hardware) -> Result<Resolved> {
     let (endpoint, _) = endpoint(machine, source)?;
-    let (repository, tag) = (repository.to_string(), tag.to_string());
+    let (repository, release, lane, hardware) = (repository.to_string(), release.to_string(), lane.to_string(), hardware.clone());
     machine.block(&Stop::default(), async move {
-        let Some((repo, _)) = endpoint.repo(&repository).await? else {
-            return refuse(Code::REF_NOT_FOUND, format!("no model {repository} at {}", endpoint.url()));
-        };
-        match repo.resolve((!tag.is_empty()).then_some(tag.as_str())) {
-            Some(Resolution::Tag(found)) => Ok((found.name.clone(), found.commit.clone())),
-            _ => refuse(Code::REF_NOT_FOUND, format!("{repository} has no tag {tag:?} at {}", endpoint.url())),
-        }
+        let some = |text: &str| (!text.is_empty()).then(|| text.to_owned());
+        endpoint.resolve(&repository, some(&release).as_deref(), some(&lane).as_deref(), &hardware).await
     })
 }
 

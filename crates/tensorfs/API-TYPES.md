@@ -27,22 +27,21 @@ impl Config { pub fn from_env() -> Config; }
 
 pub struct Ref {
     pub repo_id: String,
-    pub revision: Option<String>,
-    pub variant: Option<String>,
+    pub release: Option<String>,
+    pub lane: Option<String>,
     pub endpoint: Option<String>,
 }
 impl FromStr for Ref {
     type Err = Failure;
     fn from_str(value: &str) -> Result<Ref>;
 }
-// <org>/<name>[@revision[/variant]], and sha256:<64 lowercase hex>.
+// <org>/<name>[@release|@sha256:<commit>], and sha256:<64 lowercase hex>.
 // Client.open checks an existing folder/.cozytensors path before parsing a Ref.
 
 pub struct Open {
-    pub bits: Option<u32>,
+    pub lane: Option<String>,
     pub gpus: Option<Vec<String>>,
-    pub revision: Option<String>,
-    pub variant: Option<String>,
+    pub release: Option<String>,
     pub endpoint: Option<String>,
     pub local_files_only: bool,
     pub lazy: bool,
@@ -89,11 +88,11 @@ impl Client {
         &self, reference: &Ref, filename: &str,
         local_dir: Option<&Path>, local_files_only: bool,
     ) -> Result<PathBuf>;
-    // Commits the folder on top of the tag reference.revision (default "main", private when new):
-    // the tag's tree minus paths matching delete_patterns (fnmatch), plus the folder's files.
-    pub async fn upload_folder(&self, reference: &Ref, folder: &Path, delete_patterns: &[&str],
+    // Uploads the folder (one .cozytensors file, its repo files) as a new commit in `lane`,
+    // private until a release names it.
+    pub async fn upload_folder(&self, reference: &Ref, folder: &Path, lane: &str,
         progress: Option<&Progress<'_>>) -> Result<ObjectRef>;
-    // The final progress callback runs after the tag moved; its error cannot undo that update.
+    // The final progress callback runs after the commit was recorded; its error cannot undo it.
 }
 // Python components= maps to Selection::Components. Asset selection does not fetch tensor chunks.
 
@@ -104,7 +103,7 @@ impl Checkpoint {
     pub fn header(&self) -> &format::Header;
     pub fn metadata(&self) -> &Metadata;
     pub fn chunks(&self) -> &[ObjectRef];
-    pub fn variant(&self) -> Option<&str>;
+    pub fn lane(&self) -> Option<&str>;
     pub fn tree(&self) -> Option<&ObjectRef>;
     pub fn verify(&self, selection: &Selection) -> Result<VerificationReport>;
     // Placement (varena): stored spans of named regions, a part's stored dtype/shape, and a
@@ -166,13 +165,10 @@ pub struct Endpoint { /* unchanged native endpoint/transport internally */ }
 impl Endpoint {
     pub fn new(url: &str, token: Option<Arc<dyn TokenProvider>>) -> Result<Endpoint>;
     pub fn with_config(url: &str, config: &Config) -> Result<Endpoint>;
-    pub async fn repo(&self, repo_id: &str) -> Result<Option<(Repo, String)>>;
-    pub async fn update_repo(
-        &self, repo_id: &str,
-        change: impl FnMut(Option<Repo>) -> Result<Option<Repo>>,
-    ) -> Result<Repo>;
-    // A revision (tag, commit or variant header) to its commit, and the tag it went through.
-    pub async fn commit(&self, repo_id: &str, revision: &str) -> Result<(ObjectRef, Option<String>)>;
+    pub async fn document(&self, object: &ObjectRef) -> Result<Vec<u8>>;
+    // The commit of `release` (none: the newest) in `lane` (none: the endpoint's pick for `hardware`).
+    pub async fn resolve(&self, repo_id: &str, release: Option<&str>, lane: Option<&str>,
+        hardware: &fetch::Hardware) -> Result<fetch::Resolved>;
 }
 // Endpoint("local") resolves default cache root; with_config supplies explicit
 // cache_dir/CA/provider. No callback changes a different repo or bypasses native CAS.
@@ -216,10 +212,10 @@ impl Client {
 pub struct WriterOptions<'a> {
     // Exact header-file path, or None for a checkpoint in the shared store. The file is a
     // handle into the store, rooting its data while it holds this header.
-    // dest and repo_id exclude each other; variant needs repo_id.
-    pub dest: Option<&'a Path>, pub variant: Option<&'a str>,
+    // dest and repo_id exclude each other; a repo_id commit names its lane.
+    pub dest: Option<&'a Path>,
     pub base: Option<&'a Checkpoint>, pub resume: Option<&'a str>,
-    pub repo_id: Option<&'a str>, pub revision: Option<&'a str>, pub endpoint: Option<&'a str>,
+    pub repo_id: Option<&'a str>, pub lane: Option<&'a str>, pub endpoint: Option<&'a str>,
     pub token: Option<Arc<dyn TokenProvider>>,
 }
 pub struct Writer { /* owned local and optional remote write state */ }

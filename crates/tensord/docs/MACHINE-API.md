@@ -30,10 +30,10 @@ GPUs; unsupported operations fail instead of reducing the count. This includes G
 calls of a deviceless root, whose explicit count reserves one subset while it runs. Checkpoint identity and weight
 lanes never select parallelism. Busy GPUs cause queuing, not a smaller group.
 
-`RunSpec.bits` and `WarmItem.bits` (16, 8 or 4) set the run's weight precision; children inherit
-it and Runtime gets it with each request. Zero: the lane rule (`precision.rs`, tracker design
-`precision-tiers.md` §2.2) picks each slot's lane from its GPUs' compute capability, its declared
-`min_bits`, `phase` and `encoded_leaves`, and the memory budget. A fallback is one run warning.
+`RunSpec.lane` and `WarmItem.lane` name the main model's lane (a label); children inherit it. Empty: the
+Hub resolves each slot's commit for its GPU group's compute capabilities and free VRAM (plain lanes only for
+a slot whose class takes no encoded leaves, or raw weights), and says why it passed a better lane over (one run
+warning each). A model-only upload's lane labels the commit it makes.
 
 
 ## What disappears
@@ -41,25 +41,25 @@ it and Runtime gets it with each request. Zero: the lane rule (`precision.rs`, t
 - **Prepare and warm-up** are runs (`kind: warm`); uninstall is `kind: remove` (`remove/1`).
 - **Acknowledge** is deleted. A read that reaches the final length of an output's final revision
   marks it delivered, and delivered bytes are evicted first.
-- **Hub access**: released content is read anonymously. A run that reads its owner's private
-  checkpoints or publishes to the owner's repositories carries the owner's bearer
-  (`tensorfs.token`, with the Hub's `endpoint`, `ca_der` and `expires_unix_ms`), taken at send
-  from the CLI's signed-in session. Calcifer also gives each machine it sent one every bearer
+- **Hub access**: released content is read anonymously. Signed in, every run carries the user's
+  bearer (`tensorfs.token`, with the Hub's `endpoint`, `ca_der` and `expires_unix_ms`), taken at send
+  from the CLI's signed-in session: the Hub reads its org's unreleased commits to it by membership. Calcifer also gives each machine it sent one every bearer
   the session mints after, at the session's own refresh point (`PUT /v1/bearer`). The machine
   keeps the newest per signer and Hub, in memory only, and reads models through TensorFS's
   distribution `Endpoint` under it: runs, warm-set members, prefetches and calls alike. Each
   executor given it on a Load or Invoke hears of every newer one (`bearer`, see
   [DEVICE-EXECUTOR.md](DEVICE-EXECUTOR.md)), so a call that outlives its bearer still uploads.
-  It presents it only to that Hub's origin; its scope is the owner's account. A refused bearer
+  It presents it only to that Hub's origin; its scope is the user's account. A refused bearer
   ends the run `hub_credential_refused`, naming its expiry. If the machine restarts before
   preparation completes, the run ends FAILED with a typed reason; started work is never re-run.
 - **Names** (th-245): the machine resolves them at the run's Hub. A release (`org/name`, its
   release or none for the newest) installs from the card and locked requirements it reads there
   by name. A model slot is the run's choice, else its declared `default` release (a callee's
-  too): `repository` at `release` (none: the newest) in its `lane`, else in the first lane of the
-  rule's order its release publishes, else in its only lane: the repo document names the release,
-  its tree the lane's header. `manifest` names a checkpoint by hash only: the owner's (under the
-  bearer) or one the machine holds. Name
+  too): `repository` at `release` (none: the newest) in its `lane`, else the commit the Hub picks for
+  the hardware (`GET /v1/models/{org}/{name}/resolve`); the commit's tree names its one header.
+  `manifest` names a commit (or a header) by hash: one the bearer may read, or one the machine
+  holds. A weights output the Runtime writes, the machine uploads itself as a commit of the run's
+  `weights_destination` in the output's lane. Name
   resolutions and held preparations are kept per `catalog_revision`, so a warm run reads nothing
   at a Hub and a revision the caller moved resolves once more; there is no TTL guess or forget verb.
 - **List** is deleted. Status shows live runs; history is the CLI's own records plus a run's events.

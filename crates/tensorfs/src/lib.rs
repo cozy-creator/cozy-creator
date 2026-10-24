@@ -19,11 +19,8 @@ pub mod import;
 /// The read engine: byte ranges of files into host or device destinations (xs-055).
 pub mod io;
 pub mod kernels;
-/// The lane rule: which variant a reader's GPUs and bits take (spec §7, xs-042).
+/// A header's precision family, by the lane rule's table (spec §7).
 pub mod precision;
-/// The A11 0.12 -> D10 header migration.
-#[cfg(feature = "store")]
-pub mod migrate;
 pub mod sha256;
 #[cfg(feature = "store")]
 pub mod store;
