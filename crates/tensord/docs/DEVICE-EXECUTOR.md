@@ -40,8 +40,9 @@ PYTHON -I -m cozy_runtime.internal.trampoline --expect-parent <pid> --oom-adj 10
 
 TensorD's `Load` command asks Runtime to construct the model in this executor. TensorD supplies
 the selected stored metadata/assets and the weight sets' bytes (`read_grant`); Runtime parses
-and plans reads with its own TensorFS library, and varena in the executor decides every GPU byte
-it holds, making room in other executors through the GPU's ledger (design memory-varena).
+and plans reads with its own TensorFS library into Torch-owned tensors. Runtime manages local
+weight residency; TensorD offloads whole idle executors through `Map(Ram)` when another construction
+needs room. TensorD creates no CUDA context, GPU allocation or lease listener.
 
 ## Wire
 
@@ -58,8 +59,11 @@ it holds, making room in other executors through the GPU's ledger (design memory
   TensorD sends it to each executor a Load or Invoke gave that signer's token for that endpoint,
   whenever it holds a newer one. Load and Invoke name `actor`. A Runtime without the handler
   answers `reply: bearer`, which TensorD ignores.
-- `start` names `memory_protocol` (the lease protocol, or 0: the executor runs its own memory)
-  and, with leases, `leases`: the namespace each GPU's lease listener is named in.
+- GPU execution requires Hello's concrete `memory_backend="torch"` capability before Start;
+  package versions are not the capability. Start carries no GPU-page namespace or lease protocol.
+  A configured total `gpu_memory_limit` is currently refused as `gpu_memory_limit_unsupported`:
+  independent per-process fractions cannot enforce the total across a call family. Uncapped
+  stock-Torch execution is the implemented mode until aggregate grants are qualified.
 - While waiting for a reply, `event=progress` frames go to `Services::progress`. `event=request`
   frames (optionally with an `SCM_RIGHTS` fd) go to `Services::request`. The reply must name the
   command, otherwise it is an error. Unknown events and fields are ignored.
@@ -75,7 +79,7 @@ read. Hello's version fields are provenance only. There is no SDK or TensorFS ve
 
 ## Observations
 
-`LoadFacts`, `Metrics` and an invoke's `memory` (varena's per-request stats, kept whole) are
+`LoadFacts`, `Metrics` and an invoke's `memory` (Runtime's allocation/residency observations) are
 typed optional records. An absent value is unknown, and signed byte fields keep the SDK's `-1`
 sentinel. Observations never authorize kills.
 

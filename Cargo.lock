@@ -3702,7 +3702,6 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "uuid",
- "varena",
  "webpki-roots",
  "zip",
 ]
