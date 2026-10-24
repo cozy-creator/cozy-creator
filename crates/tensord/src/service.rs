@@ -419,7 +419,6 @@ impl Service {
                 memo: pool.as_ref().map(|pool| pool.memo()),
                 uv_cache: uv_cache.as_deref(),
                 disk: &|| crate::reclaim::measure(&self.engine.root),
-                derived: pool.as_ref().map(|pool| pool.derived()),
             })
         };
         match sweep() {
