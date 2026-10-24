@@ -7,6 +7,7 @@ The cell does not load a checkpoint or claim model-quality/performance qualifica
 import hashlib
 import json
 import os
+import struct
 import time
 from typing import Annotated
 
@@ -18,11 +19,68 @@ from cozy_runtime.author import (
     FileAsset,
     ImageAsset,
     ImageFrame,
+    ModelArtifact,
     Outputs,
     Telemetry,
+    WeightsOutput,
+    invocable,
 )
+from cozy_runtime.weights_store import Derivation
 
 app = App()
+
+
+class DeriveRequest(msgspec.Struct, forbid_unknown_fields=True):
+    seed: int
+    recipe: str = "v1"
+
+
+class DeriveResult(msgspec.Struct):
+    artifact: ModelArtifact
+    repo_id: str
+    lane: str
+    tree: str
+    reused: bool
+    written_bytes: int
+    exact_bytes: bool
+
+
+@app.entrypoint(accelerator=False, weights=(WeightsOutput("prepared", 4096),))
+@invocable
+async def derive(ctx: Context, *, payload: DeriveRequest) -> DeriveResult:
+    """Real public derivation/adoption, including persistent lookup on a later invocation."""
+    work = Derivation(
+        base=None,
+        order=(("probe", "values"),),
+        provenance={"recipe": payload.recipe, "seed": payload.seed},
+    )
+    output = ctx.output("prepared", work)
+    reused = output.done is not None
+    data = struct.pack("<4f", *(float((payload.seed + i) % 100) for i in range(4)))
+    if not output.has("probe", "values"):
+        output.put("probe", "values", "F32", (4,), data)
+    checkpoint = output.commit()
+    actual = bytearray(len(data))
+    checkpoint.components["probe"].tensors.read_into("values", actual)
+    if bytes(actual) != data:
+        raise RuntimeError(
+            "the committed TensorFS values differ from the prepared bytes"
+        )
+    artifact = ctx.adopt_model(output)
+    expected_repo = "local/derived-" + artifact.transaction.removeprefix("sha256:")
+    if checkpoint.repo_id != expected_repo or checkpoint.lane != "prepared":
+        raise RuntimeError(
+            "the replay was not retained in its own repository and output lane"
+        )
+    return DeriveResult(
+        artifact,
+        checkpoint.repo_id,
+        checkpoint.lane,
+        checkpoint.tree or "",
+        reused,
+        output.written,
+        True,
+    )
 
 
 class Request(msgspec.Struct, forbid_unknown_fields=True):

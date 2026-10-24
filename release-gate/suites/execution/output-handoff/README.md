@@ -13,6 +13,7 @@ python3 gate.py --out /path/to/new/proof-directory --expect overlap
 python3 gate.py --out /path/to/new/cancel-directory --cancel-output
 python3 gate.py --out /path/to/new/custody-directory --cancel-custody
 python3 burst.py --out /path/to/new/burst-directory --cpu-capacity 2
+python3 derive.py --out /path/to/new/derived-checkpoints
 ```
 
 Use `--on <name>` for an already rented candidate machine. The controllers never rent or update it.
@@ -46,3 +47,9 @@ It checks that detached output work never exceeds that capacity plus the one act
 that enough backlog was generated to exercise the policy, that every image commits, and that one
 executor is reused without overlapping independent GPU invocations. It queues at most 16 real
 images and cancels only its own runs if the proof cannot finish.
+
+The CPU derivation case uses declared weights outputs, Context.output and adoption through the
+installed Runtime/TensorD pair. It checks actual committed tensor bytes, a later request's zero-write
+replay, and a distinct recipe's separate repository. It does not claim process-restart replay or
+GPU prepared-artifact performance. This covers the TensorFS release/lane API integration needed by
+the combined candidate; no private SDK invocation or alternate store is used.
