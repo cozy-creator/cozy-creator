@@ -73,8 +73,8 @@ pub struct GpuConfig {
     /// (`precision`).
     #[serde(default)]
     pub inventory: Vec<crate::machine::receipt::Gpu>,
-    /// The total machine GPU cap. Stock-allocator execution refuses it until aggregate grants
-    /// include every executor and non-allocator bytes; it is never multiplied per executor.
+    /// The total machine GPU cap. Below-device caps require enforcement covering every
+    /// executor and non-allocator byte; it is never multiplied per executor.
     #[serde(default)]
     pub gpu_memory_limit: Option<u64>,
     /// Explicitly configured locations; the executor seal is imposed on top of them.
@@ -890,17 +890,21 @@ impl Pool {
             self.end_session(&key)
         })
     }
-    /// No per-process fraction can enforce the machine's total cap across a call family.
-    fn gpu_cap(&self, degree: u32) -> io::Result<()> {
-        if degree > 0 {
-            if let Some(limit) = self.config.gpu_memory_limit {
-                return Err(io::Error::other(Refused {
-                    code: "gpu_memory_limit_unsupported".into(),
-                    detail: format!("the configured total GPU limit of {limit} bytes requires aggregate executor grants; stock-PyTorch execution cannot enforce it yet"),
-                }));
-            }
-        }
-        Ok(())
+    /// The physical device already enforces a cap at its capacity. A smaller synthetic cap
+    /// needs more than fractions of Torch's allocator: CUDA contexts and libraries can grow
+    /// outside it. Driver observations cannot turn their measured use into an upper bound.
+    fn gpu_cap(&self, start: usize, degree: u32) -> io::Result<()> {
+        let Some(limit) = self.config.gpu_memory_limit.filter(|&limit| limit > 0) else { return Ok(()) };
+        if degree == 0 { return Ok(()) }
+        let bounded = self.devices.get(start..start + degree as usize).is_some_and(|devices| {
+            devices.iter().all(|device| platform::gpu::Device::open(&device.entry)
+                .and_then(|gpu| gpu.read()).is_ok_and(|read| read.total > 0 && read.total <= limit))
+        });
+        if bounded { return Ok(()) }
+        Err(io::Error::other(Refused {
+            code: "gpu_memory_limit_unsupported".into(),
+            detail: format!("the configured total GPU limit of {limit} bytes is below a selected device's capacity, or its capacity is unknown; stock PyTorch cannot enforce this hard limit across executor allocators, CUDA contexts and direct library allocations"),
+        }))
     }
 
     fn measured_peak(&self, lane: &std::ops::Range<usize>, construction: &str) -> Option<u64> {
@@ -2389,7 +2393,7 @@ impl Pool {
             })
         };
         let (key, degree) = (session_key(&plan.construction, start), plan.degree);
-        if let Err(error) = self.gpu_cap(degree) {
+        if let Err(error) = self.gpu_cap(start, degree) {
             engine.finish(id, Outcome::Failed(Failure::machine("gpu_memory_limit_unsupported", error.to_string())))?;
             return Ok(());
         }
@@ -2504,7 +2508,7 @@ impl Pool {
         start: usize,
         on_birth: impl Fn(&Birth, &Cancellation) -> io::Result<()>,
     ) -> io::Result<Session> {
-        self.gpu_cap(plan.degree)?;
+        self.gpu_cap(start, plan.degree)?;
         if plan.degree > 0 { self.make_room(engine, &plan.construction, start..start + plan.degree as usize); }
         let launched = Instant::now();
         let (root, socket, directory) = self.executor_endpoint()?;

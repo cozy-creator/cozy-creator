@@ -61,9 +61,9 @@ needs room. TensorD creates no CUDA context, GPU allocation or lease listener.
   answers `reply: bearer`, which TensorD ignores.
 - GPU execution requires Hello's concrete `memory_backend="torch"` capability before Start;
   package versions are not the capability. Start carries no GPU-page namespace or lease protocol.
-  A configured total `gpu_memory_limit` is currently refused as `gpu_memory_limit_unsupported`:
-  independent per-process fractions cannot enforce the total across a call family. Uncapped
-  stock-Torch execution is the implemented mode until aggregate grants are qualified.
+  A configured total `gpu_memory_limit` below a selected device's capacity is refused as
+  `gpu_memory_limit_unsupported`; see [GPU limits](#gpu-limits). No limit is copied to each
+  executor or rank. Deviceless execution is unaffected.
 - While waiting for a reply, `event=progress` frames go to `Services::progress`. `event=request`
   frames (optionally with an `SCM_RIGHTS` fd) go to `Services::request`. The reply must name the
   command, otherwise it is an error. Unknown events and fields are ignored.
@@ -76,6 +76,34 @@ needs room. TensorD creates no CUDA context, GPU allocation or lease listener.
 
 The oldest Runtime is 0.27.0, which takes every command and field here; `Hello.memory` is not
 read. Hello's version fields are provenance only. There is no SDK or TensorFS version gate.
+
+## GPU limits
+
+`gpu_memory_limit` is a hard total device-memory cap, including every executor/rank and its
+CUDA context and library allocations. Zero disables it. A cap at or above each selected
+device's live NVML capacity needs no synthetic enforcement: the physical capacity already
+bounds it. Unknown capacity and every smaller cap are refused before starting or reusing a
+GPU executor. Imported CPU-only parents may still exist, and the machine remains available
+for deviceless work.
+
+The missing contract is `sum(allocator grants + enforced non-allocator ceilings) <= cap`.
+PyTorch's [per-process fraction](https://docs.pytorch.org/docs/2.14/generated/torch.cuda.memory.set_per_process_memory_fraction.html)
+limits its caching allocator. [Direct CUDA and NCCL allocations](https://docs.pytorch.org/docs/2.14/torch_cuda_memory.html#identifying-non-pytorch-allocations)
+can bypass that allocator. Subtracting a measured context/library high-water mark or a fixed
+reserve does not enforce their future use. NVML observations and periodic kills cannot
+establish a hard cap either.
+
+A future grant implementation must first provide a bound for those allocations, or explicitly
+change this configuration's contract. Each executor/rank then needs its own allocator grant;
+lowering it requires completed offload, an empty-cache pass and an acknowledgement that its
+remaining reservations fit. A waiting parent still owns its live tensors and grant. Existing
+family GPU permits continue to allow its child; a second admission wait cannot borrow the
+parent's grant or wait for the parent to finish. No Start/Map grant fields are advertised until
+these conditions can be implemented and proven together.
+
+This is an explicit unfinished boundary for smaller-card simulation, not aggregate capped-mode
+support. Required proof includes parent/child overlap, multiple ranks, graph-private pools,
+offload acknowledgement, process death and allocations outside Torch.
 
 ## Observations
 
