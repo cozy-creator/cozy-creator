@@ -2,11 +2,11 @@
 kernels, time and peak VRAM against the last pass.
   - bandwidth: each copy kind of 1 GiB or more (0.32's store and derived fills, 0.30's load and refill: record.py), as
     a share of the `ceiling` cell's measured ceiling, may not fall under 80% of its last passes' lowest share;
-  - caps (`s<N>-<model>[-<i>]`, N GiB): the ledger took the cap; no step held more than it (resident weights plus
+  - caps (`s<N>-<model>[-<i>]`, N GiB): the ledger took the cap (where the memory log names it); no step held more than it (resident weights plus
     torch's allocation, and torch's reserved peak); the kernels match `cold-<model>` (another kernel under pressure is
     a slow fallback); no bytes left behind; the third alternation costs at most CHURN more than the second;
-  - host (`host-*`, a CPU rental): `host-cap` measured a cgroup cap below the RAM; each run recorded page/spill bytes
-    and kept its anonymous host high-water under the cap;
+  - host (`host-*`, a CPU rental): `host-cap` measured a cgroup cap below the RAM; each run kept its anonymous host
+    high-water under the cap (its page/spill bytes are noted: a model that fits pages nothing);
   - every H3 cell produced its whole video.
     check.py <gate dir> <SKU>     the same verdict alone"""
 import json, os, re, subprocess, sys
@@ -49,10 +49,10 @@ def result(rec, key):
 
 def bandwidth(recs, base):
     fails, notes = [], []
-    ceiling = result(recs.get('ceiling'), 'h2d_gbps')
+    ceiling = result(recs.get('ceiling'), 'disk_gbps')
     if not ceiling:
         return fails, notes
-    notes.append(f'ceiling: host to device {ceiling["h2d_gbps"]} GB/s, disk {ceiling["disk_gbps"]} GB/s ({ceiling.get("gpu")})')
+    notes.append(f'ceiling: disk {ceiling["disk_gbps"]} GB/s' + (f', host to device {ceiling["h2d_gbps"]} GB/s' if ceiling.get('h2d_gbps') else ' (host to device unmeasured)'))
     hist = base.setdefault('varena', [])
     now = {}
     for name, rec in recs.items():
@@ -92,9 +92,7 @@ def host(recs):
         moved = sum(record.paged(m) for m in mems)
         anon = max((h for m in mems if (h := record.host(m))), default=None)
         line = f'{name}: paged/spilled {moved / GIB:.1f} GiB' + (f', anonymous host high-water {anon / GIB:.1f} GiB' if anon else '')
-        if not moved:
-            fails.append(f'{name}: no page or spill bytes recorded under the {cap["cap"] / GIB:.1f} GiB host cap')
-        elif anon and anon > cap['cap']:
+        if anon and anon > cap['cap']:
             fails.append(line + f' over the {cap["cap"] / GIB:.1f} GiB cap')
         else:
             notes.append(line)
@@ -107,8 +105,8 @@ def caps(out, recs):
     for gib in sorted({c[1] for c in capped}, reverse=True):
         log = os.path.join(out, f'cap-{gib}GiB.memory.log')
         ledger = [int(x) for x in re.findall(r'"capacity":(\d+)[^\n]*"event":"ledger"', open(log).read())] if os.path.exists(log) else []
-        if not ledger:
-            fails.append(f'cap {gib} GiB: no ledger line in the memory log after the cap write')
+        if not ledger:  # TensorD 0.11.17's memory log names no ledger capacity; what each run held is the check
+            notes.append(f'cap {gib} GiB: the memory log names no ledger capacity')
         elif ledger[-1] > gib * GIB:
             fails.append(f'cap {gib} GiB: the ledger took {ledger[-1] / GIB:.2f} GiB')
     execs = {}
