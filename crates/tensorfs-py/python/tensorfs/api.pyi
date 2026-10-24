@@ -53,7 +53,7 @@ class CheckpointFile(io.RawIOBase):
 class Endpoint:
     def __init__(self, url: str, token: Token | None = None, *, ca_der: bytes | None = None, cache_dir: StrPath | None = None) -> None: ...
     def resolve(self, repo_id: str, *, release: str | None = None, lane: str | None = None,
-                gpus: Sequence[str] | None = None) -> dict[str, object]:
+                gpus: Sequence[str] | None = None, plain: bool = False) -> dict[str, object]:
         """The commit of `release` (none: the newest) in `lane` (none: what `gpus` run best; none:
         the CPU): `{release, lane, commit, header, reasons}`."""
 

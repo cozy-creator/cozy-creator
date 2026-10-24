@@ -74,11 +74,14 @@ pub struct Uploaded {
 }
 
 /// What a consumer runs on, for a resolve without a lane: each GPU's compute capability (`"8.9"`,
-/// `"apple9"`; none: the CPU) and the free bytes on the smallest of them.
+/// `"apple9"`; none: the CPU), the free bytes on the smallest of them, and whether it takes plain
+/// weights only (code that runs no encoded tensor).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Hardware {
     pub gpus: Vec<String>,
     pub free_vram: Option<u64>,
+    #[serde(default)]
+    pub plain: bool,
 }
 
 /// A model's commit as resolved: its release (empty: none), lane, tree and header, and why a
@@ -188,6 +191,9 @@ impl Endpoint {
         if !hardware.gpus.is_empty() {
             query("gpus", &hardware.gpus.join(","));
             hardware.free_vram.into_iter().for_each(|free| query("free_vram", &free.to_string()));
+        }
+        if hardware.plain {
+            query("plain", "true");
         }
         url.pop();
         let reply = self.exchange(Ask { method: "GET", url: &url, headers: vec![], body: None, payload: None, auth: true }).await?;

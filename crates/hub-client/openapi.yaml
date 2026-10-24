@@ -600,8 +600,8 @@ paths:
       summary: One commit of a release (the newest when none is named), by its lane or else by the hardware.
       description: |
         With a lane, the release's commit of that lane, else 404 lane.not_found. Without one, the Hub picks from
-        each commit's header (its schemes, dtypes and bytes) what the GPUs run, preferring 8-bit, and of those
-        what fits free_vram; reasons say what was passed over. No gpus means CPU.
+        each commit's header (its schemes, dtypes and bytes) what the GPUs run (plain weights only when plain),
+        preferring 8-bit, and of those what fits free_vram; reasons say what was passed over. No gpus means CPU.
       security: [{}, {bearer: []}, {dpop: []}]
       parameters:
       - {$ref: '#/components/parameters/Org'}
@@ -610,6 +610,7 @@ paths:
       - {name: lane, in: query, schema: {type: string}, description: "A lane label; omitted: chosen by the hardware."}
       - {name: gpus, in: query, schema: {type: string}, description: 'Comma-separated GPUs of the set: CUDA compute capabilities ("8.9") or Apple Metal families ("apple9"). Omitted: CPU.'}
       - {name: free_vram, in: query, schema: {type: integer, format: int64}, description: "Free bytes on each GPU (the set's smallest); omitted: no fit check."}
+      - {name: plain, in: query, schema: {type: boolean}, description: "The consumer takes only plain (unencoded) weights (a slot of raw weights, or one without encoded_leaves=accept): the pick skips encoded lanes, and none left is lane.unrunnable. A lane overrides it."}
       responses:
         '200':
           description: The resolved commit.

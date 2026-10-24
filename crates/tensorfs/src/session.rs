@@ -229,7 +229,7 @@ impl Client {
                     .into_iter().map(|g| g.capability).collect(),
             };
             let source = self.source(&reference, options.local_files_only)?;
-            source.open(reference, &crate::fetch::Hardware { gpus, free_vram: None }).await?
+            source.open(reference, &crate::fetch::Hardware { gpus, ..Default::default() }).await?
         };
         if !options.lazy {
             checkpoint.download(&Download::default()).await?;

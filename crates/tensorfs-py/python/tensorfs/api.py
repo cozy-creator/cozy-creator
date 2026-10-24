@@ -122,8 +122,8 @@ class Endpoint:
     def __init__(self, url, token=None, *, ca_der=None, cache_dir=None):
         self._native = _ext.Endpoint(url, token, ca_der=ca_der, cache_dir=_cache(cache_dir))
 
-    def resolve(self, repo_id, *, release=None, lane=None, gpus=None):
-        return self._native.resolve(repo_id, release=release, lane=lane, gpus=gpus)
+    def resolve(self, repo_id, *, release=None, lane=None, gpus=None, plain=False):
+        return self._native.resolve(repo_id, release=release, lane=lane, gpus=gpus, plain=plain)
 
 
 class ComponentWriter:

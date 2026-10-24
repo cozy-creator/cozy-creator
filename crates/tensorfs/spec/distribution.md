@@ -28,14 +28,15 @@ a commit is named by its id.
 ## 2. Reading
 
 ```text
-GET  B/v1/models/<org>/<name>/resolve?release=&lane=&gpus=&free_vram=      200 {release, lane, commit, header, reasons} | 404
+GET  B/v1/models/<org>/<name>/resolve?release=&lane=&gpus=&free_vram=&plain=   200 {release, lane, commit, header, reasons} | 404
 GET  B/blobs/<aa>/<bb>/<hex>    [Range: bytes=a-b]          200 | 206 | 302/303/307 + Location | 404
 HEAD B/blobs/<aa>/<bb>/<hex>                                200 + Content-Length | 404
 ```
 
 - Resolve names one commit: of `release` (none: the newest), in `lane`, else what the hardware runs and fits:
   `gpus`, each GPU's compute capability (`8.9`) or Apple Metal family (`apple9`), none for the CPU, and
-  `free_vram`, the free bytes on the smallest. `reasons` say what was passed over.
+  `free_vram`, the free bytes on the smallest; `plain=true` takes plain lanes only (code that runs no encoded
+  tensor). `reasons` say what was passed over.
 - A client walks commit (tree) → its repo files and header → that header's chunks and assets. It MUST check every
   object's length and SHA-256 before it admits it.
 - A commit no release names, and its objects, a server serves only to members of the model's organization.

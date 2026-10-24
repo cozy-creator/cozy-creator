@@ -153,8 +153,9 @@ impl PyEndpoint {
     }
 
     /// The commit of `repo_id` at `release` (none: the newest) in `lane` (none: what `gpus`
-    /// run best; none: the CPU): `{release, lane, commit, header, reasons}`.
-    #[pyo3(signature = (repo_id, *, release = None, lane = None, gpus = None))]
+    /// run best, of plain lanes only with `plain`; none: the CPU): `{release, lane, commit,
+    /// header, reasons}`.
+    #[pyo3(signature = (repo_id, *, release = None, lane = None, gpus = None, plain = false))]
     fn resolve<'py>(
         &self,
         py: Python<'py>,
@@ -162,8 +163,9 @@ impl PyEndpoint {
         release: Option<String>,
         lane: Option<String>,
         gpus: Option<Vec<String>>,
+        plain: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let hardware = tensorfs::fetch::Hardware { gpus: gpus.unwrap_or_default(), free_vram: None };
+        let hardware = tensorfs::fetch::Hardware { gpus: gpus.unwrap_or_default(), free_vram: None, plain };
         let resolved = py
             .detach(|| block_on(self.endpoint.resolve(repo_id, release.as_deref(), lane.as_deref(), &hardware)))
             .or_raise(py)?;

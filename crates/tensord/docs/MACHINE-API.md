@@ -31,8 +31,9 @@ calls of a deviceless root, whose explicit count reserves one subset while it ru
 lanes never select parallelism. Busy GPUs cause queuing, not a smaller group.
 
 `RunSpec.lane` and `WarmItem.lane` name the main model's lane (a label); children inherit it. Empty: the
-Hub resolves each slot's commit for its GPU group's compute capabilities and free VRAM, and says why it
-passed a better lane over (one run warning each). A model-only upload's lane labels the commit it makes.
+Hub resolves each slot's commit for its GPU group's compute capabilities and free VRAM (plain lanes only for
+a slot whose class takes no encoded leaves, or raw weights), and says why it passed a better lane over (one run
+warning each). A model-only upload's lane labels the commit it makes.
 
 
 ## What disappears
