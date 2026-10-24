@@ -29,11 +29,14 @@ cozy --json package search birefnet --limit 1 > "$OUT/search.json" && J '(.packa
   || check "package search --limit 1: not exactly birefnet"
 cozy --json package info birefnet > "$OUT/package-info.json" && J '(.latest_release | length > 0) and (.releases | length > 0)' "$OUT/package-info.json" \
   || check "package info birefnet: no releases"
-cozy --json package install "$(birefnet_package)" --on local > "$OUT/install.ndjson" || check "package install $(birefnet_package) --on local failed: $(grep -oE '"message": *"[^"]*"' "$OUT/install.ndjson" | tail -1)"
-cozy --json package list --on local > "$OUT/packages.json" && grep -q '"[^"]*birefnet"' "$OUT/packages.json" || check "package list --on local: no birefnet"
-cozy --json package remove birefnet --on local > "$OUT/remove.ndjson" || check "package remove birefnet --on local failed"
-cozy --json package list --on local > "$OUT/packages-after.json" && ! grep -q '"[^"]*birefnet"' "$OUT/packages-after.json" \
-  || check "package remove: birefnet is still installed"
+# Install, list and remove: this suite's own package from its directory (local/e2e-weightless), so the step holds
+# whatever the Hub has published (a published name is installed by the release suite's throwaway, and by every run).
+cozy --json package install "$here/weightless" --on local > "$OUT/install.ndjson" \
+  || check "package install ./weightless --on local failed: $(grep -oE '"message": *"[^"]*"' "$OUT/install.ndjson" | tail -1)"
+cozy --json package list --on local > "$OUT/packages.json" && grep -q 'e2e-weightless' "$OUT/packages.json" || check "package list --on local: no local/e2e-weightless"
+cozy --json package remove local/e2e-weightless --on local > "$OUT/remove.ndjson" || check "package remove local/e2e-weightless --on local failed"
+cozy --json package list --on local > "$OUT/packages-after.json" && ! grep -q 'e2e-weightless' "$OUT/packages-after.json" \
+  || check "package remove: local/e2e-weightless is still installed"
 
 step models
 cozy --json model search birefnet --limit 1 > "$OUT/models-search.json" && J '(.models | length) == 1' "$OUT/models-search.json" \
@@ -94,11 +97,11 @@ for level in installed downloaded imported host; do
   cozy --json run "$(birefnet)" --warm "$level" --on local > "$OUT/warm-$level.ndjson" || check "run --warm $level failed"
   cozy --json machine show local > "$OUT/warm-$level.json" || true
   # The warm set holds the level asked, or says why it holds less (a CPU binds no model on a GPU).
-  J --arg l "$level" '.status.warm | any((.source | test("birefnet")) and .level == $l and (.holds == $l or (.held_back | length > 0)))' "$OUT/warm-$level.json" \
+  J --arg l "$level" '.status.warm | any(.entrypoint == "remove_background" and .level == $l and (.holds == $l or (.held_back | length > 0)))' "$OUT/warm-$level.json" \
     || check "--warm $level: the warm set does not hold birefnet at $level: $(jq -c '.status.warm' "$OUT/warm-$level.json")"
 done
 cozy --json run "$(birefnet)" --warm off --on local > "$OUT/warm-off.ndjson" || check "run --warm off failed"
-cozy --json machine show local | J '.status.warm | all(.source | test("birefnet") | not)' || check "--warm off: birefnet is still in the warm set"
+cozy --json machine show local | J '.status.warm | all(.entrypoint != "remove_background")' || check "--warm off: birefnet is still in the warm set"
 
 step "a run followed, a snapshot, a cancel"
 (cd "$here" && cozy --json run ./weightless/wait seconds:=120 --on local > "$OUT/wait.ndjson" 2>&1) &

@@ -326,8 +326,6 @@ picture() {
 }
 
 # The BiRefNet target: a pinned release, the packages checkout's directory, or the published release.
-# The BiRefNet package as installed by name: a pinned candidate when PINS holds one.
-birefnet_package() { tr , '\n' <<< "$PINS" | grep -m1 '^birefnet@' || echo birefnet; }
 birefnet() {
   local pin
   pin=$(tr ',' '\n' <<< "$PINS" | sed -n 's/^birefnet@//p' | head -1)
