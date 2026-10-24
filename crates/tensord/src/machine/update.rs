@@ -115,10 +115,6 @@ pub struct Choice {
     pub sha256: String,
     #[serde(default)]
     pub version: String,
-    /// A release candidate's wheel the caller resolved (its GitHub prerelease), fetched here and
-    /// held to `sha256`: nothing is uploaded.
-    #[serde(default)]
-    pub url: String,
 }
 
 /// An update failure with its own reason code.
@@ -1044,17 +1040,6 @@ impl Updates {
     /// A staged {file, sha256}, or a release {version} the machine fetches: a wheel from PyPI,
     /// `cozy` from its GitHub release, each held to the digest its source publishes.
     fn resolve(&self, distribution: &str, choice: &Choice) -> io::Result<PathBuf> {
-        if !choice.url.is_empty() {
-            let file = choice.url.rsplit('/').next().unwrap_or_default();
-            let named = file.starts_with(&format!("{distribution}-")) && file.ends_with(".whl");
-            let digest = choice.sha256.len() == 64 && choice.sha256.bytes().all(|c| c.is_ascii_hexdigit());
-            if !choice.url.starts_with("https://") || !named || !digest {
-                return Err(invalid(&format!("{} is no https URL of a {distribution} wheel with its sha256", choice.url)));
-            }
-            let machine = self.machine.as_ref().ok_or_else(|| invalid("this machine fetches no releases"))?;
-            let stop = self.stop.lock().unwrap().clone();
-            return super::pypi::wheel_at(&choice.url, &choice.sha256, file, &self.paths.update("downloads"), machine, &stop);
-        }
         if !choice.file.is_empty() {
             let path = self
                 .paths

@@ -44,8 +44,8 @@ pub(super) fn owns(
 /// file) a dev build the caller staged.
 #[derive(serde::Deserialize)]
 struct Cohort {
-    runtime: Option<Member>,
-    tensorfs: Option<Member>,
+    runtime: Option<String>,
+    tensorfs: Option<String>,
     /// The `cozy` binary, TensorD: a release version, or the `tensord` input's dev binary.
     tensord: Option<String>,
     /// The `cozy` binary as a CLI before 0.11.16 sends it: the `binary` input's file.
@@ -58,14 +58,6 @@ struct Cohort {
     gpu_memory_limit: Option<u64>,
     #[serde(flatten)]
     unknown: BTreeMap<String, serde_json::Value>,
-}
-
-/// A wheel member: a release version (PyPI), or a release candidate's wheel by URL and digest.
-#[derive(serde::Deserialize)]
-#[serde(untagged)]
-enum Member {
-    Version(String),
-    Fetched { url: String, sha256: String },
 }
 
 static SUBMITTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -212,14 +204,6 @@ fn stage(
         let file = if file.is_empty() { value.as_str() } else { file };
         Ok(Some(held(member, file)?.unwrap_or(Choice { version: value, ..Default::default() })))
     };
-    // A wheel: a version or a staged file as above, or a release candidate fetched by URL.
-    let wheel = |member: &str, value: Option<Member>| -> Result<Option<Choice>, Error> {
-        match value {
-            Some(Member::Fetched { url, sha256 }) => Ok(Some(Choice { url, sha256, ..Default::default() })),
-            Some(Member::Version(version)) => choose(member, "", Some(version)),
-            None => choose(member, "", None),
-        }
-    };
     let binary = match cohort.tensord {
         Some(named) => choose("tensord", BINARY, Some(named))?,
         None => choose("binary", BINARY, cohort.binary)?,
@@ -242,8 +226,8 @@ fn stage(
     let request = Request {
         operation: id.into(),
         pin: None,
-        runtime: wheel("runtime", cohort.runtime)?,
-        tensorfs: wheel("tensorfs", cohort.tensorfs)?,
+        runtime: choose("runtime", "", cohort.runtime)?,
+        tensorfs: choose("tensorfs", "", cohort.tensorfs)?,
         cozy: cohort.cozy,
         gpu_memory_limit: limit,
         binary,
