@@ -1,5 +1,5 @@
 //! The journal's stored values: the domain values themselves as JSON, bytes in base64. Measured
-//! on the stored kinds (a model choice, a product, an intake receipt, a terminal page) JSON is
+//! on the stored kinds (a model choice, a product, a terminal page) JSON is
 //! 3–5× protobuf's bytes, a few hundred bytes a record.
 use crate::api::domain;
 use serde::{de::DeserializeOwned, Serialize};
@@ -28,16 +28,6 @@ pub fn encode_model_choice(value: &domain::ModelChoice) -> Vec<u8> {
 
 pub fn encode_native_byte_retention_request(value: &domain::NativeByteRetentionRequest) -> Vec<u8> {
     encode(value)
-}
-
-pub fn encode_native_byte_retention_result(value: &domain::NativeByteRetentionResult) -> Vec<u8> {
-    encode(value)
-}
-
-pub fn decode_native_byte_retention_result(
-    bytes: &[u8],
-) -> Result<domain::NativeByteRetentionResult, serde_json::Error> {
-    decode(bytes)
 }
 
 pub fn encode_run_product(value: &domain::RunProduct) -> Vec<u8> {

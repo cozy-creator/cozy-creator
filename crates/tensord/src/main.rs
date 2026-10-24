@@ -3,10 +3,7 @@
 #![forbid(unsafe_code)]
 use clap::{Parser, Subcommand};
 use std::process::ExitCode;
-use tensord::{
-    config::Flags,
-    serve::{self, Dev},
-};
+use tensord::{config::Flags, serve};
 
 #[derive(Parser)]
 #[command(name = "tensord", version)]
@@ -29,8 +26,6 @@ enum Mode {
         #[arg(long)]
         json: bool,
     },
-    /// A machine on a state directory with no grant.
-    Serve(Box<Dev>),
 }
 
 fn main() -> ExitCode {
@@ -39,7 +34,6 @@ fn main() -> ExitCode {
         None => return serve::machine(tensord.flags.lifetime(), tensord.service_ready),
         Some(Mode::Run(flags)) => return serve::machine(flags.lifetime(), tensord.service_ready),
         Some(Mode::Version { .. }) => serve::version(),
-        Some(Mode::Serve(dev)) => serve::dev(*dev),
     };
     match done {
         Ok(()) => ExitCode::SUCCESS,

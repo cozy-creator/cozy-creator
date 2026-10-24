@@ -32,9 +32,5 @@ makes the same binary with `build=tensord`.
 
 ```sh
 target/debug/tensord version --json
-target/debug/tensord serve --state PATH [--generations PATH] [--host-bytes N] \
-  [--cpu-parallelism N] [--gpu-config FILE] [--machine-config FILE --listen ADDR]
+target/debug/tensord run [--rental]   # what `cozy machine serve` runs
 ```
-
-`--machine-config` with `--listen` starts the authenticated HTTPS machine API Calcifer uses.
-`--gpu-config` adds the GPU pool ([GPU service](docs/GPU-SERVICE.md)).

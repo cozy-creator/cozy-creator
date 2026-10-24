@@ -1,14 +1,11 @@
-//! Materialize verified package carriers and call the trusted Python/uv installer.
+//! Call the trusted Python/uv installer for a local package.
 //! The service commits actor/installation aliases in its one execution journal.
-use super::workspaces::{RootSet, UploadedPackage};
-use platform::durable::Mode;
 use serde::Deserialize;
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::Arc,
 };
 use crate::stop::Stop;
 use protocol::error::Error;
@@ -22,7 +19,6 @@ pub struct InstallerConfig {
     pub python: String,
     pub generations: PathBuf,
     pub client_wheel: PathBuf,
-    pub staging_root: PathBuf,
     /// The machine's own Runtime/TensorFS wheels: a local package runs this pair too.
     pub sdk: Vec<PathBuf>,
     /// The development Runtime an update named (`--runtime <path>`, `PackageSdk::runtime_build`):
@@ -53,125 +49,15 @@ pub struct GenerationRecord {
 pub struct PreparedGeneration {
     pub record: GenerationRecord,
     pub interface_bytes: Vec<u8>,
-    pub hold: Arc<File>,
-}
-pub struct MaterializedPackage {
-    pub root_set: RootSet,
-    pub project: Option<PathBuf>,
-    pub wheels: Vec<PathBuf>,
-    pub requirements: Option<PathBuf>,
-    root: PathBuf,
     _hold: File,
 }
-impl Drop for MaterializedPackage {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
-    }
-}
-
-pub fn materialize_uploaded(
-    uploaded: &UploadedPackage,
-    staging: &Path,
-) -> Result<MaterializedPackage, Error> {
-    fs::create_dir_all(staging).map_err(storage)?;
-    let root = staging.join(uuid::Uuid::new_v4().to_string());
-    fs::create_dir(&root).map_err(storage)?;
-    platform::durable::set_mode(&root, 0o700).map_err(std::io::Error::from).map_err(storage)?;
-    let hold = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .mode(0o600)
-        .open(root.join("active.lock"))
-        .map_err(storage)?;
-    hold.lock().map_err(storage)?;
-    let mut materialized = MaterializedPackage {
-        root_set: uploaded.root.clone(),
-        project: None,
-        wheels: vec![],
-        requirements: None,
-        root,
-        _hold: hold,
-    };
-    for carrier in &uploaded.files {
-        let file = carrier.open()?;
-        if carrier.filename == uploaded.root.source_archive {
-            let project = materialized.root.join("source");
-            fs::create_dir(&project).map_err(storage)?;
-            let mut archive = tar::Archive::new(file);
-            for entry in archive.entries().map_err(storage)? {
-                let mut entry = entry.map_err(storage)?;
-                let path = entry.path().map_err(storage)?.into_owned();
-                if path.is_absolute()
-                    || path
-                        .components()
-                        .any(|c| !matches!(c, std::path::Component::Normal(_)))
-                    || !(entry.header().entry_type().is_file()
-                        || entry.header().entry_type().is_dir())
-                {
-                    return Err(Error::conflict("precondition_failed",
-                        "unsafe source archive member during materialization",
-                    ));
-                }
-                let target = project.join(&path);
-                if entry.header().entry_type().is_dir() {
-                    fs::create_dir_all(target).map_err(storage)?;
-                    continue;
-                }
-                fs::create_dir_all(target.parent().expect("source member parent"))
-                    .map_err(storage)?;
-                let mut output = platform::durable::open_nofollow(&target, OpenOptions::new().create_new(true).write(true).mode(0o600)).map_err(std::io::Error::from)
-                    .map_err(storage)?;
-                std::io::copy(&mut entry, &mut output).map_err(storage)?;
-                output.sync_all().map_err(storage)?;
-                platform::durable::set_mode(&target, entry.header().mode().map_err(storage)? & 0o777).map_err(std::io::Error::from)
-                .map_err(storage)?;
-            }
-            materialized.project = Some(project);
-        } else {
-            let path = materialized.root.join(&carrier.filename);
-            let mut output = platform::durable::open_nofollow(&path, OpenOptions::new().create_new(true).write(true).mode(0o600)).map_err(std::io::Error::from)
-                .map_err(storage)?;
-            std::io::copy(&mut { file }, &mut output).map_err(storage)?;
-            output.sync_all().map_err(storage)?;
-            materialized.wheels.push(path);
-        }
-    }
-    if !uploaded.root.dependency_requirements.is_empty() {
-        let path = materialized.root.join("requirements.txt");
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .mode(0o600)
-            .open(&path)
-            .map_err(storage)?;
-        file.write_all(&uploaded.root.dependency_requirements)
-            .map_err(storage)?;
-        file.sync_all().map_err(storage)?;
-        materialized.requirements = Some(path);
-    }
-    Ok(materialized)
-}
-
-/// `read`: the bytes the installer has written (its downloads, the wheels it unpacks), about
-/// once a second while it runs.
-pub fn prepare_uploaded(
-    config: &InstallerConfig,
-    uploaded: &UploadedPackage,
-    stop: Option<&Stop>,
-    read: &dyn Fn(u64),
-) -> Result<PreparedGeneration, Error> {
-    let materialized = materialize_uploaded(uploaded, &config.staging_root)?;
-    let mut command = installer(config, &materialized.root_set)?;
-    if let Some(project) = &materialized.project {
-        command.arg("--project").arg(project);
-    }
-    for wheel in &materialized.wheels {
-        command.arg("--wheel").arg(wheel);
-    }
-    if let Some(requirements) = &materialized.requirements {
-        command.arg("--requirements").arg(requirements);
-    }
-    publish(config, command, stop, None, read)
+/// What a local package declares of itself.
+pub struct RootSet {
+    pub package: String,
+    pub release: String,
+    pub python_requires: String,
+    pub python_version: String,
+    pub callees: std::collections::BTreeMap<String, String>,
 }
 
 /// A live project installed editable in `environment`, which is built when it is not there
@@ -390,7 +276,7 @@ fn publish(config: &InstallerConfig, mut command: Command, stop: Option<&Stop>, 
     Ok(PreparedGeneration {
         record,
         interface_bytes,
-        hold: Arc::new(hold),
+        _hold: hold,
     })
 }
 fn storage(error: std::io::Error) -> Error {

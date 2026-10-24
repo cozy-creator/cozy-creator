@@ -10,7 +10,6 @@ use crate::{
     device_executor::{Answer, ByteGrant, CallInterface, CallProgress, Frame, ModelPrefetch, Request},
     execution::Engine,
     journal::{Execution, Failure, InputFile, State},
-    launch_identity::LaunchIdentity,
     runs::Runs,
     service::Service,
 };
@@ -24,7 +23,6 @@ use std::{
 };
 
 pub struct Calls {
-    identity: Option<LaunchIdentity>,
     service: Weak<Service>,
     /// Children prepare as runs do, with their parent's context.
     runs: Weak<Runs>,
@@ -161,7 +159,6 @@ impl Calls {
         runs: Option<&Arc<Runs>>,
     ) -> io::Result<Arc<Self>> {
         let calls = Arc::new(Self {
-            identity: service.pool().and_then(|pool| pool.config().identity),
             service: Arc::downgrade(service),
             runs: runs.map_or_else(Weak::new, Arc::downgrade),
             parents: Mutex::new(HashMap::new()),
@@ -388,7 +385,7 @@ impl Calls {
                         .spool
                         .join("child-results")
                         .join(call_index.to_string());
-                    let (text, rows, held) = receive(&service.engine.root, result, &parent.spool, &directory, self.identity)
+                    let (text, rows, held) = receive(&service.engine.root, result, &parent.spool, &directory)
                         .map_err(|e| ("child_result_unavailable", e.to_string()))?;
                     let settled = (text, rows);
                     // Each file is the signer's object too: a later child may be handed it.
@@ -775,7 +772,6 @@ fn receive(
     result: &crate::journal::ResultRecord,
     spool: &Path,
     directory: &Path,
-    identity: Option<LaunchIdentity>,
 ) -> io::Result<(String, Vec<ByteGrant>, Held)> {
     fn leaves(value: &Value, path: &mut Vec<String>, found: &mut Vec<String>) {
         match value {
@@ -838,9 +834,6 @@ fn receive(
         fs::create_dir_all(directory)?;
         let local = directory.join(format!("{}-{}", grants.len(), artifact.sha256));
         fs::copy(root.join(&artifact.path), &local)?;
-        if let Some(identity) = identity {
-            identity.readable(&local)?;
-        }
         hold(&local, &artifact.sha256, artifact.length)?;
         let digest = format!("sha256:{}", artifact.sha256);
         if binding.media_type == protocol::tree::MEDIA {
@@ -855,16 +848,8 @@ fn receive(
                 let target = tree.join(relative);
                 fs::create_dir_all(target.parent().unwrap_or(&tree))?;
                 fs::copy(root.join(&member.path), &target)?;
-                if let Some(identity) = identity {
-                    identity.readable(&target)?;
-                }
                 hold(&target, sha, length)?;
                 content += length;
-            }
-            if let Some(identity) = identity {
-                for entry in crate::gpu_service::walk_dirs(&tree)? {
-                    identity.readable(&entry)?;
-                }
             }
             node["asset_ref"] = digest.clone().into();
             node["digest"] = digest.clone().into();

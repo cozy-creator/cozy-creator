@@ -133,16 +133,6 @@ pub struct OutputSnapshot {
     /// `sha256:<hex>`, set once the run is terminal (the output is final).
     pub sha256: Option<String>,
 }
-/// One bounded native-input transfer. The store/journal owner validates identity,
-/// membership, contiguous offsets, native custody and durable commit/abort semantics.
-/// Dropping a disconnected transfer never supplies execution cancellation authority.
-pub trait InputTreeReceiver: Send {
-    fn blob(&mut self, blob: domain::InputTreeImportBlob) -> Result<(), Error>;
-    fn commit(
-        self: Box<Self>,
-        commit: domain::InputTreeImportCommit,
-    ) -> Result<domain::NativeByteRetentionResult, Error>;
-}
 
 fn unsupported<T>() -> Result<T, Error> {
     Err(Error::not_found(

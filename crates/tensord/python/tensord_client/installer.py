@@ -12,7 +12,7 @@ from pathlib import Path
 
 import msgspec
 
-from .captured_packages import install_captured, install_editable
+from .captured_packages import install_editable
 from .package_records import InstallFailed
 from .packages import PackageError
 
@@ -23,7 +23,6 @@ def main():
     captured = commands.add_parser("install-captured")
     captured.add_argument("--project", type=Path)
     captured.add_argument("--wheel", action="append", type=Path, default=[])
-    captured.add_argument("--requirements", type=Path)
     captured.add_argument("--distribution", required=True)
     captured.add_argument("--release", required=True)
     captured.add_argument("--python-requires", default="")
@@ -36,7 +35,7 @@ def main():
     captured.add_argument("--python", default=sys.executable)
     captured.add_argument("--callees", default="{}")
     # A live project installed editable in this environment, kept while its lock stands.
-    captured.add_argument("--editable-environment", type=Path)
+    captured.add_argument("--editable-environment", type=Path, required=True)
     # An index the project's sources name without declaring it (name=url).
     captured.add_argument("--index", action="append", default=[])
     # A live project's own code, by content (its installed files only point at it).
@@ -46,11 +45,8 @@ def main():
         shared = dict(distribution=args.distribution, release=args.release, python_requires=args.python_requires,
             python_version=args.python_version, generations=args.generations, client_wheel=args.client_wheel,
             python=args.python, sdk=args.sdk_wheel, runtime_build=args.runtime_build, callees=msgspec.json.decode(args.callees, type=dict[str, str]))
-        if args.editable_environment:
-            result = install_editable(project=args.project, environment=args.editable_environment, wheels=args.wheel,
-                                      indexes=args.index, source_digest=args.source_digest, **shared)
-        else:
-            result = install_captured(project=args.project, wheels=args.wheel, requirements=args.requirements, **shared)
+        result = install_editable(project=args.project, environment=args.editable_environment, wheels=args.wheel,
+                                  indexes=args.index, source_digest=args.source_digest, **shared)
     except PackageError as exc:
         print(msgspec.json.encode(InstallFailed(exc.code, str(exc))).decode())
         raise SystemExit(1)

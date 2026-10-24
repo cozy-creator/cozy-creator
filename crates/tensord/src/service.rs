@@ -5,7 +5,7 @@ use crate::{
     catalog::Catalog,
     execution::Engine,
     gpu_service::{Plan, Pool},
-    journal::{Execution, SubmissionContext},
+    journal::Execution,
 };
 use serde_json::Value;
 use std::{
@@ -45,8 +45,6 @@ pub struct Service {
     /// The TensorFS store's caches (`Publisher::reclaim`), swept with the machine's.
     publisher: Mutex<Option<Arc<crate::published::Publisher>>>,
     startup_gpu_births: Mutex<Vec<Birth>>,
-    /// Package/model preparations in flight: work a rental's idle release must wait for.
-    preparing: std::sync::atomic::AtomicUsize,
     /// This machine's birth: a fenced leader's group members born before it are its
     /// previous incarnation's followers.
     started_ticks: u64,
@@ -56,16 +54,6 @@ pub struct Service {
     held: std::sync::OnceLock<Box<dyn Fn() -> bool + Send + Sync>>,
     /// A rental's report to its Hub that a preparation made no progress (`on_stall`).
     stall: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
-}
-/// Held while one preparation runs; the machine is not idle meanwhile.
-pub struct Preparing(Arc<Service>);
-impl Drop for Preparing {
-    fn drop(&mut self) {
-        self.0
-            .preparing
-            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-        self.0.engine.notify_activity();
-    }
 }
 
 const SWEEP_EVERY: std::time::Duration = crate::reclaim::IDLE;
@@ -127,7 +115,6 @@ impl Service {
             calls: Mutex::new(None),
             publisher: Mutex::new(None),
             startup_gpu_births: Mutex::new(startup_gpu_births),
-            preparing: std::sync::atomic::AtomicUsize::new(0),
             started_ticks,
             queue: Default::default(),
             held: Default::default(),
@@ -229,48 +216,6 @@ impl Service {
         Ok(())
     }
 
-    pub fn submit(
-        &self,
-        key: &str,
-        generation: &str,
-        entrypoint: &str,
-        input: Value,
-    ) -> io::Result<Execution> {
-        let stopped = self.stopped.lock().unwrap();
-        if *stopped {
-            return Err(io::Error::other("machine is stopping"));
-        }
-        let held = self.catalog.resolve(generation)?;
-        let mut invocation = held.invocation(entrypoint, input)?;
-        invocation.degree = self.weightless_degree(&held, &invocation)?;
-        let record = self.engine.submit(key, invocation)?;
-        self.retain(&record, held.retention());
-        Ok(record)
-    }
-    pub fn submit_public(
-        &self,
-        context: SubmissionContext,
-        generation: &str,
-        call: Call,
-        boot: &str,
-    ) -> io::Result<Execution> {
-        let stopped = self.stopped.lock().unwrap();
-        if *stopped {
-            return Err(io::Error::other("machine is stopping"));
-        }
-        let held = self.catalog.resolve(generation)?;
-        let mut invocation = held.invocation(&call.entrypoint, call.input)?;
-        invocation.attention_kernel = call.attention_kernel;
-        invocation.gpus = call.gpus;
-        invocation.lane = call.lane;
-        invocation.inputs = call.inputs;
-        invocation.degree = self.weightless_degree(&held, &invocation)?;
-        let record = self
-            .engine
-            .submit_public_on_boot(context, invocation, boot)?;
-        self.retain(&record, held.retention());
-        Ok(record)
-    }
     /// A run prepared inside itself (`runs`) names its generation, call and model plan, and how
     /// the machine memo met it; one the memo answered (`answer`) completes with that result.
     pub fn bind_prepared(
@@ -294,15 +239,6 @@ impl Service {
         self.retain(&record, held.retention());
         Ok(record)
     }
-    /// A call submitted without a preparation constructs nothing: its declaration's degree.
-    fn weightless_degree(&self, held: &crate::catalog::HeldGeneration, invocation: &crate::journal::Invocation) -> io::Result<u32> {
-        let (_, _, interface) = held.record.app(&invocation.module).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "this environment holds no such application")
-        })?;
-        let entry = protocol::interface::entrypoint(interface, &invocation.entrypoint)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "this application declares no such entrypoint"))?;
-        self.pool().map_or(Ok(0), |pool| pool.degree(entry, invocation.gpus))
-    }
     fn retain(&self, record: &Execution, hold: Arc<File>) {
         if !record.state.terminal() {
             self.retained
@@ -317,15 +253,12 @@ impl Service {
         Ok(())
     }
     pub fn idle(&self) -> io::Result<bool> {
-        Ok(
-            self.preparing.load(std::sync::atomic::Ordering::Acquire) == 0
-                && self.engine.nonterminal(1)?.is_empty(),
-        )
+        Ok(self.engine.nonterminal(1)?.is_empty())
     }
     /// Nothing a restart would lose: no run started, no preparation in flight, and nothing waiting
     /// that could not prepare again. An update waits for this; queued runs run after it.
     pub fn settled(&self) -> io::Result<bool> {
-        Ok(self.preparing.load(std::sync::atomic::Ordering::Acquire) == 0 && !self.engine.with_journal(|journal| journal.unsettled())?)
+        Ok(!self.engine.with_journal(|journal| journal.unsettled())?)
     }
     pub fn hold_while(&self, held: impl Fn() -> bool + Send + Sync + 'static) {
         let _ = self.held.set(Box::new(held));
@@ -339,11 +272,6 @@ impl Service {
         if let Some(stall) = self.stall.get() {
             stall();
         }
-    }
-    pub fn preparing(self: &Arc<Self>) -> Preparing {
-        self.preparing
-            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        Preparing(self.clone())
     }
     /// This computer's machine idle a while: every idle executor ends, and what it held goes back.
     pub fn release_idle(&self) {

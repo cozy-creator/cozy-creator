@@ -1,16 +1,12 @@
-"""Install captured carriers with standard uv while preserving their lock/constraints."""
+"""Install a live local project editable with standard uv."""
 from __future__ import annotations
 
-import configparser
-import email.parser
-import itertools
 import os
 import shutil
 import subprocess
 import sys
 import tomllib
 import uuid
-import zipfile
 from pathlib import Path
 
 import msgspec
@@ -19,29 +15,8 @@ from packaging.utils import canonicalize_name
 from packaging.version import Version
 
 from . import layout
-from .package_records import Dependency, Describe, DescribeInstalled, DESCRIPTION_DECODER, PackageMetadata
+from .package_records import Dependency, Describe, DESCRIPTION_DECODER
 from .packages import PackageError, in_environment, publish_generation, read_metadata
-
-
-def wheel_metadata(path: Path) -> PackageMetadata:
-    with zipfile.ZipFile(path) as archive:
-        names = [n for n in archive.namelist() if n.endswith(".dist-info/METADATA")]
-        if len(names) != 1 or archive.getinfo(names[0]).file_size > 1 << 20:
-            raise PackageError("package_wheel_metadata_invalid", "one bounded wheel metadata record is required")
-        headers = email.parser.Parser().parsestr(archive.read(names[0]).decode(), headersonly=True)
-        entry_name = names[0].removesuffix("METADATA") + "entry_points.txt"
-        if entry_name not in archive.namelist() or archive.getinfo(entry_name).file_size > 1 << 20:
-            raise PackageError("package_application_absent", "the selected wheel has no bounded App declaration")
-        entries = configparser.ConfigParser(interpolation=None)
-        entries.read_string(archive.read(entry_name).decode())
-        applications = list(entries.items("cozy.application"))
-        if len(applications) != 1:
-            raise PackageError("package_application_invalid", "one App declaration is required")
-        return PackageMetadata(headers["Name"], headers["Version"], applications[0][1])
-
-
-def installed_description(distribution: str, interpreter: Path) -> msgspec.Raw:
-    return in_environment(interpreter, DescribeInstalled(distribution, str(interpreter)), DESCRIPTION_DECODER).interface
 
 
 #: Under symlinks (an image's seeded cache) the code the Runtime describes (an App's wheel, the
@@ -128,23 +103,6 @@ def interpreter_for(python: str, python_requires: str, python_version: str) -> s
     if python_version and str(version) != python_version and ".".join(str(version).split(".")[:2]) != python_version:
         raise PackageError("package_python_unavailable", "configured interpreter does not match captured Python selection")
     return python
-
-
-def without(requirements: Path, names: set[str], out: Path) -> Path:
-    """`requirements` (hashed, `\\`-continued) less the requirements naming `names`, at `out`."""
-    kept, entry = [], []
-    for line in requirements.read_text().splitlines():
-        entry.append(line)
-        if line.rstrip().endswith("\\"):
-            continue
-        first = entry[0].strip()
-        name = "".join(itertools.takewhile(lambda c: c.isalnum() or c in "-_.", first))
-        if not (name and not first.startswith(("#", "-")) and canonicalize_name(name) in names):
-            kept.extend(entry)
-        entry = []
-    kept.extend(entry)
-    out.write_text("\n".join(kept) + "\n")
-    return out
 
 
 def add_client(interpreter: Path, constraints: Path, client_wheel: Path) -> None:
@@ -240,95 +198,6 @@ def install_editable(*, project: Path, environment: Path, wheels: list[Path], di
         live = layout.interpreter(root / "env")
         interface = in_environment(live, Describe(str(project), str(live)), DESCRIPTION_DECODER).interface
         return publish_generation(root, metadata, interface, callees, ready.read_text(), source_digest)
-    except BaseException:
-        shutil.rmtree(root)  # uniquely owned unpublished generation, never dispatched
-        raise
-
-
-def install_captured(*, project: Path | None, wheels: list[Path], requirements: Path | None,
-                     distribution: str, release: str, python_requires: str, python_version: str,
-                     generations: Path, client_wheel: Path, python: str, sdk: list[Path] = (),
-                     runtime_build: str = "", callees: dict[str, str] | None = None):
-    python = interpreter_for(python, python_requires, python_version)
-    project = project.resolve() if project else None
-    wheels = [wheel.resolve(strict=True) for wheel in wheels]
-    client_wheel = client_wheel.resolve(strict=True)
-    if project and (project / "uv.lock").is_file() and (wheels or requirements):
-        raise PackageError("package_capture_mixed_lock_unsupported", "a frozen source capture cannot overlay an independent wheel/requirements closure")
-    if project:
-        metadata = read_metadata(project)
-    else:
-        matches = []
-        for wheel in wheels:
-            with zipfile.ZipFile(wheel) as archive:
-                names = [n for n in archive.namelist() if n.endswith(".dist-info/METADATA")]
-                if len(names) != 1 or archive.getinfo(names[0]).file_size > 1 << 20:
-                    raise PackageError("package_wheel_metadata_invalid", "invalid bounded wheel metadata")
-                name = email.parser.Parser().parsestr(archive.read(names[0]).decode(), headersonly=True)["Name"]
-                if canonicalize_name(name) == canonicalize_name(distribution):
-                    matches.append(wheel_metadata(wheel))
-        if len(matches) != 1:
-            raise PackageError("package_root_wheel_absent", "one captured wheel must name the requested distribution")
-        metadata = matches[0]
-    if canonicalize_name(metadata.name) != canonicalize_name(distribution) or Version(metadata.version) != Version(release):
-        raise PackageError("package_metadata_changed", "uploaded source/wheel declares another package release")
-    generations.mkdir(parents=True, exist_ok=True)
-    root = generations.resolve() / uuid.uuid4().hex
-    root.mkdir(); (root / ".hold").touch()
-    try:
-        interpreter = layout.interpreter(root / "env")
-        frozen = project and (project / "uv.lock").is_file()
-        if frozen:
-            source = root / "source"
-            shutil.copytree(project, source)
-        else:
-            subprocess.run(["uv", "venv", "--python", python, str(root / "env")], check=True)
-
-        def capture(machine: set[str] = frozenset()):
-            """The capture's own selection, without the `machine` SDK distributions the machine's pair
-            installs next: the pair is installed once, never the capture's first and then replaced."""
-            offered = [str(wheel) for wheel in sdk] if machine else []
-            if frozen:
-                # UV_PROJECT_ENVIRONMENT is a standard destination configuration value.
-                environment = {**os.environ, "UV_PROJECT_ENVIRONMENT": str(root / "env")}
-                sync = ["uv", "sync", "--frozen", "--no-dev", "--no-editable", "--no-python-downloads",
-                        "--project", str(source), "--python", python,
-                        *(f"--no-install-package={name}" for name in sorted(machine))]
-                if COPY:
-                    # The locked dependencies link; then the project itself, and any App among
-                    # them (a callee the lock holds by path), is copied.
-                    subprocess.run([*sync, "--no-install-project"], env=environment, check=True)
-                    subprocess.run([*sync, *COPY], env=environment, check=True)
-                    linked = linked_applications(interpreter)
-                    if linked:
-                        subprocess.run([*sync, *COPY, *(f"--reinstall-package={name}" for name in linked)], env=environment, check=True)
-                else:
-                    subprocess.run(sync, env=environment, check=True)
-            elif requirements and requirements.stat().st_size:
-                # uv owns hashed requirements parsing and standard download integrity. The locked
-                # dependencies link as the machine says (an image's seeded cache: symlinks).
-                # Less the pair it is a whole closure: installed as listed, the pair comes next.
-                listed = without(requirements, machine, root / "requirements.txt") if machine else requirements
-                command = ["uv", "pip", "install", "--python", str(interpreter), "--require-hashes", "-r", str(listed)]
-                if wheels:
-                    command += ["--find-links", str(wheels[0].parent)]
-                subprocess.run([*command, *(["--no-deps"] if machine else [])], check=True)
-                linked = linked_applications(interpreter) if COPY else []
-                if linked:
-                    subprocess.run([*command, *COPY, "--no-deps", *(f"--reinstall-package={name}" for name in linked)], check=True)
-                if wheels:
-                    subprocess.run(["uv", "pip", "install", *COPY, "--python", str(interpreter), "--no-deps", *map(str,wheels)], check=True)
-            else:
-                # Unlocked: resolved with the pair's wheels offered where its bounds admit them.
-                install = ["uv", "pip", "install", *COPY, "--python", str(interpreter), *([str(project)] if project else []),
-                           *map(str, wheels)]
-                if not offered or subprocess.run([*install, *offered]).returncode != 0:
-                    subprocess.run(install, check=True)
-
-        capture({canonicalize_name(wheel.name.split("-")[0]) for wheel in sdk})
-        note = machine_sdk(interpreter, sdk) if sdk else ""
-        add_client(interpreter, root / "captured-constraints.txt", client_wheel)
-        return publish_generation(root, metadata, None, callees, checked(interpreter, note, runtime_build))
     except BaseException:
         shutil.rmtree(root)  # uniquely owned unpublished generation, never dispatched
         raise
