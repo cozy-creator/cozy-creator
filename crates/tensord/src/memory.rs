@@ -19,6 +19,14 @@ pub struct Gpu {
     pub uuid: String,
 }
 
+/// Driver-attributed owners, not the unassigned difference between total and free bytes.
+pub struct DeviceUse {
+    pub total: u64,
+    pub free: u64,
+    pub own: u64,
+    pub foreign: u64,
+}
+
 impl Gpu {
     pub fn create(entry: &str, inventory: &[receipt::Gpu], peaks: &Peaks, log: &MemoryLog) -> Option<Self> {
         let row = row(entry, inventory)?;
@@ -32,6 +40,31 @@ impl Gpu {
     /// A current driver reading, never a reservation or permission to allocate.
     pub fn free(&self) -> Option<u64> {
         platform::gpu::Device::open(&self.uuid).and_then(|gpu| gpu.free()).ok()
+    }
+
+    pub fn usage(&self, tenants: &Tenants) -> Option<DeviceUse> {
+        let read = platform::gpu::Device::open(&self.uuid).and_then(|gpu| gpu.read()).ok()?;
+        if read.total == 0 { return None }
+        let processes = read.processes?;
+        let book = tenants.lock().unwrap_or_else(|e| e.into_inner());
+        // A container's local pids may differ from NVML's host pids. In that case no claim
+        // about foreign ownership is justified. WDDM's unavailable byte counts are unknown too.
+        if !book.is_empty() && !book.keys().any(|pid| processes.contains_key(pid)) { return None }
+        let (mut own, mut foreign) = (0u64, 0u64);
+        for (pid, bytes) in processes {
+            // A package's spawned CUDA worker or a kernel build is also ours. Follow current
+            // parentage rather than calling every unregistered PID a foreign application.
+            // An unreadable/disappearing process makes this sample unknown.
+            let (mut ancestor, mut ours) = (pid, false);
+            let mut seen = std::collections::BTreeSet::new();
+            while ancestor > 0 && seen.insert(ancestor) {
+                if book.contains_key(&ancestor) || ancestor == std::process::id() { ours = true; break }
+                ancestor = platform::process::parent_of(ancestor).ok()?;
+            }
+            if ours { own = own.saturating_add(bytes) }
+            else { foreign = foreign.saturating_add(bytes) }
+        }
+        Some(DeviceUse { total: read.total, free: read.free, own, foreign })
     }
 
     /// Driver-attributed process usage. Missing pid accounting is unknown, not zero.

@@ -634,6 +634,8 @@ pub struct Pool {
     levels: Mutex<BTreeMap<String, (App, Level, Birth)>>,
     /// Each envelope GPU and its measurement book, in envelope order.
     devices: Vec<Device>,
+    /// Observed foreign demand; our own offload cannot clear this latch.
+    pressure: Mutex<Vec<Pressure>>,
     /// Measured peaks, persisted per GPU model.
     peaks: memory::Peaks,
     /// Woken by memory events alongside the GPU permits' scheduling events.
@@ -698,6 +700,36 @@ struct Device {
     entry: String,
     /// Its observed figures; None where the inventory does not name this GPU.
     memory: Option<Arc<memory::Gpu>>,
+}
+
+#[derive(Default)]
+struct Pressure {
+    baseline: Option<u64>,
+    blocked: bool,
+    observable: Option<bool>,
+    sampled: Option<Instant>,
+}
+
+impl Pressure {
+    fn headroom(total: u64) -> u64 { (total / 10).max(512 << 20) }
+
+    fn observe(&mut self, usage: &memory::DeviceUse) {
+        let baseline = *self.baseline.get_or_insert(usage.foreign);
+        if self.blocked {
+            if usage.foreign <= baseline.saturating_add(64 << 20) && usage.free >= Self::headroom(usage.total) {
+                self.blocked = false;
+                self.baseline = Some(usage.foreign);
+            }
+        } else {
+            // Before Cozy occupies the card, learn its existing desktop/application use.
+            // Once it does, only a decrease refreshes the baseline; a game cannot become
+            // normal merely by holding its memory for a while.
+            let baseline = if usage.own == 0 { usage.foreign } else { baseline.min(usage.foreign) };
+            self.baseline = Some(baseline);
+            self.blocked = usage.foreign.saturating_sub(baseline) >= 128 << 20
+                && usage.free < Self::headroom(usage.total);
+        }
+    }
 }
 
 
@@ -801,6 +833,7 @@ impl Pool {
                 serving: Arc::default(),
                 allocations: crate::gpu_allocation::Allocations::new(envelope.len()),
                 devices,
+                pressure: Mutex::new((0..envelope.len()).map(|_| Pressure::default()).collect()),
                 peaks,
                 engine: Default::default(),
                 host,
@@ -908,36 +941,129 @@ impl Pool {
             .filter_map(|gpu| gpu.figures.request_peak(construction, "")).max()
     }
 
+    fn free(&self, lane: &std::ops::Range<usize>) -> Option<u64> {
+        lane.clone().map(|index| self.devices.get(index)?.memory.as_ref()?.free()).collect::<Option<Vec<_>>>()?
+            .into_iter().min()
+    }
+
+    /// A session removed from the idle pool cannot be taken by a call while Map runs.
+    fn offload_idle(&self, engine: &Arc<Engine>, key: &str, reason: &str, need: Option<u64>) {
+        let Some(mut session) = self.sessions.lock().unwrap().remove(key) else { return };
+        let lane = session.start..session.start + session.degree as usize;
+        let (pid, plan, began) = (session.executor.birth.pid, session.plan.clone(), Instant::now());
+        let before = self.free(&lane);
+        self.notes.note(serde_json::json!({"event": "offload_begin", "for": reason, "pid": pid,
+            "plan": plan, "need": need, "free_before": before}));
+        let reply = session.executor.command(&Command::Map(Map {
+            construction: session.plan.clone(), level: protocol::executor::Level::Ram,
+        }), &mut device_executor::Baseline);
+        let why = match &reply {
+            Ok(reply) if reply.ok => { session.level = Level::Host; String::new() }
+            Ok(reply) => format!("{} {}", reply.code, reply.detail),
+            Err(error) => error.to_string(),
+        };
+        if let Err(error) = self.keep_idle(engine, session) { tracing::warn!("offloading {plan}: {error}"); }
+        self.notes.note(serde_json::json!({"event": "offload", "for": reason, "pid": pid,
+            "plan": plan, "need": need, "free_before": before, "free_after": self.free(&lane),
+            "ack_ms": began.elapsed().as_secs_f64() * 1e3, "failed": why}));
+    }
+
     /// Offload other idle constructions on this lane, LRU first, until current free bytes cover
     /// its measured peak. Unknown peaks offload all candidates. Running sessions are absent
     /// from the idle pool and are never stopped or awaited by this operation.
     fn make_room(&self, engine: &Arc<Engine>, construction: &str, lane: std::ops::Range<usize>) {
         let need = self.measured_peak(&lane, construction);
-        let room = || lane.clone().map(|index| self.devices.get(index)?.memory.as_ref()?.free()).collect::<Option<Vec<_>>>()
-            .and_then(|free| free.into_iter().min());
         let members: std::collections::BTreeSet<String> = self.members.lock().unwrap().values().flatten()
             .filter_map(|member| member.plan.as_ref().map(|plan| plan.construction.clone())).collect();
         let mut candidates: Vec<_> = self.sessions.lock().unwrap().iter()
             .filter(|(_, s)| s.level == Level::Gpu && s.start < lane.end && lane.start < s.start + s.degree as usize)
             .map(|(key, s)| (members.contains(&s.plan), s.used, key.clone())).collect();
         candidates.sort_by_key(|(member, used, _)| (*member, *used));
-        for (member, _, key) in candidates {
-            let before = room();
-            if need.zip(before).is_some_and(|(need, free)| free >= need) { return; }
-            let Some(mut session) = self.sessions.lock().unwrap().remove(&key) else { continue };
-            let reply = session.executor.command(&Command::Map(Map {
-                construction: session.plan.clone(), level: protocol::executor::Level::Ram,
-            }), &mut device_executor::Baseline);
-            let why = match &reply {
-                Ok(reply) if reply.ok => { session.level = Level::Host; String::new() }
-                Ok(reply) => format!("{} {}", reply.code, reply.detail),
-                Err(error) => error.to_string(),
+        for (_, _, key) in candidates {
+            if need.zip(self.free(&lane)).is_some_and(|(need, free)| free >= need) { return; }
+            self.offload_idle(engine, &key, construction, need);
+        }
+    }
+
+    /// Sampled by the existing machine reclaim loop. Sampling schedules observation only;
+    /// neither elapsed time nor an unavailable driver reading authorizes cancellation.
+    pub(crate) fn relieve_pressure(&self, engine: &Arc<Engine>) {
+        for (index, device) in self.devices.iter().enumerate() {
+            let usage = device.memory.as_ref().and_then(|gpu| gpu.usage(&self.tenants));
+            let blocked = {
+                let mut pressure = self.pressure.lock().unwrap();
+                let state = &mut pressure[index];
+                let now = Instant::now();
+                let gap = state.sampled.replace(now).map(|was| (now - was).as_secs_f64() * 1e3);
+                if state.observable != Some(usage.is_some()) {
+                    self.notes.note(serde_json::json!({"event": "gpu_pressure_observation", "gpu": device.entry,
+                        "known": usage.is_some(), "sample_gap_ms": gap, "scope": "driver_attributed_process_bytes"}));
+                    state.observable = Some(usage.is_some());
+                }
+                let Some(usage) = usage.as_ref() else { continue };
+                let was = state.blocked;
+                state.observe(usage);
+                if was != state.blocked {
+                    self.allocations.pressure(index, state.blocked);
+                    self.notes.note(serde_json::json!({"event": "gpu_pressure", "gpu": device.entry,
+                        "blocked": state.blocked, "baseline_foreign_bytes": state.baseline,
+                        "foreign_bytes": usage.foreign, "own_bytes": usage.own, "free_bytes": usage.free,
+                        "headroom_bytes": Pressure::headroom(usage.total), "sample_gap_ms": gap}));
+                    engine.notify_activity();
+                }
+                state.blocked
             };
-            let (pid, plan) = (session.executor.birth.pid, session.plan.clone());
-            if let Err(error) = self.keep_idle(engine, session) { tracing::warn!("offloading {plan}: {error}"); }
-            self.notes.note(serde_json::json!({"event": "offload", "for": construction, "pid": pid,
-                "plan": plan, "member": member, "need": need, "free_before": before,
-                "free_after": room(), "failed": why}));
+            let Some(before) = usage.filter(|usage| blocked && usage.free < Pressure::headroom(usage.total)) else { continue };
+            let headroom = Pressure::headroom(before.total);
+            let read = || device.memory.as_ref()?.usage(&self.tenants);
+            let short = || read().is_some_and(|usage| usage.free < headroom);
+            let idle = || {
+                let mut sessions: Vec<_> = self.sessions.lock().unwrap().iter()
+                    .filter(|(_, session)| session.start <= index && index < session.start + session.degree as usize)
+                    .map(|(key, session)| (session.used, key.clone(), session.level)).collect();
+                sessions.sort_by_key(|(used, _, _)| *used);
+                sessions
+            };
+            let mut reclaimed = false;
+            for (_, key, level) in idle() {
+                if !short() { break }
+                if level == Level::Gpu {
+                    self.offload_idle(engine, &key, "external_gpu_pressure", Some(headroom));
+                    reclaimed = true;
+                }
+            }
+            // A returned Torch cache is not a released CUDA context or package global. Only
+            // now-idle executors may end, and exact exit is observed by the existing lifecycle.
+            for (_, key, _) in idle() {
+                if !short() { break }
+                reclaimed |= self.end_session(&key);
+            }
+            let after = read();
+            if reclaimed {
+                self.notes.note(serde_json::json!({"event": "gpu_pressure_reclaim", "gpu": device.entry,
+                    "free_before": before.free, "free_after": after.as_ref().map(|usage| usage.free),
+                    "own_bytes_before": before.own, "own_bytes_after": after.as_ref().map(|usage| usage.own)}));
+            }
+            if !short() { continue }
+            let active = match engine.active(usize::MAX) { Ok(active) => active, Err(_) => continue };
+            let leaders = self.leaders.lock().unwrap().clone();
+            let mut roots = std::collections::BTreeSet::new();
+            for record in active {
+                if record.invocation.degree == 0 || record.cancel_actor.is_some() { continue }
+                let Some((birth, _, start)) = record.process.as_ref().and_then(|birth| leaders.get(&birth.pid)) else { continue };
+                if record.process.as_ref() != Some(birth) || *start > index || index >= start + record.invocation.degree as usize { continue }
+                roots.insert(if record.invocation.root.is_empty() { record.id } else { record.invocation.root });
+            }
+            for root in roots {
+                if engine.get(&root).is_ok_and(|record| record.cancel_actor.is_some()) { continue }
+                let detail = format!("GPU {} yielded to observed external memory pressure; the interrupted run will not restart automatically", device.entry);
+                let _ = engine.append_log(&root, "warning", &detail);
+                match engine.cancel(&root, "machine:gpu_pressure") {
+                    Ok(_) => self.notes.note(serde_json::json!({"event": "gpu_pressure_cancel", "gpu": device.entry,
+                        "root": root, "free_bytes": read().map(|usage| usage.free), "headroom_bytes": headroom})),
+                    Err(error) => tracing::warn!("GPU pressure could not cancel {root}: {error}"),
+                }
+            }
         }
     }
 
@@ -1309,6 +1435,24 @@ impl Pool {
             self.exits.iter().for_each(Exits::changed);
             return Ok(Disposition::Cached);
         }
+    }
+
+    /// A canceled invocation may leave package globals, a CUDA context, or other work in this
+    /// session. Ordered Shutdown waits that work before releasing the exact owning process;
+    /// the invocation's reusable/quiescent reply alone is not a session-wide completion fence.
+    fn retire_canceled(&self, engine: &Arc<Engine>, id: &str, session: Session) -> Disposition {
+        let lane = session.start..session.start + session.degree as usize;
+        let births = executor_births(&session.executor.birth, &session.followers);
+        let (plan, start, began) = (session.plan.clone(), session.start, Instant::now());
+        let before = self.free(&lane);
+        let shutdown = session.executor.shutdown();
+        await_executor_exit(engine, &births);
+        self.retire_returned(&plan, start, &births);
+        self.notes.note(serde_json::json!({"event": "canceled_executor_exit", "request": id,
+            "plan": plan, "free_before": before, "free_after": self.free(&lane),
+            "exit_ms": began.elapsed().as_secs_f64() * 1e3,
+            "shutdown_error": shutdown.err().map(|error| error.to_string())}));
+        Disposition::ProvenEnded(births)
     }
     fn retire_returned(&self, plan: &str, start: usize, births: &[Birth]) {
         self.retire(plan, start, births);
@@ -2449,7 +2593,8 @@ impl Pool {
         };
         let facts = crate::journal::ExecutorFacts::observed(session.executor.birth.pid, runtime, hello.tensorfs_version.clone());
         if !engine.authorize_managed(id, Some(facts))? {
-            *disposition = self.keep_idle(engine, session)?;
+            *disposition = if degree > 0 { self.retire_canceled(engine, id, session) }
+                else { self.keep_idle(engine, session)? };
             engine.finish_stopped(id)?;
             return Ok(());
         }
@@ -2462,7 +2607,9 @@ impl Pool {
                     // A caller can submit again as soon as finish publishes. Its predecessor
                     // must already be idle, or gone if it cannot be reused.
                     *disposition = if reusable {
-                        self.keep_idle(engine, session)
+                        if degree > 0 && engine.get(id)?.cancel_actor.is_some() {
+                            Ok(self.retire_canceled(engine, id, session))
+                        } else { self.keep_idle(engine, session) }
                     } else {
                         let births = executor_births(&session.executor.birth, &session.followers);
                         session.executor.terminate().map(|_| Disposition::ProvenEnded(births))

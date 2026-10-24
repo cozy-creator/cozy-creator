@@ -385,12 +385,19 @@ impl Service {
             self.engine.wait_activity(epoch, None);
         }
     }
-    /// Caches expire by their TTL on a thread of their own, apart from dispatch.
+    /// Observe GPU demand on the existing reclaim thread; disk caches retain their TTL cadence.
     fn reclaim_loop(weak: std::sync::Weak<Self>) {
+        let mut swept = std::time::Instant::now();
         loop {
-            std::thread::sleep(SWEEP_EVERY);
+            std::thread::sleep(std::time::Duration::from_millis(500));
             match weak.upgrade() {
-                Some(service) if !*service.stopped.lock().unwrap() => drop(service.reclaim()),
+                Some(service) if !*service.stopped.lock().unwrap() => {
+                    if let Some(pool) = service.gpu() { pool.relieve_pressure(&service.engine); }
+                    if swept.elapsed() >= SWEEP_EVERY {
+                        service.reclaim();
+                        swept = std::time::Instant::now();
+                    }
+                }
                 _ => return,
             }
         }
