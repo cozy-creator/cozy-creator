@@ -93,8 +93,8 @@ The runner signs in as the owner's account with its own device key: secret `COZY
   - `model download` of a large many-object model cold (Hub and datacenter-cache times are separate baselines), again
     (nothing from the Hub), and cut part-way then resumed (only the rest comes).
   - `model upload` of new random weights from the gate's host to a throwaway `<account>/ci-tfs-<R>` (the time
-    includes staging from the host: run it from a runner), the same folder to a second tag (dedup: the same tree, a
-    tenth of the time), and new weights cut part-way then resumed. The model is deleted after.
+    includes staging from the host: run it from a runner), the same folder as a second commit in another lane (dedup:
+    the same objects, a tenth of the time), and new weights cut part-way then resumed. The model is deleted after.
   - `straggler` (on the gate's host, where a client may dial): `tfs download` of BiRefNet clean and through
     `straggler.py`, which drips its first objects as a slow storage GET does. A straggler must be re-asked, not
     waited out (at most 1.5x clean + 20 s).
@@ -106,8 +106,8 @@ The runner signs in as the owner's account with its own device key: secret `COZY
   - Through `cozy`, on a throwaway `<account>/ci-hub-<R>`: whoami, credits, credits history, the rental catalog, the
     rental itself and a rental of `cpu` on each provider with a dev-build cozy (`machine rent --provider runpod|vast`, ended and
     checked gone: renters never pick one, th-254); a package locked, published twice, run, yanked (the simple index marks it `data-yanked`),
-    resolved past, run by exact pin, and un-yanked; a model uploaded, published (listed), downloaded, yanked (listed
-    yanked), downloaded by pin, un-yanked, deleted (gone). The package's releases are yanked and the model deleted.
+    resolved past, run by exact pin, and un-yanked; a model commit uploaded in a lane, published (listed), downloaded,
+    downloaded by pin and lane, deleted (gone). The package's releases are yanked and the model deleted.
   - Before a Hub deploy, the release agent also rehearses its migrations: dump prod (in-pod `pg_dump -Fc`, copied
     in sha256-checked chunks, a full `pg_restore -f /dev/null`), restore it into a scratch Postgres, start the
     candidate image against it (it migrates on start) and wait for `/healthz` 204. Record the dump and the result

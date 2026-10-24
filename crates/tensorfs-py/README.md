@@ -170,7 +170,7 @@ runtime has a matching compute kernel:
 ```python
 import tensorfs
 
-checkpoint = tensorfs.open("owner/model", variant="model.int8.cozytensors")
+checkpoint = tensorfs.open("owner/model", lane="int8")
 tensors = checkpoint.components["unet"].tensors
 stored = tensors.read("proj.weight", device="cuda:0", decode=False)
 print(stored.scheme, stored.params)
@@ -385,23 +385,22 @@ and explicit `component.export_files(directory)` is only a compatibility conveni
 
 ## Checkpoints and repositories
 
-A cozytensors variant is one header plus the chunks and assets it names. Its identity is the header's object ref.
+A cozytensors checkpoint is one header plus the chunks and assets it names. Its identity is the header's object ref.
 The header contains a pipeline class/config and named components with class/config, tensors and assets. Run data
 is self-contained; README, LICENSE, images and code remain ordinary repository files.
 
 ```text
-repo → release → tree
-                  ├─ model.int8.cozytensors → header → chunks and assets
-                  ├─ model.bf16.cozytensors → header → chunks and assets
-                  └─ README.md, LICENSE, …
+repo → release → lane → commit (a cozytensors.tree/1)
+                          ├─ model.cozytensors → header → chunks and assets
+                          └─ README.md, LICENSE, …
 ```
 
-A release names a `tensorfs.tree/1` tree. `variant=` selects a cozytensors file; `open` requires an explicit variant
-when there is more than one. `revision="sha256:…"` can select an unpublished tree or header. Opening downloads
+A commit holds one header and one lane label; a release names one commit per lane. `lane=` picks one, else the
+endpoint picks what the GPUs run best; `"owner/model@sha256:…"` names an unreleased commit. Opening downloads
 metadata by default; each tensor read fetches only the objects it needs. Set `lazy=False` to wait for the whole
 checkpoint in the shared store, or call `checkpoint.download(components=["unet"])` to preload a selection.
-`materialize` returns a plain folder, including all variants by default, while `download_file` returns one
-repository file. These folder/file operations are optional compatibility tools.
+`materialize` returns a plain folder, while `download_file` returns one repository file. These folder/file
+operations are optional compatibility tools.
 
 ## Convert, write and share
 
@@ -422,18 +421,18 @@ with tensorfs.Writer("./model.cozytensors") as writer:
 checkpoint = writer.commit()
 tensorfs.materialize(checkpoint, local_dir="./portable", format="cozytensors")
 
-tensorfs.upload_folder(repo_id="local/example", revision="draft", folder_path="./portable")
+tensorfs.upload_folder(repo_id="local/example", folder_path="./portable", lane="f32")
 tensorfs.upload_folder(
-    repo_id="acme/example", folder_path="./portable", endpoint=Path("./origin").resolve().as_uri(),
+    repo_id="acme/example", folder_path="./portable", lane="f32", endpoint=Path("./origin").resolve().as_uri(),
 )
 ```
 
 A normal save writes one .cozytensors header file, with its tensors and supporting-file bytes retained in
 the shared store. The file contains content hashes, not physical store paths. `Writer()` without a destination
 keeps the checkpoint in the store without writing a user-visible header file. An explicit native portable export
-writes `model.cozytensors` (or a named variant) plus complete `chunks/<sha256>` objects. `base=` reuses unchanged
-tensors and `resume=` journals local work. `Writer(repo_id=…, endpoint=…, token=…)` streams new objects
-and appends an unreleased tree. Its successful checkpoint carries the exact published tree; an upload failure keeps
+writes `model.cozytensors` plus complete `chunks/<sha256>` objects. `base=` reuses unchanged
+tensors and `resume=` journals local work. `Writer(repo_id=…, lane=…, endpoint=…, token=…)` streams new objects
+and records an unreleased commit. Its successful checkpoint carries the exact published tree; an upload failure keeps
 `writer.local_checkpoint` and remains an error.
 
 The default endpoint is `https://tensorhub.com`; `configure(endpoint=…)` or `TENSORFS_ENDPOINT` changes it.

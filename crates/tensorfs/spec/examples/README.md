@@ -6,7 +6,7 @@ Real `.cozytensors` headers use the binary CBOR encoding in [the specification](
 
 `tree-basic.json` and `repo-basic.json` show the JSON document forms. Some chunk and asset
 references are synthetic fixture identities; these examples are not a complete downloadable model.
-The repo's public tag `1.1` and private tag `main` name the exact example tree bytes.
+The repo's release `1.0` names the example tree's exact bytes as its `int8` lane.
 
 [Schema files](../schema/) describe structure; the specification also defines canonical encoding,
 duplicate-key refusal, bounds, reference closure, construction order and decoding requirements.

@@ -22,8 +22,8 @@ use tensorfs::{Client, Config, Download, Open, Selection};
 
 let client = Client::new(Config::from_env())?;
 let checkpoint = client.open("me/model", &Open {
-    revision: Some("1.0".into()),
-    lane: Some(16),
+    release: Some("1.0".into()),
+    lane: Some("bf16".into()),
     ..Default::default()
 }).await?;
 
@@ -50,14 +50,9 @@ Only the placement `source` fetches on its own, on the process runtime.
 A borrowed component follows Rust's ordinary borrow rules. Clone the `Component` if it
 must outlive the parent checkpoint; owned child handles retain their source and data holds.
 
-Automatic selection derives precision and GPU requirements from each variant's header. Pass
-`lane=16`, `lane=8` or `lane=4` (Rust: `Open.lane`), the precision lane in bits, to take only that lane: a release without it is
-refused. Omitted, the 8-bit lane is a preference, and a variant outside it serves when none in it works.
-`gpus=["8.9"]` supplies compute capabilities; omitted detects visible GPUs, while `[]` reads on the CPU,
-where no GPU requirement applies. A refusal names each variant and why it does not work. Explicit `variant="nested/weights.cozytensors"` fixes the path instead. Every
-`.cozytensors` file at every depth is a variant, and its name conveys no precision. Selection
-loads only headers. The Hub's indexed selection and local
-selection agree.
+A model's commit is resolved by its endpoint: a release (none: the newest) and, in it, the lane
+asked (`lane="int8"`, Rust: `Open.lane`), else the one the endpoint picks for `gpus=["8.9"]`
+(omitted: the visible GPUs; `[]`: the CPU). `"me/model@sha256:<hex>"` names a commit by id.
 
 ## Rust: write, convert and publish
 
@@ -87,9 +82,8 @@ local copies expire 7 days after their last use, least recently used first when 
 low. Open checkpoints keep their bytes in the meantime. To copy a checkpoint to another machine,
 write the portable form with `saved.materialize(dir, Format::Cozytensors, false)`.
 
-`dest` is the exact filename; TensorFS does not append a variant or create a directory.
-`dest` and `repo_id` exclude each other. `variant` names an arbitrary `.cozytensors` path in a
-`repo_id` upload and is `Invalid` without `repo_id`. With no destination, the writer keeps
+`dest` is the exact filename; TensorFS does not create a directory. `dest` and `repo_id` exclude
+each other. A `repo_id` upload names its commit's `lane`. With no destination, the writer keeps
 the checkpoint in the shared store as a cache entry.
 
 A standalone header identifies one checkpoint. It does not contain its enclosing tree,
@@ -106,7 +100,7 @@ exact remote tree.
 | `open(name_or_path, &Open)` | Open metadata, optionally waiting for all checkpoint data with `lazy: false`; returns `Result<Checkpoint>`. |
 | `materialize(&Ref, &Download, local_dir, local_files_only)` | Make selected repository content available as a normal folder; returns `Result<PathBuf>`. |
 | `download_file(&Ref, filename, local_dir, local_files_only)` | Fetch one repository file; returns `Result<PathBuf>`. |
-| `upload_folder(&Ref, folder, delete_patterns, progress)` | Commit the folder's files on top of the tag `Ref.revision` (default `main`, private when new): the tag's tree minus paths matching `delete_patterns` (fnmatch globs), plus these files. Returns the commit, `Result<ObjectRef>`. |
+| `upload_folder(&Ref, folder, lane, progress)` | Upload the folder (one `.cozytensors` file and its repo files) as a new commit in `lane`, private until a release names it. Returns the commit, `Result<ObjectRef>`. |
 | `convert_to_cozytensors(&[String], &Convert)` | Convert pinned sources; returns `Result<Checkpoint>`. |
 | `writer(WriterOptions)` | Begin a write; returns `Result<Writer>`. |
 
@@ -115,20 +109,19 @@ For example, parse a repository reference and use the returned folder or tree:
 ```rust
 use tensorfs::{Format, Ref};
 
-let model: Ref = "me/model@1.0/model.bf16.cozytensors".parse()?;
+let mut model: Ref = "me/model@1.0".parse()?;
+model.lane = Some("bf16".into());
 let folder = client.materialize(&model, &Download::default(), None, false).await?;
 println!("downloaded to {}", folder.display());
 
 saved.materialize(Path::new("./portable"), Format::Cozytensors, false).await?;
-let destination: Ref = "me/output@draft".parse()?;
-let commit = client.upload_folder(&destination, Path::new("./portable"), &[], None).await?;
-println!("me/output@draft is {}", commit.id());
+let destination: Ref = "me/output".parse()?;
+let commit = client.upload_folder(&destination, Path::new("./portable"), "bf16", None).await?;
+println!("me/output@{}", commit.id());
 ```
 
 Checkpoint materialization includes that checkpoint and any known repository files.
-Use `Client::materialize` for an entire native repository, including all variants when no
-variant is selected. A standalone header cannot supply unknown repository files or release
-metadata.
+A standalone header cannot supply unknown repository files or release metadata.
 
 All operations involving network/source resolution above are async except construction and
 `writer`. `checkpoint.materialize(directory, format, decode).await` returns
@@ -157,21 +150,21 @@ below; normal model consumers do not need it.
 | Type | Fields / use |
 |---|---|
 | `Config` | `endpoint: String`, `cache_dir: PathBuf`, `mirror: Option<PathBuf>`, `token: Option<Arc<dyn TokenProvider>>`, `ca_der: Option<Vec<u8>>` (a private CA trusted on top of the system roots, for every operation of the client). `Config::from_env()` returns configuration; `Client::new` validates it. Debug output redacts access material. |
-| `Ref` | `repo_id`, optional `revision`, `variant`, `endpoint`; implements `FromStr`. Use explicit fields/options when names contain shorthand separators. |
-| `Open` | Optional `revision`, `variant`, `endpoint`, plus `local_files_only` and `lazy`; defaults to `lazy: true`. |
+| `Ref` | `repo_id`, optional `release` (or `sha256:<hex>` of a commit), `lane`, `endpoint`; implements `FromStr` for `org/name[@release]`. |
+| `Open` | Optional `release`, `lane`, `gpus`, `endpoint`, plus `local_files_only` and `lazy`; defaults to `lazy: true`. |
 | `Selection` | `All`, `Components(Vec<String>)`, `Tensors { component, keys }`, `Part { component, key, role: Option<String>, range: Option<Range<u64>> }`, or `Assets { component, names: Option<Vec<String>> }`. Part ranges are stored byte ranges; absent asset names selects all assets. |
 | `Download` | `selection`, `priority: u64`, optional borrowed progress callback; defaults to all. |
 | `Fetched` | Byte counts `local`, `volume`, `origin`. |
 | `VerificationReport` | Separate `missing` and `corrupt` object-reference vectors; `is_ok()` checks both are empty. |
 | `Convert` | Optional `converter`, `variant`, borrowed conversion-progress callback. |
-| `WriterOptions` | Optional `dest`, `variant` (only with `repo_id`), `base`, `resume`, `repo_id`, `endpoint`, `token`; implements `Default`. |
+| `WriterOptions` | Optional `dest`, `base`, `resume`, `repo_id`, `lane` (with `repo_id`), `endpoint`, `token`; implements `Default`. |
 | `ReadInto` | `role: Option<&str>`, `decode: bool`, `offset: u64` for `Component::read_into`; implements `Default`. |
 | `Format` | `Safetensors` or native portable `Cozytensors` export. |
 
 `Progress` is a borrowed `Fn(u64, u64) -> Result<()> + Sync` (held bytes, total bytes).
 `ConvertProgress` additionally receives a stage string. A callback can stop remaining work
-by returning an error. The final `upload_folder` progress callback runs after the tag moved:
-its error is returned to the caller but does not undo the repository update. Configured
+by returning an error. The final `upload_folder` progress callback runs after the commit was
+recorded: its error is returned to the caller but does not undo it. Configured
 providers supply ordinary credentials; construction does not create a separate
 worker-permission mechanism.
 
@@ -183,7 +176,7 @@ worker-permission mechanism.
 | `header()` | `&format::Header`. |
 | `metadata()` | `&Metadata`. |
 | `chunks()` | `&[ObjectRef]`. |
-| `variant()` | `Option<&str>` for the selected variant. |
+| `lane()` | `Option<&str>`, its commit's lane. |
 | `tree()` | `Option<&ObjectRef>`. |
 | `named()` | `Option<&Ref>`. |
 | `pipeline()` | `Option<&format::Pipeline>`. |

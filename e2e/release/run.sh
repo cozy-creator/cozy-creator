@@ -71,17 +71,22 @@ header = json.dumps({"w": {"dtype": "F16", "shape": [4, 4], "data_offsets": [0, 
 header += b" " * (-len(header) % 8)
 open(sys.argv[1], "wb").write(struct.pack("<Q", len(header)) + header + bytes(32))
 PY
-cozy --json model upload "$OUT/tiny.safetensors" "$model" --on local > "$OUT/upload.ndjson" || check "model upload failed"
+cozy --json model upload "$OUT/tiny.safetensors" "$model" --lane f16 --on local > "$OUT/upload.ndjson" || check "model upload failed"
 commit=$(jq -r '.. | objects | .commit? // empty' "$OUT/upload.ndjson" 2> /dev/null | tail -1) || true
+uv run -q --no-project python -I - "$OUT/tiny-b.safetensors" <<'PY'
+import json, struct, sys
+header = json.dumps({"w": {"dtype": "F32", "shape": [4, 4], "data_offsets": [0, 64]}}).encode()
+header += b" " * (-len(header) % 8)
+open(sys.argv[1], "wb").write(struct.pack("<Q", len(header)) + header + bytes(64))
+PY
+cozy --json model upload "$OUT/tiny-b.safetensors" "$model" --lane f32 --on local > "$OUT/upload-b.ndjson" || check "model upload --lane f32 failed"
+commit_b=$(jq -r '.. | objects | .commit? // empty' "$OUT/upload-b.ndjson" 2> /dev/null | tail -1) || true
 cozy --json model family e2e-family "$model" > /dev/null && cozy --json model info "$model" | J '.family == "e2e-family"' || check "model family: not set"
 cozy --json model family --clear "$model" > /dev/null && cozy --json model info "$model" | J '.family == null' || check "model family --clear: not cleared"
-cozy --json model publish "$model" --release 0.1.0 ${commit:+--commit "$commit"} > "$OUT/model-publish.json" || check "model publish failed"
-cozy --json model info "$model" > "$OUT/model-info.json" && J '.releases | any(.release == "0.1.0" and .yanked == false)' "$OUT/model-info.json" \
-  || check "model publish: no 0.1.0"
-cozy --json model yank "$model" --release 0.1.0 > /dev/null && cozy --json model info "$model" | J '.releases | any(.release == "0.1.0" and .yanked)' \
-  || check "model yank: 0.1.0 not yanked"
-cozy --json model yank "$model" --release 0.1.0 --undo > /dev/null && cozy --json model info "$model" | J '.releases | any(.release == "0.1.0" and (.yanked | not))' \
-  || check "model yank --undo: 0.1.0 still yanked"
+cozy --json model publish "$model" 0.1.0 "$commit" "$commit_b" > "$OUT/model-publish.json" || check "model publish failed"
+cozy --json model info "$model" > "$OUT/model-info.json" \
+  && J '.releases | any(.version == "0.1.0" and ([.lanes[].lane] | sort) == ["f16", "f32"])' "$OUT/model-info.json" \
+  || check "model publish: no 0.1.0 with lanes f16 and f32"
 cozy --json model delete "$model" -y > "$OUT/model-delete.json" || check "model delete failed"
 ! cozy --json model info "$model" > /dev/null 2>&1 || check "model delete: $model still answers"
 
