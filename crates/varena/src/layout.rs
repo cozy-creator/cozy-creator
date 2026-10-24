@@ -74,7 +74,7 @@ impl Layout {
     /// Checks public layout descriptions before they reserve or map memory. Empty tensors
     /// occupy no bytes; a region containing only empty tensors still has its mapped span.
     pub fn validate(&self) -> Result<()> {
-        if self.nbytes % REGION_ALIGN != 0 || self.nbytes > isize::MAX as u64 {
+        if !self.nbytes.is_multiple_of(REGION_ALIGN) || self.nbytes > isize::MAX as u64 {
             return Err(Error::Invalid("layout span is unaligned or beyond the address space".into()));
         }
         if self.regions.len() > u32::MAX as usize {
@@ -83,7 +83,7 @@ impl Layout {
         let mut regions = Vec::with_capacity(self.regions.len());
         for (index, region) in self.regions.iter().enumerate() {
             let what = format!("region {index}");
-            if region.offset % REGION_ALIGN != 0 || region.span == 0 || region.span % REGION_ALIGN != 0 {
+            if !region.offset.is_multiple_of(REGION_ALIGN) || region.span == 0 || !region.span.is_multiple_of(REGION_ALIGN) {
                 return Err(Error::Invalid(format!("{what} has an empty or unaligned mapped span")));
             }
             let end = range_end(region.offset, region.span, self.nbytes, &what)?;
@@ -109,7 +109,7 @@ impl Layout {
         let mut parts = Vec::with_capacity(self.parts.len());
         for part in &self.parts {
             let region = self.region(part.region)?;
-            if part.offset % PART_ALIGN != 0 || part.offset < region.offset {
+            if !part.offset.is_multiple_of(PART_ALIGN) || part.offset < region.offset {
                 return Err(Error::Invalid(format!("part {} starts unaligned or before its region", part.what)));
             }
             // The region's data end was checked above, including its addition.
