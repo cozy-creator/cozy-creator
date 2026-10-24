@@ -92,6 +92,13 @@ pub enum Record {
     /// An ask back held by a pin (`slot`, `pins` of them) for `looks` looks: reported, never
     /// ended.
     Pinned { pid: u32, slot: u32, pins: u32, looks: u32, waited_ms: u64 },
+    /// An ask left waiting: what it needs, what counts as coming, the pids whose pins it waits
+    /// on (each running a request), and its own chunks Revoking and asked back. Logged when any
+    /// of these changes.
+    Wait { pid: u32, ask: u64, bytes: u64, coming: u64, on: Vec<u32>, own_revoking: u64, own_asked: u64 },
+    /// An ask short of room that idle executors (`idle`, no request running) pin: the host is
+    /// asked to end them, and the ask waits for their exit.
+    EndIdle { pid: u32, ask: u64, idle: Vec<u32> },
 }
 
 /// What TensorD answers for the manager.
@@ -102,6 +109,16 @@ pub trait Hosting: Send + Sync {
 
     /// A record of what the manager did, after its books dropped.
     fn record(&self, _record: Record) {}
+
+    /// Whether the host ends idle executors on [`Hosting::end_idle`]: then an ask short of room
+    /// that idle executors pin waits for their exit instead of being refused.
+    fn ends_idle(&self) -> bool {
+        false
+    }
+
+    /// End these executors (by pid): idle (no request running), their pins hold room a waiting
+    /// ask needs. After the books dropped.
+    fn end_idle(&self, _pids: &[u32]) {}
 
     /// The derived-weights disk cache (§6): a new unlinked entry of `domain` for `bytes`, its
     /// own, for the agent that derived it to write. None: none kept (low disk, unhosted).
@@ -305,6 +322,14 @@ struct Exec {
     /// Its regions and graphs, as its agent last reported them, and those asked back whole.
     regions: BTreeMap<u64, RegionFacts>,
     reclaiming: BTreeSet<u64>,
+    /// Its waiting ask's last Wait record: (ask, coming, on), so an unchanged wait logs once.
+    logged: Option<(u64, u64, Vec<u64>)>,
+    /// It failed or was poisoned ([`Manager::fault`]): none of its chunks counts or is asked
+    /// for, and its exit destroys them all (none is kept for another executor to adopt).
+    faulted: bool,
+    /// When the host was asked to end it (idle, its pins holding a waiting ask's room). An ask
+    /// waits for its exit only the stall look's looks, then is refused.
+    ending: Option<Instant>,
 }
 
 struct Leased {
@@ -337,6 +362,8 @@ struct Out {
     records: Vec<Record>,
     /// Derived entries whose retained region went: (domain, fill key).
     forgets: Vec<(String, String)>,
+    /// Idle executors the host is asked to end (pids).
+    end_idle: Vec<u32>,
     idle: Option<Arc<Device>>,
 }
 
@@ -347,6 +374,7 @@ impl Out {
         self.sends.append(&mut other.sends);
         self.records.append(&mut other.records);
         self.forgets.append(&mut other.forgets);
+        self.end_idle.append(&mut other.end_idle);
         self.idle = self.idle.take().or(other.idle);
     }
 }
@@ -466,13 +494,16 @@ impl Manager {
         pids
     }
 
-    /// One stall look (every [`LOOK`] while asks are out): whether any ask is out, and the
-    /// executors newly judged stalled.
-    fn look(&self) -> (bool, Vec<Record>) {
+    /// One stall look (every [`LOOK`] while asks are out): whether any ask is out, the
+    /// executors newly judged stalled, and whether a waiting ask must be decided again (its own
+    /// chunks went overdue, or an idle holder it waits on outlived the looks).
+    fn look(&self) -> (bool, Vec<Record>, bool) {
         let mut b = self.books.lock();
-        let (mut out, mut records) = (false, vec![]);
+        let (mut out, mut records, mut again) = (false, vec![], false);
         for e in b.executors.values_mut() {
             out |= !e.asked.is_empty();
+            again |= !e.waiting.is_empty() && e.asked.values().any(|at| at.elapsed() >= LOOK * LOOKS);
+            again |= e.ending.is_some_and(|at| at.elapsed() >= LOOK * LOOKS);
             // An ask a pin holds is reported once it waited the looks, never judged.
             for (slot, at) in &e.asked {
                 let held = e.table.word(*slot).filter(|w| w.state == State::Mapped && w.pins > 0);
@@ -495,7 +526,20 @@ impl Manager {
                 records.push(Record::Stalled { pid: e.pid, looks: e.still, waited_ms: u64::try_from(oldest.elapsed().as_millis()).unwrap_or(u64::MAX) });
             }
         }
-        (out, records)
+        let waiting = b.executors.values().any(|e| !e.waiting.is_empty());
+        (out, records, again && waiting)
+    }
+
+    /// A decision with no event behind it (the look found a waiting ask's own chunks overdue,
+    /// or an idle holder past the looks).
+    fn decide_again(&self) {
+        let sample = self.read();
+        let out = {
+            let mut b = self.books.lock();
+            b.sample = sample;
+            self.settle(&mut b)
+        };
+        self.emit(out);
     }
 
     pub fn holdings(&self) -> Holdings {
@@ -597,7 +641,7 @@ impl Manager {
             let mut b = self.books.lock();
             b.next += 1;
             let id = b.next;
-            let exec = Exec { pid: peer.pid, identity, table, end: end.clone(), free: (0..slots).collect(), leased: BTreeMap::new(), waiting: VecDeque::new(), asked: BTreeMap::new(), progress: 0, seen: (0, 0), still: 0, stalled: false, reported: BTreeSet::new(), waits_on: BTreeSet::new(), regions: BTreeMap::new(), reclaiming: BTreeSet::new() };
+            let exec = Exec { pid: peer.pid, identity, table, end: end.clone(), free: (0..slots).collect(), leased: BTreeMap::new(), waiting: VecDeque::new(), asked: BTreeMap::new(), progress: 0, seen: (0, 0), still: 0, stalled: false, reported: BTreeSet::new(), waits_on: BTreeSet::new(), regions: BTreeMap::new(), reclaiming: BTreeSet::new(), logged: None, faulted: false, ending: None };
             b.executors.insert(id, exec);
             id
         };
@@ -669,6 +713,9 @@ impl Manager {
                 let _ = end.send(&message, handle);
             }
         }
+        if !out.end_idle.is_empty() {
+            self.hosting.end_idle(&out.end_idle);
+        }
         for record in out.records {
             self.hosting.record(record);
         }
@@ -731,11 +778,23 @@ impl Manager {
         self.emit(out);
     }
 
-    /// A GPU fault or sticky error: the page cache goes.
-    pub fn fault(&self) {
+    /// A GPU fault or sticky error: the page cache goes. `pids` failed or were poisoned: from
+    /// now their chunks neither count nor are asked for, their waiting asks are refused, and
+    /// their exit destroys every chunk (none is kept for adoption).
+    pub fn fault(&self, pids: &[u32]) {
         let out = {
             let mut b = self.books.lock();
             let mut out = Out::default();
+            let faulted: Vec<u64> = b.executors.iter().filter(|(_, e)| pids.contains(&e.pid)).map(|(id, _)| *id).collect();
+            for id in faulted {
+                let asks: Vec<u64> = b.executors.get_mut(&id).map(|e| {
+                    e.faulted = true;
+                    e.waiting.drain(..).map(|w| w.id).collect()
+                }).unwrap_or_default();
+                for ask in asks {
+                    refuse(&mut b, &mut out, id, ask, Refusal::Failed, "its executor failed".into());
+                }
+            }
             for key in b.order.clone() {
                 self.drop_retained(&mut b, &key, &mut out);
             }
@@ -930,6 +989,11 @@ impl Manager {
         let sample = self.read();
         let mut b = self.books.lock();
         b.sample = sample;
+        if b.executors.get(&exec).is_some_and(|e| e.faulted) {
+            let mut out = Out::default();
+            refuse(&mut b, &mut out, exec, ask.id, Refusal::Failed, "its executor failed".into());
+            return out;
+        }
         if let Some(e) = b.executors.get_mut(&exec) {
             e.waiting.push_back(ask);
         }
@@ -990,7 +1054,7 @@ impl Manager {
             // Both say landed: the manager's record of this grant's ack, and the table now (an
             // unland whose doorbell was still queued wins).
             match l.region {
-                Some(region) if l.landed && e.table.landed(slot) && e.table.word(slot).is_some_and(|w| w.seq == l.seq) => {
+                Some(region) if !e.faulted && l.landed && e.table.landed(slot) && e.table.word(slot).is_some_and(|w| w.seq == l.seq) => {
                     retained += l.phys.len;
                     let key = (e.identity.domain.clone(), region);
                     if let Some(fill) = l.fill {
@@ -1052,7 +1116,7 @@ impl Manager {
         let (reserved, granularity) = (b.reserve, b.device.as_ref().map_or(1, |d| d.granularity));
         let cache: Vec<Kept> = b.order.iter().cloned().collect();
         let (mut asks, mut executors) = (vec![], vec![]);
-        for (id, e) in &b.executors {
+        for (id, e) in b.executors.iter().filter(|(_, e)| !e.faulted) {
             for w in &e.waiting {
                 let sizes = sizes(w, granularity);
                 let hit = cached(b, &e.identity.domain, w.region, &sizes).and_then(|k| cache.iter().position(|c| *c == k));
@@ -1060,7 +1124,9 @@ impl Manager {
             }
             let chunk = |(slot, l): (&u32, &Leased)| {
                 let w = e.table.word(*slot).filter(|w| w.seq == l.seq)?;
-                Some(policy::Chunk { slot: *slot, seq: l.seq, bytes: l.phys.len, state: w.state, pins: w.pins, asked: e.asked.contains_key(slot), advice: e.table.advice(*slot) })
+                let asked = e.asked.get(slot);
+                let overdue = asked.is_some_and(|at| at.elapsed() >= LOOK * LOOKS);
+                Some(policy::Chunk { slot: *slot, seq: l.seq, bytes: l.phys.len, state: w.state, pins: w.pins, asked: asked.is_some(), overdue, advice: e.table.advice(*slot) })
             };
             let waits_on = if e.waiting.is_empty() { vec![] } else { e.waits_on.iter().copied().collect() };
             let (mut regions, mut graphs) = (vec![], vec![]);
@@ -1073,7 +1139,7 @@ impl Manager {
                     kind => regions.push(policy::Region { id: *rid, chunks: f.slots.clone(), swappable: kind == crate::region::Reclaimable::Swappable, last_use: f.last_use, next_use, produce_ns: f.cost_ns }),
                 }
             }
-            executors.push(policy::Executor { id: *id, chunks: e.leased.iter().filter_map(chunk).collect(), regions, graphs, waits_on });
+            executors.push(policy::Executor { id: *id, chunks: e.leased.iter().filter_map(chunk).collect(), regions, graphs, waits_on, running: e.table.running() });
         }
         let page_cache = cache.iter().map(|k| b.retained.get(k).map_or(0, |v| v.values().map(|p| p.len).sum())).collect();
         let host = b.sample.map(|s| s.host).unwrap_or_default();
@@ -1145,13 +1211,50 @@ impl Manager {
                     }
                 }
                 Answer::Wait { on } => {
+                    let pids: Vec<u32> = on.iter().filter_map(|x| b.executors.get(x).map(|e| e.pid)).collect();
+                    let coming = policy::coming_for(&snapshot, exec);
+                    let own = snapshot.executors.iter().find(|x| x.id == exec).map_or((0, 0), |x| {
+                        let sum = |f: &dyn Fn(&policy::Chunk) -> bool| x.chunks.iter().filter(|c| f(c)).map(|c| c.bytes).sum::<u64>();
+                        (sum(&|c| c.state == State::Revoking), sum(&|c| c.state == State::Mapped && c.asked))
+                    });
                     if let Some(e) = b.executors.get_mut(&exec) {
+                        if let Some(ask) = e.waiting.front() {
+                            let now = (ask.id, coming, on.clone());
+                            if e.logged.as_ref() != Some(&now) {
+                                out.records.push(Record::Wait { pid: e.pid, ask: ask.id, bytes: ask.bytes, coming, on: pids, own_revoking: own.0, own_asked: own.1 });
+                                e.logged = Some(now);
+                            }
+                        }
                         e.waits_on = on.into_iter().collect();
                     }
                     // Starts the look's cadence if it slept; never makes a look early.
                     self.looking.notify_all();
                 }
                 Answer::Refuse { room } => {
+                    // Idle executors pinning room: the host ends them and the ask waits for
+                    // their exit (logged), when it ends idle executors at all.
+                    let idle: Vec<u64> = if self.hosting.ends_idle() {
+                        b.executors.iter().filter(|(id, e)| **id != exec && !e.faulted && !e.table.running() && e.leased.keys().any(|s| e.table.word(*s).is_some_and(|w| w.pins > 0))).map(|(id, _)| *id).collect()
+                    } else {
+                        vec![]
+                    };
+                    // Waited for only while one has not outlived the looks since it was named.
+                    let idle: Vec<u64> = idle.into_iter().filter(|id| b.executors.get(id).is_some_and(|e| e.ending.is_none_or(|at| at.elapsed() < LOOK * LOOKS))).collect();
+                    if !idle.is_empty() {
+                        let mut ended = vec![];
+                        for id in &idle {
+                            if let Some(e) = b.executors.get_mut(id).filter(|e| e.ending.is_none()) {
+                                e.ending = Some(Instant::now());
+                                ended.push(e.pid);
+                            }
+                        }
+                        if !ended.is_empty() {
+                            let (pid, ask) = b.executors.get(&exec).map_or((0, 0), |e| (e.pid, e.waiting.front().map_or(0, |w| w.id)));
+                            out.records.push(Record::EndIdle { pid, ask, idle: ended.clone() });
+                            out.end_idle.extend(ended);
+                        }
+                        continue;
+                    }
                     if let Some(ask) = b.executors.get_mut(&exec).and_then(|e| e.waiting.pop_front()) {
                         refuse(b, out, exec, ask.id, Refusal::NothingRevocable, format!("nothing reclaimable for {} bytes ({room} could come)", ask.bytes));
                     }
@@ -1335,9 +1438,12 @@ fn look_loop(manager: &Weak<Manager>) {
             continue;
         }
         last = Some(Instant::now());
-        let (out, records) = m.look();
+        let (out, records, again) = m.look();
         for record in records {
             m.hosting.record(record);
+        }
+        if again {
+            m.decide_again();
         }
         if !out {
             let mut b = m.books.lock();

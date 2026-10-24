@@ -829,6 +829,10 @@ struct Inner {
     /// Asked back while in use: pinned in the table until idle, then given.
     #[cfg(unix)]
     declined: Mutex<HashSet<crate::lease::Ticket>>,
+    /// Leased pages a step holds (pinned here), pinned in the table too: the manager never asks
+    /// for one in use.
+    #[cfg(unix)]
+    stepped: Mutex<HashSet<crate::lease::Ticket>>,
     /// Leased pages filled whose bytes the manager has not heard landed yet: acked once their
     /// ready event completes (only landed bytes are retained).
     #[cfg(unix)]
@@ -939,6 +943,8 @@ impl Memory {
                 leased: Mutex::default(),
                 #[cfg(unix)]
                 declined: Mutex::default(),
+                #[cfg(unix)]
+                stepped: Mutex::default(),
                 #[cfg(unix)]
                 to_land: Mutex::default(),
                 _device: device,
@@ -1299,6 +1305,7 @@ impl Inner {
             }
             // Events still pending: its GPU work is running, never a stall.
             agent.busy(st.events.values().any(|q| !q.is_empty()));
+            agent.running(st.table.requests.iter().any(|r| !r.idle));
             self.redecline(st);
             self.land(st, agent);
             self.offer_derived(st, agent);
@@ -1477,6 +1484,12 @@ impl Inner {
         // once the copy stream is proven drained.
         let ownership_lost = landed.iter().any(|out| matches!(out, Err(Error::Ownership(_))));
         let drained = !ownership_lost && (landed.iter().all(Result::is_ok) || self.backend.drain().is_ok());
+        // A fill that landed is this process's progress: a loading executor is never judged
+        // stalled by the manager's stall look.
+        #[cfg(unix)]
+        if let Some(agent) = self.lease.get().filter(|_| landed.iter().any(Result::is_ok)) {
+            agent.progressed();
+        }
         // A spilling host device starts their writeback (no lock held: it may wait on I/O).
         for ((_, (va, off, span)), landed) in pages.iter().zip(&landed) {
             if landed.is_ok() {
@@ -2569,6 +2582,11 @@ impl Pin {
         let _ = self.inner.guard(|| {
             let event = self.inner.backend.record(self.stream)?;
             self.inner.backend.landed(self.ptr, self.len);
+            // A transform that ran is progress too.
+            #[cfg(unix)]
+            if let Some(agent) = self.inner.lease.get() {
+                agent.progressed();
+            }
             let mut st = self.inner.lock();
             if let Some(h) = st.homes.get_mut(&self.key) {
                 let old = std::mem::replace(&mut h.ready, event);
@@ -2953,7 +2971,23 @@ impl Inner {
     #[cfg(unix)]
     fn advise(&self, st: &State, agent: &crate::lease::Agent) {
         use crate::lease::Advice;
-        for (ticket, key, _) in self.leased.lock().values() {
+        let leased = self.leased.lock();
+        // Step-held pages are pinned in the table while their pins here last (a pin on change
+        // only): the policy sees them in use and never asks for one to be declined.
+        let mut stepped = self.stepped.lock();
+        stepped.retain(|t| leased.values().any(|(x, ..)| x == t));
+        for (ticket, key, _) in leased.values() {
+            let held = st.table.page(*key).is_some_and(|p| !p.pins.is_empty());
+            if held && !stepped.contains(ticket) {
+                if agent.pin(*ticket).unwrap_or(false) {
+                    stepped.insert(*ticket);
+                }
+            } else if !held && stepped.remove(ticket) {
+                let _ = agent.unpin(*ticket);
+            }
+        }
+        drop(stepped);
+        for (ticket, key, _) in leased.values() {
             let at = st.table.distance(*key).map(|(step, pass, block)| u64::from(step) << 40 | u64::from(pass) << 20 | u64::from(block));
             let advice = match (st.table.class(*key), at) {
                 (Some(Class::P), _) => Advice::Step { at: 0 },
