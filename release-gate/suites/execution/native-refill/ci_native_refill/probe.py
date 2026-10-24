@@ -180,6 +180,7 @@ def fits(memory, seed):
                 },
                 "decoder_scratch_bound": None if kind == "fp8.tensorwise" else 0,
             }
+            print(json.dumps({"case": kind, "evidence": result[kind]}), flush=True)
             owner.close()
             del owner, module, inputs, output
             memory.trim()
