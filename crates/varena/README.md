@@ -32,8 +32,10 @@ active working memory, excluded from the idle cache limit, and remain subject to
 capacity. Dropping those pins can temporarily grow the idle cache; the next allocation trims it.
 Preparing streamed groups evicts only idle nonpreferred groups. Activation
 pressure via `reclaim(device, bytes)` can additionally evict the preferred suffix, permanently
-lowering its watermark. New reservations at or after the watermark cannot become preferred in
-that Arena. No scan can continually evict and rebuild the retained prefix. Pinned groups are
+lowering its watermark. New reservations at or after the watermark cannot become preferred while
+any existing Region owner remains. After all old Regions and escaped pins are dropped, the next
+reservation starts a fresh prefix; retired cached pages are ordinary reclaimable memory.
+No scan can continually evict and rebuild the retained prefix. Pinned groups are
 never candidates. Insufficient unpinned capacity returns a typed capacity failure.
 
 Until complete stream ownership exists, actual reclamation conservatively joins the CUDA primary
