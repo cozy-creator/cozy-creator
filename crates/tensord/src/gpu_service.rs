@@ -3472,9 +3472,10 @@ pub(crate) fn settle(engine: &Arc<Engine>, id: &str, error: &io::Error) -> io::R
     let outcome = if record.cancel_actor.is_some() {
         // Canceled: the reason its executor ended (it ignored the cancel and was killed, say)
         // is the run's last log line.
-        if let Err(log) = engine.append_log(id, "warn", &format!("canceled; its executor ended: {error}")) {
-            tracing::warn!("run {id}: {log}");
-        }
+        let detail = if record.state == State::Running && record.process.is_none() {
+            format!("canceled during CPU output handling after executor return: {error}")
+        } else { format!("canceled; its executor ended: {error}") };
+        if let Err(log) = engine.append_log(id, "warn", &detail) { tracing::warn!("run {id}: {log}"); }
         Outcome::Canceled
     } else if let Some(refusal) = refused(error) {
         // The executor's own reason, typed: a group's first fault names its GPU.
@@ -3487,6 +3488,8 @@ pub(crate) fn settle(engine: &Arc<Engine>, id: &str, error: &io::Error) -> io::R
         Outcome::Failed(
             Failure::abandoned(&format!("device executor did not start: {error}")),
         )
+    } else if record.process.is_none() {
+        Outcome::Failed(Failure::custody(&format!("CPU output handling after executor return: {error}")))
     } else {
         Outcome::Failed(Failure::abandoned(&format!("device executor ended: {error}")))
     };
