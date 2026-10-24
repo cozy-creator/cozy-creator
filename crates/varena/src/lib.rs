@@ -28,7 +28,7 @@ pub mod table;
 
 pub use backend::{Access, Backend, Budget, Event, HostBackend, Physical, Va};
 pub use cuda::CudaBackend;
-pub use memory::{Allocating, Fills, MakeRoom, Memory, Moved, Origin, Pass, Pin, PoolId, Ref, Request, Retained, SetId, Stats, StepStats, TorchStats, Yielded};
+pub use memory::{landed, Allocating, Fills, MakeRoom, Memory, Moved, Origin, Pass, Pin, PoolId, Ref, Request, Retained, SetId, Stats, StepStats, TorchStats, Yielded};
 pub use region::{GraphRegion, Kind as RegionKind, Reclaimable, Reclaimed, Record as RegionRecord, Region, RegionPin, Room, Word as GraphWord};
 pub use table::{headroom, Fill, Fingerprint, Level, PartId, Plan, SetSpec, Step};
 

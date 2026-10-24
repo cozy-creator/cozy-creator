@@ -752,6 +752,12 @@ fn host_limit() -> Option<u64> {
     platform::contain::host_memory::limit()
 }
 
+/// Bytes this process's fills and transforms landed, every GPU: monotonic.
+#[pyfunction]
+fn landed() -> u64 {
+    varena::landed()
+}
+
 /// Pins the binding holds now (Python's pin objects and the tensors that keep one).
 #[pyfunction]
 fn pins_held() -> u64 {
@@ -1000,6 +1006,7 @@ pub fn install(parent: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<varena::arena::Outlived>()?;
     m.add_class::<varena::arena::Ended>()?;
     m.add_function(wrap_pyfunction!(pins_held, &m)?)?;
+    m.add_function(wrap_pyfunction!(landed, &m)?)?;
     m.add_function(wrap_pyfunction!(document, &m)?)?;
     m.add_function(wrap_pyfunction!(host_limit, &m)?)?;
     m.add("VarenaError", py.get_type::<VarenaError>())?;

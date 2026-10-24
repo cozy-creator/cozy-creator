@@ -34,7 +34,7 @@ import torch
 from torch import Tensor, nn
 from torch.utils._pytree import tree_leaves, tree_map
 
-from . import Ended, Exhausted, Fill, GpuId, Level, Pass, Pin, Stats, VarenaError, Window, host_limit
+from . import Ended, Exhausted, Fill, GpuId, Level, Pass, Pin, Stats, VarenaError, Window, host_limit, landed
 from . import Memory as Native
 from .. import _ext
 from . import Request as NativeRequest
@@ -42,7 +42,7 @@ from . import Set
 
 __all__ = [
     "Bind", "Declared", "Exhausted", "Filling", "GpuId", "Hold", "Level", "Memory", "Model",
-    "NotRegistered", "GraphRegion", "Placeholder", "Region", "Request", "Room", "Stats", "Unbound", "VarenaError", "Weights", "blocks_of",
+    "NotRegistered", "GraphRegion", "Placeholder", "Region", "Request", "Room", "Stats", "Unbound", "VarenaError", "Weights", "blocks_of", "landed",
 ]
 
 #: Blocks entered, process-wide: the work a call does in its models, which the Runtime tells the

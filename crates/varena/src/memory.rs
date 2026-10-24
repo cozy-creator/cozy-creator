@@ -316,6 +316,15 @@ impl Drop for Owner {
     }
 }
 
+/// Bytes this process's fills and transforms landed, every device: a loading call's work that no
+/// block entry shows.
+static LANDED: AtomicU64 = AtomicU64::new(0);
+
+/// [`LANDED`] now: monotonic.
+pub fn landed() -> u64 {
+    LANDED.load(Ordering::Relaxed)
+}
+
 /// One process's memory on one device. A clone is another public handle on it.
 pub struct Memory {
     inner: Owner,
@@ -1485,9 +1494,11 @@ impl Inner {
         let ownership_lost = landed.iter().any(|out| matches!(out, Err(Error::Ownership(_))));
         let drained = !ownership_lost && (landed.iter().all(Result::is_ok) || self.backend.drain().is_ok());
         // A fill that landed is this process's progress: a loading executor is never judged
-        // stalled by the manager's stall look.
+        // stalled by the manager's stall look, nor by its call's liveness ([`landed`]).
+        let moved: u64 = pages.iter().zip(&landed).filter(|(_, l)| l.is_ok()).map(|((.., (.., span)), _)| *span).sum();
+        LANDED.fetch_add(moved, Ordering::Relaxed);
         #[cfg(unix)]
-        if let Some(agent) = self.lease.get().filter(|_| landed.iter().any(Result::is_ok)) {
+        if let Some(agent) = self.lease.get().filter(|_| moved > 0) {
             agent.progressed();
         }
         // A spilling host device starts their writeback (no lock held: it may wait on I/O).
@@ -2583,6 +2594,7 @@ impl Pin {
             let event = self.inner.backend.record(self.stream)?;
             self.inner.backend.landed(self.ptr, self.len);
             // A transform that ran is progress too.
+            LANDED.fetch_add(self.len, Ordering::Relaxed);
             #[cfg(unix)]
             if let Some(agent) = self.inner.lease.get() {
                 agent.progressed();

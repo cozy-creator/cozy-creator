@@ -427,3 +427,7 @@ def document(stats: Stats) -> dict[str, object]:
 
 def pins_held() -> int:
     """Pins the binding holds now: Python's pin objects and the tensors that keep one."""
+
+def landed() -> int:
+    """Bytes this process's fills and transforms landed, every GPU: monotonic. A loading call's
+    work that no block entry (`tensorfs.varena.torch.progress`) shows."""

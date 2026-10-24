@@ -32,6 +32,7 @@ from .._ext.varena import (
     Yielded,
     document,
     host_limit,
+    landed,
     pins_held,
 )
 
@@ -66,5 +67,6 @@ __all__ = [
     "Yielded",
     "document",
     "host_limit",
+    "landed",
     "pins_held",
 ]
