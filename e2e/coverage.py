@@ -147,7 +147,7 @@ def hidden_in_source(src: str) -> set[str]:
 
     names = set()
     for path in pathlib.Path(src).rglob("*.rs"):
-        lines = path.read_text().splitlines()
+        lines = path.read_text(encoding="utf-8").splitlines()
         for i, line in enumerate(lines):
             if not re.search(r"#\[(arg|command)\(.*hide\s*=\s*true", line):
                 continue
