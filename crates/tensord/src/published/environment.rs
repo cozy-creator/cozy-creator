@@ -464,7 +464,7 @@ fn live_paths(env: &Path) -> io::Result<()> {
             continue;
         }
         let text = fs::read_to_string(&path)?;
-        let inside = |line: &str| site.join(line.trim_end()).canonicalize().is_ok_and(|p| p.starts_with(&env));
+        let inside = |line: &str| platform::durable::canonical(&site.join(line.trim_end())).is_ok_and(|p| p.starts_with(&env));
         let live = |line: &str| !line.is_empty() && !line.starts_with('#') && !line.starts_with("import ") && !line.starts_with("import\t") && !inside(line);
         if !text.lines().any(live) {
             continue;
