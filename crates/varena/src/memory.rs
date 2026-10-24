@@ -1811,17 +1811,18 @@ impl Inner {
         self.free(st)
     }
 
-    /// Makes `bytes` free for a bind or a range's preparation, taking its own pages in
-    /// [`decide::victims`]' order, never `keep` (the pages being bound): idle pages unmapped, a
-    /// running set streamed through slots, pages whose last consumers still run taken once their
-    /// release events complete (waited on here). `Exhausted` at once beyond what it could ever
-    /// have, else only when a round takes nothing and nothing of its own is about to come back
-    /// (a fill: waited for). `why` and `req` name it in the request's record.
+    /// Makes `bytes` free for a bind, a range's preparation or a standalone torch chunk, in the
+    /// order torch's idle spans, its own pages in [`decide::victims`]' order (never `keep`, the
+    /// pages being bound: idle pages unmapped, a running set streamed through slots, pages whose
+    /// last consumers still run taken once their release events complete), then unpinned cache
+    /// regions; no state lock is held across any of them. `Exhausted` at once beyond what it
+    /// could ever have, else only when a round takes nothing and nothing of its own is about to
+    /// come back (a fill: waited for). `why` and `req` name it in the request's record.
     fn make_room(&self, bytes: u64, keep: &[Key], why: &'static str, req: Option<u64>, free_only: bool) -> Result<u64> {
-        if self.torch.get().is_some_and(|torch| torch.capturing()) {
-            return Err(Error::Exhausted(exhausted(bytes, Some("weight preparation during capture"), Stats::default())));
-        }
         let mut record = MakeRoom { step: 0, trigger: why.into(), need: bytes, freed: 0, waited: 0 };
+        // What the table does not count, read once and only when short: unpinned caches and
+        // torch's idle spans still waiting for their epochs.
+        let mut beyond: Option<u64> = None;
         let out = loop {
             let mut st = self.lock();
             // A refused create, or a manager's refusal, says there is less than the figures: the
@@ -1841,21 +1842,49 @@ impl Inner {
                 self.unlock(st);
                 break Ok(free);
             }
-            // Idle work takes free bytes only. Other demands reclaim local idle torch chunks,
-            // then weights, then unpinned caches; pinned pages and graphs are never candidates.
+            let torch = self.torch.get().cloned();
+            // Every unmap and give-back below would land inside an open capture.
+            if torch.as_ref().is_some_and(|t| t.capturing()) {
+                let stats = req.and_then(|r| st.stats.get(&r)).cloned().unwrap_or_default();
+                self.unlock(st);
+                break Err(Error::Exhausted(exhausted(bytes - free, Some("making room while a capture is open"), stats)));
+            }
+            // Torch's quiet idle spans first, for any demand: this process's free list.
+            if let Some(torch) = &torch {
+                self.unlock(st);
+                let given = torch.reclaim(bytes - free);
+                if given > 0 {
+                    record.freed += given;
+                    continue;
+                }
+                st = self.lock();
+            }
+            // Idle work takes free bytes only; nothing takes more than it could ever have (its
+            // pinned pages stay; a page still filling is the round's once it lands).
             let idle = free_only || req.and_then(|r| st.table.request(r)).is_some_and(|r| r.idle);
-            if idle {
+            let beyond = match beyond {
+                Some(b) => b,
+                None if idle => 0,
+                None => {
+                    self.unlock(st);
+                    let b = crate::region::cache_bytes(self) + torch.as_ref().map_or(0, |t| t.idle().1);
+                    st = self.lock();
+                    *beyond.insert(b)
+                }
+            };
+            let pinned: u64 = st.table.pages().filter(|(k, p)| p.mapped && !p.pins.is_empty() && !keep.contains(k)).map(|(_, p)| p.bytes).sum();
+            if idle || bytes > (free + st.table.mapped() + beyond).saturating_sub(pinned) {
                 let out = short(&st);
                 self.unlock(st);
                 break out;
             }
             record.step = req.and_then(|r| st.table.request(r)).map_or(0, |r| r.cursor.step);
-            if let Some(torch) = self.torch.get() {
+            // Spans freed but waiting for their epochs, then the table's pages.
+            if let Some(torch) = &torch {
                 self.unlock(st);
-                let freed = torch.reclaim(bytes - free);
-                let freed = if freed == 0 { torch.give_back()? } else { freed };
-                if freed > 0 {
-                    record.freed += freed;
+                let given = torch.give_back()?;
+                if given > 0 {
+                    record.freed += given;
                     continue;
                 }
                 st = self.lock();

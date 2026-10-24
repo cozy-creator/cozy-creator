@@ -709,18 +709,30 @@ pub(crate) fn reclaim(id: u64, swap: bool) -> Result<Reclaimed> {
     }
 }
 
-/// Local caches only, oldest first, with no Memory state lock held. A graph region and a
-/// pinned/locked cache are skipped; a failed unmap counts only the bytes actually returned.
-pub(crate) fn reclaim_local(inner: &crate::memory::Inner, want: u64) -> Result<u64> {
+/// This Memory's unpinned, resident caches: their bytes, or evicted oldest first until `want`
+/// bytes went back (the bytes that did). Graph regions are never taken; a cache pinned or locked
+/// is skipped. No Memory state lock is held.
+fn local_caches(inner: &crate::memory::Inner) -> Vec<Arc<Shared>> {
     let mut caches: Vec<Arc<Shared>> = LIVE.lock().values().filter_map(|live| match live {
         Live::Cache(weak) => weak.upgrade().filter(|cache| cache.memory.same_inner(inner)),
         Live::Graph(_) => None,
     }).collect();
     caches.sort_unstable_by_key(|cache| cache.last_use.load(Ordering::Acquire));
-    let before = inner.local_free();
+    caches
+}
+
+pub(crate) fn cache_bytes(inner: &crate::memory::Inner) -> u64 {
+    local_caches(inner).iter().filter(|cache| cache.res.try_lock().is_some_and(|r| !r.closed && r.pins == 0 && r.evicted.is_none()))
+        .map(|cache| cache.memory.torch_if().map_or(0, |t| t.mapped_by(Owner::Region(cache.id)))).sum()
+}
+
+pub(crate) fn reclaim_local(inner: &crate::memory::Inner, want: u64) -> Result<u64> {
+    let caches = local_caches(inner);
+    let Some(torch) = caches.first().and_then(|cache| cache.memory.torch_if()) else { return Ok(0) };
+    let before = torch.mapped();
     for cache in caches {
-        if inner.local_free().saturating_sub(before) >= want { break; }
+        if before.saturating_sub(torch.mapped()) >= want { break; }
         cache.reclaim_local()?;
     }
-    Ok(inner.local_free().saturating_sub(before))
+    Ok(before.saturating_sub(torch.mapped()))
 }

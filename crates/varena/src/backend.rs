@@ -85,8 +85,10 @@ impl Allowance {
 
     /// A page made by [`Allowance::create`] destroyed, its bytes refunded.
     pub fn destroy(&self, backend: &dyn Backend, page: Physical) -> Result<()> {
-        self.refund(page.len);
-        backend.destroy(page)
+        let len = page.len;
+        backend.destroy(page)?;
+        self.refund(len);
+        Ok(())
     }
 
     fn refund(&self, len: u64) {
