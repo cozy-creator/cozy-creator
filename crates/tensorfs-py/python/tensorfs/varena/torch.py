@@ -464,7 +464,9 @@ def _install() -> None:
         shim.varena_torch_abandon_pool.argtypes = (ctypes.c_int, ctypes.c_uint64, ctypes.c_uint64)
         if shim.varena_torch_abi() != _SHIM_ABI:
             raise RuntimeError(f"its agent ABI is {shim.varena_torch_abi()}, this extension's {_SHIM_ABI}")
-        agent = ("alloc", "free", "record_stream", "pool_begin", "pool_end", "pool_release")
+        # The allocator symbol is versioned too: an old adapter/shim must not call a new
+        # extension with the old argument list and no writable error-code cell.
+        agent = ("alloc_v2", "free", "record_stream", "pool_begin", "pool_end", "pool_release")
         shim.varena_torch_bind((ctypes.c_void_p * len(agent))(*(ctypes.cast(getattr(ext, f"varena_agent_{f}"), ctypes.c_void_p) for f in agent)))
         hook = {name: ctypes.cast(getattr(shim, f"varena_torch_{name}"), ctypes.c_void_p).value for name in ("malloc", "free", "record_stream", "begin_pool", "end_pool", "release_pool")}
         allocator = torch._C._cuda_customAllocator(hook["malloc"], hook["free"])

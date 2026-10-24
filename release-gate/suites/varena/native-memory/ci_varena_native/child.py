@@ -2,7 +2,7 @@
 process's GPU, beside the ballast process that holds the rest of the card. Prints a JSON line per step, the result
 last, then exits without teardown (a faulted context must not hang the cell).
 
-  recovery  a capacity refusal is torch's OutOfMemoryError and evicts nothing; a usage error is an ordinary error;
+  recovery  a capacity refusal is torch's OutOfMemoryError and preserves live bytes; a usage error is an ordinary error;
             a demand past free bytes takes cold weights, then an unpinned cache region (swapped to RAM), and the
             weights refill from the store with the same output; the region pins again not fresh, its bytes intact
   fault     a kernel reads an evicted region outside its pin: the fault and every allocation after it are
@@ -84,15 +84,18 @@ def recovery(seed: int) -> dict[str, object]:
             c0 = digest(c)
         say(step="cached", left=left(), mapped=mapped(mem))
 
-        # More than evicting everything could give: refused at once, nothing taken.
-        before = (weights(mem), mapped(mem))
+        # More than evicting everything could give: preserve live allocations and contents.
+        # Returning already-free torch spans is valid recovery, so total mapped bytes can fall.
+        before = (weights(mem), int(mem.torch_stats()["allocated"]))
         need = left() + w_bytes + CACHE + 256 * MIB
         try:
             torch.empty(need, dtype=torch.uint8, device="cuda")
             out["refusal"] = {"bytes": need, "allocated": True}
         except Exception as e:  # noqa: BLE001 - the class is the fact recorded
             out["refusal"] = {"bytes": need, **failure(e)}
-        out["refusal_kept"] = {"weights": weights(mem) == before[0], "mapped": mapped(mem) == before[1]}
+        out["refusal_kept"] = {"weights": weights(mem) == before[0], "allocated": int(mem.torch_stats()["allocated"]) == before[1]}
+        with cache.pin() as fresh:
+            out["refusal_kept"].update({"cache_not_fresh": not fresh, "cache_same_bytes": digest(c) == c0})
         say(step="refused", **out["refusal_kept"])  # type: ignore[arg-type]
 
         try:

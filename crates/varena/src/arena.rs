@@ -896,7 +896,9 @@ impl Torch {
             Ok(event) => Fence::Event(stream, event),
             Err(e) => {
                 tracing::warn!("varena: recording a pool fence failed ({e}); synchronizing its stream");
-                sh.backend.synchronize(stream)?;
+                if let Err(failed) = sh.backend.synchronize(stream) {
+                    return Err(sh.lost_completion(format!("pool fence failed ({e}); stream completion failed ({failed})")));
+                }
                 return Ok(());
             }
         };
@@ -1292,11 +1294,19 @@ impl Shared {
             }
             Err(e) => {
                 c.lost.store(true, Release);
-                self.lost.store(true, Release);
-                tracing::error!("varena: stream {:#x}'s epoch failed ({why}) and so did its synchronize ({e}): its spans are quarantined", c.stream);
-                self.progressed();
+                self.lost_completion(format!("stream {:#x}'s epoch failed ({why}); stream completion failed ({e})", c.stream));
             }
         }
+    }
+
+    /// Clock and pool fences share one lost-completion flag and wake the same waiters. The
+    /// next Memory boundary turns it into the existing ownership-loss retirement path.
+    fn lost_completion(&self, why: impl std::fmt::Display) -> Error {
+        self.lost.store(true, Release);
+        let error = Error::Ownership(why.to_string());
+        tracing::error!("varena: allocator completion is unproven: {error}");
+        self.progressed();
+        error
     }
 
     fn queue(&self, a: &Arc<Arena>, kick: bool) {
@@ -1613,7 +1623,13 @@ impl Shared {
                     Ok(done) => done,
                     Err(why) => {
                         tracing::warn!("varena: a pool fence's query failed ({why}); synchronizing its stream");
-                        self.backend.synchronize(*stream).is_ok()
+                        match self.backend.synchronize(*stream) {
+                            Ok(()) => true,
+                            Err(failed) => {
+                                self.lost_completion(format!("pool fence query failed ({why}); stream completion failed ({failed})"));
+                                false
+                            }
+                        }
                     }
                 },
             })

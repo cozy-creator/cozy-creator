@@ -53,6 +53,7 @@ def stage(name: str, seed: int, tel: Telemetry) -> dict[str, Any]:
             except (ValueError, KeyError, TypeError):
                 tel.log(f"{name}: {line.strip()}")
         result["exit"] = p.wait()
+        result["passed"] = result.get("passed") is True and result["exit"] == 0
         tel.log(f"{name}: {json.dumps(result)}")
         return result
 
@@ -71,5 +72,5 @@ def prove(payload: Probe, tel: Telemetry) -> Report:
     finally:
         ballast.kill()
         ballast.wait()
-    return Report(passed=bool(recovery.get("passed") and fault.get("passed")), ballast_bytes=held, card_bytes=card,
+    return Report(passed=recovery.get("passed") is True and fault.get("passed") is True, ballast_bytes=held, card_bytes=card,
                   recovery=json.dumps(recovery), fault=json.dumps(fault))
