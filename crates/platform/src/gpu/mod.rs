@@ -187,7 +187,8 @@ impl Device {
         // A process in both lists (a CUDA program that also draws) is charged once: its larger.
         let graphics = device
             .running_graphics_processes()
-            .map_or(Some(vec![]), charged);
+            .ok()
+            .and_then(charged);
         let processes = device
             .running_compute_processes()
             .ok()
