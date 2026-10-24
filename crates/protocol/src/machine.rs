@@ -728,6 +728,18 @@ pub struct StatusFrame {
     pub kernels: Vec<KernelVerdict>,
     /// The TensorD service's process (not its stable parent, a pod's PID 1).
     pub tensord_pid: u32,
+    /// While the machine starts: the step it is on, answered before anything else, so a
+    /// watcher tells a slow start from none. Absent once it serves.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub booting: Option<Booting>,
+}
+
+/// A starting machine's step and a counter that advances as it moves.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(default)]
+pub struct Booting {
+    pub step: String,
+    pub progress: u64,
 }
 
 /// The machine's build toolchain: CUDA's compiler and a host C/C++ compiler.

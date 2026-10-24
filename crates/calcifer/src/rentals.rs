@@ -1174,7 +1174,13 @@ fn boot_phase(rental: &types::Rental) -> Option<String> {
     .flatten()
     .filter(|w| !w.is_empty())
     .collect();
-    (!words.is_empty()).then(|| words.join(": "))
+    // A boot that stands still is shown standing, by the Hub's clock: its renter decides.
+    let still = boot
+        .and_then(|b| Some(ms(&b.observed_at)? - ms(b.last_progress_at.as_deref()?)?))
+        .map(|ms| ms / 60_000)
+        .filter(|minutes| *minutes > 0)
+        .map(|minutes| format!(" (no progress {minutes} min)"));
+    (!words.is_empty()).then(|| words.join(": ") + &still.unwrap_or_default())
 }
 
 /// What we charge for the rental an hour, its GPUs; disk and traffic are never the user's.

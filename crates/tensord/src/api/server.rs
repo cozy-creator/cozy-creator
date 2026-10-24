@@ -131,6 +131,79 @@ pub async fn serve<B: MachineBackend>(
 
 const LIVENESS: Duration = Duration::from_secs(20);
 
+/// A starting machine's step, which `booting` answers until the API serves.
+pub struct Boot {
+    step: std::sync::Mutex<&'static str>,
+    progress: std::sync::atomic::AtomicU64,
+}
+
+impl Boot {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self { step: std::sync::Mutex::new("starting"), progress: Default::default() })
+    }
+
+    /// The machine moved on to `step`: progress, whatever the step.
+    pub fn at(&self, step: &'static str) {
+        *self.step.lock().unwrap() = step;
+        self.progress.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn now(&self) -> super::v1::Booting {
+        super::v1::Booting {
+            step: (*self.step.lock().unwrap()).into(),
+            progress: self.progress.load(std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+}
+
+/// Answers `GET /v1/status` with the machine's identity and boot step (no receipt yet), and
+/// everything else `machine_booting`, until the caller aborts it and `serve` takes the listener:
+/// the machine answers before it does anything slow, so a watcher hears a slow start, never
+/// silence.
+pub fn booting(
+    listener: std::net::TcpListener,
+    identity: &MachineIdentity,
+    boot: Arc<Boot>,
+) -> std::io::Result<impl std::future::Future<Output = std::io::Result<()>> + Send + 'static> {
+    use axum::{http::StatusCode, routing::get, Json, Router};
+    let tls = TlsAcceptor::from(Arc::new(tls(identity)?));
+    let frame = super::v1::StatusFrame {
+        worker_id: identity.authority.worker_id.clone(),
+        boot_id: identity.authority.boot_id.clone(),
+        version: env!("CARGO_PKG_VERSION").into(),
+        commit: protocol::COMMIT.into(),
+        phase: "booting".into(),
+        ..Default::default()
+    };
+    let app = Router::new()
+        .route(super::v1::path::STATUS, get(move || {
+            let frame = super::v1::StatusFrame { booting: Some(boot.now()), ..frame.clone() };
+            async move { Json(frame) }
+        }))
+        .fallback(|| async {
+            let error = protocol::error::Error::unavailable("machine_booting", "the machine is starting; ask again once it serves");
+            (StatusCode::SERVICE_UNAVAILABLE, Json(protocol::error::Envelope { error }))
+        });
+    let service = TowerToHyperService::new(app);
+    let http = Arc::new(auto::Builder::new(TokioExecutor::new()));
+    Ok(async move {
+        let listener = tokio::net::TcpListener::from_std(listener)?;
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            };
+            live(&stream);
+            let (tls, http, service) = (tls.clone(), http.clone(), service.clone());
+            tokio::spawn(async move {
+                if let Ok(stream) = tls.accept(stream).await {
+                    let _ = http.serve_connection(TokioIo::new(stream), service).await;
+                }
+            });
+        }
+    })
+}
+
 /// The machine's leaf, offering HTTP/2 for control and HTTP/1.1 for bulk lanes.
 fn tls(identity: &MachineIdentity) -> std::io::Result<rustls::ServerConfig> {
     use rustls::pki_types::{pem::PemObject, PrivateKeyDer};

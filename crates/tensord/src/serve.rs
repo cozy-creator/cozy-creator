@@ -185,6 +185,13 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
         lifetime,
         readiness,
     )?;
+    // The machine answers before it does anything slow: its listener first, then its step as it
+    // starts, so whoever watches it (a rental's Hub, Calcifer) hears a slow start, never silence.
+    let api = crate::machine::net::kept_listener(&layout.state.join("api-port"), grant.listen_host, grant.worker_port)?;
+    let boot = crate::api::Boot::new();
+    api.set_nonblocking(true)?;
+    let booting = runtime.spawn(crate::api::booting(api.try_clone()?, &identity, boot.clone())?);
+    boot.at("store");
     let lifecycle = crate::machine::lifecycle::Lifecycle::open(
         layout.state.join("idle.json"),
         rental,
@@ -199,7 +206,9 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     let (_owned, store) = own(&engine, &layout.store, Some(&paths))?;
     // The machine's one downloader, held for its life: it reads the datacenter volume before the
     // Hub and fills it. A variable naming no mount point (the volume was not delivered) is none.
+    boot.at("cache");
     let machine = Machine::new(store.clone(), layout.cache.as_deref())?;
+    boot.at("journal");
     let service = crate::service::Service::open(&engine, &generations, 1)?;
     // The jobs this root held (a preparation the restart ended counts as ended now): Status
     // reports the true deadline from the first frame.
@@ -211,6 +220,7 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     service.hold_while(move || holding.holding());
     lifecycle.on_change(move || executions.notify_activity());
     let sdk = crate::published::PackageSdk::selected(&paths.sdk(), crate::machine::uv::Uv::of(&layout.root, &engine, rental));
+    boot.at("updates");
     let running = {
         let engine = service.engine.clone();
         Box::new(move || engine.with_journal(|journal| journal.started()).unwrap_or_default())
@@ -238,6 +248,7 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     // A machine serves every package on its pool: its GPUs (the envelope, sorted by index; a
     // degree-K plan uses the first K) and deviceless executors, with the executor environment
     // the pod proofs used.
+    boot.at("gpus");
     let mut gpus = receipt::gpus(visible_devices.as_deref())?;
     // A driver below CUDA 13.0's floor serves no GPU; the machine stays for CPU work.
     if let Some(why) = gpus.first().and_then(|gpu| platform::gpu::below_floor(&gpu.driver_version)) {
@@ -246,6 +257,7 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     }
     identity.gpus = gpus.clone();
     identity.gpu_memory_limit = gpu_memory_limit;
+    boot.at("pool");
     {
         let devices: Vec<String> = gpus.iter().map(|g| g.device_index.to_string()).collect();
         let home = engine.join("executor-home");
@@ -312,9 +324,12 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
                 std::process::exit(0);
             })?;
     }
-    let api = crate::machine::net::kept_listener(&layout.state.join("api-port"), grant.listen_host, grant.worker_port)?;
+    boot.at("api");
     identity.webrtc = crate::machine::player::listen(&layout.state, grant.webrtc_port, !rental)?;
     identity.player = grant.webrtc_reach.clone();
+    // The boot answer ends before the API takes its listener: one server answers at a time.
+    booting.abort();
+    let _ = runtime.block_on(booting);
     start_api(
         &engine,
         &generations,
