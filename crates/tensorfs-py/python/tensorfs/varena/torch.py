@@ -17,11 +17,13 @@ from __future__ import annotations
 import ctypes
 import hashlib
 import json
+import math
 import os
 import sys
 import threading
 import warnings
 import weakref
+from collections import Counter
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager, nullcontext
 from contextvars import ContextVar
@@ -566,12 +568,18 @@ class Memory:
         declared = vars(module).get("_varena")
         if not isinstance(declared, Declared):
             raise Unbound(f"{type(module).__name__}: no weights declared (`_varena = Declared(...)`)")
-        w, paths = declared.weights, blocks_of(module)
+        w = declared.weights
+        tensors = w.ck.components[w.component].tensors
+        bound = {key: w.bound.get(key, key) if w.bound else key for key in tensors if w.keys is None or key in w.keys}
+        # Logical bytes: an encoded tensor stores fewer, which a threshold can ignore.
+        size = {key: math.prod(t.shape) * (DTYPES[t.dtype].itemsize if t.dtype in DTYPES else 1) for key, t in tensors.items() if key in bound}
+        stored = {path: size[key] for key, path in bound.items()}
+        paths = blocks_of(module)
+        rank = {path: i for i, (path, _) in enumerate(module.named_modules())}
+        paths = sorted([*paths, *_alone(module, stored, paths)], key=lambda path: rank.get(path, -1))
         owned: dict[str, list[str]] = {}
-        for key in w.ck.components[w.component].tensors:
-            if w.keys is None or key in w.keys:
-                path = w.bound.get(key, key) if w.bound else key
-                owned.setdefault(_block_of(path, paths), []).append(f"{w.component}/{key}")
+        for key, path in bound.items():
+            owned.setdefault(_block_of(path, paths), []).append(f"{w.component}/{key}")
         order = [p for p in ("", *paths) if p in owned]
         # A set is one checkpoint's component as one module builds it: two models of a release that share a
         # component name (two DiTs' `transformer`, two LoRAs' `model`) are two sets, and so are two modules
@@ -1072,6 +1080,27 @@ def _fill(fill: Filling | None) -> Fill:
     if fill is None:
         return Fill.Stored()
     return Fill.Undeclared() if fill.identity is None else Fill.Declared(fill.identity)
+
+
+#: A leaf module outside every block storing at least this many bytes is a region of its own, bound
+#: only while it runs (a text encoder's token table), never pinned for a whole pass as common is.
+ALONE = 64 << 20
+
+
+def _alone(module: nn.Module, stored: Mapping[str, int], paths: Sequence[str]) -> list[str]:
+    """`module`'s leaf modules outside `paths` whose own tensors store `ALONE` bytes or more,
+    `stored` giving each tensor's bytes by module path. A tensor another module shares (a tied
+    head) keeps its module in common: that module reads it outside its own forward."""
+    tensors = [*module.named_parameters(remove_duplicate=False), *module.named_buffers(remove_duplicate=False)]
+    uses = Counter(id(t) for _, t in tensors)
+    found = []
+    for path, sub in module.named_modules():
+        if not path or next(sub.children(), None) is not None or _block_of(path, paths):
+            continue
+        own = [*sub.named_parameters(recurse=False), *sub.named_buffers(recurse=False)]
+        if own and all(uses[id(t)] == 1 for _, t in own) and sum(stored.get(f"{path}.{name}", 0) for name, _ in own) >= ALONE:
+            found.append(path)
+    return found
 
 
 def _block_of(key: str, paths: Sequence[str]) -> str:
