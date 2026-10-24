@@ -175,9 +175,10 @@ step machines
 # and the machine reports their versions.
 if [ -n "$CAND_RT" ] && [ -n "$CAND_TFS" ]; then
   cozy --json machine update local --runtime "$CAND_RT" --tensorfs "$CAND_TFS" -y > "$OUT/update-again.json" || check "machine update local --runtime --tensorfs failed"
-  rt=$(basename "$CAND_RT" | cut -d- -f2) tfs=$(basename "$CAND_TFS" | cut -d- -f2)
-  cozy --json machine show local | J --arg rt "$rt" --arg tfs "$tfs" '(.status.runtime | startswith($rt)) and (.status.tensorfs | startswith($tfs))' \
-    || check "machine update --runtime $rt --tensorfs $tfs: the machine reports other versions"
+  rt=$(jq -r 'select(.machine) | .runtime' "$OUT/update-again.json" | tail -1 || true)
+  tfs=$(jq -r 'select(.machine) | .tensorfs' "$OUT/update-again.json" | tail -1 || true)
+  cozy --json machine show local | J --arg rt "$rt" --arg tfs "$tfs" '$rt != "" and .status.runtime == $rt and .status.tensorfs == $tfs' \
+    || check "machine update --runtime --tensorfs reported Runtime '$rt', TensorFS '$tfs': the machine reports other versions"
 fi
 cozy --json machine list > "$OUT/machines.json" && J '.machines | any(.name == "local")' "$OUT/machines.json" || check "machine list: no local"
 cozy --json machine show local > "$OUT/local.json" && J '.state == "ready" and (.address | length > 0)' "$OUT/local.json" || check "machine show local: not ready"

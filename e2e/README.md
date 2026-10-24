@@ -5,6 +5,9 @@ Real runs of `cozy` on GitHub's runners, chosen by what a change touches (CI v2:
 - `ci/affected <repo> <base> <head>` prints what a change must run; `ci/suites.toml` holds the rules.
 - **The candidate set** (`candidates/`): on Linux, TensorD, TensorFS and the Runtime, built from the change at its commit and the
   other repos at master (`stack_ref`, `runtime_ref`), go on the local machine together, so a mismatch between them fails the PR.
+  A built cozy or Runtime is `<version>+dev.g<sha8>`; a taken release asset or URL with no checksum is refused.
+- `run.sh`: how every suite (and the release gate) runs `cozy run`: `--out`, the record's `output[].path`, and a watchdog
+  that cancels only a run whose events and record stop changing.
 - `cli/run.sh`: install, up, the local machine, the candidates, a weightless request through them, BiRefNet on the CPU, a second
   executor, down, uninstall.
 - `imports/run.sh`: every published first-party package release installs (`cozy package install`) and imports on the candidates;
