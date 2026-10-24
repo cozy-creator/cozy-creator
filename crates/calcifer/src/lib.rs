@@ -552,9 +552,15 @@ impl Calcifer {
             };
             // This computer's machine starts when a run needs it; a run it was never sent fails
             // when it cannot start, saying why.
+            // Its start is shown while it lasts: nothing but TensorD's own answer or exit ends it.
             if name == "local"
                 && let Some(machines) = self.machines()
-                && let Err(e) = machines.local_up().await
+                && let Err(e) = {
+                    if !machines.local_runs() {
+                        self.waiting(id, "waiting for local to start".into());
+                    }
+                    machines.local_up().await
+                }
             {
                 if run.state != State::Queued {
                     self.waiting(id, format!("local cannot start: {}", e.message));

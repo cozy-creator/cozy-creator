@@ -697,7 +697,10 @@ impl Machines {
 
     async fn boot(self: &Arc<Self>, mut row: MachineRow) {
         let id = row.rental_id.clone().unwrap_or_default();
-        let (mut pause, mut last) = (Duration::from_secs(2), String::new());
+        // One cheap read of our own Hub every 2 s: the address is seen within 2 s of the pod
+        // serving, however long the boot's last phase took. Only a failing read backs off.
+        const BOOTING: Duration = Duration::from_secs(2);
+        let mut pause = BOOTING;
         loop {
             match self.store().machine(&row.name) {
                 Ok(Some(now)) if now.state != MachineState::Ended && now.endpoint.is_none() => {
@@ -740,13 +743,7 @@ impl Machines {
                         self.calcifer.machine_changed();
                         return self.watch(&row);
                     }
-                    let now = format!("{} {boot:?}", rental.state);
-                    pause = if now == last {
-                        (pause * 3 / 2).min(Duration::from_secs(30))
-                    } else {
-                        Duration::from_secs(2)
-                    };
-                    last = now;
+                    pause = BOOTING;
                 }
                 Err(e) => {
                     warn!(machine = row.name, "reading its boot: {e}");

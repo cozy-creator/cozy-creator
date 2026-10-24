@@ -291,6 +291,8 @@ pub(crate) struct Shared {
     advanced: AtomicU64,
     /// The longest the fetch stood still and then moved again, in nanoseconds.
     worst_still: AtomicU64,
+    /// The longest wait an origin stated (`Retry-After`), in nanoseconds: "not now" is not stillness.
+    stated_most: AtomicU64,
     /// Tasks and write-backs not yet ended.
     busy: AtomicUsize,
     settle: Notify,
@@ -478,6 +480,7 @@ impl Shared {
             active: AtomicUsize::new(0),
             advanced: AtomicU64::new(0),
             worst_still: AtomicU64::new(0),
+            stated_most: AtomicU64::new(0),
             busy: AtomicUsize::new(0),
             settle: Notify::new(),
             writes: Semaphore::new(WRITERS),
@@ -814,6 +817,9 @@ impl Shared {
                         doublings = (doublings + 1).min(MAX_DOUBLINGS);
                         tracing::debug!(object = %task.object.sha256, at = sink.reached, %why, "restart");
                     }
+                    if let Some(wait) = wait {
+                        self.stated_most.fetch_max(wait.as_nanos() as u64, Ordering::AcqRel);
+                    }
                     if let Some(refusal) = self.given_up(task, &why) {
                         return Err(refusal);
                     }
@@ -835,7 +841,7 @@ impl Shared {
     }
 
     /// The refusal that ends `task` when nothing anywhere has landed for twice the patience the
-    /// fetch has measured.
+    /// fetch has measured, or twice the longest wait an origin stated.
     fn given_up(&self, task: &Task, last: &str) -> Option<Refusal> {
         let since = self
             .advanced
@@ -843,7 +849,8 @@ impl Shared {
             .max(task.since.load(Ordering::Acquire));
         let still = Duration::from_nanos(self.now().saturating_sub(since));
         let worst = Duration::from_nanos(self.worst_still.load(Ordering::Acquire));
-        let patience = (self.tick * STILL_TICKS).max(worst.mul_f64(STALL_FACTOR));
+        let stated = Duration::from_nanos(self.stated_most.load(Ordering::Acquire));
+        let patience = (self.tick * STILL_TICKS).max(worst.mul_f64(STALL_FACTOR)).max(stated);
         (still > patience * 2).then(|| Refusal {
             code: Code::STALLED,
             detail: format!(
