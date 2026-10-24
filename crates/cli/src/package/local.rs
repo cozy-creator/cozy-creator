@@ -1,6 +1,6 @@
 //! Local code as a machine takes it: TensorD's `LocalSource`, a manifest naming each source file
 //! by its content. A directory travels with the path dependencies its sources name, under their
-//! common directory; a PEP 723 script becomes a generated project (scripts are packages). Nothing
+//! common directory; a script is a one-file package, its PEP 723 block its pyproject.toml. Nothing
 //! is locked here: a project without a uv.lock is resolved on the machine. This computer's machine
 //! reads the files in place, so only the manifest and the carried wheels travel; another receives
 //! the files too, and Calcifer writes only the bytes it lacks.
@@ -66,7 +66,7 @@ pub(crate) struct Local {
     _manifest: tempfile::TempDir,
 }
 
-/// `path` (a project directory or a PEP 723 script) as the machine `on` installs it. This
+/// `path` (a package directory or a script) as the machine `on` installs it. This
 /// computer's machine reads the files where they are; another is sent them.
 pub(crate) async fn source(ctx: &Context, path: &Path, on: &On) -> Result<Local, Error> {
     let in_place = matches!(on, On::Machine(name) if name.eq_ignore_ascii_case("local"));
@@ -276,34 +276,69 @@ fn callees(project: &Path) -> Result<BTreeMap<String, String>, Error> {
     Ok(lock.package.iter().filter_map(callee).collect())
 }
 
-/// A PEP 723 script as the project it is: generated under `~/.cozy/scripts`, named by the
-/// script's content, so an unchanged script is the same project.
+/// A script as the one-file package it is (xs-099): its PEP 723 block is its pyproject.toml
+/// (`dependencies` and `requires-python` are [project]'s, [tool] is [tool]), named for the file,
+/// whose module it is, with its `app`. The project is written under `~/.cozy/scripts`, one per
+/// script path, and from there it is read as any package directory is.
 fn script(ctx: &Context, path: &Path) -> Result<PathBuf, Error> {
     let raw = fs::read(path).map_err(|e| refuse("script_unreadable", e))?;
-    let mut metadata = pep723(&String::from_utf8_lossy(&raw))?;
-    let name = format!("cozy-script-{}", &hex::encode(Sha256::digest(&raw))[..24]);
-    let root = ctx.home.root().join("scripts").join(&name);
-    let mut dependencies = metadata
-        .remove("dependencies")
-        .and_then(|d| d.as_array().cloned())
-        .unwrap_or_default();
-    let names_runtime = dependencies.iter().filter_map(|d| d.as_str()).any(|d| {
-        d.trim_start()
-            .to_ascii_lowercase()
-            .replace('_', "-")
-            .starts_with("cozy-runtime")
-    });
-    if !names_runtime {
-        dependencies.push("cozy-runtime>=0.27".into());
+    let mut block = pep723(&String::from_utf8_lossy(&raw))?;
+    let stem = path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_ascii_lowercase();
+    let name: String = (stem.chars())
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || ".-_".contains(c) {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let mut module: String = (stem.chars())
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    if !module.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
+        module.insert(0, '_');
     }
-    let requires = metadata
-        .remove("requires-python")
-        .and_then(|r| r.as_str().map(str::to_owned));
-    let mut tool = metadata
-        .remove("tool")
-        .and_then(|t| t.as_table().cloned())
-        .unwrap_or_default();
-    // A path source names a directory beside the script: relative to the generated project
+    let at = hex::encode(Sha256::digest(path.to_string_lossy().as_bytes()));
+    let root = ctx
+        .home
+        .root()
+        .join("scripts")
+        .join(format!("{name}-{}", &at[..16]));
+    let file = format!("{module}.py");
+    let table = |text: String| toml::from_str::<toml::Table>(&text).expect("a constant table");
+    let mut project = table(format!(
+        "name = \"{name}\"\nversion = \"0.0.0\"\n\
+         entry-points.\"cozy.application\".default = \"{module}:app\"\n"
+    ));
+    for field in ["requires-python", "dependencies"] {
+        if let Some(value) = block.remove(field) {
+            project.insert(field.into(), value);
+        }
+    }
+    let mut tool = match block.remove("tool") {
+        Some(toml::Value::Table(tool)) => tool,
+        None => toml::Table::new(),
+        Some(_) => {
+            return Err(refuse(
+                "script_metadata_invalid",
+                "the `# /// script` block's tool is not a table",
+            ));
+        }
+    };
+    if let Some(other) = block.keys().next() {
+        return Err(refuse(
+            "script_metadata_invalid",
+            format!(
+                "the `# /// script` block names {other:?}: it takes dependencies, requires-python and [tool]"
+            ),
+        ));
+    }
+    // A path source names a directory beside the script: relative to the written project
     // instead, so the project and its libraries travel to a machine as one tree.
     let sources = tool
         .get_mut("uv")
@@ -316,73 +351,30 @@ fn script(ctx: &Context, path: &Path) -> Result<PathBuf, Error> {
             source["path"] = from(&root, &absolute).into();
         }
     }
-    // Hatchling builds the two modules, and admits git or URL dependencies as uv locks them.
-    let hatch: toml::Table = toml::from_str(
+    // Hatchling builds the one module, and admits git or URL dependencies as uv locks them.
+    let hatch = table(format!(
         "metadata.allow-direct-references = true\n\
-         build.targets.wheel.only-include = [\"cozy_script.py\", \"cozy_script_entry.py\"]\n",
-    )
-    .expect("a constant table");
+         build.targets.wheel.only-include = [\"{file}\"]\n"
+    ));
     tool.insert("hatch".into(), hatch.into());
-    let pyproject = Pyproject {
-        project: ScriptProject {
-            name: name.clone(),
-            version: "0.0.0",
-            requires_python: requires.unwrap_or_else(|| ">=3.12".into()),
-            dependencies,
-            entry_points: BTreeMap::from([(
-                "cozy.application",
-                BTreeMap::from([("default", "cozy_script_entry:app")]),
-            )]),
-        },
-        build_system: BuildSystem {
-            requires: vec!["hatchling>=1.25"],
-            build_backend: "hatchling.build",
-        },
-        tool,
-    };
-    let files = [
-        (
-            "pyproject.toml",
-            toml::to_string(&pyproject).map_err(|e| refuse("script_metadata_invalid", e))?,
-        ),
-        (
-            "cozy_script_entry.py",
-            "from cozy_runtime.author import script_app\napp = script_app(\"cozy_script\")\n"
-                .into(),
-        ),
-    ];
+    let mut pyproject = table(
+        "build-system = { requires = [\"hatchling>=1.25\"], build-backend = \"hatchling.build\" }"
+            .into(),
+    );
+    pyproject.insert("project".into(), project.into());
+    pyproject.insert("tool".into(), tool.into());
+    let pyproject =
+        toml::to_string(&pyproject).map_err(|e| refuse("script_metadata_invalid", e))?;
     fs::create_dir_all(&root).map_err(|e| refuse("script_unwritable", e))?;
-    fs::write(root.join("cozy_script.py"), &raw).map_err(|e| refuse("script_unwritable", e))?;
-    for (file, text) in files {
-        fs::write(root.join(file), text).map_err(|e| refuse("script_unwritable", e))?;
+    for (name, bytes) in [
+        (file.as_str(), raw.as_slice()),
+        ("pyproject.toml", pyproject.as_bytes()),
+    ] {
+        if fs::read(root.join(name)).ok().as_deref() != Some(bytes) {
+            fs::write(root.join(name), bytes).map_err(|e| refuse("script_unwritable", e))?;
+        }
     }
     Ok(root)
-}
-
-#[derive(Serialize)]
-struct Pyproject {
-    project: ScriptProject,
-    #[serde(rename = "build-system")]
-    build_system: BuildSystem,
-    tool: toml::Table,
-}
-
-#[derive(Serialize)]
-struct ScriptProject {
-    name: String,
-    version: &'static str,
-    #[serde(rename = "requires-python")]
-    requires_python: String,
-    dependencies: Vec<toml::Value>,
-    #[serde(rename = "entry-points")]
-    entry_points: BTreeMap<&'static str, BTreeMap<&'static str, &'static str>>,
-}
-
-#[derive(Serialize)]
-struct BuildSystem {
-    requires: Vec<&'static str>,
-    #[serde(rename = "build-backend")]
-    build_backend: &'static str,
 }
 
 /// `to` as a slash path relative to the directory `dir`.

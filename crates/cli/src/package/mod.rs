@@ -44,7 +44,7 @@ enum Command {
     /// its environment, no weights. Without a release, the newest; over an installed package, its
     /// older releases there go (an update). Follows the install; Ctrl-C stops following, never it.
     Install {
-        /// [org/]name[@release], a directory such as `.` or `./project`, or a PEP 723 `script.py`.
+        /// [org/]name[@release], a directory such as `.` or `./project`, or a `script.py`.
         #[arg(add = clap_complete::ArgValueCompleter::new(crate::completion::local))]
         package: String,
         #[command(flatten)]

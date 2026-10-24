@@ -1479,7 +1479,7 @@ impl Pool {
             _ if constructed.is_empty() && wanted as usize > self.devices.len() => {
                 return Err(self.unavailable(wanted))
             }
-            // It constructs nothing (a script): the GPUs it asks for, held by its one process.
+            // It constructs nothing: the GPUs it asks for, held by its one process.
             _ if constructed.is_empty() => wanted.max(1),
             _ => group_degree(&constructed, wanted, self.devices.len()),
         })

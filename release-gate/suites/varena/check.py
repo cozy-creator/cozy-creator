@@ -34,7 +34,7 @@ def memories(rec):
 
 
 def result(rec, key):
-    """The JSON document a script cell returned (a string holding `key`)."""
+    """The JSON document a script cell returned (a string field holding `key`)."""
     def walk(o):
         if isinstance(o, dict):
             for v in o.values():

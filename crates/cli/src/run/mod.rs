@@ -55,8 +55,8 @@ pub struct Args {
 
 #[derive(clap::Args, Debug)]
 struct RunArgs {
-    /// `[org/]pkg[/fn][@release]` (no org: first-party), `./dir[/fn]` or `./script.py`; without a
-    /// function, its functions.
+    /// `[org/]pkg[/fn][@release]` (no org: first-party), `./dir[/fn]` or `./script.py[/fn]`;
+    /// without a function, its functions (local code's one function runs).
     #[arg(required = true, value_name = "TARGET", add = ArgValueCompleter::new(crate::completion::local))]
     target: Option<String>,
     /// `key=value`, `key:=json`, `model.<slot>=<ref>`, one positional value, input files.
@@ -214,10 +214,9 @@ async fn run(ctx: &Context, args: RunArgs) -> Result<ExitCode, Error> {
             release,
             owned,
         } => (package, function, release, owned),
-        Target::Directory { path, function } => {
+        Target::Local { path, function } => {
             return local::run(ctx, &cwd.join(path), function, args).await;
         }
-        Target::Script(path) => return local::run(ctx, &cwd.join(path), None, args).await,
     };
     let hub = ctx.hub()?;
     let (package, function, resolved) =
