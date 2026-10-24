@@ -11,6 +11,8 @@
 
 pub mod arena;
 #[allow(unsafe_code)]
+pub mod charge;
+#[allow(unsafe_code)]
 pub mod backend;
 #[allow(unsafe_code)]
 pub mod cuda;
