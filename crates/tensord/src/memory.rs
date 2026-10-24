@@ -1,10 +1,11 @@
 //! TensorD hosts varena's lease manager (design varena-leases): each envelope GPU the inventory
 //! names has one, which creates the GPU's chunks and leases them to its executors, places their
 //! components, and keeps their measured peaks (capacity min(card, `gpu_memory_limit`)). GPU
-//! permits schedule calls; measured peaks never add a second admission queue. A GPU whose
-//! chunks TensorD cannot create has a chunk-less manager: its executors run standalone. Host RAM
-//! is the OS page cache; [`Host`] watches what the running calls must keep free of it. One thread blocks on every GPU's events and the
-//! host's short event; each GPU's [`Watch`] reads NVML while cozy holds bytes there.
+//! permits alone schedule calls (design varena-local): measured peaks guide placement and the
+//! host rule, never a second admission queue. A GPU whose chunks TensorD cannot create has a
+//! chunk-less manager: its executors run standalone. Host RAM is the OS page cache; [`Host`]
+//! watches what the running calls must keep free of it. One thread blocks on every GPU's events
+//! and the host's short event; each GPU's [`Watch`] reads NVML while cozy holds bytes there.
 use crate::machine::receipt;
 use platform::contain::host_memory;
 use platform::contain::host_pressure::{self, Growth, HostMode, Nudge};
@@ -439,18 +440,19 @@ pub fn homes(managers: &[&Manager], package: &str, shape: &str, sets: &[&str], l
     }
 }
 
-/// Measured peaks, persisted per GPU model as `<dir>/<model>.json`: varena's records, kept and
-/// restored whole. A key names its package release (`<construction>|<shape>`, or a set's
-/// `<package>@<release>/<component>|…`), so one file holds every release's. Each GPU of the
-/// model contributes its records; a key two of them measured is merged by the manager's restore.
+/// Measured peaks, persisted per GPU model as `<dir>/<model>.json`: varena's records, the
+/// largest of each kind and key across every GPU of the model. A key names its package release
+/// (`<construction>|<shape>`, or a set's `<package>@<release>/<component>|…`), so one file holds
+/// every release's. Each restore and each saved change is a memory-log note.
 pub struct Peaks {
     dir: PathBuf,
     saved: Mutex<BTreeMap<String, Vec<Peak>>>,
+    log: MemoryLog,
 }
 
 impl Peaks {
-    pub fn at(dir: PathBuf) -> Self {
-        Self { dir, saved: Mutex::default() }
+    pub fn at(dir: PathBuf, log: MemoryLog) -> Self {
+        Self { dir, saved: Mutex::default(), log }
     }
 
     fn path(&self, model: &str) -> PathBuf {
@@ -462,50 +464,33 @@ impl Peaks {
         let mut saved = self.saved.lock().unwrap();
         let held = saved.entry(model.into()).or_insert_with(|| {
             let read = fs::read(self.path(model)).ok().and_then(|bytes| serde_json::from_slice::<Vec<Peak>>(&bytes).ok());
-            read.unwrap_or_default()
+            Peak::merge(read.unwrap_or_default())
         });
-        if let Err(error) = manager.restore(held) {
-            tracing::warn!("memory: {model}'s peaks not restored: {error}");
-        }
+        manager.restore(held);
+        self.log.note(serde_json::json!({"event": "peaks_restored", "model": model, "peaks": held.len()}));
     }
 
     /// Saves what `managers` (every GPU of `model`, each holding what was restored into it) now
     /// hold, when it changed.
     pub fn save<'a>(&self, model: &str, managers: impl Iterator<Item = &'a Manager>) {
         let mut saved = self.saved.lock().unwrap();
-        let held = merge_peaks(managers.flat_map(Manager::peaks));
-        if saved.get(model).is_some_and(|before| before.len() == held.len() && held.iter().all(|peak| before.contains(peak))) {
+        let held = Peak::merge(managers.flat_map(Manager::peaks));
+        let before = saved.get(model).map_or(&[][..], Vec::as_slice);
+        if before == held {
             return;
         }
+        let changed: Vec<&Peak> = held.iter().filter(|peak| !before.contains(peak)).collect();
         let written = fs::create_dir_all(&self.dir)
             .map_err(platform::Error::from)
             .and_then(|()| platform::durable::replace(&self.path(model), &serde_json::to_vec(&held).unwrap_or_default(), 0o600));
         match written {
-            Ok(()) => drop(saved.insert(model.into(), held)),
+            Ok(()) => {
+                self.log.note(serde_json::json!({"event": "peaks_saved", "model": model, "changed": changed}));
+                saved.insert(model.into(), held);
+            }
             Err(error) => tracing::warn!("memory: {model}'s peaks not saved: {error}"),
         }
     }
-}
-
-/// Canonical high-water marks across every GPU of a model, independent of iteration order.
-fn merge_peaks(peaks: impl Iterator<Item = Peak>) -> Vec<Peak> {
-    let mut merged = BTreeMap::<(u8, String), u64>::new();
-    for peak in peaks {
-        let (kind, key, bytes) = match peak {
-            Peak::Request { key, bytes } => (0, key, bytes),
-            Peak::Compute { key, bytes } => (1, key, bytes),
-            Peak::Set { key, bytes } => (2, key, bytes),
-            Peak::Host { key, bytes } => (3, key, bytes),
-        };
-        let held = merged.entry((kind, key)).or_insert(bytes);
-        *held = (*held).max(bytes);
-    }
-    merged.into_iter().map(|((kind, key), bytes)| match kind {
-        0 => Peak::Request { key, bytes },
-        1 => Peak::Compute { key, bytes },
-        2 => Peak::Set { key, bytes },
-        _ => Peak::Host { key, bytes },
-    }).collect()
 }
 
 /// One process on a call's GPU. A single process may own several GPUs; a group has one per rank.
@@ -527,7 +512,7 @@ pub struct Call {
 pub type Running = Arc<Mutex<BTreeMap<String, Call>>>;
 
 /// A process running calls: measured anonymous peak, anonymous bytes now, and call count.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct HostCall {
     pub pid: u32,
     pub peak: Option<u64>,
@@ -535,28 +520,26 @@ pub struct HostCall {
     pub running: u64,
 }
 
-impl Call {
-    /// A GPU's figure is process-local: followers add separate headroom, while one process
-    /// using multiple GPUs is charged once (the largest figure any of its GPUs measured).
-    fn host(&self, peak: impl Fn(&str) -> Option<u64>, anon: impl Fn(u32) -> u64) -> Vec<HostCall> {
-        let mut processes = BTreeMap::<u32, Option<u64>>::new();
-        for rank in &self.ranks {
-            let measured = peak(&rank.gpu);
-            let held = processes.entry(rank.pid).or_default();
-            *held = (*held).max(measured);
-        }
-        processes.into_iter().map(|(pid, peak)| HostCall { pid, peak, anon: anon(pid), running: 1 }).collect()
-    }
-}
-
-/// Every process of every call, joined to the peak measured on its own GPU. The host rule
-/// deduplicates a process shared by calls; file-backed model pages remain in the OS budget.
+/// Every process of every call (each rank of a group), with the host peak its own GPU measured.
+/// One process on several GPUs is one row at the largest of their figures; the host rule
+/// deduplicates a process shared by calls. File-backed model pages remain in the OS budget.
 pub fn host_calls(running: &Running, gpus: &[Arc<Gpu>]) -> Vec<HostCall> {
     let calls: Vec<Call> = running.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect();
-    calls.into_iter().flat_map(|call| call.host(
-        |uuid| gpus.iter().find(|gpu| gpu.uuid == uuid).and_then(|gpu| gpu.manager.host_peak(&call.package, &call.shape)),
-        |pid| host_memory::resident(pid).map_or(0, |now| now.anon),
-    )).collect()
+    let mut rows = vec![];
+    for call in calls {
+        let mut processes = BTreeMap::<u32, Option<u64>>::new();
+        for rank in &call.ranks {
+            let gpu = gpus.iter().find(|gpu| gpu.uuid == rank.gpu);
+            let peak = gpu.and_then(|gpu| gpu.manager.host_peak(&call.package, &call.shape));
+            let held = processes.entry(rank.pid).or_default();
+            *held = (*held).max(peak);
+        }
+        rows.extend(processes.into_iter().map(|(pid, peak)| {
+            let anon = host_memory::resident(pid).map_or(0, |now| now.anon);
+            HostCall { pid, peak, anon, running: 1 }
+        }));
+    }
+    rows
 }
 
 /// What woke the events thread.
@@ -662,14 +645,22 @@ impl Host {
             .inspect_err(|error| log.note(serde_json::json!({"event": "host_unwatched", "mode": format!("{mode:?}"), "why": error.to_string()})))
             .ok()?;
         let (nudge, looks) = (pressure.nudge(), Arc::new((Mutex::new((0, 0)), std::sync::Condvar::new())));
-        let (looked, signal) = (looks.clone(), short.clone());
+        let (looked, signal, notes) = (looks.clone(), short.clone(), log.clone());
         let watching = std::thread::Builder::new().name("host-pressure".into()).spawn(move || {
             let mut keep = Keep::default();
             // The budget when short was last signalled: the next signal needs more than it.
             let mut signalled: Option<u64> = None;
+            // The processes and peaks the last note named: a note when they change.
+            let mut noted: Vec<(u32, Option<u64>)> = vec![];
             while pressure.wait().is_ok() {
                 looked.0.lock().unwrap_or_else(|e| e.into_inner()).0 += 1;
-                let need = keep.look(host_calls(&running, &gpus));
+                let calls = host_calls(&running, &gpus);
+                let named: Vec<(u32, Option<u64>)> = calls.iter().map(|call| (call.pid, call.peak)).collect();
+                if named != noted {
+                    notes.note(serde_json::json!({"event": "host_calls", "calls": calls}));
+                    noted = named;
+                }
+                let need = keep.look(calls);
                 let budget = u64::try_from(host_memory::read().available).unwrap_or(u64::MAX);
                 if budget >= need {
                     signalled = None;

@@ -769,7 +769,7 @@ impl Pool {
         let incarnation = uuid::Uuid::new_v4().simple().to_string();
         crate::launch_identity::remove_stale_jit(root, &incarnation);
         remove_old_executor_roots(root);
-        let peaks = memory::Peaks::at(root.join("peaks"));
+        let peaks = memory::Peaks::at(root.join("peaks"), notes.clone());
         let tenants = memory::Tenants::default();
         let uids = [Some(platform::memory::euid()), config.identity.map(|identity| identity.uid)];
         let peers = Arc::new(memory::Peers::new(tenants.clone(), uids.into_iter().flatten().collect(), notes.clone()));
@@ -2858,7 +2858,7 @@ impl Pool {
         let pids: Vec<u32> = std::iter::once(session.executor.birth.pid).chain(session.followers.iter().map(|f| f.birth().pid)).collect();
         let ranks = gpus.iter().enumerate().map(|(rank, gpu)| memory::Rank {
             pid: pids.get(rank).copied().unwrap_or(session.executor.birth.pid),
-            gpu: memory::row(&gpu.entry, &self.config.inventory).map_or_else(|| gpu.entry.clone(), |row| row.device_uuid.clone()),
+            gpu: gpu.memory.as_ref().map_or_else(String::new, |memory| memory.uuid.clone()),
         }).collect();
         let call = memory::Call { ranks, package: construction.clone(), shape: shape.clone() };
         let dispatched = Dispatched::new(gpus, id, &construction, &shape, self.running.clone());
@@ -3145,33 +3145,30 @@ struct Dispatched<'a> {
     running: memory::Running,
 }
 
+/// One GPU's row of an Invoke reply's `memory.varena`: its figures, never its trace.
 #[derive(Deserialize)]
 struct GpuMeasurement {
-    gpu: u32,
+    gpu: i64,
     stats: RequestFigures,
 }
 
-/// Only the measured figures, without copying a request's potentially large trace.
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
+#[serde(default)]
 struct RequestFigures {
     request: String,
     peak: u64,
-    #[serde(default)]
     compute: u64,
-    #[serde(default)]
     host: Option<u64>,
 }
 
 impl<'a> Dispatched<'a> {
     fn new(gpus: &'a [Device], id: &str, package: &str, shape: &str, running: memory::Running) -> Self {
-        for memory in gpus.iter().filter_map(|gpu| gpu.memory.as_ref()) {
-            if let Err(error) = memory.manager.dispatch(id, package, shape) {
-                tracing::warn!("memory: request {id}'s measurement key unwritten: {error}");
-            }
-        }
+        gpus.iter().filter_map(|gpu| gpu.memory.as_ref()).for_each(|memory| memory.manager.dispatch(id, package, shape));
         Self { gpus, id: id.into(), running }
     }
 
+    /// Each GPU's final figures from the settled Invoke reply (every rank's row), recorded
+    /// under the call's key before the key goes.
     fn record(&self, reply: &Frame, inventory: &[crate::machine::receipt::Gpu]) {
         let Some(value) = reply.memory.as_ref().and_then(|m| m.get("varena")) else { return };
         let rows = match Vec::<GpuMeasurement>::deserialize(value) {
@@ -3180,12 +3177,9 @@ impl<'a> Dispatched<'a> {
         };
         for gpu in self.gpus {
             let Some(memory) = &gpu.memory else { continue };
-            let Some(index) = memory::row(&gpu.entry, inventory).map(|row| row.device_index) else { continue };
-            if let Some(row) = rows.iter().find(|row| row.gpu == index && row.stats.request == self.id) {
-                memory.manager.record_request(&varena::Stats {
-                    request: row.stats.request.clone(), peak: row.stats.peak, compute: row.stats.compute,
-                    host: row.stats.host, ..Default::default()
-                });
+            let Some(index) = memory::row(&gpu.entry, inventory).map(|row| i64::from(row.device_index)) else { continue };
+            if let Some(RequestFigures { peak, compute, host, .. }) = rows.iter().find(|row| row.gpu == index && row.stats.request == self.id).map(|row| &row.stats) {
+                memory.manager.record_request(&self.id, *peak, *compute, *host);
             }
         }
     }

@@ -177,7 +177,7 @@ pub enum Mode {
     Dedicated,
 }
 
-/// A measured peak, as TensorD persists it per GPU model: restored exactly as it was read.
+/// A measured peak, as TensorD persists it per GPU model: the largest of each kind and key.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Peak {
     /// A request's largest working set at `<package>|<shape>`.
@@ -189,6 +189,40 @@ pub enum Peak {
     Set { key: String, bytes: u64 },
     /// A request's anonymous host high-water at `<package>|<shape>`.
     Host { key: String, bytes: u64 },
+}
+
+impl Peak {
+    /// Its figure: `<kind>/<key>` and its bytes.
+    fn figure(&self) -> (String, u64) {
+        match self {
+            Peak::Request { key, bytes } => (format!("peak/{key}"), *bytes),
+            Peak::Compute { key, bytes } => (format!("compute/{key}"), *bytes),
+            Peak::Set { key, bytes } => (format!("set/{key}"), *bytes),
+            Peak::Host { key, bytes } => (format!("host/{key}"), *bytes),
+        }
+    }
+
+    fn of((figure, &bytes): (&String, &u64)) -> Option<Peak> {
+        let (kind, key) = figure.split_once('/')?;
+        let key = key.to_string();
+        Some(match kind {
+            "peak" => Peak::Request { key, bytes },
+            "compute" => Peak::Compute { key, bytes },
+            "set" => Peak::Set { key, bytes },
+            "host" => Peak::Host { key, bytes },
+            _ => return None,
+        })
+    }
+
+    /// The largest of each kind and key, in key order: what every GPU of one model persists.
+    pub fn merge(peaks: impl IntoIterator<Item = Peak>) -> Vec<Peak> {
+        let mut figures = BTreeMap::new();
+        for peak in peaks {
+            let (figure, bytes) = peak.figure();
+            larger(&mut figures, figure, bytes);
+        }
+        figures.iter().filter_map(Peak::of).collect()
+    }
 }
 
 /// The driver's free bytes, and the bytes created and destroyed before that read; the host's
@@ -795,26 +829,24 @@ impl Manager {
     }
 
     /// Names the `<package>|<shape>` a request's peaks are recorded under, before it runs.
-    pub fn dispatch(&self, request: &str, package: &str, shape: &str) -> Result<()> {
+    pub fn dispatch(&self, request: &str, package: &str, shape: &str) {
         self.books.lock().dispatched.insert(request.to_string(), format!("{package}|{shape}"));
-        Ok(())
     }
 
     pub fn undispatch(&self, request: &str) {
         self.books.lock().dispatched.remove(request);
-        self.events.set();
     }
 
-    /// TensorD's settled Invoke reply is the request's only measurement path. It records every
-    /// rank before its dispatch key goes, without cross-socket ordering or completion tombstones.
-    pub fn record_request(&self, stats: &crate::Stats) {
+    /// A request's final figures on this GPU, from TensorD's settled Invoke reply (its only
+    /// measurement path), under its dispatch key: the larger working set and host high-water
+    /// stay, the compute bytes are the newest.
+    pub fn record_request(&self, request: &str, peak: u64, compute: u64, host: Option<u64>) {
         let mut b = self.books.lock();
-        if let Some(key) = b.dispatched.get(&stats.request).cloned() {
-            larger(&mut b.figures, format!("peak/{key}"), stats.peak);
-            b.figures.insert(format!("compute/{key}"), stats.compute);
-            if let Some(host) = stats.host {
-                larger(&mut b.figures, format!("host/{key}"), host);
-            }
+        let Some(key) = b.dispatched.get(request).cloned() else { return };
+        larger(&mut b.figures, format!("peak/{key}"), peak);
+        b.figures.insert(format!("compute/{key}"), compute);
+        if let Some(host) = host {
+            larger(&mut b.figures, format!("host/{key}"), host);
         }
         drop(b);
         self.events.set();
@@ -844,34 +876,17 @@ impl Manager {
 
     /// The measured peaks, to persist per GPU model.
     pub fn peaks(&self) -> Vec<Peak> {
-        let b = self.books.lock();
-        let peak = |(k, &bytes): (&String, &u64)| {
-            let (kind, key) = k.split_once('/')?;
-            let key = key.to_string();
-            Some(match kind {
-                "peak" => Peak::Request { key, bytes },
-                "compute" => Peak::Compute { key, bytes },
-                "set" => Peak::Set { key, bytes },
-                "host" => Peak::Host { key, bytes },
-                _ => return None,
-            })
-        };
-        b.figures.iter().filter_map(peak).collect()
+        self.books.lock().figures.iter().filter_map(Peak::of).collect()
     }
 
-    /// Peaks saved earlier for this GPU model: merge every card's records conservatively.
-    /// Neither iteration order nor a smaller duplicate may erase a measured high-water mark.
-    pub fn restore(&self, peaks: &[Peak]) -> Result<()> {
+    /// Peaks saved earlier for this GPU model: each figure keeps the larger, so no order or
+    /// smaller duplicate lowers a measured high-water mark.
+    pub fn restore(&self, peaks: &[Peak]) {
         let mut b = self.books.lock();
-        for p in peaks {
-            match p {
-                Peak::Request { key, bytes } => larger(&mut b.figures, format!("peak/{key}"), *bytes),
-                Peak::Compute { key, bytes } => larger(&mut b.figures, format!("compute/{key}"), *bytes),
-                Peak::Set { key, bytes } => larger(&mut b.figures, format!("set/{key}"), *bytes),
-                Peak::Host { key, bytes } => larger(&mut b.figures, format!("host/{key}"), *bytes),
-            }
+        for peak in peaks {
+            let (figure, bytes) = peak.figure();
+            larger(&mut b.figures, figure, bytes);
         }
-        Ok(())
     }
 
     /// The backend goes once nothing needs it; its drop (a context's destroy) runs unlocked.
