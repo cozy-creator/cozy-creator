@@ -30,17 +30,7 @@ pub(crate) async fn upload(ctx: &Context, reference: &str, destination: &str, la
         )
     })?;
     let hub = ctx.config.resolve(&run.hub)?;
-    if !ctx.signed_in(&hub) {
-        return Err(Error::new(
-            Kind::Credential,
-            "hub_sign_in_required",
-            format!(
-                "an upload goes to your account at {}, which needs your sign-in",
-                hub.origin
-            ),
-        )
-        .next("cozy login <email>"));
-    }
+    ctx.hub_session(&hub)?;
     let submission = submission(&run, item, machine, destination, lane);
     let submitted = submit(ctx, submission, None).await?;
     Ok(exit_code(&follow(ctx, submitted.run).await?))

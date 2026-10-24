@@ -9,7 +9,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 
 use crate::{Client, Error, types};
+use platform::paths::Home;
 use progenitor_client::ClientInfo;
+use protocol::{config::Hub, error::Error as Refusal};
 
 const ENROLL_DOMAIN: &str = "authkit.device-key-enrollment/1";
 const LOGIN_DOMAIN: &str = "authkit.device-key-login/1";
@@ -37,13 +39,13 @@ struct Kept {
 impl DeviceKey {
     pub fn load(path: &Path) -> Result<Self, Error> {
         let raw =
-            std::fs::read(path).map_err(|e| Error::Key(format!("{}: {e}", path.display())))?;
+            std::fs::read(path).map_err(|e| Error::Credential(format!("{}: {e}", path.display())))?;
         let kept: Kept = serde_json::from_slice(&raw)
-            .map_err(|e| Error::Key(format!("{}: {e}", path.display())))?;
+            .map_err(|e| Error::Credential(format!("{}: {e}", path.display())))?;
         let seed: [u8; 32] = unb64(&kept.private_key)
             .and_then(|seed| seed.try_into().ok())
             .filter(|_| kept.version == 1 && !kept.device_key_id.is_empty())
-            .ok_or_else(|| Error::Key(format!("{}: not a device key", path.display())))?;
+            .ok_or_else(|| Error::Credential(format!("{}: not a device key", path.display())))?;
         Ok(Self {
             hub: kept.hub,
             email: kept.email,
@@ -138,6 +140,20 @@ impl UserSession {
         }
     }
 
+    /// This computer's session at `hub`: its device key and the Bearer kept beside it. Refused
+    /// when it holds no key there, `login` (asked only then) signing it in.
+    pub fn open(hub: &Hub, home: &Home, login: impl FnOnce() -> String) -> Result<Self, Refusal> {
+        let path = hub.device_key(home);
+        if !path.exists() {
+            let message = format!("this computer is not signed in to {hub}");
+            return Err(Refusal::credential("not_logged_in", message).next(login()));
+        }
+        match DeviceKey::load(&path) {
+            Ok(key) => Ok(Self::new(key, Some(hub.bearer(home)))),
+            Err(e) => Err(e.refusal(login)),
+        }
+    }
+
     pub fn key(&self) -> &DeviceKey {
         &self.key
     }
@@ -185,12 +201,18 @@ impl UserSession {
         }
     }
 
+    /// A login at `hub`. Its refusal is the key's (revoked, unknown): final.
     async fn login(&self, hub: &Client) -> Result<Bearer, Error> {
+        let refused = |e: Error| match e.retry() {
+            true => e,
+            false => Error::Credential(format!("sign-in refused: {e}")),
+        };
         let begun = hub
             .begin_device_key_login(&types::AuthDeviceKeyLoginBeginRequest {
                 device_key_id: self.key.id.clone(),
             })
-            .await?
+            .await
+            .map_err(|e| refused(e.into()))?
             .into_inner();
         let signature = DeviceKey::sign_challenge(&self.key.key, LOGIN_DOMAIN, &begun.challenge)?;
         let started = now();
@@ -199,7 +221,8 @@ impl UserSession {
                 challenge_id: begun.challenge_id,
                 signature,
             })
-            .await?
+            .await
+            .map_err(|e| refused(e.into()))?
             .into_inner();
         Bearer::from_answer(&answer, started)
     }
@@ -234,7 +257,7 @@ impl Enrollment {
                 label: (!label.is_empty())
                     .then(|| label.parse())
                     .transpose()
-                    .map_err(|_| Error::Key("an unusable key label".into()))?,
+                    .map_err(|_| Error::Credential("an unusable key label".into()))?,
             })
             .await?
             .into_inner();
@@ -295,7 +318,7 @@ fn random<const N: usize>() -> [u8; N] {
 }
 
 fn write_private(path: &Path, bytes: &[u8]) -> Result<(), Error> {
-    let fail = |e: std::io::Error| Error::Key(format!("{}: {e}", path.display()));
+    let fail = |e: std::io::Error| Error::Credential(format!("{}: {e}", path.display()));
     let dir = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir).map_err(fail)?;
     let staged = dir.join(format!(".{}.tmp", b64(random::<24>())));

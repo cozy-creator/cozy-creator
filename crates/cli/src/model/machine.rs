@@ -200,11 +200,8 @@ pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Erro
     if let Some(reference) = args.source.strip_prefix("run:") {
         return super::from_run::upload(ctx, reference, &destination, &args.lane).await;
     }
-    if !ctx.signed_in(&ctx.hub()?) {
-        // The machine publishes under this computer's sign-in; refuse before anything is made.
-        return Err(Error::new(Kind::Credential, "not_logged_in", "an upload publishes as your account: sign in first")
-            .next(ctx.login(&ctx.hub()?)));
-    }
+    // The machine publishes under this computer's sign-in; refuse before anything is made.
+    ctx.hub_session(&ctx.hub()?)?;
     let path = Path::new(&args.source);
     let made = if (args.source.starts_with('.') || path.is_absolute()) && path.is_dir() {
         folder(path, &args.profiles, &ctx.home.root().join("cache/trees"), &ctx.home.root().join("cache/digests"))?

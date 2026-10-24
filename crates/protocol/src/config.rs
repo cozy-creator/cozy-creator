@@ -411,6 +411,15 @@ impl Config {
             .map_err(|e| e.remedy("set `hub` with `cozy hub use <name>`"))
     }
 
+    /// `cozy login` for `hub`, spelled for the next step: `--tensorhub` only for a Hub other than
+    /// the current one.
+    pub fn login(&self, hub: &Hub) -> String {
+        match self.current() {
+            Ok(current) if current.origin == hub.origin => "cozy login <email>".into(),
+            _ => format!("cozy login <email> --tensorhub {}", hub.label()),
+        }
+    }
+
     /// Where new work goes: `--tensorhub`, else the current Hub.
     pub fn selected(&self) -> Result<Hub, Error> {
         match self.narrowed()? {
