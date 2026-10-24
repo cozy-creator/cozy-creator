@@ -34,8 +34,26 @@ pub struct Memo {
 struct State {
     /// A key one run is computing: other lookups of it wait for the outcome.
     claims: HashMap<String, String>,
+    /// The key each waiting run waits on: a wait that would close a cycle never starts.
+    waits: HashMap<String, String>,
     /// (stage, numerics) scopes in which one key was computed twice, differently: reuse stops.
     disputed: HashSet<(String, String)>,
+}
+
+/// Whether `from` waits, directly or through the producers it waits on, on a key `run` claims.
+fn waits_on(state: &State, from: &str, run: &str) -> bool {
+    let mut seen = HashSet::new();
+    let mut at = from;
+    while seen.insert(at) {
+        let Some(owner) = state.waits.get(at).and_then(|key| state.claims.get(key)) else {
+            return false;
+        };
+        if owner == run {
+            return true;
+        }
+        at = owner;
+    }
+    false
 }
 
 /// One entry on disk: `<root>/<key>/<sha256>-<cost µs>`.
@@ -126,8 +144,14 @@ impl Memo {
                     }
                     match state.claims.get(key) {
                         Some(owner) if owner != run => {
+                            if waits_on(&state, owner, run) {
+                                // Its producer waits, through others, on this run: computed here.
+                                return Ok(None);
+                            }
                             // Its producer stores, abandons, or its run ends: progress, not a clock.
+                            state.waits.insert(run.into(), key.clone());
                             state = self.settled.wait(state).unwrap();
+                            state.waits.remove(run);
                         }
                         _ => {
                             state.claims.insert(key.clone(), run.into());
