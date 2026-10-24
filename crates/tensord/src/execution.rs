@@ -136,7 +136,7 @@ impl Engine {
     pub fn open(root: &Path) -> io::Result<Arc<Self>> {
         fs::create_dir_all(root)?;
         platform::durable::set_mode(root, 0o700)?;
-        for name in ["staging", "results"] {
+        for name in ["staging", "output-work", "results"] {
             fs::create_dir_all(root.join(name))?;
         }
         platform::durable::sync_dir(root)?;
@@ -1015,6 +1015,19 @@ impl Engine {
         Ok(())
     }
 
+    /// A quiescent invocation no longer owns its pooled executor. Its CPU output work remains
+    /// owned by the same managed worker; restart reconciliation must not wait on a later borrower.
+    pub(crate) fn returned_managed(&self, id: &str, birth: &Birth) -> io::Result<()> {
+        let progress = self.progress.lock().unwrap();
+        let record = self.journal.lock().unwrap().returned_process(id, birth, progress.get(id))?;
+        drop(progress);
+        let phase = if record.invocation.degree > 0 { "gpu_returned" } else { "executor_returned" };
+        let note = serde_json::json!({"phase": phase, "pid": birth.pid}).to_string();
+        if let Err(error) = self.append_log(id, "info", &note) { tracing::warn!("run {id}: {error}"); }
+        self.notify_activity();
+        Ok(())
+    }
+
     pub(crate) fn authorize_managed(
         &self,
         id: &str,
@@ -1061,6 +1074,41 @@ impl Engine {
         fs::create_dir_all(&root)?;
         Ok(root)
     }
+    /// Retain durable host bytes independently of the executor root. Ordinary machine spools
+    /// already have that ownership; peer-owned spools are copied before the session is reusable.
+    pub(crate) fn output_spool(&self, id: &str, source: Spool, files: &[PathBuf]) -> io::Result<Spool> {
+        if source.0 == self.root.join("staging").join(id) {
+            match source.sync(files) {
+                Ok(()) => return Ok(source),
+                // Windows cannot flush a read-only handle. A private copy gives us the writer
+                // whose successful flush proves durability without changing producer permissions.
+                Err(error) if matches!(error.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::Unsupported) => (),
+                Err(error) => return Err(error),
+            }
+        }
+        let root = self.root.join("output-work").join(id);
+        fs::create_dir(&root)?;
+        platform::durable::set_mode(&root, 0o700)?;
+        let held = Spool(root);
+        let mut directories = std::collections::BTreeSet::from([held.0.clone()]);
+        for name in files {
+            let mut input = open_artifact(&source.0, name)?;
+            let path = held.0.join(name);
+            let parent = path.parent().expect("output file has a parent");
+            fs::create_dir_all(parent)?;
+            for directory in parent.ancestors().take_while(|p| p.starts_with(&held.0)) {
+                directories.insert(directory.to_owned());
+            }
+            let mut output = platform::durable::Mode::mode(OpenOptions::new().write(true).create_new(true), 0o600).open(&path)?;
+            io::copy(&mut input, &mut output)?;
+            output.sync_all()?;
+        }
+        for directory in directories.iter().rev() { platform::durable::sync_dir(directory)?; }
+        platform::durable::sync_dir(&self.root.join("output-work"))?;
+        drop(source);
+        Ok(held)
+    }
+
     /// Take the result's verified files into custody without publishing a terminal. A pooled
     /// executor returns to its idle pool before its caller can observe completion and call again.
     pub(crate) fn managed_result_record(
@@ -1129,7 +1177,12 @@ impl Engine {
                 // A journaled cancel ends it CANCELED, however it stopped.
                 journal.finish(&record.id, Outcome::Canceled)?;
             } else {
-                journal.finish(&record.id, Outcome::Failed(crate::journal::Failure::machine("machine_stopped", "owner lost before durable result custody; exact executor birth has ended; started work will not be replayed")))?;
+                let failure = if record.process.is_none() {
+                    crate::journal::Failure::machine("output_owner_lost", "owner lost after executor return and before durable output custody; CPU output work is not replayed; the historical executor is not owned by this invocation")
+                } else {
+                    crate::journal::Failure::machine("machine_stopped", "owner lost before durable result custody; exact executor birth has ended; started work will not be replayed")
+                };
+                journal.finish(&record.id, Outcome::Failed(failure))?;
             }
             changed = true;
         }
@@ -1267,6 +1320,20 @@ fn overlay_observation(
 /// A run's spool: removed once the run is settled, whatever the outcome. Its outputs are in
 /// custody by then (results and the store), so the spool would be a third copy.
 pub(crate) struct Spool(pub PathBuf);
+impl Spool {
+    fn sync(&self, files: &[PathBuf]) -> io::Result<()> {
+        let mut directories = std::collections::BTreeSet::from([self.0.clone()]);
+        for name in files {
+            open_artifact(&self.0, name)?.sync_all()?;
+            for directory in self.0.join(name).parent().expect("spool file parent").ancestors().take_while(|p| p.starts_with(&self.0)) {
+                directories.insert(directory.to_owned());
+            }
+        }
+        for directory in directories.iter().rev() { platform::durable::sync_dir(directory)?; }
+        platform::durable::sync_dir(self.0.parent().expect("spool parent"))?;
+        Ok(())
+    }
+}
 impl Drop for Spool {
     fn drop(&mut self) {
         // remove_dir_all never follows a symlink the package planted inside.

@@ -154,12 +154,16 @@ pub struct DeviceExecutor {
 /// pace then decides whether it stopped and must be killed.
 #[derive(Clone)]
 pub struct Cancellation {
+    /// One invocation only. Disabling waits for an in-flight delivery before session reuse.
+    enabled: Arc<Mutex<bool>>,
     root: PathBuf,
     identity: Option<LaunchIdentity>,
     watched: Watched,
 }
 impl Cancellation {
     pub fn cancel(&self, request_id: &str) -> io::Result<()> {
+        let enabled = self.enabled.lock().unwrap_or_else(|error| error.into_inner());
+        if !*enabled { return Ok(()); }
         let temporary = self
             .root
             .join(format!("executor.cancel.{}.pending", uuid::Uuid::new_v4()));
@@ -179,6 +183,11 @@ impl Cancellation {
             watch.canceled();
         }
         Ok(())
+    }
+
+    /// No clone of this invocation can write its cancel file or touch a later command's watch.
+    pub fn disable(&self) {
+        *self.enabled.lock().unwrap_or_else(|error| error.into_inner()) = false;
     }
 }
 
@@ -312,11 +321,13 @@ pub struct CodecConfig {
 }
 
 /// The selected SDK's encoder for codecs this machine does not encode itself (audio,
-/// video): one helper process per executor, started at its first such output and ended
-/// with the executor (or when the machine dies: it exits on stdin EOF).
+/// video): one reusable helper per executor. Owned output work retains it after the executor
+/// returns or exits; machine death closes its stdin. Its generation and log outlive the helper.
 pub struct Codec {
     config: CodecConfig,
     log: PathBuf,
+    /// Opened before the executor is returned; its directory may disappear afterward.
+    stderr: Mutex<Option<File>>,
     helper: Mutex<Option<CodecHelper>>,
 }
 struct CodecHelper {
@@ -338,10 +349,35 @@ impl Codec {
         Self {
             config,
             log,
+            stderr: Mutex::new(None),
             helper: Mutex::new(None),
         }
     }
+    /// Retain the log inode before an idle executor can be ended or its root removed.
+    pub fn retain_log(&self) -> io::Result<()> {
+        let mut stderr = self.stderr.lock().unwrap();
+        if stderr.is_none() {
+            *stderr = Some(OpenOptions::new().create(true).read(true).append(true)
+                .mode(0o600).open(&self.log)?);
+        }
+        Ok(())
+    }
+    fn stderr_tail(&self) -> String {
+        use std::io::{Seek, SeekFrom};
+        let read = || -> io::Result<Vec<u8>> {
+            let stderr = self.stderr.lock().unwrap();
+            let mut file = stderr.as_ref().ok_or_else(|| io::Error::other("encoder log unopened"))?.try_clone()?;
+            let end = file.metadata()?.len();
+            file.seek(SeekFrom::Start(end.saturating_sub(4096)))?;
+            let mut bytes = Vec::new();
+            file.take(4096).read_to_end(&mut bytes)?;
+            Ok(bytes)
+        };
+        read().map(|bytes| String::from_utf8_lossy(&bytes).into_owned()).unwrap_or_default()
+    }
     fn spawn(&self) -> io::Result<CodecHelper> {
+        self.retain_log()?;
+        let stderr = self.stderr.lock().unwrap().as_ref().expect("retained encoder log").try_clone()?;
         #[cfg(unix)]
         let hold = self
             .config
@@ -356,13 +392,7 @@ impl Codec {
             .envs(&self.config.environment)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(
-                OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .mode(0o600)
-                    .open(&self.log)?,
-            );
+            .stderr(stderr);
         // The retained generation hold stays open in the codec.
         #[cfg(unix)]
         platform::process::keep_open(&mut command, hold.into_iter().collect());
@@ -413,8 +443,8 @@ impl Codec {
             Ok(_) | Err(_) => {
                 helper.take(); // the next output starts a fresh helper
                 return Err(io::Error::other(format!(
-                    "selected SDK encoder stopped; see {}",
-                    self.log.display()
+                    "selected SDK encoder stopped; {}: {}",
+                    self.log.display(), self.stderr_tail()
                 )));
             }
         }
@@ -431,6 +461,13 @@ impl Codec {
                 format!("selected SDK encoder refused: {error}"),
             )),
         }
+    }
+}
+
+impl Drop for Codec {
+    fn drop(&mut self) {
+        // The helper exits before its generation/log owners are released, including on Windows.
+        drop(self.helper.get_mut().unwrap_or_else(|error| error.into_inner()).take());
     }
 }
 
@@ -507,6 +544,65 @@ pub fn postprocess(
     }
     Ok((result, bindings))
 }
+/// Exact source files the existing result/binding/encoder contract will consume. Staged
+/// inputs and unrelated package scratch files are not part of output handoff custody.
+pub fn postprocess_files(spool: &Path, reply: &Frame) -> io::Result<Vec<PathBuf>> {
+    read_result(spool, reply)?;
+    let mut files = std::collections::BTreeSet::from([PathBuf::from(RESULT_DOCUMENT)]);
+    let deferred: std::collections::BTreeSet<_> = reply.frames.iter().map(|frame| frame.handle.as_str()).collect();
+    for frame in &reply.frames {
+        spool_name(&frame.handle)?;
+        let raw = PathBuf::from(&frame.raw);
+        if open_artifact(spool, &raw)?.metadata()?.len() != frame.raw_bytes {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "deferred frame bytes differ from its descriptor"));
+        }
+        files.insert(raw);
+    }
+    let ordinary = Frame {
+        outputs: reply.outputs.iter().filter(|o| o.kind != "tree" && !deferred.contains(o.asset_ref.as_str())).cloned().collect(),
+        max_output_bytes: reply.max_output_bytes,
+        ..Frame::default()
+    };
+    for binding in bind(spool, &ordinary, &BTreeMap::new())? { files.insert(PathBuf::from(binding.name)); }
+    for output in reply.outputs.iter().filter(|output| output.kind == "tree") {
+        match tree_source(&output.asset_ref)? {
+            TreeSource::Directory(directory) => {
+                let members = protocol::tree::walk(&spool.join(&directory))?;
+                if members.is_empty() { return Err(io::Error::new(io::ErrorKind::InvalidData, "output tree holds no file")); }
+                for name in members.into_keys() {
+                    let path = Path::new(&directory).join(name);
+                    open_artifact(spool, &path)?;
+                    files.insert(path);
+                }
+            }
+            TreeSource::Manifest(_) => {
+                // A forwarded tree already has its canonical manifest and digest-named files.
+                let binding = tree_binding(spool, output)?;
+                let name = PathBuf::from(binding.name);
+                let mut manifest = Vec::new();
+                open_artifact(spool, &name)?.read_to_end(&mut manifest)?;
+                files.insert(name);
+                for member in crate::trees::parse(&manifest)?.into_values() {
+                    files.insert(PathBuf::from(format!("sha256-{}", member.sha256)));
+                }
+            }
+        }
+    }
+    Ok(files.into_iter().collect())
+}
+
+enum TreeSource { Manifest(String), Directory(String) }
+fn tree_source(reference: &str) -> io::Result<TreeSource> {
+    if let Some(hex) = reference.strip_prefix("sha256:")
+        .filter(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit())) {
+        return Ok(TreeSource::Manifest(format!("sha256-{hex}")));
+    }
+    match reference.rsplitn(3, '/').collect::<Vec<_>>().as_slice() {
+        [name, "tree", _] => Ok(TreeSource::Directory(format!("tree-{name}"))),
+        _ => Err(io::Error::new(io::ErrorKind::InvalidData, "output tree: its reference names no spool directory")),
+    }
+}
+
 /// An output tree as the machine holds it: each regular file of its spool directory linked as
 /// the spool's `sha256-<hex>`, and a manifest naming them by path (`protocol::tree`), which the
 /// output binds to. A tree forwarded from a child (`sha256:<manifest>`) is already both.
@@ -518,16 +614,9 @@ fn tree_binding(spool: &Path, output: &Output) -> io::Result<AssetBinding> {
         let length = io::copy(&mut file, &mut HashWriter(&mut hash))?;
         Ok((tensorfs::sha256::hex(&hash.finish()), length))
     };
-    let name = match output.asset_ref.strip_prefix("sha256:") {
-        Some(hex) if hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()) => {
-            format!("sha256-{hex}")
-        }
-        _ => {
-            let tail: Vec<_> = output.asset_ref.rsplitn(3, '/').collect();
-            let [n, "tree", _] = tail.as_slice() else {
-                return Err(invalid("its reference names no spool directory"));
-            };
-            let directory = format!("tree-{n}");
+    let name = match tree_source(&output.asset_ref)? {
+        TreeSource::Manifest(name) => name,
+        TreeSource::Directory(directory) => {
             let mut files = std::collections::BTreeMap::new();
             for name in protocol::tree::walk(&spool.join(&directory)).map_err(|e| invalid(&e.to_string()))?.into_keys() {
                 let member = Path::new(&directory).join(&name);
@@ -794,6 +883,7 @@ impl DeviceExecutor {
         on_birth(
             &birth,
             &Cancellation {
+                enabled: Arc::new(Mutex::new(true)),
                 root: config.root.clone(),
                 identity: config.identity,
                 watched: watched.clone(),
@@ -899,6 +989,7 @@ impl DeviceExecutor {
     }
     pub fn cancellation(&self) -> Cancellation {
         Cancellation {
+            enabled: Arc::new(Mutex::new(true)),
             root: self.root.clone(),
             identity: self.identity,
             watched: self.watched.clone(),

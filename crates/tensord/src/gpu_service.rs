@@ -465,6 +465,46 @@ impl Default for Disposition {
     fn default() -> Self { Self::Unknown(vec![]) }
 }
 
+/// Quiescent GPU work has handed these host bytes to the managed worker. No executor or
+/// GPU permit is retained here; the codec and generation outlive any idle-session teardown.
+struct Postprocess {
+    codec: Arc<device_executor::Codec>,
+    spool: crate::execution::Spool,
+    reply: Frame,
+    _generation: Arc<File>,
+}
+impl Postprocess {
+    fn finish(self, engine: &Arc<Engine>, id: &str) -> io::Result<()> {
+        if engine.get(id)?.cancel_actor.is_some() {
+            engine.finish(id, Outcome::Canceled)?;
+            return Ok(());
+        }
+        let note = |state: &str, ok: Option<bool>| {
+            let text = serde_json::json!({"phase": "output_encoding", "state": state, "ok": ok}).to_string();
+            if let Err(error) = engine.append_log(id, "info", &text) { tracing::warn!("run {id}: {error}"); }
+        };
+        note("begin", None);
+        let encoded = device_executor::postprocess(&self.codec, &self.spool.0, &self.reply);
+        note("end", Some(encoded.is_ok()));
+        let outcome = if engine.get(id)?.cancel_actor.is_some() {
+            Outcome::Canceled
+        } else {
+            let result = encoded.and_then(|(value, bindings)| {
+                let adjusted = device_executor::adjustments(id, &self.reply);
+                engine.managed_result_record(id, &self.spool.0, value, output_bindings(bindings), adjusted)
+            });
+            match result {
+                Ok(result) => Outcome::Completed(result),
+                Err(error) => Outcome::Failed(Failure::custody(&error.to_string())),
+            }
+        };
+        // Journal publication is after custody, and atomically respects a cancellation that
+        // arrived after the last check. Its detached process cannot be a later borrower.
+        engine.finish(id, outcome)?;
+        Ok(())
+    }
+}
+
 /// How a session's executor came to exist, for the load record.
 #[derive(Clone, Debug, Serialize)]
 struct Launch {
@@ -1873,6 +1913,7 @@ impl Pool {
     /// Run `record` on an executor of its plan, or leave it queued (false). A deviceless root
     /// registers its lane for its children's GPU steps while it runs; a GPU call runs on the
     /// GPUs `place` gives it, inside its root's lane when that root holds one.
+    #[allow(clippy::too_many_arguments)]
     pub fn dispatch(
         self: &Arc<Self>,
         engine: &Arc<Engine>,
@@ -1881,9 +1922,11 @@ impl Pool {
         plan: Plan,
         claims: &mut Claims,
         calls: Option<Arc<crate::calls::Calls>>,
+        admit: impl FnOnce() -> io::Result<bool>,
     ) -> io::Result<bool> {
         let root = record.root_seq();
         if plan.degree == 0 {
+            if !admit()? { return Ok(false); }
             let width = match record.invocation.gpus {
                 0 => held.record.widest_group(self.width()) as usize,
                 gpus => gpus as usize,
@@ -1894,10 +1937,10 @@ impl Pool {
             let pool = self.clone();
             return engine.dispatch_managed(&record.id, move |engine, id| {
                 let result = pool.run(&engine, &id, held, plan, 0, calls.as_ref());
-                if let Err(error) = &result {
-                    settle(&engine, &id, error)?;
-                }
+                // The deviceless root's GPU children have returned before its CPU output work.
                 drop(root);
+                let result = result.and_then(|post| post.map_or(Ok(()), |post| post.finish(&engine, &id)));
+                if let Err(error) = &result { settle(&engine, &id, error)?; }
                 if let Some(calls) = &calls {
                     calls.ended(&id);
                 }
@@ -1914,17 +1957,18 @@ impl Pool {
         let Some((start, permit)) = self.place(engine, &plan, (Some(root), record.family()), lane, claims) else {
             return Ok(false);
         };
+        // Count CPU output owners after this GPU slot is held. A prior call can return while
+        // preparation resolves; it cannot turn a stale pre-placement count into a new grant.
+        if !admit()? { return Ok(false); }
         engine.dispatch_managed(&record.id, move |engine, id| {
             let pool = permit.pool.clone();
             let result = pool.run(&engine, &id, held, plan, start, calls.as_ref());
-            if let Err(error) = &result {
-                settle(&engine, &id, error)?;
-            }
-            if let Some(calls) = &calls {
-                calls.ended(&id);
-            }
-            // The call slot is free: a warm set member this call pushed down may come back.
+            // Session return and process detachment are already proven. CPU encoding uses
+            // the existing managed worker after the next GPU call is allowed to start.
             drop(permit);
+            let result = result.and_then(|post| post.map_or(Ok(()), |post| post.finish(&engine, &id)));
+            if let Err(error) = &result { settle(&engine, &id, error)?; }
+            if let Some(calls) = &calls { calls.ended(&id); }
             pool.keep_all(&engine);
             result
         })
@@ -2500,7 +2544,7 @@ impl Pool {
         plan: Plan,
         start: usize,
         calls: Option<&Arc<crate::calls::Calls>>,
-    ) -> io::Result<()> {
+    ) -> io::Result<Option<Postprocess>> {
         let key = plan.construction.clone();
         let mut disposition = Disposition::default();
         let result = self.run_on(engine, id, held, plan, start, calls, &mut disposition);
@@ -2520,9 +2564,13 @@ impl Pool {
         start: usize,
         calls: Option<&Arc<crate::calls::Calls>>,
         disposition: &mut Disposition,
-    ) -> io::Result<()> {
+    ) -> io::Result<Option<Postprocess>> {
+        // Retain the exact cancellation object registered for this invocation. Removing its
+        // map entry cannot revoke a Halt clone another thread already took.
+        let cancellation = Mutex::new(None::<Cancellation>);
         // A cancel ends the call's children with it.
         let stops = |cancel: Cancellation| {
+            *cancellation.lock().unwrap() = Some(cancel.clone());
             let (request, calls) = (id.to_string(), calls.map(Arc::downgrade));
             Arc::new(move || {
                 let canceled = cancel.cancel(&request);
@@ -2535,7 +2583,7 @@ impl Pool {
         let (key, degree) = (session_key(&plan.construction, start), plan.degree);
         if let Err(error) = self.gpu_cap(degree) {
             engine.finish(id, Outcome::Failed(Failure::machine("gpu_memory_limit_unsupported", error.to_string())))?;
-            return Ok(());
+            return Ok(None);
         }
         let retained = match degree {
             0 => {
@@ -2577,7 +2625,7 @@ impl Pool {
                         } else {
                             engine.defer_completion(id, outcome, births)?;
                         }
-                        return Ok(());
+                        return Ok(None);
                     }
                     session => session?,
                 }
@@ -2593,28 +2641,33 @@ impl Pool {
         };
         let facts = crate::journal::ExecutorFacts::observed(session.executor.birth.pid, runtime, hello.tensorfs_version.clone());
         if !engine.authorize_managed(id, Some(facts))? {
+            if let Some(cancel) = cancellation.lock().unwrap().as_ref() { cancel.disable(); }
             *disposition = if degree > 0 { self.retire_canceled(engine, id, session) }
-                else { self.keep_idle(engine, session)? };
+                else {
+                    engine.returned_managed(id, &session.executor.birth)?;
+                    self.keep_idle(engine, session)?
+                };
             engine.finish_stopped(id)?;
-            return Ok(());
+            return Ok(None);
         }
         let fresh = plan.clone();
         let error = {
             let mut session = session;
             let fetch = calls.map(|calls| engine.get(id).map(|record| calls.fetch(&record))).transpose()?;
             match self.call(engine, id, &held, plan, &mut session, false, calls, fetch) {
-                Ok(reusable) => {
+                Ok(post) => {
+                    // Serialize against any old in-flight Halt before the executor becomes
+                    // available to a new invocation. Late clones are harmless after this.
+                    if let Some(cancel) = cancellation.lock().unwrap().as_ref() { cancel.disable(); }
                     // A caller can submit again as soon as finish publishes. Its predecessor
                     // must already be idle, or gone if it cannot be reused.
-                    *disposition = if reusable {
-                        if degree > 0 && engine.get(id)?.cancel_actor.is_some() {
-                            Ok(self.retire_canceled(engine, id, session))
-                        } else { self.keep_idle(engine, session) }
+                    *disposition = if post.is_none() && degree > 0 && engine.get(id)?.cancel_actor.is_some() {
+                        self.retire_canceled(engine, id, session)
                     } else {
-                        let births = executor_births(&session.executor.birth, &session.followers);
-                        session.executor.terminate().map(|_| Disposition::ProvenEnded(births))
-                    }?;
-                    return Ok(());
+                        engine.returned_managed(id, &session.executor.birth)?;
+                        self.keep_idle(engine, session)?
+                    };
+                    return Ok(post);
                 }
                 Err(error) => {
                     *disposition = Disposition::Unknown(executor_births(&session.executor.birth, &session.followers));
@@ -2636,7 +2689,7 @@ impl Pool {
             self.retire_returned(&fresh.construction, start, births);
         }
         if !engine.redeliver(id)? {
-            return Ok(()); // canceled meanwhile
+            return Ok(None); // canceled meanwhile
         }
         self.run_on(engine, id, held, fresh, start, calls, disposition)
     }
@@ -2758,7 +2811,7 @@ impl Pool {
         load_only: bool,
         calls: Option<&Arc<crate::calls::Calls>>,
         _fetch: Option<Arc<crate::access::Fetch>>,
-    ) -> io::Result<bool> {
+    ) -> io::Result<Option<Postprocess>> {
         let (start, degree) = (session.start, plan.degree);
         let construction = plan.construction.clone();
         let gpus = self.lane(start, degree)?;
@@ -2794,7 +2847,7 @@ impl Pool {
                     session.executor.hello.memory_backend,
                 ));
                 defer_completion(engine, id, &session.executor.birth, &session.followers, Outcome::Failed(failure))?;
-                return Ok(true);
+                return Ok(None);
             }
             let interface_path = self.interface_file(&session.executor, held)?;
             let starting = Instant::now();
@@ -2901,7 +2954,7 @@ impl Pool {
             session.loaded = true;
         }
         if load_only {
-            return Ok(true);
+            return Ok(None);
         }
         let record = engine.get(id)?;
         let prepared = session.executor.command(
@@ -2949,7 +3002,7 @@ impl Pool {
             // Canceled while it waited for its attention kernel's compile (Runtime 0.23.4).
             if prepared.terminal == "canceled" && engine.get(id)?.cancel_actor.is_some() {
                 defer_completion(engine, id, &session.executor.birth, &session.followers, Outcome::Canceled)?;
-                return Ok(true);
+                return Ok(None);
             }
             // A pre-entry refusal leaves the executor Ready; the run ends with its reason.
             let terminal = if prepared.terminal.is_empty() {
@@ -2972,7 +3025,7 @@ impl Pool {
                 },
             );
             defer_completion(engine, id, &session.executor.birth, &session.followers, Outcome::Failed(failure))?;
-            return Ok(true);
+            return Ok(None);
         }
         let prepared = command_ok(prepared)?;
         // The GPU permits already scheduled this call. Its shape names only its measurements.
@@ -2995,7 +3048,7 @@ impl Pool {
         } else {
             engine.staging(id)?
         };
-        let _spool = crate::execution::Spool(spool.clone());
+        let spool_owner = crate::execution::Spool(spool.clone());
         let inputs = stage_inputs(
             &engine.cas(),
             self.config.identity,
@@ -3081,17 +3134,18 @@ impl Pool {
         match outcome.terminal.as_str() {
             "succeeded" => {
                 let result = (|| {
-                    let (value, bindings) =
-                        device_executor::postprocess(&session.executor.codec(), &spool, &reply)?;
-                    let adjusted = device_executor::adjustments(id, &reply);
-                    engine.managed_result_record(id, &spool, value, output_bindings(bindings), adjusted)
+                    // Validate the canonical reply before transferring its complete host spool.
+                    let files = device_executor::postprocess_files(&spool, &reply)?;
+                    let codec = session.executor.codec();
+                    codec.retain_log()?;
+                    let spool = engine.output_spool(id, spool_owner, &files)?;
+                    Ok::<_, io::Error>(Postprocess { codec, spool, reply, _generation: held.retention() })
                 })();
-                // Custody is durable before the spool goes; terminal publication waits
-                // until run_on has returned the executor to its pool.
-                defer_completion(engine, id, &session.executor.birth, &session.followers, match result {
-                    Ok(result) => Outcome::Completed(result),
-                    Err(error) => Outcome::Failed(Failure::custody(&error.to_string())),
-                })?;
+                match result {
+                    Ok(post) => return Ok(Some(post)),
+                    Err(error) => defer_completion(engine, id, &session.executor.birth, &session.followers,
+                        Outcome::Failed(Failure::custody(&error.to_string())))?,
+                }
             }
             "canceled" if engine.get(id)?.cancel_actor.is_some() => {
                 defer_completion(engine, id, &session.executor.birth, &session.followers, Outcome::Canceled)?;
@@ -3106,7 +3160,7 @@ impl Pool {
                 )))?;
             }
         }
-        Ok(true)
+        Ok(None)
     }
 
     /// For a group, each slot's placeable components and the GPU of the group that keeps each

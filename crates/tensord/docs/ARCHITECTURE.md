@@ -4,8 +4,8 @@ TensorD (executable `tensord`) is the Rust daemon that owns the API, execution j
 node scheduling and executor supervision. Package code runs in Python executors (cozy-runtime)
 inside each package environment. TensorFS is a library embedded in TensorD and used inside
 Runtime; it is not a separate daemon. TensorD has no CUDA context: executors own device
-contexts, allocations and operations. Runtime manages weight residency using the ordinary Torch
-allocator. TensorD reads GPU availability and cooperatively offloads eligible idle executors through
+contexts, allocations and operations. Runtime manages weight residency through process-local native Varena regions; Torch retains
+its ordinary caching allocator for activations. TensorD reads GPU availability and cooperatively offloads eligible idle executors through
 `Map(Ram)`; it owns no GPU chunks, lease listener, page-revocation policy or shared derived-weight cache.
 
 Model loading spans storage, shared CPU buffers and executor GPU memory:
@@ -54,7 +54,9 @@ its immutable generation (`catalog`) and its plan, and starts it on the pool. Ev
 path (Start, Load, Activate, PrepareRequest, Invoke): a deviceless call (`accelerator=False`, or a
 machine without GPUs) on a pooled deviceless executor within CPU room, a GPU call on the GPUs the
 pool places it on. Progress, outputs and terminal state are written
-by `Engine`; outputs are kept in native custody until the client acknowledges collection.
+by `Engine`; outputs are kept in native custody until the client acknowledges collection. A quiescent
+invocation returns its executor and GPU permit before CPU output encoding; the existing managed
+worker retains the output spool, codec and generation through durable result custody.
 
 Tenancy: a pod has one owner, a package one publisher, and many users submit. A GPU plan (and so
 its executor) is the package's generation, entrypoint, bound models and

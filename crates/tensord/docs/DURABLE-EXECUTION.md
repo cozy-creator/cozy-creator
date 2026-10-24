@@ -52,7 +52,11 @@ let file = engine.open_result(&record.id, 0)?;  // the held file; its length is 
 2. The pool picks or starts an executor and records its birth `(pid, boot_id, start_ticks)`.
 3. Commit `running`, then send `Invoke`. A cancel recorded earlier ends the attempt canceled with
    no authored code run.
-4. Progress frames until the executor's terminal; output custody; one outcome.
+4. A successful quiescent reply transfers the referenced host output files to the managed
+   worker. Its invocation-specific cancellation gate closes, the live process reference is
+   cleared, and the session returns to the pool before the GPU permit is released.
+5. The same managed worker encodes and takes output custody without a GPU permit, then commits
+   one outcome. No extra daemon or postprocessing queue is created.
 
 - Only explicit `cancel` cancels. Disconnect, EOF and submission closure never do. No time-based
   kill: the executor's cooperative cancel is the meter (see device executor).
@@ -65,7 +69,11 @@ let file = engine.open_result(&record.id, 0)?;  // the held file; its length is 
 `reconcile` (records not supervised by this process):
 - birth alive, or liveness unknown: stays nonterminal;
 - `starting` with ended or no recorded birth: back to `queued` with a reason;
-- `running` with ended birth: `canceled` if a cancel was journaled, else `failed`, never replayed.
+- `running` with ended birth: `canceled` if a cancel was journaled, else `failed`, never replayed;
+- `running` with a detached process: unfinished CPU output ownership was lost. It becomes
+  `canceled` when cancellation was journaled, otherwise `failed` with `output_owner_lost`.
+  The historical executor may still live or serve another request; it is not waited on or
+  stopped for this old invocation. Neither GPU work nor CPU output work is replayed.
 
 It returns at most 1,024 nonterminal records.
 
@@ -88,14 +96,33 @@ It returns at most 1,024 nonterminal records.
 
 ## Output custody
 
+Host output ownership is separate from a returned executor. Only canonical result bytes,
+deferred frame raw files, ordinary output files and referenced tree members are synced or
+copied for the handoff; unrelated staged inputs are not copied or synced. Machine-owned staging
+stays owned by the postprocessing object. Peer-owned spools, or files that cannot be flushed
+through their producer handle, are copied into private `output-work/<id>` custody first.
+The reusable codec retains its generation and an open stderr handle before session return,
+so idle executor shutdown cannot invalidate its interpreter, log or input files.
+
+Detached output work counts against the service's existing CPU parallelism. Admission checks
+fresh occupancy for each offer and again after acquiring a GPU slot. At capacity the current
+GPU wave may finish, but no later GPU work is admitted while CPU occupancy exceeds capacity;
+there is no unbounded list of waiting encoder threads/spools. Existing family GPU allocations
+and child-wait exclusion remain intact.
+
+After the handoff, cancellation can no longer write the old executor's cancel file or mark its
+new command's watch. An already-running CPU encoder completes safely; the journal atomically
+chooses cancellation instead of publishing success when a cancel was recorded before terminal
+commit. This does not promise a fixed cancellation latency for opaque CPU encoders.
+
 After the executor's result, each declared file is opened with `openat(O_NOFOLLOW)` per
 component (no absolute, `..` or symlink), checked as a regular file via `O_PATH`, copied to
 `results/<id>/`, SHA-256 hashed, made 0400, fsynced and renamed. Every `asset_binding` must name
 one held artifact of equal length. This copy is the one read of an output's bytes: nothing before
 it re-reads them (the encoders bind lengths) and nothing after re-hashes them (reads, collection).
 
-Reclamation: the run's spool (`staging/<id>`, the executor's own output directory) is removed
-before the run's terminal state is written. `results/<id>` is removed when the client releases
+Reclamation: the postprocessing owner releases its spool (`staging/<id>` or `output-work/<id>`)
+after encoding/custody and terminal handling. Crash leftovers of settled runs are swept. `results/<id>` is removed when the client releases
 retention and the store holds the public products. The caches manage themselves (`reclaim.rs`, at
 start and every 10 minutes; no purge verb): crash-leftover spools of settled runs go at once;
 logs, collected results, generations (last use: `.hold` mtime), compiled kernels (last read or

@@ -292,6 +292,7 @@ pub struct Execution {
     /// observation the engine overlays, never journaled.
     #[serde(skip)]
     pub waiting: Option<String>,
+    /// Live process ownership only; cleared after a proven return. `executor` retains history.
     pub process: Option<Birth>,
     pub cancel_actor: Option<String>,
     /// Explicit cancellation reserved this actor/ID before any Run spec was accepted.
@@ -1438,6 +1439,11 @@ impl Journal {
             {
                 return Ok(false);
             }
+            // A detached invocation is doing CPU output work. Cancellation linearizes at
+            // this transaction, so it cannot publish success after a recorded cancel.
+            let outcome = if record.state == State::Running && record.process.is_none() && record.cancel_actor.is_some() {
+                Outcome::Canceled
+            } else { outcome };
             match outcome {
                 Outcome::Completed(result) => {
                     record.state = State::Completed;
@@ -2228,6 +2234,19 @@ impl Journal {
                 return Err(db_error("attempt is not awaiting its first executor"));
             }
             record.process = Some(process);
+            Ok(true)
+        })
+    }
+
+    /// The owner has proved completion and revoked this invocation's cancellation delivery.
+    /// Keep historical executor facts, but no live process obligation can follow its next use.
+    pub(crate) fn returned_process(&mut self, id: &str, birth: &Birth, progress: Option<&ProgressSnapshot>) -> io::Result<Execution> {
+        self.update_observed(id, progress, |record| {
+            if !matches!(record.state, State::Starting | State::Running) || record.process.as_ref() != Some(birth) {
+                return Err(db_error("returned executor does not own this active invocation"));
+            }
+            record.process = None;
+            if let Some(pending) = &mut record.pending_completion { pending.processes.clear(); }
             Ok(true)
         })
     }
