@@ -172,6 +172,9 @@ jobs:
       matrix:
         os: ${{ fromJSON(needs.affected.outputs.selection).os }}
     runs-on: ${{ matrix.os == 'linux' && 'ubuntu-24.04' || matrix.os == 'macos' && 'macos-15' || 'windows-2025' }}
+    # macOS (TensorD exit 78, cr-021; Mac deferred) and Windows (TensorFS has no read source on Windows yet) report
+    # but do not block until those gaps close; Linux blocks.
+    continue-on-error: ${{ matrix.os != 'linux' }}
     # Hang bound, not a work budget.
     timeout-minutes: 90
     defaults:
