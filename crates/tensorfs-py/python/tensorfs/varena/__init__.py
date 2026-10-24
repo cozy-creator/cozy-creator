@@ -9,7 +9,6 @@ from __future__ import annotations
 import os
 from contextlib import contextmanager
 from collections.abc import Iterator
-from typing import Any
 from .. import _ext
 
 try:
@@ -85,7 +84,7 @@ class Arena:
 
 
 class Region:
-    def __init__(self, native: Any) -> None:
+    def __init__(self, native: _ext._VarenaRegion) -> None:
         self._native = native
 
     @property
@@ -117,7 +116,7 @@ class Use:
     The tensor and all its aliases retain their own native physical pin, even after this
     object is destroyed. An abandoned fill stays unreadable to later prepares.
     """
-    def __init__(self, native: Any) -> None:
+    def __init__(self, native: _ext._VarenaUse) -> None:
         import torch
         self._native = native
         self.needs_fill = native.needs_fill
