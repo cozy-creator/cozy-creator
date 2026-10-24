@@ -554,7 +554,7 @@ paths:
     delete:
       operationId: delete_model
       tags: [models]
-      summary: Deletes a model whose releases are all yanked.
+      summary: Deletes a model, its releases with it.
       security: [{bearer: []}]
       parameters:
       - {$ref: '#/components/parameters/Org'}
@@ -2070,12 +2070,9 @@ components:
         lanes: {type: array, items: {$ref: '#/components/schemas/ModelLane'}}
     ModelDeletion:
       type: object
-      required: [model, checkpoints, reclaimable_objects, reclaimable_bytes]
+      required: [model]
       properties:
         model: {type: string}
-        checkpoints: {type: integer, format: int64}
-        reclaimable_objects: {type: integer, format: int64}
-        reclaimable_bytes: {type: integer, format: int64}
     ModelFamilyUpdate:
       type: object
       required: [family]

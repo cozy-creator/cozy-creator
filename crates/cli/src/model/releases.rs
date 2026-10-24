@@ -53,8 +53,8 @@ enum Edit {
     /// Tag `release` public at `at`.
     Publish { release: String, at: At },
     Yank { release: String, yanked: bool },
-    /// Removes one tag, or with none every tag: the model.
-    Delete { tag: Option<String> },
+    /// Removes one tag.
+    Delete { tag: String },
 }
 
 impl Edit {
@@ -84,8 +84,7 @@ impl Edit {
                 Some(tag) => tag.yanked = *yanked,
                 None => return Err(absent(release)),
             },
-            Edit::Delete { tag: Some(tag) } => doc.tags.retain(|t| &t.name != tag),
-            Edit::Delete { tag: None } => doc.tags.clear(),
+            Edit::Delete { tag } => doc.tags.retain(|t| &t.name != tag),
         }
         Ok(doc)
     }
@@ -216,16 +215,13 @@ pub(crate) async fn delete(ctx: &Context, args: Delete) -> Result<ExitCode, Erro
             .remedy("run it again with --yes"));
     }
     let model = repo.to_string();
-    let edit = Edit::Delete { tag: tag.clone() };
-    let tags = edit_repo(&endpoint(ctx, &hub).await?, &model, |old| edit.apply(&model, old)).await;
-    let removed = match (&tag, tags) {
-        (Some(_), tags) => tags?.1,
-        // The whole model: with no tag left no release is live, and the Hub then deletes the model.
-        (None, tags) => {
-            match tags {
-                Err(e) if e.code != "model_not_found" => return Err(e),
-                _ => {}
-            }
+    let removed = match &tag {
+        Some(one) => {
+            let edit = Edit::Delete { tag: one.clone() };
+            edit_repo(&endpoint(ctx, &hub).await?, &model, |old| edit.apply(&model, old)).await?.1
+        }
+        // The whole model: the Hub deletes it, its releases with it.
+        None => {
             hub_answer(ctx.hub_signed_in(&hub)?.delete_model(&repo.org, &repo.name).await)?;
             true
         }
