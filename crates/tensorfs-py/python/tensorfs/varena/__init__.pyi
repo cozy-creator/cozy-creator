@@ -160,8 +160,8 @@ class Memory:
     def region(self, owner: str, kind: str, sets: Sequence[int] = (), spill: bool = True) -> Region:
         """A long-lived intermediate's region: kind kv, latent, conditioning, derived or workspace."""
 
-    def graph_region(self, pool: tuple[int, int], sets: Sequence[int] = (), retained: Sequence[int] = ()) -> GraphRegion:
-        """A component's graphs on this device, captured into `pool`."""
+    def graph_region(self, pool: tuple[int, int]) -> GraphRegion:
+        """A capture pool use and its replay/drop word, without weight pins."""
 
     def room(self, step: int | None = None) -> tuple[int, int, int, int, int]:
         """(free, cold, warm, granularity, floor) at plan step `step` (the cursor's when None)."""
