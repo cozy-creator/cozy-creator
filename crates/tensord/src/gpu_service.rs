@@ -3539,10 +3539,11 @@ fn call_memory(reply: &Frame) -> Option<serde_json::Value> {
     Some(fields.into_iter().filter_map(|(key, value)| Some((key.to_string(), value?))).collect())
 }
 
-/// The run's measurements: the kernels it served (`attention.`, `gemm.`, `kernel.`) and the work
-/// that blocked its request path (`request_path.`), which a release gate reads.
+/// The run's measurements: the kernels it served (`attention.`, `gemm.`, `kernel.`), the work
+/// that blocked its request path (`request_path.`) and how its calls bound (`calls.`), which a
+/// release gate reads.
 fn measured<S: Serialize, M: Serialize>(plan: &Plan, reply: &Frame, software: S, memory: M) -> serde_json::Value {
-    let kept = |name: &str| ["attention.", "gemm.", "kernel.", "request_path."].iter().any(|prefix| name.starts_with(prefix));
+    let kept = |name: &str| ["attention.", "gemm.", "kernel.", "request_path.", "calls."].iter().any(|prefix| name.starts_with(prefix));
     let kernels: Vec<&serde_json::Value> = (reply.observations.as_array().into_iter().flatten())
         .filter(|row| row["name"].as_str().is_some_and(kept))
         .collect();
