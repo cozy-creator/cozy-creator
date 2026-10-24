@@ -110,6 +110,9 @@ pub trait Source: Send + Sync {
     /// Idle chunks' epochs passed: chunks asked back may go now ([`Torch::reclaim_chunks`]). The
     /// poller's, no lock held.
     fn quiet(&self) {}
+    /// Local allocation pressure after idle chunks were returned. True only when capacity
+    /// actually increased; callers never enter this path while capturing or holding arena locks.
+    fn reclaim(&self, _want: u64) -> bool { false }
     /// The lease table slot a chunk is granted in, for the region facts the manager ranks.
     fn slot(&self, _chunk: &Chunk) -> Option<u32> {
         None
@@ -1350,7 +1353,7 @@ impl Shared {
                         return Err(e);
                     }
                     self.unmap(va, chunks, true, false);
-                    if !(matches!(e, Error::Exhausted(_)) && self.give_back()) {
+                    if !(matches!(e, Error::Exhausted(_)) && (self.give_back() || self.source.reclaim(new))) {
                         return Err(e);
                     }
                 }
@@ -1366,9 +1369,8 @@ impl Shared {
             let seen = *self.progress.0.lock();
             let (quiet, pending) = self.idle.lock().bytes();
             if quiet > 0 {
-                // Given, or adopted meanwhile by another arena: either way the source is asked again.
-                self.reclaim(u64::MAX);
-                return true;
+                // A failed unmap makes no room: retry only after bytes actually went back.
+                return self.reclaim(u64::MAX) > 0;
             }
             if pending == 0 {
                 return false;
@@ -1707,12 +1709,18 @@ fn poll(weak: &Weak<Shared>) {
 pub struct Direct {
     backend: Arc<dyn Backend>,
     allowance: Arc<Allowance>,
+    memory: Weak<crate::memory::Inner>,
     held: Mutex<HashMap<u64, Physical>>,
 }
 
 impl Direct {
     pub fn new(backend: Arc<dyn Backend>, allowance: Arc<Allowance>) -> Direct {
-        Direct { backend, allowance, held: Mutex::new(HashMap::new()) }
+        Direct { backend, allowance, memory: Weak::new(), held: Mutex::new(HashMap::new()) }
+    }
+
+    pub(crate) fn recover_from(mut self, memory: Weak<crate::memory::Inner>) -> Self {
+        self.memory = memory;
+        self
     }
 
     fn one(&self, va: Va, off: u64, len: u64) -> Result<Chunk> {
@@ -1735,6 +1743,10 @@ impl Direct {
 }
 
 impl Source for Direct {
+    fn reclaim(&self, want: u64) -> bool {
+        self.memory.upgrade().is_some_and(|memory| memory.reclaim_for_torch(want))
+    }
+
     fn map(&self, va: Va, _: Kind, into: &mut Vec<Chunk>) -> Result<()> {
         let mut off = 0;
         while off < va.len {
