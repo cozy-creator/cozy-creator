@@ -377,6 +377,10 @@ impl Memory {
         self.inner.torch.get().cloned()
     }
 
+    pub(crate) fn same_inner(&self, inner: &Inner) -> bool {
+        std::ptr::eq(Arc::as_ptr(&self.inner), inner)
+    }
+
     /// The same device memory: two handles of one open.
     pub(crate) fn same(&self, other: &Memory) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
@@ -828,7 +832,7 @@ impl Drop for Work {
     }
 }
 
-struct Inner {
+pub(crate) struct Inner {
     backend: Arc<dyn Backend>,
     /// Standalone, every page's and torch chunk's: the device's free bytes at open less its
     /// reserve.
@@ -1760,6 +1764,22 @@ impl Inner {
 
     // ---- demands
 
+    pub(crate) fn local_free(&self) -> u64 { self.allowance.left() }
+
+    /// The standalone torch source's slow path. A boolean cannot carry a fatal error, so
+    /// ownership loss uses the existing device flag observed by Memory's allocation boundary.
+    pub(crate) fn reclaim_for_torch(self: &Arc<Self>, bytes: u64) -> bool {
+        if self.check_ownership().is_err() { return false; }
+        let before = self.local_free();
+        if let Err(error) = self.make_room(bytes, &[], "torch", None, false) {
+            if error.is_sticky() || matches!(error, Error::Internal(_) | Error::Closed(_)) {
+                self.lost_backing(&error);
+            }
+            tracing::debug!("varena: local torch reclaim: {error}");
+        }
+        self.local_free() > before
+    }
+
     /// Free bytes for a page now, from varena's own figures (never the device's: a pass reads
     /// none). Leased: what the manager can allocate and reclaim from others. Standalone: what
     /// the budget its pages and torch's share has left (a refused create says the device has
@@ -1810,16 +1830,24 @@ impl Inner {
                 self.unlock(st);
                 break Ok(free);
             }
-            // Idle work (a request opened idle, a free-only bind) takes free bytes only; nothing
-            // takes more than it could ever have (its pinned pages stay).
-            let pinned: u64 = st.table.pages().filter(|(k, p)| p.mapped && (!p.pins.is_empty() || p.filling) && !keep.contains(k)).map(|(_, p)| p.bytes).sum();
+            // Idle work takes free bytes only. Other demands reclaim local idle torch chunks,
+            // then weights, then unpinned caches; pinned pages and graphs are never candidates.
             let idle = free_only || req.and_then(|r| st.table.request(r)).is_some_and(|r| r.idle);
-            if idle || bytes > (free + st.table.mapped()).saturating_sub(pinned) {
+            if idle {
                 let out = short(&st);
                 self.unlock(st);
                 break out;
             }
             record.step = req.and_then(|r| st.table.request(r)).map_or(0, |r| r.cursor.step);
+            if let Some(torch) = self.torch.get() {
+                self.unlock(st);
+                let freed = torch.reclaim(bytes - free);
+                if freed > 0 {
+                    record.freed += freed;
+                    continue;
+                }
+                st = self.lock();
+            }
             let mut want = bytes - free;
             let (mut unmapped, mut events, mut streamed) = (0, vec![], HashSet::new());
             for Victim { key, bytes: b, releasing } in decide::victims(&st.table, keep) {
@@ -1858,6 +1886,11 @@ impl Inner {
             record.waited += events.len() as u32;
             record.freed += unmapped;
             if unmapped == 0 && events.is_empty() {
+                let freed = crate::region::reclaim_local(self, bytes - free)?;
+                if freed > 0 {
+                    record.freed += freed;
+                    continue;
+                }
                 let mut st = self.lock();
                 if coming {
                     self.wait(&mut st)?;
