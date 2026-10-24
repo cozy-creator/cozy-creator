@@ -154,10 +154,24 @@ struct Entry {
     hold: Option<File>,
     /// Removed first: a uv cache entry's pointers (`uv_pointers`).
     pointers: Vec<PathBuf>,
+    /// The lock its users take (uv's cache `.lock`, a kernel namespace's `.hold`): taken
+    /// exclusively around this entry's removal alone, never across a sweep. Busy, it stays.
+    guard: Option<PathBuf>,
 }
 
 impl Entry {
     fn remove(&mut self) -> io::Result<bool> {
+        let _guard = match &self.guard {
+            Some(guard) => match File::options().write(true).open(guard) {
+                Ok(lock) if lock.try_lock().is_ok() => Some(lock),
+                _ => return Ok(false),
+            },
+            None => None,
+        };
+        // An environment may have linked a uv entry since the scan.
+        if self.kind == Kind::UvCache && unlinked_since(&self.path).is_none() {
+            return Ok(false);
+        }
         for pointer in &self.pointers {
             remove_pointer(pointer);
         }
@@ -203,7 +217,7 @@ pub fn remove_generation(generations: &Path, identity: &str) -> io::Result<Optio
         return Ok(Some(0));
     };
     let bytes = releasable(&path, filesystem, &open_files()).unwrap_or(0);
-    let mut entry = Entry { kind: Kind::Generation, path, used: SystemTime::now(), hold: None, pointers: vec![] };
+    let mut entry = Entry { kind: Kind::Generation, path, used: SystemTime::now(), hold: None, pointers: vec![], guard: None };
     Ok(entry.remove()?.then_some(bytes))
 }
 
@@ -295,23 +309,24 @@ fn releasable(path: &Path, filesystem: u64, open: &HashSet<FileId>) -> Option<u6
     }
 }
 
-/// Kernel entries of every namespace no live process holds: one compiled kernel (a `triton`
-/// or `flash-attn4` entry) or one generation's torch kernels. The returned locks keep those
-/// namespaces until the sweep ends.
-fn kernel_entries(caches: &KernelCaches) -> (Vec<PathBuf>, Vec<File>) {
-    let (mut entries, mut locks) = (vec![], vec![]);
+/// Kernel entries of every namespace no live process holds, each with its namespace's lock:
+/// one compiled kernel (a `triton` or `flash-attn4` entry) or one generation's torch kernels.
+/// A namespace is locked only while it is read, and again around each entry's removal.
+fn kernel_entries(caches: &KernelCaches) -> Vec<(PathBuf, PathBuf)> {
+    let mut entries = vec![];
     let Ok(namespaces) = fs::read_dir(&caches.root) else {
-        return (entries, locks);
+        return entries;
     };
     for namespace in namespaces.flatten() {
         if !namespace.file_type().is_ok_and(|kind| kind.is_dir()) {
             continue; // never through a link, and not a lock file
         }
-        let lock = kernel_hold(&caches.root, &namespace.file_name().to_string_lossy());
-        let Some(lock) = lock.ok().filter(|lock| lock.try_lock().is_ok()) else {
+        let name = namespace.file_name().to_string_lossy().into_owned();
+        let lock = kernel_hold(&caches.root, &name);
+        let Some(_reading) = lock.ok().filter(|lock| lock.try_lock().is_ok()) else {
             continue;
         };
-        locks.push(lock);
+        let guard = caches.root.join(format!(".{name}.hold"));
         for child in fs::read_dir(namespace.path())
             .into_iter()
             .flatten()
@@ -323,27 +338,28 @@ fn kernel_entries(caches: &KernelCaches) -> (Vec<PathBuf>, Vec<File>) {
                         .into_iter()
                         .flatten()
                         .flatten()
-                        .map(|e| e.path()),
+                        .map(|e| (e.path(), guard.clone())),
                 ),
-                _ => entries.push(child.path()),
+                _ => entries.push((child.path(), guard.clone())),
             }
         }
     }
-    (entries, locks)
+    entries
 }
 
 /// The uv cache's unpacked wheels (`archive-v0/<id>`) no environment links, each with the
 /// last time one linked or let go of it (its newest ctime) and its pointers. Environments
 /// hard-link these files, so an entry with a file linked twice is a live environment's and
 /// frees nothing: it stays. uv takes the cache's `.lock` shared for each command and the
-/// publisher for a whole environment build; the returned exclusive hold keeps both out until
-/// the sweep ends. An entry removed with its pointers is a cache miss to uv, which unpacks the
-/// wheel again. A layout uv no longer writes lists nothing.
+/// publisher for a whole environment build; the scan holds it exclusively only while it reads,
+/// and each removal takes it again for that entry alone (`Entry::remove`). An entry removed
+/// with its pointers is a cache miss to uv, which unpacks the wheel again. A layout uv no
+/// longer writes lists nothing.
 type UvEntry = (PathBuf, SystemTime, Vec<PathBuf>);
-fn uv_entries(cache: &Path) -> (Vec<UvEntry>, Option<File>) {
+fn uv_entries(cache: &Path) -> Vec<UvEntry> {
     let lock = File::options().write(true).open(cache.join(".lock"));
-    let Some(lock) = lock.ok().filter(|lock| lock.try_lock().is_ok()) else {
-        return (vec![], None);
+    let Some(_reading) = lock.ok().filter(|lock| lock.try_lock().is_ok()) else {
+        return vec![];
     };
     let mut pointers = HashMap::new();
     for bucket in fs::read_dir(cache).into_iter().flatten().flatten() {
@@ -355,15 +371,14 @@ fn uv_entries(cache: &Path) -> (Vec<UvEntry>, Option<File>) {
         .into_iter()
         .flatten()
         .flatten();
-    let entries = archives
+    archives
         .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
         .filter_map(|entry| {
             let used = unlinked_since(&entry.path())?;
             let pointers = pointers.remove(&entry.file_name()).unwrap_or_default();
             Some((entry.path(), used, pointers))
         })
-        .collect();
-    (entries, Some(lock))
+        .collect()
 }
 
 /// uv's pointers under `dir` to an unpacked wheel in `archive-v0`, by the archive's name: a
@@ -445,20 +460,21 @@ pub fn sweep(caches: &Caches) -> io::Result<Swept> {
         }
     }
     let mut entries = vec![];
-    let mut add = |kind, path: PathBuf, used, pointers| {
+    let mut add = |kind, path: PathBuf, used, pointers, guard| {
         entries.push(Entry {
             kind,
             path,
             used,
             hold: None,
             pointers,
+            guard,
         })
     };
     // Result copies the client collected; uncollected ones are durable outputs.
     for entry in fs::read_dir(root.join("results"))?.flatten() {
         let id = entry.file_name().to_string_lossy().into_owned();
         if engine.get(&id).is_ok_and(|record| record.collected) {
-            add(Kind::Result, entry.path(), modified(&entry.path()), vec![]);
+            add(Kind::Result, entry.path(), modified(&entry.path()), vec![], None);
         }
     }
     // Logs no unfinished run names (machine logs, rotated copies): diagnostics.
@@ -471,7 +487,7 @@ pub fn sweep(caches: &Caches) -> io::Result<Swept> {
                 Err(error) => error.kind() == io::ErrorKind::NotFound,
             };
             if settled {
-                add(Kind::Log, entry.path(), modified(&entry.path()), vec![]);
+                add(Kind::Log, entry.path(), modified(&entry.path()), vec![], None);
             }
         }
     }
@@ -479,7 +495,7 @@ pub fn sweep(caches: &Caches) -> io::Result<Swept> {
         swept.memo += memo.sweep(); // its own TTL and cap
         for home in memo.homes() {
             let used = last_use(&home);
-            add(Kind::Memo, home, used, vec![]);
+            add(Kind::Memo, home, used, vec![], None);
         }
     }
     // Generations unbound by any installation, unfinished run or configured package: a
@@ -493,19 +509,19 @@ pub fn sweep(caches: &Caches) -> io::Result<Swept> {
             && !caches.bound.contains(&name)
         {
             let used = modified(&entry.path().join(".hold"));
-            add(Kind::Generation, entry.path(), used, vec![]);
+            add(Kind::Generation, entry.path(), used, vec![], None);
         }
     }
-    // Kernel namespaces stay locked from here until the sweep ends: an executor that starts
-    // meanwhile waits for it.
-    let (wheels, _installs) = caches.uv_cache.map(uv_entries).unwrap_or_default();
-    for (path, used, pointers) in wheels {
-        add(Kind::UvCache, path, used, pointers);
+    // No lock is held across the sweep: each uv and kernel entry takes its users' lock around
+    // its own removal, and one in use stays for the next sweep.
+    if let Some(cache) = caches.uv_cache {
+        for (path, used, pointers) in uv_entries(cache) {
+            add(Kind::UvCache, path, used, pointers, Some(cache.join(".lock")));
+        }
     }
-    let (kernels, _namespaces) = caches.kernels.map(kernel_entries).unwrap_or_default();
-    for path in kernels {
+    for (path, guard) in caches.kernels.map(kernel_entries).unwrap_or_default() {
         let used = last_use(&path);
-        add(Kind::Kernel, path, used, vec![]);
+        add(Kind::Kernel, path, used, vec![], Some(guard));
     }
     let mut kept = vec![];
     for mut entry in entries {
