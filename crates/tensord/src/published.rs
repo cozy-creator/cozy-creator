@@ -1037,7 +1037,7 @@ impl Publisher {
 
     /// Whether the store holds a Hub file (its URL expires; its bytes do not).
     fn held_file(&self, file: &HubFile) -> bool {
-        file.length > 0 && storage::present(&self.store, &ObjectRef { sha256: file.sha256.clone(), length: file.length })
+        file.length > 0 && self.store.holds(&ObjectRef { sha256: file.sha256.clone(), length: file.length })
     }
 
     fn hub_wheel(&self, file: &HubFile, source: &hub::Source, wheels: &Path, stop: Option<&Stop>) -> Result<PathBuf, Failure> {
@@ -1437,7 +1437,7 @@ fn make_source(
         profiles: profiles.to_vec(),
     };
     let held = crate::storage::local(store, &format!("local/{name}")).map_err(io_failure)?;
-    if let Some(local) = held.filter(|local| crate::storage::present(store, &local.header)) {
+    if let Some(local) = held.filter(|local| store.holds(&local.header)) {
         crate::storage::transport(store, "import", source, &format!("header={} reused", local.header.id()));
         return Ok(made(local.header));
     }

@@ -469,7 +469,7 @@ impl Runs {
                 // A local alias: the model this machine's store holds under that name.
                 let local = crate::storage::local(publisher.store(), &choice.repository)
                     .map_err(|e| refused("checkpoint_absent", e.to_string()))?
-                    .filter(|local| crate::storage::present(publisher.store(), &local.header))
+                    .filter(|local| publisher.store().holds(&local.header))
                     .ok_or_else(|| refused("checkpoint_absent", format!("this machine holds no local/{name}")))?;
                 let row = json!({"parameter": choice.parameter,
                     "repository": choice.repository, "checkpoint": local.header.id()});

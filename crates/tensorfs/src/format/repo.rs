@@ -102,14 +102,9 @@ impl Tree {
     }
 }
 
-/// `refs/<org>/<name>.json`, ASCII-lowercased: repo names are case-insensitive, one identity.
-pub fn repo_key(name: &str) -> String {
-    format!("refs/{}.json", name.to_ascii_lowercase())
-}
-
 /// `cozytensors.repo/1`: a model's releases, oldest first, each naming one commit per lane, and
 /// its other commits (private until a release names one). Every commit it names is a root.
-/// Kept at [`repo_key`]: a store's record of a model, and a static origin's.
+/// A store's record of a model, read and written only by its `get_ref` and `update_ref`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(try_from = "RepoWire", into = "RepoWire")]
 pub struct Repo {
@@ -172,11 +167,6 @@ impl Repo {
         self.check()?;
         json::write(self)
     }
-    /// The repo's key in a store or static origin: [`repo_key`] of its name.
-    pub fn key(&self) -> String {
-        repo_key(&self.name)
-    }
-
     fn check(&self) -> Result<()> {
         if !repo_name(&self.name) {
             return invalid(format!("repo name {:?} is not <org>/<name>", self.name));
