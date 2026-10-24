@@ -87,7 +87,7 @@ fn path(current: &OsStr, kind: &str) -> Vec<CompletionCandidate> {
     let prefix = match current.split_once('=') {
         _ if current.starts_with('-') => return vec![],
         Some((key, _)) if key.ends_with(':') => return vec![],
-        Some((key, _)) if !explicit(key) => &current[..=key.len()],
+        Some((key, _)) if !crate::run::target::written_as_path(key) => &current[..=key.len()],
         _ => "",
     };
     vec![CompletionCandidate::new(format!("{prefix}{PATH}{kind}"))]
@@ -95,14 +95,10 @@ fn path(current: &OsStr, kind: &str) -> Vec<CompletionCandidate> {
 
 /// A reference or local code: a path only when written as one (`./`, `/`, `~`).
 pub fn local(current: &OsStr) -> Vec<CompletionCandidate> {
-    match explicit(&current.to_string_lossy()) {
+    match crate::run::target::written_as_path(&current.to_string_lossy()) {
         true => path(current, "files"),
         false => vec![],
     }
-}
-
-fn explicit(text: &str) -> bool {
-    text.starts_with(['.', '/', '~']) || Path::new(text).is_absolute()
 }
 
 /// Hub names, with each one's URL as its help.

@@ -557,7 +557,7 @@ impl Binder<'_> {
     /// Whether a bare term is a local file for a media input: an explicit path (which must
     /// exist), or an existing file when the callable takes media. Never a `key=value` term.
     fn positional_file(&self, term: &str) -> Result<bool, Error> {
-        let explicit = is_explicit_path(term) && !term.contains(char::is_whitespace);
+        let explicit = super::target::written_as_path(term) && !term.contains(char::is_whitespace);
         if !explicit && term.contains('=') || !self.takes_media() {
             return Ok(false);
         }
@@ -587,11 +587,7 @@ impl Binder<'_> {
 
     /// An absolute path: `~` is the user's home, a relative path starts at the working directory.
     fn resolve(&self, path: &Path) -> PathBuf {
-        let path = match path.strip_prefix("~") {
-            Ok(rest) => self.terms.user_home.join(rest),
-            Err(_) => path.to_path_buf(),
-        };
-        self.terms.cwd.join(path)
+        super::target::spelled(&path.to_string_lossy(), &self.terms.cwd, &self.terms.user_home)
     }
 
     /// Binds every file: those named in the payload, `--asset` and positional files. Each value
@@ -837,7 +833,7 @@ impl Binder<'_> {
             source: PathBuf::from(raw),
             label: None,
         };
-        if is_explicit_path(raw) {
+        if super::target::written_as_path(raw) {
             return bare;
         }
         let Some((name, source)) = raw.split_once('=') else {
@@ -1279,7 +1275,7 @@ fn relative_files(ty: &Type, value: &mut Value, base: &Path) {
         (Type::Asset(_) | Type::Tree, Value::String(source))
             if !source.contains("://")
                 && !source.starts_with("sha256:")
-                && !is_explicit_path(source)
+                && !super::target::written_as_path(source)
                 && !source.is_empty() =>
         {
             *source = base.join(&*source).to_string_lossy().into_owned();
@@ -1822,10 +1818,6 @@ fn child_slot(asked: &str) -> bool {
         (parts.next(), parts.next(), parts.next(), parts.next()),
         (Some(callable), Some("models"), Some(param), None) if ident(callable) && ident(param)
     ) && asked.matches('/').count() != 1
-}
-
-pub(super) fn is_explicit_path(raw: &str) -> bool {
-    ["/", "~/", "./", "../"].iter().any(|p| raw.starts_with(p)) || raw == "~"
 }
 
 fn usage(code: &str, message: impl Into<String>) -> Error {
