@@ -150,7 +150,7 @@ jobs:
             gh run download "$COZY" -R cozy-creator/cozy-creator -p 'cozy-*' -D dev
             install -m 0755 dev/cozy-*/cozy-linux-x86_64 "$bin/cozy"; args+=(--tensord "$bin/cozy")
           fi
-          # A wheel is a URL the machine fetches, or an artifact of this run the CLI uploads.
+          # A wheel is a URL#sha256 the gate fetches and checks, or an artifact of this run.
           for w in "runtime-wheel=$RUNTIME_WHEEL=cozy_runtime" "tensorfs-wheel=$TENSORFS_WHEEL=tensorfs"; do
             IFS== read -r flag value dist <<< "$w"
             case $value in
@@ -209,7 +209,6 @@ jobs:
       # gate.sh ends its rental in a trap; a cancelled job can skip it, so end it here too and say so.
       - if: always()
         run: |
-          cp -r ~/.cozy/outputs "$OUT/outputs" 2>/dev/null || true
           m=$(cat "$OUT/machine" 2>/dev/null) || exit 0
           for _ in $(seq 1 30); do
             timeout 30 cozy machine list 2>/dev/null | grep -q "^$m " || { echo "$m is gone"; exit 0; }

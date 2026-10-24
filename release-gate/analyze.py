@@ -4,7 +4,7 @@ gate-<SKU>.json, which gate.sh fetches from and publishes to the `release-gate-b
 in the baseline file; `--accept` records a FAIL the lead accepted. Exit 1 on any failure: the publish is blocked.
     analyze.py <gate dir> <SKU> <baseline file> [--accept]
 More checks (quality, lm, swap, a suite's check.py) are modules imported here and listed in CHECKS: check(gate) -> (fails, notes)."""
-import fnmatch, glob, json, os, re, subprocess, sys, time
+import fnmatch, json, os, re, subprocess, sys, time
 import numpy as np
 from PIL import Image
 
@@ -14,6 +14,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, 'suites'))
 import lm, quality, record, swap  # noqa: E402
+from runs import Run  # noqa: E402
 from tensorfs import check as tensorfs  # noqa: E402  (release-gate/suites/tensorfs, never the tensorfs library)
 from varena import check as varena  # noqa: E402
 from cli import check as cli  # noqa: E402
@@ -45,18 +46,10 @@ def walk(o):
             yield from walk(v)
 
 
-def measurements(rec):
-    return [rec.get('measurements') or {}] + [c.get('measurements') or {} for c in rec.get('calls') or []]
-
-
-def observations(rec):
-    return [o for m in measurements(rec) for o in m.get('observations') or []]
-
-
-def peak_vram_mb(rec, figure=record.working):
+def peak_vram_mb(run, figure=record.working):
     """The most the run and its calls needed at once (`record.working`: 0.32's varena working set, 0.30's reserved
     peak), in MiB; with `record.held`, what they held."""
-    peaks = [figure(m.get('memory') or {}) for m in measurements(rec)]
+    peaks = [figure(m.get('memory') or {}) for m in run.measurements]
     return round(max(peaks) / 2**20) if any(peaks) else None
 
 
@@ -65,30 +58,15 @@ def canonical(target):
     return re.sub(r'^(\./|[^/]+/(?=[^/]+/[^/]+$))', '', re.sub(r'@.*$', '', target))
 
 
-def steps(rec):
-    """The dominant step series (largest total) of the run and its calls, in ms."""
-    best = None
-    for m in measurements(rec):
-        for v in ((m.get('attribution') or {}).get('steps') or {}).values():
-            if v.get('count') and (best is None or v.get('total_ms', 0) > best.get('total_ms', 0)):
-                best = v
-    return [x[1] for x in (best or {}).get('series') or []]
-
-
 cells = [l.rstrip('\n').split('\t') for l in open(os.path.join(out, 'cells.tsv')) if l.strip()]
-summary, recs, host_legs = {}, {}, {}
+summary, runs, recs, host_legs = {}, {}, {}, {}
 for name, target, number in cells:
-    p = os.path.join(out, name + '.json')
-    rec = json.load(open(p)) if os.path.exists(p) else None
-    if rec is None or rec.get('status') != 'completed':
-        why = (rec or {}).get('reason')
-        why = f"{why.get('code')}: {why.get('message')}" if isinstance(why, dict) else why
-        fails.append(f'{name}: run {number} {rec and rec.get("status")} {why}')
+    run = Run.read(os.path.join(out, name + '.json'))
+    if run is None or run.status != 'completed':
+        fails.append(f'{name}: run {number} {run and run.status} {run and run.reason or None}')
         continue
-    recs[name] = rec
-    obs = observations(rec)
-    gemm = [list(x) for x in sorted({(o['fields'].get('format', ''), o['value']) for o in obs if o.get('name') == 'gemm.selected'})]
-    attn = sorted({o['value'] for o in obs if o.get('name') == 'attention.selected'})
+    runs[name], recs[name] = run, run.record
+    obs, gemm, attn = run.observations, run.gemm, run.attention
     for o in obs:
         text = f"{o.get('name')} {o.get('value')}"
         if any(s in text for s in ('gemm.fallback', 'decoded_float')):
@@ -102,20 +80,19 @@ for name, target, number in cells:
     for o in obs:
         if o.get('name') == 'request_path.blocking':
             blocking[o['value']] = blocking.get(o['value'], 0) + round(float(o['fields'].get('ms', 0)))
-    s = steps(rec)
+    s = run.steps
     legs = {}
-    for m in measurements(rec):
+    for m in run.measurements:
         ex = m.get('execution') or {}
         for part in ('executor', 'construction'):
             for leg in ('cuda_init', 'measure_device'):
                 v = ((ex.get(part) or {}).get('legs_ms') or {}).get(leg)
                 if v: legs[leg] = max(legs.get(leg, 0), round(v))
     host_legs[name] = legs
-    c = summary[name] = {'blocking': blocking, 'run': rec['number'], 'target': canonical(target), 'gemm': gemm, 'attention': attn,
-                         'execution_ms': rec.get('execution_ms'), 'step1_ms': round(s[0]) if s else None,
-                         'peak_vram_mb': peak_vram_mb(rec), 'held_vram_mb': peak_vram_mb(rec, record.held),
-                         'steady_ms': round(sum(s[1:]) / len(s[1:])) if len(s) > 1 else None,
-                         'files': sorted(glob.glob(os.path.expanduser(f"~/.cozy/outputs/*/{rec['number']}-*")))}
+    c = summary[name] = {'blocking': blocking, 'run': run.number, 'target': canonical(target), 'gemm': gemm, 'attention': attn,
+                         'execution_ms': run.execution_ms, 'step1_ms': round(s[0]) if s else None,
+                         'peak_vram_mb': peak_vram_mb(run), 'held_vram_mb': peak_vram_mb(run, record.held),
+                         'steady_ms': round(sum(s[1:]) / len(s[1:])) if len(s) > 1 else None, 'files': list(run.outputs)}
     if len(s) > 2:
         median = sorted(s[1:])[(len(s) - 1) // 2]
         for i, (ms, ref) in enumerate([(s[0], s[1])] + [(x, median) for x in s[1:]]):
@@ -152,8 +129,8 @@ im = image('birefnet')  # composites the cutout onto white
 if im is not None:
     white = (np.asarray(im.convert('L')) > 245).mean(); notes.append(f'birefnet: white background {white:.0%}')
     if white < 0.05: fails.append(f'birefnet: no white background ({white:.1%})')
-if 'describer' in recs:
-    texts = [s for d in walk(recs['describer'].get('result')) for v in d.values() for s in (v if isinstance(v, list) else [v])
+if 'describer' in runs:
+    texts = [s for d in walk(runs['describer'].result) for v in d.values() for s in (v if isinstance(v, list) else [v])
              if isinstance(s, str) and len(s) > 20]
     if not texts: fails.append('describer: no description text')
 for n, min_h, min_frames in (('h3', 700, 300), ('seedvr2', 1000, 20)):
@@ -215,7 +192,7 @@ for leg in ('cuda_init', 'measure_device'):
     vals = [l[leg] for l in host_legs.values() if leg in l]
     if vals:
         notes.append(f'host {leg}: median {sorted(vals)[len(vals) // 2] / 1000:.1f} s, max {max(vals) / 1000:.1f} s over {len(vals)} executors')
-gate = {'out': out, 'sku': sku, 'summary': summary, 'records': recs, 'baseline': base}
+gate = {'out': out, 'sku': sku, 'summary': summary, 'runs': runs, 'records': recs, 'baseline': base}
 # CLI-behaviour checks a cells/*.sh recorded with gate.sh's `expect` (expect.tsv: check, PASS|FAIL, what happened).
 EXPECT = os.path.join(out, 'expect.tsv')
 for row in (l.rstrip('\n').split('\t') + [''] for l in open(EXPECT)) if os.path.exists(EXPECT) else []:

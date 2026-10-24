@@ -5,14 +5,14 @@
 #   gate.sh <SKU> --suite name,... [--gpus N] [--out DIR] [--establish] [--publish] [--runtime F|URL] [--tensorfs F|URL]
 #           [--tensord BIN|URL] [--packages DIR] [--pins name@release,...] [--only cell,cell] [--before FILE]...
 #           [--cells FILE]... [--first pkg,...] [--cli BIN] [--install-cli BIN] [--disk GB]
-# --install-cli puts the candidate on with that cozy (0.11.15 or older: its machine fetches URL#sha256 candidates itself,
-# where cozy 0.11.16+ uploads them from here, slow on a slow uplink); every other command uses --cli.
+# --install-cli is an old cozy (0.11.15) whose machine fetches URL#sha256 candidates itself, for suites/tensord/skew.sh.
 # --suite runs those suites (suites/<name>/: README.md says what each proves and costs); there is no default, the
 # release agent chooses. A suite's before.sh runs on the fresh pod before the candidate goes on, its cells.sh after it
 # and its check.py in analyze.py; the baseline is gate-<SKU>-<suites>.json.
-# A candidate URL is https://…#sha256=<hex>: fetched here, held by its digest, and sent as a file (cozy 0.11.16+
-# `machine update --runtime/--tensorfs/--tensord <path>`; an older --cli gets --runtime-wheel/--tensorfs-wheel).
-# One FRESH rental. The candidate goes on with `cozy machine update` (a new executor), then each cell runs ONCE
+# A candidate URL is https://…#sha256=<hex>: fetched here, held by its digest, and sent as a file
+# (`cozy machine update --runtime/--tensorfs/--tensord <path>`).
+# One FRESH rental. The candidate goes on with the candidate's own cozy's `machine update`, which fails unless the
+# machine then runs it; the set the machine reports is the gate's label. Then each cell runs ONCE (e2e/run.sh)
 # with a scenario prompt from scenarios.tsv and fresh seeds. A cell runs the root (first-party) package users get;
 # --pins runs exact releases of them instead (a yanked candidate installs by its exact pin), --packages a packages
 # checkout's dirs. A cell another suite ran, or one known-failing.json parks on the SKU (its "cells"), does not run.
@@ -28,8 +28,7 @@ fi
 HERE=$2; shift 2
 REPO=cozy-creator/cozy-creator TAG=release-gate-baselines
 SKU=$1; shift; CAND=() ONLY= EXTRA=() BEFORE=() CLI=cozy DISK=400 OUT= PKGS= ESTABLISH= PUBLISH= PINS= SUITES= K= CLIP= GPUS= FIRST= ICLI=
-RT= TFS= BIN= RW= TW= TD=
-ver() { basename "${1%%#*}" | cut -d- -f2; }
+BIN= RW= TW= TD=
 while [ $# -gt 0 ]; do
   case $1 in
     --establish) ESTABLISH=1; shift; continue;;
@@ -46,9 +45,9 @@ while [ $# -gt 0 ]; do
     --disk) DISK=$2;;
     --packages) PKGS=$(cd "$2" && pwd);;
     --pins) PINS=",$2,";;
-    --runtime|--runtime-wheel) RW=$2; RT=$(ver "$2");;
-    --tensorfs|--tensorfs-wheel) TW=$2; TFS=$(ver "$2");;
-    --tensord) TD=$2; if [ -f "$2" ]; then BIN=$("$2" --version | awk '{print $2}'); else BIN=$(ver "$2"); fi;;
+    --runtime|--runtime-wheel) RW=$2;;
+    --tensorfs|--tensorfs-wheel) TW=$2;;
+    --tensord) TD=$2;;
     *) echo "unknown argument $1" >&2; exit 2;;
   esac; shift 2
 done
@@ -56,22 +55,9 @@ done
 for s in ${SUITES//,/ }; do
   [ -f "$HERE/suites/$s/cells.sh" ] || { echo "no suite $s: $(ls "$HERE/suites" | paste -sd, -)" >&2; exit 2; }
 done
-SW=$(curl -sf https://tensorhub.com/v1/software | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["cozy"], d["runtime"], d["tensorfs"])')
-[ -n "$SW" ] || { echo "no /v1/software"; exit 1; }
-read -r C0 R0 T0 <<< "$SW"
-LABEL=cozy${BIN:-$C0}-rt${RT:-$R0}-tfs${TFS:-$T0}${PKGS:+-packages$(git -C "$PKGS" rev-parse --short HEAD)}${PINS:+-pins$(cksum <<< "$PINS" | cut -d' ' -f1)}
-OUT=${OUT:-$PWD/gate-$SKU-$LABEL-$(date -u +%Y%m%dT%H%MZ)}
+OUT=${OUT:-$PWD/gate-$SKU-$(date -u +%Y%m%dT%H%MZ)}
 B=$OUT/baseline
-mkdir -p "$B"; cd "$OUT"; : > cells.tsv; echo "$LABEL" > label
-digest() { case $1 in *'#sha256='*) echo "${1##*#sha256=}";; '') ;; *) [ -f "$1" ] && sha256sum "$1" | cut -d' ' -f1;; esac; }
-python3 - "$LABEL" "$BIN" "$(digest "$TD")" "$(basename "${RW%%#*}")" "$(digest "$RW")" "$(basename "${TW%%#*}")" "$(digest "$TW")" \
-  "${PINS//,/ }" "${PKGS:+$(git -C "$PKGS" rev-parse HEAD)}" > candidate.json <<'PY'
-import json, sys
-label, cozy, cozy_sha, rt, rt_sha, tfs, tfs_sha, pins, packages = sys.argv[1:]
-print(json.dumps({"label": label, "cozy": cozy, "cozy_sha256": cozy_sha, "runtime_wheel": rt, "runtime_sha256": rt_sha,
-                  "tensorfs_wheel": tfs, "tensorfs_sha256": tfs_sha, "pins": sorted(pins.split()), "packages_ref": packages},
-                 indent=1, sort_keys=True))
-PY
+mkdir -p "$B"; cd "$OUT"; : > cells.tsv
 log() { echo "$(date -u +%H:%M:%SZ) $*" | tee -a gate.log; }
 # expect <check> PASS|FAIL <what happened>: a CLI-behaviour check (cells/*.sh); analyze.py fails the gate on a FAIL.
 expect() { printf '%s\t%s\t%s\n' "$1" "$2" "$(tr '\n\t' '  ' <<< "$3" | cut -c1-400)" >> expect.tsv; log "$1: $2 $3"; }
@@ -88,18 +74,15 @@ fetch() {
   esac
   echo "$f"
 }
-URLS=; if [ -n "$ICLI" ]; then  # the machine fetches the URLs itself
-  URLS=1 RWF=$RW TWF=$TW TDF=$TD
-else
-  RWF=$(fetch "$RW") && TWF=$(fetch "$TW") && TDF=$(fetch "$TD") || exit 1
-  [ -z "$TDF" ] || { chmod +x "$TDF"; BIN=$("$TDF" --version | awk '{print $2}'); }
-  # The candidate's own cozy puts the candidate on: it reaches the boot image's older TensorD, which a CLI between
-  # them may not (cozy 0.11.16 on 0.11.12: update_field_unknown).
-  ICLI=${TDF:-$CLI}
+RWF=$(fetch "$RW") && TWF=$(fetch "$TW") && TDF=$(fetch "$TD") || exit 1
+if [ -n "$TDF" ]; then
+  chmod +x "$TDF"; BIN=$("$TDF" --version | awk '{print $2}')
+  [ -n "$BIN" ] || { log "$TD is not a cozy binary"; exit 1; }
 fi
-W=; "$ICLI" machine update --help 2>/dev/null | grep -q -- --runtime-wheel && W=-wheel
-ONCE=; "$CLI" run show --help 2>/dev/null | grep -q -- --once && ONCE=--once  # a snapshot, where run show follows
-[ -z "$RWF" ] || CAND+=("--runtime$W" "$RWF"); [ -z "$TWF" ] || CAND+=("--tensorfs$W" "$TWF"); [ -z "$TDF" ] || CAND+=(--tensord "$TDF")
+# The candidate's own cozy puts the candidate on: it reaches the boot image's older TensorD, which a CLI between
+# them may not (cozy 0.11.16 on 0.11.12: update_field_unknown).
+UP=${TDF:-$CLI}
+[ -z "$RWF" ] || CAND+=(--runtime "$RWF"); [ -z "$TWF" ] || CAND+=(--tensorfs "$TWF"); [ -z "$TDF" ] || CAND+=(--tensord "$TDF")
 BK=$SKU${SUITES:+-${SUITES//,/-}}  # the baseline's name
 gh release download "$TAG" -R "$REPO" -D "$B" -p "gate-$BK.json" -p "ref-$SKU.*" -p "ref-$SKU-clip.mp4" 2>/dev/null
 if [ -f "$B/gate-$BK.json" ]; then
@@ -126,12 +109,16 @@ end_it() {
 }
 trap end_it EXIT
 trap 'exit 143' TERM INT
-# cell <name> <target> [args...]: runs on $M, keeps its record as <name>.json
+RUN_CLI=$CLI; . "$HERE/../e2e/run.sh"
+# wedged <what>: a run never ended and its cancel did not take (10-24: Fibo pinned and silent for 30 min): the gate
+# stops, and its trap keeps the machine's logs and ends the pod.
+wedged() { expect gate-wedged FAIL "$1: the gate stopped"; printf 'VERDICT FAIL (%s)\n' "$1" | tee verdict.txt; exit 1; }
+# cell <name> <target> [args...]: one run on $M (e2e/run.sh's run_cell): its record <name>.json, its outputs <name>/.
 # --only names cells or packages.
 # A cell another suite already ran, or one known-failing.json parks on this SKU ("cells"; sku "*" is every SKU), does
 # not run.
 cell() {
-  local name=$1 target=$2 p issue; shift 2
+  local name=$1 target=$2 p issue n code=0; shift 2
   p=${target%/*}; p=${p##*/}
   [ -z "$ONLY" ] || [[ $ONLY == *",$name,"* || $ONLY == *",$p,"* ]] || return 0
   ! cut -f1 cells.tsv | grep -qx -- "$name" || return 0
@@ -139,25 +126,11 @@ cell() {
     "$HERE/known-failing.json" | head -1)
   [ -z "$issue" ] || { log "$name: pending fix $issue, not run on $SKU"; return 0; }
   for p in "$@"; do [[ $p != prompt=* ]] || printf '%s\t%s\n' "$name" "${p#prompt=}" >> prompts.tsv; done  # quality.py
-  timeout 3600 "$CLI" --json run "$target" --on "$M" "$@" >"$name.ndjson" 2>"$name.err"
-  local n st j; n=$(jq -r 'select(.run.number != null) | .run.number' "$name.ndjson" 2>/dev/null | head -1)
-  snap() { timeout 120 "$CLI" run show "$n" $ONCE --json 2>/dev/null | jq -s 'last // {}' >"$name.json"; jq -r '.status // ""' "$name.json"; }
-  if [ -n "$n" ]; then
-    st=$(snap)
-    # A run that never ends holds the pod (10-24: Fibo pinned and silent for 30 min, no watchdog): cancel it, and when
-    # that does not take, stop the gate; the trap keeps the machine's logs and ends the pod.
-    if [ "$st" = queued ] || [ "$st" = in_progress ]; then
-      "$CLI" run cancel "$n" -y >"$name.cancel" 2>&1
-      for j in $(seq 24); do st=$(snap); [ "$st" = queued ] || [ "$st" = in_progress ] || break; sleep 5; done
-      if [ "$st" = queued ] || [ "$st" = in_progress ]; then
-        printf '%s\t%s\t%s\n' "$name" "$target" "$n" >> cells.tsv
-        expect gate-wedged FAIL "$name run $n never ended and its cancel did not take: the gate stopped"
-        printf 'VERDICT FAIL (%s run %s wedged)\n' "$name" "$n" | tee verdict.txt; exit 1
-      fi
-    fi
-  fi
-  printf '%s\t%s\t%s\n' "$name" "$target" "${n:-none}" >> cells.tsv
-  log "$name run ${n:-none} $(jq -r '.status // "none"' "$name.json" 2>/dev/null)"
+  run_cell "$OUT" "$name" "$target" --on "$M" "$@" || code=$?
+  n=$(cat "$name.number")
+  printf '%s\t%s\t%s\n' "$name" "$target" "$n" >> cells.tsv
+  [ "$code" != 2 ] || wedged "$name run $n never ended and its cancel did not take"
+  log "$name run $n $(run_get "$OUT" "$name" .status)$(cat "$name.stalled" 2>/dev/null | head -1 | sed 's/^/: /')"
 }
 # pkg <package> <fn>: the root package's function users get, its --pins release, or the --packages checkout's dir.
 pkg() {
@@ -166,9 +139,9 @@ pkg() {
   elif [ -n "$PKGS" ] && grep -qs cozy.application "$PKGS/$1/pyproject.toml"; then ln -sfn "$PKGS/$1" "$OUT/$1"; echo "./$1/$2"
   else echo "$1/$2"; fi
 }
-output() { local n; n=$(awk -F'\t' -v c="$1" '$1==c{print $3}' cells.tsv); ls ~/.cozy/outputs/*/"$n"-* 2>/dev/null | grep -E "\.($2)$" | head -1; }
+output() { run_output "$OUT" "$1" "$2"; }
 . "$HERE/products.sh"
-log "gate $LABEL on $SKU (suites ${SUITES//,/ }): scenario $NAME, seeds from $R, candidate: ${CAND[*]:-released}${PKGS:+ packages $PKGS}${PINS:+ pins ${PINS//,/ }}, cli: $CLI"
+log "gate on $SKU (suites ${SUITES//,/ }): scenario $NAME, seeds from $R, candidate: ${CAND[*]:-released}${PKGS:+ packages $PKGS}${PINS:+ pins ${PINS//,/ }}, cli: $CLI"
 "$CLI" machine rent "$SKU" ${GPUS:+--gpus "$GPUS"} --disk-gb "$DISK" -y --json >rent.json 2>rent.err
 M=$(python3 -c 'import json,sys
 t = open(sys.argv[1]).read(); dec = json.JSONDecoder(); i = 0
@@ -191,34 +164,30 @@ for f in "${BEFORE[@]}"; do . "$f"; done
 if [ -n "$BIN" ] && [ "$(timeout 60 "$CLI" --json machine show "$M" | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"]["version"])' 2>/dev/null)" = "$BIN" ]; then
   for ((i = 0; i < ${#CAND[@]}; i += 2)); do [ "${CAND[i]}" = --tensord ] && CAND=("${CAND[@]:0:i}" "${CAND[@]:i+2}") && break; done
 fi
-# --install-cli's URL payload reaches a TensorD before 0.11.16 only (a later one refuses it, invalid_payload): a machine
-# already past that (a suite's before.sh moved it) is sent the candidate's files by --cli.
-mv=$(timeout 60 "$CLI" --json machine show "$M" 2>/dev/null | jq -r '.status.version // ""')
-if [ -n "$URLS" ] && [ -n "$mv" ] && [ "$(printf '%s\n' 0.11.16 "$mv" | sort -V | head -1)" = 0.11.16 ]; then
-  ICLI=$CLI CAND=()
-  if [ -n "$RW" ]; then RWF=$(fetch "$RW") || exit 1; CAND+=(--runtime "$RWF"); fi
-  if [ -n "$TW" ]; then TWF=$(fetch "$TW") || exit 1; CAND+=(--tensorfs "$TWF"); fi
-  [ -z "$TD" ] || [ "$mv" = "$BIN" ] || { TDF=$(fetch "$TD") || exit 1; CAND+=(--tensord "$TDF"); }
-fi
 # notinstalled <why>: the cells would run the old software, so the gate stops here: logs kept, pod ended, FAIL.
 notinstalled() {
   expect candidate-installed FAIL "$1"
   printf 'FAIL candidate not installed: %s\nVERDICT FAIL (candidate not installed)\n' "$1" | tee verdict.txt
   exit 1
 }
+# cozy's `machine update` fails (update_unapplied) unless the machine then runs what it was sent.
 if [ ${#CAND[@]} -gt 0 ]; then
-  "$ICLI" machine update "$M" "${CAND[@]}" -y >update.log 2>&1; code=$?
-  log "candidate on $M: exit $code $(grep -E '^status' update.log)"
+  "$UP" --json machine update "$M" "${CAND[@]}" -y >update.json 2>update.log; code=$?
+  log "candidate on $M: exit $code $(jq -c 'select(.machine and .tensord)' update.json 2>/dev/null)"
   [ "$code" = 0 ] || notinstalled "cozy machine update exit $code: $(tail -c 300 update.log | tr '\n' ' ')"
 fi
 timeout 60 "$CLI" machine show "$M" > machine.txt 2>&1
 read -r v rt tfs <<< "$(timeout 60 "$CLI" --json machine show "$M" 2>/dev/null | jq -r '.status | "\(.version) \(.runtime) \(.tensorfs)"')"
-miss=
-[ -z "$BIN" ] || [ "$v" = "$BIN" ] || miss="$miss cozy ${v:-?} (not $BIN)"
-[ -z "$RT" ] || [ "$rt" = "$RT" ] || miss="$miss Runtime ${rt:-?} (not $RT)"
-[ -z "$TFS" ] || [ "$tfs" = "$TFS" ] || miss="$miss TensorFS ${tfs:-?} (not $TFS)"
-[ -z "$miss" ] || notinstalled "$M runs$miss"
+[ -n "$v" ] && [ -n "$rt" ] && [ -n "$tfs" ] || notinstalled "$M reports no cozy, Runtime and TensorFS (cozy ${v:-?}, Runtime ${rt:-?}, TensorFS ${tfs:-?})"
 expect candidate-installed PASS "$M runs cozy $v, Runtime $rt, TensorFS $tfs"
+# The set the verdict is for: what the machine runs, and the candidate files' digests (verify.sh, promote.sh).
+LABEL=cozy$v-rt$rt-tfs$tfs${PKGS:+-packages$(git -C "$PKGS" rev-parse --short HEAD)}${PINS:+-pins$(cksum <<< "$PINS" | cut -d' ' -f1)}
+echo "$LABEL" > label; log "gate $LABEL"
+digest() { [ -z "$1" ] || sha256sum "$1" | cut -d' ' -f1; }
+jq -n --arg label "$LABEL" --arg cozy "$v" --arg runtime "$rt" --arg tensorfs "$tfs" --arg cozy_sha256 "$(digest "$TDF")" \
+  --arg runtime_wheel "$(basename "${RWF:-}")" --arg runtime_sha256 "$(digest "$RWF")" --arg tensorfs_wheel "$(basename "${TWF:-}")" \
+  --arg tensorfs_sha256 "$(digest "$TWF")" --arg pins "${PINS//,/ }" --arg packages_ref "${PKGS:+$(git -C "$PKGS" rev-parse HEAD)}" \
+  -S '$ARGS.named | .pins |= (split(" ") | map(select(. != "")) | sort)' > candidate.json
 printf '%s\n' ${SUITES//,/ } > suites
 for s in ${SUITES//,/ }; do . "$HERE/suites/$s/cells.sh"; done
 # More cells (`--cells FILE`): `name<TAB>target<TAB>args`, args expanded here ($SCENE, $CHAR, $R, $K, $M, $CLI ...).

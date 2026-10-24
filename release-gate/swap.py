@@ -7,20 +7,16 @@ its first cell started, or the check proves nothing.
 GROUPS = (('qwen-image', 'qwen-image-edit', 'qwen-image-t2i'), ('qwen-image-turbo', 'qwen-image-turbo-edit'))
 
 
-def started(rec):
-    return (((rec.get('measurements') or {}).get('execution') or {}).get('executor') or {}).get('started_unix_ms')
-
-
 def check(gate):
     fails, notes = [], []
     for group in GROUPS:
-        recs = {n: gate['records'][n] for n in group if n in gate['records']}
-        if len(recs) < len(group):
+        runs = {n: gate['runs'][n] for n in group if n in gate['runs']}
+        if len(runs) < len(group):
             continue  # not selected, or a cell failed, which fails on its own
-        runs = ', '.join(f'{n} {r["number"]}' for n, r in recs.items())
-        executors = {started(r) for r in recs.values()}
+        named = ', '.join(f'{n} {r.number}' for n, r in runs.items())
+        executors = {r.executor_started_ms for r in runs.values()}
         if len(executors) == 1 and None not in executors:
-            notes.append(f'swap: {runs} loaded in turn on one executor')
+            notes.append(f'swap: {named} loaded in turn on one executor')
         else:
-            fails.append(f'swap: {runs} ran on {len(executors)} executors, not one: the swap was not tested')
+            fails.append(f'swap: {named} ran on {len(executors)} executors, not one: the swap was not tested')
     return fails, notes
