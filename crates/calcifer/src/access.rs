@@ -133,19 +133,14 @@ impl Machines {
     }
 
     /// Mints this computer's bearer at `origin` and gives it to each machine sent one that is
-    /// still driven. None, and no machine is given any more, once none is left or none can be
-    /// minted.
-    async fn push(&self, origin: &Origin) -> Option<Bearer> {
+    /// still driven. `Ok(None)` once no machine is left to give it to; `Err` when none could be
+    /// minted: the Hub's refusal, or its silence, which the refresh asks again.
+    async fn push(&self, origin: &Origin) -> Result<Option<Bearer>, Denied> {
         let minted = match self.hubs.facts(origin).await {
-            Ok(facts) => self
-                .hubs
-                .bearer(origin)
-                .await
-                .ok()
-                .map(|bearer| (tensorfs(&facts, &bearer), bearer)),
-            Err(_) => None,
+            Ok(facts) => self.hubs.bearer(origin).await.map(|bearer| (tensorfs(&facts, &bearer), bearer)),
+            Err(e) => Err(e),
         };
-        if let Some((options, _)) = &minted {
+        if let Ok((options, _)) = &minted {
             let holders: Vec<String> = lock(&self.bearers)
                 .get(origin)
                 .into_iter()
@@ -170,37 +165,48 @@ impl Machines {
             }
         }
         let mut held = lock(&self.bearers);
-        if minted.is_none() || held.get(origin).is_none_or(|machines| machines.is_empty()) {
+        if held.get(origin).is_none_or(|machines| machines.is_empty()) {
             held.remove(origin);
-            return None;
+            return Ok(None);
         }
-        minted.map(|(_, bearer)| bearer)
+        minted.map(|(_, bearer)| Some(bearer))
     }
 }
 
 /// From the session's own refresh point of `held`, the bearer the machines were sent, each one
-/// it mints at `origin` goes to them (`push`), until that stops.
+/// it mints at `origin` goes to them (`push`), until no machine is left to give it to. A mint
+/// that fails is asked again, backing off to a minute, for as long as machines hold one.
 async fn refresh(machines: Weak<Machines>, origin: Origin, held: Bearer) {
-    let mut held = Some(held);
-    while let Some(bearer) = held.take() {
+    let mut due = held.refresh_at();
+    let mut failing = Duration::ZERO;
+    loop {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
-        if bearer.refresh_at() <= now {
+        if failing.is_zero() && due <= now {
             tracing::warn!(%origin, "the Hub's bearers expire within the session's refresh margin");
-            break;
+            if let Some(machines) = machines.upgrade() {
+                lock(&machines.bearers).remove(&origin);
+            }
+            return;
         }
-        tokio::time::sleep(Duration::from_secs(bearer.refresh_at() - now)).await;
+        tokio::time::sleep(Duration::from_secs(due.saturating_sub(now)).max(failing)).await;
         let Some(machines) = machines.upgrade() else {
             return;
         };
-        held = machines.push(&origin).await;
-        if held.is_none() {
-            return;
+        match machines.push(&origin).await {
+            Ok(Some(bearer)) => (due, failing) = (bearer.refresh_at(), Duration::ZERO),
+            Ok(None) => return,
+            Err(Denied::Unreachable(error)) => {
+                failing = (failing * 2).clamp(Duration::from_secs(1), Duration::from_secs(60));
+                tracing::warn!(%origin, %error, retry_s = failing.as_secs(), "minting the machines' next Hub bearer");
+            }
+            Err(Denied::Refused(reason)) => {
+                tracing::warn!(%origin, code = %reason.code, "the Hub refused the machines' next bearer: {}", reason.message);
+                lock(&machines.bearers).remove(&origin);
+                return;
+            }
         }
-    }
-    if let Some(machines) = machines.upgrade() {
-        lock(&machines.bearers).remove(&origin);
     }
 }
 

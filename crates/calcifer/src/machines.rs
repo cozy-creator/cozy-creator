@@ -376,13 +376,17 @@ impl Machines {
 
     /// Brings `local` up: starts its TensorD when none runs, records where it serves and
     /// follows it. Callers share one start.
+    /// Whether this computer's machine runs and is followed: `local_up` returns at once.
+    pub(crate) fn local_runs(&self) -> bool {
+        !lock(&self.seen).get("local").is_some_and(|seen| seen.stopped) && self.local.running()
+    }
+
     pub(crate) async fn local_up(self: &Arc<Self>) -> Result<(), Error> {
-        let stopped = || lock(&self.seen).get("local").is_some_and(|seen| seen.stopped);
-        if !stopped() && self.local.running() {
+        if self.local_runs() {
             return Ok(());
         }
         let _start = self.local.starting.lock().await;
-        if !stopped() && self.local.running() {
+        if self.local_runs() {
             return Ok(());
         }
         // TensorD admits this controller's key from the home as it starts.
