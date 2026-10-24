@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # The `cli-release` suite: cozy's signed-in commands before a release (e2e/coverage.toml's `release` tier).
 # Signed in with the CI key (or, by hand with --installed, as this computer is), it works a throwaway
-# fidika/ci-e2e-<run> package and model through lock, publish, yank, un-yank and delete, reads the account's
-# credit and makes (never pays) a checkout, and rents ONE machine of --sku (default cpu): keepalive, a run on
-# it, and an end while that run is still going, checked gone. The throwaway and the rental are removed in an
+# fidika/ci-e2e-<run> package and model through lock, publish, the model's private `@main` on the local machine,
+# yank, un-yank and delete, reads the account's credit and makes (never pays) a checkout, and rents ONE machine
+# of --sku (default cpu): keepalive, a run on it, and an end while that run is still going, checked gone. The throwaway and the rental are removed in an
 # EXIT trap whatever fails.
 #   e2e/release/run.sh --out DIR [--key FILE | --installed] [--sku SKU] [--cozy-bin F] [--tensorfs-wheel F] [--runtime-wheel F]
 . "$(dirname "$0")/../lib.sh"
@@ -73,6 +73,9 @@ open(sys.argv[1], "wb").write(struct.pack("<Q", len(header)) + header + bytes(32
 PY
 cozy --json model upload "$OUT/tiny.safetensors" "$model" --on local > "$OUT/upload.ndjson" || check "model upload failed"
 commit=$(jq -r '.. | objects | .commit? // empty' "$OUT/upload.ndjson" 2> /dev/null | tail -1) || true
+# A private tag (the upload's `main`) resolves on a machine only under its owner's bearer (xs-093).
+cozy --json model download "$model@main" local/e2e-private-$run > "$OUT/private-main.ndjson" \
+  || check "model download $model@main (a private tag) failed: $(grep -oE '"message": *"[^"]*"' "$OUT/private-main.ndjson" | tail -1)"
 cozy --json model family e2e-family "$model" > /dev/null && cozy --json model info "$model" | J '.family == "e2e-family"' || check "model family: not set"
 cozy --json model family --clear "$model" > /dev/null && cozy --json model info "$model" | J '.family == null' || check "model family --clear: not cleared"
 cozy --json model publish "$model" --release 0.1.0 ${commit:+--commit "$commit"} > "$OUT/model-publish.json" || check "model publish failed"

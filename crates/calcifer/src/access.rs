@@ -1,7 +1,7 @@
 //! What a run's send carries for its Hub: where its machine reads the Hub (the Hub's own word,
 //! kept per Hub: in a dev or CI Hub it is not the origin this computer dials) and, for a run that
-//! publishes into its weights destination or reads one of its owner's checkpoints by digest,
-//! this computer's user Bearer as its TensorFS token. The Bearer is added at the send, never to
+//! publishes into its weights destination or reads anything of its owner's (a model by any ref,
+//! or its own code), this computer's user Bearer as its TensorFS token. The Bearer is added at the send, never to
 //! the stored submission; each one the session mints after goes to every machine sent one, at the
 //! session's own refresh point (`PUT /v1/bearer`). Signed out, a public run reads at its Hub's
 //! origin.
@@ -347,13 +347,21 @@ fn hub_denied(origin: &Origin, error: hub_client::Error) -> Denied {
 
 /// Whether the run does something at its Hub that is not public: publish into its weights
 /// destination, or read a checkpoint by digest alone (a release's lanes are published), as a
-/// model choice or a warm set member's. With `owner`, only `owner`'s checkpoints count.
+/// model choice or a warm set member's. With `owner`, it is whether the run reads anything of
+/// `owner`'s: a model by any ref (a private tag such as `@main` reads only under its owner's
+/// bearer), or its own code, whose defaults may name such a model.
 fn private(spec: &v1::RunSpec, owner: Option<&str>) -> bool {
-    let read = |model: &str, release: &str, manifest: &str| {
-        by_digest(release, manifest)
-            && owner.is_none_or(|owner| {
-                (model.split_once('/')).is_some_and(|(org, _)| org.eq_ignore_ascii_case(owner))
-            })
+    let mine = |name: &str| {
+        owner.is_some_and(|owner| (name.split_once('/')).is_some_and(|(org, _)| org.eq_ignore_ascii_case(owner)))
+    };
+    let read = |model: &str, release: &str, manifest: &str| match owner {
+        Some(_) => mine(model),
+        None => by_digest(release, manifest),
+    };
+    let own_code = match &spec.source {
+        Some(v1::Source::Release(release)) => mine(&release.package),
+        Some(v1::Source::Local(_) | v1::Source::Installation(_)) => owner.is_some(),
+        None => false,
     };
     let members = spec.set.iter().flat_map(|set| &set.items);
     let mut choices = spec
@@ -361,6 +369,7 @@ fn private(spec: &v1::RunSpec, owner: Option<&str>) -> bool {
         .iter()
         .chain(members.flat_map(|item| &item.models));
     !destination(spec).is_empty()
+        || own_code
         || choices.any(|choice| {
             read(&choice.repository, &choice.release, &choice.manifest)
                 || (choice.adapters.iter()).any(|a| read(&a.model, &a.release, &a.manifest))
