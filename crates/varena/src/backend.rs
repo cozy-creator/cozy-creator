@@ -51,9 +51,10 @@ pub const RESERVE: u64 = 512 << 20;
 /// (`CUDA_ERROR_OUT_OF_MEMORY`; the host backend answers the same at its limit).
 pub const OUT_OF_MEMORY: i32 = 2;
 
-/// A standalone Memory's one allowance: the device's free bytes at open less its reserve. Weight
-/// pages and torch's chunks are both created through it, so together they never reach into the
-/// reserve.
+/// A standalone Memory's local ceiling: device capacity less its reserve, optionally capped
+/// by its owner. Every physical create also checks current driver-free bytes, so an executor
+/// opened beside a busy peer can grow after that peer offloads. Driver allocation arbitrates
+/// races between processes; the free-memory sample is not a shared headroom reservation.
 #[derive(Debug)]
 pub struct Allowance {
     limit: u64,
@@ -62,7 +63,7 @@ pub struct Allowance {
 
 impl Allowance {
     pub fn of(backend: &dyn Backend) -> Result<Allowance> {
-        Ok(Allowance::new(backend.free()?.saturating_sub(backend.headroom())))
+        Ok(Allowance::new(backend.capacity().saturating_sub(backend.headroom())))
     }
 
     pub fn new(limit: u64) -> Allowance {
@@ -74,8 +75,21 @@ impl Allowance {
         self.limit.saturating_sub(self.used.load(Acquire))
     }
 
-    /// A page charged before it is made: `Exhausted` when it would cross the limit.
+    /// Available now within both the local ceiling and the driver's free bytes less reserve.
+    pub fn available(&self, backend: &dyn Backend) -> Result<u64> {
+        Ok(self.left().min(backend.free()?.saturating_sub(backend.headroom())))
+    }
+
+    /// A page checked against current driver room, then charged before it is made.
     pub fn create(&self, backend: &dyn Backend, len: u64) -> Result<Physical> {
+        let available = self.available(backend)?;
+        if len > available {
+            return Err(Error::Exhausted(Box::new(Exhausted {
+                need: len - available,
+                site: Some("standalone device availability after reserve".into()),
+                stats: crate::Stats::default(), foreign: None,
+            })));
+        }
         if self.used.try_update(AcqRel, Acquire, |u| u.checked_add(len).filter(|&n| n <= self.limit)).is_err() {
             let site = format!("the standalone budget of {} bytes is spent", self.limit);
             return Err(Error::Exhausted(Box::new(Exhausted { need: len, site: Some(site), stats: crate::Stats::default(), foreign: None })));
@@ -85,8 +99,10 @@ impl Allowance {
 
     /// A page made by [`Allowance::create`] destroyed, its bytes refunded.
     pub fn destroy(&self, backend: &dyn Backend, page: Physical) -> Result<()> {
-        self.refund(page.len);
-        backend.destroy(page)
+        let len = page.len;
+        backend.destroy(page)?;
+        self.refund(len);
+        Ok(())
     }
 
     fn refund(&self, len: u64) {
@@ -103,8 +119,8 @@ pub trait Backend: Send + Sync {
     fn headroom(&self) -> u64 {
         RESERVE
     }
-    /// Free bytes as the driver measures them now. Only foreign bytes derive from it (the
-    /// device's used bytes less every row's); placement never sizes from it.
+    /// Free bytes as the driver measures them now. Standalone placement and physical creates
+    /// are bounded by this sample less headroom; the driver arbitrates concurrent allocations.
     fn free(&self) -> Result<u64>;
     /// Device bytes this process holds now, measured (NVML per process). Its context is this
     /// less torch's reserved bytes and its mapped pages. Errs where it cannot be measured

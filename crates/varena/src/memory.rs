@@ -1,7 +1,7 @@
 //! One executor's memory on one device (varena-leases). Leased, every page is a chunk the
 //! manager allocates, and room between processes is its reclaim. Standalone (no compatible
-//! manager), pages come from the device within a budget fixed at open (its free bytes less the
-//! reserve):
+//! manager), pages come from the device within a local ceiling (capacity less reserve,
+//! optionally capped by its owner), bounded at allocation by current driver-free bytes:
 //! `make_room` takes its own pages in [`crate::decide::victims`]' order, and a shortfall is
 //! `Exhausted`. One `parking_lot` mutex guards the table and the mechanism's state; it is never
 //! held across a fill, a wait on an event or a caller's callback.
@@ -837,8 +837,8 @@ impl Drop for Work {
 
 pub(crate) struct Inner {
     backend: Arc<dyn Backend>,
-    /// Standalone, every page's and torch chunk's: the device's free bytes at open less its
-    /// reserve.
+    /// Standalone, every page's and torch chunk's local ceiling; current driver availability
+    /// also bounds placement and each physical create.
     allowance: Arc<Allowance>,
     /// The lease agent once attached (varena-leases): this GPU's pages are the manager's chunks.
     #[cfg(unix)]
@@ -941,14 +941,14 @@ fn exhausted(need: u64, site: Option<&str>, stats: Stats) -> Box<Exhausted> {
 impl Memory {
     /// Opens `gpu` for this process: one Memory per device per process. Its pages are leased
     /// once [`Memory::lease`] attaches it to a manager; until then (or with none) they come from
-    /// the device within the standalone budget: its free bytes now less the reserve (rev 6).
+    /// the device within a local ceiling and the driver's current free bytes less reserve.
     pub fn open(gpu: GpuId, backend: Box<dyn Backend>) -> Result<Memory> {
         Self::open_with_limit(gpu, backend, None)
     }
 
     /// Opens standalone memory with an optional physical-byte cap shared by weight pages and
-    /// torch chunks. The effective allowance is the smaller of this cap and current free bytes
-    /// less the backend's reserve. An explicit zero cap is honored.
+    /// torch chunks. The ceiling is the smaller of this cap and device capacity less reserve;
+    /// every physical allocation also checks current free bytes less reserve. Zero is honored.
     pub fn open_with_limit(gpu: GpuId, backend: Box<dyn Backend>, limit: Option<u64>) -> Result<Memory> {
         crate::caught(|| {
             if !crate::layout::REGION_ALIGN.is_multiple_of(backend.granularity().max(1)) {
@@ -1783,17 +1783,16 @@ impl Inner {
         self.local_free() > before
     }
 
-    /// Free bytes for a page now, from varena's own figures (never the device's: a pass reads
-    /// none). Leased: what the manager can allocate and reclaim from others. Standalone: what
-    /// the budget its pages and torch's share has left (a refused create says the device has
-    /// less).
+    /// A placement estimate now: the manager's figures when leased; standalone, the smaller
+    /// of local quota and current driver availability after reserve. Failed estimates admit
+    /// nothing; actual allocations and demands propagate the driver's error.
     fn free(&self, _st: &State) -> u64 {
         #[cfg(unix)]
         if let Some(agent) = self.lease.get() {
             let f = agent.table().figures();
             return f.free.saturating_add(f.revocable);
         }
-        self.allowance.left()
+        self.allowance.available(&*self.backend).unwrap_or(0)
     }
 
     /// Free bytes speculative work (prefetch, a streamed set's regrowth) may take: never another
@@ -1819,13 +1818,12 @@ impl Inner {
             // A refused create, or a manager's refusal, says there is less than the figures: the
             // round takes the page's bytes itself. Leased, a page is asked of the manager first
             // (its reclaim makes room across processes, this one's idle pages too). Standalone, a
-            // miss bounds the budget by the driver's free bytes (another tenant's churn); a pass
-            // never reads them.
+            // miss uses the driver's current room after reserve (another tenant's churn).
             let refused = keep.iter().any(|k| st.short.remove(k).is_some());
             let free = match (refused, self.leasing()) {
                 (true, _) => 0,
                 (false, true) => u64::MAX,
-                (false, false) => self.free(&st).min(self.backend.free().unwrap_or(u64::MAX)),
+                (false, false) => self.allowance.available(&*self.backend)?,
             };
             let req = req.or_else(|| st.active.iter().find(|(_, a)| a.thread == std::thread::current().id()).map(|((r, _), _)| *r));
             let short = |st: &State| -> Result<u64> { Err(Error::Exhausted(exhausted(bytes.saturating_sub(free), None, req.and_then(|r| st.stats.get(&r)).cloned().unwrap_or_default()))) };
@@ -2018,7 +2016,7 @@ impl Inner {
                 {
                     let mut st = self.lock();
                     let leased = self.leasing();
-                    let mut free = if leased { u64::MAX } else { self.spare(&st) };
+                    let mut free = if leased { u64::MAX } else { self.allowance.available(&*self.backend)? };
                     let keys: Vec<(Key, u64)> = st.table.pages().filter(|(k, p)| k.0 == id && !p.mapped).map(|(k, p)| (k, p.bytes)).collect();
                     for (key, bytes) in keys {
                         if bytes > free {
