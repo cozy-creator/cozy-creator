@@ -11,12 +11,19 @@ uses only ordinary CLI run/cancel commands and records every run. It never updat
 ```bash
 python3 gate.py --out /path/to/new/proof-directory --expect overlap
 python3 gate.py --out /path/to/new/cancel-directory --cancel-output
+python3 gate.py --out /path/to/new/custody-directory --cancel-custody
 python3 burst.py --out /path/to/new/burst-directory --cpu-capacity 2
 ```
 
 Use `--on <name>` for an already rented candidate machine. The controllers never rent or update it.
 Remote overlap and cancellation use machine-side phase timestamps, avoiding comparisons between
 the laptop clock and the GPU host clock. The uninstrumented `--expect serial` baseline is local-only.
+
+The custody cancellation case produces a real ordinary file (240 MiB by default, bounded by
+`--file-mib`). It cancels after encoding finishes and must observe accepted cancellation before
+the machine's output-finished transition, while the next GPU call remains active and succeeds.
+It exercises actual copy/hash/fsync work with no sleeps or injected barriers. If the output settles
+before cancellation arrives, the case fails as unexercised; it cannot claim the race was covered.
 
 Run through the shared heavy wrapper. `--expect serial` records the old behavior as a baseline.
 Each case first warms the same entrypoint, then submits the image request and its queued successor.

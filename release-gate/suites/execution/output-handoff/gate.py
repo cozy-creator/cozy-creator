@@ -11,7 +11,17 @@ from pathlib import Path
 
 class Run:
     def __init__(
-        self, cli, target, output, tag, seed, image, iterations, size, machine="local"
+        self,
+        cli,
+        target,
+        output,
+        tag,
+        seed,
+        image,
+        iterations,
+        size,
+        machine="local",
+        file_mib=0,
     ):
         self.cli, self.tag = cli, tag
         self.record = None
@@ -30,6 +40,7 @@ class Run:
                 f"image={'true' if image else 'false'}",
                 f"iterations={iterations}",
                 f"size={size}",
+                f"file_mib={file_mib}",
                 "--on",
                 machine,
                 "--gpus=1",
@@ -136,13 +147,19 @@ def main():
     )
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--size", type=int, default=4096)
-    parser.add_argument("--cancel-output", action="store_true")
+    cancellation = parser.add_mutually_exclusive_group()
+    cancellation.add_argument("--cancel-output", action="store_true")
+    cancellation.add_argument("--cancel-custody", action="store_true")
+    parser.add_argument("--file-mib", type=int, default=240)
     parser.add_argument("--expect", choices=("overlap", "serial"), default="overlap")
     args = parser.parse_args()
     if not 512 <= args.size <= 4096:
         parser.error("size must be 512..4096")
-    if args.cancel_output and args.expect != "overlap":
+    cancel = args.cancel_output or args.cancel_custody
+    if cancel and args.expect != "overlap":
         parser.error("cancellation while reusing requires the overlap candidate")
+    if not 1 <= args.file_mib <= 240:
+        parser.error("file-mib must be 1..240")
     if args.on != "local" and args.expect == "serial":
         parser.error(
             "the uninstrumented serial baseline requires the local clock domain"
@@ -153,6 +170,7 @@ def main():
     report = {
         "expect": args.expect,
         "cancel_output": args.cancel_output,
+        "cancel_custody": args.cancel_custody,
         "passed": False,
         "machine": args.on,
     }
@@ -165,7 +183,16 @@ def main():
         assert warm.record["status"] == "completed", warm.record
 
         first = Run(
-            args.cozy, target, args.out, "encode", seed + 1, True, 1, args.size, args.on
+            args.cozy,
+            target,
+            args.out,
+            "encode",
+            seed + 1,
+            not args.cancel_custody,
+            1,
+            args.size,
+            args.on,
+            args.file_mib if args.cancel_custody else 0,
         )
         runs.append(first)
         first.wait_for(lambda: "gpu_started" in first.marks, deadline)
@@ -176,25 +203,27 @@ def main():
             "next",
             seed + 2,
             False,
-            4096 if args.cancel_output else 256,
+            8192 if args.cancel_custody else 4096 if args.cancel_output else 256,
             512,
             args.on,
         )
         runs.append(second)
         second.wait_for(lambda: "gpu_started" in second.marks, deadline)
-        if args.cancel_output:
+        if args.cancel_custody:
+            first.wait_for(lambda: "output_encoding.end" in first.phases, deadline)
+        if cancel:
             # Refresh any already queued terminal report before claiming cancellation was exercised.
             while not first.events.empty():
                 first.consume(0.001)
             assert not first.terminal(), (
-                "encoding finished before cancellation; use a larger real output"
+                "output settled before cancellation; this run did not exercise the race"
             )
             report["cancel_response"] = first.cancel()
             report["cancel_returned_ns"] = time.time_ns()
         for run in (first, second):
             run.wait_for(run.terminal, deadline)
         assert second.record["status"] == "completed", second.record
-        expected_first = "canceled" if args.cancel_output else "completed"
+        expected_first = "canceled" if cancel else "completed"
         assert first.record["status"] == expected_first, first.record
         a_end = first.marks["gpu_finished"]["at_ns"]
         b_start = second.marks["gpu_started"]["at_ns"]
@@ -210,22 +239,32 @@ def main():
             first.marks,
             second.marks,
         )
-        if not args.cancel_output:
+        if not cancel:
             assert first.record.get("output"), "the real image was not committed"
         if args.expect == "overlap":
-            begin = first.phases["output_encoding.begin"]["at_ns"]
-            end = first.phases["output_encoding.end"]["at_ns"]
+            begin = first.phases[
+                "output_encoding.end"
+                if args.cancel_custody
+                else "output_encoding.begin"
+            ]["at_ns"]
+            end = first.phases[
+                "output_finished" if args.cancel_custody else "output_encoding.end"
+            ]["at_ns"]
             b_end = second.marks["gpu_finished"]["at_ns"]
             assert max(begin, b_start) < min(end, b_end), (
-                "GPU work did not overlap real CPU encoding"
+                "GPU work did not overlap the selected real CPU output interval"
             )
             overlap = True
-            report["encoding_overlap_ns"] = min(end, b_end) - max(begin, b_start)
-            if args.cancel_output:
+            report["output_overlap_ns"] = min(end, b_end) - max(begin, b_start)
+            if cancel:
                 canceled = first.phases["output_cancelled"]["at_ns"]
                 assert b_start <= canceled < b_end, (
                     "successor finished before cancel delivery"
                 )
+                if args.cancel_custody:
+                    assert begin <= canceled < end, (
+                        "cancel missed the real custody interval"
+                    )
         report.update(
             passed=True,
             overlap=overlap,

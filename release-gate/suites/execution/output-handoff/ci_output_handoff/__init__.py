@@ -15,6 +15,7 @@ from cozy_runtime.author import (
     App,
     AssetBound,
     Context,
+    FileAsset,
     ImageAsset,
     ImageFrame,
     Outputs,
@@ -30,6 +31,7 @@ class Request(msgspec.Struct, forbid_unknown_fields=True):
     image: bool = False
     size: Annotated[int, msgspec.Meta(ge=512, le=4096)] = 4096
     iterations: Annotated[int, msgspec.Meta(ge=1, le=8192)] = 16
+    file_mib: Annotated[int, msgspec.Meta(ge=0, le=240)] = 0
 
 
 class Result(msgspec.Struct):
@@ -44,6 +46,11 @@ class Result(msgspec.Struct):
             max_bytes=64 << 20, max_decoded_bytes=64 << 20, media_types=("image/webp",)
         ),
     ]
+    file: Annotated[
+        FileAsset | None,
+        AssetBound(max_bytes=240 << 20, media_types=("application/octet-stream",)),
+    ] = None
+    file_sha256: str = ""
 
 
 @app.entrypoint
@@ -52,6 +59,8 @@ def run(payload: Request, ctx: Context, out: Outputs, tel: Telemetry) -> Result:
 
     if ctx.device.type != "cuda":
         raise ValueError("the output-handoff cell requires one CUDA GPU")
+    if payload.image and payload.file_mib:
+        raise ValueError("choose an encoded image or a custody-only file")
     torch.set_num_threads(1)
     device = str(ctx.device)
 
@@ -85,6 +94,8 @@ def run(payload: Request, ctx: Context, out: Outputs, tel: Telemetry) -> Result:
                 "the actual GPU GEMM output differs from its identity input"
             )
         asset = None
+        file_asset = None
+        file_digest = ""
         digest = ""
         if payload.image:
             generator = torch.Generator(device=device).manual_seed(payload.seed)
@@ -105,6 +116,42 @@ def run(payload: Request, ctx: Context, out: Outputs, tel: Telemetry) -> Result:
             asset = out.save_image(
                 ImageFrame(payload.size, payload.size, pixels), format="webp"
             )
+        if payload.file_mib:
+            # An ordinary bounded file exercises real copy/hash/fsync after encoding ends.
+            generator = torch.Generator(device=device).manual_seed(payload.seed)
+            block = (
+                torch.randint(
+                    0,
+                    256,
+                    (1 << 20,),
+                    generator=generator,
+                    dtype=torch.uint8,
+                    device=device,
+                )
+                .cpu()
+                .numpy()
+                .tobytes()
+            )
+            path = out.temporary_file(".bin")
+            hashed = hashlib.sha256()
+            with path.open("wb") as writer:
+                for index in range(payload.file_mib):
+                    ctx.raise_if_cancelled()
+                    chunk = index.to_bytes(8, "little") + block[8:]
+                    writer.write(chunk)
+                    hashed.update(chunk)
+            file_digest = hashed.hexdigest()
+            file_asset = out.save_file(path)
+            path.unlink()
         finished = note("gpu_finished")
     # save_image registered raw pixels; CPU encoding happens in the real output path afterward.
-    return Result(payload.tag, os.getpid(), started, finished, digest, asset)
+    return Result(
+        payload.tag,
+        os.getpid(),
+        started,
+        finished,
+        digest,
+        asset,
+        file_asset,
+        file_digest,
+    )
