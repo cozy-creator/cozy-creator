@@ -14,6 +14,9 @@ import glob, json, os, subprocess, sys, tempfile
 import numpy as np
 from PIL import Image
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from runs import Run  # noqa: E402
+
 MODEL = 'openai/clip-vit-base-patch16'
 FLOOR = 0.25
 # The sharpness median may fall this far under the lowest of the last KEEP passed medians.
@@ -67,7 +70,8 @@ def check(gate):
         name, _, number = line.rstrip('\n').split('\t')[:3]
         if name not in prompts or not number.isdigit() or name.split('-')[0] in SKIP:
             continue
-        files = sorted(glob.glob(os.path.expanduser(f'~/.cozy/outputs/*/{number}-*')))
+        run = Run.read(os.path.join(out, name + '.json'))
+        files = run.outputs if run else ()
         ims = [rgb(f) for f in files if f.endswith(('.png', '.webp', '.jpg'))] + [fr for f in files if f.endswith('.mp4') for fr in frames(f)]
         if ims:
             cells[name] = judge(ims, prompts[name])

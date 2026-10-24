@@ -24,14 +24,14 @@ hub_do() {
     return 1
   fi
 }
-# hub_runs <check> <release> <package> [pin]: `cozy run <package>/echo[@pin]` on $M answers with that release.
+# hub_runs <check> <release> <package> [pin]: `cozy run <package>/echo[@pin]` on $M (e2e/run.sh) answers with that release.
 hub_runs() {
-  local check=$1 want=$2 n got
-  "$CLI" --json run "$3/echo${4:+@$4}" text=hub --on "$M" >"$HB/$check.ndjson" 2>"$HB/$check.err"
-  n=$(grep -o '"number":[0-9]*' "$HB/$check.ndjson" | head -1 | cut -d: -f2)
-  got=$([ -n "$n" ] && timeout 120 "$CLI" --json run show "$n" 2>/dev/null | python3 -c 'import json,sys; print((json.load(sys.stdin).get("result") or {}).get("release", ""))')
+  local check=$1 want=$2 n got code=0
+  run_cell "$HB" "$check" "$3/echo${4:+@$4}" text=hub --on "$M" || code=$?
+  n=$(cat "$HB/$check.number") got=$(run_get "$HB" "$check" .result.release)
+  [ "$code" != 2 ] || wedged "hub $check: run $n never ended and its cancel did not take"
   [ "$got" = "$want" ] && expect "hub $check" PASS "run $n of $3${4:+@$4} served $got" ||
-    expect "hub $check" FAIL "run ${n:-none} of $3${4:+@$4} served '${got}', not $want: $(tail -c 300 "$HB/$check.err")"
+    expect "hub $check" FAIL "run $n of $3${4:+@$4} served '${got}', not $want: $(tail -c 300 "$HB/$check.err")"
 }
 # hub_release <version>: the throwaway package at that version, published from its own directory.
 hub_release() {
