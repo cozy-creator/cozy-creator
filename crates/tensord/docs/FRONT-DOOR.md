@@ -16,12 +16,3 @@ and the boot id and P256 leaf the machine root keeps (`machine/identity.rs`), so
 is the same machine. The readiness receipt is `{payload, hmac_sha256}`, where the HMAC covers
 `cozy.pod-readiness/1\0` + payload. After binding, the service writes `api-ready.json`
 (`address`, `worker_id`, `boot_id`, `cert_pem`) to the state root.
-
-## Install (`install.rs`)
-
-`prepare_editable(InstallerConfig, …)` runs `tensord_client.installer install-captured` on a live local
-project (see `PACKAGE-BRIDGE.md`).
-- No wall-clock kill. Stdout is capped at 8 MiB.
-- A failure `{kind: "install_failed", code, detail}` is refused with its code.
-- It returns `PreparedGeneration`: a 32-hex identity, the record, interface bytes, and a shared
-  `.hold` lock.

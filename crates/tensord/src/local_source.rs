@@ -5,8 +5,8 @@
 //! an accepted run still reads. This computer's explicit live path is read in place, never
 //! copied. Both use the shared dependency cache.
 use crate::{
-    api::install::{prepare_editable, InstallerConfig, RootSet},
     journal::Installation,
+    published::{self, environment, Job, Publisher},
     objects::{Objects, Refused},
     service::Service,
 };
@@ -26,10 +26,6 @@ pub struct Manifest {
     pub package: String,
     #[serde(default)]
     pub release: String,
-    #[serde(default)]
-    pub python_requires: String,
-    #[serde(default)]
-    pub python_version: String,
     /// Wheels the project vendors, by file name.
     #[serde(default)]
     pub wheels: Vec<Member>,
@@ -100,7 +96,10 @@ impl Drop for Holder<'_> {
 
 pub struct LocalSources {
     pub objects: Arc<Objects>,
-    pub installer: InstallerConfig,
+    /// Local code's environments are built as releases' are.
+    publisher: Arc<Publisher>,
+    /// The machine's generations (`catalog`).
+    generations: PathBuf,
     pub cas: Cas,
     /// Each signer's packages: remote `source-<manifest>/{tree,env-*}`, direct paths `env-*`.
     editable: PathBuf,
@@ -140,7 +139,6 @@ fn collect_environments(home: &Path, named: &HashSet<PathBuf>) -> usize {
         }
         if !named.contains(&platform::durable::canonical(&path).unwrap_or_else(|_| path.clone())) {
             let _ = fs::remove_dir_all(&path);
-            let _ = fs::remove_file(path.with_extension("constraints.txt"));
             let _ = fs::remove_dir_all(path.with_extension("wheels"));
         }
     }
@@ -197,12 +195,13 @@ fn open_manifest(
 }
 
 impl LocalSources {
-    pub fn new(objects: Arc<Objects>, installer: InstallerConfig) -> Self {
+    pub fn new(objects: Arc<Objects>, publisher: Arc<Publisher>, generations: &Path) -> Self {
         Self {
-            editable: installer.generations.with_file_name("editable"),
+            editable: generations.with_file_name("editable"),
+            generations: generations.to_path_buf(),
             cas: objects.cas().clone(),
             objects,
-            installer,
+            publisher,
             installing: Mutex::new(()),
             holder: Mutex::new(None),
         }
@@ -248,9 +247,8 @@ impl LocalSources {
         let carried: Vec<_> = manifest.wheels.iter().map(|w| (&w.name, &w.digest)).collect();
         let key = serde_json::json!({
             "lock": held("uv.lock"), "project": held("pyproject.toml"), "beside": beside, "wheels": carried,
-            "indexes": manifest.indexes,
-            "sdk": self.installer.sdk, "client": self.installer.client_wheel,
-            "python": self.installer.python, "python_version": manifest.python_version,
+            "indexes": manifest.indexes, "sdk": self.publisher.sdk.requirements,
+            "links": self.publisher.sdk.find_links, "python": self.publisher.sdk.python,
         });
         home.join(format!("env-{}", &sha256::hex_digest(key.to_string().as_bytes())[..16]))
     }
@@ -294,7 +292,9 @@ impl LocalSources {
         Ok(tree)
     }
 
-    /// Install editable against this manifest's remote tree, or the explicit direct path.
+    /// Install editable against this manifest's remote tree, or the explicit direct path: its
+    /// environment built as a release's is (`published::environment`) when it is not ready, then a
+    /// generation of it describing the project as it is now.
     #[allow(clippy::too_many_arguments)]
     fn install_live(
         &self,
@@ -303,8 +303,8 @@ impl LocalSources {
         alias: String,
         manifest: Manifest,
         digest: &str,
-        stop: Option<&Stop>,
-        stage: &dyn Fn(&str, u64),
+        job: &Job,
+        imports: bool,
     ) -> Result<Installation, Refused> {
         let home = self.home(actor, &manifest.package)?;
         let home = if manifest.path.is_empty() { home.join(format!("source-{digest}")) } else { home };
@@ -323,18 +323,22 @@ impl LocalSources {
                 format!("{} is not a project directory on this machine", project.display()),
             ));
         }
+        for (name, url) in &manifest.indexes {
+            let named = !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b));
+            if !named || !(url.starts_with("https://") || url.starts_with("http://")) || url.contains(char::is_whitespace) {
+                return Err(refused("local_source_invalid", format!("index {name:?} = {url:?} is not a named HTTP(S) index")));
+            }
+        }
         let environment = self.environment(&home, &manifest);
-        let installing = match environment.join(".ready").is_file() {
-            true => format!("syncing {}'s changed source", manifest.package),
-            false => format!("installing {} on this machine", manifest.package),
-        };
-        stage(&installing, 0);
-        let source_digest = manifest.source_digest();
-        // Wheels the CLI carries for locked dependencies this machine cannot fetch itself (a
-        // Hub's on the caller's computer, a private git source): beside the environment they
-        // install into, and needed only while it is built.
-        let mut wheels = vec![];
-        if !environment.join(".ready").is_file() {
+        let ready = environment.join(".ready");
+        let label = format!("{} {}", manifest.package, manifest.release);
+        let pyproject = fs::read_to_string(project.join("pyproject.toml"))?;
+        if !ready.is_file() {
+            let stage = format!("installing {} on this machine", manifest.package);
+            job.stage(stage.clone());
+            // Wheels the CLI carries for locked dependencies this machine cannot fetch itself (a
+            // Hub's on the caller's computer, a private git source): beside the environment they
+            // install into, and needed only while it is built.
             let carried = environment.with_extension("wheels");
             let _ = fs::remove_dir_all(&carried);
             fs::create_dir_all(&carried)?;
@@ -344,36 +348,62 @@ impl LocalSources {
                 }
                 let object = written_member(&self.objects, actor, wheel)?;
                 fs::copy(self.cas.path(&object)?, carried.join(&wheel.name))?;
-                wheels.push(carried.join(&wheel.name));
+            }
+            let locked = match fs::read_to_string(project.join("uv.lock")) {
+                Ok(lock) => Some(published::read_lock(&pyproject, &lock, None).map_err(failed)?),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error.into()),
+            };
+            let built = self.publisher.build(&environment, &environment::Project {
+                dir: &project,
+                python: &self.publisher.sdk.python,
+                locked: locked.as_ref(),
+                wheels: (!manifest.wheels.is_empty()).then_some(carried.as_path()),
+                skip: &[],
+                editable: true,
+                indexes: &manifest.indexes,
+                label: &label,
+                stage: &stage,
+                fetch: None,
+            }, job).map_err(failed)?;
+            let _ = fs::remove_dir_all(&carried);
+            fs::write(&ready, serde_json::to_vec(&built).map_err(std::io::Error::other)?)?;
+        }
+        let built: environment::Built = serde_json::from_slice(&fs::read(&ready)?).map_err(std::io::Error::other)?;
+        // One generation per environment and source: a run of code unchanged since reads it as it is.
+        let identity = sha256::hex_digest(serde_json::json!([environment, digest]).to_string().as_bytes())[..32].to_string();
+        if service.catalog.resolve(&identity).is_err() {
+            job.stage(format!("describing {}", manifest.package));
+            let dir = service.catalog.root().join(&identity);
+            let _ = fs::remove_dir_all(&dir); // an interrupted, never-published one
+            fs::create_dir_all(&dir)?;
+            let published = || -> Result<(), published::Failure> {
+                environment::hold(&dir)?;
+                platform::durable::symlink(&environment, &dir.join("env")).map_err(|e| published::io_failure(e.into()))?;
+                let (env, distribution) = (dir.join("env"), published::distribution(&pyproject)?);
+                let python = platform::paths::venv_python(&env);
+                let interface = environment::describe_project(&python, &project)?;
+                let (_, callees) = environment::describe_environment(&python, &distribution, &manifest.callees)?;
+                let record = built.record(&identity, (&distribution, &manifest.release), &env, &interface,
+                    &self.publisher.sdk.runtime_build, (manifest.source_digest(), callees))?;
+                environment::publish(&dir, &record)
+            };
+            if let Err(failure) = published() {
+                let _ = fs::remove_dir_all(&dir);
+                return Err(failed(failure));
             }
         }
-        let root = RootSet {
-            package: manifest.package.clone(),
-            release: manifest.release.clone(),
-            python_requires: manifest.python_requires,
-            python_version: manifest.python_version,
-            callees: manifest.callees,
-        };
-        for (name, url) in &manifest.indexes {
-            let named = !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b));
-            if !named || !(url.starts_with("https://") || url.starts_with("http://")) || url.contains(char::is_whitespace) {
-                return Err(refused("local_source_invalid", format!("index {name:?} = {url:?} is not a named HTTP(S) index")));
-            }
-        }
-        let read = |bytes| stage(&installing, bytes);
-        let prepared = prepare_editable(&self.installer, &root, &project, &environment, &wheels, &manifest.indexes, &source_digest, stop, &read)
-            .map_err(installer_refusal)?;
-        let _ = fs::remove_dir_all(environment.with_extension("wheels"));
+        let held = service.catalog.resolve(&identity)?;
         let installed = service.engine.bind_installation(Installation {
             actor: actor.to_string(),
             alias,
-            generation: prepared.record.identity,
+            generation: identity,
             package: manifest.package,
             release: manifest.release,
-            interface: prepared.interface_bytes,
+            interface: serde_json::to_vec(&held.record.interface).map_err(std::io::Error::other)?,
             hub: String::new(),
         })?;
-        service.changed_environment()?;
+        service.installed(&held, imports);
         Ok(installed)
     }
 
@@ -385,7 +415,7 @@ impl LocalSources {
         };
         let _installing = self.installing.lock().unwrap();
         // An unavailable or partial inventory says nothing about which sources are unused.
-        let Ok(generations) = fs::read_dir(&self.installer.generations)
+        let Ok(generations) = fs::read_dir(&self.generations)
             .and_then(|entries| entries.collect::<std::io::Result<Vec<_>>>()) else { return; };
         let mut named = HashSet::new();
         for generation in generations {
@@ -427,16 +457,13 @@ impl LocalSources {
         digest: &str,
         stop: Option<&Stop>,
         run: &str,
-        stage: &dyn Fn(&str, u64),
+        observer: published::Observer,
+        imports: bool,
     ) -> Result<Installation, Refused> {
-        // Like published installations, local aliases include the selected SDK and
-        // client. The source digest alone cannot identify the environment after an update.
-        let key = serde_json::json!({
-            "manifest": digest,
-            "sdk": self.installer.sdk,
-            "client": self.installer.client_wheel,
-            "python": self.installer.python,
-        });
+        // Like published installations, local aliases include the selected SDK. The source
+        // digest alone cannot identify the environment after an update.
+        let sdk = &self.publisher.sdk;
+        let key = serde_json::json!({"manifest": digest, "sdk": sdk.requirements, "links": sdk.find_links, "python": sdk.python});
         let alias = format!("local-{}", &tensorfs::sha256::hex_digest(key.to_string().as_bytes())[..32]);
         let _installing = match self.installing.try_lock() {
             Ok(installing) => installing,
@@ -468,15 +495,25 @@ impl LocalSources {
         if manifest.files.is_empty() && manifest.path.is_empty() {
             return Err(refused("local_source_invalid", "a local package manifest names its files or its path"));
         }
-        self.install_live(service, actor, alias, manifest, &object.sha256, stop, stage)
+        let (engine, waiter) = (service.engine.clone(), run.to_string());
+        let job = Job {
+            observer: Some(observer),
+            stop: stop.cloned(),
+            caller: service.engine.caller_id(run),
+            waiting: (!run.is_empty()).then(|| {
+                Box::new(move |reason| {
+                    if let Err(error) = engine.waiting(&waiter, reason) {
+                        tracing::warn!("run {waiter}: its waiting reason was not shown: {error}");
+                    }
+                }) as Box<dyn Fn(Option<String>) + Send + Sync>
+            }),
+            ..Default::default()
+        };
+        self.install_live(service, actor, alias, manifest, &object.sha256, &job, imports)
     }
 }
 
-/// The trusted installer's end as a run's reason: canceled with its run, or failed.
-fn installer_refusal(error: protocol::error::Error) -> Refused {
-    let code = match error.code.as_str() {
-        crate::published::CANCELED => crate::published::CANCELED,
-        _ => "package_installation_failed",
-    };
-    refused(code, error.message)
+/// A build's failure as the run's reason.
+fn failed((code, message): published::Failure) -> Refused {
+    refused(code, message)
 }

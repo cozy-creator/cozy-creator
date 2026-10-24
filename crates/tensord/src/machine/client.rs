@@ -1,6 +1,4 @@
-//! The machine's Python client, embedded at build time (build.rs packs python/ as a wheel).
-//! Package environments and the installer helper take it from the binary, so an image or a
-//! local install ships only the machine, uv and the executor SDK wheels.
+//! The uv the machine runs: an image's, else the pinned one fetched on first need.
 use sha2::{Digest, Sha256};
 use std::{
     fs,
@@ -9,9 +7,6 @@ use std::{
     process::{Command, Stdio},
     sync::{Mutex, PoisonError},
 };
-
-const WHEEL: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/client.whl"));
-const WHEEL_NAME: &str = env!("COZY_CLIENT_WHEEL_NAME");
 
 /// The uv every machine runs when its image brought none: one version, fetched on first need.
 pub const UV: &str = "0.12.24";
@@ -105,56 +100,4 @@ fn settle(path: &Path) -> io::Result<()> {
             Ok(_) => return Ok(()),
         }
     }
-}
-
-/// Publish the embedded wheel under its content identity. A new build with the same
-/// distribution version must not overwrite an earlier installer's selected input.
-pub fn wheel(engine: &Path) -> io::Result<PathBuf> {
-    let digest = format!("{:x}", Sha256::digest(WHEEL));
-    let path = engine.join("client").join(digest).join(WHEEL_NAME);
-    if fs::read(&path).ok().as_deref() != Some(WHEEL) {
-        fs::create_dir_all(path.parent().expect("embedded wheel directory"))?;
-        super::identity::write_atomic(&path, WHEEL, 0o644)?;
-    }
-    Ok(path)
-}
-
-/// The installer helper's interpreter under `engine`.
-pub fn helper_python(engine: &Path) -> PathBuf {
-    platform::paths::venv_python(&engine.join("helper"))
-}
-
-/// The installer helper: an environment over Python 3.12 holding the client with its installer
-/// extra, made with uv at `engine/helper` and made again when the embedded client changes.
-pub fn helper(engine: &Path, uv: &Path, wheel: &Path) -> io::Result<PathBuf> {
-    static MAKING: Mutex<()> = Mutex::new(());
-    let _making = MAKING.lock().unwrap_or_else(PoisonError::into_inner);
-    ensure_uv(uv)?;
-    let dir = engine.join("helper");
-    let (python, marker) = (helper_python(engine), dir.join(".client-sha256"));
-    let digest = format!("{:x}", Sha256::digest(WHEEL));
-    if python.exists() && fs::read_to_string(&marker).ok().as_deref() == Some(digest.as_str()) {
-        return Ok(python);
-    }
-    if dir.exists() {
-        fs::remove_dir_all(&dir)?;
-    }
-    let run = |command: &mut Command| -> io::Result<()> {
-        let output = command.output()?;
-        if output.status.success() {
-            return Ok(());
-        }
-        Err(io::Error::other(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        ))
-    };
-    run(Command::new(uv)
-        .args(["venv", "--no-project", "--no-config", "--python", "3.12"])
-        .arg(&dir))?;
-    run(Command::new(uv)
-        .args(["pip", "install", "--no-config", "--python"])
-        .arg(&python)
-        .arg(format!("{}[installer]", wheel.display())))?;
-    fs::write(&marker, digest)?;
-    Ok(python)
 }

@@ -249,6 +249,17 @@ impl Service {
         self.engine.notify_activity();
         Ok(())
     }
+    /// A package installed, release or local: its environment's kernels compile now, and a call's
+    /// imports (`imports`) start, while its weights come.
+    pub fn installed(&self, held: &crate::catalog::HeldGeneration, imports: bool) {
+        if let Some(gpu) = self.gpu() {
+            gpu.kernel_boot(held.clone());
+            if imports {
+                gpu.prespawn(held.clone());
+            }
+        }
+        self.engine.notify_activity();
+    }
     pub fn idle(&self) -> io::Result<bool> {
         Ok(self.engine.nonterminal(1)?.is_empty())
     }

@@ -25,7 +25,6 @@ pub struct NativeBackend {
     pub service: Arc<Service>,
     pub authority: Authority,
     pub store: Arc<Store>,
-    pub installer: Option<crate::api::install::InstallerConfig>,
     pub publisher: Option<Arc<crate::published::Publisher>>,
     /// `cozy.machine.v1` Run sources and Write.
     pub runs: Option<Arc<crate::runs::Runs>>,
@@ -45,7 +44,6 @@ impl NativeBackend {
             service,
             authority,
             store,
-            installer: None,
             publisher: None,
             runs: None,
             logs: None,
