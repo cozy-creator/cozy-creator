@@ -1,0 +1,29 @@
+# GPU / CPU output handoff
+
+This real release-gate package performs CUDA GEMM, produces actual raw RGB pixels, and uses the
+ordinary Runtime/TensorD lossless WebP output path. A second request of the same entrypoint should
+reuse the executor and start GPU work while the first request is still processing its host output.
+No checkpoint is downloaded; this is lifecycle/overlap proof, not model-quality qualification.
+
+Use the default Cozy home and an explicitly selected candidate machine cohort. The controller
+uses only ordinary CLI run/cancel commands and records every run. It never updates the SDK.
+
+```bash
+python3 gate.py --out /path/to/new/proof-directory --expect overlap
+python3 gate.py --out /path/to/new/cancel-directory --cancel-output
+```
+
+Run through the shared heavy wrapper. `--expect serial` records the old behavior as a baseline.
+Each case first warms the same entrypoint, then submits the image request and its queued successor.
+The default image is 4096x4096 random RGB, at most 48 MiB raw; the extra cancellation case does
+more real GEMM to keep the successor active while the preceding output is canceled.
+
+Acceptance: correct GPU result, committed image (ordinary case), same executor PID, first GPU work
+complete before the successor starts, and successor GPU work before the first request settles.
+Cancellation must not stop the reused executor's successor. Candidate runs additionally require real
+output_encoding begin/end log events overlapping the successor's GPU interval; the canceled-output
+case must deliver cancellation before the successor's GPU work finishes. The observation deadline
+only stops the proof and requests cancellation of its own
+runs; it never authorizes killing the daemon, an executor, or somebody else's work.
+
+No successful candidate run is claimed until a receipt exists against the changed TensorD binary.
