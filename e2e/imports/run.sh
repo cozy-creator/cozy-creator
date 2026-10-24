@@ -8,9 +8,10 @@
 # and imports it there as an executor does: its entry points and every module under them. A Runtime that
 # moves or drops what a published package imports fails here, before the Runtime reaches PyPI. A release
 # whose Runtime floor the candidate does not meet is refused by name and skipped. With --packages, the
-# checkout's package directories are installed and imported the same way.
+# checkout's package directories are installed and imported the same way. --shard K/N takes every Nth package,
+# from the Kth, so N runners share them.
 #   e2e/imports/run.sh --out DIR [--cozy-bin F] [--tensorfs-wheel F] [--runtime-wheel F] [--packages DIR]
-#                      [--published] [--pins name@release,...]
+#                      [--published] [--pins name@release,...] [--shard K/N]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
 PROBE=$(cd "$(dirname "$0")" && pwd)/probe.py
@@ -62,7 +63,10 @@ install() {
   return 1
 }
 
-count=0
+# mine <i>: whether the i-th package (from 0) is this shard's.
+mine() { [ -z "$SHARD" ] || [ $(($1 % ${SHARD#*/})) = $((${SHARD%/*} - 1)) ]; }
+
+count=0 i=-1
 if [ -n "$PUBLISHED" ] || [ -n "$PINS" ]; then
   # A release's question: the published releases (or the pinned candidates) on the candidate set.
   step "published packages"
@@ -78,6 +82,7 @@ if [ -n "$PUBLISHED" ] || [ -n "$PINS" ]; then
   [ -n "$releases" ] || fail "the Hub lists no first-party package release"
   while read -r name release kind; do
     [ -n "$name" ] || continue
+    i=$((i + 1)); mine $i || continue
     echo "::group::$name $release ($kind)"
     if install "$name" "$name@$release"; then import_release "$name" "$name" "$release"; fi
     echo "::endgroup::"
@@ -89,6 +94,7 @@ else
   step "the checkout's packages"
   # A package is a directory whose pyproject declares a cozy.application entry point.
   for toml in $(grep -l 'cozy.application' "$PACKAGES"/*/pyproject.toml); do
+    i=$((i + 1)); mine $i || continue
     dir=$(dirname "$toml") name=$(sed -n 's/^name = "\(.*\)"/\1/p' "$toml" | head -1)
     version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$toml" | head -1)
     echo "::group::$name $version (checkout)"
@@ -98,4 +104,5 @@ else
   done
 fi
 
-finish "imports: $count packages"
+df -h / | tail -1
+finish "imports${SHARD:+ $SHARD}: $count packages"

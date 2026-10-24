@@ -12,10 +12,11 @@
 #   --key FILE            sign in with this device key (`cozy login --key`; release suite)
 #   --sku SKU             what the release suite rents (default cpu)
 #   --installed           this computer's cozy as it is, signed in: no installer (the release suite by hand)
+#   --shard S             one part of the suite, on its own runner (cli: a name; imports: K/N, every Nth package)
 
 set -euo pipefail
 E2E=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-OUT='' CAND_COZY='' CAND_TFS='' CAND_RT='' PACKAGES='' PINS='' PUBLISHED='' KEY='' SKU=cpu INSTALLED=''
+OUT='' CAND_COZY='' CAND_TFS='' CAND_RT='' PACKAGES='' PINS='' PUBLISHED='' KEY='' SKU=cpu INSTALLED='' SHARD=''
 COZY=$HOME/.cozy/bin/cozy
 [ "${RUNNER_OS:-}" != Windows ] || COZY=$HOME/.cozy/bin/cozy.exe
 
@@ -32,6 +33,7 @@ parse() {
       --key) KEY=$2 ;;
       --sku) SKU=$2 ;;
       --installed) INSTALLED=1; shift; continue ;;
+      --shard) SHARD=$2 ;;
       *) echo "unknown argument $1" >&2; exit 2 ;;
     esac
     shift 2
