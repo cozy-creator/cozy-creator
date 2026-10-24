@@ -187,10 +187,20 @@ impl Named {
     pub(crate) fn header(&self) -> Result<&ObjectRef, Failure> {
         self.header.as_ref().ok_or_else(|| unresolved(self))
     }
+
+    /// `repository@release lane`, or `repository@sha256:… lane` for a commit by hash.
+    fn shown(&self) -> String {
+        let at = match (&self.release, &self.tree) {
+            (release, _) if !release.is_empty() => release.clone(),
+            (_, Some(tree)) => tree.id(),
+            _ => "newest".into(),
+        };
+        format!("{}@{at} {}", self.repository, self.lane).trim_end().to_owned()
+    }
 }
 
 fn unresolved(named: &Named) -> Failure {
-    ("model_resolution_failed", format!("{}@{} {} is not resolved", named.repository, named.release, named.lane))
+    ("model_resolution_failed", format!("{} is not resolved", named.shown()))
 }
 
 /// The caller's provider tokens; empty reads public sources anonymously.
@@ -428,7 +438,7 @@ impl Publisher {
             true => canceled(),
             false => refused("model_download_failed", e),
         };
-        let (started, subject) = (Instant::now(), format!("{}@{} {}", named.repository, named.release, named.lane));
+        let (started, subject) = (Instant::now(), named.shown());
         let failed = |e: Refusal| {
             storage::transport(&self.store, "pull-failed", &subject, &format!("origin={}: {e}", source.origin));
             failed(e)
@@ -492,7 +502,7 @@ impl Publisher {
         if checkpoints.is_empty() {
             return Ok(());
         }
-        let names: Vec<String> = checkpoints.iter().map(|n| format!("{}@{} {}", n.repository, n.release, n.lane)).collect();
+        let names: Vec<String> = checkpoints.iter().map(Named::shown).collect();
         job.stage(format!("resolving {}", names.join(" and ")));
         for named in checkpoints {
             self.pull(source, named, Some(&[]), job.stop.as_ref(), &|_, _| ())?;

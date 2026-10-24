@@ -486,9 +486,10 @@ fn stage_rows(measured: &Measured) -> Vec<Vec<String>> {
 fn model_rows(measured: &Measured) -> Vec<Vec<String>> {
     let measured = &measured.m;
     let row = |m: &Model| {
-        let model = match m.repository.is_empty() {
-            true => m.manifest.chars().take(19).collect(),
-            false => format!("{}@{}", m.repository, m.release),
+        let model = match (m.repository.is_empty(), m.release.is_empty()) {
+            (true, _) => m.manifest.chars().take(19).collect(),
+            (false, true) => m.repository.clone(),
+            (false, false) => format!("{}@{}", m.repository, m.release),
         };
         let lane = match m.precision.is_empty() {
             true => or_dash(&m.lane),
