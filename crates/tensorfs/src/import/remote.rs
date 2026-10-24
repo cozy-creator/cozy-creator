@@ -706,7 +706,8 @@ pub enum Files {
 
 /// `Some(variant)` of a Diffusers/Transformers weights file or index:
 /// `diffusion_pytorch_model.fp16-00001-of-00002.safetensors` and
-/// `model.safetensors.index.fp16.json` are `Some(Some("fp16"))`; other files are `None`.
+/// `model.safetensors.index.fp16.json` are `Some(Some("fp16"))`; other files are `None`. Qwen3.5's
+/// `model.safetensors-00001-of-00002.safetensors` is a shard of the plain `model.safetensors`.
 fn variant(path: &str) -> Option<Option<&str>> {
     let name = path.rsplit('/').next().unwrap_or(path);
     let (stem, variant) = match name.split_once(".safetensors.index") {
@@ -717,7 +718,9 @@ fn variant(path: &str) -> Option<Option<&str>> {
                 .rsplit_once("-of-")
                 .and_then(|(head, _)| head.rsplit_once('-'))
             {
-                Some((head, part)) if part.bytes().all(|b| b.is_ascii_digit()) => head,
+                Some((head, part)) if part.bytes().all(|b| b.is_ascii_digit()) => {
+                    head.strip_suffix(".safetensors").unwrap_or(head)
+                }
                 _ => stem,
             };
             match stem.split_once('.') {
