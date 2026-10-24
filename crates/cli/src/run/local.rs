@@ -1,4 +1,4 @@
-//! Local code: `cozy run ./dir[/fn]` and `cozy run ./script.py`, a package nobody published. The
+//! Local code: `cozy run ./dir[/fn]` and `cozy run ./script.py[/fn]`, a package nobody published. The
 //! machine installs it and answers its interface; the CLI binds the terms against that and calls
 //! it, just as it calls a release. No Python runs here. The interface is the source's (a static
 //! description), so it is kept by the source manifest's digest: a source sent before is called
@@ -106,12 +106,11 @@ pub(super) async fn run(
 ) -> Result<ExitCode, Error> {
     let prepared = prepare(ctx, path, args.placement.on(), args.warm.is_some()).await?;
     let (package, interface) = (prepared.package(), prepared.interface());
-    let script = path.extension().is_some_and(|e| e == "py");
-    // A script's one callable runs bare, a recipe too: local code is its author's to run.
+    // Local code's one callable runs bare, a recipe too: local code is its author's to run.
     let callables: Vec<&str> = (interface.callables.iter()).filter(|c| !c.internal).map(|c| c.name.as_str()).collect();
     let function = match (function, callables.as_slice()) {
         (Some(function), _) => function,
-        (None, [only]) if script => (*only).to_owned(),
+        (None, [only]) => (*only).to_owned(),
         (None, _) => {
             super::unnamed(package, None, interface, &args)?;
             super::functions_of(ctx, package, ("local", ""), None, interface);

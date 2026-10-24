@@ -1,12 +1,25 @@
 # /// script
 # requires-python = ">=3.12"
-# [tool.cozy]
-# accelerator = false
+# dependencies = ["cozy-runtime>=0.30", "msgspec>=0.19"]
 # ///
 """The host memory this machine's executors may use: the tightest memory.max/high (cgroup v2) or memory.limit_in_bytes
 (v1) on this process's cgroup path, with MemTotal and SwapTotal. The varena suite's host-RAM cap."""
 import json
 from pathlib import Path
+
+import msgspec
+
+from cozy_runtime.author import App
+
+app = App()
+
+
+class Nothing(msgspec.Struct):
+    pass
+
+
+class Measured(msgspec.Struct):
+    measured: str
 
 
 def number(path: Path) -> int | None:
@@ -24,7 +37,8 @@ def meminfo(key: str) -> int | None:
     return None
 
 
-def main(ctx) -> str:
+@app.entrypoint(accelerator=False)
+def main(payload: Nothing) -> Measured:
     limits = []
     for line in Path("/proc/self/cgroup").read_text().splitlines():
         hierarchy, controllers, relative = line.split(":", 2)
@@ -39,4 +53,4 @@ def main(ctx) -> str:
             if at == base or base not in at.parents:
                 break
             at = at.parent
-    return json.dumps({"cap": min(limits, default=None), "mem_total": meminfo("MemTotal"), "swap_total": meminfo("SwapTotal")})
+    return Measured(json.dumps({"cap": min(limits, default=None), "mem_total": meminfo("MemTotal"), "swap_total": meminfo("SwapTotal")}))

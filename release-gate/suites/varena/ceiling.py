@@ -1,14 +1,29 @@
 # /// script
 # requires-python = ">=3.12"
+# dependencies = ["cozy-runtime>=0.30", "msgspec>=0.19"]
 # ///
 """This machine's load ceiling, measured on it (hardware-ceiling-bars): a cold sequential read of a fresh 2 GiB file on
-the disk the machine's software lives on. The varena suite judges every load from the store as a share of it. A script
-gets no GPU (Runtime 0.32 refuses `accelerator` in a script's metadata), so the host-to-device ceiling is unmeasured."""
+the disk the machine's software lives on. The varena suite judges every load from the store as a share of it. The
+host-to-device ceiling is unmeasured."""
 import json
 import os
 import sys
 import tempfile
 import time
+
+import msgspec
+
+from cozy_runtime.author import App
+
+app = App()
+
+
+class Nothing(msgspec.Struct):
+    pass
+
+
+class Measured(msgspec.Struct):
+    measured: str
 
 GIB = 1 << 30
 
@@ -31,5 +46,6 @@ def disk(total: int = 2 * GIB, chunk: int = 16 << 20) -> float:
         os.unlink(path)
 
 
-def main(ctx) -> str:
-    return json.dumps({"disk_gbps": round(disk(), 2)})
+@app.entrypoint
+def main(payload: Nothing) -> Measured:
+    return Measured(json.dumps({"disk_gbps": round(disk(), 2)}))

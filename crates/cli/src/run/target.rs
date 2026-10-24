@@ -1,5 +1,6 @@
-//! What `cozy run` runs: `[org/]pkg[/fn][@release]`, `./dir[/fn]` or `./script.py`. A package
-//! with no org is first-party, the root's (xs-071).
+//! What `cozy run` runs: `[org/]pkg[/fn][@release]` or local code, `./dir[/fn]` or
+//! `./script.py[/fn]` (a script is a one-file package). A package with no org is first-party, the
+//! root's (xs-071).
 use std::path::{Path, PathBuf};
 
 use protocol::error::{Error, Kind};
@@ -17,11 +18,11 @@ pub enum Target {
         /// function y. Accounts and root names never collide, so the Hub holds at most one.
         owned: Option<String>,
     },
-    Directory {
+    /// A package directory or a script, on this computer.
+    Local {
         path: PathBuf,
         function: Option<String>,
     },
-    Script(PathBuf),
 }
 
 /// Whether `raw` spells a path on this computer (`./dir`), never a package name.
@@ -35,27 +36,28 @@ impl Target {
     pub fn parse(raw: &str, cwd: &Path) -> Result<Self, Error> {
         let raw = raw.trim();
         let explicit = local_path(raw);
-        if raw.ends_with(".py") && (explicit || cwd.join(raw).is_file()) {
-            return Ok(Target::Script(PathBuf::from(raw)));
-        }
-        if explicit {
+        let package = |path: &Path| {
+            let at = cwd.join(path);
+            at.is_dir() || (at.is_file() && path.extension().is_some_and(|e| e == "py"))
+        };
+        if explicit || (raw.ends_with(".py") && cwd.join(raw).is_file()) {
             let path = PathBuf::from(raw);
-            if cwd.join(&path).is_dir() {
-                return Ok(Target::Directory {
+            if package(&path) {
+                return Ok(Target::Local {
                     path,
                     function: None,
                 });
             }
             let function = path.file_name().map(|n| n.to_string_lossy().into_owned());
             let parent = path.parent().map(Path::to_path_buf).unwrap_or_default();
-            if !cwd.join(&parent).is_dir() {
+            if !package(&parent) {
                 return Err(Error::new(
                     Kind::NotFound,
                     "target_not_found",
                     format!("{raw} is not a package directory or a script on this computer"),
                 ));
             }
-            return Ok(Target::Directory {
+            return Ok(Target::Local {
                 path: parent,
                 function,
             });
@@ -71,7 +73,7 @@ impl Target {
                 "target_malformed",
                 format!("{raw:?} is not [org/]package[/function][@release]"),
             )
-            .remedy("omit /function to list the package's functions; ./dir or ./script.py runs local code")
+            .remedy("omit /function to list the package's functions; ./dir or ./script.py is local code")
             .next("cozy package search <words>")
         };
         if parts.len() == 4 {

@@ -555,7 +555,7 @@ fn ranged(header: Option<&HeaderValue>, len: u64) -> Result<Option<(u64, u64)>, 
 }
 
 /// Where a run that names no directory puts its outputs: its package's folder, `<org>-<name>` as
-/// the Go CLI named it (`fidika-minimax-h3`, `local-cozy-script-<hex>`), from a target
+/// the Go CLI named it (`fidika-minimax-h3`, `local-my-script`), from a target
 /// `<org>/<name>/<function>[@release]` (a root package's: `<name>`); the outputs folder itself for
 /// any other target.
 pub fn package_outputs(outputs: &Path, target: &str) -> PathBuf {

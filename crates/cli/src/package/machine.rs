@@ -104,7 +104,7 @@ pub async fn install(
     installed(ctx, submitted, &name).await
 }
 
-/// A directory or a PEP 723 script, installed live: the next run reads its files as they are
+/// A package directory or a script, installed live: the next run reads its files as they are
 /// then. This computer's machine reads them in place; another is sent what it lacks.
 pub async fn install_directory(
     ctx: &Context,
