@@ -265,6 +265,11 @@ impl PyMemory {
         detached(py, &self.gpu.uuid, || Ok(torch_stats(self.memory())))
     }
 
+    /// Torch's idle spans back to the driver now, the float too (an offload's step); the bytes.
+    fn trim(&self, py: Python<'_>) -> PyResult<u64> {
+        detached(py, &self.gpu.uuid, || Ok(self.memory().trim_torch()))
+    }
+
     /// An event on `stream` after torch pool `pool`'s use there (a replay and its readers): the
     /// pool's chunks leave, once released, only after every fence completed.
     fn fence_pool(&self, py: Python<'_>, pool: (u64, u64), stream: usize) -> PyResult<()> {

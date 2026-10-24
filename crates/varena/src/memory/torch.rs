@@ -131,6 +131,13 @@ impl Memory {
         self.torch()?.pool_fence(pool, stream)
     }
 
+    /// Torch's quiet idle spans back to their source now, the float too: an offload's step, after
+    /// which this process holds only torch's live blocks. A span whose stream epoch is pending
+    /// goes once it passes. Returns the bytes given back.
+    pub fn trim_torch(&self) -> u64 {
+        self.inner.torch.get().map_or(0, |t| t.reclaim(u64::MAX))
+    }
+
     pub fn torch_stats(&self) -> TorchStats {
         let Some(t) = self.inner.torch.get() else { return TorchStats::default() };
         let s = t.stats();
