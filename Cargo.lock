@@ -497,7 +497,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "sigstore-verify",
  "supports-hyperlinks",
  "tar",
  "tempfile",
@@ -2266,6 +2265,7 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 name = "platform"
 version = "0.11.17"
 dependencies = [
+ "flate2",
  "getrandom 0.3.4",
  "hex",
  "libc",
@@ -2274,9 +2274,12 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sigstore-verify",
+ "tar",
  "thiserror 2.0.21",
  "tracing",
  "windows-sys 0.61.2",
+ "zip",
 ]
 
 [[package]]

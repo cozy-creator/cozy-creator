@@ -197,6 +197,31 @@ pub struct Archive {
     pub members: &'static [(&'static str, &'static str)],
 }
 
+/// Copies `member`, a path inside a `.zip` or `.tar.gz` `archive`, into `out`.
+#[cfg(feature = "fetch")]
+pub fn unpack(
+    mut archive: impl std::io::Read + std::io::Seek,
+    member: &str,
+    out: &mut impl std::io::Write,
+) -> std::io::Result<u64> {
+    let mut magic = [0; 2];
+    archive.read_exact(&mut magic)?;
+    archive.rewind()?;
+    if magic == *b"PK" {
+        return std::io::copy(&mut zip::ZipArchive::new(archive)?.by_name(member)?, out);
+    }
+    for entry in tar::Archive::new(flate2::read::GzDecoder::new(archive)).entries()? {
+        let mut entry = entry?;
+        if *entry.path_bytes() == *member.as_bytes() {
+            return std::io::copy(&mut entry, out);
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        format!("the archive holds no {member}"),
+    ))
+}
+
 /// The uv cozy fetches where this computer or machine brings none: one version everywhere.
 pub const UV_VERSION: &str = "0.12.24";
 

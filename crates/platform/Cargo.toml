@@ -17,6 +17,14 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+flate2 = { workspace = true, optional = true }
+sigstore-verify = { workspace = true, optional = true }
+tar = { workspace = true, optional = true }
+zip = { workspace = true, optional = true }
+
+[features]
+# Fetched archives: a cozy release verified (`release`) and members unpacked (`tools::unpack`).
+fetch = ["dep:flate2", "dep:sigstore-verify", "dep:tar", "dep:zip"]
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
