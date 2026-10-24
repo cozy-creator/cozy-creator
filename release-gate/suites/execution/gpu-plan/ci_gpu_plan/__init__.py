@@ -30,6 +30,7 @@ def repeat(payload: Probe, tel: Telemetry) -> Report:
         "consumer": "consumer.py",
         "lifecycle": "lifecycle.py",
         "lifecycle_cancel": "lifecycle.py",
+        "lifecycle_running_cancel": "lifecycle.py",
     }.get(payload.mode)
     if probe is None:
         raise ValueError("unknown GPU-plan gate mode")
@@ -42,7 +43,9 @@ def repeat(payload: Probe, tel: Telemetry) -> Report:
             payload.mode,
         ],
         stdout=subprocess.PIPE,
-        stdin=subprocess.PIPE if payload.mode == "lifecycle_cancel" else None,
+        stdin=subprocess.PIPE
+        if payload.mode in ("lifecycle_cancel", "lifecycle_running_cancel")
+        else None,
         stderr=subprocess.STDOUT,
         text=True,
     )
@@ -51,7 +54,7 @@ def repeat(payload: Probe, tel: Telemetry) -> Report:
     try:
         for line in process.stdout:
             tel.log(line.rstrip())
-            if payload.mode == "lifecycle_cancel":
+            if payload.mode in ("lifecycle_cancel", "lifecycle_running_cancel"):
                 tel.progress(0.0, stage="pending-submit")
             try:
                 row = json.loads(line)
@@ -60,7 +63,10 @@ def repeat(payload: Probe, tel: Telemetry) -> Report:
             if isinstance(row, dict) and "result" in row:
                 result = row["result"]
     finally:
-        if payload.mode == "lifecycle_cancel" and process.poll() is None:
+        if (
+            payload.mode in ("lifecycle_cancel", "lifecycle_running_cancel")
+            and process.poll() is None
+        ):
             assert process.stdin is not None
             try:
                 process.stdin.write("cancel\n")

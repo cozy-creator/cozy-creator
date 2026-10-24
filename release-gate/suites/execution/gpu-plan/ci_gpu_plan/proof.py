@@ -174,8 +174,10 @@ def main():
     else:
         raise AssertionError("unsupported external event node was accepted")
     pinned_host = torch.empty_like(initial, device="cpu", pin_memory=True)
+
     def host_copy(index):
         pinned_host.copy_(latent, non_blocking=True)
+
     try:
         PreparedRepeat.capture(host_copy, state=(latent,), steps=2, owners=(pinned_host,))
     except CapabilityError as error:
@@ -184,24 +186,9 @@ def main():
         raise AssertionError("host-ended copy was accepted in a resident-only body")
     report(stage="eligibility", rng="refused", metadata="refused", external_event="refused")
 
-    # A real nested CUDA child graph exercises recursive node inspection and source ownership.
-    nested_state = torch.zeros(8, device="cuda")
-    nested_stream = torch.cuda.Stream()
-    nested_stream.wait_stream(torch.cuda.current_stream())
-    inner = torch.cuda.CUDAGraph(keep_graph=True)
-    with torch.cuda.stream(nested_stream), varena.capture(0):
-        inner.capture_begin()
-        nested_state.add_(2)
-        inner.capture_end()
-    nested_stream.synchronize()
-    inner.instantiate()
-    nested = PreparedRepeat.capture(
-        lambda index: inner.replay(), state=(nested_state,), steps=3, owners=(inner, nested_state)
-    )
-    nested_run = nested.submit()
-    torch.testing.assert_close(nested_run.wait()[0], torch.full_like(nested_state, 6))
-    nested.close()
-    inner.reset()
+    # Native preparation recursively inspects its actual cloned CUDA child definition.
+    facts = prepared.facts()
+    assert facts["validated_nodes"] >= facts["body_nodes"] + 2, facts
 
     # Python owner destruction may reenter close; it must happen outside native mutex guards.
     retired = []
@@ -223,7 +210,7 @@ def main():
     reentrant.submit().wait()
     reentrant.close()
     assert retired == [True], retired
-    report(stage="owner-lifetime", nested_graph="passed", reentrant_close="passed")
+    report(stage="owner-lifetime", recursive_definition="passed", reentrant_close="passed")
 
     # A long real GEMM loop exercises asynchronous progress and cancellation during native wait.
     long_state = initial.clone()

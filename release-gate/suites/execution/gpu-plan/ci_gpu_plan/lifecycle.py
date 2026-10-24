@@ -46,20 +46,23 @@ def main():
     generator = torch.Generator(device="cuda").manual_seed(seed)
     weight = torch.randn(256, 256, device="cuda", generator=generator) * 0.01
     plans, states, tickets, contexts = {}, {}, {}, {}
-    for case in ("normal", "raise", "pending"):
+    for case in ("normal", "raise", "pending", "active"):
         state = torch.randn(16, 256, device="cuda", generator=generator) * 0.01
 
         def step(index, state=state):
             state.add_(torch.tanh(state @ weight) * 0.00001)
 
         states[case] = state
-        plans[case] = PreparedRepeat.capture(step, state=(state,), steps=100000)
+        plans[case] = PreparedRepeat.capture(
+            step, state=(state,), steps=10000000 if case == "active" else 100000
+        )
 
     pending_entered, pending_release, canceled = (
         threading.Event(),
         threading.Event(),
         threading.Event(),
     )
+    active_entered = threading.Event()
     submit_errors, workers = [], []
     closed = []
     app = App()
@@ -91,6 +94,14 @@ def main():
             report(stage="pending-submit-ready", ready_for_task_cancel=True)
             return Done(True)  # closure must own the still-pending submission
         tickets[payload.action] = ctx.plan(plans[payload.action])
+        if payload.action == "active":
+            active_entered.set()
+            assert plans["active"].facts()["host_graph_launches"] == 1
+            report(
+                stage="active-submit-ready",
+                ready_for_task_cancel=True,
+                native=plans["active"].facts(),
+            )
         if payload.action == "raise":
             raise ValueError("intentional handler unwind after GPU submission")
         return Done(True)  # deliberately no poll/wait/close in the handler
@@ -115,13 +126,19 @@ def main():
             return WatchedOutput(store / "tensorfs", slot, transaction, derivation, 1 << 20)
 
         try:
-            cases = ("pending",) if mode == "lifecycle_cancel" else ("normal", "raise", "pending")
+            cases = (
+                ("active",)
+                if mode == "lifecycle_running_cancel"
+                else ("pending",)
+                if mode == "lifecycle_cancel"
+                else ("normal", "raise", "pending")
+            )
             for case in cases:
-                if case == "pending":
+                if case in ("pending", "active"):
 
-                    def release():
-                        assert pending_entered.wait(10)
-                        if mode == "lifecycle_cancel":
+                    def release(case=case):
+                        assert (active_entered if case == "active" else pending_entered).wait(10)
+                        if mode in ("lifecycle_cancel", "lifecycle_running_cancel"):
                             for line in sys.stdin:
                                 if line.strip() == "cancel":
                                     break
@@ -164,6 +181,15 @@ def main():
                     assert (
                         progress.done and progress.canceled and progress.completed_steps < 100000
                     ), progress
+                elif case == "active":
+                    control.join(timeout=10)
+                    progress = tickets[case].poll()
+                    assert canceled.is_set() and outcome.terminal == "canceled", outcome
+                    assert (
+                        progress.done
+                        and progress.canceled
+                        and 0 < progress.completed_steps < 10000000
+                    ), progress
                 else:
                     control.join(timeout=10)
                     for worker in workers:
@@ -191,7 +217,7 @@ def main():
                 result={
                     "passed": True,
                     "request_lifecycle": closed,
-                    "actual_task_cancel": mode == "lifecycle_cancel",
+                    "actual_task_cancel": mode in ("lifecycle_cancel", "lifecycle_running_cancel"),
                 }
             )
         finally:
