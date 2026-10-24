@@ -1818,6 +1818,9 @@ impl Inner {
     /// have, else only when a round takes nothing and nothing of its own is about to come back
     /// (a fill: waited for). `why` and `req` name it in the request's record.
     fn make_room(&self, bytes: u64, keep: &[Key], why: &'static str, req: Option<u64>, free_only: bool) -> Result<u64> {
+        if self.torch.get().is_some_and(|torch| torch.capturing()) {
+            return Err(Error::Exhausted(exhausted(bytes, Some("weight preparation during capture"), Stats::default())));
+        }
         let mut record = MakeRoom { step: 0, trigger: why.into(), need: bytes, freed: 0, waited: 0 };
         let out = loop {
             let mut st = self.lock();
@@ -1850,6 +1853,7 @@ impl Inner {
             if let Some(torch) = self.torch.get() {
                 self.unlock(st);
                 let freed = torch.reclaim(bytes - free);
+                let freed = if freed == 0 { torch.give_back()? } else { freed };
                 if freed > 0 {
                     record.freed += freed;
                     continue;
@@ -2685,7 +2689,7 @@ impl Pass {
 impl Inner {
     /// Memory whose release could not be proved: this executor is quarantined, and it leaks
     /// rather than reuse what another may still hold.
-    fn lost_backing(self: &Arc<Self>, why: impl std::fmt::Display) -> Error {
+    pub(crate) fn lost_backing(self: &Arc<Self>, why: impl std::fmt::Display) -> Error {
         self.ownership_lost.store(true, Ordering::Release);
         self._device.retiring(true);
         self.landed.notify_all();

@@ -290,8 +290,7 @@ pub struct Region {
 
 /// A region pinned for use: its bytes stay mapped until this drops. Uses must be on the
 /// allocation streams or additional streams registered with `Memory::record_stream`; an
-/// arbitrary foreign stream is not discovered by the pin. Owners serialize tensor frees with
-/// residency changes.
+/// arbitrary foreign stream is not discovered by the pin.
 pub struct RegionPin {
     sh: Arc<Shared>,
     fresh: bool,
