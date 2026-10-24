@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import json
 import math
 import sys
@@ -13,6 +14,7 @@ from pathlib import Path
 import numpy as np
 import tensorfs
 import torch
+from cozy_runtime import _build_provenance
 from cozy_runtime.internal import accel, residency
 from tensorfs.raw import decode_into
 from tensorfs.raw import parts as stored_parts
@@ -285,6 +287,7 @@ def failed_fill(memory, seed):
         owner.close()
         memory.trim()
         checkpoint.close()
+        assert memory.native.stats()["pinned_bytes"] == 0
         return {
             "after_failure": request.stats(),
             "failed_alias_preserved": True,
@@ -379,6 +382,8 @@ def exercise(seed, mode):
         "mode": mode,
         "torch": torch.__version__,
         "tensorfs": tensorfs.__version__,
+        "runtime_version": importlib.metadata.version("cozy-runtime"),
+        "runtime_commit": _build_provenance.COMMIT,
         "residency_sha256": hashlib.sha256(
             Path(residency.__file__).read_bytes()
         ).hexdigest(),
