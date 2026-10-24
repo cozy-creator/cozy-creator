@@ -1,4 +1,6 @@
 //! Host destinations: positioned reads on a few threads, each copy cut on the request grid.
+//! Windows reads every file through an overlapped handle (`durable::open_parallel`,
+//! `durable::open_direct`): a synchronous one runs one read at a time.
 
 use std::alloc::{self, Layout};
 use std::collections::HashMap;
@@ -8,7 +10,7 @@ use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::Relaxed};
 use std::sync::{Mutex, OnceLock};
 
-use platform::durable;
+use platform::durable::{self, pread as read_at};
 
 use super::{Copy, Dst, Error, ReadOpts, ReadStats, Src};
 use crate::format::layout::ALIGN;
@@ -86,6 +88,7 @@ pub(super) unsafe fn fill(copies: &[Copy], opts: &ReadOpts) -> Result<ReadStats,
         }
     }
     let direct: Vec<OnceLock<Option<File>>> = files.iter().map(|_| OnceLock::new()).collect();
+    let parallel: Vec<OnceLock<Option<File>>> = files.iter().map(|_| OnceLock::new()).collect();
     let (tally, next, failed, error) = (Tally::default(), AtomicUsize::new(0), AtomicBool::new(false), Mutex::new(None));
     let work = || {
         let mut bounce = Bounce::default();
@@ -115,7 +118,8 @@ pub(super) unsafe fn fill(copies: &[Copy], opts: &ReadOpts) -> Result<ReadStats,
                     tally.bounced.fetch_add(n, Relaxed);
                 }),
                 (None, _) => segs.iter().try_for_each(|s| {
-                    read_exact_at(file, dst(s), s.offset)?;
+                    let f = parallel[i].get_or_init(|| durable::open_parallel(file).ok().flatten());
+                    read_exact_at(f.as_ref().unwrap_or(file), dst(s), s.offset)?;
                     tally.cached.fetch_add(s.len as u64, Relaxed);
                     Ok(())
                 }),
@@ -202,16 +206,6 @@ fn read_exact_at(f: &File, mut buf: &mut [u8], mut at: u64) -> io::Result<()> {
         }
     }
     Ok(())
-}
-
-#[cfg(unix)]
-pub(super) fn read_at(f: &File, buf: &mut [u8], at: u64) -> io::Result<usize> {
-    std::os::unix::fs::FileExt::read_at(f, buf, at)
-}
-
-#[cfg(windows)]
-pub(super) fn read_at(f: &File, buf: &mut [u8], at: u64) -> io::Result<usize> {
-    std::os::windows::fs::FileExt::seek_read(f, buf, at)
 }
 
 /// One thread's aligned buffer for O_DIRECT reads its destination cannot take.

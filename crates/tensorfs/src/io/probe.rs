@@ -13,9 +13,9 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
-use platform::durable;
+use platform::durable::{self, pread as read_at};
 
-use super::host::{read_at, Bounce};
+use super::host::Bounce;
 
 /// Bytes a probe reads at most.
 const PROBE: u64 = 1 << 30;
