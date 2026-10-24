@@ -360,7 +360,7 @@ impl Shared {
                     self.mapped.fetch_add(len, AcqRel);
                     if e.is_sticky() { return Err(e); }
                     self.unmap(Va { base: va.base, len }, chunks, false, true);
-                    if !(matches!(e, Error::Exhausted(_)) && self.give_back()) {
+                    if !(matches!(e, Error::Exhausted(_)) && (self.give_back() || self.source.reclaim(va.len))) {
                         return Err(e);
                     }
                 }

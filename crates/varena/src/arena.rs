@@ -921,7 +921,7 @@ impl Torch {
                 Err(e) => {
                     if e.is_sticky() { return Err(e); }
                     sh.unmap(va, chunks, true, false);
-                    if !(matches!(e, Error::Exhausted(_)) && sh.give_back()) {
+                    if !(matches!(e, Error::Exhausted(_)) && (sh.give_back() || sh.source.reclaim(short))) {
                         return Err(e);
                     }
                 }
