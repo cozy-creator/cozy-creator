@@ -103,6 +103,7 @@ impl Status {
             ("waiting_activation", 0) => "waiting for the submits in flight".into(),
             ("waiting_activation", 1) => "waiting for a run in flight to end".into(),
             ("waiting_activation", n) => format!("waiting for {n} runs in flight to end"),
+            ("queued", _) => "waiting for the machine's start or the update in progress to end".into(),
             _ => String::new(),
         }
     }
@@ -121,7 +122,7 @@ impl Status {
 /// What an update installs of one component: a release `version` the machine fetches (PyPI's
 /// wheel; for `cozy`, its GitHub release), a dev build the caller staged (`file`, `sha256`), or a
 /// `file` at an https `url` the machine fetches, held to `sha256`.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Choice {
     #[serde(default)]
     pub file: String,
@@ -146,7 +147,7 @@ impl std::fmt::Display for Coded {
 }
 impl std::error::Error for Coded {}
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Request {
     pub operation: String,
     #[serde(default)]
@@ -168,6 +169,13 @@ pub struct Request {
     /// Install the build toolchain (`super::toolchain`) instead of a software pair.
     #[serde(default)]
     pub toolchain: bool,
+}
+
+/// An update waiting for the one in progress, with its status.
+#[derive(Clone, Serialize, Deserialize)]
+struct Queued {
+    request: Request,
+    status: Status,
 }
 
 /// The activation in flight: what a rollback restores.
@@ -411,6 +419,9 @@ pub struct Updates {
     /// The Python executors run (`PackageSdk::python`): the SDK pair resolves for it.
     python: String,
     status: Mutex<Option<Status>>,
+    /// Updates submitted while another runs, in order (`queued.json`): each starts when the one
+    /// before it ends, after the restart that one ends with too. None is ever refused for it.
+    queued: Mutex<Vec<Queued>>,
     /// The runs in flight, by number: what activating would end.
     running: Box<dyn Fn() -> Vec<String> + Send + Sync>,
     lifecycle: Option<Arc<super::lifecycle::Lifecycle>>,
@@ -443,11 +454,13 @@ impl Updates {
             stopped.enter("failed");
             write_json(&paths.update("status.json"), stopped)?;
         }
+        let queued = fs::read(paths.update("queued.json")).ok().and_then(|raw| serde_json::from_slice(&raw).ok()).unwrap_or_default();
         Ok(Arc::new(Self {
             paths,
             uv,
             python,
             status: Mutex::new(status),
+            queued: Mutex::new(queued),
             running,
             lifecycle,
             machine,
@@ -496,8 +509,8 @@ impl Updates {
                 binary: None,
                 toolchain: true,
             };
-            // One already answered (installed, failed or another update running) asks nothing.
-            let _ = self.request(fetch, |code| std::process::exit(code));
+            // One already answered (installed, failed or queued) asks nothing.
+            let _ = self.request(fetch, true, |code| std::process::exit(code));
         }
         verdicts
     }
@@ -579,17 +592,26 @@ impl Updates {
     }
 
     pub fn update(&self, operation: &str) -> Option<Status> {
-        self.status
-            .lock()
-            .unwrap()
-            .clone()
-            .filter(|s| s.operation == operation)
+        let current = self.status.lock().unwrap().clone().filter(|s| s.operation == operation);
+        current.or_else(|| self.queued.lock().unwrap().iter().find(|q| q.status.operation == operation).map(|q| q.status.clone()))
     }
 
     /// Cancels update `operation` before it activates: it ends `canceled`, its candidate is
     /// removed and admission reopens. Once activating it ends on its own (ResourceBusy).
     pub fn cancel(&self, operation: &str) -> io::Result<Status> {
         let mut current = self.status.lock().unwrap();
+        // A queued one ends now; the next to start skips it.
+        let mut queued = self.queued.lock().unwrap();
+        if let Some(waiting) = queued.iter_mut().find(|q| q.status.operation == operation) {
+            if !waiting.status.terminal() {
+                waiting.status.error = "canceled by its owner".into();
+                waiting.status.enter("canceled");
+            }
+            let canceled = waiting.status.clone();
+            write_json(&self.paths.update("queued.json"), &*queued)?;
+            return Ok(canceled);
+        }
+        drop(queued);
         let status = current
             .as_mut()
             .filter(|s| s.operation == operation)
@@ -619,12 +641,6 @@ impl Updates {
 
     /// PUT /v1/machine/runtime/wheels/{file}: kept as staged/<sha256>/<file>.
     pub fn stage(&self, file: &str, body: &mut dyn Read) -> Result<(String, u64), (u16, String)> {
-        if self.busy() {
-            return Err((
-                409,
-                "the machine is running a Runtime update; stage wheels after it finishes".into(),
-            ));
-        }
         if wheel_name(file).is_none() && file != BINARY {
             return Err((400, format!("stage a cozy_runtime or tensorfs wheel, or the {BINARY} binary")));
         }
@@ -659,18 +675,13 @@ impl Updates {
         Ok((sha, length))
     }
 
-    fn busy(&self) -> bool {
-        self.status
-            .lock()
-            .unwrap()
-            .as_ref()
-            .is_some_and(|s| !s.terminal())
-    }
-
-    /// POST /v1/machine/runtime/update: accepts one operation and runs it in the background.
+    /// POST /v1/machine/runtime/update: accepts one operation and runs it in the background, or
+    /// queues it behind an update in progress, or (`ready` false: the service has not proved its
+    /// start yet) until it has (`next`).
     pub fn request(
         self: &Arc<Self>,
         request: Request,
+        ready: bool,
         exit: fn(i32),
     ) -> Result<Status, (u16, String)> {
         let valid = !request.operation.is_empty()
@@ -686,20 +697,70 @@ impl Updates {
             return Err((400, "an update requires operation and a Runtime, TensorFS or cozy binary, or the toolchain alone".into()));
         }
         let mut current = self.status.lock().unwrap();
-        if let Some(status) = current.as_ref() {
-            if status.operation == request.operation {
-                return Ok(status.clone());
+        if let Some(status) = current.as_ref().filter(|s| s.operation == request.operation) {
+            return Ok(status.clone());
+        }
+        let mut queued = self.queued.lock().unwrap();
+        if let Some(waiting) = queued.iter().find(|q| q.status.operation == request.operation) {
+            return Ok(waiting.status.clone());
+        }
+        // Another update runs, or waits to, or the service is starting: this one waits behind them.
+        if !ready || current.as_ref().is_some_and(|s| !s.terminal()) || !queued.is_empty() {
+            let mut status = Status {
+                operation: request.operation.clone(),
+                toolchain: request.toolchain,
+                pinned: request.pin.unwrap_or(false),
+                ..Status::default()
+            };
+            status.enter("queued");
+            queued.push(Queued { request, status: status.clone() });
+            write_json(&self.paths.update("queued.json"), &*queued).map_err(server)?;
+            return Ok(status);
+        }
+        drop(queued);
+        self.start(&mut current, request, Vec::new(), exit)
+    }
+
+    /// The next queued update starts once the one before it has ended: from that update's own
+    /// end, or (when it ended in a restart) from the restarted service once it proves readiness.
+    pub fn next(self: &Arc<Self>, exit: fn(i32)) {
+        let mut current = self.status.lock().unwrap();
+        if current.as_ref().is_some_and(|s| !s.terminal()) {
+            return;
+        }
+        loop {
+            let mut queued = self.queued.lock().unwrap();
+            if queued.is_empty() {
+                return;
             }
-            if !status.terminal() {
-                return Err((
-                    409,
-                    format!(
-                        "the machine is running another Runtime update: {}",
-                        status.operation
-                    ),
-                ));
+            let Queued { request, status } = queued.remove(0);
+            if let Err(error) = write_json(&self.paths.update("queued.json"), &*queued) {
+                tracing::warn!("queued updates: {error}");
+            }
+            drop(queued);
+            if status.terminal() {
+                continue;
+            }
+            let operation = request.operation.clone();
+            match self.start(&mut current, request, status.history.clone(), exit) {
+                Ok(_) => return,
+                Err((_, why)) => {
+                    tracing::warn!("queued update {operation} did not start: {why}");
+                    let mut failed = status;
+                    failed.error = why;
+                    failed.enter("failed");
+                    if let Err(error) = write_json(&self.paths.update("status.json"), &failed) {
+                        tracing::warn!("update status: {error}");
+                    }
+                    *current = Some(failed);
+                }
             }
         }
+    }
+
+    /// Starts `request` with no other update in progress (`current` held), its log going on from
+    /// `history` (its steps while it was queued).
+    fn start(self: &Arc<Self>, current: &mut Option<Status>, request: Request, history: Vec<Step>, exit: fn(i32)) -> Result<Status, (u16, String)> {
         // A committed terminal outcome may still have cleanup to do. Finish that before a
         // different operation overwrites its status and loses the pending decision's meaning.
         recover_activation(&self.paths).map_err(server)?;
@@ -712,13 +773,13 @@ impl Updates {
             toolchain: request.toolchain,
             from: this_binary(identified(&self.paths.sdk()).map_err(server)?),
             pinned: request.pin.unwrap_or(false),
+            history,
             ..Status::default()
         };
         status.enter("waiting");
         write_json(&self.paths.update("status.json"), &status).map_err(server)?;
         *current = Some(status.clone());
         *self.stop.lock().unwrap() = Stop::default();
-        drop(current);
         let updates = self.clone();
         std::thread::Builder::new()
             .name("runtime-update".into())
@@ -740,6 +801,8 @@ impl Updates {
                         _ => {}
                     }
                 }
+                // Ended without a restart (one that activates never returns here).
+                updates.next(exit);
             })
             .map_err(server)?;
         Ok(status)
