@@ -207,10 +207,10 @@ bash -c ". '$OUT/completion.bash'; complete -p cozy" > /dev/null || check "compl
   || check "completion powershell: cozy mach does not complete to machine"
 echo "completion: ${shells[*]}"
 
-# Last: this computer's cozy (the candidate) updates itself to the newest release, as a person's `cozy update`
+# run.sh's last step before removal (after the steps that stop Calcifer): this computer's cozy (the candidate) updates itself to the newest release, as a person's `cozy update`
 # does: the binary is that release's and Calcifer restarted on it. (An older release's own update is its code,
 # frozen: run 40084450876 found 0.11.14's update waiting on Calcifer for good while an authorized machine served.)
-step update
+update_to_newest() {
 cp "$COZY" "$OUT/cozy-under-test"
 newest=$(curl -fsSL ${GH_TOKEN:+-H "Authorization: Bearer $GH_TOKEN"} "https://api.github.com/repos/cozy-creator/cozy-creator/releases?per_page=30" \
   | jq -r '[.[] | select(.prerelease | not) | .tag_name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))][0] // empty') || true
@@ -222,3 +222,4 @@ if [ -z "$newest" ]; then check "update: no release to update to"; else
   J '.calcifer == "restarted"' "$OUT/update.json" || check "update: Calcifer was not restarted ($(jq -c .calcifer "$OUT/update.json"))"
   cozy --json status | J --arg v "${newest#v}" '.calcifer.version == $v' || check "update: Calcifer does not run ${newest#v}"
 fi
+}

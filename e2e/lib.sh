@@ -113,6 +113,7 @@ calcifer_stuck() {
   [ -n "$pid" ] || { check "no Calcifer pid to stop"; return 1; }
   kill -STOP "$pid" || { check "SIGSTOP $pid failed"; return 1; }
   cozy --json doctor > "$OUT/doctor-stuck.json" || check "cozy doctor did not fix a stuck Calcifer"
+  [ "$RUNNER_OS" != Linux ] || journalctl --user -u cozy-calcifer.service -n 120 --no-pager > "$OUT/calcifer-journal.txt" 2>&1 || true
   grep -q '"fixed": *"restarted' "$OUT/doctor-stuck.json" || check "cozy doctor did not restart the stuck Calcifer"
   local stat; stat=$(ps -o stat= -p "$pid" 2> /dev/null || true)
   # Gone, or a zombie its service manager has yet to reap.

@@ -60,6 +60,9 @@ if cell second "$(birefnet)" --asset "image=$dog"; then white_background "$(outp
 step "Calcifer reaps the machine it started"; machine_reaped
 step "a restarted Calcifer adopts the machine"; calcifer_restart_adopts
 
+# Every other command and flag (e2e/coverage.toml), while Calcifer is healthy.
+. "$(dirname "$0")/commands.sh"
+
 step "Calcifer stopped under the machine it started"
 if calcifer_orphaned; then
   (cd "$(dirname "$0")" && cell after-orphan ./weightless/reverse "text=orphan$RANDOM") || check "no run went after cozy doctor recovered Calcifer"
@@ -70,7 +73,7 @@ if calcifer_stuck; then
   (cd "$(dirname "$0")" && cell after-stuck ./weightless/reverse "text=after$RANDOM") || check "no run went after cozy doctor restarted Calcifer"
 fi
 
-. "$(dirname "$0")/commands.sh"
+step update; update_to_newest
 
 step "remove cozy"; remove_cozy
 step coverage; coverage "$OUT/cozy-under-test" pr
