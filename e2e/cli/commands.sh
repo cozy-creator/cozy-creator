@@ -217,7 +217,18 @@ update_to_newest() {
 cp "$COZY" "$OUT/cozy-under-test"
 newest=$(curl -fsSL ${GH_TOKEN:+-H "Authorization: Bearer $GH_TOKEN"} "https://api.github.com/repos/cozy-creator/cozy-creator/releases?per_page=30" \
   | jq -r '[.[] | select(.prerelease | not) | .tag_name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))][0] // empty') || true
-if [ -z "$newest" ]; then check "update: no release to update to"; else
+# The signing workflow's rename was a hard cut (Paul 10-24): this cozy refuses a release signed by release.yml, so until
+# the first release signed by cozy-publish.yaml the step proves that refusal instead.
+signer=
+[ -z "$newest" ] || signer=$(curl -fsSL "https://github.com/cozy-creator/cozy-creator/releases/download/$newest/cozy-x86_64-unknown-linux-gnu.tar.gz.sigstore.jsonl" \
+  | head -1 | jq -r '.verificationMaterial.certificate.rawBytes // empty' | base64 -d 2>/dev/null | grep -aoE 'workflows/[A-Za-z0-9_.-]+@' | head -1) || true
+if [ -z "$newest" ]; then check "update: no release to update to"
+elif [ "$signer" = workflows/release.yml@ ]; then
+  if cozy --json update "${newest#v}" > "$OUT/update.json"; then check "update ${newest#v}: a release signed by release.yml was accepted (the hard cut refuses it)"
+  else grep -q 'signed by' "$OUT/update.json" || check "update ${newest#v}: refused, but not for its signer: $(head -c 300 "$OUT/update.json")"; fi
+  cmp -s "$COZY" "$OUT/cozy-under-test" || check "update ${newest#v}: the refused update replaced the binary"
+  echo "update ${newest#v}: refused, signed by release.yml (the hard cut)"
+else
   t0=$SECONDS
   cozy --json update "${newest#v}" > "$OUT/update.json" || check "update ${newest#v} failed: $(head -c 300 "$OUT/update.json")"
   echo "update ${newest#v}: $((SECONDS - t0)) s"
