@@ -40,8 +40,8 @@ fn lenient<'de, D: serde::Deserializer<'de>, T: Default + serde::de::Deserialize
 }
 
 /// Its executor's memory (TensorD's `call_memory`): torch's high-water marks and, under `stats`,
-/// the invoke reply's own `memory`: per GPU, varena's record of the request (`varena::memory::Stats`,
-/// one definition from the Runtime to here) beside its fill ceilings and torch's peak.
+/// the invoke reply's own `memory`: per GPU, Runtime's record beside its fill ceilings and
+/// torch's peak. This CLI projection reads the fields it displays, without loading an allocator.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct Memory {
@@ -68,7 +68,7 @@ fn each<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(d: D) 
 struct GpuMemory {
     gpu: u32,
     ceiling: Option<Ceiling>,
-    stats: varena::memory::Stats,
+    stats: ResidencyStats,
     torch_peak: u64,
 }
 
@@ -79,6 +79,48 @@ struct Ceiling {
     h2d_gbps: Option<f64>,
     disk_gbps: f64,
 }
+
+/// A display projection of Runtime's memory record. Optional values stay unknown when the
+/// allocator cannot attribute them to one request (stock Torch figures are process-scoped).
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct ResidencyStats {
+    allocator_scope: String,
+    moved: Moved,
+    trace: Vec<Reference>,
+    steps: Vec<MemoryStep>,
+    stall_ns: u64,
+    evicted: [u64; 7],
+    peak: Option<u64>,
+    compute: Option<u64>,
+    leftover: Option<u64>,
+    outlived: Option<Vec<Outlived>>,
+    make_room: Vec<MakeRoom>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Fills { bytes: u64, ns: u64 }
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Moved { kept: Fills, leased: Fills, store: Fills, derived: Fills }
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Reference { step: u32, bytes: u64, origin: String, speculative: bool }
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct MemoryStep { capacity: u64, evicted: [u64; 7] }
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Outlived { bytes: u64 }
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct MakeRoom { step: u32, trigger: String, need: u64, freed: u64, waited: u32 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
@@ -270,7 +312,7 @@ pub async fn exec(ctx: &Context, id: &str, once: bool) -> Result<ExitCode, Error
     );
     gpus.print(ctx, "attention kernels");
     let memory = grid(
-        &["GPU", "KEPT", "LEASED", "STORE", "DERIVED", "STALL", "PEAK", "TORCH", "COMPUTE", "EVICTED", "LEFTOVER"],
+        &["GPU", "SCOPE", "KEPT", "LEASED", "STORE", "DERIVED", "STALL", "PEAK", "TORCH", "COMPUTE", "EVICTED", "LEFTOVER"],
         &measured,
         memory_rows,
     );
@@ -593,26 +635,27 @@ fn memory_rows(measured: &Measured) -> Vec<Vec<String>> {
         let s = &g.stats;
         let h2d = g.ceiling.as_ref().and_then(|c| c.h2d_gbps);
         let disk = g.ceiling.as_ref().map(|c| c.disk_gbps);
-        let leftover = s.leftover + s.outlived.iter().map(|o| o.bytes).sum::<u64>();
+        let leftover = s.leftover.map(|n| n.saturating_add(s.outlived.iter().flatten().map(|o| o.bytes).sum::<u64>()));
         vec![
             g.gpu.to_string(),
+            if s.allocator_scope.is_empty() { "request".into() } else { s.allocator_scope.clone() },
             moved(&s.moved.kept, None),
             moved(&s.moved.leased, h2d),
             moved(&s.moved.store, disk),
             moved(&s.moved.derived, disk),
             duration(s.stall_ns as f64 / 1e6),
-            output::bytes(s.peak),
+            s.peak.map_or_else(|| "-".into(), output::bytes),
             output::bytes(g.torch_peak),
-            output::bytes(s.compute),
+            s.compute.map_or_else(|| "-".into(), output::bytes),
             evicted(&s.evicted),
-            output::bytes(leftover),
+            leftover.map_or_else(|| "-".into(), output::bytes),
         ]
     };
     measured.m.memory.stats.varena.iter().map(row).collect()
 }
 
 /// Bytes and, when they took time, their rate and its share of the ceiling: `3.2 GiB @ 11.4 GB/s (48%)`.
-fn moved(fills: &varena::memory::Fills, ceiling: Option<f64>) -> String {
+fn moved(fills: &Fills, ceiling: Option<f64>) -> String {
     if fills.bytes == 0 {
         return "-".into();
     }
@@ -647,11 +690,12 @@ fn step_rows(measured: &Measured) -> Vec<Vec<String>> {
         let mut by_step: BTreeMap<u32, [u64; 5]> = BTreeMap::new();
         for r in &g.stats.trace {
             let cell = by_step.entry(r.step).or_default();
-            let at = match r.origin {
-                varena::memory::Origin::Hit => 0,
-                varena::memory::Origin::Kept => 1,
-                varena::memory::Origin::Store => 2,
-                varena::memory::Origin::Derived => 3,
+            let at = match r.origin.as_str() {
+                "hit" => 0,
+                "kept" => 1,
+                "store" => 2,
+                "derived" => 3,
+                _ => continue,
             };
             cell[at] += r.bytes;
             if r.speculative {
