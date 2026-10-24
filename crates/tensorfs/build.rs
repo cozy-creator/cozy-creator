@@ -5,7 +5,9 @@ fn main() {
     println!("cargo:rerun-if-env-changed=TENSORFS_REQUIRE_AOT");
     let catalog =
         PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("kernels/aot/catalog.rs");
-    println!("cargo:rerun-if-changed=kernels/aot");
+    // A missing path reruns this script, and recompiles TensorFS, on every build: until the catalog exists, the
+    // crate's own directory stands for it.
+    println!("cargo:rerun-if-changed={}", if catalog.exists() { "kernels/aot" } else { "." });
     println!("cargo:rerun-if-changed=../tensorfs-py/kernels");
     if env::var("TENSORFS_REQUIRE_AOT").is_ok_and(|v| v == "1") {
         assert!(catalog.exists(), "CUDA wheels require prebuilt TensorFS kernels; run crates/tensorfs-py/kernels/build.py first");

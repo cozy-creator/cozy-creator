@@ -10,7 +10,9 @@ Real runs of `cozy` on GitHub's runners, chosen by what a change touches (CI v2:
 - `imports/run.sh`: every published first-party package release installs (`cozy package install`) and imports on the candidates;
   a Runtime that moves what a published package imports fails here.
 - `mps/run.sh`: BiRefNet and SDXL on a Mac's GPU (explicit `select` only, until it can pass).
-- `.github/workflows/e2e.yaml` runs the selected suites on PRs here and for cozy-runtime, packages and the release gate.
+- `.github/workflows/e2e.yaml` runs the selected suites on PRs here and for cozy-runtime, packages and the release gate. On Linux
+  each candidate is one `candidate` job (`candidates/build.sh`), reused from an earlier cozy-creator run that built the same
+  sources, and `cli` and `imports` run in shards (`--shard`) on their own runners; `e2e` checks coverage over every shard.
 
 Run one suite on a fresh computer: `e2e/cli/run.sh --out /tmp/e2e [--cozy-bin ./cozy] [--runtime-wheel …] [--tensorfs-wheel …]`.
 Against chosen versions: `gh workflow run e2e.yaml -f repo=cozy-runtime -f ref=<sha> -f stack_ref=<cozy-creator sha> -f select="cli imports build:runtime"`.

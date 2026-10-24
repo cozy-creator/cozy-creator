@@ -1,9 +1,10 @@
-# e2e/cli/commands.sh: the rest of cozy's PR-tier commands and flags (e2e/coverage.toml), sourced by cli/run.sh
-# after its runs, on the same computer: signed out, CPU, the local machine up. Each call's answer is checked,
+# e2e/cli/commands.sh: the rest of cozy's PR-tier commands and flags (e2e/coverage.toml), parts cli/run.sh calls
+# after its runs or in its own shards: signed out, CPU, the local machine up. Each call's answer is checked,
 # not its exit code alone. Signed-in and renting commands are the release suite's (e2e/release/run.sh).
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 J() { jq -e "$@" > /dev/null; }  # J <filter> <file>: the answer holds what the filter asks
 
+basics() {
 step status
 cozy --json status > "$OUT/status.json" || check "cozy status failed"
 J '.calcifer.running == true and (.calcifer.version | length > 0)' "$OUT/status.json" || check "status: Calcifer is not running"
@@ -66,7 +67,9 @@ cozy --json model list --on local > "$OUT/models.json" || check "model list --on
 grep -q e2e-tiny "$OUT/models.json" || check "model list: the local file's local/e2e-tiny is not listed"
 J 'any(.models[]; .model == "_/birefnet" and .precision == "fp16")' "$OUT/models.json" || check "model list: no fp16 _/birefnet after --lane 16"
 grep -q e2e-birefnet "$OUT/models.json" || check "model list: the local/e2e-birefnet alias is not listed"
+}
 
+yaml_requests() {
 step "a YAML request, then inline inputs over it"
 text=yaml-$RANDOM back=''
 for ((i = ${#text} - 1; i >= 0; i--)); do back+=${text:i:1}; done
@@ -83,7 +86,10 @@ if cell birefnet-yaml "$(birefnet)" --input "$OUT/birefnet.yaml" --lane 16; then
   white_background "$(output birefnet-yaml webp)" "$dog" || check "birefnet-yaml: not a background removal"
   J '[.. | .precision? // empty] | any(. == "fp16" or . == "bf16")' "$OUT/birefnet-yaml.json" || check "birefnet-yaml --lane 16: not a 16-bit lane"
 fi
+}
 
+# After a BiRefNet run: the warm levels find it installed.
+run_flags() {
 step "run flags"
 before=$(cozy --json run list --limit 0 | jq '.runs | length') || true
 (cd "$here" && cozy --json run ./weightless/reverse --describe) > "$OUT/describe.json" || check "run --describe failed"
@@ -102,7 +108,9 @@ for level in installed downloaded imported host; do
 done
 cozy --json run "$(birefnet)" --warm off --on local > "$OUT/warm-off.ndjson" || check "run --warm off failed"
 cozy --json machine show local | J '.status.warm | all(.entrypoint != "remove_background")' || check "--warm off: birefnet is still in the warm set"
+}
 
+run_follow() {
 step "a run followed, a snapshot, a cancel"
 (cd "$here" && cozy --json run ./weightless/wait seconds:=120 --on local > "$OUT/wait.ndjson" 2>&1) &
 waiting=$!
@@ -126,12 +134,20 @@ fi
 step "run list filters"
 cozy --json run list --state canceled > "$OUT/canceled.json" && J --argjson n "${n:-0}" '(.runs | length > 0) and all(.runs[]; .status == "canceled") and any(.runs[]; .number == $n)' "$OUT/canceled.json" \
   || check "run list --state canceled: wrong runs"
+}
+
+# After `basics`: its model downloads are runs of birefnet.
+run_filters() {
+step "run list filters"
 cozy --json run list --package birefnet > "$OUT/by-package.json" && J '(.runs | length > 0) and all(.runs[]; .target | test("birefnet"))' "$OUT/by-package.json" \
   || check "run list --package birefnet: other packages listed"
 cozy --json run list --on local > "$OUT/by-machine.json" && J '(.runs | length > 0) and all(.runs[]; .machine == "local")' "$OUT/by-machine.json" \
   || check "run list --on local: other machines listed"
 cozy --json run list --limit 1 > "$OUT/limit.json" && J '(.runs | length) == 1' "$OUT/limit.json" || check "run list --limit 1: not one run"
+}
 
+# After the first BiRefNet run (run.sh's first_run).
+run_play() {
 step "run play"
 # The link opens the browser player (GitHub Pages) with this machine, the output and a token in its fragment; the
 # token's expiry is --expires from now.
@@ -151,7 +167,9 @@ if [ "$first" = none ] || [ -z "$name" ]; then check "run play: no BiRefNet outp
     [ -n "$e" ] && [ $(( e - want )) -le 10 ] && [ $(( want - e )) -le 10 ] || check "run play --expires $expires: the token expires at ${e:-?}, not about $want"
   done
 fi
+}
 
+machines() {
 step machines
 # The candidate CLI's own spelling of an update (candidates() spoke the installer's): the same wheels again,
 # and the machine reports their versions.
@@ -192,7 +210,9 @@ cozy --json machine end e2e-self > "$OUT/end-added.json" || check "machine end e
 
 step "doctor --on"
 cozy --json doctor --on local > "$OUT/doctor-local.json" || check "cozy doctor --on local found a problem"
+}
 
+completions() {
 step completion
 shells=(bash)
 [ "$RUNNER_OS" != Linux ] || { sudo apt-get install -y -qq zsh fish > /dev/null 2>&1 || true; }
@@ -209,6 +229,7 @@ bash -c ". '$OUT/completion.bash'; complete -p cozy" > /dev/null || check "compl
 [ ! -s "$OUT/completion.powershell" ] || PATH="$(dirname "$COZY"):$PATH" pwsh -NoProfile -c ". '$OUT/completion.ps1'; (TabExpansion2 'cozy mach' 9).CompletionMatches.CompletionText" | grep -q machine \
   || check "completion powershell: cozy mach does not complete to machine"
 echo "completion: ${shells[*]}"
+}
 
 # run.sh's last step before removal (after the steps that stop Calcifer): this computer's cozy (the candidate) updates itself to the newest release, as a person's `cozy update`
 # does: the binary is that release's and Calcifer restarted on it. (An older release's own update is its code,
