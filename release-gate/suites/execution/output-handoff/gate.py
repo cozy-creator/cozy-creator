@@ -85,7 +85,10 @@ class Run:
                 "output_finished",
             }:
                 key = mark["phase"] + ("." + mark["state"] if "state" in mark else "")
-                self.phases[key] = {**mark, "at_ns": int(row["at_ms"]) * 1_000_000}
+                self.phases[key] = {
+                    **mark,
+                    "at_ns": int(mark.get("at_ns", int(row["at_ms"]) * 1_000_000)),
+                }
 
     def terminal(self):
         return self.record is not None and self.record.get("status") in {
