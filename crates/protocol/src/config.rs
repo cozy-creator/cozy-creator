@@ -47,6 +47,10 @@ pub const ENV: [(&str, &str); 18] = [
     ("CUDA_VISIBLE_DEVICES", "machine.visible_devices"),
 ];
 
+/// The variables whose empty value is a value: `CUDA_VISIBLE_DEVICES=` is CUDA's "no GPUs". Every
+/// other one empty is unset.
+const EMPTY_IS_A_VALUE: [&str; 1] = ["CUDA_VISIBLE_DEVICES"];
+
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -334,7 +338,8 @@ pub fn load_from(
     };
     // As spelled: a value is a string until its setting's type reads it (`"0"` stays a device).
     for (var, key) in ENV {
-        if let Some(value) = environment.get(var).filter(|v| !v.is_empty()) {
+        let set = |v: &&String| !v.is_empty() || EMPTY_IS_A_VALUE.contains(&var);
+        if let Some(value) = environment.get(var).filter(set) {
             let (tables, name) = key.rsplit_once('.').map_or((None, key), |(t, n)| (Some(t), n));
             let mut at = &mut table;
             for part in tables.into_iter().flat_map(|t| t.split('.')) {
