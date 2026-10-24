@@ -89,7 +89,7 @@ impl Client {
         &self, reference: &Ref, filename: &str,
         local_dir: Option<&Path>, local_files_only: bool,
     ) -> Result<PathBuf>;
-    // Commits the folder on top of the tag reference.revision (default "main", private when new):
+    // Commits the folder on top of the tag reference.revision (default "master", private when new):
     // the tag's tree minus paths matching delete_patterns (fnmatch), plus the folder's files.
     pub async fn upload_folder(&self, reference: &Ref, folder: &Path, delete_patterns: &[&str],
         progress: Option<&Progress<'_>>) -> Result<ObjectRef>;

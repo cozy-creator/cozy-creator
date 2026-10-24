@@ -113,7 +113,7 @@ pub(crate) struct Upload {
     /// run:N[#output], a run's weights output, uploaded from the machine that holds it.
     #[arg(add = clap_complete::ArgValueCompleter::new(crate::completion::local))]
     source: String,
-    /// Where it goes: org/name[@tag], the Hub repository and the private tag the upload moves (main).
+    /// Where it goes: org/name[@tag], the Hub repository and the private tag the upload moves (master).
     destination: String,
     /// A reviewed TensorFS profile to convert with; repeat to compose one model.
     #[arg(long = "source-profile", value_name = "PROFILE")]
@@ -125,9 +125,9 @@ pub(crate) struct Upload {
 #[derive(clap::Args, Debug)]
 #[command(group(ArgGroup::new("lane").required(true).args(["format", "recipe"])))]
 pub(crate) struct Quantize {
-    /// org/name[@release-or-tag] (main after an upload; none: its default) or org/name#sha256:….
+    /// org/name[@release-or-tag] (master after an upload; none: its default) or org/name#sha256:….
     model: String,
-    /// Where it goes: org/name[@tag], the tag whose tree takes the variant (main); default: the
+    /// Where it goes: org/name[@tag], the tag whose tree takes the variant (master); default: the
     /// model's own.
     #[arg(value_name = "DESTINATION")]
     destination: Option<String>,

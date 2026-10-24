@@ -39,8 +39,6 @@ use crate::precision::{Constraints, Selection};
 use crate::sha256::{digest, hex, hex_digest};
 use crate::store::Store;
 
-/// The tag an upload moves when none is named.
-pub const MAIN: &str = "main";
 /// The most bytes a repo document may have.
 const REPO_BYTES: usize = 16 << 20;
 /// Objects an upload sends at once.

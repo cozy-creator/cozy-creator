@@ -12,7 +12,7 @@ use protocol::calcifer::{Run, Status};
 use protocol::config::Hub;
 use protocol::error::{Error, Kind};
 use tensorfs::Endpoint;
-use tensorfs::format::{Header, ObjectRef, Tree};
+use tensorfs::format::{Header, ObjectRef, Tree, MASTER};
 use tensorfs::precision::Profile;
 
 use super::refs::{self, ModelRef, Repo};
@@ -76,7 +76,7 @@ async fn variants(endpoint: &Endpoint, commit: &ObjectRef) -> tensorfs::Result<V
 }
 
 /// The checkpoint to quantize, by TensorFS's one rule, the one a run's `model.<slot>=org/name@x`
-/// takes on its machine: `@x` a release or any tag its owner reads (`main` after an upload), none
+/// takes on its machine: `@x` a release or any tag its owner reads (`master` after an upload), none
 /// the repo's default, `#sha256:…` a commit or a variant header. Its variants' headers say what
 /// it holds.
 async fn checkpoint(ctx: &Context, hub: &Hub, model: &ModelRef, lane: &str) -> Result<Source, Error> {
@@ -91,7 +91,7 @@ async fn checkpoint(ctx: &Context, hub: &Hub, model: &ModelRef, lane: &str) -> R
         .ok_or_else(|| absent(format!("{repo} has no commits")))?;
     let (commit, tag) = match revision {
         None => doc.default_tag().map(|t| (t.commit.clone(), Some(t)))
-            .ok_or_else(|| absent(format!("{repo} has no release and no main")))?,
+            .ok_or_else(|| absent(format!("{repo} has no release and no {MASTER}")))?,
         Some(revision) => match endpoint.commit(&name, revision).await {
             Ok((commit, through)) => (commit, through.and_then(|t| doc.tag(&t))),
             Err(f) if f.kind == tensorfs::Kind::NotFound => return Err(absent(format!("{repo} has no release or tag {revision}"))),
@@ -244,10 +244,10 @@ async fn write(
             "{callee} has no {what} recipe for this model ({})", source.components.join(", ")))
             .remedy(declared(interface)));
     }
-    // The variant goes onto the tag's tree (main unless named): publishing the tag releases all.
+    // The variant goes onto the tag's tree (master unless named): publishing the tag releases all.
     // Local code's lane records its package as `local/<name>` and its release as the source's
     // manifest digest: an unpublished recipe, exactly.
-    let destination = destination.map_or_else(|| format!("{}@main", source.repo), str::to_owned);
+    let destination = destination.map_or_else(|| format!("{}@{MASTER}", source.repo), str::to_owned);
     let mut terms = vec![source.spelled.clone(), destination.clone(), format!("lane={lane}"),
         format!("package={}", callee.package()), format!("release={}", callee.release())];
     terms.extend(args.recipe.iter().map(|name| format!("recipe={name}")));

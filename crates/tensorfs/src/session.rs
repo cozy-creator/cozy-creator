@@ -300,7 +300,7 @@ impl Client {
         source.file(reference, filename, local_dir).await
     }
 
-    /// Commits the folder's files on top of tag `reference.revision` (none: [`fetch::MAIN`]) of
+    /// Commits the folder's files on top of tag `reference.revision` (none: `master`) of
     /// the repository, as Hugging Face's `upload_folder`: the tag's tree keeps its other files,
     /// loses the paths a `delete_patterns` glob matches, and takes the folder's files, added or
     /// replaced. A new tag is private; an existing one keeps its flags. The folder may be thin
@@ -313,7 +313,7 @@ impl Client {
         delete_patterns: &[&str],
         progress: Option<&Progress<'_>>,
     ) -> Result<ObjectRef> {
-        let tag = reference.revision.as_deref().unwrap_or(crate::fetch::MAIN);
+        let tag = reference.revision.as_deref().unwrap_or(crate::format::MASTER);
         if !crate::format::tag_name(tag) {
             return fail(Kind::Invalid, format!("{tag:?} is not a tag name"));
         }

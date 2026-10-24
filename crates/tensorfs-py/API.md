@@ -616,7 +616,7 @@ commit = tensorfs.upload_folder(repo_id="me/model", folder_path="./portable", to
 `download_file` returns one file path and accepts revision, location and authentication
 options, without component or variant selection.
 
-`upload_folder` commits the folder on top of the tag `revision` (default `main`, private when new),
+`upload_folder` commits the folder on top of the tag `revision` (default `master`, private when new),
 as Hugging Face's does: the tag's current files stay, the folder's files are added or replaced, and
 only paths matching `delete_patterns` (fnmatch globs such as `"*.int8.cozytensors"`) are removed.
 It returns the commit id. It never publishes: making a tag public is `cozy model publish`.

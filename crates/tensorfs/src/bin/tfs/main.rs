@@ -232,7 +232,7 @@ async fn run(args: &Args) -> Done {
         ["upload", folder, reference] => {
             let reference: Ref = reference.parse()?;
             let commit = client.upload_folder(&reference, Path::new(folder), &args.all("delete"), None).await?;
-            let tag = reference.revision.as_deref().unwrap_or(fetch::MAIN);
+            let tag = reference.revision.as_deref().unwrap_or(tensorfs::format::MASTER);
             let human = format!("uploaded sha256:{}, {}@{tag}", commit.sha256, reference.repo_id);
             Ok(Some((json!({"commit": object(&commit), "tag": tag}), human)))
         }
@@ -304,11 +304,11 @@ async fn run(args: &Args) -> Done {
     }
 }
 
-/// Commits `tree`'s files on top of tag `@tag` (none: `main`) of the local repo
+/// Commits `tree`'s files on top of tag `@tag` (none: `master`) of the local repo
 /// `local/<name>`, through the store's own endpoint: the one commit path. The commit.
 async fn name_locally(root: &Path, store: &Store, name: &str, tree: &ObjectRef) -> Result<ObjectRef> {
     let named: Ref = name.parse()?;
-    let tag = named.revision.as_deref().unwrap_or(fetch::MAIN);
+    let tag = named.revision.as_deref().unwrap_or(tensorfs::format::MASTER);
     if !named.repo_id.starts_with("local/") || named.variant.is_some() || !tensorfs::format::tag_name(tag) {
         return fail(Kind::Invalid, format!("--name {name:?}: a local name is local/<name>[@tag]"));
     }

@@ -25,7 +25,7 @@ pub struct WriterOptions<'a> {
     pub base: Option<&'a Checkpoint>,
     pub resume: Option<&'a str>,
     pub repo_id: Option<&'a str>,
-    /// The tag a `repo_id` commit moves (none: `main`).
+    /// The tag a `repo_id` commit moves (none: `master`).
     pub revision: Option<&'a str>,
     pub endpoint: Option<&'a str>,
     pub token: Option<Arc<dyn TokenProvider>>,
@@ -85,7 +85,7 @@ impl Client {
                 "variant and revision name a commit of a repo_id upload; they need repo_id",
             );
         }
-        let tag = options.revision.unwrap_or(crate::fetch::MAIN);
+        let tag = options.revision.unwrap_or(crate::format::MASTER);
         if !crate::format::tag_name(tag) {
             return fail(Kind::Invalid, format!("{tag:?} is not a tag name"));
         }

@@ -29,7 +29,7 @@ def download_file(repo_id: str, filename: str, *, revision: str | None = None,
                  cache_dir: StrPath | None = None, local_dir: StrPath | None = None,
                  local_files_only: bool = False, token: Token | None = None,
                  endpoint: str | None = None) -> str: ...
-def upload_folder(*, repo_id: str, folder_path: StrPath, revision: str = "main",
+def upload_folder(*, repo_id: str, folder_path: StrPath, revision: str = "master",
                   delete_patterns: str | Sequence[str] | None = None,
                   token: Token | None = None, endpoint: str | None = None,
                   cache_dir: StrPath | None = None) -> str:
@@ -78,7 +78,7 @@ class Writer:
         """`dest` is a header file, a handle into the shared local store that roots its data while
         it holds this header; `materialize` makes the portable copy. With `repo_id`, `commit()`
         commits `model.<variant>.cozytensors` (and its repo files) on top of tag `revision` (default
-        `main`; a new tag is private) of that repo, keeping the tag's other files. Both need
+        `master`; a new tag is private) of that repo, keeping the tag's other files. Both need
         `repo_id`."""
     def __enter__(self) -> Writer: ...
     def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None,

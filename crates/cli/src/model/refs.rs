@@ -12,6 +12,7 @@ use std::fmt;
 use protocol::error::{Error, Kind};
 use protocol::machine::ModelChoice;
 use protocol::names::ROOT;
+use tensorfs::format::MASTER;
 
 /// A Hub repository, `org/name`, lowercased (names are case-insensitive); a root one's org is
 /// [`ROOT`].
@@ -128,9 +129,9 @@ impl Repo {
 }
 
 /// An upload's destination, `[org/]name[@tag]`: a Hub repository and the private tag the upload
-/// moves, `main` unless named. Sent as `org/name@tag`.
+/// moves, `master` unless named. Sent as `org/name@tag`.
 pub(crate) fn destination(raw: &str) -> Result<String, Error> {
-    let (name, tag) = raw.trim().split_once('@').unwrap_or((raw.trim(), "main"));
+    let (name, tag) = raw.trim().split_once('@').unwrap_or((raw.trim(), MASTER));
     Ok(format!("{}@{}", Repo::hub(name)?, label("tag", tag)?))
 }
 

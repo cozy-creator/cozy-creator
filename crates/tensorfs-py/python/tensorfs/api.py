@@ -80,7 +80,7 @@ def download_file(repo_id: str, filename: str, *, revision=None, cache_dir=None,
     ))
 
 
-def upload_folder(*, repo_id: str, folder_path, revision="main", delete_patterns=None, token=None, endpoint=None, cache_dir=None) -> str:
+def upload_folder(*, repo_id: str, folder_path, revision="master", delete_patterns=None, token=None, endpoint=None, cache_dir=None) -> str:
     patterns = [delete_patterns] if isinstance(delete_patterns, str) else list(delete_patterns or [])
     return _client(cache_dir, endpoint, token).upload_folder(Path(folder_path), repo_id, revision, patterns)
 

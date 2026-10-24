@@ -106,7 +106,7 @@ exact remote tree.
 | `open(name_or_path, &Open)` | Open metadata, optionally waiting for all checkpoint data with `lazy: false`; returns `Result<Checkpoint>`. |
 | `materialize(&Ref, &Download, local_dir, local_files_only)` | Make selected repository content available as a normal folder; returns `Result<PathBuf>`. |
 | `download_file(&Ref, filename, local_dir, local_files_only)` | Fetch one repository file; returns `Result<PathBuf>`. |
-| `upload_folder(&Ref, folder, delete_patterns, progress)` | Commit the folder's files on top of the tag `Ref.revision` (default `main`, private when new): the tag's tree minus paths matching `delete_patterns` (fnmatch globs), plus these files. Returns the commit, `Result<ObjectRef>`. |
+| `upload_folder(&Ref, folder, delete_patterns, progress)` | Commit the folder's files on top of the tag `Ref.revision` (default `master`, private when new): the tag's tree minus paths matching `delete_patterns` (fnmatch globs), plus these files. Returns the commit, `Result<ObjectRef>`. |
 | `convert_to_cozytensors(&[String], &Convert)` | Convert pinned sources; returns `Result<Checkpoint>`. |
 | `writer(WriterOptions)` | Begin a write; returns `Result<Writer>`. |
 

@@ -54,7 +54,7 @@ def open(name_or_path: StrPath, *, revision: str | None=None, variant: str | Non
 def materialize(source: str | Checkpoint, *, revision: str | None=None, variant: str | None=None, components: Sequence[str] | None=None, cache_dir: StrPath | None=None, local_dir: StrPath | None=None, local_files_only: bool=False, token: Token | None=None, endpoint: str | None=None, format: str='cozytensors', decode: bool=False) -> str:
     ...
 
-def upload_folder(*, repo_id: str, folder_path: StrPath, revision: str='main', delete_patterns: str | Sequence[str] | None=None, token: Token | None=None, endpoint: str | None=None, cache_dir: StrPath | None=None) -> str:
+def upload_folder(*, repo_id: str, folder_path: StrPath, revision: str='master', delete_patterns: str | Sequence[str] | None=None, token: Token | None=None, endpoint: str | None=None, cache_dir: StrPath | None=None) -> str:
     ...
 
 class Error(Exception):
@@ -423,7 +423,7 @@ class Writer:
 
         The file is a handle into the shared local store that roots its data while it holds
         this header; `materialize` makes the portable copy. With `repo_id`, commit makes a commit
-        and moves the private tag `revision` (default `main`) to it. `variant` names
+        and moves the private tag `revision` (default `master`) to it. `variant` names
         `model.<variant>.cozytensors` in a `repo_id` upload and is refused without `repo_id`.
         """
 

@@ -2,7 +2,7 @@
 //! own and never takes an open checkpoint's bytes. A model TensorD keeps, it holds open.
 //!
 //! - A checkpoint's id is its cozytensors header's object (`sha256:<hex>`).
-//! - Local models are `local/<name>` repos, never evicted: one tag, `main`, at its commit.
+//! - Local models are `local/<name>` repos, never evicted: one tag, `master`, at its commit.
 //! - A Hub model this machine pulled is a cached ref, a tag at its commit (`held_models::Pulled`).
 use std::{
     collections::BTreeMap,
@@ -14,8 +14,8 @@ use std::{
 
 pub use tensorfs::store::Store;
 use tensorfs::{
-    fetch::{pick_variant, with_tag, MAIN},
-    format::{ObjectRef, Resolution, Tree},
+    fetch::{pick_variant, with_tag},
+    format::{ObjectRef, Resolution, Tree, MASTER},
 };
 
 /// Opens (or creates) the machine store at `root`; one in an older format is refused (its
@@ -83,7 +83,7 @@ pub struct Local {
     pub header: ObjectRef,
 }
 
-/// The local model `repo` (`local/<name>`) at `revision` (none: its default, else `main`) in
+/// The local model `repo` (`local/<name>`) at `revision` (none: its default, else `master`) in
 /// `variant` (its only one when `None`); None when the name holds nothing.
 pub fn local(store: &Store, repo: &str, revision: Option<&str>, variant: Option<&str>) -> io::Result<Option<Local>> {
     let Some(named) = store.get_ref(repo).map_err(io_error)? else {
@@ -92,11 +92,11 @@ pub fn local(store: &Store, repo: &str, revision: Option<&str>, variant: Option<
     let absent = |detail: String| io::Error::new(io::ErrorKind::NotFound, detail);
     let resolution = match revision {
         Some(_) => named.resolve(revision),
-        None => named.resolve(None).or_else(|| named.tag(MAIN).map(Resolution::Tag)),
+        None => named.resolve(None).or_else(|| named.tag(MASTER).map(Resolution::Tag)),
     };
     let found = resolution.map(|r| r.find(|commit| store.tree(commit))).transpose().map_err(io_error)?.flatten();
     let Some((tag, cited)) = found else {
-        return Err(absent(format!("{repo} has no revision {}", revision.unwrap_or(MAIN))));
+        return Err(absent(format!("{repo} has no revision {}", revision.unwrap_or(MASTER))));
     };
     let parsed = store.tree(&tag.commit).map_err(io_error)?;
     let variant = pick_variant(&parsed, revision, cited, variant).map_err(|e| absent(e.to_string()))?;
@@ -104,7 +104,7 @@ pub fn local(store: &Store, repo: &str, revision: Option<&str>, variant: Option<
     Ok(Some(Local { release: tag.name.clone(), variant: variant.into(), header: header.clone(), tree: tag.commit.clone() }))
 }
 
-/// Names `header` (with its source's repo `files`) the local model `local/<name>`: its `main`
+/// Names `header` (with its source's repo `files`) the local model `local/<name>`: its `master`
 /// at a new commit, replacing what the name held.
 pub fn set_local(store: &Store, name: &str, header: &ObjectRef, files: &BTreeMap<String, ObjectRef>) -> io::Result<ObjectRef> {
     let mut tree = Tree { files: files.clone() };
@@ -112,7 +112,7 @@ pub fn set_local(store: &Store, name: &str, header: &ObjectRef, files: &BTreeMap
     let tree = store.put_tree(&tree).map_err(io_error)?;
     let repo = format!("local/{name}");
     store
-        .update_ref(&repo, |_| Some(with_tag(None, &repo, MAIN, &tree)))
+        .update_ref(&repo, |_| Some(with_tag(None, &repo, MASTER, &tree)))
         .map_err(io_error)?;
     Ok(tree)
 }

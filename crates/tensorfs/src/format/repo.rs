@@ -14,6 +14,9 @@ use super::{REPO_FORMAT, TREE_FORMAT};
 
 /// The folder that holds a plain folder's chunks and assets: no repo file lives under it.
 pub const CHUNKS_DIR: &str = "chunks";
+/// The tag an upload moves when none is named, and the unversioned default of a repo with no
+/// release.
+pub const MASTER: &str = "master";
 
 /// `cozytensors.tree/1`: a commit, a repo state as files, as on HF. Each `.cozytensors` file, at any
 /// path, is a variant's header; every other file (README, LICENSE, images) is a blob shared by them all.
@@ -346,10 +349,9 @@ impl Repo {
         self.tags.iter_mut().find(|t| t.name == name)
     }
 
-    /// The unversioned default: [`newest`] of the tags, else `main` (HF's revision default)
-    /// unless yanked.
+    /// The unversioned default: [`newest`] of the tags, else [`MASTER`] unless yanked.
     pub fn default_tag(&self) -> Option<&Tag> {
-        newest(&self.tags).or_else(|| self.tag("main").filter(|t| !t.yanked))
+        newest(&self.tags).or_else(|| self.tag(MASTER).filter(|t| !t.yanked))
     }
 
     /// Resolves `revision` once (§7): none is the default; `sha256:<hex>` a tag's commit, else a
