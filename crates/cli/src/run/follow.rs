@@ -621,22 +621,27 @@ impl View {
     }
 }
 
-/// How far a run is: its own fraction, else its steps', else its bytes'.
+/// How far a run is: its own fraction, else its stage's, else its steps', else its bytes'.
 pub(crate) fn fraction(progress: &Progress) -> Option<f64> {
     let of = |done: u64, total: u64| (total > 0).then(|| done as f64 / total as f64);
     (progress.fraction.filter(|f| *f >= 0.0))
+        .or(progress.stage_fraction)
         .or_else(|| of(progress.completed, progress.total))
         .or_else(|| of(progress.bytes_done, progress.bytes_total))
 }
 
-/// Where a run is: its stage, its steps of their total and their times, and its bytes of theirs.
-/// A stage's first step carries its setup: its time is said as the first's, never as the pace.
+/// Where a run is: its stage, its steps of their total and their times, and its bytes of theirs;
+/// a stage that counts neither, the fraction it says. A stage's first step carries its setup: its
+/// time is said as the first's, never as the pace.
 pub(crate) fn said(progress: &Progress) -> String {
     let mut text = progress.stage.clone();
     if progress.total > 0 {
         let _ = write!(text, " {}/{}", progress.completed, progress.total);
     }
     let (done, total) = (progress.bytes_done, progress.bytes_total);
+    if let Some(f) = progress.stage_fraction.filter(|_| progress.total == 0 && total == 0) {
+        let _ = write!(text, " {:.0}%", f.clamp(0.0, 1.0) * 100.0);
+    }
     if done > 0 || total > 0 {
         let _ = write!(text, " {}", output::bytes(done));
         if total > 0 {
