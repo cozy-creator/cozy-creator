@@ -2008,12 +2008,14 @@ impl Pool {
     /// Compile a generation's kernels for every card of the envelope in the background
     /// (machine start, after an install, so beside the model download): the Runtime's
     /// `machine_kernels` under the generation's own seal, so each key is its executors' and
-    /// a kernel already in the store is not built again. Once per generation and machine
+    /// a kernel already in the store is not built again. Once per environment and machine
     /// run. It opens no device; its builds are niced and share the host. An executor that
     /// needs a kernel still compiling waits for it.
     pub fn kernel_boot(self: &Arc<Self>, held: HeldGeneration) {
         if binds_models(&held.record.interface) {
-            self.boot_kernels(held.record.identity, held.record.python, None);
+            // Once per environment: a local package's generations share theirs.
+            let environment = tensorfs::sha256::hex_digest(held.record.python.as_os_str().as_encoded_bytes());
+            self.boot_kernels(environment[..32].to_string(), held.record.python, None);
         }
     }
 

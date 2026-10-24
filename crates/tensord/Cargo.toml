@@ -52,10 +52,6 @@ tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true
 
-[build-dependencies]
-zip.workspace = true
-sha2.workspace = true
-base64.workspace = true
 
 [lints]
 workspace = true

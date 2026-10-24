@@ -210,21 +210,14 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     let (holding, executions) = (lifecycle.clone(), service.engine.clone());
     service.hold_while(move || holding.holding());
     lifecycle.on_change(move || executions.notify_activity());
-    let mut sdk = crate::published::PackageSdk::selected(&paths.sdk(), &layout.root, crate::machine::client::uv(&layout.root));
-    // A local machine installs releases through its owner's uv cache, as its local packages do;
-    // a cache of its own from before is no longer read (environments keep their linked files).
-    if !rental {
-        sdk.owner_uv = crate::published::OwnerUv::of(protocol::config::environment());
-        if sdk.owner_uv.is_some() {
-            let _ = std::fs::remove_dir_all(engine.join("published/uv-cache"));
-        }
-    }
+    let sdk = crate::published::PackageSdk::selected(&paths.sdk(), crate::machine::uv::Uv::of(&layout.root, &engine, rental));
     let running = {
         let engine = service.engine.clone();
         Box::new(move || engine.with_journal(|journal| journal.started()).unwrap_or_default())
     };
     let updates = crate::machine::update::Updates::open(
         paths.clone(),
+        sdk.uv.clone(),
         sdk.python.clone(),
         running,
         Some(lifecycle.clone()),
@@ -322,8 +315,6 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     let api = crate::machine::net::kept_listener(&layout.state.join("api-port"), grant.listen_host, grant.worker_port)?;
     identity.webrtc = crate::machine::player::listen(&layout.state, grant.webrtc_port, !rental)?;
     identity.player = grant.webrtc_reach.clone();
-    // The client this binary embeds; the installer helper over it is made at the first install.
-    let wheel = crate::machine::client::wheel(&engine)?;
     start_api(
         &engine,
         &generations,
@@ -332,9 +323,6 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
         &store,
         &machine,
         &service,
-        Some(crate::machine::client::helper_python(&engine)),
-        Some(wheel),
-        "3.12".into(),
         sdk,
         // A run naming no Hub reads this rental's own Hub's public content.
         grant.hub.clone().filter(|_| rental),
@@ -377,58 +365,24 @@ fn start_api(
     store: &Arc<Store>,
     machine: &Arc<Machine>,
     service: &Arc<crate::service::Service>,
-    helper: Option<PathBuf>,
-    wheel: Option<PathBuf>,
-    python: String,
-    mut sdk: crate::published::PackageSdk,
+    sdk: crate::published::PackageSdk,
     own_hub: Option<crate::machine::grant::HubGrant>,
     logs: Option<PathBuf>,
 ) -> io::Result<()> {
     use crate::{api, machine_api::NativeBackend};
-    sdk.client_wheel = wheel.clone();
-    let (pair, uv, seed_cache, runtime_build): (Vec<PathBuf>, _, _, _) = (
-        sdk.requirements.iter().map(PathBuf::from).collect(),
-        sdk.uv.clone(),
-        sdk.seed_cache.clone(),
-        sdk.runtime_build.clone(),
-    );
     let store = store.clone();
     let mut backend = NativeBackend::new(service.clone(), identity.authority.clone(), store.clone());
     backend.logs = logs;
-    let publisher =
-        crate::published::Publisher::new(&root.join("published"), sdk, machine.clone())?;
+    let publisher = crate::published::Publisher::new(sdk, machine.clone(), identity.updates.clone());
     service.configure_publisher(publisher.clone());
     backend.publisher = Some(publisher.clone());
-    // Local packages install only with the helper; package environments get the client either way.
-    backend.installer = match (helper, wheel) {
-        (Some(helper_python), Some(client_wheel)) => Some(api::install::InstallerConfig {
-            // The machine's own helper is made on first use; a given one is the caller's.
-            helper_engine: (helper_python == crate::machine::client::helper_python(root)).then(|| root.to_path_buf()),
-            helper_python,
-            client_wheel,
-            python,
-            generations: generations.to_path_buf(),
-            sdk: pair,
-            runtime_build,
-            uv: uv.clone(),
-            seed_cache,
-        }),
-        (Some(_), None) => {
-            return Err(io::Error::other(
-                "--installer-python requires --client-wheel",
-            ))
-        }
-        _ => None,
-    };
     let objects = Arc::new(crate::objects::Objects::new(&root.join("writes"), service.engine.clone())?);
     service.engine.hold_memos(&objects);
     backend.runs = Some(Arc::new(crate::runs::Runs {
         service: service.clone(),
         objects: objects.clone(),
+        local: Arc::new(crate::local_source::LocalSources::new(objects, publisher.clone(), generations)),
         publisher,
-        local: backend.installer.clone().map(|installer| {
-            Arc::new(crate::local_source::LocalSources::new(objects, installer))
-        }),
         own_hub: own_hub
             .map(|hub| crate::hub::Source::new(&hub.origin, hub.ca_der, None))
             .transpose()

@@ -1,29 +1,39 @@
 # Package bridge
 
-`python/tensord_client` builds a live local package's uv environment generation. Every
-call runs on a pool executor ([GPU service](GPU-SERVICE.md)); the journal side is in
-`DURABLE-EXECUTION.md`.
+A package's environment is built one way, for a release (`published.rs`) and for local code
+(`local_source.rs`): `published/environment.rs`. Every call runs on a pool executor
+([GPU service](GPU-SERVICE.md)); the journal side is in `DURABLE-EXECUTION.md`.
 
-## Generations (`packages.py`, `captured_packages.py`)
+## Generations
 
 Layout: `<generations>/<32-hex>/` with `env/`, `.hold` and `generation.json` (`identity`, `package`,
-`version`, `application`, `python`, `dependencies`, `interface`). `generation.json` is published
+`version`, `application`, `python`, `dependencies` (the Runtime pair), `interface`, `sdk`,
+`sdk_fallback`, `runtime_build`, `source_digest`, `callees`). `generation.json` is published
 atomically last. A generation is never updated. `catalog.rs` resolves one only under a shared
-`.hold` flock.
+`.hold` flock. A local package's `env` links its environment (`editable/…/env-<key>`, kept while its
+lock, pyproject, path dependencies, carried wheels and the machine's pair stand); each source
+digest of it is a generation.
 
-- `install-captured` (`python -m tensord_client.installer`, called by `api/install.rs`):
-  - Python comes from `uv python find` and must match the captured `python_requires`/`python_version`.
-  - A live project, installed editable: its lock's dependencies by `uv sync --frozen --no-dev
-    --no-editable --no-install-project`, else `uv pip install --editable` of the project.
-  - The machine's own Runtime/TensorFS pair (`--sdk-wheel`) replaces the captured pair, every other
-    version constrained, where `uv pip check` admits it. Else the capture's own pair (a vendored dev
-    Runtime, say) is restored and `sdk_fallback` says why; every run of it logs that warning.
-  - The client wheel is installed under constraints pinning every selected package. Any change is
-    `package_lock_changed`. Then `uv pip check` runs.
-  - The interface is described inside the env with `python -I -S` (no `.pth` execution).
-  - Failure prints `{kind: "install_failed", code, detail}`. `install.rs` passes the helper's
-    stderr to the machine log and quotes its last lines (credentials masked) in the refusal when
-    the failure is an operation's (`package_dependency_operation_failed`) or untyped.
+The build (`Publisher::build`), each step uv under one environment (the machine's, less credentials
+and the seal's names, over this machine's uv cache and Pythons):
+- `uv venv` for the package's Python (a release's card names it; local code: 3.12, its
+  `requires-python` held by uv).
+- Locked: `uv sync --frozen --inexact --no-dev --no-editable --no-install-project`, less the rows
+  installed from files and the machine's pair; local directories rebuilt. Unlocked local code:
+  `uv pip install --editable` of the project, offered the machine's pair.
+- Wheels from files (`--no-deps --no-index --link-mode copy`): a release's Hub-hosted wheels (fetched by
+  TensorFS), local code's carried ones. Then local code itself, editable, its `.pth` paths spelled as
+  `import` lines so the static reader never follows them.
+- The machine's Runtime/TensorFS pair over it, every other installed version a constraint. A pin the
+  pair rejects keeps its version and the pair goes in without its dependencies (`sdk_fallback` says
+  so). A floor the package puts on the pair that the pair misses updates the machine to the package's
+  own versions (a software update; the run prepares again after its restart), and refuses
+  `runtime_floor_unmet` only when it cannot (a development Runtime, a refused or failed update).
+  Other `uv pip check` findings are the run's warning.
+- The last step compiles the environment's bytecode.
+- Described inside the env by its own Runtime with `python -I -S` (no `.pth` execution): the
+  environment's callees and digest, and local code's interface from its source.
+- `Service::installed`: its kernels compile and a call's imports start, for both kinds.
 
 ## Calls between packages
 
@@ -34,8 +44,8 @@ can call its own internal exports; another package can call only its public expo
 calls use the callee's source digest.
 
 A local-source manifest may carry an optional `callees` map from normalized distribution names
-to package identities. It may carry a source archive, or an immutable root wheel together with
-dependency wheels. A published release's map is its lock: every row its Hub publishes is
+to package identities. It names the project's files (or, on this computer, its directory) and
+the wheels it carries. A published release's map is its lock: every row its Hub publishes is
 `<release org>/<row name>` (a Hub lock pins only its own org). A wheel's URL never names a
 package; anything unmapped, and older records without a package identity, read as
 `local/<normalized-distribution>`. Description

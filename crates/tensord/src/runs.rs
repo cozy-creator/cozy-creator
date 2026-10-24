@@ -99,7 +99,7 @@ pub struct Runs {
     pub objects: Arc<Objects>,
     /// The one resolver of a run's code and models.
     pub publisher: Arc<Publisher>,
-    pub local: Option<Arc<LocalSources>>,
+    pub local: Arc<LocalSources>,
     /// On a rental: its own Hub, where a run that names none reads anonymously.
     pub own_hub: Option<hub::Source>,
     /// Unfinished runs' preparation: their children prepare with it, and their weights are
@@ -304,10 +304,7 @@ impl Runs {
         // A local source is refused here, not accepted to fail: the run takes custody of its
         // objects now, and a refused id is free for the client to write them and send again.
         if let Source::Local(digest) = &spec.source {
-            let local = self.local.as_ref().ok_or_else(|| {
-                refused("capability_unavailable", "this machine installs no local packages")
-            })?;
-            references.extend(local.written(actor, digest)?);
+            references.extend(self.local.written(actor, digest)?);
         }
         // A written file a warm run makes into a model (`object://sha256:<hex>/<file>`).
         for choice in &spec.models {
@@ -601,17 +598,15 @@ impl Runs {
                     })?,
             ),
             Source::Local(digest) => {
-                let local = self.local.as_ref().ok_or_else(|| {
-                    refused("capability_unavailable", "this machine installs no local packages")
-                })?;
-                let stage = |stage: &str, read: u64| observe(stage, read, 0);
-                let installed = local.install(&self.service, actor, digest, Some(&stoppable.stop), id, &stage)?;
+                let local = &self.local;
+                let observer = Box::new({
+                    let observe = observe.clone();
+                    move |stage: &str, done: u64, total: u64| observe(stage, done, total)
+                });
+                // A call's imports start as soon as its code is installed, as a release's do.
+                let installed = local.install(&self.service, actor, digest, Some(&stoppable.stop), id, observer, !spec.warm)?;
                 self.supersede(actor, &installed)?;
                 local.collect(actor, &installed.package);
-                // A call's imports start as soon as its code is installed, as a release's do.
-                if let (false, Some(gpu)) = (spec.warm, self.service.gpu()) {
-                    gpu.prespawn(self.service.catalog.resolve(&installed.generation)?);
-                }
                 Some(installed)
             }
         };
@@ -997,10 +992,8 @@ impl Runs {
             Source::Local(_) | Source::Models => false,
         };
         let (removed, reclaimed, retained) = self.uninstall(actor, named)?;
-        if let Some(local) = &self.local {
-            for gone in removed.iter().filter(|i| i.package.starts_with("local/")) {
-                local.collect(actor, &gone.package);
-            }
+        for gone in removed.iter().filter(|i| i.package.starts_with("local/")) {
+            self.local.collect(actor, &gone.package);
         }
         let rows: Vec<Value> = removed
             .iter()

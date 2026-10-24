@@ -3,23 +3,22 @@
 //! Python worker's release-root preparation (package set from the release's locked
 //! requirements with uv; each model's commit as the Hub resolves it for the machine's hardware,
 //! then a TensorFS download) with its `release_root_preparing` progress answers.
+pub(crate) mod environment;
 use crate::{
     api::domain,
     gpu_service::{Plan, Pool, ModelGrant},
     hub::{self, Catalog},
     journal::{Installation, Preparation},
     objects::Refused,
-    process::Supervised,
     service::Service,
 };
 use base64::Engine as _;
 use serde_json::{json, Value};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
-    fs::{self, File, OpenOptions},
-    io::{self, Read, Write},
+    collections::{BTreeMap, HashMap},
+    fs::{self, File},
+    io,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -39,48 +38,21 @@ use crate::catalog::normalized;
 
 /// How each published environment gets its Runtime SDK. Empty `requirements` keeps the
 /// release's own locked SDK rows.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct PackageSdk {
-    pub uv: PathBuf,
+    pub uv: crate::machine::uv::Uv,
     pub python: String,
     pub requirements: Vec<String>,
     pub find_links: Option<PathBuf>,
-    /// The machine's description client (`tensord_client`), installed into each generation.
-    pub client_wheel: Option<PathBuf>,
-    /// An image's baked uv cache (expanded wheels, index records), linked rather than copied.
-    pub seed_cache: Option<PathBuf>,
-    /// On a local machine, its owner's uv cache and managed Pythons (what the owner's own and
-    /// local-package installs use), so a release's Torch stack is fetched and kept once.
-    pub owner_uv: Option<OwnerUv>,
     /// The development Runtime an update named by its wheel file (`0.24.6+e9baf7a4`): the
     /// operator's choice, which runs every package whatever its own bounds on the pair.
     pub runtime_build: String,
 }
 
-/// Where uv keeps its cache and managed Pythons for the owner whose environment `env` is: as
-/// uv itself resolves them (its variables, then XDG, then the home directory's defaults).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OwnerUv {
-    pub cache: PathBuf,
-    pub python: PathBuf,
-}
-
-impl OwnerUv {
-    pub fn of(env: &BTreeMap<String, String>) -> Option<Self> {
-        let path = |name: &str| env.get(name).map(PathBuf::from).filter(|p| p.is_absolute());
-        let home = path("HOME");
-        let base = |xdg: &str, default: &str| path(xdg).or_else(|| home.as_ref().map(|h| h.join(default)));
-        Some(Self {
-            cache: path("UV_CACHE_DIR").or_else(|| Some(base("XDG_CACHE_HOME", ".cache")?.join("uv")))?,
-            python: path("UV_PYTHON_INSTALL_DIR").or_else(|| Some(base("XDG_DATA_HOME", ".local/share")?.join("uv/python")))?,
-        })
-    }
-}
-
 impl PackageSdk {
     /// Executors use the selected Runtime/TensorFS pair (an update's, else the image's), so they
     /// speak this machine's protocol; without a complete pair, each release's locked SDK.
-    pub fn selected(wheels: &Path, root: &Path, uv: PathBuf) -> Self {
+    pub fn selected(wheels: &Path, uv: crate::machine::uv::Uv) -> Self {
         // An activation replaces sdk/current, not the immutable candidate directory. Freeze
         // that selection once: both cache identity and the installer's actual wheel inputs
         // must name the same build even when filenames/version labels repeat.
@@ -98,7 +70,6 @@ impl PackageSdk {
         let complete = named("cozy_runtime-") && named("tensorfs-");
         let mut pair: Vec<String> = found.iter().map(|path| path.display().to_string()).collect();
         pair.sort();
-        let seed = root.join("opt/cozy/dependency-seed/uv-cache");
         Self {
             uv,
             python: "3.12".into(),
@@ -108,9 +79,6 @@ impl PackageSdk {
             },
             find_links: complete.then_some(wheels),
             requirements: if complete { pair } else { vec![] },
-            client_wheel: None,
-            seed_cache: seed.is_dir().then_some(seed),
-            owner_uv: None,
         }
     }
 }
@@ -214,16 +182,16 @@ pub struct Providers {
 pub type Observer = Box<dyn Fn(&str, u64, u64) + Send + Sync>;
 
 #[derive(Default)]
-struct Job {
+pub(crate) struct Job {
     /// The stage its byte counts are reported under.
-    stage: Mutex<String>,
-    observer: Option<Observer>,
+    pub(crate) stage: Mutex<String>,
+    pub(crate) observer: Option<Observer>,
     /// Its run's stop: a cancel ends its downloads and installs.
-    stop: Option<Stop>,
+    pub(crate) stop: Option<Stop>,
     /// Its run as its caller names it, and how that run is told what it waits for
     /// (`Engine::waiting`).
-    caller: String,
-    waiting: Option<Box<dyn Fn(Option<String>) + Send + Sync>>,
+    pub(crate) caller: String,
+    pub(crate) waiting: Option<Box<dyn Fn(Option<String>) + Send + Sync>>,
 }
 impl Job {
     fn set(&self, stage: String, moved: u64, total: u64) {
@@ -237,7 +205,7 @@ impl Job {
             waiting(reason);
         }
     }
-    fn stage(&self, stage: String) {
+    pub(crate) fn stage(&self, stage: String) {
         self.set(stage, 0, 0);
     }
     fn bytes(&self, moved: u64, total: u64) {
@@ -247,7 +215,7 @@ impl Job {
     }
 }
 
-type Failure = (&'static str, String);
+pub(crate) type Failure = (&'static str, String);
 
 /// A preparation its run's cancel stopped.
 pub const CANCELED: &str = "preparation_canceled";
@@ -270,14 +238,15 @@ struct Environment<'a> {
 }
 
 pub struct Publisher {
-    root: PathBuf,
-    sdk: PackageSdk,
+    pub(crate) sdk: PackageSdk,
     machine: Arc<Machine>,
     store: Arc<Store>,
     /// One maker per source: a second asker waits, then finds it held (runs 5393/5394).
     making: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     /// The run building each environment identity, which a second run waits for.
     building: Mutex<HashMap<String, String>>,
+    /// The machine's software updates: a package needing a newer Runtime gets one (`environment`).
+    updates: Option<Arc<crate::machine::update::Updates>>,
 }
 
 /// An identity's builder, forgotten however the build ends.
@@ -289,16 +258,15 @@ impl Drop for Building<'_> {
 }
 
 impl Publisher {
-    pub fn new(root: &Path, sdk: PackageSdk, machine: Arc<Machine>) -> io::Result<Arc<Self>> {
-        fs::create_dir_all(root)?;
-        Ok(Arc::new(Self {
-            root: root.to_path_buf(),
+    pub fn new(sdk: PackageSdk, machine: Arc<Machine>, updates: Option<Arc<crate::machine::update::Updates>>) -> Arc<Self> {
+        Arc::new(Self {
             sdk,
             store: machine.store().clone(),
             machine,
             making: Mutex::new(HashMap::new()),
             building: Mutex::new(HashMap::new()),
-        }))
+            updates,
+        })
     }
 
     /// One run's preparation on the calling thread, reported through `observe`: a held
@@ -608,10 +576,7 @@ impl Publisher {
     /// The installation of `release` of the request's package at its Hub, by this machine's SDK.
     fn release_alias(&self, request: &Request, release: &str) -> String {
         let origin = request.origin();
-        let sdk = format!(
-            "{:?}{:?}{:?}",
-            self.sdk.requirements, self.sdk.find_links, self.sdk.client_wheel
-        );
+        let sdk = format!("{:?}{:?}", self.sdk.requirements, self.sdk.find_links);
         let key = format!("{origin}\0{}\0{release}\0{sdk}", request.package);
         format!("hub-{}", &sha256::hex_digest(key.as_bytes())[..32])
     }
@@ -789,13 +754,13 @@ impl Publisher {
             Some(card) => card,
             None => hub_card(&catalog()?, &request.package, &release, &self.sdk.python)?,
         };
-        let locked = read_lock(&card.pyproject, &card.lock, source)?;
+        let locked = read_lock(&card.pyproject, &card.lock, Some(source))?;
         let before = earlier.and_then(|dir| fs::read(dir.join("generation.json")).ok())
             .and_then(|raw| serde_json::from_slice::<crate::catalog::Generation>(&raw).ok())
             .map(|record| record.dependencies.into_iter().map(|d| (normalized(&d.name), d.version)).collect());
         let stage = install_stage(&request.package, &release, before.as_ref(), &self.planned_pair(&locked));
         let wheels: Vec<&str> = card.wheels.iter().map(|wheel| wheel.sha256.as_str()).collect();
-        let identity = sha256::hex_digest(json!({"package":request.package,"release":release,"pyproject":card.pyproject,"lock":card.lock,"wheels":wheels,"python":card.python,"hub":hub::origin_key(&source.origin),"sdk":self.sdk.requirements,"links":self.sdk.find_links,"client":self.sdk.client_wheel}).to_string().as_bytes())[..32].to_string();
+        let identity = sha256::hex_digest(json!({"package":request.package,"release":release,"pyproject":card.pyproject,"lock":card.lock,"wheels":wheels,"python":card.python,"hub":hub::origin_key(&source.origin),"sdk":self.sdk.requirements,"links":self.sdk.find_links}).to_string().as_bytes())[..32].to_string();
         let wanted = Environment {
             card: &card,
             locked: &locked,
@@ -807,13 +772,7 @@ impl Publisher {
         self.generation(service.catalog.root(), &identity, &wanted, job)?;
         keep_card(&service.catalog.root().join(&identity), &card);
         let held = service.catalog.resolve(&identity).map_err(io_failure)?;
-        if let Some(gpu) = service.gpu() {
-            // Its kernels compile, and a call's imports run, while its weights come.
-            gpu.kernel_boot(held.clone());
-            if request.imports {
-                gpu.prespawn(held.clone());
-            }
-        }
+        service.installed(&held, request.imports);
         service
             .engine
             .bind_installation(Installation {
@@ -838,7 +797,7 @@ impl Publisher {
     /// the lock covers installs it. The wheels the release's Hub hosts (its project wheel, its
     /// carried git dependencies, its org's packages) come through TensorFS's downloader instead
     /// and install from disk; the machine's own Runtime pair, where it has one, replaces the
-    /// lock's.
+    /// lock's (`environment`).
     fn generation(
         &self,
         generations: &Path,
@@ -874,132 +833,29 @@ impl Publisher {
         fs::write(project.join("pyproject.toml"), &card.pyproject).map_err(io_failure)?;
         fs::write(project.join("uv.lock"), &card.lock).map_err(io_failure)?;
         let files: Vec<HubFile> = card.wheels.iter().chain(&locked.hub).cloned().collect();
-        let own_sdk = !self.sdk.requirements.is_empty();
-        let client = self.sdk.client_wheel.is_some();
-        // One stage to the person, its steps counted: the Hub's files, the Python, the locked
-        // packages, this machine's Runtime pair, the description.
-        let steps = [!files.is_empty(), true, true, own_sdk, client].iter().filter(|s| **s).count();
-        let step = std::cell::Cell::new(0);
-        let next = || {
-            step.set(step.get() + 1);
-            job.stage(format!("{stage} {}/{steps}", step.get()));
-        };
-        if !files.is_empty() {
-            next();
-        }
-        let wheels = self.fetch_hub(&files, source, &dir, job)?;
-        let env = dir.join("env");
-        let interpreter = platform::paths::venv_python(&env);
-        let py = interpreter.to_string_lossy().to_string();
-        next();
-        self.uv(&["venv", "--no-project", "--no-config", "--python", &card.python, &env.to_string_lossy()], job.stop.as_ref())?;
-        // The last install compiles the whole environment's bytecode: executors run `-I` from
-        // an environment they may not write, so uncompiled modules compile again in every
-        // executor (SDXL's imports: 10.7 s uncompiled, 4.5 s compiled; J/BREAKDOWN.md).
-        let compile = |last: bool| if last { "--compile-bytecode" } else { "--no-compile-bytecode" };
-        let hosted: Vec<String> = files.iter().map(HubFile::distribution).collect();
-        let lock_sdk: Vec<&str> = SDK.into_iter().filter(|n| own_sdk && locked.packages.contains_key(*n)).collect();
-        let sync = |last: bool| -> Result<(), Failure> {
-            let project = project.to_string_lossy();
-            // The release's own `[tool.uv]` settings hold (its build settings for a source-only
-            // row): no `--no-config`.
-            let mut args = vec!["sync", "--frozen", "--inexact", "--no-dev", "--no-install-project",
-                "--project", &project, "--python", &py, compile(last)];
-            let held = locked.git.iter().chain(&hosted).map(String::as_str).chain(lock_sdk.iter().copied());
-            for name in held {
-                args.extend(["--no-install-package", name]);
-            }
-            self.uv_observed(&args, &[("UV_PROJECT_ENVIRONMENT", env.as_os_str())], job.stop.as_ref(), &|read| job.bytes(read, 0))
-                .map_err(|failure| platform(failure, package, release))
-        };
-        next();
-        sync(wheels.is_empty() && !own_sdk && !client)?;
-        if !wheels.is_empty() {
-            let paths: Vec<String> = wheels.iter().map(|w| w.to_string_lossy().into_owned()).collect();
-            let mut args = vec!["pip", "install", "--no-config", "--python", &py, compile(!own_sdk && !client), "--no-deps"];
-            args.extend(paths.iter().map(String::as_str));
-            self.uv(&args, job.stop.as_ref())?;
-        }
-        if own_sdk || client {
-            let pins = self.export_pins(&project, &lock_sdk, job.stop.as_ref())?;
-            fs::write(dir.join("constraints.txt"), pins).map_err(io_failure)?;
-        }
-        // The machine's own pair when it has one, whatever the lock's: a floor the release puts on
-        // it that the pair misses refuses the run; other findings warn.
-        let (sdk_choice, mut sdk_fallback) = (if own_sdk { "machine" } else { "locked" }, String::new());
-        if own_sdk {
-            next();
-            sdk_fallback = self.install_sdk(&py, &dir, compile(!client), job.stop.as_ref()).map_err(|(code, detail)| {
-                if code != "runtime_floor_unmet" {
-                    return (code, detail);
-                }
-                let (pair, lock) = (self.planned_pair(locked), &locked.packages);
-                let running = |name: &str| pair.get(name).map_or("none", String::as_str);
-                let wanted = |name: &str| lock.get(name).map_or("<version>", String::as_str);
-                (code, format!(
-                    "{package} {release} needs {detail}, but this machine runs Runtime {} and TensorFS {}: update it first \
-                     (cozy machine update <machine> --runtime {} --tensorfs {})",
-                    running("cozy-runtime"), running("tensorfs"), wanted("cozy-runtime"), wanted("tensorfs"),
-                ))
-            })?;
-            if !sdk_fallback.is_empty() {
-                tracing::warn!("package {package} {release}: {sdk_fallback}");
-                job.stage(format!("warning: {sdk_fallback}"));
-            }
-        }
-        if let Some(wheel) = &self.sdk.client_wheel {
-            next();
-            let constraints = dir.join("constraints.txt").to_string_lossy().to_string();
-            let wheel = wheel.to_string_lossy().to_string();
-            self.uv(&["pip", "install", "--no-config", "--python", &py, compile(true), "--constraints", &constraints, &wheel],
-                job.stop.as_ref())?;
-        }
-        let interface = &card.interface;
-        let application = protocol::interface::application(interface).ok_or((
-            "package_prepare_interface_invalid",
-            "the package interface names no application".to_string(),
-        ))?;
-        File::create(dir.join(".hold")).map_err(io_failure)?;
+        let fetch = || self.fetch_hub(&files, source, &dir, job).map(drop);
+        let (env, wheels, label) = (dir.join("env"), dir.join("wheels"), format!("{package} {release}"));
+        let built = self.build(&env, &environment::Project {
+            dir: &project,
+            python: &card.python,
+            locked: Some(locked),
+            wheels: (!files.is_empty()).then_some(wheels.as_path()),
+            skip: &locked.git,
+            editable: false,
+            indexes: &BTreeMap::new(),
+            label: &label,
+            stage,
+            fetch: (!files.is_empty()).then_some(&fetch as &dyn Fn() -> Result<(), Failure>),
+        }, job)?;
+        environment::hold(&dir)?;
         // The Hub package each hosted wheel installs is its own name in the release's org, the
         // one org a Hub lock names; never read from the URL, whose shape is the Hub's to change
         // (th-245 did, and every callee became `local/<name>`: run 5234).
         let org = package.split_once('/').map_or("", |(org, _)| org);
-        let hub_packages: BTreeMap<String, String> = hosted.iter().map(|name| (name.clone(), format!("{org}/{name}"))).collect();
-        let (source_digest, callees) = match &self.sdk.client_wheel {
-            Some(_) => describe_environment(&py, &locked.distribution, &hub_packages)?,
-            None => (String::new(), vec![]),
-        };
-        let runtime_build = if sdk_choice == "machine" { self.sdk.runtime_build.as_str() } else { "" };
-        let record = json!({"identity":identity,"package":locked.distribution,"version":release,"application":application,"python":interpreter,"dependencies":installed_sdk(&env),"interface":interface,"sdk":sdk_choice,"sdk_fallback":sdk_fallback,"runtime_build":runtime_build,"source_digest":source_digest,"callees":callees});
-        let staged = dir.join(".generation.json.new");
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&staged)
-            .map_err(io_failure)?;
-        file.write_all(record.to_string().as_bytes())
-            .and_then(|_| file.sync_all())
-            .map_err(io_failure)?;
-        fs::rename(&staged, dir.join("generation.json")).map_err(io_failure)?;
-        platform::durable::sync_dir(&dir)
-            .and_then(|()| platform::durable::sync_dir(generations))
-            .map_err(|error| io_failure(error.into()))
-    }
-
-    /// The lock's exact versions as constraints (`name==version ; marker`), less `except`: what
-    /// the machine's own Runtime pair and the client install against, so neither moves a
-    /// locked package.
-    fn export_pins(&self, project: &Path, except: &[&str], stop: Option<&Stop>) -> Result<String, Failure> {
-        let out = project.join("pins.txt");
-        let (project, path) = (project.to_string_lossy(), out.to_string_lossy());
-        let mut args = vec!["export", "--frozen", "--no-dev", "--no-emit-project", "--no-hashes", "--no-annotate", "--no-header",
-            "--format", "requirements.txt", "--project", &project, "--output-file", &path];
-        for name in except {
-            args.extend(["--no-emit-package", name]);
-        }
-        self.uv(&args, stop)?;
-        let text = fs::read_to_string(&out).map_err(io_failure)?;
-        Ok(text.lines().filter(|l| l.contains("==") && !l.trim_start().starts_with('#')).map(|l| format!("{l}\n")).collect())
+        let hub_packages: BTreeMap<String, String> = files.iter().map(|file| (file.distribution(), format!("{org}/{}", file.distribution()))).collect();
+        let described = environment::describe_environment(&platform::paths::venv_python(&env), &locked.distribution, &hub_packages)?;
+        let record = built.record(identity, (&locked.distribution, release), &env, &card.interface, &self.sdk.runtime_build, described)?;
+        environment::publish(&dir, &record)
     }
 
     /// The release's Hub-hosted wheels through TensorFS's downloader instead of uv's: 1 MiB
@@ -1057,11 +913,9 @@ impl Publisher {
         Ok(path)
     }
 
-    /// This machine's own uv cache, which `reclaim` manages; None when an image's seeded cache
-    /// serves installs (environments symlink into it, so nothing there is ever removed) or the
-    /// owner's does (uv and its owner manage that one).
+    /// This machine's own uv cache, which `reclaim` manages (`Uv::machine_cache`).
     pub fn uv_cache(&self) -> Option<PathBuf> {
-        (self.sdk.seed_cache.is_none() && self.sdk.owner_uv.is_none()).then(|| self.root.join("uv-cache"))
+        self.sdk.uv.machine_cache().map(Path::to_path_buf)
     }
 
     /// Held shared through one environment build, so `reclaim` removes nothing from the cache
@@ -1078,129 +932,6 @@ impl Publisher {
             .open(cache.join(".lock"))?;
         lock.lock_shared()?;
         Ok(Some(lock))
-    }
-
-    /// This machine's own Runtime and TensorFS over a release's locked requirements. Every other
-    /// locked version stays exact: the lock's pins constrain the install, and a pin the pair's own
-    /// requirements reject keeps the lock's version while the pair goes in without its
-    /// dependencies. A bound the release puts on the pair that it misses (a floor: Fibo's
-    /// `cozy-runtime>=0.30.16` for #1700's BatchNorm fix) refuses, `runtime_floor_unmet`: never a
-    /// run on the wrong Runtime with a warning. What else uv's check finds that the pair adds is
-    /// the run's warning. Returns that warning; empty when there is none.
-    fn install_sdk(&self, py: &str, dir: &Path, compile: &str, stop: Option<&Stop>) -> Result<String, Failure> {
-        let constraints = dir.join("constraints.txt").to_string_lossy().to_string();
-        let links = self.sdk.find_links.as_ref().map(|p| p.to_string_lossy().to_string());
-        let install = |how: &[&str]| {
-            let mut args = vec!["pip", "install", "--no-config", "--python", py, compile];
-            args.extend(how);
-            if let Some(links) = &links {
-                args.extend(["--find-links", links]);
-            }
-            args.extend(self.sdk.requirements.iter().map(String::as_str));
-            self.uv(&args, stop)
-        };
-        // What the release's own closure reports already stands (NVIDIA's aarch64 cusparseLt
-        // wheel is tagged `sbsa`, so uv flags it on every Linux arm64 machine).
-        let before = self.check(py, stop)?;
-        let mut warnings = vec![];
-        if let Err((code, detail)) = install(&["--constraints", &constraints]) {
-            if code == CANCELED {
-                return Err((code, detail));
-            }
-            install(&["--no-deps"])?;
-            warnings.push(format!(
-                "this machine's Runtime and TensorFS want versions the release's lock does not hold, which it keeps ({})",
-                crate::triage::ends(&detail, 1000)
-            ));
-        }
-        let added: Vec<String> = self.check(py, stop)?.difference(&before).cloned().collect();
-        let floors: Vec<&str> = (added.iter().map(String::as_str))
-            .filter(|line| SDK.iter().any(|name| line.contains(&format!("requires `{name}"))))
-            .filter_map(|line| line.split('`').nth(3))
-            .collect();
-        if !floors.is_empty() {
-            return Err(("runtime_floor_unmet", floors.join(" and ")));
-        }
-        if !added.is_empty() {
-            warnings.push(format!("uv pip check: {}", added.join("; ")));
-        }
-        let build = &self.sdk.runtime_build;
-        if !warnings.is_empty() && !build.is_empty() {
-            warnings.push(format!("this machine's development Runtime {build} (`--runtime <path>`) runs it regardless"));
-        }
-        Ok(warnings.join("; "))
-    }
-
-    fn uv(&self, args: &[&str], stop: Option<&Stop>) -> Result<(), Failure> {
-        self.uv_observed(args, &[], stop, &|_| ())
-    }
-
-    /// `uv pip check`'s findings in an environment, one line each (`The package …`).
-    fn check(&self, py: &str, stop: Option<&Stop>) -> Result<BTreeSet<String>, Failure> {
-        match self.uv(&["pip", "check", "--no-config", "--python", py], stop) {
-            Ok(()) => Ok(BTreeSet::new()),
-            Err((code, detail)) => {
-                let found: BTreeSet<String> = detail.lines().map(str::trim).filter(|l| l.starts_with("The package ")).map(String::from).collect();
-                if found.is_empty() { Err((code, detail)) } else { Ok(found) }
-            }
-        }
-    }
-
-    /// `uv` with `read` told, about once a second, how many bytes the process has written so far
-    /// (its downloads and the wheels it unpacks), so a long install shows it moves. Its
-    /// process group is killed when `stop` is canceled (`process::supervise`).
-    fn uv_observed(&self, args: &[&str], env: &[(&str, &std::ffi::OsStr)], stop: Option<&Stop>,
-        read: &(dyn Fn(u64) + Sync)) -> Result<(), Failure> {
-        crate::machine::client::ensure_uv(&self.sdk.uv).map_err(|e| ("uv_unavailable", e.to_string()))?;
-        let mut command = Command::new(&self.sdk.uv);
-        command.args(args).env_clear().envs(env.iter().copied()).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
-        platform::process::own_group(&mut command);
-        // Windows spells its names in any case (`Path`), and resolves no host name for a
-        // process without `SystemRoot`; TEMP and TMP are its temporary directory.
-        const KEPT: [&str; 7] = ["PATH", "SSL_CERT_FILE", "SSL_CERT_DIR", "LANG", "SYSTEMROOT", "TEMP", "TMP"];
-        for (name, value) in protocol::config::environment() {
-            if KEPT.iter().any(|kept| kept.eq_ignore_ascii_case(name)) {
-                command.env(name, value);
-            }
-        }
-        let owner = self.sdk.owner_uv.as_ref();
-        command
-            .env("HOME", self.root.join("home"))
-            .env("UV_PYTHON_INSTALL_DIR", owner.map_or_else(|| self.root.join("python"), |o| o.python.clone()));
-        // As the Python worker: an image's seeded cache, symlinked so overlayfs never copies
-        // the baked Torch payload into each environment; else the owner's, else this machine's.
-        match (&self.sdk.seed_cache, owner) {
-            (Some(seed), _) => command
-                .env("UV_CACHE_DIR", seed)
-                .env("UV_LINK_MODE", "symlink"),
-            (None, Some(owner)) => command.env("UV_CACHE_DIR", &owner.cache),
-            (None, None) => command.env("UV_CACHE_DIR", self.root.join("uv-cache")),
-        };
-        let mut child = command.spawn().map_err(|e| {
-            (
-                "package_installation_uv_absent",
-                format!("cannot run uv: {e}"),
-            )
-        })?;
-        let mut stderr = child.stderr.take().expect("piped uv stderr");
-        let (ended, stderr) = std::thread::scope(|scope| {
-            let drained = scope.spawn(move || {
-                let mut kept = Vec::new();
-                let _ = stderr.read_to_end(&mut kept);
-                kept
-            });
-            let ended = crate::process::supervise(&mut child, stop, read);
-            (ended, drained.join().unwrap_or_default())
-        });
-        let step = args[..2.min(args.len())].join(" ");
-        match ended.map_err(|e| ("package_installation_uv_failed", format!("uv: {e}")))? {
-            Supervised::Exited(status) if status.success() => Ok(()),
-            Supervised::Exited(_) => Err((
-                "package_installation_uv_failed",
-                format!("uv {step}:\n{}", crate::api::install::stderr_tail(&stderr)),
-            )),
-            Supervised::Canceled => Err(canceled()),
-        }
     }
 
     /// The run's model grants and its precision warnings. Each slot takes the run's choice, else
@@ -1742,7 +1473,7 @@ impl HubFile {
 /// One file named by its digest, into this machine's store: a download that stops moving
 /// fails on its measured stillness, `ledger`'s stop ends it, and what landed stays for the
 /// next ask. Answers the blob's path.
-fn io_failure(error: io::Error) -> Failure {
+pub(crate) fn io_failure(error: io::Error) -> Failure {
     ("release_root_preparation_failed", error.to_string())
 }
 
@@ -1793,13 +1524,14 @@ fn declares_models(installation: &Installation, entrypoint: &str) -> bool {
         .is_some_and(|m| !m.is_empty())
 }
 
-/// What a release's uv.lock leaves to this machine: its git-sourced packages (installed from the
-/// release's carried wheels), the rows the run's Hub hosts (each one wheel, moved by TensorFS),
-/// and every package it names.
+/// What a uv.lock leaves to this machine: its git-sourced packages (a release's are installed from
+/// its carried wheels), its local directories (built again with their changed code), the rows the
+/// run's Hub hosts (each one wheel, moved by TensorFS), and every package it names.
 #[derive(Debug, Default)]
-struct Locked {
+pub(crate) struct Locked {
     distribution: String,
     git: Vec<String>,
+    local: Vec<String>,
     hub: Vec<HubFile>,
     /// Each package it names, at its version.
     packages: BTreeMap<String, String>,
@@ -1808,66 +1540,10 @@ struct Locked {
 /// The Runtime SDK pair: the machine's own, where it has one.
 const SDK: [&str; 2] = ["cozy-runtime", "tensorfs"];
 
-/// The environment's root digest and the other Apps it holds, described inside it by its own
-/// Runtime without importing them (`cozy-runtime machine-describe`). A failed description fails
-/// this preparation; it never publishes an environment with silently missing callees.
-pub fn describe_environment(
-    python: &str,
-    root: &str,
-    packages: &BTreeMap<String, String>,
-) -> Result<(String, Vec<crate::catalog::Callee>), Failure> {
-    #[derive(serde::Deserialize)]
-    #[serde(tag = "kind", rename_all = "snake_case")]
-    enum Reply {
-        DescribedEnvironment { source_digest: String, callees: Vec<crate::catalog::Callee> },
-        DescribeFailed { code: String, detail: String },
-    }
-    // -S keeps authored .pth startup code out; only the venv's own site-packages are added.
-    const BOOTSTRAP: &str = "import pathlib,runpy,sys;\
-        root=pathlib.Path(sys.executable).absolute().parent.parent;\
-        sys.path[:0]=[str(p) for p in (*(root/'lib').glob('python*/site-packages'),root/'Lib'/'site-packages') if p.is_dir()];\
-        sys.argv=['cozy-runtime','machine-describe'];runpy.run_module('cozy_runtime.cli.main',run_name='__main__')";
-    let described = Command::new(python)
-        .args(["-I", "-S", "-c", BOOTSTRAP])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .and_then(|mut child| {
-            let request = json!({"kind": "describe_environment", "root": root, "packages": packages}).to_string();
-            child.stdin.take().expect("piped").write_all(request.as_bytes())?;
-            child.wait_with_output()
-        });
-    let output = described.map_err(io_failure)?;
-    let reply = serde_json::from_slice::<Reply>(&output.stdout).map_err(|error| {
-        ("package_prepare_description_failed", format!("environment description failed: {error}"))
-    })?;
-    match reply {
-        Reply::DescribedEnvironment { source_digest, callees } if output.status.success() => Ok((source_digest, callees)),
-        Reply::DescribeFailed { code, detail } => Err(("package_prepare_description_failed", format!("{code}: {detail}"))),
-        _ => Err(("package_prepare_description_failed", "environment description did not complete".into())),
-    }
-}
-
-/// The Runtime and TensorFS an environment holds, by their installed distribution names.
-fn installed_sdk(env: &Path) -> Vec<Value> {
-    let mut found: Vec<Value> = platform::paths::venv_site_packages(env)
-        .into_iter()
-        .flat_map(|site| fs::read_dir(site).into_iter().flatten().flatten())
-        .filter_map(|entry| {
-            let name = entry.file_name().into_string().ok()?;
-            let (distribution, version) = name.strip_suffix(".dist-info")?.split_once('-')?;
-            let distribution = normalized(distribution);
-            SDK.contains(&distribution.as_str()).then(|| json!({"name": distribution, "version": version}))
-        })
-        .collect();
-    found.sort_by_key(|d| d["name"].as_str().unwrap_or_default().to_string());
-    found
-}
-
-/// The release's pyproject and uv.lock read for what `generation` hands uv and what it moves
-/// itself. A Hub row with more than one wheel (one per platform) is uv's to choose.
-fn read_lock(pyproject: &str, lock: &str, source: &hub::Source) -> Result<Locked, Failure> {
+/// A project's pyproject and uv.lock read for what its environment's build hands uv and what it
+/// moves itself: the rows a release's Hub (`source`) hosts (each one wheel; a row with one per
+/// platform is uv's to choose).
+pub(crate) fn read_lock(pyproject: &str, lock: &str, source: Option<&hub::Source>) -> Result<Locked, Failure> {
     #[derive(serde::Deserialize)]
     struct Lock {
         #[serde(default)]
@@ -1892,30 +1568,24 @@ fn read_lock(pyproject: &str, lock: &str, source: &hub::Source) -> Result<Locked
         #[serde(default)]
         size: u64,
     }
-    #[derive(serde::Deserialize)]
-    struct Pyproject {
-        project: Project,
-    }
-    #[derive(serde::Deserialize)]
-    struct Project {
-        name: String,
-    }
-    let invalid = |what: &str, e: toml::de::Error| ("package_prepare_lock_invalid", format!("the release's {what} does not parse: {e}"));
-    let project = toml::from_str::<Pyproject>(pyproject).map_err(|e| invalid("pyproject.toml", e))?.project.name;
+    let project = distribution(pyproject)?;
     let lock = toml::from_str::<Lock>(lock).map_err(|e| invalid("uv.lock", e))?;
     // Refused before anything is fetched: a Mac or Windows computer told at once where it runs.
     if let Some(there) = elsewhere(&lock.supported, uv_platform()) {
         let here = format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH);
         return Err(("release_platform_unsupported",
-            format!("this release runs on {there}, not this machine ({here}): `--on new` rents a machine for it")));
+            format!("this package runs on {there}, not this machine ({here}): `--on new` rents a machine for it")));
     }
     let rows = lock.package;
     let mut locked = Locked { distribution: project, ..Default::default() };
     for row in rows {
         let name = normalized(&row.name);
+        let local = ["directory", "editable", "path"].iter().any(|key| row.source.contains_key(*key));
         if row.source.contains_key("git") {
             locked.git.push(name.clone());
-        } else if let [Wheel { url: Some(url), hash: Some(hash), size }] = row.wheels.as_slice() {
+        } else if local && row.source.get("editable").and_then(|e| e.as_str()) != Some(".") {
+            locked.local.push(name.clone());
+        } else if let ([Wheel { url: Some(url), hash: Some(hash), size }], Some(source)) = (row.wheels.as_slice(), source) {
             let file = url.rsplit('/').next().unwrap_or_default();
             if let Some(file) = HubFile::new(url, hash, file, *size).filter(|_| hub::publishes(source, url)) {
                 locked.hub.push(file);
@@ -1924,6 +1594,23 @@ fn read_lock(pyproject: &str, lock: &str, source: &hub::Source) -> Result<Locked
         locked.packages.insert(name, row.version);
     }
     Ok(locked)
+}
+
+/// The distribution a pyproject.toml names (`[project] name`).
+pub(crate) fn distribution(pyproject: &str) -> Result<String, Failure> {
+    #[derive(serde::Deserialize)]
+    struct Pyproject {
+        project: Project,
+    }
+    #[derive(serde::Deserialize)]
+    struct Project {
+        name: String,
+    }
+    Ok(toml::from_str::<Pyproject>(pyproject).map_err(|e| invalid("pyproject.toml", e))?.project.name)
+}
+
+fn invalid(what: &str, e: toml::de::Error) -> Failure {
+    ("package_prepare_lock_invalid", format!("the package's {what} does not parse: {e}"))
 }
 
 /// This machine's `sys_platform`, as a lock's markers spell it.
@@ -1953,21 +1640,4 @@ fn elsewhere(markers: &[String], here: &str) -> Option<String> {
         value(marker, "platform_machine").map_or(os.clone(), |arch| format!("{os} {arch}"))
     };
     Some(markers.iter().map(named).collect::<Vec<_>>().join(", "))
-}
-
-/// A lock this machine's platform is outside of, in uv's words: its author's to fix, by adding
-/// the platform to `[tool.uv] environments` and locking again.
-fn platform(failure: Failure, package: &str, release: &str) -> Failure {
-    const OUTSIDE: [&str; 3] = [
-        "not compatible with the lockfile's supported environments",
-        "wheel for the current platform",
-        "has no wheels with a matching platform tag",
-    ];
-    match failure {
-        (code, detail) if code == "package_installation_uv_failed" && OUTSIDE.iter().any(|s| detail.contains(s)) => (
-            "release_platform_unsupported",
-            format!("{package}@{release} is not locked for this machine ({}/{}): {detail}", std::env::consts::OS, std::env::consts::ARCH),
-        ),
-        failure => failure,
-    }
 }

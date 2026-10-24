@@ -3,7 +3,6 @@ pub mod backend;
 pub mod domain;
 mod cozy1;
 mod http;
-pub mod install;
 pub(crate) mod machine_runs;
 mod machine_status;
 mod machine_update;

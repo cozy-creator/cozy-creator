@@ -213,7 +213,6 @@ pub enum Recovered {
 pub struct Paths {
     engine: PathBuf,
     image_wheels: PathBuf,
-    uv: PathBuf,
     /// The machine's `config.toml`, which its one load reads at start.
     pub(crate) config: PathBuf,
 }
@@ -230,7 +229,6 @@ impl Paths {
         Self {
             engine: engine.into(),
             image_wheels,
-            uv: super::client::uv(root),
             config: platform::paths::Home::under(&home).config(),
         }
     }
@@ -409,6 +407,7 @@ fn latest(paths: &Paths, pending: Status) -> io::Result<Status> {
 
 pub struct Updates {
     paths: Paths,
+    uv: super::uv::Uv,
     /// The Python executors run (`PackageSdk::python`): the SDK pair resolves for it.
     python: String,
     status: Mutex<Option<Status>>,
@@ -426,6 +425,7 @@ pub struct Updates {
 impl Updates {
     pub fn open(
         paths: Paths,
+        uv: super::uv::Uv,
         python: String,
         running: Box<dyn Fn() -> Vec<String> + Send + Sync>,
         lifecycle: Option<Arc<super::lifecycle::Lifecycle>>,
@@ -445,6 +445,7 @@ impl Updates {
         }
         Ok(Arc::new(Self {
             paths,
+            uv,
             python,
             status: Mutex::new(status),
             running,
@@ -767,7 +768,7 @@ impl Updates {
                 s.enter("installing");
             })?;
             let stop = self.stop.lock().unwrap().clone();
-            let installed = super::toolchain::install(&self.toolchain_dir(), &self.paths.uv, &stop);
+            let installed = super::toolchain::install(&self.toolchain_dir(), &self.uv, &stop);
             *self.toolchain.lock().unwrap() = Some(self.probe_toolchain());
             installed?;
             return self.set(|s| s.enter("succeeded"));
@@ -1069,7 +1070,7 @@ impl Updates {
     /// [`compile_sdk`] of requirement lines for the executors' Python.
     fn compile_input(&self, input: &str) -> io::Result<Result<String, String>> {
         let stop = self.stop.lock().unwrap().clone();
-        compile_sdk(&self.paths.uv, &self.python, input, &stop, false)
+        compile_sdk(&self.uv, &self.python, input, &stop, false)
     }
 
     /// A {file, sha256} at a URL or staged, or a release {version} the machine fetches: a wheel
@@ -1104,15 +1105,14 @@ impl Updates {
         let downloads = self.paths.update("downloads");
         match distribution {
             "cozy" => super::release::cozy(&choice.version, &downloads, machine, &stop),
-            _ => super::pypi::wheel(distribution, &choice.version, &self.paths.uv, &self.python, &downloads, machine, &stop),
+            _ => super::pypi::wheel(distribution, &choice.version, &self.uv, &self.python, &downloads, machine, &stop),
         }
     }
 }
 
 /// Resolves SDK requirements for the executors' `python` over uv's configured index.
-pub(super) fn compile_sdk(uv: &Path, python: &str, input: &str, stop: &Stop, wheel_plan: bool) -> io::Result<Result<String, String>> {
-    super::client::ensure_uv(uv)?;
-    let mut command = std::process::Command::new(uv);
+pub(super) fn compile_sdk(uv: &super::uv::Uv, python: &str, input: &str, stop: &Stop, wheel_plan: bool) -> io::Result<Result<String, String>> {
+    let mut command = uv.command()?;
     command.args(["pip", "compile"]);
     if wheel_plan { command.args(["--format", "pylock.toml", "--only-binary", ":all:"]); }
     let mut child = platform::process::own_group(&mut command)
