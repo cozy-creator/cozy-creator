@@ -189,11 +189,11 @@ pub(crate) async fn quantize(ctx: &Context, args: Quantize) -> Result<ExitCode, 
         format!("package={}", callee.package()), format!("release={}", callee.release())];
     terms.extend(calibration(interface, &found, &source.spelled));
     let run = crate::run::call(ctx, &callee, RECIPES, terms, &args.placement).await?;
-    if !ctx.json && run.status == Status::Completed {
-        if let Some(written) = written(&run, &args.lane) {
-            Record::new().field("commit", format!("{}@{}", written.repo_id, written.revision)).field("lane", &written.lane).print(ctx);
-            output::next(ctx, &[&format!("cozy model publish {} <version> {}", written.repo_id, written.revision)]);
-        }
+    if !ctx.json && run.status == Status::Completed
+        && let Some(written) = written(&run, &args.lane)
+    {
+        Record::new().field("commit", format!("{}@{}", written.repo_id, written.revision)).field("lane", &written.lane).print(ctx);
+        output::next(ctx, &[&format!("cozy model publish {} <version> {}", written.repo_id, written.revision)]);
     }
     Ok(crate::run::exit_code(&run))
 }
