@@ -538,7 +538,7 @@ fn tree_binding(spool: &Path, output: &Output) -> io::Result<AssetBinding> {
             };
             let directory = format!("tree-{n}");
             let mut files = std::collections::BTreeMap::new();
-            for name in protocol::tree::walk(&spool.join(&directory)).map_err(|e| invalid(&e.to_string()))?.into_keys() {
+            for name in protocol::tree::walk(&spool.join(&directory), false).map_err(|e| invalid(&e.to_string()))?.into_keys() {
                 let member = Path::new(&directory).join(&name);
                 let (sha, length) = hash(&member)?;
                 match fs::hard_link(spool.join(&member), spool.join(format!("sha256-{sha}"))) {

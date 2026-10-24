@@ -68,23 +68,29 @@ pub fn parse(bytes: &[u8]) -> io::Result<BTreeMap<String, Member>> {
     Ok(files)
 }
 
-/// Every file below `root` by its tree path. A link or any other entry that is neither a regular
-/// file nor a folder is refused, never followed, as is a name that is not a portable path.
-pub fn walk(root: &Path) -> io::Result<BTreeMap<String, PathBuf>> {
+/// Every file below `root` by its tree path; a name that is not a portable path is refused.
+/// `follow` reads through links, as a person's own folder (a local Tree input) always was read;
+/// without it, as for an output spool package code writes, a link is refused. Any other entry that
+/// is neither a regular file nor a folder is refused.
+pub fn walk(root: &Path, follow: bool) -> io::Result<BTreeMap<String, PathBuf>> {
     let at = |path: &Path, e: io::Error| io::Error::new(e.kind(), format!("{}: {e}", path.display()));
     let (mut files, mut pending) = (BTreeMap::new(), vec![root.to_path_buf()]);
     while let Some(dir) = pending.pop() {
         for entry in fs::read_dir(&dir).map_err(|e| at(&dir, e))? {
             let entry = entry.map_err(|e| at(&dir, e))?;
             let path = entry.path();
-            let kind = entry.file_type().map_err(|e| at(&path, e))?;
+            let kind = match follow {
+                true => fs::metadata(&path).map(|meta| meta.file_type()),
+                false => entry.file_type(),
+            }
+            .map_err(|e| at(&path, e))?;
             if kind.is_dir() {
                 pending.push(path);
                 continue;
             }
             let refused = |why: &str| at(&path, io::Error::new(io::ErrorKind::InvalidInput, why));
             if !kind.is_file() {
-                return Err(refused("a tree holds regular files and folders, never a link"));
+                return Err(refused("a tree holds only regular files and folders"));
             }
             let parts: Option<Vec<&str>> =
                 path.strip_prefix(root).expect("under its root").iter().map(|p| p.to_str()).collect();
