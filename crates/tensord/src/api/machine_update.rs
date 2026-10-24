@@ -41,15 +41,15 @@ pub(super) fn owns(
 }
 
 /// An update's payload: each component a release version the machine fetches, or (with its input
-/// file) a dev build the caller staged.
+/// file) a dev build the caller staged; a wheel also `{url, sha256}`, a file the machine fetches.
 #[derive(serde::Deserialize)]
 struct Cohort {
     runtime: Option<Member>,
     tensorfs: Option<Member>,
     /// The `cozy` binary, TensorD: a release version, or the `tensord` input's dev binary.
-    tensord: Option<Member>,
+    tensord: Option<String>,
     /// The `cozy` binary as a CLI before 0.11.16 sends it: the `binary` input's file.
-    binary: Option<Member>,
+    binary: Option<String>,
     /// `"install"`: the build toolchain, alone (a kernel's first need, `Updates::kernels`).
     toolchain: Option<String>,
     /// The `cozy` release the caller installed at the machine's launch path (`cozy update`).
@@ -60,9 +60,8 @@ struct Cohort {
     unknown: BTreeMap<String, serde_json::Value>,
 }
 
-/// A component as a CLI sends it: a version or a staged file's name, or `{url, sha256}`, a file the
-/// machine fetches itself and holds to that digest (a release candidate not on PyPI, a binary on
-/// a slow uplink).
+/// A wheel as a CLI sends it: a version or a staged file's name, or `{url, sha256}`, a release
+/// candidate's wheel (not on PyPI) the machine fetches itself and holds to that digest.
 #[derive(serde::Deserialize)]
 #[serde(untagged)]
 enum Member {
@@ -76,8 +75,8 @@ enum Member {
 }
 
 impl Member {
-    /// `field`'s choice: a name through `choose` (a staged input's file, else a release), or a
-    /// URL's file, `distribution`'s wheel or the `cozy` binary.
+    /// `field`'s choice: a name through `choose` (a staged input's file, else a release), or
+    /// `distribution`'s wheel at an https URL whose last segment is its file name.
     fn choice(
         member: Option<Self>,
         field: &str,
@@ -95,17 +94,13 @@ impl Member {
                 if sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
                     return Err(refused(format!("{url} comes with no sha256 (64 hex digits) to hold its bytes to")));
                 }
-                let name = path.rsplit('/').next().unwrap_or_default();
-                let file = match distribution {
-                    "cozy" => BINARY.to_string(),
-                    _ if name.starts_with(&format!("{distribution}-"))
-                        && name.ends_with(".whl")
-                        && name.bytes().all(|c| c.is_ascii_alphanumeric() || b"._-+".contains(&c)) =>
-                    {
-                        name.to_string()
-                    }
-                    _ => return Err(refused(format!("{url} names no {distribution} wheel ({distribution}-<version>-….whl)"))),
-                };
+                let file = path.rsplit('/').next().unwrap_or_default().to_string();
+                let wheel = file.starts_with(&format!("{distribution}-"))
+                    && file.ends_with(".whl")
+                    && file.bytes().all(|c| c.is_ascii_alphanumeric() || b"._-+".contains(&c));
+                if !wheel {
+                    return Err(refused(format!("{url} names no {distribution} wheel ({distribution}-<version>-….whl)")));
+                }
                 Ok(Some(Choice { file, sha256: sha256.to_ascii_lowercase(), url, ..Default::default() }))
             }
             Some(Self::Other(value)) => Err(Error::validation(
@@ -261,8 +256,8 @@ fn stage(
         Ok(Some(held(member, file)?.unwrap_or(Choice { version: value, ..Default::default() })))
     };
     let binary = match cohort.tensord {
-        Some(tensord) => Member::choice(Some(tensord), "tensord", "cozy", |v| choose("tensord", BINARY, v))?,
-        None => Member::choice(cohort.binary, "binary", "cozy", |v| choose("binary", BINARY, v))?,
+        Some(named) => choose("tensord", BINARY, Some(named))?,
+        None => choose("binary", BINARY, cohort.binary)?,
     };
     let toolchain = match cohort.toolchain.as_deref() {
         None => false,

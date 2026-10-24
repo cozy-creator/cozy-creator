@@ -75,8 +75,8 @@ fn selected(plan: &str, distribution: &str, version: &str) -> io::Result<Artifac
     Ok(wheel)
 }
 
-/// Wheel (or binary) `file` at an https `url`, redirects followed: its bytes are held to `sha256`,
-/// so no host vouches for anything. Other bytes fail `wheel_digest_mismatch`.
+/// Wheel `file` at an https `url`, redirects followed: its bytes are held to `sha256`, so no host
+/// vouches for anything. Other bytes fail `wheel_digest_mismatch`.
 pub(crate) fn wheel_at(url: &str, sha256: &str, file: &str, dir: &Path, machine: &Machine, stop: &Stop) -> io::Result<PathBuf> {
     // A private server's root as uv trusts it: the bundle SSL_CERT_FILE names. Only this fetch
     // reads it; the Hub's clients trust their own CA alone.
