@@ -90,9 +90,11 @@ const Stream per_thread = reinterpret_cast<Stream>(0x2);  // cudaStreamPerThread
 
 extern "C" {
 
-// Different symbol: an old shim fails at installation instead of calling an ABI with a
-// missing writable code pointer. The shim and extension are built into the same wheel.
-VARENA_EXPORT void varena_torch_bind_v2(const Agent* functions) { agent = *functions; }
+// Agent's layout: torch.py refuses a shim of another before binding (a stale shim beside a new
+// extension would call `alloc` without its code cell).
+VARENA_EXPORT int varena_torch_abi() { return 2; }
+
+VARENA_EXPORT void varena_torch_bind(const Agent* functions) { agent = *functions; }
 
 VARENA_EXPORT void* varena_torch_malloc(size_t bytes, int device, Stream stream) {
     if (stream == per_thread) {

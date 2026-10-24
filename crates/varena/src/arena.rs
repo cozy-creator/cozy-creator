@@ -692,6 +692,8 @@ struct Shared {
     arenas: Mutex<HashMap<Owner, Arc<Arena>>>,
     process: Arc<Arena>,
     clocks: RwLock<HashMap<usize, Arc<Clock>>>,
+    /// Some stream's completion is unproven (its clock is lost): nothing may be reused or waited on.
+    lost: AtomicBool,
     /// The poller records under its read side, a capture begins and ends under its write side:
     /// nothing is recorded on a stream once its capture began. No arena lock is held with it.
     gate: RwLock<()>,
@@ -738,6 +740,7 @@ impl Torch {
             arenas: Mutex::new(HashMap::new()),
             process: Arena::new(Owner::Process),
             clocks: RwLock::new(HashMap::new()),
+            lost: AtomicBool::new(false),
             gate: RwLock::new(()),
             captures: AtomicU32::new(0),
             capturers: Mutex::new(Vec::new()),
@@ -759,10 +762,9 @@ impl Torch {
     /// A torch block on `stream`: in `pool`'s arena while a capture routes there, else the thread's
     /// routed arena, else the process's. Err is `Exhausted`, whose text is torch's OOM reason.
     pub fn alloc(&self, bytes: u64, stream: usize, pool: Option<PoolId>) -> Result<u64> {
-        self.check_completion()?;
         let size = bytes.max(1).checked_next_multiple_of(ALIGN).filter(|s| *s < 1 << 50).ok_or_else(|| exhausted(bytes, "no device holds that much"))?;
         let sh = &self.sh;
-        let result = match pool {
+        match pool {
             Some(p) => {
                 sh.capturing_on(p, stream);
                 sh.alloc_in(&sh.arena(Owner::Pool(p)), size, stream, true)
@@ -771,13 +773,12 @@ impl Torch {
                 sh.begun(stream);
                 sh.alloc_in(&sh.routed(), size, stream, sh.capturing())
             }
-        };
-        if !result.as_ref().err().is_some_and(Error::is_sticky) { self.check_completion()?; }
-        result
+        }
     }
 
+    /// `Ownership` once a stream's completion is unproven: its spans can never be reused.
     pub(crate) fn check_completion(&self) -> Result<()> {
-        if self.sh.clocks.read().values().any(|clock| clock.lost.load(Acquire)) {
+        if self.sh.lost.load(Acquire) {
             Err(Error::Ownership("an allocator stream's completion is unproven".into()))
         } else { Ok(()) }
     }
@@ -1245,6 +1246,7 @@ impl Shared {
             }
             Err(e) => {
                 c.lost.store(true, Release);
+                self.lost.store(true, Release);
                 tracing::error!("varena: stream {:#x}'s epoch failed ({why}) and so did its synchronize ({e}): its spans are quarantined", c.stream);
                 self.progressed();
             }
@@ -1360,7 +1362,7 @@ impl Shared {
     /// (the poller, a Rust thread, sees them land); false when none is left to give.
     fn give_back(&self) -> bool {
         loop {
-            if self.clocks.read().values().any(|clock| clock.lost.load(Acquire)) { return false; }
+            if self.lost.load(Acquire) { return false; }
             let seen = *self.progress.0.lock();
             let (quiet, pending) = self.idle.lock().bytes();
             if quiet > 0 {
@@ -1374,7 +1376,7 @@ impl Shared {
             self.kick();
             let mut p = self.progress.0.lock();
             while *p == seen {
-                if self.clocks.read().values().any(|clock| clock.lost.load(Acquire)) { return false; }
+                if self.lost.load(Acquire) { return false; }
                 self.progress.1.wait(&mut p);
             }
         }

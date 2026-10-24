@@ -74,7 +74,8 @@ pub enum Error {
     /// What closed: a set, the table, the custody channel.
     #[error("closed: {0}")]
     Closed(String),
-    /// A panic or broken invariant inside varena: the request fails, the process keeps serving.
+    /// A panic or broken invariant inside varena: the request fails. In an allocator or region
+    /// operation its memory is unproven, and the executor retires.
     #[error("internal: {0}")]
     Internal(String),
     /// A bind that needs a page only the calling thread pins (re-binding a page it is

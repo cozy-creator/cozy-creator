@@ -332,23 +332,21 @@ impl Clone for Memory {
 
 /// region.rs's hooks: the device's events, its free bytes, the manager's figures, and the plan.
 impl Memory {
-    /// The common device-error boundary for weights, torch and local region operations.
-    /// Uses the existing ownership flag and retirement path; no second allocator health state.
+    /// The device-error boundary of torch and region operations. A sticky, internal or closed
+    /// failure, or a stream whose completion became unproven meanwhile (a capacity refusal that
+    /// stopped waiting on it, too), goes to the existing ownership-loss retirement.
     pub(crate) fn device_call<T>(&self, call: impl FnOnce() -> Result<T>) -> Result<T> {
-        self.inner.check_ownership()?;
-        let result = crate::caught(|| {
-            if let Some(torch) = self.inner.torch.get() { torch.check_completion()?; }
-            let result = call();
-            if !result.as_ref().err().is_some_and(|e| e.is_sticky() || matches!(e, Error::Internal(_) | Error::Closed(_))) {
-                if let Some(torch) = self.inner.torch.get() { torch.check_completion()?; }
-            }
-            result
-        });
-        if let Some(error) = result.as_ref().err().filter(|e| e.is_sticky() || matches!(e, Error::Internal(_) | Error::Closed(_))) {
-            self.inner.lost_backing(error);
-        }
-        if !result.as_ref().err().is_some_and(|e| e.is_sticky() || matches!(e, Error::Internal(_) | Error::Closed(_))) {
+        let fatal = |e: &Error| e.is_sticky() || matches!(e, Error::Internal(_) | Error::Closed(_));
+        let proven = || {
             self.inner.check_ownership()?;
+            self.inner.torch.get().map_or(Ok(()), |torch| torch.check_completion())
+        };
+        let result = match proven().and_then(|()| crate::caught(call)) {
+            Err(e) if fatal(&e) => Err(e),
+            result => proven().and(result),
+        };
+        if let Err(e) = &result {
+            if fatal(e) { self.inner.lost_backing(e); }
         }
         result
     }
