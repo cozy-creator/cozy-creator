@@ -44,12 +44,12 @@ pub(super) fn owns(
 /// file) a dev build the caller staged.
 #[derive(serde::Deserialize)]
 struct Cohort {
-    runtime: Option<String>,
-    tensorfs: Option<String>,
+    runtime: Option<Member>,
+    tensorfs: Option<Member>,
     /// The `cozy` binary, TensorD: a release version, or the `tensord` input's dev binary.
-    tensord: Option<String>,
+    tensord: Option<Member>,
     /// The `cozy` binary as a CLI before 0.11.16 sends it: the `binary` input's file.
-    binary: Option<String>,
+    binary: Option<Member>,
     /// `"install"`: the build toolchain, alone (a kernel's first need, `Updates::kernels`).
     toolchain: Option<String>,
     /// The `cozy` release the caller installed at the machine's launch path (`cozy update`).
@@ -58,6 +58,37 @@ struct Cohort {
     gpu_memory_limit: Option<u64>,
     #[serde(flatten)]
     unknown: BTreeMap<String, serde_json::Value>,
+}
+
+/// A component as any CLI sends it: a version or file name; `{url, sha256}` from a CLI before 0.11.16
+/// (the form #1905 retired), refused by name rather than as a malformed payload.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum Member {
+    Named(String),
+    Fetched { url: String },
+    Other(serde_json::Value),
+}
+
+impl Member {
+    fn named(member: Option<Self>, field: &str) -> Result<Option<String>, Error> {
+        let version = env!("CARGO_PKG_VERSION");
+        match member {
+            None => Ok(None),
+            Some(Self::Named(named)) => Ok(Some(named)),
+            Some(Self::Fetched { url }) => Err(Error::validation(
+                "update_url_retired",
+                format!(
+                    "the update's {field} is a URL ({url}), which cozy before 0.11.16 sends; cozy {version} takes a release \
+                     version or a file the CLI sends. Update this computer's cozy (`cozy update`) and pass the version or the downloaded file"
+                ),
+            )),
+            Some(Self::Other(value)) => Err(Error::validation(
+                "invalid_payload",
+                format!("the update's {field} is a version or a file name, not {value}"),
+            )),
+        }
+    }
 }
 
 static SUBMITTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -204,9 +235,9 @@ fn stage(
         let file = if file.is_empty() { value.as_str() } else { file };
         Ok(Some(held(member, file)?.unwrap_or(Choice { version: value, ..Default::default() })))
     };
-    let binary = match cohort.tensord {
+    let binary = match Member::named(cohort.tensord, "tensord")? {
         Some(named) => choose("tensord", BINARY, Some(named))?,
-        None => choose("binary", BINARY, cohort.binary)?,
+        None => choose("binary", BINARY, Member::named(cohort.binary, "binary")?)?,
     };
     let toolchain = match cohort.toolchain.as_deref() {
         None => false,
@@ -226,8 +257,8 @@ fn stage(
     let request = Request {
         operation: id.into(),
         pin: None,
-        runtime: choose("runtime", "", cohort.runtime)?,
-        tensorfs: choose("tensorfs", "", cohort.tensorfs)?,
+        runtime: choose("runtime", "", Member::named(cohort.runtime, "runtime")?)?,
+        tensorfs: choose("tensorfs", "", Member::named(cohort.tensorfs, "tensorfs")?)?,
         cozy: cohort.cozy,
         gpu_memory_limit: limit,
         binary,
