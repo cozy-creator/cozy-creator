@@ -5,19 +5,19 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::failure::{fail, Failure, Kind, Result};
-use crate::fetch::{self, Fetcher, ObjectStore, Origin, VolumeOrigin, Want};
-use crate::format::{Header, ObjectRef, Repo, Tag, Tree};
+use crate::fetch::{self, Fetcher, Hardware, ObjectStore, Origin, VolumeOrigin, Want};
+use crate::format::{Header, ObjectRef, Repo, Tree};
 use crate::store::Store;
 
 use super::provider::from_native;
 use super::{io_failure, Checkpoint, Endpoint, Download, Fetched, Ref};
 
-/// What a reference names: the root object (a commit, or a bare header), the tag it resolved
-/// through, and the variant a header digest names.
+/// What a reference names: the root object (a commit, or a bare header), and the release and
+/// lane it resolved to (empty: none).
 struct Root {
     object: ObjectRef,
-    tag: Option<Tag>,
-    variant: Option<String>,
+    release: String,
+    lane: String,
 }
 
 #[derive(Clone)]
@@ -98,93 +98,53 @@ impl Remote {
         Ok(result)
     }
 
-    /// A commit's tree, fetched into the store.
-    async fn tree(&self, commit: &ObjectRef) -> Result<Tree> {
-        self.fetch(std::slice::from_ref(commit), &Download::default()).await?;
-        Ok(self.store.tree(commit)?)
-    }
-
-    /// What `reference` names: a bare object (`sha256:` repo id), or its revision resolved once
-    /// through the repo document (spec §7).
-    async fn root(&self, reference: &Ref) -> Result<Root> {
+    /// What `reference` names: a bare object (`sha256:` repo id), a commit by id, or its release
+    /// and lane resolved once by the endpoint, for `hardware` when it names no lane (spec §7).
+    /// Offline, or when the endpoint cannot be reached, the store's record of what it resolved.
+    async fn root(&self, reference: &Ref, hardware: &Hardware) -> Result<Root> {
+        let bare = |object| Root { object, release: String::new(), lane: String::new() };
         if let Some(hex) = reference.repo_id.strip_prefix("sha256:") {
-            return Ok(Root { object: self.object(hex).await?, tag: None, variant: None });
+            return Ok(bare(self.object(hex).await?));
         }
-        let revision = reference.revision.as_deref();
-        // The local record of tags this store resolved before; its trees are held.
-        let cached = || -> Result<Option<Root>> {
-            let Some(repo) = self.store.get_ref(&reference.repo_id)? else {
-                return Ok(None);
-            };
-            let found = repo.resolve(revision).map(|r| r.find(|commit| self.store.tree(commit)));
-            Ok(match found {
-                Some(Ok(Some((tag, variant)))) => Some(Root { object: tag.commit.clone(), tag: Some(tag.clone()), variant }),
-                _ => None,
-            })
+        let (release, lane) = (reference.release.as_deref(), reference.lane.as_deref());
+        if let Some(hex) = release.and_then(|r| r.strip_prefix("sha256:")) {
+            return Ok(bare(self.object(hex).await?));
+        }
+        let recorded = || -> Result<Option<Root>> {
+            let Some(repo) = self.store.get_ref(&reference.repo_id)? else { return Ok(None) };
+            Ok(repo.resolve(release, lane).ok().map(|(release, lane, object)| Root { object, release, lane: lane.unwrap_or_default() }))
         };
-        // A digest names immutable content; a tag moves, so only offline is it read from the record.
-        if self.offline || revision.is_some_and(|r| r.starts_with("sha256:")) {
-            if let Some(found) = cached()? {
-                return Ok(found);
-            }
-        }
-        // An untagged immutable commit is not recorded as a synthetic tag. Its verified
-        // cached tree is nevertheless enough to open it again, including fully offline.
-        if let Some(hex) = revision.and_then(|r| r.strip_prefix("sha256:")) {
-            let mut object = ObjectRef { sha256: hex.to_owned(), length: 0 };
-            if let Ok(metadata) = std::fs::metadata(self.store.path(&object)?) {
-                object.length = metadata.len();
-                if self.store.tree(&object).is_ok() {
-                    return Ok(Root { object, tag: None, variant: None });
-                }
-            }
-        }
         let local;
-        let endpoint = if self.offline {
-            let Some(mirror) = &self.mirror else {
-                return fail(Kind::NotFound, format!("{} is not cached", reference.repo_id));
-            };
-            // An absolute directory cannot be interpreted as an HTTP endpoint, and carries no
-            // provider even if Config supplies one for the Hub.
-            let path = std::path::absolute(mirror).map_err(|error| io_failure(mirror.display(), error))?;
-            let path = path.to_str().ok_or_else(|| Failure { kind: Kind::Invalid, detail: "mirror path is not UTF-8".into() })?;
-            local = Endpoint {
-                inner: Arc::new(fetch::Endpoint::new(&self.endpoint.transport, path, None).map_err(from_native)?),
-                transport: self.endpoint.transport.clone(),
-            };
-            &local
-        } else {
-            &self.endpoint
+        let endpoint = match self.offline {
+            false => &self.endpoint,
+            true if self.mirror.is_none() => {
+                return recorded()?.ok_or_else(|| Failure { kind: Kind::NotFound, detail: format!("{} is not cached", reference.repo_id) });
+            }
+            true => {
+                // An absolute directory cannot be interpreted as an HTTP endpoint, and carries no
+                // provider even if Config supplies one for the Hub.
+                let mirror = self.mirror.as_ref().expect("a mirror");
+                let path = std::path::absolute(mirror).map_err(|error| io_failure(mirror.display(), error))?;
+                let path = path.to_str().ok_or_else(|| Failure { kind: Kind::Invalid, detail: "mirror path is not UTF-8".into() })?;
+                local = Endpoint {
+                    inner: Arc::new(fetch::Endpoint::new(&self.endpoint.transport, path, None).map_err(from_native)?),
+                    transport: self.endpoint.transport.clone(),
+                };
+                &local
+            }
         };
-        let repo = match endpoint.inner.repo_attempt(&reference.repo_id).await {
-            Ok(repo) => repo,
-            Err(error) => {
-                let transport = matches!(&error, fetch::GetError::Exchange(_));
-                let error = from_native(error.refusal());
-                if transport && error.kind == Kind::Network {
-                    if let Some(found) = cached()? {
-                        if self.store.reuse(&found.object)? {
-                            return Ok(found);
-                        }
-                    }
+        match endpoint.inner.resolve(&reference.repo_id, release, lane, hardware).await.map_err(from_native) {
+            Ok(resolved) => {
+                for reason in &resolved.reasons {
+                    tracing::warn!("{reason}");
                 }
-                return Err(error);
+                Ok(Root { object: resolved.commit, release: resolved.release, lane: resolved.lane })
             }
-        };
-        let resolved = match repo {
-            Some((repo, _)) => fetch::resolve(&repo, revision, async |commit: &ObjectRef| self.tree(commit).await).await,
-            None => fail(Kind::NotFound, format!("no repo {}", reference.repo_id)),
-        };
-        match (resolved, revision.filter(|r| r.starts_with("sha256:"))) {
-            (Ok((tag, variant)), _) => Ok(Root { object: tag.commit.clone(), tag: Some(tag), variant }),
-            // A retained commit no tag names, as the endpoint serves it to the readers it
-            // authorizes; never the tagged default instead.
-            (Err(error), Some(digest)) if error.kind == Kind::NotFound => {
-                let object = endpoint.inner.object(digest).await.map_err(from_native)?.ok_or(error)?;
-                self.tree(&object).await?;
-                Ok(Root { object, tag: None, variant: None })
-            }
-            (Err(error), _) => Err(error),
+            Err(error) if error.kind == Kind::Network => match recorded()? {
+                Some(found) if self.store.reuse(&found.object)? => Ok(found),
+                _ => Err(error),
+            },
+            Err(error) => Err(error),
         }
     }
 
@@ -209,134 +169,83 @@ impl Remote {
         object.ok_or_else(|| Failure { kind: Kind::NotFound, detail: format!("no object sha256:{hex}") })
     }
 
-    /// Records the tag a remote resolution went through, so the store resolves it again offline.
-    fn remember(&self, reference: &Ref, tag: Option<&Tag>) -> Result<()> {
-        if let Some(tag) = tag.filter(|_| !reference.repo_id.starts_with("local/")) {
-            self.store.update_ref(&reference.repo_id, |old| {
-                let mut repo = old.unwrap_or_else(|| Repo::new(&reference.repo_id));
-                match repo.tag_mut(&tag.name) {
-                    Some(held) => *held = tag.clone(),
-                    None => repo.tags.push(tag.clone()),
-                }
-                Some(repo)
-            })?;
+    /// Records what a remote resolution named, so the store resolves it again offline.
+    fn remember(&self, reference: &Ref, root: &Root) -> Result<()> {
+        if reference.repo_id.starts_with("local/") || reference.repo_id.starts_with("sha256:") {
+            return Ok(());
         }
+        self.store.update_ref(&reference.repo_id, |old| {
+            let mut repo = old.unwrap_or_else(|| Repo::new(&reference.repo_id));
+            match root.release.is_empty() || root.lane.is_empty() {
+                true => repo.add_commit(root.object.clone()),
+                false => repo.set_lane(&root.release, &root.lane, root.object.clone()),
+            }
+            Some(repo)
+        })?;
         Ok(())
     }
 
-    pub async fn open(&self, mut reference: Ref, constraints: &crate::precision::Constraints) -> Result<Checkpoint> {
-        let Root { object: root, tag, variant } = self.root(&reference).await?;
-        let _root_hold = self.store.hold(std::slice::from_ref(&root))?;
-        self.fetch(std::slice::from_ref(&root), &Download::default())
-            .await?;
-        let bytes = self.store.read(&root)?;
-        let (tree, header, variant, mut extra) = match Tree::from_json(&bytes) {
+    /// The commit (or bare header) `reference` names, opened: its header fetched.
+    pub async fn open(&self, mut reference: Ref, hardware: &Hardware) -> Result<Checkpoint> {
+        let root = self.root(&reference, hardware).await?;
+        let _root_hold = self.store.hold(std::slice::from_ref(&root.object))?;
+        self.fetch(std::slice::from_ref(&root.object), &Download::default()).await?;
+        let bytes = self.store.read(&root.object)?;
+        let (tree, header, lane, mut extra) = match Tree::from_json(&bytes) {
             Ok(tree) => {
-                let named = fetch::pick_variant(&tree, reference.revision.as_deref(), variant, reference.variant.as_deref())?;
-                let selected = match named {
-                    Some(named) => named,
-                    None => {
-                        let repo = &reference.repo_id;
-                        let index = !self.offline && !repo.starts_with("local/") && !repo.starts_with("sha256:");
-                        let origin = index.then_some(&*self.endpoint.inner as &dyn Origin);
-                        let model = tag.as_ref().map_or_else(|| repo.clone(), |tag| format!("{repo}@{}", tag.name));
-                        let headers: Vec<_> = tree.variants().map(|(_, header)| header.clone()).collect();
-                        let _headers_hold = self.store.hold(&headers)?;
-                        let fetch = async |headers: &[ObjectRef]| self.fetch(headers, &Download::default()).await.map(drop);
-                        let selected = fetch::select(origin, &self.store, repo, &model, &root, &tree, constraints, fetch).await?;
-                        for reason in &selected.reasons { tracing::warn!("{reason}"); }
-                        selected.variant
-                    }
-                };
-                let wanted = Some(selected.as_str());
-                let (variant, header) = tree.variant(wanted).map_err(|e| absent(wanted.is_some(), e))?;
+                let header = tree.header()?.1.clone();
                 let extra = tree.repo_files().map(|(_, r)| r.clone()).collect();
-                (
-                    Some(root.clone()),
-                    header.clone(),
-                    Some(variant.to_owned()),
-                    extra,
-                )
+                (Some(root.object.clone()), header, Some(tree.lane), extra)
             }
             Err(_) => {
                 Header::from_cbor(&bytes)?;
-                (None, root.clone(), reference.variant.clone(), Vec::new())
+                (None, root.object.clone(), None, Vec::new())
             }
         };
         let _metadata_hold = self.store.hold(std::slice::from_ref(&header))?;
-        self.fetch(std::slice::from_ref(&header), &Download::default())
-            .await?;
+        self.fetch(std::slice::from_ref(&header), &Download::default()).await?;
         let raw = match &tree {
-            Some(tree) => self.store.variant(tree, variant.as_deref())?,
+            Some(tree) => {
+                self.remember(&reference, &root)?;
+                extra.push(tree.clone());
+                self.store.at_commit(tree)?
+            }
             None => self.store.checkpoint(&header)?,
         };
-        if tree.is_some() {
-            self.remember(&reference, tag.as_ref())?;
-        }
-        reference.revision = tag.map(|t| t.name).or(reference.revision);
-        reference.variant = variant;
-        if let Some(tree) = &tree {
-            extra.push(tree.clone());
-        }
-        let variant = reference.variant.clone();
+        reference.release = (!root.release.is_empty()).then_some(root.release).or(reference.release);
+        reference.lane = lane.filter(|l| !l.is_empty()).or(reference.lane);
         let named = (!reference.repo_id.starts_with("sha256:")).then_some(reference);
-        Checkpoint::managed(
-            raw,
-            named,
-            tree,
-            Some(self.clone()),
-            extra,
-            self.store.clone(),
-            variant,
-        )
+        Checkpoint::managed(raw, named, tree, Some(self.clone()), extra, self.store.clone())
     }
 
-    pub async fn snapshot(
-        &self,
-        reference: &Ref,
-        want: &Download<'_>,
-        local_dir: Option<&Path>,
-    ) -> Result<PathBuf> {
-        let Root { object: root, tag, variant } = self.root(reference).await?;
-        let _root_hold = self.store.hold(std::slice::from_ref(&root))?;
-        self.fetch(std::slice::from_ref(&root), &Download::default())
-            .await?;
-        let tree = self.store.tree(&root)?;
-        let wanted = fetch::pick_variant(&tree, reference.revision.as_deref(), variant, reference.variant.as_deref())?;
-        let headers: Vec<_> = match wanted.as_deref() {
-            Some(variant) => vec![tree.variant(Some(variant)).map_err(|e| absent(true, e))?.1.clone()],
-            None => tree.variants().map(|(_, h)| h.clone()).collect(),
-        };
-        let _header_hold = self.store.hold(&headers)?;
-        self.fetch(&headers, &Download::default()).await?;
-        let mut payload = Vec::new();
-        for header in &headers {
-            payload.extend(super::selection::objects(
-                &self.store.checkpoint(header)?,
-                &want.selection,
-            )?);
-        }
+    /// The commit `reference` names as a plain folder: its repo files and header, and the
+    /// objects `want` selects.
+    pub async fn snapshot(&self, reference: &Ref, want: &Download<'_>, local_dir: Option<&Path>) -> Result<PathBuf> {
+        let root = self.root(reference, &Hardware::default()).await?;
+        let commit = root.object.clone();
+        let _root_hold = self.store.hold(std::slice::from_ref(&commit))?;
+        self.fetch(std::slice::from_ref(&commit), &Download::default()).await?;
+        let tree = self.store.tree(&commit)?;
+        let header = tree.header()?.1.clone();
+        let _header_hold = self.store.hold(std::slice::from_ref(&header))?;
+        self.fetch(std::slice::from_ref(&header), &Download::default()).await?;
+        let payload = super::selection::objects(&self.store.checkpoint(&header)?, &want.selection)?;
         let mut objects: Vec<_> = tree.repo_files().map(|(_, r)| r.clone()).collect();
         objects.extend(payload.iter().cloned());
         let _object_hold = self.store.hold(&objects)?;
         self.fetch(&objects, want).await?;
-        self.remember(reference, tag.as_ref())?;
+        self.remember(reference, &root)?;
         let identity = match &want.selection {
-            super::Selection::All => root.sha256.clone(),
-            _ => crate::sha256::hex_digest(
-                format!("{}:{:?}:{:?}", root.sha256, wanted, want.selection).as_bytes(),
-            ),
+            super::Selection::All => commit.sha256.clone(),
+            _ => crate::sha256::hex_digest(format!("{}:{:?}", commit.sha256, want.selection).as_bytes()),
         };
-        let used = std::iter::once(&root).chain(&headers).chain(&objects);
+        let used = std::iter::once(&commit).chain(std::iter::once(&header)).chain(&objects);
         self.store.used(&identity, used)?;
         let dest = local_dir
             .map(Path::to_path_buf)
             .unwrap_or_else(|| self.store.root().join("snapshots").join(identity));
         // The selected closure, not every payload that happens to be in the shared cache.
-        let chosen: Vec<_> = (tree.variants())
-            .filter(|(v, _)| wanted.as_deref().is_none_or(|want| want == *v))
-            .collect();
-        self.store.write_folder(&tree, &dest, &chosen, &payload)?;
+        self.store.write_folder(&tree, &dest, &payload)?;
         self.store.maintain(0)?;
         Ok(dest)
     }
@@ -347,11 +256,12 @@ impl Remote {
         filename: &str,
         local_dir: Option<&Path>,
     ) -> Result<PathBuf> {
-        let Root { object: root, tag, .. } = self.root(reference).await?;
-        let _root_hold = self.store.hold(std::slice::from_ref(&root))?;
-        self.fetch(std::slice::from_ref(&root), &Download::default())
+        let root = self.root(reference, &Hardware::default()).await?;
+        let commit = root.object.clone();
+        let _root_hold = self.store.hold(std::slice::from_ref(&commit))?;
+        self.fetch(std::slice::from_ref(&commit), &Download::default())
             .await?;
-        let tree = self.store.tree(&root)?;
+        let tree = self.store.tree(&commit)?;
         let object = tree.files.get(filename).ok_or_else(|| Failure {
             kind: Kind::NotFound,
             detail: format!("no repo file {filename:?}"),
@@ -359,20 +269,14 @@ impl Remote {
         let _object_hold = self.store.hold(std::slice::from_ref(object))?;
         self.fetch(std::slice::from_ref(object), &Download::default())
             .await?;
-        self.remember(reference, tag.as_ref())?;
-        self.store.used(&root.sha256, [&root, object])?;
+        self.remember(reference, &root)?;
+        self.store.used(&commit.sha256, [&commit, object])?;
         let folder = local_dir
             .map(Path::to_path_buf)
-            .unwrap_or_else(|| self.store.root().join("snapshots").join(&root.sha256));
+            .unwrap_or_else(|| self.store.root().join("snapshots").join(&commit.sha256));
         let dest = folder.join(filename);
         self.store.materialize(object, &dest)?;
         self.store.maintain(0)?;
         Ok(dest)
     }
-}
-
-/// A named variant the commit lacks is not found; an unnamed choice among several is invalid.
-fn absent(named: bool, e: crate::format::Error) -> Failure {
-    let kind = if named { Kind::NotFound } else { Kind::Invalid };
-    Failure { kind, detail: e.to_string() }
 }

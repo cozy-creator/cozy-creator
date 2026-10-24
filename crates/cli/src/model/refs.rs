@@ -1,9 +1,9 @@
 //! The one model-reference grammar, shared by `cozy model …` and `cozy run model.<slot>=…`:
 //!
 //! ```text
-//! [org/]name[@release]          a Hub model by name (no org: first-party, the root's); the machine
-//!                               resolves the release and selects its variant
-//! [org/]name#sha256:<64 hex>    the owner's checkpoint by hash
+//! [org/]name[@release]          a Hub model by name (no org: first-party, the root's); the Hub
+//!                               resolves the release (none: the newest) and its lane
+//! [org/]name@sha256:<64 hex>    one of the model's commits by id
 //! local/<alias>                 a model a machine holds under that name
 //! hf://… civitai://… https://…  a provider source, passed through: the machine pins and makes it
 //! ```
@@ -27,15 +27,15 @@ pub(crate) enum ModelRef {
         repo: Repo,
         release: Option<String>,
     },
-    Checkpoint {
+    Commit {
         repo: Repo,
-        manifest: String,
+        commit: String,
     },
     Local(String),
     Provider(String),
 }
 
-const GRAMMAR: &str = "[org/]name[@release], [org/]name#sha256:<hex>, local/<alias>, hf://…, civitai://… or https://…";
+const GRAMMAR: &str = "[org/]name[@release], [org/]name@sha256:<commit>, local/<alias>, hf://…, civitai://… or https://…";
 
 fn usage(code: &str, message: String) -> Error {
     Error::new(Kind::Usage, code, message)
@@ -53,35 +53,22 @@ fn slug(part: &str) -> bool {
 
 /// A release or lane label: alphanumeric first, then up to 63 of `A-Za-z0-9._+!-`.
 pub(crate) fn label(flag: &str, value: &str) -> Result<String, Error> {
-    let b = value.as_bytes();
-    let ok = (1..=64).contains(&b.len())
-        && b[0].is_ascii_alphanumeric()
-        && b.iter()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'+' | b'!' | b'-'));
-    if ok {
-        Ok(value.to_owned())
-    } else {
-        Err(usage(
+    match tensorfs::format::label(value) {
+        true => Ok(value.to_owned()),
+        false => Err(usage(
             "model_label_invalid",
             format!("{flag} {value:?}: start alphanumeric, then at most 63 of letters, digits, . _ + ! -"),
-        ))
+        )),
     }
 }
 
-/// A variant's exact tree path (`--variant`): a `.cozytensors` file by TensorFS's path grammar.
-pub(crate) fn variant(value: &str) -> Result<String, Error> {
-    let tree = tensorfs::format::Tree { files: std::collections::BTreeMap::from([(value.to_owned(),tensorfs::format::ObjectRef::of(b""))]) };
-    let valid = tree.to_json().and_then(|bytes| tensorfs::format::Tree::from_json(&bytes));
-    match valid {
-        Ok(tree) if tree.variants().next().is_some() => Ok(value.to_owned()),
-        Ok(_) => Err(usage("model_variant_invalid", format!("variant {value:?} is no .cozytensors path"))
-            .remedy("name the variant's path, e.g. model.int8.cozytensors (`cozy model info` lists them)")),
-        Err(e) => Err(usage("model_variant_invalid", format!("variant {value:?}: {e}"))),
-    }
+/// `--lane`, as clap validates it.
+pub(crate) fn lane(value: &str) -> Result<String, String> {
+    label("--lane", value).map_err(|e| e.message)
 }
 
-/// A checkpoint id: `sha256:` and 64 lowercase hex digits.
-pub(crate) fn checkpoint(value: &str) -> Result<String, Error> {
+/// A commit id: `sha256:` and 64 lowercase hex digits.
+pub(crate) fn commit(value: &str) -> Result<String, Error> {
     match value.strip_prefix("sha256:") {
         Some(hex)
             if hex.len() == 64
@@ -91,7 +78,7 @@ pub(crate) fn checkpoint(value: &str) -> Result<String, Error> {
         }
         _ => Err(usage(
             "checkpoint_invalid",
-            format!("{value:?} is not a checkpoint id"),
+            format!("{value:?} is not a commit id"),
         )
         .remedy("write sha256:<64 lowercase hex>")),
     }
@@ -127,13 +114,6 @@ impl Repo {
     }
 }
 
-/// An upload's destination, `[org/]name[@tag]`: a Hub repository and the private tag the upload
-/// moves, `main` unless named. Sent as `org/name@tag`.
-pub(crate) fn destination(raw: &str) -> Result<String, Error> {
-    let (name, tag) = raw.trim().split_once('@').unwrap_or((raw.trim(), "main"));
-    Ok(format!("{}@{}", Repo::hub(name)?, label("tag", tag)?))
-}
-
 impl fmt::Display for Repo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}/{}", self.org, self.name)
@@ -152,11 +132,6 @@ impl ModelRef {
                 )),
             };
         }
-        if let Some((name, hash)) = raw.split_once('#') {
-            let repo = Repo::parse(name).map_err(|_| grammar(raw))?;
-            let manifest = checkpoint(hash).map_err(|e| e.remedy("`#` names a checkpoint, [org/]name#sha256:<hex>"))?;
-            return Ok(ModelRef::Checkpoint { repo, manifest });
-        }
         let (name, pin) = match raw.split_once('@') {
             Some((name, pin)) => (name, Some(pin)),
             None => (raw, None),
@@ -171,9 +146,8 @@ impl ModelRef {
                 )),
             };
         }
-        if pin.is_some_and(|pin| pin.contains('/')) {
-            return Err(usage("model_variant_pin", format!("{raw:?}: a model is [org/]name[@release]; its variant is selected by GPUs and --lane"))
-                .remedy("pin a variant by path with `cozy model download … --variant <path>`"));
+        if let Some(id) = pin.filter(|pin| pin.starts_with("sha256:")) {
+            return Ok(ModelRef::Commit { repo, commit: commit(id)? });
         }
         let release = pin.map(|release| label("release", release)).transpose()?;
         Ok(ModelRef::Hub { repo, release })
@@ -190,9 +164,9 @@ impl ModelRef {
                 choice.repository = repo.to_string();
                 choice.release = release.clone().unwrap_or_default();
             }
-            ModelRef::Checkpoint { repo, manifest } => {
+            ModelRef::Commit { repo, commit } => {
                 choice.repository = repo.to_string();
-                choice.manifest = manifest.clone();
+                choice.manifest = commit.clone();
             }
             ModelRef::Local(alias) => choice.repository = format!("local/{alias}"),
             ModelRef::Provider(source) => choice.source = source.clone(),
@@ -212,7 +186,7 @@ impl fmt::Display for ModelRef {
                 }
                 Ok(())
             }
-            ModelRef::Checkpoint { repo, manifest } => write!(f, "{repo}#{manifest}"),
+            ModelRef::Commit { repo, commit } => write!(f, "{repo}@{commit}"),
             ModelRef::Local(alias) => write!(f, "local/{alias}"),
             ModelRef::Provider(source) => f.write_str(source),
         }

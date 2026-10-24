@@ -1,5 +1,6 @@
-//! `cozy model upload run:N[#output] org/model`: a run's weights output as a private checkpoint in
-//! the owner's repository, uploaded by the machine that holds it, without running it again.
+//! `cozy model upload run:N[#output] org/model --lane <lane>`: a run's weights output as a new
+//! private commit of the user's model, uploaded by the machine that holds it, without running it
+//! again.
 use std::process::ExitCode;
 
 use protocol::{
@@ -14,7 +15,7 @@ use crate::{
 };
 
 /// `reference` is `N[#output]`, after `run:`; `destination` is already parsed.
-pub(crate) async fn upload(ctx: &Context, reference: &str, destination: &str) -> Result<ExitCode, Error> {
+pub(crate) async fn upload(ctx: &Context, reference: &str, destination: &str, lane: &str) -> Result<ExitCode, Error> {
     let (number, output) = match reference.split_once('#') {
         Some((number, output)) => (number, Some(output)),
         None => (reference, None),
@@ -29,18 +30,8 @@ pub(crate) async fn upload(ctx: &Context, reference: &str, destination: &str) ->
         )
     })?;
     let hub = ctx.config.resolve(&run.hub)?;
-    if !ctx.signed_in(&hub) {
-        return Err(Error::new(
-            Kind::Credential,
-            "hub_sign_in_required",
-            format!(
-                "an upload goes to your account at {}, which needs your sign-in",
-                hub.origin
-            ),
-        )
-        .next("cozy login <email>"));
-    }
-    let submission = submission(&run, item, machine, destination);
+    ctx.hub_session(&hub)?;
+    let submission = submission(&run, item, machine, destination, lane);
     let submitted = submit(ctx, submission, None).await?;
     Ok(exit_code(&follow(ctx, submitted.run).await?))
 }
@@ -75,20 +66,20 @@ fn weights<'a>(run: &'a Run, output: Option<&str>) -> Result<&'a OutputItem, Err
     }
 }
 
-/// A WARM run on the run's machine: the output's checkpoint by hash, into `destination`.
-fn submission(run: &Run, item: &OutputItem, machine: String, destination: &str) -> SubmitRun {
+/// A WARM run on the run's machine: the output's commit by hash, into `destination` in `lane`.
+fn submission(run: &Run, item: &OutputItem, machine: String, destination: &str, lane: &str) -> SubmitRun {
     let reference = (item.checkpoint.as_ref()).expect("a weights output names its checkpoint");
     let model = ModelChoice {
         parameter: item.name.clone(),
         repository: reference.repo_id.clone(),
         manifest: reference.revision.clone(),
-        lane: reference.variant.clone(),
         ..Default::default()
     };
     let spec = v1::RunSpec {
         kind: v1::RunKind::Warm,
         models: vec![model],
         weights_destination: destination.to_owned(),
+        lane: lane.to_owned(),
         ..Default::default()
     };
     SubmitRun {

@@ -177,31 +177,18 @@ impl Cas {
         }
     }
 
-    pub fn held(&self, id: &str) -> io::Result<Option<Hold>> {
-        match fs::read(self.hold_path(id)?) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(io::Error::other),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error),
-        }
-    }
-
-    /// Drops hold `id`: its objects age from their last use. Whether it was held.
-    pub fn release(&self, id: &str) -> io::Result<bool> {
-        match fs::remove_file(self.hold_path(id)?) {
-            Ok(()) => Ok(true),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-            Err(error) => Err(error),
-        }
-    }
-
     /// Removes each unheld object unused for `age` that `doomed` agrees to, and temp files as
-    /// old: the digests removed.
+    /// old: the digests removed. The gate is taken while the holds are read and again around
+    /// each object's last check and removal, never across the walk: a hold written meanwhile
+    /// renews its roots' use (`hold`), so they are young when their turn comes.
     pub fn sweep(&self, age: Duration, doomed: &mut dyn FnMut(&str) -> io::Result<bool>) -> io::Result<Vec<String>> {
-        let _gate = GATE.write().unwrap();
         let mut held = BTreeSet::new();
-        for entry in fs::read_dir(self.root.join("holds")).into_iter().flatten().flatten() {
-            let hold: Hold = serde_json::from_slice(&fs::read(entry.path())?).map_err(io::Error::other)?;
-            held.extend(hold.roots.into_iter().map(|root| root.sha256));
+        {
+            let _gate = GATE.write().unwrap();
+            for entry in fs::read_dir(self.root.join("holds")).into_iter().flatten().flatten() {
+                let hold: Hold = serde_json::from_slice(&fs::read(entry.path())?).map_err(io::Error::other)?;
+                held.extend(hold.roots.into_iter().map(|root| root.sha256));
+            }
         }
         let mut removed = vec![];
         for dir in fs::read_dir(&self.root).into_iter().flatten().flatten() {
@@ -219,7 +206,11 @@ impl Cas {
             }
             for entry in fs::read_dir(dir.path())?.flatten() {
                 let sha256 = entry.file_name().to_string_lossy().into_owned();
-                if !is_hex(&sha256) || held.contains(&sha256) || !old(&entry.path(), age) || !doomed(&sha256)? {
+                if !is_hex(&sha256) || held.contains(&sha256) || !old(&entry.path(), age) {
+                    continue;
+                }
+                let _gate = GATE.write().unwrap();
+                if !old(&entry.path(), age) || !doomed(&sha256)? {
                     continue;
                 }
                 fs::remove_file(entry.path())?;

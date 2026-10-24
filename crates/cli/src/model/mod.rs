@@ -9,8 +9,6 @@ use crate::Context;
 mod catalog;
 mod from_run;
 mod machine;
-#[cfg(feature = "migrate")]
-mod migrate_headers;
 mod quantize;
 pub(crate) mod refs;
 mod releases;
@@ -23,9 +21,9 @@ pub struct Args {
 
 #[derive(Subcommand, Debug)]
 enum Verb {
-    /// Search the Hub's models: one row per model with its newest available release.
+    /// Search the Hub's models: one row per model with its newest release.
     Search(Search),
-    /// A model's releases, their lanes, sizes and commits.
+    /// A model's releases and their lanes; to its org's members, every commit too.
     Info(Info),
     /// Set or clear a model's discovery family.
     Family(Family),
@@ -33,22 +31,17 @@ enum Verb {
     List(List),
     /// Make a model present in a machine's store. Follows it to its end; Ctrl-C stops following, never the work.
     Download(Download),
-    /// Make a model on a machine, or take a run's weights output (run:N), and upload it as a private
-    /// checkpoint. Follows it to its end; Ctrl-C stops following, never the work.
+    /// Make a model on a machine, or take a run's weights output (run:N), and upload it as a new
+    /// private commit in a lane: its id. Follows it to its end; Ctrl-C stops following, never the work.
     Upload(Upload),
-    /// Write a model's lanes (--format int8,fp8,…), or any lane, by the recipe a named package
-    /// declares. Follows it to its end; Ctrl-C stops following, never the work.
+    /// Write a new commit in a lane from a commit or release, by the recipe a named package
+    /// declares for that lane. Follows it to its end; Ctrl-C stops following, never the work.
     Quantize(Quantize),
-    /// Release a commit: a public tag named by a version, created, moved, or a private one made public.
+    /// Release commits as a version, public for good: one commit per lane, the version higher
+    /// than every earlier one.
     Publish(Publish),
-    /// Yank a release: only its exact version resolves it; --undo takes it back.
-    Yank(Yank),
-    /// Delete one tag, or the whole model.
+    /// Delete a commit no release names, or the whole model.
     Delete(Delete),
-    /// Dev builds only: move models from before D10 onto it, header-only.
-    #[cfg(feature = "migrate")]
-    #[command(hide = true)]
-    MigrateHeaders(migrate_headers::Args),
 }
 
 #[derive(clap::Args, Debug)]
@@ -90,14 +83,10 @@ pub(crate) struct List {
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct Download {
-    /// precision lane: 16, 8 or 4 bits. Absent, 8 is preferred, in the encoding the machine's GPUs
-    /// run best, else whatever works.
-    #[arg(long, value_parser = ["16", "8", "4"], conflicts_with = "variant")]
+    /// The lane (a label: bf16, fp8, …); absent, the Hub picks what the machine runs best.
+    #[arg(long, value_parser = refs::lane)]
     lane: Option<String>,
-    /// This variant exactly, by its path in the release (`cozy model info` lists them).
-    #[arg(long, value_name = "PATH")]
-    variant: Option<String>,
-    /// org/name[@release], org/name#sha256:…, hf://…, civitai://… or https://….
+    /// org/name[@release], org/name@sha256:<commit>, hf://…, civitai://… or https://….
     model: String,
     /// Keep it on the machine under this name.
     #[arg(value_name = "local/ALIAS")]
@@ -108,13 +97,16 @@ pub(crate) struct Download {
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct Upload {
-    /// A provider source, local/<alias>, a Hub model or checkpoint, ./file.safetensors, a
-    /// CozyTensors folder (all variants and repo files; its chunks may already be at the Hub), or
-    /// run:N[#output], a run's weights output, uploaded from the machine that holds it.
+    /// A provider source, local/<alias>, a Hub model or commit, ./file.safetensors, a
+    /// CozyTensors folder (one .cozytensors file and its repo files; its chunks may already be at
+    /// the Hub), or run:N[#output], a run's weights output, uploaded from the machine that holds it.
     #[arg(add = clap_complete::ArgValueCompleter::new(crate::completion::local))]
     source: String,
-    /// Where it goes: org/name[@tag], the Hub repository and the private tag the upload moves (main).
+    /// The Hub model it becomes a commit of: org/name.
     destination: String,
+    /// The commit's lane, a label (bf16, fp8, int8-convrot, …).
+    #[arg(long, value_parser = refs::lane)]
+    lane: String,
     /// A reviewed TensorFS profile to convert with; repeat to compose one model.
     #[arg(long = "source-profile", value_name = "PROFILE")]
     profiles: Vec<String>,
@@ -123,28 +115,16 @@ pub(crate) struct Upload {
 }
 
 #[derive(clap::Args, Debug)]
-#[command(group(ArgGroup::new("lane").required(true).args(["format", "recipe"])))]
 pub(crate) struct Quantize {
-    /// org/name[@release-or-tag] (main after an upload; none: its default) or org/name#sha256:….
+    /// What it reads: org/name@sha256:<commit> or org/name@<release> (none: the newest).
     model: String,
-    /// Where it goes: org/name[@tag], the tag whose tree takes the variant (main); default: the
-    /// model's own.
-    #[arg(value_name = "DESTINATION")]
-    destination: Option<String>,
-    /// The lanes to write, comma-separated, one run each: int8 (int8-convrot), fp8 (row-scaled
-    /// FP8), nvfp4 (block-scaled FP4), w4a8 (4-bit ConvRot codes on int8 tensor cores: Ampere,
-    /// Ada, Hopper), svdq-nvfp4 (SVDQuant: an nvfp4 residual and a 16-bit low-rank branch,
-    /// Blackwell).
-    #[arg(long, value_name = "FORMAT,...", value_delimiter = ',', conflicts_with = "recipe",
-        value_parser = crate::run::interface::LANE_FLAGS)]
-    format: Vec<String>,
-    /// Run the package's recipe of this name: any lane's (`drafter_head` writes a drafter).
-    #[arg(long, value_name = "NAME")]
-    recipe: Option<String>,
+    /// The lane to write: a recipe the package declares for this model; the new commit's lane.
+    #[arg(long, value_parser = refs::lane)]
+    lane: String,
     /// The package whose recipe writes the lane: org/name[@release], or ./dir for one not yet
     /// published. Required: packages that serve the same model can each declare one.
     #[arg(long)]
-    package: Option<String>,
+    package: String,
     #[command(flatten)]
     placement: crate::run::Placement,
 }
@@ -153,30 +133,16 @@ pub(crate) struct Quantize {
 pub(crate) struct Publish {
     /// org/name.
     model: String,
-    /// The release: any tag name; only a PEP 440 version is a candidate for the unversioned default.
-    #[arg(long)]
-    release: String,
-    /// The commit it names: a tag, or sha256:<hex> of a commit or a variant header; default: the
-    /// release's own tag.
-    #[arg(long, value_name = "COMMIT")]
-    commit: Option<String>,
-}
-
-#[derive(clap::Args, Debug)]
-pub(crate) struct Yank {
-    /// org/name.
-    model: String,
-    /// The release to yank.
-    #[arg(long)]
-    release: String,
-    /// Un-yank it instead.
-    #[arg(long)]
-    undo: bool,
+    /// The release's version: PEP 440, higher than every earlier release.
+    version: String,
+    /// The commits it names (sha256:<hex>), one per lane.
+    #[arg(required = true, value_name = "COMMIT")]
+    commits: Vec<String>,
 }
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct Delete {
-    /// org/name, or org/name@tag for one tag.
+    /// org/name for the whole model, or org/name@sha256:<commit> for a commit no release names.
     model: String,
 }
 
@@ -186,13 +152,10 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         Verb::Info(args) => catalog::info(ctx, args).await,
         Verb::Family(args) => catalog::family(ctx, args).await,
         Verb::Publish(args) => releases::publish(ctx, args).await,
-        Verb::Yank(args) => releases::yank(ctx, args).await,
         Verb::Delete(args) => releases::delete(ctx, args).await,
         Verb::List(args) => machine::list(ctx, args).await,
         Verb::Download(args) => machine::download(ctx, args).await,
         Verb::Upload(args) => machine::upload(ctx, args).await,
         Verb::Quantize(args) => quantize::quantize(ctx, args).await,
-        #[cfg(feature = "migrate")]
-        Verb::MigrateHeaders(args) => migrate_headers::exec(ctx, args).await,
     }
 }

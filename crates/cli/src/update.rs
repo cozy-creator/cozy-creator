@@ -1,78 +1,24 @@
-//! `cozy update [VERSION]` (design §5): replaces this binary with a release's and restarts Calcifer on
-//! it; the local machine moves to it once idle. The release's dist-manifest.json names this target's archive and its
-//! sha256; the release also carries the archive's GitHub attestations (`<archive>.sigstore.jsonl`, one
-//! Sigstore bundle per line), and one must verify as this repo's release workflow, pinned by GitHub
-//! repository id so a rename keeps verifying and a repo that takes an old name never does.
+//! `cozy update [VERSION]` (design §5): replaces this binary with a release's, verified as
+//! `platform::release` verifies one, and restarts Calcifer on it; the local machine moves to it once
+//! idle. `download_url` (`COZY_DOWNLOAD_URL`, which dist's installers read too) serves one release's
+//! files in place of GitHub's.
 use std::{
-    collections::BTreeMap,
     io,
     path::{Path, PathBuf},
     process::ExitCode,
 };
 
+use platform::release::{self, Release, TARGET};
 use protocol::error::{Error, Kind};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
-use sigstore_verify::{
-    VerificationPolicy, VerificationResult,
-    trust_root::{SigstoreInstance, TrustedRoot},
-    types::Bundle,
-};
 
 use crate::{Context, machine::Adopted};
-
-const RELEASES: &str = "https://github.com/cozy-creator/cozy-creator/releases";
-const ISSUER: &str = "https://token.actions.githubusercontent.com";
-/// This repo's GitHub id, which a rename keeps.
-const REPOSITORY_ID: &str = "1345607976";
-/// Its release workflow, on any ref. A hard cut (Paul 10-24): releases signed by release.yml, before it, are refused,
-/// and a cozy that predates this one refuses releases it signs (reinstall once with the install line).
-const WORKFLOW: &str = "/.github/workflows/cozy-publish.yaml@";
-
-/// The dist target whose archive replaces this binary.
-const TARGET: &str = if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-    "x86_64-unknown-linux-gnu"
-} else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
-    "aarch64-unknown-linux-gnu"
-} else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-    "aarch64-apple-darwin"
-} else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
-    "x86_64-apple-darwin"
-} else if cfg!(all(windows, target_arch = "x86_64")) {
-    "x86_64-pc-windows-msvc"
-} else if cfg!(all(windows, target_arch = "aarch64")) {
-    "aarch64-pc-windows-msvc"
-} else {
-    "unreleased"
-};
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
     /// The release to install, even when it is this one (default: the newest, when newer).
     version: Option<String>,
-}
-
-/// The fields of dist's manifest an update reads.
-#[derive(Deserialize)]
-struct Manifest {
-    announcement_tag: String,
-    releases: Vec<Release>,
-    artifacts: BTreeMap<String, Artifact>,
-}
-
-#[derive(Deserialize)]
-struct Release {
-    app_name: String,
-    app_version: String,
-}
-
-#[derive(Deserialize)]
-struct Artifact {
-    kind: String,
-    #[serde(default)]
-    target_triples: Vec<String>,
-    #[serde(default)]
-    checksums: BTreeMap<String, String>,
 }
 
 #[derive(Serialize)]
@@ -110,63 +56,44 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         .next("brew upgrade cozy"));
     }
     let wanted = args.version.as_deref().map(|v| v.trim_start_matches('v'));
-    let dir = match (&ctx.config.download_url, wanted) {
-        (Some(url), _) => url.as_str().trim_end_matches('/').to_owned(),
-        (None, Some(version)) => format!("{RELEASES}/download/v{version}"),
-        (None, None) => format!("{RELEASES}/latest/download"),
+    let dir = match &ctx.config.download_url {
+        Some(url) => url.as_str().trim_end_matches('/').to_owned(),
+        None => release::dir(wanted).map_err(refused)?,
     };
     let http = reqwest::Client::builder()
         .user_agent(concat!("cozy/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|e| Error::new(Kind::Internal, "http_client", e.to_string()))?;
 
-    let manifest: Manifest = get(&http, &format!("{dir}/dist-manifest.json"))
-        .await?
-        .json()
-        .await
-        .map_err(|e| unavailable(&dir, e))?;
-    let version = manifest
-        .releases
-        .iter()
-        .find(|r| r.app_name == "cozy")
-        .map(|r| r.app_version.clone())
-        .ok_or_else(|| not_found(format!("{dir} holds no cozy release")))?;
-    match wanted {
-        Some(wanted) if wanted != version => {
-            return Err(not_found(format!(
-                "{dir} holds cozy {version}, not {wanted}"
-            )));
-        }
-        None if !newer(&version, current) => {
-            println!("cozy {current} is the newest release");
-            return Ok(ExitCode::SUCCESS);
-        }
-        _ => {}
+    let manifest = text(&http, &format!("{dir}/dist-manifest.json")).await?;
+    let release = Release::read(&dir, &manifest, wanted).map_err(refused)?;
+    let version = release.version.clone();
+    if wanted.is_none() && !newer(&version, current) {
+        println!("cozy {current} is the newest release");
+        return Ok(ExitCode::SUCCESS);
     }
-    let (name, artifact) = manifest
-        .artifacts
-        .iter()
-        .find(|(_, a)| a.kind == "executable-zip" && a.target_triples.iter().any(|t| t == TARGET))
-        .ok_or_else(|| not_found(format!("cozy {version} has no build for {TARGET}")))?;
     let url = match &ctx.config.download_url {
-        Some(_) => format!("{dir}/{name}"),
-        None => format!("{RELEASES}/download/{}/{name}", manifest.announcement_tag),
+        Some(_) => format!("{dir}/{}", release.archive),
+        None => release.url(),
     };
+    let bundles = format!("{url}.sigstore.jsonl");
+    let signer = release
+        .signer(&bundles, &text(&http, &bundles).await?)
+        .map_err(refused)?;
     let archive = get(&http, &url)
         .await?
         .bytes()
         .await
         .map_err(|e| unavailable(&url, e))?;
     let sha256 = hex::encode(Sha256::digest(&archive));
-    if artifact.checksums.get("sha256") != Some(&sha256) {
+    if sha256 != release.sha256 {
         return Err(Error::new(
             Kind::Validation,
             "checksum_mismatch",
             format!("{url} has sha256 {sha256}, not the one its release names"),
         ));
     }
-    let signer = attested(&http, &url, &archive).await?;
-    let new = unpack(&archive, &binary).map_err(|e| local("unpack", e))?;
+    let new = unpack(&release, &archive, &binary).map_err(|e| local("unpack", e))?;
     let runs = std::process::Command::new(&new)
         .arg("--version")
         .output()
@@ -203,7 +130,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         from: current,
         to: version,
         binary,
-        archive: name.clone(),
+        archive: release.archive,
         sha256,
         signer,
         calcifer,
@@ -252,131 +179,13 @@ fn installed() -> Result<PathBuf, Error> {
     exe.canonicalize().map_err(|e| local("find this binary", e))
 }
 
-/// The release workflow run that signed `archive`, from the bundles the release carries beside it
-/// (Sigstore public good).
-async fn attested(http: &reqwest::Client, url: &str, archive: &[u8]) -> Result<String, Error> {
-    let bundles = format!("{url}.sigstore.jsonl");
-    let lines = get(http, &bundles)
-        .await?
-        .text()
-        .await
-        .map_err(|e| unavailable(&bundles, e))?;
-    signer(&bundles, &lines, archive.into())
-}
-
-/// The signer of the first bundle in `lines` that attests `artifact` as this repo's release workflow.
-fn signer(
-    bundles: &str,
-    lines: &str,
-    artifact: sigstore_verify::types::Artifact<'_>,
-) -> Result<String, Error> {
-    let root = TrustedRoot::from_embedded(SigstoreInstance::PublicGood)
-        .map_err(|e| Error::new(Kind::Internal, "sigstore_root", e.to_string()))?;
-    let policy = VerificationPolicy::any_identity().require_issuer(ISSUER);
-    let mut seen = Vec::new();
-    for line in lines.lines().filter(|line| !line.trim().is_empty()) {
-        let verified = Bundle::from_json(line)
-            .map_err(|e| e.to_string())
-            .and_then(|bundle| {
-                sigstore_verify::verify(artifact.clone(), &bundle, &policy, &root)
-                    .map_err(|e| e.to_string())
-            })
-            .and_then(|result| ours(&result));
-        match verified {
-            Ok(signer) => return Ok(signer),
-            Err(e) => seen.push(e),
-        }
-    }
-    Err(Error::new(
-        Kind::Validation,
-        "unattested",
-        format!(
-            "no bundle in {bundles} verifies as the release workflow of GitHub repository {REPOSITORY_ID}: [{}]",
-            seen.join("; ")
-        ),
-    ))
-}
-
-/// The signer, when the certificate is this repository's (by id) and the signer is its own release workflow.
-fn ours(result: &VerificationResult) -> Result<String, String> {
-    let signer = result.identity().map_or("", |id| id.as_str());
-    let claims = result.certificate().map(|cert| &cert.ci_claims);
-    let repository = claims
-        .and_then(|c| c.source_repository_uri.as_deref())
-        .unwrap_or_default();
-    let id = claims
-        .and_then(|c| c.source_repository_identifier.as_deref())
-        .unwrap_or_default();
-    let release_workflow = !repository.is_empty()
-        && signer
-            .strip_prefix(repository)
-            .is_some_and(|path| path.starts_with(WORKFLOW));
-    if result.certificate_verified() && id == REPOSITORY_ID && release_workflow {
-        Ok(signer.to_owned())
-    } else {
-        Err(format!("signed by {signer} (GitHub repository {id})"))
-    }
-}
-
-/// cozy `version`'s binary for another machine's dist `target` (`x86_64-unknown-linux-gnu`),
-/// fetched as `cozy update` fetches this one's (its sha256 from the release's manifest, its
-/// attestation verified) and unpacked to a temporary file: what a machine whose TensorD fetches
-/// no release itself is sent.
-pub(crate) async fn release_binary(version: &str, target: &str) -> Result<tempfile::TempPath, Error> {
-    let dir = format!("{RELEASES}/download/v{version}");
-    let http = reqwest::Client::builder()
-        .user_agent(concat!("cozy/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|e| Error::new(Kind::Internal, "http_client", e.to_string()))?;
-    let manifest: Manifest = get(&http, &format!("{dir}/dist-manifest.json"))
-        .await?
-        .json()
-        .await
-        .map_err(|e| unavailable(&dir, e))?;
-    let (name, artifact) = (manifest.artifacts.iter())
-        .find(|(_, a)| a.kind == "executable-zip" && a.target_triples.iter().any(|t| t == target))
-        .ok_or_else(|| not_found(format!("cozy {version} has no build for {target}")))?;
-    let url = format!("{RELEASES}/download/{}/{name}", manifest.announcement_tag);
-    let archive = get(&http, &url).await?.bytes().await.map_err(|e| unavailable(&url, e))?;
-    let sha256 = hex::encode(Sha256::digest(&archive));
-    if artifact.checksums.get("sha256") != Some(&sha256) {
-        return Err(Error::new(
-            Kind::Validation,
-            "checksum_mismatch",
-            format!("{url} has sha256 {sha256}, not the one its release names"),
-        ));
-    }
-    attested(&http, &url, &archive).await?;
-    let mut file = tempfile::Builder::new().prefix(".cozy-release-").tempfile().map_err(|e| local("stage the binary", e))?;
-    let copied = match name.ends_with(".zip") {
-        true => zip::ZipArchive::new(io::Cursor::new(&archive[..]))
-            .and_then(|mut zip| Ok(io::copy(&mut zip.by_name("cozy.exe")?, &mut file)?))
-            .map_err(io::Error::other),
-        false => untar(&archive, &mut file),
-    };
-    copied.map_err(|e| local("unpack the binary", e))?;
-    Ok(file.into_temp_path())
-}
-
-/// dist's `.tar.gz`, whatever this computer runs: one top directory holding `cozy`.
-fn untar(archive: &[u8], out: &mut impl io::Write) -> io::Result<u64> {
-    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(archive));
-    for entry in tar.entries()? {
-        let mut entry = entry?;
-        if entry.path()?.file_name() == Some("cozy".as_ref()) {
-            return io::copy(&mut entry, out);
-        }
-    }
-    Err(io::Error::new(io::ErrorKind::NotFound, "the archive holds no cozy"))
-}
-
 /// Writes the archive's `cozy` beside `binary` (a file there can run, and the swap stays on one disk).
-fn unpack(archive: &[u8], binary: &Path) -> io::Result<tempfile::TempPath> {
+fn unpack(release: &Release, archive: &[u8], binary: &Path) -> io::Result<tempfile::TempPath> {
     let mut file = tempfile::Builder::new()
         .prefix(".cozy-update-")
         .suffix(std::env::consts::EXE_SUFFIX)
         .tempfile_in(binary.parent().unwrap_or(Path::new(".")))?;
-    extract(archive, &mut file)?;
+    release.unpack(io::Cursor::new(archive), &mut file)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -387,17 +196,12 @@ fn unpack(archive: &[u8], binary: &Path) -> io::Result<tempfile::TempPath> {
     Ok(file.into_temp_path())
 }
 
-/// dist's `.tar.gz`: one top directory holding `cozy`.
-#[cfg(unix)]
-fn extract(archive: &[u8], out: &mut impl io::Write) -> io::Result<u64> {
-    untar(archive, out)
-}
-
-/// dist's `.zip`: `cozy.exe` at its root.
-#[cfg(windows)]
-fn extract(archive: &[u8], out: &mut impl io::Write) -> io::Result<u64> {
-    let mut zip = zip::ZipArchive::new(io::Cursor::new(archive))?;
-    io::copy(&mut zip.by_name("cozy.exe")?, out)
+async fn text(http: &reqwest::Client, url: &str) -> Result<String, Error> {
+    get(http, url)
+        .await?
+        .text()
+        .await
+        .map_err(|e| unavailable(url, e))
 }
 
 async fn get(http: &reqwest::Client, url: &str) -> Result<reqwest::Response, Error> {
@@ -417,7 +221,6 @@ async fn get(http: &reqwest::Client, url: &str) -> Result<reqwest::Response, Err
     }
 }
 
-/// Whether release `version` is newer than `current`; one that does not parse never is.
 /// Whether release `version` replaces `current`: a newer release, or any release over a dev build
 /// (`+dev.g<sha>`), even the release it was built from.
 fn newer(version: &str, current: &str) -> bool {
@@ -448,6 +251,15 @@ fn step(step: &Step) -> &'static str {
 
 fn not_found(message: String) -> Error {
     Error::new(Kind::NotFound, "release_not_found", message)
+}
+
+fn refused(e: release::Refused) -> Error {
+    let kind = match e.code {
+        "release_not_found" => Kind::NotFound,
+        "unattested" => Kind::Validation,
+        _ => Kind::Unavailable,
+    };
+    Error::new(kind, e.code, e.message)
 }
 
 fn unavailable(url: &str, error: impl std::fmt::Display) -> Error {

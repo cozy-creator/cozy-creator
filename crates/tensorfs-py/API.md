@@ -25,24 +25,23 @@ uv pip install tensorfs
 ```python
 import tensorfs
 
-checkpoint = tensorfs.open("me/model", revision="1.0", lane=16)
+checkpoint = tensorfs.open("me/model", release="1.0", lane="bf16")
 weight = checkpoint.components["unet"].tensors.read("conv_in.weight")
 ```
 
-In these examples `me/model` stands for a repository you can read, with `bf16` and `int8` variants.
+In these examples `me/model` stands for a repository you can read, with `bf16` and `int8` lanes.
 
 `open` returns a `Checkpoint`. By default (`lazy=True`), it loads metadata; reading
-tensors then downloads the objects those tensors need. `revision` names a tag, a commit (`sha256:<tree>`) or a
-variant header (`sha256:<header>`), resolved once at open; without one, the newest public final release;
-`variant` selects a representation such as `bf16` or `int8`. Without a variant, a
-single-variant tree is unambiguous; a multi-variant tree requires a choice. No separate
+tensors then downloads the objects those tensors need. `release` names a release (none: the
+newest) and `lane` its commit of that lane; without a lane the endpoint picks what `gpus` run best
+(omitted: the visible GPUs; `[]`: the CPU). `"me/model@sha256:<tree>"` names a commit by id. No separate
 download call is required. The same `open` accepts a local `.cozytensors` header or an
 explicitly materialized folder; those are optional input forms.
 
 To download the complete checkpoint into the shared store before continuing:
 
 ```python
-checkpoint = tensorfs.open("me/model", lane=16, lazy=False)
+checkpoint = tensorfs.open("me/model", lane="bf16", lazy=False)
 ```
 
 This waits for all declared chunks and component assets. It does not create a folder,
@@ -52,15 +51,6 @@ open lazily and call `checkpoint.download(components=["unet"])`.
 For a private model, pass `token=...`. Other options are `endpoint`, `cache_dir` and
 `local_files_only`. `local_files_only=True` forbids network access and fails if the required
 data is unavailable locally. A private CA is set once, with `tensorfs.configure(ca_der=...)`.
-
-Automatic selection derives precision and GPU requirements from each variant's header. Pass
-`lane=16`, `lane=8` or `lane=4` (Rust: `Open.lane`), the precision lane in bits, to take only that lane: a release without it is
-refused. Omitted, the 8-bit lane is a preference, and a variant outside it serves when none in it works.
-`gpus=["8.9"]` supplies compute capabilities; omitted detects visible GPUs, while `[]` reads on the CPU,
-where no GPU requirement applies. A refusal names each variant and why it does not work. Explicit `variant="nested/weights.cozytensors"` fixes the path instead. Every
-`.cozytensors` file at every depth is a variant, and its name conveys no precision. Selection
-loads only headers. The Hub's indexed selection and local
-selection agree.
 
 ## Python: use the returned objects
 
@@ -181,7 +171,7 @@ The returned arrays and their framework consumers retain the storage they need.
 ### Keep quantized weights encoded
 
 ```python
-quantized = tensorfs.open("me/model", revision="1.0", variant="model.int8.cozytensors").components["unet"]
+quantized = tensorfs.open("me/model", release="1.0", lane="int8").components["unet"]
 value = quantized.tensors.read("time_embedding.linear_1.weight")  # decode=False is the default
 print(value.scheme, value.params)
 print(value.parts.keys())
@@ -276,8 +266,8 @@ Additional checkpoint properties and operations:
 | `id` | Header identity, a `sha256:…` string. |
 | `tree` | Commit identity (the repository tree), a `sha256:…` string, when known. |
 | `repo_id` | Repository name, when known. |
-| `revision` | Tag name, when opened through one. |
-| `variant` | Selected repository variant, when known. A standalone header does not store this label. |
+| `release` | The release it was resolved through, when known. |
+| `lane` | Its commit's lane, when known. A standalone header does not store this label. |
 | `pipeline`, `components` | Pipeline description and ordered component mapping. |
 | `metadata` | Loading/provenance metadata. |
 | `chunks` | Chunk object references in header order, as `(sha256_hex, byte_length)` pairs. |
@@ -298,7 +288,7 @@ the blocking call to a worker thread so the event loop remains responsive:
 import asyncio
 
 async def load_model():
-    return await asyncio.to_thread(tensorfs.open, "me/model", lane=16, lazy=False)
+    return await asyncio.to_thread(tensorfs.open, "me/model", lane="bf16", lazy=False)
 
 checkpoint = asyncio.run(load_model())
 ```
@@ -447,16 +437,14 @@ label or repository README/LICENSE files; those remain available on a checkpoint
 through its repository.
 
 `Writer(dest=None, ...)` keeps the checkpoint in the shared store as a cache entry, without a
-header file. `dest` is a literal file path, not a directory; TensorFS does not infer a
-variant label from the filename. `variant` names an arbitrary `.cozytensors` path in a
-`repo_id` upload and raises `InvalidError` without `repo_id`. To build a multi-variant folder
-locally, write each header to its own `model.<variant>.cozytensors` path in that folder.
+header file. `dest` is a literal file path, not a directory. A `repo_id` upload names its
+commit's `lane`.
 
 Its options and members are:
 
 | Option or member | Use |
 |---|---|
-| `variant` | The uploaded file's label, `model.<variant>.cozytensors`; only with `repo_id`. |
+| `lane` | The uploaded commit's lane; with `repo_id`. |
 | `base` | Start from an existing checkpoint and reuse unchanged data. |
 | `resume` | Resume keyed local write state. |
 | `repo_id`, `endpoint`, `token` | Stream the new checkpoint to a repository using supplied access. |
@@ -561,11 +549,11 @@ folder = tensorfs.materialize(saved, local_dir="./portable")
 st_folder = tensorfs.materialize(
     saved, local_dir="./safetensors-model", format="safetensors", decode=True
 )
-repo_folder = tensorfs.materialize("me/model", revision="1.0", local_dir="./repo")
+repo_folder = tensorfs.materialize("me/model", release="1.0", lane="bf16", local_dir="./repo")
 ```
 
 The default `format="cozytensors"` writes a native portable folder: `model.cozytensors`
-(or its named variant) plus `chunks/`, retaining the same header bytes and content hashes.
+plus `chunks/`, retaining the same header bytes and content hashes.
 `format="safetensors"` writes Safetensors weights with ordinary configuration and supporting
 files. It retains supported encoded representations, or with `decode=True` writes each
 tensor in its logical dtype. Native cozytensors materialization preserves encodings and rejects
@@ -573,16 +561,13 @@ tensor in its logical dtype. Native cozytensors materialization preserves encodi
 
 Materialization fetches required missing objects or fails; it does not silently create an
 incomplete output. A checkpoint produces its own data and any known repository files.
-A bare header cannot supply an unknown README, LICENSE or other variants. With a repository
-name in native mode, omitting `variant` includes all variants; `components` can select
-which components' payloads are materialized.
+A bare header cannot supply an unknown README or LICENSE. With a repository name in native
+mode, `components` can select which components' payloads are materialized.
 
 Supply `local_dir` for a checkpoint or for Safetensors output. A checkpoint already has
 its source and credentials, so repository-selection/configuration keywords do not apply.
-Safetensors output requires one selected checkpoint and does not accept `components`;
-choose `variant` when a named repository has multiple variants. Native repository mode
-also accepts `revision`, `variant`, `components`, `local_files_only`, `cache_dir`, `endpoint`
-and `token`; without `local_dir`, it returns a managed snapshot folder.
+Safetensors output does not accept `components`. Native repository mode also accepts
+`release`, `lane`, `components`, `local_files_only`, `cache_dir`, `endpoint` and `token`; without `local_dir`, it returns a managed snapshot folder.
 
 #### Export for file-based libraries
 
@@ -610,31 +595,24 @@ needed.
 
 ```python
 license_path = tensorfs.download_file("me/model", "LICENSE")
-commit = tensorfs.upload_folder(repo_id="me/model", folder_path="./portable", token=my_token)
+commit = tensorfs.upload_folder(repo_id="me/model", folder_path="./portable", lane="bf16", token=my_token)
 ```
 
-`download_file` returns one file path and accepts revision, location and authentication
-options, without component or variant selection.
+`download_file` returns one file path and accepts release, lane, location and authentication
+options, without component selection.
 
-`upload_folder` commits the folder on top of the tag `revision` (default `main`, private when new),
-as Hugging Face's does: the tag's current files stay, the folder's files are added or replaced, and
-only paths matching `delete_patterns` (fnmatch globs such as `"*.int8.cozytensors"`) are removed.
-It returns the commit id. It never publishes: making a tag public is `cozy model publish`.
-Repository files such as README and LICENSE are ordinary files in the uploaded folder.
+`upload_folder` uploads the folder (one `.cozytensors` file and its repo files) as a new commit
+in `lane` and returns its id. It never publishes: a release is `cozy model publish`.
 
-### Work directly with repository references
+### Resolve a model
 
 ```python
 endpoint = tensorfs.Endpoint("https://tensorhub.com", token=my_token)
-current = endpoint.repo("me/model")
-if current is not None:
-    document, etag = current
+resolved = endpoint.resolve("me/model", release="1.0", gpus=["8.9"])
 ```
 
-`Endpoint(url, token=None, ca_der=None, cache_dir=None)` provides `repo(repo_id)` and
-`update_repo(repo_id, change)`. The latter returns the resulting document; `change` receives
-the current document or `None` and returns its replacement or `None` to empty/remove it.
-A conflict can cause the callback to run again, so it must tolerate retries.
+`Endpoint(url, token=None, ca_der=None, cache_dir=None)` provides `resolve(repo_id, release=,
+lane=, gpus=)`: `{release, lane, commit, header, reasons}`, without opening or caching it.
 
 ### All Python entry points at a glance
 

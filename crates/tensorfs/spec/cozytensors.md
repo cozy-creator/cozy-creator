@@ -6,14 +6,14 @@ schemas are in [schema/](schema/).
 This is the authoritative specification of the stored format and its decode semantics. A reader can implement it
 without TensorFS, Cozy or Tensorhub. Library APIs, cache policy and GPU execution are outside the format contract.
 
-cozytensors/1 describes model weights as immutable, content-addressed objects. One **header** describes one model
-variant: its pipeline, components, plain or encoded tensors, and the chunks and assets those components use.
-A **tree** groups variant headers with shared repository files such as README and LICENSE; it is a repo's commit. A
-**repo** document is the mutable list of tags naming commits: public tags are releases, private ones the owner's.
+cozytensors/1 describes model weights as immutable, content-addressed objects. One **header** describes a model:
+its pipeline, components, plain or encoded tensors, and the chunks and assets those components use. A **tree** is a
+**commit**: one header, its repository files such as configs, a tokenizer, README and LICENSE, and one **lane**
+label. A **repo** document lists a model's **releases**, each naming one commit per lane, and its other commits.
 
 ```text
-repo -> tag -> commit (tree) -> variant header -> tensor chunks and component assets
-                                  -> shared repository files
+repo -> release -> lane -> commit (tree) -> header -> tensor chunks and component assets
+                                         -> repository files
 ```
 
 Everything required to locate and decode a tensor is in its header and this specification. A header does not
@@ -37,7 +37,7 @@ check both. A reader MAY reuse a prior verification if it can rely on those byte
 still check lengths when opening them. Cache policy and the mechanism that preserves verified bytes are outside
 this format contract.
 
-Identity is over stored bytes, not decoded model values. A variant's id hashes its complete encoded header,
+Identity is over stored bytes, not decoded model values. A header's id hashes its complete encoded bytes,
 including configuration, metadata and construction order. A tree's id hashes its stored JSON bytes. Two
 representations that produce the same logical tensor need not have the same id.
 
@@ -49,14 +49,14 @@ spelling. A reader also accepts `<kind>/1.<minor>`, the minor one or more decima
 
 | Document | `format` kind | Encoding (§9) | Usual name |
 |---|---|---|---|
-| tree | `cozytensors.tree` | JSON object | an object, cited by a repo |
+| tree | `cozytensors.tree` | JSON object | an object, a commit |
 | header | `cozytensors` | CBOR array | any tree file ending in `.cozytensors` |
 | repo | `cozytensors.repo` | JSON object | `refs/<org>/<name>.json` |
 
 The schemas describe structure; they do not replace the rules below for canonical encoding, duplicate keys,
 value domains, arithmetic bounds and reference closure.
 
-- A reader MUST refuse a document whose kind differs or whose major is not `1`, and a pre-cut header (§9).
+- A reader MUST refuse a document whose kind differs or whose major is not `1`.
 - A reader MUST ignore what a later writer adds (§8): unknown fields of a JSON document, at every level, and
   trailing elements of the header's records (§4).
 - Values are booleans, integers in [−2^63, 2^64), strings, lists and maps with string keys. There are no null values
@@ -70,28 +70,25 @@ or more segments joined by `/`.
 ## 3. Tree
 
 ```
-{format: "cozytensors.tree/1", files: {path: object-ref}}
+{format: "cozytensors.tree/1", lane?, files: {path: object-ref}}
 ```
 
+A tree is a **commit**, one immutable state of a model.
+
+- `lane` is a label its author picks (`bf16`, `fp8`, `int8-convrot`): alphanumeric first, then at most 63 of
+  `A-Za-z0-9._+!-`. Nothing reads it but a consumer asking for that label; a new quantization is a new commit with
+  its own lane. A commit without one is a machine's own, never published.
 - Every key of `files` MUST be a path whose first segment is not `chunks` (a plain folder's chunk directory).
-- A **variant** is any file ending in `.cozytensors`, at any depth. Its identity within the tree is
-  its full path; its object is the header. Filenames convey no precision, layout or GPU requirements.
-  An explicit choice resolves the exact path first, then the path with `.cozytensors` appended.
-  For older callers only, a root-level shorthand also resolves `model.<name>.cozytensors` when
-  neither prior path exists; it never searches nested folders. The empty legacy name names
-  `model.cozytensors`. Every successful lookup returns the canonical full path.
-- Every other file (README, LICENSE, images, code) is a **repo file**: an object shared by all variants and never
-  cited by a header. A tree without variants holds no tensors.
+- Exactly one file, at any depth, ends in `.cozytensors`: the commit's **header**. Its filename conveys nothing.
+- Every other file (configs, a tokenizer, README, LICENSE, images, code) is a **repo file**, never cited by the header.
 
 **Plain folder.** A tree on disk is a directory with each file at its path and `chunks/<sha256>` holding the chunks
-and assets its headers cite. A writer writes object contents first and the headers last.
+and assets its header cites. A writer writes object contents first and the header last.
 
 A **thin folder** may omit chunks or assets. Header validation does not require their presence; absence alone
 is not a malformed-header error. An operation that needs an absent object obtains it from its
-object source or reports it missing, and applies §1 before using its bytes. A complete variant contains its entire
-header closure (§7); a complete tree
-contains all of its files and every variant's closure. A folder containing only selected variants is a projection
-of a tree, not a complete copy of that tree.
+object source or reports it missing, and applies §1 before using its bytes. A complete tree contains all of its files
+and its header's closure (§7).
 
 Individual paths may be valid even when they cannot coexist as files: for example `a` and `a/b`. A materializer
 MUST refuse such a file/directory collision, including collisions between a component's config path and its asset
@@ -101,10 +98,9 @@ paths; it MUST NOT silently drop or overwrite either entry. Metadata-only inspec
 
 A standalone `.cozytensors` file contains the encoded header bytes described here. Its
 content identity is independent of its filename and the physical location of referenced
-objects. The header does not identify an enclosing tree, repository or release; a variant
-label is supplied by the tree entry that refers to it (§3).
+objects. The header does not identify an enclosing tree, repository, release or lane (§3).
 
-A header is one variant of a model, self-contained: its pipeline, its components (class, config, tensors and run
+A header is self-contained: its pipeline, its components (class, config, tensors and run
 data) and the chunks of tensor bytes. It holds only what running, loading or quantizing the model needs or is helped
 by; a README, license, images, docs and code are repo files, never in a header. A header is an array of records, each
 an array whose fields are known by position (CDDL:
@@ -464,7 +460,7 @@ At run time `p` (the smoothing's reciprocal) multiplies the activations the resi
 them, and the branch takes the activations as they are: `down` already holds the smoothing. Nunchaku's `qweight`,
 `wscales`, `wtscale`, `wcscales`, `smooth_factor`, `proj_down` and `proj_up` are `weight`, `scale`, `scale_2`,
 `channel_scale`, `1 / p`, `lowrank_down` transposed and `lowrank_up` here, out of its kernel's tiles. A reader of an
-older selection rule holds the name outside its lane table (§7), so it never reads such a variant as another lane.
+older selection rule holds the name outside its lane table (§7), so it never reads such a header as another lane.
 
 ### `fp8.blockwise`
 
@@ -686,113 +682,44 @@ or source-tree layout.
 ## 7. Repo, store and origin
 
 ```
-{format: "cozytensors.repo/1", name: "<org>/<name>",
- tags: [{name, commit: object-ref, public?, yanked?}]}
+{format: "cozytensors.repo/1", name: "<org>/<name>", releases: [{version, lanes: {lane: object-ref}}], commits: [object-ref]}
 ```
 
-A repo is a set of **commits** and the **tags** that point at them, as in git:
+A repo is a model's commits and releases:
 
-- A **commit** is an immutable repo state: a tree (§3). Its id is the tree's object ref. Every upload makes one.
-- A **tag** is a movable name for a commit. `tags` lists them in creation order: moving a tag keeps its place, a new
-  one is appended, a deleted one is removed. Names MUST be unique segments (§2) that do not start with `sha256:`.
-- `public` (boolean, default `false`): a public tag is a release, of any tag name (`1.0.0-audit.1`). A private
-  tag is the owner's: a server serves it only to readers who may write the repo (distribution.md §4).
-- `yanked` (boolean, default `false`) withdraws a tag from unversioned lookups.
-- A client skips a tag entry it cannot read, with a warning, and resolves the rest; an edit writes that entry back
-  unchanged. A server refuses to store a document with an entry it cannot read.
-- Any change is a new document: a writer conditions it on the whole document it read (its ETag, distribution.md §4).
-  Nothing in it counts edits.
-- **Resolution** of a `revision`, once, to a commit:
-  - none: among public, non-yanked tags named by a PEP 440 version, the highest final one; a pre-release (`a`, `b`,
-    `rc`, `.dev`) only when no final version exists; of equal versions (`1.0`, `1.0.0`), the later-created tag; with
-    none, the tag `main` unless it is yanked (Hugging Face's default revision);
-  - `sha256:<hex>`: the tag commit with that digest; else a variant header with that digest, at the commit that cites
-    it (the default's if it does, else the last-created tag's whose commit does); else the retained commit with that
-    digest, when the reader holds it or the endpoint serves it to that reader; else not found;
-  - otherwise the tag of that name, yanked or not (a reader MAY warn); else not found.
-
-  The variant is then looked up in that commit's tree. An explicit path or header digest fixes the
-  variant. Otherwise the constraints rule below selects one from header-derived profiles. A commit
-  id and a header digest name immutable content; a tag moves,
-  and a commit it leaves stays the repo's (below).
-- **Roots.** Every commit the repo has is a referenced root: its tags' commits, yanked or private included, and every
-  commit a tag has named, until the repo's owner deletes it. A commit no tag names is never collected on its own.
-  Keeping a complete copy of the repo requires keeping their closures. Local cache eviction policy is not part of the
-  document format.
+- A **commit** (§3) is a tree; its id is the tree's object ref, `sha256:<hex>`. Every upload makes one. `commits`
+  lists the repo's commits no release names, newest last.
+- A **release** names one commit per lane under a version: a PEP 440 version higher than every earlier release's.
+  `releases` lists them oldest first. A release is public for good; a commit no release names is private, readable
+  only by members of the repo's organization (distribution.md §5).
 - Repo names are case-insensitive: `Acme/SDXL` and `acme/sdxl` are one repo. Keys and paths use the name with ASCII
   `A`–`Z` lowered (`refs/acme/sdxl.json`); the document's `name` keeps the writer's spelling.
+- **Roots.** Every commit a repo names is a referenced root until its owner deletes it; keeping a complete copy of
+  the repo requires keeping their closures.
 - A **store** or **static origin** is a directory, bucket or HTTP prefix holding `refs/<org>/<name>.json` and
-  `blobs/…` (§1). A reader resolves name → tag → commit (tree) → variant header → chunks and assets, verifying every
-  object where it enters.
-- Reading and publishing at an endpoint over HTTP, S3 or a directory: [distribution.md](distribution.md).
+  `blobs/…` (§1). A store's repo records what it holds: a machine's own model (`local/<name>`) is its newest commit.
 
-**Closure.** A cozytensors' closure is its header's closure (§4): the header and every object it cites, its `chunks`
-and each component's assets. A tree's closure is the tree, every object its `files` cite, and each variant's closure.
-A copy is complete when its whole closure is present. A reader that needs only some components MAY fetch only the
-chunks their locations touch and their assets; one that needs one variant MAY fetch only the tree, its repo files and
-that variant's closure.
+**Resolution.** A consumer names a repo and gets one commit: a commit by id; else a release (none: the newest) and,
+within it, a lane label (that commit, else not found) or, without one, its hardware. The Hub picks for the hardware
+(distribution.md §2): of the release's commits, by each header's actual kinds and bytes, what the hardware runs and
+fits, by [`selection.json`](selection.json), which the Hub vendors byte for byte. A static origin's release names its
+one lane, or the consumer names it.
+
+**Closure.** A header's closure is the header and every object it cites, its `chunks` and each component's assets. A
+tree's closure is the tree, every object its `files` cite, and its header's closure. A copy is complete when its whole
+closure is present. A reader that needs only some components MAY fetch only the chunks their locations touch and
+their assets.
 
 Closure follows only these defined reference slots. Object contents and unknown extension fields are opaque;
 an object reference that merely appears inside metadata is not a dependency. Same-major extensions MUST put
 additional required dependencies in the existing chunk, asset or tree-file slots. They MUST NOT require an old
 reader, copier or collector to discover a new kind of reference edge.
 
-### Variant selection
-
-Rust and Hub readers MUST agree. Selection reads headers, never tensor payloads. The rule's table is data:
-[`selection.json`](selection.json) holds its version (`rule`), the GPU features by compute capability, the kinds and
-their families, each family's width, needed feature, compute width and rank, the lane orders and every scheme a reader
-implements. The Hub vendors it byte for byte; each reader evaluates it as below and ignores fields it does not know.
-Consumers pass `{gpus: ["major.minor", ...], bits?, prefer?, min_bits?, plain?}` (widths 4, 8 or 16).
-No GPUs means the CPU. `bits` is asked: only that lane answers. Otherwise `prefer` (8 when omitted) is
-the lane ranked first. A slot adds `min_bits`, the narrowest it takes unasked, and `plain`, that it takes
-no encoded weights. The lane order reads what every device runs natively: a feature holds for a set of GPUs when
-each one's capability starts with its `prefix`, or is a number from `min` on and not an `except`; a capability that is
-not a number has it only when `unread`; no GPUs have it only when `cpu`. GPUs with the `apple` feature run 16 bits
-only: a slot prefers 16 there, and asked 4 or 8 is refused.
-
-A header's profile is `{family, bits, bytes, kinds}`. A tensor's kind is its encoding scheme or,
-for plain tensors, its dtype. Sum the lengths of all tensor locations (including encoded parts)
-by kind. `bytes` is their total, `kinds` their sorted unique names. Its lane kind is the kind with a family
-(`kinds`: an exact `kind` or a `prefix`) with the fewest bits (an nvfp4 variant that keeps sensitive layers in int8 is
-4 bits, however many bytes those hold); of equal bits, the most stored bytes, then lexical kind order. A header holding
-an encoded kind with no family has no lane kind (family empty, bits 0): its width is not the rule's to guess, so a
-newer family is never read as its narrower or plain extras.
-
-Known plain dtypes run on any target. An encoded kind runs where every GPU has its family's `needs` feature; another
-scheme a reader implements (`schemes`) decodes on any GPU; an unknown one runs on none, even with a known family prefix.
-With no GPUs, no GPU requirement applies. A variant named by its path, or a header by its id, is the sole
-candidate: the rule validates it.
-
-A variant works unless: `bits` is asked and its bits differ, or are 16 and it holds an encoded kind; it
-holds an encoded kind under `plain`; unasked, its bits are nonzero and below `min_bits`; or GPUs are given
-and no one of them runs one of its encoded kinds (every kind counts, even a small minority).
-
-The lane order at the asked or preferred width is the first `order` row whose `bits` match, whose `decode` (a
-slot preferring 4 bits unasked) holds if set, and whose `when` feature holds; its lanes every GPU runs, omitted under
-`plain`; then the first `plain` row whose `when` holds. A family ranks as its `rank` lane (`after`: just after the
-order). A 4-bit family whose `compute` width here is 16 is weight-only. Of the variants that work, the first in
-that order wins, then none narrower than the width ranked first, then native over weight-only, then fewer stored
-bytes, then lexical full path. A variant
-outside the order serves only when none in it works. When none works, selection is refused, naming each
-variant's path, family and why. Reasons and refusals use families, never filenames; the vectors define
-their text and cover every scheme this reader implements.
-
-The Hub indexes profiles and the repo's ordered tag document transactionally with a repo write.
-It stages rows, performs the object store's conditional PUT inside that transaction, records the
-returned ETag, then commits. A failed PUT rolls back. A read detects a newer repo-file ETag and repairs
-that repository's index, including a process loss after PUT but before COMMIT. Its indexed endpoint
-is `GET /v1/models/{org}/{name}/select?revision=&gpus=8.9,8.9&bits=8&rule=5` (and `prefer`, `min_bits`,
-`plain`); the response has `rule`, `release`, `commit`, `variant`, `header`, `profile` and `reasons`. A
-client takes only an answer of its own rule version (`rule` in the table), else reads the headers. A reader that names no
-`rule` is of rule 3. The Hub answers a reader of an older rule in that rule, choosing by its own rule among the
-variants whose every kind such a reader implements (a kind's `since` is the first rule whose readers implement it), since that reader would take a scheme it does not know on a CPU and fail to decode it. A refused selection is
-HTTP200 with null fields and the refusal as its reason; the client applies the rule to the headers itself.
-Invalid bits is HTTP400; a model it has not indexed is HTTP404. Read permissions and explicit yanked-tag
-behavior match ordinary resolution. The current index covers commits named by repo tags; an untagged
-retained commit, a static origin or an older Hub answers HTTP404. Clients then apply the same pure rule to
-the exact commit's headers; they never substitute a tagged default. Explicit owner deletion and commit
-retention are unchanged.
+**Profile.** What a header holds, as `selection.json` reads it: `{family, bits, bytes, kinds}`. A tensor's kind is
+its encoding scheme or, for plain tensors, its dtype; `bytes` sums all tensor locations, `kinds` lists the unique
+names. Its family is the table's family of the kind with the fewest bits (an nvfp4 header that keeps sensitive
+layers in int8 is 4 bits); of equal bits, the most stored bytes, then lexical kind order. A header holding an
+encoded kind the table does not name has no family (empty, 0 bits).
 
 ## 8. Versioning
 
@@ -825,10 +752,6 @@ Lossless decoding and re-encoding of the complete CBOR value reproduces its byte
 recognized fields and discard extensions; reconstructing a header from that projection creates a new object.
 A copier that preserves object identity MUST retain the original bytes, including its format tag and extensions.
 
-A header that fails to read and is JSON (first byte `{`) or a well-formed `cozytensors/1` root of exactly five
-elements is a **pre-cut** header, a layout without the pipeline under the same tag. A reader MUST refuse it as such
-("pre-cut cozytensors header (old layout); re-import or migrate"): only the structure tells it apart.
-
 **Tree and repo: JSON.** UTF-8 JSON (RFC 8259) whose top level is an object; §2's values map to JSON in the obvious
 way. A reader MUST refuse invalid UTF-8 or JSON, a top level that is not an object, a repeated key in any object, any
 number with a fraction or exponent, `NaN` or `Infinity`, any integer outside [−2^63, 2^64), `null`, and a field of the
@@ -838,16 +761,16 @@ wrong JSON type. Whitespace between tokens is allowed. A writer MUST produce the
 - strings with `"` and `\` escaped as `\"` and `\\`, the controls U+0008, U+0009, U+000A, U+000C and U+000D as `\b`,
   `\t`, `\n`, `\f`, `\r`, other controls below U+0020 as `\u00XX` (lowercase hex), and every other character as its
   UTF-8 bytes (Python: `json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False)`);
-- optional fields at their default omitted: `public: false`, `yanked: false`; `tags` is always written.
+- optional fields at their default omitted: an empty `lane`, `releases` or `commits`.
 
 ## 10. Chunks (informative)
 
 Readers need only locations. Writers SHOULD lay tensors out by this rule, which keeps objects few (16–64 MiB),
-shares unchanged large tensors between variants, and aligns every part for direct I/O:
+shares unchanged large tensors between a model's commits, and aligns every part for direct I/O:
 
 1. **Order.** Parts in header order (components, their tensors, each tensor's parts); the layout never reorders.
 2. **Standalone.** A part of 16 MiB (2^24 bytes) or more is its own chunk(s), split every 64 MiB from its first byte.
-   Its objects depend only on its bytes, so an unchanged large tensor dedupes across variants and versions.
+   Its objects depend only on its bytes, so an unchanged large tensor dedupes across lanes and versions.
 3. **Packs.** Smaller parts are packed in order, each at a 4 KiB-aligned offset (zero padding). The open pack closes
    before a part when the part belongs to another component; when the pack holds 16 MiB or more and the part's block
    differs from the previous part's; or when the part would end past 64 MiB. A part's **block** is its key up to and

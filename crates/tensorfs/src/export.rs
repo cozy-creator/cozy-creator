@@ -36,7 +36,7 @@ use serde_json::{json, Map, Value as Json};
 
 use crate::failure::{fail, Kind, Result};
 use crate::format::{
-    variant_of, Body, Component, Config, ConfigValue, Dtype, Location, ObjectRef, Value,
+    is_header, Body, Component, Config, ConfigValue, Dtype, Location, ObjectRef, Value,
 };
 use crate::import::{FILE_METADATA, PIPELINE_FILE, ROOT_COMPONENT};
 use crate::store::Checkpoint;
@@ -51,7 +51,6 @@ pub(crate) fn cozytensors(
     repo: &BTreeMap<String, PathBuf>,
     repo_objects: &BTreeMap<String, ObjectRef>,
     dir: &Path,
-    variant: &str,
     header: &[u8],
 ) -> Result<Vec<String>> {
     if &ObjectRef::of(header) != ck.id() {
@@ -60,8 +59,7 @@ pub(crate) fn cozytensors(
             "export header differs from the opened checkpoint",
         );
     }
-    let header_path = crate::format::variant_path(variant);
-    crate::format::check_file(&header_path)?;
+    let header_path = crate::format::HEADER_PATH.to_owned();
     let mut sources = BTreeMap::new();
     for object in ck.header().objects() {
         let path = format!("{}/{}", crate::format::CHUNKS_DIR, object.sha256);
@@ -71,7 +69,7 @@ pub(crate) fn cozytensors(
     }
     for (name, path) in repo {
         crate::format::check_file(name)?;
-        if variant_of(name).is_none() {
+        if !is_header(name) {
             sources.insert(
                 name.clone(),
                 (
@@ -118,7 +116,7 @@ fn part_name(key: &str, role: &str) -> String {
 }
 
 /// Writes `ck` into `dir` as a Diffusers/Transformers folder, with the repo files `repo` (path →
-/// local file; a tree's files other than its variants); the paths written, relative. `decode`
+/// local file; a commit's files other than its header); the paths written, relative. `decode`
 /// writes each encoded tensor in its logical dtype.
 pub fn safetensors(
     ck: &Checkpoint,
@@ -132,7 +130,7 @@ pub fn safetensors(
         _ => BTreeMap::new(),
     };
     let mut written = Vec::new();
-    for (path, local) in repo.iter().filter(|(p, _)| variant_of(p).is_none()) {
+    for (path, local) in repo.iter().filter(|(p, _)| !is_header(p)) {
         let dest = dir.join(path);
         copy(&mut File::open(local).map_err(|e| io(local, e))?, &dest)?;
         written.push(path.clone());

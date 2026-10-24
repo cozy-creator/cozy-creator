@@ -15,8 +15,6 @@ cli.workspace = true
 tensord.workspace = true
 
 [features]
-# Dev builds only (xs-053 A11): `cozy model migrate-headers`. Never in a release.
-migrate = ["cli/migrate"]
 # Dev builds only: the hidden `cozy machine rent --provider`. Never in a release.
 dev = ["cli/dev"]
 

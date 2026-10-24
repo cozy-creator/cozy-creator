@@ -33,13 +33,6 @@ use std::{
 };
 use crate::storage::Store;
 
-fn threads() -> u32 {
-    crate::launch_identity::DEFAULT_THREADS
-}
-fn yes() -> bool {
-    true
-}
-
 /// A slot's model as the run's preparation resolved it (`published`).
 #[derive(Clone, Debug)]
 pub struct ModelGrant {
@@ -64,8 +57,6 @@ pub struct HostOptions {
 /// Root-sealed configuration, never peer-controlled paths or environment logic switches.
 #[derive(Clone, Debug, Deserialize)]
 pub struct GpuConfig {
-    #[serde(default)]
-    pub identity: Option<crate::launch_identity::LaunchIdentity>,
     /// The GPU envelope, `"0"` or `"0,1,..."`: a degree-K plan occupies K contiguous devices.
     pub devices: String,
     /// The receipt's inventory (NVML): each GPU's UUID, model, compute capability and memory,
@@ -84,16 +75,8 @@ pub struct GpuConfig {
     /// executors started after find it through CUDA_HOME and PATH.
     #[serde(default)]
     pub toolchain: Option<PathBuf>,
-    /// `OMP_NUM_THREADS` the seal imposes. torch's allocator is the Runtime's, set in code.
-    #[serde(default = "threads")]
-    pub threads: u32,
     #[serde(default)]
     pub host: HostOptions,
-    /// Keep one import-only executor per installed GPU generation and fork executors from
-    /// it (`fork/1`), so a new executor's imports are already done. It costs that process's
-    /// host memory (no device memory); false spawns every executor, which imports again.
-    #[serde(default = "yes")]
-    pub prespawn: bool,
     /// The image's Runtime interpreter and the executors' Runtime wheel: the machine compiles
     /// its kernels with them at start, before any package is installed (`image_kernel_boot`).
     #[serde(default)]
@@ -105,11 +88,7 @@ pub struct ImageKernels {
     pub runtime_wheel: PathBuf,
 }
 impl GpuConfig {
-    pub fn load(path: &Path) -> io::Result<Self> {
-        serde_json::from_reader::<_, Self>(File::open(path)?).map_err(io::Error::other)?.checked()
-    }
-    /// The config, refused when its GPU scope repeats a device or its executors' environment
-    /// carries a credential.
+    /// The config, refused when its GPU scope repeats a device.
     pub fn checked(self) -> io::Result<Self> {
         let envelope = self.envelope();
         let unique: std::collections::BTreeSet<_> = envelope.iter().collect();
@@ -119,25 +98,7 @@ impl GpuConfig {
                 "GPU scope names one device or a list of distinct devices",
             ));
         }
-        if self
-            .environment
-            .keys()
-            .any(|key| key.contains("TOKEN") || key.contains("SECRET") || key.contains("PASSWORD"))
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "device executor environment cannot carry credentials",
-            ));
-        }
         Ok(self)
-    }
-    /// A machine without GPUs: deviceless executors only, with a minimal environment whose
-    /// home is `home`.
-    pub fn deviceless(home: &Path) -> io::Result<Self> {
-        fs::create_dir_all(home)?;
-        serde_json::from_value(serde_json::json!({"devices": "",
-            "environment": {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": home}}))
-            .map_err(io::Error::other)
     }
     /// The configured devices in order (`CUDA_VISIBLE_DEVICES` entries); none on a CPU machine.
     pub fn envelope(&self) -> Vec<String> {
@@ -240,11 +201,6 @@ impl Plan {
             plan.construction = plan.id.clone();
         }
         Ok(plan)
-    }
-    /// Every checkpoint it reads, constructed or raw: the store keeps them while it may run.
-    pub fn manifests(&self) -> Vec<String> {
-        let constructed = self.slots.iter().map(|slot| slot.binding.snapshot.clone());
-        constructed.chain(self.sources.iter().map(|source| source.manifest.clone())).collect()
     }
     pub fn selections(&self) -> Vec<SelectedManifest> {
         merged(&self.slots)
@@ -822,13 +778,6 @@ impl Pool {
     pub fn new(root: &Path, config: GpuConfig, store: Arc<Store>) -> io::Result<Arc<Self>> {
         fs::create_dir_all(root)?;
         let notes = MemoryLog::at(store.root().join("logs"));
-        if let Some(identity) = config.identity {
-            identity.traverse(root)?;
-            identity.traverse(
-                root.parent()
-                    .ok_or_else(|| io::Error::other("GPU root has no owned state parent"))?,
-            )?;
-        }
         // Weight sources and output transport can retain many descriptors; executors inherit
         // this process limit even though GPU handles no longer cross the seam.
         platform::process::raise_fd_limit();
@@ -1167,6 +1116,14 @@ impl Pool {
         let ccs: Vec<&str> = self.devices.iter().take(degree as usize)
             .map(|d| self.inventory(&d.entry).map_or("", |g| g.compute_cap.as_str())).collect();
         crate::precision::Gpus::of(&ccs)
+    }
+    /// The first `degree` GPUs as the Hub resolves a model for them: each one's capability, and
+    /// the free bytes on the one with the fewest (none read: no fit check). No GPU: the CPU.
+    pub fn hardware(&self, degree: u32) -> tensorfs::fetch::Hardware {
+        let devices: Vec<&Device> = self.devices.iter().take(degree as usize).collect();
+        let gpus = devices.iter().filter_map(|d| self.inventory(&d.entry)).map(|g| g.compute_cap.clone()).filter(|cc| !cc.is_empty()).collect();
+        let free_vram = devices.iter().filter_map(|d| d.memory.as_ref()?.free()).min();
+        tensorfs::fetch::Hardware { gpus, free_vram, plain: false }
     }
     fn inventory(&self, entry: &str) -> Option<&crate::machine::receipt::Gpu> {
         self.config.inventory.iter().find(|g| g.device_index.to_string() == entry || g.device_uuid == entry)
@@ -2273,7 +2230,6 @@ impl Pool {
         let devices: Vec<_> = self.devices.iter().map(|d| d.entry.as_str()).collect();
         let seal = Seal::prepare(
             &self.root,
-            self.config.identity,
             &self.incarnation,
             generation,
             &devices.join(","),
@@ -2285,7 +2241,7 @@ impl Pool {
         ))?);
         let launch = || {
             let mut command =
-                crate::launch_identity::trampoline(python, self.config.identity, Some(&scope))?;
+                crate::launch_identity::trampoline(python, Some(&scope))?;
             match runtime {
                 None => command.args(["-I", "-m", "cozy_runtime.internal.machine_kernels"]),
                 Some(runtime) => command.args(["-I", "-c", RUNTIME_FIRST]).arg(runtime),
@@ -2391,11 +2347,11 @@ impl Pool {
     }
 
     /// The generation's import-only executor, and whether the caller must start it. None
-    /// when this pool spawns every executor (no GPU, or no prespawn) or the generation
+    /// when this pool spawns every executor (no GPU) or the generation
     /// constructs no model.
     fn zygote(&self, held: &HeldGeneration) -> Option<(Arc<Zygote>, bool)> {
         let stopped = self.stopped.load(Ordering::Acquire);
-        if stopped || !self.config.prespawn || self.devices.is_empty() || !binds_models(&held.record.interface) {
+        if stopped || self.devices.is_empty() || !binds_models(&held.record.interface) {
             return None;
         }
         let mut zygotes = self.zygotes.lock().unwrap();
@@ -2455,35 +2411,21 @@ impl Pool {
     }
 
     /// A new executor root and its socket path. The socket is named through this process's
-    /// descriptor of the root (Linux `sun_path` limit), or inside it for another identity.
+    /// descriptor of the root (Linux `sun_path` limit).
     fn executor_endpoint(&self) -> io::Result<(PathBuf, PathBuf, File)> {
         let root = self.root.join(uuid::Uuid::new_v4().simple().to_string());
         fs::create_dir(&root)?;
         let directory = platform::durable::open_dir(&root)?;
-        let socket = if self.config.identity.is_some() {
-            // Another UID cannot traverse this owner's /proc/fd magic link.
-            // A deliberately short owned state root is required for this operation.
-            let socket = root.join("executor");
-            if socket.as_os_str().len() > 107 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "configured identity needs a short owned executor socket path (Linux sun_path)",
-                ));
-            }
-            socket
-        } else {
-            // Linux names it through this process's descriptor of the root; elsewhere it is the
-            // root's own, or a short private one when that is too long.
-            #[cfg(target_os = "linux")]
-            let socket = PathBuf::from(format!(
-                "/proc/{}/fd/{}/executor",
-                std::process::id(),
-                std::os::fd::AsRawFd::as_raw_fd(&directory)
-            ));
-            #[cfg(not(target_os = "linux"))]
-            let socket = crate::device_executor::socket_path(&root, "executor")?;
-            socket
-        };
+        // Linux names it through this process's descriptor of the root; elsewhere it is the
+        // root's own, or a short private one when that is too long.
+        #[cfg(target_os = "linux")]
+        let socket = PathBuf::from(format!(
+            "/proc/{}/fd/{}/executor",
+            std::process::id(),
+            std::os::fd::AsRawFd::as_raw_fd(&directory)
+        ));
+        #[cfg(not(target_os = "linux"))]
+        let socket = crate::device_executor::socket_path(&root, "executor")?;
         Ok((root, socket, directory))
     }
 
@@ -2497,7 +2439,6 @@ impl Pool {
     ) -> io::Result<ExecutorConfig> {
         let mut seal = Seal::prepare(
             &self.root,
-            self.config.identity,
             &self.incarnation,
             &held.record.identity,
             &self.lane_devices(start, degree)?,
@@ -2505,7 +2446,6 @@ impl Pool {
         // A group's NCCL seal (NVLS off, peer memory only over NVLink).
         seal.group = degree > 1;
         seal.tensorfs_home = Some(self.store.root().to_path_buf());
-        seal.threads = self.config.threads;
         Ok(ExecutorConfig {
             python: held.record.python.clone(),
             root,
@@ -2516,14 +2456,13 @@ impl Pool {
             },
             seal,
             generation_hold: Some(held.retention()),
-            identity: self.config.identity,
             cgroup_namespace: Some(platform::contain::namespace(
                 self.root.parent().unwrap_or(&self.root),
             )),
         })
     }
 
-    /// The installed package interface, written where the executor (its identity) reads it.
+    /// The installed package interface, written where the executor reads it.
     fn interface_file(
         &self,
         executor: &DeviceExecutor,
@@ -2531,9 +2470,6 @@ impl Pool {
     ) -> io::Result<PathBuf> {
         let path = executor.root_path().join("package-interface.json");
         fs::write(&path, serde_json::to_vec(&held.record.interface)?)?;
-        if let Some(identity) = self.config.identity {
-            identity.readable(&path)?;
-        }
         Ok(path)
     }
     fn run(
@@ -2832,6 +2768,7 @@ impl Pool {
             generation: &held.record,
             spool: None,
             caller: None,
+            calls,
             formation: Some(Formation {
                 tenants: self.tenants.clone(),
                 leader: session.executor.birth.clone(),
@@ -2841,14 +2778,8 @@ impl Pool {
             host: self.host.as_deref(),
         };
         if !session.loaded {
-            if degree > 0 && session.executor.hello.memory_backend != "torch" {
-                let failure = Failure::machine("memory_backend_unsupported", format!(
-                    "GPU execution requires memory_backend=\"torch\"; this executor advertises {:?}",
-                    session.executor.hello.memory_backend,
-                ));
-                defer_completion(engine, id, &session.executor.birth, &session.followers, Outcome::Failed(failure))?;
-                return Ok(None);
-            }
+            // Runtime initializes and validates its allocator. TensorD schedules device work
+            // and owns no allocator-specific protocol or backend-name admission gate.
             let interface_path = self.interface_file(&session.executor, held)?;
             let starting = Instant::now();
             // Each executor owns its GPU allocations. The existing GPU permits schedule
@@ -2964,7 +2895,7 @@ impl Pool {
                 entrypoint: plan.entrypoint.clone(),
                 payload: protocol::executor::Json(record.invocation.input.clone()),
                 attention_kernel: record.invocation.attention_kernel.clone(),
-                bits: record.invocation.bits,
+                bits: 0,
                 input_metadata: record
                     .invocation
                     .inputs
@@ -3038,20 +2969,10 @@ impl Pool {
         let call = memory::Call { ranks, package: construction.clone(), shape: shape.clone() };
         let dispatched = Dispatched::new(gpus, id, &construction, &shape, self.running.clone());
         self.running.lock().unwrap().insert(id.into(), call);
-        let spool = if let Some(identity) = self.config.identity {
-            // Keep Journal/results/admin paths private to the core. A separate peer-owned
-            // spool lives only inside this executor's already authorized output directory.
-            let spool = session.executor.root_path().join(format!("output-{id}"));
-            fs::create_dir(&spool)?;
-            identity.own(&spool)?;
-            spool
-        } else {
-            engine.staging(id)?
-        };
+        let spool = engine.staging(id)?;
         let spool_owner = crate::execution::Spool(spool.clone());
         let inputs = stage_inputs(
             &engine.cas(),
-            self.config.identity,
             &spool,
             &record.invocation.inputs,
         )?;
@@ -3075,7 +2996,8 @@ impl Pool {
         let reply = session.executor.command(
             &Command::Invoke(Box::new(Invoke {
                 tensorfs: calls.and_then(|calls| calls.tensorfs(id, session.executor.line())),
-                destination: calls.map(|calls| calls.destination(id)).unwrap_or_default(),
+                // A weights output TensorD uploads itself, as a commit in its lane (`publish`).
+                destination: String::new(),
                 actor: record.submission.as_ref().map(|submission| submission.actor.clone()).unwrap_or_default(),
                 operation,
                 family: record.family().unwrap_or_default().into(),
@@ -3086,7 +3008,7 @@ impl Pool {
                 spool: spool.clone(),
                 deadline_s: None,
                 attention_kernel: record.invocation.attention_kernel.clone(),
-                bits: record.invocation.bits,
+                bits: 0,
                 inputs: inputs.inputs,
                 trees: inputs.trees,
                 sources: plan.sources.iter().map(|s| (s.parameter.clone(), s.manifest.clone())).collect(),
@@ -3531,7 +3453,6 @@ pub(crate) struct Staged {
 
 pub(crate) fn stage_inputs(
     cas: &crate::cas::Cas,
-    identity: Option<crate::launch_identity::LaunchIdentity>,
     spool: &Path,
     inputs: &[crate::journal::InputFile],
 ) -> io::Result<Staged> {
@@ -3560,13 +3481,13 @@ pub(crate) fn stage_inputs(
         let local = directory.join(format!("{position:03}-{field}"));
         if input.media_type == protocol::tree::MEDIA {
             let manifest = held_bytes(cas, &input.digest, input.length)?;
-            materialize_tree(cas, identity, &manifest, &local)?;
+            materialize_tree(cas, &manifest, &local)?;
             // A payload names a tree by its field's ref or by its manifest digest.
             staged.trees.insert(input.digest.clone(), (local.clone(), input.digest.clone()));
             staged.trees.insert(input.input_id.clone(), (local, input.digest.clone()));
             continue;
         }
-        copy_held(cas, identity, &input.digest, input.length, &local)?;
+        copy_held(cas, &input.digest, input.length, &local)?;
         staged.inputs.insert(
             input.input_id.clone(),
             InputFile {
@@ -3578,16 +3499,12 @@ pub(crate) fn stage_inputs(
             },
         );
     }
-    if let Some(identity) = identity {
-        identity.readable(&directory)?;
-    }
     Ok(staged)
 }
 
 /// One held object copied read-only to `local`, exactly `length` bytes.
 fn copy_held(
     cas: &crate::cas::Cas,
-    identity: Option<crate::launch_identity::LaunchIdentity>,
     digest: &str,
     length: u64,
     local: &Path,
@@ -3606,9 +3523,6 @@ fn copy_held(
             "an input's held bytes changed length",
         ));
     }
-    if let Some(identity) = identity {
-        identity.readable(local)?;
-    }
     Ok(())
 }
 
@@ -3620,7 +3534,6 @@ fn held_bytes(cas: &crate::cas::Cas, digest: &str, length: u64) -> io::Result<Ve
 /// A tree manifest's files under `root`: each a relative path below it, each a held object.
 fn materialize_tree(
     cas: &crate::cas::Cas,
-    identity: Option<crate::launch_identity::LaunchIdentity>,
     manifest: &[u8],
     root: &Path,
 ) -> io::Result<()> {
@@ -3634,29 +3547,9 @@ fn materialize_tree(
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent)?;
         }
-        copy_held(cas, identity, &format!("sha256:{sha}"), length, &target)?;
-    }
-    if let Some(identity) = identity {
-        for entry in walk_dirs(root)? {
-            identity.readable(&entry)?;
-        }
+        copy_held(cas, &format!("sha256:{sha}"), length, &target)?;
     }
     Ok(())
-}
-
-pub(crate) fn walk_dirs(root: &Path) -> io::Result<Vec<PathBuf>> {
-    let mut found = vec![root.to_path_buf()];
-    let mut index = 0;
-    while index < found.len() {
-        for entry in fs::read_dir(&found[index])? {
-            let entry = entry?;
-            if entry.file_type()?.is_dir() {
-                found.push(entry.path());
-            }
-        }
-        index += 1;
-    }
-    Ok(found)
 }
 
 /// The failed attempt's triage bundle, kept before the run settles: the executor's own terminal
@@ -3858,6 +3751,8 @@ struct Callbacks<'a> {
     spool: Option<PathBuf>,
     /// The invoking request as a caller: its child-call frames.
     caller: Option<&'a crate::calls::Caller>,
+    /// The machine's calls: a weights output goes to its run's destination through them.
+    calls: Option<&'a Arc<crate::calls::Calls>>,
     /// Its executor's group, forming at Start.
     formation: Option<Formation>,
     /// The host watcher: each frame nudges it to look (the only wakeup where the kernel gives
@@ -3891,7 +3786,11 @@ impl Services for Callbacks<'_> {
         }
         if let Some(Request::CheckpointItem(item)) = &frame.request {
             drop(descriptor);
-            return Ok((crate::products::checkpoint(self.engine, self.generation, self.id, frame.seq, item), None));
+            let publish = |tree: &str| match self.calls {
+                Some(calls) => calls.publish(self.id, tree, &item.output),
+                None => Ok(None),
+            };
+            return Ok((crate::products::checkpoint(self.engine, self.generation, self.id, frame.seq, item, &publish), None));
         }
         drop(descriptor);
         match self.caller {

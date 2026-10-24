@@ -6,7 +6,7 @@
 //! - A part of 16 MiB or more streams straight into objects on the 64 MiB grid. Smaller parts
 //!   wait in a spool; `commit` packs them by the chunk rule (`format::layout`).
 //! - `copy_as` takes a tensor from any checkpoint. A large part already on the grid keeps its
-//!   objects, which is what variants share; the rest is re-laid from its bytes.
+//!   objects, which is what a model's commits share; the rest is re-laid from its bytes.
 //! - With a base, every base component, tensor and asset not written again carries over.
 //! - Order is data: components in the base's order, then in order of declaration; tensors in
 //!   the order the producer `put`s or copies them (a base's keep the base's order, ones written
@@ -17,11 +17,11 @@
 //!   (`has`); the producer declares its components again. Its fence is `flock` on an O_CLOEXEC
 //!   descriptor: a forked child holds it only until it execs, and a second opener waits.
 //! - The writer holds every object it refers to until it commits or ends.
-//! - A folder writer writes `chunks/<sha256>` first and `model.<variant>.cozytensors` last, by
-//!   rename: a folder without the header is unfinished. Objects its base's store holds are
-//!   referenced, not copied (a thin folder).
+//! - A folder writer writes `chunks/<sha256>` first and `model.cozytensors` last, by rename: a
+//!   folder without the header is unfinished. Objects its base's store holds are referenced,
+//!   not copied (a thin folder).
 //! - A streaming writer sends each object to an endpoint as it seals it ([`Stream`]) and, at
-//!   commit, the header, set with its repo files on top of a tag's tree as a new commit.
+//!   commit, the header with its repo files as a new commit in its lane.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File, OpenOptions};
@@ -37,8 +37,8 @@ use crate::err;
 use crate::fetch::Stream;
 use crate::format::layout::{self, GRID, STANDALONE};
 use crate::format::{
-    self, segment, variant_path, Body, ClassRef, Component, Config, Dtype, Encoding, Header,
-    Metadata, ObjectRef, Part, Pipeline, Tensor, Value, CHUNKS_DIR, CONFIG_FILE,
+    self, segment, Body, ClassRef, Component, Config, Dtype, Encoding, Header, Metadata,
+    ObjectRef, Part, Pipeline, Tensor, Value, CHUNKS_DIR, CONFIG_FILE, HEADER_PATH,
 };
 use crate::import;
 use crate::store::retention::{self, Hold};
@@ -177,21 +177,19 @@ struct Spec {
 #[derive(Clone, Debug)]
 enum Dest {
     Store(Store),
-    /// `root/chunks/<sha256>` and `root/model.<variant>.cozytensors`; `cache` holds what a thin
-    /// folder references.
+    /// `root/chunks/<sha256>` and `root/model.cozytensors`; `cache` holds what a thin folder
+    /// references.
     Folder {
         root: PathBuf,
-        variant: String,
         cache: Option<Store>,
     },
-    /// Objects sent as they seal; at commit the header, as `variant` with the repo files
-    /// committed onto tag `tag` of repo `name`.
+    /// Objects sent as they seal; at commit the header with the repo files, a commit of repo
+    /// `name` in lane `lane`.
     Endpoint {
         store: Store,
         stream: Arc<Stream>,
         name: String,
-        tag: String,
-        variant: String,
+        lane: String,
     },
 }
 
@@ -251,21 +249,16 @@ impl Store {
         Writer::open(Dest::Store(self.clone()), writers.join(name), key, base)
     }
 
-    /// A writer of `variant` whose objects go to `stream` as they seal and whose commit sets it
-    /// (with its repo files) on top of tag `tag` of repo `name` there.
-    /// The local checkpoint commits first and remains available when the upload fails.
-    pub fn streaming_writer(&self, stream: Arc<Stream>, name: &str, tag: &str, variant: &str, base: Option<&Checkpoint>) -> Result<Writer> {
-        self.streaming_writer_resumable(stream, name, tag, variant, base, None)
-    }
-
-    pub(crate) fn streaming_writer_resumable(&self, stream: Arc<Stream>, name: &str, tag: &str, variant: &str, base: Option<&Checkpoint>, key: Option<&str>) -> Result<Writer> {
-        format::check_file(&variant_path(variant))?;
-        if !format::tag_name(tag) {
-            return Err(bad(format!("{tag:?} is not a tag name")));
+    /// A writer whose objects go to `stream` as they seal and whose commit (the header with its
+    /// repo files, in lane `lane`) becomes one of repo `name`'s there. The local checkpoint
+    /// commits first and remains available when the upload fails. With `key`, it resumes.
+    pub fn streaming_writer(&self, stream: Arc<Stream>, name: &str, lane: &str, base: Option<&Checkpoint>, key: Option<&str>) -> Result<Writer> {
+        if !format::label(lane) {
+            return Err(bad(format!("lane {lane:?} is not a label")));
         }
         // Reuse the existing keyed journal, kernel fence, replay and retention machinery.
         let mut writer = self.writer(base, key)?;
-        writer.dest = Dest::Endpoint { store: self.clone(), stream, name: name.to_owned(), tag: tag.to_owned(), variant: variant.to_owned() };
+        writer.dest = Dest::Endpoint { store: self.clone(), stream, name: name.to_owned(), lane: lane.to_owned() };
         Ok(writer)
     }
 
@@ -326,16 +319,15 @@ impl Store {
 }
 
 impl Writer {
-    /// A writer of `variant` into the plain folder `path` (created when absent), starting from
-    /// `base` when given; objects `base`'s store holds are referenced, not copied. With
-    /// `resume`, it takes back what an interrupted writer of this variant there journaled.
-    pub fn folder(path: &Path, variant: &str, base: Option<&Checkpoint>, resume: bool) -> Result<Writer> {
+    /// A writer into the plain folder `path` (created when absent), starting from `base` when
+    /// given; objects `base`'s store holds are referenced, not copied. With `resume`, it takes
+    /// back what an interrupted writer there journaled.
+    pub fn folder(path: &Path, base: Option<&Checkpoint>, resume: bool) -> Result<Writer> {
         let chunks = path.join(CHUNKS_DIR);
         fs::create_dir_all(&chunks).map_err(fail("create", &chunks))?;
-        let dir = chunks.join(WRITING).join(variant_path(variant));
+        let dir = chunks.join(WRITING).join(HEADER_PATH);
         let dest = Dest::Folder {
             root: path.to_path_buf(),
-            variant: variant.to_owned(),
             cache: base.and_then(Checkpoint::store).cloned(),
         };
         if !resume {
@@ -345,8 +337,7 @@ impl Writer {
             }
             drop(fence);
         }
-        let key = resume.then(|| variant_path(variant));
-        Writer::open(dest, dir, key.as_deref(), base)
+        Writer::open(dest, dir, resume.then_some(HEADER_PATH), base)
     }
 
     fn open(dest: Dest, dir: PathBuf, key: Option<&str>, base: Option<&Checkpoint>) -> Result<Writer> {
@@ -474,8 +465,8 @@ impl Writer {
     pub fn repo_file(&mut self, path: &str, bytes: &[u8]) -> Result<()> {
         self.live()?;
         format::check_file(path)?;
-        if format::variant_of(path).is_some() {
-            return Err(bad(format!("{path:?} names a variant, not a repo file")));
+        if format::is_header(path) {
+            return Err(bad(format!("{path:?} names a header, not a repo file")));
         }
         let object = match &self.dest {
             Dest::Store(_) => self.dest.put_bytes(&self.dir, bytes, self.hold.as_ref())?,
@@ -508,6 +499,12 @@ impl Writer {
     /// with the repo files; or into the folder, last. The journal and spool go; the writer is
     /// spent.
     pub fn commit(&mut self) -> Result<ObjectRef> {
+        self.commit_with(&|_, _| {})
+    }
+
+    /// [`Writer::commit`], telling `progress(done, total)` the spooled bytes packed into chunks so
+    /// far: packing a model of many small tensors copies most of its bytes.
+    pub fn commit_with(&mut self, progress: &dyn Fn(u64, u64)) -> Result<ObjectRef> {
         self.live()?;
         let base = self.base.take();
         let built = self.assemble(base.as_ref());
@@ -542,6 +539,9 @@ impl Writer {
                 At::Spool(_) => {}
             }
         }
+        let total: u64 = packs.values().flatten().map(|i| list[*i].2.length).sum();
+        let mut packed = 0;
+        progress(packed, total);
         for (chunk, mut members) in packs {
             members.sort_by_key(|i| plan.places[*i].offset);
             let mut admit = self.dest.admit(&self.dir, self.hold.as_ref())?;
@@ -560,10 +560,12 @@ impl Writer {
                 let what = format!("{}/{}", list[i].0.component, list[i].0.key);
                 pour(&mut spool, &mut admit, stored.length, &mut self.buffer, &what)?;
                 end = place.offset + stored.length;
+                packed += stored.length;
             }
             let object = admit.finish()?;
             debug_assert_eq!(object.length, plan.chunks[chunk as usize]);
             chunks[chunk as usize] = Some(object);
+            progress(packed, total);
         }
 
         let mut places = plan.places.iter();
@@ -603,19 +605,19 @@ impl Writer {
                 store.used(&id.sha256, std::iter::once(&id).chain(&objects).chain(self.repo.values()))?;
                 id
             }
-            Dest::Folder { root, variant, .. } => {
+            Dest::Folder { root, .. } => {
                 sync_dir(&root.join(CHUNKS_DIR))?;
-                let at = root.join(variant_path(variant));
+                let at = root.join(HEADER_PATH);
                 durable::replace(&at, &header, 0o644).map_err(|e| fail("write", &at)(e.into()))?;
                 ObjectRef::of(&header)
             }
-            Dest::Endpoint { store, stream, name, tag, variant } => {
+            Dest::Endpoint { store, stream, name, lane } => {
                 let id = self.admit_header(store, &header)?;
                 store.used(&id.sha256, std::iter::once(&id).chain(&objects).chain(self.repo.values()))?;
                 self.committed = Some(id.clone());
-                let done = stream.commit(name, tag, variant, header, &self.repo).map_err(sent)?;
+                let (_, tree) = stream.commit(name, lane, header, &self.repo).map_err(sent)?;
                 // The commit's tree is held here too: the checkpoint names it.
-                self.published = Some(store.put_tree(&done.tree)?);
+                self.published = Some(store.put_tree(&tree)?);
                 id
             }
         };

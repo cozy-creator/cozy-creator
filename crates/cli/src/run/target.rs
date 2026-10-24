@@ -25,44 +25,57 @@ pub enum Target {
     },
 }
 
-/// Whether `raw` spells a path on this computer (`./dir`), never a package name.
-pub(crate) fn local_path(raw: &str) -> bool {
-    let raw = raw.trim();
-    ["./", "../", "/", "~/"].iter().any(|p| raw.starts_with(p)) || raw == "."
+/// Whether `text` is written as a path on this computer, never a name: `.`, `..` or `~`, alone or
+/// before a separator (`./dir`, `..\dir` on Windows), or a rooted or absolute path (`/dir`,
+/// `C:\dir`). The CLI's one test, for code and for input files.
+pub(crate) fn written_as_path(text: &str) -> bool {
+    let text = text.trim();
+    let led = |lead: &str| text.strip_prefix(lead).is_some_and(|rest| rest.is_empty() || rest.starts_with(std::path::is_separator));
+    led(".") || led("..") || led("~") || text.starts_with(std::path::is_separator) || Path::new(text).is_absolute()
+}
+
+/// The path `text` spells: `~` is `home`, and a relative one is under `cwd`.
+pub(crate) fn spelled(text: &str, cwd: &Path, home: &Path) -> PathBuf {
+    let path = Path::new(text.trim());
+    match path.strip_prefix("~") {
+        Ok(rest) => home.join(rest),
+        Err(_) => cwd.join(path),
+    }
+}
+
+/// Local code `text` names, when it is written as a path or names a script here (`x.py`).
+pub(crate) fn local(text: &str, cwd: &Path, home: &Path) -> Option<PathBuf> {
+    let text = text.trim();
+    let script = text.ends_with(".py") && cwd.join(text).is_file();
+    (written_as_path(text) || script).then(|| spelled(text, cwd, home))
 }
 
 impl Target {
-    /// Reads a target. `cwd` decides whether a spelling names a local file or directory.
-    pub fn parse(raw: &str, cwd: &Path) -> Result<Self, Error> {
+    /// Reads a target. `cwd` and `home` place local code.
+    pub fn parse(raw: &str, cwd: &Path, home: &Path) -> Result<Self, Error> {
         let raw = raw.trim();
-        let explicit = local_path(raw);
-        let package = |path: &Path| {
-            let at = cwd.join(path);
-            at.is_dir() || (at.is_file() && path.extension().is_some_and(|e| e == "py"))
+        let Some(path) = local(raw, cwd, home) else {
+            return Self::published(raw);
         };
-        if explicit || (raw.ends_with(".py") && cwd.join(raw).is_file()) {
-            let path = PathBuf::from(raw);
-            if package(&path) {
-                return Ok(Target::Local {
-                    path,
-                    function: None,
-                });
-            }
-            let function = path.file_name().map(|n| n.to_string_lossy().into_owned());
-            let parent = path.parent().map(Path::to_path_buf).unwrap_or_default();
-            if !package(&parent) {
-                return Err(Error::new(
-                    Kind::NotFound,
-                    "target_not_found",
-                    format!("{raw} is not a package directory or a script on this computer"),
-                ));
-            }
-            return Ok(Target::Local {
-                path: parent,
-                function,
-            });
+        let package = |path: &Path| path.is_dir() || (path.is_file() && path.extension().is_some_and(|e| e == "py"));
+        if package(&path) {
+            return Ok(Target::Local { path, function: None });
         }
-        let (path, release) = match raw.rsplit_once('@') {
+        let function = path.file_name().map(|n| n.to_string_lossy().into_owned());
+        match path.parent().filter(|parent| package(parent)) {
+            Some(parent) => Ok(Target::Local { path: parent.to_path_buf(), function }),
+            None => Err(Error::new(
+                Kind::NotFound,
+                "target_not_found",
+                format!("{raw} is not a package directory or a script on this computer"),
+            )),
+        }
+    }
+
+    /// The one package grammar, `[org/]pkg[/fn][@release]`: names and releases are letters,
+    /// digits, `-`, `_` and `.`, and names are lowercase (never case-sensitive).
+    pub(crate) fn published(raw: &str) -> Result<Self, Error> {
+        let (path, release) = match raw.split_once('@') {
             Some((path, release)) => (path, Some(release)),
             None => (raw, None),
         };
@@ -82,11 +95,12 @@ impl Target {
                 parts[0], parts[1], parts[3], parts[2]
             )));
         }
-        if parts.len() > 3 || parts.iter().any(|p| p.is_empty()) || release.is_some_and(str::is_empty) {
+        let valid = |part: &str| !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+        if parts.len() > 3 || !parts.iter().all(|p| valid(p)) || !release.is_none_or(valid) {
             return Err(malformed());
         }
         let release = release.map(str::to_owned);
-        let lower = |s: &str| s.to_lowercase();
+        let lower = |s: &str| s.to_ascii_lowercase();
         Ok(match parts[..] {
             [name] => Target::Published { package: format!("{ROOT}/{}", lower(name)), function: None, release, owned: None },
             [first, second] if first == ROOT => Target::Published {

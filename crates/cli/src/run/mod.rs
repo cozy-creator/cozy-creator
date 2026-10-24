@@ -67,10 +67,9 @@ struct RunArgs {
     /// Use at most N GPUs for the run and its calls.
     #[arg(long, value_name = "N", value_parser = gpu_count)]
     gpus: Option<u32>,
-    /// precision lane: 16, 8 or 4 bits, of the function's main model; its LoRAs and other
-    /// models take the default. Absent, 8 is preferred, in the encoding the GPUs run best, else
-    /// whatever works; an Apple GPU runs 16.
-    #[arg(long, value_parser = ["16", "8", "4"])]
+    /// The lane of the function's main model (a label: bf16, fp8, int8, …); its LoRAs and other
+    /// models take their own. Absent, the Hub picks what this machine's hardware runs best.
+    #[arg(long, value_parser = crate::model::refs::lane)]
     lane: Option<String>,
     /// Pin an attention kernel for this run: everywhere, or at one `[slot/]component`.
     #[arg(long, value_name = "[[SLOT/]COMPONENT=]KERNEL", value_parser = attention_pin, conflicts_with = "warm")]
@@ -207,7 +206,7 @@ async fn run(ctx: &Context, args: RunArgs) -> Result<ExitCode, Error> {
     let cwd = std::env::current_dir()
         .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
     let raw = args.target.as_deref().unwrap_or_default();
-    let (package, function, release, owned) = match Target::parse(raw, &cwd)? {
+    let (package, function, release, owned) = match Target::parse(raw, &cwd, &ctx.user_home)? {
         Target::Published {
             package,
             function,
@@ -334,7 +333,7 @@ impl std::fmt::Display for Callee<'_> {
     }
 }
 
-/// `cozy run <package>/<function> <inputs…> [--lane …] --on …` for another verb: `model quantize`
+/// `cozy run <package>/<function> <inputs…> --on …` for another verb: `model quantize`
 /// runs a package's recipes this way. The run as it settled, or as it was when Ctrl-C stopped
 /// following it; its record is printed either way.
 pub(crate) async fn call(
@@ -342,7 +341,6 @@ pub(crate) async fn call(
     callee: &Callee<'_>,
     function: &str,
     inputs: Vec<String>,
-    lane: Option<&str>,
     placement: &Placement,
 ) -> Result<Run, Error> {
     let args = RunArgs {
@@ -350,7 +348,7 @@ pub(crate) async fn call(
         inputs,
         placement: placement.clone(),
         gpus: None,
-        lane: lane.map(str::to_owned),
+        lane: None,
         attention_kernel: None,
         input_file: None,
         assets: vec![],
@@ -416,7 +414,7 @@ async fn call_code(
         source: code.source,
         callable,
         gpus: args.gpus.unwrap_or(0),
-        bits: bits(&args),
+        lane: args.lane.clone().unwrap_or_default(),
         attention_kernel: args.attention_kernel.as_deref().unwrap_or_default(),
     };
     let (spec, bound, out) = match args.warm {
@@ -474,13 +472,6 @@ fn gpu_count(text: &str) -> Result<u32, String> {
         Ok(n) => Ok(n),
         Err(_) => Err(format!("{text:?} is not a number of GPUs")),
     }
-}
-
-/// `--lane`, the wire's `bits`; 0 lets the machine's rules choose.
-fn bits(args: &RunArgs) -> u32 {
-    args.lane
-        .as_deref()
-        .map_or(0, |b| b.parse().expect("clap admits 16, 8 or 4"))
 }
 
 /// `--attention-kernel`, in the grammar the Runtime reads (`KERNEL` or `[SLOT/]COMPONENT=KERNEL`,

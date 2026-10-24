@@ -30,9 +30,9 @@ pub struct Invocation {
     /// An explicit run GPU group; zero selects the package's widest supported group.
     #[serde(default)]
     pub gpus: u32,
-    /// The request's weight precision (16, 8 or 4), passed to the executor; zero: the rules'.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub bits: u32,
+    /// The main model's lane; empty: the Hub's pick for the hardware.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub lane: String,
     /// File inputs the caller imported, verified at acceptance.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<InputFile>,
@@ -104,15 +104,11 @@ pub struct PublicTerminal {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AdmissionError {
-    WorkspaceMismatch,
     BindingConflict,
 }
 impl std::fmt::Display for AdmissionError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
-            Self::WorkspaceMismatch => {
-                "expected workspace differs from this durable machine workspace"
-            }
             Self::BindingConflict => {
                 "request or submission is already bound to different authored semantics"
             }
@@ -123,7 +119,6 @@ impl std::error::Error for AdmissionError {}
 
 fn admission(error: AdmissionError) -> io::Error {
     let kind = match error {
-        AdmissionError::WorkspaceMismatch => io::ErrorKind::InvalidInput,
         AdmissionError::BindingConflict => io::ErrorKind::AlreadyExists,
     };
     io::Error::new(kind, error)
@@ -502,7 +497,6 @@ impl Journal {
             CREATE TABLE IF NOT EXISTS attention_applied(execution INTEGER PRIMARY KEY REFERENCES executions(id));
             CREATE TABLE IF NOT EXISTS run_calls(execution INTEGER NOT NULL REFERENCES executions(id),sequence INTEGER NOT NULL,at_ms INTEGER NOT NULL,call TEXT NOT NULL,record BLOB NOT NULL,PRIMARY KEY(execution,sequence),UNIQUE(execution,call));
             CREATE TABLE IF NOT EXISTS native_outputs(actor TEXT NOT NULL,owner TEXT NOT NULL,source BLOB NOT NULL,PRIMARY KEY(actor,owner));
-            CREATE TABLE IF NOT EXISTS input_intakes(actor TEXT NOT NULL,retention TEXT NOT NULL,record TEXT NOT NULL,PRIMARY KEY(actor,retention));
             CREATE TABLE IF NOT EXISTS triage(execution INTEGER PRIMARY KEY REFERENCES executions(id),record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS resolutions(actor TEXT NOT NULL,key TEXT NOT NULL,package TEXT NOT NULL,preparation TEXT NOT NULL,PRIMARY KEY(actor,key));
             CREATE TABLE IF NOT EXISTS names(name TEXT PRIMARY KEY,revision TEXT NOT NULL,named TEXT NOT NULL);
@@ -570,148 +564,6 @@ impl Journal {
 
     pub fn workspace_id(&self) -> &str {
         &self.workspace_id
-    }
-    pub fn begin_intake(
-        &mut self,
-        spec: crate::native_inputs::IntakeSpec,
-    ) -> io::Result<crate::native_inputs::IntakeState> {
-        use crate::native_inputs::IntakeState;
-        if self
-            .native_owner(&spec.retention_id)?
-            .is_some_and(|held| held != spec.actor)
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "intake retention belongs to another actor",
-            ));
-        }
-        let prior: Option<String> = self
-            .connection
-            .query_row(
-                "SELECT record FROM input_intakes WHERE actor=?1 AND retention=?2",
-                params![spec.actor, spec.retention_id],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(db_error)?;
-        if let Some(prior) = prior {
-            let state: IntakeState = serde_json::from_str(&prior).map_err(db_error)?;
-            if encoded(&state.spec)? != encoded(&spec)? {
-                return Err(admission(AdmissionError::BindingConflict));
-            }
-            return Ok(state);
-        }
-        let state = IntakeState {
-            spec,
-            released: false,
-            receipt: None,
-        };
-        self.connection
-            .execute(
-                "INSERT INTO input_intakes(actor,retention,record) VALUES(?1,?2,?3)",
-                params![state.spec.actor, state.spec.retention_id, encoded(&state)?],
-            )
-            .map_err(db_error)?;
-        Ok(state)
-    }
-    pub fn intake(
-        &self,
-        actor: &str,
-        retention: &str,
-    ) -> io::Result<Option<crate::native_inputs::IntakeState>> {
-        self.connection
-            .query_row(
-                "SELECT record FROM input_intakes WHERE actor=?1 AND retention=?2",
-                params![actor, retention],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(db_error)?
-            .map(|record| serde_json::from_str(&record).map_err(db_error))
-            .transpose()
-    }
-    pub fn settle_intake(
-        &mut self,
-        actor: &str,
-        retention: &str,
-        receipt: Option<Vec<u8>>,
-        abort: bool,
-    ) -> io::Result<crate::native_inputs::IntakeState> {
-        use crate::{api::domain, native_inputs::IntakeState};
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(db_error)?;
-        let raw: Option<String> = tx
-            .query_row(
-                "SELECT record FROM input_intakes WHERE actor=?1 AND retention=?2",
-                params![actor, retention],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(db_error)?;
-        let mut state: IntakeState =
-            serde_json::from_str(&raw.ok_or_else(|| {
-                io::Error::new(io::ErrorKind::NotFound, "input intake not bound")
-            })?)
-            .map_err(db_error)?;
-        if let Some(receipt) = receipt {
-            let result =
-                crate::archive::decode_native_byte_retention_result(receipt.as_slice()).map_err(db_error)?;
-            if result.retention_id != retention || result.source.is_none() {
-                return Err(db_error("native input receipt differs from bound intake"));
-            }
-            if let Some(prior) = &state.receipt {
-                if prior != &receipt {
-                    return Err(admission(AdmissionError::BindingConflict));
-                }
-            }
-            state.receipt = Some(receipt);
-            if !state.released && !abort {
-                let source = crate::archive::encode_native_byte_retention_request(&domain::NativeByteRetentionRequest {
-                    source: result.source,
-                    retention_id: retention.into(),
-                });
-                let owner: Option<String> = tx
-                    .query_row(
-                        "SELECT actor FROM native_outputs WHERE owner=?1 LIMIT 1",
-                        [retention],
-                        |r| r.get(0),
-                    )
-                    .optional()
-                    .map_err(db_error)?;
-                if owner.is_some_and(|held| held != actor) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        "native intake owner belongs to another actor",
-                    ));
-                }
-                let prior: Option<Vec<u8>> = tx
-                    .query_row(
-                        "SELECT source FROM native_outputs WHERE actor=?1 AND owner=?2",
-                        params![actor, retention],
-                        |r| r.get(0),
-                    )
-                    .optional()
-                    .map_err(db_error)?;
-                if prior.as_ref().is_some_and(|held| held != &source) {
-                    return Err(admission(AdmissionError::BindingConflict));
-                }
-                tx.execute(
-                    "INSERT OR IGNORE INTO native_outputs(actor,owner,source) VALUES(?1,?2,?3)",
-                    params![actor, retention, source],
-                )
-                .map_err(db_error)?;
-            }
-        }
-        state.released |= abort;
-        tx.execute(
-            "UPDATE input_intakes SET record=?1 WHERE actor=?2 AND retention=?3",
-            params![encoded(&state)?, actor, retention],
-        )
-        .map_err(db_error)?;
-        tx.commit().map_err(db_error)?;
-        Ok(state)
     }
 
     pub fn installation(&self, actor: &str, alias: &str) -> io::Result<Option<Installation>> {
@@ -844,11 +696,6 @@ impl Journal {
             .map_err(db_error)?;
         Ok(())
     }
-    pub fn hold_memo(&mut self, held: &HeldMemo) -> io::Result<()> {
-        let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_error)?;
-        hold_memo(&tx, held)?;
-        tx.commit().map_err(db_error)
-    }
     pub fn held_memo(&self, actor: &str, computation: &str) -> io::Result<Option<Vec<u8>>> {
         let record = self.connection
             .query_row("SELECT record FROM held_memos WHERE actor=?1 AND computation=?2",
@@ -957,26 +804,6 @@ impl Journal {
             .map(|record| serde_json::from_str(&record).map_err(db_error))
             .transpose()
     }
-    /// The accepted public execution a submission or request already names, if any.
-    pub fn accepted_public(
-        &self,
-        actor: &str,
-        request_id: &str,
-        submission_id: &str,
-    ) -> io::Result<Option<Execution>> {
-        let record: Option<String> = self
-            .connection
-            .query_row(
-                "SELECT record FROM executions WHERE actor=?1 AND (request_id=?2 OR submission_id=?3) LIMIT 1",
-                params![actor, request_id, submission_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(db_error)?;
-        record
-            .map(|r| serde_json::from_str(&r).map_err(db_error))
-            .transpose()
-    }
     pub fn preparation(&self, actor: &str, id: &str) -> io::Result<Option<Preparation>> {
         self.connection
             .query_row(
@@ -1067,45 +894,6 @@ impl Journal {
             .optional()
             .map_err(db_error)
     }
-    pub fn acknowledge_collection(&mut self, id: &str) -> io::Result<Execution> {
-        self.acknowledge_collection_events(id, None)
-    }
-    pub fn acknowledge_collection_events(
-        &mut self,
-        id: &str,
-        events: Option<&[u8]>,
-    ) -> io::Result<Execution> {
-        let mut record = self.get(id)?;
-        if !record.state.terminal() {
-            return Err(db_error(
-                "collection acknowledgement requires a terminal result",
-            ));
-        }
-        let transaction = self.connection.transaction().map_err(db_error)?;
-        if let Some(events) = events {
-            if transaction
-                .execute(
-                    "UPDATE public_terminals SET events=?1 WHERE execution=?2",
-                    params![events, id],
-                )
-                .map_err(db_error)?
-                != 1
-            {
-                return Err(db_error("terminal projection absent during collection"));
-            }
-        }
-        if !record.collected {
-            record.collected = true;
-            transaction
-                .execute(
-                    "UPDATE executions SET record=?1 WHERE id=?2",
-                    params![encoded(&record)?, id],
-                )
-                .map_err(db_error)?;
-        }
-        transaction.commit().map_err(db_error)?;
-        Ok(record)
-    }
     pub fn native_output(&self, actor: &str, owner: &str) -> io::Result<Option<Vec<u8>>> {
         self.connection
             .query_row(
@@ -1172,111 +960,6 @@ impl Journal {
             )
             .map_err(db_error)?;
         Ok(projection)
-    }
-
-    pub fn accept_public(
-        &mut self,
-        context: SubmissionContext,
-        invocation: Invocation,
-    ) -> io::Result<Execution> {
-        self.accept_public_on_boot(context, invocation, "")
-    }
-    pub fn accept_public_on_boot(
-        &mut self,
-        context: SubmissionContext,
-        invocation: Invocation,
-        boot: &str,
-    ) -> io::Result<Execution> {
-        self.validate_workspace(&context.expected_workspace_id)?;
-        validate_scope(&context.actor, &context.request_id, &context.submission_id)?;
-        if !context.preparation_id.is_empty() {
-            let preparation = self
-                .preparation(&context.actor, &context.preparation_id)?
-                .ok_or_else(|| admission(AdmissionError::BindingConflict))?;
-            let installation = self
-                .installation(&context.actor, &preparation.installation)?
-                .ok_or_else(|| admission(AdmissionError::BindingConflict))?;
-            if installation.generation != invocation.generation {
-                return Err(admission(AdmissionError::BindingConflict));
-            }
-        }
-        // An escaped tuple is an unambiguous selector encoding, not a version/fingerprint gate.
-        let key = format!(
-            "public:{}",
-            encoded(&(context.actor.as_str(), context.submission_id.as_str()))?
-        );
-        self.accept_bound(&key, invocation, Some(context), boot)
-    }
-
-    /// A successful return is an acceptance receipt: FULL WAL commit precedes it.
-    /// Reusing a key with different semantics fails rather than silently replacing work.
-    pub fn accept(&mut self, key: &str, invocation: Invocation) -> io::Result<Execution> {
-        if key.is_empty() || key.len() > 512 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "idempotency key must contain 1..512 bytes",
-            ));
-        }
-        self.accept_bound(key, invocation, None, "")
-    }
-
-    fn accept_bound(
-        &mut self,
-        key: &str,
-        invocation: Invocation,
-        context: Option<SubmissionContext>,
-        boot: &str,
-    ) -> io::Result<Execution> {
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(db_error)?;
-        let mut prior: Option<String> = tx
-            .query_row(
-                "SELECT record FROM executions WHERE idempotency_key=?1",
-                [key],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(db_error)?;
-        if let Some(context) = &context {
-            if prior.is_none() {
-                prior = public_prior(
-                    &tx,
-                    &context.actor,
-                    &context.request_id,
-                    &context.submission_id,
-                )?;
-            }
-        }
-        if let Some(prior) = prior {
-            let execution: Execution = serde_json::from_str(&prior).map_err(db_error)?;
-            if execution.invocation != invocation || execution.submission != context {
-                if context.is_some() {
-                    return Err(admission(AdmissionError::BindingConflict));
-                }
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "idempotency key already identifies a different invocation",
-                ));
-            }
-            return Ok(execution);
-        }
-        let execution = insert(&tx, key, invocation, context, boot, None)?;
-        tx.commit().map_err(db_error)?;
-        Ok(execution)
-    }
-
-    /// A run (`cozy.machine.v1` Run) accepted before its preparation: queued and waiting on
-    /// `PREPARING`, idempotent on (actor, id) by its spec digest. True when newly accepted.
-    pub fn accept_run(
-        &mut self,
-        actor: &str,
-        id: &str,
-        digest: &str,
-        invocation: Invocation,
-    ) -> io::Result<(Execution, bool)> {
-        self.accept_run_objects(actor, id, digest, invocation, &[], &[])
     }
 
     /// `accept_run`, also referencing `objects` (tree members, a local source) the run needs, and
@@ -1439,11 +1122,6 @@ impl Journal {
             {
                 return Ok(false);
             }
-            // A detached invocation is doing CPU output work. Cancellation linearizes at
-            // this transaction, so it cannot publish success after a recorded cancel.
-            let outcome = if record.state == State::Running && record.process.is_none() && record.cancel_actor.is_some() {
-                Outcome::Canceled
-            } else { outcome };
             match outcome {
                 Outcome::Completed(result) => {
                     record.state = State::Completed;
@@ -1658,22 +1336,6 @@ impl Journal {
         .map_err(db_error)
     }
 
-    pub fn list_actor(&self, actor: &str, limit: usize) -> io::Result<Vec<Execution>> {
-        let mut statement = self
-            .connection
-            .prepare("SELECT record FROM executions WHERE actor=?1 ORDER BY id LIMIT ?2")
-            .map_err(db_error)?;
-        let records = statement
-            .query_map(params![actor, limit.min(i64::MAX as usize) as i64], |row| {
-                row.get::<_, String>(0)
-            })
-            .map_err(db_error)?;
-        records
-            .map(|record| record.map_err(db_error))
-            .collect::<io::Result<Vec<_>>>()
-            .map(readable)
-    }
-
     /// Closure is a durable acceptance tombstone, never implicit execution cancellation.
     pub fn actor_page(
         &self,
@@ -1722,26 +1384,6 @@ impl Journal {
             )
             .map_err(db_error)
     }
-    fn validate_workspace(&self, expected: &str) -> io::Result<()> {
-        if expected != self.workspace_id {
-            return Err(admission(AdmissionError::WorkspaceMismatch));
-        }
-        Ok(())
-    }
-
-    pub fn list(&self) -> io::Result<Vec<Execution>> {
-        let mut statement = self
-            .connection
-            .prepare("SELECT record FROM executions ORDER BY id")
-            .map_err(db_error)?;
-        let records = statement
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(db_error)?;
-        records
-            .map(|record| record.map_err(db_error))
-            .collect::<io::Result<Vec<_>>>()
-            .map(readable)
-    }
 
     /// Accepted history remains evidence of use even after every execution is terminal.
     /// Whether a job (any run asked of this machine: a call, a warm-up, an upload) is queued or
@@ -1758,20 +1400,6 @@ impl Journal {
                 |row| Ok((row.get(0)?, row.get::<_, Option<i64>>(1)?.unwrap_or(0).max(since))),
             )
             .map_err(db_error)
-    }
-
-    /// Every run not completed, failed or canceled: unknown states too. A row
-    /// that does not decode is an error here, where a missed run is a model evicted.
-    pub fn unfinished(&self) -> io::Result<Vec<Execution>> {
-        let mut statement = self
-            .connection
-            .prepare("SELECT record FROM executions WHERE state NOT IN ('completed','failed','canceled') ORDER BY id")
-            .map_err(db_error)?;
-        let rows = statement
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(db_error)?;
-        rows.map(|row| serde_json::from_str(&row.map_err(db_error)?).map_err(db_error))
-            .collect()
     }
 
     pub fn nonterminal(&self, limit: usize) -> io::Result<Vec<Execution>> {
@@ -2238,16 +1866,37 @@ impl Journal {
         })
     }
 
+    /// Reserve a log cursor before the transition's snapshot cursor. A log cannot hide a
+    /// terminal/status snapshot at the same cursor; both are written in the same transaction.
+    fn phase_revision(record: &mut Execution) -> io::Result<()> {
+        record.revision_ceiling = record.revision.max(record.revision_ceiling)
+            .checked_add(1).ok_or_else(|| db_error("execution observation cursor exhausted"))?;
+        Ok(())
+    }
+    fn phase_log(tx: &rusqlite::Transaction<'_>, record: &Execution, mut phase: serde_json::Value) -> io::Result<()> {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+        phase["at_ns"] = (now.as_nanos().min(u64::MAX as u128) as u64).into();
+        let line = serde_json::to_vec(&serde_json::json!({"level": "info", "text": phase.to_string()}))?;
+        let sequence = record.revision.checked_sub(1).ok_or_else(|| db_error("phase cursor absent"))?;
+        tx.execute("INSERT INTO run_logs(execution,sequence,at_ms,record) VALUES(?1,?2,?3,?4)",
+            params![record.id, sequence as i64, timestamp(), line]).map_err(db_error)?;
+        Ok(())
+    }
+
     /// The owner has proved completion and revoked this invocation's cancellation delivery.
     /// Keep historical executor facts, but no live process obligation can follow its next use.
     pub(crate) fn returned_process(&mut self, id: &str, birth: &Birth, progress: Option<&ProgressSnapshot>) -> io::Result<Execution> {
-        self.update_observed(id, progress, |record| {
+        self.update_with(id, progress, |record| {
             if !matches!(record.state, State::Starting | State::Running) || record.process.as_ref() != Some(birth) {
                 return Err(db_error("returned executor does not own this active invocation"));
             }
             record.process = None;
             if let Some(pending) = &mut record.pending_completion { pending.processes.clear(); }
+            Self::phase_revision(record)?;
             Ok(true)
+        }, |tx, record| {
+            let phase = if record.invocation.degree > 0 { "gpu_returned" } else { "executor_returned" };
+            Self::phase_log(tx, record, serde_json::json!({"phase": phase, "pid": birth.pid}))
         })
     }
 
@@ -2287,10 +1936,6 @@ impl Journal {
         })
     }
 
-    pub fn cancel(&mut self, id: &str, actor: &str) -> io::Result<Execution> {
-        self.cancel_observed(id, actor, None)
-    }
-
     pub fn cancel_observed(
         &mut self,
         id: &str,
@@ -2303,16 +1948,22 @@ impl Journal {
                 "cancellation requires an actor",
             ));
         }
-        self.update_observed(id, progress, |record| {
+        let output = std::cell::Cell::new(false);
+        self.update_with(id, progress, |record| {
             if record.state.terminal() || record.cancel_actor.is_some() {
                 return Ok(false);
             }
+            output.set(record.state == State::Running && record.process.is_none());
+            if output.get() { Self::phase_revision(record)?; }
             record.cancel_actor = Some(actor.into());
             if record.state == State::Queued {
                 record.state = State::Canceled;
                 record.finished_at_ms = timestamp().max(0) as u64;
             }
             Ok(true)
+        }, |tx, record| {
+            if output.get() { Self::phase_log(tx, record, serde_json::json!({"phase": "output_cancelled"})) }
+            else { Ok(()) }
         })
     }
 
@@ -2364,9 +2015,11 @@ impl Journal {
         progress: Option<&ProgressSnapshot>,
         held: Option<HeldMemo>,
     ) -> io::Result<Execution> {
-        let hold = |tx: &rusqlite::Transaction<'_>, record: &Execution| match held {
-            Some(held) if record.state == State::Completed => hold_memo(tx, &held),
-            _ => Ok(()),
+        let output = std::cell::Cell::new(false);
+        let hold = |tx: &rusqlite::Transaction<'_>, record: &Execution| {
+            if let Some(held) = held.filter(|_| record.state == State::Completed) { hold_memo(tx, &held)?; }
+            if output.get() { Self::phase_log(tx, record, serde_json::json!({"phase": "output_finished"}))?; }
+            Ok(())
         };
         self.update_with(id, progress, |record| {
             if record.state.terminal() {
@@ -2375,6 +2028,11 @@ impl Journal {
             if record.state == State::Queued {
                 return Err(db_error("unstarted attempt cannot finish"));
             }
+            output.set(record.state == State::Running && record.process.is_none());
+            if output.get() { Self::phase_revision(record)?; }
+            // This is the final serialized decision, after custody: an accepted cancellation
+            // cannot be replaced by success from the earlier, now detached invocation.
+            let outcome = if output.get() && record.cancel_actor.is_some() { Outcome::Canceled } else { outcome };
             match outcome {
                 Outcome::Completed(result) => {
                     record.state = State::Completed;

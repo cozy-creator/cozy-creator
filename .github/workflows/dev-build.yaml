@@ -18,7 +18,7 @@ on:
         type: string
         default: cozy
       features:
-        description: "Cargo features of the cozy and tensord builds (cozy's migrate: the A11 dev build, never a release)"
+        description: "Cargo features of the cozy and tensord builds"
         type: string
         default: ''
       runner:

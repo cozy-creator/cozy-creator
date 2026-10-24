@@ -13,7 +13,7 @@ use platform::durable;
 use super::retention::{self, Hold};
 use super::{fail, invalid, Error, Result, Store};
 use crate::format::{
-    self, decode, variant_of, Body, Component, Header, Location, ObjectRef,
+    self, decode, is_header, Body, Component, Header, Location, ObjectRef, HEADER_PATH,
     PartBytes, Pipeline, Tensor, Tree, CHUNKS_DIR,
 };
 use crate::io::{Copy, Dst, ReadOpts, Src};
@@ -54,11 +54,11 @@ impl Store {
         Ok(Tree::from_json(&self.read(tree)?)?)
     }
 
-    /// `variant` of `tree` (its only one when `None`).
-    pub fn variant(&self, tree: &ObjectRef, variant: Option<&str>) -> Result<Checkpoint> {
+    /// The cozytensors of commit `tree`.
+    pub fn at_commit(&self, tree: &ObjectRef) -> Result<Checkpoint> {
         let fence = retention::acquire(self)?;
         let parsed = self.tree(tree)?;
-        let header = parsed.variant(variant)?.1;
+        let header = parsed.header()?.1;
         let ck = Checkpoint::opened(Objects::Store(self.clone()), header.clone(), Header::from_cbor(&self.read(header)?)?, None)?;
         let files = std::iter::once(tree).chain(parsed.files.values());
         if let Some(hold) = &ck._hold {
@@ -94,10 +94,10 @@ impl Checkpoint {
         std::iter::once(&self.id).chain(self.header.objects())
     }
 
-    /// `variant` of the plain folder `dir` (its only one when `None`): its header file, and its
-    /// chunks and assets from `dir/chunks/`, else from `cache`. Lengths are checked; digests are
-    /// checked where bytes enter a store ([`Store::admit_folder`]).
-    pub fn folder(dir: &Path, variant: Option<&str>, cache: Option<&Store>) -> Result<Checkpoint> {
+    /// The plain folder `dir` (or a header file): its one header, and its chunks and assets from
+    /// `dir/chunks/`, else from `cache`. Lengths are checked; digests are checked where bytes
+    /// enter a store ([`Store::admit_folder`]).
+    pub fn folder(dir: &Path, cache: Option<&Store>) -> Result<Checkpoint> {
         // No collection runs between reading the header and holding what it names.
         let _fence = cache.map(retention::acquire).transpose()?;
         if dir.is_file() {
@@ -105,24 +105,10 @@ impl Checkpoint {
             let bytes = fs::read(dir).map_err(fail("read", dir))?;
             return Self::opened(Objects::Folder { dir: parent.to_path_buf(), cache: cache.cloned() }, ObjectRef::of(&bytes), Header::from_cbor(&bytes)?, Some(dir.to_path_buf()));
         }
-        let name = match variant {
-            Some(v) => {
-                let files = super::folder_files(dir, "")?.into_iter().map(|name| (name, ObjectRef::of(&[]))).collect();
-                let tree = Tree { files };
-                tree.variant(Some(v)).map_err(Error::from)?.0.to_owned()
-            },
-            None => {
-                let mut found = Vec::new();
-                for name in super::folder_files(dir, "")? {
-                    if variant_of(&name).is_some() { found.push(name); }
-                }
-                match <[String; 1]>::try_from(found) {
-                    Ok([one]) => one,
-                    Err(found) => {
-                        return Err(invalid(dir, format!("name a variant (has {found:?})")))
-                    }
-                }
-            }
+        let found: Vec<String> = super::folder_files(dir, "")?.into_iter().filter(|name| is_header(name)).collect();
+        let name = match <[String; 1]>::try_from(found) {
+            Ok([one]) => one,
+            Err(found) => return Err(invalid(dir, format!("a model folder holds one .cozytensors file (has {found:?})"))),
         };
         let path = dir.join(&name);
         let bytes = fs::read(&path).map_err(|e| match e.kind() {
@@ -166,18 +152,13 @@ impl Checkpoint {
 
     /// A plain folder view of this checkpoint, sharing its admitted object files.
     pub fn path(&self) -> Result<PathBuf> {
-        self.path_for("")
-    }
-
-    pub fn path_for(&self, variant: &str) -> Result<PathBuf> {
         match &self.objects {
             Objects::Folder { dir, .. } => Ok(dir.clone()),
             Objects::Store(store) => {
                 let dir = store.root().join("snapshots").join(&self.id.sha256);
                 store.used(&self.id.sha256, self.closure())?;
-                let mut tree = Tree::default();
-                tree.set_variant(variant, self.id.clone());
-                store.snapshot(&store.put_tree(&tree)?, &dir, None)?;
+                let tree = Tree { files: [(HEADER_PATH.to_owned(), self.id.clone())].into(), ..Tree::default() };
+                store.snapshot(&store.put_tree(&tree)?, &dir)?;
                 Ok(dir)
             }
         }

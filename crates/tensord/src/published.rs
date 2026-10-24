@@ -1,15 +1,14 @@
 //! Published packages and their models, prepared from a Hub by name (th-245) and reused: a
 //! run whose installation and model resolution are held reads nothing from the Hub. Port of the
 //! Python worker's release-root preparation (package set from the release's locked
-//! requirements with uv; each model's lane by the lane rule (`precision`), then a TensorFS
-//! download) with its `release_root_preparing` progress answers.
+//! requirements with uv; each model's commit as the Hub resolves it for the machine's hardware,
+//! then a TensorFS download) with its `release_root_preparing` progress answers.
 use crate::{
     api::domain,
     gpu_service::{Plan, Pool, ModelGrant},
     hub::{self, Catalog},
     journal::{Installation, Preparation},
     objects::Refused,
-    precision,
     process::Supervised,
     service::Service,
 };
@@ -32,7 +31,7 @@ use crate::{
 };
 use tensorfs::{
     err::Refusal,
-    fetch::Progress as Counted,
+    fetch::{Hardware, Progress as Counted},
     format::ObjectRef,
     sha256,
 };
@@ -119,7 +118,7 @@ impl PackageSdk {
 pub struct Prepared {
     pub installation: Installation,
     pub plan: Option<Plan>,
-    /// The lane rule's warnings for the run (`precision`), held with its resolution.
+    /// Why the Hub passed over a better lane for the run, held with its resolution.
     pub warnings: Vec<String>,
 }
 
@@ -143,8 +142,8 @@ pub struct Request {
     pub choices: Vec<domain::ModelChoice>,
     /// 0 selects the widest supported machine group; otherwise exactly this many GPUs.
     pub gpus: u32,
-    /// The request's weight precision (16, 8 or 4); 0 lets the lane rule choose per slot.
-    pub bits: u32,
+    /// The main model's lane; empty lets the Hub pick for the hardware.
+    pub lane: String,
     /// A call's: its imports start as soon as it installs. A warm run imports only when its
     /// level asks (`downloaded` never does).
     pub imports: bool,
@@ -163,47 +162,24 @@ impl Request {
     }
 }
 
-/// A Hub checkpoint as a run names it (th-245): `repository` at `release` (empty: the newest) in
-/// `lane` (empty: the lane rule's), or by hash (`tree` and no release): a commit (tree), or one
-/// variant's header, which resolves to that header alone (no tree). A lane is a variant of its
-/// release's tree. Resolved, it carries the release, lane and tree the Hub named and the lane's
-/// header there, which is the checkpoint's id on this machine.
+/// A Hub commit as a run names it (th-245): `repository` at `release` (empty: the newest) in
+/// `lane` (empty: the Hub's pick for the hardware), or by hash (`tree` and no release): a commit,
+/// or a bare header (no tree). Resolved, it carries the release, lane and commit the Hub named,
+/// that commit's header (the checkpoint's id on this machine), and why a better lane was passed
+/// over.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Named {
     pub repository: String,
     pub release: String,
     pub lane: String,
-    /// The tree; a run's hash names one before it resolves (its length 0 when unsaid).
+    /// The commit; a run's hash names one before it resolves (its length 0 when unsaid).
     pub tree: Option<ObjectRef>,
-    /// The lane's cozytensors header in `tree`, once resolved.
+    /// The commit's cozytensors header, once resolved.
     pub header: Option<ObjectRef>,
+    pub reasons: Vec<String>,
 }
 
 impl Named {
-    /// Its tag's commit at the Hub (no tag: the default, the newest public version not yanked).
-    fn at_hub(mut self, machine: &Machine, source: &hub::Source) -> Result<Self, Failure> {
-        let (release, tree) = origin::release(machine, source, &self.repository, &self.release)
-            .map_err(|e| refused("model_resolution_failed", e))?;
-        (self.release, self.tree) = (release, Some(tree));
-        Ok(self)
-    }
-
-    /// Its variant in its tree (TensorFS's one selection, header profiles only): its lane when
-    /// it names one, else the one `constraints` take; and that variant's header.
-    fn landed(mut self, machine: &Machine, source: &hub::Source, constraints: &precision::Constraints) -> Result<Self, Failure> {
-        let failed = |e| refused("model_resolution_failed", e);
-        let remote = origin::remote(machine, source).map_err(failed)?;
-        let tree = machine.tree(&remote, self.tree()?, &Stop::default()).map_err(failed)?;
-        if self.lane.is_empty() {
-            let model = format!("{}@{}", self.repository, self.release);
-            let selected = machine.select(&remote, &self.repository, &model, self.tree()?, &tree, constraints).map_err(failed)?;
-            self.lane = selected.map_err(|e| ("model_resolution_failed", e.detail))?.variant;
-        }
-        let (path,header) = tree.variant(Some(&self.lane)).map_err(|e| ("model_resolution_failed",e.to_string()))?;
-        self.lane = path.to_owned(); self.header = Some(header.clone());
-        Ok(self)
-    }
-
     pub(crate) fn tree(&self) -> Result<&ObjectRef, Failure> {
         self.tree.as_ref().ok_or_else(|| unresolved(self))
     }
@@ -211,10 +187,20 @@ impl Named {
     pub(crate) fn header(&self) -> Result<&ObjectRef, Failure> {
         self.header.as_ref().ok_or_else(|| unresolved(self))
     }
+
+    /// `repository@release lane`, or `repository@sha256:… lane` for a commit by hash.
+    fn shown(&self) -> String {
+        let at = match (&self.release, &self.tree) {
+            (release, _) if !release.is_empty() => release.clone(),
+            (_, Some(tree)) => tree.id(),
+            _ => "newest".into(),
+        };
+        format!("{}@{at} {}", self.repository, self.lane).trim_end().to_owned()
+    }
 }
 
 fn unresolved(named: &Named) -> Failure {
-    ("model_resolution_failed", format!("{}@{} {} is not resolved", named.repository, named.release, named.lane))
+    ("model_resolution_failed", format!("{} is not resolved", named.shown()))
 }
 
 /// The caller's provider tokens; empty reads public sources anonymously.
@@ -452,7 +438,7 @@ impl Publisher {
             true => canceled(),
             false => refused("model_download_failed", e),
         };
-        let (started, subject) = (Instant::now(), format!("{}@{} {}", named.repository, named.release, named.lane));
+        let (started, subject) = (Instant::now(), named.shown());
         let failed = |e: Refusal| {
             storage::transport(&self.store, "pull-failed", &subject, &format!("origin={}: {e}", source.origin));
             failed(e)
@@ -506,6 +492,7 @@ impl Publisher {
             lane: p.lane,
             tree: Some(p.tree),
             header: Some(header.clone()),
+            reasons: vec![],
         }))
     }
 
@@ -515,7 +502,7 @@ impl Publisher {
         if checkpoints.is_empty() {
             return Ok(());
         }
-        let names: Vec<String> = checkpoints.iter().map(|n| format!("{}@{} {}", n.repository, n.release, n.lane)).collect();
+        let names: Vec<String> = checkpoints.iter().map(Named::shown).collect();
         job.stage(format!("resolving {}", names.join(" and ")));
         for named in checkpoints {
             self.pull(source, named, Some(&[]), job.stop.as_ref(), &|_, _| ())?;
@@ -523,24 +510,25 @@ impl Publisher {
         Ok(())
     }
 
-    /// The checkpoint `named` is: a tree by hash as given, a name as its release's tree at the
-    /// Hub; then the header there of its lane, else of the first of `lanes` the tree has, else of
-    /// its only lane. Journaled per catalog revision so a warm run, across restarts too,
-    /// asks the Hub nothing (th-245).
-    pub(crate) fn resolve(&self, service: &Service, source: &hub::Source, named: Named, constraints: &precision::Constraints, revision: &str) -> Result<Named, Failure> {
+    /// The commit `named` is: one by hash as given, a name as the Hub resolves its release and
+    /// lane (or, with no lane, `hardware`); then that commit's header. Journaled per catalog
+    /// revision and GPUs (free VRAM moves; the first answer stands) so a warm run, across
+    /// restarts too, asks the Hub nothing (th-245).
+    pub(crate) fn resolve(&self, service: &Service, source: &hub::Source, named: Named, hardware: &Hardware, revision: &str) -> Result<Named, Failure> {
         if named.tree.is_some() {
-            return measured(&self.machine, service, source, named, constraints);
+            return measured(&self.machine, service, source, named);
         }
         let origin = hub::origin_key(&source.origin).unwrap_or_default();
-        let name = json!(["profiles-v2", origin, named.repository, named.release, named.lane, constraints]).to_string();
+        let name = json!(["resolve-v3", origin, named.repository, named.release, named.lane, hardware.gpus, hardware.plain]).to_string();
         let held = service.engine.with_journal(|j| j.named(&name, revision)).map_err(io_failure)?;
-        if let Some((release, lane, tree, header)) = held.and_then(|held| serde_json::from_str(&held).ok()) {
-            return Ok(Named { release, lane, tree: Some(tree), header: Some(header), ..named });
+        if let Some((release, lane, tree, header, reasons)) = held.and_then(|held| serde_json::from_str(&held).ok()) {
+            return Ok(Named { release, lane, tree: Some(tree), header: Some(header), reasons, ..named });
         }
-        let resolved = named.at_hub(&self.machine, source)?.landed(&self.machine, source, constraints)?;
-        let answer = json!([resolved.release, resolved.lane, resolved.tree, resolved.header]).to_string();
+        let r = origin::resolve(&self.machine, source, &named.repository, &named.release, &named.lane, hardware)
+            .map_err(|e| refused("model_resolution_failed", e))?;
+        let answer = json!([r.release, r.lane, r.commit, r.header, r.reasons]).to_string();
         service.engine.with_journal(|j| j.bind_named(&name, revision, &answer)).map_err(io_failure)?;
-        Ok(resolved)
+        Ok(Named { release: r.release, lane: r.lane, tree: Some(r.commit), header: Some(r.header), reasons: r.reasons, ..named })
     }
 
     /// A Hub checkpoint resolved (`resolve`) and downloaded whole into the store (a warm run's
@@ -552,13 +540,13 @@ impl Publisher {
         service: &Service,
         source: &hub::Source,
         named: Named,
-        constraints: &precision::Constraints,
+        hardware: &Hardware,
         revision: &str,
         stop: Option<&Stop>,
         bytes: &(dyn Fn(u64, u64) + Sync),
     ) -> Result<(Named, (u64, u64)), Refused> {
         let failed = |(code, message)| Refused { code, message };
-        let named = self.resolve(service, source, named, constraints, revision).map_err(failed)?;
+        let named = self.resolve(service, source, named, hardware, revision).map_err(failed)?;
         // A checkpoint this store already holds whole moves nothing and asks the Hub nothing.
         let moved = self.ensure(source, &named, stop, bytes).map_err(failed)?;
         Ok((named, moved))
@@ -665,7 +653,7 @@ impl Publisher {
         let origin = request.origin();
         let package = request.installed.as_ref().map(|i| i.package.as_str()).unwrap_or(&request.package);
         let release = request.installed.as_ref().map(|i| i.release.as_str()).unwrap_or(&request.release);
-        let key = json!({"installation":alias,"package":package,"release":release,"hub":origin,"owner":request.owner,"catalog":request.catalog_revision,"entrypoint":request.entrypoint,"choices":choices,"row":gpus,"gpus":request.gpus,"bits":request.bits});
+        let key = json!({"installation":alias,"package":package,"release":release,"hub":origin,"owner":request.owner,"catalog":request.catalog_revision,"entrypoint":request.entrypoint,"choices":choices,"row":gpus,"gpus":request.gpus,"lane":request.lane});
         format!("hub-{}", sha256::hex_digest(key.to_string().as_bytes()))
     }
 
@@ -1246,8 +1234,10 @@ impl Publisher {
                 "package_prepare_interface_invalid",
                 "declared model slot absent".to_string(),
             ))?;
-        let degree = crate::gpu_service::group_degree(&slots, request.gpus, gpu.width());
-        let gpus = gpu.gpus(degree);
+        // The GPUs the call runs on (none for `accelerator=False`): what its models resolve for.
+        let entry = protocol::interface::entrypoint(&interface, &request.entrypoint).cloned().unwrap_or_default();
+        let degree = gpu.degree(&entry, request.gpus).map_err(|e| ("model_preparation_failed", e.to_string()))?;
+        let hardware = gpu.hardware(degree);
         let main = main_model(&slots);
         // One slot's grant, its Hub checkpoint and its warnings.
         let pick = |slot: &Value| -> Result<(ModelGrant, Option<Named>, Vec<String>), Failure> {
@@ -1269,36 +1259,26 @@ impl Publisher {
                 return Ok((self.held_grant(installation, &path, reference)?, None, vec![]));
             }
             if choice.repository.starts_with("local/") && choice.manifest.is_none() {
-                let reference = match choice.release.is_empty() {
-                    true => choice.repository.clone(),
-                    false => format!("{}@{}", choice.repository, choice.release),
-                };
-                let (release, lane) = ((!choice.release.is_empty()).then_some(choice.release.as_str()), (!choice.lane.is_empty()).then_some(choice.lane.as_str()));
-                let local = storage::local(&self.store, &choice.repository, release, lane)
+                let local = storage::local(&self.store, &choice.repository)
                     .and_then(|local| local.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "this machine holds no such model")))
-                    .map_err(|error| ("model_resolution_failed", format!("{reference}: {error}")))?;
+                    .map_err(|error| ("model_resolution_failed", format!("{}: {error}", choice.repository)))?;
                 let header = local.header.id();
                 return Ok((ModelGrant {
                     package: installation.package.clone(), slot: path, repository: choice.repository.clone(),
-                    release: local.release, lane: local.variant,
+                    release: String::new(), lane: local.lane,
                     components: self.components(&header)?, manifest: header,
                 }, None, vec![]));
             }
-            let named = choose(choice, &path)?;
-            let tolerances = precision::Slot::of(slot);
-            // The asked lane is the main model's; every other slot takes the no-flag rule.
-            let asked = if Some(slot) == main { request.bits } else { 0 };
-            let ruled = named.lane.is_empty() && named.tree.is_none();
-            let constraints = tolerances.constraints(&gpus, asked);
-            let named = self.resolve(service, request.hub(&format!("the model for {path}"))?, named, &constraints, &request.catalog_revision)?;
-            let model = format!("{}@{}", named.repository, named.release);
-            let warnings = if ruled {
-                let remote = origin::remote(&self.machine, request.hub("selected header")?).map_err(|e| refused("model_resolution_failed",e))?;
-                self.machine.objects(&remote, std::slice::from_ref(named.header()?), priority::NOW, &Stop::default()).map_err(|e| refused("model_resolution_failed",e))?;
-                let header = tensorfs::format::Header::from_cbor(&self.store.read(named.header()?).map_err(|e| ("model_resolution_failed",e.to_string()))?).map_err(|e| ("model_resolution_failed",e.to_string()))?;
-                // Raw weights are data and ask no lane; else the rule's own reasons, as it selected.
-                if tolerances.raw { vec![] } else { constraints.warnings(&model, &precision::Profile::of(&header)) }
-            } else { vec![] };
+            let mut named = choose(choice, &path)?;
+            // The run's lane is its main model's; another slot's is its choice's or its own.
+            if Some(slot) == main && !request.lane.is_empty() {
+                named.lane = request.lane.clone();
+            }
+            // A class that takes no encoded leaves, or raw weights read as data, takes plain lanes only.
+            let plain = slot["encoded_leaves"] != "accept" || slot["weights"] == true;
+            let hardware = tensorfs::fetch::Hardware { plain, ..hardware.clone() };
+            let named = self.resolve(service, request.hub(&format!("the model for {path}"))?, named, &hardware, &request.catalog_revision)?;
+            let warnings = named.reasons.iter().map(|why| format!("{}: {why}", named.repository)).collect();
             let grant = ModelGrant {
                 package: installation.package.clone(),
                 slot: path,
@@ -1341,9 +1321,8 @@ impl Publisher {
                 .iter()
                 .find(|c| c.parameter == grant.slot || c.parameter == parameter)
             {
-                // An adapter is selected for the run's GPUs by the no-flag rule: `--lane` is the main model's.
-                let constraints = precision::Constraints { gpus: gpus.capabilities.clone(), ..Default::default() };
-                let resolve = |source: &hub::Source, named| self.resolve(service, source, named, &constraints, &request.catalog_revision);
+                // An adapter resolves for the run's hardware: `--lane` is the main model's.
+                let resolve = |source: &hub::Source, named| self.resolve(service, source, named, &hardware, &request.catalog_revision);
                 apply_adapters(self, request.source.as_ref(), &resolve, choice, grant, &request.providers, job)?;
             }
         }
@@ -1379,9 +1358,9 @@ impl Publisher {
     }
 }
 
-/// A function's main model, the one a run's `--lane` filters (owner, 10-22): its first slot
+/// A function's main model, the one a run's `--lane` names (owner, 10-22): its first slot
 /// constructed up front, neither raw weights nor on demand. Its LoRAs and auxiliary models take
-/// the no-flag rule.
+/// their own choice's lane, else the Hub's pick.
 fn main_model(slots: &[Value]) -> Option<&Value> {
     slots.iter().find(|slot| crate::gpu_service::constructed(slot) && slot["on_demand"] != true)
 }
@@ -1407,14 +1386,14 @@ fn warnings_key(resolution: &str) -> String {
     json!(["warnings", resolution]).to_string()
 }
 
-/// A Hub model slot's checkpoint as its choice names it (th-245): the owner's by hash, else
-/// `repository` at `release` in the choice's lane; no lane is the lane rule's (`resolve`).
+/// A Hub model slot's commit as its choice names it (th-245): by hash, else `repository` at
+/// `release` in the choice's lane; no lane is the Hub's pick (`resolve`).
 pub(crate) fn choose(choice: &domain::ModelChoice, path: &str) -> Result<Named, Failure> {
     if choice.repository.is_empty() {
         return Err(("model_choice_absent", format!("{path}'s choice names no model repository")));
     }
     let tree = choice.manifest.as_ref().map(|m| ObjectRef { sha256: sha256::hex(&m.digest), length: m.length });
-    Ok(Named { repository: choice.repository.clone(), release: choice.release.clone(), lane: choice.lane.clone(), tree, header: None })
+    Ok(Named { repository: choice.repository.clone(), release: choice.release.clone(), lane: choice.lane.clone(), tree, ..Named::default() })
 }
 
 /// A provider source made into a local model.
@@ -1461,7 +1440,7 @@ fn make_source(
         resolved: listed.pinned.clone(),
         profiles: profiles.to_vec(),
     };
-    let held = crate::storage::local(store, &format!("local/{name}"), None, None).map_err(io_failure)?;
+    let held = crate::storage::local(store, &format!("local/{name}")).map_err(io_failure)?;
     if let Some(local) = held.filter(|local| crate::storage::present(store, &local.header)) {
         crate::storage::transport(store, "import", source, &format!("header={} reused", local.header.id()));
         return Ok(made(local.header));
@@ -1502,7 +1481,7 @@ fn make_source(
         started.elapsed().as_secs_f64()
     );
     crate::storage::transport(store, "import", source, &detail);
-    crate::storage::set_local(store, &name, &header, &files).map_err(io_failure)?;
+    crate::storage::set_local(store, &name, &header, &files, "").map_err(io_failure)?;
     Ok(made(header))
 }
 
@@ -1551,7 +1530,7 @@ fn apply_adapters(
                 release: adapter.release.clone(),
                 lane: adapter.lane.clone(),
                 tree,
-                header: None,
+                ..Named::default()
             })?;
             // An adapter is small and its view composes from all of it: it comes whole.
             publisher.ensure(source, &named, job.stop.as_ref(), &|d, t| job.bytes(d, t))?;
@@ -1634,16 +1613,15 @@ fn newest_key(request: &Request) -> String {
     json!(["newest", request.origin(), request.package]).to_string()
 }
 
-/// A checkpoint named by its hash, with what a hash alone does not say: its length (the Hub's) and
-/// its format; a tree (a commit) resolves to its lane's header, a header is the checkpoint itself.
-/// Read once under the run's access (its request's bearer for the owner's) and kept, since a hash
-/// never names other bytes.
-fn measured(machine: &Machine, service: &Service, source: &hub::Source, named: Named, constraints: &precision::Constraints) -> Result<Named, Failure> {
+/// A commit (or a bare header) named by its hash, with what a hash alone does not say: its
+/// length (the Hub's) and its format; a commit resolves to its header and lane. Read once under
+/// the run's access (its request's bearer) and kept, since a hash never names other bytes.
+fn measured(machine: &Machine, service: &Service, source: &hub::Source, named: Named) -> Result<Named, Failure> {
     if named.header.is_some() {
         return Ok(named);
     }
     let tree = named.tree()?.clone();
-    let key = json!(["profiles-v2", hub::origin_key(&source.origin).unwrap_or_default(), named.repository, tree.id(), named.lane, constraints]).to_string();
+    let key = json!(["measured-v3", hub::origin_key(&source.origin).unwrap_or_default(), named.repository, tree.id()]).to_string();
     let held = service.engine.with_journal(|j| j.named(&key, "")).map_err(io_failure)?;
     if let Some((tree, lane, header)) = held.and_then(|held| serde_json::from_str(&held).ok()) {
         return Ok(Named { tree, lane, header: Some(header), ..named });
@@ -1655,10 +1633,13 @@ fn measured(machine: &Machine, service: &Service, source: &hub::Source, named: N
     };
     let remote = origin::remote(machine, source).map_err(failed)?;
     machine.objects(&remote, std::slice::from_ref(&object), priority::NOW, &Stop::default()).map_err(failed)?;
-    let commit = storage::tree_or_header(machine.store(), &object).map_err(|e| ("model_resolution_failed", e.to_string()))?.is_some();
+    let commit = storage::tree_or_header(machine.store(), &object).map_err(|e| ("model_resolution_failed", e.to_string()))?;
     let named = match commit {
-        true => Named { tree: Some(object), ..named }.landed(machine, source, constraints)?,
-        false => Named { tree: None, header: Some(object), ..named },
+        Some(commit) => {
+            let header = commit.header().map_err(|e| ("model_resolution_failed", format!("{}: {e}", object.id())))?.1.clone();
+            Named { tree: Some(object), lane: commit.lane, header: Some(header), ..named }
+        }
+        None => Named { tree: None, header: Some(object), ..named },
     };
     let answer = json!([named.tree, named.lane, named.header]).to_string();
     service.engine.with_journal(|j| j.bind_named(&key, "", &answer)).map_err(io_failure)?;
@@ -1770,8 +1751,8 @@ fn io_failure(error: io::Error) -> Failure {
 }
 
 /// A slot's declared default as a choice (its `default`: `[org/]model@release`, or a local
-/// model `local/<name>`, its newest): what a run that names no model for the slot gets, in the
-/// lane rule's lane. A model with no org is first-party, the root's (xs-071).
+/// model `local/<name>`, its newest): what a run that names no model for the slot gets, in its
+/// declared `lane`, else the Hub's pick. A model with no org is first-party, the root's (xs-071).
 pub(crate) fn default_choice(slot: &Value, path: &str) -> Option<domain::ModelChoice> {
     let default = slot.get("default")?.as_str()?;
     let (model, release) = match default.split_once('@') {
@@ -1782,7 +1763,8 @@ pub(crate) fn default_choice(slot: &Value, path: &str) -> Option<domain::ModelCh
         true => model.into(),
         false => format!("{}/{model}", protocol::names::ROOT),
     };
-    Some(domain::ModelChoice { parameter: path.into(), repository, release: release.into(), ..Default::default() })
+    let lane = slot.get("lane").and_then(Value::as_str).unwrap_or_default().into();
+    Some(domain::ModelChoice { parameter: path.into(), repository, release: release.into(), lane, ..Default::default() })
 }
 
 fn local_aliases(installation: &Installation, request: &Request) -> io::Result<bool> {

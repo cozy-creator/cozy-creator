@@ -21,7 +21,6 @@ pub const RECIPES: &str = "quantize";
 /// One declared recipe: the lane it writes and the model it reads.
 #[derive(Debug, Deserialize)]
 pub struct Recipe {
-    pub name: String,
     pub lane: String,
     pub model: RecipeModel,
     /// `module:function` that calibrates on the model itself, constructed in `quantize`'s slot.
@@ -36,16 +35,10 @@ pub struct RecipeModel {
     pub component_use: BTreeMap<String, Vec<String>>,
 }
 
-/// The lanes `cozy model quantize --format` names (`--format int8,fp8`).
-pub const LANE_FLAGS: [&str; 5] = ["int8", "fp8", "nvfp4", "w4a8", "svdq-nvfp4"];
-
 impl Recipe {
-    /// The `cozy model quantize` flag that runs it: its lane's, else its name.
+    /// The `cozy model quantize` flag that runs it.
     pub fn flag(&self) -> String {
-        match LANE_FLAGS.contains(&self.lane.as_str()) {
-            true => format!("--format {}", self.lane),
-            false => format!("--recipe {}", self.name),
-        }
+        format!("--lane {}", self.lane)
     }
 
     /// Whether a checkpoint holding `components` holds every component its model reads.
@@ -89,8 +82,9 @@ pub struct Slot {
     /// The release a run that names none loads: `[org/]model@release`.
     #[serde(default, deserialize_with = "or_default")]
     pub default: Option<String>,
+    /// The lane its default loads in; absent: the Hub's pick for the machine.
     #[serde(default, deserialize_with = "or_default")]
-    pub min_bits: Option<u32>,
+    pub lane: Option<String>,
     /// `decode` for an LM token loop; absent is compute.
     #[serde(default, deserialize_with = "or_default")]
     pub phase: Option<String>,

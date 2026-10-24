@@ -34,13 +34,13 @@ def _client(cache_dir=None, endpoint=None, token=None, *, configured_token=True)
     return _ext._Client(_cache(cache_dir), endpoint=_endpoint(endpoint), token=credential, ca_der=_settings.get("ca_der"))
 
 
-def open(name_or_path, *, revision=None, variant=None, lane=None, gpus=None, endpoint=None, local_files_only=False, cache_dir=None, token=None, lazy=True):
+def open(name_or_path, *, release=None, lane=None, gpus=None, endpoint=None, local_files_only=False, cache_dir=None, token=None, lazy=True):
     return _client(cache_dir, endpoint, token).open(
-        os.fspath(name_or_path), revision=revision, variant=variant, lane=lane, gpus=gpus, local_files_only=local_files_only, lazy=lazy
+        os.fspath(name_or_path), release=release, lane=lane, gpus=gpus, local_files_only=local_files_only, lazy=lazy
     )
 
 
-def materialize(source: str | _ext.Checkpoint, *, local_dir=None, format="cozytensors", decode=False, revision=None, variant=None, components=None, cache_dir=None, local_files_only=False, token=None, endpoint=None) -> str:
+def materialize(source: str | _ext.Checkpoint, *, local_dir=None, format="cozytensors", decode=False, release=None, lane=None, components=None, cache_dir=None, local_files_only=False, token=None, endpoint=None) -> str:
     if format not in {"cozytensors", "safetensors"}:
         raise ValueError("format must be cozytensors or safetensors")
     if format == "cozytensors" and decode:
@@ -51,14 +51,14 @@ def materialize(source: str | _ext.Checkpoint, *, local_dir=None, format="cozyte
         if local_dir is None:
             raise ValueError("a checkpoint requires an explicit local_dir")
         if local_files_only or any(value is not None for value in
-                                   (revision, variant, cache_dir, token, endpoint)):
+                                   (release, lane, cache_dir, token, endpoint)):
             raise ValueError("repository and client options do not apply to a checkpoint")
         return str(_ext._materialize(source, local_dir, format=format, decode=decode))
     if not isinstance(source, str):
         raise TypeError("source must be a repository reference or Checkpoint")
     if format == "cozytensors":
         return str(_client(cache_dir, endpoint, token).materialize(
-            (source, revision, variant), components=components,
+            (source, release, lane), components=components,
             local_dir=local_dir, local_files_only=local_files_only,
         ))
     if components is not None:
@@ -66,7 +66,7 @@ def materialize(source: str | _ext.Checkpoint, *, local_dir=None, format="cozyte
     if local_dir is None:
         raise ValueError("safetensors materialization requires an explicit local_dir")
     checkpoint = _client(cache_dir, endpoint, token).open(
-        source, revision=revision, variant=variant, local_files_only=local_files_only,
+        source, release=release, lane=lane, local_files_only=local_files_only,
     )
     try:
         return str(_ext._materialize(checkpoint, local_dir, format=format, decode=decode))
@@ -74,15 +74,14 @@ def materialize(source: str | _ext.Checkpoint, *, local_dir=None, format="cozyte
         checkpoint.close()
 
 
-def download_file(repo_id: str, filename: str, *, revision=None, cache_dir=None, local_dir=None, local_files_only=False, token=None, endpoint=None) -> str:
+def download_file(repo_id: str, filename: str, *, release=None, lane=None, cache_dir=None, local_dir=None, local_files_only=False, token=None, endpoint=None) -> str:
     return str(_client(cache_dir, endpoint, token).download_file(
-        repo_id, filename, revision=revision, local_dir=local_dir, local_files_only=local_files_only,
+        repo_id, filename, release=release, lane=lane, local_dir=local_dir, local_files_only=local_files_only,
     ))
 
 
-def upload_folder(*, repo_id: str, folder_path, revision="main", delete_patterns=None, token=None, endpoint=None, cache_dir=None) -> str:
-    patterns = [delete_patterns] if isinstance(delete_patterns, str) else list(delete_patterns or [])
-    return _client(cache_dir, endpoint, token).upload_folder(Path(folder_path), repo_id, revision, patterns)
+def upload_folder(*, repo_id: str, folder_path, lane: str, token=None, endpoint=None, cache_dir=None) -> str:
+    return _client(cache_dir, endpoint, token).upload_folder(Path(folder_path), repo_id, lane)
 
 
 def convert_to_cozytensors(source: str | Sequence[str], *, converter=None, source_variant=None, cache_dir=None, token=None, progress=None):
@@ -123,14 +122,8 @@ class Endpoint:
     def __init__(self, url, token=None, *, ca_der=None, cache_dir=None):
         self._native = _ext.Endpoint(url, token, ca_der=ca_der, cache_dir=_cache(cache_dir))
 
-    def repo(self, repo_id):
-        return self._native.repo(repo_id)
-
-    def commit(self, repo_id, revision):
-        return self._native.commit(repo_id, revision)
-
-    def update_repo(self, repo_id, change):
-        return self._native.update_repo(repo_id, change)
+    def resolve(self, repo_id, *, release=None, lane=None, gpus=None, plain=False):
+        return self._native.resolve(repo_id, release=release, lane=lane, gpus=gpus, plain=plain)
 
 
 class ComponentWriter:
@@ -157,8 +150,8 @@ class ComponentWriter:
 
 
 class Writer:
-    def __init__(self, dest=None, *, variant=None, base=None, resume=None, repo_id=None, revision=None, endpoint=None, token=None, cache_dir=None):
-        self._native = _ext.Writer(dest, variant=variant, base=base, resume=resume, cache_dir=_cache(cache_dir), repo_id=repo_id, revision=revision, endpoint=_endpoint(endpoint), token=token if token is not None else _settings.get("token"), ca_der=_settings.get("ca_der"))
+    def __init__(self, dest=None, *, base=None, resume=None, repo_id=None, lane=None, endpoint=None, token=None, cache_dir=None):
+        self._native = _ext.Writer(dest, base=base, resume=resume, cache_dir=_cache(cache_dir), repo_id=repo_id, lane=lane, endpoint=_endpoint(endpoint), token=token if token is not None else _settings.get("token"), ca_der=_settings.get("ca_der"))
         self._resume = resume
         self._committed = None
         self.local_checkpoint = None

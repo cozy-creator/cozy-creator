@@ -11,7 +11,7 @@ durable daemon state, and describes the software activation transaction.
 
 - `executions.sqlite3` in the state root, WAL with `synchronous=FULL`. A successful accept is a
   committed receipt. The same file holds installations, preparations, public terminal
-  projections, native outputs, input intakes and submission closures.
+  projections, native outputs and submission closures.
 - `workspace_id()` is a v4 UUID created once and persisted.
 - States: `queued`, `starting`, `running`, `completed`, `failed`, `canceled`.
 - `Invocation`: `package`, `generation`, `module`, `entrypoint`, `input` (JSON).
@@ -99,10 +99,16 @@ It returns at most 1,024 nonterminal records.
 Host output ownership is separate from a returned executor. Only canonical result bytes,
 deferred frame raw files, ordinary output files and referenced tree members are synced or
 copied for the handoff; unrelated staged inputs are not copied or synced. Machine-owned staging
-stays owned by the postprocessing object. Peer-owned spools, or files that cannot be flushed
-through their producer handle, are copied into private `output-work/<id>` custody first.
+stays owned by the postprocessing object. Files that cannot be flushed through their producer read handle are copied into private
+`output-work/<id>` custody first; all spools are machine-owned.
 The reusable codec retains its generation and an open stderr handle before session return,
 so idle executor shutdown cannot invalidate its interpreter, log or input files.
+
+`gpu_returned`, `output_cancelled` and `output_finished` are machine journal log phases in the
+same transactions as process detachment, accepted cancellation and terminal commit. Each has a
+machine `at_ns` timestamp; its log cursor precedes the state snapshot cursor. Remote observers
+must compare these machine times, not controller/Hub settlement clocks. `output_finished`
+includes custody and the serialized terminal decision, including early cancellation and failure.
 
 Detached output work counts against the service's existing CPU parallelism. Admission checks
 fresh occupancy for each offer and again after acquiring a GPU slot. At capacity the current

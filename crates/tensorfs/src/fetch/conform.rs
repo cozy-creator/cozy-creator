@@ -1,10 +1,9 @@
 //! `tfs conform endpoint`: a black-box check of an endpoint against `spec/distribution.md`, over
-//! a fixture repo ([`FIXTURE`], public tag `1`) built the same way every time. With `write` it
-//! uploads the fixture and checks the write side first; without, the fixture must be there (a
-//! `write` run over the same storage seeds it). A case is a MUST or a SHOULD; buckets and static
-//! servers fail some SHOULDs (no `428`, no closure check, no Range) by design.
+//! a fixture commit of [`FIXTURE`] (lane `int8`) built the same way every time. With `write` it
+//! uploads the fixture and checks the write side first; without, the fixture's objects must be
+//! there (a `write` run over the same storage seeds them). A case is a MUST or a SHOULD; buckets
+//! and static servers fail some SHOULDs (no closure check, no Range) by design.
 
-use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -12,10 +11,10 @@ use std::time::SystemTime;
 use bytes::Bytes;
 
 use base64::engine::{general_purpose::STANDARD, Engine as _};
-use super::endpoint::{upload_tree, with_tag, Endpoint, Fresh, Payload};
+use super::endpoint::{upload_commit, Endpoint, Hardware, Payload, UploadControl};
 use super::{Client, Config, Fetcher, ObjectStore, Origin, Want};
 use crate::err::{Code, Refusal, Result};
-use crate::format::{repo_key, Config as HeaderConfig, Dtype, ObjectRef, Repo, Tree};
+use crate::format::{Config as HeaderConfig, Dtype, ObjectRef, Tree};
 use crate::sha256::hex_digest;
 use crate::store::Store;
 use crate::writer::{Data, Source};
@@ -54,8 +53,8 @@ fn expect(cond: bool, why: impl FnOnce() -> String) -> std::result::Result<(), S
     }
 }
 
-/// The fixture in a store under `scratch`: a one-component cozytensors as variant `int8` of a
-/// tree with a README. The tree.
+/// The fixture in a store under `scratch`: a one-component cozytensors as a commit in lane
+/// `int8`, with a README. The tree.
 fn fixture(scratch: &Path) -> Result<(Store, ObjectRef)> {
     let failed = crate::store::Error::refusal;
     let store = Store::open(scratch.join("fixture")).map_err(failed)?;
@@ -65,9 +64,9 @@ fn fixture(scratch: &Path) -> Result<(Store, ObjectRef)> {
     let mut c = w.component("model", Default::default(), config, None).map_err(failed)?;
     c.put("w", &Dtype::U8, &[bytes.len() as u64], Data::Plain(Source::Read(&mut &bytes[..]))).map_err(failed)?;
     let header = w.commit().map_err(failed)?;
-    let mut tree = Tree::default();
-    tree.set_variant("int8", header);
-    tree.files.insert("README.md".into(), store.put_bytes(b"# cozytensors distribution conformance\n").map_err(failed)?);
+    let readme = store.put_bytes(b"# cozytensors distribution conformance\n").map_err(failed)?;
+    let tree = Tree::of("int8", header, &[("README.md".to_owned(), readme)].into())
+        .map_err(|e| Refusal { code: Code::UNKNOWN_FORMAT, detail: e.to_string() })?;
     let tree = store.put_tree(&tree).map_err(failed)?;
     Ok((store, tree))
 }
@@ -77,23 +76,21 @@ pub async fn endpoint(endpoint: Arc<Endpoint>, client: &Client, write: bool, scr
     let (store, tree) = fixture(scratch)?;
     let mut cases = Cases(Vec::new());
     let nonce = hex_digest(format!("{:?}", SystemTime::now()).as_bytes());
-    if write && !write_side(&endpoint, client, &store, &tree, &nonce, &mut cases).await? {
+    if write && !write_side(&endpoint, &store, &tree, &nonce, &mut cases).await? {
         return Ok(cases.0);
     }
     read_side(&endpoint, client, &store, &tree, &nonce, scratch, &mut cases).await?;
     Ok(cases.0)
 }
 
-async fn write_side(endpoint: &Arc<Endpoint>, client: &Client, store: &Store, tree: &ObjectRef, nonce: &str, cases: &mut Cases) -> Result<bool> {
-    let up = upload_tree(endpoint, FIXTURE, tree, store, "1").await;
-    let published = endpoint.update_repo(FIXTURE, |old| Ok(old.map(|mut r| (r.tag_mut("1").map(|t| t.public = true), r).1)));
-    let up = match up {
-        Ok(_) => published.await.map(drop).map_err(|e| e.to_string()),
-        Err(e) => Err(e.to_string()),
-    };
-    if !cases.record("upload: HEAD 404 → PUT → HEAD 200, then the ref", true, Some(up)) {
+async fn write_side(endpoint: &Arc<Endpoint>, store: &Store, tree: &ObjectRef, nonce: &str, cases: &mut Cases) -> Result<bool> {
+    let control = UploadControl { cancelled: &|| false, progress: &|_, _| {}, commit: &|| true };
+    let up = upload_commit(endpoint, FIXTURE, tree, store, &control).await.map(drop).map_err(|e| e.to_string());
+    if !cases.record("upload: HEAD 404 → PUT → HEAD 200, then the commit recorded", true, Some(up)) {
         return Ok(false);
     }
+    let again = endpoint.commit(FIXTURE, tree).await;
+    cases.record("commits: recording a held commit again says so", true, Some(expect(matches!(again, Ok(true)), || format!("{again:?}"))));
 
     let claimed = ObjectRef::of(format!("conformance {nonce}").as_bytes());
     let wrong = Bytes::from(vec![b'x'; claimed.length as usize]);
@@ -102,10 +99,7 @@ async fn write_side(endpoint: &Arc<Endpoint>, client: &Client, store: &Store, tr
     let outcome = expect(sent.is_err() && !held, || format!("answered {sent:?}, holds it: {held}"));
     cases.record("upload: wrong bytes are refused and not stored", true, Some(outcome));
 
-    let readme = Tree::from_json(&store.read(tree).map_err(crate::store::Error::refusal)?)
-        .map_err(|e| Refusal { code: Code::UNKNOWN_FORMAT, detail: e.to_string() })?
-        .files["README.md"]
-        .clone();
+    let readme = store.tree(tree).map_err(crate::store::Error::refusal)?.files["README.md"].clone();
     let bytes = Bytes::from(store.read(&readme).map_err(crate::store::Error::refusal)?);
     let checksum = STANDARD.encode(crate::sha256::digest(&bytes));
     let headers = vec![
@@ -117,68 +111,17 @@ async fn write_side(endpoint: &Arc<Endpoint>, client: &Client, store: &Store, tr
     let outcome = again.map(|(status, ..)| expect(matches!(status, 200 | 201 | 204 | 412), || format!("answered {status}")));
     cases.record("upload: a repeated PUT is idempotent", true, outcome);
 
-    let Fresh::Doc(doc, etag) = endpoint.repo_bytes(FIXTURE, None).await? else {
-        cases.record("refs: the uploaded document reads back", true, Some(Err("absent".into())));
-        return Ok(false);
-    };
-    let created = endpoint.put_repo_bytes(FIXTURE, doc.clone(), None).await;
-    cases.record("refs: a second create is 412", true, Some(expect(matches!(created, Ok(false)), || format!("{created:?}"))));
-    let stale = endpoint.put_repo_bytes(FIXTURE, doc.clone(), Some("\"conformance-stale\"")).await;
-    cases.record("refs: a stale If-Match is 412", true, Some(expect(matches!(stale, Ok(false)), || format!("{stale:?}"))));
-    let json = vec![("content-type".to_owned(), "application/json".to_owned())];
-    let bare = endpoint.raw("PUT", &repo_key(FIXTURE), json.clone(), Some(Bytes::from(doc.clone()))).await?;
-    let outcome = bare.map(|(status, ..)| expect(status == 428, || format!("answered {status}")));
-    cases.record("refs: no precondition is 428 (servers)", false, outcome);
-
-    // A document citing a commit nobody uploaded; restored at once wherever it was taken.
-    let missing = ObjectRef::of(format!("absent tree {nonce}").as_bytes());
-    let absent = format!("conformance-absent-{}", &nonce[..12]);
-    let mut cited = Repo::from_json(&doc).map_err(|e| Refusal { code: Code::UNKNOWN_FORMAT, detail: e.to_string() })?;
-    cited.set_tag(&absent, missing.clone());
-    let cited = cited.to_json().map_err(|e| Refusal { code: Code::UNKNOWN_FORMAT, detail: e.to_string() })?;
-    let mut matched = json.clone();
-    matched.push(("if-match".to_owned(), etag.clone()));
-    let refused = endpoint.raw("PUT", &repo_key(FIXTURE), matched, Some(Bytes::from(cited))).await?;
-    let outcome = refused.map(|(status, _, body)| {
-        let body = String::from_utf8_lossy(&body);
-        expect(status == 409 && body.contains("closure_incomplete") && body.contains(&missing.sha256), || format!("answered {status} {body}"))
-    });
-    cases.record("refs: an incomplete closure is 409 closure_incomplete (servers)", false, outcome);
-    endpoint.update_repo(FIXTURE, |old| Ok(old.map(|mut r| (r.tags.retain(|t| t.name != absent), r).1))).await?;
-
-    // A private tag: the writer reads it, an anonymous reader does not.
-    let private = format!("conformance-private-{}", &nonce[..12]);
-    endpoint.update_repo(FIXTURE, |old| Ok(Some(with_tag(old, FIXTURE, &private, tree)))).await?;
-    let seen = |repo: Option<(Repo, String)>| repo.is_some_and(|(r, _)| r.tag(&private).is_some());
-    let writer = seen(endpoint.repo(FIXTURE).await?);
-    let anonymous = seen(Endpoint::new(client, endpoint.url(), None)?.repo(FIXTURE).await?);
-    let directory = endpoint.raw("HEAD", &repo_key(FIXTURE), vec![], None).await?.is_none();
-    let outcome = expect(writer && !anonymous, || format!("the writer sees it: {writer}, an anonymous reader: {anonymous}"));
-    cases.record("refs: a private tag is served only to writers (servers)", false, (!directory).then_some(outcome));
-    endpoint.update_repo(FIXTURE, |old| Ok(old.map(|mut r| (r.tags.retain(|t| t.name != private), r).1))).await?;
-
-    let mut trees = Vec::new();
-    for i in 0..8 {
-        let readme = store.put_bytes(format!("writer {i} {nonce}").as_bytes()).map_err(crate::store::Error::refusal)?;
-        let t = store.put_tree(&Tree { files: BTreeMap::from([("README.md".to_owned(), readme.clone())]) });
-        let t = t.map_err(crate::store::Error::refusal)?;
-        for object in [&readme, &t] {
-            let (from, at) = (store.clone(), object.clone());
-            endpoint.upload(object, &move || from.file(&at).map(Payload::File).map_err(crate::store::Error::refusal)).await?;
-        }
-        trees.push(t);
-    }
-    let tags: Vec<String> = (0..trees.len()).map(|i| format!("conformance-writer-{i}-{}", &nonce[..12])).collect();
-    let writers = trees.iter().cloned().zip(tags.clone()).map(|(t, tag)| {
-        let endpoint = Arc::clone(endpoint);
-        tokio::spawn(async move { endpoint.update_repo(FIXTURE, |old| Ok(Some(with_tag(old, FIXTURE, &tag, &t)))).await })
-    });
-    let landed = futures::future::join_all(writers).await;
-    let repo = endpoint.repo(FIXTURE).await?.map(|(r, _)| r).unwrap_or_default();
-    let all = trees.iter().zip(&tags).all(|(t, tag)| repo.tag(tag).is_some_and(|found| found.commit == *t));
-    let outcome = expect(all && landed.iter().all(|l| matches!(l, Ok(Ok(_)))), || format!("{landed:?}"));
-    cases.record("refs: 8 concurrent writers all land through the 412 loop", true, Some(outcome));
-    endpoint.update_repo(FIXTURE, |old| Ok(old.map(|mut r| (r.tags.retain(|t| !tags.contains(&t.name)), r).1))).await?;
+    // A commit citing a header nobody uploaded.
+    let missing = ObjectRef::of(format!("absent header {nonce}").as_bytes());
+    let cited = Tree::of("int8", missing.clone(), &Default::default()).and_then(|t| t.to_json())
+        .map_err(|e| Refusal { code: Code::UNKNOWN_FORMAT, detail: e.to_string() })?;
+    let cited_ref = ObjectRef::of(&cited);
+    let cited = Bytes::from(cited);
+    endpoint.upload(&cited_ref, &move || Ok(Payload::Bytes(cited.clone()))).await?;
+    let refused = endpoint.commit(FIXTURE, &cited_ref).await;
+    let directory = endpoint.raw("HEAD", &cited_ref.key(), vec![], None).await?.is_none();
+    let outcome = expect(refused.as_ref().is_err_and(|e| e.detail.contains(&missing.sha256)), || format!("{refused:?}"));
+    cases.record("commits: an incomplete closure is refused, naming what is missing (servers)", false, (!directory).then_some(outcome));
     Ok(true)
 }
 
@@ -191,41 +134,21 @@ async fn read_side(
     scratch: &Path,
     cases: &mut Cases,
 ) -> Result<()> {
-    let fixture = endpoint.repo(FIXTURE).await?;
-    let read = match &fixture {
-        Some((repo, _)) => expect(repo.tag("1").is_some_and(|t| t.commit == *tree && t.public), || format!("public tag 1 is not the fixture: {repo:?}")),
-        None => Err(format!("{FIXTURE} is absent: seed it with a --write run over the same storage")),
-    };
-    if !cases.record("refs: GET is 200 with the document", true, Some(read)) {
-        return Ok(());
-    }
-    let got = endpoint.raw("GET", &repo_key(FIXTURE), vec![], None).await?;
-    let etag = got.as_ref().and_then(|(_, headers, _)| headers.get("etag")?.to_str().ok().map(str::to_owned));
-    cases.record("refs: an ETag", false, got.as_ref().map(|_| expect(etag.is_some(), || "none sent".into())));
-    let fresh = match &etag {
-        Some(etag) => endpoint.raw("GET", &repo_key(FIXTURE), vec![("if-none-match".into(), etag.clone())], None).await?,
-        None => None,
-    };
-    let outcome = fresh.map(|(status, ..)| expect(status == 304, || format!("answered {status}")));
-    let unasked = (got.is_some() && etag.is_none()).then(|| Err("no ETag to ask with".into()));
-    cases.record("refs: If-None-Match is 304", false, outcome.or(unasked));
-    let absent = endpoint.repo_bytes(&format!("conformance/absent-{}", &nonce[..12]), None).await?;
-    cases.record("refs: an absent repo is 404", true, Some(expect(absent == Fresh::Absent, || format!("{absent:?}"))));
+    let absent = endpoint.resolve(&format!("conformance/absent-{}", &nonce[..12]), None, None, &Hardware::default()).await;
+    let outcome = expect(absent.as_ref().is_err_and(|e| e.code == Code::REF_NOT_FOUND), || format!("{absent:?}"));
+    cases.record("resolve: an absent model is 404", true, Some(outcome));
 
     // Down through the Fetcher: redirects followed, every object checked.
     let into = Store::open(scratch.join("pulled")).map_err(crate::store::Error::refusal)?;
     let fetcher = Fetcher::new(Arc::new(into.clone()) as Arc<dyn ObjectStore>, client.clone(), None, Config::default());
     let origin: Arc<dyn Origin> = endpoint.clone();
-    let pulled = fetcher.pull(&origin, FIXTURE, Some("1"), Some("model.int8.cozytensors"), &Want::default()).await;
+    let pulled = fetcher.pull_tree(&origin, tree, &Want::default()).await;
     fetcher.settled().await;
     let outcome = pulled.map(|p| p.objects).map_err(|e| e.to_string()).and_then(|n| expect(n >= 4, || format!("{n} objects")));
     cases.record("blobs: GET returns each object, verified", true, Some(outcome));
 
-    let header = Tree::from_json(&store.read(tree).map_err(crate::store::Error::refusal)?)
-        .map_err(|e| Refusal { code: Code::UNKNOWN_FORMAT, detail: e.to_string() })?
-        .header("model.int8.cozytensors")
-        .cloned()
-        .expect("the fixture's variant");
+    let header = store.tree(tree).map_err(crate::store::Error::refusal)?.header()
+        .map_err(|e| Refusal { code: Code::UNKNOWN_FORMAT, detail: e.to_string() })?.1.clone();
     let head = endpoint.raw("HEAD", &header.key(), vec![], None).await?;
     let outcome = head.map(|(status, headers, _)| {
         let length = headers.get("content-length").and_then(|v| v.to_str().ok()?.parse::<u64>().ok());

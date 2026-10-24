@@ -77,29 +77,26 @@ code is still not sandboxed.
 | `api/server.rs` | The pinned-TLS listener (h2 and http/1.1) and the readiness self-probe | `MachineIdentity`, `serve` | D1 |
 | `api/http.rs` | The machine API's Router (`MACHINE-API.md`): auth, refusals as the error envelope, SSE, ranged outputs, object parts | `router`, `Refusal` | H |
 | `api/auth.rs` | Admitted keys (a rental's Hub lease) and each open stream's authority | `Authority`, `Keys`, `StreamAuthority` | D1 |
-| `api/identity.rs` | Persistent P-256 TLS identity, typed machine config, readiness secret | `MachineConfig`, `AuthorizedKeys`, `ReadinessSecret` | D2 |
 | `api/domain.rs` | Current typed native execution/backend values; no RPC or version identity | Native queries, state, model and custody values | APIM |
-| `archive.rs` | Private stored model/product/intake/terminal codecs, preserving existing byte tags | Stored records and codec functions | APIM |
-| `api/backend.rs` | The one backend trait the server calls | `MachineBackend`, `InputTreeReceiver`, `Observation` | D1 |
-| `api/workspaces.rs` | Resumable package uploads, scoped by owner key | `WorkspaceUploads`, `UploadSession`, `UploadedPackage` | D1 |
+| `archive.rs` | Private stored model/product/terminal codecs, preserving existing byte tags | Stored records and codec functions | APIM |
+| `api/backend.rs` | The one backend trait the server calls | `MachineBackend`, `Observation` | D1 |
 | `api/machine_runs.rs` | Runs: submit (idempotent per signer), the engine's pages as a run's events | `submit`, `follow` | G |
 | `api/machine_status.rs` | Status: identity and receipt to anyone, the whole machine to a machine cap as it changes | `frame`, `watch` | D2 |
 | `api/machine_update.rs` | Runs of `kind: update`: a software cohort from versions or held wheel objects; its log is the update's state history | `submit`, `events`, `owns` | D2 |
 | `api/capability.rs` | `Cozy-Cap` grants (the Go agent's token) for run outputs and maintenance | `Grant`, `verify`, `mint` | G |
-| `api/install.rs` | Materialize uploaded packages, run the uv installer helper | `InstallerConfig`, `PreparedGeneration` | D1 |
+| `api/install.rs` | Run the uv installer helper on a live local package | `InstallerConfig`, `PreparedGeneration` | D1 |
 | `machine_api.rs` | `MachineBackend` implementation: submit, events, collect, list, inventory | `NativeBackend` | D1 |
 | `products.rs` | Run output log: `Outputs.publish` custody and `product` events (SET/APPEND, composite parts) | `publish`, `retain`, `document` | G |
 | `triage.rs` | One bounded triage bundle per failed attempt, named by its outcome | `TriageRef`, `Facts` | G |
 | `hub.rs` | Hub access (th-245): the package catalog read anonymously; models through TensorFS's distribution `Endpoint` under the owner's newest bearer (`Bearer`: per signer and Hub, from requests and `PUT /v1/bearer`, memory only), else anonymously | `Source`, `Catalog`, `Bearer`, `Refusal` | D1 |
-| `published.rs` | Package and model preparation: releases from the Hub, each model's checkpoint chosen (choice or declared default, name+tag+variant → commit (tree)/header, or a `#sha256:` commit or header) and landed as its structure only, provider-source models via TensorFS `source_model`, held per release and resolution | `Publisher`, `Request`, `Prepared` | D1 |
-| `precision.rs` | The lane rule (xs-042): a slot's bits and lane order from the GPUs' compute capability, the request's bits and the slot's `min_bits`, `phase` and `encoded_leaves`; its fallback warnings | `Row`, `Gpus`, `Slot` | D1 |
+| `published.rs` | Package and model preparation: releases from the Hub, each model's commit chosen (choice or declared default: the Hub resolves name+release+lane or the hardware to a commit, or a `@sha256:` commit by id) and its header and landed as its structure only, provider-source models via TensorFS `source_model`, held per release and resolution | `Publisher`, `Request`, `Prepared` | D1 |
+| `precision.rs` | A header's precision family and GPU names, by the lane rule's table | `Profile`, `Gpus` | D1 |
 | `access.rs` | What a call's weights are fetched under: origins and their Hub access (the owner's newest bearer, for the owner's checkpoint by hash), readers' waits (Now) and a warm member's `downloaded` ticket, all ended with the call or its run's cancel | `Fetch` | D1 |
 | `adapter.rs` | Caller LoRA adapters as a zero-copy TensorFS component-writer composition | `compose` | D1 |
 | `runs.rs` | Run sources and preparation inside a run: accepted at once, install/download as its progress, its bearer kept as the owner's newest (`hub::Bearer`). A warm run with no entrypoint installs and fetches its choices; one with no code makes provider sources and uploads to its weights destination | `Runs`, `Spec`, `Source` | D1 |
 | `objects.rs` | Uploaded objects: byte ranges in any order, resumable, verified once whole into the store, per signer | `Objects`, `Upload` | D1 |
 | `local_source.rs` | A run's local source: each remote manifest owns its source tree and editable environment; explicit local paths read the directory in place | `LocalSources`, `Manifest` | D1 |
 | `machine/` | Launch grant, lifetime identity, readiness receipt, idle lifecycle (a rental's release, this computer's exit), supervision, SSH, runtime update, the direct player endpoint (`player.rs`), the embedded Python client and installer helper (`client.rs`) | `Grant`, `Readiness`, `Lifecycle` | D2 |
-| `native_inputs.rs` | Native input custody into TensorFS + journal | `SourceIntake`, `IntakeJournal` | D1 |
 | `catalog.rs` | Immutable package environment generations and their holds | `Catalog`, `Generation`, `HeldGeneration` | D1 |
 | `service.rs` | Sole dispatch policy (CPU parallelism, one GPU slot, startup GPU fences) | `Service` | B2 |
 | `calls.rs` | Child calls (the seam broker): each call a run, canceled with its parent; each attempt's weights grant | `Calls`, `Caller` | G |
@@ -109,7 +106,7 @@ code is still not sandboxed.
 | `memory.rs` | Per-GPU measurement books and persisted maxima, inventory/driver observations, every rank's host-growth accounting | `Gpu`, `Figures`, `Peaks`, `Host` | xs-098 |
 | `deposits.rs` | Sealed host layouts executors deposit, granted to the next executor of the same weights | `Deposits` | xs-046 B4 |
 | `device_executor.rs` | Control seam to the Runtime device executor (its wire types are `protocol::executor`), per-request output encoding | `DeviceExecutor`, `ExecutorConfig`, `Services` | E |
-| `launch_identity.rs` | Runtime trampoline command, the executor environment seal, optional UID/GID | `LaunchIdentity`, `Seal`, `trampoline` | E |
+| `launch_identity.rs` | Runtime trampoline command, the executor environment seal, the one credential-name rule | `Seal`, `trampoline`, `credential_name` | E |
 | `process.rs` | Exact process births, kill (scope and group), the progress meter and watch (leader plus process-group members), reaping (`reap_group`) | `Exact`, `Pace`, `Watching`, `Reaped` | E, I |
 | `scope.rs` | Each executor's own scope (cgroup-v2, else an inherited token): kill, count, end; sweep of unclaimed and earlier runs' scopes | `Scope` | E |
 | `reclaim.rs` | Self-managing caches: TTL and storage pressure for spools, logs, collected results, generations | `Disk`, `Swept`, `sweep` | E |
@@ -142,7 +139,7 @@ the checkpoint reference Runtime reports; failed uploads leave Runtime's local c
 - [Front door](FRONT-DOOR.md): the listener, TLS identity, install.
 - [Package bridge](PACKAGE-BRIDGE.md): generation description and install.
 - [Device executor](DEVICE-EXECUTOR.md): executor launch and control seam.
-- [GPU service](GPU-SERVICE.md): GPU pool, config, launch identity.
+- [GPU service](GPU-SERVICE.md): GPU pool, config, launch.
 
 ## Build
 

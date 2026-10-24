@@ -294,7 +294,7 @@ pub async fn whoami(ctx: &Context, _args: Whoami) -> Result<ExitCode, Error> {
     }
     record.print(ctx);
     if !accepted || account.is_none() {
-        output::next(ctx, &[&ctx.login(&hub)]);
+        output::next(ctx, &[&ctx.config.login(&hub)]);
     }
     Ok(ExitCode::SUCCESS)
 }

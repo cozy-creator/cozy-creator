@@ -3,10 +3,10 @@
 //! `<root>/{format, blobs/<aa>/<bb>/<sha256>, refs/<org>/<name>.json, holds/, files/, uses/,
 //! snapshots/<name>/, tmp/}`
 //!
-//! - Objects are trees, cozytensors headers, chunks, assets and repo files. A ref names a
-//!   model's tags of commits (trees). A cozytensors is opened by its header ([`Store::checkpoint`]) or
-//!   a tree's variant ([`Store::variant`]); a plain folder enters by [`Store::admit_folder`] and
-//!   leaves by [`Store::snapshot`].
+//! - Objects are trees (commits), cozytensors headers, chunks, assets and repo files. A ref
+//!   records a model's releases and commits. A cozytensors is opened by its header
+//!   ([`Store::checkpoint`]) or its commit ([`Store::at_commit`]); a plain folder enters by
+//!   [`Store::admit_folder`] and leaves by [`Store::snapshot`].
 //! - One door admits objects ([`Store::admit`], [`Store::put`]): streamed into `tmp/`, hashed,
 //!   checked, flushed per [`Durability`] and renamed into `blobs/`. An object is verified there
 //!   once and trusted after; [`Store::verify`] rehashes on demand.
@@ -124,7 +124,7 @@ impl Error {
             Error::Invalid { .. } => Code::UNKNOWN_FORMAT,
             Error::Format(format::Error::UnknownScheme(_)) => Code::UNKNOWN_ENCODING,
             Error::Format(format::Error::Decode(_) | format::Error::Encode(_)) => Code::ENCODING_MISMATCH,
-            Error::Format(format::Error::Format { .. } | format::Error::PreCut) => {
+            Error::Format(format::Error::Format { .. }) => {
                 Code::UNKNOWN_FORMAT
             }
             Error::Format(format::Error::Invalid(_)) => Code::TENSOR_SCHEMA_MISMATCH,

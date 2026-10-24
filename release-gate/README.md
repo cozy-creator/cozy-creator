@@ -18,9 +18,10 @@ same SKU and suites; any FAIL blocks the promotion. Design: tracker `design/ci-v
 
 A rewrite picks every suite. Suites stack on one rental per SKU (`--suite runtime,packages` runs each cell once,
 against `gate-<SKU>-runtime-packages.json`). A suite is `suites/<name>/`: `cells.sh` (sourced in gate.sh: `cell`,
-`pkg`, `product`, `expect`, `log`, `$CLI`, `$M`, `$R`, `$REF` and the scenario), optional `before.sh` (the fresh pod,
-before the candidate goes on), optional `check.py` (`check(gate) -> (fails, notes)`, listed in analyze.py), and `skus`
-(`<sku> [disk GB] [gpus]` per line, the workflow's rentals). The verdict's `SUITES` line names what ran.
+`pkg`, `product`, `expect`, `log`, `wedged`, `$CLI`, `$M`, `$R`, `$REF`, the scenario, and e2e/run.sh's `run_*`, the one
+way a suite runs `cozy` and reads a run), optional `before.sh` (the fresh pod, before the candidate goes on), optional
+`check.py` (`check(gate) -> (fails, notes)`, listed in analyze.py; `gate['runs']` holds each completed cell as
+`runs.py`'s summary of its record), and `skus` (`<sku> [disk GB] [gpus]` per line, the workflow's rentals). The verdict's `SUITES` line names what ran.
 
 ## What a gate does
 
@@ -28,7 +29,9 @@ before the candidate goes on), optional `check.py` (`check(gate) -> (fails, note
 2. Puts the candidate on it: `--runtime`, `--tensorfs`, `--tensord` (a cozy binary; each a file or `URL#sha256=`), `--pins`
    (exact package releases, `sdxl@2.13.0,…`: a package candidate is published and yanked, and installs only by its pin),
    or `--packages` (a packages checkout whose directories run). Unpinned cells run the root package users get.
-3. Runs the chosen suites' cells, each once, with new prompts and seeds.
+   The candidate's cozy puts it on; its `machine update` fails unless the machine then runs it.
+3. Runs the chosen suites' cells, each once, with new prompts and seeds. A run whose record and events stop changing for
+   15 minutes is canceled; one whose cancel does not take stops the gate (e2e/run.sh).
 4. Ends the rental and checks that it is gone.
 5. Runs `analyze.py`. A cell passes when it completed, served the last PASS's kernels (with no fallback), produced
    a sane output, and kept execution / step 1 / steady s/step / peak reserved VRAM within the last PASS's spread.
@@ -53,10 +56,11 @@ Nothing reaches users before a recorded PASS. Candidates wait where users don't 
 (cozy-publish.yaml; `cozy update`, the installer and Homebrew follow latest), TensorFS and the Runtime as GitHub
 prerelease assets (publish-tensorfs.yaml `candidate=true`, cozy-runtime publish.yaml `mode=source`), and packages
 as yanked releases (`task publish`). The release agent picks the suites, runs the gate by hand or from Actions, and
-records the result. `candidate.json` in each gate's output names the exact set; `verify.sh <run|dir>...` prints it only
-when every SKU passed. `promote.sh <run id>` (or `--record <URL> <dirs>...` for a hand gate) hands that set to users in
-one step: the same files to PyPI, the cozy prerelease latest plus Homebrew (cozy-promote.yaml), the packages un-yanked
-(`cozy package yank --undo`). The worker image and the Hub pin follow, by the release owner.
+records the result. `candidate.json` in each gate's output names the exact set: the versions the machine ran and the
+candidate files' digests. `verify.sh <run|dir>...` prints it only when every SKU passed. `promote.sh <run id>` (or
+`--record <URL> <dirs>...` for a hand gate) hands that set to users in one step: the same files to PyPI, the cozy
+prerelease latest plus Homebrew (cozy-promote.yaml), the packages un-yanked (`cozy package yank --undo`) on every Hub
+that holds them. Packages' `task promote` calls it. The worker image and the Hub pin follow, by the release owner.
 
 ## CI sign-in
 
@@ -89,8 +93,8 @@ The runner signs in as the owner's account with its own device key: secret `COZY
   - `model download` of a large many-object model cold (Hub and datacenter-cache times are separate baselines), again
     (nothing from the Hub), and cut part-way then resumed (only the rest comes).
   - `model upload` of new random weights from the gate's host to a throwaway `<account>/ci-tfs-<R>` (the time
-    includes staging from the host: run it from a runner), the same folder to a second tag (dedup: the same tree, a
-    tenth of the time), and new weights cut part-way then resumed. The model is deleted after.
+    includes staging from the host: run it from a runner), the same folder as a second commit in another lane (dedup:
+    the same objects, a tenth of the time), and new weights cut part-way then resumed. The model is deleted after.
   - `straggler` (on the gate's host, where a client may dial): `tfs download` of BiRefNet clean and through
     `straggler.py`, which drips its first objects as a slow storage GET does. A straggler must be re-asked, not
     waited out (at most 1.5x clean + 20 s).
@@ -102,8 +106,8 @@ The runner signs in as the owner's account with its own device key: secret `COZY
   - Through `cozy`, on a throwaway `<account>/ci-hub-<R>`: whoami, credits, credits history, the rental catalog, the
     rental itself and a rental of `cpu` on each provider with a dev-build cozy (`machine rent --provider runpod|vast`, ended and
     checked gone: renters never pick one, th-254); a package locked, published twice, run, yanked (the simple index marks it `data-yanked`),
-    resolved past, run by exact pin, and un-yanked; a model uploaded, published (listed), downloaded, yanked (listed
-    yanked), downloaded by pin, un-yanked, deleted (gone). The package's releases are yanked and the model deleted.
+    resolved past, run by exact pin, and un-yanked; a model commit uploaded in a lane, published (listed), downloaded,
+    downloaded by pin and lane, deleted (gone). The package's releases are yanked and the model deleted.
   - Before a Hub deploy, the release agent also rehearses its migrations: dump prod (in-pod `pg_dump -Fc`, copied
     in sha256-checked chunks, a full `pg_restore -f /dev/null`), restore it into a scratch Postgres, start the
     candidate image against it (it migrates on start) and wait for `/healthz` 204. Record the dump and the result

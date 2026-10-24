@@ -4,6 +4,9 @@ use progenitor_client::{ClientHooks, ClientInfo, Error as CallError, OperationIn
 use reqwest::header::{HeaderName, HeaderValue};
 use std::sync::Arc;
 
+use platform::paths::Home;
+use protocol::{config::Hub, error::Error as Refusal};
+
 use crate::Client;
 use crate::device::UserSession;
 
@@ -46,6 +49,18 @@ impl Client {
         Self::new_with_client(origin.trim_end_matches('/'), http, Auth { credential })
     }
 
+    /// `hub` as this computer's signed-in user, over `http`; refused when it holds no device key
+    /// there, `login` (asked only then) signing it in.
+    pub fn signed_in(
+        hub: &Hub,
+        home: &Home,
+        http: reqwest::Client,
+        login: impl FnOnce() -> String,
+    ) -> Result<Self, Refusal> {
+        let session = UserSession::open(hub, home, login)?;
+        Ok(Self::connect(&hub.origin, http, Credential::User(Arc::new(session))))
+    }
+
     /// The same Hub, anonymously: for the exchanges that mint a credential.
     pub fn anonymous(&self) -> Self {
         Self::connect(self.baseurl(), self.client().clone(), Credential::Anonymous)
@@ -74,7 +89,7 @@ impl Client {
         };
         for (name, value) in headers {
             let value = HeaderValue::from_str(&value)
-                .map_err(|_| crate::Error::Key(format!("an unusable {name} value")))?;
+                .map_err(|_| crate::Error::Credential(format!("an unusable {name} value")))?;
             request
                 .headers_mut()
                 .insert(HeaderName::from_static(name), value);
@@ -89,9 +104,9 @@ impl ClientHooks<Auth> for Client {
         request: &mut reqwest::Request,
         _: &OperationInfo,
     ) -> Result<(), CallError<E>> {
-        self.present(request)
-            .await
-            .map_err(|e| CallError::Custom(e.to_string()))
+        // Typed through progenitor's one string: `From<CallError>` reads it back.
+        let failed = |e| CallError::Custom(serde_json::to_string(&e).expect("JSON"));
+        self.present(request).await.map_err(failed)
     }
 
     /// Sends the request; a refused Bearer logs in again, once. The first answer stands when the

@@ -17,7 +17,7 @@ pub use doc::{
     Body, ClassRef, Component, Encoding, Header, Location, Metadata, ObjectRef, Part, Provenance,
     Span, Tensor,
 };
-pub use repo::{fnmatch, newest, newest_by, repo_key, tag_name, Repo, Resolution, Tag, Tree, CHUNKS_DIR, ROOT_ORG};
+pub use repo::{label, newest_by, repo_key, Release, Repo, Tree, CHUNKS_DIR, ROOT_ORG};
 #[cfg(feature = "store")]
 pub(crate) use doc::{is_digest, segment};
 #[cfg(feature = "store")]
@@ -29,29 +29,14 @@ pub use value::{Config, ConfigValue, Value};
 
 pub const HEADER_FORMAT: &str = "cozytensors/1";
 pub const REPO_FORMAT: &str = "cozytensors.repo/1";
-/// The tree path a writer gives a variant it names nothing.
+/// The path a writer gives a commit's header.
 pub const HEADER_PATH: &str = "model.cozytensors";
-/// A variant's extension: any repo file ending in it is one (spec §3).
-pub const VARIANT_EXTENSION: &str = ".cozytensors";
-/// A repo's file tree: `{format, files: {path: object}}`.
+/// A commit: `{format, lane, files: {path: object}}`.
 pub const TREE_FORMAT: &str = "cozytensors.tree/1";
 
-/// The variant a repo file is (spec §3): any `.cozytensors` file, at any depth, named by its
-/// path; `None` for any other path.
-pub fn variant_of(path: &str) -> Option<&str> {
-    let name = path.rsplit('/').next()?;
-    name.ends_with(VARIANT_EXTENSION).then_some(path)
-}
-
-/// A writer's full path, or a legacy bare name written as `model.<name>.cozytensors`;
-/// an extensionless nested path gets the extension. `""` is [`HEADER_PATH`].
-pub fn variant_path(name: &str) -> String {
-    match name {
-        "" => HEADER_PATH.into(),
-        name if variant_of(name).is_some() => name.into(),
-        name if !name.contains('/') => format!("model.{name}{VARIANT_EXTENSION}"),
-        name => format!("{name}{VARIANT_EXTENSION}"),
-    }
+/// Whether a tree's file at `path` is a header (spec §3): a `.cozytensors` file, at any depth.
+pub fn is_header(path: &str) -> bool {
+    path.rsplit('/').next().is_some_and(|name| name.ends_with(".cozytensors"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -65,9 +50,6 @@ pub enum Error {
         found: String,
         expected: &'static str,
     },
-    /// A header from before the cut to this format: same tag, older layout.
-    #[error("pre-cut cozytensors header (old layout); re-import or migrate")]
-    PreCut,
     /// The tensor reads, but this reader has no decoder for its scheme.
     #[error("unknown scheme {0:?}: its parts read raw, decode is refused")]
     UnknownScheme(String),
@@ -84,7 +66,6 @@ impl Error {
         match self {
             Error::Invalid(_) => "invalid",
             Error::Format { .. } => "format",
-            Error::PreCut => "pre_cut",
             Error::UnknownScheme(_) => "unknown_scheme",
             Error::Decode(_) => "decode",
             Error::Encode(_) => "encode",

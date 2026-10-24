@@ -22,7 +22,7 @@ use protocol::{
     machine as v1,
 };
 use ed25519_dalek::SigningKey;
-use hub_client::{Client, Credential, DeviceKey, UserSession, types};
+use hub_client::{Client, types};
 use sha2::{Digest as _, Sha256};
 use tracing::warn;
 
@@ -63,17 +63,8 @@ impl Hubs {
 
     /// A client speaking as this computer's device key at the Hub.
     pub(crate) fn client(&self, origin: &str) -> Result<Client, Error> {
-        let hub = config::Hub {
-            name: None,
-            origin: config::Origin::parse(origin).map_err(|_| signed_out(origin))?,
-        };
-        let key = DeviceKey::load(&hub.device_key(&self.home)).map_err(|_| signed_out(origin))?;
-        let session = UserSession::new(key, Some(hub.bearer(&self.home)));
-        Ok(Client::connect(
-            origin,
-            self.http.clone(),
-            Credential::User(Arc::new(session)),
-        ))
+        let hub = config::Hub { name: None, origin: config::Origin::parse(origin)? };
+        Client::signed_in(&hub, &self.home, self.http.clone(), || login(origin))
     }
 
     /// Remembers what a Hub said of one rental.
@@ -319,16 +310,15 @@ impl Machines {
         let client = self.hubs.client(origin)?;
         match client.quote_rental(request).await {
             Ok(quote) => Ok(quote.into_inner()),
-            Err(e) => Err(match asked(origin, e.into()) {
-                Asked::Refused(e) | Asked::Unanswered(e) => e,
-            }),
+            Err(e) => Err(hub_refusal(origin, e.into())),
         }
     }
 
     /// Makes a recorded rent ask. The Hub's acceptance records the rental as a booting machine
     /// (no endpoint: its runs wait in the outbox) in the transaction that ends the ask; its
-    /// refusal ends the ask and the run it was made for. A Hub that does not answer is asked
-    /// again under the same key, paced; `told` hears the first answer, or that there was none.
+    /// refusal, of this computer's credential too, ends the ask and the run it was made for. A Hub
+    /// that does not answer is asked again under the same key, paced; `told` hears the first
+    /// answer, or that there was none.
     async fn ask_hub(
         self: &Arc<Self>,
         ask: &Ask,
@@ -342,8 +332,8 @@ impl Machines {
         };
         loop {
             match self.ask_once(ask).await {
-                Err(Asked::Refused(error)) => {
-                    let reason = format!("{}: {}", error.code, error.message);
+                Err(error) if error.kind != Kind::Unavailable => {
+                    let reason = said(&error);
                     self.store()
                         .settle_ask(&ask.key, Err(&reason))
                         .map_err(internal)?;
@@ -359,7 +349,7 @@ impl Machines {
                     tell(&refused);
                     return refused;
                 }
-                Err(Asked::Unanswered(e)) => {
+                Err(e) => {
                     warn!(ask = ask.key, "asking {} again: {e}", ask.hub);
                     let key = &ask.key;
                     tell(&Err(e.remedy(format!(
@@ -433,19 +423,14 @@ impl Machines {
         }
     }
 
-    async fn ask_once(&self, ask: &Ask) -> Result<types::Rental, Asked> {
-        let client = self.hubs.client(&ask.hub).map_err(Asked::Refused)?;
-        let request = RentBody::of(ask).map_err(Asked::Refused)?.request;
-        let key = types::CreateRentalIdempotencyKey::try_from(ask.key.as_str()).map_err(|e| {
-            Asked::Refused(Error::new(
-                Kind::Usage,
-                "idempotency_key_invalid",
-                e.to_string(),
-            ))
-        })?;
+    async fn ask_once(&self, ask: &Ask) -> Result<types::Rental, Error> {
+        let client = self.hubs.client(&ask.hub)?;
+        let request = RentBody::of(ask)?.request;
+        let key = types::CreateRentalIdempotencyKey::try_from(ask.key.as_str())
+            .map_err(|e| Error::new(Kind::Usage, "idempotency_key_invalid", e.to_string()))?;
         match client.create_rental(&key, &request).await {
             Ok(rental) => Ok(rental.into_inner()),
-            Err(e) => Err(asked(&ask.hub, e.into())),
+            Err(e) => Err(hub_refusal(&ask.hub, e.into())),
         }
     }
 
@@ -496,15 +481,10 @@ impl Machines {
                 },
                 Err(error) => Err(error),
             };
-            if let Err(error) = rented {
-                let reason = Reason {
-                    code: error.code,
-                    message: error.message,
-                    ..Default::default()
-                };
-                if let Err(e) = me.calcifer.fail(&run.id, reason) {
-                    warn!(run = %run.id, "failing it: {e}");
-                }
+            if let Err(error) = rented
+                && let Err(e) = me.calcifer.fail(&run.id, reason(error))
+            {
+                warn!(run = %run.id, "failing it: {e}");
             }
             lock(&me.renting).remove(&run.id);
         });
@@ -564,21 +544,14 @@ impl Machines {
             package: release.package.clone(),
             release: Some(release.release.clone()).filter(|r| !r.is_empty()),
             function: spec.entrypoint.clone(),
-            bits: (spec.bits > 0)
-                .then(|| types::RentalPlacementRequestBits::try_from(i64::from(spec.bits)))
-                .transpose()
-                .map_err(|e| Error::new(Kind::Validation, "bits_invalid", e.to_string()))?,
+            lane: Some(spec.lane.clone()).filter(|lane| !lane.is_empty()),
             gpus: std::num::NonZeroU64::new(spec.gpus.into()),
             sku: sku.map(str::to_owned),
         };
         let client = self.hubs.client(hub)?;
         let placement = match client.place_rental(&request).await {
             Ok(placement) => placement.into_inner(),
-            Err(e) => {
-                return Err(match asked(hub, e.into()) {
-                    Asked::Refused(e) | Asked::Unanswered(e) => e,
-                });
-            }
+            Err(e) => return Err(hub_refusal(hub, e.into())),
         };
         let Some(top) = placement.machines.first() else {
             let why: Vec<String> = placement
@@ -602,13 +575,12 @@ impl Machines {
             _ => format!("the fastest of {}: none is fast enough", placement.machines.len()),
         };
         let why = format!(
-            "the Hub placed it on {} ({}× {}, {} GB): {rule} for {} GB of {}-bit weights",
+            "the Hub placed it on {} ({}× {}, {} GB): {rule} for {} GB of weights",
             top.name,
             top.accelerator_count,
             top.accelerator_model,
             top.vram_gb,
             placement.weight_bytes / 1_000_000_000,
-            placement.bits,
         );
         // The Hub may buy the next machines down its order instead (as fast, when the pick is),
         // never above the price agreed for the pick.
@@ -697,7 +669,10 @@ impl Machines {
 
     async fn boot(self: &Arc<Self>, mut row: MachineRow) {
         let id = row.rental_id.clone().unwrap_or_default();
-        let (mut pause, mut last) = (Duration::from_secs(2), String::new());
+        // One cheap read of our own Hub every 2 s: the address is seen within 2 s of the pod
+        // serving, however long the boot's last phase took. Only a failing read backs off.
+        const BOOTING: Duration = Duration::from_secs(2);
+        let mut pause = BOOTING;
         loop {
             match self.store().machine(&row.name) {
                 Ok(Some(now)) if now.state != MachineState::Ended && now.endpoint.is_none() => {
@@ -740,13 +715,7 @@ impl Machines {
                         self.calcifer.machine_changed();
                         return self.watch(&row);
                     }
-                    let now = format!("{} {boot:?}", rental.state);
-                    pause = if now == last {
-                        (pause * 3 / 2).min(Duration::from_secs(30))
-                    } else {
-                        Duration::from_secs(2)
-                    };
-                    last = now;
+                    pause = BOOTING;
                 }
                 Err(e) => {
                     warn!(machine = row.name, "reading its boot: {e}");
@@ -830,11 +799,10 @@ impl Machines {
         let rentals = match listed {
             Ok(listing) => listing.into_inner().rentals,
             Err(e) => {
-                let e = hub_client::Error::from(e);
+                let error = hub_refusal(origin, e.into());
                 let mut listings = lock(&self.hubs.listings);
                 let listing = listings.entry(origin.to_owned()).or_default();
-                listing.signed_out = matches!(&e, hub_client::Error::Hub { status: 401, .. });
-                let error = hub_refusal(origin, e);
+                listing.signed_out = error.kind == Kind::Credential;
                 listing.problem = Some(HubProblem {
                     hub: origin.to_owned(),
                     code: error.cause.unwrap_or(error.code),
@@ -928,7 +896,7 @@ impl Machines {
 
     /// Releases the rental at its Hub, then reads it until the Hub says it ended. A Hub that
     /// does not know the rental proves nothing: the ask fails `release_unconfirmed` and the
-    /// machine stays.
+    /// machine stays, as it does when the Hub refuses this computer's credential.
     async fn finish_end(self: Arc<Self>, ask: Ask) {
         let id = ask.digest.clone();
         let mut pause = Duration::ZERO;
@@ -949,20 +917,20 @@ impl Machines {
                 Err(e) => return settle(Err(e.message)),
             };
             if !released {
-                match client
-                    .release_rental(&id)
-                    .await
-                    .map_err(hub_client::Error::from)
-                {
+                let release = client.release_rental(&id).await;
+                match release.map_err(|e| hub_refusal(&ask.hub, e.into())) {
                     Ok(_) => released = true,
-                    Err(hub_client::Error::Hub { status: 404, .. }) => {
+                    Err(e) if e.kind == Kind::NotFound => {
                         return settle(Err(format!(
                             "release_unconfirmed: {} does not know rental {id}; nothing was ended",
                             ask.hub
                         )));
                     }
-                    Err(e) if e.refused() => released = true,
-                    Err(e) => warn!(rental = id, "releasing it: {e}"),
+                    Err(e) if e.kind == Kind::Credential => return settle(Err(said(&e))),
+                    Err(e) if e.kind == Kind::Unavailable => {
+                        warn!(rental = id, "releasing it: {e}")
+                    }
+                    Err(_) => released = true,
                 }
             }
             if released {
@@ -978,11 +946,10 @@ impl Machines {
                             return settle(Ok(()));
                         }
                     }
-                    Err(e) => warn!(
-                        rental = id,
-                        "reading its end: {}",
-                        hub_client::Error::from(e)
-                    ),
+                    Err(e) => match hub_refusal(&ask.hub, e.into()) {
+                        e if e.kind == Kind::Credential => return settle(Err(said(&e))),
+                        e => warn!(rental = id, "reading its end: {e}"),
+                    },
                 }
             }
             pause = (pause * 2).clamp(Duration::from_secs(2), Duration::from_secs(30));
@@ -1080,59 +1047,39 @@ fn quote_of(quote: &types::RentalQuote) -> Quote {
     }
 }
 
-/// What asking a Hub came to, short of an answer.
-enum Asked {
-    /// The Hub's refusal, which asking again would not change.
-    Refused(Error),
-    Unanswered(Error),
-}
-
-fn asked(origin: &str, e: hub_client::Error) -> Asked {
-    match e.refused() {
-        true => Asked::Refused(hub_refusal(origin, e)),
-        false => Asked::Unanswered(hub_refusal(origin, e)),
-    }
-}
-
-/// A Hub's refusal as the API answers it: the Hub's own code is the cause.
+/// A Hub's failure as the API answers it, naming the Hub.
 pub(crate) fn hub_refusal(origin: &str, e: hub_client::Error) -> Error {
-    match e {
-        hub_client::Error::Hub {
-            status,
-            code,
-            message,
-            remedy,
-        } => {
-            let error = Error::new(Kind::of_http(status), "hub_refused", format!("{origin}: {message}"))
-                .cause(code);
-            if remedy.is_empty() {
-                error
-            } else {
-                error.remedy(remedy)
-            }
-        }
-        e => Error::new(
-            Kind::Unavailable,
-            "hub_unavailable",
-            format!("{origin}: {e}"),
-        ),
+    let mut error = e.refusal(|| login(origin));
+    error.message = format!("{origin}: {}", error.message);
+    error
+}
+
+/// `cozy login` for the Hub at `origin`, spelled by the config as it is now.
+fn login(origin: &str) -> String {
+    let config = config::load(config::Flags::default()).map(|loaded| loaded.config);
+    let config = config.unwrap_or_default();
+    match config.resolve(origin) {
+        Ok(hub) => config.login(&hub),
+        Err(_) => format!("cozy login <email> --tensorhub {origin}"),
     }
 }
 
-pub(crate) fn signed_out(origin: &str) -> Error {
-    let current = config::load(config::Flags::default()).and_then(|loaded| loaded.config.current());
-    let login = match current {
-        Ok(hub) if config::Origin::parse(origin).is_ok_and(|o| o == hub.origin) => {
-            "cozy login <email>".to_owned()
-        }
-        _ => format!("cozy login <email> --tensorhub {origin}"),
-    };
-    Error::new(
-        Kind::Credential,
-        "signed_out",
-        format!("this computer is not signed in to {origin}"),
-    )
-    .next(login)
+/// A refusal's message with its next step: what a run's reason says.
+fn words(error: &Error) -> String {
+    match error.next.first() {
+        Some(next) => format!("{} (`{next}`)", error.message),
+        None => error.message.clone(),
+    }
+}
+
+/// A refusal in one line: what an ask records.
+fn said(error: &Error) -> String {
+    format!("{}: {}", error.code, words(error))
+}
+
+/// A refusal as a run's reason.
+pub(crate) fn reason(error: Error) -> Reason {
+    Reason { message: words(&error), code: error.code, ..Default::default() }
 }
 
 /// What a rental's Hub said of a machine that did not answer, once acted on.

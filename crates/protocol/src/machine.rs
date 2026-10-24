@@ -253,8 +253,8 @@ pub struct WarmItem {
     pub holds: String,
     /// Status only: why that is lower than `level`.
     pub held_back: String,
-    /// As [`RunSpec::bits`].
-    pub bits: u32,
+    /// As [`RunSpec::lane`].
+    pub lane: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -303,9 +303,11 @@ pub struct RunSpec {
     /// 0: widest group every model slot supports on this machine. Positive: at most this many
     /// GPUs, for the run and its children.
     pub gpus: u32,
-    /// The main model's weight precision: 16, 8 or 4. 0, and every other slot: the machine's rules
-    /// choose the lane. The package's own children inherit it; another package's take 0.
-    pub bits: u32,
+    /// The main model's lane, a label (`bf16`, `fp8`, …). Empty, and every other slot: the Hub
+    /// picks for the machine's hardware. For a model-only warm run with a weights destination,
+    /// the lane its commit is labelled. The package's own children inherit it; another
+    /// package's take none.
+    pub lane: String,
 }
 
 /// The caller's provider tokens, for models a run makes from a provider source.
@@ -386,10 +388,10 @@ pub struct InputFile {
 }
 
 /// One model slot's choice, by name (th-245: the machine resolves it at the Hub). A Hub model is
-/// `repository` at `release` (empty: the newest) in `lane`, else in the lane the machine's rules
-/// pick (xs-042). `manifest` names a checkpoint by hash only: the owner's private one at the Hub
-/// (with `repository`; the run's capability names it) or one this machine holds (without). A slot
-/// with no choice takes its declared default release, a callee's included (`<package>/<path>`).
+/// `repository` at `release` (empty: the newest) in `lane`, else in the lane the Hub picks for
+/// the machine's hardware. `manifest` names a commit (or a header) by hash: one of the
+/// repository's at the Hub (with `repository`), or one this machine holds (without). A slot with
+/// no choice takes its declared default release, a callee's included (`<package>/<path>`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(default)]
 pub struct ModelChoice {
@@ -419,7 +421,7 @@ pub struct Adapter {
     pub model: String,
     pub release: String,
     pub lane: String,
-    /// `sha256:<hex>`, the owner's checkpoint by hash; else `model` at `release`, `lane`.
+    /// `sha256:<hex>`, a commit of `model` by hash; else `model` at `release`, `lane`.
     pub manifest: String,
     /// Canonical decimal; empty means 1.
     pub scale: String,
@@ -532,15 +534,13 @@ pub struct Progress {
     pub stage_fraction: Option<f64>,
 }
 
-/// A checkpoint stored by Runtime. `revision` names its commit (`sha256:<tree>`); `tag` the
-/// tag the Runtime moved to it (empty: none).
+/// A weights output's commit: `revision` (`sha256:<tree>`) of `repo_id`, in `lane`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(default)]
 pub struct CheckpointRef {
     pub repo_id: String,
     pub revision: String,
-    pub variant: String,
-    pub tag: String,
+    pub lane: String,
 }
 
 /// One revision of an output: a single output is replaced by each, a list output grows. Byte
@@ -784,16 +784,15 @@ pub struct Model {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(default)]
 pub struct Checkpoint {
-    /// Empty for a local alias.
+    /// Empty for a local alias or a commit by hash.
     pub release: String,
-    /// The variant, by its path.
+    /// Its commit's lane label.
     pub lane: String,
-    /// Its header's precision lane (`int8`, `bf16`, …).
+    /// Its header's precision family (`int8`, `bf16`, …).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub precision: String,
-    /// `sha256:<hex>`
+    /// `sha256:<hex>` of its header.
     pub manifest: String,
-    pub yanked: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]

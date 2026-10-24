@@ -213,18 +213,10 @@ pub struct PyClient {
     client: Client,
 }
 
-fn reference(
-    repo_id: &str,
-    revision: Option<String>,
-    variant: Option<String>,
-) -> tensorfs::Result<Ref> {
+fn reference(repo_id: &str, release: Option<String>, lane: Option<String>) -> tensorfs::Result<Ref> {
     let mut reference: Ref = repo_id.parse()?;
-    if revision.is_some() {
-        reference.revision = revision;
-    }
-    if variant.is_some() {
-        reference.variant = variant;
-    }
+    reference.release = release.or(reference.release);
+    reference.lane = lane;
     Ok(reference)
 }
 
@@ -244,23 +236,21 @@ impl PyClient {
         Ok(Self { client })
     }
 
-    #[pyo3(signature = (name_or_path, *, revision = None, variant = None, lane = None, gpus = None, local_files_only = false, lazy = true))]
+    #[pyo3(signature = (name_or_path, *, release = None, lane = None, gpus = None, local_files_only = false, lazy = true))]
     #[allow(clippy::too_many_arguments)]
     fn open(
         &self,
         py: Python<'_>,
         name_or_path: &str,
-        revision: Option<String>,
-        variant: Option<String>,
-        lane: Option<u32>,
+        release: Option<String>,
+        lane: Option<String>,
         gpus: Option<Vec<String>>,
         local_files_only: bool,
         lazy: bool,
     ) -> PyResult<PyCheckpoint> {
         let options = Open {
             lane, gpus,
-            revision,
-            variant,
+            release,
             local_files_only,
             lazy,
             ..Open::default()
@@ -297,17 +287,19 @@ impl PyClient {
         .or_raise(py)
     }
 
-    #[pyo3(signature = (repo_id, filename, *, revision = None, local_dir = None, local_files_only = false))]
+    #[pyo3(signature = (repo_id, filename, *, release = None, lane = None, local_dir = None, local_files_only = false))]
+    #[allow(clippy::too_many_arguments)]
     fn download_file(
         &self,
         py: Python<'_>,
         repo_id: &str,
         filename: &str,
-        revision: Option<String>,
+        release: Option<String>,
+        lane: Option<String>,
         local_dir: Option<PathBuf>,
         local_files_only: bool,
     ) -> PyResult<PathBuf> {
-        let reference = reference(repo_id, revision, None).or_raise(py)?;
+        let reference = reference(repo_id, release, lane).or_raise(py)?;
         py.detach(|| {
             block_on(self.client.download_file(
                 &reference,
@@ -319,18 +311,10 @@ impl PyClient {
         .or_raise(py)
     }
 
-    #[pyo3(signature = (folder_path, repo_id, revision = None, delete_patterns = Vec::new()))]
-    fn upload_folder(
-        &self,
-        py: Python<'_>,
-        folder_path: PathBuf,
-        repo_id: &str,
-        revision: Option<String>,
-        delete_patterns: Vec<String>,
-    ) -> PyResult<String> {
-        let reference = reference(repo_id, revision, None).or_raise(py)?;
-        let delete: Vec<&str> = delete_patterns.iter().map(String::as_str).collect();
-        py.detach(|| block_on(self.client.upload_folder(&reference, &folder_path, &delete, None)))
+    #[pyo3(signature = (folder_path, repo_id, lane))]
+    fn upload_folder(&self, py: Python<'_>, folder_path: PathBuf, repo_id: &str, lane: &str) -> PyResult<String> {
+        let reference = reference(repo_id, None, None).or_raise(py)?;
+        py.detach(|| block_on(self.client.upload_folder(&reference, &folder_path, lane, None)))
             .map(|tree| tree.id())
             .or_raise(py)
     }
@@ -408,7 +392,6 @@ pub struct PyCheckpoint {
     id: ObjectRef,
     tree: Option<ObjectRef>,
     named: Option<Ref>,
-    variant: Option<String>,
     state: Mutex<CheckpointState>,
 }
 
@@ -655,13 +638,11 @@ impl PyCheckpoint {
         let id = checkpoint.id().clone();
         let tree = checkpoint.tree().cloned();
         let named = checkpoint.named().cloned();
-        let variant = checkpoint.variant().map(str::to_owned);
         Self {
             header,
             id,
             tree,
             named,
-            variant,
             state: Mutex::new(CheckpointState {
                 access: Some(Arc::new(CheckpointAccess(Some(checkpoint)))),
                 components: None,
@@ -803,7 +784,7 @@ impl PyCheckpoint {
         self.id.id()
     }
 
-    /// The tree, repo, revision and variant naming it, when one does.
+    /// The commit (tree), repo, release and lane naming it, when one does.
     #[getter]
     fn tree(&self) -> Option<String> {
         self.tree.as_ref().map(ObjectRef::id)
@@ -813,12 +794,12 @@ impl PyCheckpoint {
         self.named.as_ref().map(|named| named.repo_id.as_str())
     }
     #[getter]
-    fn revision(&self) -> Option<&str> {
-        self.named.as_ref()?.revision.as_deref()
+    fn release(&self) -> Option<&str> {
+        self.named.as_ref()?.release.as_deref()
     }
     #[getter]
-    fn variant(&self) -> Option<&str> {
-        self.variant.as_deref()
+    fn lane(&self) -> Option<&str> {
+        self.named.as_ref()?.lane.as_deref()
     }
     #[getter]
     fn pipeline(&self, py: Python<'_>) -> PyResult<Option<PyPipeline>> {
@@ -1732,17 +1713,16 @@ impl Drop for PyWriter {
 #[pymethods]
 impl PyWriter {
     #[new]
-    #[pyo3(signature = (dest = None, *, variant = None, base = None, resume = None, cache_dir = None, repo_id = None, revision = None, endpoint = None, token = None, ca_der = None))]
+    #[pyo3(signature = (dest = None, *, base = None, resume = None, cache_dir = None, repo_id = None, lane = None, endpoint = None, token = None, ca_der = None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
         dest: Option<PathBuf>,
-        variant: Option<String>,
         base: Option<&PyCheckpoint>,
         resume: Option<String>,
         cache_dir: Option<PathBuf>,
         repo_id: Option<String>,
-        revision: Option<String>,
+        lane: Option<String>,
         endpoint: Option<String>,
         token: Option<&Bound<'_, PyAny>>,
         ca_der: Option<Vec<u8>>,
@@ -1754,11 +1734,10 @@ impl PyWriter {
                 let client = Client::new(config)?;
                 let options = WriterOptions {
                     dest: dest.as_deref(),
-                    variant: variant.as_deref(),
                     base: base.as_ref(),
                     resume: resume.as_deref(),
                     repo_id: repo_id.as_deref(),
-                    revision: revision.as_deref(),
+                    lane: lane.as_deref(),
                     ..WriterOptions::default()
                 };
                 block_on(async { client.writer(options) })

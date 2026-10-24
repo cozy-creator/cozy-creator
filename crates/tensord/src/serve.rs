@@ -112,87 +112,6 @@ fn machine_runtime() -> io::Result<&'static tokio::runtime::Runtime> {
     Ok(RUNTIME.get_or_init(|| runtime))
 }
 
-/// `tensord serve`: a machine on a state directory with no grant, for tests.
-#[derive(Debug, clap::Args)]
-pub struct Dev {
-    #[arg(long)]
-    state: PathBuf,
-    #[arg(long)]
-    generations: Option<PathBuf>,
-    #[arg(long)]
-    machine_config: Option<PathBuf>,
-    #[arg(long)]
-    listen: Option<String>,
-    #[arg(long)]
-    gpu_config: Option<PathBuf>,
-    #[arg(long)]
-    installer_python: Option<PathBuf>,
-    #[arg(long)]
-    client_wheel: Option<PathBuf>,
-    #[arg(long, default_value = "3.12")]
-    package_python: String,
-    #[arg(long, default_value = "uv")]
-    uv: PathBuf,
-    #[arg(long)]
-    package_sdk: Vec<String>,
-    #[arg(long)]
-    package_find_links: Option<PathBuf>,
-    #[arg(long, default_value_t = 1)]
-    cpu_parallelism: usize,
-}
-
-pub fn dev(args: Dev) -> io::Result<()> {
-    config::init_logs(None);
-    if let Err(error) = platform::process::set_name("tensord") {
-        if !error.is_unsupported() {
-            return Err(io::Error::other(format!("cannot set TensorD process name: {error}")));
-        }
-    }
-    #[cfg(unix)]
-    platform::process::cloexec_from(3);
-    machine_runtime()?;
-    let root = args.state;
-    let generations = args.generations.unwrap_or_else(|| root.join("generations"));
-    let (_owned, store) = own(&root, &root.join("tensorfs"), None)?;
-    let machine = Machine::new(store.clone(), None)?;
-    let service = crate::service::Service::open(&root, &generations, args.cpu_parallelism)?;
-    let pool = match args.gpu_config {
-        Some(config) => crate::gpu_service::GpuConfig::load(&config)?,
-        None => crate::gpu_service::GpuConfig::deviceless(&root.join("cpu").join("home"))?,
-    };
-    service.configure_pool(crate::gpu_service::Pool::new(&root.join("gpu"), pool, store.clone())?)?;
-    // A Runtime wheel named here is the operator's choice, as an update's `--runtime <path>` is: it
-    // runs every package whatever the package's bounds on the pair.
-    let runtime_build = (args.package_sdk.iter())
-        .filter_map(|r| std::path::Path::new(r).file_name()?.to_str()?.strip_prefix("cozy_runtime-")?.split('-').next().map(str::to_owned))
-        .next()
-        .unwrap_or_default();
-    let sdk = crate::published::PackageSdk {
-        uv: args.uv,
-        requirements: args.package_sdk,
-        find_links: args.package_find_links,
-        python: args.package_python.clone(),
-        runtime_build,
-        ..Default::default()
-    };
-    match (args.machine_config, args.listen) {
-        (Some(config), Some(listen)) => {
-            let identity = crate::api::MachineIdentity::retained(&crate::api::identity::MachineConfig::load(&config)?)?;
-            start_api(&root, &generations, identity, std::net::TcpListener::bind(listen)?, &store, &machine, &service,
-                args.installer_python, args.client_wheel, args.package_python, sdk, None, None)?
-        }
-        (None, None) => {
-            crate::calls::Calls::configure(&service, machine.clone(), None)?;
-        }
-        _ => return Err(io::Error::other("--machine-config and --listen are required together")),
-    }
-    drop(service);
-    // The machine runs on its own threads until it is stopped.
-    loop {
-        std::thread::park();
-    }
-}
-
 /// The state root's one owner: its lock held while the process lives, and the TensorFS store it
 /// serves (which may live outside `root`), claimed for this machine alone. A machine's (`paths`)
 /// store in an older format is set aside for the update that met it (`older_store`).
@@ -339,7 +258,7 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
         let devices: Vec<String> = gpus.iter().map(|g| g.device_index.to_string()).collect();
         let home = engine.join("executor-home");
         std::fs::create_dir_all(&home)?;
-        let mut config = serde_json::json!({
+        let config = serde_json::json!({
             "devices": devices.join(","),
             "inventory": gpus,
             "authorized_device_limit_bytes": null,
@@ -350,12 +269,6 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
             "image_kernels": (!gpus.is_empty()).then(|| image_kernels(&layout.root, &paths.sdk())).flatten(),
             "toolchain": crate::machine::toolchain::dir(&engine),
         });
-        // The operator's GPU settings, when the machine root has them, over these defaults.
-        if let Ok(file) = std::fs::File::open(layout.state.join("gpu-config.json")) {
-            let settings: serde_json::Map<String, serde_json::Value> =
-                serde_json::from_reader(file).map_err(io::Error::other)?;
-            config.as_object_mut().expect("an object").extend(settings);
-        }
         let config = serde_json::from_value::<crate::gpu_service::GpuConfig>(config)
             .map_err(io::Error::other)?
             .checked()?;
@@ -506,7 +419,6 @@ fn start_api(
             client_wheel,
             python,
             generations: generations.to_path_buf(),
-            staging_root: root.join("package-staging"),
             sdk: pair,
             runtime_build,
             uv: uv.clone(),

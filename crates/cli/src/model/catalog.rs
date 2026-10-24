@@ -1,9 +1,10 @@
-//! `cozy model search|info|family`: the Hub's model catalog. Reads are anonymous.
-use std::collections::{BTreeMap, BTreeSet};
+//! `cozy model search|info|family`: the Hub's model catalog. Signed in, `info` also lists the
+//! commits of a model of the user's org.
+use std::collections::BTreeMap;
 use std::process::ExitCode;
 
 use protocol::error::{Error, Kind};
-use hub_client::types::{ModelCard, ModelCatalogRelease, ModelFamilyUpdate};
+use hub_client::types::{ModelCard, ModelFamilyUpdate, ModelLaneProvenance};
 use serde::Serialize;
 
 use super::refs::{ModelRef, Repo};
@@ -12,7 +13,7 @@ use crate::Context;
 use crate::context::hub_answer;
 use crate::output::{self, Record, Table};
 
-/// One search row: the model's first available release in the Hub's order, and its lanes.
+/// One search row: the model's newest release, and its lanes.
 #[derive(Serialize)]
 struct Found {
     model: String,
@@ -28,21 +29,14 @@ struct Searched {
     total: i64,
 }
 
-fn available(release: &ModelCatalogRelease) -> bool {
-    !release.release.is_empty() && release.yanked != Some(true) && release.yanked_at.as_deref().is_none_or(str::is_empty)
-}
-
 fn found(card: &ModelCard) -> Found {
-    let release = tensorfs::format::newest_by(card.releases.iter().filter(|r| available(r)), |r| r.release.as_str());
+    // The Hub lists releases newest first.
+    let release = card.releases.first();
     Found {
         model: protocol::names::shown(&format!("{}/{}", card.model.org, card.model.name)),
         family: card.model.family.clone().filter(|f| !f.is_empty()),
-        release: release.map(|r| r.release.clone()),
-        lanes: release
-            .map(|r| r.lanes.iter().map(|l| l.lane.clone()).collect::<BTreeSet<_>>())
-            .unwrap_or_default()
-            .into_iter()
-            .collect(),
+        release: release.map(|r| r.version.clone()),
+        lanes: release.map(|r| r.lanes.keys().cloned().collect()).unwrap_or_default(),
     }
 }
 
@@ -101,25 +95,31 @@ pub(crate) async fn search(ctx: &Context, args: Search) -> Result<ExitCode, Erro
 
 #[derive(Serialize)]
 struct Lane {
-    /// The variant, by its path.
     lane: String,
-    /// Its header's precision lane (`int8`, `bf16`, …).
-    precision: Option<String>,
-    bytes: i64,
-    components: Vec<String>,
-    component_bytes: BTreeMap<String, i64>,
-    /// The commit (tree) the lane names, as `org/name#sha256:…`.
+    /// The commit, `sha256:…`.
     commit: String,
+    bytes: i64,
+    /// Its header's schemes and dtypes.
+    kinds: Vec<String>,
     /// The recipe that wrote it, as its header records.
-    provenance: Option<hub_client::types::ModelLaneProvenance>,
+    provenance: Option<ModelLaneProvenance>,
 }
 
 #[derive(Serialize)]
 struct Release {
-    release: String,
-    created_at: Option<String>,
-    yanked: bool,
+    version: String,
+    created_at: String,
     lanes: Vec<Lane>,
+}
+
+#[derive(Serialize)]
+struct Commit {
+    commit: String,
+    lane: String,
+    bytes: i64,
+    /// The releases naming it; none while private.
+    releases: Vec<String>,
+    created_at: String,
 }
 
 #[derive(Serialize)]
@@ -128,6 +128,8 @@ struct Detail {
     family: Option<String>,
     created_at: String,
     releases: Vec<Release>,
+    /// Every commit, newest first, to the model's members.
+    commits: Vec<Commit>,
 }
 
 pub(crate) async fn info(ctx: &Context, args: Info) -> Result<ExitCode, Error> {
@@ -137,60 +139,58 @@ pub(crate) async fn info(ctx: &Context, args: Info) -> Result<ExitCode, Error> {
             return Err(Error::new(Kind::Usage, "model_ref_invalid", format!("{:?}: info reads org/name[@release]", args.model)));
         }
     };
-    let client = ctx.hub_anonymous(&ctx.hub()?);
-    let card = hub_answer(client.get_model(&repo.org, &repo.name).await)?;
+    let card = hub_answer(ctx.hub_client(&ctx.hub()?)?.get_model(&repo.org, &repo.name).await)?;
     let releases: Vec<Release> = card
         .releases
-        .iter()
-        .filter(|r| selected.as_ref().is_none_or(|s| *s == r.release))
+        .into_iter()
+        .filter(|r| selected.as_ref().is_none_or(|s| *s == r.version))
         .map(|r| Release {
-            release: r.release.clone(),
-            created_at: r.cut_at.clone().filter(|t| !t.is_empty()),
-            yanked: !available(r),
-            lanes: r
-                .lanes
-                .iter()
-                .map(|l| Lane {
-                    lane: l.lane.clone(),
-                    precision: l.precision.clone().filter(|p| !p.is_empty()),
-                    bytes: l.bytes,
-                    components: l.components.clone().unwrap_or_default(),
-                    component_bytes: l.component_bytes.clone().into_iter().collect(),
-                    commit: format!("{repo}#{}", l.manifest_id),
-                    provenance: l.provenance.clone(),
-                })
-                .collect(),
+            version: r.version,
+            created_at: r.created_at,
+            lanes: r.lanes.into_iter().map(|(lane, l)| Lane { lane, commit: l.commit, bytes: l.bytes, kinds: l.kinds, provenance: l.provenance }).collect(),
         })
         .collect();
     if let Some(release) = selected.filter(|_| releases.is_empty()) {
         return Err(Error::new(Kind::NotFound, "model_release_not_found", format!("{repo} has no release {release:?}"))
             .next(format!("cozy model info {repo}")));
     }
+    let commits = card.commits.into_iter()
+        .map(|c| Commit { commit: c.id, lane: c.lane, bytes: c.bytes, releases: c.releases, created_at: c.created_at })
+        .collect();
     let view = Detail {
         model: repo.to_string(),
         family: card.model.family.filter(|f| !f.is_empty()),
         created_at: card.model.created_at,
         releases,
+        commits,
     };
     if ctx.json {
         output::json(&view);
         return Ok(ExitCode::SUCCESS);
     }
+    let shown = protocol::names::shown(&repo.to_string());
     let mut record = Record::new().field("model", &view.model).field("family", view.family.as_deref().unwrap_or("-"));
     record = record.field("created", &view.created_at);
     record.print(ctx);
     for release in &view.releases {
-        let yanked = if release.yanked { " (yanked)" } else { "" };
-        anstream::println!("\n{}@{}{yanked}", protocol::names::shown(&repo.to_string()), release.release);
-        let mut table = Table::new(ctx, ["lane", "precision", "bytes", "commit", "recipe"]);
+        anstream::println!("\n{shown}@{}", release.version);
+        let mut table = Table::new(ctx, ["lane", "kinds", "bytes", "commit", "recipe"]);
         for lane in &release.lanes {
-            let precision = lane.precision.clone().unwrap_or_else(|| "-".into());
             let recipe = lane.provenance.as_ref().map_or_else(|| "-".into(), |p| format!("{}@{} {}", protocol::names::shown(&p.package), p.release, p.recipe));
-            table = table.row([lane.lane.clone(), precision, output::bytes(lane.bytes as u64), lane.commit.clone(), recipe]);
+            table = table.row([lane.lane.clone(), lane.kinds.join("+"), output::bytes(lane.bytes as u64), lane.commit.clone(), recipe]);
         }
         // A recipe is its fingerprint: the digest of the plan the lane was written by.
         for (lane, made) in release.lanes.iter().filter_map(|l| Some((l, l.provenance.as_ref()?))) {
             table = table.note(format!("{}: recipe {}, from {}", lane.lane, made.fingerprint, made.source));
+        }
+        table.print();
+    }
+    if !view.commits.is_empty() {
+        anstream::println!("\n{shown} commits");
+        let mut table = Table::new(ctx, ["commit", "lane", "bytes", "releases", "created"]);
+        for c in &view.commits {
+            let releases = if c.releases.is_empty() { "private".to_owned() } else { c.releases.join(", ") };
+            table = table.row([c.commit.clone(), c.lane.clone(), output::bytes(c.bytes as u64), releases, c.created_at.clone()]);
         }
         table.print();
     }

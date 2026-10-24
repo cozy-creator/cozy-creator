@@ -124,28 +124,21 @@ test = "pr: models"
 test = "pr: models"
 "--lane" = "pr: models"
 "--on" = "pr: models"
-"--variant" = "pr: models"
 ["model family"]
 test = "release: throwaway model, family set and cleared"
 "--clear" = "release: throwaway model, family set and cleared"
 ["model upload"]
 test = "release: throwaway model, uploaded from a file and from a run's output"
 "--on" = "release: throwaway model"
+"--lane" = "release: throwaway model, two lanes"
 "--source-profile" = "none: needs a reviewed TensorFS profile for a small provider model, and none exists"
 ["model publish"]
-test = "release: throwaway model, published"
-"--release" = "release: throwaway model"
-"--commit" = "release: throwaway model"
-["model yank"]
-test = "release: throwaway model, yanked and un-yanked"
-"--release" = "release: throwaway model"
-"--undo" = "release: throwaway model"
+test = "release: throwaway model, published with two lanes"
 ["model delete"]
 test = "release: throwaway model, deleted"
 ["model quantize"]
-test = "gate: cli cells, the throwaway model's int8 lane"
-"--format" = "gate: cli cells"
-"--recipe" = "gate: cli cells"
+test = "gate: cli cells, the throwaway model's int8 and fp8 lanes"
+"--lane" = "gate: cli cells"
 "--package" = "gate: cli cells"
 "--on" = "gate: cli cells"
 
@@ -182,4 +175,3 @@ test = "pr: run play, its link serves the output, then expires"
 [hidden]
 "machine rent --provider" = "pending: dev builds only (cargo feature `dev`), never in a release; release-gate/suites/hub rents cpu once per provider with a dev-build cozy, ended and checked gone; the Hub decides who may"
 "machine rent --image-digest" = "pending: release tier, a Hub admin's gated worker-image bake; waits for the CI key"
-"model migrate-headers" = "none: dev builds only (cargo feature migrate), never in a release"

@@ -5,10 +5,7 @@
 //! an accepted run still reads. This computer's explicit live path is read in place, never
 //! copied. Both use the shared dependency cache.
 use crate::{
-    api::{
-        install::{prepare_editable, prepare_uploaded, InstallerConfig},
-        workspaces::{RootSet, UploadedFile, UploadedPackage},
-    },
+    api::install::{prepare_editable, InstallerConfig, RootSet},
     journal::Installation,
     objects::{Objects, Refused},
     service::Service,
@@ -33,15 +30,9 @@ pub struct Manifest {
     pub python_requires: String,
     #[serde(default)]
     pub python_version: String,
-    /// The project's source tree as a tar archive.
-    #[serde(default)]
-    pub source: Option<Member>,
     /// Wheels the project vendors, by file name.
     #[serde(default)]
     pub wheels: Vec<Member>,
-    /// The locked dependency requirements (`uv export` text).
-    #[serde(default)]
-    pub requirements: Option<Member>,
     /// Installed dependency distribution -> the package whose invocables it owns.
     #[serde(default)]
     pub callees: std::collections::BTreeMap<String, String>,
@@ -238,8 +229,7 @@ impl LocalSources {
             self.home(actor, &manifest.package)?;
         }
         let files = manifest.files.iter().filter(|_| manifest.path.is_empty());
-        let members = manifest.source.iter().chain(&manifest.wheels).chain(&manifest.requirements).chain(files);
-        for m in members {
+        for m in manifest.wheels.iter().chain(files) {
             written.push(written_member(&self.objects, actor, m)?);
         }
         Ok(written)
@@ -358,16 +348,11 @@ impl LocalSources {
             }
         }
         let root = RootSet {
-            operation_id: String::new(),
             package: manifest.package.clone(),
             release: manifest.release.clone(),
-            installation_id: alias.clone(),
             python_requires: manifest.python_requires,
             python_version: manifest.python_version,
-            source_archive: String::new(),
-            dependency_requirements: Vec::new(),
             callees: manifest.callees,
-            files: Vec::new(),
         };
         for (name, url) in &manifest.indexes {
             let named = !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b));
@@ -479,75 +464,13 @@ impl LocalSources {
                 return Ok(held);
             }
         }
-        let member = |m: &Member| written_member(&self.objects, actor, m);
         let (manifest, object) = open_manifest(&self.objects, actor, digest)?;
-        if !manifest.files.is_empty() || !manifest.path.is_empty() {
-            return self.install_live(service, actor, alias, manifest, &object.sha256, stop, stage);
+        if manifest.files.is_empty() && manifest.path.is_empty() {
+            return Err(refused("local_source_invalid", "a local package manifest names its files or its path"));
         }
-        let installing = format!("installing {} on this machine", manifest.package);
-        stage(&installing, 0);
-        if !manifest.package.starts_with("local/") || (manifest.source.is_none() && manifest.wheels.is_empty()) {
-            return Err(refused(
-                "local_source_invalid",
-                "a local package manifest names local/<name> and its source archive or root wheel",
-            ));
-        }
-        let requirements = match &manifest.requirements {
-            Some(m) => {
-                let object = member(m)?;
-                fs::read(self.cas.path(&object)?)?
-            }
-            None => Vec::new(),
-        };
-        let (source_name, mut files) = match &manifest.source {
-            Some(source) => ("source.tar".to_string(), vec![UploadedFile::held(
-                "source.tar".into(), &member(source)?, self.cas.clone(),
-            )]),
-            None => (String::new(), vec![]),
-        };
-        for wheel in &manifest.wheels {
-            if !wheel.name.ends_with(".whl") || wheel.name.contains('/') {
-                return Err(refused(
-                    "local_source_invalid",
-                    format!("{:?} is not a wheel file name", wheel.name),
-                ));
-            }
-            files.push(UploadedFile::held(
-                wheel.name.clone(),
-                &member(wheel)?,
-                self.cas.clone(),
-            ));
-        }
-        let uploaded = UploadedPackage {
-            root: RootSet {
-                operation_id: String::new(),
-                package: manifest.package.clone(),
-                release: manifest.release.clone(),
-                installation_id: alias.clone(),
-                python_requires: manifest.python_requires,
-                python_version: manifest.python_version,
-                source_archive: source_name,
-                dependency_requirements: requirements,
-                callees: manifest.callees,
-                files: Vec::new(),
-            },
-            files,
-        };
-        let prepared = prepare_uploaded(&self.installer, &uploaded, stop, &|bytes| stage(&installing, bytes)).map_err(installer_refusal)?;
-        let installed = service.engine.bind_installation(Installation {
-            actor: actor.to_string(),
-            alias,
-            generation: prepared.record.identity,
-            package: manifest.package,
-            release: manifest.release,
-            interface: prepared.interface_bytes,
-            hub: String::new(),
-        })?;
-        service.changed_environment()?;
-        Ok(installed)
+        self.install_live(service, actor, alias, manifest, &object.sha256, stop, stage)
     }
 }
-
 
 /// The trusted installer's end as a run's reason: canceled with its run, wedged (no CPU or
 /// bytes moved past its measured patience), or failed.

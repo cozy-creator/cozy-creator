@@ -1,10 +1,10 @@
 //! What a run's send carries for its Hub: where its machine reads the Hub (the Hub's own word,
-//! kept per Hub: in a dev or CI Hub it is not the origin this computer dials) and, for a run that
-//! publishes into its weights destination or reads one of its owner's checkpoints by digest,
-//! this computer's user Bearer as its TensorFS token. The Bearer is added at the send, never to
-//! the stored submission; each one the session mints after goes to every machine sent one, at the
-//! session's own refresh point (`PUT /v1/bearer`). Signed out, a public run reads at its Hub's
-//! origin.
+//! kept per Hub: in a dev or CI Hub it is not the origin this computer dials) and, signed in,
+//! this computer's user Bearer as its TensorFS token, for every model it resolves or reads: the
+//! Hub decides by org membership what a commit is to that user. The Bearer is added at the send,
+//! never to the stored submission; each one the session mints after goes to every machine sent
+//! one, at the session's own refresh point (`PUT /v1/bearer`). Signed out, a run reads public
+//! releases at its Hub's origin; a run that publishes needs the sign-in.
 use std::{
     sync::Weak,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -22,7 +22,7 @@ use protocol::{
 
 use crate::{
     machines::{Machines, internal, lock},
-    rentals::{Hubs, hub_refusal, signed_out},
+    rentals::{Hubs, hub_refusal, reason},
     store::RunRow,
 };
 
@@ -67,8 +67,8 @@ impl Machines {
             None => None,
         };
         let Some(origin) = origin.filter(|origin| {
-            // Signed out, a public run reads at its Hub's origin (lib's finish_spec).
-            self.hubs.client(origin).is_ok() || private(spec, None)
+            // Signed out, a run reads public releases at its Hub's origin (lib's finish_spec).
+            self.hubs.client(origin).is_ok() || !destination(spec).is_empty()
         }) else {
             return Ok(Access {
                 providers,
@@ -76,7 +76,8 @@ impl Machines {
             });
         };
         let facts = self.hubs.facts(&origin).await?;
-        let bearer = match needs_bearer(spec, &facts.account) {
+        // An explicit endpoint's own TensorFS options get none.
+        let bearer = match spec.tensorfs.is_none() {
             true => Some(self.hubs.bearer(&origin).await?),
             false => None,
         };
@@ -132,19 +133,14 @@ impl Machines {
     }
 
     /// Mints this computer's bearer at `origin` and gives it to each machine sent one that is
-    /// still driven. None, and no machine is given any more, once none is left or none can be
-    /// minted.
-    async fn push(&self, origin: &Origin) -> Option<Bearer> {
+    /// still driven. `Ok(None)` once no machine is left to give it to; `Err` when none could be
+    /// minted: the Hub's refusal, or its silence, which the refresh asks again.
+    async fn push(&self, origin: &Origin) -> Result<Option<Bearer>, Denied> {
         let minted = match self.hubs.facts(origin).await {
-            Ok(facts) => self
-                .hubs
-                .bearer(origin)
-                .await
-                .ok()
-                .map(|bearer| (tensorfs(&facts, &bearer), bearer)),
-            Err(_) => None,
+            Ok(facts) => self.hubs.bearer(origin).await.map(|bearer| (tensorfs(&facts, &bearer), bearer)),
+            Err(e) => Err(e),
         };
-        if let Some((options, _)) = &minted {
+        if let Ok((options, _)) = &minted {
             let holders: Vec<String> = lock(&self.bearers)
                 .get(origin)
                 .into_iter()
@@ -169,37 +165,48 @@ impl Machines {
             }
         }
         let mut held = lock(&self.bearers);
-        if minted.is_none() || held.get(origin).is_none_or(|machines| machines.is_empty()) {
+        if held.get(origin).is_none_or(|machines| machines.is_empty()) {
             held.remove(origin);
-            return None;
+            return Ok(None);
         }
-        minted.map(|(_, bearer)| bearer)
+        minted.map(|(_, bearer)| Some(bearer))
     }
 }
 
 /// From the session's own refresh point of `held`, the bearer the machines were sent, each one
-/// it mints at `origin` goes to them (`push`), until that stops.
+/// it mints at `origin` goes to them (`push`), until no machine is left to give it to. A mint
+/// that fails is asked again, backing off to a minute, for as long as machines hold one.
 async fn refresh(machines: Weak<Machines>, origin: Origin, held: Bearer) {
-    let mut held = Some(held);
-    while let Some(bearer) = held.take() {
+    let mut due = held.refresh_at();
+    let mut failing = Duration::ZERO;
+    loop {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
-        if bearer.refresh_at() <= now {
+        if failing.is_zero() && due <= now {
             tracing::warn!(%origin, "the Hub's bearers expire within the session's refresh margin");
-            break;
+            if let Some(machines) = machines.upgrade() {
+                lock(&machines.bearers).remove(&origin);
+            }
+            return;
         }
-        tokio::time::sleep(Duration::from_secs(bearer.refresh_at() - now)).await;
+        tokio::time::sleep(Duration::from_secs(due.saturating_sub(now)).max(failing)).await;
         let Some(machines) = machines.upgrade() else {
             return;
         };
-        held = machines.push(&origin).await;
-        if held.is_none() {
-            return;
+        match machines.push(&origin).await {
+            Ok(Some(bearer)) => (due, failing) = (bearer.refresh_at(), Duration::ZERO),
+            Ok(None) => return,
+            Err(Denied::Unreachable(error)) => {
+                failing = (failing * 2).clamp(Duration::from_secs(1), Duration::from_secs(60));
+                tracing::warn!(%origin, %error, retry_s = failing.as_secs(), "minting the machines' next Hub bearer");
+            }
+            Err(Denied::Refused(reason)) => {
+                tracing::warn!(%origin, code = %reason.code, "the Hub refused the machines' next bearer: {}", reason.message);
+                lock(&machines.bearers).remove(&origin);
+                return;
+            }
         }
-    }
-    if let Some(machines) = machines.upgrade() {
-        lock(&machines.bearers).remove(&origin);
     }
 }
 
@@ -219,9 +226,9 @@ impl Hubs {
     /// This computer's live Bearer at `origin`, from the normal cached user session: held, kept,
     /// or minted again past its refresh point. The key stays on this computer.
     async fn bearer(&self, origin: &Origin) -> Result<Bearer, Denied> {
-        let client = self.client(origin).map_err(|_| needs_sign_in(origin))?;
+        let client = self.client(origin).map_err(refused)?;
         let Credential::User(session) = client.credential() else {
-            return Err(needs_sign_in(origin));
+            unreachable!("a signed-in client speaks as its user")
         };
         session
             .bearer(&client.anonymous())
@@ -232,9 +239,9 @@ impl Hubs {
     /// This computer's account at `origin` and where machines read it: read once per device
     /// key, so a login, logout or account switch is seen at the next run with no Hub read.
     pub(crate) async fn facts(&self, origin: &Origin) -> Result<Facts, Denied> {
-        let client = self.client(origin).map_err(|_| needs_sign_in(origin))?;
+        let client = self.client(origin).map_err(refused)?;
         let Credential::User(session) = client.credential() else {
-            return Err(needs_sign_in(origin));
+            unreachable!("a signed-in client speaks as its user")
         };
         let key = session.key().public_key();
         if let Some(facts) = lock(&self.facts)
@@ -315,12 +322,6 @@ impl Hubs {
     }
 }
 
-/// Whether the send carries `owner`'s Bearer: the run reads one of `owner`'s checkpoints by digest
-/// or publishes, and names no TensorFS options of its own (an explicit endpoint gets none).
-fn needs_bearer(spec: &v1::RunSpec, owner: &str) -> bool {
-    spec.tensorfs.is_none() && private(spec, Some(owner))
-}
-
 /// The existing outbound Hub context also names public model defaults resolved later by
 /// TensorD. Copying its transport acquires no credential and makes no network call.
 pub(crate) fn anonymous_tensorfs(spec: &v1::RunSpec) -> Option<v1::TensorFSOptions> {
@@ -333,42 +334,10 @@ pub(crate) fn anonymous_tensorfs(spec: &v1::RunSpec) -> Option<v1::TensorFSOptio
 }
 
 fn hub_denied(origin: &Origin, error: hub_client::Error) -> Denied {
-    let refused = error.refused();
-    let error = hub_refusal(origin, error);
-    match refused {
-        true => Denied::Refused(Reason {
-            code: error.cause.unwrap_or(error.code),
-            message: error.message,
-            ..Default::default()
-        }),
-        false => unreachable(error.message),
+    match hub_refusal(origin, error) {
+        error if error.kind == Kind::Unavailable => Denied::Unreachable(error.message),
+        error => refused(error),
     }
-}
-
-/// Whether the run does something at its Hub that is not public: publish into its weights
-/// destination, or read a checkpoint by digest alone (a release's lanes are published), as a
-/// model choice or a warm set member's. With `owner`, only `owner`'s checkpoints count.
-fn private(spec: &v1::RunSpec, owner: Option<&str>) -> bool {
-    let read = |model: &str, release: &str, manifest: &str| {
-        by_digest(release, manifest)
-            && owner.is_none_or(|owner| {
-                (model.split_once('/')).is_some_and(|(org, _)| org.eq_ignore_ascii_case(owner))
-            })
-    };
-    let members = spec.set.iter().flat_map(|set| &set.items);
-    let mut choices = spec
-        .models
-        .iter()
-        .chain(members.flat_map(|item| &item.models));
-    !destination(spec).is_empty()
-        || choices.any(|choice| {
-            read(&choice.repository, &choice.release, &choice.manifest)
-                || (choice.adapters.iter()).any(|a| read(&a.model, &a.release, &a.manifest))
-        })
-}
-
-fn by_digest(release: &str, manifest: &str) -> bool {
-    release.is_empty() && !manifest.is_empty()
 }
 
 /// The Hub model a run publishes into; empty for none or a `local/` one.
@@ -380,26 +349,6 @@ fn destination(spec: &v1::RunSpec) -> &str {
     }
 }
 
-fn needs_sign_in(origin: &str) -> Denied {
-    let error: Error = signed_out(origin);
-    refused(
-        "hub_sign_in_required",
-        format!(
-            "this run publishes to or reads private models at {origin}, which needs this \
-             computer's sign-in there: {}",
-            error.message
-        ),
-    )
-}
-
-fn refused(code: &str, message: String) -> Denied {
-    Denied::Refused(Reason {
-        code: code.into(),
-        message,
-        ..Default::default()
-    })
-}
-
-fn unreachable(message: String) -> Denied {
-    Denied::Unreachable(message)
+fn refused(error: Error) -> Denied {
+    Denied::Refused(reason(error))
 }

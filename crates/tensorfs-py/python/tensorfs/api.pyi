@@ -15,28 +15,26 @@ class DLPack(Protocol):
 
 def configure(*, endpoint: str | None = None, cache_dir: StrPath | None = None, token: Token | None = None,
               ca_der: bytes | None = None) -> None: ...
-def open(name_or_path: StrPath, *, revision: str | None = None, variant: str | None = None,
-         lane: int | None = None, gpus: Sequence[str] | None = None,
+def open(name_or_path: StrPath, *, release: str | None = None, lane: str | None = None,
+         gpus: Sequence[str] | None = None,
          endpoint: str | None = None, local_files_only: bool = False, cache_dir: StrPath | None = None,
          token: Token | None = None, lazy: bool = True) -> Checkpoint: ...
 def materialize(source: str | Checkpoint, *, local_dir: StrPath | None = None,
                 format: str = "cozytensors", decode: bool = False,
-                revision: str | None = None, variant: str | None = None,
+                release: str | None = None, lane: str | None = None,
                 components: Sequence[str] | None = None, cache_dir: StrPath | None = None,
                 local_files_only: bool = False, token: Token | None = None,
                 endpoint: str | None = None) -> str: ...
-def download_file(repo_id: str, filename: str, *, revision: str | None = None,
+def download_file(repo_id: str, filename: str, *, release: str | None = None, lane: str | None = None,
                  cache_dir: StrPath | None = None, local_dir: StrPath | None = None,
                  local_files_only: bool = False, token: Token | None = None,
                  endpoint: str | None = None) -> str: ...
-def upload_folder(*, repo_id: str, folder_path: StrPath, revision: str = "main",
-                  delete_patterns: str | Sequence[str] | None = None,
+def upload_folder(*, repo_id: str, folder_path: StrPath, lane: str,
                   token: Token | None = None, endpoint: str | None = None,
                   cache_dir: StrPath | None = None) -> str:
-    """Commits the folder's files on top of tag `revision` of `repo_id`, as Hugging Face's
-    `upload_folder`: the tag's other files stay, the paths a `delete_patterns` glob (fnmatch)
-    matches go, and the folder's files are added or replaced. A new tag is private, an existing
-    one keeps its flags. The commit's id, `sha256:<tree hex>`."""
+    """Uploads the folder (one `.cozytensors` file and its repo files) as a new commit of
+    `repo_id` in lane `lane`, private until a release names it. The commit's id,
+    `sha256:<tree hex>`."""
 def convert_to_cozytensors(source: str | Sequence[str], *, converter: str | None = None, source_variant: str | None = None,
             cache_dir: StrPath | None = None, token: Token | None = None,
             progress: Callable[[str, int, int], object] | None = None) -> Checkpoint: ...
@@ -54,10 +52,10 @@ class CheckpointFile(io.RawIOBase):
 
 class Endpoint:
     def __init__(self, url: str, token: Token | None = None, *, ca_der: bytes | None = None, cache_dir: StrPath | None = None) -> None: ...
-    def repo(self, repo_id: str) -> tuple[dict[str, object], str] | None: ...
-    def commit(self, repo_id: str, revision: str) -> tuple[str, str | None]:
-        """`revision` (a tag, a commit or a header id, or a commit no tag names) as (commit id, tag)."""
-    def update_repo(self, repo_id: str, change: Callable[[dict[str, object] | None], dict[str, object] | None]) -> dict[str, object]: ...
+    def resolve(self, repo_id: str, *, release: str | None = None, lane: str | None = None,
+                gpus: Sequence[str] | None = None, plain: bool = False) -> dict[str, object]:
+        """The commit of `release` (none: the newest) in `lane` (none: what `gpus` run best; none:
+        the CPU): `{release, lane, commit, header, reasons}`."""
 
 class ComponentWriter:
     def put(self, key: str, data: Buffer | DLPack, *, dtype: str | None = None, shape: Sequence[int] | None = None) -> None: ...
@@ -71,15 +69,13 @@ class ComponentWriter:
 class Writer:
     metadata: dict[str, object]
     local_checkpoint: Checkpoint | None
-    def __init__(self, dest: StrPath | None = None, *, variant: str | None = None,
-                 base: Checkpoint | None = None, resume: str | None = None,
-                 repo_id: str | None = None, revision: str | None = None, endpoint: str | None = None,
-                 token: Token | None = None, cache_dir: StrPath | None = None) -> None:
+    def __init__(self, dest: StrPath | None = None, *, base: Checkpoint | None = None,
+                 resume: str | None = None, repo_id: str | None = None, lane: str | None = None,
+                 endpoint: str | None = None, token: Token | None = None,
+                 cache_dir: StrPath | None = None) -> None:
         """`dest` is a header file, a handle into the shared local store that roots its data while
-        it holds this header; `materialize` makes the portable copy. With `repo_id`, `commit()`
-        commits `model.<variant>.cozytensors` (and its repo files) on top of tag `revision` (default
-        `main`; a new tag is private) of that repo, keeping the tag's other files. Both need
-        `repo_id`."""
+        it holds this header; `materialize` makes the portable copy. With `repo_id` and `lane`,
+        `commit()` makes the header (and its repo files) a new commit of that repo in `lane`."""
     def __enter__(self) -> Writer: ...
     def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None,
                  traceback: TracebackType | None) -> None: ...

@@ -7,7 +7,7 @@ publish.workspace = true
 
 [dependencies]
 clap.workspace = true
-platform.workspace = true
+platform = { workspace = true, features = ["fetch"] }
 getrandom.workspace = true
 protocol.workspace = true
 str0m = { version = "0.24", default-features = false, features = ["aws-lc-rs"] }

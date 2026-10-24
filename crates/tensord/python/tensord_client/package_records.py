@@ -59,23 +59,14 @@ class Describe(msgspec.Struct, tag="describe", tag_field="kind"):
     environment_python: str | None = None
 
 
-class DescribeInstalled(msgspec.Struct, tag="describe_installed", tag_field="kind"):
-    distribution: str
-    environment_python: str
-
-
 class DescribeEnvironment(msgspec.Struct, tag="describe_environment", tag_field="kind"):
     root: str
     packages: dict[str, str] = {}
-    # Also the root's own installed interface, in the same process.
-    interface: bool = False
 
 
 class DescribedEnvironment(msgspec.Struct, tag="described_environment", tag_field="kind"):
     source_digest: str
     callees: list[Callee]
-    # The root's interface document as JSON text, when asked for.
-    interface: str = ""
 
 
 class Described(msgspec.Struct, tag="described", tag_field="kind"):
@@ -92,6 +83,5 @@ class InstallFailed(msgspec.Struct, tag="install_failed", tag_field="kind"):
     detail: str
 
 
-GENERATION_DECODER = msgspec.json.Decoder(Generation)
 DESCRIPTION_DECODER = msgspec.json.Decoder(Described | DescribeFailed)
 ENVIRONMENT_DECODER = msgspec.json.Decoder(DescribedEnvironment | DescribeFailed)

@@ -9,9 +9,9 @@ use std::{
 use platform::paths::Home;
 use protocol::{
     config::{Config, Hub, Loaded},
-    error::{Error, Kind},
+    error::Error,
 };
-use hub_client::{Credential, DeviceKey, ResponseValue, UserSession};
+use hub_client::{Credential, ResponseValue, UserSession};
 
 use crate::{calcifer_client::Client, output::Term};
 
@@ -72,38 +72,14 @@ impl Context {
 
     /// `hub` as this computer's signed-in user; refused when it has no device key there.
     pub fn hub_signed_in(&self, hub: &Hub) -> Result<hub_client::Client, Error> {
-        let credential = Credential::User(self.hub_session(hub)?);
-        Ok(hub_client::Client::connect(
-            &hub.origin,
-            self.http().clone(),
-            credential,
-        ))
-    }
-
-    /// `cozy login` for `hub`, spelled for the next step: `--tensorhub` only for a Hub other than
-    /// the current one.
-    pub fn login(&self, hub: &Hub) -> String {
-        match self.config.current() {
-            Ok(current) if current.origin == hub.origin => "cozy login <email>".into(),
-            _ => format!("cozy login <email> --tensorhub {}", hub.label()),
-        }
+        hub_client::Client::signed_in(hub, &self.home, self.http().clone(), || {
+            self.config.login(hub)
+        })
     }
 
     /// This computer's device key at `hub` and the Bearer it mints, kept beside it.
     pub fn hub_session(&self, hub: &Hub) -> Result<Arc<UserSession>, Error> {
-        if !self.signed_in(hub) {
-            return Err(Error::new(
-                Kind::Credential,
-                "not_logged_in",
-                format!("this computer is not signed in to {hub}"),
-            )
-            .next(self.login(hub)));
-        }
-        let key = DeviceKey::load(&hub.device_key(&self.home)).map_err(hub_error)?;
-        Ok(Arc::new(UserSession::new(
-            key,
-            Some(hub.bearer(&self.home)),
-        )))
+        UserSession::open(hub, &self.home, || self.config.login(hub)).map(Arc::new)
     }
 
     /// Signed in when this computer is, else anonymous: what public and owned reads both need.
@@ -126,27 +102,7 @@ where
     answer.map(ResponseValue::into_inner).map_err(hub_error)
 }
 
-/// The Hub's refusal with its code, message and remedy verbatim, classed by its HTTP status.
+/// A failed Hub call as the CLI's refusal.
 pub fn hub_error(error: impl Into<hub_client::Error>) -> Error {
-    use hub_client::Error as Hub;
-    match error.into() {
-        Hub::Hub {
-            status,
-            code,
-            message,
-            remedy,
-        } => {
-            let mut error = Error::new(Kind::of_http(status), code.clone(), message).cause(code);
-            if !remedy.is_empty() {
-                error = error.remedy(remedy);
-            }
-            error
-        }
-        Hub::Call(message) => Error::new(Kind::Unavailable, "hub_unreachable", message)
-            .remedy("check this computer's internet connection, then try again"),
-        Hub::Credential(message) | Hub::Key(message) => {
-            Error::new(Kind::Credential, "hub_credential", message).next("cozy login <email>")
-        }
-        other => Error::new(Kind::Internal, "hub_answer", other.to_string()),
-    }
+    error.into().refusal(|| "cozy login <email>".into())
 }

@@ -38,30 +38,29 @@ pub struct MachineIdentity {
 }
 
 impl MachineIdentity {
-    pub fn ephemeral(
+    /// The pod or computer machine: its lifetime files under the machine root, keys from its
+    /// grant (a rental's Hub answer replaces them) and this boot's readiness receipt.
+    pub fn machine(
         worker_id: String,
-        keys: Vec<ed25519_dalek::VerifyingKey>,
-        receipt_key: Vec<u8>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        if keys.is_empty() || receipt_key.len() < 32 {
-            return Err("authorized owner keys and a >=32-byte readiness key are required".into());
-        }
-        let boot_id = uuid::Uuid::new_v4().to_string();
-        let rcgen::CertifiedKey { cert, signing_key } =
-            rcgen::generate_simple_self_signed(vec!["cozy.worker".into(), "localhost".into()])?;
-        let cert_der = cert.der().to_vec();
+        keys: super::auth::Keys,
+        lifetime: crate::machine::identity::Lifetime,
+        readiness: std::sync::Arc<crate::machine::receipt::Readiness>,
+    ) -> std::io::Result<Self> {
         let authority = Authority {
             worker_id,
-            boot_id,
-            keys: keys.into(),
+            boot_id: lifetime.boot_id,
+            keys,
         };
         Ok(Self {
             authority,
-            cert_pem: cert.pem(),
-            key_pem: signing_key.serialize_pem(),
-            cert_der,
-            readiness: Readiness::open(None, Some(receipt_key), false)?,
-            started_at_ms: now_ms(),
+            cert_pem: lifetime.cert_pem,
+            key_pem: lifetime.key_pem,
+            cert_der: lifetime.cert_der,
+            readiness,
+            started_at_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(std::io::Error::other)?
+                .as_millis() as u64,
             lifecycle: None,
             hubs: vec![],
             updates: None,
@@ -225,11 +224,4 @@ async fn prove_readiness(port: u16, readiness: Arc<Readiness>, id: MeasuredIdent
             std::process::exit(78);
         }
     }
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
 }

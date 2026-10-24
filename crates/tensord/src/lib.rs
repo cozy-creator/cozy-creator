@@ -27,7 +27,6 @@ pub mod machine;
 pub mod machine_api;
 pub mod memo;
 pub mod memory;
-pub mod native_inputs;
 pub mod objects;
 pub mod origin;
 pub mod output_capacity;

@@ -13,29 +13,28 @@
 TFS_MODEL=${TFS_MODEL:-qwen3.5-9b} TFS_RESUME=${TFS_RESUME:-flux-3-klein} TFS_UPLOAD_MB=${TFS_UPLOAD_MB:-256}
 T=$OUT/suite-tensorfs TFS_DEST=
 mkdir -p "$T"
-# tfs_step <name> <cozy args...>: one command followed to its end: its events in <name>.ndjson, its record
-# (`cozy run show`) in <name>.json, its wall time in steps.tsv.
+# tfs_step <name> <cozy args...>: one command that makes a run, followed to its end (e2e/run.sh): its events in
+# <name>.ndjson, its record in <name>.json, its wall time in steps.tsv.
 tfs_step() {
-  local name=$1 t0 n; shift
+  local name=$1 t0 code=0; shift
   t0=$(date +%s%3N)
-  "$CLI" --json "$@" >"$T/$name.ndjson" 2>"$T/$name.err"
-  n=$(grep -o '"number":[0-9]*' "$T/$name.ndjson" | head -1 | cut -d: -f2)
-  [ -z "$n" ] || timeout 120 "$CLI" --json run show "$n" >"$T/$name.json" 2>/dev/null
-  printf '%s\t%s\t%s\n' "$name" "${n:-none}" "$(( $(date +%s%3N) - t0 ))" >> "$T/steps.tsv"
-  log "tensorfs $name: run ${n:-none} $(grep -o '"type":"run\.[a-z_]*"' "$T/$name.ndjson" | tail -1)"
+  run_submit "$T" "$name" "$@" > /dev/null; run_wait "$T" "$name" || code=$?
+  [ "$code" != 2 ] || wedged "tensorfs $name: run $(cat "$T/$name.number") never ended and its cancel did not take"
+  printf '%s\t%s\t%s\n' "$name" "$(cat "$T/$name.number")" "$(( $(date +%s%3N) - t0 ))" >> "$T/steps.tsv"
+  log "tensorfs $name: run $(cat "$T/$name.number") $(run_get "$T" "$name" .status)"
 }
 # tfs_cut <name> <stage> <fraction> <cozy args...>: the command, cancelled once its <stage> progress passes the
 # fraction; the bytes it had moved by then go in <name>.cut.
 tfs_cut() {
-  local name=$1 stage=$2 frac=$3 pid n= moved=; shift 3
-  "$CLI" --json "$@" >"$T/$name.ndjson" 2>"$T/$name.err" & pid=$!
-  while kill -0 "$pid" 2>/dev/null; do
-    [ -n "$n" ] || n=$(grep -o '"number":[0-9]*' "$T/$name.ndjson" | head -1 | cut -d: -f2)
+  local name=$1 stage=$2 frac=$3 n moved= code=0; shift 3
+  n=$(run_submit "$T" "$name" "$@")
+  while [ -n "$n" ] && kill -0 "$(cat "$T/$name.pid")" 2>/dev/null; do
     moved=$(python3 -I "$HERE/suites/tensorfs/check.py" --past "$T/$name.ndjson" "$stage" "$frac")
-    if [ -n "$n" ] && [ -n "$moved" ]; then "$CLI" run cancel "$n" -y >/dev/null 2>&1; echo "$moved" > "$T/$name.cut"; break; fi
+    if [ -n "$moved" ]; then "$CLI" run cancel "$n" -y >/dev/null 2>&1; echo "$moved" > "$T/$name.cut"; break; fi
     sleep 2
   done
-  wait "$pid"
+  run_wait "$T" "$name" || code=$?
+  [ "$code" != 2 ] || wedged "tensorfs $name: run $n never ended and its cancel did not take"
   printf '%s\t%s\t\n' "$name" "${n:-none}" >> "$T/steps.tsv"
   log "tensorfs $name: run ${n:-none} cancelled at $(cat "$T/$name.cut" 2>/dev/null || echo '?') bytes"
 }
@@ -90,10 +89,10 @@ done
 # Local paths go absolute: `cozy model upload ./folder` resolves them against Calcifer, not here (2026-10-24).
 if [ -n "$WHO" ] && tfs_weights "$T/up-a" "$TFS_UPLOAD_MB" && tfs_weights "$T/up-c" "$TFS_UPLOAD_MB"; then
   TFS_DEST=$WHO/ci-tfs-$R
-  tfs_step upload model upload "$T/up-a" "$TFS_DEST@a" --on "$M" -y
-  tfs_step upload-again model upload "$T/up-a" "$TFS_DEST@b" --on "$M" -y
-  tfs_cut upload-cut "uploading to" 0.3 model upload "$T/up-c" "$TFS_DEST@c" --on "$M" -y
-  tfs_step upload-resume model upload "$T/up-c" "$TFS_DEST@c" --on "$M" -y
+  tfs_step upload model upload "$T/up-a" "$TFS_DEST" --lane bf16 --on "$M" -y
+  tfs_step upload-again model upload "$T/up-a" "$TFS_DEST" --lane bf16-b --on "$M" -y
+  tfs_cut upload-cut "uploading to" 0.3 model upload "$T/up-c" "$TFS_DEST" --lane bf16-c --on "$M" -y
+  tfs_step upload-resume model upload "$T/up-c" "$TFS_DEST" --lane bf16-c --on "$M" -y
   tfs_cleanup
 else
   expect tensorfs-upload FAIL "no account (${WHO:-not signed in}) or no weights to upload"

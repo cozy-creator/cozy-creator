@@ -2,45 +2,34 @@
 # fresh pod through TensorD 0.11.15 to the candidate and met a release's Runtime floor. Each check below is an `expect`
 # row, PASS or FAIL with what happened, which analyze.py fails the gate on. Every request has its own prompt and seed.
 T=$OUT/tensord; mkdir -p "$T"
-# The CLI's own verbs: cozy before #1985 has `run watch` and `package update`; later ones follow a run with `run show`,
-# move a package with `package install`, and snapshot with `run show --once`. JSON is read with jq.
-ONCE=; "$CLI" run show --help 2>/dev/null | grep -q -- --once && ONCE=--once
-FOLLOW=(run show); "$CLI" run watch --help >/dev/null 2>&1 && FOLLOW=(run watch)
+# The CLI's own verbs: cozy before #1985 has `package update`; later ones move a package with `package install`.
 MOVE=install; "$CLI" package update --help >/dev/null 2>&1 && MOVE=update
-show() { timeout 120 "$CLI" run show "$1" $ONCE --json 2>/dev/null | jq -s 'last // {}' > "$T/$1.json"; }
-# get <run> <field>: the run's record, now (status, reason, attempt, executor, gpus, window, ms).
-get() {
-  show "$1"
-  case $2 in
-    status) jq -r '.status // ""';; reason) jq -r '.reason.code // ""';; ms) jq -r '.execution_ms // ""';;
-    attempt) jq -r '.measurements.software.attempt_ordinal // ""';;
-    executor) jq -r '.measurements.execution.executor.started_unix_ms // ""';;
-    gpus) jq -r '[.measurements | .. | objects | select((.gpu | type) == "number" and .gpu >= 0) | .gpu] | unique | map(tostring) | join(",")';;
-    window) jq -r '"\(.accepted_at_ms // 0) \(.settled_at_ms // 0)"';; stage) jq -r '.progress.stage // ""';;
-  esac < "$T/$1.json" 2>/dev/null
-}
-# submit <target> [inputs]: starts the run, followed in the background into its own NDJSON, and prints its number
-# (the first event's .run.number).
+# submit <target> [inputs]: a run on $M (e2e/run.sh's run_submit), followed in the background; prints its number. Its
+# files are $T/run-*.{ndjson,json,...} and its outputs $T/out/run-*, named in $T/<number>.name.
 submit() {
-  local f n i; f=$(mktemp "$T/run-XXXXXX.ndjson")
-  "$CLI" --json run "$@" --on "$M" > "$f" 2>>"$T/submit.err" &
-  for i in $(seq 300); do
-    n=$(jq -r 'select(.run.number != null) | .run.number' "$f" 2>/dev/null | head -1); [ -n "$n" ] && { echo "$n"; return; }
-    kill -0 $! 2>/dev/null || break; sleep 1
-  done
+  local nm n; nm=$(basename "$(mktemp -u "$T/run-XXXXXX")")
+  n=$(run_submit "$T" "$nm" run "$@" --on "$M" --out "$T/out/$nm") && [ -n "$n" ] && echo "$nm" > "$T/$n.name" && echo "$n"
 }
-until_status() {  # until_status <run> <in_progress|terminal>: the run's end, followed; or its status reached
-  if [ "$2" = terminal ]; then
-    timeout 1800 "$CLI" "${FOLLOW[@]}" "$1" --json > "$T/$1.follow" 2>&1
-    case $(get "$1" status) in completed|failed|canceled|'') return;; esac
-    # A run that never ends holds the pod (10-24: a describer answered for 4 h, its executor pinned and silent): cancel it,
-    # and when that does not take, stop the suite; gate.sh's trap keeps the machine's logs and ends the pod.
-    "$CLI" run cancel "$1" -y > "$T/$1.cancel" 2>&1
-    local j; for j in $(seq 24); do case $(get "$1" status) in completed|failed|canceled) return;; esac; sleep 5; done
-    expect tensord-wedged FAIL "run $1 never ended (stage $(get "$1" stage)) and its cancel did not take: the suite stopped"
-    printf 'VERDICT FAIL (run %s wedged)\n' "$1" | tee verdict.txt; exit 1
-  fi
-  local i s; for i in $(seq 300); do s=$(get "$1" status); [ "$s" = "$2" ] && return 0; case $s in completed|failed|canceled) return 1;; esac; sleep 2; done; return 1
+nm() { cat "$T/$1.name" 2>/dev/null; }
+# get <run> <field>: the run's record, now (status, reason, attempt, executor, gpus, window, ms, stage, output, length).
+get() {
+  local q=
+  case $2 in
+    status) q=.status;; reason) q=.reason.code;; ms) q=.execution_ms;; attempt) q=.measurements.software.attempt_ordinal;;
+    executor) q=.measurements.execution.executor.started_unix_ms;;
+    gpus) q='[.measurements | .. | objects | select((.gpu | type) == "number" and .gpu >= 0) | .gpu] | unique | map(tostring) | join(",")';;
+    window) q='"\(.accepted_at_ms // 0) \(.settled_at_ms // 0)"';; stage) q=.progress.stage;;
+    output) q=.output[0].path;; length) q=.output[0].length;;
+  esac
+  run_show "$T" "$(nm "$1")" "$1"; run_get "$T" "$(nm "$1")" "$q"
+}
+# until_status <run> <in_progress|terminal>: the run followed to its end, or until it reaches the status (e2e/run.sh's
+# watchdog: 10-24, a describer answered for 4 h, its executor pinned and silent). One whose cancel does not take stops
+# the gate.
+until_status() {
+  local code=0; run_wait "$T" "$(nm "$1")" "${2#terminal}" || code=$?
+  [ "$code" != 2 ] || wedged "run $1 (stage $(get "$1" stage)) never ended and its cancel did not take"
+  return "$code"
 }
 envs() { timeout 60 "$CLI" --json machine show "$M" 2>/dev/null | jq -r '[.status.environments[] | (.package | split("/") | last) + "@" + .release] | sort | join(" ")'; }
 released() {  # released <package>: its two newest releases users get (not yanked), newest first
@@ -65,8 +54,7 @@ fi
 if [ -n "$RWF$TWF" ]; then
   "$CLI" machine update "$M" --runtime 0.31.0 --tensorfs 0.14.0 -y > "$T/runtime-back.log" 2>&1; back=$?
   n=$(submit "sdxl/generate@$NEW" prompt="$CHAR, the Runtime back" seed:=$((R + 32))); until_status "$n" terminal; s1=$(get "$n" status)
-  rw=$RWF tw=$TWF; case $rw in *://*) rw=$(fetch "$rw");; esac; case $tw in *://*) tw=$(fetch "$tw");; esac  # cozy 0.11.16+ sends files
-  "$CLI" machine update "$M" ${rw:+--runtime "$rw"} ${tw:+--tensorfs "$tw"} -y > "$T/runtime-forward.log" 2>&1; fwd=$?
+  "$CLI" machine update "$M" ${RWF:+--runtime "$RWF"} ${TWF:+--tensorfs "$TWF"} -y > "$T/runtime-forward.log" 2>&1; fwd=$?
   m=$(submit "sdxl/generate@$NEW" prompt="$CHAR, the Runtime forward" seed:=$((R + 33))); until_status "$m" terminal; s2=$(get "$m" status)
   [ "$back$fwd" = 00 ] && [ "$s1$s2" = completedcompleted ] \
     && expect tensord-runtime-rollback PASS "Runtime back to 0.31.0 (run $n) and forward to the candidate (run $m)" \
@@ -83,8 +71,7 @@ until_status "$a" in_progress; qb=$(get "$b" status)
 for x in "${busy[@]}"; do "$CLI" run cancel "$x" -y > "$T/cancel-running-$x.log" 2>&1; done
 for x in "${busy[@]}"; do until_status "$x" terminal; done
 c=$(submit "sdxl/generate@$NEW" prompt="$CHAR, the landed run" seed:=$((R + 36))); until_status "$c" terminal
-f=$(ls ~/.cozy/outputs/*/"$c"-* 2>/dev/null | grep -v '\.part$' | head -1)
-want=$(jq -r 'select(.type == "output_item.done") | .item.length' "$T/$c.follow" 2>/dev/null | tail -1)
+f=$(get "$c" output) want=$(get "$c" length)
 if [ "$qb" = queued ] && [ "$(get "$b" status)" = canceled ] && [ -z "$(get "$b" ms)" ] && [ "$(get "$a" status)" = canceled ] \
    && [ "$(get "$c" status)" = completed ] && [ -n "$f" ] && [ "$(stat -c %s "$f")" = "$want" ]; then
   expect tensord-run-lifecycle PASS "run $b queued behind $a and canceled unrun; $a canceled running; $c's $want bytes landed"

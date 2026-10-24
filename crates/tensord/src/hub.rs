@@ -297,7 +297,7 @@ impl Catalog {
 
     /// A package and its releases.
     pub fn package(&self, org: &str, name: &str) -> Result<types::PackageCard, hub_client::Error> {
-        block(async { Ok(self.hub.get_package(org, name, None).await?.into_inner()) })
+        asked(&self.origin, || async { Ok(self.hub.get_package(org, name, None).await?.into_inner()) })
     }
 
     /// The exact files of one committed release (`python_version` picks its project wheel):
@@ -310,9 +310,38 @@ impl Catalog {
         python_version: Option<&str>,
     ) -> Result<types::PackageInstallPlan, hub_client::Error> {
         let empty = types::Empty(Default::default());
-        block(async {
+        asked(&self.origin, || async {
             let plan = self.hub.get_package_download_plan(org, name, python_version, Some(release), &empty).await?;
             Ok(plan.into_inner())
         })
     }
+}
+
+/// The last resort (`design/stalls.md`): a catalog answer is one small JSON document, and the
+/// Hub gives no progress on it but the answer itself. Each ask gets `ANSWER`; a silent or failed
+/// ask is asked again with backoff, and the Hub's own refusal or `ASKS` failures in a row end it.
+const ANSWER: Duration = Duration::from_secs(60);
+const ASKS: u32 = 3;
+
+fn asked<T: Send, F: Future<Output = Result<T, hub_client::Error>> + Send>(
+    origin: &str,
+    ask: impl Fn() -> F + Send + Sync,
+) -> Result<T, hub_client::Error> {
+    block(async {
+        let mut attempt = 0;
+        loop {
+            let failed = match tokio::time::timeout(ANSWER, ask()).await {
+                Ok(Ok(answer)) => return Ok(answer),
+                Ok(Err(error)) if !error.retry() => return Err(error),
+                Ok(Err(error)) => error,
+                Err(_) => hub_client::Error::Call(format!("{origin} gave no answer in {} s", ANSWER.as_secs())),
+            };
+            attempt += 1;
+            if attempt == ASKS {
+                return Err(failed);
+            }
+            tracing::warn!(%origin, attempt, "asking the Hub's catalog again: {failed}");
+            tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
+        }
+    })
 }

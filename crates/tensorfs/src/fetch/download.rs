@@ -44,15 +44,17 @@ use crate::format::ObjectRef;
 type Delivery = (String, Option<Instant>);
 
 /// How many times slower than its peers a request may run, or longer than their answer it may
-/// wait, before it is dropped. Also how much longer than the fetch's longest recovered stillness
-/// it may stand still before an object ends.
+/// wait, before it is dropped and asked again from the byte reached.
 const STALL_FACTOR: f64 = 8.0;
 /// The noise floor, in ticks, below which a wait for an answer or a silence is no evidence.
 const HEAD_TICKS: u32 = 8;
 /// Ticks over which a body's rate is judged.
 const JUDGE_TICKS: usize = 4;
-/// The floor, in ticks, of the stillness an object's retries are allowed.
-const STILL_TICKS: u32 = 120;
+/// Attempts in a row the origin answered nothing at all (no connection, no answer) before an
+/// object ends: a dead peer. Any answer or byte starts the count again.
+const DEAD_PEER: u32 = 8;
+/// The most a re-ask that moved nothing waits before the next, doubling from one tick.
+const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// Rate samples needed before any request is judged slow.
 const MIN_SAMPLES: usize = 8;
 /// The fewest bytes a stretch of body needs to be a rate sample.
@@ -83,8 +85,6 @@ pub(crate) struct Task {
     priority: AtomicU64,
     waiters: AtomicUsize,
     started: AtomicBool,
-    /// When its transfer began, in nanoseconds since the fetcher's epoch.
-    since: AtomicU64,
     /// The most bytes any of its requests reached: only bytes past it are progress.
     reached: AtomicU64,
     done: watch::Sender<Option<std::result::Result<Tier, Refusal>>>,
@@ -276,7 +276,6 @@ pub(crate) struct Shared {
     pub client: Client,
     pub volume: Option<VolumeOrigin>,
     pub tick: Duration,
-    epoch: Instant,
     queue: Mutex<Queue>,
     queued: Notify,
     closed: AtomicBool,
@@ -285,12 +284,8 @@ pub(crate) struct Shared {
     pace: Mutex<Pace>,
     flights: Mutex<Vec<Arc<Flight>>>,
     measured: Mutex<Measured>,
-    /// Transfers running; the stillness clock restarts when the first begins.
+    /// Transfers running.
     active: AtomicUsize,
-    /// When any object last gained bytes, in nanoseconds since `epoch`.
-    advanced: AtomicU64,
-    /// The longest the fetch stood still and then moved again, in nanoseconds.
-    worst_still: AtomicU64,
     /// Tasks and write-backs not yet ended.
     busy: AtomicUsize,
     settle: Notify,
@@ -316,6 +311,8 @@ enum Attempt {
         why: String,
         wait: Option<Duration>,
         dropped: bool,
+        /// The origin answered: a dead peer answers nothing.
+        heard: bool,
     },
     /// 401/403: the location may be stale.
     Refused(Refusal),
@@ -329,9 +326,41 @@ impl From<Refusal> for Attempt {
                 why: refusal.to_string(),
                 wait: None,
                 dropped: false,
+                heard: false,
             },
             _ => Attempt::Fatal(refusal),
         }
+    }
+}
+
+/// An object's re-asks. It never ends on stillness: a request that stalls is dropped and asked
+/// again from the byte reached (`judge`), and an origin that answers "not now" is asked again
+/// when it says. Only a dead peer ends it: `DEAD_PEER` attempts in a row that it answered
+/// nothing at all. A re-ask that moved nothing waits longer each time, up to `MAX_BACKOFF`.
+struct Retry {
+    tick: Duration,
+    unheard: u32,
+    quiet: u32,
+}
+
+impl Retry {
+    fn new(tick: Duration) -> Self {
+        Self { tick, unheard: 0, quiet: 0 }
+    }
+
+    /// The pause before the next attempt (None: at once), or the dead peer's refusal.
+    fn again(&mut self, task: &Task, why: &str, heard: bool, moved: bool, wait: Option<Duration>) -> Result<Option<Duration>> {
+        self.unheard = if heard || moved { 0 } else { self.unheard + 1 };
+        if self.unheard >= DEAD_PEER {
+            let detail = format!("{}: the origin answered none of {DEAD_PEER} attempts in a row; the last: {why}", task.object.sha256);
+            return refuse(Code::TRANSFER_FAILED, detail);
+        }
+        if moved {
+            self.quiet = 0;
+            return Ok(wait);
+        }
+        self.quiet = (self.quiet + 1).min(16);
+        Ok(Some(wait.unwrap_or((self.tick * (1 << (self.quiet - 1))).min(MAX_BACKOFF))))
     }
 }
 
@@ -460,7 +489,6 @@ impl Shared {
             client,
             volume,
             tick: tick.max(Duration::from_millis(1)),
-            epoch: Instant::now(),
             queue: Mutex::default(),
             queued: Notify::new(),
             closed: AtomicBool::new(false),
@@ -476,8 +504,6 @@ impl Shared {
             flights: Mutex::default(),
             measured: Mutex::default(),
             active: AtomicUsize::new(0),
-            advanced: AtomicU64::new(0),
-            worst_still: AtomicU64::new(0),
             busy: AtomicUsize::new(0),
             settle: Notify::new(),
             writes: Semaphore::new(WRITERS),
@@ -485,10 +511,6 @@ impl Shared {
             write_backs: Semaphore::new(WRITE_BACKS),
             stats: Counters::default(),
         }
-    }
-
-    fn now(&self) -> u64 {
-        self.epoch.elapsed().as_nanos() as u64
     }
 
     pub fn streams(&self) -> usize {
@@ -561,7 +583,6 @@ impl Shared {
                     priority: AtomicU64::new(priority),
                     waiters: AtomicUsize::new(1),
                     started: AtomicBool::new(false),
-                    since: AtomicU64::new(0),
                     reached: AtomicU64::new(0),
                     done: watch::channel(None).0,
                 });
@@ -666,11 +687,8 @@ impl Shared {
                 self.0.fetch_sub(1, Ordering::AcqRel);
             }
         }
-        if self.active.fetch_add(1, Ordering::AcqRel) == 0 {
-            self.advanced.store(self.now(), Ordering::Release);
-        }
+        self.active.fetch_add(1, Ordering::AcqRel);
         let _active = Active(&self.active);
-        task.since.store(self.now(), Ordering::Release);
         let outcome = self.fetch(task).await;
         if let Err(refusal) = &outcome {
             tracing::info!(object = %task.object.sha256, %refusal, "fetch refused");
@@ -720,6 +738,7 @@ impl Shared {
         let mut sink = Sink::open(self, task)?;
         let (mut location, mut delivery, mut relocated) = (None::<Location>, None::<Delivery>, false);
         let (mut doublings, mut wrong) = (0, None::<String>);
+        let mut retry = Retry::new(self.tick);
         loop {
             if !task.wanted() {
                 return refuse(Code::TRANSFER_FAILED, "nothing wants it");
@@ -736,13 +755,11 @@ impl Shared {
                                 format!("{}: the origin located nothing", task.object.sha256);
                             return refuse(Code::REF_NOT_FOUND, what);
                         }
-                        // The origin's weather is asked again, under the same stillness rule.
+                        // The origin's weather is asked again, as any unanswered attempt is.
                         Err(refusal) => match Attempt::from(refusal) {
                             Attempt::Again { why, .. } => {
-                                if let Some(refusal) = self.given_up(task, &why) {
-                                    return Err(refusal);
-                                }
-                                tokio::time::sleep(self.tick).await;
+                                let pause = retry.again(task, &why, false, false, None)?;
+                                tokio::time::sleep(pause.unwrap_or(self.tick)).await;
                                 continue;
                             }
                             Attempt::Fatal(refusal) | Attempt::Refused(refusal) => {
@@ -768,6 +785,7 @@ impl Shared {
                         why,
                         wait: None,
                         dropped: true,
+                        heard: true,
                     },
                     FileRead::Failed(refusal) => Attempt::Fatal(refusal),
                 },
@@ -808,18 +826,14 @@ impl Shared {
                     }
                     Err(refusal) => return Err(refusal),
                 },
-                Attempt::Again { why, wait, dropped } => {
+                Attempt::Again { why, wait, dropped, heard } => {
                     if dropped {
                         self.stats.restarts.fetch_add(1, Ordering::Relaxed);
                         doublings = (doublings + 1).min(MAX_DOUBLINGS);
                         tracing::debug!(object = %task.object.sha256, at = sink.reached, %why, "restart");
                     }
-                    if let Some(refusal) = self.given_up(task, &why) {
-                        return Err(refusal);
-                    }
                     let moved = task.reached.load(Ordering::Acquire) > reached;
-                    let pause = wait.or((!moved && !dropped).then_some(self.tick));
-                    if let Some(pause) = pause {
+                    if let Some(pause) = retry.again(task, &why, heard, moved || dropped, wait)? {
                         tokio::time::sleep(pause).await;
                     }
                 }
@@ -834,27 +848,6 @@ impl Shared {
         }
     }
 
-    /// The refusal that ends `task` when nothing anywhere has landed for twice the patience the
-    /// fetch has measured.
-    fn given_up(&self, task: &Task, last: &str) -> Option<Refusal> {
-        let since = self
-            .advanced
-            .load(Ordering::Acquire)
-            .max(task.since.load(Ordering::Acquire));
-        let still = Duration::from_nanos(self.now().saturating_sub(since));
-        let worst = Duration::from_nanos(self.worst_still.load(Ordering::Acquire));
-        let patience = (self.tick * STILL_TICKS).max(worst.mul_f64(STALL_FACTOR));
-        (still > patience * 2).then(|| Refusal {
-            code: Code::STALLED,
-            detail: format!(
-                "{}: nothing landed for {:.1} s against the {:.1} s this fetch's own pace allows; the last answer: {last}",
-                task.object.sha256,
-                still.as_secs_f64(),
-                patience.as_secs_f64()
-            ),
-        })
-    }
-
     /// `task` reached `reached` bytes: what is past its earlier best is progress.
     fn advance(&self, task: &Task, reached: u64) {
         let before = task.reached.fetch_max(reached, Ordering::AcqRel);
@@ -862,9 +855,6 @@ impl Shared {
             self.stats
                 .landed
                 .fetch_add(reached - before, Ordering::Relaxed);
-            let now = self.now();
-            let gap = now.saturating_sub(self.advanced.swap(now, Ordering::AcqRel));
-            self.worst_still.fetch_max(gap, Ordering::AcqRel);
         }
     }
 
@@ -896,6 +886,7 @@ impl Shared {
                 why,
                 wait: None,
                 dropped: true,
+                heard: true,
             },
             Dropped::Unwanted => Attempt::Fatal(Refusal {
                 code: Code::TRANSFER_FAILED,
@@ -991,12 +982,12 @@ impl Shared {
                 return match status {
                     401 | 403 | 404 | 410 if delivered => {
                         *delivery = None;
-                        Attempt::Again { why, wait: None, dropped: false }
+                        Attempt::Again { why, wait: None, dropped: false, heard: true }
                     }
                     401 | 403 => Attempt::Refused(Refusal { code: Code::CREDENTIAL_REQUIRED, detail: why }),
                     404 | 410 => Attempt::Fatal(Refusal { code: Code::REF_NOT_FOUND, detail: why }),
                     416 => Attempt::Fatal(Refusal { code: Code::LENGTH_MISMATCH, detail: why }),
-                    status if ask::weather(status) => Attempt::Again { why, wait, dropped: false },
+                    status if ask::weather(status) => Attempt::Again { why, wait, dropped: false, heard: true },
                     _ => Attempt::Fatal(Refusal { code: Code::HUB_REFUSED, detail: why }),
                 };
             }
@@ -1030,6 +1021,7 @@ impl Shared {
                         why,
                         wait: None,
                         dropped: false,
+                        heard: true,
                     };
                 }
             }
@@ -1045,6 +1037,7 @@ impl Shared {
                 ),
                 wait: None,
                 dropped: false,
+                heard: true,
             },
         }
     }
