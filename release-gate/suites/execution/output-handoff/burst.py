@@ -75,7 +75,8 @@ def main():
                 (run.marks["gpu_started"]["at_ns"], run.marks["gpu_finished"]["at_ns"])
             )
         active = peak = 0
-        for _, change in sorted(events):
+        # Conservative at millisecond resolution: simultaneous starts precede finishes.
+        for _, change in sorted(events, key=lambda event: (event[0], -event[1])):
             active += change
             assert active >= 0
             peak = max(peak, active)
@@ -83,7 +84,7 @@ def main():
         assert peak <= args.cpu_capacity + 1, (
             "detached output work exceeded capacity plus one GPU slot"
         )
-        assert peak >= args.cpu_capacity, (
+        assert peak == args.cpu_capacity + 1, (
             "the burst did not exercise output backpressure"
         )
         intervals.sort()
