@@ -133,13 +133,19 @@ async fn signed_in(
 ) -> Result<ExitCode, Error> {
     let user = ctx.hub_signed_in(hub)?;
     let account = match hub_answer(user.get_current_account().await) {
-        Err(e) if e.code == "account.name_required" => {
+        // A taken or invalid name asks again; an empty line ends the login.
+        Err(e) if e.code == "account.name_required" => loop {
             let name = ask(ctx, "Tensorhub account name: ", "account name")?;
-            hub_answer(
+            match hub_answer(
                 user.register_account(&name, &types::Empty(Default::default()))
                     .await,
-            )?
-        }
+            ) {
+                Err(e) if matches!(e.code.as_str(), "account.name_unavailable" | "account.name_invalid") => {
+                    output::warn(&format!("{} ({})", e.message, e.code));
+                }
+                answer => break answer?,
+            }
+        },
         answer => answer?,
     };
     let key = session.key();
