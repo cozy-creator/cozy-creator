@@ -171,7 +171,7 @@ async fn calcifer(ctx: &Context) -> Vec<Check> {
                 format!("held by pid {} at {}", holder.pid, holder.address),
             ));
             if let Some(silence) = silence(ctx, &client, &holder).await {
-                if let Err(e) = end(holder.pid) {
+                if let Err(e) = end_calcifer(ctx, holder.pid) {
                     checks.push(Check::bad("calcifer", format!("{silence}, and ending it failed: {e}")));
                     return checks;
                 }
@@ -228,7 +228,7 @@ fn captive(ctx: &Context, checks: &mut Vec<Check>) -> Option<String> {
     checks.push(Check::ok("lock record", format!("{} is held by pid {pid} ({command})", lock.display())));
     for (pid, command) in &held {
         let ended = match command.contains(" calcifer") {
-            true => end(*pid),
+            true => end_calcifer(ctx, *pid),
             false => platform::process::end_tree(&platform::process::tree(*pid)).map_err(|e| e.to_string()),
         };
         if let Err(e) = ended {
@@ -335,9 +335,25 @@ fn version(path: &Path) -> Option<String> {
     text.trim().strip_prefix("cozy ").map(str::to_owned)
 }
 
-/// Ends a stuck Calcifer's own process, and only it: the machine it started runs on its own.
+/// Ends a Calcifer that will not stop on its own, and only it: the machine it started runs on. One
+/// its service manager runs is stopped through the manager, whose stop also continues a stopped
+/// process (systemd sends SIGCONT with SIGTERM); a stop it was asked for is no failure it restarts
+/// on its own. A SIGKILL there left systemd's unit failed and restarting, and the start that
+/// followed raced that restart and lost (run 40102607459). Whatever is left is SIGKILLed.
+fn end_calcifer(ctx: &Context, pid: u32) -> Result<(), String> {
+    if let Ok(client) = Client::unconnected(ctx)
+        && let Ok((services, spec, _)) = client.service()
+        && services.available()
+        && services.current(&spec)
+    {
+        let _ = services.stop("calcifer");
+    }
+    end(pid)
+}
+
+/// SIGKILLs `pid`'s own process, and only it, and waits for it; one already gone is done.
 fn end(pid: u32) -> Result<(), String> {
-    let birth = Birth::of(pid).map_err(|e| e.to_string())?;
+    let Ok(birth) = Birth::of(pid) else { return Ok(()) };
     match Exact::open(&birth).map_err(|e| e.to_string())? {
         Some(process) => {
             let _ = process.kill();
