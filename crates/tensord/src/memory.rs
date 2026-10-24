@@ -162,11 +162,6 @@ impl Gpu {
         Some(Gpu { manager, model: id.model, watch })
     }
 
-    /// Executors to end: those answering no revoke.
-    pub fn stalled(&self) -> Vec<u32> {
-        self.manager.stalled()
-    }
-
     /// The manager's books changed: the watch looks whether to read again.
     pub fn changed(&self) {
         self.watch.change();

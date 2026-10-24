@@ -1028,8 +1028,6 @@ impl Publisher {
                     })
                 })
                 .collect();
-            // Each file is a fetch, judged by what it moves: this thread waits on them.
-            let _asking = tensorfs::fetch::asking::begin();
             handles
                 .into_iter()
                 .map(|handle| handle.join().unwrap_or_else(|_| Err(io_failure(io::Error::other("a package file download panicked")))))
@@ -1150,8 +1148,7 @@ impl Publisher {
 
     /// `uv` with `read` told, about once a second, how many bytes the process has written so far
     /// (its downloads and the wheels it unpacks), so a long install shows it moves. Its
-    /// process group is killed when `stop` is canceled, or when its CPU and bytes stop moving
-    /// past its measured patience (`process::supervise`).
+    /// process group is killed when `stop` is canceled (`process::supervise`).
     fn uv_observed(&self, args: &[&str], env: &[(&str, &std::ffi::OsStr)], stop: Option<&Stop>,
         read: &(dyn Fn(u64) + Sync)) -> Result<(), Failure> {
         crate::machine::client::ensure_uv(&self.sdk.uv).map_err(|e| ("uv_unavailable", e.to_string()))?;
@@ -1192,7 +1189,7 @@ impl Publisher {
                 let _ = stderr.read_to_end(&mut kept);
                 kept
             });
-            let ended = crate::process::supervise(&mut child, stop, "uv", read);
+            let ended = crate::process::supervise(&mut child, stop, read);
             (ended, drained.join().unwrap_or_default())
         });
         let step = args[..2.min(args.len())].join(" ");
@@ -1203,7 +1200,6 @@ impl Publisher {
                 format!("uv {step}:\n{}", crate::api::install::stderr_tail(&stderr)),
             )),
             Supervised::Canceled => Err(canceled()),
-            Supervised::Wedged(verdict) => Err(("no_progress", format!("uv {step}: {verdict}"))),
         }
     }
 

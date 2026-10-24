@@ -113,12 +113,11 @@ pub fn install(dir: &Path, uv: &Path, stop: &Stop) -> io::Result<()> {
             let _ = io::Read::read_to_string(&mut stderr, &mut text);
             text
         });
-        (crate::process::supervise(&mut child, Some(stop), "uv", &|_| ()), drained.join().unwrap_or_default())
+        (crate::process::supervise(&mut child, Some(stop), &|_| ()), drained.join().unwrap_or_default())
     });
     match ended? {
         Supervised::Exited(status) if status.success() => {}
         Supervised::Canceled => return Err(io::Error::new(io::ErrorKind::Interrupted, "the toolchain install was canceled")),
-        Supervised::Wedged(verdict) => return Err(io::Error::other(format!("uv pip install: {verdict}"))),
         Supervised::Exited(_) => return Err(io::Error::other(format!("uv pip install: {}", reason.trim()))),
     }
     if !cuda(&staging).join("bin/nvcc").is_file() {

@@ -3,7 +3,7 @@ use platform::process::{Birth, Exact};
 use crate::{
     execution::open_artifact,
     launch_identity::Seal,
-    process::{reap_group, tail, Liveness, Meter, Watch, Watching},
+    process::{reap_group, tail},
     seam,
 };
 pub use protocol::executor::{
@@ -26,7 +26,6 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, ExitStatus, Stdio},
     sync::{Arc, Mutex},
-    time::Duration,
 };
 #[cfg(unix)]
 use std::os::{fd::AsRawFd, unix::process::ExitStatusExt};
@@ -165,59 +164,42 @@ pub struct DeviceExecutor {
     writer: Arc<Mutex<LocalStream>>,
     pub birth: Birth,
     pub hello: Hello,
-    /// Sampling resolution of the wedge rule. Tests shorten it; nothing else changes it.
-    pub liveness: Liveness,
-    /// Stillness while this answers true is not this executor's: it waits on runs watched
-    /// by their own executors (a job's unfinished children).
-    pub waits: Option<crate::process::Waits>,
-    /// Its GPUs' work, which judges its invocations beside its CPU, bytes and frames
-    /// (`Meter::Work`); None on a lane with no GPUs.
-    pub activity: Option<crate::process::Activity>,
-    /// What its invocations wait on (GPU memory asked of other processes), which a wedge's
-    /// verdict names; None on a lane with no GPUs.
-    pub place: Option<crate::process::Place>,
     root: PathBuf,
     socket: PathBuf,
     _generation_hold: Option<Arc<File>>,
     codec: Arc<Codec>,
     retained: Vec<Box<dyn Send>>,
-    watched: Watched,
-    /// Longest gap between frames this executor has shown during invocations.
-    worst_gap: Duration,
+    cancellation: Cancellation,
     /// Where its stderr stood when the request it serves began.
     log_from: u64,
     memo: Option<Arc<crate::memo::Memo>>,
 }
 
-/// Cooperative first: the executor stops at its next safe point. The running invocation's
-/// pace then decides whether it stopped and must be killed.
+/// A cancel ends the call at once: its executor is killed (its exact process and scope), never
+/// waited on to stop by itself. Its GPU weights stay in the machine's custody, so the next
+/// executor maps them without a copy. A cancel for a call it no longer serves does nothing.
 #[derive(Clone)]
 pub struct Cancellation {
-    root: PathBuf,
-    watched: Watched,
+    exact: Arc<Exact>,
+    /// The call it serves ("" while idle in the pool), and whether a cancel killed it.
+    serving: Arc<Mutex<(String, bool)>>,
 }
 impl Cancellation {
-    pub fn cancel(&self, request_id: &str) -> io::Result<()> {
-        let temporary = self
-            .root
-            .join(format!("executor.cancel.{}.pending", uuid::Uuid::new_v4()));
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temporary)?;
-        file.write_all(request_id.as_bytes())?;
-        file.sync_all()?;
-        fs::rename(temporary, self.root.join("executor.cancel"))?;
-        platform::durable::sync_dir(&self.root)?;
-        if let Some(watch) = self.watched.lock().unwrap().as_ref() {
-            watch.canceled();
+    /// It serves `request` from now on ("": none); false once a cancel killed it.
+    pub fn serve(&self, request: &str) -> bool {
+        let mut serving = self.serving.lock().unwrap();
+        serving.0 = request.into();
+        !serving.1
+    }
+    pub fn cancel(&self, request: &str) -> io::Result<()> {
+        let mut serving = self.serving.lock().unwrap();
+        if serving.0 != request || serving.1 {
+            return Ok(());
         }
-        Ok(())
+        serving.1 = true;
+        self.exact.kill().map_err(io::Error::from)
     }
 }
-
-type Watched = Arc<Mutex<Option<Arc<Watch>>>>;
 
 pub enum Forked {
     Ready(Box<DeviceExecutor>),
@@ -331,7 +313,7 @@ impl std::fmt::Display for EndedBeforeStart {
 }
 impl std::error::Error for EndedBeforeStart {}
 
-/// How an executor ended: status, a kill's measurement, descendants killed after it.
+/// How an executor ended: its status, and the descendants killed after it.
 pub type Ended = crate::process::Reaped;
 
 #[derive(Clone)]
@@ -808,14 +790,8 @@ impl DeviceExecutor {
                 "forked executor is not a child of the process it was forked from",
             ));
         }
-        let watched: Watched = Arc::default();
-        on_birth(
-            &birth,
-            &Cancellation {
-                root: config.root.clone(),
-                watched: watched.clone(),
-            },
-        )?;
+        let cancellation = Cancellation { exact: Arc::new(exact.try_clone()?), serving: Arc::default() };
+        on_birth(&birth, &cancellation)?;
         // Wait for connection OR observed process death. No elapsed-time startup kill.
         let Some(stream) = listener.accept_unless(&exact)? else {
             let status = unready.ended()?;
@@ -843,20 +819,16 @@ impl DeviceExecutor {
             stream,
             birth,
             hello: Hello::default(),
-            liveness: Liveness::default(),
-            waits: None,
-            activity: None,
-            place: None,
             root: config.root,
             socket: config.socket,
             _generation_hold: config.generation_hold,
             codec,
             retained: Vec::new(),
-            watched,
-            worst_gap: Duration::ZERO,
+            cancellation,
             log_from: 0,
             memo: None,
         };
+        end_channel_at_exit(executor.exact.try_clone()?, executor.stream.try_clone()?)?;
         let hello = executor.command(&Command::Hello, &mut Baseline)?;
         let mismatched = config.seal.mismatches(&hello.hello.sealed);
         if !hello.ok
@@ -908,10 +880,11 @@ impl DeviceExecutor {
         Line(Arc::downgrade(&self.writer))
     }
     pub fn cancellation(&self) -> Cancellation {
-        Cancellation {
-            root: self.root.clone(),
-            watched: self.watched.clone(),
-        }
+        self.cancellation.clone()
+    }
+    /// It goes back to its pool, serving no call; false when a cancel killed it meanwhile.
+    pub fn idle(&self) -> bool {
+        self.cancellation.serve("")
     }
 
     pub fn observer_pidfd(&self) -> io::Result<File> {
@@ -924,8 +897,8 @@ impl DeviceExecutor {
         self.retained.push(Box::new(resource));
     }
 
-    /// One command, observed: a wedged executor is killed on its measured lack of progress,
-    /// which closes the channel and returns this call with the measurement.
+    /// One command, answered: it ends with its reply, or when the executor ends (a cancel kills
+    /// it, which closes the channel).
     pub fn command(
         &mut self,
         command: &Command,
@@ -933,84 +906,42 @@ impl DeviceExecutor {
     ) -> io::Result<Frame> {
         // Refuse leases to an executor that does not speak them before writing the command.
         accepts(&self.hello, command)?;
-        let meter = match command {
-            Command::Invoke(_) => Meter::Work,
-            _ => Meter::Burn,
-        };
-        let watching = Watching::start(
-            self.exact.try_clone()?,
-            meter,
-            self.liveness,
-            self.worst_gap,
-            self.waits.clone(),
-            self.activity.clone(),
-            command.name(),
-        )?;
-        watching.watch().place(self.place.clone());
-        *self.watched.lock().unwrap() = Some(watching.watch());
-        let result = self.exchange(command, services, &watching.watch());
-        *self.watched.lock().unwrap() = None;
+        let result = self.exchange(command, services);
         // Whatever the run was computing when its exchange ended, its waiters compute themselves.
         if let (Some(memo), Some((run, _))) = (&self.memo, spool(command)) {
             memo.release(run);
         }
-        let (killed, worst_gap) = watching.finish();
-        if meter == Meter::Work {
-            self.worst_gap = self.worst_gap.max(worst_gap);
-        }
-        match killed {
-            Some(verdict) => Err(io::Error::other(crate::process::Wedged(verdict))),
-            None => result,
-        }
+        result
     }
 
     fn exchange(
         &mut self,
         command: &Command,
         services: &mut impl Services,
-        watch: &Watch,
     ) -> io::Result<Frame> {
         let bytes = command_bytes(command)?;
         seam::write_body(&mut self.writer.lock().unwrap(), &bytes)?;
-        let mut last = Advance::default();
         loop {
             let frame = read_frame(&mut self.stream)?
                 .ok_or_else(|| {
                     io::Error::new(io::ErrorKind::UnexpectedEof, "stock executor EOF before reply")
                 })?;
-            if advances(&frame, &mut last) {
-                watch.frame();
-            }
             match frame.event {
                 Some(Event::Request) if !frame.malformed.is_empty() => {
                     refuse_malformed(&mut self.writer.lock().unwrap(), &frame)?
                 }
                 Some(Event::Progress) if !frame.malformed.is_empty() => (),
-                Some(Event::Progress) => {
-                    if !frame.stage.is_empty() {
-                        watch.at(&frame.stage);
-                    }
-                    services.progress(&frame)
-                }
+                Some(Event::Progress) => services.progress(&frame),
                 Some(Event::Request)
                     if matches!(frame.request, Some(Request::StageMemoLookup(_) | Request::StageMemoStore(_))) =>
                 {
-                    // A lookup may wait on the run computing its key: not this executor's stillness.
-                    watch.serving(true);
                     let answer = match (&self.memo, spool(command)) {
                         (Some(memo), Some((run, spool))) => memo.answer(run, spool, frame.seq, frame.request.as_ref().expect("a memo request")),
                         _ => Answer::unavailable(frame.seq),
                     };
-                    watch.serving(false);
                     write_frame(&mut self.writer.lock().unwrap(), &answer)?;
                 }
-                Some(Event::Request) => {
-                    // The machine's own answer time is not the executor's stillness.
-                    watch.serving(true);
-                    let answered = self.answer(&frame, services);
-                    watch.serving(false);
-                    answered?;
-                }
+                Some(Event::Request) => self.answer(&frame, services)?,
                 Some(Event::Unknown) => (),
                 None if frame.reply == command.name() => return Ok(frame),
                 // A Runtime without the `bearer` handler refuses it as a command.
@@ -1042,29 +973,13 @@ impl DeviceExecutor {
         self.memo.as_ref().map(|_| MemoSettings { process_bytes: -1, entry_bytes: crate::memo::ENTRY_BYTES })
     }
 
-    /// Ask the executor to exit, then observe that exact exit (killing only a wedge).
-    pub fn shutdown(mut self) -> io::Result<()> {
-        let asked = self.command(&Command::Shutdown, &mut Baseline);
-        let ended = self.terminate()?;
-        asked?;
-        if !ended.status.success() {
-            return Err(io::Error::other(format!(
-                "stock executor shutdown: {}",
-                ended.status
-            )));
-        }
-        Ok(())
-    }
-
-    /// Kills the executor now, without waiting for it to stop: one whose GPU state is lost (a
-    /// poisoned or unsettled reply) has nothing to finish, and its teardown can spin on that
-    /// state, holding its GPU memory, without ever looking wedged. Its reap follows (`terminate`).
+    /// Kills the executor now; its reap follows (`terminate`), on this thread or another.
     pub fn kill(&self) -> io::Result<()> {
         self.exact.kill().map_err(io::Error::from)
     }
 
-    /// Close the channel, let the executor stop at its next exchange, kill it only on a
-    /// measured wedge, then reap it and release what it held. Blocks until it is gone.
+    /// Ends the executor: closes its channel, kills it (nothing waits on it to stop by itself),
+    /// reaps it and releases what it held. Blocks until it is gone.
     pub fn terminate(mut self) -> io::Result<Ended> {
         let parts = self.parts();
         parts.end()
@@ -1078,7 +993,6 @@ impl DeviceExecutor {
             forked: std::mem::take(&mut self.forked),
             retained: std::mem::take(&mut self.retained),
             socket: std::mem::take(&mut self.socket),
-            liveness: self.liveness,
         }
     }
 }
@@ -1132,6 +1046,19 @@ impl Drop for Unready {
     }
 }
 
+/// The executor's exit ends its channel at once, and whatever it left in its scope: a child it
+/// forked (a data loader's worker) can hold the socket open past it, and a read would then never
+/// see the end. The command waiting on it returns, and the run fails with the exit's status.
+fn end_channel_at_exit(exact: Exact, stream: LocalStream) -> io::Result<()> {
+    std::thread::Builder::new().name(format!("exit-{}", exact.birth().pid)).spawn(move || {
+        if exact.wait().is_ok() {
+            let _ = exact.kill();
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+    })?;
+    Ok(())
+}
+
 /// Everything an executor's teardown must hold until its exit is observed.
 struct Ending {
     exact: io::Result<Exact>,
@@ -1139,7 +1066,6 @@ struct Ending {
     forked: bool,
     retained: Vec<Box<dyn Send>>,
     socket: PathBuf,
-    liveness: Liveness,
 }
 impl Ending {
     fn end(mut self) -> io::Result<Ended> {
@@ -1153,8 +1079,9 @@ impl Ending {
                 )));
             }
         };
-        // Followers (degree > 1) stay in the leader's group and are waited for too.
-        let mut ended = match reap_group(exact, self.child.as_mut(), self.liveness) {
+        let _ = exact.kill();
+        // Followers (degree > 1) stay in the leader's group and are ended too.
+        let mut ended = match reap_group(exact, self.child.as_mut()) {
             Ok(ended) => ended,
             Err(error) => {
                 std::mem::forget(std::mem::take(&mut self.retained));
@@ -1182,37 +1109,6 @@ impl Drop for DeviceExecutor {
         if let Err(error) = self.parts().end() {
             tracing::warn!("executor teardown: {error}");
         }
-    }
-}
-
-/// The last progress a call reported: its stage, its fractions (as bits), position, completed
-/// units and relayed call.
-type Advance = (String, Option<u64>, Option<u64>, Option<u64>, u64, Option<String>, u64);
-
-/// Whether `frame` is real progress of its call: a progress frame that moved its stage, position
-/// or completed units (`last` is the one before; a repeat, telemetry or a log line is not), a
-/// work count that moved, or a request that makes something toward its output: a product or
-/// checkpoint published, weights kept, a child call started. A re-ask for a layout, a memo
-/// lookup, a poll is not.
-fn advances(frame: &Frame, last: &mut Advance) -> bool {
-    match frame.kind {
-        Kind::Work => std::mem::replace(&mut last.6, frame.work) != frame.work,
-        Kind::Progress if matches!(frame.event, Some(Event::Progress)) && !frame.stage.is_empty() => {
-            let fraction = |f: Option<f64>| f.map(f64::to_bits);
-            let now = (
-                frame.stage.clone(),
-                fraction(frame.stage_fraction),
-                fraction(frame.overall_fraction),
-                frame.position,
-                frame.advance,
-                frame.call_request.clone(),
-                last.6,
-            );
-            let moved = *last != now;
-            *last = now;
-            moved
-        }
-        _ => matches!(frame.request, Some(Request::Publish(_) | Request::CheckpointItem(_) | Request::ChildCall(_))),
     }
 }
 

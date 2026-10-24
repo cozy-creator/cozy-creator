@@ -263,6 +263,9 @@ pub struct Progress {
     /// The stage's steady step time: the mean of its steps after the first; 0 before one.
     #[serde(default)]
     pub step_avg_ms: f64,
+    /// When the machine last saw it move (Unix ms; 0: unknown): how long a run has not.
+    #[serde(default)]
+    pub at_ms: i64,
 }
 
 /// One event of a run's stream.
@@ -577,6 +580,9 @@ pub struct MachineStatus {
     pub platform: String,
     /// `booting`, `ready` or `releasing`.
     pub phase: String,
+    /// An update in progress there: what it waits for, else its state.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub update: String,
     #[serde(default)]
     pub runtime: String,
     #[serde(default)]

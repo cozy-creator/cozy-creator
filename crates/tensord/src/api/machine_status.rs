@@ -164,6 +164,8 @@ fn picture(identity: &MachineIdentity, held: Held) -> v1::StatusFrame {
     v1::StatusFrame {
         idle_deadline_unix_ms: lifecycle.map_or(0, |l| l.deadline_ms()),
         runs,
+        update: (identity.updates.as_ref().and_then(|updates| updates.current()))
+            .map(|update| super::machine_update::state(&update.operation, &update)),
         phase: match lifecycle {
             Some(l) if l.released() => "releasing",
             _ if !identity.readiness.proved() => "booting",

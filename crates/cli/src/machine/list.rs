@@ -257,6 +257,9 @@ pub fn status_fields(status: &MachineStatus) -> Vec<(String, String)> {
         ("platform".into(), status.platform.clone()),
         ("phase".into(), status.phase.clone()),
     ];
+    if !status.update.is_empty() {
+        fields.push(("update".into(), status.update.clone()));
+    }
     let commit = [("commit", &status.commit)];
     for (key, value) in commit
         .into_iter()

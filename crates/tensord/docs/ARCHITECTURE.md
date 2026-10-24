@@ -14,7 +14,7 @@ Model loading spans storage, shared CPU buffers and executor GPU memory:
 | --- | --- | --- |
 | Stored weight bytes and metadata | Use TensorFS to acquire/retain manifests, headers, assets and tensor objects; bind available data to the selected model components | Request the selected header/assets, inspect tensor layouts, and construct Python/PyTorch models |
 | Shared CPU weight buffers | Fill and retain sealed layouts or streaming windows through TensorFS; coordinate host budgets and release unused buffers | Adopt granted layouts and descriptors through its TensorFS weight plane; read ready regions and manage its pinned staging within the host budget |
-| GPU-resident tensor storage | Create each GPU's ledger; admit executor starts, reap exited rows, end stalled ones | Varena maps, evicts and asks other rows for room; Runtime binds those pages to the model |
+| GPU-resident tensor storage | Create each GPU's ledger; admit executor starts, reap exited rows | Varena maps, evicts and asks other rows for room; Runtime binds those pages to the model |
 
 Each executor's row in its GPU's ledger states what it holds; asks between rows make room.
 TensorD's own row holds what no row explains. A model source carries access to selected weight
@@ -44,7 +44,7 @@ Calcifer ──HTTPS (Cozy-Cap)──> api::http ─> machine_api::NativeBackend
                           gpu_service::Pool ─> device_executor::DeviceExecutor
                             (retained executors per plan: deviceless, one GPU or a group,
                              via the Runtime trampoline)
-                            memory::GpuLedger: per-GPU ledger + eventfd, fits, reaps, stalls
+                            memory::GpuLedger: per-GPU ledger + eventfd, fits, reaps
                             answers model-source, read-grant and deposit requests
                           calls::Calls: child calls and each attempt's weights grant
 ```
@@ -101,7 +101,7 @@ code is still not sandboxed.
 | `execution.rs` | Acceptance, attempt supervision, cancellation, progress coalescing, output custody, reconcile | `Engine` | E |
 | `journal.rs` | SQLite journal: executions, installations, preparations, receipts, process births | `Journal`, `Execution`, `State`, `ProcessBirth` | E |
 | `gpu_service.rs` | Executor pool (degree 0, 1 or n): published package/model mapping, executor retention, request callbacks; GPU groups (a degree-K plan on the first K GPUs, one memory decision per GPU), one call slot per GPU and one-GPU replicas and multi-slot plans | `Pool`, `GpuConfig`, `Plan`, `PlanSlot`, `PlanSource`, `ModelGrant` | B2 (admission, grants), E (spawn/fencing), D1 (published mapping), I (groups, slots) |
-| `memory/` | Each GPU's varena ledger and eventfd, TensorD's row in it, `fits`, reaps, stalls and freed wakes on an NVML watch thread (`gpu`); a call's memory measurements (`call`) | `GpuLedger`, `CallMemory` | xs-046 B4 |
+| `memory/` | Each GPU's varena ledger and eventfd, TensorD's row in it, `fits`, reaps and freed wakes on an NVML watch thread (`gpu`); a call's memory measurements (`call`) | `GpuLedger`, `CallMemory` | xs-046 B4 |
 | `deposits.rs` | Sealed host layouts executors deposit, granted to the next executor of the same weights | `Deposits` | xs-046 B4 |
 | `device_executor.rs` | Control seam to the Runtime device executor (its wire types are `protocol::executor`), per-request output encoding | `DeviceExecutor`, `ExecutorConfig`, `Services` | E |
 | `launch_identity.rs` | Runtime trampoline command, the executor environment seal, the one credential-name rule | `Seal`, `trampoline`, `credential_name` | E |

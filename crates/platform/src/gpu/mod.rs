@@ -14,8 +14,8 @@ pub use cuda::memory_classes;
 use crate::{Error, Result};
 use nvml_wrapper::{
     Nvml,
-    enum_wrappers::device::{ComputeMode, Sampling},
-    enums::device::{SampleValue, UsedGpuMemory},
+    enum_wrappers::device::ComputeMode,
+    enums::device::UsedGpuMemory,
     error::NvmlError,
     struct_wrappers::device::{MemoryInfo, ProcessInfo},
 };
@@ -215,27 +215,6 @@ impl Device {
     pub fn free(&self) -> Result<u64> {
         let device = self.nvml.device_by_index(self.index).map_err(failed("open device"))?;
         memory(device.memory_info()).map(|(_, free)| free)
-    }
-
-    /// Whether device memory moved (kernels' traffic, copies, peer writes) in NVML's samples
-    /// after `seen` (its timestamp, µs), which it advances.
-    pub fn moved_since(&self, seen: &mut u64) -> Result<bool> {
-        let device = self.nvml.device_by_index(self.index).map_err(failed("open device"))?;
-        // No sample newer than `seen` is no work seen: NVML answers NotFound while the GPU is idle,
-        // which is a reading, not an unreadable GPU: a call stuck there was never judged.
-        let samples = match device.samples(Sampling::MemoryUtilization, *seen) {
-            Err(NvmlError::NotFound) => return Ok(false),
-            samples => samples.map_err(failed("utilization samples"))?,
-        };
-        Ok(samples.iter().fold(false, |moved, sample| {
-            *seen = (*seen).max(sample.timestamp);
-            moved || match sample.value {
-                SampleValue::U32(value) => value > 0,
-                SampleValue::U64(value) => value > 0,
-                SampleValue::I64(value) => value > 0,
-                SampleValue::F64(value) => value > 0.0,
-            }
-        }))
     }
 
     /// Whether its compute mode admits one context at a time (exclusive-process) or none
