@@ -271,8 +271,22 @@ pub async fn update(
             }
             Component::Release(version) => {
                 want.push(reports(member, &version));
-                named.push(format!("{member} {version}"));
-                payload.insert(key.into(), version.into());
+                // A wheel version PyPI lacks is, for a Hub admin, its release candidate: the
+                // machine fetches the GitHub prerelease's wheel itself, held to its digest.
+                let value = match member {
+                    "tensord" => None,
+                    _ => candidate(ctx, &hub, distribution, &version, &status.platform).await?,
+                };
+                match value {
+                    Some((url, sha256)) => {
+                        named.push(format!("{member} {version} (candidate)"));
+                        payload.insert(key.into(), serde_json::json!({ "url": url, "sha256": sha256 }));
+                    }
+                    None => {
+                        named.push(format!("{member} {version}"));
+                        payload.insert(key.into(), version.into());
+                    }
+                }
                 continue;
             }
             Component::Build(path) => (path, None),
@@ -373,6 +387,76 @@ fn dist_target(platform: &str) -> Result<String, Error> {
         other => return Err(Error::new(Kind::Unavailable, "platform_unknown", format!("no cozy release is built for {other:?}"))),
     };
     Ok(target.into())
+}
+
+/// `distribution` `version`'s release-candidate wheel for `platform` (`linux/x86_64`), when PyPI
+/// does not hold that version and this computer's sign-in is a Hub admin's: the GitHub
+/// prerelease (cozy-runtime `v<version>`, cozy-creator `tensorfs-v<version>`) names it in its
+/// `SHA256SUMS`, the platform's own wheel first, else the pure one. Its URL and sha256; `None` for
+/// a PyPI release or anyone else, whose machine fetches the version from PyPI as before.
+async fn candidate(
+    ctx: &Context,
+    hub: &protocol::config::Hub,
+    distribution: &str,
+    version: &str,
+    platform: &str,
+) -> Result<Option<(String, String)>, Error> {
+    let failed = |e: reqwest::Error| Error::new(Kind::Unavailable, "release_unreachable", e.to_string());
+    let http = reqwest::Client::builder()
+        .user_agent(concat!("cozy/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(failed)?;
+    let project = distribution.replace('_', "-");
+    let pypi = http.get(format!("https://pypi.org/pypi/{project}/{version}/json")).send().await.map_err(failed)?;
+    if pypi.status().is_success() || !ctx.signed_in(hub) {
+        return Ok(None);
+    }
+    // Only an admin's sign-in may narrow rentals to a provider: the Hub's own word on who is one.
+    match hub_answer(ctx.hub_signed_in(hub)?.list_rental_skus(Some("runpod")).await) {
+        Ok(_) => {}
+        Err(e) if e.code == "rental.provider_choice_operator_only" => return Ok(None),
+        Err(e) => return Err(e),
+    }
+    let base = match distribution {
+        "cozy_runtime" => format!("https://github.com/cozy-creator/cozy-runtime/releases/download/v{version}"),
+        _ => format!("https://github.com/cozy-creator/cozy-creator/releases/download/tensorfs-v{version}"),
+    };
+    let sums = http.get(format!("{base}/SHA256SUMS")).send().await.map_err(failed)?;
+    if !sums.status().is_success() {
+        return Err(Error::new(
+            Kind::NotFound,
+            "release_not_found",
+            format!("{project} {version} is neither on PyPI nor a release candidate ({base}/SHA256SUMS: HTTP {})", sums.status()),
+        ));
+    }
+    let sums = sums.text().await.map_err(failed)?;
+    let prefix = format!("{distribution}-{version}-");
+    let wheels: Vec<(&str, &str)> = sums
+        .lines()
+        .filter_map(|line| line.split_once(char::is_whitespace))
+        .map(|(sha256, file)| (sha256.trim(), file.trim().trim_start_matches('*')))
+        .filter(|(sha256, file)| sha256.len() == 64 && file.starts_with(&prefix) && file.ends_with(".whl"))
+        .collect();
+    let (os, arch) = platform.split_once('/').unwrap_or((platform, ""));
+    // A version-specific (`cp310-cp310`) wheel fits one Python only; the stable-ABI one fits all.
+    let native = |file: &str| file.contains("-abi3-") && match (os, arch) {
+        ("linux", arch) => file.contains("manylinux") && file.contains(arch),
+        ("macos", "aarch64") => file.contains("macosx") && file.contains("arm64"),
+        ("macos", arch) => file.contains("macosx") && file.contains(arch),
+        ("windows", "x86_64") => file.contains("win_amd64"),
+        ("windows", _) => file.contains("win_arm64"),
+        _ => false,
+    };
+    let chosen = (wheels.iter().find(|(_, file)| native(file)))
+        .or_else(|| wheels.iter().find(|(_, file)| file.ends_with("-none-any.whl")))
+        .ok_or_else(|| {
+            Error::new(
+                Kind::NotFound,
+                "release_wheel_absent",
+                format!("{project} {version}'s release candidate holds no wheel for {platform}"),
+            )
+        })?;
+    Ok(Some((format!("{base}/{}", chosen.1), chosen.0.to_owned())))
 }
 
 /// A fetched release kept under this computer's cozy home until the run sends it.
