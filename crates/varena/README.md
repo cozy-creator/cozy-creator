@@ -35,7 +35,9 @@ never candidates. Insufficient unpinned capacity returns a typed capacity failur
 Until complete stream ownership exists, actual reclamation conservatively joins the CUDA primary
 context. This protects untracked side-stream work after a storage deleter has run; no throughput
 claim is made for this synchronization. Capture dependencies and graph roots retain their pins.
-Hold `enter_capture` around capture to reject residency misses and reclamation during that period.
+Hold process-wide `varena::enter_capture(device)` around capture to reject residency misses and
+reclamation in every Arena on that device, even when capture starts before any Arena exists.
+`Arena::enter_capture` wraps the same device guard and also retains that Arena.
 Prepare before capture; retire graph roots before reclaiming their weights, then recapture.
 
 Any uncertain map, access, unmap, handle release, or device-completion failure poisons the Arena.
