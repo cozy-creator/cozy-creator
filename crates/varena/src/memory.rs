@@ -2013,6 +2013,7 @@ impl Inner {
     // ---- the calls
 
     fn load(self: &Arc<Self>, spec: SetSpec, level: Level) -> Result<SetId> {
+        spec.layout.validate()?;
         let (id, again) = {
             let mut st = self.lock();
             let existing = st.sets.iter().position(|m| m.as_ref().is_some_and(|m| m.spec.name == spec.name && !m.closing));
