@@ -1,6 +1,7 @@
 """Actual CLI GPU work vs CPU encoding; no direct machine HTTP or alternate homes."""
 
 import argparse
+import hashlib
 import json
 import queue
 import subprocess
@@ -44,6 +45,8 @@ class Run:
                 "--on",
                 machine,
                 "--gpus=1",
+                "--out",
+                str(output / f"{tag}-assets"),
             ],
             stdout=subprocess.PIPE,
             stderr=self.errors,
@@ -130,6 +133,18 @@ class Run:
             ).stdout
         return None
 
+    def verify_image(self):
+        from PIL import Image
+
+        outputs = self.record.get("output", [])
+        assert len(outputs) == 1, "one returned image was not published"
+        path = Path(outputs[0]["path"])
+        with Image.open(path) as saved:
+            actual = hashlib.sha256(saved.convert("RGB").tobytes()).hexdigest()
+        assert actual == self.record["result"]["pixels_sha256"], (
+            "the downloaded lossless image differs from the actual GPU pixels"
+        )
+
     def close(self):
         # Only this controller's CLI watcher is ended here; run cancellation uses the public verb.
         if self.process.poll() is None:
@@ -151,7 +166,7 @@ def main():
     cancellation.add_argument("--cancel-output", action="store_true")
     cancellation.add_argument("--cancel-custody", action="store_true")
     parser.add_argument("--file-mib", type=int, default=240)
-    parser.add_argument("--expect", choices=("overlap", "serial"), default="overlap")
+    parser.add_argument("--expect", choices=("overlap", "baseline"), default="overlap")
     args = parser.parse_args()
     if not 512 <= args.size <= 4096:
         parser.error("size must be 512..4096")
@@ -160,10 +175,6 @@ def main():
         parser.error("cancellation while reusing requires the overlap candidate")
     if not 1 <= args.file_mib <= 240:
         parser.error("file-mib must be 1..240")
-    if args.on != "local" and args.expect == "serial":
-        parser.error(
-            "the uninstrumented serial baseline requires the local clock domain"
-        )
     args.out.mkdir(parents=True, exist_ok=False)
     target = Path(__file__).resolve().parent / "run"
     runs = []
@@ -229,9 +240,9 @@ def main():
         b_start = second.marks["gpu_started"]["at_ns"]
         settled = first.record["settled_at_ms"] * 1_000_000
         assert a_end <= b_start, "independent requests overlapped their GPU ownership"
-        overlap = False
-        if args.expect == "serial":
-            assert b_start >= settled, (a_end, b_start, settled)
+        overlap = (
+            None  # An uninstrumented baseline does not identify the encoding interval.
+        )
         assert (
             first.marks["gpu_started"]["pid"] == second.marks["gpu_started"]["pid"]
         ), (
@@ -240,7 +251,7 @@ def main():
             second.marks,
         )
         if not cancel:
-            assert first.record.get("output"), "the real image was not committed"
+            first.verify_image()
         if args.expect == "overlap":
             begin = first.phases[
                 "output_encoding.end"
@@ -270,7 +281,9 @@ def main():
             overlap=overlap,
             first_gpu_finished_ns=a_end,
             second_gpu_started_ns=b_start,
-            first_settled_ns=settled,
+            gpu_handoff_gap_ns=b_start - a_end,
+            first_controller_settled_ns=settled,
+            candidate_qualified=args.expect == "overlap",
             phases=first.phases,
         )
     finally:

@@ -17,7 +17,8 @@ python3 burst.py --out /path/to/new/burst-directory --cpu-capacity 2
 
 Use `--on <name>` for an already rented candidate machine. The controllers never rent or update it.
 Remote overlap and cancellation use machine-side phase timestamps, avoiding comparisons between
-the laptop clock and the GPU host clock. The uninstrumented `--expect serial` baseline is local-only.
+the laptop clock and the GPU host clock. `--expect baseline` records the GPU handoff gap without
+classifying encoding overlap: controller settlement is a later delivery event even on the same host.
 
 The custody cancellation case produces a real ordinary file (240 MiB by default, bounded by
 `--file-mib`). It cancels after encoding finishes and must observe accepted cancellation before
@@ -25,14 +26,14 @@ the machine's output-finished transition, while the next GPU call remains active
 It exercises actual copy/hash/fsync work with no sleeps or injected barriers. If the output settles
 before cancellation arrives, the case fails as unexercised; it cannot claim the race was covered.
 
-Run through the shared heavy wrapper. `--expect serial` records the old behavior as a baseline.
+Run through the shared heavy wrapper with a Python that has Pillow (for downloaded pixel parity).
 Each case first warms the same entrypoint, then submits the image request and its queued successor.
 The default image is 4096x4096 random RGB, at most 48 MiB raw; the extra cancellation case does
 more real GEMM to keep the successor active while the preceding output is canceled.
 
-Acceptance: correct GPU result, committed image (ordinary case), same executor PID, first GPU work
-complete before the successor starts, and successor GPU work before the first request settles.
-Cancellation must not stop the reused executor's successor. Candidate runs additionally require real
+Acceptance: correct GPU result, a downloaded image whose decoded pixels match the GPU source
+(ordinary case), same executor PID, and first GPU work complete before the successor starts.
+Cancellation must not stop the reused executor's successor. Candidate runs require real
 output_encoding begin/end log events overlapping the successor's GPU interval; the canceled-output
 case must deliver cancellation before the successor's GPU work finishes. The observation deadline
 only stops the proof and requests cancellation of its own

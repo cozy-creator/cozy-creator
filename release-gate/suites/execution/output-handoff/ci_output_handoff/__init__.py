@@ -40,16 +40,16 @@ class Result(msgspec.Struct):
     gpu_started_ns: int
     gpu_finished_ns: int
     pixels_sha256: str
-    image: Annotated[
-        ImageAsset | None,
+    images: Annotated[
+        list[ImageAsset],
         AssetBound(
             max_bytes=64 << 20, max_decoded_bytes=64 << 20, media_types=("image/webp",)
         ),
     ]
-    file: Annotated[
-        FileAsset | None,
+    files: Annotated[
+        list[FileAsset],
         AssetBound(max_bytes=240 << 20, media_types=("application/octet-stream",)),
-    ] = None
+    ]
     file_sha256: str = ""
 
 
@@ -151,7 +151,7 @@ def run(payload: Request, ctx: Context, out: Outputs, tel: Telemetry) -> Result:
         started,
         finished,
         digest,
-        asset,
-        file_asset,
+        [asset] if asset is not None else [],
+        [file_asset] if file_asset is not None else [],
         file_digest,
     )

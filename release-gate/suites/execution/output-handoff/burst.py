@@ -64,7 +64,7 @@ def main():
         for run in runs[1:]:
             run.wait_for(run.terminal, deadline)
             assert run.record["status"] == "completed", run.record
-            assert run.record.get("output"), "a real image was not committed"
+            run.verify_image()
         intervals, events = [], []
         for run in runs[1:]:
             begin = run.phases["gpu_returned"]["at_ns"]
