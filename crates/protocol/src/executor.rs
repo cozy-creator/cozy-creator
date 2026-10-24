@@ -111,13 +111,6 @@ pub struct Start {
     /// Each constructed slot's checkpoint, so the Runtime schedules fetches before it imports.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub constructions: Vec<Construction>,
-    /// The namespace (TensorD's uid) each GPU's lease listener (`lease-<uuid>`) is named in, for
-    /// an executor speaking the lease protocol; a GPU nobody serves runs its own pages.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub leases: Option<u32>,
-    /// The memory contract it serves: the lease protocol, or 0 (its own memory).
-    #[serde(default)]
-    pub memory_protocol: u32,
     /// Its stage memo tiers, when the machine memoizes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memo: Option<MemoSettings>,
@@ -455,18 +448,18 @@ pub enum Kind {
     Unknown,
 }
 
-/// An executor's `hello` reply: who it is, its versions, its memory protocol and its seal.
+/// An executor's `hello` reply: who it is, its versions, memory capability and seal.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Hello {
+    /// Concrete executor allocation/offload capability; unrelated to its package version.
+    #[serde(default)]
+    pub memory_backend: String,
     pub pid: u32,
     pub ppid: u32,
     pub pgid: u32,
     pub runtime_version: String,
     pub tensorfs_version: String,
-    /// Its memory wire contract: the lease protocol leases chunks from each GPU's manager; any
-    /// other runs its memory alone.
-    pub memory_protocol: u32,
     pub sealed: BTreeMap<String, String>,
 }
 
