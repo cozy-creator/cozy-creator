@@ -321,9 +321,12 @@ impl Shared {
 
     /// Waits until every one of `streams` passed an epoch after its work so far; false while a capture
     /// is open. A stream whose recording was lost can prove nothing: an error.
-    fn quiesce(&self, streams: &[usize]) -> Result<bool> {
+    pub(super) fn quiesce(&self, streams: &[usize]) -> Result<bool> {
         let Some(need) = self.stamps(streams) else { return Ok(false) };
         loop {
+            if self.lost.load(Acquire) {
+                return Err(Error::Ownership("allocator completion is unproven".into()));
+            }
             let seen = *self.progress.0.lock();
             if let Some((c, _)) = need.iter().find(|(c, n)| !c.passed(*n) && c.lost.load(Acquire)) {
                 return Err(Error::Internal(format!("stream {:#x} lost its epochs: a region on it cannot be proven idle", c.stream)));
@@ -334,6 +337,9 @@ impl Shared {
             self.kick();
             let mut p = self.progress.0.lock();
             while *p == seen {
+                if self.lost.load(Acquire) {
+                    return Err(Error::Ownership("allocator completion is unproven".into()));
+                }
                 self.progress.1.wait(&mut p);
             }
         }

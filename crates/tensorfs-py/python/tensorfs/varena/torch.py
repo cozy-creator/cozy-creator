@@ -646,6 +646,14 @@ class Memory:
             "requests": {r: (a, p) for r, a, p in requests}, "pools": {pool: (m, a) for pool, m, a in pools},
         }
 
+    def trim(self) -> int:
+        """Torch's idle memory back to the driver now, the float kept for allocation latency too:
+        an offload's last step (`load(model, "ram")` unmaps the weights' unpinned pages), after
+        which this process holds its context, torch's live blocks and what is pinned. A span
+        whose stream epoch is pending is joined before return. Call only while the executor
+        starts no allocation or capture work. Returns the bytes given back."""
+        return self.native.trim()
+
     def fence_pool(self, pool: tuple[int, int], stream: torch.cuda.Stream) -> None:
         """After a replay from `pool` and its outputs' readers on `stream`: the pool's chunks
         leave, once torch released it, only after this point on `stream`."""

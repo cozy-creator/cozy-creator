@@ -166,6 +166,9 @@ class Memory:
     def room(self, step: int | None = None) -> tuple[int, int, int, int, int]:
         """(free, cold, warm, granularity, floor) at plan step `step` (the cursor's when None)."""
 
+    def trim(self) -> int:
+        """Torch's idle spans back to the driver now, the float too; the bytes given back."""
+
     def fence_pool(self, pool: tuple[int, int], stream: int) -> None:
         """An event on `stream` after torch pool `pool`'s use there: its chunks leave, once
         released, only after every fence completed."""

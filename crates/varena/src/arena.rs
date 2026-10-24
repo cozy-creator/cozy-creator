@@ -1087,6 +1087,30 @@ impl Torch {
 
     pub(crate) fn capturing(&self) -> bool { self.sh.capturing() }
 
+    /// An idle executor's offload: join known consumers, apply deferred frees and return the
+    /// float too. The caller keeps new allocation/capture work stopped for this operation.
+    pub fn trim(&self) -> Result<u64> {
+        self.check_completion()?;
+        let sh = &self.sh;
+        let before = sh.mapped.load(Acquire);
+        let streams: Vec<_> = sh.clocks.read().keys().copied().collect();
+        let mut arenas: Vec<_> = sh.arenas.lock().values().cloned().collect();
+        arenas.push(sh.process.clone());
+        // First settle turns frees deferred by a completed capture into epoch waits. The
+        // second runs after those epochs; neither pass treats a live allocation as idle.
+        for _ in 0..2 {
+            arenas.iter().for_each(|arena| { sh.settle(arena); });
+            if !sh.quiesce(&streams)? {
+                return Err(Error::Invalid("idle trim cannot run during graph capture".into()));
+            }
+        }
+        arenas.iter().for_each(|arena| { sh.settle(arena); });
+        self.check_completion()?;
+        sh.reclaim(u64::MAX);
+        self.check_completion()?;
+        Ok(before.saturating_sub(sh.mapped.load(Acquire)))
+    }
+
     /// A weight demand may wait only for spans already freed, never for live allocations.
     pub(crate) fn give_back(&self) -> Result<u64> {
         self.check_completion()?;

@@ -138,6 +138,12 @@ impl Memory {
         self.device_call(|| self.torch()?.pool_fence(pool, stream))
     }
 
+    /// An idle executor's offload: join its known streams and return idle spans including the
+    /// float. Live allocations remain owned. New work must stay stopped until this returns.
+    pub fn trim_torch(&self) -> Result<u64> {
+        self.device_call(|| self.inner.torch.get().map_or(Ok(0), |t| t.trim()))
+    }
+
     pub fn torch_stats(&self) -> TorchStats {
         let Some(t) = self.inner.torch.get() else { return TorchStats::default() };
         let s = t.stats();
