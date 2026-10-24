@@ -1,5 +1,4 @@
-//! Optional root-sealed identity; this is not a public caller-controlled credential.
-use serde::{Deserialize, Serialize};
+//! The executor's launch: its trampoline, inherited environment and seal.
 use std::{
     collections::BTreeMap,
     fs::{self, File},
@@ -9,128 +8,10 @@ use std::{
     sync::Arc,
 };
 #[cfg(unix)]
-use std::{
-    fs::OpenOptions,
-    os::{
-        fd::AsRawFd,
-        unix::{
-            fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
-            process::CommandExt,
-        },
-    },
+use std::os::{
+    fd::AsRawFd,
+    unix::{fs::MetadataExt, process::CommandExt},
 };
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-pub struct LaunchIdentity {
-    pub uid: u32,
-    pub gid: u32,
-}
-#[cfg(unix)]
-impl LaunchIdentity {
-    pub fn validate(self) -> io::Result<Self> {
-        // A nonprivileged owner can only retain its existing identity.
-        if euid() != 0 && (self.uid != euid() || self.gid != egid())
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "configured executor identity requires privilege the owner does not have",
-            ));
-        }
-        Ok(self)
-    }
-    pub(crate) fn traverse(self, path: &Path) -> io::Result<()> {
-        self.directory(path, euid(), 0o710)
-    }
-    pub(crate) fn own(self, path: &Path) -> io::Result<()> {
-        self.directory(path, self.uid, 0o700)
-    }
-    fn directory(self, path: &Path, uid: u32, mode: u32) -> io::Result<()> {
-        self.validate()?;
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
-            .open(path)?;
-        let metadata = file.metadata()?;
-        if metadata.uid() != euid() && metadata.uid() != self.uid {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "launch path belongs to another owner",
-            ));
-        }
-        // Exact opened directory only; never walk/chown an authored tree or generation.
-        std::os::unix::fs::fchown(&file, Some(uid), Some(self.gid))?;
-        file.set_permissions(fs::Permissions::from_mode(mode))?;
-        file.sync_all()
-    }
-    pub(crate) fn socket(self, path: &Path) -> io::Result<()> {
-        self.validate()?;
-        // macOS has no O_PATH: the socket's own name is changed, never a link it points to.
-        #[cfg(not(target_os = "linux"))]
-        return std::os::unix::fs::lchown(path, Some(self.uid), Some(self.gid));
-        // O_PATH/NOFOLLOW binds ownership to the actual socket inode created by this owner.
-        #[cfg(target_os = "linux")]
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_PATH | libc::O_NOFOLLOW)
-            .open(path)?;
-        #[cfg(target_os = "linux")]
-        {
-            use std::os::unix::fs::FileTypeExt;
-            if !file.metadata()?.file_type().is_socket() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "executor endpoint is not the owned socket",
-                ));
-            }
-            use nix::unistd::{fchownat, Gid, Uid};
-            let (uid, gid) = (Some(Uid::from_raw(self.uid)), Some(Gid::from_raw(self.gid)));
-            Ok(fchownat(&file, "", uid, gid, nix::fcntl::AtFlags::AT_EMPTY_PATH)?)
-        }
-    }
-    pub(crate) fn readable(self, path: &Path) -> io::Result<()> {
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(path)?;
-        if !file.metadata()?.is_file() || file.metadata()?.uid() != euid() {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "launch metadata is not the owner's regular file",
-            ));
-        }
-        std::os::unix::fs::fchown(&file, Some(euid()), Some(self.gid))?;
-        file.set_permissions(fs::Permissions::from_mode(0o440))?;
-        file.sync_all()
-    }
-}
-
-/// Run-as identities are Linux's: a Windows machine runs its executors as its own user.
-#[cfg(windows)]
-impl LaunchIdentity {
-    pub fn validate(self) -> io::Result<Self> {
-        Err(identity_unsupported())
-    }
-    pub(crate) fn traverse(self, _: &Path) -> io::Result<()> {
-        Err(identity_unsupported())
-    }
-    pub(crate) fn own(self, _: &Path) -> io::Result<()> {
-        Err(identity_unsupported())
-    }
-    pub(crate) fn socket(self, _: &Path) -> io::Result<()> {
-        Err(identity_unsupported())
-    }
-    pub(crate) fn readable(self, _: &Path) -> io::Result<()> {
-        Err(identity_unsupported())
-    }
-}
-
-#[cfg(windows)]
-fn identity_unsupported() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::Unsupported,
-        "a configured executor identity is Linux's: a Windows machine runs executors as its user",
-    )
-}
 
 /// This process's user: the effective uid, or 0 where there is none (Windows).
 pub(crate) fn euid() -> u32 {
@@ -148,15 +29,11 @@ pub(crate) fn egid() -> u32 {
     0
 }
 
-/// Reuse Runtime's pre-CUDA seal: expected parent, parent-death SIGKILL, no_new_privs,
-/// OOM score and the optional identity. Every child gets its own process group, so a kill
+/// Reuse Runtime's pre-CUDA seal: expected parent, parent-death SIGKILL, no_new_privs and
+/// OOM score. Every child gets its own process group, so a kill
 /// reaches the descendants that stayed in it and a terminal signal to the machine does not.
 #[cfg(unix)]
-pub fn trampoline(
-    python: &Path,
-    identity: Option<LaunchIdentity>,
-    scope: Option<&platform::contain::Scope>,
-) -> io::Result<Command> {
+pub fn trampoline(python: &Path, scope: Option<&platform::contain::Scope>) -> io::Result<Command> {
     let mut command = Command::new(python);
     platform::process::inherit_nothing(&mut command);
     command
@@ -174,33 +51,17 @@ pub fn trampoline(
         Some(scope) => command.args(scope.trampoline_args()),
         None => command.args(["--scope-backend", "inherit"]),
     };
-    if let Some(identity) = identity {
-        identity.validate()?;
-        command.args([
-            "--uid",
-            &identity.uid.to_string(),
-            "--gid",
-            &identity.gid.to_string(),
-        ]);
-    }
     command.process_group(0).arg("--").arg(python);
     Ok(command)
 }
 
 /// Windows: no trampoline. The executor starts as its Python, its tree held by the machine's
-/// handle on it; there is no parent-death signal, no seal of privileges and no other identity.
+/// handle on it; there is no parent-death signal and no seal of privileges.
 /// A venv's python.exe is a launcher that starts the interpreter as its child, which would make
 /// the executor a stranger's child: the interpreter starts itself, told its venv as the launcher
 /// tells it ([`interpreter_environment`]).
 #[cfg(windows)]
-pub fn trampoline(
-    python: &Path,
-    identity: Option<LaunchIdentity>,
-    _scope: Option<&platform::contain::Scope>,
-) -> io::Result<Command> {
-    if let Some(identity) = identity {
-        identity.validate()?;
-    }
+pub fn trampoline(python: &Path, _scope: Option<&platform::contain::Scope>) -> io::Result<Command> {
     let mut command = Command::new(venv_home(python)?.map_or_else(|| python.into(), |home| home.join("python.exe")));
     platform::process::inherit_nothing(&mut command);
     Ok(command)
@@ -294,7 +155,6 @@ pub struct Seal {
     pub devices: String,
     /// The shared TensorFS store, separate from the executor's home.
     pub tensorfs_home: Option<PathBuf>,
-    pub threads: u32,
     /// Degree above one: NVLS off and GPU peer memory only over NVLink (Runtime cr-068).
     pub group: bool,
     /// `COZY_HOME`: attention/kernel qualification is kept here between executors.
@@ -320,13 +180,13 @@ pub fn inherit(command: &mut Command, holds: &[Option<&Arc<File>>]) {
     platform::process::keep_open(command, holds.iter().flatten().map(|hold| hold.as_raw_fd()).collect());
 }
 
-pub const DEFAULT_THREADS: u32 = 4;
+/// `OMP_NUM_THREADS` the seal imposes. torch's allocator is the Runtime's, set in code.
+const THREADS: u32 = 4;
 
 impl Seal {
-    /// Create the identity-owned directories under `root` for one generation.
+    /// Create the owner's directories under `root` for one generation.
     pub fn prepare(
         root: &Path,
-        identity: Option<LaunchIdentity>,
         incarnation: &str,
         generation: &str,
         devices: &str,
@@ -339,18 +199,14 @@ impl Seal {
         }
         // Directory names never carry a caller's spelling of the generation.
         let generation = &tensorfs::sha256::hex_digest(generation.as_bytes())[..32];
-        let uid = identity.map_or_else(euid, |i| i.uid);
-        let namespace = format!("u{uid}");
+        let namespace = format!("u{}", euid());
         let owned = |path: PathBuf| -> io::Result<PathBuf> {
             match fs::create_dir(&path) {
                 Ok(()) => (),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => (),
                 Err(error) => return Err(error),
             }
-            match identity {
-                Some(identity) => identity.own(&path)?,
-                None => platform::durable::set_mode(&path, 0o700)?,
-            }
+            platform::durable::set_mode(&path, 0o700)?;
             Ok(path)
         };
         fs::create_dir_all(root)?;
@@ -373,7 +229,6 @@ impl Seal {
         Ok(Self {
             devices: devices.into(),
             tensorfs_home: None,
-            threads: DEFAULT_THREADS,
             group: false,
             home: owned(root.join("home").join(&namespace))?,
             jit,
@@ -387,7 +242,7 @@ impl Seal {
         let path = |path: PathBuf| path.to_string_lossy().into_owned();
         let mut imposed = BTreeMap::from([
             ("CUDA_VISIBLE_DEVICES".to_string(), self.devices.clone()),
-            ("OMP_NUM_THREADS".into(), self.threads.to_string()),
+            ("OMP_NUM_THREADS".into(), THREADS.to_string()),
             ("COZY_HOME".into(), path(self.home.clone())),
             ("TMPDIR".into(), path(self.jit.clone())),
             ("CUDA_CACHE_PATH".into(), path(self.jit.join("cuda"))),

@@ -1,6 +1,6 @@
 # Package bridge
 
-`python/tensord_client` describes packages and builds immutable uv environment generations. Every
+`python/tensord_client` builds a live local package's uv environment generation. Every
 call runs on a pool executor ([GPU service](GPU-SERVICE.md)); the journal side is in
 `DURABLE-EXECUTION.md`.
 
@@ -11,16 +11,10 @@ Layout: `<generations>/<32-hex>/` with `env/`, `.hold` and `generation.json` (`i
 atomically last. A generation is never updated. `catalog.rs` resolves one only under a shared
 `.hold` flock.
 
-- `describe(project)`: the Runtime static reader runs in a subprocess, AST only. It never imports
-  package code.
-- `install`: `uv build --wheel`, then a new venv with the package and client wheels. The package's
-  own bounds apply. No SDK version is injected.
 - `install-captured` (`python -m tensord_client.installer`, called by `api/install.rs`):
   - Python comes from `uv python find` and must match the captured `python_requires`/`python_version`.
-  - Locked source: `uv sync --frozen --no-dev --no-editable`.
-  - Hashed requirements: `--require-hashes`, then the wheels with `--no-deps`.
-  - Anything else: `uv pip install` of the project and/or wheels.
-  - A locked source mixed with wheels or requirements is refused.
+  - A live project, installed editable: its lock's dependencies by `uv sync --frozen --no-dev
+    --no-editable --no-install-project`, else `uv pip install --editable` of the project.
   - The machine's own Runtime/TensorFS pair (`--sdk-wheel`) replaces the captured pair, every other
     version constrained, where `uv pip check` admits it. Else the capture's own pair (a vendored dev
     Runtime, say) is restored and `sdk_fallback` says why; every run of it logs that warning.
@@ -30,7 +24,6 @@ atomically last. A generation is never updated. `catalog.rs` resolves one only u
   - Failure prints `{kind: "install_failed", code, detail}`. `install.rs` passes the helper's
     stderr to the machine log and quotes its last lines (credentials masked) in the refusal when
     the failure is an operation's (`package_dependency_operation_failed`) or untyped.
-- `collect`: takes an exclusive non-blocking `.hold`, renames the generation, then deletes it.
 
 ## Calls between packages
 

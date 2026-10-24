@@ -7,17 +7,16 @@ and output post-processing. It has no scheduler and no memory-admission policy.
 
 ## Spawn
 
-`DeviceExecutor::spawn(ExecutorConfig)` (also `spawn_observed`, and `spawn_owned` through a
-`ChildLauncher`) runs:
+`DeviceExecutor::spawn_owned(ExecutorConfig)`, through a `ChildLauncher`, runs:
 
 ```
 PYTHON -I -m cozy_runtime.internal.trampoline --expect-parent <pid> --oom-adj 1000 \
-  --scope-backend inherit [--uid U --gid G] -- PYTHON -I -m cozy_runtime.internal.executor \
+  --scope-backend inherit -- PYTHON -I -m cozy_runtime.internal.executor \
   --socket <path> --root <root>
 ```
 
 - `ExecutorConfig`: `python`, `root` (0700), `socket` (0600), `environment` (configured
-  locations), `seal`, `generation_hold`, optional `LaunchIdentity`.
+  locations), `seal`, `generation_hold`.
 - Environment (`Seal::environment`, the only place it is composed): the machine's environment
   without credential-like names or Runtime's erased prefixes (`COZY_`, `CUDA_`, `PYTORCH_`,
   `NCCL_`, `HF_`, `TMPDIR`, …), then configured locations, then the seal, which always wins:
@@ -25,8 +24,7 @@ PYTHON -I -m cozy_runtime.internal.trampoline --expect-parent <pid> --oom-adj 10
   attention qualification is cached), JIT caches and `TMPDIR` (per machine run and generation),
   and the persistent per-UID kernel store.
 - The SDK trampoline applies parent-death, no_new_privs and OOM ordering before imports. Every
-  child leads its own process group; without a `LaunchIdentity` it keeps the service's UID and
-  cgroup.
+  child leads its own process group and keeps the service's UID.
 - The generation hold fd is inherited and survives exec and parent death.
 - `on_birth(&ProcessBirth, &Cancellation)` runs right after spawn so the caller can journal it.
 - Startup waits on a pidfd and the listener, with no timeout. A child that exits first returns

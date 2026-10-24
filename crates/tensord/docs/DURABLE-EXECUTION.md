@@ -11,7 +11,7 @@ durable daemon state, and describes the software activation transaction.
 
 - `executions.sqlite3` in the state root, WAL with `synchronous=FULL`. A successful accept is a
   committed receipt. The same file holds installations, preparations, public terminal
-  projections, native outputs, input intakes and submission closures.
+  projections, native outputs and submission closures.
 - `workspace_id()` is a v4 UUID created once and persisted.
 - States: `queued`, `starting`, `running`, `completed`, `failed`, `canceled`.
 - `Invocation`: `package`, `generation`, `module`, `entrypoint`, `input` (JSON).

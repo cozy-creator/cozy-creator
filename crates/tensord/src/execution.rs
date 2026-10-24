@@ -3,7 +3,7 @@
 use platform::process::Birth;
 use crate::journal::{
     Artifact, CallMemo, Execution, Invocation, Journal, Outcome, ProgressSnapshot,
-    ResultRecord, State, SubmissionContext, Weights,
+    ResultRecord, State, Weights,
 };
 use serde_json::Value;
 use std::{
@@ -31,36 +31,6 @@ fn bounded(text: &str, max: usize) -> String {
         end -= 1;
     }
     format!("{}…", &text[..end])
-}
-
-impl crate::native_inputs::IntakeJournal for Engine {
-    fn begin_intake(
-        &self,
-        spec: crate::native_inputs::IntakeSpec,
-    ) -> io::Result<crate::native_inputs::IntakeState> {
-        self.journal.lock().unwrap().begin_intake(spec)
-    }
-    fn finish_intake(
-        &self,
-        actor: &str,
-        retention: &str,
-        receipt: Vec<u8>,
-    ) -> io::Result<crate::native_inputs::IntakeState> {
-        self.journal
-            .lock()
-            .unwrap()
-            .settle_intake(actor, retention, Some(receipt), false)
-    }
-    fn abort_intake(
-        &self,
-        actor: &str,
-        retention: &str,
-    ) -> io::Result<crate::native_inputs::IntakeState> {
-        self.journal
-            .lock()
-            .unwrap()
-            .settle_intake(actor, retention, None, true)
-    }
 }
 
 pub struct Engine {
@@ -127,11 +97,6 @@ fn stop_preparation(
 type Halt = Arc<dyn Fn() -> io::Result<()> + Send + Sync>;
 
 impl Engine {
-    /// Object custody, as a run's acceptance takes it: while one holds it, no run is accepted
-    /// (and no object root is released).
-    pub fn object_custody(&self) -> std::sync::MutexGuard<'_, ()> {
-        self.object_custody.lock().unwrap()
-    }
 
     pub fn open(root: &Path) -> io::Result<Arc<Self>> {
         fs::create_dir_all(root)?;
@@ -172,16 +137,6 @@ impl Engine {
         let _ = self.memo.set(Arc::downgrade(objects));
     }
 
-    pub fn submit(&self, key: &str, invocation: Invocation) -> io::Result<Execution> {
-        let owned = self.owned.lock().unwrap();
-        let progress = self.progress.lock().unwrap();
-        let mut record = self.journal.lock().unwrap().accept(key, invocation)?;
-        overlay_observation(&mut record, &owned, &progress);
-        drop(progress);
-        drop(owned);
-        self.notify_activity();
-        Ok(record)
-    }
     pub fn get(&self, id: &str) -> io::Result<Execution> {
         let owned = self.owned.lock().unwrap();
         let progress = self.progress.lock().unwrap();
@@ -254,31 +209,6 @@ impl Engine {
     }
     pub fn public_terminal(&self, id: &str) -> io::Result<Option<crate::journal::PublicTerminal>> {
         self.journal.lock().unwrap().public_terminal(id)
-    }
-    pub fn acknowledge_collection(&self, id: &str) -> io::Result<Execution> {
-        self.journal.lock().unwrap().acknowledge_collection(id)
-    }
-    pub fn acknowledge_collection_events(
-        &self,
-        id: &str,
-        events: Option<&[u8]>,
-    ) -> io::Result<Execution> {
-        let record = self
-            .journal
-            .lock()
-            .unwrap()
-            .acknowledge_collection_events(id, events)?;
-        // Released by the client, and the store holds its products: the custody copy goes.
-        if events.is_some() && record.collected && self.public_terminal(id)?.is_some() {
-            drop(Spool(self.root.join("results").join(id)));
-        }
-        Ok(record)
-    }
-    pub fn native_output(&self, actor: &str, owner: &str) -> io::Result<Option<Vec<u8>>> {
-        self.journal.lock().unwrap().native_output(actor, owner)
-    }
-    pub fn native_owner(&self, owner: &str) -> io::Result<Option<String>> {
-        self.journal.lock().unwrap().native_owner(owner)
     }
     pub fn bind_native_output(&self, actor: &str, owner: &str, source: &[u8]) -> io::Result<()> {
         self.journal
@@ -396,45 +326,6 @@ impl Engine {
             .commit_public_terminal(id, record)
     }
 
-    pub fn submit_public(
-        &self,
-        context: SubmissionContext,
-        invocation: Invocation,
-    ) -> io::Result<Execution> {
-        self.submit_public_on_boot(context, invocation, "")
-    }
-    pub fn submit_public_on_boot(
-        &self,
-        context: SubmissionContext,
-        invocation: Invocation,
-        boot: &str,
-    ) -> io::Result<Execution> {
-        let owned = self.owned.lock().unwrap();
-        let progress = self.progress.lock().unwrap();
-        let mut record = self
-            .journal
-            .lock()
-            .unwrap()
-            .accept_public_on_boot(context, invocation, boot)?;
-        overlay_observation(&mut record, &owned, &progress);
-        drop(progress);
-        drop(owned);
-        self.notify_activity();
-        Ok(record)
-    }
-
-    /// A run accepted before its preparation; true when new. Its preparation's progress is
-    /// observed like a supervised attempt's until it is prepared or ends.
-    pub fn accept_run(
-        &self,
-        actor: &str,
-        id: &str,
-        digest: &str,
-        invocation: Invocation,
-    ) -> io::Result<(Execution, bool)> {
-        self.accept_run_objects(actor, id, digest, invocation, &[], &[])
-    }
-
     pub fn accept_run_objects(
         &self,
         actor: &str,
@@ -514,10 +405,6 @@ impl Engine {
         Ok(record)
     }
 
-    pub fn list_actor(&self, actor: &str, limit: usize) -> io::Result<Vec<Execution>> {
-        self.select(|journal| journal.list_actor(actor, limit))
-    }
-
     pub fn actor_page(
         &self,
         actor: &str,
@@ -532,21 +419,9 @@ impl Engine {
     pub fn actor_head(&self, actor: &str) -> io::Result<u64> {
         self.journal.lock().unwrap().actor_head(actor)
     }
-    pub fn list(&self) -> io::Result<Vec<Execution>> {
-        let owned = self.owned.lock().unwrap();
-        let progress = self.progress.lock().unwrap();
-        let mut records = self.journal.lock().unwrap().list()?;
-        for record in &mut records {
-            overlay_observation(record, &owned, &progress);
-        }
-        Ok(records)
-    }
     /// See `Journal::jobs`.
     pub fn jobs(&self, since: i64) -> io::Result<(bool, i64)> {
         self.journal.lock().unwrap().jobs(since)
-    }
-    pub fn supervising(&self) -> usize {
-        self.owned.lock().unwrap().len()
     }
     /// Whether this machine run supervises `id`.
     pub fn owns(&self, id: &str) -> bool {

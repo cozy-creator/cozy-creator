@@ -2,7 +2,7 @@
 use platform::process::{Birth, Exact};
 use crate::{
     execution::open_artifact,
-    launch_identity::{LaunchIdentity, Seal},
+    launch_identity::Seal,
     process::{reap_group, tail, Liveness, Meter, Watch, Watching},
     seam,
 };
@@ -40,7 +40,6 @@ pub struct ExecutorConfig {
     pub environment: BTreeMap<String, String>,
     pub seal: Seal,
     pub generation_hold: Option<Arc<File>>,
-    pub identity: Option<LaunchIdentity>,
     /// Give the executor its own scope in this namespace: a cgroup when the host delegates
     /// one, else a token its descendants inherit.
     pub cgroup_namespace: Option<String>,
@@ -182,7 +181,6 @@ pub struct DeviceExecutor {
     _generation_hold: Option<Arc<File>>,
     codec: Arc<Codec>,
     retained: Vec<Box<dyn Send>>,
-    identity: Option<LaunchIdentity>,
     watched: Watched,
     /// Longest gap between frames this executor has shown during invocations.
     worst_gap: Duration,
@@ -196,7 +194,6 @@ pub struct DeviceExecutor {
 #[derive(Clone)]
 pub struct Cancellation {
     root: PathBuf,
-    identity: Option<LaunchIdentity>,
     watched: Watched,
 }
 impl Cancellation {
@@ -211,9 +208,6 @@ impl Cancellation {
             .open(&temporary)?;
         file.write_all(request_id.as_bytes())?;
         file.sync_all()?;
-        if let Some(identity) = self.identity {
-            identity.readable(&temporary)?;
-        }
         fs::rename(temporary, self.root.join("executor.cancel"))?;
         platform::durable::sync_dir(&self.root)?;
         if let Some(watch) = self.watched.lock().unwrap().as_ref() {
@@ -262,26 +256,21 @@ fn zombie_status(birth: &Birth) -> Option<ExitStatus> {
 fn endpoint(config: &ExecutorConfig) -> io::Result<(LocalListener, BTreeMap<String, String>)> {
     fs::create_dir_all(&config.root)?;
     platform::durable::set_mode(&config.root, 0o700)?;
-    if let Some(identity) = config.identity {
-        identity.own(&config.root)?;
-    }
     let listener = LocalListener::bind(&config.socket)?;
     // A Unix socket is a file whose mode and owner admit the executor; a Windows pipe's own
     // access list admits only this user.
     #[cfg(unix)]
     platform::durable::set_mode(&config.socket, 0o600)?;
-    if let Some(identity) = config.identity {
-        identity.socket(&config.socket)?;
-    }
     Ok((listener, config.seal.environment(&config.environment)))
 }
 
 /// Where an executor dials the listener at `root/name`. A Unix socket path has a short limit
 /// (`sun_path`: 104 bytes on macOS); past it, the socket lives in this user's private directory
 /// under /tmp, named by the hash of the path it stands for. A Windows pipe takes any path.
+#[cfg(not(target_os = "linux"))]
 pub fn socket_path(root: &Path, name: &str) -> io::Result<PathBuf> {
     let natural = root.join(name);
-    #[cfg(all(unix, not(target_os = "linux")))]
+    #[cfg(unix)]
     if natural.as_os_str().len() > 100 {
         use std::os::unix::fs::MetadataExt;
         let dir = PathBuf::from(format!("/tmp/cozy-{}", crate::launch_identity::euid()));
@@ -372,9 +361,6 @@ impl Drop for CodecHelper {
     }
 }
 impl Codec {
-    pub fn python(&self) -> &Path {
-        &self.config.python
-    }
     pub fn new(config: CodecConfig, log: PathBuf) -> Self {
         Self {
             config,
@@ -670,16 +656,7 @@ fn bind(spool: &Path, reply: &Frame, media: &BTreeMap<String, String>) -> io::Re
 }
 
 impl DeviceExecutor {
-    pub fn spawn(config: ExecutorConfig) -> io::Result<Self> {
-        Self::spawn_observed(config, |_, _| Ok(()))
-    }
 
-    pub fn spawn_observed(
-        config: ExecutorConfig,
-        on_birth: impl FnOnce(&Birth, &Cancellation) -> io::Result<()>,
-    ) -> io::Result<Self> {
-        Self::spawn_internal(config, None, on_birth)
-    }
     pub fn spawn_owned(
         config: ExecutorConfig,
         launcher: &crate::child_launcher::ChildLauncher,
@@ -695,7 +672,7 @@ impl DeviceExecutor {
         let (listener, environment) = endpoint(&config)?;
         let scope = scope(&config)?;
         let mut command =
-            crate::launch_identity::trampoline(&config.python, config.identity, scope.as_deref())?;
+            crate::launch_identity::trampoline(&config.python, scope.as_deref())?;
         command
             .args(["-I", "-m", "cozy_runtime.internal.executor", "--socket"])
             .arg(&config.socket)
@@ -836,7 +813,6 @@ impl DeviceExecutor {
             &birth,
             &Cancellation {
                 root: config.root.clone(),
-                identity: config.identity,
                 watched: watched.clone(),
             },
         )?;
@@ -849,15 +825,9 @@ impl DeviceExecutor {
             }));
         };
         let credential = platform::handles::peer(&stream)?;
-        let expected_uid = config
-            .identity
-            .map_or_else(crate::launch_identity::euid, |identity| identity.uid);
-        let expected_gid = config
-            .identity
-            .map_or_else(crate::launch_identity::egid, |identity| identity.gid);
         if credential.pid != pid
-            || credential.uid != expected_uid
-            || credential.gid != expected_gid
+            || credential.uid != crate::launch_identity::euid()
+            || credential.gid != crate::launch_identity::egid()
         {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -882,7 +852,6 @@ impl DeviceExecutor {
             _generation_hold: config.generation_hold,
             codec,
             retained: Vec::new(),
-            identity: config.identity,
             watched,
             worst_gap: Duration::ZERO,
             log_from: 0,
@@ -941,7 +910,6 @@ impl DeviceExecutor {
     pub fn cancellation(&self) -> Cancellation {
         Cancellation {
             root: self.root.clone(),
-            identity: self.identity,
             watched: self.watched.clone(),
         }
     }
@@ -1072,11 +1040,6 @@ impl DeviceExecutor {
     /// Its Start's `memo`: the tiers its stage memo serves, when this machine memoizes.
     pub fn memo_settings(&self) -> Option<MemoSettings> {
         self.memo.as_ref().map(|_| MemoSettings { process_bytes: -1, entry_bytes: crate::memo::ENTRY_BYTES })
-    }
-
-    /// Attempt-keyed cooperative cancellation; observer teardown never calls this.
-    pub fn cancel(&self, request_id: &str) -> io::Result<()> {
-        self.cancellation().cancel(request_id)
     }
 
     /// Ask the executor to exit, then observe that exact exit (killing only a wedge).
@@ -1350,12 +1313,6 @@ fn refuse_malformed(
     }
     let answer = refused(frame.seq, "malformed_request", frame.malformed.clone());
     write_frame(stream, &answer)
-}
-pub fn write_answer(
-    stream: &mut LocalStream,
-    answer: &Answer,
-) -> io::Result<()> {
-    write_frame(stream, answer)
 }
 fn scan(value: &Value) -> io::Result<()> {
     match value {

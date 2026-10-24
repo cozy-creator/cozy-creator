@@ -17,24 +17,6 @@ pub struct AttemptOutcome {
     pub outcome_canonical_bytes: Vec<u8>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct DesiredLocalPackageSet {
-    pub operation_id: String,
-    pub package: Option<DevelopmentPackage>,
-    pub files: Vec<LocalPackageFileRef>,
-    pub dependency_requirements: Vec<u8>,
-    pub python_requires: String,
-    pub python_version: String,
-    pub source_archive: String,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct DevelopmentPackage {
-    pub package: String,
-    pub release: String,
-    pub installation_id: String,
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DownloadAdapterRef {
@@ -53,46 +35,6 @@ pub struct DownloadAdapterRef {
 pub struct ImageDistribution {
     pub distribution: String,
     pub version: String,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct InputTreeImportBlob {
-    pub object: Option<Ref>,
-    pub offset: u64,
-    pub data: Vec<u8>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct InputTreeImportCommit {
-    pub abort: bool,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct InputTreeImportHeader {
-    pub request_id: String,
-    pub input_id: String,
-    pub manifest: Option<Ref>,
-    pub manifest_canonical_bytes: Vec<u8>,
-    pub content_bytes: u64,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct LocalPackageFileRef {
-    pub digest: Vec<u8>,
-    pub filename: String,
-    pub length: u64,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct LocalPackageUploadChunk {
-    pub offset: u64,
-    pub data: Vec<u8>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct LocalPackageUploadHeader {
-    pub operation_id: String,
-    pub file: Option<LocalPackageFileRef>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -242,14 +184,6 @@ pub struct ModelChoice {
 pub struct NativeByteRetentionRequest {
     pub source: Option<NativeByteTreeRef>,
     pub retention_id: String,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct NativeByteRetentionResult {
-    pub source: Option<NativeByteTreeRef>,
-    pub retention_id: String,
-    pub released: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

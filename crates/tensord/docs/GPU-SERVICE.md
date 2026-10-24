@@ -9,7 +9,7 @@ Acceptance, journal, progress and output custody stay in `Engine`; scheduling st
 
 ## Configuration
 
-`tensord serve --gpu-config <json>` loads a root-sealed `GpuConfig`:
+The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `config.toml`:
 - `devices`: the GPU envelope, `"0"` or `"0,1,..."`. A plan of degree K > 1 runs on the first K;
   a one-GPU plan on any of them. An executor is sealed to its lane (`CUDA_VISIBLE_DEVICES`).
 - `models: [ModelGrant { package, slot, repository, release, lane, manifest, components }]`: the only
@@ -18,8 +18,8 @@ Acceptance, journal, progress and output custody stay in `Engine`; scheduling st
 - `authorized_device_limit_bytes`: a GPU's ledger capacity where neither NVML nor the inventory
   says it.
 - `memory`: `{ floor_bytes }`: raise the free floor TensorD keeps on each GPU.
-- `environment`: keys containing `TOKEN`, `SECRET` or `PASSWORD` are refused.
-- `host`: optional `{mode}`, `shared` (default) or `dedicated`. `identity`: optional `{uid, gid}`.
+- `environment`: names `launch_identity::credential_name` judges credentials never reach an executor.
+- `host`: `{mode}`, `dedicated` on a rental, else `shared`.
 
 ## Preparation
 
@@ -151,17 +151,11 @@ Executor requests:
   single outputs SET; re-publishing identical SET bytes is a no-op). Answers `Published`.
 - Progress counts only `advance > 0`.
 
-## Launch identity
+## Launch
 
-With `identity`:
-- A non-root owner may only name its own UID and GID.
-- The trampoline gets `--uid/--gid`. Peer credentials must match.
-- The pool root and its parent become 0710, keeping their owner. Executor dirs and per-request
-  spools become identity-owned 0700.
-- The interface file and cancel marker become 0440. Journal, results and generations are never
-  changed.
-- The socket path is `<root>/executor` and at most 107 bytes. Without an identity it is
-  `/proc/<pid>/fd/<dirfd>/executor`.
+Executors run as the machine's own user: a pod has one tenant, and a local machine runs its owner's
+code. Peer credentials must match the machine's UID and GID. On Linux the socket path is
+`/proc/<pid>/fd/<dirfd>/executor`.
 
 `ChildLauncher` spawns from one pool-owned thread, because Linux ties `PDEATHSIG` to the creating
 thread.
@@ -173,6 +167,5 @@ thread.
 - One Python post helper per request.
 - Each executor gets its own scope: a cgroup-v2 where the host delegates one (laptop systemd
   scopes, rootful hosts), else a token (containers with a read-only or v1 hierarchy, RunPod).
-- Seal: `threads` config field (torch's allocator is set in Runtime code); `<root>/home`, `<root>/kernels` (per UID) and
+- Seal: `OMP_NUM_THREADS` 4 (torch's allocator is set in Runtime code); `<root>/home`, `<root>/kernels` (per UID) and
   `<root>/jit/<run>/<generation>`. Earlier runs' JIT scopes, and executor roots (logs) older than a day, are removed at pool start.
-- `PDEATHSIG` retention after a UID drop is unverified.

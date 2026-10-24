@@ -222,9 +222,6 @@ impl HeldGeneration {
     pub fn retention(&self) -> Arc<File> {
         self.hold.clone()
     }
-    pub fn invocation(&self, entrypoint: &str, input: serde_json::Value) -> io::Result<Invocation> {
-        self.invocation_of("", entrypoint, input)
-    }
     /// A call of `application` (empty: the root's; else a callee's) in this environment.
     pub fn invocation_of(
         &self,

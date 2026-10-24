@@ -44,10 +44,6 @@ impl Hub {
         })
     }
 
-    pub fn origin(&self) -> &str {
-        &self.grant.origin
-    }
-
     /// When the Hub last answered this machine, whatever it said; 0: never in this process.
     pub fn contact_ms(&self) -> i64 {
         self.contact_ms.load(Ordering::Acquire)
