@@ -332,7 +332,7 @@ fn asked<T: Send, F: Future<Output = Result<T, hub_client::Error>> + Send>(
         loop {
             let failed = match tokio::time::timeout(ANSWER, ask()).await {
                 Ok(Ok(answer)) => return Ok(answer),
-                Ok(Err(error)) if error.refused() => return Err(error),
+                Ok(Err(error)) if !error.retry() => return Err(error),
                 Ok(Err(error)) => error,
                 Err(_) => hub_client::Error::Call(format!("{origin} gave no answer in {} s", ANSWER.as_secs())),
             };

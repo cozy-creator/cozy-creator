@@ -22,7 +22,7 @@ use protocol::{
 
 use crate::{
     machines::{Machines, internal, lock},
-    rentals::{Hubs, hub_refusal, signed_out},
+    rentals::{Hubs, hub_refusal, reason},
     store::RunRow,
 };
 
@@ -226,9 +226,9 @@ impl Hubs {
     /// This computer's live Bearer at `origin`, from the normal cached user session: held, kept,
     /// or minted again past its refresh point. The key stays on this computer.
     async fn bearer(&self, origin: &Origin) -> Result<Bearer, Denied> {
-        let client = self.client(origin).map_err(|_| needs_sign_in(origin))?;
+        let client = self.client(origin).map_err(refused)?;
         let Credential::User(session) = client.credential() else {
-            return Err(needs_sign_in(origin));
+            unreachable!("a signed-in client speaks as its user")
         };
         session
             .bearer(&client.anonymous())
@@ -239,9 +239,9 @@ impl Hubs {
     /// This computer's account at `origin` and where machines read it: read once per device
     /// key, so a login, logout or account switch is seen at the next run with no Hub read.
     pub(crate) async fn facts(&self, origin: &Origin) -> Result<Facts, Denied> {
-        let client = self.client(origin).map_err(|_| needs_sign_in(origin))?;
+        let client = self.client(origin).map_err(refused)?;
         let Credential::User(session) = client.credential() else {
-            return Err(needs_sign_in(origin));
+            unreachable!("a signed-in client speaks as its user")
         };
         let key = session.key().public_key();
         if let Some(facts) = lock(&self.facts)
@@ -334,15 +334,9 @@ pub(crate) fn anonymous_tensorfs(spec: &v1::RunSpec) -> Option<v1::TensorFSOptio
 }
 
 fn hub_denied(origin: &Origin, error: hub_client::Error) -> Denied {
-    let refused = error.refused();
-    let error = hub_refusal(origin, error);
-    match refused {
-        true => Denied::Refused(Reason {
-            code: error.cause.unwrap_or(error.code),
-            message: error.message,
-            ..Default::default()
-        }),
-        false => unreachable(error.message),
+    match hub_refusal(origin, error) {
+        error if error.kind == Kind::Unavailable => Denied::Unreachable(error.message),
+        error => refused(error),
     }
 }
 
@@ -355,25 +349,6 @@ fn destination(spec: &v1::RunSpec) -> &str {
     }
 }
 
-fn needs_sign_in(origin: &str) -> Denied {
-    let error: Error = signed_out(origin);
-    refused(
-        "hub_sign_in_required",
-        format!(
-            "this run publishes to {origin}, which needs this computer's sign-in there: {}",
-            error.message
-        ),
-    )
-}
-
-fn refused(code: &str, message: String) -> Denied {
-    Denied::Refused(Reason {
-        code: code.into(),
-        message,
-        ..Default::default()
-    })
-}
-
-fn unreachable(message: String) -> Denied {
-    Denied::Unreachable(message)
+fn refused(error: Error) -> Denied {
+    Denied::Refused(reason(error))
 }

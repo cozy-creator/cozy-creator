@@ -60,7 +60,7 @@ pub async fn list(ctx: &Context) -> Result<ExitCode, Error> {
     }
     for hub in &list.signed_out {
         let login = match ctx.config.resolve(hub) {
-            Ok(hub) => ctx.login(&hub),
+            Ok(hub) => ctx.config.login(&hub),
             Err(_) => format!("cozy login <email> --tensorhub {hub}"),
         };
         println!("hub {}: not logged in; `{login}`", hub_label(ctx, hub));

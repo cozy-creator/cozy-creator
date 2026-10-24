@@ -13,6 +13,8 @@ mod generated {
     include!(concat!(env!("OUT_DIR"), "/hub.rs"));
 }
 
+use protocol::error::{Error as Refusal, Kind};
+
 pub use auth::{Auth, Credential};
 pub use device::{Bearer, DeviceKey, Enrollment, UserSession};
 pub use generated::{Client, types};
@@ -22,7 +24,7 @@ pub use progenitor_client::{ByteStream, ResponseValue};
 pub type CallError = progenitor_client::Error<types::Error>;
 
 /// A refused or failed call. `Hub` carries the Hub's own typed refusal verbatim.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
 pub enum Error {
     #[error("{code}: {message}")]
     Hub {
@@ -33,20 +35,51 @@ pub enum Error {
     },
     #[error("Tensorhub: {0}")]
     Call(String),
-    /// The call's credential could not be had (a login failed); nothing was sent.
+    /// The call's credential could not be had (a login refused, a key missing or unusable);
+    /// nothing was sent.
     #[error("{0}")]
     Credential(String),
     #[error("an unusable answer: {0}")]
     Answer(String),
-    #[error("key: {0}")]
-    Key(String),
 }
 
 impl Error {
-    /// The Hub refused the request itself, so asking again gets the same answer. A timeout
-    /// (408), rate limit (429), server failure (5xx) or no answer at all is worth asking again.
-    pub fn refused(&self) -> bool {
-        matches!(self, Self::Hub { status, .. } if *status < 500 && !matches!(status, 408 | 429))
+    /// Whether asking again may be answered: no answer, a timeout (408), rate limit (429) or
+    /// server failure. A refusal, of the credential too, is final.
+    pub fn retry(&self) -> bool {
+        match self {
+            Self::Call(_) => true,
+            Self::Hub { status, .. } => Kind::of_http(*status) == Kind::Unavailable,
+            _ => false,
+        }
+    }
+
+    /// The one reading of a failed call as cozy's refusal: the Hub's code (also the cause),
+    /// message and remedy, classed by status, `Unavailable` exactly when [`Error::retry`]. A
+    /// refused credential (a login refused, a key missing, unusable or revoked, a 401) is
+    /// `hub_credential`, with `login` next.
+    pub fn refusal(self, login: impl FnOnce() -> String) -> Refusal {
+        let (error, remedy) = match self {
+            Self::Hub { status: 401, code, message, remedy } => (
+                Refusal::credential("hub_credential", message).cause(code).next(login()),
+                remedy,
+            ),
+            Self::Hub { status, code, message, remedy } => {
+                (Refusal::new(Kind::of_http(status), code.clone(), message).cause(code), remedy)
+            }
+            Self::Call(message) => (
+                Refusal::unavailable("hub_unreachable", message),
+                "check this computer's internet connection, then try again".into(),
+            ),
+            Self::Credential(message) => {
+                (Refusal::credential("hub_credential", message).next(login()), String::new())
+            }
+            Self::Answer(message) => (Refusal::internal("hub_answer", message), String::new()),
+        };
+        match remedy.is_empty() {
+            true => error,
+            false => error.remedy(remedy),
+        }
     }
 }
 
@@ -93,7 +126,10 @@ impl<E: serde::Serialize + std::fmt::Debug> From<progenitor_client::Error<E>> fo
             }
         }
         match error {
-            progenitor_client::Error::Custom(why) => Self::Credential(why),
+            // The `pre` hook's own failure, typed.
+            progenitor_client::Error::Custom(failed) => {
+                serde_json::from_str(&failed).unwrap_or(Self::Credential(failed))
+            }
             progenitor_client::Error::InvalidResponsePayload(_, why) => {
                 Self::Answer(why.to_string())
             }

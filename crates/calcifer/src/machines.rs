@@ -909,18 +909,17 @@ impl Machines {
     /// Refuses `new` before the run is recorded from a computer not signed in to the run's Hub
     /// (it could only fail once it was), and without the quote its renter agreed to.
     pub(crate) async fn admit(self: &Arc<Self>, submit: &SubmitRun) -> Result<(), Error> {
-        let signed_out = || {
-            config::Origin::parse(&submit.hub).is_ok_and(|hub| self.hubs.client(&hub).is_err())
-        };
         match &submit.on {
             On::Machine(name) => self.reach(name).await,
-            On::New(_) if signed_out() => Err(crate::rentals::signed_out(&submit.hub)),
-            On::New(_) if submit.agreed.is_none() => Err(Error::new(
-                Kind::Usage,
-                "quote_unagreed",
-                "a run that rents names the quote its renter agreed to (POST /v1/run-quotes)",
-            )),
-            _ => Ok(()),
+            On::New(_) => match self.hubs.client(&submit.hub).map(|_| submit.agreed) {
+                Ok(None) => Err(Error::new(
+                    Kind::Usage,
+                    "quote_unagreed",
+                    "a run that rents names the quote its renter agreed to (POST /v1/run-quotes)",
+                )),
+                agreed => agreed.map(drop),
+            },
+            On::Any => Ok(()),
         }
     }
 
@@ -1191,9 +1190,7 @@ pub(crate) async fn run_quote(
     body: Bytes,
 ) -> Result<Json<wire::RunQuote>, Refusal> {
     let submit = parse::<SubmitRun>(&body)?;
-    if config::Origin::parse(&submit.hub).is_ok_and(|hub| api.machines.hubs.client(&hub).is_err()) {
-        return Err(Refusal(crate::rentals::signed_out(&submit.hub)));
-    }
+    api.machines.hubs.client(&submit.hub).map_err(Refusal)?;
     Ok(Json(api.machines.run_quote(&submit).await.map_err(Refusal)?))
 }
 
