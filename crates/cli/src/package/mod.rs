@@ -7,9 +7,8 @@ use std::{path::PathBuf, process::ExitCode};
 
 use clap::Subcommand;
 use protocol::error::{Error, Kind};
-use protocol::names::ROOT;
 
-use crate::{Context, run::Placement};
+use crate::{Context, run::{Placement, target::Target}};
 
 mod author;
 mod carried;
@@ -93,7 +92,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     match args.command {
         Command::Search { query, limit } => catalog::search(ctx, &query.join(" "), limit).await,
         Command::Info { package } => catalog::info(ctx, &PackageRef::parse(&package)?).await,
-        Command::Install { package, placement } => match directory(&package) {
+        Command::Install { package, placement } => match local(ctx, &package)? {
             Some(path) => machine::install_directory(ctx, &path, placement.on()).await,
             None => machine::install(ctx, &PackageRef::parse(&package)?, placement.on()).await,
         },
@@ -120,34 +119,17 @@ pub(crate) struct PackageRef {
 }
 
 impl PackageRef {
+    /// A package target without a function (`run::target`'s grammar): `x/y` is account x's
+    /// package y.
     pub fn parse(text: &str) -> Result<Self, Error> {
-        let text = text.trim();
-        let (path, release) = match text.split_once('@') {
-            Some((path, release)) => (path, Some(release.to_owned())),
-            None => (text, None),
+        let invalid = || Error::new(Kind::Usage, "package_ref_invalid", format!("{text:?} is not [org/]name[@release]"));
+        let (package, release) = match Target::published(text.trim()).map_err(|_| invalid())? {
+            Target::Published { package, function: None, release, .. } => (package, release),
+            Target::Published { owned: Some(owned), release, .. } => (owned, release),
+            _ => return Err(invalid()),
         };
-        let valid = |part: &str| {
-            !part.is_empty()
-                && part
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-        };
-        match path.split_once('/').or(Some((ROOT, path))) {
-            Some((org, name))
-                if valid(org) && valid(name) && release.as_deref().is_none_or(valid) =>
-            {
-                Ok(Self {
-                    org: org.to_ascii_lowercase(),
-                    name: name.to_ascii_lowercase(),
-                    release,
-                })
-            }
-            _ => Err(Error::new(
-                Kind::Usage,
-                "package_ref_invalid",
-                format!("{text:?} is not [org/]name[@release]"),
-            )),
-        }
+        let (org, name) = package.split_once('/').ok_or_else(invalid)?;
+        Ok(Self { org: org.into(), name: name.into(), release })
     }
 
     pub fn package(&self) -> String {
@@ -164,17 +146,10 @@ impl std::fmt::Display for PackageRef {
     }
 }
 
-/// Local code only when it is written as a path (`.`, `..`, absolute, `./…`, `../…`) or names a
-/// `.py` script; a bare word is a package name.
-fn directory(text: &str) -> Option<PathBuf> {
-    let explicit = text.ends_with(".py")
-        || text == "."
-        || text == ".."
-        || ["./", "../", ".\\", "..\\"]
-            .iter()
-            .any(|p| text.starts_with(p))
-        || std::path::Path::new(text).is_absolute();
-    explicit.then(|| PathBuf::from(text))
+/// Local code `text` names (`run::target::local`), from the working directory.
+fn local(ctx: &Context, text: &str) -> Result<Option<PathBuf>, Error> {
+    let cwd = std::env::current_dir().map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
+    Ok(crate::run::target::local(text, &cwd, &ctx.user_home))
 }
 
 /// Names to remove: `[org/]name` (or `local/name`), with no release.

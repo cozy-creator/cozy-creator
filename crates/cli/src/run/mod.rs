@@ -206,7 +206,7 @@ async fn run(ctx: &Context, args: RunArgs) -> Result<ExitCode, Error> {
     let cwd = std::env::current_dir()
         .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
     let raw = args.target.as_deref().unwrap_or_default();
-    let (package, function, release, owned) = match Target::parse(raw, &cwd)? {
+    let (package, function, release, owned) = match Target::parse(raw, &cwd, &ctx.user_home)? {
         Target::Published {
             package,
             function,

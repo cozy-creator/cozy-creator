@@ -118,11 +118,11 @@ enum Named {
     Local(PathBuf),
 }
 
-fn package(named: &str) -> Result<Named, Error> {
-    if crate::run::target::local_path(named) {
-        let cwd = std::env::current_dir()
-            .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
-        return Ok(Named::Local(cwd.join(named.trim())));
+fn package(ctx: &Context, named: &str) -> Result<Named, Error> {
+    let cwd = std::env::current_dir()
+        .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
+    if let Some(path) = crate::run::target::local(named, &cwd, &ctx.user_home) {
+        return Ok(Named::Local(path));
     }
     let named = crate::package::PackageRef::parse(named)?;
     Ok(Named::Hub(named.package(), named.release))
@@ -161,7 +161,7 @@ fn declared(interface: &Interface) -> String {
 }
 
 pub(crate) async fn quantize(ctx: &Context, args: Quantize) -> Result<ExitCode, Error> {
-    let named = package(&args.package)?;
+    let named = package(ctx, &args.package)?;
     let model = ModelRef::parse(&args.model)?;
     let hub = ctx.hub()?;
     let (card, prepared);

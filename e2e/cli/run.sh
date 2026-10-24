@@ -27,9 +27,14 @@ weightless() {
 step "a weightless request"
 text=e2e-$RANDOM$RANDOM back=''
 for ((i = ${#text} - 1; i >= 0; i--)); do back+=${text:i:1}; done
-if (cd "$here" && cell weightless ./weightless/reverse "text=$text"); then
+# Local code spelled as this OS spells paths (`.\weightless\reverse` on Windows), and `..` is a path too.
+spelled=./weightless/reverse
+[ "${RUNNER_OS:-}" != Windows ] || spelled='.\weightless\reverse'
+if (cd "$here" && cell weightless "$spelled" "text=$text"); then
   grep -q "$back" "$OUT/weightless.ndjson" || check "weightless: the reply is not $back"
 fi
+(cd "$here/weightless/e2e_weightless" && cozy --json run .. --describe --on local > "$OUT/parent.json" 2> "$OUT/parent.err") \
+  || check "cozy run .. did not describe the package above: $(tail -c 300 "$OUT/parent.err")"
 
 # An idle executor killed is reaped at once (gone from ps, no zombie), and the next request works.
 step "a killed idle executor"
