@@ -12,7 +12,6 @@ members = [
     "crates/tensord",
     "crates/tensorfs",
     "crates/tensorfs-py",
-    "crates/varena",
 ]
 
 [workspace.package]
@@ -32,7 +31,6 @@ platform = { path = "crates/platform" }
 protocol = { path = "crates/protocol" }
 tensord = { path = "crates/tensord" }
 tensorfs = { path = "crates/tensorfs", default-features = false }
-varena = { path = "crates/varena", default-features = false }
 
 anstream = "1.0.0"
 anstyle = "1.0.14"

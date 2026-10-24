@@ -26,7 +26,6 @@ pub mod local_source;
 pub mod machine;
 pub mod machine_api;
 pub mod memo;
-pub mod derived;
 pub mod memory;
 pub mod native_inputs;
 pub mod objects;

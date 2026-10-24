@@ -15,9 +15,6 @@ STORE_FORMAT: int
 def _kernel_binary(family: int, core: str, dtype: str) -> tuple[bytes, str, int, int]:
     """Internal engine binary payload, entry symbol, shared bytes and warp count."""
 
-#: `tensorfs._ext.varena`, typed in full by `varena/__init__.pyi` (the public package).
-varena: ModuleType
-
 #: Physical format inspection for storage integrations.
 raw: ModuleType
 #: `tensorfs._ext.executor`, typed in `executor.pyi` (the public module).
