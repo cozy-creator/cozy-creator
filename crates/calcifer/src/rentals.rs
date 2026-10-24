@@ -449,13 +449,14 @@ impl Machines {
                 if let Some(ask) = me.store().ask(&key).map_err(internal)? {
                     return Ok(ask);
                 }
-                let (sku, gpus, fallbacks) = match sku {
-                    Some(sku) if gpus > 0 => (sku, Some(gpus), vec![]),
+                let (sku, gpus, disk_gb, fallbacks) = match sku {
+                    Some(sku) if gpus > 0 => (sku, Some(gpus), None, vec![]),
                     sku => me.placed(&run, sku.as_deref()).await?,
                 };
                 let hub = run.hub.as_deref().unwrap_or_default();
                 let shape = Shape {
                     gpus,
+                    disk_gb,
                     agreed: run.agreed,
                     fallbacks,
                     ..Shape::default()
@@ -497,7 +498,7 @@ impl Machines {
         &self,
         run: &RunRow,
         sku: Option<&str>,
-    ) -> Result<(String, Option<u32>, Vec<types::RentalFallback>), Error> {
+    ) -> Result<(String, Option<u32>, Option<u32>, Vec<types::RentalFallback>), Error> {
         let hub = run.hub.as_deref().unwrap_or_default();
         let placed = self.place(hub, &run.spec, sku).await?;
         if !placed.why.is_empty() {
@@ -507,7 +508,7 @@ impl Machines {
             };
             self.calcifer.warn(&run.id, &warning).map_err(internal)?;
         }
-        Ok((placed.sku, placed.gpus, placed.fallbacks))
+        Ok((placed.sku, placed.gpus, placed.disk_gb, placed.fallbacks))
     }
 
     /// Where `hub` places a run of `spec`, on `sku` when the run names one. A named product the Hub
@@ -518,6 +519,7 @@ impl Machines {
             (Err(e), Some(sku)) => Ok(Placed {
                 sku: sku.into(),
                 gpus: None,
+                disk_gb: None,
                 fallbacks: vec![],
                 why: match e.code.as_str() {
                     "placement_needs_release" => String::new(),
@@ -584,9 +586,13 @@ impl Machines {
         );
         // The Hub may buy the next machines down its order instead (as fast, when the pick is),
         // never above the price agreed for the pick.
-        let fallbacks = placement.machines[1..]
+        let others: Vec<_> = placement.machines[1..]
             .iter()
             .filter(|m| top.fast != Some(true) || m.fast == Some(true))
+            .collect();
+        let disk = others.iter().fold(top.container_disk_gb, |disk, m| disk.max(m.container_disk_gb));
+        let fallbacks = others
+            .iter()
             .map(|m| types::RentalFallback {
                 sku: m.name.clone(),
                 accelerator_count: Some(m.accelerator_count),
@@ -595,6 +601,7 @@ impl Machines {
         Ok(Placed {
             sku: top.name.clone(),
             gpus: u32::try_from(top.accelerator_count).ok(),
+            disk_gb: u32::try_from(disk).ok().filter(|d| *d > 0),
             fallbacks,
             why,
             alternatives: alternatives(&placement.machines),
@@ -609,12 +616,13 @@ impl Machines {
         let gpus = (submit.spec.gpus > 0).then_some(submit.spec.gpus);
         let placed = match (sku, gpus) {
             (Some(sku), Some(_)) => {
-                Placed { sku: sku.clone(), gpus, fallbacks: vec![], why: String::new(), alternatives: vec![] }
+                Placed { sku: sku.clone(), gpus, disk_gb: None, fallbacks: vec![], why: String::new(), alternatives: vec![] }
             }
             (sku, _) => self.place(&submit.hub, &submit.spec, sku.as_deref()).await?,
         };
         let gpus = placed.gpus.or(gpus);
-        let quote = self.quote(&submit.hub, &placed.sku, Shape { gpus, ..Shape::default() }).await?;
+        let shape = Shape { gpus, disk_gb: placed.disk_gb, ..Shape::default() };
+        let quote = self.quote(&submit.hub, &placed.sku, shape).await?;
         Ok(RunQuote {
             sku: placed.sku,
             gpus,
@@ -976,6 +984,9 @@ impl Hubs {
 struct Placed {
     sku: String,
     gpus: Option<u32>,
+    /// The disk the Hub priced the pick at (sized for the weights the run fetches), as large as
+    /// any fallback's: the rental asks for it.
+    disk_gb: Option<u32>,
     fallbacks: Vec<types::RentalFallback>,
     why: String,
     alternatives: Vec<Alternative>,
@@ -1186,7 +1197,6 @@ fn view(rental: &types::Rental, sku: Option<String>) -> Rental {
         disk_gb: u32::try_from(rental.container_disk_gb).unwrap_or_default(),
         failure: rental.failure.as_ref().map(|f| f.code.clone()),
         placement_note: rental.placement_note.clone().filter(|n| !n.is_empty()),
-        provider_warning: rental.provider_warning.clone().filter(|w| !w.is_empty()),
         unreachable_since_ms: rental.unreachable_since.as_deref().and_then(ms),
         base_worker_image_digest: Some(rental.base_worker_image_digest.clone())
             .filter(|d| !d.is_empty()),

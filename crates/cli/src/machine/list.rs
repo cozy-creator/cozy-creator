@@ -176,9 +176,6 @@ pub(crate) fn record(ctx: &Context, m: &Machine) -> output::Record {
         if let Some(note) = &r.placement_note {
             record = record.field("placement", note);
         }
-        if let Some(warning) = &r.provider_warning {
-            record = record.field("provider", warning);
-        }
         if let Some(digest) = &r.base_worker_image_digest {
             record = record.field("image", digest);
         }
