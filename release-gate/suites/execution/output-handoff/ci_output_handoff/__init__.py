@@ -11,7 +11,15 @@ import time
 from typing import Annotated
 
 import msgspec
-from cozy_runtime.author import App, AssetBound, Context, ImageAsset, ImageFrame, Outputs, Telemetry
+from cozy_runtime.author import (
+    App,
+    AssetBound,
+    Context,
+    ImageAsset,
+    ImageFrame,
+    Outputs,
+    Telemetry,
+)
 
 app = App()
 
@@ -32,7 +40,9 @@ class Result(msgspec.Struct):
     pixels_sha256: str
     image: Annotated[
         ImageAsset | None,
-        AssetBound(max_bytes=64 << 20, max_decoded_bytes=64 << 20, media_types=("image/webp",)),
+        AssetBound(
+            max_bytes=64 << 20, max_decoded_bytes=64 << 20, media_types=("image/webp",)
+        ),
     ]
 
 
@@ -47,7 +57,16 @@ def run(payload: Request, ctx: Context, out: Outputs, tel: Telemetry) -> Result:
 
     def note(event: str) -> int:
         when = time.time_ns()
-        tel.log(json.dumps({"handoff": event, "tag": payload.tag, "pid": os.getpid(), "at_ns": when}))
+        tel.log(
+            json.dumps(
+                {
+                    "handoff": event,
+                    "tag": payload.tag,
+                    "pid": os.getpid(),
+                    "at_ns": when,
+                }
+            )
+        )
         return when
 
     with torch.inference_mode(), tel.stage("gpu-work"):
@@ -62,15 +81,30 @@ def run(payload: Request, ctx: Context, out: Outputs, tel: Telemetry) -> Result:
                 ctx.raise_if_cancelled()
         torch.cuda.synchronize()
         if not torch.equal(current, identity):
-            raise RuntimeError("the actual GPU GEMM output differs from its identity input")
+            raise RuntimeError(
+                "the actual GPU GEMM output differs from its identity input"
+            )
         asset = None
         digest = ""
         if payload.image:
             generator = torch.Generator(device=device).manual_seed(payload.seed)
-            pixels = torch.randint(0, 256, (payload.size, payload.size, 3), generator=generator,
-                                   dtype=torch.uint8, device=device).cpu().numpy().tobytes()
+            pixels = (
+                torch.randint(
+                    0,
+                    256,
+                    (payload.size, payload.size, 3),
+                    generator=generator,
+                    dtype=torch.uint8,
+                    device=device,
+                )
+                .cpu()
+                .numpy()
+                .tobytes()
+            )
             digest = hashlib.sha256(pixels).hexdigest()
-            asset = out.save_image(ImageFrame(payload.size, payload.size, pixels), format="webp")
+            asset = out.save_image(
+                ImageFrame(payload.size, payload.size, pixels), format="webp"
+            )
         finished = note("gpu_finished")
     # save_image registered raw pixels; CPU encoding happens in the real output path afterward.
     return Result(payload.tag, os.getpid(), started, finished, digest, asset)

@@ -11,6 +11,7 @@ uses only ordinary CLI run/cancel commands and records every run. It never updat
 ```bash
 python3 gate.py --out /path/to/new/proof-directory --expect overlap
 python3 gate.py --out /path/to/new/cancel-directory --cancel-output
+python3 burst.py --out /path/to/new/burst-directory --cpu-capacity 2
 ```
 
 Run through the shared heavy wrapper. `--expect serial` records the old behavior as a baseline.
@@ -27,3 +28,9 @@ only stops the proof and requests cancellation of its own
 runs; it never authorizes killing the daemon, an executor, or somebody else's work.
 
 No successful candidate run is claimed until a receipt exists against the changed TensorD binary.
+
+The burst case requires the service's actual CPU parallelism and an idle qualification window.
+It checks that detached output work never exceeds that capacity plus the one active GPU slot,
+that enough backlog was generated to exercise the policy, that every image commits, and that one
+executor is reused without overlapping independent GPU invocations. It queues at most 16 real
+images and cancels only its own runs if the proof cannot finish.
