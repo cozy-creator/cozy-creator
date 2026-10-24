@@ -449,7 +449,7 @@ share immutable objects and coordinated records. Admission hashes bytes before i
 opens check lengths. Saved local roots are retained separately from evictable download-cache entries; deleting a header file only removes that handle. Explicit verification rehashes on demand. TensorFS is a library and has no daemon.
 
 Runtime and TensorD use this same public API. Callers read and write the shared store and upload with a supplied
-credential. TensorFS owns I/O and decoding; varena owns memory placement. Installing the wheel does
+credential. TensorFS owns I/O and decoding; Runtime manages residency of framework-owned buffers. Installing the wheel does
 not grant access to private data or managed executions.
 
 The [usage guide](../tensorfs/README.md) summarizes the target public calls. The
