@@ -25,8 +25,16 @@ class Report(msgspec.Struct):
 
 @app.entrypoint
 def gpu(payload: Probe, tel: Telemetry) -> Report:
-    if payload.mode not in {"fits", "stream", "lora", "failure"}:
-        raise ValueError("mode must be fits, stream, lora or failure")
+    if payload.mode not in {
+        "fits",
+        "stream",
+        "lora",
+        "failure",
+        "async",
+        "async-cancel",
+        "async-error",
+    }:
+        raise ValueError("unknown native refill gate mode")
     if not Path(payload.candidate_python).is_file():
         raise ValueError(
             "candidate_python must name an isolated prebuilt-wheel environment"
@@ -35,7 +43,11 @@ def gpu(payload: Probe, tel: Telemetry) -> Report:
         [
             payload.candidate_python,
             "-I",
-            str(Path(__file__).with_name("probe.py")),
+            str(
+                Path(__file__).with_name(
+                    "async_probe.py" if payload.mode.startswith("async") else "probe.py"
+                )
+            ),
             str(payload.seed),
             payload.mode,
         ],
