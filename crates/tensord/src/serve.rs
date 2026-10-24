@@ -210,21 +210,14 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     let (holding, executions) = (lifecycle.clone(), service.engine.clone());
     service.hold_while(move || holding.holding());
     lifecycle.on_change(move || executions.notify_activity());
-    let mut sdk = crate::published::PackageSdk::selected(&paths.sdk(), &layout.root, crate::machine::client::uv(&layout.root));
-    // A local machine installs releases through its owner's uv cache, as its local packages do;
-    // a cache of its own from before is no longer read (environments keep their linked files).
-    if !rental {
-        sdk.owner_uv = crate::published::OwnerUv::of(protocol::config::environment());
-        if sdk.owner_uv.is_some() {
-            let _ = std::fs::remove_dir_all(engine.join("published/uv-cache"));
-        }
-    }
+    let sdk = crate::published::PackageSdk::selected(&paths.sdk(), crate::machine::uv::Uv::of(&layout.root, &engine, rental));
     let running = {
         let engine = service.engine.clone();
         Box::new(move || engine.with_journal(|journal| journal.started()).unwrap_or_default())
     };
     let updates = crate::machine::update::Updates::open(
         paths.clone(),
+        sdk.uv.clone(),
         sdk.python.clone(),
         running,
         Some(lifecycle.clone()),
@@ -380,8 +373,7 @@ fn start_api(
     let store = store.clone();
     let mut backend = NativeBackend::new(service.clone(), identity.authority.clone(), store.clone());
     backend.logs = logs;
-    let publisher =
-        crate::published::Publisher::new(&root.join("published"), sdk, machine.clone(), identity.updates.clone())?;
+    let publisher = crate::published::Publisher::new(sdk, machine.clone(), identity.updates.clone());
     service.configure_publisher(publisher.clone());
     backend.publisher = Some(publisher.clone());
     let objects = Arc::new(crate::objects::Objects::new(&root.join("writes"), service.engine.clone())?);

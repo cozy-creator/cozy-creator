@@ -94,7 +94,7 @@ code is still not sandboxed.
 | `objects.rs` | Uploaded objects: byte ranges in any order, resumable, verified once whole into the store, per signer | `Objects`, `Upload` | D1 |
 | `local_source.rs` | A run's local source: each remote manifest owns its source tree and editable environment; explicit local paths read the directory in place | `LocalSources`, `Manifest` | D1 |
 | `published/environment.rs` | One package-environment build for releases and local code: uv's steps, the machine's pair and its floor rule, the description, the record | `Project`, `Built` | D1 |
-| `machine/` | Launch grant, lifetime identity, readiness receipt, idle lifecycle (a rental's release, this computer's exit), supervision, SSH, runtime update, the direct player endpoint (`player.rs`), the machine's uv (`client.rs`) | `Grant`, `Readiness`, `Lifecycle` | D2 |
+| `machine/` | Launch grant, lifetime identity, readiness receipt, idle lifecycle (a rental's release, this computer's exit), supervision, SSH, runtime update, the direct player endpoint (`player.rs`), the machine's uv: where it is, its one environment, cache and Pythons (`uv.rs`) | `Grant`, `Readiness`, `Lifecycle` | D2 |
 | `catalog.rs` | Immutable package environment generations and their holds | `Catalog`, `Generation`, `HeldGeneration` | D1 |
 | `service.rs` | Sole dispatch policy (CPU parallelism, one GPU slot, startup GPU fences) | `Service` | B2 |
 | `calls.rs` | Child calls (the seam broker): each call a run, canceled with its parent; each attempt's weights grant | `Calls`, `Caller` | G |

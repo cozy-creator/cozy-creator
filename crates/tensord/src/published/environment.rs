@@ -100,7 +100,7 @@ impl Publisher {
                 // An App the lock holds is described from its installed files, which the Runtime's
                 // static reader refuses as links into an image's seeded cache: those are copied.
                 let linked = linked_applications(env);
-                if self.sdk.seed_cache.is_some() && !linked.is_empty() {
+                if self.sdk.uv.seeded() && !linked.is_empty() {
                     args.extend(["--link-mode", "copy"]);
                     for name in &linked {
                         args.extend(["--reinstall-package", name]);
@@ -290,26 +290,13 @@ impl Publisher {
         }
     }
 
-    /// uv as every package environment runs it: the machine's environment without credentials or
-    /// names the executor seal owns (a proxy and its certificates hold), over this machine's uv
-    /// cache and Pythons. `job` hears the bytes it writes about once a second; its process group
+    /// uv as the machine runs it (`machine::uv`). `job` hears the bytes it writes about once a second; its process group
     /// is killed when the run is canceled, or when its CPU and bytes stop moving past its measured
     /// patience (`process::supervise`).
     pub(crate) fn uv(&self, args: &[&str], env: &[(&str, &std::ffi::OsStr)], job: &Job) -> Result<(), Failure> {
-        crate::machine::client::ensure_uv(&self.sdk.uv).map_err(|e| ("uv_unavailable", e.to_string()))?;
-        let mut command = Command::new(&self.sdk.uv);
-        command.args(args).env_clear().envs(crate::launch_identity::inherited()).envs(env.iter().copied())
-            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
+        let mut command = self.sdk.uv.command().map_err(|e| ("uv_unavailable", e.to_string()))?;
+        command.args(args).envs(env.iter().copied()).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
         platform::process::own_group(&mut command);
-        let owner = self.sdk.owner_uv.as_ref();
-        command.env("UV_PYTHON_INSTALL_DIR", owner.map_or_else(|| self.root.join("python"), |o| o.python.clone()));
-        // An image's seeded cache, symlinked so overlayfs never copies the baked Torch payload
-        // into each environment; else the owner's, else this machine's.
-        match (&self.sdk.seed_cache, owner) {
-            (Some(seed), _) => command.env("UV_CACHE_DIR", seed).env("UV_LINK_MODE", "symlink"),
-            (None, Some(owner)) => command.env("UV_CACHE_DIR", &owner.cache),
-            (None, None) => command.env("UV_CACHE_DIR", self.root.join("uv-cache")),
-        };
         let mut child = command.spawn().map_err(|e| ("package_installation_uv_absent", format!("cannot run uv: {e}")))?;
         let mut stderr = child.stderr.take().expect("piped uv stderr");
         let (ended, stderr) = std::thread::scope(|scope| {

@@ -38,46 +38,21 @@ use crate::catalog::normalized;
 
 /// How each published environment gets its Runtime SDK. Empty `requirements` keeps the
 /// release's own locked SDK rows.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct PackageSdk {
-    pub uv: PathBuf,
+    pub uv: crate::machine::uv::Uv,
     pub python: String,
     pub requirements: Vec<String>,
     pub find_links: Option<PathBuf>,
-    /// An image's baked uv cache (expanded wheels, index records), linked rather than copied.
-    pub seed_cache: Option<PathBuf>,
-    /// On a local machine, its owner's uv cache and managed Pythons (what the owner's own and
-    /// local-package installs use), so a release's Torch stack is fetched and kept once.
-    pub owner_uv: Option<OwnerUv>,
     /// The development Runtime an update named by its wheel file (`0.24.6+e9baf7a4`): the
     /// operator's choice, which runs every package whatever its own bounds on the pair.
     pub runtime_build: String,
 }
 
-/// Where uv keeps its cache and managed Pythons for the owner whose environment `env` is: as
-/// uv itself resolves them (its variables, then XDG, then the home directory's defaults).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OwnerUv {
-    pub cache: PathBuf,
-    pub python: PathBuf,
-}
-
-impl OwnerUv {
-    pub fn of(env: &BTreeMap<String, String>) -> Option<Self> {
-        let path = |name: &str| env.get(name).map(PathBuf::from).filter(|p| p.is_absolute());
-        let home = path("HOME");
-        let base = |xdg: &str, default: &str| path(xdg).or_else(|| home.as_ref().map(|h| h.join(default)));
-        Some(Self {
-            cache: path("UV_CACHE_DIR").or_else(|| Some(base("XDG_CACHE_HOME", ".cache")?.join("uv")))?,
-            python: path("UV_PYTHON_INSTALL_DIR").or_else(|| Some(base("XDG_DATA_HOME", ".local/share")?.join("uv/python")))?,
-        })
-    }
-}
-
 impl PackageSdk {
     /// Executors use the selected Runtime/TensorFS pair (an update's, else the image's), so they
     /// speak this machine's protocol; without a complete pair, each release's locked SDK.
-    pub fn selected(wheels: &Path, root: &Path, uv: PathBuf) -> Self {
+    pub fn selected(wheels: &Path, uv: crate::machine::uv::Uv) -> Self {
         // An activation replaces sdk/current, not the immutable candidate directory. Freeze
         // that selection once: both cache identity and the installer's actual wheel inputs
         // must name the same build even when filenames/version labels repeat.
@@ -95,7 +70,6 @@ impl PackageSdk {
         let complete = named("cozy_runtime-") && named("tensorfs-");
         let mut pair: Vec<String> = found.iter().map(|path| path.display().to_string()).collect();
         pair.sort();
-        let seed = root.join("opt/cozy/dependency-seed/uv-cache");
         Self {
             uv,
             python: "3.12".into(),
@@ -105,8 +79,6 @@ impl PackageSdk {
             },
             find_links: complete.then_some(wheels),
             requirements: if complete { pair } else { vec![] },
-            seed_cache: seed.is_dir().then_some(seed),
-            owner_uv: None,
         }
     }
 }
@@ -266,7 +238,6 @@ struct Environment<'a> {
 }
 
 pub struct Publisher {
-    root: PathBuf,
     pub(crate) sdk: PackageSdk,
     machine: Arc<Machine>,
     store: Arc<Store>,
@@ -287,17 +258,15 @@ impl Drop for Building<'_> {
 }
 
 impl Publisher {
-    pub fn new(root: &Path, sdk: PackageSdk, machine: Arc<Machine>, updates: Option<Arc<crate::machine::update::Updates>>) -> io::Result<Arc<Self>> {
-        fs::create_dir_all(root)?;
-        Ok(Arc::new(Self {
-            root: root.to_path_buf(),
+    pub fn new(sdk: PackageSdk, machine: Arc<Machine>, updates: Option<Arc<crate::machine::update::Updates>>) -> Arc<Self> {
+        Arc::new(Self {
             sdk,
             store: machine.store().clone(),
             machine,
             making: Mutex::new(HashMap::new()),
             building: Mutex::new(HashMap::new()),
             updates,
-        }))
+        })
     }
 
     /// One run's preparation on the calling thread, reported through `observe`: a held
@@ -944,11 +913,9 @@ impl Publisher {
         Ok(path)
     }
 
-    /// This machine's own uv cache, which `reclaim` manages; None when an image's seeded cache
-    /// serves installs (environments symlink into it, so nothing there is ever removed) or the
-    /// owner's does (uv and its owner manage that one).
+    /// This machine's own uv cache, which `reclaim` manages (`Uv::machine_cache`).
     pub fn uv_cache(&self) -> Option<PathBuf> {
-        (self.sdk.seed_cache.is_none() && self.sdk.owner_uv.is_none()).then(|| self.root.join("uv-cache"))
+        self.sdk.uv.machine_cache().map(Path::to_path_buf)
     }
 
     /// Held shared through one environment build, so `reclaim` removes nothing from the cache

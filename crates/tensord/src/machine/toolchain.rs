@@ -91,14 +91,13 @@ pub fn probe(dir: &Path, cuda_home: Option<&Path>, path: &[PathBuf]) -> Toolchai
     }
 }
 
-/// Installs the toolchain's wheels with the machine's pinned `uv` into a staging directory, then
-/// puts it in place whole. A stop ends it (Interrupted).
-pub fn install(dir: &Path, uv: &Path, stop: &Stop) -> io::Result<()> {
-    super::client::ensure_uv(uv)?;
+/// Installs the toolchain's wheels with the machine's uv into a staging directory, then puts it
+/// in place whole. A stop ends it (Interrupted).
+pub fn install(dir: &Path, uv: &super::uv::Uv, stop: &Stop) -> io::Result<()> {
     let staging = dir.with_extension("partial");
     let _ = fs::remove_dir_all(&staging);
     fs::create_dir_all(&staging)?;
-    let mut child = std::process::Command::new(uv)
+    let mut child = uv.command()?
         .args(["pip", "install", "--quiet", "--no-config", "--python", "3.12", "--target"])
         .arg(&staging)
         .args(PACKAGES)
