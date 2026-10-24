@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # e2e/candidates/build.sh <cozy|tensorfs|runtime> <src> <out>: one candidate for this runner's OS, into <out>; prints
 # its file. cozy (TensorD, the dev cozy <version>+dev.g<sha8>) and the TensorFS wheel come from the cozy-creator
-# checkout <src>, the Runtime wheel from the cozy-runtime checkout <src>.
+# checkout <src>, the Runtime wheel (<version>+dev.g<sha8>) from the cozy-runtime checkout <src>.
 #   TAKE=<spec>  a built one instead: a version (PyPI for the wheels, the v<version> release for cozy), a release tag
 #                (cozy-creator's v<version> / tensorfs-v<version>, cozy-runtime's v<version>; this OS's asset, checked
-#                against the release's SHA256SUMS), or a URL#sha256=<hex>
+#                against the release's SHA256SUMS), or a URL#sha256=<hex>. A release asset or URL with no checksum is
+#                refused.
 #   REUSE=1      cozy or tensorfs as a cozy-creator merge-group or dispatched e2e run uploaded it (candidate-<what>-<sha>)
 #                for <src>'s commit, or for an older one on its first-parent line with the same build inputs
 # With $GITHUB_OUTPUT, `name` is the artifact's: candidate-<what>-<commit>, or candidate-<what>-taken.
@@ -27,8 +28,9 @@ take() {
   local repo=$1 spec=$2 name=$3 dir file want
   dir=$(mktemp -d)
   if [[ $spec == *://* ]]; then
+    [[ $spec == *'#sha256='* ]] || { echo "$spec names no #sha256=<hex>: refused, a candidate is always verified" >&2; return 1; }
     file=$dir/$(basename "${spec%%#*}"); curl -fsSL -o "$file" "${spec%%#*}"
-    want=${spec##*#sha256=}; [ "$want" = "$spec" ] || [ "$(sum "$file")" = "$want" ] || { echo "$file: not sha256 $want" >&2; return 1; }
+    want=${spec##*#sha256=}; [ "$(sum "$file")" = "$want" ] || { echo "$file: not sha256 $want" >&2; return 1; }
   elif [[ $spec == v* || $spec == tensorfs-v* || $name == cozy ]]; then
     [[ $spec == v* || $spec == tensorfs-v* ]] || spec=v$spec
     if [ "$name" = cozy ]; then
@@ -43,7 +45,8 @@ take() {
     done
     [ -n "$file" ] || { echo "release $spec of cozy-creator/$repo has no $name for $target" >&2; return 1; }
     want=$( (cat "$dir"/SHA256SUMS "$file.sha256" 2>/dev/null || true) | grep -F "$(basename "$file")" | head -1 | cut -d' ' -f1)
-    [ -z "$want" ] || [ "$(sum "$file")" = "$want" ] || { echo "$file: not its SHA256SUMS $want" >&2; return 1; }
+    [ -n "$want" ] || { echo "release $spec lists no checksum for $(basename "$file"): refused, a candidate is always verified" >&2; return 1; }
+    [ "$(sum "$file")" = "$want" ] || { echo "$file: not its SHA256SUMS $want" >&2; return 1; }
   else
     uvx -q --from pip pip download -q --no-deps --only-binary :all: "${name//_/-}==$spec" -d "$dir"
     file=$(ls "$dir"/*.whl | head -1)
@@ -120,9 +123,12 @@ else
       cp "target/release/tfs$exe" crates/tensorfs-py/wheel-data/scripts/
       cd crates/tensorfs-py && uvx -q maturin@1.15.0 build --release --locked --out "$out")
   else
+    # Its own version, <version>+dev.g<sha8> as the dev cozy's, so the imports suite tells it from PyPI's.
     (cd "$src"
       uv run -q --no-project python scripts/stamp-build-provenance.py "$sha"
-      uv build -q --wheel --out-dir "$out")
+      uv version -q --frozen "$(uv version --short)+dev.g${sha:0:8}"
+      uv build -q --wheel --out-dir "$out"
+      git checkout -- pyproject.toml)
   fi
   case $what in
     cozy) file=$out/cozy$exe; chmod +x "$file" ;;

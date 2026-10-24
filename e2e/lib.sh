@@ -275,19 +275,18 @@ machine_ready() {
   fail "the local machine is not ready after 10 min"
 }
 
-# cell <name> <target> [inputs...]: one `cozy run` on local, followed to its end. Its events go to
-# $OUT/<name>.ndjson, its record (`cozy run show`) to $OUT/<name>.json, its number to $OUT/<name>.number,
-# its outputs under $OUT/<name>/. A run that does not complete is a recorded failure (`check`), unless
-# ALLOW names a code its refusal carries: then $OUT/<name>.refused holds that code. Returns 1 when the
-# run neither completed nor was refused as allowed.
+# cell <name> <target> [inputs...]: one `cozy run` on local (e2e/run.sh's run_cell), followed to its end. Its
+# events go to $OUT/<name>.ndjson, its record (`cozy run show`) to $OUT/<name>.json, its number to
+# $OUT/<name>.number, its outputs under $OUT/out/<name>/. A run that does not complete is a recorded failure
+# (`check`), unless ALLOW names a code its refusal carries: then $OUT/<name>.refused holds that code. Returns 1
+# when the run neither completed nor was refused as allowed.
+RUN_CLI=cozy; . "$E2E/run.sh"
 cell() {
   local name=$1 target=$2 code=0 n
   shift 2
-  cozy --json run "$target" "$@" --on local --out "$OUT/$name" > "$OUT/$name.ndjson" 2> "$OUT/$name.err" || code=$?
-  n=$(grep -o '"number":[0-9]*' "$OUT/$name.ndjson" | head -1 | cut -d: -f2 || true)
-  echo "${n:-none}" > "$OUT/$name.number"
-  [ -z "$n" ] || cozy --json run show "$n" > "$OUT/$name.json" 2>> "$OUT/$name.err" || true
-  if [ "$code" = 0 ] && grep -q '"type":"run.completed"' "$OUT/$name.ndjson"; then
+  run_cell "$OUT" "$name" "$target" "$@" --on local || code=$?
+  n=$(cat "$OUT/$name.number")
+  if [ "$code" = 0 ]; then
     echo "$name: run $n completed"
     return 0
   fi
@@ -298,12 +297,12 @@ cell() {
     echo "$name: run ${n:-none} refused with $ALLOW"
     return 0
   fi
-  check "$name: cozy run $target did not complete (exit $code, run ${n:-none}): $(grep -o '"message":"[^"]*"' "$OUT/$name.ndjson" | head -1)"
+  check "$name: cozy run $target did not complete (run $n $(run_get "$OUT" "$name" .status)): $(run_get "$OUT" "$name" '.reason.message' | head -c 300)$(cat "$OUT/$name.stalled" 2> /dev/null | head -1)$(grep -o '"message": *"[^"]*"' "$OUT/$name.ndjson" | head -1 || true)"
   return 1
 }
 
-# The first output file of a cell with this extension.
-output() { find "$OUT/$1" -type f -name "*.$2" | head -1; }
+# The first output file of a cell with this extension (its record's output[].path).
+output() { run_output "$OUT" "$1" "$2"; }
 
 # A background removal: the input's geometry, its background white, and its subject kept (a small subject is
 # mostly white; an all-white image lost it).

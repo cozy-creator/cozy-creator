@@ -20,6 +20,12 @@ step install; install_cozy
 user_services
 step "the local machine"; machine_ready
 step candidates; candidates
+# The candidate Runtime as the machine reports it (`cozy machine update --json`): a built one is <version>+dev.g<sha8>.
+WANT_RT=
+if [ -n "$CAND_RT" ]; then
+  WANT_RT=$(jq -r 'select(.machine and .runtime) | .runtime' "$OUT/update.json" 2> /dev/null | tail -1 || true)
+  [ -n "$WANT_RT" ] || fail "cozy machine update local named no Runtime ($OUT/update.json)"
+fi
 
 # import_release <label> <distribution> <version>: the probe in the environment holding that release.
 import_release() {
@@ -34,16 +40,16 @@ import_release() {
   "$py" -I "$PROBE" "$2" > "$OUT/import-$1.log" 2>&1 \
     || check "$1: $(grep -m3 '^FAIL' "$OUT/import-$1.log" | tr '\n' ' ')"
   tail -2 "$OUT/import-$1.log"
-  [ -z "$CAND_RT" ] || grep -q "^cozy-runtime $(basename "$CAND_RT" | cut -d- -f2)," "$OUT/import-$1.log" \
-    || check "$1: imported with $(head -1 "$OUT/import-$1.log"), not the candidate Runtime"
+  [ -z "$WANT_RT" ] || grep -qF "cozy-runtime $WANT_RT," "$OUT/import-$1.log" \
+    || check "$1: imported with $(head -1 "$OUT/import-$1.log"), not the candidate Runtime $WANT_RT"
 }
 
-# install <label> <target>: the environment. A release refused because it needs a newer Runtime or TensorFS
-# than the candidates ships with a later set: skipped, named. One refused because the candidates are too new
-# for it fails: the set cannot ship while a published package cannot run on it.
+# install <label> <target>: the environment. A release cozy refuses with runtime_floor_unmet needs a newer Runtime
+# or TensorFS than the candidates and ships with a later set: skipped, named. Any other refusal fails: the set cannot
+# ship while a published package cannot run on it.
 install() {
   cozy --json package install "$2" --on local -y > "$OUT/install-$1.ndjson" 2> "$OUT/install-$1.err" && return 0
-  local msg want have
+  local msg
   msg=$(grep -ho '"message": *"[^"]*"' "$OUT/install-$1.ndjson" "$OUT/install-$1.err" | head -1)
   # A checkout whose dependencies are Hub-hosted packages needs a signed-in computer for the Hub's index;
   # these runners are anonymous (the signed-in release gate covers it).
@@ -51,13 +57,7 @@ install() {
     echo "::notice::$1: skipped, its dependencies come from the Hub's index and this runner is not signed in"; return 1
   fi
   if grep -q runtime_floor_unmet "$OUT/install-$1.ndjson" "$OUT/install-$1.err"; then
-    # "… this machine runs Runtime A and TensorFS B: update it first (… --runtime C --tensorfs D)"
-    have=$(sed -n 's/.*runs Runtime \([0-9.]*\) and TensorFS \([0-9.]*\).*/\1 \2/p' <<< "$msg")
-    want=$(sed -n 's/.*--runtime \([0-9.]*\) --tensorfs \([0-9.]*\).*/\1 \2/p' <<< "$msg")
-    if [ -n "$have" ] && [ -n "$want" ] && [ "$(printf '%s\n%s\n' "${have% *}" "${want% *}" | sort -V | head -1)" = "${have% *}" ] \
-      && [ "$(printf '%s\n%s\n' "${have#* }" "${want#* }" | sort -V | head -1)" = "${have#* }" ]; then
-      echo "$1: skipped, needs a newer set (Runtime/TensorFS $want) than the candidates ($have)"; return 1
-    fi
+    echo "$1: skipped, it needs a newer set than the candidates: $msg"; return 1
   fi
   check "$1: cozy package install $2 failed: $msg$(tail -c 300 "$OUT/install-$1.err")"
   return 1
