@@ -467,11 +467,11 @@ impl Endpoint {
 
     async fn exchange_attempt(&self, ask: Ask<'_>) -> std::result::Result<Reply, GetError> {
         let (ask, challenged, patience) = (&ask, &AtomicBool::new(false), &self.patience);
-        ask::again(patience, move |moved| async move {
+        ask::again(patience, move |watch| async move {
             let mut headers = ask.headers.clone();
             if ask.auth {
                 // A provider's failure is the caller's verdict, not failed network traffic.
-                let authorized = ask::watched(patience, &moved, self.authorize(ask.method, ask.url, &ask.headers, ask.payload));
+                let authorized = ask::watched(patience, &watch, self.authorize(ask.method, ask.url, &ask.headers, ask.payload));
                 headers.extend(authorized.await.map_err(GetError::Caller)?);
             }
             let body = match ask.body {
@@ -479,12 +479,12 @@ impl Endpoint {
                     Payload::Bytes(bytes) => Body::Bytes(bytes),
                     Payload::File(file) => {
                         let length = file.metadata().map_err(|e| crate::err::classify_io(ask.url, e))?.len();
-                        Body::File { file, length, sent: [Arc::clone(&moved), Arc::clone(&self.sent)] }
+                        Body::File { file, length, sent: [Arc::clone(&watch.moved), Arc::clone(&self.sent)] }
                     }
                 }),
                 None => None,
             };
-            let reply = ask::watched(patience, &moved, self.round_trip(ask.method, ask.url, &headers, body, &moved)).await?;
+            let reply = ask::watched(patience, &watch, self.round_trip(ask.method, ask.url, &headers, body, &watch.moved)).await?;
             let sent = Request { method: ask.method, url: ask.url, headers: &headers, payload: ask.payload };
             let again = match (ask.auth, &self.token) {
                 (true, Some(token)) => token.retry(&sent, reply.status, &reply.headers).map_err(GetError::Caller)?,
