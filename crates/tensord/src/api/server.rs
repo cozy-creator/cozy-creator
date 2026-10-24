@@ -188,14 +188,18 @@ pub fn booting(
     let http = Arc::new(auto::Builder::new(TokioExecutor::new()));
     Ok(async move {
         let listener = tokio::net::TcpListener::from_std(listener)?;
+        // Its connections end with it: one a client keeps open (Calcifer's HTTP/2) must not go on
+        // answering `machine_booting` after the API serves; closed, the client dials the API.
+        let mut connections = tokio::task::JoinSet::new();
         loop {
             let Ok((stream, _)) = listener.accept().await else {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             };
+            while connections.try_join_next().is_some() {}
             live(&stream);
             let (tls, http, service) = (tls.clone(), http.clone(), service.clone());
-            tokio::spawn(async move {
+            connections.spawn(async move {
                 if let Ok(stream) = tls.accept(stream).await {
                     let _ = http.serve_connection(TokioIo::new(stream), service).await;
                 }
