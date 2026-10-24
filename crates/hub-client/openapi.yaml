@@ -520,8 +520,8 @@ paths:
     get:
       operationId: get_model
       tags: [models]
-      summary: A model, its releases with their lanes, and its measured throughput.
-      security: []
+      summary: A model, its releases with their lanes, and its measured throughput; to its owner, its bytes.
+      security: [{}, {bearer: []}]
       parameters:
       - {$ref: '#/components/parameters/Org'}
       - {$ref: '#/components/parameters/Name'}
@@ -554,7 +554,7 @@ paths:
     delete:
       operationId: delete_model
       tags: [models]
-      summary: Deletes a model whose releases are all yanked.
+      summary: Deletes a model, its releases with it.
       security: [{bearer: []}]
       parameters:
       - {$ref: '#/components/parameters/Org'}
@@ -2059,6 +2059,14 @@ components:
         model: {$ref: '#/components/schemas/ModelSummary'}
         releases: {type: array, items: {$ref: '#/components/schemas/ModelCatalogRelease'}}
         throughput: {type: array, items: {$ref: '#/components/schemas/ModelThroughput'}}
+        bytes:
+          type: integer
+          format: int64
+          description: To its owner (a bearer of the model's account) only, the bytes its commits hold.
+        unique_bytes:
+          type: integer
+          format: int64
+          description: To its owner only, of those, the bytes no other model's commits hold, which deleting it frees.
     ModelCatalogRelease:
       type: object
       required: [release, lanes]
@@ -2070,12 +2078,9 @@ components:
         lanes: {type: array, items: {$ref: '#/components/schemas/ModelLane'}}
     ModelDeletion:
       type: object
-      required: [model, checkpoints, reclaimable_objects, reclaimable_bytes]
+      required: [model]
       properties:
         model: {type: string}
-        checkpoints: {type: integer, format: int64}
-        reclaimable_objects: {type: integer, format: int64}
-        reclaimable_bytes: {type: integer, format: int64}
     ModelFamilyUpdate:
       type: object
       required: [family]

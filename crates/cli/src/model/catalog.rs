@@ -127,6 +127,11 @@ struct Detail {
     model: String,
     family: Option<String>,
     created_at: String,
+    /// To its owner: the bytes its commits hold, and of those what deleting it frees.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bytes: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unique_bytes: Option<i64>,
     releases: Vec<Release>,
 }
 
@@ -137,7 +142,9 @@ pub(crate) async fn info(ctx: &Context, args: Info) -> Result<ExitCode, Error> {
             return Err(Error::new(Kind::Usage, "model_ref_invalid", format!("{:?}: info reads org/name[@release]", args.model)));
         }
     };
-    let client = ctx.hub_anonymous(&ctx.hub()?);
+    // Signed in, the Hub tells the model's owner its bytes.
+    let hub = ctx.hub()?;
+    let client = ctx.hub_signed_in(&hub).unwrap_or_else(|_| ctx.hub_anonymous(&hub));
     let card = hub_answer(client.get_model(&repo.org, &repo.name).await)?;
     let releases: Vec<Release> = card
         .releases
@@ -170,6 +177,8 @@ pub(crate) async fn info(ctx: &Context, args: Info) -> Result<ExitCode, Error> {
         model: repo.to_string(),
         family: card.model.family.filter(|f| !f.is_empty()),
         created_at: card.model.created_at,
+        bytes: card.bytes,
+        unique_bytes: card.unique_bytes,
         releases,
     };
     if ctx.json {
@@ -178,6 +187,9 @@ pub(crate) async fn info(ctx: &Context, args: Info) -> Result<ExitCode, Error> {
     }
     let mut record = Record::new().field("model", &view.model).field("family", view.family.as_deref().unwrap_or("-"));
     record = record.field("created", &view.created_at);
+    if let (Some(bytes), Some(unique)) = (view.bytes, view.unique_bytes) {
+        record = record.field("bytes", &output::bytes(bytes as u64)).field("deleting frees", &output::bytes(unique as u64));
+    }
     record.print(ctx);
     for release in &view.releases {
         let yanked = if release.yanked { " (yanked)" } else { "" };
