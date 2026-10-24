@@ -108,7 +108,7 @@ async def gpu_parent(ctx: Context, *, payload: FamilyRequest) -> FamilyResult:
     if ctx.device.type != "cuda":
         raise ValueError("the family proof parent requires CUDA")
     held = torch.full((32,), payload.value, dtype=torch.int64, device=str(ctx.device))
-    child = await gpu_child(ctx, payload=payload)
+    child = await gpu_child(payload=payload)
     if child.value != payload.value + 1 or int(held.sum().item()) != 32 * payload.value:
         raise RuntimeError("parent/child CUDA values differ from their expected results")
     if child.pid == os.getpid():
