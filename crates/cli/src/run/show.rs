@@ -70,6 +70,8 @@ struct GpuMemory {
     ceiling: Option<Ceiling>,
     stats: varena::memory::Stats,
     torch_peak: u64,
+    /// Bytes the Runtime's Park moved to mapped host memory (its last rung at a pure cut site).
+    parked: u64,
 }
 
 /// TensorFS's measured fill ceilings on that GPU: host to device and disk, GB/s.
@@ -270,7 +272,7 @@ pub async fn exec(ctx: &Context, id: &str, once: bool) -> Result<ExitCode, Error
     );
     gpus.print(ctx, "attention kernels");
     let memory = grid(
-        &["GPU", "KEPT", "LEASED", "STORE", "DERIVED", "STALL", "PEAK", "TORCH", "COMPUTE", "EVICTED", "LEFTOVER"],
+        &["GPU", "KEPT", "LEASED", "STORE", "DERIVED", "STALL", "PEAK", "TORCH", "COMPUTE", "EVICTED", "PARKED", "LEFTOVER"],
         &measured,
         memory_rows,
     );
@@ -586,8 +588,8 @@ fn gpu_rows(measured: &Measured) -> Vec<Vec<String>> {
 
 /// Each GPU's whole request: the bytes moved by source (kept from the manager's retention, leased
 /// and filled, read from the store, refilled from a derived entry) at their rate against the measured ceiling, the stall, the
-/// most it held (pages and torch's bytes), torch's own peak, the compute bytes, what make_room took
-/// and what it still held at the end.
+/// most it held (pages and torch's bytes), torch's own peak, the compute bytes, what make_room took,
+/// what Park moved to host memory and what it still held at the end.
 fn memory_rows(measured: &Measured) -> Vec<Vec<String>> {
     let row = |g: &GpuMemory| {
         let s = &g.stats;
@@ -605,6 +607,7 @@ fn memory_rows(measured: &Measured) -> Vec<Vec<String>> {
             output::bytes(g.torch_peak),
             output::bytes(s.compute),
             evicted(&s.evicted),
+            if g.parked == 0 { "-".into() } else { output::bytes(g.parked) },
             output::bytes(leftover),
         ]
     };
