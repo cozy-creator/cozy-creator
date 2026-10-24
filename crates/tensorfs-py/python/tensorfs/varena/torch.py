@@ -440,6 +440,8 @@ _serving: dict[int, Memory] = {}
 _SHIM = Path(_ext.__file__).parent / ("_varena_torch.dll" if os.name == "nt" else "_varena_torch.so")
 #: the shim, once installed
 _shim: ctypes.CDLL | None = None
+#: the agent table's layout the shim must be built for (`varena_torch_abi`)
+_SHIM_ABI = 2
 
 
 def _install() -> None:
@@ -460,6 +462,8 @@ def _install() -> None:
     try:
         shim, ext = ctypes.CDLL(str(_SHIM)), ctypes.CDLL(_ext.__file__)
         shim.varena_torch_abandon_pool.argtypes = (ctypes.c_int, ctypes.c_uint64, ctypes.c_uint64)
+        if shim.varena_torch_abi() != _SHIM_ABI:
+            raise RuntimeError(f"its agent ABI is {shim.varena_torch_abi()}, this extension's {_SHIM_ABI}")
         agent = ("alloc", "free", "record_stream", "pool_begin", "pool_end", "pool_release")
         shim.varena_torch_bind((ctypes.c_void_p * len(agent))(*(ctypes.cast(getattr(ext, f"varena_agent_{f}"), ctypes.c_void_p) for f in agent)))
         hook = {name: ctypes.cast(getattr(shim, f"varena_torch_{name}"), ctypes.c_void_p).value for name in ("malloc", "free", "record_stream", "begin_pool", "end_pool", "release_pool")}

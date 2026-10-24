@@ -29,8 +29,10 @@ impl SwapFile {
         let len = len.max(1).div_ceil(g) * g;
         let file = memory::page(len).map_err(host)?;
         let base = memory::reserve(len).map_err(host)?;
-        if let Err(e) = memory::map_page(base, &file, len, true) {
-            memory::release(base, len);
+        // SAFETY: the whole of the reservation just made, nothing mapped in it yet.
+        if let Err(e) = unsafe { memory::map_page(base, &file, len, true) } {
+            // SAFETY: that reservation, unmapped, released once and never used again.
+            unsafe { memory::release(base, len) };
             return Err(host(e));
         }
         Ok(SwapFile { _file: file, base, len })
@@ -47,8 +49,14 @@ impl SwapFile {
 
 impl Drop for SwapFile {
     fn drop(&mut self) {
-        let _ = memory::unmap_page(self.base, self.len);
-        memory::release(self.base, self.len);
+        // SAFETY: this file's own mapping and reservation. Every copy into or out of it returned
+        // (`at` hands out `&mut self` borrows), and a copy whose completion is unproven forgets
+        // the file instead of dropping it.
+        unsafe {
+            if memory::unmap_page(self.base, self.len).is_ok() {
+                memory::release(self.base, self.len);
+            }
+        }
     }
 }
 
@@ -73,7 +81,9 @@ impl Evicted {
 impl Torch {
     /// Evicts region `owner`'s spans once their streams passed everything enqueued so far: their
     /// chunks go back to the source, and with `swap` their bytes go to a RAM file first. The caller
-    /// guarantees nothing allocates into the region meanwhile (it is unpinned). `None` while a
+    /// guarantees no allocation or new use races this operation (the region is unpinned).
+    /// Frees may race: their chunks stay held here until copying ends. Only allocation streams
+    /// and explicitly recorded additional streams are fenced. `None` while a
     /// capture is open: no epoch can be recorded then (R2), so the caller asks again later.
     pub fn evict(&self, owner: Owner, swap: bool) -> Result<Option<Evicted>> {
         if !matches!(owner, Owner::Region(_)) {
@@ -89,31 +99,59 @@ impl Torch {
         if !sh.quiesce(&streams)? {
             return Ok(None);
         }
-        let spans: Vec<(u64, u64)> = a.st.lock().spans.iter().filter(|(_, s)| !s.chunks.is_empty()).map(|(b, s)| (*b, s.len)).collect();
-        let mut file = if swap { Some(SwapFile::new(spans.iter().map(|(_, l)| l).sum())?) } else { None };
-        let mut out = Evicted::default();
-        for (base, len) in spans {
-            if let Some(f) = file.as_mut() {
-                // The region's streams passed their epochs: nothing to order the copy after.
-                sh.backend.copy_out(Va { base, len }, 0, f.at(out.bytes, len)?, Event::DONE)?;
-            }
-            let chunks = {
-                let mut st = a.st.lock();
+        // Detach ownership under the arena lock, without unmapping. A racing last free sees
+        // no chunks and cannot move this span to idle while its bytes are being copied.
+        let spans: Vec<(u64, u64, Vec<Chunk>)> = {
+            let mut st = a.st.lock();
+            let bases: Vec<u64> = st.spans.iter().filter(|(_, s)| !s.chunks.is_empty()).map(|(base, _)| *base).collect();
+            let mut spans = Vec::new();
+            for base in bases {
                 let Some(span) = st.spans.get_mut(&base) else { continue };
-                let chunks = std::mem::take(&mut span.chunks);
-                if !chunks.is_empty() {
-                    st.mapped = st.mapped.saturating_sub(len);
-                    st.hide(base);
-                }
-                chunks
-            };
-            if chunks.is_empty() {
-                continue;
+                let len = span.len;
+                spans.push((base, len, std::mem::take(&mut span.chunks)));
+                st.hide(base);
             }
-            // A chunk that cannot go back stays mapped and counted, its range the span's still.
-            sh.unmap(Va { base, len }, chunks, false, true);
+            spans
+        };
+        let bytes = spans.iter().map(|(_, len, _)| len).sum();
+        let mut file = if swap {
+            match SwapFile::new(bytes) {
+                Ok(file) => Some(file),
+                Err(error) => {
+                    sh.restore_chunks(&a, spans);
+                    return Err(error);
+                }
+            }
+        } else { None };
+        let mut out = Evicted::default();
+        // Finish all fallible copies before releasing any original mapping.
+        for i in 0..spans.len() {
+            let Some(&(base, len, _)) = spans.get(i) else { continue };
+            if let Some(f) = file.as_mut() {
+                // SAFETY: the span's chunks are detached but still mapped here, its streams passed
+                // their epochs (quiesce), and an unpinned region has no new use or allocation.
+                let copied = f.at(out.bytes, len).and_then(|dst| unsafe { sh.backend.copy_out(Va { base, len }, 0, dst, Event::DONE) });
+                if let Err(error) = copied {
+                    if let Err(drain) = sh.backend.drain() {
+                        // A pending copy may still write this buffer. Existing Memory ownership
+                        // loss retains the device; this buffer must also survive until exit.
+                        std::mem::forget(file);
+                        return Err(Error::Ownership(format!("region copy failed ({error}); completion is unknown ({drain})")));
+                    }
+                    if !error.is_sticky() { sh.restore_chunks(&a, spans); }
+                    return Err(error);
+                }
+            }
             out.spans.push((base, len, out.bytes));
             out.bytes += len;
+        }
+        for (base, len, chunks) in spans {
+            {
+                let mut st = a.st.lock();
+                st.mapped = st.mapped.saturating_sub(len);
+            }
+            // Failed unmaps stay mapped and counted in the existing stuck list for retry.
+            sh.unmap(Va { base, len }, chunks, false, true);
         }
         out.swap = file;
         Ok(Some(out))
@@ -140,35 +178,56 @@ impl Torch {
             match sh.map_again(Va { base, len }) {
                 Ok(chunks) => got.push((base, len, off, chunks)),
                 Err(e) => {
-                    got.into_iter().for_each(|(base, len, _, chunks)| {
-                        sh.unmap(Va { base, len }, chunks, false, false);
-                    });
+                    if !e.is_sticky() {
+                        got.into_iter().for_each(|(base, len, _, chunks)| {
+                            sh.unmap(Va { base, len }, chunks, false, true);
+                        });
+                    }
+                    // Sticky errors cross Memory's existing ownership-loss boundary; their
+                    // source keeps every handle, and these addresses are never reused.
                     return Err(e);
                 }
             }
         }
-        let Evicted { mut swap, .. } = std::mem::take(evicted);
-        for (base, len, off, chunks) in got {
-            {
-                let mut st = a.st.lock();
-                let Some(span) = st.spans.get_mut(&base) else {
-                    drop(st);
-                    sh.unmap(Va { base, len }, chunks, false, false);
-                    continue;
-                };
-                span.chunks = chunks;
-                st.mapped += len;
-                st.show(base);
-                sh.mapped.fetch_add(len, AcqRel);
+        // Restore into unpublished mappings. The saved bytes remain owned by `evicted` until
+        // every map and copy has succeeded, so a recoverable failure can be retried.
+        for i in 0..got.len() {
+            let Some(&(base, len, off, _)) = got.get(i) else { continue };
+            if let Some(f) = evicted.swap.as_mut() {
+                // SAFETY: mapped read-write by `map_again` above and not yet published to the arena:
+                // nothing else can reach these addresses until this restore installs them.
+                let copied = f.at(off, len).and_then(|bytes| unsafe { sh.backend.copy_in(Va { base, len }, 0, bytes) });
+                if let Err(error) = copied {
+                    if let Err(drain) = sh.backend.drain() {
+                        // The copy may still read its saved buffer: retain it along with the
+                        // unproven device mappings through the existing ownership-loss path.
+                        std::mem::forget(evicted.swap.take());
+                        return Err(Error::Ownership(format!("region restore failed ({error}); completion is unknown ({drain})")));
+                    }
+                    if !error.is_sticky() {
+                        got.into_iter().for_each(|(base, len, _, chunks)| {
+                            sh.unmap(Va { base, len }, chunks, false, true);
+                        });
+                    }
+                    return Err(error);
+                }
             }
-            if let Some(f) = swap.as_mut() {
-                sh.backend.copy_in(Va { base, len }, 0, f.at(off, len)?)?;
-            }
+        }
+        for (base, len, _, chunks) in got {
             let mut st = a.st.lock();
+            let Some(span) = st.spans.get_mut(&base) else {
+                drop(st);
+                sh.unmap(Va { base, len }, chunks, false, true);
+                continue;
+            };
+            span.chunks = chunks;
+            st.mapped += len;
+            st.show(base);
             if st.spans.get(&base).is_some_and(|s| s.live == 0) {
                 sh.whole(&a, &mut st, base);
             }
         }
+        *evicted = Evicted::default();
         Ok(fresh)
     }
 
@@ -242,6 +301,24 @@ impl State {
 }
 
 impl Shared {
+    /// An eviction copy failed with completion proved: return its still-mapped chunks to the
+    /// arena. A span freed while detached can now follow the ordinary whole-free path.
+    fn restore_chunks(&self, arena: &Arc<Arena>, spans: Vec<(u64, u64, Vec<Chunk>)>) {
+        for (base, len, chunks) in spans {
+            let mut st = arena.st.lock();
+            let Some(span) = st.spans.get_mut(&base) else {
+                drop(st);
+                self.unmap(Va { base, len }, chunks, false, true);
+                continue;
+            };
+            span.chunks = chunks;
+            st.show(base);
+            if st.spans.get(&base).is_some_and(|span| span.live == 0) {
+                self.whole(arena, &mut st, base);
+            }
+        }
+    }
+
     /// Waits until every one of `streams` passed an epoch after its work so far; false while a capture
     /// is open. A stream whose recording was lost can prove nothing: an error.
     fn quiesce(&self, streams: &[usize]) -> Result<bool> {
@@ -268,16 +345,22 @@ impl Shared {
         if self.stuck_in(va) {
             self.retry_stuck();
             if self.stuck_in(va) {
-                return Err(Error::Internal(format!("a chunk of the span at {va:?} could not go back: it is not made resident over it")));
+                return Err(Error::Io(format!("a chunk of the span at {va:?} could not be unmapped; saved bytes remain available for retry")));
             }
         }
         loop {
             let mut chunks = Vec::new();
             match self.source.map(va, Kind::Torch, &mut chunks) {
-                Ok(()) => return Ok(chunks),
+                Ok(()) => {
+                    self.mapped.fetch_add(va.len, AcqRel);
+                    return Ok(chunks);
+                }
                 Err(e) => {
-                    self.unmap(va, chunks, false, false);
-                    if !(matches!(e, Error::Exhausted(_)) && self.give_back()) {
+                    let len = chunks.iter().map(|c| c.len).sum();
+                    self.mapped.fetch_add(len, AcqRel);
+                    if e.is_sticky() { return Err(e); }
+                    self.unmap(Va { base: va.base, len }, chunks, false, true);
+                    if !(matches!(e, Error::Exhausted(_)) && (self.give_back() || self.source.reclaim(va.len))) {
                         return Err(e);
                     }
                 }

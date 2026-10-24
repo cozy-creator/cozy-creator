@@ -172,13 +172,14 @@ struct Shared {
 
 impl Shared {
     fn pin(self: &Arc<Self>, route: bool) -> Result<RegionPin> {
+        self.memory.device_call(|| Ok(()))?;
         let mut r = self.res.lock();
         if r.closed {
             return Err(Error::Closed(format!("region {} ({})", self.id, self.owner)));
         }
         let remapped = r.evicted.is_some();
         let fresh = match r.evicted.as_mut() {
-            Some(ev) => self.memory.torch()?.make_resident(Owner::Region(self.id), ev)?,
+            Some(ev) => self.memory.device_call(|| self.memory.torch()?.make_resident(Owner::Region(self.id), ev))?,
             None => false,
         };
         r.evicted = None;
@@ -244,13 +245,25 @@ impl Shared {
             return Ok(Reclaimed::Busy);
         }
         let Some(torch) = self.memory.torch_if() else { return Ok(Reclaimed::Gone) };
-        let Some(ev) = torch.evict(Owner::Region(self.id), swap && self.spill)? else { return Ok(Reclaimed::Busy) };
+        let Some(ev) = self.memory.device_call(|| torch.evict(Owner::Region(self.id), swap && self.spill))? else { return Ok(Reclaimed::Busy) };
         self.asked.store(ASKED_NONE, Ordering::Release);
         let (bytes, swapped) = (ev.bytes, ev.swapped());
         r.evicted = Some(ev);
         drop(r);
         self.publish();
         Ok(if swapped { Reclaimed::Swapped(bytes) } else { Reclaimed::Discarded(bytes) })
+    }
+
+    /// Local allocation pressure skips a busy cache instead of scheduling a later reclaim.
+    fn reclaim_local(&self) -> Result<()> {
+        let Some(mut r) = self.res.try_lock() else { return Ok(()) };
+        if r.closed || r.pins > 0 || r.evicted.is_some() { return Ok(()); }
+        let Some(torch) = self.memory.torch_if() else { return Ok(()) };
+        let Some(ev) = self.memory.device_call(|| torch.evict(Owner::Region(self.id), self.spill))? else { return Ok(()) };
+        r.evicted = Some(ev);
+        drop(r);
+        self.publish();
+        Ok(())
     }
 
     fn end(&self) -> Ended {
@@ -275,7 +288,9 @@ pub struct Region {
     sh: Arc<Shared>,
 }
 
-/// A region pinned for use: its bytes stay mapped until this drops.
+/// A region pinned for use: its bytes stay mapped until this drops. Uses must be on the
+/// allocation streams or additional streams registered with `Memory::record_stream`; an
+/// arbitrary foreign stream is not discovered by the pin.
 pub struct RegionPin {
     sh: Arc<Shared>,
     fresh: bool,
@@ -692,4 +707,32 @@ pub(crate) fn reclaim(id: u64, swap: bool) -> Result<Reclaimed> {
         Some(Found::Graph(g)) => g.drop_now(),
         None => Ok(Reclaimed::Gone),
     }
+}
+
+/// This Memory's unpinned, resident caches: their bytes, or evicted oldest first until `want`
+/// bytes went back (the bytes that did). Graph regions are never taken; a cache pinned or locked
+/// is skipped. No Memory state lock is held.
+fn local_caches(inner: &crate::memory::Inner) -> Vec<Arc<Shared>> {
+    let mut caches: Vec<Arc<Shared>> = LIVE.lock().values().filter_map(|live| match live {
+        Live::Cache(weak) => weak.upgrade().filter(|cache| cache.memory.same_inner(inner)),
+        Live::Graph(_) => None,
+    }).collect();
+    caches.sort_unstable_by_key(|cache| cache.last_use.load(Ordering::Acquire));
+    caches
+}
+
+pub(crate) fn cache_bytes(inner: &crate::memory::Inner) -> u64 {
+    local_caches(inner).iter().filter(|cache| cache.res.try_lock().is_some_and(|r| !r.closed && r.pins == 0 && r.evicted.is_none()))
+        .map(|cache| cache.memory.torch_if().map_or(0, |t| t.mapped_by(Owner::Region(cache.id)))).sum()
+}
+
+pub(crate) fn reclaim_local(inner: &crate::memory::Inner, want: u64) -> Result<u64> {
+    let caches = local_caches(inner);
+    let Some(torch) = caches.first().and_then(|cache| cache.memory.torch_if()) else { return Ok(0) };
+    let before = torch.mapped();
+    for cache in caches {
+        if before.saturating_sub(torch.mapped()) >= want { break; }
+        cache.reclaim_local()?;
+    }
+    Ok(before.saturating_sub(torch.mapped()))
 }

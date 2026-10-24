@@ -332,6 +332,28 @@ impl Clone for Memory {
 
 /// region.rs's hooks: the device's events, its free bytes, the manager's figures, and the plan.
 impl Memory {
+    /// The device-error boundary of torch and region operations. A sticky, internal or closed
+    /// failure, or a stream whose completion became unproven meanwhile (a capacity refusal that
+    /// stopped waiting on it, too), goes to the existing ownership-loss retirement.
+    pub(crate) fn device_call<T>(&self, call: impl FnOnce() -> Result<T>) -> Result<T> {
+        let fatal = |e: &Error| e.is_sticky() || matches!(e, Error::Internal(_) | Error::Closed(_));
+        let proven = || {
+            self.inner.check_ownership()?;
+            self.inner.torch.get().map_or(Ok(()), |torch| torch.check_completion())
+        };
+        let result = match proven().and_then(|()| crate::caught(call)) {
+            Err(e) if fatal(&e) => Err(e),
+            result => proven().and(result),
+        };
+        if let Err(e) = &result {
+            if fatal(e) { self.inner.lost_backing(e); }
+        }
+        result
+    }
+
+    /// A non-unwinding allocator hook panicked: retain uncertain backing until executor exit.
+    pub fn allocator_failed(&self) { self.inner.lost_backing("allocator hook panicked"); }
+
     pub(crate) fn record_event(&self, stream: usize) -> Result<Event> {
         self.inner.backend.record(stream)
     }
@@ -361,6 +383,10 @@ impl Memory {
     /// The device's torch allocator, if anything allocated through it yet.
     pub(crate) fn torch_if(&self) -> Option<Arc<crate::arena::Torch>> {
         self.inner.torch.get().cloned()
+    }
+
+    pub(crate) fn same_inner(&self, inner: &Inner) -> bool {
+        std::ptr::eq(Arc::as_ptr(&self.inner), inner)
     }
 
     /// The same device memory: two handles of one open.
@@ -814,7 +840,7 @@ impl Drop for Work {
     }
 }
 
-struct Inner {
+pub(crate) struct Inner {
     backend: Arc<dyn Backend>,
     /// Standalone, every page's and torch chunk's: the device's free bytes at open less its
     /// reserve.
@@ -1759,6 +1785,22 @@ impl Inner {
 
     // ---- demands
 
+    pub(crate) fn local_free(&self) -> u64 { self.allowance.left() }
+
+    /// The standalone torch source's slow path. A boolean cannot carry a fatal error, so
+    /// ownership loss uses the existing device flag observed by Memory's allocation boundary.
+    pub(crate) fn reclaim_for_torch(self: &Arc<Self>, bytes: u64) -> bool {
+        if self.check_ownership().is_err() { return false; }
+        let before = self.local_free();
+        if let Err(error) = self.make_room(bytes, &[], "torch", None, false) {
+            if error.is_sticky() || matches!(error, Error::Internal(_) | Error::Closed(_)) {
+                self.lost_backing(&error);
+            }
+            tracing::debug!("varena: local torch reclaim: {error}");
+        }
+        self.local_free() > before
+    }
+
     /// Free bytes for a page now, from varena's own figures (never the device's: a pass reads
     /// none). Leased: what the manager can allocate and reclaim from others. Standalone: what
     /// the budget its pages and torch's share has left (a refused create says the device has
@@ -1782,14 +1824,18 @@ impl Inner {
         self.free(st)
     }
 
-    /// Makes `bytes` free for a bind or a range's preparation, taking its own pages in
-    /// [`decide::victims`]' order, never `keep` (the pages being bound): idle pages unmapped, a
-    /// running set streamed through slots, pages whose last consumers still run taken once their
-    /// release events complete (waited on here). `Exhausted` at once beyond what it could ever
-    /// have, else only when a round takes nothing and nothing of its own is about to come back
-    /// (a fill: waited for). `why` and `req` name it in the request's record.
+    /// Makes `bytes` free for a bind, a range's preparation or a standalone torch chunk, in the
+    /// order torch's idle spans, its own pages in [`decide::victims`]' order (never `keep`, the
+    /// pages being bound: idle pages unmapped, a running set streamed through slots, pages whose
+    /// last consumers still run taken once their release events complete), then unpinned cache
+    /// regions; no state lock is held across any of them. `Exhausted` at once beyond what it
+    /// could ever have, else only when a round takes nothing and nothing of its own is about to
+    /// come back (a fill: waited for). `why` and `req` name it in the request's record.
     fn make_room(&self, bytes: u64, keep: &[Key], why: &'static str, req: Option<u64>, free_only: bool) -> Result<u64> {
         let mut record = MakeRoom { step: 0, trigger: why.into(), need: bytes, freed: 0, waited: 0 };
+        // What the table does not count, read once and only when short: unpinned caches and
+        // torch's idle spans still waiting for their epochs.
+        let mut beyond: Option<u64> = None;
         let out = loop {
             let mut st = self.lock();
             // A refused create, or a manager's refusal, says there is less than the figures: the
@@ -1809,16 +1855,53 @@ impl Inner {
                 self.unlock(st);
                 break Ok(free);
             }
-            // Idle work (a request opened idle, a free-only bind) takes free bytes only; nothing
-            // takes more than it could ever have (its pinned pages stay).
-            let pinned: u64 = st.table.pages().filter(|(k, p)| p.mapped && (!p.pins.is_empty() || p.filling) && !keep.contains(k)).map(|(_, p)| p.bytes).sum();
+            let torch = self.torch.get().cloned();
+            // Every unmap and give-back below would land inside an open capture.
+            if torch.as_ref().is_some_and(|t| t.capturing()) {
+                let stats = req.and_then(|r| st.stats.get(&r)).cloned().unwrap_or_default();
+                self.unlock(st);
+                break Err(Error::Exhausted(exhausted(bytes - free, Some("making room while a capture is open"), stats)));
+            }
+            // Torch's quiet idle spans first, for any demand: this process's free list.
+            if let Some(torch) = &torch {
+                self.unlock(st);
+                let given = torch.reclaim(bytes - free);
+                if given > 0 {
+                    record.freed += given;
+                    continue;
+                }
+                st = self.lock();
+            }
+            // Idle work takes free bytes only; nothing takes more than it could ever have (its
+            // pinned pages stay; a page still filling is the round's once it lands).
             let idle = free_only || req.and_then(|r| st.table.request(r)).is_some_and(|r| r.idle);
-            if idle || bytes > (free + st.table.mapped()).saturating_sub(pinned) {
+            let beyond = match beyond {
+                Some(b) => b,
+                None if idle => 0,
+                None => {
+                    self.unlock(st);
+                    let b = crate::region::cache_bytes(self) + torch.as_ref().map_or(0, |t| t.idle().1);
+                    st = self.lock();
+                    *beyond.insert(b)
+                }
+            };
+            let pinned: u64 = st.table.pages().filter(|(k, p)| p.mapped && !p.pins.is_empty() && !keep.contains(k)).map(|(_, p)| p.bytes).sum();
+            if idle || bytes > (free + st.table.mapped() + beyond).saturating_sub(pinned) {
                 let out = short(&st);
                 self.unlock(st);
                 break out;
             }
             record.step = req.and_then(|r| st.table.request(r)).map_or(0, |r| r.cursor.step);
+            // Spans freed but waiting for their epochs, then the table's pages.
+            if let Some(torch) = &torch {
+                self.unlock(st);
+                let given = torch.give_back()?;
+                if given > 0 {
+                    record.freed += given;
+                    continue;
+                }
+                st = self.lock();
+            }
             let mut want = bytes - free;
             let (mut unmapped, mut events, mut streamed) = (0, vec![], HashSet::new());
             for Victim { key, bytes: b, releasing } in decide::victims(&st.table, keep) {
@@ -1857,6 +1940,11 @@ impl Inner {
             record.waited += events.len() as u32;
             record.freed += unmapped;
             if unmapped == 0 && events.is_empty() {
+                let freed = crate::region::reclaim_local(self, bytes - free)?;
+                if freed > 0 {
+                    record.freed += freed;
+                    continue;
+                }
                 let mut st = self.lock();
                 if coming {
                     self.wait(&mut st)?;
@@ -2411,6 +2499,17 @@ impl Inner {
     }
 }
 
+impl Inner {
+    /// A mapping a dropped Inner's mechanism left: unmapped once `after` proves its consumers
+    /// done, then its page goes; else both leak.
+    fn unmap_left(&self, va: Va, off: u64, span: u64, phys: Option<Physical>, after: &[Event]) {
+        // SAFETY: mapped there; its consumers ended (`after`, waited for first).
+        if after.iter().all(|e| self.backend.finish(*e).is_ok()) && unsafe { self.backend.unmap(va, off, span) }.is_ok() {
+            phys.into_iter().for_each(|p| { let _ = self.give_page(p); });
+        }
+    }
+}
+
 impl Drop for Inner {
     fn drop(&mut self) {
         self.burst.0.lock().closed = true;
@@ -2419,23 +2518,21 @@ impl Drop for Inner {
         // then its Close (taken by it alone) ends it.
         let left: Vec<(u64, Mech)> = self.mech.rx.try_iter().collect();
         self.mech.post(Mech::Close);
+        // An Inner drops only after its retirement quiesced (a quarantined one is leaked): what
+        // is left unmaps once its own events prove its consumers done, else it leaks.
         for (_, op) in left {
             match op {
                 Mech::Unmap { va, off, span, phys, ready } => {
-                    let _ = self.backend.finish(ready);
-                    let _ = self.backend.unmap(va, off, span);
-                    phys.into_iter().for_each(|p| { let _ = self.give_page(p); });
+                    // SAFETY: mapped at the page's home; its reads and landing ended (`ready`).
+                    if self.backend.finish(ready).is_ok() && unsafe { self.backend.unmap(va, off, span) }.is_ok() {
+                        phys.into_iter().for_each(|p| { let _ = self.give_page(p); });
+                    }
                     self.backend.retire(ready);
                 }
-                Mech::Renew { va, off, span, old, .. } => {
-                    let _ = self.backend.unmap(va, off, span);
-                    old.into_iter().for_each(|p| { let _ = self.give_page(p); });
-                }
-                Mech::Move { va, from, span, phys, .. } => {
-                    let _ = self.backend.unmap(va, from, span);
-                    let _ = self.give_page(phys);
-                }
-                Mech::Release(va) => self.backend.release(va),
+                Mech::Renew { va, off, span, old: phys, after, .. } => self.unmap_left(va, off, span, phys, &after),
+                Mech::Move { va, from, span, phys, after, .. } => self.unmap_left(va, from, span, Some(phys), &after),
+                // SAFETY: a set's reservation, its pages unmapped before its Release was posted.
+                Mech::Release(va) => unsafe { self.backend.release(va) },
                 Mech::Map { .. } | Mech::Close => {}
                 #[cfg(unix)]
                 Mech::Revoke | Mech::Reclaim { .. } => {}
@@ -2446,14 +2543,16 @@ impl Drop for Inner {
         for (key, home) in homes {
             let Some(phys) = home.phys else { continue };
             if let Ok((va, off, span)) = st.place(key) {
-                let _ = self.backend.unmap(va, off, span);
+                // SAFETY: the home's mapping; retirement quiesced its fills and consumers.
+                if unsafe { self.backend.unmap(va, off, span) }.is_err() { continue; }
             }
             let _ = self.give_page(phys);
         }
         let sets: Vec<SetMech> = st.sets.drain(..).flatten().collect();
         drop(st);
         for m in sets {
-            self.backend.release(m.va);
+            // SAFETY: each set's own reservation, released once; its homes were unmapped above.
+            unsafe { self.backend.release(m.va) };
         }
         // Its retired events that completed go with it (one still pending, with the backend).
         self.backend.sweep();
@@ -2648,7 +2747,7 @@ impl Pass {
 impl Inner {
     /// Memory whose release could not be proved: this executor is quarantined, and it leaks
     /// rather than reuse what another may still hold.
-    fn lost_backing(self: &Arc<Self>, why: impl std::fmt::Display) -> Error {
+    pub(crate) fn lost_backing(self: &Arc<Self>, why: impl std::fmt::Display) -> Error {
         self.ownership_lost.store(true, Ordering::Release);
         self._device.retiring(true);
         self.landed.notify_all();
@@ -2674,8 +2773,9 @@ impl Inner {
             }
             Mech::Renew { key, gen, va, off, span, old, after, job } => {
                 // Its consumers finish before the unmap: this thread waits for their events.
+                // SAFETY: the home's mapping; its consumers ended (`after`, waited for first).
                 let released = after.iter().try_for_each(|e| self.backend.finish(*e))
-                    .and_then(|()| self.backend.unmap(va, off, span));
+                    .and_then(|()| unsafe { self.backend.unmap(va, off, span) });
                 if let Err(error) = released {
                     tracing::warn!("varena: renewed page ownership could not be released: {error}");
                     let st = self.state.lock();
@@ -2696,7 +2796,8 @@ impl Inner {
             }
             Mech::Unmap { va, off, span, phys, ready } => {
                 // A page read ready at issue may still be landing: its copies end first.
-                if let Err(error) = self.backend.finish(ready).and_then(|()| self.backend.unmap(va, off, span)) {
+                // SAFETY: the home's mapping; its reads and landing ended (`ready`, waited for first).
+                if let Err(error) = self.backend.finish(ready).and_then(|()| unsafe { self.backend.unmap(va, off, span) }) {
                     tracing::warn!("varena: page ownership could not be released: {error}");
                     let st = self.state.lock();
                     self.ownership_lost.store(true, Ordering::Release);
@@ -2714,7 +2815,8 @@ impl Inner {
                 self.backend.retire(ready);
             }
             Mech::Move { key, gen, va, from, off, span, phys, after, job } => self.move_slot(key, gen, va, from, off, span, phys, after, job),
-            Mech::Release(va) => self.backend.release(va),
+            // SAFETY: a set's reservation, its pages unmapped before its Release was posted.
+            Mech::Release(va) => unsafe { self.backend.release(va) },
             Mech::Close => {}
         }
     }
@@ -2751,7 +2853,9 @@ impl Inner {
 
     /// `p` mapped read-write at `va + off`; unmappable, it goes back.
     fn map_rw(self: &Arc<Self>, va: Va, off: u64, p: Physical) -> Result<Physical> {
-        match self.backend.map(va, off, &p, Access::ReadWrite) {
+        // SAFETY: the page's home in its set's reservation, unmapped (the mechanism places each
+        // home once per generation); `p` is returned to the caller, alive while mapped.
+        match unsafe { self.backend.map(va, off, &p, Access::ReadWrite) } {
             Ok(()) => Ok(p),
             Err(error @ Error::Ownership(_)) => Err(self.lost_backing(error)),
             Err(error) => match self.give_page(p) {
@@ -2771,7 +2875,8 @@ impl Inner {
             drop(st);
             if let Ok((p, ..)) = made {
                 self.commit_page(&p);
-                let released = self.backend.unmap(va, off, span).and_then(|()| self.give_page(p));
+                // SAFETY: mapped by this placement and never published: no consumer has it.
+                let released = unsafe { self.backend.unmap(va, off, span) }.and_then(|()| self.give_page(p));
                 if let Err(error) = released {
                     self.lost_backing(error);
                 }

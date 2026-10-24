@@ -289,7 +289,7 @@ impl Backend for CudaBackend {
         Ok(Va { base, len })
     }
 
-    fn release(&self, va: Va) {
+    unsafe fn release(&self, va: Va) {
         self.logged("cuMemAddressFree", || Ok(call!("cuMemAddressFree", mem_address_free(va.base, va.len as usize))?));
     }
 
@@ -306,7 +306,7 @@ impl Backend for CudaBackend {
         Ok(call!("cuMemRelease", mem_release(page.id))?)
     }
 
-    fn map(&self, va: Va, offset: u64, page: &Physical, access: Access) -> Result<()> {
+    unsafe fn map(&self, va: Va, offset: u64, page: &Physical, access: Access) -> Result<()> {
         self.aligned("offset", offset)?;
         if offset.checked_add(page.len).is_none_or(|end| end > va.len) {
             return Err(Error::Invalid(format!("{} bytes at {offset} outside a {} byte reservation", page.len, va.len)));
@@ -323,12 +323,12 @@ impl Backend for CudaBackend {
         Ok(())
     }
 
-    fn protect(&self, va: Va, offset: u64, len: u64, access: Access) -> Result<()> {
+    unsafe fn protect(&self, va: Va, offset: u64, len: u64, access: Access) -> Result<()> {
         let _ctx = self.primary.enter()?;
         self.access(va.base + offset, len, access)
     }
 
-    fn unmap(&self, va: Va, offset: u64, len: u64) -> Result<()> {
+    unsafe fn unmap(&self, va: Va, offset: u64, len: u64) -> Result<()> {
         let _ctx = self.primary.enter()?;
         Ok(call!("cuMemUnmap", mem_unmap(va.base + offset, len as usize))?)
     }
@@ -377,7 +377,7 @@ impl Backend for CudaBackend {
         Dst::Device { device: self.ordinal, ptr: va.base + offset, len: len as usize, stream: self.stream.raw() }
     }
 
-    fn copy_in(&self, va: Va, offset: u64, src: &[u8]) -> Result<()> {
+    unsafe fn copy_in(&self, va: Va, offset: u64, src: &[u8]) -> Result<()> {
         crate::backend::inside(va, offset, src.len())?;
         let _ctx = self.primary.enter()?;
         call!("cuMemcpyHtoDAsync", memcpy_htod_async(va.base + offset, src.as_ptr().cast(), src.len(), self.stream.raw() as CUstream))?;
@@ -467,7 +467,8 @@ impl Backend for CudaBackend {
         Ok(tensorfs::io::drain(self.ordinal)?)
     }
 
-    fn copy_out(&self, va: Va, offset: u64, dst: &mut [u8], after: Event) -> Result<()> {
+    unsafe fn copy_out(&self, va: Va, offset: u64, dst: &mut [u8], after: Event) -> Result<()> {
+        crate::backend::inside(va, offset, dst.len())?;
         let _ctx = self.primary.enter()?;
         let stream = self.stream.raw() as CUstream;
         if after != Event::DONE {

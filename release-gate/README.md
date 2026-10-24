@@ -77,6 +77,9 @@ The runner signs in as the owner's account with its own device key: secret `COZY
 - **varena** (`suites/varena`): the memory manager through its paces on SDXL, Klein and 5 s H3 on Ampere, Ada,
   Blackwell and a CPU rental (Hopper/B200 on request): cold load, co-residency, unload and reload, 8/6/3 GiB caps with
   SDXL and Klein alternating at 6, a real 8 GB card, and host RAM under the rental's cgroup with page/spill to disk.
+  `native-memory` runs standalone varena in child processes beside a ballast: a capacity refusal is torch's OOM and
+  evicts nothing, a demand past free bytes takes cold weights then a swapped cache region (same output, same bytes
+  after), and a device fault and every allocation after it are AcceleratorError.
   `check.py` holds each load and refill to a share of the machine's measured ceiling (`ceiling.py`), checks caps,
   alternation and host RAM; `analyze.py`, time and peak VRAM. Selected by `varena` (varena, TensorFS, TensorD, the
   Runtime); a SKU new to it needs `-f suites=varena -f skus=<sku> -f establish=true` once.

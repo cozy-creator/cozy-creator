@@ -4,6 +4,7 @@
 # the scenario's $CHAR $MOTION $OBJECT $SCENE. Every request has its own prompt and seed.
 #
 #   ceiling          this machine's pinned host-to-device and cold disk-read bandwidth (ceiling.py)
+#   native-memory    standalone varena beside a ballast: typed refusal, local recovery, a region swap, a device fault
 #   cold-*           each model loaded from disk into a fresh process
 #   co-*             all three again on one card: what does not fit is evicted and refilled
 #   reload-*         after an unload (a restart ends every executor), each model back from page cache or disk
@@ -32,7 +33,7 @@ cap() {
 }
 SDXL=$(pkg sdxl generate) KLEIN=$(pkg flux-3-klein generate_turbo) H3=$(pkg minimax-h3 ref2va_turbo)
 h3() { vcell "$1" "$H3" --asset ref="$REF" seed:=$((R + $2)) duration_s:="$3" resolution=768p prompt="$MOTION $4"; }
-ln -sfn "$V/ceiling.py" ceiling.py; ln -sfn "$V/host-cap.py" host-cap.py
+ln -sfn "$V/ceiling.py" ceiling.py; ln -sfn "$V/host-cap.py" host-cap.py; ln -sfn "$V/native-memory" native-memory
 
 if ! grep -q '^GPU 0' machine.txt; then
   vcell host-cap ./host-cap.py
@@ -41,6 +42,7 @@ if ! grep -q '^GPU 0' machine.txt; then
   return 0
 fi
 vcell ceiling ./ceiling.py
+vcell native-memory ./native-memory/prove
 vcell cold-sdxl "$SDXL" prompt="$SCENE, photo" seed:=$((R + 1))
 vcell cold-klein "$KLEIN" prompt="$CHAR" seed:=$((R + 2))
 h3 cold-h3 3 5 ""

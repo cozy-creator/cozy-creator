@@ -450,8 +450,12 @@ pub fn reserve(len: u64) -> Result<u64> {
 }
 
 /// Gives back a reservation whose pages are all unmapped: its placeholders coalesce, then go.
-pub fn release(base: u64, len: u64) {
-    // SAFETY: a reservation [`reserve`] made, every view of it unmapped.
+///
+/// # Safety
+/// `base..base + len` is exactly one live reservation [`reserve`] returned, released once, with
+/// every view of it unmapped; no reference or pointer into it is used after.
+pub unsafe fn release(base: u64, len: u64) {
+    // SAFETY: the caller's reservation, every view unmapped and unused from here on.
     unsafe {
         VirtualFree(base as *mut _, len as usize, MEM_RELEASE | MEM_COALESCE_PLACEHOLDERS);
         VirtualFree(base as *mut _, 0, MEM_RELEASE);
@@ -459,7 +463,11 @@ pub fn release(base: u64, len: u64) {
 }
 
 /// Maps a host page at `at`: its range splits off the placeholder, then the view replaces it.
-pub fn map_page(at: u64, page: &Owned, len: u64, write: bool) -> Result<()> {
+///
+/// # Safety
+/// `at..at + len` lies inside a live reservation of this process ([`reserve`]), at a multiple of
+/// [`granularity`], and is a placeholder now (no view maps it).
+pub unsafe fn map_page(at: u64, page: &Owned, len: u64, write: bool) -> Result<()> {
     // SAFETY: splitting our own placeholder; a range that already is one placeholder refuses,
     // which leaves it as it is.
     unsafe { VirtualFree(at as *mut _, len as usize, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER) };
@@ -472,9 +480,14 @@ pub fn map_page(at: u64, page: &Owned, len: u64, write: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn protect(at: u64, len: u64, write: bool) -> Result<()> {
+/// Changes a mapped range's access.
+///
+/// # Safety
+/// `at..at + len` is a view [`map_page`] mapped inside the caller's reservation. Made read-only,
+/// no reference that writes into it, and no write in flight, is left.
+pub unsafe fn protect(at: u64, len: u64, write: bool) -> Result<()> {
     let mut old = 0;
-    // SAFETY: a view of ours.
+    // SAFETY: the caller's view, with no writer left when it loses write access.
     if unsafe { VirtualProtect(at as *const _, len as usize, if write { PAGE_READWRITE } else { PAGE_READONLY }, &mut old) } == 0 {
         return Err(last("protect a page"));
     }
@@ -482,8 +495,12 @@ pub fn protect(at: u64, len: u64, write: bool) -> Result<()> {
 }
 
 /// The view goes; its range is a placeholder again.
-pub fn unmap_page(at: u64, _len: u64) -> Result<()> {
-    // SAFETY: a view of ours, returned to a placeholder.
+///
+/// # Safety
+/// `at` starts a view [`map_page`] mapped inside the caller's reservation, and every access to
+/// it (references, copies, device work) has ended.
+pub unsafe fn unmap_page(at: u64, _len: u64) -> Result<()> {
+    // SAFETY: the caller's view, no longer accessed, returned to a placeholder.
     if unsafe { UnmapViewOfFile2(GetCurrentProcess(), MEMORY_MAPPED_VIEW_ADDRESS { Value: at as *mut _ }, MEM_PRESERVE_PLACEHOLDER) } == 0 {
         return Err(last("unmap a page"));
     }

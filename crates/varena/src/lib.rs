@@ -74,7 +74,8 @@ pub enum Error {
     /// What closed: a set, the table, the custody channel.
     #[error("closed: {0}")]
     Closed(String),
-    /// A panic or broken invariant inside varena: the request fails, the process keeps serving.
+    /// A panic or broken invariant inside varena: the request fails. In an allocator or region
+    /// operation its memory is unproven, and the executor retires.
     #[error("internal: {0}")]
     Internal(String),
     /// A bind that needs a page only the calling thread pins (re-binding a page it is
@@ -104,7 +105,7 @@ impl Error {
     /// CUDA documents these as destroying the context: the process must end, and the GPU's kept
     /// pages go (cuda 13.0 driver API, CUresult).
     pub fn is_sticky(&self) -> bool {
-        matches!(self, Error::Ownership(_) | Error::Device { code: 700 | 702 | 709 | 710 | 714..=719 | 721 | 911, .. })
+        matches!(self, Error::Ownership(_) | Error::Device { code: 214 | 220 | 700 | 702 | 709 | 710 | 714..=719 | 721 | 911, .. })
     }
 
     pub(crate) fn io(what: &str, e: impl std::fmt::Display) -> Error {

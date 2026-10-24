@@ -138,6 +138,9 @@ pub trait Source: Send + Sync {
     /// Idle chunks' epochs passed: chunks asked back may go now ([`Torch::reclaim_chunks`]). The
     /// poller's, no lock held.
     fn quiet(&self) {}
+    /// Local allocation pressure after idle chunks were returned. True only when capacity
+    /// actually increased; callers never enter this path while capturing or holding arena locks.
+    fn reclaim(&self, _want: u64) -> bool { false }
     /// The lease table slot a chunk is granted in, for the region facts the manager ranks.
     fn slot(&self, _chunk: &Chunk) -> Option<u32> {
         None
@@ -720,6 +723,8 @@ struct Shared {
     arenas: Mutex<HashMap<Owner, Arc<Arena>>>,
     process: Arc<Arena>,
     clocks: RwLock<HashMap<usize, Arc<Clock>>>,
+    /// Some stream's completion is unproven (its clock is lost): nothing may be reused or waited on.
+    lost: AtomicBool,
     /// The poller records under its read side, a capture begins and ends under its write side:
     /// nothing is recorded on a stream once its capture began. No arena lock is held with it.
     gate: RwLock<()>,
@@ -766,6 +771,7 @@ impl Torch {
             arenas: Mutex::new(HashMap::new()),
             process: Arena::new(Owner::Process),
             clocks: RwLock::new(HashMap::new()),
+            lost: AtomicBool::new(false),
             gate: RwLock::new(()),
             captures: AtomicU32::new(0),
             capturers: Mutex::new(Vec::new()),
@@ -799,6 +805,13 @@ impl Torch {
                 sh.alloc_in(&sh.routed(), size, stream, sh.capturing())
             }
         }
+    }
+
+    /// `Ownership` once a stream's completion is unproven: its spans can never be reused.
+    pub(crate) fn check_completion(&self) -> Result<()> {
+        if self.sh.lost.load(Acquire) {
+            Err(Error::Ownership("an allocator stream's completion is unproven".into()))
+        } else { Ok(()) }
     }
 
     /// Never fails and never waits on the device; a pointer no arena holds is logged.
@@ -934,8 +947,9 @@ impl Torch {
                     sh.install(&a, &mut st, va.base, chunks, None, Tier::Pool);
                 }
                 Err(e) => {
+                    if e.is_sticky() { return Err(e); }
                     sh.unmap(va, chunks, true, false);
-                    if !(matches!(e, Error::Exhausted(_)) && sh.give_back()) {
+                    if !(matches!(e, Error::Exhausted(_)) && (sh.give_back() || sh.source.reclaim(short))) {
                         return Err(e);
                     }
                 }
@@ -1042,6 +1056,18 @@ impl Torch {
         retried + given.into_iter().map(|s| self.sh.give(s)).sum::<u64>()
     }
 
+    pub(crate) fn capturing(&self) -> bool { self.sh.capturing() }
+
+    /// A weight demand may wait only for spans already freed, never for live allocations.
+    pub(crate) fn give_back(&self) -> Result<u64> {
+        self.check_completion()?;
+        if self.sh.capturing() { return Ok(0); }
+        let before = self.sh.mapped.load(Acquire);
+        self.sh.give_back();
+        self.check_completion()?;
+        Ok(before.saturating_sub(self.sh.mapped.load(Acquire)))
+    }
+
     /// Idle bytes: (quiet, waiting for their stream's epoch).
     pub fn idle(&self) -> (u64, u64) {
         self.sh.idle.lock().bytes()
@@ -1056,7 +1082,10 @@ impl Drop for Torch {
         sh.reclaim(u64::MAX);
         let mapped = sh.mapped.load(Acquire);
         if mapped == 0 {
-            std::mem::take(&mut sh.space.lock().reserved).into_iter().for_each(|va| sh.backend.release(va));
+            // SAFETY: torch's own reservations, released once at its close; nothing in them is
+            // mapped (`mapped` is 0, stuck chunks included) and no torch block outlives the Torch.
+            #[allow(unsafe_code)]
+            std::mem::take(&mut sh.space.lock().reserved).into_iter().for_each(|va| unsafe { sh.backend.release(va) });
         } else {
             tracing::warn!("varena: torch's arenas still map {mapped} bytes at close: their address space stays reserved");
         }
@@ -1263,7 +1292,9 @@ impl Shared {
             }
             Err(e) => {
                 c.lost.store(true, Release);
+                self.lost.store(true, Release);
                 tracing::error!("varena: stream {:#x}'s epoch failed ({why}) and so did its synchronize ({e}): its spans are quarantined", c.stream);
+                self.progressed();
             }
         }
     }
@@ -1349,15 +1380,19 @@ impl Shared {
             }
             let va = self.reserve(new)?;
             let mut chunks = Vec::new();
-            // The source may wait (the manager, this process's own idle spans): never holding
-            // the host's lock.
+            // The source may wait: neither the host lock nor an arena lock may span it.
             let unblocked = unblocked();
             if let Err(e) = self.source.map(va, if a.pool() { Kind::Pool } else { Kind::Torch }, &mut chunks) {
+                if e.is_sticky() {
+                    // The mapping may remain: keep its VA and imported handles until exit.
+                    return Err(e);
+                }
                 self.unmap(va, chunks, true, false);
-                let retry = matches!(e, Error::Exhausted(_)) && self.give_back();
+                let retry = matches!(e, Error::Exhausted(_)) && (self.give_back() || self.source.reclaim(new));
                 drop(unblocked);
                 if !retry {
                     return Err(e);
+
                 }
                 continue;
             }
@@ -1378,12 +1413,12 @@ impl Shared {
     /// [`STALL`] passed with no capture open and none landing.
     fn give_back(&self) -> bool {
         loop {
+            if self.lost.load(Acquire) { return false; }
             let seen = *self.progress.0.lock();
             let (quiet, pending) = self.idle.lock().bytes();
             if quiet > 0 {
-                // Given, or adopted meanwhile by another arena: either way the source is asked again.
-                self.reclaim(u64::MAX);
-                return true;
+                // A failed unmap makes no room: retry only after bytes actually went back.
+                return self.reclaim(u64::MAX) > 0;
             }
             if pending == 0 {
                 return false;
@@ -1391,9 +1426,11 @@ impl Shared {
             self.kick();
             let mut p = self.progress.0.lock();
             while *p == seen {
+                if self.lost.load(Acquire) { return false; }
                 if self.progress.1.wait_for(&mut p, STALL).timed_out() && *p == seen && self.captures.load(SeqCst) == 0 {
                     return false;
                 }
+
             }
         }
     }
@@ -1723,21 +1760,42 @@ fn poll(weak: &Weak<Shared>) {
 pub struct Direct {
     backend: Arc<dyn Backend>,
     allowance: Arc<Allowance>,
+    memory: Weak<crate::memory::Inner>,
     held: Mutex<HashMap<u64, Physical>>,
 }
 
 impl Direct {
     pub fn new(backend: Arc<dyn Backend>, allowance: Arc<Allowance>) -> Direct {
-        Direct { backend, allowance, held: Mutex::new(HashMap::new()) }
+        Direct { backend, allowance, memory: Weak::new(), held: Mutex::new(HashMap::new()) }
     }
 
+    pub(crate) fn recover_from(mut self, memory: Weak<crate::memory::Inner>) -> Self {
+        self.memory = memory;
+        self
+    }
+
+    fn release_failed(&self, error: &Error) {
+        tracing::error!("varena: a standalone physical reference could not be released: {error}");
+        if error.is_sticky() || matches!(error, Error::Internal(_) | Error::Closed(_)) {
+            if let Some(memory) = self.memory.upgrade() { memory.lost_backing(error); }
+        }
+    }
+
+    #[allow(unsafe_code)]
     fn one(&self, va: Va, off: u64, len: u64) -> Result<Chunk> {
         let p = self.allowance.create(&*self.backend, len).map_err(|e| match e {
             Error::Device { code: OUT_OF_MEMORY, .. } => exhausted(len, "the device is out of memory"),
             e => e,
         })?;
-        if let Err(e) = self.backend.map(va, off, &p, Access::ReadWrite) {
-            let _ = self.allowance.destroy(&*self.backend, p);
+        // SAFETY: the arena's fresh reservation `va` (Source::map's contract), unmapped at `off`;
+        // `p` is new and stays alive in `held` while mapped (or after an unproven failure).
+        if let Err(e) = unsafe { self.backend.map(va, off, &p, Access::ReadWrite) } {
+            if e.is_sticky() {
+                self.held.lock().insert(p.id, p);
+            } else if let Err(release) = self.allowance.destroy(&*self.backend, p) {
+                self.release_failed(&release);
+                return Err(release);
+            }
             return Err(e);
         }
         let id = p.id;
@@ -1747,6 +1805,10 @@ impl Direct {
 }
 
 impl Source for Direct {
+    fn reclaim(&self, want: u64) -> bool {
+        self.memory.upgrade().is_some_and(|memory| memory.reclaim_for_torch(want))
+    }
+
     fn map(&self, va: Va, _: Kind, into: &mut Vec<Chunk>) -> Result<()> {
         let mut off = 0;
         while off < va.len {
@@ -1757,19 +1819,24 @@ impl Source for Direct {
         Ok(())
     }
 
+    #[allow(unsafe_code)]
     fn unmap(&self, va: Va, chunks: Vec<Chunk>) -> Vec<(u64, Chunk)> {
         let (mut off, mut stuck) = (0, Vec::new());
         for c in chunks {
             let at = va.base + off;
             off += c.len;
-            if let Err(e) = self.backend.unmap(Va { base: at, len: c.len }, 0, c.len) {
+            // SAFETY: Source::unmap's contract: `one` mapped this chunk at `at`, and the arena
+            // gives it back only once its span's streams passed their epochs (no consumer left).
+            if let Err(e) = unsafe { self.backend.unmap(Va { base: at, len: c.len }, 0, c.len) } {
                 tracing::error!("varena: unmapping a torch chunk at {at:#x} failed: {e}");
                 stuck.push((at, c));
                 continue;
             }
             let page = self.held.lock().remove(&c.id);
             if let Some(p) = page {
-                let _ = self.allowance.destroy(&*self.backend, p);
+                if let Err(error) = self.allowance.destroy(&*self.backend, p) {
+                    self.release_failed(&error);
+                }
             }
         }
         stuck

@@ -8,6 +8,7 @@ kernels, time and peak VRAM against the last pass.
   - host (`host-*`, a CPU rental): `host-cap` measured a cgroup cap below the RAM; each run kept its anonymous host
     high-water under the cap (its page/spill bytes are noted: a model that fits pages nothing);
   - every H3 cell produced its whole video.
+  - `native-memory` (native-memory/) passed: its report says each stage held (xs-090 D1, D2, D4).
     check.py <gate dir> <SKU>     the same verdict alone"""
 import json, os, re, subprocess, sys
 
@@ -148,10 +149,25 @@ def videos(recs):
     return fails, notes
 
 
+def native(recs):
+    rec = recs.get('native-memory')
+    if rec is None:
+        return [], []
+    def dicts(o):
+        if isinstance(o, dict):
+            yield o
+            for v in o.values():
+                yield from dicts(v)
+    report = next((d for d in dicts(rec.get('result')) if 'recovery' in d and 'fault' in d), {})
+    if report.get('passed') is not True:
+        return [f"native-memory: run {rec.get('number')} failed: recovery {report.get('recovery')}, fault {report.get('fault')}"], []
+    return [], [f"native-memory: run {rec.get('number')} passed"]
+
+
 def check(gate):
     recs, sku = gate['records'], gate.get('sku', '')
     fails, notes = [], []
-    for f, n in (bandwidth(recs, gate.setdefault('baseline', {})), caps(gate['out'], recs), host(recs), videos(recs)):
+    for f, n in (bandwidth(recs, gate.setdefault('baseline', {})), caps(gate['out'], recs), host(recs), videos(recs), native(recs)):
         fails += f; notes += n
     parked = [c for k in json.load(open(os.path.join(HERE, '..', '..', 'known-failing.json')))
               if k['sku'] in (sku, '*') for c in k.get('cells', [])]
