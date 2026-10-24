@@ -216,7 +216,7 @@ struct Model {
     repository: String,
     release: String,
     lane: String,
-    /// The header's precision lane (`int8`, …), shown beside the variant's path.
+    /// The header's precision family (`int8`, …), shown beside the lane.
     precision: String,
     manifest: String,
 }
@@ -482,7 +482,7 @@ fn stage_rows(measured: &Measured) -> Vec<Vec<String>> {
 }
 
 /// Each model slot's checkpoint: its repository and release, or its hash when it was passed
-/// by value, and the variant it was resolved in with its header's precision lane.
+/// by value, and the lane it was resolved in with its header's precision family.
 fn model_rows(measured: &Measured) -> Vec<Vec<String>> {
     let measured = &measured.m;
     let row = |m: &Model| {

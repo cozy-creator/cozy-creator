@@ -116,7 +116,7 @@ fn part_name(key: &str, role: &str) -> String {
 }
 
 /// Writes `ck` into `dir` as a Diffusers/Transformers folder, with the repo files `repo` (path →
-/// local file; a tree's files other than its variants); the paths written, relative. `decode`
+/// local file; a commit's files other than its header); the paths written, relative. `decode`
 /// writes each encoded tensor in its logical dtype.
 pub fn safetensors(
     ck: &Checkpoint,
