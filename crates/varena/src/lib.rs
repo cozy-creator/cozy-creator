@@ -222,6 +222,11 @@ impl Arena {
         let captures = capture_counts()?;
         ensure_not_capturing(&captures, self.device)?;
         let mut state = self.lock()?;
+        // A new model may choose a fresh prefix only after every old reservation owner is gone.
+        // Escaped storage and graph Pins own their Region, so they prevent this reset.
+        if state.entries.values().all(|entry| entry.retired) {
+            state.preferred_end = None;
+        }
         let id = state.next_id;
         state.next_id = id
             .checked_add(1)
@@ -734,6 +739,7 @@ impl Drop for Region {
         };
         let entry = state.entries.get_mut(&self.id).expect("last region owner");
         entry.retired = true;
+        entry.preferred = false;
         // Defer physical teardown to reclamation or Arena drop; destructors cannot block capture.
         if entry.handle.is_some() || ensure_not_capturing(&captures, self.arena.device).is_err() {
             return;
