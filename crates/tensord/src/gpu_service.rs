@@ -922,10 +922,7 @@ impl Pool {
     /// End the least recently used idle GPU executor (outside every warm set first) whose lane's
     /// call slots are free meanwhile; whether one ended.
     fn end_lru_idle(&self) -> bool {
-        let members: std::collections::BTreeSet<String> = {
-            let sets = self.members.lock().unwrap();
-            sets.values().flatten().filter_map(|m| m.plan.as_ref().map(|p| p.construction.clone())).collect()
-        };
+        let members = self.member_plans();
         let mut idle: Vec<(bool, Instant, String, std::ops::Range<usize>)> = {
             let sessions = self.sessions.lock().unwrap();
             let lane = |s: &Session| s.start..s.start + s.degree as usize;
@@ -936,6 +933,79 @@ impl Pool {
             let Some(_upkeep) = self.allocations.upkeep(lane) else { return false };
             self.end_session(&key)
         })
+    }
+    /// The constructions of every warm set's members.
+    fn member_plans(&self) -> std::collections::BTreeSet<String> {
+        let sets = self.members.lock().unwrap();
+        sets.values().flatten().filter_map(|m| m.plan.as_ref().map(|p| p.construction.clone())).collect()
+    }
+    /// The room GPU `index` has for a call's growth: the driver's free bytes less varena's
+    /// reserve, and under a GPU memory limit no more than the charge page leaves of it. None
+    /// while NVML cannot read it.
+    fn room(&self, index: usize) -> Option<u64> {
+        let device = self.devices.get(index)?;
+        let free = platform::gpu::Device::open(&device.entry).and_then(|gpu| gpu.free()).ok()?;
+        let room = free.saturating_sub(varena::backend::RESERVE);
+        let uuid = memory::row(&device.entry, &self.config.inventory).map(|row| row.device_uuid.as_str());
+        Some(match uuid.and_then(|uuid| self.charge.as_ref()?.left(uuid)) {
+            Some(left) => room.min(left),
+            None => room,
+        })
+    }
+    /// `construction`'s measured peak on `lane` at `shape` (any shape's largest before its
+    /// Prepare names one), from its GPUs' books.
+    fn measured_peak(&self, lane: &std::ops::Range<usize>, construction: &str, shape: Option<&str>) -> Option<u64> {
+        let (exact, any) = (shape.map(|shape| format!("{construction}|{shape}")), format!("{construction}|"));
+        let peaks = self.devices.get(lane.clone()).into_iter().flatten().filter_map(|d| d.memory.as_ref()).flat_map(|m| m.manager.peaks());
+        peaks
+            .filter_map(|peak| match peak {
+                varena::lease::Peak::Request { key, bytes } if exact.as_ref().map_or(key.starts_with(&any), |exact| key == *exact) => Some(bytes),
+                _ => None,
+            })
+            .max()
+    }
+    /// Before call `id` grows on `lane`'s GPUs (its executor's Start, its Invoke): idle executors
+    /// there go to RAM (`Map(Ram)`), least recently used first and warm-set non-members before
+    /// members, until every GPU of the lane has room for `need`, the call's measured peak; with
+    /// none measured, every one goes. Only idle executors are in the pool, so a running call and
+    /// its family are never touched. Each decision is a memory-log note; the call then runs in
+    /// whatever room there is (it streams).
+    fn make_room(&self, engine: &Arc<Engine>, id: &str, lane: &std::ops::Range<usize>, need: Option<u64>) {
+        let room = || lane.clone().filter_map(|index| self.room(index)).min();
+        let overlaps = |s: &Session| s.start < lane.end && lane.start < s.start + s.degree as usize;
+        let members = self.member_plans();
+        let mut idle: Vec<(bool, Instant, String)> = {
+            let sessions = self.sessions.lock().unwrap();
+            sessions.iter().filter(|(_, s)| s.level == Level::Gpu && overlaps(s)).map(|(key, s)| (members.contains(&s.plan), s.used, key.clone())).collect()
+        };
+        idle.sort_by_key(|(member, used, _)| (*member, *used));
+        for (member, _, key) in idle {
+            let before = room();
+            if need.zip(before).is_some_and(|(need, before)| before >= need) {
+                return;
+            }
+            let Some(mut session) = self.sessions.lock().unwrap().remove(&key) else { continue };
+            let map = Command::Map(Map { construction: session.plan.clone(), level: protocol::executor::Level::Ram });
+            let reply = session.executor.command(&map, &mut device_executor::Baseline);
+            let why = match &reply {
+                Ok(reply) if reply.ok => {
+                    session.level = Level::Host;
+                    String::new()
+                }
+                Ok(reply) => format!("{} {}", reply.code, reply.detail),
+                Err(error) => error.to_string(),
+            };
+            let (pid, plan) = (session.executor.birth.pid, session.plan.clone());
+            if let Err(error) = self.keep_idle(engine, session) {
+                tracing::warn!("offloading {plan}: {error}");
+            }
+            self.notes.note(serde_json::json!({"event": "offload", "call": id, "pid": pid, "plan": plan, "member": member,
+                "need": need, "room_before": before, "room_after": room(), "failed": why}));
+        }
+        let left = room();
+        if need.zip(left).is_none_or(|(need, left)| left < need) {
+            self.notes.note(serde_json::json!({"event": "offload_short", "call": id, "need": need, "room": left}));
+        }
     }
     /// End the least recently used idle deviceless executor `which` picks; whether one ended.
     fn end_idle_deviceless(&self, which: impl Fn(&Session) -> bool) -> bool {
