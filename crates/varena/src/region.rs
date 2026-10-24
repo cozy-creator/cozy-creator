@@ -464,14 +464,15 @@ impl Graph {
     }
 
     fn record(&self) -> Record {
-        let dropped = self.dropped.load(Ordering::Acquire);
+        // Draining a replay does not release Torch's executable/static tensors or this
+        // region's pool use. Report the backing until the Python owner actually closes it.
         let torch = self.memory.torch_if();
         let owner = Owner::Pool(self.pool);
         Record {
             id: self.id,
             kind: Reclaimable::Graph,
-            bytes: if dropped { 0 } else { torch.as_ref().map_or(0, |t| t.mapped_by(owner)) },
-            slots: if dropped { Vec::new() } else { torch.as_ref().map_or_else(Vec::new, |t| t.slots(owner)) },
+            bytes: torch.as_ref().map_or(0, |t| t.mapped_by(owner)),
+            slots: torch.as_ref().map_or_else(Vec::new, |t| t.slots(owner)),
             cost_ns: self.capture_ns.load(Ordering::Acquire),
             last_use: self.last_use.load(Ordering::Acquire),
             next_use: None,
