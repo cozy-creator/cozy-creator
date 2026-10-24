@@ -33,7 +33,7 @@ use windows_sys::Win32::{
         Threading::{
             CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, CreateProcessW,
             DETACHED_PROCESS, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
-            GetExitCodeProcess, GetProcessTimes, INFINITE, InitializeProcThreadAttributeList,
+            GetExitCodeProcess, GetProcessIoCounters, GetProcessTimes, INFINITE, IO_COUNTERS, InitializeProcThreadAttributeList,
             OpenProcess, OpenThread, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION,
             PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
             ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, THREAD_SUSPEND_RESUME,
@@ -106,17 +106,46 @@ pub(super) fn set_name(_: &str) -> crate::Result<()> {
     Err(crate::Error::unsupported(crate::Seam::Process))
 }
 
-/// Groups and meters are read only on Linux so far: unreadable here, which decides nothing.
-pub(super) fn group_members(_: &Birth) -> Vec<Birth> {
-    Vec::new()
+/// Every live process descended from `leader`: Windows has no process groups, but every process
+/// names its parent, an orphan its exited one too. A child is born after its parent, and before
+/// any later process that took the parent's id once it exited.
+pub(super) fn group_members(leader: &Birth) -> Vec<Birth> {
+    let parents = parents();
+    let (mut members, mut frontier) = (Vec::<Birth>::new(), vec![leader.clone()]);
+    while let Some(parent) = frontier.pop() {
+        let reused = birth(parent.pid).ok().filter(|now| now.start_ticks != parent.start_ticks).map(|now| now.start_ticks);
+        for &(pid, _) in parents.iter().filter(|(pid, of)| *of == parent.pid && *pid != leader.pid) {
+            let Ok(child) = birth(pid) else { continue };
+            let ours = child.start_ticks >= parent.start_ticks && reused.is_none_or(|taken| child.start_ticks < taken);
+            if ours && !members.iter().any(|m| m.pid == pid) {
+                frontier.push(child.clone());
+                members.push(child);
+            }
+        }
+    }
+    members
 }
 
-pub(super) fn meter(_: u32) -> Option<(u64, u64)> {
-    None
+/// Kernel plus user time in nanoseconds, and every byte the process read, wrote or otherwise moved:
+/// Windows' I/O counters count files, sockets and devices alike (a download is progress).
+pub(super) fn meter(pid: u32) -> Option<(u64, u64)> {
+    let process = open_process(pid, PROCESS_QUERY_LIMITED_INFORMATION).ok()?;
+    let [_, _, kernel, user] = times(raw(&process)).ok()?;
+    let io = counters(&process)?;
+    let moved = io.ReadTransferCount.saturating_add(io.WriteTransferCount).saturating_add(io.OtherTransferCount);
+    Some((ticks(kernel).saturating_add(ticks(user)).saturating_mul(100), moved))
 }
 
-pub(super) fn written_bytes(_: u32) -> Option<u64> {
-    None
+/// Bytes written: files, sockets and devices.
+pub(super) fn written_bytes(pid: u32) -> Option<u64> {
+    let process = open_process(pid, PROCESS_QUERY_LIMITED_INFORMATION).ok()?;
+    Some(counters(&process)?.WriteTransferCount)
+}
+
+fn counters(process: &OwnedHandle) -> Option<IO_COUNTERS> {
+    let mut io = IO_COUNTERS::default();
+    // SAFETY: a live handle with query access and a record the call fills.
+    (unsafe { GetProcessIoCounters(raw(process), &mut io) } != 0).then_some(io)
 }
 
 pub(super) fn become_subreaper() -> crate::Result<()> {
