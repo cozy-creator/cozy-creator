@@ -69,7 +69,7 @@ struct GpuMemory {
     gpu: u32,
     ceiling: Option<Ceiling>,
     stats: ResidencyStats,
-    torch_peak: u64,
+    torch_peak: Option<u64>,
 }
 
 /// TensorFS's measured fill ceilings on that GPU: host to device and disk, GB/s.
@@ -86,6 +86,7 @@ struct Ceiling {
 #[serde(default)]
 struct ResidencyStats {
     allocator_scope: String,
+    trace_scope: String,
     moved: Moved,
     trace: Vec<Reference>,
     steps: Vec<MemoryStep>,
@@ -645,7 +646,7 @@ fn memory_rows(measured: &Measured) -> Vec<Vec<String>> {
             moved(&s.moved.derived, disk),
             duration(s.stall_ns as f64 / 1e6),
             s.peak.map_or_else(|| "-".into(), output::bytes),
-            output::bytes(g.torch_peak),
+            g.torch_peak.map_or_else(|| "-".into(), output::bytes),
             s.compute.map_or_else(|| "-".into(), output::bytes),
             evicted(&s.evicted),
             leftover.map_or_else(|| "-".into(), output::bytes),
@@ -687,6 +688,10 @@ fn evicted(by_class: &[u64; 7]) -> String {
 fn step_rows(measured: &Measured) -> Vec<Vec<String>> {
     let mut rows = vec![];
     for g in &measured.m.memory.stats.varena {
+        if g.stats.trace_scope == "fills" {
+            // Fill order is not an execution plan step. Totals remain in the memory table.
+            continue;
+        }
         let mut by_step: BTreeMap<u32, [u64; 5]> = BTreeMap::new();
         for r in &g.stats.trace {
             let cell = by_step.entry(r.step).or_default();

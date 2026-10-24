@@ -8,8 +8,10 @@ not diffusion/video quality or total-machine-cap qualification. It injects no de
 import hashlib
 import json
 import math
+import os
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import tensorfs
@@ -42,7 +44,7 @@ class Scale:
 
 
 def exercise(device: str, seed: int) -> dict:
-    torch.set_num_threads(2)
+    torch.set_num_threads(1)
     cuda = device.startswith("cuda")
     width, layers = (1024, 64) if cuda else (128, 4)
     budget = 160 * MIB if cuda else None
@@ -84,6 +86,17 @@ def exercise(device: str, seed: int) -> dict:
         result["warm"] = warm
         if not cuda:
             assert warm["moved"]["store"]["bytes"] == 0, "a fitting model must stay warm"
+            # A cached step hold may be prepared on one managed worker and used sequentially
+            # on another. Only actual overlapping forwards require separate model storage.
+            with ThreadPoolExecutor(max_workers=1) as worker:
+                held = worker.submit(loaded.hold, free_only=True).result()
+                assert held is not None
+                try:
+                    threaded, _ = forward(network, x, "other-thread")
+                    torch.testing.assert_close(threaded, first, rtol=0, atol=0)
+                finally:
+                    held.release()
+            result["sequential_worker_hold"] = True
 
         # An actual tensor view escaping its forward keeps normal Torch storage alive.
         with memory.request("alias"), loaded.passing():
@@ -112,6 +125,40 @@ def exercise(device: str, seed: int) -> dict:
         memory.trim()
         checkpoint.close()
 
+        if not cuda:
+            # Real shared Parameter identity is retained at both registered names.
+            class Tied(nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.a = nn.Linear(32, 32, bias=False)
+                    self.b = nn.Linear(32, 32, bias=False)
+                    self.b.weight = self.a.weight
+
+                def forward(self, inputs):
+                    assert self.a.weight is self.b.weight
+                    return self.b(self.a(inputs))
+
+            shared = torch.randn(32, 32, generator=generator) / 8
+            writer = tensorfs.Writer(Path(directory) / "tied.cozytensors")
+            component = writer.component("net")
+            component.put("a.weight", shared)
+            component.put("b.weight", shared)
+            tied_ck = writer.commit()
+            with torch.device("meta"):
+                tied = Tied()
+            vars(tied)["_cozy_weights"] = residency.Declared(
+                residency.Weights(tied_ck, "net"), blocks=["a", "b"]
+            )
+            owner = memory.load(tied, "ram")
+            inputs = torch.randn(3, 32, generator=generator)
+            with memory.request("tied"), torch.no_grad():
+                actual = tied(inputs)
+            expected_tied = torch.nn.functional.linear(torch.nn.functional.linear(inputs, shared), shared)
+            torch.testing.assert_close(actual, expected_tied, rtol=0, atol=0)
+            owner.close()
+            tied_ck.close()
+            result["tied_parameter_identity"] = True
+
         if cuda:
             # The oversize component above streams eagerly; capture a separate fitting root.
             tiny_width, tiny_layers = 64, 3
@@ -123,30 +170,34 @@ def exercise(device: str, seed: int) -> dict:
             tiny = model(tiny_ck, tiny_width, tiny_layers)
             loaded = memory.load(tiny, "ram")
             static_input = torch.randn(4, tiny_width, generator=generator).to(device)
-            binding = loaded.retain()
-            stream = torch.cuda.Stream()
-            stream.wait_stream(torch.cuda.current_stream())
-            with memory.request("graph"), binding.prepare(stream), torch.cuda.stream(stream), torch.no_grad():
-                for _ in range(3):
-                    expected_gpu = tiny(static_input)
+            for generation in range(2):
+                binding = loaded.retain()
+                stream = torch.cuda.Stream()
+                stream.wait_stream(torch.cuda.current_stream())
+                with memory.request("graph"), binding.prepare(stream), torch.cuda.stream(stream), torch.no_grad():
+                    for _ in range(3):
+                        expected_gpu = tiny(static_input)
+                    stream.synchronize()
+                    graph = torch.cuda.CUDAGraph()
+                    with torch.cuda.graph(graph, stream=stream):
+                        static_output = tiny(static_input)
+                with binding.replay_use(stream), torch.cuda.stream(stream):
+                    graph.replay()
+                    actual = static_output.clone()
                 stream.synchronize()
-                graph = torch.cuda.CUDAGraph()
-                with torch.cuda.graph(graph, stream=stream):
-                    static_output = tiny(static_input)
-            with binding.replay_use(stream), torch.cuda.stream(stream):
-                graph.replay()
-                actual = static_output.clone()
-            stream.synchronize()
-            torch.testing.assert_close(actual, expected_gpu, rtol=0, atol=0)
-            graph.reset()
-            del graph, static_output, actual, expected_gpu
-            binding.close()
-            memory.load(tiny, "ram")
+                torch.testing.assert_close(actual, expected_gpu, rtol=0, atol=0)
+                graph.reset()
+                del graph, static_output, actual, expected_gpu
+                binding.close()
+                memory.load(tiny, "ram")
+                memory.trim()
             loaded.close()
             del loaded, tiny, static_input
             memory.trim()
             tiny_ck.close()
             result["graph_replayed"] = True
+            result["graph_captures"] = 2
+            result["recaptured_after_offload"] = True
             result["allocator"] = torch.cuda.get_allocator_backend()
             assert result["allocator"] == "native"
     assert hashlib.sha256(Path(residency.__file__).read_bytes()).hexdigest() == source_hash
@@ -155,4 +206,6 @@ def exercise(device: str, seed: int) -> dict:
 
 
 if __name__ == "__main__":
+    if hasattr(os, "nice"):
+        os.nice(19)
     print(json.dumps({"result": exercise(sys.argv[1], int(sys.argv[2]))}), flush=True)
