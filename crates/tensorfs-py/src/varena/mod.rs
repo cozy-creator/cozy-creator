@@ -350,6 +350,7 @@ fn _varena_allocator_stats(device: i32) -> PyResult<std::collections::BTreeMap<&
 
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let poisoned = module.py().get_type::<VarenaPoisonedError>();
+    poisoned.setattr("__module__", "tensorfs._ext")?;
     poisoned.setattr("sticky", true)?;
     module.add("VarenaPoisonedError", poisoned)?;
     module.add_class::<PyArena>()?;
