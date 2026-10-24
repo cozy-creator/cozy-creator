@@ -564,10 +564,7 @@ impl Machines {
             package: release.package.clone(),
             release: Some(release.release.clone()).filter(|r| !r.is_empty()),
             function: spec.entrypoint.clone(),
-            bits: (spec.bits > 0)
-                .then(|| types::RentalPlacementRequestBits::try_from(i64::from(spec.bits)))
-                .transpose()
-                .map_err(|e| Error::new(Kind::Validation, "bits_invalid", e.to_string()))?,
+            lane: Some(spec.lane.clone()).filter(|lane| !lane.is_empty()),
             gpus: std::num::NonZeroU64::new(spec.gpus.into()),
             sku: sku.map(str::to_owned),
         };
@@ -602,13 +599,12 @@ impl Machines {
             _ => format!("the fastest of {}: none is fast enough", placement.machines.len()),
         };
         let why = format!(
-            "the Hub placed it on {} ({}× {}, {} GB): {rule} for {} GB of {}-bit weights",
+            "the Hub placed it on {} ({}× {}, {} GB): {rule} for {} GB of weights",
             top.name,
             top.accelerator_count,
             top.accelerator_model,
             top.vram_gb,
             placement.weight_bytes / 1_000_000_000,
-            placement.bits,
         );
         // The Hub may buy the next machines down its order instead (as fast, when the pick is),
         // never above the price agreed for the pick.

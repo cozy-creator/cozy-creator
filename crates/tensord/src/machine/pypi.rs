@@ -132,10 +132,6 @@ struct Url(String);
 
 #[async_trait]
 impl Origin for Url {
-    async fn repo_of(&self, name: &str) -> Result<tensorfs::format::Repo> {
-        refuse(Code::REF_NOT_FOUND, format!("{} names no model {name}", self.0))
-    }
-
     async fn locate(&self, objects: &[ObjectRef]) -> Result<Vec<Location>> {
         Ok(objects.iter().map(|_| Location::Url { url: self.0.clone(), headers: vec![], expires: None }).collect())
     }

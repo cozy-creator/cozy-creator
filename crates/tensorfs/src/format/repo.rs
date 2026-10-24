@@ -1,31 +1,36 @@
-//! The repo documents: `cozytensors.tree/1`, a commit's file tree, and `cozytensors.repo/1`, a
-//! model's tags naming commits. Both parse through a `Wire` twin that carries the `format` tag.
+//! The repo documents: `cozytensors.tree/1`, a commit (one lane, one cozytensors file and the repo
+//! files beside it), and `cozytensors.repo/1`, a model's releases and commits. Both parse through a
+//! `Wire` twin that carries the `format` tag.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use pep440_rs::Version;
-
 use serde::{Deserialize, Serialize};
 
-use super::doc::{is_digest, path, segment};
-use super::{check_format, invalid, json, variant_of, variant_path, Error, ObjectRef, Result};
-use super::{REPO_FORMAT, TREE_FORMAT};
+use super::doc::{path, segment};
+use super::{check_format, invalid, is_header, json, Error, ObjectRef, Result};
+use super::{HEADER_PATH, REPO_FORMAT, TREE_FORMAT};
 
 /// The folder that holds a plain folder's chunks and assets: no repo file lives under it.
 pub const CHUNKS_DIR: &str = "chunks";
 
-/// `cozytensors.tree/1`: a commit, a repo state as files, as on HF. Each `.cozytensors` file, at any
-/// path, is a variant's header; every other file (README, LICENSE, images) is a blob shared by them all.
+/// `cozytensors.tree/1`: a commit, one immutable state of a model. Its `lane` is the label its
+/// author gave it (`bf16`, `fp8`, `int8-convrot`, …), read only by a consumer asking for that
+/// label. Its one `.cozytensors` file, at any path, is the header; every other file (configs, a
+/// tokenizer, README) is a repo file.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(try_from = "TreeWire", into = "TreeWire")]
 pub struct Tree {
+    pub lane: String,
     pub files: BTreeMap<String, ObjectRef>,
 }
 
 #[derive(Serialize, Deserialize)]
 struct TreeWire {
     format: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    lane: String,
     files: BTreeMap<String, ObjectRef>,
 }
 
@@ -36,16 +41,13 @@ impl TryFrom<TreeWire> for Tree {
         for p in w.files.keys() {
             check_file(p)?;
         }
-        Ok(Tree { files: w.files })
+        Ok(Tree { lane: w.lane, files: w.files })
     }
 }
 
 impl From<Tree> for TreeWire {
     fn from(t: Tree) -> Self {
-        TreeWire {
-            format: TREE_FORMAT.into(),
-            files: t.files,
-        }
+        TreeWire { format: TREE_FORMAT.into(), lane: t.lane, files: t.files }
     }
 }
 
@@ -57,7 +59,26 @@ pub(crate) fn check_file(p: &str) -> Result<()> {
     Ok(())
 }
 
+/// A lane or release label: alphanumeric first, then at most 63 of `A-Za-z0-9._+!-`.
+pub fn label(text: &str) -> bool {
+    let b = text.as_bytes();
+    (1..=64).contains(&b.len())
+        && b[0].is_ascii_alphanumeric()
+        && b.iter().all(|c| c.is_ascii_alphanumeric() || b"._+!-".contains(c))
+}
+
 impl Tree {
+    /// A commit of `header` at [`HEADER_PATH`] in lane `lane` (empty: unlabelled, a machine's
+    /// own), beside `files` (their own `.cozytensors` files dropped: a commit holds one).
+    pub fn of(lane: &str, header: ObjectRef, files: &BTreeMap<String, ObjectRef>) -> Result<Tree> {
+        if !lane.is_empty() && !label(lane) {
+            return invalid(format!("lane {lane:?}: start alphanumeric, then at most 63 of letters, digits, . _ + ! -"));
+        }
+        let mut files: BTreeMap<String, ObjectRef> = files.iter().filter(|(p, _)| !is_header(p)).map(|(p, r)| (p.clone(), r.clone())).collect();
+        files.insert(HEADER_PATH.into(), header);
+        Ok(Tree { lane: lane.into(), files })
+    }
+
     pub fn from_json(bytes: &[u8]) -> Result<Tree> {
         json::read(bytes, TREE_FORMAT)
     }
@@ -65,115 +86,19 @@ impl Tree {
         json::write(self)
     }
 
-    /// Each variant and its header, by name (its path).
-    pub fn variants(&self) -> impl Iterator<Item = (&str, &ObjectRef)> {
-        (self.files.iter()).filter_map(|(p, r)| Some((variant_of(p)?, r)))
+    /// The commit's one cozytensors file: its path and header.
+    pub fn header(&self) -> Result<(&str, &ObjectRef)> {
+        let mut headers = self.files.iter().filter(|(p, _)| is_header(p));
+        match (headers.next(), headers.next()) {
+            (Some((path, header)), None) => Ok((path, header)),
+            (None, _) => invalid("the commit holds no .cozytensors file"),
+            (Some(_), Some(_)) => invalid("the commit holds several .cozytensors files; a commit holds one"),
+        }
     }
 
-    /// The variant at `path` (spec §3: a variant is its path, never a name matched to one):
-    /// (its path, its header).
-    fn named(&self, path: &str) -> Option<(&str, &ObjectRef)> {
-        self.files.get_key_value(path).filter(|(p, _)| variant_of(p).is_some()).map(|(p, r)| (p.as_str(), r))
-    }
-
-    /// The header of the variant at `path`.
-    pub fn header(&self, name: &str) -> Option<&ObjectRef> {
-        self.named(name).map(|(_, r)| r)
-    }
-
-    /// `variant`, or with `None` the tree's only one: (its name, its header).
-    pub fn variant(&self, variant: Option<&str>) -> Result<(&str, &ObjectRef)> {
-        let found = match variant {
-            Some(v) => self.named(v),
-            None => match self.variants().collect::<Vec<_>>()[..] {
-                [only] => Some(only),
-                _ => None,
-            },
-        };
-        found.map_or_else(
-            || {
-                let has: Vec<&str> = self.variants().map(|(v, _)| v).collect();
-                invalid(match variant {
-                    Some(v) => format!("the tree has no variant {v:?} (has {has:?})"),
-                    None if has.is_empty() => "the tree has no variant".into(),
-                    None => format!("the tree has several variants; select by GPUs and bits or name one of {has:?}"),
-                })
-            },
-            Ok,
-        )
-    }
-
-    /// The repo files: everything but the variants' headers.
+    /// The repo files: everything but the header.
     pub fn repo_files(&self) -> impl Iterator<Item = (&str, &ObjectRef)> {
-        (self.files.iter())
-            .filter(|(p, _)| variant_of(p).is_none())
-            .map(|(p, r)| (p.as_str(), r))
-    }
-
-    /// Sets `variant`'s header, replacing the one it had.
-    pub fn set_variant(&mut self, variant: &str, header: ObjectRef) {
-        self.files.insert(variant_path(variant), header);
-    }
-
-    /// A commit on top of this tree, as Hugging Face's `upload_folder`: the paths a `delete`
-    /// pattern matches ([`fnmatch`]) removed, then `files` added or replaced.
-    pub fn commit(&self, files: &BTreeMap<String, ObjectRef>, delete: &[&str]) -> Tree {
-        let mut files_kept = self.files.clone();
-        files_kept.retain(|path, _| !delete.iter().any(|pattern| fnmatch(pattern, path)));
-        files_kept.extend(files.iter().map(|(p, r)| (p.clone(), r.clone())));
-        Tree { files: files_kept }
-    }
-}
-
-/// Python's `fnmatch` (Hugging Face's `delete_patterns`): `*` any run of characters, `/`
-/// included; `?` one; `[set]`, `[!set]` and ranges one of a set; a pattern ending in `/` matches
-/// everything under it.
-pub fn fnmatch(pattern: &str, path: &str) -> bool {
-    let mut p: Vec<char> = pattern.chars().collect();
-    if pattern.ends_with('/') {
-        p.push('*');
-    }
-    let s: Vec<char> = path.chars().collect();
-    let (mut pi, mut si, mut star) = (0, 0, None);
-    while si < s.len() {
-        if p.get(pi) == Some(&'*') {
-            star = Some((pi, si));
-            pi += 1;
-        } else if let Some(next) = (pi < p.len()).then(|| one(&p, pi, s[si])).flatten() {
-            (pi, si) = (next, si + 1);
-        } else if let Some((at, from)) = star {
-            (pi, si) = (at + 1, from + 1);
-            star = Some((at, from + 1));
-        } else {
-            return false;
-        }
-    }
-    p[pi..].iter().all(|&c| c == '*')
-}
-
-/// Where the token of `p` at `at` ends when it matches `c`.
-fn one(p: &[char], at: usize, c: char) -> Option<usize> {
-    let set = (p[at] == '[').then(|| {
-        let negate = p.get(at + 1) == Some(&'!');
-        let first = at + 1 + negate as usize;
-        let close = (first + 1..p.len()).find(|&i| p[i] == ']')?;
-        let mut hit = false;
-        let mut i = first;
-        while i < close {
-            if i + 2 < close && p[i + 1] == '-' {
-                hit |= p[i] <= c && c <= p[i + 2];
-                i += 3;
-            } else {
-                hit |= p[i] == c;
-                i += 1;
-            }
-        }
-        Some((hit != negate, close + 1))
-    });
-    match set.flatten() {
-        Some((true, next)) => Some(next),
-        Some((false, _)) => None,
-        None => (p[at] == '?' || p[at] == c).then_some(at + 1),
+        (self.files.iter()).filter(|(p, _)| !is_header(p)).map(|(p, r)| (p.as_str(), r))
     }
 }
 
@@ -182,56 +107,39 @@ pub fn repo_key(name: &str) -> String {
     format!("refs/{}.json", name.to_ascii_lowercase())
 }
 
-/// `cozytensors.repo/1`: a model's tags, each naming a commit (a tree), in creation order. Kept at
-/// [`repo_key`].
+/// `cozytensors.repo/1`: a model's releases, oldest first, each naming one commit per lane, and
+/// its other commits (private until a release names one). Every commit it names is a root.
+/// Kept at [`repo_key`]: a store's record of a model, and a static origin's.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(try_from = "RepoWire", into = "RepoWire")]
 pub struct Repo {
     pub name: String,
-    pub tags: Vec<Tag>,
-    /// Tag entries this reader cannot read (a newer writer's, or malformed): skipped with a
-    /// warning so the rest resolves, and written back as they were.
-    pub unread: Vec<serde_json::Value>,
+    pub releases: Vec<Release>,
+    pub commits: Vec<ObjectRef>,
 }
 
-/// A movable name for a commit. A public tag is a release; a private one is the owner's. A yanked
-/// tag, or a public name that is not a PEP 440 version, is never the unversioned default.
+/// A release: a version, higher than every earlier one, and its commit of each lane.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Tag {
-    pub name: String,
-    pub commit: ObjectRef,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub public: bool,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub yanked: bool,
-}
-
-fn is_false(b: &bool) -> bool {
-    !b
+pub struct Release {
+    pub version: String,
+    pub lanes: BTreeMap<String, ObjectRef>,
 }
 
 #[derive(Serialize, Deserialize)]
 struct RepoWire {
     format: String,
     name: String,
-    tags: Vec<serde_json::Value>,
+    #[serde(default)]
+    releases: Vec<Release>,
+    #[serde(default)]
+    commits: Vec<ObjectRef>,
 }
 
 impl TryFrom<RepoWire> for Repo {
     type Error = Error;
     fn try_from(w: RepoWire) -> Result<Self> {
         check_format(&w.format, REPO_FORMAT)?;
-        let mut repo = Repo::new(&w.name);
-        for raw in w.tags {
-            match serde_json::from_value::<Tag>(raw.clone()) {
-                Ok(t) if tag_name(&t.name) && repo.tag(&t.name).is_none() => repo.tags.push(t),
-                read => {
-                    let why = read.map_or_else(|e| e.to_string(), |t| format!("tag {:?} is not a segment, starts with sha256: or repeats", t.name));
-                    tracing::warn!("{}: skipping a tag this client cannot read: {why}", repo.name);
-                    repo.unread.push(raw);
-                }
-            }
-        }
+        let repo = Repo { name: w.name, releases: w.releases, commits: w.commits };
         repo.check()?;
         Ok(repo)
     }
@@ -239,25 +147,8 @@ impl TryFrom<RepoWire> for Repo {
 
 impl From<Repo> for RepoWire {
     fn from(r: Repo) -> Self {
-        let known = r.tags.iter().map(|t| serde_json::to_value(t).expect("a tag is JSON"));
-        RepoWire { format: REPO_FORMAT.into(), name: r.name, tags: known.chain(r.unread).collect() }
+        RepoWire { format: REPO_FORMAT.into(), name: r.name, releases: r.releases, commits: r.commits }
     }
-}
-
-/// The one "newest" ordering (spec §7): of `items`, the one whose `version` is the highest final
-/// PEP 440 version (a post-release is final), else the highest pre-release (`a`, `b`, `rc`,
-/// `.dev`); of equal versions (`1.0`, `1.0.0`), the last given. Items whose version does not parse
-/// are skipped; callers filter anything else first.
-pub fn newest_by<T>(items: impl IntoIterator<Item = T>, version: impl Fn(&T) -> &str) -> Option<T> {
-    let versioned = items.into_iter().filter_map(|item| Some((Version::from_str(version(&item)).ok()?, item)));
-    let order = |(a, _): &(Version, T), (b, _): &(Version, T)| a.is_stable().cmp(&b.is_stable()).then_with(|| a.cmp(b));
-    versioned.max_by(order).map(|(_, item)| item)
-}
-
-/// The unversioned default among `tags`: [`newest_by`] of the public, non-yanked ones, in
-/// creation order.
-pub fn newest<'a>(tags: impl IntoIterator<Item = &'a Tag>) -> Option<&'a Tag> {
-    newest_by(tags.into_iter().filter(|t| t.public && !t.yanked), |t| t.name.as_str())
 }
 
 /// The root namespace's org (Tensorhub's first-party models): a name with no org, `sdxl`, is
@@ -267,44 +158,6 @@ pub const ROOT_ORG: &str = "_";
 /// A repository name: `<org>/<name>`, two segments.
 pub(crate) fn repo_name(name: &str) -> bool {
     name.split_once('/').is_some_and(|(org, name)| segment(org) && segment(name))
-}
-
-/// A tag name: a segment that cannot be read as a digest.
-pub fn tag_name(name: &str) -> bool {
-    segment(name) && !name.starts_with("sha256:")
-}
-
-/// What a revision names (§7), before any tree is read.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Resolution<'r> {
-    /// A tag, or the commit of one: resolved.
-    Tag(&'r Tag),
-    /// A variant header (its SHA-256): the commit is the first of these tags' whose tree cites it.
-    Header(String, Vec<&'r Tag>),
-}
-
-impl<'r> Resolution<'r> {
-    /// The tag and, for a header, the variant that names it, reading each candidate's tree with
-    /// `tree`. `None` when no candidate cites the header.
-    pub fn find<E>(self, mut tree: impl FnMut(&ObjectRef) -> std::result::Result<Tree, E>) -> std::result::Result<Option<(&'r Tag, Option<String>)>, E> {
-        let (sha256, tags) = match self {
-            Resolution::Tag(tag) => return Ok(Some((tag, None))),
-            Resolution::Header(sha256, tags) => (sha256, tags),
-        };
-        for tag in tags {
-            if let Some(variant) = tree(&tag.commit)?.cites(&sha256) {
-                return Ok(Some((tag, Some(variant.to_owned()))));
-            }
-        }
-        Ok(None)
-    }
-}
-
-impl Tree {
-    /// The variant whose header has SHA-256 `sha256`.
-    pub fn cites(&self, sha256: &str) -> Option<&str> {
-        self.variants().find(|(_, h)| h.sha256 == sha256).map(|(v, _)| v)
-    }
 }
 
 impl Repo {
@@ -328,63 +181,90 @@ impl Repo {
         if !repo_name(&self.name) {
             return invalid(format!("repo name {:?} is not <org>/<name>", self.name));
         }
-        let mut seen = HashSet::new();
-        for t in &self.tags {
-            if !tag_name(&t.name) || !seen.insert(&t.name) {
-                return invalid(format!("tag {:?} is not a segment, starts with sha256: or repeats", t.name));
+        for release in &self.releases {
+            if !label(&release.version) || release.lanes.keys().any(|lane| !label(lane)) {
+                return invalid(format!("release {:?} or one of its lanes is not a label", release.version));
             }
         }
         Ok(())
     }
 
-    /// Tag `name`, yanked or not.
-    pub fn tag(&self, name: &str) -> Option<&Tag> {
-        self.tags.iter().find(|t| t.name == name)
+    /// Release `version`.
+    pub fn release(&self, version: &str) -> Option<&Release> {
+        self.releases.iter().find(|r| r.version == version)
     }
 
-    pub fn tag_mut(&mut self, name: &str) -> Option<&mut Tag> {
-        self.tags.iter_mut().find(|t| t.name == name)
+    /// Records `commit` as `version`'s lane `lane`, the release kept in version order.
+    pub fn set_lane(&mut self, version: &str, lane: &str, commit: ObjectRef) {
+        match self.releases.iter_mut().find(|r| r.version == version) {
+            Some(release) => drop(release.lanes.insert(lane.into(), commit)),
+            None => {
+                let release = Release { version: version.into(), lanes: BTreeMap::from([(lane.into(), commit)]) };
+                let after = |r: &Release| order(&r.version) > order(version);
+                let at = self.releases.iter().position(after).unwrap_or(self.releases.len());
+                self.releases.insert(at, release);
+            }
+        }
     }
 
-    /// The unversioned default: [`newest`] of the tags, else `main` (HF's revision default)
-    /// unless yanked.
-    pub fn default_tag(&self) -> Option<&Tag> {
-        newest(&self.tags).or_else(|| self.tag("main").filter(|t| !t.yanked))
+    /// Records `commit` as one of the repo's, the newest.
+    pub fn add_commit(&mut self, commit: ObjectRef) {
+        self.commits.retain(|c| *c != commit);
+        self.commits.push(commit);
     }
 
-    /// Resolves `revision` once (§7): none is the default; `sha256:<hex>` a tag's commit, else a
-    /// variant header; anything else a tag name. `None` when it names nothing here.
-    pub fn resolve(&self, revision: Option<&str>) -> Option<Resolution<'_>> {
-        let Some(revision) = revision else {
-            return self.default_tag().map(Resolution::Tag);
+    /// The commit `release` (none: the newest) names in `lane` (none: its only lane), as
+    /// (release, lane, commit). A repo without releases (a machine's own model) answers its newest
+    /// commit, in no release. Refused naming what the repo has.
+    pub fn resolve(&self, release: Option<&str>, lane: Option<&str>) -> Result<(String, Option<String>, ObjectRef)> {
+        if self.releases.is_empty() && release.is_none() {
+            return match self.commits.last() {
+                Some(commit) => Ok((String::new(), lane.map(str::to_owned), commit.clone())),
+                None => invalid(format!("{} has no commit", self.name)),
+            };
+        }
+        let found = match release {
+            Some(version) => self.release(version),
+            None => self.releases.last(),
         };
-        let Some(sha256) = revision.strip_prefix("sha256:") else {
-            return self.tag(revision).map(Resolution::Tag);
+        let Some(found) = found else {
+            let has: Vec<&str> = self.releases.iter().map(|r| r.version.as_str()).collect();
+            return invalid(format!("{} has no release {} (has {has:?})", self.name, release.unwrap_or("at all")));
         };
-        if !is_digest(sha256) {
-            return None;
-        }
-        // The default's commit first, then the last created.
-        let mut order: Vec<&Tag> = self.default_tag().into_iter().collect();
-        order.extend(self.tags.iter().rev());
-        if let Some(tag) = order.iter().find(|t| t.commit.sha256 == sha256) {
-            return Some(Resolution::Tag(tag));
-        }
-        let mut commits = HashSet::new();
-        order.retain(|t| commits.insert(&t.commit));
-        Some(Resolution::Header(sha256.to_owned(), order))
-    }
-
-    /// Moves tag `name` to `commit`, keeping its place and flags; a new tag is private and last.
-    pub fn set_tag(&mut self, name: &str, commit: ObjectRef) {
-        match self.tag_mut(name) {
-            Some(t) => t.commit = commit,
-            None => self.tags.push(Tag { name: name.into(), commit, public: false, yanked: false }),
+        let picked = match lane {
+            Some(lane) => found.lanes.get_key_value(lane),
+            None if found.lanes.len() == 1 => found.lanes.iter().next(),
+            None => None,
+        };
+        match picked {
+            Some((lane, commit)) => Ok((found.version.clone(), Some(lane.clone()), commit.clone())),
+            None => {
+                let has: Vec<&str> = found.lanes.keys().map(String::as_str).collect();
+                let wanted = lane.map_or_else(|| "name a lane".to_owned(), |lane| format!("has no lane {lane:?}"));
+                invalid(format!("{}@{}: {wanted} (lanes {has:?})", self.name, found.version))
+            }
         }
     }
 
-    /// Every commit the repo keeps alive: each tag's, yanked or private too.
-    pub fn roots(&self) -> impl Iterator<Item = &ObjectRef> {
-        self.tags.iter().map(|t| &t.commit)
+    /// Every commit the repo keeps alive, each once.
+    pub fn roots(&self) -> Vec<&ObjectRef> {
+        let mut roots: Vec<&ObjectRef> = self.releases.iter().flat_map(|r| r.lanes.values()).chain(&self.commits).collect();
+        roots.sort();
+        roots.dedup();
+        roots
     }
+}
+
+/// The one "newest" ordering: of `items`, the one whose `version` is the highest final PEP 440
+/// version (a post-release is final), else the highest pre-release; of equal versions (`1.0`,
+/// `1.0.0`), the last given. Items whose version does not parse are skipped.
+pub fn newest_by<T>(items: impl IntoIterator<Item = T>, version: impl Fn(&T) -> &str) -> Option<T> {
+    let versioned = items.into_iter().filter_map(|item| Some((Version::from_str(version(&item)).ok()?, item)));
+    let order = |(a, _): &(Version, T), (b, _): &(Version, T)| a.is_stable().cmp(&b.is_stable()).then_with(|| a.cmp(b));
+    versioned.max_by(order).map(|(_, item)| item)
+}
+
+/// A version's order (spec §7): PEP 440, an unparsable one first.
+fn order(version: &str) -> Option<Version> {
+    Version::from_str(version).ok()
 }

@@ -21,12 +21,11 @@ pub struct PartData<'a> {
 #[derive(Default)]
 pub struct WriterOptions<'a> {
     pub dest: Option<&'a Path>,
-    pub variant: Option<&'a str>,
     pub base: Option<&'a Checkpoint>,
     pub resume: Option<&'a str>,
     pub repo_id: Option<&'a str>,
-    /// The tag a `repo_id` commit moves (none: `main`).
-    pub revision: Option<&'a str>,
+    /// The lane of a `repo_id` commit.
+    pub lane: Option<&'a str>,
     pub endpoint: Option<&'a str>,
     pub token: Option<Arc<dyn TokenProvider>>,
 }
@@ -36,7 +35,7 @@ struct Context {
     store: Store,
     base: Option<Checkpoint>,
     dest: Option<PathBuf>,
-    variant: String,
+    lane: String,
     repo_id: Option<String>,
     endpoint: Option<String>,
 }
@@ -79,19 +78,12 @@ impl Client {
                 "a Writer names a header file or an endpoint repository",
             );
         }
-        if (options.variant.is_some() || options.revision.is_some()) && options.repo_id.is_none() {
-            return fail(
-                Kind::Invalid,
-                "variant and revision name a commit of a repo_id upload; they need repo_id",
-            );
-        }
-        let tag = options.revision.unwrap_or(crate::fetch::MAIN);
-        if !crate::format::tag_name(tag) {
-            return fail(Kind::Invalid, format!("{tag:?} is not a tag name"));
-        }
-        // A variant is its path: a bare name is written as `model.<name>.cozytensors`.
-        let variant = crate::format::variant_path(options.variant.unwrap_or(""));
-        crate::format::check_file(&variant)?;
+        let lane = match (options.lane, options.repo_id) {
+            (Some(lane), Some(_)) => lane.to_owned(),
+            (None, Some(_)) => return fail(Kind::Invalid, "a repo_id commit names its lane"),
+            (Some(_), None) => return fail(Kind::Invalid, "a lane labels a commit of a repo_id upload; it needs repo_id"),
+            (None, None) => String::new(),
+        };
         let store = self.store.clone();
         let declared = options
             .base
@@ -111,14 +103,8 @@ impl Client {
         let mut destination_endpoint = None;
         let raw = if let Some(repo_id) = options.repo_id {
             let reference: Ref = repo_id.parse()?;
-            if reference.repo_id.starts_with("sha256:")
-                || reference.revision.is_some()
-                || reference.variant.is_some()
-            {
-                return fail(
-                    Kind::Invalid,
-                    "Writer repo_id names a repository, without a revision",
-                );
+            if reference.repo_id.starts_with("sha256:") || reference.release.is_some() {
+                return fail(Kind::Invalid, "Writer repo_id names a repository, without a release");
             }
             let mut config = (*self.config).clone();
             if let Some(token) = options.token {
@@ -139,7 +125,7 @@ impl Client {
             })?;
             let stream = Arc::new(crate::fetch::Stream::new(endpoint.inner, runtime));
             store
-                .streaming_writer_resumable(stream, repo_id, tag, &variant, base, options.resume)
+                .streaming_writer(stream, repo_id, &lane, base, options.resume)
                 .map_err(from_writer)?
         } else {
             store.writer(base, options.resume).map_err(from_writer)?
@@ -155,7 +141,7 @@ impl Client {
                 store,
                 base: options.base.cloned(),
                 dest,
-                variant,
+                lane,
                 repo_id: options.repo_id.map(str::to_owned),
                 endpoint: destination_endpoint,
             },
@@ -182,25 +168,20 @@ impl Context {
                 None,
                 Vec::new(),
                 self.store.clone(),
-                None,
             );
         }
-        // A published commit is the tag's tree with this variant on top; else the writer's own.
+        // A published commit, else the writer's own, unlabelled.
         let tree = match published {
             Some(commit) => commit.clone(),
-            None => {
-                let mut parsed = Tree { files: files.clone() };
-                parsed.set_variant(&self.variant, header.clone());
-                self.store.put_tree(&parsed)?
-            }
+            None => self.store.put_tree(&Tree::of("", header.clone(), files)?)?,
         };
-        if self.store.tree(&tree)?.header(&self.variant) != Some(header) {
+        if self.store.tree(&tree)?.header()?.1 != header {
             return fail(Kind::Integrity, "the commit does not name this writer's header");
         }
         let named = published.and(self.repo_id.as_ref()).map(|name| Ref {
             repo_id: name.clone(),
-            revision: None,
-            variant: Some(self.variant.clone()),
+            release: None,
+            lane: Some(self.lane.clone()),
             endpoint: self.endpoint.clone(),
         });
         let extra = std::iter::once(tree.clone())
@@ -213,7 +194,6 @@ impl Context {
             None,
             extra,
             self.store.clone(),
-            Some(self.variant.clone()),
         )?;
         // The tree is a use of its own: a failed upload stays retryable for the TTL.
         self.store.used(&tree.sha256, std::iter::once(&tree).chain(files.values()))?;

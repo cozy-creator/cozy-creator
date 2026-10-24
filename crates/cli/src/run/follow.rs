@@ -270,11 +270,11 @@ pub(crate) fn record(ctx: &Context, run: &Run) {
     next(ctx, run);
 }
 
-/// A checkpoint's TensorFS reference, or the location of its legacy manifest bytes.
+/// A weights output's commit.
 fn checkpoint(reference: &protocol::machine::CheckpointRef) -> String {
-    let mut shown = format!("checkpoint {}@{}", reference.repo_id, reference.revision);
-    if !reference.variant.is_empty() {
-        let _ = write!(shown, " (variant {})", reference.variant);
+    let mut shown = format!("commit {}@{}", reference.repo_id, reference.revision);
+    if !reference.lane.is_empty() {
+        let _ = write!(shown, " ({})", reference.lane);
     }
     shown
 }

@@ -1,10 +1,10 @@
 //! What a run's send carries for its Hub: where its machine reads the Hub (the Hub's own word,
-//! kept per Hub: in a dev or CI Hub it is not the origin this computer dials) and, for a run that
-//! publishes into its weights destination or reads one of its owner's checkpoints by digest,
-//! this computer's user Bearer as its TensorFS token. The Bearer is added at the send, never to
-//! the stored submission; each one the session mints after goes to every machine sent one, at the
-//! session's own refresh point (`PUT /v1/bearer`). Signed out, a public run reads at its Hub's
-//! origin.
+//! kept per Hub: in a dev or CI Hub it is not the origin this computer dials) and, signed in,
+//! this computer's user Bearer as its TensorFS token, for every model it resolves or reads: the
+//! Hub decides by org membership what a commit is to that user. The Bearer is added at the send,
+//! never to the stored submission; each one the session mints after goes to every machine sent
+//! one, at the session's own refresh point (`PUT /v1/bearer`). Signed out, a run reads public
+//! releases at its Hub's origin; a run that publishes needs the sign-in.
 use std::{
     sync::Weak,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -67,8 +67,8 @@ impl Machines {
             None => None,
         };
         let Some(origin) = origin.filter(|origin| {
-            // Signed out, a public run reads at its Hub's origin (lib's finish_spec).
-            self.hubs.client(origin).is_ok() || private(spec, None)
+            // Signed out, a run reads public releases at its Hub's origin (lib's finish_spec).
+            self.hubs.client(origin).is_ok() || !destination(spec).is_empty()
         }) else {
             return Ok(Access {
                 providers,
@@ -76,7 +76,8 @@ impl Machines {
             });
         };
         let facts = self.hubs.facts(&origin).await?;
-        let bearer = match needs_bearer(spec, &facts.account) {
+        // An explicit endpoint's own TensorFS options get none.
+        let bearer = match spec.tensorfs.is_none() {
             true => Some(self.hubs.bearer(&origin).await?),
             false => None,
         };
@@ -315,12 +316,6 @@ impl Hubs {
     }
 }
 
-/// Whether the send carries `owner`'s Bearer: the run reads one of `owner`'s checkpoints by digest
-/// or publishes, and names no TensorFS options of its own (an explicit endpoint gets none).
-fn needs_bearer(spec: &v1::RunSpec, owner: &str) -> bool {
-    spec.tensorfs.is_none() && private(spec, Some(owner))
-}
-
 /// The existing outbound Hub context also names public model defaults resolved later by
 /// TensorD. Copying its transport acquires no credential and makes no network call.
 pub(crate) fn anonymous_tensorfs(spec: &v1::RunSpec) -> Option<v1::TensorFSOptions> {
@@ -345,32 +340,6 @@ fn hub_denied(origin: &Origin, error: hub_client::Error) -> Denied {
     }
 }
 
-/// Whether the run does something at its Hub that is not public: publish into its weights
-/// destination, or read a checkpoint by digest alone (a release's lanes are published), as a
-/// model choice or a warm set member's. With `owner`, only `owner`'s checkpoints count.
-fn private(spec: &v1::RunSpec, owner: Option<&str>) -> bool {
-    let read = |model: &str, release: &str, manifest: &str| {
-        by_digest(release, manifest)
-            && owner.is_none_or(|owner| {
-                (model.split_once('/')).is_some_and(|(org, _)| org.eq_ignore_ascii_case(owner))
-            })
-    };
-    let members = spec.set.iter().flat_map(|set| &set.items);
-    let mut choices = spec
-        .models
-        .iter()
-        .chain(members.flat_map(|item| &item.models));
-    !destination(spec).is_empty()
-        || choices.any(|choice| {
-            read(&choice.repository, &choice.release, &choice.manifest)
-                || (choice.adapters.iter()).any(|a| read(&a.model, &a.release, &a.manifest))
-        })
-}
-
-fn by_digest(release: &str, manifest: &str) -> bool {
-    release.is_empty() && !manifest.is_empty()
-}
-
 /// The Hub model a run publishes into; empty for none or a `local/` one.
 fn destination(spec: &v1::RunSpec) -> &str {
     let destination = spec.weights_destination.trim_start_matches("model://");
@@ -385,8 +354,7 @@ fn needs_sign_in(origin: &str) -> Denied {
     refused(
         "hub_sign_in_required",
         format!(
-            "this run publishes to or reads private models at {origin}, which needs this \
-             computer's sign-in there: {}",
+            "this run publishes to {origin}, which needs this computer's sign-in there: {}",
             error.message
         ),
     )

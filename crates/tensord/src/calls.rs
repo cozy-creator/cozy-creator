@@ -185,8 +185,9 @@ impl Calls {
         self.runs.upgrade().and_then(|runs| runs.tensorfs(id, line))
     }
 
-    pub(crate) fn destination(&self, id: &str) -> String {
-        self.runs.upgrade().map(|runs| runs.destination(id)).unwrap_or_default()
+    /// [`crate::runs::Runs::publish`].
+    pub(crate) fn publish(&self, id: &str, tree: &str, lane: &str) -> Result<Option<(String, tensorfs::format::ObjectRef)>, crate::objects::Refused> {
+        self.runs.upgrade().map_or(Ok(None), |runs| runs.publish(id, tree, lane))
     }
 
     /// One call's fetches, under its run's Hub access and ordered by its root's acceptance;

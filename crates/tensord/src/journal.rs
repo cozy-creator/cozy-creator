@@ -30,9 +30,9 @@ pub struct Invocation {
     /// An explicit run GPU group; zero selects the package's widest supported group.
     #[serde(default)]
     pub gpus: u32,
-    /// The request's weight precision (16, 8 or 4), passed to the executor; zero: the rules'.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub bits: u32,
+    /// The main model's lane; empty: the Hub's pick for the hardware.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub lane: String,
     /// File inputs the caller imported, verified at acceptance.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<InputFile>,

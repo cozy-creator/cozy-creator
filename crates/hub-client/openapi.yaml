@@ -30,7 +30,6 @@ tags:
 - {name: models}
 - {name: packages}
 - {name: rentals}
-- {name: tensorfs}
 
 paths:
   /.well-known/oauth-protected-resource:
@@ -466,62 +465,12 @@ paths:
         4XX: {$ref: '#/components/responses/Error'}
         5XX: {$ref: '#/components/responses/Error'}
 
-  /v1/models/resolve:
-    get:
-      operationId: resolve_model
-      tags: [models]
-      summary: Turns a model ref and a lane into one exact checkpoint.
-      security: [{}, {bearer: []}, {dpop: []}]
-      parameters:
-      - name: ref
-        in: query
-        required: true
-        schema: {type: string}
-        description: org/name[@release|@sha256:...]
-      - {name: lane, in: query, schema: {type: string}}
-      responses:
-        '200':
-          description: The resolved checkpoint.
-          content:
-            application/json: {schema: {$ref: '#/components/schemas/ModelResolution'}}
-        4XX: {$ref: '#/components/responses/Error'}
-        5XX: {$ref: '#/components/responses/Error'}
-
-  /v1/models/{org}/{name}/select:
-    get:
-      operationId: select_model_variant
-      tags: [models]
-      summary: Selects a canonical variant path from indexed header profiles.
-      description: |
-        Reads metadata only. A refused selection (no variant works) returns 200 with null variant,
-        header and profile and the refusal as its reason. A model never indexed is 404.
-        The index covers tagged commits. A retained untagged hash can return 404 here while its
-        objects remain readable; clients retain the immutable hash and constraints and select
-        from its headers using the shared TensorFS rule.
-      security: [{}, {bearer: []}, {dpop: []}]
-      parameters:
-      - {name: org, in: path, required: true, schema: {type: string}}
-      - {name: name, in: path, required: true, schema: {type: string}}
-      - {name: revision, in: query, schema: {type: string}, description: 'A tag, commit or header digest; omitted uses the default revision.'}
-      - {name: gpus, in: query, schema: {type: string}, description: 'Comma-separated compute capabilities, e.g. 8.9,8.9. Empty means CPU.'}
-      - {name: bits, in: query, schema: {type: integer, enum: [4, 8, 16]}, description: 'Precision asked; only that lane answers.'}
-      - {name: prefer, in: query, schema: {type: integer, enum: [4, 8, 16]}, description: 'Lane ranked first when bits is omitted; omitted means 8.'}
-      - {name: min_bits, in: query, schema: {type: integer, enum: [4, 8, 16]}, description: "A slot's narrowest lane when bits is omitted."}
-      - {name: plain, in: query, schema: {type: boolean}, description: 'A slot that takes no encoded weights.'}
-      responses:
-        '200':
-          description: The selected revision and variant, or null when none works.
-          content:
-            application/json: {schema: {$ref: '#/components/schemas/ModelSelection'}}
-        4XX: {$ref: '#/components/responses/Error'}
-        5XX: {$ref: '#/components/responses/Error'}
-
   /v1/models/{org}/{name}:
     get:
       operationId: get_model
       tags: [models]
-      summary: A model, its releases with their lanes, and its measured throughput.
-      security: []
+      summary: A model, its releases (newest first) with their lanes, and to its members every commit.
+      security: [{}, {bearer: []}, {dpop: []}]
       parameters:
       - {$ref: '#/components/parameters/Org'}
       - {$ref: '#/components/parameters/Name'}
@@ -554,7 +503,7 @@ paths:
     delete:
       operationId: delete_model
       tags: [models]
-      summary: Deletes a model, its releases with it.
+      summary: Deletes a model, its commits and releases with it.
       security: [{bearer: []}]
       parameters:
       - {$ref: '#/components/parameters/Org'}
@@ -567,172 +516,63 @@ paths:
         4XX: {$ref: '#/components/responses/Error'}
         5XX: {$ref: '#/components/responses/Error'}
 
-  /v1/models/{org}/{name}/checkpoints/{manifest}:
-    get:
-      operationId: get_model_checkpoint
+  /v1/models/{org}/{name}/commits:
+    post:
+      operationId: create_model_commit
       tags: [models]
-      summary: 'A checkpoint''s manifest document, to its owner or a run reading it; to a run publishing to the
-        model, only whether the model holds it ({"held": true}).'
+      summary: Records an uploaded commit (a cozytensors.tree/1 with one lane and one .cozytensors file) as the model's, private until a release names it.
+      description: |
+        Upload the commit's objects first (distribution/1 §3: chunks, assets and files, then the header, then the
+        tree). The Hub reads the tree, checks its lane and its single .cozytensors file, and checks that the caller
+        can read its whole closure. The first commit creates the model. 201 records it; 200 means the model
+        already had it.
       security: [{bearer: []}, {dpop: []}]
       parameters:
       - {$ref: '#/components/parameters/Org'}
       - {$ref: '#/components/parameters/Name'}
-      - {$ref: '#/components/parameters/Manifest'}
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/ModelCommitRequest'}}
       responses:
         '200':
-          description: The manifest document, or {"held":true}.
+          description: The model already had this commit.
           content:
-            application/json: {schema: {$ref: '#/components/schemas/CheckpointDocument'}}
+            application/json: {schema: {$ref: '#/components/schemas/ModelCommit'}}
+        '201':
+          description: The commit, recorded.
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/ModelCommit'}}
         4XX: {$ref: '#/components/responses/Error'}
         5XX: {$ref: '#/components/responses/Error'}
+
+  /v1/models/{org}/{name}/commits/{commit}:
     delete:
-      operationId: remove_model_checkpoint
+      operationId: delete_model_commit
       tags: [models]
-      summary: Removes a tree no release names.
+      summary: Deletes a commit no release names; its objects go when no other commit reaches them.
       security: [{bearer: []}]
       parameters:
       - {$ref: '#/components/parameters/Org'}
       - {$ref: '#/components/parameters/Name'}
-      - {$ref: '#/components/parameters/Manifest'}
+      - {$ref: '#/components/parameters/Commit'}
       responses:
         '200':
-          description: The removal.
+          description: The deleted commit.
           content:
-            application/json: {schema: {$ref: '#/components/schemas/CheckpointRemoval'}}
-        4XX: {$ref: '#/components/responses/Error'}
-        5XX: {$ref: '#/components/responses/Error'}
-
-  /v1/models/{org}/{name}/rows:
-    get:
-      operationId: read_model_rows
-      tags: [models]
-      summary: 'A model''s own index rows, to its owner: every release lane, a yanked release''s too, and every
-        unreleased checkpoint (release and lane empty), each saying whether its checkpoint predates the format cut
-        (v1). It goes with the post-A11 cleanup.'
-      security: [{bearer: []}]
-      parameters:
-      - {$ref: '#/components/parameters/Org'}
-      - {$ref: '#/components/parameters/Name'}
-      responses:
-        '200':
-          description: The rows.
-          content:
-            application/json: {schema: {$ref: '#/components/schemas/ModelRows'}}
-        4XX: {$ref: '#/components/responses/Error'}
-        5XX: {$ref: '#/components/responses/Error'}
-
-  /v1/models/{org}/{name}/publications/{operation}:
-    put:
-      operationId: open_model_publication
-      tags: [models]
-      summary: Opens (or resumes) a checkpoint publication and declares its objects.
-      security: [{bearer: []}, {dpop: []}]
-      parameters:
-      - {$ref: '#/components/parameters/Org'}
-      - {$ref: '#/components/parameters/Name'}
-      - {$ref: '#/components/parameters/Operation'}
-      requestBody:
-        required: true
-        content:
-          application/json: {schema: {$ref: '#/components/schemas/PublicationDeclaration'}}
-      responses:
-        '200':
-          description: The publication and each object's state.
-          content:
-            application/json: {schema: {$ref: '#/components/schemas/PublicationOpened'}}
-        4XX: {$ref: '#/components/responses/Error'}
-        5XX: {$ref: '#/components/responses/Error'}
-
-  /v1/models/{org}/{name}/publications/{operation}/finalization:
-    get:
-      operationId: get_model_finalization
-      tags: [models]
-      summary: A checkpoint finalization's state.
-      security: [{bearer: []}, {dpop: []}]
-      parameters:
-      - {$ref: '#/components/parameters/Org'}
-      - {$ref: '#/components/parameters/Name'}
-      - {$ref: '#/components/parameters/Operation'}
-      responses:
-        '200':
-          description: The finalization.
-          content:
-            application/json: {schema: {$ref: '#/components/schemas/ModelFinalization'}}
-        4XX: {$ref: '#/components/responses/Error'}
-        5XX: {$ref: '#/components/responses/Error'}
-
-  /v1/models/{org}/{name}/publications/{operation}/finalize:
-    post:
-      operationId: finalize_model_publication
-      tags: [models]
-      summary: Queues the checkpoint's finalization; poll status_url.
-      security: [{bearer: []}, {dpop: []}]
-      parameters:
-      - {$ref: '#/components/parameters/Org'}
-      - {$ref: '#/components/parameters/Name'}
-      - {$ref: '#/components/parameters/Operation'}
-      requestBody:
-        required: true
-        content:
-          application/json: {schema: {$ref: '#/components/schemas/PublicationFinalize'}}
-      responses:
-        '202':
-          description: Queued (Location and Retry-After headers).
-          content:
-            application/json: {schema: {$ref: '#/components/schemas/ModelFinalization'}}
-        4XX: {$ref: '#/components/responses/Error'}
-        5XX: {$ref: '#/components/responses/Error'}
-
-  /v1/models/{org}/{name}/publications/{operation}/grants:
-    post:
-      operationId: grant_publication_objects
-      tags: [models]
-      summary: Presigned PUTs for the named objects the Hub does not hold yet.
-      security: [{bearer: []}, {dpop: []}]
-      parameters:
-      - {$ref: '#/components/parameters/Org'}
-      - {$ref: '#/components/parameters/Name'}
-      - {$ref: '#/components/parameters/Operation'}
-      requestBody:
-        required: true
-        content:
-          application/json: {schema: {$ref: '#/components/schemas/PublicationObjectIds'}}
-      responses:
-        '200':
-          description: Grants for absent objects; the held ones.
-          content:
-            application/json: {schema: {$ref: '#/components/schemas/PublicationGrants'}}
-        4XX: {$ref: '#/components/responses/Error'}
-        5XX: {$ref: '#/components/responses/Error'}
-
-  /v1/models/{org}/{name}/publications/{operation}/verify:
-    post:
-      operationId: verify_publication_objects
-      tags: [models]
-      summary: Verifies uploaded objects.
-      security: [{bearer: []}, {dpop: []}]
-      parameters:
-      - {$ref: '#/components/parameters/Org'}
-      - {$ref: '#/components/parameters/Name'}
-      - {$ref: '#/components/parameters/Operation'}
-      requestBody:
-        required: true
-        content:
-          application/json: {schema: {$ref: '#/components/schemas/PublicationObjectIds'}}
-      responses:
-        '200':
-          description: The publication with the verified objects' states.
-          content:
-            application/json: {schema: {$ref: '#/components/schemas/PublicationAnswer'}}
+            application/json: {schema: {$ref: '#/components/schemas/ModelCommitDeletion'}}
         4XX: {$ref: '#/components/responses/Error'}
         5XX: {$ref: '#/components/responses/Error'}
 
   /v1/models/{org}/{name}/releases/{release}:
-    post:
-      operationId: update_model_release
+    put:
+      operationId: publish_model_release
       tags: [models]
-      summary: Points a release at a retained tree.
-      security: [{bearer: []}]
+      summary: Creates a release, public for good, naming commits whose lanes are distinct.
+      description: |
+        The version is a PEP 440 version higher than every existing release of the model. Repeating the same
+        request answers 200 with the release; the same version with other commits is 409 release.exists.
+      security: [{bearer: []}, {dpop: []}]
       parameters:
       - {$ref: '#/components/parameters/Org'}
       - {$ref: '#/components/parameters/Name'}
@@ -740,31 +580,43 @@ paths:
       requestBody:
         required: true
         content:
-          application/json: {schema: {$ref: '#/components/schemas/ModelReleaseUpdate'}}
+          application/json: {schema: {$ref: '#/components/schemas/ModelReleaseRequest'}}
       responses:
         '200':
-          description: The release.
+          description: The release already existed with exactly these commits.
           content:
             application/json: {schema: {$ref: '#/components/schemas/ModelRelease'}}
-        4XX: {$ref: '#/components/responses/Error'}
-        5XX: {$ref: '#/components/responses/Error'}
-    delete:
-      operationId: yank_model_release
-      tags: [models]
-      summary: Yanks a release.
-      security: [{bearer: []}]
-      parameters:
-      - {$ref: '#/components/parameters/Org'}
-      - {$ref: '#/components/parameters/Name'}
-      - {$ref: '#/components/parameters/Release'}
-      responses:
-        '200':
-          description: The yanked release.
+        '201':
+          description: The release, created.
           content:
             application/json: {schema: {$ref: '#/components/schemas/ModelRelease'}}
         4XX: {$ref: '#/components/responses/Error'}
         5XX: {$ref: '#/components/responses/Error'}
 
+  /v1/models/{org}/{name}/resolve:
+    get:
+      operationId: resolve_model
+      tags: [models]
+      summary: One commit of a release (the newest when none is named), by its lane or else by the hardware.
+      description: |
+        With a lane, the release's commit of that lane, else 404 lane.not_found. Without one, the Hub picks from
+        each commit's header (its schemes, dtypes and bytes) what the GPUs run, preferring 8-bit, and of those
+        what fits free_vram; reasons say what was passed over. No gpus means CPU.
+      security: [{}, {bearer: []}, {dpop: []}]
+      parameters:
+      - {$ref: '#/components/parameters/Org'}
+      - {$ref: '#/components/parameters/Name'}
+      - {name: release, in: query, schema: {type: string}, description: 'A release version; omitted: the newest release.'}
+      - {name: lane, in: query, schema: {type: string}, description: "A lane label; omitted: chosen by the hardware."}
+      - {name: gpus, in: query, schema: {type: string}, description: 'Comma-separated GPUs of the set: CUDA compute capabilities ("8.9") or Apple Metal families ("apple9"). Omitted: CPU.'}
+      - {name: free_vram, in: query, schema: {type: integer, format: int64}, description: "Free bytes on each GPU (the set's smallest); omitted: no fit check."}
+      responses:
+        '200':
+          description: The resolved commit.
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/ModelResolution'}}
+        4XX: {$ref: '#/components/responses/Error'}
+        5XX: {$ref: '#/components/responses/Error'}
   /v1/packages:
     get:
       operationId: search_packages
@@ -969,9 +821,9 @@ paths:
       tags: [rentals]
       summary: The machines that hold one run of a package function, the pick first.
       description: |
-        Sizes the function's model slots on each card as its machine selects them (the selection rule for the
-        card's compute capability; the run's bits filter the main model) and keeps the products whose card holds
-        the weights in three quarters of its memory and serves the main model's narrowest lane, at the asked GPU
+        Sizes the function's model slots on each card as its machine resolves them (resolve_model with the slot's
+        lane, the run's lane for the main slot, else the card's compute capability and memory) and keeps the
+        products whose card holds the weights in three quarters of its memory, at the asked GPU
         count, else one and every sequence-parallel degree the function declares. Each machine's speed comes from
         its card's spec sheet; its cost per run is its expected total over its speed. The pick is the cheapest
         per run of the machines fast enough, else the fastest (design/placement.md). Nothing is bought.
@@ -1137,42 +989,6 @@ paths:
         4XX: {$ref: '#/components/responses/Error'}
         5XX: {$ref: '#/components/responses/Error'}
 
-  /v1/tensorfs/closure:
-    post:
-      operationId: resolve_tensorfs_closure
-      tags: [tensorfs]
-      summary: Reads one page of what a readable checkpoint contains, digests and lengths only.
-      security: [{}, {bearer: []}, {dpop: []}]
-      requestBody:
-        required: true
-        content:
-          application/json: {schema: {$ref: '#/components/schemas/TensorfsClosureRequest'}}
-      responses:
-        '200':
-          description: One page of the closure.
-          content:
-            application/json: {schema: {$ref: '#/components/schemas/TensorfsClosure'}}
-        4XX: {$ref: '#/components/responses/TensorfsError'}
-        5XX: {$ref: '#/components/responses/TensorfsError'}
-
-  /v1/tensorfs/presign:
-    post:
-      operationId: presign_tensorfs_objects
-      tags: [tensorfs]
-      summary: Mints download URLs for exactly the asked objects of checkpoints the caller may read.
-      security: [{}, {bearer: []}, {dpop: []}]
-      requestBody:
-        required: true
-        content:
-          application/json: {schema: {$ref: '#/components/schemas/TensorfsPresignRequest'}}
-      responses:
-        '200':
-          description: A URL for every asked digest.
-          content:
-            application/json: {schema: {$ref: '#/components/schemas/TensorfsPresign'}}
-        4XX: {$ref: '#/components/responses/TensorfsError'}
-        5XX: {$ref: '#/components/responses/TensorfsError'}
-
   /v1/worker/rental/authorized-keys:
     get:
       operationId: get_worker_authorized_keys
@@ -1273,19 +1089,11 @@ components:
       description: An OAuth error, or AuthKit's envelope for a rate limit.
       content:
         application/json: {schema: {$ref: '#/components/schemas/AuthTokenRefusal'}}
-    TensorfsError:
-      description: A TensorFS refusal.
-      content:
-        application/json: {schema: {$ref: '#/components/schemas/TensorfsError'}}
   schemas:
     Account:
       type: object
       required: [name, user_id]
       properties: {name: {type: string}, user_id: {type: string}}
-    ArtifactRef:
-      type: object
-      required: [digest, length]
-      properties: {digest: {type: string}, length: {type: integer, format: int64}}
     AuthAccountRecoveryConfirmation:
       type: object
       required: [token, expires_at, purge_at]
@@ -1946,33 +1754,6 @@ components:
         cut_at: {type: string, format: date-time}
         yanked: {type: boolean}
         yanked_at: {type: string, format: date-time}
-    CheckpointDocument:
-      type: object
-      description: A CozyTensors manifest document, or {"held":true} to a publishing run.
-    ModelRows:
-      type: object
-      required: [model, rows]
-      properties:
-        model: {type: string}
-        rows:
-          type: array
-          items:
-            type: object
-            required: [release, lane, yanked, checkpoint_id, manifest_length, v1]
-            properties:
-              release: {type: string}
-              lane: {type: string}
-              yanked: {type: boolean}
-              checkpoint_id: {type: string}
-              manifest_length: {type: integer, format: int64}
-              v1: {type: boolean}
-    CheckpointRemoval:
-      type: object
-      required: [checkpoint_id, repository_sha256, removed]
-      properties:
-        checkpoint_id: {type: string}
-        repository_sha256: {type: string}
-        removed: {type: boolean}
     CreditDeposit:
       type: object
       description: The credit deposit as the catalog sells it; amounts are micros of USD as decimal strings.
@@ -2011,12 +1792,6 @@ components:
           format: date-time
           nullable: true
           description: When the burn reaches the floor; null with nothing charging.
-    DeclaredObject:
-      type: object
-      required: [object_id, length]
-      properties:
-        object_id: {type: string}
-        length: {type: integer, format: int64}
     Empty: {type: object, description: An empty JSON object.}
     Error:
       type: object
@@ -2054,20 +1829,36 @@ components:
               description: The CA a machine trusts for the origin when a private CA signs it (a test hub).
     ModelCard:
       type: object
-      required: [model, releases, throughput]
+      required: [model, releases, commits, throughput]
       properties:
         model: {$ref: '#/components/schemas/ModelSummary'}
-        releases: {type: array, items: {$ref: '#/components/schemas/ModelCatalogRelease'}}
+        releases: {type: array, items: {$ref: '#/components/schemas/ModelRelease'}, description: Newest first.}
+        commits: {type: array, items: {$ref: '#/components/schemas/ModelCommit'}, description: "Every commit, newest first, to the model's members; empty to anyone else."}
         throughput: {type: array, items: {$ref: '#/components/schemas/ModelThroughput'}}
-    ModelCatalogRelease:
+    ModelCommit:
       type: object
-      required: [release, lanes]
+      required: [id, length, lane, header, bytes, kinds, releases, created_at]
       properties:
-        release: {type: string}
-        cut_at: {type: string, format: date-time}
-        yanked: {type: boolean}
-        yanked_at: {type: string, format: date-time}
-        lanes: {type: array, items: {$ref: '#/components/schemas/ModelLane'}}
+        id: {type: string, description: 'sha256:<hex> of the commit''s tree.'}
+        length: {type: integer, format: int64, description: The tree's length.}
+        lane: {type: string}
+        header: {$ref: '#/components/schemas/ObjectRef'}
+        bytes: {type: integer, format: int64, description: The commit's whole closure.}
+        kinds: {type: array, items: {type: string}, description: "Its header's schemes and dtypes (bf16, fp8.rowwise, int8.convrot, …)."}
+        provenance: {$ref: '#/components/schemas/ModelLaneProvenance'}
+        releases: {type: array, items: {type: string}, description: The releases naming it; empty while private.}
+        created_at: {type: string, format: date-time}
+    ModelCommitDeletion:
+      type: object
+      required: [model, id]
+      properties:
+        model: {type: string}
+        id: {type: string}
+    ModelCommitRequest:
+      type: object
+      required: [commit]
+      properties:
+        commit: {$ref: '#/components/schemas/ObjectRef'}
     ModelDeletion:
       type: object
       required: [model]
@@ -2078,31 +1869,9 @@ components:
       required: [family]
       properties:
         family: {type: string, description: A discovery family label; empty clears it.}
-    ModelFinalization:
-      type: object
-      required: [operation, state, status_url]
-      properties:
-        operation: {type: string}
-        state: {type: string}
-        status_url: {type: string}
-        result: {description: 'The finalized checkpoint, once committed.'}
-        error: {description: Why the finalization failed.}
-    ModelLane:
-      type: object
-      required: [lane, manifest_id, manifest_length, components, objects, bytes]
-      properties:
-        lane: {type: string, description: "The variant, by its path."}
-        precision: {type: string, description: "Its header's precision lane (int8, fp8, nvfp4, bf16, …)."}
-        manifest_id: {type: string}
-        manifest_length: {type: integer, format: int64}
-        components: {type: array, nullable: true, items: {type: string}}
-        component_bytes: {type: object, additionalProperties: {type: integer, format: int64}}
-        objects: {type: integer, format: int64}
-        bytes: {type: integer, format: int64}
-        provenance: {$ref: '#/components/schemas/ModelLaneProvenance'}
     ModelLaneProvenance:
       type: object
-      description: "The recipe that wrote the lane: its header's `metadata.provenance`."
+      description: "The recipe that wrote the commit: its header's `metadata.provenance`."
       required: [package, release, recipe, fingerprint, source, plan]
       properties:
         package: {type: string}
@@ -2113,73 +1882,38 @@ components:
         plan: {type: object, additionalProperties: true, description: "The recipe's canonical plan."}
     ModelRelease:
       type: object
-      required: [release, yanked, lanes, changed, repository_sha256]
+      required: [version, created_at, lanes]
       properties:
-        release: {type: string}
-        yanked: {type: boolean}
-        tree: {type: string, description: 'The tree the release names; absent for a pre-cut release of lanes.'}
-        lanes:
-          type: array
-          nullable: true
-          description: Each variant of the tree by canonical full path.
-          items: {$ref: '#/components/schemas/ModelReleaseLane'}
-        changed: {type: boolean}
-        repository_sha256: {type: string}
+        version: {type: string}
+        created_at: {type: string, format: date-time}
+        lanes: {type: object, additionalProperties: {$ref: '#/components/schemas/ModelReleaseLane'}, description: Each lane label's commit.}
     ModelReleaseLane:
       type: object
-      required: [lane, checkpoint_id, objects, bytes]
+      required: [commit, length, header, bytes, kinds]
       properties:
-        lane: {type: string}
-        checkpoint_id: {type: string}
-        objects: {type: integer, format: int64}
+        commit: {type: string, description: 'sha256:<hex>'}
+        length: {type: integer, format: int64}
+        header: {$ref: '#/components/schemas/ObjectRef'}
         bytes: {type: integer, format: int64}
-    ModelReleaseUpdate:
+        kinds: {type: array, items: {type: string}}
+        provenance: {$ref: '#/components/schemas/ModelLaneProvenance'}
+    ModelReleaseRequest:
       type: object
-      required: [tree]
+      required: [commits]
       properties:
-        tree: {type: string, description: 'A tree the model retains, sha256:<hex>; its variants are the lanes.'}
-    ModelSelection:
-      type: object
-      required: [rule, release, commit, variant, header, profile, reasons]
-      properties:
-        rule: {type: integer, description: "The selection rule's version (2); a client takes only an answer of its own rule."}
-        release: {type: string}
-        commit:
-          type: object
-          required: [sha256, length]
-          properties: {sha256: {type: string}, length: {type: integer, format: int64}}
-        variant: {type: string, nullable: true, description: The canonical full .cozytensors path.}
-        header:
-          type: object
-          nullable: true
-          required: [sha256, length]
-          properties: {sha256: {type: string}, length: {type: integer, format: int64}}
-        profile:
-          type: object
-          nullable: true
-          required: [family, bits, bytes, kinds]
-          properties:
-            family: {type: string}
-            bits: {type: integer}
-            bytes: {type: integer, format: int64}
-            kinds: {type: array, items: {type: string}}
-            provenance: {$ref: '#/components/schemas/ModelLaneProvenance'}
-        reasons: {type: array, items: {type: string}}
+        commits: {type: array, items: {type: string}, description: 'Commit ids (sha256:<hex>) of this model, lanes distinct.'}
     ModelResolution:
       type: object
-      required: [model, manifest_id, header_digest, encodings, components, objects, bytes]
+      required: [model, release, lane, commit, header, bytes, kinds, reasons]
       properties:
         model: {type: string}
         release: {type: string}
         lane: {type: string}
-        manifest_id: {type: string}
-        manifest_length: {type: integer, format: int64}
-        header_digest: {type: string}
-        encodings: {type: array, nullable: true, items: {type: string}, description: 'Each encoding as tfs inspect prints it, in header order, e.g. "fp8.rowwise {axis: 0}".'}
-        components: {type: array, nullable: true, items: {type: string}}
-        component_bytes: {type: object, additionalProperties: {type: integer, format: int64}}
-        objects: {type: integer, format: int64}
+        commit: {$ref: '#/components/schemas/ObjectRef'}
+        header: {$ref: '#/components/schemas/ObjectRef'}
         bytes: {type: integer, format: int64}
+        kinds: {type: array, items: {type: string}}
+        reasons: {type: array, items: {type: string}, description: Why a better-ranked lane was passed over.}
     ModelSearch:
       type: object
       required: [models, search]
@@ -2244,6 +1978,10 @@ components:
         reason:
           type: string
           description: A stable cause beside the code, when one is known.
+    ObjectRef:
+      type: object
+      required: [sha256, length]
+      properties: {sha256: {type: string, description: 64 lowercase hex}, length: {type: integer, format: int64}}
     PackageCard:
       type: object
       required: [package, releases]
@@ -2380,80 +2118,6 @@ components:
       properties:
         url: {type: string}
         required_headers: {type: object, additionalProperties: {type: string}}
-    Publication:
-      type: object
-      required: [operation, state, objects]
-      properties:
-        operation: {type: string}
-        state: {type: string}
-        objects: {type: array, items: {$ref: '#/components/schemas/PublicationObject'}}
-    PublicationAnswer:
-      type: object
-      required: [publication]
-      properties: {publication: {$ref: '#/components/schemas/Publication'}}
-    PublicationDeclaration:
-      type: object
-      required: [objects]
-      properties:
-        objects: {type: array, items: {$ref: '#/components/schemas/DeclaredObject'}}
-    PublicationFinalize:
-      type: object
-      required: [manifest_id, manifest_length]
-      properties:
-        manifest_id: {type: string}
-        manifest_length: {type: integer, format: int64}
-    PublicationGrant:
-      type: object
-      required: [object_id, length, url, expires_at_unix]
-      properties:
-        object_id: {type: string}
-        length: {type: integer, format: int64}
-        url: {type: string}
-        required_headers: {type: object, additionalProperties: {type: string}}
-        expires_at_unix:
-          type: integer
-          format: int64
-          description: On the Hub's clock; compare to server_time_unix.
-    PublicationGrants:
-      type: object
-      required: [grants, held, server_time_unix]
-      properties:
-        grants:
-          type: array
-          nullable: true
-          items: {$ref: '#/components/schemas/PublicationGrant'}
-        held:
-          type: array
-          nullable: true
-          items: {$ref: '#/components/schemas/PublicationHeldObject'}
-        server_time_unix: {type: integer, format: int64}
-    PublicationHeldObject:
-      type: object
-      required: [transfer_id, object_id, length, state]
-      properties:
-        transfer_id: {type: string}
-        object_id: {type: string}
-        length: {type: integer, format: int64}
-        state: {type: string}
-        refusal_code: {type: string}
-        refusal_detail: {type: string}
-    PublicationObject:
-      type: object
-      required: [object_id, length, state]
-      properties:
-        object_id: {type: string}
-        length: {type: integer, format: int64}
-        state: {type: string, description: 'pending, verifying, accepted or refused.'}
-    PublicationObjectIds:
-      type: object
-      required: [object_ids]
-      properties: {object_ids: {type: array, items: {type: string}}}
-    PublicationOpened:
-      type: object
-      required: [created, publication]
-      properties:
-        created: {type: boolean}
-        publication: {$ref: '#/components/schemas/Publication'}
     Rental:
       type: object
       description: One rental. Provider facts are present for an admin only.
@@ -2603,7 +2267,6 @@ components:
       - package
       - release
       - function
-      - bits
       - gpus
       - accelerator
       - weights
@@ -2614,7 +2277,6 @@ components:
         package: {type: string}
         release: {type: string}
         function: {type: string}
-        bits: {type: integer, format: int64}
         gpus: {type: integer, format: int64}
         accelerator:
           type: boolean
@@ -2657,7 +2319,7 @@ components:
         storage_usd_micros_per_hour: {type: integer, format: int64}
         container_disk_gb: {type: integer, format: int64}
         expected_price: {$ref: '#/components/schemas/RentalPriceEstimate'}
-        lane: {type: string, description: The main model's lane family on this card.}
+        lane: {type: string, description: The lane the main model resolves to on this card.}
         weight_bytes: {type: integer, format: int64, description: The weights this card's machine loads.}
         speed:
           type: number
@@ -2675,7 +2337,7 @@ components:
         package: {type: string, description: org/name}
         release: {type: string, description: Absent reads the newest release.}
         function: {type: string}
-        bits: {type: integer, format: int64, enum: [16, 8, 4], description: "The main model's lane; absent: the lane rule's own (8 unless a slot declares otherwise)."}
+        lane: {type: string, description: "The main model slot's lane label; absent: resolved by each card, as resolve_model does."}
         gpus: {type: integer, format: int64, minimum: 1, description: Absent asks for one or a degree the function declares.}
         sku: {type: string, description: "A product to place on (`--on new:<sku>`): only its GPU counts are ranked."}
     RentalPlacementWeights:
@@ -2914,110 +2576,6 @@ components:
         pinned:
           type: boolean
           description: The version is the operator's pin, not the current worker image's.
-    TensorfsClosure:
-      type: object
-      required:
-      - bytes
-      - complete
-      - lane
-      - manifest
-      - model
-      - objects
-      - presign_max_digests
-      - public
-      - release
-      - scope
-      - server_time_unix
-      properties:
-        bytes:
-          type: integer
-          format: int64
-          description: The whole closure's length, manifest included.
-        complete:
-          type: boolean
-          description: False when more object rows follow; ask again with after.
-        lane: {type: string}
-        manifest: {$ref: '#/components/schemas/TensorfsObject'}
-        model: {type: string}
-        objects:
-          type: array
-          description: This page's objects, sorted by digest, the manifest excluded.
-          items: {$ref: '#/components/schemas/TensorfsObject'}
-        presign_max_digests:
-          type: integer
-          format: int64
-          description: The most digests one presign call may ask for.
-        public: {type: boolean, description: Every object is a live release's.}
-        release: {type: string}
-        scope: {type: string}
-        server_time_unix: {type: integer, format: int64}
-    TensorfsClosureRequest:
-      type: object
-      required: [ref]
-      properties:
-        ref:
-          type: string
-          description: org/name[@release][@sha256:<hex>]; a bare checkpoint hash is its owner's only.
-        lane: {type: string}
-        lanes:
-          type: array
-          maxItems: 8
-          description: Lanes in order of preference; not beside lane.
-          items: {type: string}
-        after:
-          type: string
-          description: The previous page's last object digest, bare hex; omitted on the first page.
-        limit:
-          type: integer
-          format: int64
-          minimum: 0
-          description: At most this many objects; the hub's page size when omitted or larger.
-    TensorfsError:
-      type: object
-      description: The TensorFS routes' refusal envelope, on the hub's clock.
-      required: [error, server_time_unix]
-      properties:
-        error: {$ref: '#/components/schemas/TensorfsErrorDetail'}
-        retry_after_unix:
-          type: integer
-          format: int64
-          description: When to send the same request again, where waiting is the remedy.
-        server_time_unix: {type: integer, format: int64}
-    TensorfsErrorDetail:
-      type: object
-      required: [code, message]
-      properties:
-        code: {type: string}
-        message: {type: string}
-        remedy: {type: string}
-    TensorfsObject:
-      type: object
-      required: [length, sha256]
-      properties:
-        length: {type: integer, format: int64}
-        sha256: {type: string, description: Bare lowercase hex.}
-    TensorfsPresign:
-      type: object
-      required: [expires_at_unix, server_time_unix, urls]
-      properties:
-        expires_at_unix: {type: integer, format: int64}
-        server_time_unix: {type: integer, format: int64}
-        urls:
-          type: object
-          description: Bare hex digest to its presigned URL.
-          additionalProperties: {type: string}
-    TensorfsPresignRequest:
-      type: object
-      required: [digests]
-      properties:
-        digests:
-          type: array
-          minItems: 1
-          description: SHA-256 digests (bare hex, any case or order, sha256 prefix allowed); at most presign_max_digests.
-          items: {type: string}
-        manifest:
-          type: string
-          description: The manifest of the closure the digests belong to (bare hex); without it only v1 objects presign.
     WorkerAuthorizedKeys:
       type: object
       required: [worker_id, authorized_keys, lease_seconds]
@@ -3051,5 +2609,4 @@ components:
     Org: {name: org, in: path, required: true, schema: {type: string}, description: 'An account, or `_` for the root namespace (first-party models and packages).'}
     Name: {name: name, in: path, required: true, schema: {type: string}}
     Release: {name: release, in: path, required: true, schema: {type: string}}
-    Operation: {name: operation, in: path, required: true, schema: {type: string}}
-    Manifest: {name: manifest, in: path, required: true, schema: {type: string}}
+    Commit: {name: commit, in: path, required: true, schema: {type: string}, description: 'sha256:<hex>'}

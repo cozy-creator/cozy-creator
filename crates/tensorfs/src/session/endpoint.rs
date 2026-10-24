@@ -2,14 +2,15 @@ use std::sync::Arc;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 
-use crate::failure::{fail, Failure, Kind, Result};
+use crate::failure::{Failure, Result};
 use crate::fetch::{self, Client as Transport, SourcePolicy};
-use crate::format::{ObjectRef, Repo, Tree};
+use crate::format::ObjectRef;
 
 use super::provider::from_native;
 use super::{Config, TokenProvider};
 
-/// Generic repository/object protocol. Authentication stays with TokenProvider.
+/// The distribution protocol: objects, and a model's commits by resolution. Authentication
+/// stays with TokenProvider.
 #[derive(Clone)]
 pub struct Endpoint {
     pub(super) inner: Arc<fetch::Endpoint>,
@@ -67,59 +68,14 @@ impl Endpoint {
         Ok(Self { inner, transport })
     }
 
-    pub async fn repo(&self, repo_id: &str) -> Result<Option<(Repo, String)>> {
-        self.inner.repo(repo_id).await.map_err(from_native)
-    }
-
-    /// A small object read whole and verified, never cached: a commit's tree or a variant's header.
+    /// A small object read whole and verified, never cached: a commit's tree or its header.
     pub async fn document(&self, object: &ObjectRef) -> Result<Vec<u8>> {
         self.inner.document(object).await.map_err(from_native)
     }
 
-    /// `revision` of `repo_id` as a commit, without opening a variant or filling a cache: a tag,
-    /// a tag's commit or a header's commit (spec §7), else (`sha256:<hex>`) a commit the endpoint
-    /// holds that no tag names. The tag it resolved through, if any.
-    pub async fn commit(&self, repo_id: &str, revision: &str) -> Result<(ObjectRef, Option<String>)> {
-        let repo = self.repo(repo_id).await?.map_or_else(|| Repo::new(repo_id), |(repo, _)| repo);
-        let tree = async |commit: &ObjectRef| -> Result<Tree> { Ok(Tree::from_json(&self.inner.document(commit).await.map_err(from_native)?)?) };
-        match fetch::resolve(&repo, Some(revision), tree).await {
-            Ok((tag, _)) => return Ok((tag.commit, Some(tag.name))),
-            Err(e) if e.kind == Kind::NotFound && revision.starts_with("sha256:") => {}
-            Err(e) => return Err(e),
-        }
-        let object = self.inner.object(revision).await.map_err(from_native)?;
-        let Some(object) = object else {
-            return fail(Kind::NotFound, format!("{repo_id} has no revision {revision}, and {} holds no such object", self.inner.url()));
-        };
-        let tree = Tree::from_json(&self.inner.document(&object).await.map_err(from_native)?);
-        match tree {
-            Ok(_) => Ok((object, None)),
-            Err(_) => fail(Kind::NotFound, format!("{revision} is not a commit, and no tag of {repo_id} names it")),
-        }
-    }
-
-    pub async fn update_repo(
-        &self,
-        repo_id: &str,
-        mut change: impl FnMut(Option<Repo>) -> Result<Option<Repo>>,
-    ) -> Result<Repo> {
-        let mut callback_error = None;
-        let result = self
-            .inner
-            .update_repo(repo_id, |old| match change(old) {
-                Ok(new) => Ok(new),
-                Err(error) => {
-                    callback_error = Some(error);
-                    Err(crate::err::Refusal {
-                        code: crate::err::Code::UNKNOWN_FORMAT,
-                        detail: "repository callback failed".into(),
-                    })
-                }
-            })
-            .await;
-        match callback_error {
-            Some(error) => Err(error),
-            None => result.map_err(from_native),
-        }
+    /// The commit of `repo_id` at `release` (none: the newest) in `lane` (none: what `hardware`
+    /// runs best), without opening it or filling a cache.
+    pub async fn resolve(&self, repo_id: &str, release: Option<&str>, lane: Option<&str>, hardware: &fetch::Hardware) -> Result<fetch::Resolved> {
+        self.inner.resolve(repo_id, release, lane, hardware).await.map_err(from_native)
     }
 }

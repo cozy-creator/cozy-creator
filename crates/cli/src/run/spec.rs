@@ -22,8 +22,8 @@ pub struct Call<'a> {
     pub callable: &'a Callable,
     /// 0: every GPU the run's slots support on its machine.
     pub gpus: u32,
-    /// 0: the machine's rules choose each slot's precision.
-    pub bits: u32,
+    /// The main model's lane; empty: the Hub's pick for the machine.
+    pub lane: String,
     /// `--attention-kernel`; empty: the machine's own selection.
     pub attention_kernel: &'a str,
 }
@@ -75,7 +75,7 @@ impl Call<'_> {
             weights_destination: bound.destination.clone().unwrap_or_default(),
             attention_kernel: self.attention_kernel.to_owned(),
             gpus: self.gpus,
-            bits: self.bits,
+            lane: self.lane.clone(),
             ..Default::default()
         })
     }
@@ -113,7 +113,7 @@ impl Call<'_> {
             entrypoint: self.callable.name.clone(),
             models: choices(models)?,
             level,
-            bits: self.bits,
+            lane: self.lane.clone(),
             ..Default::default()
         };
         Ok(v1::RunSpec {

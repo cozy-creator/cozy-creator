@@ -175,7 +175,7 @@ impl Client {
             })?;
             // Acquire the checkpoint before releasing the Writer's strong native owner.
             let raw = store.checkpoint(header)?;
-            let variant = import::main_variant(raw.header().tensors().map(|(_, tensor)| {
+            let lane = import::main_lane(raw.header().tensors().map(|(_, tensor)| {
                 let (encoding, length) = match &tensor.body {
                     Body::Data(at) => (None, at.length),
                     Body::Encoded { encoding, parts } => {
@@ -184,10 +184,7 @@ impl Client {
                 };
                 (&tensor.dtype, encoding, length)
             }));
-            let mut parsed = Tree {
-                files: writer.repo_files().clone(),
-            };
-            parsed.set_variant(&variant, header.clone());
+            let parsed = Tree::of(&lane, header.clone(), writer.repo_files())?;
             worker_control.check()?;
             let tree = store.put_tree(&parsed)?;
             let extra = std::iter::once(tree.clone())
@@ -200,7 +197,6 @@ impl Client {
                 None,
                 extra,
                 store.clone(),
-                Some(variant),
             )?;
             store.used(&tree.sha256, std::iter::once(&tree).chain(writer.repo_files().values()))?;
             Ok(checkpoint)

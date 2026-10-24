@@ -209,9 +209,11 @@ fn declared(engine: &Engine, generation: &Generation, id: &str) -> io::Result<(c
     Ok((context, entry))
 }
 
-/// Record Runtime's checkpoint reference. A later upload replaces the local reference;
-/// a published remote tree need not be present in TensorD's cache.
-pub fn checkpoint(engine: &Engine, generation: &Generation, id: &str, seq: u64, item: &CheckpointItem) -> Answer {
+/// Record the commit the Runtime wrote for a weights output, in lane `item.output`; with a Hub
+/// destination, `publish` uploads it and the output names the destination's commit instead.
+#[allow(clippy::type_complexity)]
+pub fn checkpoint(engine: &Engine, generation: &Generation, id: &str, seq: u64, item: &CheckpointItem,
+    publish: &dyn Fn(&str) -> Result<Option<(String, tensorfs::format::ObjectRef)>, crate::objects::Refused>) -> Answer {
     let record = || -> io::Result<u64> {
         let (_, entry) = declared(engine, generation, id)?;
         if !protocol::interface::weights_outputs(&entry).any(|(output, _)| output == item.output) {
@@ -222,10 +224,11 @@ pub fn checkpoint(engine: &Engine, generation: &Generation, id: &str, seq: u64, 
             return Err(storage("a checkpoint reference needs its repository"));
         }
         crate::storage::check_digest("checkpoint revision", &item.revision, true).map_err(storage)?;
-        let reference = protocol::machine::CheckpointRef {
-            repo_id: item.repo_id.clone(), revision: item.revision.clone(), variant: item.variant.clone(),
-            tag: item.tag.clone(),
+        let (repo_id, revision) = match publish(&item.revision).map_err(|refused| io::Error::other(format!("{}: {}", refused.code, refused.message)))? {
+            Some((destination, commit)) => (destination, commit.id()),
+            None => (item.repo_id.clone(), item.revision.clone()),
         };
+        let reference = protocol::machine::CheckpointRef { repo_id, revision, lane: item.output.clone() };
         let product = domain::RunProduct {
             output: item.output.clone(), checkpoint: Some(reference.clone()),
             op: domain::RunProductOp::Set as i32, ..Default::default()

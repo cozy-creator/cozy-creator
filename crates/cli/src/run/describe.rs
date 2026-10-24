@@ -150,8 +150,8 @@ pub fn contract(target: &str, interface: &Interface, callable: &Callable) -> Str
             if let Some(default) = &slot.default {
                 notes.push(format!("default {default}"));
             }
-            if let Some(bits) = slot.min_bits {
-                notes.push(format!("at least {bits} bits"));
+            if let Some(lane) = &slot.lane {
+                notes.push(format!("lane {lane}"));
             }
             if let Some(phase) = &slot.phase {
                 notes.push(phase.clone());

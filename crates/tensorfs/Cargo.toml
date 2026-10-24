@@ -18,8 +18,6 @@ store = ["dep:hmac", "dep:rustix", "dep:rustls", "dep:webpki-roots", "dep:tokio"
 
 [dependencies]
 base64.workspace = true
-# The A11 header migration's Cozy config wrappers (src/migrate/d10.rs); goes with it.
-flate2.workspace = true
 platform.workspace = true
 libloading.workspace = true
 minicbor = { version = "2.3.0", default-features = false, features = ["alloc"] }

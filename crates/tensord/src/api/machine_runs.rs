@@ -153,7 +153,7 @@ fn member(mut item: v1::WarmItem) -> Result<Option<crate::runs::SetItem>, Error>
         source,
         entrypoint: item.entrypoint,
         models: choices(item.models)?,
-        bits: item.bits,
+        lane: item.lane,
         level,
         sent,
     }))
@@ -252,7 +252,7 @@ fn spec_of(mut spec: v1::RunSpec) -> Result<(crate::runs::Spec, Option<v1::HubAc
         models,
         attention_kernel: spec.attention_kernel,
         gpus: spec.gpus,
-        bits: spec.bits,
+        lane: spec.lane,
         hub: None,
         tensorfs,
         providers: providers

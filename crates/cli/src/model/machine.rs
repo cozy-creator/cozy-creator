@@ -13,7 +13,7 @@ use protocol::machine::{InputFile, ModelChoice, RunKind as SpecKind, RunSpec};
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
-use super::refs::{self, ModelRef, Repo};
+use super::refs::{ModelRef, Repo};
 use super::{Download, List, Upload};
 use crate::Context;
 use crate::output::{self, Record, Table};
@@ -115,18 +115,18 @@ fn escape(name: &str) -> String {
 }
 
 /// Submits one warm run of `choice` to `destination` (a `local/` alias, a Hub repository, or
-/// none) and follows it.
+/// none) and follows it; `lane` labels the commit an upload makes.
 async fn warm(
     ctx: &Context,
     placement: &Placement,
     target: String,
     input: ModelInput,
     destination: String,
-    bits: u32,
+    lane: String,
 ) -> Result<ExitCode, Error> {
     let spec = RunSpec {
         kind: SpecKind::Warm,
-        bits,
+        lane,
         models: vec![input.choice],
         inputs: input.files,
         weights_destination: destination,
@@ -160,28 +160,19 @@ fn made(ctx: &Context, run: &Run) {
     }
     let text = |key: &str| model[key].as_str().filter(|s| !s.is_empty());
     let mut record = Record::new();
-    for key in ["repository", "release", "lane", "checkpoint", "resolved"] {
-        // A variant is its path; its header names its precision lane (int8, fp8, …).
-        let value = match (key, text(key), text("precision")) {
-            ("lane", Some(path), Some(precision)) => Some(format!("{path} ({precision})")),
-            (_, value, _) => value.map(str::to_owned),
-        };
-        if let Some(value) = value {
+    for key in ["repository", "release", "lane", "precision", "checkpoint", "resolved"] {
+        if let Some(value) = text(key) {
             record = record.field(key, value);
         }
     }
     let published = &model["published"];
-    let (destination, checkpoint) = (published["destination"].as_str(), published["checkpoint"].as_str());
-    if let (Some(destination), Some(checkpoint)) = (destination, checkpoint) {
-        record = record.field("published", format!("{destination}#{checkpoint}"));
+    let (destination, commit) = (published["destination"].as_str(), published["commit"].as_str());
+    if let (Some(destination), Some(commit)) = (destination, commit) {
+        record = record.field("commit", format!("{destination}@{commit}"));
     }
     record.print(ctx);
-    if let (Some(destination), Some(checkpoint)) = (destination, checkpoint)
-        && !destination.starts_with("local/")
-    {
-        let model = destination.split('@').next().unwrap_or(destination);
-        let at = published["tag"].as_str().filter(|t| !t.is_empty()).unwrap_or(checkpoint);
-        output::next(ctx, &[&format!("cozy model publish {model} --release <version> --commit {at}")]);
+    if let (Some(destination), Some(commit)) = (destination, commit) {
+        output::next(ctx, &[&format!("cozy model publish {destination} <version> {commit}")]);
     }
 }
 
@@ -195,20 +186,19 @@ pub(crate) async fn download(ctx: &Context, args: Download) -> Result<ExitCode, 
     if made.1.is_some() && destination.is_empty() {
         return Err(usage("model_alias_missing", "a local file is kept under a name: add local/<name>"));
     }
-    if let Some(variant) = &args.variant {
+    if let Some(lane) = args.lane {
         if made.0.repository.is_empty() || made.0.repository.starts_with("local/") {
-            return Err(usage("model_variant_pin", "--variant names a variant of a Hub model or checkpoint"));
+            return Err(usage("model_lane_unused", "--lane names a lane of a Hub model"));
         }
-        made.0.lane = refs::variant(variant)?;
+        made.0.lane = lane;
     }
-    let lane = args.lane.as_deref().map_or(0, |b| b.parse().expect("clap admits 16, 8 or 4"));
-    warm(ctx, &args.placement, args.model.clone(), made.into(), destination, lane).await
+    warm(ctx, &args.placement, args.model.clone(), made.into(), destination, String::new()).await
 }
 
 pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Error> {
-    let destination = refs::destination(&args.destination)?;
+    let destination = Repo::hub(&args.destination)?.to_string();
     if let Some(reference) = args.source.strip_prefix("run:") {
-        return super::from_run::upload(ctx, reference, &destination).await;
+        return super::from_run::upload(ctx, reference, &destination, &args.lane).await;
     }
     if !ctx.signed_in(&ctx.hub()?) {
         // The machine publishes under this computer's sign-in; refuse before anything is made.
@@ -221,8 +211,8 @@ pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Erro
     } else {
         source(&args.source, &args.profiles)?.into()
     };
-    let target = format!("{} → {destination}", args.source);
-    warm(ctx, &args.placement, target, made, destination, 0).await
+    let target = format!("{} → {destination} ({})", args.source, args.lane);
+    warm(ctx, &args.placement, target, made, destination, args.lane).await
 }
 
 /// One checkpoint a machine holds, and its repository's bytes there.
@@ -235,7 +225,6 @@ struct Held {
     /// Its header's precision lane (`int8`, …).
     precision: String,
     checkpoint: String,
-    yanked: bool,
     bytes: u64,
     /// The repository's bytes other held models share.
     shared_bytes: u64,
@@ -256,21 +245,20 @@ pub(crate) async fn list(ctx: &Context, args: List) -> Result<ExitCode, Error> {
         };
         stores.push(format!("{}: {} in {} models", machine.name, output::bytes(status.models_bytes), status.models.len()));
         for model in &status.models {
-            let held = |release: &str, lane: (&str, &str), checkpoint: &str, yanked| Held {
+            let held = |release: &str, lane: (&str, &str), checkpoint: &str| Held {
                 machine: machine.name.clone(),
                 model: model.repository.clone(),
                 release: release.into(),
                 lane: lane.0.into(),
                 precision: lane.1.into(),
                 checkpoint: checkpoint.into(),
-                yanked,
                 bytes: model.total_bytes,
                 shared_bytes: model.total_bytes.saturating_sub(model.unique_bytes),
             };
             if model.checkpoints.is_empty() {
-                rows.push(held("", ("", ""), "", false));
+                rows.push(held("", ("", ""), ""));
             }
-            rows.extend(model.checkpoints.iter().map(|c| held(&c.release, (&c.lane, &c.precision), &c.manifest, c.yanked)));
+            rows.extend(model.checkpoints.iter().map(|c| held(&c.release, (&c.lane, &c.precision), &c.manifest)));
         }
     }
     if ctx.json {
@@ -279,13 +267,10 @@ pub(crate) async fn list(ctx: &Context, args: List) -> Result<ExitCode, Error> {
     }
     let mut table = Table::new(ctx, ["machine", "model", "release", "lane", "size", "shared"]);
     for row in &rows {
-        let mut lane = match row.precision.is_empty() {
+        let lane = match row.precision.is_empty() {
             true => row.lane.clone(),
             false => format!("{} ({})", row.lane, row.precision),
         };
-        if row.yanked {
-            lane.push_str(" (yanked)");
-        }
         let (size, shared) = (output::bytes(row.bytes), output::bytes(row.shared_bytes));
         table = table.row([row.machine.as_str(), &row.model, &row.release, &lane, &size, &shared]);
     }

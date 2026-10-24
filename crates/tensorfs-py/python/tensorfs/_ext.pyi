@@ -240,12 +240,13 @@ class Checkpoint:
     def tree(self) -> str | None:
         """`sha256:<hex>` of the repository tree, when known."""
     @property
-    def variant(self) -> str | None: ...
-    @property
     def repo_id(self) -> str | None: ...
     @property
-    def revision(self) -> str | None:
-        """The tag this checkpoint was resolved through, when known."""
+    def release(self) -> str | None:
+        """The release this checkpoint was resolved through, when known."""
+    @property
+    def lane(self) -> str | None:
+        """Its commit's lane, when known."""
     @property
     def pipeline(self) -> Pipeline | None: ...
     @property
@@ -292,9 +293,9 @@ class ComponentWriter:
     def has(self, key: str) -> bool: ...
 
 class Writer:
-    def __init__(self, dest: StrPath | None = None, *, variant: str | None = None,
-                 base: Checkpoint | None = None, resume: str | None = None,
-                 cache_dir: StrPath | None = None, repo_id: str | None = None, revision: str | None = None,
+    def __init__(self, dest: StrPath | None = None, *, base: Checkpoint | None = None,
+                 resume: str | None = None, cache_dir: StrPath | None = None,
+                 repo_id: str | None = None, lane: str | None = None,
                  endpoint: str | None = None, token: _Token | None = None, ca_der: bytes | None = None) -> None: ...
     def pipeline(self, cls: ClassRef | tuple[str, str, str] | Literal[""] | None, config: Mapping[str, Any]) -> None: ...
     def component(
@@ -311,16 +312,15 @@ class _Client:
     """Internal marshaling adapter over the public Rust session."""
     def __init__(self, root: StrPath | None = None, *, endpoint: str | None = None,
                  token: _Token | None = None, ca_der: bytes | None = None) -> None: ...
-    def open(self, name_or_path: str, *, revision: str | None = None,
-             variant: str | None = None, lane: int | None = None, gpus: Sequence[str] | None = None,
+    def open(self, name_or_path: str, *, release: str | None = None,
+             lane: str | None = None, gpus: Sequence[str] | None = None,
              local_files_only: bool = False, lazy: bool = True) -> Checkpoint: ...
     def materialize(self, identity: tuple[str, str | None, str | None], *,
                           components: Sequence[str] | None = None,
                           local_dir: StrPath | None = None, local_files_only: bool = False) -> str: ...
-    def download_file(self, repo_id: str, filename: str, *, revision: str | None = None,
+    def download_file(self, repo_id: str, filename: str, *, release: str | None = None, lane: str | None = None,
                      local_dir: StrPath | None = None, local_files_only: bool = False) -> str: ...
-    def upload_folder(self, folder_path: StrPath, repo_id: str,
-                      revision: str | None = None, delete_patterns: Sequence[str] = ...) -> str: ...
+    def upload_folder(self, folder_path: StrPath, repo_id: str, lane: str) -> str: ...
     def convert_to_cozytensors(self, source: str | Sequence[str], *, converter: str | None = None,
                 source_variant: str | None = None,
                 progress: Callable[[str, int, int], object] | None = None) -> Checkpoint: ...
@@ -334,9 +334,8 @@ class TokenProvider(Protocol):
 class Endpoint:
     def __init__(self, url: str, token: _Token | None = None, *, ca_der: bytes | None = None,
                  cache_dir: StrPath | None = None) -> None: ...
-    def repo(self, repo_id: str) -> tuple[dict[str, Any], str] | None: ...
-    def commit(self, repo_id: str, revision: str) -> tuple[str, str | None]: ...
-    def update_repo(self, repo_id: str, change: Any) -> dict[str, Any]: ...
+    def resolve(self, repo_id: str, *, release: str | None = None, lane: str | None = None,
+                gpus: Sequence[str] | None = None) -> dict[str, Any]: ...
 
 _Token = str | TokenProvider | Callable[[str, str, Mapping[str, str], str | None], Mapping[str, str]]
 

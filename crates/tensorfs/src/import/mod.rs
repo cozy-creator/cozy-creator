@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 
 use crate::err::{refuse, Code, Refusal, Result};
 use crate::format::{
-    ClassRef, Config, ConfigValue, Dtype, Encoding, Metadata, ObjectRef, Pipeline, Value,
+    ClassRef, Config, ConfigValue, Dtype, Encoding, Metadata, Pipeline, Value,
     CONFIG_FILE,
 };
 use crate::store::Error;
@@ -51,9 +51,9 @@ pub struct Part<'a> {
 
 /// Where a convert's output goes: the writer, or anything that takes a D10 model.
 pub trait Sink {
-    /// The variant ([`main_variant`]), the pipeline, each component's class, config and assets,
-    /// and the repo files; before any tensor.
-    fn begin(&mut self, variant: &str, layout: &Layout) -> Result<()>;
+    /// The pipeline, each component's class, config and assets, and the repo files; before any
+    /// tensor.
+    fn begin(&mut self, layout: &Layout) -> Result<()>;
     /// One tensor: plain (no encoding, one part) or encoded (its parts in order).
     fn put(
         &mut self,
@@ -64,13 +64,14 @@ pub trait Sink {
         encoding: Option<&Encoding>,
         parts: Vec<Part>,
     ) -> Result<()>;
-    /// Commits with the header's loading metadata ([`Imported::metadata`]).
-    fn commit(&mut self, metadata: Metadata) -> Result<()>;
+    /// Commits with the header's loading metadata ([`Imported::metadata`]), telling `progress`
+    /// the bytes it lays out ([`Writer::commit_with`]).
+    fn commit(&mut self, metadata: Metadata, progress: &dyn Fn(u64, u64)) -> Result<()>;
 }
 
 /// A convert writes through the writer; tensors an interrupted convert journaled are skipped.
 impl Sink for Writer {
-    fn begin(&mut self, _: &str, layout: &Layout) -> Result<()> {
+    fn begin(&mut self, layout: &Layout) -> Result<()> {
         if let Some(p) = &layout.pipeline {
             self.pipeline(p.class.clone(), p.config.clone());
         }
@@ -116,52 +117,12 @@ impl Sink for Writer {
         (self.get(component).put(key, dtype, shape, data)).map_err(Error::refusal)
     }
 
-    fn commit(&mut self, metadata: Metadata) -> Result<()> {
+    fn commit(&mut self, metadata: Metadata, progress: &dyn Fn(u64, u64)) -> Result<()> {
         for (key, value) in metadata {
             self.set_metadata(&key, value);
         }
-        Writer::commit(self).map(drop).map_err(Error::refusal)
+        Writer::commit_with(self, progress).map(drop).map_err(Error::refusal)
     }
-}
-
-/// Converts `req` into the plain folder `dir`: its repo files, `model.<variant>.cozytensors`
-/// (the variant [`main_variant`]) and `chunks/`. An interrupted convert into `dir` resumes. The
-/// header.
-pub fn convert_folder(req: &Request, dir: &Path) -> Result<ObjectRef> {
-    struct Folder<'d>(&'d Path, Option<Writer>);
-    impl Folder<'_> {
-        fn writer(&mut self) -> &mut Writer {
-            self.1.as_mut().expect("begun")
-        }
-    }
-    impl Sink for Folder<'_> {
-        fn begin(&mut self, variant: &str, layout: &Layout) -> Result<()> {
-            let writer = Writer::folder(self.0, variant, None, true).map_err(Error::refusal)?;
-            self.1.insert(writer).begin(variant, layout)
-        }
-        fn put(
-            &mut self,
-            component: &str,
-            key: &str,
-            dtype: &Dtype,
-            shape: &[u64],
-            encoding: Option<&Encoding>,
-            parts: Vec<Part>,
-        ) -> Result<()> {
-            self.writer()
-                .put(component, key, dtype, shape, encoding, parts)
-        }
-        fn commit(&mut self, metadata: Metadata) -> Result<()> {
-            Sink::commit(self.writer(), metadata)
-        }
-    }
-    let mut folder = Folder(dir, None);
-    convert(req, &mut folder)?;
-    Ok(folder
-        .writer()
-        .committed()
-        .expect("a convert commits")
-        .clone())
 }
 
 /// What a component's folder held besides weights.
@@ -611,9 +572,9 @@ fn recorded(config: &Config) -> impl Iterator<Item = (String, String)> + '_ {
     })
 }
 
-/// The variant a model is written as: its main dtype or scheme by stored bytes (`bf16`,
+/// The lane an import is labelled: its main dtype or scheme by stored bytes (`bf16`,
 /// `fp8.rowwise`), `files` when it has no tensors.
-pub fn main_variant<'a>(
+pub fn main_lane<'a>(
     tensors: impl Iterator<Item = (&'a Dtype, Option<&'a Encoding>, u64)>,
 ) -> String {
     let mut bytes: BTreeMap<String, u64> = BTreeMap::new();
@@ -766,24 +727,6 @@ pub fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
             tensored.push(name.clone());
         }
     }
-    let sizes = |parts: &mut dyn Iterator<Item = (&Dtype, &[u64])>| -> u64 {
-        parts.map(|(d, s)| d.byte_len(s).unwrap_or(0)).sum()
-    };
-    let stored = (planned.iter())
-        .map(|p| {
-            (
-                &p.dtype,
-                p.encoding.as_ref(),
-                sizes(&mut p.parts.iter().map(|q| (&q.dtype, &q.shape[..]))),
-            )
-        })
-        .chain(ggufs_planned.iter().flat_map(|g| &g.2.tensors).map(|o| {
-            (
-                &o.dtype,
-                o.encoding.as_ref(),
-                sizes(&mut o.parts.iter().map(|q| (&q.dtype, &q.shape[..]))),
-            )
-        }));
     stopped(req)?;
     let mut layout = layout(files, &tensored, &versions)?;
     for folder in &mut layout.components {
@@ -791,7 +734,7 @@ pub fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
             (folder.config, folder.config_file) = (adapter.config, Some(lora::ADAPTER_CONFIG.into()));
         }
     }
-    sink.begin(&main_variant(stored), &layout)?;
+    sink.begin(&layout)?;
     let opened: Vec<File> = set
         .files
         .iter()
@@ -880,7 +823,7 @@ pub fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
     // dropped future cannot promise to undo the writer's atomic finalization.
     progress("imported", total, total);
     stopped(req)?;
-    sink.commit(imported.metadata())?;
+    sink.commit(imported.metadata(), &|done, total| progress("committing", done, total))?;
     drop(opened);
     match std::fs::remove_dir_all(&area) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => {

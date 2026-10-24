@@ -1,13 +1,13 @@
-//! Plain folders in and out of the store. A folder is a tree on disk: repo files at their paths,
-//! `model.<variant>.cozytensors` headers, and `chunks/<sha256>` for the chunks and assets they
-//! cite (thin: some may be in the store instead).
+//! Plain folders in and out of the store. A folder is a commit on disk: repo files at their
+//! paths, one `.cozytensors` header, and `chunks/<sha256>` for the chunks and assets it cites
+//! (thin: some may be in the store instead).
 
 use std::fs::{self, File};
 use std::io;
 use std::path::Path;
 
 use super::{fail, Result, Store};
-use crate::format::{check_file, variant_of, Header, ObjectRef, Tree, CHUNKS_DIR};
+use crate::format::{check_file, is_header, Header, ObjectRef, Tree, CHUNKS_DIR};
 
 impl Store {
     /// Puts the tree document; its files need not be here.
@@ -15,15 +15,15 @@ impl Store {
         self.put_bytes(&tree.to_json()?)
     }
 
-    /// Admits the plain folder `dir`: every object a header cites that `chunks/` has, then the
-    /// headers and repo files, then the tree. Every byte is hashed once, here. Returns the tree
-    /// and the cited objects in neither the folder nor this store (a thin folder whose bytes an
-    /// endpoint may already hold).
-    pub fn admit_folder(&self, dir: &Path) -> Result<(ObjectRef, Vec<ObjectRef>)> {
-        let (mut tree, mut absent) = (Tree::default(), Vec::new());
+    /// Admits the plain folder `dir` as a commit in lane `lane`: every object its header cites
+    /// that `chunks/` has, then the header and repo files, then the tree. Every byte is hashed
+    /// once, here. Returns the tree and the cited objects in neither the folder nor this store (a
+    /// thin folder whose bytes an endpoint may already hold).
+    pub fn admit_folder(&self, dir: &Path, lane: &str) -> Result<(ObjectRef, Vec<ObjectRef>)> {
+        let (mut tree, mut absent) = (Tree { lane: lane.into(), ..Tree::default() }, Vec::new());
         for path in files(dir, "")? {
             let at = dir.join(&path);
-            if variant_of(&path).is_some() {
+            if is_header(&path) {
                 let bytes = fs::read(&at).map_err(fail("read", &at))?;
                 for object in Header::from_cbor(&bytes)?.objects() {
                     let chunk = dir.join(CHUNKS_DIR).join(&object.sha256);
@@ -43,31 +43,26 @@ impl Store {
                 tree.files.insert(path, self.put(file, None)?);
             }
         }
+        tree.header()?;
         Ok((self.put_tree(&tree)?, absent))
     }
 
-    /// The tree `tree` as a plain folder in `dir`: the headers of `variants` (all when `None`)
-    /// and those headers' objects this store holds.
-    pub fn snapshot(&self, tree: &ObjectRef, dir: &Path, variants: Option<&[String]>) -> Result<()> {
+    /// The commit `tree` as a plain folder in `dir`: its files, and its header's objects this
+    /// store holds.
+    pub fn snapshot(&self, tree: &ObjectRef, dir: &Path) -> Result<()> {
         let tree = self.tree(tree)?;
-        let wanted = variants.map(|names| names.iter().map(|name| tree.variant(Some(name)).map(|(path,_)|path)).collect::<crate::format::Result<Vec<_>>>()).transpose()?;
-        let chosen: Vec<(&str, &ObjectRef)> = (tree.variants())
-            .filter(|(v, _)| wanted.as_ref().is_none_or(|want| want.contains(v)))
-            .collect();
         let mut payload = Vec::new();
-        for (_, header) in &chosen {
-            for object in Header::from_cbor(&self.read(header)?)?.objects() {
-                if self.reuse(object)? {
-                    payload.push(object.clone());
-                }
+        for object in Header::from_cbor(&self.read(tree.header()?.1)?)?.objects() {
+            if self.reuse(object)? {
+                payload.push(object.clone());
             }
         }
-        self.write_folder(&tree, dir, &chosen, &payload)
+        self.write_folder(&tree, dir, &payload)
     }
 
-    /// `tree` as a plain folder in `dir`: its repo files, `payload` under `chunks/`, then
-    /// `headers` last, so a folder never has a header without what it names.
-    pub fn write_folder(&self, tree: &Tree, dir: &Path, headers: &[(&str, &ObjectRef)], payload: &[ObjectRef]) -> Result<()> {
+    /// The commit `tree` as a plain folder in `dir`: its repo files, `payload` under `chunks/`,
+    /// then its header last, so a folder never has a header without what it names.
+    pub fn write_folder(&self, tree: &Tree, dir: &Path, payload: &[ObjectRef]) -> Result<()> {
         let chunks = dir.join(CHUNKS_DIR);
         fs::create_dir_all(&chunks).map_err(fail("create", &chunks))?;
         for (path, object) in tree.repo_files() {
@@ -76,10 +71,8 @@ impl Store {
         for object in payload {
             self.materialize(object, &chunks.join(&object.sha256))?;
         }
-        for (variant, header) in headers {
-            self.materialize(header, &dir.join(crate::format::variant_path(variant)))?;
-        }
-        Ok(())
+        let (path, header) = tree.header()?;
+        self.materialize(header, &dir.join(path))
     }
 
     /// `object` at `dest`, unless a file of its length is there: hard-linked inside this store,
