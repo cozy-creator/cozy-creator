@@ -16,7 +16,6 @@ reqwest.workspace = true
 async-trait.workspace = true
 tensorfs = { workspace = true, features = ["store"] }
 tempfile.workspace = true
-varena.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 serde_json_canonicalizer.workspace = true

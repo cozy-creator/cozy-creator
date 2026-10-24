@@ -507,7 +507,6 @@ dependencies = [
  "toml",
  "toml_edit",
  "url",
- "varena",
  "zip",
 ]
 
@@ -3702,14 +3701,13 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "uuid",
- "varena",
  "webpki-roots",
  "zip",
 ]
 
 [[package]]
 name = "tensorfs"
-version = "0.14.0"
+version = "0.15.2"
 dependencies = [
  "async-trait",
  "base64",
@@ -3741,10 +3739,11 @@ dependencies = [
 
 [[package]]
 name = "tensorfs-py"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "async-trait",
  "base64",
+ "libc",
  "platform",
  "protocol",
  "pyo3",
@@ -4258,19 +4257,10 @@ dependencies = [
 
 [[package]]
 name = "varena"
-version = "0.14.0"
+version = "0.11.17"
 dependencies = [
- "crossbeam-channel",
- "libc",
- "parking_lot",
- "platform",
- "pyo3",
- "serde",
- "serde_json",
- "sha2",
- "tensorfs",
+ "libloading 0.9.0",
  "thiserror 2.0.21",
- "tracing",
 ]
 
 [[package]]
