@@ -2954,6 +2954,13 @@ impl Pool {
         // Rank 0 answered, so a follower that ended during the call is the group's first fault.
         let lost = self.lost_followers(start, degree, &session.followers);
         if !reply.ok || !reply.quiescent || !reply.poisoned.is_empty() || !lost.is_empty() {
+            // Its GPU state lost, it is killed now: a graceful end could spin on that state and
+            // keep its GPU memory from every later call.
+            if !reply.quiescent || !reply.poisoned.is_empty() || !lost.is_empty() {
+                if let Err(error) = session.executor.kill() {
+                    tracing::warn!("run {id}: killing its unsettled executor: {error}");
+                }
+            }
             // It may have faulted on its GPUs: their kept pages go.
             gpus.iter().filter_map(|d| d.memory.as_ref()).for_each(|m| m.manager.fault());
             // The author's failure keeps its traceback and origin in triage; the executor's
