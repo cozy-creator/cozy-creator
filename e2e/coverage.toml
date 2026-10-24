@@ -54,7 +54,7 @@ test = "pr: signed out, whoami says so (release: signed in as fidika)"
 test = "pr: status, Calcifer and the local machine"
 
 [update]
-test = "pr: update, to the previous release and back to the newest"
+test = "pr: update, the candidate to the newest release"
 
 ["machine list"]
 test = "pr: machines"

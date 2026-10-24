@@ -182,6 +182,8 @@ key=$(openssl pkey -in "$OUT/controller.pem" -pubout -outform DER | tail -c 32 |
 cozy --json machine authorize "$key" > "$OUT/authorize.json" && J '.changed == true' "$OUT/authorize.json" || check "machine authorize: the key was not added"
 grep -qx "$key" "$HOME/.cozy/keys/authorized" || check "machine authorize: the key is not in keys/authorized"
 cozy --json machine authorize "$key" | J '.changed == false' || check "machine authorize twice: added it again"
+# The test controller goes again (no verb takes a key back), so the machine may idle out as usual.
+grep -vx "$key" "$HOME/.cozy/keys/authorized" > "$OUT/authorized" || true; cp "$OUT/authorized" "$HOME/.cozy/keys/authorized"
 cozy --json machine end e2e-self > "$OUT/end-added.json" || check "machine end e2e-self failed"
 ! cozy --json machine list | J '.machines | any(.name == "e2e-self")' || check "machine end: e2e-self is still listed"
 
@@ -205,19 +207,18 @@ bash -c ". '$OUT/completion.bash'; complete -p cozy" > /dev/null || check "compl
   || check "completion powershell: cozy mach does not complete to machine"
 echo "completion: ${shells[*]}"
 
-# Last: it replaces this computer's cozy (the candidate) with releases.
+# Last: this computer's cozy (the candidate) updates itself to the newest release, as a person's `cozy update`
+# does: the binary is that release's and Calcifer restarted on it. (An older release's own update is its code,
+# frozen: run 40084450876 found 0.11.14's update waiting on Calcifer for good while an authorized machine served.)
 step update
 cp "$COZY" "$OUT/cozy-under-test"
-releases=$(curl -fsSL ${GH_TOKEN:+-H "Authorization: Bearer $GH_TOKEN"} "https://api.github.com/repos/cozy-creator/cozy-creator/releases?per_page=30" \
-  | jq -r '[.[] | select(.prerelease | not) | .tag_name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))] | .[:2] | .[]') || true
-newest=$(sed -n 1p <<< "$releases") previous=$(sed -n 2p <<< "$releases")
-if [ -z "$previous" ]; then check "update: no two releases to move between"; else
+newest=$(curl -fsSL ${GH_TOKEN:+-H "Authorization: Bearer $GH_TOKEN"} "https://api.github.com/repos/cozy-creator/cozy-creator/releases?per_page=30" \
+  | jq -r '[.[] | select(.prerelease | not) | .tag_name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))][0] // empty') || true
+if [ -z "$newest" ]; then check "update: no release to update to"; else
   t0=$SECONDS
-  cozy --json update "${previous#v}" > "$OUT/update-previous.json" || check "update ${previous#v} failed"
-  echo "update ${previous#v}: $((SECONDS - t0)) s"; t0=$SECONDS
-  [ "$(cozy --version)" = "cozy ${previous#v}" ] || check "update ${previous#v}: cozy is $(cozy --version)"
-  cozy --json update > "$OUT/update-newest.json" || check "update to the newest failed"
+  cozy --json update "${newest#v}" > "$OUT/update.json" || check "update ${newest#v} failed: $(head -c 300 "$OUT/update.json")"
   echo "update ${newest#v}: $((SECONDS - t0)) s"
-  [ "$(cozy --version)" = "cozy ${newest#v}" ] || check "update: cozy is $(cozy --version), not the newest ${newest#v}"
-  cozy --json status | J --arg v "${newest#v}" '.calcifer.version == $v' || check "update: Calcifer did not restart on ${newest#v}"
+  [ "$(cozy --version)" = "cozy ${newest#v}" ] || check "update: cozy is $(cozy --version), not ${newest#v}"
+  J '.calcifer == "restarted"' "$OUT/update.json" || check "update: Calcifer was not restarted ($(jq -c .calcifer "$OUT/update.json"))"
+  cozy --json status | J --arg v "${newest#v}" '.calcifer.version == $v' || check "update: Calcifer does not run ${newest#v}"
 fi
