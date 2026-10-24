@@ -190,7 +190,8 @@ def exercise(device: str, seed: int, driver_room: bool = False) -> dict:
             for index in range(tiny_layers):
                 component.put(f"{index}.weight", torch.randn(tiny_width, tiny_width, generator=generator) / 8)
             tiny_ck = writer.commit()
-            tiny = model(tiny_ck, tiny_width, tiny_layers)
+            tiny_fill = Scale()
+            tiny = model(tiny_ck, tiny_width, tiny_layers, tiny_fill)
             loaded = memory.load(tiny, "ram")
             static_input = torch.randn(4, tiny_width, generator=generator).to(device)
             for generation in range(2):
@@ -251,6 +252,25 @@ def exercise(device: str, seed: int, driver_room: bool = False) -> dict:
                 binding.close()
                 memory.load(tiny, "ram")
                 memory.trim()
+            # A fill-identity change must allocate fresh storage while an old alias survives.
+            baseline, _ = forward(tiny, static_input, "identity-baseline")
+            identity_binding = loaded.retain()
+            with identity_binding.prepare(), torch.no_grad():
+                old_pointer = tiny[0].weight.data_ptr()
+                old_alias = tiny[0].weight[:2]
+                old_value = old_alias.cpu().clone()
+            tiny_fill.scale = 0.5
+            assert not identity_binding.valid()
+            identity_binding.close()
+            changed, _ = forward(tiny, static_input, "identity-changed")
+            torch.testing.assert_close(changed, baseline * (0.5 ** tiny_layers), rtol=2e-4, atol=2e-5)
+            torch.testing.assert_close(old_alias.cpu(), old_value, rtol=0, atol=0)
+            new_binding = loaded.retain()
+            with new_binding.prepare():
+                assert tiny[0].weight.data_ptr() != old_pointer
+            new_binding.close()
+            del old_alias, old_value, identity_binding, new_binding, baseline, changed
+            result["gpu_fill_identity_preserves_alias"] = True
             loaded.close()
             del loaded, tiny, static_input
             memory.trim()

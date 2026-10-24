@@ -44,7 +44,8 @@ reclaims, refusals and retries; it is not a GPU ownership authority.
 
 `capture(device)` forbids residency changes and allocation recovery across the entire process
 on that device. Prepare and pin every dependency before capture/replay, and retain those pins
-for graph lifetime. Reclamation synchronizes the primary context before unmapping, including
+for graph lifetime. Raw Torch/CUDA captures outside Runtime must also enter this guard; the
+streamless cudaMalloc hook does not infer arbitrary third-party captures. Reclamation synchronizes the primary context before unmapping, including
 work on unknown side streams in that context. Private foreign CUDA contexts and IPC are not
 supported.
 
@@ -54,3 +55,11 @@ Unsupported layouts/backends fail explicitly. Linux x86_64 Torch 2.14.1+cu130 is
 the stock-memory/native release-gate cell. Linux aarch64 and Windows x86_64 have implementation
 only; the Windows hook has been cross-typechecked, not run on a Windows GPU. Neither is claimed
 qualified until the same cell runs there. macOS and Windows ARM CUDA hooks are unsupported.
+
+Implementation references: PyTorch documents that [`use_mem_pool`](https://docs.pytorch.org/docs/stable/cuda.html#torch.cuda.use_mem_pool)
+routes only the current thread, so it cannot provide this process-wide allocation path.
+The loader bindings follow [Linux dlopen](https://man7.org/linux/man-pages/man3/dlopen.3.html),
+[Microsoft PE/COFF](https://learn.microsoft.com/en-us/windows/win32/debug/pe-format),
+[VirtualQuery's memory layout](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-memory_basic_information),
+and [GetModuleHandleEx module pinning](https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-getmodulehandleexa).
+No GPL allocator implementation or source was used.
