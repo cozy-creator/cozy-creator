@@ -1,0 +1,59 @@
+# Varena: executor-local weight residency
+
+This is an original implementation against the CUDA Driver API. Each executor owns its own
+reservations and physical allocations. TensorFS supplies immutable bytes; it does not own device
+memory. No source from aimdo or another external allocator was used.
+
+```text
+Arena::reserve -> Region (stable VA, no physical pages)
+Region::prepare -> Resident(Pin) | Fill (exclusive initialization)
+Fill::commit -> Pin (ready bytes)
+foreign storage owns Pin until its final alias disappears
+Arena::reclaim -> context join -> unmap -> release; Region keeps its VA
+```
+
+The Python/native bridge must retain a `Pin` in every exported storage deleter. A view or graph
+can outlive Runtime's local references, so Runtime dropping an idle view is not permission to
+unmap it. `Fill::pin` provides the same ownership for an in-flight fill tensor. Abandoned fills
+never become ready; an escaped abandoned fill keeps its mapping pinned and blocks refilling.
+The entire logical byte range must be initialized. `copy_from_host` checks the length; native
+integrations using `commit_external` must uphold its documented unsafe initialization contract.
+Consumers treat published weights as immutable.
+
+Reservations and mappings use the device's minimum VMM allocation granularity. One Region is
+one allocation and one eviction group: reserve at the execution block/group level, not per
+scalar or page. Allocation has at most one finite reclaim pass and one retry after an actual
+`cuMemCreate` capacity failure. It calls no Python, filesystem, TensorFS, network, or remote owner.
+
+Runtime selects a preferred prefix with `set_preferred` and sets `set_streaming_limit` to its
+largest block/window. Preparing streamed groups evicts only idle nonpreferred groups. Activation
+pressure via `reclaim(device, bytes)` can additionally evict the preferred suffix, permanently
+lowering its watermark. New reservations at or after the watermark cannot become preferred in
+that Arena. No scan can continually evict and rebuild the retained prefix. Pinned groups are
+never candidates. Insufficient unpinned capacity returns a typed capacity failure.
+
+Until complete stream ownership exists, actual reclamation conservatively joins the CUDA primary
+context. This protects untracked side-stream work after a storage deleter has run; no throughput
+claim is made for this synchronization. Capture dependencies and graph roots retain their pins.
+Hold `enter_capture` around capture to reject residency misses and reclamation during that period.
+Prepare before capture; retire graph roots before reclaiming their weights, then recapture.
+
+Any uncertain map, access, unmap, handle release, or device-completion failure poisons the Arena.
+It stops serving addresses and deliberately retains affected VA/handles until process death.
+`Error::OutOfMemory` is distinct from `Error::DeviceFault` and other CUDA failures. Recovery must
+not treat device faults or poisoned state as capacity. A forked process cannot use an inherited
+Arena. CUDA primary context reset while an Arena exists is unsupported.
+
+`resident_bytes(device)` counts only this crate's physical allocations. It excludes the CUDA
+context, PyTorch's allocator, and third-party direct allocations. A bridge may combine this value
+with separately measured allocation reservations for a documented managed-memory ceiling; it
+must not describe that as total GPU use.
+
+Source checks are `cargo check -p varena` and `cargo clippy -p varena -- -D warnings`. Real CUDA
+allocation pressure, escaped aliases, failed fills, side-stream completion, graph lifetime, and
+device faults still require the production release gate. No mock/unit-test success substitutes
+for that gate. This source change alone is not a GPU qualification or release.
+
+CUDA references: [Driver virtual-memory API](https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/group__CUDA__VA.html),
+[allocation properties](https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/structCUmemAllocationProp__v1.html),
+[access descriptor](https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/structCUmemAccessDesc__v1.html).
