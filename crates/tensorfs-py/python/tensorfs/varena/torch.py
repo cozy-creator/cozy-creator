@@ -508,11 +508,12 @@ class Memory:
         self.crossed = 0
 
     @classmethod
-    def open(cls, gpu: int | str | torch.device | GpuId = 0, *, leases: int | None = None) -> Memory:
+    def open(cls, gpu: int | str | torch.device | GpuId = 0, *, leases: int | None = None, charge: int | None = None) -> Memory:
         """The device's memory. On CUDA, with `leases` (TensorD's namespace, from its Start), its
         pages and torch's are leased from TensorD's manager (`_lease`); without, or with no
-        compatible manager, it runs standalone on the device's free bytes at open less the
-        backend's reserve. Then varena becomes torch's only allocator (`_install`), so open it
+        compatible manager, it runs standalone: each page created within the driver's free bytes
+        less this executor's measured reserve, and with `charge` (the charge page's fd from
+        TensorD's Start; the caller keeps it) within cozy's limit on the GPU. Then varena becomes torch's only allocator (`_install`), so open it
         before any torch CUDA call. CPU and MPS use host pages of the machine's RAM; a `GpuId`
         names a host table and its size. A process has one Memory per device: opening the device
         again returns it, and a CUDA device's lives as long as the process (torch's blocks are
@@ -527,7 +528,9 @@ class Memory:
                 if isinstance(gpu, GpuId):
                     native = Native.host(gpu)
                 elif device.type == "cuda":
-                    native = Native.cuda(device.index or 0)
+                    native = Native.cuda(device.index or 0, charge)
+                    if charge is not None and native.uncharged is not None:
+                        warnings.warn(f"varena: GPU {native.gpu.uuid} runs uncharged: {native.uncharged}", stacklevel=2)
                 else:
                     ram = host_limit()  # past it the kernel kills: a cgroup's limit, not physical memory
                     if ram is None:

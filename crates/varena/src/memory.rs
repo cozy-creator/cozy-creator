@@ -1,7 +1,7 @@
 //! One executor's memory on one device (varena-leases). Leased, every page is a chunk the
 //! manager allocates, and room between processes is its reclaim. Standalone (no compatible
-//! manager), pages come from the device within a budget fixed at open (its free bytes less the
-//! reserve):
+//! manager), pages come from the device within its allowance, read at each create (the
+//! driver's free bytes less the executor's reserve, and cozy's limit on the charge page):
 //! `make_room` takes its own pages in [`crate::decide::victims`]' order, and a shortfall is
 //! `Exhausted`. One `parking_lot` mutex guards the table and the mechanism's state; it is never
 //! held across a fill, a wait on an event or a caller's callback.
@@ -257,6 +257,8 @@ pub struct Stats {
     /// Each `make_room` that had to take bytes for it, in order.
     pub make_room: Vec<MakeRoom>,
     pub outlived: Vec<crate::arena::Outlived>, // its torch blocks live at its end (the audit)
+    /// The executor's reserve when it ended: what it keeps free for its growth outside its pages.
+    pub reserve: u64,
 }
 
 /// One `make_room` that had to take bytes: what asked, how many bytes, what it took.
@@ -816,9 +818,11 @@ impl Drop for Work {
 
 struct Inner {
     backend: Arc<dyn Backend>,
-    /// Standalone, every page's and torch chunk's: the device's free bytes at open less its
-    /// reserve.
+    /// Standalone, every page's and torch chunk's: the device's free bytes less the reserve,
+    /// within the charge page's limit.
     allowance: Arc<Allowance>,
+    /// Why a charge page handed to open charges nothing.
+    uncharged: Option<String>,
     /// The lease agent once attached (varena-leases): this GPU's pages are the manager's chunks.
     #[cfg(unix)]
     lease: std::sync::OnceLock<Arc<crate::lease::Agent>>,
@@ -913,6 +917,17 @@ impl Mechs {
     }
 }
 
+/// This process's slot on the charge page in `file`, for `uuid`; why none, when none.
+fn claim(file: &platform::handles::Owned, uuid: &str) -> std::result::Result<crate::charge::Claim, String> {
+    let raw = crate::charge::uuid_bytes(uuid).ok_or_else(|| format!("{uuid} is no GPU uuid"))?;
+    let birth = platform::process::Birth::own().map_err(|e| format!("this process's birth: {e}"))?;
+    match crate::charge::Claim::take(file, &raw, birth.pid, birth.start_ticks) {
+        Ok(Some(claim)) => Ok(claim),
+        Ok(None) => Err(format!("the charge page has no section or no free slot for {uuid}")),
+        Err(e) => Err(format!("the charge page: {e}")),
+    }
+}
+
 fn exhausted(need: u64, site: Option<&str>, stats: Stats) -> Box<Exhausted> {
     Box::new(Exhausted { need, site: site.map(str::to_string), stats, foreign: None })
 }
@@ -920,8 +935,9 @@ fn exhausted(need: u64, site: Option<&str>, stats: Stats) -> Box<Exhausted> {
 impl Memory {
     /// Opens `gpu` for this process: one Memory per device per process. Its pages are leased
     /// once [`Memory::lease`] attaches it to a manager; until then (or with none) they come from
-    /// the device within the standalone budget: its free bytes now less the reserve (rev 6).
-    pub fn open(gpu: GpuId, backend: Box<dyn Backend>) -> Result<Memory> {
+    /// the device within the standalone allowance: its free bytes at each create less the
+    /// reserve, and with `charge` (TensorD's charge page) within cozy's limit on the GPU.
+    pub fn open(gpu: GpuId, backend: Box<dyn Backend>, charge: Option<&platform::handles::Owned>) -> Result<Memory> {
         crate::caught(|| {
             if !crate::layout::REGION_ALIGN.is_multiple_of(backend.granularity().max(1)) {
                 return Err(Error::Invalid(format!("granularity {} does not divide a region", backend.granularity())));
@@ -929,9 +945,14 @@ impl Memory {
             let device = Device::open(&gpu.uuid)?;
             let (release_tx, releases) = unbounded();
             let ((demand, demanded), (ahead, wanted_ahead)) = (unbounded(), unbounded());
-            let allowance = Arc::new(Allowance::of(&*backend)?);
+            let (claim, uncharged) = match charge.map(|file| claim(file, &gpu.uuid)) {
+                None => (None, None),
+                Some(Ok(claim)) => (Some(claim), None),
+                Some(Err(why)) => (None, Some(why)),
+            };
             let inner = Arc::new(Inner {
-                allowance,
+                allowance: Arc::new(Allowance::new(claim)),
+                uncharged,
                 backend: Arc::from(backend),
                 #[cfg(unix)]
                 lease: std::sync::OnceLock::new(),
@@ -988,6 +1009,16 @@ impl Memory {
     /// Whether its pages are leased ([`Memory::lease`]).
     pub fn leased(&self) -> bool {
         self.inner.leasing()
+    }
+
+    /// Why the charge page handed to [`Memory::open`] charges nothing (it runs uncharged).
+    pub fn uncharged(&self) -> Option<&str> {
+        self.inner.uncharged.as_deref()
+    }
+
+    /// Whether its pages are charged on TensorD's charge page.
+    pub fn charged(&self) -> bool {
+        self.inner.allowance.charged()
     }
 
     /// [`Memory::lease`] over a stream its host connected.
@@ -1746,17 +1777,15 @@ impl Inner {
 
     // ---- demands
 
-    /// Free bytes for a page now, from varena's own figures (never the device's: a pass reads
-    /// none). Leased: what the manager can allocate and reclaim from others. Standalone: what
-    /// the budget its pages and torch's share has left (a refused create says the device has
-    /// less).
+    /// Free bytes for a page now. Leased: what the manager can allocate and reclaim from
+    /// others. Standalone: what the allowance its pages and torch's share has left now.
     fn free(&self, _st: &State) -> u64 {
         #[cfg(unix)]
         if let Some(agent) = self.lease.get() {
             let f = agent.table().figures();
             return f.free.saturating_add(f.revocable);
         }
-        self.allowance.left()
+        self.allowance.left(&*self.backend)
     }
 
     /// Free bytes speculative work (prefetch, a streamed set's regrowth) may take: never another
@@ -1781,14 +1810,12 @@ impl Inner {
             let mut st = self.lock();
             // A refused create, or a manager's refusal, says there is less than the figures: the
             // round takes the page's bytes itself. Leased, a page is asked of the manager first
-            // (its reclaim makes room across processes, this one's idle pages too). Standalone, a
-            // miss bounds the budget by the driver's free bytes (another tenant's churn); a pass
-            // never reads them.
+            // (its reclaim makes room across processes, this one's idle pages too).
             let refused = keep.iter().any(|k| st.short.remove(k).is_some());
             let free = match (refused, self.leasing()) {
                 (true, _) => 0,
                 (false, true) => u64::MAX,
-                (false, false) => self.free(&st).min(self.backend.free().unwrap_or(u64::MAX)),
+                (false, false) => self.free(&st),
             };
             let req = req.or_else(|| st.active.iter().find(|(_, a)| a.thread == std::thread::current().id()).map(|((r, _), _)| *r));
             let short = |st: &State| -> Result<u64> { Err(Error::Exhausted(exhausted(bytes.saturating_sub(free), None, req.and_then(|r| st.stats.get(&r)).cloned().unwrap_or_default()))) };
@@ -2016,6 +2043,9 @@ impl Inner {
 
     fn open_request(&self, id: &str, plan: &Plan, idle: bool) -> Result<u64> {
         let mut st = self.lock();
+        if st.table.requests.is_empty() && !self.leasing() {
+            self.allowance.busy(&*self.backend);
+        }
         let rid = st.tick();
         let steps = Self::resolve(&st, plan);
         // Its anonymous host peak is measured from its start (the process's, when it runs alone).
@@ -2248,10 +2278,14 @@ impl Inner {
         let host = st.window.as_mut().and_then(HostWindow::look);
         if st.table.requests.is_empty() {
             st.window = None;
+            if !self.leasing() {
+                self.allowance.idle(&*self.backend);
+            }
             #[cfg(unix)]
             self.derived_idle();
         }
-        let stats = Stats { outlived, leftover, host, ..st.stats.remove(&req).unwrap_or_default() };
+        let reserve = self.allowance.reserve();
+        let stats = Stats { outlived, leftover, host, reserve, ..st.stats.remove(&req).unwrap_or_default() };
         st.last = Some(stats.clone());
         self.unlock(st);
         stats

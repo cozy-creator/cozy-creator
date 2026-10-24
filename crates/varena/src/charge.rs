@@ -225,3 +225,74 @@ impl Section {
         let _ = self.charged.try_update(AcqRel, Acquire, |c| Some(c.saturating_sub(bytes)));
     }
 }
+
+/// This process's slot in one GPU's section: each byte it creates there is charged first and
+/// refunded once destroyed. Freed on drop once it holds nothing (else TensorD's reap frees it).
+pub struct Claim {
+    page: Page,
+    /// The section's and the slot's offsets in the mapping.
+    section: usize,
+    slot: usize,
+}
+
+impl Claim {
+    /// A free slot of `uuid`'s section, taken for this process (`pid` of `start_ticks`). None
+    /// when the page has no section for this GPU or no free slot; an error for a page this side
+    /// cannot read.
+    pub fn take(file: &Owned, uuid: &[u8; 16], pid: u32, start_ticks: u64) -> Result<Option<Claim>> {
+        let page = Page::attach(file)?;
+        let at = |p: *const u8| p as usize - page.map.base as usize;
+        let Some(section) = page.section(uuid) else { return Ok(None) };
+        let Some(slot) = page.slots(section).find(|s| s.pid.compare_exchange(0, pid, AcqRel, Relaxed).is_ok()) else { return Ok(None) };
+        slot.start_ticks.store(start_ticks, Release);
+        let (section, slot) = (at(section as *const Section as *const u8), at(slot as *const Slot as *const u8));
+        Ok(Some(Claim { page, section, slot }))
+    }
+
+    fn section(&self) -> &Section {
+        // SAFETY: an offset `take` found in this mapping, which the claim holds.
+        unsafe { &*(self.page.map.base.add(self.section) as *const Section) }
+    }
+
+    fn slot(&self) -> &Slot {
+        // SAFETY: as `section`.
+        unsafe { &*(self.page.map.base.add(self.slot) as *const Slot) }
+    }
+
+    /// Charges `bytes` unless that passes the GPU's limit; whether it did.
+    pub fn charge(&self, bytes: u64) -> bool {
+        let charged = self.section().charge(bytes);
+        if charged {
+            self.slot().bytes.fetch_add(bytes, AcqRel);
+        }
+        charged
+    }
+
+    pub fn refund(&self, bytes: u64) {
+        let _ = self.slot().bytes.try_update(AcqRel, Acquire, |b| Some(b.saturating_sub(bytes)));
+        self.section().refund(bytes);
+    }
+
+    /// What cozy's executors hold on this GPU now.
+    pub fn charged(&self) -> u64 {
+        self.section().charged()
+    }
+
+    pub fn left(&self) -> u64 {
+        self.section().left()
+    }
+
+    pub fn limit(&self) -> u64 {
+        self.section().limit()
+    }
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        let slot = self.slot();
+        if slot.bytes.load(Acquire) == 0 {
+            slot.start_ticks.store(0, Release);
+            slot.pid.store(0, Release);
+        }
+    }
+}

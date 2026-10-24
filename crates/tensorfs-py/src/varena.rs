@@ -211,6 +211,17 @@ fn source(_: &tensorfs::Checkpoint) -> varena::Result<Arc<varena::table::Source>
 
 // ---------------------------------------------------------------- memory
 
+/// A duplicate of the caller's handle (an fd; a HANDLE on Windows): the caller keeps its own.
+fn adopt(raw: i64) -> PyResult<platform::handles::Owned> {
+    #[cfg(unix)]
+    // SAFETY: the caller's open fd, borrowed only to duplicate it.
+    let owned = unsafe { std::os::fd::BorrowedFd::borrow_raw(raw as std::os::fd::RawFd) }.try_clone_to_owned();
+    #[cfg(windows)]
+    // SAFETY: the caller's open handle, borrowed only to duplicate it.
+    let owned = unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(raw as isize as std::os::windows::io::RawHandle) }.try_clone_to_owned();
+    owned.map_err(|e| pyo3::exceptions::PyOSError::new_err(format!("the charge page's handle {raw}: {e}")))
+}
+
 /// One process's memory on one device.
 #[pyclass(name = "Memory", module = "tensorfs.varena", frozen)]
 pub struct PyMemory {
@@ -233,11 +244,11 @@ impl PyMemory {
         self.memory.as_ref().unwrap_or_else(|| unreachable!())
     }
 
-    /// `gpu`'s memory; the backend opens first.
-    fn open(py: Python<'_>, dl: (i32, i32), backend: impl Send + FnOnce() -> varena::Result<(GpuId, Box<dyn Backend>)>) -> PyResult<Self> {
+    /// `gpu`'s memory; the backend opens first. `charge`: TensorD's charge page.
+    fn open(py: Python<'_>, dl: (i32, i32), charge: Option<platform::handles::Owned>, backend: impl Send + FnOnce() -> varena::Result<(GpuId, Box<dyn Backend>)>) -> PyResult<Self> {
         let (gpu, memory) = detached(py, "", || {
             let (gpu, backend) = backend()?;
-            Ok((gpu.clone(), Memory::open(gpu, backend)?))
+            Ok((gpu.clone(), Memory::open(gpu, backend, charge.as_ref())?))
         })?;
         let gpu = PyGpuId { uuid: gpu.uuid, model: gpu.model, memory: gpu.memory };
         Ok(PyMemory { memory: Some(Arc::new(memory)), gpu, dl })
@@ -246,10 +257,13 @@ impl PyMemory {
 
 #[pymethods]
 impl PyMemory {
-    /// CUDA device `ordinal`'s memory. Open it before torch initializes CUDA.
+    /// CUDA device `ordinal`'s memory. Open it before torch initializes CUDA. `charge`: the
+    /// charge page's handle from TensorD's Start (an fd; the caller keeps its own).
     #[staticmethod]
-    fn cuda(py: Python<'_>, ordinal: i32) -> PyResult<Self> {
-        let memory = PyMemory::open(py, (KDL_CUDA, ordinal), || {
+    #[pyo3(signature = (ordinal, charge=None))]
+    fn cuda(py: Python<'_>, ordinal: i32, charge: Option<i64>) -> PyResult<Self> {
+        let charge = charge.map(adopt).transpose()?;
+        let memory = PyMemory::open(py, (KDL_CUDA, ordinal), charge, || {
             let backend = CudaBackend::open(ordinal)?;
             Ok((backend.gpu()?, Box::new(backend) as Box<dyn Backend>))
         })?;
@@ -319,9 +333,15 @@ impl PyMemory {
         detached(py, &self.gpu.uuid, || lease(self.memory(), ns, &self.gpu.uuid))
     }
 
-    /// Serves torch's allocations standalone, before any is made: from the device's own free
-    /// bytes less the backend's reserve (no compatible manager, or none asked for). A leased
-    /// Memory's are served by its lease.
+    /// Why the charge page handed to `cuda` charges nothing (the Memory runs uncharged).
+    #[getter]
+    fn uncharged(&self) -> Option<String> {
+        self.memory().uncharged().map(str::to_string)
+    }
+
+    /// Serves torch's allocations standalone, before any is made: within the allowance its
+    /// weight pages share (no compatible manager, or none asked for). A leased Memory's are
+    /// served by its lease.
     fn serve_standalone(&self, py: Python<'_>) -> PyResult<()> {
         detached(py, &self.gpu.uuid, || self.memory().serve_standalone_torch().map(drop))
     }
@@ -332,7 +352,7 @@ impl PyMemory {
     fn host(py: Python<'_>, gpu: PyGpuId) -> PyResult<Self> {
         let memory = platform::contain::host_memory::limit().map_or(gpu.memory, |limit| limit.min(gpu.memory));
         let id = GpuId { uuid: gpu.uuid, model: gpu.model, memory };
-        PyMemory::open(py, (KDL_CPU, 0), || Ok((id.clone(), Box::new(host_backend(id.memory)) as Box<dyn Backend>)))
+        PyMemory::open(py, (KDL_CPU, 0), None, || Ok((id.clone(), Box::new(host_backend(id.memory)) as Box<dyn Backend>)))
     }
 
     /// Registers `set` and brings it to `level`; returns its id.

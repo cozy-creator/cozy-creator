@@ -114,8 +114,13 @@ class Set:
 
 class Memory:
     @staticmethod
-    def cuda(ordinal: int) -> Memory:
-        """CUDA device `ordinal`'s memory. Open it before torch initializes CUDA."""
+    def cuda(ordinal: int, charge: int | None = None) -> Memory:
+        """CUDA device `ordinal`'s memory. Open it before torch initializes CUDA. `charge`: the
+        charge page's fd from TensorD's Start (the caller keeps it)."""
+
+    @property
+    def uncharged(self) -> str | None:
+        """Why the charge page handed to `cuda` charges nothing (the Memory runs uncharged)."""
 
     @staticmethod
     def host(gpu: GpuId) -> Memory:
@@ -154,8 +159,8 @@ class Memory:
         less live), per open request (id, allocated, peak), per pool (pool, mapped, allocated))."""
 
     def serve_standalone(self) -> None:
-        """Serves torch's allocations standalone, before any: from the device's free bytes less
-        the backend's reserve. A leased Memory's are served by its lease."""
+        """Serves torch's allocations standalone, before any: within the allowance its weight
+        pages share. A leased Memory's are served by its lease."""
 
     def region(self, owner: str, kind: str, sets: Sequence[int] = (), spill: bool = True) -> Region:
         """A long-lived intermediate's region: kind kv, latent, conditioning, derived or workspace."""
@@ -370,6 +375,9 @@ class Stats:
     @property
     def outlived(self) -> list[Outlived]:
         """Its torch blocks still live at its end: the request-end audit."""
+    @property
+    def reserve(self) -> int:
+        """The executor's reserve when it ended: what it keeps free for growth outside its pages."""
 
 class MakeRoom:
     """One make_room that took bytes for a request."""

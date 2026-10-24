@@ -13,6 +13,7 @@ use platform::handles::Owned;
 use platform::memory;
 use tensorfs::io::Dst;
 
+use crate::charge::Claim;
 use crate::{Error, Exhausted, Result};
 
 /// Reserved address space: `len` bytes from `base`, nothing mapped until [`Backend::map`].
@@ -51,47 +52,105 @@ pub const RESERVE: u64 = 512 << 20;
 /// (`CUDA_ERROR_OUT_OF_MEMORY`; the host backend answers the same at its limit).
 pub const OUT_OF_MEMORY: i32 = 2;
 
-/// A standalone Memory's one allowance: the device's free bytes at open less its reserve. Weight
-/// pages and torch's chunks are both created through it, so together they never reach into the
-/// reserve.
-#[derive(Debug)]
+/// Where an executor's reserve starts, and the step it grows by.
+pub const RESERVE_STEP: u64 = 32 << 20;
+
+/// A standalone Memory's one allowance, read live at each create: the device's free bytes now
+/// less this executor's reserve, and with a charge page, cozy's limit on the GPU. Weight pages
+/// and torch's chunks are both created through it.
 pub struct Allowance {
-    limit: u64,
-    used: AtomicU64,
+    claim: Option<Claim>,
+    /// Kept free for what this executor grows outside its pages (cuBLAS and cuDNN workspaces,
+    /// its context): twice the most one busy spell grew so, in steps; one step at first.
+    reserve: AtomicU64,
+    /// Bytes created less destroyed.
+    made: AtomicU64,
+    /// Since the first open request: the driver's free bytes, and the pages made then (every
+    /// executor's, with a charge page).
+    window: Mutex<Option<(u64, u64)>>,
 }
 
 impl Allowance {
-    pub fn of(backend: &dyn Backend) -> Result<Allowance> {
-        Ok(Allowance::new(backend.free()?.saturating_sub(backend.headroom())))
+    pub fn new(claim: Option<Claim>) -> Allowance {
+        Allowance { claim, reserve: AtomicU64::new(RESERVE_STEP), made: AtomicU64::new(0), window: Mutex::new(None) }
     }
 
-    pub fn new(limit: u64) -> Allowance {
-        Allowance { limit, used: AtomicU64::new(0) }
+    pub fn reserve(&self) -> u64 {
+        self.reserve.load(Acquire)
     }
 
-    /// Bytes not yet charged.
-    pub fn left(&self) -> u64 {
-        self.limit.saturating_sub(self.used.load(Acquire))
+    pub fn charged(&self) -> bool {
+        self.claim.is_some()
     }
 
-    /// A page charged before it is made: `Exhausted` when it would cross the limit.
+    /// Bytes a create may take now.
+    pub fn left(&self, backend: &dyn Backend) -> u64 {
+        let free = backend.free().unwrap_or(0).saturating_sub(self.reserve());
+        self.claim.as_ref().map_or(free, |c| free.min(c.left()))
+    }
+
+    /// A page charged before it is made: `Exhausted` when the device lacks it beyond the
+    /// reserve, or cozy's limit on the GPU would pass.
     pub fn create(&self, backend: &dyn Backend, len: u64) -> Result<Physical> {
-        if self.used.try_update(AcqRel, Acquire, |u| u.checked_add(len).filter(|&n| n <= self.limit)).is_err() {
-            let site = format!("the standalone budget of {} bytes is spent", self.limit);
-            return Err(Error::Exhausted(Box::new(Exhausted { need: len, site: Some(site), stats: crate::Stats::default(), foreign: None })));
+        let (free, reserve) = (backend.free()?, self.reserve());
+        if free.saturating_sub(reserve) < len {
+            return Err(exhausted(len, format!("the device has {free} bytes free, {reserve} of them this executor's reserve")));
         }
-        backend.create(len).inspect_err(|_| self.refund(len))
+        if let Some(claim) = &self.claim {
+            if !claim.charge(len) {
+                return Err(exhausted(len, format!("cozy's limit of {} bytes on this GPU is charged", claim.limit())));
+            }
+        }
+        match backend.create(len) {
+            Ok(page) => {
+                self.made.fetch_add(len, AcqRel);
+                Ok(page)
+            }
+            Err(e) => {
+                self.refund(len);
+                Err(e)
+            }
+        }
     }
 
     /// A page made by [`Allowance::create`] destroyed, its bytes refunded.
     pub fn destroy(&self, backend: &dyn Backend, page: Physical) -> Result<()> {
-        self.refund(page.len);
-        backend.destroy(page)
+        let len = page.len;
+        backend.destroy(page)?;
+        let _ = self.made.try_update(AcqRel, Acquire, |m| Some(m.saturating_sub(len)));
+        self.refund(len);
+        Ok(())
     }
 
     fn refund(&self, len: u64) {
-        self.used.update(AcqRel, Acquire, |u| u.saturating_sub(len));
+        if let Some(claim) = &self.claim {
+            claim.refund(len);
+        }
     }
+
+    fn books(&self, backend: &dyn Backend) -> Option<(u64, u64)> {
+        let made = self.claim.as_ref().map_or_else(|| self.made.load(Acquire), Claim::charged);
+        backend.free().ok().map(|free| (free, made))
+    }
+
+    /// The first request opened: the window measuring growth outside the pages starts.
+    pub fn busy(&self, backend: &dyn Backend) {
+        *self.window.lock() = self.books(backend);
+    }
+
+    /// The last request ended: the device memory gone beyond the pages made meanwhile (every
+    /// executor's, with a charge page; else others' growth counts too, over-reserving) sets the
+    /// reserve to twice it, if more.
+    pub fn idle(&self, backend: &dyn Backend) {
+        let (Some((free0, made0)), Some((free1, made1))) = (self.window.lock().take(), self.books(backend)) else { return };
+        let grew = (free0 as i128 - free1 as i128) - (made1 as i128 - made0 as i128);
+        let want = u64::try_from(grew.max(0) * 2).unwrap_or(u64::MAX).div_ceil(RESERVE_STEP).saturating_mul(RESERVE_STEP);
+        self.reserve.fetch_max(want, AcqRel);
+    }
+}
+
+fn exhausted(need: u64, site: String) -> Error {
+    Error::Exhausted(Box::new(Exhausted { need, site: Some(site), stats: crate::Stats::default(), foreign: None }))
 }
 
 /// One device's mechanism. Every call is short: no call waits on another process or a fill.
