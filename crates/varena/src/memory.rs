@@ -280,6 +280,17 @@ pub struct MakeRoom {
 /// The final public handle transfers its actual Arc, never a racing temporary clone.
 struct Owner(std::mem::ManuallyDrop<Arc<Inner>>);
 
+#[cfg(unix)]
+impl Owner {
+    /// A background user may join existing public ownership, never revive its retirement.
+    fn try_retain(inner: &Arc<Inner>) -> Option<Self> {
+        inner.public_owners.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+            if n == 0 { None } else { n.checked_add(1) }
+        }).ok()?;
+        Some(Self(std::mem::ManuallyDrop::new(inner.clone())))
+    }
+}
+
 impl From<Arc<Inner>> for Owner {
     fn from(inner: Arc<Inner>) -> Self {
         inner.public_owners.fetch_add(1, Ordering::Relaxed);

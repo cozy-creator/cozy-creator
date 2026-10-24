@@ -12,11 +12,11 @@ use std::sync::{Arc, OnceLock, Weak};
 use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
 
-use super::{Inner, Memory, State};
+use super::{Inner, Memory, Owner, State, Work};
 use crate::backend::{Event, Va};
 use crate::derived::{pays, Hold, Job, Key as Derived, Refill, Writer};
 use crate::table::{Fill, Key};
-use crate::Result;
+use crate::{Error, Result};
 
 /// Memory's side of the derived cache.
 #[derive(Default)]
@@ -124,9 +124,9 @@ impl Inner {
             let (writer, va) = (writer.clone(), Va { base: va.base + off, len: span });
             let asked = agent.derive(dk.store(), span, Box::new(move |entry: Option<crate::lease::DerivedEntry>| {
                 if let Some(e) = entry {
-                    // SAFETY: Holder validates the same derived key and pins its mapped page;
-                    // a changed/unmapped identity refuses the pin. Its measured transform has
-                    // already completed, and that pin excludes writes/eviction during the copy.
+                    // SAFETY: Holder validates this exact key, VA and landed fill, and retains
+                    // public ownership with the page pin; moved or changed pages refuse it.
+                    // The completed transform and pin exclude writes/eviction during the copy.
                     unsafe { writer.offer(Job { key: dk, entry: e.file, entry_id: e.id, va, ready: Event::DONE }) };
                 }
             }));
@@ -151,28 +151,34 @@ struct Holder(Weak<Inner>);
 impl Hold for Holder {
     /// The page, filled with these derived bytes and quiet, pinned for its copy: a revoke
     /// declines it meanwhile, and never waits on the disk write after (M1).
-    fn pin(&self, dk: &Derived) -> Option<Box<dyn Send>> {
-        let inner = self.0.upgrade()?;
+    fn pin(&self, dk: &Derived, va: Va) -> Option<Box<dyn Send>> {
+        let inner = Work::of(&self.0)?;
+        let owner = Owner::try_retain(&inner)?;
+        inner.check_ownership().ok()?;
         let key = *inner.derived.pages.lock().get(dk)?;
         let mut st = inner.state.lock();
-        let fit = st.homes.get(&key).is_some_and(|h| h.filled && h.phys.is_some() && !h.filling && !h.transforming) && inner.derived_key(&st, key) == Some(*dk);
+        let (reserved, offset, span) = st.place(key).ok()?;
+        let identity = &st.mech(key.0).ok()?.key;
+        let fit = va.base == reserved.base + offset && va.len == span
+            && st.homes.get(&key).is_some_and(|h| h.filled && h.phys.is_some() && !h.filling && !h.transforming && h.identity == *identity && inner.backend.query(h.ready).unwrap_or(false))
+            && inner.derived_key(&st, key) == Some(*dk);
         if !fit {
             return None;
         }
         let id = st.tick();
         st.pins.insert(id, (key, None, std::thread::current().id()));
         st.sync(key);
-        Some(Box::new(Held { inner: Arc::downgrade(&inner), id, key }))
+        Some(Box::new(Held { inner: owner, id, key }))
     }
 
     fn idle(&self) -> bool {
-        self.0.upgrade().is_some_and(|i| i.state.lock().table.requests.is_empty())
+        Work::of(&self.0).is_some_and(|i| i.check_ownership().is_ok() && i.state.lock().table.requests.is_empty())
     }
 
     /// Written whole: TensorD hears which entry (its id), and this process holds the entry for
     /// its own refills.
     fn written(&self, dk: Derived, entry_id: u64, entry: File) {
-        let Some(inner) = self.0.upgrade() else { return };
+        let Some(inner) = Work::of(&self.0) else { return };
         inner.derived.pages.lock().remove(&dk);
         if let Some(agent) = inner.lease.get() {
             if let Err(error) = agent.derived(dk.store(), entry_id) {
@@ -181,23 +187,29 @@ impl Hold for Holder {
         }
         inner.derived.entries.lock().insert(dk, entry);
     }
+
+    fn failed(&self, error: &Error) {
+        if error.is_sticky() || matches!(error, Error::Internal(_) | Error::Closed(_)) {
+            if let Some(inner) = Work::of(&self.0) {
+                inner.lost_backing(error);
+            }
+        }
+    }
 }
 
 /// The writer's pin on a page for its copy.
 struct Held {
-    inner: Weak<Inner>,
+    inner: Owner,
     id: u64,
     key: Key,
 }
 
 impl Drop for Held {
     fn drop(&mut self) {
-        if let Some(inner) = self.inner.upgrade() {
-            let mut st = inner.state.lock();
-            st.pins.remove(&self.id);
-            st.sync(self.key);
-            drop(st);
-            inner.landed.notify_all();
-        }
+        let mut st = self.inner.state.lock();
+        st.pins.remove(&self.id);
+        st.sync(self.key);
+        drop(st);
+        self.inner.landed.notify_all();
     }
 }

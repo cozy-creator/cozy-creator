@@ -60,14 +60,17 @@ pub fn pays(derive_ns: u64, bytes: u64, write_bps: f64, read_bps: f64) -> bool {
 
 /// What the writer asks of its holder.
 pub trait Hold: Send + Sync {
-    /// Pins the page for its device-to-host copy; dropping the guard unpins. `None` once it is
-    /// gone or holds other bytes: its write is dropped (M1).
-    fn pin(&self, key: &Key) -> Option<Box<dyn Send>>;
+    /// Pins this mapping for its device-to-host copy; dropping the guard unpins. `None` once
+    /// it is gone, moved or holds other bytes: its write is dropped (M1).
+    fn pin(&self, key: &Key, va: Va) -> Option<Box<dyn Send>>;
     /// No request runs: writes go only now.
     fn idle(&self) -> bool;
     /// Written whole: the holder keeps `entry` for refills and tells TensorD which entry it was
     /// (`entry_id`, TensorD's, so a writer marks only its own).
     fn written(&self, key: Key, entry_id: u64, entry: File);
+    /// A copy failed. An Ownership error means completion is unproven: the writer has retained
+    /// its destination, backend and pin until exit; the holder must stop reusing device state.
+    fn failed(&self, _error: &Error) {}
 }
 
 /// One page to write: TensorD's entry for it (and its id), where its bytes are mapped, and the
@@ -114,8 +117,8 @@ impl Writer {
     /// Queues a page; it is written at the next idle moment.
     ///
     /// # Safety
-    /// Whenever this writer's holder successfully pins `job.key`, that guard must retain
-    /// `job.va` as a readable mapping on this writer's backend until the copy finishes, excluding
+    /// Whenever this writer's holder successfully pins `(job.key, job.va)`, that guard must retain
+    /// `job.va` as a readable mapping on this writer's backend until the guard drops, excluding
     /// concurrent writers. `job.ready` must belong to that backend and follow the page's fill.
     /// If the page changes or leaves, the holder must refuse the pin rather than return a stale VA.
     pub unsafe fn offer(&self, job: Job) {
@@ -194,12 +197,26 @@ impl Shared {
     }
 
     fn write(&self, job: Job) -> Result<()> {
-        let Some(pin) = self.hold.pin(&job.key) else { return Ok(()) };
+        let Some(pin) = self.hold.pin(&job.key, job.va) else { return Ok(()) };
         let start = Instant::now();
         let mut bytes = vec![0u8; usize::try_from(job.va.len).map_err(|_| Error::Invalid("a page beyond the address space".into()))?];
-        // SAFETY: the pin keeps the page mapped until this returns, `job.ready` follows its fill
-        // or transform, and a pinned derived page is read-only.
-        unsafe { self.backend.copy_out(job.va, 0, &mut bytes, job.ready) }?;
+        // SAFETY: offer's contract and the matching pin keep the page readable and unchanged;
+        // `job.ready` follows its fill. Both owners survive any unproven copy completion below.
+        if let Err(error) = unsafe { self.backend.copy_out(job.va, 0, &mut bytes, job.ready) } {
+            let error = match self.backend.drain() {
+                Ok(()) => error,
+                Err(drain) => {
+                    // The copy may still write bytes or read the page: retain the actual owners,
+                    // including its backend/context, before notifying the holder's failure path.
+                    std::mem::forget((bytes, pin, self.backend.clone()));
+                    let error = Error::Ownership(format!("derived copy failed ({error}); completion is unknown ({drain})"));
+                    self.hold.failed(&error);
+                    return Err(error);
+                }
+            };
+            self.hold.failed(&error);
+            return Err(error);
+        }
         // The bytes are ours: a revoke may take the page now, while the disk write runs.
         drop(pin);
         job.entry.write_all_at(&bytes, 0).map_err(|e| Error::io("write a derived entry", e))?;
