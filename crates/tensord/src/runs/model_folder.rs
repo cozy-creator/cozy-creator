@@ -103,7 +103,7 @@ pub(super) fn input<'a>(spec: &'a Spec, choice: &domain::ModelChoice) -> Result<
     }
     let mut inputs = spec.inputs.iter().filter(|input| input.input_id == field);
     let input = inputs.next().ok_or_else(invalid)?;
-    if inputs.next().is_some() || input.media_type != crate::gpu_service::TREE_MEDIA {
+    if inputs.next().is_some() || input.media_type != protocol::tree::MEDIA {
         return Err(invalid());
     }
     Ok(Some(input))

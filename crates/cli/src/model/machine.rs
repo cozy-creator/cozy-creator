@@ -46,7 +46,7 @@ fn folder(path: &Path, profiles: &[String], manifests: &Path, memo: &Path) -> Re
         field: "model".into(),
         digest: staged.manifest.digest.to_string(),
         length: staged.manifest.length,
-        media_type: crate::run::tree::MEDIA.into(),
+        media_type: protocol::tree::MEDIA.into(),
         order: 0,
     };
     let mut files = staged.files;

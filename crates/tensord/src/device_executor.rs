@@ -549,9 +549,8 @@ pub fn postprocess(
     Ok((result, bindings))
 }
 /// An output tree as the machine holds it: each regular file of its spool directory linked as
-/// the spool's `sha256-<hex>`, and a manifest naming them by path (`gpu_service::TREE_MEDIA`),
-/// which the output binds to. A tree forwarded from a child (`sha256:<manifest>`) is already
-/// both.
+/// the spool's `sha256-<hex>`, and a manifest naming them by path (`protocol::tree`), which the
+/// output binds to. A tree forwarded from a child (`sha256:<manifest>`) is already both.
 fn tree_binding(spool: &Path, output: &Output) -> io::Result<AssetBinding> {
     let invalid = |why: &str| io::Error::new(io::ErrorKind::InvalidData, format!("output tree: {why}"));
     let hash = |path: &Path| -> io::Result<(String, u64)> {
@@ -571,26 +570,14 @@ fn tree_binding(spool: &Path, output: &Output) -> io::Result<AssetBinding> {
             };
             let directory = format!("tree-{n}");
             let mut files = std::collections::BTreeMap::new();
-            let mut pending = vec![std::path::PathBuf::new()];
-            while let Some(relative) = pending.pop() {
-                for entry in fs::read_dir(spool.join(&directory).join(&relative))? {
-                    let entry = entry?;
-                    let (kind, path) = (entry.file_type()?, relative.join(entry.file_name()));
-                    if kind.is_dir() {
-                        pending.push(path);
-                        continue;
-                    } else if !kind.is_file() {
-                        return Err(invalid("it holds something other than files and directories"));
-                    }
-                    let member = Path::new(&directory).join(&path);
-                    let (sha, length) = hash(&member)?;
-                    match fs::hard_link(spool.join(&member), spool.join(format!("sha256-{sha}"))) {
-                        Err(error) if error.kind() != io::ErrorKind::AlreadyExists => return Err(error),
-                        _ => (),
-                    }
-                    let path = path.to_str().ok_or_else(|| invalid("a path is not UTF-8"))?;
-                    files.insert(path.to_owned(), tensorfs::format::ObjectRef { sha256: sha, length });
+            for name in protocol::tree::walk(&spool.join(&directory)).map_err(|e| invalid(&e.to_string()))?.into_keys() {
+                let member = Path::new(&directory).join(&name);
+                let (sha, length) = hash(&member)?;
+                match fs::hard_link(spool.join(&member), spool.join(format!("sha256-{sha}"))) {
+                    Err(error) if error.kind() != io::ErrorKind::AlreadyExists => return Err(error),
+                    _ => (),
                 }
+                files.insert(name, tensorfs::format::ObjectRef { sha256: sha, length });
             }
             if files.is_empty() {
                 return Err(invalid("it holds no file"));
@@ -620,7 +607,7 @@ fn tree_binding(spool: &Path, output: &Output) -> io::Result<AssetBinding> {
         asset_ref: output.asset_ref.clone(),
         name,
         kind: "tree".into(),
-        media_type: crate::gpu_service::TREE_MEDIA.into(),
+        media_type: protocol::tree::MEDIA.into(),
         length: bytes.len() as u64,
     })
 }

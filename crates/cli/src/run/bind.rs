@@ -775,7 +775,7 @@ impl Binder<'_> {
                 path: staged.manifest.path,
                 digest,
                 length: staged.manifest.length,
-                media_type: super::tree::MEDIA.into(),
+                media_type: protocol::tree::MEDIA.into(),
                 order: 0,
             });
             members.extend(staged.files);

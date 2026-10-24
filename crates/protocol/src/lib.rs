@@ -10,6 +10,7 @@ pub mod executor;
 pub mod ids;
 pub mod machine;
 pub mod names;
+pub mod tree;
 
 /// The commit this build is from (`build.rs`).
 pub const COMMIT: &str = env!("COZY_COMMIT");

@@ -240,11 +240,11 @@ impl NativeBackend {
                 )
                 .map_err(problem)?;
                 // A tree's members are held too: Read serves them, a child may be handed it.
-                if binding.media_type == crate::gpu_service::TREE_MEDIA {
+                if binding.media_type == protocol::tree::MEDIA {
                     let mut manifest = Vec::new();
                     self.service.engine.open_result(&record.id, index).map_err(problem)?
                         .read_to_end(&mut manifest).map_err(problem)?;
-                    for (sha, length) in crate::execution::tree_members(&manifest).map_err(problem)? {
+                    for protocol::tree::Member { sha256: sha, length } in protocol::tree::parse(&manifest).map_err(problem)?.into_values() {
                         let member = result.artifacts.iter().position(|a| a.sha256 == sha && a.length == length)
                             .ok_or_else(|| Error::internal("custody_corrupt", "a tree member is not held"))?;
                         let owner = identity(&json!({"workspace":self.workspace_id(),"actor":context.actor,
@@ -530,7 +530,7 @@ impl MachineBackend for NativeBackend {
         member: &str,
     ) -> Result<crate::api::backend::OutputSnapshot, Error> {
         let tree = self.open_output(actor, run, output, index)?;
-        if tree.media_type != crate::gpu_service::TREE_MEDIA {
+        if tree.media_type != protocol::tree::MEDIA {
             return Err(Error::validation("invalid_request", "only a tree output has members"));
         }
         let mut manifest = Vec::new();

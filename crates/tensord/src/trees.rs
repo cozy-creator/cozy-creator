@@ -1,17 +1,9 @@
-//! Retained file trees: a run's native inputs, a result's bytes, an uploaded package file. A
-//! tree's document is the machine wire's (`{"entries": [{"kind": "file", "path", "blob":
-//! {"sha256", "length"}}]}`, keys sorted, entries by path); its receipt is the document itself.
-//! One hold in the run objects' store (`cas`), `tree-<owner>`, keeps the document and every
-//! file until the owner releases it.
-use std::{
-    collections::BTreeMap,
-    fs::File,
-    io,
-    path::{Component, Path},
-};
+//! Retained file trees: a run's native inputs, a result's bytes, an uploaded package file, each a
+//! `protocol::tree` document and its files. One hold in the run objects' store (`cas`),
+//! `tree-<owner>`, keeps the document and every file until the owner releases it.
+use std::{collections::BTreeMap, fs::File, io, path::Path};
 
-use serde::Deserialize;
-use serde_json::json;
+use protocol::tree::{self, Member};
 
 use crate::cas::{Cas, Hold};
 use tensorfs::format::ObjectRef;
@@ -31,40 +23,14 @@ fn id(owner: &str) -> String {
 
 /// A tree's document for `files`.
 pub fn document(files: &BTreeMap<String, ObjectRef>) -> Vec<u8> {
-    let entries: Vec<_> = (files.iter())
-        .map(|(path, o)| json!({"blob": {"length": o.length, "sha256": o.sha256}, "kind": "file", "path": path}))
-        .collect();
-    crate::boundary_json::exact(&json!({ "entries": entries }))
+    let member = |o: &ObjectRef| Member { length: o.length, sha256: o.sha256.clone() };
+    tree::document(&files.iter().map(|(path, o)| (path.clone(), member(o))).collect())
 }
 
-/// A tree document's files, by path: ordinary files only, each path once and inside the tree.
+/// A tree document's files, by path.
 pub fn parse(bytes: &[u8]) -> io::Result<BTreeMap<String, ObjectRef>> {
-    #[derive(Deserialize)]
-    struct Document {
-        entries: Vec<Entry>,
-    }
-    #[derive(Deserialize)]
-    struct Entry {
-        kind: String,
-        path: String,
-        blob: ObjectRef,
-    }
-    let invalid = |why: String| io::Error::new(io::ErrorKind::InvalidInput, why);
-    let document: Document = serde_json::from_slice(bytes).map_err(|e| invalid(format!("a tree document: {e}")))?;
-    let mut files = BTreeMap::new();
-    for entry in document.entries {
-        if entry.kind != "file" {
-            return Err(invalid(format!("a tree holds files, not {:?}", entry.kind)));
-        }
-        let inside = Path::new(&entry.path).components().all(|c| matches!(c, Component::Normal(_)));
-        if !inside || entry.path.is_empty() || entry.path.contains(['\\', '\0']) {
-            return Err(invalid(format!("tree path {:?} leaves its tree", entry.path)));
-        }
-        if files.insert(entry.path.clone(), entry.blob).is_some() {
-            return Err(invalid(format!("a tree names {} twice", entry.path)));
-        }
-    }
-    Ok(files)
+    let files = tree::parse(bytes)?.into_iter();
+    Ok(files.map(|(path, Member { length, sha256 })| (path, ObjectRef { sha256, length })).collect())
 }
 
 /// Holds the tree of `files` (each already held) for `owner`. Idempotent per owner.
