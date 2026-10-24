@@ -86,8 +86,12 @@ user_services() {
 
 # Candidates go on through `cozy machine update local`, the path a person takes for a dev build, in the
 # spelling of the installed cozy (0.11.16 renamed --runtime-wheel/--tensorfs-wheel to --runtime/--tensorfs).
+# CAND_RUNTIME is then the Runtime the machine reports (`machine show --json`): a built candidate's own
+# <version>+dev.g<sha8>, which must differ from what it ran before.
+CAND_RUNTIME=''
 candidates() {
-  local args=() rt=--runtime tfs=--tensorfs
+  local args=() rt=--runtime tfs=--tensorfs before
+  before=$(jq -r '.status.runtime // empty' "$OUT/machine.json" 2> /dev/null || true)
   if cozy machine update --help | grep -- --runtime-wheel > /dev/null; then rt=--runtime-wheel tfs=--tensorfs-wheel; fi
   [ -z "$CAND_COZY" ] || args+=(--tensord "$CAND_COZY")
   [ -z "$CAND_TFS" ] || args+=("$tfs" "$CAND_TFS")
@@ -103,6 +107,12 @@ candidates() {
     grep -q "cozy ${want#cozy }," "$OUT/doctor-candidate.json" || check "Calcifer is not the candidate ${want#cozy }"
   fi
   machine_ready
+  [ -n "$CAND_RT" ] || return 0
+  CAND_RUNTIME=$(jq -r '.status.runtime // empty' "$OUT/machine.json" 2> /dev/null || true)
+  if [ -z "$CAND_RUNTIME" ] || [ "$CAND_RUNTIME" = "$before" ]; then
+    fail "the machine runs Runtime ${CAND_RUNTIME:-?} as before the candidates: the Runtime candidate did not go on"
+  fi
+  echo "the candidate Runtime: $CAND_RUNTIME (was ${before:-none})"
 }
 
 # Calcifer stuck: its process stopped (SIGSTOP), so it answers nothing and makes no progress. `cozy doctor`

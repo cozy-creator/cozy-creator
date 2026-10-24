@@ -20,12 +20,6 @@ step install; install_cozy
 user_services
 step "the local machine"; machine_ready
 step candidates; candidates
-# The candidate Runtime as the machine reports it (`cozy machine update --json`): a built one is <version>+dev.g<sha8>.
-WANT_RT=
-if [ -n "$CAND_RT" ]; then
-  WANT_RT=$(jq -r 'select(.machine and .runtime) | .runtime' "$OUT/update.json" 2> /dev/null | tail -1 || true)
-  [ -n "$WANT_RT" ] || fail "cozy machine update local named no Runtime ($OUT/update.json)"
-fi
 
 # import_release <label> <distribution> <version>: the probe in the environment holding that release.
 import_release() {
@@ -40,8 +34,8 @@ import_release() {
   "$py" -I "$PROBE" "$2" > "$OUT/import-$1.log" 2>&1 \
     || check "$1: $(grep -m3 '^FAIL' "$OUT/import-$1.log" | tr '\n' ' ')"
   tail -2 "$OUT/import-$1.log"
-  [ -z "$WANT_RT" ] || grep -qF "cozy-runtime $WANT_RT," "$OUT/import-$1.log" \
-    || check "$1: imported with $(head -1 "$OUT/import-$1.log"), not the candidate Runtime $WANT_RT"
+  [ -z "$CAND_RUNTIME" ] || grep -qF "cozy-runtime $CAND_RUNTIME," "$OUT/import-$1.log" \
+    || check "$1: imported with $(head -1 "$OUT/import-$1.log"), not the candidate Runtime $CAND_RUNTIME"
 }
 
 # install <label> <target>: the environment. A release cozy refuses with runtime_floor_unmet needs a newer Runtime
