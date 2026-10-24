@@ -113,6 +113,21 @@ def overlap(memory, directory, seed):
         )
         reclaimed = memory.native.reclaim(region.allocated_bytes)
         assert reclaimed >= region.allocated_bytes and not region.resident
+        padded = memory.native.reserve(expected.nbytes + 512)
+        padded_read = padded.prepare_read(
+            checkpoint, [("next/data#value", 256, expected.nbytes)], threads=2
+        )
+        padded_read.start()
+        padded_read.wait()
+        raw = padded.prepare().tensor
+        copied = raw.cpu()
+        assert torch.count_nonzero(copied[:256]).item() == 0
+        assert torch.count_nonzero(copied[-256:]).item() == 0
+        torch.testing.assert_close(
+            copied[256:-256].view(torch.int32), expected, rtol=0, atol=0
+        )
+        del raw
+        memory.native.reclaim(padded.allocated_bytes)
         return {
             "producer": completed,
             "read_ms": read_ms,
@@ -121,6 +136,7 @@ def overlap(memory, directory, seed):
             "compute_total_steps": count,
             "cross_stream_sha256": digest,
             "reclaimed_future_bytes": reclaimed,
+            "verified_padding_bytes": 512,
             "scope": "raw producer publication while a resident matmul loop remains incomplete; no decode-overlap claim",
         }
     finally:
