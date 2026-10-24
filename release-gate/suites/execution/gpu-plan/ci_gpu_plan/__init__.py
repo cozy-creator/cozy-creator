@@ -1,4 +1,5 @@
 """A same-machine candidate-wheel proof, scheduled by the normal Cozy GPU lane."""
+
 import json
 import subprocess
 from pathlib import Path
@@ -12,6 +13,7 @@ app = App()
 class Probe(msgspec.Struct, forbid_unknown_fields=True):
     candidate_python: str
     seed: int = 103
+    mode: str = "repeat"
 
 
 class Report(msgspec.Struct):
@@ -23,20 +25,51 @@ class Report(msgspec.Struct):
 def repeat(payload: Probe, tel: Telemetry) -> Report:
     if not Path(payload.candidate_python).is_file():
         raise ValueError("candidate_python must name the isolated candidate environment")
+    probe = {
+        "repeat": "proof.py",
+        "consumer": "consumer.py",
+        "lifecycle": "lifecycle.py",
+        "lifecycle_cancel": "lifecycle.py",
+    }.get(payload.mode)
+    if probe is None:
+        raise ValueError("unknown GPU-plan gate mode")
     process = subprocess.Popen(
-        [payload.candidate_python, "-I", str(Path(__file__).with_name("proof.py")), str(payload.seed)],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        [
+            payload.candidate_python,
+            "-I",
+            str(Path(__file__).with_name(probe)),
+            str(payload.seed),
+            payload.mode,
+        ],
+        stdout=subprocess.PIPE,
+        stdin=subprocess.PIPE if payload.mode == "lifecycle_cancel" else None,
+        stderr=subprocess.STDOUT,
+        text=True,
     )
     assert process.stdout is not None
     result = None
-    for line in process.stdout:
-        tel.log(line.rstrip())
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(row, dict) and "result" in row:
-            result = row["result"]
+    try:
+        for line in process.stdout:
+            tel.log(line.rstrip())
+            if payload.mode == "lifecycle_cancel":
+                tel.progress(0.0, stage="pending-submit")
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and "result" in row:
+                result = row["result"]
+    finally:
+        if payload.mode == "lifecycle_cancel" and process.poll() is None:
+            assert process.stdin is not None
+            try:
+                process.stdin.write("cancel\n")
+                process.stdin.flush()
+            except BrokenPipeError:
+                pass
+            for line in process.stdout:
+                tel.log(line.rstrip())
+            process.wait()
     status = process.wait()
     if status or not isinstance(result, dict) or not result.get("passed"):
         raise RuntimeError(f"GPU plan child failed ({status}): {result}")
