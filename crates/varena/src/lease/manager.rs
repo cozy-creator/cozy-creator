@@ -11,8 +11,8 @@
 //! page accounting never rests on an agent's word.
 //!
 //! One manager per GPU, TensorD's, with the GPU's listener; TensorD reacts to [`Manager::events`].
-//! It also holds what admission and placement read (TensorD's dispatches and the measured peaks)
-//! and the allocation-wait spans PSI reads.
+//! It also holds TensorD's request measurement keys, measured placement figures, and the
+//! allocation-wait spans PSI reads. TensorD's GPU permits alone schedule calls.
 //!
 //! The table is untrusted input: identity, pid, a chunk's index and whether it landed are the
 //! manager's own records (peer credentials, grant time, fill-ack time), never read back at exit.
@@ -194,7 +194,7 @@ pub enum Mode {
     Dedicated,
 }
 
-/// A measured peak, as TensorD persists it per GPU model: restored exactly as it was read.
+/// A measured peak, as TensorD persists it per GPU model: the largest of each kind and key.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Peak {
     /// A request's largest working set at `<package>|<shape>`.
@@ -206,6 +206,40 @@ pub enum Peak {
     Set { key: String, bytes: u64 },
     /// A request's anonymous host high-water at `<package>|<shape>`.
     Host { key: String, bytes: u64 },
+}
+
+impl Peak {
+    /// Its figure: `<kind>/<key>` and its bytes.
+    fn figure(&self) -> (String, u64) {
+        match self {
+            Peak::Request { key, bytes } => (format!("peak/{key}"), *bytes),
+            Peak::Compute { key, bytes } => (format!("compute/{key}"), *bytes),
+            Peak::Set { key, bytes } => (format!("set/{key}"), *bytes),
+            Peak::Host { key, bytes } => (format!("host/{key}"), *bytes),
+        }
+    }
+
+    fn of((figure, &bytes): (&String, &u64)) -> Option<Peak> {
+        let (kind, key) = figure.split_once('/')?;
+        let key = key.to_string();
+        Some(match kind {
+            "peak" => Peak::Request { key, bytes },
+            "compute" => Peak::Compute { key, bytes },
+            "set" => Peak::Set { key, bytes },
+            "host" => Peak::Host { key, bytes },
+            _ => return None,
+        })
+    }
+
+    /// The largest of each kind and key, in key order: what every GPU of one model persists.
+    pub fn merge(peaks: impl IntoIterator<Item = Peak>) -> Vec<Peak> {
+        let mut figures = BTreeMap::new();
+        for peak in peaks {
+            let (figure, bytes) = peak.figure();
+            larger(&mut figures, figure, bytes);
+        }
+        figures.iter().filter_map(Peak::of).collect()
+    }
 }
 
 /// The driver's free bytes, and the bytes created and destroyed before that read; the host's
@@ -805,22 +839,15 @@ impl Manager {
         self.emit(out);
     }
 
-    /// What an agent measured: a request's peaks under TensorD's dispatch key (the larger stays;
-    /// the compute bytes are the newest), a set's bytes (the larger).
+    /// A set's bytes as its agent measured them (the larger stays). Request figures arrive
+    /// through TensorD's settled Invoke reply, on the same path as completion.
     fn measured(&self, exec: u64, m: Measured) -> Out {
         let mut b = self.books.lock();
         if !b.executors.contains_key(&exec) {
             return Out::default();
         }
-        match m {
-            Measured::Request { request, working, compute, host } => {
-                let Some(key) = b.dispatched.get(&request).cloned() else { return Out::default() };
-                larger(&mut b.figures, format!("peak/{key}"), working);
-                b.figures.insert(format!("compute/{key}"), compute);
-                larger(&mut b.figures, format!("host/{key}"), host);
-            }
-            Measured::Set { name, bytes } => larger(&mut b.figures, format!("set/{name}"), bytes),
-        }
+        let Measured::Set { name, bytes } = m;
+        larger(&mut b.figures, format!("set/{name}"), bytes);
         Out::default()
     }
 
@@ -845,72 +872,57 @@ impl Manager {
         self.settle(&mut b)
     }
 
-    // ---- Admission and placement (TensorD's): its own dispatches and the measured peaks.
+    // ---- Request measurement keys and component placement.
 
     /// The device bytes requests can use: free and every chunk of ours (all of it reclaimable),
-    /// less the reserved pool; 0 until the device was read (a request then waits).
+    /// less the reserved pool; 0 until the device was read (a placement hint only).
     fn usable(b: &Books) -> u64 {
         free(b).map_or(0, |f| (f + b.created).saturating_sub(b.reserve))
     }
 
-    /// A fresh reading for admission and placement, which run before anything is asked.
+    /// A fresh reading for component placement, before anything is asked.
     fn refresh(&self) {
         if let Some(sample) = self.read() {
             self.books.lock().sample = Some(sample);
         }
     }
 
-    /// The measured peaks of every dispatched request (`None`: unmeasured).
-    fn dispatched_peaks(b: &Books) -> Vec<Option<u64>> {
-        b.dispatched.values().map(|key| figure(b, "peak", key)).collect()
-    }
-
-    /// Whether a request of `package` at `shape` (empty: its widest measured shape) can start now
-    /// beside every request dispatched here ([`decide::fits`]): their measured peaks and its own
-    /// within the usable bytes; anything unmeasured only on an idle GPU. A request that does not
-    /// fit queues before it starts, so two never wait on each other's protected steps.
-    pub fn fits(&self, package: &str, shape: &str) -> bool {
-        self.refresh();
-        let b = self.books.lock();
-        decide::fits(Self::usable(&b), 0, &[], &Self::dispatched_peaks(&b), figure(&b, "peak", &format!("{package}|{shape}")), None)
-    }
-
-    /// A multi-GPU group: dispatches `request` on every GPU of `group` if it fits on all, else
-    /// on none.
-    pub fn admit(group: &[&Manager], request: &str, package: &str, shape: &str) -> Result<bool> {
-        if !group.iter().all(|m| m.fits(package, shape)) {
-            return Ok(false);
-        }
-        for m in group {
-            m.dispatch(request, package, shape)?;
-        }
-        Ok(true)
-    }
-
     /// Names the `<package>|<shape>` a request's peaks are recorded under, before it runs.
-    pub fn dispatch(&self, request: &str, package: &str, shape: &str) -> Result<()> {
+    pub fn dispatch(&self, request: &str, package: &str, shape: &str) {
         self.books.lock().dispatched.insert(request.to_string(), format!("{package}|{shape}"));
-        Ok(())
     }
 
     pub fn undispatch(&self, request: &str) {
         self.books.lock().dispatched.remove(request);
     }
 
+    /// A request's final figures on this GPU, from TensorD's settled Invoke reply (its only
+    /// measurement path), under its dispatch key: the larger working set and host high-water
+    /// stay, the compute bytes are the newest.
+    pub fn record_request(&self, request: &str, peak: u64, compute: u64, host: Option<u64>) {
+        let mut b = self.books.lock();
+        let Some(key) = b.dispatched.get(request).cloned() else { return };
+        larger(&mut b.figures, format!("peak/{key}"), peak);
+        b.figures.insert(format!("compute/{key}"), compute);
+        if let Some(host) = host {
+            larger(&mut b.figures, format!("host/{key}"), host);
+        }
+        drop(b);
+        self.events.set();
+    }
+
     /// The GPU of `group` (an index) that keeps each set of `package`'s request at `shape`
     /// ([`decide::place`]). A set's bytes are its layout's when the caller has them, else as a
-    /// load measured them on any GPU of the group. Each GPU's room is its usable bytes less its
-    /// dispatched requests' measured peaks; GPU 0's less the package's measured compute bytes
-    /// too.
+    /// load measured them on any GPU of the group. Each GPU's room is its actual usable bytes;
+    /// GPU 0 also leaves room for the package's measured compute bytes.
     pub fn place(group: &[&Manager], package: &str, shape: &str, sets: &[(&str, Option<u64>)]) -> Result<Vec<u32>> {
         let key = format!("{package}|{shape}");
         let mut rooms = Vec::with_capacity(group.len());
         for (g, m) in group.iter().enumerate() {
             m.refresh();
             let b = m.books.lock();
-            let running: u64 = Self::dispatched_peaks(&b).into_iter().flatten().sum();
             let working = if g == 0 { figure(&b, "compute", &key).unwrap_or(0) } else { 0 };
-            rooms.push(Self::usable(&b).saturating_sub(running + working));
+            rooms.push(Self::usable(&b).saturating_sub(working));
         }
         let bytes: Vec<Option<u64>> = sets.iter().map(|(name, known)| known.or_else(|| group.iter().filter_map(|m| figure(&m.books.lock(), "set", name)).max())).collect();
         Ok(decide::place(&rooms, &bytes))
@@ -923,34 +935,17 @@ impl Manager {
 
     /// The measured peaks, to persist per GPU model.
     pub fn peaks(&self) -> Vec<Peak> {
-        let b = self.books.lock();
-        let peak = |(k, &bytes): (&String, &u64)| {
-            let (kind, key) = k.split_once('/')?;
-            let key = key.to_string();
-            Some(match kind {
-                "peak" => Peak::Request { key, bytes },
-                "compute" => Peak::Compute { key, bytes },
-                "set" => Peak::Set { key, bytes },
-                "host" => Peak::Host { key, bytes },
-                _ => return None,
-            })
-        };
-        b.figures.iter().filter_map(peak).collect()
+        self.books.lock().figures.iter().filter_map(Peak::of).collect()
     }
 
-    /// Peaks saved earlier on this machine for this GPU model: what this run measured wins (sets
-    /// and host peaks: the larger).
-    pub fn restore(&self, peaks: &[Peak]) -> Result<()> {
+    /// Peaks saved earlier for this GPU model: each figure keeps the larger, so no order or
+    /// smaller duplicate lowers a measured high-water mark.
+    pub fn restore(&self, peaks: &[Peak]) {
         let mut b = self.books.lock();
-        for p in peaks {
-            match p {
-                Peak::Request { key, bytes } => drop(b.figures.entry(format!("peak/{key}")).or_insert(*bytes)),
-                Peak::Compute { key, bytes } => drop(b.figures.entry(format!("compute/{key}")).or_insert(*bytes)),
-                Peak::Set { key, bytes } => larger(&mut b.figures, format!("set/{key}"), *bytes),
-                Peak::Host { key, bytes } => larger(&mut b.figures, format!("host/{key}"), *bytes),
-            }
+        for peak in peaks {
+            let (figure, bytes) = peak.figure();
+            larger(&mut b.figures, figure, bytes);
         }
-        Ok(())
     }
 
     /// The backend goes once nothing needs it; its drop (a context's destroy) runs unlocked.
