@@ -367,8 +367,24 @@ impl PreparedRead {
         .map_err(PyRuntimeError::new_err)
     }
 
-    fn cancel(&self) -> PyResult<()> {
-        self.shared()?.cancel.cancel();
+    fn cancel(&self, py: Python<'_>) -> PyResult<()> {
+        let shared = self.shared()?.clone();
+        shared.cancel.cancel();
+        py.detach(|| {
+            let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            if !state.started && state.result.is_none() {
+                // No worker can own or issue this fill while the state lock is held.
+                // Release its pin before publishing canceled completion; source teardown
+                // remains on the native cleanup queue, never under the GIL.
+                let mut work = state.work.take();
+                if let Some(work) = &mut work {
+                    drop(work.fill.take());
+                }
+                crate::cleanup::defer(work);
+                state.result = Some(Err(Failure::Canceled));
+            }
+        });
+        shared.changed.notify_all();
         Ok(())
     }
 
@@ -377,13 +393,12 @@ impl PreparedRead {
     }
 
     fn wait<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        if !self
-            .shared()?
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .started
-        {
+        let shared = self.shared()?;
+        let unstarted = {
+            let state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            !state.started && state.result.is_none()
+        };
+        if unstarted {
             return Err(PyValueError::new_err("start native refill before waiting"));
         }
         self.snapshot(py, true)

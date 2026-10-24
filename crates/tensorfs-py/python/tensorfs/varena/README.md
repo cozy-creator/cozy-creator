@@ -84,8 +84,10 @@ Only successful checked completion publishes the region; ordinary `prepare()` an
 DLPack views can then consume it on any stream. This first interface does not publish
 pending GPU writes, so no consumer waits on an unrecorded or pooled event.
 
-`cancel()` stops new bounded pieces and joins submitted copies. Cancellation does
-not publish partial data. Ordinary input failures also require checked producer
+`cancel()` requests that new bounded pieces stop; it does not join a running read.
+`wait()` (or completed `poll()`) reports the checked drain of submitted copies.
+Cancellation before `start()` settles immediately and releases the Fill without
+requiring a later start. Cancellation never publishes partial data. Ordinary input failures also require checked producer
 drain before the Fill is released. If completion is uncertain, the actual Fill,
 region and source owners are retained and the arena is poisoned against reuse.
 The existing conservative context join for unknown/escaped consumer reclamation
