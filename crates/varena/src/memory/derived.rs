@@ -1,11 +1,9 @@
-//! The derived-weights disk cache in Memory (varena-leases §6, M1/M4; [`crate::derived`]; S1's
-//! frames, S5's store). A declared set's page names its derived entry in its weights ask; a
-//! grant that brings one (or one this process holds) refills the page with no transform; a
-//! transform that landed is offered to the write-behind writer when deriving it again costs more
-//! than writing it and reading it back.
+//! Derived weights in Memory ([`crate::derived`], design varena-local "Derived weights"): a declared
+//! set's transform that landed is offered to the write-behind writer when deriving it again costs
+//! more than writing it and reading it back (M4), into this executor's temp file, within its cap
+//! (its models' own size). A fill of a page whose identity was written reads it back, no transform.
 
 use std::collections::HashMap;
-use std::fs::File;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, OnceLock, Weak};
 
@@ -14,18 +12,18 @@ use sha2::{Digest, Sha256};
 
 use super::{Inner, Memory, State};
 use crate::backend::{Event, Va};
-use crate::derived::{pays, Hold, Job, Key as Derived, Refill, Writer};
-use crate::table::{Fill, Key};
+use crate::derived::{pays, Hold, Job, Key as Derived, Refill, Store, Writer};
+use crate::table::{Fill, Key, SetSpec};
 use crate::Result;
 
-/// Memory's side of the derived cache.
+/// Memory's side of the derived weights.
 #[derive(Default)]
 pub(super) struct Cache {
     writer: OnceLock<Arc<Writer>>,
-    /// Refills granted, for the fill threads: by page and generation.
-    refills: Mutex<HashMap<(Key, u64), Arc<Refill>>>,
-    /// Entries this process wrote: it holds them (the holder set is the open fds).
-    entries: Mutex<HashMap<Derived, File>>,
+    /// The executor's temp file, opened at the first write (`Err`: unopenable, never retried).
+    store: Mutex<Option<std::result::Result<Store, ()>>>,
+    /// Entries written: where each is in the file.
+    entries: Mutex<HashMap<Derived, (Arc<std::fs::File>, u64)>>,
     /// The page each offered entry is written from.
     pages: Mutex<HashMap<Derived, Key>>,
     /// Transforms that landed, measured once both events complete: (page, the bind's event,
@@ -36,7 +34,7 @@ pub(super) struct Cache {
 }
 
 impl Memory {
-    /// The writer, once leased: its hold is this Memory's pages.
+    /// The writer: its hold is this Memory's pages.
     pub(super) fn start_derived(&self) -> Result<()> {
         let writer = Writer::new(self.inner.backend.clone(), Arc::new(Holder(Arc::downgrade(&*self.inner))))?;
         let _ = self.inner.derived.writer.set(Arc::new(writer));
@@ -44,41 +42,24 @@ impl Memory {
     }
 }
 
+/// A declared set's page `region`: the key of its derived bytes.
+pub(super) fn derived_of(spec: &SetSpec, region: u32) -> Option<Derived> {
+    let Fill::Declared(identity) = &spec.fingerprint.fill else { return None };
+    let digest = Sha256::digest(spec.fingerprint.key().as_bytes());
+    let fingerprint = digest.get(..8).and_then(|b| <[u8; 8]>::try_from(b).ok()).map(u64::from_le_bytes)?;
+    Some(Derived::new(fingerprint, region, identity))
+}
+
 impl Inner {
-    /// A declared set's page: the key of its derived bytes.
-    pub(super) fn derived_key(&self, st: &State, key: Key) -> Option<Derived> {
-        let m = st.mech(key.0).ok()?;
-        let Fill::Declared(identity) = &m.spec.fingerprint.fill else { return None };
-        let digest = Sha256::digest(m.key.as_bytes());
-        let fingerprint = digest.get(..8).and_then(|b| <[u8; 8]>::try_from(b).ok()).map(u64::from_le_bytes)?;
-        Some(Derived::new(fingerprint, key.1, identity))
+    fn derived_key(&self, st: &State, key: Key) -> Option<Derived> {
+        derived_of(&st.mech(key.0).ok()?.spec, key.1)
     }
 
-    /// The fill key a page's weights ask names (S5's store key), when its set is declared.
-    pub(super) fn fill_key(&self, key: Key) -> Option<String> {
-        let st = self.state.lock();
-        self.derived_key(&st, key).map(|k| k.store())
-    }
-
-    /// A page's grant (not adopted): its entry, the manager's or one this process holds, refills
-    /// it on the fill threads.
-    pub(super) fn granted(&self, key: Key, gen: u64, span: u64, entry: Option<File>) {
-        let derived = {
-            let st = self.state.lock();
-            self.derived_key(&st, key)
-        };
-        let Some(dk) = derived else { return };
-        let entry = entry.or_else(|| self.derived.entries.lock().get(&dk).and_then(|f| f.try_clone().ok()));
-        let mut refills = self.derived.refills.lock();
-        refills.retain(|(k, g), _| *k != key || *g > gen);
-        if let Some(entry) = entry {
-            refills.insert((key, gen), Arc::new(Refill::new(&dk, entry, span)));
-        }
-    }
-
-    /// The fill threads' refill for a page, when its grant brought one.
-    pub(super) fn derived_refill(&self, key: Key, gen: u64) -> Option<Arc<Refill>> {
-        self.derived.refills.lock().remove(&(key, gen))
+    /// The fill threads' refill for a page of `spec`, when its identity was written.
+    pub(super) fn derived_refill(&self, spec: &SetSpec, key: Key, span: u64) -> Option<Refill> {
+        let dk = derived_of(spec, key.1)?;
+        let (file, at) = self.derived.entries.lock().get(&dk).cloned()?;
+        Refill::new(&dk, &file, at, span).inspect_err(|e| tracing::debug!("varena: a derived refill of {key:?}: {e}")).ok()
     }
 
     /// A batch read from disk: M4's read bandwidth.
@@ -91,9 +72,9 @@ impl Inner {
         self.derived.read_bps.store(if was == 0 { now } else { (was * 3 + now) / 4 }, Relaxed);
     }
 
-    /// Whether a transform on this page is measured for the writer: leased, with a writer.
+    /// Whether a transform on this page is measured for the writer.
     pub(super) fn measures(&self) -> bool {
-        self.derived.writer.get().is_some()
+        self.derived.writer.get().is_some_and(|w| w.usable())
     }
 
     /// A transform landed (`Pin::filled`): `from` (the bind's event, now the cache's to retire)
@@ -104,10 +85,15 @@ impl Inner {
 
     /// Transforms whose events completed: each is offered to the writer when deriving it again
     /// costs more than writing it and reading it back (M4; before the writer measured its own
-    /// bandwidth, the store's read stands in). Under the state lock; nothing waits.
-    pub(super) fn offer_derived(&self, st: &State, agent: &crate::lease::Agent) {
-        let Some(writer) = self.derived.writer.get() else { return };
+    /// bandwidth, the store's read stands in) and the executor's file has room under its cap, its
+    /// models' own bytes. Under the state lock; nothing waits.
+    pub(super) fn offer_derived(&self, st: &State) {
+        let Some(writer) = self.derived.writer.get().filter(|w| w.usable()) else { return };
         let mut landed = self.derived.landed.lock();
+        if landed.is_empty() {
+            return;
+        }
+        let cap: u64 = st.sets.iter().flatten().filter(|m| !m.closing).map(|m| m.spec.layout.nbytes).sum();
         landed.retain(|&(key, from, to)| {
             let ns = match self.backend.elapsed(from, to) {
                 Ok(None) => return true,
@@ -117,19 +103,14 @@ impl Inner {
             self.backend.retire(from);
             let (Some(ns), Some(dk), Ok((va, off, span))) = (ns, self.derived_key(st, key), st.place(key)) else { return false };
             let read = self.derived.read_bps.load(Relaxed) as f64;
-            if !pays(ns, span, writer.write_bps().unwrap_or(read), read) || self.derived.entries.lock().contains_key(&dk) {
+            if !pays(ns, span, writer.write_bps().unwrap_or(read), read) || self.derived.entries.lock().contains_key(&dk) || self.derived.pages.lock().contains_key(&dk) {
                 return false;
             }
+            let mut store = self.derived.store.lock();
+            let opened = store.get_or_insert_with(|| Store::open().map_err(|e| tracing::warn!("varena: no temp file for derived weights: {e}")));
+            let Some((file, at)) = opened.as_mut().ok().and_then(|s| s.reserve(span, cap)) else { return false };
             self.derived.pages.lock().insert(dk, key);
-            let (writer, va) = (writer.clone(), Va { base: va.base + off, len: span });
-            let asked = agent.derive(dk.store(), span, Box::new(move |entry: Option<crate::lease::DerivedEntry>| {
-                if let Some(e) = entry {
-                    writer.offer(Job { key: dk, entry: e.file, entry_id: e.id, va, ready: Event::DONE });
-                }
-            }));
-            if let Err(error) = asked {
-                tracing::debug!("varena: a derived entry for {key:?}: {error}");
-            }
+            writer.offer(Job { key: dk, file, at, va: Va { base: va.base + off, len: span }, ready: Event::DONE });
             false
         });
     }
@@ -146,7 +127,7 @@ impl Inner {
 struct Holder(Weak<Inner>);
 
 impl Hold for Holder {
-    /// The page, filled with these derived bytes and quiet, pinned for its copy: a revoke
+    /// The page, filled with these derived bytes and quiet, pinned for its copy: a reclaim
     /// declines it meanwhile, and never waits on the disk write after (M1).
     fn pin(&self, dk: &Derived) -> Option<Box<dyn Send>> {
         let inner = self.0.upgrade()?;
@@ -154,6 +135,7 @@ impl Hold for Holder {
         let mut st = inner.state.lock();
         let fit = st.homes.get(&key).is_some_and(|h| h.filled && h.phys.is_some() && !h.filling && !h.transforming) && inner.derived_key(&st, key) == Some(*dk);
         if !fit {
+            inner.derived.pages.lock().remove(dk);
             return None;
         }
         let id = st.tick();
@@ -166,17 +148,10 @@ impl Hold for Holder {
         self.0.upgrade().is_some_and(|i| i.state.lock().table.requests.is_empty())
     }
 
-    /// Written whole: TensorD hears which entry (its id), and this process holds the entry for
-    /// its own refills.
-    fn written(&self, dk: Derived, entry_id: u64, entry: File) {
+    fn written(&self, dk: Derived, file: Arc<std::fs::File>, at: u64) {
         let Some(inner) = self.0.upgrade() else { return };
         inner.derived.pages.lock().remove(&dk);
-        if let Some(agent) = inner.lease.get() {
-            if let Err(error) = agent.derived(dk.store(), entry_id) {
-                tracing::debug!("varena: a derived entry's written ack: {error}");
-            }
-        }
-        inner.derived.entries.lock().insert(dk, entry);
+        inner.derived.entries.lock().insert(dk, (file, at));
     }
 }
 

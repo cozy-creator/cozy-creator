@@ -1,18 +1,19 @@
-//! Derived weights on disk (varena-leases §6, review M1/M4; S5's store): a page a GPU transform
-//! produced (a LoRA bake, a quantization from another source) is written to the entry TensorD
-//! hands this executor, write-behind at idle, and a later bind of that identity refills from it
-//! through the page cache instead of deriving it again.
+//! Derived weights (design varena-local, "Derived weights"): a page a GPU transform produced (a LoRA
+//! bake, a quantization from another source) is written behind, at idle, to its executor's own temp
+//! file, and a later fill of that identity reads it back instead of deriving it again. The file is
+//! the executor's alone and lives as long as it: unlinked from birth in the OS temp directory, so
+//! the OS frees it at exit or crash; no sweeper, eviction or cache directory. Its bytes are capped
+//! at the executor's models' own size; past the cap nothing is written and the transform reruns.
 //! - M4: only where deriving again takes longer than writing the bytes and reading them back.
-//! - M1: a revoke never waits on a write: the page is pinned only for its device-to-host copy,
-//!   and a write still queued when its page goes is dropped.
-//!
-//! The holder (Memory) owns the hooks: it pins pages, says when no request runs, and keeps each
-//! written entry's fd (the holder set is the open fds) for refills.
+//! - M1: a reclaim never waits on a write: the page is pinned only for its device-to-host copy,
+//!   and a write whose page went (or holds other bytes) by then is dropped.
 
 use std::collections::VecDeque;
-use std::fs::File;
-use std::os::unix::fs::FileExt;
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::fs::{File, OpenOptions};
+use std::io;
+use std::os::unix::fs::{FileExt, OpenOptionsExt};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -42,8 +43,7 @@ impl Key {
         Key { fingerprint, region, fill }
     }
 
-    /// The store's name for it (S5): opaque to TensorD.
-    pub fn store(&self) -> String {
+    fn name(&self) -> String {
         let hex: String = self.fill.iter().map(|b| format!("{b:02x}")).collect();
         format!("{:016x}/{}/{hex}", self.fingerprint, self.region)
     }
@@ -58,6 +58,59 @@ pub fn pays(derive_ns: u64, bytes: u64, write_bps: f64, read_bps: f64) -> bool {
     derive_ns as f64 / 1e9 > cost_s
 }
 
+/// An executor's derived bytes: one file in the OS temp directory no name reaches, written
+/// append-only up to a cap. Entries are never dropped: the file goes with the process.
+pub struct Store {
+    file: Arc<File>,
+    used: u64,
+}
+
+impl Store {
+    pub fn open() -> io::Result<Store> {
+        Ok(Store { file: Arc::new(unlinked(&std::env::temp_dir())?), used: 0 })
+    }
+
+    /// Room for `len` more bytes within `cap`: where they go.
+    pub fn reserve(&mut self, len: u64, cap: u64) -> Option<(Arc<File>, u64)> {
+        let at = self.used;
+        (at + len <= cap).then(|| {
+            self.used += len;
+            (self.file.clone(), at)
+        })
+    }
+}
+
+/// A new file in `dir` no name reaches: `O_TMPFILE` where the filesystem has it.
+#[cfg(target_os = "linux")]
+fn unlinked(dir: &Path) -> io::Result<File> {
+    match OpenOptions::new().read(true).write(true).custom_flags(libc::O_TMPFILE).mode(0o600).open(dir) {
+        Ok(file) => Ok(file),
+        Err(error) if matches!(error.raw_os_error(), Some(libc::EOPNOTSUPP | libc::EISDIR | libc::EINVAL)) => named_then_unlinked(dir),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn unlinked(dir: &Path) -> io::Result<File> {
+    named_then_unlinked(dir)
+}
+
+/// Created under a fresh name and unlinked at once (a filesystem without `O_TMPFILE`).
+fn named_then_unlinked(dir: &Path) -> io::Result<File> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    loop {
+        let path = dir.join(format!(".varena-derived-{}-{}", std::process::id(), NEXT.fetch_add(1, Relaxed)));
+        match OpenOptions::new().read(true).write(true).create_new(true).mode(0o600).open(&path) {
+            Ok(file) => {
+                std::fs::remove_file(&path)?;
+                return Ok(file);
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 /// What the writer asks of its holder.
 pub trait Hold: Send + Sync {
     /// Pins the page for its device-to-host copy; dropping the guard unpins. `None` once it is
@@ -65,17 +118,16 @@ pub trait Hold: Send + Sync {
     fn pin(&self, key: &Key) -> Option<Box<dyn Send>>;
     /// No request runs: writes go only now.
     fn idle(&self) -> bool;
-    /// Written whole: the holder keeps `entry` for refills and tells TensorD which entry it was
-    /// (`entry_id`, TensorD's, so a writer marks only its own).
-    fn written(&self, key: Key, entry_id: u64, entry: File);
+    /// Written whole at `at` of `file`: from now on fills of `key` read it.
+    fn written(&self, key: Key, file: Arc<File>, at: u64);
 }
 
-/// One page to write: TensorD's entry for it (and its id), where its bytes are mapped, and the
-/// event its transform completed by.
+/// One page to write: where in the store's file, where its bytes are mapped, and the event its
+/// transform completed by.
 pub struct Job {
     pub key: Key,
-    pub entry: File,
-    pub entry_id: u64,
+    pub file: Arc<File>,
+    pub at: u64,
     pub va: Va,
     pub ready: Event,
 }
@@ -83,7 +135,6 @@ pub struct Job {
 #[derive(Default)]
 struct Queue {
     jobs: VecDeque<Job>,
-    writing: bool,
     /// Bumped by every offer and wake: a waiter that read it before its check misses none.
     gen: u64,
     stop: bool,
@@ -96,6 +147,8 @@ struct Shared {
     woke: Condvar,
     /// Measured device-to-disk bytes per second; 0 until a write lands.
     bps: AtomicU64,
+    /// A write failed (a full or unwritable temp directory): nothing more is offered.
+    failed: AtomicBool,
 }
 
 /// The write-behind thread.
@@ -105,7 +158,7 @@ pub struct Writer {
 
 impl Writer {
     pub fn new(backend: Arc<dyn Backend>, hold: Arc<dyn Hold>) -> Result<Writer> {
-        let sh = Arc::new(Shared { backend, hold, queue: Mutex::new(Queue::default()), woke: Condvar::new(), bps: AtomicU64::new(0) });
+        let sh = Arc::new(Shared { backend, hold, queue: Mutex::new(Queue::default()), woke: Condvar::new(), bps: AtomicU64::new(0), failed: AtomicBool::new(false) });
         let run = sh.clone();
         std::thread::Builder::new().name("varena-derived".into()).spawn(move || run.run()).map_err(|e| Error::io("spawn the derived writer", e))?;
         Ok(Writer { sh })
@@ -119,10 +172,9 @@ impl Writer {
         self.sh.woke.notify_all();
     }
 
-    /// The page goes (a revoke, an identity change): a write still queued for it is dropped. One
-    /// past its copy finishes, from host memory.
-    pub fn abandon(&self, key: &Key) {
-        self.sh.queue.lock().jobs.retain(|j| j.key != *key);
+    /// Whether writes still go: none after one failed.
+    pub fn usable(&self) -> bool {
+        !self.sh.failed.load(Relaxed)
     }
 
     /// The holder went idle.
@@ -130,12 +182,6 @@ impl Writer {
         let mut q = self.sh.queue.lock();
         q.gen += 1;
         self.sh.woke.notify_all();
-    }
-
-    /// Writes queued or in progress.
-    pub fn pending(&self) -> usize {
-        let q = self.sh.queue.lock();
-        q.jobs.len() + usize::from(q.writing)
     }
 
     /// Measured device-to-disk bytes per second (M4's write side), once a write landed.
@@ -170,7 +216,6 @@ impl Shared {
                         q = self.queue.lock();
                         if idle {
                             if let Some(job) = q.jobs.pop_front() {
-                                q.writing = true;
                                 break job;
                             }
                         }
@@ -181,9 +226,10 @@ impl Shared {
                 }
             };
             if let Err(e) = self.write(job) {
-                tracing::warn!("varena: a derived page's write failed: {e}");
+                tracing::warn!("varena: a derived page's write failed; no more are written: {e}");
+                self.failed.store(true, Relaxed);
+                self.queue.lock().jobs.clear();
             }
-            self.queue.lock().writing = false;
         }
     }
 
@@ -192,30 +238,31 @@ impl Shared {
         let start = Instant::now();
         let mut bytes = vec![0u8; usize::try_from(job.va.len).map_err(|_| Error::Invalid("a page beyond the address space".into()))?];
         self.backend.copy_out(job.va, 0, &mut bytes, job.ready)?;
-        // The bytes are ours: a revoke may take the page now, while the disk write runs.
+        // The bytes are ours: a reclaim may take the page now, while the disk write runs.
         drop(pin);
-        job.entry.write_all_at(&bytes, 0).map_err(|e| Error::io("write a derived entry", e))?;
+        job.file.write_all_at(&bytes, job.at).map_err(|e| Error::io("write a derived page", e))?;
         let secs = start.elapsed().as_secs_f64().max(1e-9);
         let now = (job.va.len as f64 / secs) as u64;
         let was = self.bps.load(Relaxed);
         self.bps.store(if was == 0 { now } else { (was * 3 + now) / 4 }, Relaxed);
-        self.hold.written(job.key, job.entry_id, job.entry);
+        self.hold.written(job.key, job.file, job.at);
         Ok(())
     }
 }
 
-/// A refill from a written entry: one item over the whole page, read through the page cache
-/// exactly as a store fill reads.
+/// A refill from a written entry: one item over the page's bytes in the store's file, read
+/// through the page cache exactly as a store fill reads.
 pub struct Refill {
     source: Source,
     items: Vec<Item>,
 }
 
 impl Refill {
-    pub fn new(key: &Key, entry: File, len: u64) -> Refill {
-        let obj = ObjectRef { sha256: key.store(), length: len };
-        let items = vec![Item { offset: 0, len, source: ItemSource::Object(ObjectRange { obj: obj.clone(), off: 0, len }), part_end: true }];
-        Refill { source: Source::files(vec![(obj, entry)], false, 0), items }
+    pub fn new(key: &Key, file: &File, at: u64, len: u64) -> Result<Refill> {
+        let file = file.try_clone().map_err(|e| Error::io("open a derived page", e))?;
+        let obj = ObjectRef { sha256: key.name(), length: at + len };
+        let items = vec![Item { offset: 0, len, source: ItemSource::Object(ObjectRange { obj: obj.clone(), off: at, len }), part_end: true }];
+        Ok(Refill { source: Source::files(vec![(obj, file)], false, 0), items })
     }
 
     /// Reads the entry into `dst`.

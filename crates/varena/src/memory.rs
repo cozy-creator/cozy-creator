@@ -160,7 +160,7 @@ pub enum Origin {
     Kept,
     /// The store, through the page cache.
     Store,
-    /// This page's derived entry on disk (§6), through the page cache: no transform.
+    /// This page's derived bytes from its executor's temp file: no transform.
     Derived,
 }
 
@@ -210,7 +210,7 @@ pub struct Moved {
     /// Pages leased from the manager and filled here (`ns`: the ask, import and map).
     pub leased: Fills,
     pub store: Fills,
-    /// Pages refilled from their derived entry on disk, no transform run (§6).
+    /// Pages refilled from their executor's derived temp file, no transform run.
     pub derived: Fills,
     /// Of the above, bytes filled speculatively.
     pub speculative: u64,
@@ -967,7 +967,10 @@ impl Memory {
                 let (weak, demand, ahead) = (Arc::downgrade(&inner), demanded.clone(), wanted_ahead.clone());
                 std::thread::Builder::new().name("varena-fill".into()).spawn(move || fill_loop(&demand, &ahead, &weak)).map_err(|e| Error::io("spawn fill", e))?;
             }
-            Ok(Memory { inner: inner.into(), handles: Arc::new(AtomicUsize::new(1)) })
+            let memory = Memory { inner: inner.into(), handles: Arc::new(AtomicUsize::new(1)) };
+            #[cfg(unix)]
+            memory.start_derived()?;
+            Ok(memory)
         })
     }
 
@@ -1008,7 +1011,6 @@ impl Memory {
                 }
                 // torch's blocks come from leased chunks too: the agent is its only allocator.
                 self.serve_leased_torch()?;
-                self.start_derived()?;
                 Ok(None)
             }
             crate::lease::Attach::Refused { code, why } => Ok(Some((code, why))),
@@ -1301,9 +1303,10 @@ impl Inner {
             agent.busy(st.events.values().any(|q| !q.is_empty()));
             self.redecline(st);
             self.land(st, agent);
-            self.offer_derived(st, agent);
             self.advise(st, agent);
         }
+        #[cfg(unix)]
+        self.offer_derived(st);
         self.drop_stale(st);
         self.close_sets(st);
         if wake {
@@ -1573,10 +1576,10 @@ impl Inner {
                     Dst::Host { .. } => 0,
                 };
                 let mut out = job.after.iter().try_for_each(|e| self.backend.wait(*e, stream)).err().map(Err);
-                // A grant that brought its derived entry: read it, not the store (§6).
+                // Its identity's derived bytes, written by this executor: read them, no transform.
                 #[cfg(unix)]
                 if out.is_none() {
-                    if let Some(refill) = self.derived_refill(job.key, job.gen) {
+                    if let Some(refill) = sets.get(&job.key.0).and_then(|spec| self.derived_refill(spec, job.key, *span)) {
                         // SAFETY: a mapped page only this fill writes, as long as the entry.
                         out = Some(unsafe { refill.read(dst, &self.tally) }.map(|()| Origin::Derived));
                     }
@@ -2713,7 +2716,6 @@ impl Inner {
                 span,
                 crate::lease::Kind::Weights,
                 region,
-                self.fill_key(key),
                 Box::new(move |got| {
                     if let Some(inner) = me.upgrade() {
                         inner.leased_page(key, gen, va, off, span, job, decided, got, start, region.is_some());
@@ -2901,13 +2903,10 @@ impl Inner {
             let (Some(lease), None) = (leases.next(), leases.next()) else {
                 return Err(Error::Invalid(format!("a page of {span} bytes leased as other than one chunk")));
             };
-            let crate::lease::Lease { ticket, phys, adopted, entry } = lease;
+            let crate::lease::Lease { ticket, phys, adopted } = lease;
             self.leased.lock().insert(phys.id, (ticket, key, retainable));
             let p = self.map_rw(va, off, phys)?;
             agent.mapped(&[ticket])?;
-            if !adopted {
-                self.granted(key, gen, span, entry);
-            }
             Ok((p, adopted, Some(start.elapsed().as_nanos() as u64)))
         });
         self.placed(key, gen, va, off, span, job, decided, made);
