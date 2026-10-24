@@ -75,6 +75,8 @@ fi
 
 step update; update_to_newest
 
+# Every log cozy wrote (Calcifer, TensorD, executors), before removal erases ~/.cozy: what a failed step left behind.
+step logs; (cd ~/.cozy && find . -name '*.log' -size -20M | tar -czf - -T - > "$OUT/cozy-logs.tgz") || true
 step "remove cozy"; remove_cozy
 step coverage; coverage "$OUT/cozy-under-test" pr
 finish "cli: runs $first and $(cat "$OUT/second.number")"
