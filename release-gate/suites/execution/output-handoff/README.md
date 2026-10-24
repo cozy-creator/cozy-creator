@@ -14,6 +14,10 @@ python3 gate.py --out /path/to/new/cancel-directory --cancel-output
 python3 burst.py --out /path/to/new/burst-directory --cpu-capacity 2
 ```
 
+Use `--on <name>` for an already rented candidate machine. The controllers never rent or update it.
+Remote overlap and cancellation use machine-side phase timestamps, avoiding comparisons between
+the laptop clock and the GPU host clock. The uninstrumented `--expect serial` baseline is local-only.
+
 Run through the shared heavy wrapper. `--expect serial` records the old behavior as a baseline.
 Each case first warms the same entrypoint, then submits the image request and its queued successor.
 The default image is 4096x4096 random RGB, at most 48 MiB raw; the extra cancellation case does

@@ -10,7 +10,9 @@ from pathlib import Path
 
 
 class Run:
-    def __init__(self, cli, target, output, tag, seed, image, iterations, size):
+    def __init__(
+        self, cli, target, output, tag, seed, image, iterations, size, machine="local"
+    ):
         self.cli, self.tag = cli, tag
         self.record = None
         self.marks = {}
@@ -29,7 +31,7 @@ class Run:
                 f"iterations={iterations}",
                 f"size={size}",
                 "--on",
-                "local",
+                machine,
                 "--gpus=1",
             ],
             stdout=subprocess.PIPE,
@@ -79,6 +81,8 @@ class Run:
             if isinstance(mark, dict) and mark.get("phase") in {
                 "gpu_returned",
                 "output_encoding",
+                "output_cancelled",
+                "output_finished",
             }:
                 key = mark["phase"] + ("." + mark["state"] if "state" in mark else "")
                 self.phases[key] = {**mark, "at_ns": int(row["at_ms"]) * 1_000_000}
@@ -124,6 +128,9 @@ class Run:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cozy", default="cozy")
+    parser.add_argument(
+        "--on", default="local", help="an existing local or rented machine"
+    )
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--size", type=int, default=4096)
     parser.add_argument("--cancel-output", action="store_true")
@@ -133,6 +140,10 @@ def main():
         parser.error("size must be 512..4096")
     if args.cancel_output and args.expect != "overlap":
         parser.error("cancellation while reusing requires the overlap candidate")
+    if args.on != "local" and args.expect == "serial":
+        parser.error(
+            "the uninstrumented serial baseline requires the local clock domain"
+        )
     args.out.mkdir(parents=True, exist_ok=False)
     target = Path(__file__).resolve().parent / "run"
     runs = []
@@ -140,16 +151,19 @@ def main():
         "expect": args.expect,
         "cancel_output": args.cancel_output,
         "passed": False,
+        "machine": args.on,
     }
     seed = time.time_ns() & ((1 << 53) - 1)
     deadline = time.monotonic() + 180
     try:
-        warm = Run(args.cozy, target, args.out, "warm", seed, False, 1, 512)
+        warm = Run(args.cozy, target, args.out, "warm", seed, False, 1, 512, args.on)
         runs.append(warm)
         warm.wait_for(warm.terminal, deadline)
         assert warm.record["status"] == "completed", warm.record
 
-        first = Run(args.cozy, target, args.out, "encode", seed + 1, True, 1, args.size)
+        first = Run(
+            args.cozy, target, args.out, "encode", seed + 1, True, 1, args.size, args.on
+        )
         runs.append(first)
         first.wait_for(lambda: "gpu_started" in first.marks, deadline)
         second = Run(
@@ -161,6 +175,7 @@ def main():
             False,
             4096 if args.cancel_output else 256,
             512,
+            args.on,
         )
         runs.append(second)
         second.wait_for(lambda: "gpu_started" in second.marks, deadline)
@@ -182,8 +197,9 @@ def main():
         b_start = second.marks["gpu_started"]["at_ns"]
         settled = first.record["settled_at_ms"] * 1_000_000
         assert a_end <= b_start, "independent requests overlapped their GPU ownership"
-        overlap = b_start < settled
-        assert overlap == (args.expect == "overlap"), (a_end, b_start, settled)
+        overlap = False
+        if args.expect == "serial":
+            assert b_start >= settled, (a_end, b_start, settled)
         assert (
             first.marks["gpu_started"]["pid"] == second.marks["gpu_started"]["pid"]
         ), (
@@ -200,9 +216,11 @@ def main():
             assert max(begin, b_start) < min(end, b_end), (
                 "GPU work did not overlap real CPU encoding"
             )
+            overlap = True
             report["encoding_overlap_ns"] = min(end, b_end) - max(begin, b_start)
             if args.cancel_output:
-                assert b_end > report["cancel_returned_ns"], (
+                canceled = first.phases["output_cancelled"]["at_ns"]
+                assert b_start <= canceled < b_end, (
                     "successor finished before cancel delivery"
                 )
         report.update(

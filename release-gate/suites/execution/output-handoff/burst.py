@@ -13,6 +13,9 @@ from gate import Run
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cozy", default="cozy")
+    parser.add_argument(
+        "--on", default="local", help="an existing local or rented machine"
+    )
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument(
         "--cpu-capacity",
@@ -33,9 +36,14 @@ def main():
     deadline = time.monotonic() + 300
     seed = time.time_ns() & ((1 << 53) - 1)
     runs = []
-    report = {"passed": False, "cpu_capacity": args.cpu_capacity, "gpu_slots": 1}
+    report = {
+        "passed": False,
+        "cpu_capacity": args.cpu_capacity,
+        "gpu_slots": 1,
+        "machine": args.on,
+    }
     try:
-        warm = Run(args.cozy, target, args.out, "warm", seed, False, 1, 512)
+        warm = Run(args.cozy, target, args.out, "warm", seed, False, 1, 512, args.on)
         runs.append(warm)
         warm.wait_for(warm.terminal, deadline)
         assert warm.record["status"] == "completed", warm.record
@@ -50,6 +58,7 @@ def main():
                     True,
                     1,
                     args.size,
+                    args.on,
                 )
             )
         for run in runs[1:]:
@@ -59,7 +68,7 @@ def main():
         intervals, events = [], []
         for run in runs[1:]:
             begin = run.phases["gpu_returned"]["at_ns"]
-            end = run.record["settled_at_ms"] * 1_000_000
+            end = run.phases["output_finished"]["at_ns"]
             assert begin < end, "output interval has insufficient timestamp resolution"
             events.extend(((begin, 1), (end, -1)))
             intervals.append(
