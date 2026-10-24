@@ -32,7 +32,7 @@ pools and stream records. Every thread using the verified imports reaches the sa
 On a real CUDA allocation OOM, the hook reclaims inactive groups in its process/device, then
 retries that one `cudaMalloc` call once if pages were released. Native errors return through
 Torch's normal CUDA exception path. Direct native calls preserve CUDA codes on
-`torch.AcceleratorError`; an unusable arena raises `PoisonedError(sticky=True)` for executor
+`torch.AcceleratorError`; an unusable arena raises `PoisonedError`, whose `sticky` attribute is true, for executor
 retirement, without inventing a driver error code. It never enters Python, acquires the GIL, reads bytes,
 contacts another process, or reruns package operations. Reclamation may join the local primary
 CUDA context; it has no bounded latency guarantee for opaque kernels.

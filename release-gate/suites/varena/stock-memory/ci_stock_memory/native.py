@@ -19,6 +19,8 @@ MIB = 1 << 20
 def exercise() -> dict:
     torch.set_num_threads(1)
     varena.install_allocator()
+    assert varena.PoisonedError.sticky is True
+    assert varena.PoisonedError.__module__ == "tensorfs._ext"
     varena.set_activation_limit(0, 224 * MIB)
     # Real driver argument validation, not a sticky device fault: preserve CUDA error typing.
     try:
