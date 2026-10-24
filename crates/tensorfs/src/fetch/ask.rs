@@ -1,8 +1,10 @@
 //! The one rule for asking a remote again (tfs-049), the Endpoint's exchanges' and every body
 //! GET outside the Fetcher's: weather and transport failures are asked again at `Retry-After` or a
 //! doubling wait, a request is dropped once nothing has moved for the stall rule, and the asking
-//! ends once nothing has moved for it at all. No flat timeout: every verdict scales with what was
-//! measured.
+//! ends once nothing has moved for it at all. An answer's head is judged apart: a server working on
+//! an answer sends nothing, so its wait has no progress to measure; it gets the stall rule, doubled
+//! for each ask whose head never came, and the asking ends after [`HEAD_DOUBLINGS`] of those. No
+//! flat timeout: every verdict scales with what was measured.
 
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -18,6 +20,8 @@ pub(crate) const TICK: Duration = Duration::from_millis(250);
 /// Stillness under 120 ticks is no evidence; for 8× the slowest answer seen, it is.
 const STILL_TICKS: u32 = 120;
 const STALL_FACTOR: u32 = 8;
+/// Asks whose answer head never came, each allowed twice the last, before the asking ends.
+const HEAD_DOUBLINGS: u32 = 4;
 
 /// An answer that means "not now": 499 is a proxy's own dropped exchange (the Hub's blobs, run
 /// 15391). 501 and 505 say the ask can never be answered.
@@ -48,26 +52,35 @@ impl Default for Patience {
     }
 }
 
+/// One ask's watch: the counter it bumps as anything moves, and how long its answer's head may take.
+#[derive(Clone)]
+pub(crate) struct Watch {
+    pub(crate) moved: Arc<AtomicU64>,
+    head: Duration,
+}
+
 /// An ask answered short of a refusal: done, or not now (at `wait` when the answer stated one).
 pub(crate) enum Tried<T> {
     Done(T),
     Again { why: String, wait: Option<Duration> },
 }
 
-/// `ask` until it is done. Each ask gets the counter it bumps as anything moves and watches its
-/// exchanges with it ([`watched`]). Weather and transport failures are asked again; bytes that
-/// moved before a failure are progress, a "not now" is not. Ends `HUB_UNREACHABLE` once nothing
-/// has moved for the stall rule (or twice the longest stated wait); the caller's own verdict and
-/// any other refusal end it at once.
+/// `ask` until it is done. Each ask gets its [`Watch`] and watches its exchanges with it
+/// ([`watched`]). Weather and transport failures are asked again; bytes that moved before a failure
+/// are progress, a "not now" is not. An ask whose answer head never came is asked again at once
+/// with twice the head allowance. Ends `HUB_UNREACHABLE` once nothing has moved for the stall rule
+/// (or twice the longest stated wait), or after [`HEAD_DOUBLINGS`] asks with no answer; the
+/// caller's own verdict and any other refusal end it at once.
 pub(crate) async fn again<T, A, F>(patience: &Patience, mut ask: A) -> Result<T, GetError>
 where
-    A: FnMut(Arc<AtomicU64>) -> F,
+    A: FnMut(Watch) -> F,
     F: Future<Output = Result<Tried<T>, GetError>>,
 {
-    let (mut still, mut wait, mut stated_most) = (Instant::now(), patience.tick, Duration::ZERO);
+    let (mut still, mut wait, mut stated_most, mut heads) = (Instant::now(), patience.tick, Duration::ZERO, 0);
     loop {
-        let (moved, began) = (Arc::new(AtomicU64::new(0)), Instant::now());
-        let (why, stated) = match ask(Arc::clone(&moved)).await {
+        let watch = Watch { moved: Arc::new(AtomicU64::new(0)), head: patience.get() * (1 << heads) };
+        let began = Instant::now();
+        let (why, stated) = match ask(watch.clone()).await {
             Ok(tried) => {
                 patience.slowest.fetch_max(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 match tried {
@@ -76,8 +89,17 @@ where
                 }
             }
             Err(GetError::Exchange(e)) if matches!(e.code, Code::TRANSFER_FAILED | Code::FD_HEADROOM | Code::STALLED) => {
-                if moved.load(Ordering::Relaxed) > 0 {
+                if watch.moved.load(Ordering::Relaxed) > 0 {
+                    (still, heads) = (Instant::now(), 0);
+                } else if e.code == Code::STALLED {
+                    heads += 1;
+                    if heads > HEAD_DOUBLINGS {
+                        let detail = format!("{}; no answer to {heads} asks", e.detail);
+                        return Err(GetError::Exchange(Refusal { code: Code::HUB_UNREACHABLE, detail }));
+                    }
+                    tracing::debug!(why = %e.detail, heads, "asked again with a longer head wait");
                     still = Instant::now();
+                    continue;
                 }
                 (e.detail, None)
             }
@@ -95,23 +117,26 @@ where
     }
 }
 
-/// `exchange`, dropped as `STALLED` once `moved` stands still for the stall rule.
+/// `exchange`, dropped as `STALLED` once its watch stands still: for the head allowance while
+/// nothing has moved, then for the stall rule.
 pub(crate) async fn watched<T, E: From<Refusal>>(
     patience: &Patience,
-    moved: &AtomicU64,
+    watch: &Watch,
     exchange: impl Future<Output = Result<T, E>>,
 ) -> Result<T, E> {
     tokio::pin!(exchange);
-    let (mut seen, mut since) = (moved.load(Ordering::Relaxed), Instant::now());
+    let (mut seen, mut since) = (watch.moved.load(Ordering::Relaxed), Instant::now());
     loop {
         tokio::select! {
             done = &mut exchange => return done,
             () = tokio::time::sleep(patience.tick) => {
-                let now = moved.load(Ordering::Relaxed);
+                let now = watch.moved.load(Ordering::Relaxed);
+                let allowed = if now == 0 { watch.head } else { patience.get() };
                 if now != seen {
                     (seen, since) = (now, Instant::now());
-                } else if since.elapsed() > patience.get() {
-                    let detail = format!("nothing moved for {:.1} s", since.elapsed().as_secs_f64());
+                } else if since.elapsed() > allowed {
+                    let what = if now == 0 { "no answer" } else { "nothing moved" };
+                    let detail = format!("{what} for {:.1} s", since.elapsed().as_secs_f64());
                     return Err(Refusal { code: Code::STALLED, detail }.into());
                 }
             }
@@ -136,14 +161,15 @@ pub(crate) async fn get(
 ) -> Result<Result<HeaderMap, u16>, GetError> {
     let (from, through) = range.unwrap_or((0, None));
     let (reached, sink) = (&AtomicU64::new(from), &Mutex::new(sink));
-    again(patience, move |moved| async move {
+    again(patience, move |watch| async move {
         let mut at = reached.load(Ordering::Relaxed);
         let mut headers = headers.to_vec();
         if at > 0 || through.is_some() {
             let through = through.map_or(String::new(), |t| t.to_string());
             headers.push(("range".into(), format!("bytes={at}-{through}")));
         }
-        watched(patience, &moved, async {
+        let moved = &watch.moved;
+        watched(patience, &watch, async {
             let mut answer = client.get_authorized(url, &headers, provider).await?;
             moved.fetch_add(1, Ordering::Relaxed);
             let status = answer.status();
