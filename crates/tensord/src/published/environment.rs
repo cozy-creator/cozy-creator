@@ -166,10 +166,10 @@ impl Publisher {
 
     /// This machine's own Runtime and TensorFS over the environment. Every other installed version
     /// stays exact: they constrain the install, and a pin the pair's own requirements reject keeps
-    /// its version while the pair goes in without its dependencies. A bound the package puts on the
-    /// pair that it misses (a floor: Fibo's `cozy-runtime>=0.30.16` for #1700's BatchNorm fix) is
-    /// `Floor`, never a run on the wrong Runtime. What else uv's check finds that the pair adds is
-    /// the run's warning.
+    /// its version while the pair goes in without its dependencies. A floor the package puts on the
+    /// pair that it misses (Fibo's `cozy-runtime>=0.30.16` for #1700's BatchNorm fix) is `Floor`,
+    /// never a run on a Runtime too old for it. What else uv's check finds that the pair adds (a
+    /// ceiling a newer pair passes: version skew is allowed) is the run's warning.
     fn pair(&self, env: &Path, py: &str, compile: &str, job: &Job) -> Result<String, Pair> {
         let failed = Pair::Failed;
         let constraints = env.join("cozy-constraints.txt");
@@ -202,10 +202,7 @@ impl Publisher {
             ));
         }
         let added: Vec<String> = self.check(py, job).map_err(failed)?.difference(&before).cloned().collect();
-        let floors: Vec<&str> = (added.iter().map(String::as_str))
-            .filter(|line| SDK.iter().any(|name| line.contains(&format!("requires `{name}"))))
-            .filter_map(|line| line.split('`').nth(3))
-            .collect();
+        let floors: Vec<&str> = added.iter().filter_map(|line| floor(line)).collect();
         if !floors.is_empty() {
             return Err(Pair::Floor(floors.join(" and ")));
         }
@@ -496,6 +493,18 @@ fn platform(failure: Failure, label: &str) -> Failure {
         ),
         failure => failure,
     }
+}
+
+/// The floor uv's finding `line` (`The package `x` requires `cozy-runtime>=0.31,<0.32`, but
+/// `0.30.2` is installed`) says the pair misses: a lower bound (`>=`, `>`, `~=`, `==`) above the
+/// version installed. A ceiling is no floor.
+fn floor(line: &str) -> Option<&str> {
+    let parts: Vec<&str> = line.split('`').collect();
+    let (requirement, installed) = (*parts.get(3)?, *parts.get(5)?);
+    let end = requirement.find(|c: char| "<>=!~ ;".contains(c))?;
+    let name = normalized(requirement[..end].split('[').next()?);
+    let below = |clause: &str| [">=", "~=", "==", ">"].iter().find_map(|op| clause.trim().strip_prefix(op)).is_some_and(|v| older(installed, v.trim()));
+    (SDK.contains(&name.as_str()) && requirement[end..].split(';').next()?.split(',').any(below)).then_some(requirement)
 }
 
 /// Whether release `running` is older than `wanted`, by their numeric release parts.
