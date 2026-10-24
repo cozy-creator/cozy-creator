@@ -60,32 +60,57 @@ struct Cohort {
     unknown: BTreeMap<String, serde_json::Value>,
 }
 
-/// A component as any CLI sends it: a version or file name; `{url, sha256}` from a CLI before 0.11.16
-/// (the form #1905 retired), refused by name rather than as a malformed payload.
+/// A component as a CLI sends it: a version or a staged file's name, or `{url, sha256}`, a file the
+/// machine fetches itself and holds to that digest (a release candidate not on PyPI, a binary on
+/// a slow uplink).
 #[derive(serde::Deserialize)]
 #[serde(untagged)]
 enum Member {
     Named(String),
-    Fetched { url: String },
+    Fetched {
+        url: String,
+        #[serde(default)]
+        sha256: String,
+    },
     Other(serde_json::Value),
 }
 
 impl Member {
-    fn named(member: Option<Self>, field: &str) -> Result<Option<String>, Error> {
-        let version = env!("CARGO_PKG_VERSION");
+    /// `field`'s choice: a name through `choose` (a staged input's file, else a release), or a
+    /// URL's file, `distribution`'s wheel or the `cozy` binary.
+    fn choice(
+        member: Option<Self>,
+        field: &str,
+        distribution: &str,
+        choose: impl Fn(Option<String>) -> Result<Option<Choice>, Error>,
+    ) -> Result<Option<Choice>, Error> {
+        let refused = |why: String| Error::validation("update_url_refused", format!("the update's {field}: {why}"));
         match member {
-            None => Ok(None),
-            Some(Self::Named(named)) => Ok(Some(named)),
-            Some(Self::Fetched { url }) => Err(Error::validation(
-                "update_url_retired",
-                format!(
-                    "the update's {field} is a URL ({url}), which cozy before 0.11.16 sends; cozy {version} takes a release \
-                     version or a file the CLI sends. Update this computer's cozy (`cozy update`) and pass the version or the downloaded file"
-                ),
-            )),
+            None => choose(None),
+            Some(Self::Named(named)) => choose(Some(named)),
+            Some(Self::Fetched { url, sha256 }) => {
+                let Some(path) = url.strip_prefix("https://").map(|rest| rest.split(['?', '#']).next().unwrap_or_default()) else {
+                    return Err(refused(format!("{url} is not an https URL")));
+                };
+                if sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return Err(refused(format!("{url} comes with no sha256 (64 hex digits) to hold its bytes to")));
+                }
+                let name = path.rsplit('/').next().unwrap_or_default();
+                let file = match distribution {
+                    "cozy" => BINARY.to_string(),
+                    _ if name.starts_with(&format!("{distribution}-"))
+                        && name.ends_with(".whl")
+                        && name.bytes().all(|c| c.is_ascii_alphanumeric() || b"._-+".contains(&c)) =>
+                    {
+                        name.to_string()
+                    }
+                    _ => return Err(refused(format!("{url} names no {distribution} wheel ({distribution}-<version>-….whl)"))),
+                };
+                Ok(Some(Choice { file, sha256: sha256.to_ascii_lowercase(), url, ..Default::default() }))
+            }
             Some(Self::Other(value)) => Err(Error::validation(
                 "invalid_payload",
-                format!("the update's {field} is a version or a file name, not {value}"),
+                format!("the update's {field} is a version, a file name or {{url, sha256}}, not {value}"),
             )),
         }
     }
@@ -235,9 +260,9 @@ fn stage(
         let file = if file.is_empty() { value.as_str() } else { file };
         Ok(Some(held(member, file)?.unwrap_or(Choice { version: value, ..Default::default() })))
     };
-    let binary = match Member::named(cohort.tensord, "tensord")? {
-        Some(named) => choose("tensord", BINARY, Some(named))?,
-        None => choose("binary", BINARY, Member::named(cohort.binary, "binary")?)?,
+    let binary = match cohort.tensord {
+        Some(tensord) => Member::choice(Some(tensord), "tensord", "cozy", |v| choose("tensord", BINARY, v))?,
+        None => Member::choice(cohort.binary, "binary", "cozy", |v| choose("binary", BINARY, v))?,
     };
     let toolchain = match cohort.toolchain.as_deref() {
         None => false,
@@ -257,8 +282,8 @@ fn stage(
     let request = Request {
         operation: id.into(),
         pin: None,
-        runtime: choose("runtime", "", Member::named(cohort.runtime, "runtime")?)?,
-        tensorfs: choose("tensorfs", "", Member::named(cohort.tensorfs, "tensorfs")?)?,
+        runtime: Member::choice(cohort.runtime, "runtime", "cozy_runtime", |v| choose("runtime", "", v))?,
+        tensorfs: Member::choice(cohort.tensorfs, "tensorfs", "tensorfs", |v| choose("tensorfs", "", v))?,
         cozy: cohort.cozy,
         gpu_memory_limit: limit,
         binary,
