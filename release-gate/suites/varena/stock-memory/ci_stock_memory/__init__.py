@@ -26,14 +26,14 @@ class Report(msgspec.Struct):
     detail: str
 
 
-def run(payload: Probe, tel: Telemetry, device: str) -> Report:
+def run(payload: Probe, tel: Telemetry, device: str, mode: str = "stream") -> Report:
     python = payload.candidate_python or sys.executable
     if not Path(python).is_file():
         raise ValueError("candidate_python must name an existing interpreter on this machine")
     child = Path(__file__).with_name("probe.py")
     with tel.stage(f"stock-memory-{device}"):
         process = subprocess.Popen(
-            [python, "-I", str(child), device, str(payload.seed)],
+            [python, "-I", str(child), device, str(payload.seed), mode],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -62,3 +62,8 @@ def cpu(payload: Probe, tel: Telemetry) -> Report:
 @app.entrypoint
 def gpu(payload: Probe, tel: Telemetry) -> Report:
     return run(payload, tel, "cuda:0")
+
+
+@app.entrypoint
+def driver(payload: Probe, tel: Telemetry) -> Report:
+    return run(payload, tel, "cuda:0", "driver")
