@@ -28,11 +28,29 @@ read measurements remain available. Memory peaks are tracked process/native figu
 hard driver VRAM or whole-machine cap. Missing device timings, peaks or graph measurements
 remain explicit gaps. A failed call stops the sequence; it is never rerun automatically.
 
+Use different seeds across before/after arms as well: a completed-job cache hit has no new
+invocation measurements and is rejected. Freshness uses worker invocation/GPU/step clocks and
+disjoint sequential GPU intervals, not a controller-clock tolerance. `--resume` preserves the
+old report, revalidates saved completed receipts, and submits only missing calls. It never
+resubmits failed or unsettled work. Unsaved original CLI wall time remains unknown.
+
+Logical completed reads exclude canceled speculation and are not physical disk/PCIe traffic.
+Prefetch wait measures host settlement, not GPU starvation. Exposed weight-ready stalls and
+isolated cold-weight latency remain explicitly unmeasured.
+
+## Measured phase-policy comparison
+
+[RTX3070 8GB: SDXL and Anima](evidence/phase-8gb.md) and
+[RTX3090 24GB: Qwen Image2.1](evidence/phase-24gb.md) compare real 30-step runs on each same GPU,
+with exact source/model/cohort identities and per-request evidence in the adjacent JSON files.
+These are phase-residency comparisons, not CUDA-graph speedups or release qualification.
+
 ## Anima preparation
 
 Reviewed source is the `anima` subtree at packages commit
 `da31a14a05e85707d5a3499dfca117dbfa35e1e7`, tree `c992749097f25d7ecb6a72138010b9965c6825fa`.
-No package edits are needed for the selected Runtime 0.32.1/TensorFS 0.15.2 cohort. Published
+That source is the before arm. The after arm uses packages `f7261695`, adding the explicit
+text-encoder → text-conditioner → transformer → VAE plan without changing model math. Published
 package 0.11.3 instead requires Runtime<0.32 and TensorFS<0.15; 0.12.0/0.12.1 are yanked.
 Use the reviewed source directory rather than those incompatible published dependencies.
 
@@ -55,4 +73,4 @@ cohort reports an explicit eager fallback. Its allowlist has not been widened. A
 the Diffusers Python denoising loop; component CUDA-graph counters are measured, and a successful
 model render does not establish a whole-model autonomous GPU loop.
 
-Prepared only: no Anima GPU execution or machine SDK change was performed while writing these files.
+The linked receipts now contain completed baseline and phase-policy Anima runs.
