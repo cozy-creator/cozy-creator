@@ -7,10 +7,11 @@
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
 [ "$(uname -s)" = Darwin ] || fail "the mps suite runs on macOS"
+# Preserve the service's actual readiness error when candidate installation exits early.
+trap 'mps_exit=$?; if [ "$mps_exit" != 0 ]; then cozy machine logs local tensord --lines 0 --json > "$OUT/machine-failure.ndjson" 2>&1 || true; fi' EXIT
 
 step install; install_cozy
 step "the local machine"; machine_ready
-step candidates; candidates
 sysctl -n machdep.cpu.brand_string hw.memsize | tee "$OUT/apple-hardware.txt"
 sw_vers -productVersion | tee "$OUT/macos-version.txt"
 uv run -q --no-project python - "$OUT" "$CAND_COZY" "$CAND_TFS" "$CAND_RT" <<'PY'
@@ -28,6 +29,7 @@ for name, value in zip(("cozy", "tensorfs", "runtime"), sys.argv[2:], strict=Tru
         artifacts[name] = {"release": value}
 (out / "candidate-artifacts.json").write_text(json.dumps({"os": platform.platform(), "arch": platform.machine(), "artifacts": artifacts}, indent=2) + "\n")
 PY
+step candidates; candidates
 # An Apple GPU, unified.
 grep -q '"family": *"apple' "$OUT/machine.json" && grep -q '"memory_class": *"unified"' "$OUT/machine.json" \
   || fail "the local machine reports no unified Apple GPU"

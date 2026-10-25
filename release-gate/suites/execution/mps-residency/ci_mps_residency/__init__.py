@@ -41,6 +41,13 @@ def gpu(payload: Request, ctx: Context) -> Report:
     with tempfile.TemporaryDirectory(prefix="cozy-mps-residency-") as directory:
         writer = tensorfs.Writer(Path(directory) / "weights.cozytensors")
         for name, (out_width, in_width, dtype) in specs.items():
+            if not in_width:
+                # Author an empty stored part directly; its read does not require the
+                # separate Torch DLPack writer's empty-tensor stride convention.
+                writer.component(name).put(
+                    "weight", b"", dtype="F32", shape=(out_width, in_width)
+                )
+                continue
             weight = torch.zeros((out_width, in_width), dtype=dtype)
             if in_width:
                 weight[torch.arange(out_width), torch.arange(out_width)] = 1
