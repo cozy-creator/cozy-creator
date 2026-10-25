@@ -62,10 +62,83 @@ struct Pending<'a> {
     spec: &'a QuantizeTensor,
     component: Component,
     rows_per_chunk: usize,
-    source_width: usize,
+    source: Source,
+    row_source_bytes: u64,
     output_bytes: u64,
     parts: Vec<(String, Dtype, Vec<u64>)>,
     nvfp4: bool,
+}
+
+enum Source {
+    Plain {
+        width: usize,
+    },
+    Rowwise {
+        encoding: Encoding,
+        weight: Dtype,
+        scale: Dtype,
+        scale_width: usize,
+    },
+}
+
+fn source_layout(tensor: &crate::format::Tensor) -> Result<Source> {
+    match &tensor.body {
+        Body::Data(_) => Ok(Source::Plain {
+            width: if tensor.dtype == Dtype::F32 { 4 } else { 2 },
+        }),
+        Body::Encoded { encoding, parts } => {
+            if !matches!(encoding.scheme.as_str(), "fp8.rowwise" | "int8.rowwise")
+                || !encoding.params.is_empty()
+            {
+                return fail(Kind::Unsupported, "quantization source needs plain floats or parameter-free fp8.rowwise/int8.rowwise");
+            }
+            let metadata = parts
+                .iter()
+                .map(|part| {
+                    Ok(crate::format::decode::PartMetadata {
+                        role: &part.role,
+                        dtype: &part.dtype,
+                        shape: &part.shape,
+                        len: usize::try_from(part.at().length)
+                            .map_err(|_| invalid("source part exceeds address space"))?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            crate::format::decode::check_metadata(&Dtype::F32, &tensor.shape, encoding, &metadata)?;
+            let weight = parts
+                .iter()
+                .find(|part| part.role == "weight")
+                .expect("validated weight");
+            let scale = parts
+                .iter()
+                .find(|part| part.role == "scale")
+                .expect("validated scale");
+            Ok(Source::Rowwise {
+                encoding: encoding.clone(),
+                weight: weight.dtype.clone(),
+                scale: scale.dtype.clone(),
+                scale_width: if scale.dtype == Dtype::F32 { 4 } else { 2 },
+            })
+        }
+    }
+}
+
+fn implementation() -> String {
+    let mut hash = crate::sha256::Sha256::new();
+    hash.update(encode::implementation().as_bytes());
+    for source in [
+        include_str!("quantize.rs"),
+        include_str!("../format/decode/mod.rs"),
+        include_str!("../format/decode/plan.rs"),
+        include_str!("../format/decode/fp8.rs"),
+        include_str!("../format/decode/int8.rs"),
+        include_str!("../format/decode/affine.rs"),
+        include_str!("../format/decode/grid.rs"),
+    ] {
+        hash.update(&(source.len() as u64).to_le_bytes());
+        hash.update(source.as_bytes());
+    }
+    crate::sha256::hex(&hash.finish())
 }
 
 fn invalid(detail: impl Into<String>) -> Failure {
@@ -123,25 +196,19 @@ impl Writer {
                         spec.component, spec.key
                     ))
                 })?;
-            if !matches!(tensor.body, Body::Data(_))
-                || tensor.dtype != spec.source_dtype
-                || tensor.shape != spec.shape
-            {
+            if tensor.dtype != spec.source_dtype || tensor.shape != spec.shape {
                 return fail(
                     Kind::Invalid,
                     "quantization source identity, dtype or shape differs from resolved selection",
                 );
             }
-            let width = match spec.source_dtype {
-                Dtype::F16 | Dtype::BF16 => 2usize,
-                Dtype::F32 => 4,
-                _ => {
-                    return fail(
-                        Kind::Unsupported,
-                        "native quantization reads plain F16, BF16 or F32 weights",
-                    )
-                }
-            };
+            if !matches!(spec.source_dtype, Dtype::F16 | Dtype::BF16 | Dtype::F32) {
+                return fail(
+                    Kind::Unsupported,
+                    "native quantization needs logical F16, BF16 or F32 source weights",
+                );
+            }
+            let source = source_layout(tensor)?;
             if !matches!(spec.dtype, Dtype::F16 | Dtype::BF16 | Dtype::F32) {
                 return fail(
                     Kind::Invalid,
@@ -175,10 +242,28 @@ impl Writer {
             } else {
                 checked(cols.checked_add(4))?
             };
-            let row_memory = checked(
-                cols.checked_mul(width as u64 + 4)
-                    .and_then(|n| n.checked_add(row_output)),
-            )?;
+            let (row_source_bytes, row_memory) = match &source {
+                Source::Plain { width } => (
+                    checked(cols.checked_mul(*width as u64))?,
+                    checked(
+                        cols.checked_mul(*width as u64 + 4)
+                            .and_then(|n| n.checked_add(row_output)),
+                    )?,
+                ),
+                Source::Rowwise { scale_width, .. } => {
+                    let stored = checked(cols.checked_add(*scale_width as u64))?;
+                    // The shared CPU plan holds I32 codes and F32 values together, then
+                    // F32 values and serialized output together. Scales widen to F32.
+                    let decoding = checked(
+                        cols.checked_mul(9)
+                            .and_then(|n| n.checked_add(*scale_width as u64 + 4)),
+                    )?;
+                    let encoding =
+                        checked(cols.checked_mul(4).and_then(|n| n.checked_add(row_output)))?;
+                    (stored, decoding.max(encoding))
+                }
+            };
+            let source_bytes = checked(rows.checked_mul(row_source_bytes))?;
             let scratch = checked(
                 (if nvfp4 { Some(0) } else { cols.checked_mul(8) })
                     .and_then(|n| n.checked_add(4096)),
@@ -219,7 +304,8 @@ impl Writer {
                     spec,
                     component: component.clone(),
                     rows_per_chunk: rows_per_chunk as usize,
-                    source_width: width,
+                    source,
+                    row_source_bytes,
                     output_bytes: bytes,
                     parts,
                     nvfp4,
@@ -238,7 +324,7 @@ impl Writer {
         let identity = crate::sha256::hex_digest(
             &serde_json::to_vec(&(
                 "tensorfs-quantization/1",
-                encode::implementation(),
+                implementation(),
                 source.id(),
                 self.base_id(),
                 options.tensors,
@@ -283,7 +369,7 @@ impl Writer {
             for start in (0..rows).step_by(pending.rows_per_chunk) {
                 let count = pending.rows_per_chunk.min(rows - start);
                 let values = read_window(source, pending, start, count, options.control).await?;
-                read_bytes += (count * cols * pending.source_width) as u64;
+                read_bytes += count as u64 * pending.row_source_bytes;
                 for raw in values.as_chunks::<4>().0 {
                     let value = f32::from_le_bytes(*raw);
                     if !value.is_finite() {
@@ -305,7 +391,7 @@ impl Writer {
         for start in (0..rows).step_by(pending.rows_per_chunk) {
             let count = pending.rows_per_chunk.min(rows - start);
             let values = read_window(source, pending, start, count, options.control).await?;
-            read_bytes += (count * cols * pending.source_width) as u64;
+            read_bytes += count as u64 * pending.row_source_bytes;
             let shape = [count as u64, cols as u64];
             let amax = maximum.to_le_bytes();
             let mut arrays = BTreeMap::from([(
@@ -444,13 +530,102 @@ async fn read_window(
 ) -> Result<Vec<u8>> {
     control.check()?;
     let cols = pending.spec.shape[1] as usize;
-    let offset = (start * cols * pending.source_width) as u64;
-    let length = count * cols * pending.source_width;
+    match &pending.source {
+        Source::Plain { width } => {
+            let bytes = read_part(
+                source,
+                pending,
+                None,
+                (start * cols * width) as u64,
+                count * cols * width,
+                control,
+            )
+            .await?;
+            if pending.spec.source_dtype == Dtype::F32 {
+                return Ok(bytes);
+            }
+            let mut values = Vec::with_capacity(count * cols * 4);
+            for raw in bytes.as_chunks::<2>().0 {
+                let bits = u16::from_le_bytes(*raw);
+                let value = if pending.spec.source_dtype == Dtype::BF16 {
+                    crate::format::decode::elem::bf16(bits)
+                } else {
+                    crate::format::decode::elem::f16(bits)
+                };
+                values.extend_from_slice(&value.to_le_bytes());
+            }
+            Ok(values)
+        }
+        Source::Rowwise {
+            encoding,
+            weight,
+            scale,
+            scale_width,
+        } => {
+            let codes = read_part(
+                source,
+                pending,
+                Some("weight"),
+                (start * cols) as u64,
+                count * cols,
+                control,
+            )
+            .await?;
+            let scales = read_part(
+                source,
+                pending,
+                Some("scale"),
+                (start * scale_width) as u64,
+                count * scale_width,
+                control,
+            )
+            .await?;
+            let shape = [count as u64, cols as u64];
+            let scale_shape = [count as u64];
+            let parts = BTreeMap::from([
+                (
+                    "weight",
+                    PartBytes {
+                        dtype: weight,
+                        shape: &shape,
+                        bytes: &codes,
+                    },
+                ),
+                (
+                    "scale",
+                    PartBytes {
+                        dtype: scale,
+                        shape: &scale_shape,
+                        bytes: &scales,
+                    },
+                ),
+            ]);
+            // The source's logical BF16/F16 dtype is metadata, not an extra rounding
+            // boundary: Runtime's model-values contract reconstructs directly into F32.
+            Ok(crate::format::decode::decode(
+                &Dtype::F32,
+                &shape,
+                encoding,
+                &parts,
+            )?)
+        }
+    }
+}
+
+async fn read_part(
+    source: &Checkpoint,
+    pending: &Pending<'_>,
+    role: Option<&str>,
+    offset: u64,
+    length: usize,
+    control: &ConversionControl,
+) -> Result<Vec<u8>> {
+    control.check()?;
     let wanted = Download {
         selection: Selection::Part {
             component: pending.spec.component.clone(),
             key: pending.spec.key.clone(),
-            role: None,
+            role: role.map(str::to_owned),
             range: Some(offset..offset + length as u64),
         },
         ..Default::default()
@@ -466,6 +641,7 @@ async fn read_window(
         &mut bytes,
         &ReadInto {
             offset,
+            role,
             ..Default::default()
         },
     )?;
@@ -473,20 +649,7 @@ async fn read_window(
         .read_bytes
         .fetch_add(length as u64, Ordering::Release);
     control.check()?;
-    if pending.spec.source_dtype == Dtype::F32 {
-        return Ok(bytes);
-    }
-    let mut values = Vec::with_capacity(count * cols * 4);
-    for raw in bytes.as_chunks::<2>().0 {
-        let bits = u16::from_le_bytes(*raw);
-        let value = if pending.spec.source_dtype == Dtype::BF16 {
-            crate::format::decode::elem::bf16(bits)
-        } else {
-            crate::format::decode::elem::f16(bits)
-        };
-        values.extend_from_slice(&value.to_le_bytes());
-    }
-    Ok(values)
+    Ok(bytes)
 }
 
 struct CheckedRead<'a> {
