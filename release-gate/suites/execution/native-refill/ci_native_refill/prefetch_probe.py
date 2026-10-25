@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib.metadata
 import json
+import shutil
 import sys
 import tempfile
 import time
@@ -53,7 +54,7 @@ def issued(read):
     return row
 
 
-def automatic(memory, directory, seed, cancel):
+def automatic(memory, directory, seed, cancel, *, failed_cancel=False):
     width, large = 1024, 8192
     small = torch.eye(width)
     future = torch.full((large, large), 1 / width)
@@ -62,8 +63,26 @@ def automatic(memory, directory, seed, cancel):
     for index, weight in enumerate((small, future, small)):
         component.put(f"{index}.weight", weight)
     checkpoint = writer.commit()
+    original = None
+    damaged = None
+    if failed_cancel:
+        from tensorfs.raw import parts as stored_parts
+
+        original = checkpoint
+        exported = Path(tensorfs.materialize(original, local_dir=directory / "export"))
+        private = directory / "private-prefetch-failure"
+        shutil.copytree(
+            exported, private, copy_function=shutil.copyfile, symlinks=False
+        )
+        checkpoint = tensorfs.open(str(private), local_files_only=True)
+        part = stored_parts(checkpoint, "net", "1.weight")[""]
+        digest, _ = checkpoint.chunks[part.chunk]
+        damaged = private / "chunks" / digest.removeprefix("sha256:")
+        assert damaged.is_file() and damaged.stat().st_nlink == 1
     loop, oracle = resident_loop(seed)
     evidence, tokens = {}, []
+    deadline_context = None
+    future_calls = 0
     abort = cancel
     observe = True
 
@@ -77,13 +96,36 @@ def automatic(memory, directory, seed, cancel):
             )
 
         def forward(self, inputs):
-            nonlocal observe
+            nonlocal observe, future_calls
+            if self.index == 1:
+                future_calls += 1
             if self.index == 0 and observe:
                 pending = memory._prefetch
                 assert pending is not None and pending.block.path == "1"
                 assert owner.blocks["2"].region is None, "lookahead exceeded one block"
                 assert pending.block.data is None and pending.block.assigned is None
                 tokens.append(pending.read)
+                if failed_cancel:
+                    assert damaged is not None and deadline_context is not None
+                    evidence["issued_before_input_error"] = issued(pending.read)
+                    with damaged.open("r+b") as handle:
+                        handle.truncate(0)
+                    try:
+                        pending.read.wait()
+                    except tensorfs.Error as error:
+                        assert error.code in {"io", "integrity", "not_found"}
+                        evidence["ordinary_read_error"] = {
+                            "type": type(error).__name__,
+                            "code": error.code,
+                            "detail": str(error),
+                        }
+                    else:
+                        raise AssertionError(
+                            "private truncated input did not fail its read"
+                        )
+                    while time.monotonic() < deadline_context.deadline:
+                        time.sleep(0.001)
+                    return torch.nn.functional.linear(inputs, self.weight)
                 if abort:
                     evidence["issued_before_cancel"] = issued(pending.read)
                     raise Cancelled("owned cooperative stop before the next block")
@@ -96,7 +138,10 @@ def automatic(memory, directory, seed, cancel):
                 completed = pending.read.wait()
                 after = running.poll()
                 assert completed["done"] and not completed["canceled"]
-                assert not after.done and before.completed_steps < after.completed_steps < 3000
+                assert (
+                    not after.done
+                    and before.completed_steps < after.completed_steps < 3000
+                )
                 (result,) = running.wait()
                 torch.testing.assert_close(result, oracle, rtol=0, atol=0)
                 evidence.update(
@@ -118,7 +163,44 @@ def automatic(memory, directory, seed, cancel):
     )
     expected = inputs.cpu() @ small.t() @ future[:width, :width].t() @ small.t()
     try:
-        if cancel:
+        if failed_cancel:
+            from cozy_runtime.author._context import CURRENT, Context, Device
+            from cozy_runtime.author._errors import DeadlineExceeded
+
+            deadline_context = Context(
+                "owned-prefetch-failure-deadline",
+                time.monotonic() + 2,
+                device=Device("cuda", 0),
+            )
+            token = CURRENT.set(deadline_context)
+            try:
+                with (
+                    memory.request("prefetch-failure-deadline") as stopped,
+                    torch.no_grad(),
+                ):
+                    try:
+                        module(inputs)
+                    except DeadlineExceeded as error:
+                        evidence["cancellation"] = {
+                            "type": type(error).__name__,
+                            "code": error.code,
+                        }
+                    else:
+                        raise AssertionError(
+                            "ordinary read failure swallowed the actual deadline cancellation"
+                        )
+            finally:
+                CURRENT.reset(token)
+            assert future_calls == 0 and memory._prefetch is None
+            assert memory.native.stats()["pinned_bytes"] == 0
+            assert not memory.native.stats()["poisoned"]
+            evidence.update(
+                request=stopped.stats(),
+                future_forward_calls=future_calls,
+                private_input_copy=True,
+                original_deadline_preserved=True,
+            )
+        elif cancel:
             with memory.request("prefetch-cancel") as stopped, torch.no_grad():
                 try:
                     module(inputs)
@@ -173,6 +255,8 @@ def automatic(memory, directory, seed, cancel):
         owner.close()
         memory.trim()
         checkpoint.close()
+        if original is not None:
+            original.close()
     evidence["after_close"] = memory.native.stats()
     assert evidence["after_close"]["pinned_bytes"] == 0
     return evidence
@@ -581,7 +665,13 @@ def exercise(seed, mode):
                 memory, Path(directory), seed, legacy=mode == "gil-red"
             )
         else:
-            result = automatic(memory, Path(directory), seed, mode == "prefetch-cancel")
+            result = automatic(
+                memory,
+                Path(directory),
+                seed,
+                mode == "prefetch-cancel",
+                failed_cancel=mode == "prefetch-cancel-error",
+            )
     return {
         "passed": True,
         "mode": mode,

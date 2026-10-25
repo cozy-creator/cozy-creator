@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import msgspec
@@ -13,7 +14,7 @@ app = App()
 
 
 class Probe(msgspec.Struct, forbid_unknown_fields=True):
-    candidate_python: str
+    candidate_python: str = ""
     seed: int = 103
     mode: str = "fits"
 
@@ -36,6 +37,7 @@ def gpu(payload: Probe, tel: Telemetry) -> Report:
         "async-error",
         "prefetch",
         "prefetch-cancel",
+        "prefetch-cancel-error",
         "prefetch-pressure",
         "prefetch-capture",
         "prefetch-replay",
@@ -44,13 +46,14 @@ def gpu(payload: Probe, tel: Telemetry) -> Report:
         "gil-red",
     }:
         raise ValueError("unknown native refill gate mode")
-    if not Path(payload.candidate_python).is_file():
+    executable = payload.candidate_python or sys.executable
+    if not Path(executable).is_file():
         raise ValueError(
             "candidate_python must name an isolated prebuilt-wheel environment"
         )
     process = subprocess.Popen(
         [
-            payload.candidate_python,
+            executable,
             "-I",
             str(
                 Path(__file__).with_name(
