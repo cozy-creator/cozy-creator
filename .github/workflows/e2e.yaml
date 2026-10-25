@@ -8,7 +8,10 @@ name: e2e
 # reports.
 #   Required for merges into master and rc/*: it runs on the merge queue's group (merge_group), on the final
 #   PR + branch state; on a pull request `affected` and every suite are skipped and `e2e` passes at once, which
-#   lets the PR be queued. Nothing runs on a push. Other repos (their own merge_group) and dispatches call it:
+#   lets the PR be queued. Nothing runs on a push. A queue entry's base (merge_group.base_sha) is the entry ahead
+#   of it, so it selects only its own PR's suites: the rulesets' ALLGREEN (here, cozy-runtime, packages) makes
+#   every entry pass its own. HEADGREEN let a later entry's green carry red ones ahead of it in (cl-677).
+#   Other repos (their own merge_group) and dispatches call it:
 #     uses: cozy-creator/cozy-creator/.github/workflows/e2e.yaml@master
 #     with: {repo: cozy-runtime, ref: <head sha>, base: <base sha>}     # or select: "<tokens>" instead of base
 # The candidate set (TensorD, TensorFS, the Runtime) is built from the change and the other repos' master

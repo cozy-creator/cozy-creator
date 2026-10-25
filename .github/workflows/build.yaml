@@ -3,8 +3,8 @@ name: build
 # gates yet: master has 61 in tensorfs), and the routes hold to their API documents: every route hub-client calls is
 # in tensorhub's api/openapi.yaml, and TensorD's router, its client and crates/tensord/api/openapi.yaml name the same
 # routes. Required for merges into master and rc/*: it runs on the merge queue's group (merge_group), on the final
-# PR + branch state; on a pull request it is skipped, which lets the PR be queued. A docs-only group passes without
-# building.
+# PR + branch state; on a pull request it is skipped, which lets the PR be queued. A docs-only entry (its diff from
+# the entry ahead) passes without building; ALLGREEN keeps it from vouching for the entries ahead (e2e.yaml).
 on:
   pull_request:
   merge_group:
