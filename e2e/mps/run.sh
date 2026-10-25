@@ -41,6 +41,11 @@ served_mps() {
     "$OUT/$1.json" > /dev/null || check "$1: no actual MPS allocation record; CPU fallback is not a pass"
 }
 
+step "owned MPS checkpoint, alias and refill"
+if cell mps-residency "$E2E/../release-gate/suites/execution/mps-residency/gpu" seed:=209103 --gpus=1; then
+  jq -e '.result.passed == true' "$OUT/mps-residency.json" > /dev/null || check "MPS residency cell returned no proof"
+fi
+
 step "BiRefNet on the Apple GPU"
 dog=$(picture dog1.jpg)
 if cell birefnet "$(birefnet)" --asset "image=$dog" --gpus=1; then
