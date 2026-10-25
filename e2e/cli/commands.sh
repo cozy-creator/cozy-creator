@@ -114,10 +114,11 @@ run_follow() {
 step "a run followed, a snapshot, a cancel"
 (cd "$here" && cozy --json run ./weightless/wait seconds:=120 --on local > "$OUT/wait.ndjson" 2>&1) &
 waiting=$!
-n=''
-for _ in $(seq 60); do n=$(grep -oE '"number": *[0-9]+' "$OUT/wait.ndjson" | head -1 | grep -oE '[0-9]+$') && [ -n "$n" ] && break; sleep 1; done
+# Its own events say its number, then that it runs (e2e/run.sh); its follower exiting first ends the wait.
+until n=$(run_number "$OUT/wait.ndjson"); [ -n "$n" ] || ! kill -0 "$waiting" 2> /dev/null; do sleep 0.2; done
 if [ -z "$n" ]; then check "the waiting run never got a number"; else
-  for _ in $(seq 60); do cozy --json run show "$n" --once > "$OUT/snapshot.json" || true; J '.status == "in_progress"' "$OUT/snapshot.json" && break; sleep 2; done
+  until run_reached "$OUT/wait.ndjson" in_progress || ! kill -0 "$waiting" 2> /dev/null; do sleep 0.2; done
+  cozy --json run show "$n" --once > "$OUT/snapshot.json" || true
   J '.status == "in_progress"' "$OUT/snapshot.json" || check "run show --once: run $n is $(jq -r .status "$OUT/snapshot.json"), not in_progress"
   cozy --json run show "$n" > "$OUT/followed.ndjson" &
   following=$!

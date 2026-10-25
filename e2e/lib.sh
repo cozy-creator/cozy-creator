@@ -145,7 +145,7 @@ calcifer_orphaned() {
   for _ in $(seq 60); do kill -0 "$pid" 2> /dev/null || break; sleep 1; done
   ls -l /proc/*/fd 2> /dev/null | grep -c calcifer.lock > "$OUT/orphan-fds.txt" || true
   began=$(date +%s)
-  timeout 600 "$COZY" --json doctor > "$OUT/doctor-orphaned.json" || check "cozy doctor did not recover Calcifer after an orphaned machine ($(( $(date +%s) - began )) s)"
+  "$COZY" --json doctor > "$OUT/doctor-orphaned.json" || check "cozy doctor did not recover Calcifer after an orphaned machine ($(( $(date +%s) - began )) s)"
   [ $(( $(date +%s) - began )) -lt 120 ] || check "cozy doctor took $(( $(date +%s) - began )) s to recover Calcifer"
   grep -o '"fixed": *"[^"]*"' "$OUT/doctor-orphaned.json" || true
 }
@@ -277,12 +277,14 @@ executor_reaped() {
 # machine with `cozy machine enable`; a later one starts it on first use.
 machine_ready() {
   if has_verb enable; then cozy --json machine enable > "$OUT/enable.json" || check "cozy machine enable failed"; fi
-  for _ in $(seq 120); do
-    cozy --json machine show local > "$OUT/machine.json" 2>/dev/null && grep -q '"state": *"ready"' "$OUT/machine.json" && return 0
+  # It starts on `machine show local`, which says its boot; a start that fails is the machine's typed error.
+  while cozy --json machine show local > "$OUT/machine.json" 2> "$OUT/machine.err"; do
+    grep -q '"state": *"ready"' "$OUT/machine.json" && return 0
+    grep -qE '"state": *"(ending|ended)"' "$OUT/machine.json" && break
     sleep 5
   done
-  cat "$OUT/machine.json" || true
-  fail "the local machine is not ready after 10 min"
+  cat "$OUT/machine.json" "$OUT/machine.err" || true
+  fail "the local machine did not start: $(grep -o '"message": *"[^"]*"' "$OUT/machine.json" "$OUT/machine.err" | head -1)"
 }
 
 # cell <name> <target> [inputs...]: one `cozy run` on local (e2e/run.sh's run_cell), followed to its end. Its
@@ -307,7 +309,7 @@ cell() {
     echo "$name: run ${n:-none} refused with $ALLOW"
     return 0
   fi
-  check "$name: cozy run $target did not complete (run $n $(run_get "$OUT" "$name" .status)): $(run_get "$OUT" "$name" '.reason.message' | head -c 300)$(cat "$OUT/$name.stalled" 2> /dev/null | head -1)$(grep -o '"message": *"[^"]*"' "$OUT/$name.ndjson" | head -1 || true)"
+  check "$name: cozy run $target did not complete (run $n $(run_get "$OUT" "$name" .status)): $(run_get "$OUT" "$name" '.reason.message' | head -c 300)$(grep -o '"message": *"[^"]*"' "$OUT/$name.ndjson" | head -1 || true)"
   return 1
 }
 

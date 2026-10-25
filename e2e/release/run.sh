@@ -18,10 +18,8 @@ rented() { jq -r '.. | objects | select(.kind? == "rental") | .name // empty' "$
 cleanup() {
   set +e
   [ -n "$M" ] || [ ! -s "$OUT/rent.ndjson" ] || M=$(rented "$OUT/rent.ndjson")
-  if [ -n "$M" ]; then
-    cozy --json machine end "$M" --force -y > "$OUT/end-trap.json" 2>&1
-    for _ in $(seq 30); do cozy --json machine list | J --arg m "$M" '.machines | any(.name == $m)' || break; sleep 10; done
-  fi
+  # `machine end` returns once the Hub affirms the pod gone.
+  [ -z "$M" ] || cozy --json machine end "$M" --force -y > "$OUT/end-trap.json" 2>&1
   cozy --json package delete "fidika/$pkg" -y > /dev/null 2>&1
   cozy --json model delete "$model" -y > /dev/null 2>&1
 }
@@ -108,11 +106,10 @@ J --argjson d "${deadline:-0}" '.idle_deadline_ms > $d' "$OUT/keepalive.json" ||
 (cd "$here/../cli" && cozy --json run ./weightless/reverse text=rented --on "$M" > "$OUT/on-rental.ndjson") && grep -q detner "$OUT/on-rental.ndjson" \
   || check "a run on $M: no reply"
 (cd "$here/../cli" && cozy --json run ./weightless/wait seconds:=600 --on "$M" > "$OUT/rental-wait.ndjson" 2>&1) &
-for _ in $(seq 60); do grep -qE '"status": *"in_progress"' "$OUT/rental-wait.ndjson" && break; sleep 5; done
+until run_reached "$OUT/rental-wait.ndjson" in_progress || ! kill -0 $! 2> /dev/null; do sleep 0.2; done
+# `machine end` returns once the Hub affirms the pod gone.
 cozy --json machine end "$M" --force -y > "$OUT/end.json" || check "machine end $M --force failed"
-gone=''
-for _ in $(seq 30); do cozy --json machine list | J --arg m "$M" '.machines | any(.name == $m)' || { gone=1; break; }; sleep 10; done
-[ -n "$gone" ] && M='' || check "machine end --force: $M is still listed after 5 min"
+! cozy --json machine list | J --arg m "$M" '.machines | any(.name == $m)' && M='' || check "machine end --force: $M is still listed"
 wait || true
 
 step coverage; coverage "$COZY" release

@@ -11,7 +11,7 @@ use std::{
 };
 
 use platform::{
-    process::{Birth, Exact, meter},
+    process::{Birth, Exact, in_kernel, meter},
     tools::Side,
 };
 use protocol::{
@@ -292,8 +292,10 @@ fn holders(path: &Path) -> Vec<(u32, String)> {
 }
 
 /// `None` once the Calcifer `holder` names answers; else why it counts as stuck: its process made
-/// no progress, CPU or I/O, for `STILL` samples in a row while it answered nothing. Where progress
-/// cannot be read (Windows so far) it is waited on, said every few seconds.
+/// no progress, CPU or I/O, for `STILL` samples in a row while it answered nothing. One waiting in
+/// the kernel (D state: an fsync, a hung mount) is not stuck but waiting: it is waited on and said,
+/// never ended (no signal reaches it until that wait ends). Where progress cannot be read (Windows
+/// so far) it is waited on, said every few seconds.
 async fn silence(ctx: &Context, client: &Client, holder: &Holder) -> Option<String> {
     let answered = client.answers(holder);
     tokio::pin!(answered);
@@ -308,9 +310,9 @@ async fn silence(ctx: &Context, client: &Client, holder: &Holder) -> Option<Stri
                 };
             }
             _ = tokio::time::sleep(SAMPLE) => {
-                let now = meter(holder.pid);
+                let (now, kernel) = (meter(holder.pid), in_kernel(holder.pid));
                 still = match (now, last) {
-                    (Some(now), Some(last)) if now == last => still + 1,
+                    (Some(now), Some(last)) if now == last && kernel.is_none() => still + 1,
                     _ => 0,
                 };
                 last = now;
@@ -322,8 +324,13 @@ async fn silence(ctx: &Context, client: &Client, holder: &Holder) -> Option<Stri
                 }
                 if reported.elapsed() >= REPORT {
                     reported = Instant::now();
+                    let kernel = match kernel.as_deref() {
+                        Some("") => ": it waits in the kernel (D state), as in an fsync; not ended".to_owned(),
+                        Some(wchan) => format!(": it waits in the kernel (D state, {wchan}), as in an fsync; not ended"),
+                        None => String::new(),
+                    };
                     output::say(ctx, &format!(
-                        "waiting for Calcifer (pid {}) to answer ({} s so far)",
+                        "waiting for Calcifer (pid {}) to answer ({} s so far){kernel}",
                         holder.pid,
                         began.elapsed().as_secs()
                     ));

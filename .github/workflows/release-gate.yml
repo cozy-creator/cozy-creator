@@ -109,7 +109,8 @@ jobs:
     concurrency:
       group: release-gate-${{ matrix.sku }}-${{ matrix.key }}
       cancel-in-progress: false
-    # Hang bound, not a work budget: H3 at the product shape on a cold machine is the long cell.
+    # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The gate fails on the CLI's
+    # typed errors and exits, never on time; H3 at the product shape on a cold machine is the long cell.
     timeout-minutes: 300
     defaults:
       run:

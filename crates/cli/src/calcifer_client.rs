@@ -2,7 +2,8 @@
 //! typed refusals from its envelope, and a run's event stream. Any call starts Calcifer when none
 //! runs, from the home's installed `cozy` only: as this user's service where a service manager
 //! answers, else as a detached `cozy calcifer`. Nothing here gives up because time passed: a start
-//! is waited on until Calcifer publishes its record or its refusal, and a long wait is reported.
+//! is waited on until Calcifer publishes its record or its refusal, and a long wait is reported. A
+//! request or stream Calcifer leaves unanswered says so, naming its process and what it is doing.
 use std::{
     fs::OpenOptions,
     io::{self, Write as _},
@@ -32,6 +33,9 @@ use crate::{Context, output};
 const SAMPLE: Duration = Duration::from_millis(50);
 /// How often a wait that goes on says so.
 const REPORT: Duration = Duration::from_secs(5);
+/// Calcifer's streams carry a keepalive this often (axum's default): one silent for two is a Calcifer
+/// that does not answer.
+const KEEPALIVE: Duration = Duration::from_secs(15);
 /// Calcifer stopping under a call, or a stream closing with nothing in it, this many times in a
 /// row is a Calcifer that is not going to answer.
 const AGAIN: u32 = 3;
@@ -248,8 +252,11 @@ impl Client {
                 .header(header::ACCEPT, "text/event-stream")
         });
         Ok(Watch {
+            client: self.clone(),
             stream: ok(answer.await?).await?,
             sse: Sse::default(),
+            heard: Instant::now(),
+            quiet: false,
             of: std::marker::PhantomData,
         })
     }
@@ -259,13 +266,9 @@ impl Client {
     pub async fn stop(&self) -> Result<Down, Error> {
         let holder = self.endpoint().await?;
         let base = format!("http://{}", holder.address);
+        let request = self.0.http.post(format!("{base}/v1/down")).bearer_auth(&holder.token);
         let answer = self
-            .0
-            .http
-            .post(format!("{base}/v1/down"))
-            .bearer_auth(&holder.token)
-            .json(&serde_json::json!({}))
-            .send()
+            .heard(holder.pid, Instant::now(), REPORT, request.json(&serde_json::json!({})).send())
             .await
             .map_err(unreachable)?;
         let down: Down = decode(answer).await?;
@@ -302,7 +305,8 @@ impl Client {
         let holder = self.record()?;
         let probe = format!("http://{}/v1/runs", holder.address);
         let request = self.0.http.get(probe).query(&[("limit", 1)]);
-        request.bearer_auth(&holder.token).send().await.ok()?;
+        let answer = request.bearer_auth(&holder.token).send();
+        self.heard(holder.pid, Instant::now(), REPORT, answer).await.ok()?;
         Some(holder)
     }
 
@@ -435,10 +439,8 @@ impl Client {
         loop {
             let holder = self.endpoint().await?;
             let base = format!("http://{}", holder.address);
-            let sent = build(&self.0.http, &base)
-                .bearer_auth(&holder.token)
-                .send()
-                .await;
+            let request = build(&self.0.http, &base).bearer_auth(&holder.token);
+            let sent = self.heard(holder.pid, Instant::now(), REPORT, request.send()).await;
             // Nothing answered: Calcifer is gone, or one that is stopping closed the connection
             // under the request. Every request is safe to send again: reads, keyed asks, cancels.
             // A 401: a restart minted a new token.
@@ -484,11 +486,48 @@ impl Client {
         }
     }
 
+    /// The pid of the Calcifer this client last reached.
+    fn pid(&self) -> u32 {
+        self.holder().map_or(0, |h| h.pid)
+    }
+
     fn say(&self, message: &str) {
         if !self.0.json {
             anstream::eprintln!("{message}");
         }
     }
+
+    /// `answer`, awaited as long as it takes; once Calcifer `pid` has said nothing for `quiet` since
+    /// `since`, every few seconds it says so (`unanswered`). A Calcifer that exits closes its
+    /// connections, which ends the wait at once; a live one is its user's to judge.
+    async fn heard<T>(&self, pid: u32, since: Instant, quiet: Duration, answer: impl Future<Output = T>) -> T {
+        tokio::pin!(answer);
+        let first = (since + quiet).max(Instant::now());
+        let mut report = tokio::time::interval_at(first.into(), REPORT);
+        loop {
+            tokio::select! {
+                out = &mut answer => return out,
+                _ = report.tick() => self.say(&unanswered(pid, since.elapsed())),
+            }
+        }
+    }
+}
+
+/// Calcifer process `pid` has not answered for `waited`: what that process is doing, as its OS says.
+pub(crate) fn unanswered(pid: u32, waited: Duration) -> String {
+    let doing = match process::in_kernel(pid) {
+        Some(wchan) if wchan.is_empty() => ", in the kernel (D state)".to_owned(),
+        Some(wchan) => format!(", in the kernel (D state, {wchan})"),
+        None => match process::Birth::of(pid).and_then(|birth| birth.state()) {
+            Ok(process::State::Stopped) => ", stopped".to_owned(),
+            Ok(process::State::Gone) => ", gone".to_owned(),
+            _ => String::new(),
+        },
+    };
+    format!(
+        "waiting on Calcifer (pid {pid}{doing}): no answer for {}s; `cozy doctor` restarts a stuck one",
+        waited.as_secs()
+    )
 }
 
 /// A run's events, resumed from the last durable one whenever the connection closes before the
@@ -542,7 +581,7 @@ impl Events {
                 }
                 continue;
             };
-            match stream.chunk().await {
+            match self.client.heard(self.client.pid(), Instant::now(), 2 * KEEPALIVE, stream.chunk()).await {
                 Ok(Some(bytes)) => self.sse.push(&bytes),
                 // An ended run's stream ends once its outputs settled; its follower checks them.
                 Ok(None) if self.ended => {
@@ -598,13 +637,19 @@ impl Events {
 
 /// One list-level stream (`Client::watch`).
 pub struct Watch<T> {
+    client: Client,
     stream: Response,
     sse: Sse,
+    /// When it last carried anything, a keepalive included.
+    heard: Instant,
+    /// A live view's: it shows `silence` in its title instead of saying it.
+    pub(crate) quiet: bool,
     of: std::marker::PhantomData<T>,
 }
 
 impl<T: DeserializeOwned> Watch<T> {
     /// The next item, skipping types this build does not read; `None` once the stream closed.
+    /// Cancel-safe.
     pub async fn next(&mut self) -> Option<T> {
         loop {
             while let Some(data) = self.sse.next() {
@@ -612,11 +657,31 @@ impl<T: DeserializeOwned> Watch<T> {
                     return Some(item);
                 }
             }
-            match self.stream.chunk().await {
-                Ok(Some(bytes)) => self.sse.push(&bytes),
+            let chunk = match self.quiet {
+                true => self.stream.chunk().await,
+                false => {
+                    let pid = self.client.pid();
+                    self.client.heard(pid, self.heard, 2 * KEEPALIVE, self.stream.chunk()).await
+                }
+            };
+            match chunk {
+                Ok(Some(bytes)) => {
+                    self.heard = Instant::now();
+                    self.sse.push(&bytes);
+                }
                 Ok(None) | Err(_) => return None,
             }
         }
+    }
+
+    pub fn quiet(self) -> Self {
+        Self { quiet: true, ..self }
+    }
+
+    /// Calcifer not answering on this stream past two keepalives, said for a view's title.
+    pub fn silence(&self) -> Option<String> {
+        let waited = self.heard.elapsed();
+        (waited >= 2 * KEEPALIVE).then(|| unanswered(self.client.pid(), waited))
     }
 }
 
@@ -650,7 +715,7 @@ impl LogFollow {
                 self.stream = Some(self.open().await?);
                 continue;
             };
-            match stream.chunk().await {
+            match self.client.heard(self.client.pid(), Instant::now(), 2 * KEEPALIVE, stream.chunk()).await {
                 Ok(Some(bytes)) => self.sse.push(&bytes),
                 Ok(None) | Err(_) => {
                     (self.stream, self.sse) = (None, Sse::default());

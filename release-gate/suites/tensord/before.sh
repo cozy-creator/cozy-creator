@@ -7,7 +7,7 @@
 #      cozy-runtime>=0.31 (packages 710a0a1d) and the pod holds the Hub's 0.30 pair. `cozy machine update <m> --runtime
 #      0.31.0 --tensorfs 0.14.0` (versions the machine fetches from PyPI) then serves it.
 OLDV=0.11.15 FLOORED=sdxl/generate@2.13.1 MEETS=(--runtime 0.31.0 --tensorfs 0.14.0)
-pair() { timeout 60 "$CLI" --json machine show "$M" 2>/dev/null | jq -r '.status | "\(.version) \(.runtime) \(.tensorfs)"'; }
+pair() { "$CLI" --json machine show "$M" 2>/dev/null | jq -r '.status | "\(.version) \(.runtime) \(.tensorfs)"'; }
 # pypi <dist> <version>: its wheel for the pod's CPython 3.12 on manylinux x86_64 (else pure), as URL#sha256=<hex>.
 pypi() { curl -sf --retry 5 --retry-all-errors "https://pypi.org/pypi/$1/$2/json" | jq -r '[.urls[] | select(.filename | endswith(".whl"))] as $w
   | ([$w[] | select(.filename | test("manylinux.*x86_64") and test("-cp312-|-abi3-"))] + [$w[] | select(.filename | test("-none-any"))])[0]
@@ -22,7 +22,7 @@ for _ in 1 2 3; do
     && (cd "$C" && sha256sum -c cozy-x86_64-unknown-linux-gnu.tar.gz.sha256 >/dev/null && tar -xzf cozy-x86_64-unknown-linux-gnu.tar.gz) && break
 done
 OLD=$C/cozy-x86_64-unknown-linux-gnu/cozy
-for _ in $(seq 30); do read -r v rt tfs <<< "$(pair)"; [ -n "$v" ] && break; sleep 5; done  # a fresh pod reports once up
+reported
 log "cl650: fresh $M runs cozy $v, Runtime $rt, TensorFS $tfs"
 
 if [ -z "$TDF" ]; then expect cl650-b-update-from-0.11.15 FAIL "no --tensord candidate to update a 0.11.15 TensorD to"; else
