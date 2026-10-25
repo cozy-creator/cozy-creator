@@ -96,7 +96,7 @@ def automatic(memory, directory, seed, cancel):
                 completed = pending.read.wait()
                 after = running.poll()
                 assert completed["done"] and not completed["canceled"]
-                assert not after.done and after.completed_steps < 3000
+                assert not after.done and before.completed_steps < after.completed_steps < 3000
                 (result,) = running.wait()
                 torch.testing.assert_close(result, oracle, rtol=0, atol=0)
                 evidence.update(
