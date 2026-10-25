@@ -51,6 +51,13 @@ stage timestamps, actual graph launches, cancellation/progress, pin reclamation 
 completion. The source identity, native read and result are separate facts. This gate measures
 correctness, not model throughput or comparisons with ComfyUI.
 
-Fixture syntax, formatting and lint checks pass. Installed-cohort GPU receipts remain pending;
-do not run until the source owners provide matching Runtime/TensorFS artifacts and the root
-agent coordinates the GPU lane. This PR makes no passing GPU claim yet.
+The installed RTX 3060 cohort passed all seven modes on 2026-10-25: runs **17446–17452**,
+Runtime `c4233c9d6`, TensorFS `527c1ba29`, TensorD `ca3849147`. The loaded case consumed
+64 MiB and completed all 30 reductions with one graph launch during a three-second Python
+park. Active cancellation stopped after 103 steps; failed reads launched no graph and left
+the context healthy. Scope return joined 2,000 steps; exception unwind canceled and joined.
+All modes checked physical pin/alias cleanup. Exact artifacts, facts and qualification
+limits are in [the receipt](evidence/c4233c9d6-rtx3060.json).
+
+These are mechanism correctness results. They do not establish a production denoiser,
+encoded load-to-execute composition, GPU-only transfer handoff or comparative speed.
