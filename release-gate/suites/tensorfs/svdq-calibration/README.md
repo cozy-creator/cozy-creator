@@ -55,8 +55,32 @@ required buffer bytes. Process high-water RSS was390,012,928/478,683,136 bytes f
 basic/cancel, including imports and independent reference work; it is not fitter-only
 memory. Restore18054 verified the actual observed SDK and ready/idle machine.
 
-These are CPU correctness/cost samples. The refreshed Runtime cutover, public finished
-Output reuse and held-out GPU consumer still require the combined cohort's own receipts.
+These are CPU correctness/cost samples. The separate combined consumer cohort subsequently
+passed with Runtime79d15f0c3, TensorFS33b598e78 and the unchanged7a CLI:
+[retained consumer evidence](evidence/33b-79d-native-consumer-18190-18196.json).
+Public component/reuse/changed-identity18190 and interrupted A→close→reopen→onlyB→commit→
+unchangedA reuse18191 passed. Source18192, private upload18193, real calibration/native
+conversion/adoption18194, encoded upload18195 and separately loaded held-out GPU18196
+all completed. Restore18197 verified the actual observed SDK and ready/idle state.
+
+For the128×256 BF16 linear and128 calibration rows, native calibration error was0.08636694
+versus plainNVFP40.13484470 and frozenTorch0.08588128. Whole-weight relative error was
+0.06390025. Exact residual/companion bytes and independent stored-score checks passed.
+Model calibration took0.149s, native snapshot/fit/pack/write0.378s and checkpoint adoption
+0.500s. The native working requirement was1,137,735 bytes under64MiB; invocation peakRSS
+1,811,271,680 bytes includes imports, model calibration and the frozen GPU reference.
+Torch peak allocated/reserved were21,815,296/23,068,672 bytes, not native-fit-only memory.
+
+The two held-out batches had relative errors0.00227516/0.00233244 against stored values
+and0.05493933/0.05658376 against the original BF16 model. This RTX4070 Laptop/SM89 consumer
+used `ordinary-linear` / `decoded-weight-gemm`; it does not qualify native SM100 SVDQ.
+The source/encoded private checkpoints and output hashes are retained. New BF16 normalization
+work is a separately frozen cohort and is not covered by these GPU receipts.
+
+The first combined attempt18156 exposed absent calibration stored asNone in noncalibrated
+provenance; Runtime79d15 omits that optional field under the existing no-null metadata law.
+The failed receipt and restore18157 remain preserved. Native arithmetic and the Output
+resume repair were unchanged by this one-line correction.
 
 ---
 

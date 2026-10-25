@@ -1,0 +1,331 @@
+{
+  "scope": "Actual public Runtime native conversion, interrupted/finished Output identity and separately loaded held-out GPU consumption; SM89 decoded-weight GEMM, not native SM100 SVDQ or full-model performance",
+  "creator_source": "7aebfc6bc6025f01fa97c68633a86ab3a5737079",
+  "tensorfs_source": "33b598e784c2ad6db1d716b7fdae4b7db57bf2f0",
+  "runtime_source": "79d15f0c36ae39eb2edbd5ca40bd2221ce3ca94c",
+  "target": {
+    "tensord": {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/prepared-warm-factory-20261025/creator-7aebfc6bc/cozy/cozy-linux-x86_64",
+      "sha256": "218a773780adfc8e3b9e398f363ea5ca77b142599a130c06e67409e900610566",
+      "bytes": 46921344
+    },
+    "runtime": {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261025/native-svdq-migration/runtime-provenance-artifact-79d15f0c3/cozy_runtime-0.33.0-cp312-abi3-manylinux_2_28_x86_64.whl",
+      "sha256": "970db4db3dff9a6da3615faf25fe22074fa7d77fc0dd3131620422549fc22a09",
+      "bytes": 21502009,
+      "record_hashes_verified": 227,
+      "zip_crc_verified": true
+    },
+    "tensorfs": {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261025/native-svdq-migration/combined-consumer-proof-222b/artifacts/tensorfs-0.16.0-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "sha256": "31b38d243ea2159e645c292d052d08f2ff2bc77abbb934ab261189d42dad8dcf",
+      "bytes": 13518496,
+      "record_hashes_verified": 17,
+      "zip_crc_verified": true
+    }
+  },
+  "restore": {
+    "runtime": {
+      "path": "/home/fidika/.cozy/machine/root/var/lib/cozy/tensord/sdk/candidate-da5bf3fc3add3304674385d1fef432a0/cozy_runtime-0.32.3-cp312-abi3-manylinux_2_28_x86_64.whl",
+      "sha256": "8588ce22f35872fddd76695217ea949e50eaf506ef0b75a8fbbb0b0eab7b7eb8"
+    },
+    "tensorfs": {
+      "path": "/home/fidika/.cozy/machine/root/var/lib/cozy/tensord/sdk/candidate-da5bf3fc3add3304674385d1fef432a0/tensorfs-0.15.6-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "sha256": "ca15dd65e7aa3249f3749dd60a452260ab54854ccb44d4449b7189234951941b"
+    },
+    "tensord": {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261025/native-svdq-migration/combined-consumer-proof-79d15/installed-cli-before",
+      "sha256": "6b0c6dbbe5d4740fa611dc4c0a28d1cc00b9362bf8397192bfdeae5bdfd119a0"
+    }
+  },
+  "restoration_run": 18197,
+  "restored_ready_idle_utc": "2026-10-25T22:37:58.095439Z",
+  "prior_producer_runs": {
+    "offline_runtime_adapters": 18152,
+    "native_basic": 18154,
+    "native_cancel": 18155,
+    "cohort": "/home/fidika/cozy_v2/outputs/stock-torch-20261025/native-svdq-migration/combined-consumer-proof-222b/COHORT.json",
+    "runtime_difference": "79d15 changes only noncalibrated provenance omission; native arithmetic and adapters unchanged"
+  },
+  "proof": {
+    "seed": 256006,
+    "native": {
+      "runtime_components": {
+        "run": 18190,
+        "detail": {
+          "components": {
+            "a": {
+              "exact_rank32_error": 4.336289149156448,
+              "fit": {
+                "alpha": 0.0,
+                "calibration_bytes_read": 17408,
+                "calibration_error": 0.06929895756365481,
+                "plain_nvfp4_error": 0.12897081563529061,
+                "required_buffer_bytes": 672327,
+                "residual": {
+                  "amax": 0.14911730587482452,
+                  "energy": 18.843725590218835,
+                  "max_abs_error": 0.014077983796596527,
+                  "saturated": 659,
+                  "sse": 0.1446768326146114
+                },
+                "strategy": "svdq-nvfp4-r32-faer/1"
+              },
+              "logical_energy": 64.43670226561213,
+              "lowrank_error": 4.340936023717348,
+              "multiply_vs_divide_bf16_differences": 0,
+              "relative_frobenius": 0.04738412272302474,
+              "residual_energy": 18.843725590218835,
+              "residual_packing_sha256": "53208a40edcf904f04a6d6e998843d186b899ff4a4c138bd5490b9a8a9501599",
+              "stored_parts": {
+                "input_scale": "ab36b3120563b0db9e3780b6e692417fef4969a6683bb5f52413ee17afcedaf1",
+                "lowrank_down": "5eae824fdc202446a85ec0b2952cdb4c1aaa6784c762136ef51a0b633abf196d",
+                "lowrank_up": "4a03e502449d89cf45b7c9b43d9b9f8a03f14a09b396347f6c9beed157176294",
+                "pre_quant_scale": "893a106828fbdb9521e1d868c985aab7ad2ae2f606edc55329265a5e7676006c",
+                "scale": "697cd0dacbaa545a423b0b22a98b3564b9c42ee07b1b69727a381be92488142a",
+                "scale_2": "6661cdc44cc861ad69b9ea53a752ca37a8b0bdef0903dc2b0c51a7f6348f37c5",
+                "weight": "53208a40edcf904f04a6d6e998843d186b899ff4a4c138bd5490b9a8a9501599"
+              },
+              "stored_pre_calibration_error": 0.0692989517184998
+            },
+            "b": {
+              "exact_rank32_error": 4.284881448799665,
+              "fit": {
+                "alpha": 0.20000000298023224,
+                "calibration_bytes_read": 17408,
+                "calibration_error": 0.06750588385693107,
+                "plain_nvfp4_error": 0.13585847535399692,
+                "required_buffer_bytes": 672327,
+                "residual": {
+                  "amax": 0.13495661318302155,
+                  "energy": 18.38840740193829,
+                  "max_abs_error": 0.01686156541109085,
+                  "saturated": 676,
+                  "sse": 0.142885061053117
+                },
+                "strategy": "svdq-nvfp4-r32-faer/1"
+              },
+              "logical_energy": 65.07766954992627,
+              "lowrank_error": 4.28817062935072,
+              "multiply_vs_divide_bf16_differences": 0,
+              "relative_frobenius": 0.04773527389371064,
+              "residual_energy": 18.38840740193829,
+              "residual_packing_sha256": "176d558678de06115920423fc5b2d22300885ad66dddab311dfb199f4c2399c4",
+              "stored_parts": {
+                "input_scale": "2b6871cb46566210b2e7c9a3ae69cb63aa3b3b2b7c9dbe964412f2f10369d8c0",
+                "lowrank_down": "b52d28c54e5406d5dee09af032e575249a273dd9e43e8028921643ef09a214a4",
+                "lowrank_up": "3156b1c464a79811ef0c1fa226378ac6c48ffb5612d4b9d917a2e9cfef527a07",
+                "pre_quant_scale": "1d0fcdba72caf59d10536b576339c0397c4dd746f6129a701286e4710ccb7e12",
+                "scale": "97284db34ce124e2b31968eeffd8b3e3bb23482dd565350cf417c4ee4c8ba7ad",
+                "scale_2": "82fa618d2f4767ec29a29a8cd0d06592f68befa730f6fa56b9167bbc9fc866c8",
+                "weight": "176d558678de06115920423fc5b2d22300885ad66dddab311dfb199f4c2399c4"
+              },
+              "stored_pre_calibration_error": 0.0675058893992456
+            }
+          },
+          "different_finished_calibration_refused": "quantization_identity: finished output has a different calibration or native producer; derive a new output",
+          "full_plan_single_identity": true,
+          "future_component_not_written": true,
+          "nonfit_identity_refusals": [
+            "quantization_identity: finished output has a different calibration or native producer; derive a new output",
+            "quantization_identity: finished output has a different calibration or native producer; derive a new output"
+          ]
+        }
+      },
+      "runtime_resume": {
+        "run": 18191,
+        "detail": {
+          "a_encoded": 1,
+          "a_finished_reuse": {
+            "encoded": 0,
+            "new_bytes": 0,
+            "read_bytes": 0,
+            "reused": 1,
+            "worst_relative_frobenius": null
+          },
+          "b_after_reopen": {
+            "encoded": 1,
+            "new_bytes": 16640,
+            "read_bytes": 65536,
+            "reused": 0
+          },
+          "changed_finished_policy_refusals": [
+            "quantization_identity: finished output has a different calibration or native producer; derive a new output",
+            "quantization_identity: finished output has a different calibration or native producer; derive a new output"
+          ],
+          "changed_unfinished_policy_refusals": [
+            0.0,
+            0.4
+          ],
+          "checkpoint": "sha256:6f789eb0d5acdb172ba7a6e9da931727822e2729fb75827ec528d403c458de14",
+          "controls": {
+            "inherited-base": {
+              "finished_a_refused": "quantization_identity: finished output has a different calibration or native producer; derive a new output",
+              "only_b_encoded": 1
+            },
+            "manual-before-binding": {
+              "finished_a_refused": "quantization_identity: finished output has a different calibration or native producer; derive a new output",
+              "native_refusal": "invalid: invalid document: selected tensor was written without this quantization identity"
+            }
+          },
+          "scope": "Real public component helper, native Writer journal and finished Output; CPU only"
+        }
+      }
+    },
+    "source_run": 18192,
+    "upload_source_run": 18193,
+    "source_commit": "fidika/native-svdq-faer-20261025-256006@sha256:c61c6851e26c1f15a6f7318855f51cfcbe628345488b314a7bf0faf1c45d63c3",
+    "calibration_run": 18194,
+    "calibration": {
+      "calibration_channels": 256,
+      "calibration_checkpoint": "sha256:bb94f1c8d6fe04201d673142ceae8a47f34656ee01259dc3a09f3f119e75217b",
+      "calibration_rows": 128,
+      "checkpoint": "sha256:f19b9accee8d7db1ac29277aa7633ca4ca5b7d347df7dfb64b2757f42f76e535",
+      "device": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "exact_rank32_error": 7.974154989790147,
+      "fit": {
+        "alpha": 0.6000000238418579,
+        "calibration_bytes_read": 66560,
+        "calibration_error": 0.08636693631143362,
+        "plain_nvfp4_error": 0.1348447045824871,
+        "required_buffer_bytes": 1137735,
+        "residual": {
+          "amax": 0.20048794150352478,
+          "energy": 63.7131980654498,
+          "max_abs_error": 0.026095405220985413,
+          "saturated": 1369,
+          "sse": 0.48542018824543515
+        },
+        "strategy": "svdq-nvfp4-r32-faer/1"
+      },
+      "historical_reference": {
+        "alpha": 0.7,
+        "calibration_error": 0.08588127791881561,
+        "plain_nvfp4_error": 0.13488474488258362,
+        "producer": "torch-svdq-frozen/1",
+        "whole_weight_energy": 129.51437181553837,
+        "whole_weight_sse": 0.546133981290972
+      },
+      "implementation": "e08d4471072ca01108d74c3027d56f74f879f4115360fe8438d248d331019f10",
+      "logical_energy": 129.5143718155384,
+      "lowrank_error": 7.982054747978215,
+      "measured": {
+        "encoded_keys": 1,
+        "new_bytes_written": 44040,
+        "reused_keys": 0,
+        "saturated_elements": 1369,
+        "source_bytes_read": 65536,
+        "tensors": [
+          {
+            "component": "net",
+            "fit": {
+              "alpha": 0.6000000238418579,
+              "calibration_bytes_read": 66560,
+              "calibration_error": 0.08636693631143362,
+              "plain_nvfp4_error": 0.1348447045824871,
+              "required_buffer_bytes": 1137735,
+              "residual": {
+                "amax": 0.20048794150352478,
+                "energy": 63.7131980654498,
+                "max_abs_error": 0.026095405220985413,
+                "saturated": 1369,
+                "sse": 0.48542018824543515
+              },
+              "strategy": "svdq-nvfp4-r32-faer/1"
+            },
+            "key": "proj.weight",
+            "measured": {
+              "amax": 0.259765625,
+              "energy": 129.5143718155384,
+              "max_abs_error": 0.023774228990077972,
+              "saturated": 1369,
+              "sse": 0.52883846139136
+            },
+            "new_bytes_written": 44040,
+            "relative_frobenius": 0.06390024669273592,
+            "source_bytes_read": 65536
+          }
+        ],
+        "worst_relative_frobenius": 0.06390024669273592
+      },
+      "memory": {
+        "process_peak_rss_bytes": 1811271680,
+        "scope": "whole invocation including model calibration and frozen GPU reference; not native-fit-only",
+        "torch_peak_allocated_bytes": 21815296,
+        "torch_peak_reserved_bytes": 23068672
+      },
+      "missing_calibration_refused": true,
+      "multiply_vs_divide_bf16_differences": 0,
+      "relative_frobenius": 0.06390024669273592,
+      "residual_energy": 63.7131980654498,
+      "residual_packing_sha256": "6e7bd5f7c0fa7d5485b3bcf572948c1e72c6df2daea54a2ba88449ab75bd6922",
+      "runtime": "0.33.0",
+      "runtime_commit": "79d15f0c36ae39eb2edbd5ca40bd2221ce3ca94c",
+      "seed": 256006,
+      "stored_parts": {
+        "input_scale": "e40ffa159b8738b51422d9f344f17351ead050bbc85e4e27b07dd172cc1dee71",
+        "lowrank_down": "31231a47093ee82bc8140ecbd18144ac5fd70a0d970e57092e1e1418f5cc7d51",
+        "lowrank_up": "7c97b4198243c510707173120f6379ee6eee9ec3042c166f19fc1497cc71160e",
+        "pre_quant_scale": "c11d999f13e6f93dafdfdc814e7098c9f2eb427434a580c02cbd817db7045fbc",
+        "scale": "3f0d3068458be5f0cb0093aaf3356498d215769f10f9b072a62baf3ec5537178",
+        "scale_2": "890ee33d9c27cda7cf9e26183be0ae53c07cdafe7065cc118ea5dcadd6c56326",
+        "weight": "6e7bd5f7c0fa7d5485b3bcf572948c1e72c6df2daea54a2ba88449ab75bd6922"
+      },
+      "stored_pre_calibration_error": 0.08636693788471733,
+      "tensorfs": "0.16.0",
+      "timing": {
+        "checkpoint_adoption_seconds": 0.49954590198467486,
+        "historical_reference_fit_seconds": 0.7013832989905495,
+        "model_calibration_seconds": 0.1492408270132728,
+        "native_snapshot_fit_pack_write_seconds": 0.37751134601421654
+      },
+      "torch": "2.14.1+cu130"
+    },
+    "upload_svdq_run": 18195,
+    "encoded_commit": "fidika/native-svdq-faer-20261025-256006@sha256:fe6f3d8937e99a742e91484a194b8bca89be65df1beb2375053a6995885db310",
+    "prediction_run": 18196,
+    "prediction": {
+      "cases": [
+        {
+          "consumption": "decoded-weight-gemm",
+          "heldout_max_abs_error": 0.0014446365107409487,
+          "heldout_relative_to_original": 0.054939330725609824,
+          "heldout_relative_to_stored": 0.0022751560122191024,
+          "module_encoding": "plain",
+          "output_sha256": "a6052c293534a7db0de4836d10e8dde06beed2a95d6a39237fff59623b68ddb4",
+          "provider": "ordinary-linear"
+        },
+        {
+          "consumption": "decoded-weight-gemm",
+          "heldout_max_abs_error": 0.0014659207617701009,
+          "heldout_relative_to_original": 0.056583759590334744,
+          "heldout_relative_to_stored": 0.002332441159403979,
+          "module_encoding": "plain",
+          "output_sha256": "ae1071ffa3bb23db048dbaf0efcc2ea513b5b47f0c23662eeb9121d8558ec8c0",
+          "provider": "ordinary-linear"
+        }
+      ],
+      "checkpoint": "sha256:f19b9accee8d7db1ac29277aa7633ca4ca5b7d347df7dfb64b2757f42f76e535",
+      "device": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "seed": 256006
+    },
+    "scope": "real SVDQ component/calibration correctness; not full-model performance"
+  },
+  "receipt_hashes": {
+    "inputs.json": "2ff38e4d3c6dde681b75f3632b6ab3bafd85c7b2a0baef73ed21ed7804e32d24",
+    "before.json": "3b2bd48d6c0b0064a1776129fe707d092b0f214104c0006b65da2296eae6078f",
+    "install.json": "7ffbfecd641e87b95bbc4ffe897ab29fde39cc79980227ae68d7c670fcb16c5e",
+    "restore-verified-baseline.json": "e0a99096cc2975bdd00bd4ee912f641f89a3911c6088935f84c7e76aac032488",
+    "restore-verified-baseline-observed.json": "5990edb8f2ab669079b6d431de3b9b9516978a6b5c15676cc508d971ebd34433",
+    "restore-verified-baseline-sdk.json": "a88a632582b1bccdf062efa88a33df8d6875674fff049d8ef1fc1fd897e713fd",
+    "consumer/proof.json": "81a6b7db07f7d21c15fc8b0c405c2cd89b0c801e717ac2b9e128d1cb855da96e",
+    "consumer/runtime-components.json": "d0dc0237fbc1ddb0d432e15d57b5daa5e3947cdaf2bea781639b3f8a6fe6e751",
+    "consumer/runtime-resume.json": "ebf34418df88bca378c41e23d39d9665152e76be3148195bed757f03c35f9dc5",
+    "consumer/source.json": "720b8e16e9f61582252d96f7eb4c1233212e5837184b8c1e97718151b12ac13b",
+    "consumer/upload-source.json": "9504d1a1555a683427247550f113b539a03197ab38fde6717c73482b44f9f9ec",
+    "consumer/calibrate.json": "ebd200e8340db53631076999d969379300425fb078ca85475f3e812223560d5f",
+    "consumer/upload-svdq.json": "43984db343ef2445aa553c54b65f60b1ededd7bb4d06e3cfb7c1e35efe77cab5",
+    "consumer/predict.json": "febd218bad4e9b52e43230dc0ab97500f571c8f21627b8fdc3b98397b65ac3a7"
+  },
+  "bf16_cohort_included": false
+}
