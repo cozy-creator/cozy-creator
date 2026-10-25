@@ -3,7 +3,7 @@
 //! built and written by serde here. The Runtime keeps no copy of them: an unknown field is
 //! ignored, a missing one takes its default, a needed one fails by its path.
 use protocol::executor::{
-    Activate, Adapter, Answer, Bearer, Binding, ByteGrant, CallInterface, CallProgress, Cancel, CheckpointItem,
+    Activate, Adapter, Answer, Binding, ByteGrant, CallInterface, CallProgress, Cancel, Capability, CheckpointItem,
     ChildCall, ChildCancel, ChildEvents, ChildForget, ChildPoll, Command, Construction, Fork,
     GpuRelease, InputFile, InputMetadata, Invoke, Load, Map, MemoSettings, ModelLoad, ModelPrefetch,
     PrepareRequest, Probe, Publish, PublishPart, Start, StageMemoLookup, StageMemoStore, Unload,
@@ -47,7 +47,7 @@ fn decode_command(py: Python<'_>, data: &[u8]) -> PyResult<Py<PyAny>> {
         Command::Unload(c) => c.into_py_any(py),
         Command::Probe(c) => c.into_py_any(py),
         Command::Fork(c) => c.into_py_any(py),
-        Command::Bearer(c) => c.into_py_any(py),
+        Command::Capability(c) => c.into_py_any(py),
     }
 }
 
@@ -72,7 +72,7 @@ pub fn install(parent: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Unload>()?;
     m.add_class::<Probe>()?;
     m.add_class::<Fork>()?;
-    m.add_class::<Bearer>()?;
+    m.add_class::<Capability>()?;
     m.add_class::<Adapter>()?;
     m.add_class::<Binding>()?;
     m.add_class::<ModelLoad>()?;

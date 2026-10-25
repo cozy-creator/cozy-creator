@@ -18,8 +18,12 @@ J() { jq -e "$@" > /dev/null; }
 run=$(date -u +%m%d%H%M)$RANDOM
 pkg=ci-e2e-$run model=fidika/ci-e2e-$run M=''
 
-# The machine an answer of `machine rent` names (pretty or NDJSON).
-rented() { jq -r '.. | objects | select(.kind? == "rental") | .name // empty' "$1" 2> /dev/null | tail -1; }
+# The machine an answer of `machine rent` names (pretty or NDJSON), or the rental its refusal names (one that did not
+# come up): the trap ends it either way.
+rented() {
+  { jq -r '.. | objects | select(.kind? == "rental") | .name // empty' "$1" 2> /dev/null || true; } | tail -1 | grep . \
+    || grep -o 'rental rent-[0-9a-f]* did not come up' "$1" | head -1 | cut -d' ' -f2
+}
 # Whether `machine list` lists machine $1.
 listed() { cozy --json machine list | J --arg m "$1" '.machines | any(.name == $m)'; }
 cleanup() {
@@ -32,6 +36,8 @@ cleanup() {
   fi
   cozy --json package delete "fidika/$pkg" -y > /dev/null 2>&1
   cozy --json model delete "$model" -y > /dev/null 2>&1
+  # Calcifer's log holds each Hub answer about the rental (a boot that failed, why).
+  [ -n "$INSTALLED" ] || (cd ~/.cozy && find . -name '*.log' -size -20M | tar -czf "$OUT/cozy-logs.tgz" -T -) > /dev/null 2>&1
 }
 trap cleanup EXIT
 # A runner's cancel or timeout signals the script: it exits, so the trap ends the rental.
@@ -140,7 +146,10 @@ open(sys.argv[1], "wb").write(struct.pack("<Q", len(header)) + header + bytes(64
 PY
 watched upload-b model upload "$OUT/tiny-b.safetensors" "$model" --lane f32 --on "$ON" || check "model upload --lane f32 failed"
 commit_b=$(jq -r '.. | objects | .commit? // empty' "$OUT/upload-b.ndjson" 2> /dev/null | tail -1) || true
-cozy --json model family e2e-family "$model" > /dev/null && cozy --json model info "$model" | J '.family == "e2e-family"' || check "model family: not set"
+# While its commit is private: a run capability reaches it and nothing else (cl-670).
+"$here/../capabilities/run.sh" --out "$OUT/capabilities" --commit "$model@$commit" > "$OUT/capabilities.txt" \
+  || check "run capabilities: $(grep FAIL "$OUT/capabilities.txt" | head -3 | tr '\n' ' ')"
+cozy --json model family "$model" e2e-family > /dev/null && cozy --json model info "$model" | J '.family == "e2e-family"' || check "model family: not set"
 cozy --json model family --clear "$model" > /dev/null && cozy --json model info "$model" | J '.family == null' || check "model family --clear: not cleared"
 cozy --json model publish "$model" 0.1.0 "$commit" "$commit_b" > "$OUT/model-publish.json" || check "model publish failed"
 cozy --json model info "$model" > "$OUT/model-info.json" \
@@ -171,7 +180,9 @@ cozy --json run list --on "$M" > "$OUT/runs-rental.json" && J --arg m "$M" '(.ru
 step "a run on $M followed, then canceled"
 deadline=$(jq '.idle_deadline_ms // 0' "$OUT/rental.json") || true
 cozy --json machine keepalive "$M" > "$OUT/keepalive.json" || check "machine keepalive failed"
-J --argjson d "${deadline:-0}" '.idle_deadline_ms > $d' "$OUT/keepalive.json" || check "machine keepalive: its idle deadline did not move"
+# A machine with work has no idle deadline to answer; one it answers is later than the one before.
+J --argjson d "${deadline:-0}" '.acknowledged_at_ms > 0 and (.idle_deadline_ms == null or .idle_deadline_ms > $d)' "$OUT/keepalive.json" \
+  || check "machine keepalive: not acknowledged, or its idle deadline did not move: $(head -c 300 "$OUT/keepalive.json")"
 (cd "$here/../cli" && watched on-rental run ./weightless/reverse text=rented --on "$M") && grep -q detner "$OUT/on-rental.ndjson" \
   || check "a run on $M: no reply"
 n=$(cd "$here/../cli" && run_submit "$OUT" cancel-wait run ./weightless/wait seconds:=300 --on "$M")
@@ -186,11 +197,13 @@ run_wait "$OUT" cancel-wait || true
 
 step "an end while a run goes"
 (cd "$here/../cli" && cozy --json run ./weightless/wait seconds:=600 --on "$M" > "$OUT/rental-wait.ndjson" 2>&1) &
-until run_reached "$OUT/rental-wait.ndjson" in_progress || ! kill -0 $! 2> /dev/null; do sleep 0.2; done
+going=$!
+until run_reached "$OUT/rental-wait.ndjson" in_progress || ! kill -0 "$going" 2> /dev/null; do sleep 0.2; done
 # `machine end` returns once the Hub affirms the pod gone.
 cozy --json machine end "$M" --force -y > "$OUT/end.json" || check "machine end $M --force failed"
 ! listed "$M" && M='' || check "machine end --force: $M is still listed"
-wait || true
+# Its follower ends with the run (machine_lost); a bare `wait` would wait on --release's loopback server too.
+wait "$going" || true
 
 step coverage; coverage "$COZY" release
 finish "cli-release: $pkg, $model, ${SKU} at \$$(usd "$hourly")/h, \$$(spent) of GPU time"

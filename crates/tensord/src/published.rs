@@ -1226,7 +1226,7 @@ fn make_source(
 fn refused(code: &'static str, refusal: tensorfs::err::Refusal) -> Failure {
     match refusal.code {
         tensorfs::err::Code::CAPACITY_EXHAUSTED => ("machine_disk_full", refusal.to_string()),
-        // The owner's bearer was refused (expired, revoked); without one a private object is absent.
+        // The run's capability was refused (expired); without one a private object is absent.
         tensorfs::err::Code::CREDENTIAL_REQUIRED => ("hub_credential_refused", refusal.detail),
         _ => (code, refusal.to_string()),
     }
@@ -1352,7 +1352,7 @@ fn newest_key(request: &Request) -> String {
 
 /// A commit (or a bare header) named by its hash, with what a hash alone does not say: its
 /// length (the Hub's) and its format; a commit resolves to its header and lane. Read once under
-/// the run's access (its request's bearer) and kept, since a hash never names other bytes.
+/// the run's access (its request's capability) and kept, since a hash never names other bytes.
 fn measured(machine: &Machine, service: &Service, source: &hub::Source, named: Named) -> Result<Named, Failure> {
     if named.header.is_some() {
         return Ok(named);

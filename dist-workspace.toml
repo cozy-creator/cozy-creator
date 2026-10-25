@@ -18,7 +18,6 @@ targets = [
   "x86_64-unknown-linux-gnu",
   "aarch64-unknown-linux-gnu",
   "aarch64-apple-darwin",
-  "x86_64-apple-darwin",
   "x86_64-pc-windows-msvc",
   "aarch64-pc-windows-msvc",
 ]
@@ -30,6 +29,8 @@ dispatch-releases = true
 precise-builds = true
 source-tarball = false
 pr-run-mode = "skip"
+# Swatinem/rust-cache in build-local-artifacts, keyed per target.
+cache-builds = true
 github-attestations = true
 tap = "cozy-creator/homebrew-tap"
 # A published release pushes its Formula/cozy.rb to the tap.
@@ -44,6 +45,6 @@ global = "ubuntu-24.04"
 x86_64-unknown-linux-gnu = { runner = "ubuntu-24.04", container = { image = "quay.io/pypa/manylinux_2_28_x86_64", host = "x86_64-unknown-linux-musl" } }
 aarch64-unknown-linux-gnu = { runner = "ubuntu-24.04-arm", container = { image = "quay.io/pypa/manylinux_2_28_aarch64", host = "aarch64-unknown-linux-musl" } }
 aarch64-apple-darwin = "macos-15"
-x86_64-apple-darwin = "macos-15-intel"
-x86_64-pc-windows-msvc = "windows-2025"
+# Built on the Arm64 runner: the x64 one takes twice as long (cl-669).
+x86_64-pc-windows-msvc = { runner = "windows-11-arm", host = "aarch64-pc-windows-msvc" }
 aarch64-pc-windows-msvc = "windows-11-arm"

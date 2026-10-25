@@ -155,7 +155,7 @@ class Fork(_Wire):
     root: Path
     environment: dict[str, str]
 
-class Bearer(_Wire):
+class Capability(_Wire):
     actor: str
     tensorfs: TensorFSOptions
 
@@ -195,7 +195,7 @@ class Answer(_Wire):
     stored: bool
     reason: str
 
-Command: TypeAlias = Hello | Shutdown | Start | Load | Activate | PrepareRequest | Invoke | Map | Unload | Probe | Fork | Bearer
+Command: TypeAlias = Hello | Shutdown | Start | Load | Activate | PrepareRequest | Invoke | Map | Unload | Probe | Fork | Capability | Cancel
 
 def decode_command(data: bytes) -> Command: ...
 def decode_answer(data: bytes) -> Answer: ...

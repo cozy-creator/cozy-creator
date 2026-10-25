@@ -1,6 +1,7 @@
 //! Hub access (th-245). A run reads its Hub's package catalog anonymously, and its models through
-//! TensorFS's distribution `Endpoint` (`origin`) under its owner's newest ordinary bearer when its
-//! request carried one, or anonymously without one.
+//! TensorFS's distribution `Endpoint` (`origin`) under its signer's newest run capability when its
+//! request carried one (cl-670), or anonymously without one. A machine never holds an account's
+//! sign-in.
 use base64::Engine as _;
 use hub_client::Credential;
 use std::collections::BTreeMap;
@@ -155,35 +156,36 @@ fn pooled(pool: &Pool, ca_der: Option<&[u8]>) -> Result<reqwest::Client, Refusal
     Ok(client)
 }
 
-/// One signer's newest ordinary bearer at one Hub: every read under its owner's access presents
-/// the one held when it is sent, and each executor given it for a request hears of each newer
-/// one (`Command::Bearer`). In memory only, for the life of the process.
-pub struct Bearer {
+/// One signer's newest run capability at one Hub: what its computer minted for the runs it has here
+/// (their private commits, their weights destinations). Every read and upload for those runs
+/// presents the one held when it is sent, and each executor given it for a request hears of each
+/// newer one (`Command::Capability`). In memory only, for the life of the process.
+pub struct Capability {
     actor: String,
     held: Mutex<(String, i64)>,
     /// The executors given it, each with the endpoint its requests named.
     lines: Mutex<Vec<(Line, String)>>,
 }
 
-impl Bearer {
+impl Capability {
     /// `actor`'s at `origin`, offered `token` (until `expires_unix_ms`; 0: unknown), which it
     /// keeps unless the one it holds expires later. None without a token or a Hub origin.
-    pub fn offer(actor: &str, origin: &str, token: &str, expires_unix_ms: i64) -> Option<Arc<Bearer>> {
-        static HELD: Mutex<BTreeMap<(String, String), Arc<Bearer>>> = Mutex::new(BTreeMap::new());
+    pub fn offer(actor: &str, origin: &str, token: &str, expires_unix_ms: i64) -> Option<Arc<Capability>> {
+        static HELD: Mutex<BTreeMap<(String, String), Arc<Capability>>> = Mutex::new(BTreeMap::new());
         let key = (actor.to_string(), origin_key(origin).filter(|_| !token.is_empty())?);
-        let bearer = HELD.lock().unwrap().entry(key).or_insert_with(|| Arc::new(Bearer {
+        let capability = HELD.lock().unwrap().entry(key).or_insert_with(|| Arc::new(Capability {
             actor: actor.into(), held: Mutex::default(), lines: Mutex::default(),
         })).clone();
-        let mut held = bearer.held.lock().unwrap();
+        let mut held = capability.held.lock().unwrap();
         let newer = (expires_unix_ms == 0 || expires_unix_ms >= held.1) && held.0 != token;
         if newer {
             *held = (token.to_string(), expires_unix_ms);
         }
         drop(held);
         if newer {
-            bearer.forward();
+            capability.forward();
         }
-        Some(bearer)
+        Some(capability)
     }
 
     /// The token held now, and when it expires.
@@ -205,7 +207,7 @@ impl Bearer {
     fn forward(&self) {
         let (token, expires_unix_ms) = self.held();
         self.lines.lock().unwrap().retain(|(line, endpoint)| {
-            line.send(&Command::Bearer(device_executor::Bearer {
+            line.send(&Command::Capability(device_executor::Capability {
                 actor: self.actor.clone(),
                 tensorfs: TensorFSOptions { endpoint: endpoint.clone(), token: token.clone(), expires_unix_ms, ..Default::default() },
             }))
@@ -222,13 +224,13 @@ fn utc(unix_ms: i64) -> String {
 }
 
 #[async_trait::async_trait]
-impl TokenProvider for Bearer {
+impl TokenProvider for Capability {
     async fn headers(&self, _: &Request<'_>) -> tensorfs::err::Result<Vec<(String, String)>> {
         Ok(vec![("authorization".into(), format!("Bearer {}", self.held().0))])
     }
 
-    /// A refused bearer that a newer one replaced since is asked once more with that; the newest
-    /// refused fails the read, naming when it expires.
+    /// A refused capability that a newer one replaced since is asked once more with that; the
+    /// newest refused fails the read, naming when it expires.
     fn retry(&self, sent: &Request<'_>, status: u16, _: &HeaderMap) -> tensorfs::err::Result<bool> {
         if status != 401 {
             return Ok(false);
@@ -240,33 +242,33 @@ impl TokenProvider for Bearer {
         }
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
         refuse(Code::CREDENTIAL_REQUIRED, match expires {
-            0 => "the Hub refused the owner's bearer".to_string(),
-            at if at <= now => format!("the owner's bearer expired at {}", utc(at)),
-            at => format!("the Hub refused the owner's bearer, which expires at {}", utc(at)),
+            0 => "the Hub refused the run's capability".to_string(),
+            at if at <= now => format!("the run's capability expired at {}", utc(at)),
+            at => format!("the Hub refused the run's capability, which expires at {}", utc(at)),
         })
     }
 }
 
-/// Where a run reads a Hub, and its owner's bearer there when its request carried one.
+/// Where a run reads a Hub, and its signer's capability there when its request carried one.
 #[derive(Clone)]
 pub struct Source {
     pub origin: String,
     pub ca_der: Option<Vec<u8>>,
-    pub bearer: Option<Arc<Bearer>>,
+    pub capability: Option<Arc<Capability>>,
 }
 
 impl Source {
-    pub fn new(origin: &str, ca_der: Option<Vec<u8>>, bearer: Option<Arc<Bearer>>) -> Result<Self, Refusal> {
+    pub fn new(origin: &str, ca_der: Option<Vec<u8>>, capability: Option<Arc<Capability>>) -> Result<Self, Refusal> {
         if !valid_origin(origin) {
             return Err(Refusal(format!("{origin} is not an HTTPS origin")));
         }
-        Ok(Self { origin: origin.trim_end_matches('/').to_string(), ca_der, bearer })
+        Ok(Self { origin: origin.trim_end_matches('/').to_string(), ca_der, capability })
     }
 
-    /// Its bearer, for `endpoint` only when that is this Hub.
-    pub fn bearer_at(&self, endpoint: &str) -> Option<Arc<Bearer>> {
+    /// Its capability, for `endpoint` only when that is this Hub.
+    pub fn capability_at(&self, endpoint: &str) -> Option<Arc<Capability>> {
         let here = origin_key(endpoint).is_some_and(|key| origin_key(&self.origin) == Some(key));
-        self.bearer.clone().filter(|_| here)
+        self.capability.clone().filter(|_| here)
     }
 }
 

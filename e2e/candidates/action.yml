@@ -104,8 +104,6 @@ runs:
         RUNTIME: ${{ inputs.runtime }}
         BUILD_SH: ${{ github.action_path }}/build.sh
         GH_TOKEN: ${{ github.token }}
-        CARGO_PROFILE_RELEASE_LTO: "off"
-        CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
         CARGO_INCREMENTAL: "0"
       run: |
         set -euo pipefail

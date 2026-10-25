@@ -2880,7 +2880,7 @@ impl Pool {
                     detail: "a follower exited before its GPU ledger could be associated".into(),
                 }));
             }
-            // The request's signer, whose bearer the Runtime keeps apart.
+            // The request's signer, whose capability the Runtime keeps apart.
             let actor = engine.get(id).ok().and_then(|record| record.submission).map(|s| s.actor).unwrap_or_default();
             let load = match plan.slots.first() {
                 // A call that constructs nothing: its weightless construction.

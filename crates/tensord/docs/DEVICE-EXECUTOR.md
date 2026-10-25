@@ -47,16 +47,17 @@ needs room. TensorD creates no CUDA context, GPU allocation or lease listener.
 - 4-byte big-endian length + JSON, any size. `seam::MAX_FRAME` (256 MiB, as Runtime's
   `seam.MAX_FRAME`) refuses only a corrupt or hostile prefix. Bulk data goes through the spool.
 - Any outgoing object key named `token`, `credential`, `authorization`, `secret` or `jwt` is
-  refused, except `tensorfs.token` on `load`, `invoke` and `bearer`: the request's owner bearer.
+  refused, except `tensorfs.token` on `load`, `invoke` and `capability`: the signer's run
+  capability, never an account's sign-in.
 - Commands (`cmd`): `hello`, `start`, `load`, `activate`, `prepare_request`, `invoke`, `map`
   (warming: load the construction's models at `level` `gpu` or `ram`),
   `unload`, `probe`, `fork`, `shutdown`. The usual sequence is
   Hello -> Start -> Load -> Activate -> PrepareRequest -> Invoke.
-- `bearer` (`{"cmd":"bearer","actor","tensorfs":{"endpoint","token","expires_unix_ms"}}`) goes
-  outside any exchange (a `Line`, under the lock every write takes) and is answered by nothing.
-  TensorD sends it to each executor a Load or Invoke gave that signer's token for that endpoint,
-  whenever it holds a newer one. Load and Invoke name `actor`. A Runtime without the handler
-  answers `reply: bearer`, which TensorD ignores.
+- `capability` (`{"cmd":"capability","actor","tensorfs":{"endpoint","token","expires_unix_ms"}}`)
+  goes outside any exchange (a `Line`, under the lock every write takes) and is answered by
+  nothing. TensorD sends it to each executor a Load or Invoke gave that signer's capability for
+  that endpoint, whenever it holds a newer one. Load and Invoke name `actor`. A Runtime without the
+  handler answers `reply: capability`, which TensorD ignores.
 - GPU execution requires Hello's concrete `memory_backend="torch"` capability before Start;
   package versions are not the capability. Start carries no GPU-page namespace or lease protocol.
   A configured total `gpu_memory_limit` is currently refused as `gpu_memory_limit_unsupported`:

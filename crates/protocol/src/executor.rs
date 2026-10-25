@@ -35,16 +35,16 @@ pub enum Command {
     Probe(Probe),
     /// Fork this import-only executor into a new one on its own seam (`fork/1`).
     Fork(Fork),
-    /// `actor`'s newest bearer at `tensorfs.endpoint`, sent outside any exchange and answered by
-    /// nothing: the executor's reads and uploads there present it from now on.
-    Bearer(Bearer),
+    /// `actor`'s newest run capability at `tensorfs.endpoint`, sent outside any exchange and
+    /// answered by nothing: the executor's reads and uploads there present it from now on.
+    Capability(Capability),
 }
 
 impl Command {
     /// Every `cmd` TensorD sends.
     pub const NAMES: [&'static str; 13] = [
         "hello", "shutdown", "start", "load", "activate", "prepare_request", "invoke", "map", "unload",
-        "probe", "fork", "bearer", "cancel",
+        "probe", "fork", "capability", "cancel",
     ];
 
     /// One command from its wire bytes. An unknown member is ignored and a missing one takes its
@@ -68,7 +68,7 @@ impl Command {
             "unload" => Command::Unload(one(fields)?),
             "probe" => Command::Probe(one(fields)?),
             "fork" => Command::Fork(one(fields)?),
-            "bearer" => Command::Bearer(one(fields)?),
+            "capability" => Command::Capability(one(fields)?),
             other => return Err(format!("unknown command `{other}`")),
         })
     }
@@ -88,7 +88,7 @@ impl Command {
             Self::Unload(_) => "unload",
             Self::Probe(_) => "probe",
             Self::Fork(_) => "fork",
-            Self::Bearer(_) => "bearer",
+            Self::Capability(_) => "capability",
         }
     }
 }
@@ -261,7 +261,7 @@ pub struct Fork {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
-pub struct Bearer {
+pub struct Capability {
     #[serde(default)]
     pub actor: String,
     pub tensorfs: TensorFSOptions,
@@ -1234,6 +1234,6 @@ mod python {
         Unload => Command::Unload,
         Probe => Command::Probe,
         Fork => Command::Fork,
-        Bearer => Command::Bearer
+        Capability => Command::Capability
     );
 }

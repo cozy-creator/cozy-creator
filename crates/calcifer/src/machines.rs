@@ -71,8 +71,8 @@ pub struct Machines {
     pub(crate) renting: Mutex<HashSet<RunId>>,
     /// Told when a rental appears or is ready: `any` runs may fit it.
     pub(crate) placing: Notify,
-    /// The machines sent this computer's bearer at each Hub, which get each one minted after.
-    pub(crate) bearers: Mutex<HashMap<config::Origin, HashSet<String>>>,
+    /// The machines holding a run capability at each Hub, which get each one minted after.
+    pub(crate) capabilities: Mutex<HashMap<config::Origin, HashMap<String, crate::access::Held>>>,
     /// This computer's machine, started when something uses it.
     local: crate::local::Local,
     tasks: Mutex<JoinSet<()>>,
@@ -122,7 +122,7 @@ impl Machines {
             booting: Mutex::default(),
             renting: Mutex::default(),
             placing: Notify::new(),
-            bearers: Mutex::default(),
+            capabilities: Mutex::default(),
             local,
             tasks: Mutex::default(),
             calcifer,
@@ -220,7 +220,9 @@ impl Machines {
                     }
                     self.observe(&row.name, frame);
                 }
-                Err(e) => self.unreachable(&row.name, e.to_string()),
+                Err(LinkError::Unreachable(e)) => self.unreachable(&row.name, e),
+                // Connected but slow to answer: its last picture stands.
+                Err(_) => {}
             }
         }
         self.picture(&row)
@@ -504,7 +506,12 @@ impl Machines {
             Err(error) => Err(error),
         };
         match read {
-            Err(error) if matches!(error.code.as_str(), "machine_ended" | "machine_unreachable") => {
+            Err(error)
+                if matches!(
+                    error.code.as_str(),
+                    "machine_ended" | "machine_unreachable" | "machine_unanswered"
+                ) =>
+            {
                 let row = self.store().find_machine(text).map_err(internal)?;
                 row.and_then(|row| self.kept_log(&row.name, log, lines)).ok_or(error)
             }
@@ -663,9 +670,10 @@ impl Machines {
     }
 
     /// Follows the machine's Status for as long as it lives. A broken stream is opened again,
-    /// paced; for a rental that does not answer its Hub is asked, paced apart, and its word is
-    /// the only one that ends it. While its Hub says it is offline only its Hub is read, never
-    /// the machine, until the Hub says it is back or gone.
+    /// paced; the machine is unreachable only when no connection to it can be made, never for a
+    /// stream that broke or an answer that is slow. For a rental that is unreachable its Hub is
+    /// asked, paced apart, and its word is the only one that ends it. While its Hub says it is
+    /// offline only its Hub is read, never the machine, until the Hub says it is back or gone.
     async fn follow_status(self: Arc<Self>, name: String, kind: MachineKind) {
         let (mut pause, mut hub_pause) = (Duration::ZERO, Duration::ZERO);
         let mut hub_at = tokio::time::Instant::now();
@@ -675,24 +683,29 @@ impl Machines {
                 _ => return,
             }
             let offline = self.offline(&name).is_some();
+            let mut unreachable = false;
             if !offline {
-                let reason = match self.status_frames(&name, &mut pause).await {
+                let error = match self.status_frames(&name, &mut pause).await {
                     Ok(()) if kind == MachineKind::Local => return self.local_exited().await,
                     Ok(()) => {
                         self.ended(&name, "it released itself after its idle time");
                         return;
                     }
-                    Err(reason) => reason,
+                    Err(error) => error,
                 };
                 if kind == MachineKind::Local && !self.local.running() {
                     return self.local_exited().await;
                 }
-                self.unreachable(&name, reason);
-                if pause.is_zero() {
-                    hub_pause = Duration::ZERO;
+                if let LinkError::Unreachable(reason) = error {
+                    self.unreachable(&name, reason);
+                    unreachable = true;
+                    if pause.is_zero() {
+                        hub_pause = Duration::ZERO;
+                    }
                 }
             }
-            if kind == MachineKind::Rental && tokio::time::Instant::now() >= hub_at {
+            let ask = kind == MachineKind::Rental && (offline || unreachable);
+            if ask && tokio::time::Instant::now() >= hub_at {
                 hub_pause = (hub_pause * 2).clamp(Duration::from_secs(5), Duration::from_secs(60));
                 hub_at = tokio::time::Instant::now() + hub_pause;
                 if let Some(Word::Gone(_) | Word::Moved) = self.hub_word(&name).await {
@@ -711,12 +724,10 @@ impl Machines {
 
     /// Reads the machine's Status frames until it says it released itself (`Ok`) or the stream
     /// breaks. Any frame resets the pause.
-    async fn status_frames(&self, name: &str, pause: &mut Duration) -> Result<(), String> {
-        let link = self
-            .calcifer
-            .link(name)?
-            .ok_or_else(|| "it has no address".to_string())?;
-        let mut frames = link.watch().await.map_err(|e| e.to_string())?;
+    async fn status_frames(&self, name: &str, pause: &mut Duration) -> Result<(), LinkError> {
+        let link = (self.calcifer.link(name).map_err(LinkError::Unreachable)?)
+            .ok_or_else(|| LinkError::Unreachable("it has no address".into()))?;
+        let mut frames = link.watch().await?;
         loop {
             match frames.next().await {
                 Some(Ok(frame)) => {
@@ -727,8 +738,11 @@ impl Machines {
                         return Ok(());
                     }
                 }
-                None => return Err("the machine closed its Status stream".into()),
-                Some(Err(e)) => return Err(e.to_string()),
+                None => {
+                    let closed = "the machine closed its Status stream";
+                    return Err(LinkError::Unanswered(closed.into()));
+                }
+                Some(Err(e)) => return Err(e),
             }
         }
     }
@@ -850,7 +864,7 @@ impl Machines {
             .next(format!("cozy machine show {name}")))
     }
 
-    /// Reads the machine's Status now: whether it answered.
+    /// Reads the machine's Status now: whether a connection to it was made.
     async fn status_now(&self, name: &str) -> bool {
         let Ok(Some(link)) = self.calcifer.link(name) else {
             return false;
@@ -860,10 +874,11 @@ impl Machines {
                 self.observe(name, frame);
                 true
             }
-            Err(e) => {
-                self.unreachable(name, e.to_string());
+            Err(LinkError::Unreachable(e)) => {
+                self.unreachable(name, e);
                 false
             }
+            Err(_) => true,
         }
     }
 
@@ -1153,14 +1168,15 @@ async fn fresh(machines: &Arc<Machines>, text: &str) -> Result<Machine, Error> {
     let link = link.ok_or_else(|| unavailable("it has no address yet".into()))?;
     match link.status().await {
         Ok(frame) => machines.observe(&row.name, frame),
-        Err(e) => {
-            machines.unreachable(&row.name, e.to_string());
+        Err(LinkError::Unreachable(e)) => {
+            machines.unreachable(&row.name, e.clone());
             return Err(match machines.hub_word(&row.name).await {
                 Some(Word::Gone(cause)) => ended_refusal(&row.name, &cause),
                 Some(Word::Offline(reason)) => offline_refusal(&row.name, &reason),
-                _ => unavailable(e.to_string()),
+                _ => unavailable(e),
             });
         }
+        Err(e) => return Err(unavailable(e.to_string())),
     }
     machines.picture(&row)
 }
@@ -1628,6 +1644,11 @@ fn refusal(name: &str, e: LinkError) -> Error {
             Kind::Unavailable,
             "machine_unreachable",
             format!("{name}: {message}"),
+        ),
+        LinkError::Unanswered(message) => Error::new(
+            Kind::Unavailable,
+            "machine_unanswered",
+            format!("{name} has not answered: {message}"),
         ),
     }
 }
