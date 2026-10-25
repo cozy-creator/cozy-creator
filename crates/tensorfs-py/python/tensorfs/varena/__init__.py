@@ -10,8 +10,12 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from typing import TYPE_CHECKING
 
 from .. import _ext
+
+if TYPE_CHECKING:
+    from torch import Tensor
 
 try:
     PoisonedError = _ext.VarenaPoisonedError
@@ -249,3 +253,64 @@ def replay(device: int) -> Iterator[None]:
         yield
     finally:
         guard.close()
+
+
+class LoadSlot:
+    """One initialized capture slot for a raw checkpoint load followed by native execution.
+
+    This is dedicated storage, not a readable cache entry before load completion. Use its
+    zero-initialized ``tensor`` only to prepare/capture the known body that will consume the
+    stored parts. ``PreparedRepeat.capture(load=slot)`` seals that capture. Submission is
+    one-shot; no Python callback runs between the native read and the retained continuation.
+    Ordinary region prefetch keeps its existing behavior. Native checkpoint decode is not
+    supported by this raw-parts boundary.
+    """
+
+    def __init__(
+        self,
+        arena: Arena,
+        checkpoint: _ext.Checkpoint,
+        parts: Sequence[tuple[str, int, int]],
+        *,
+        bytes: int,
+        threads: int = 2,
+    ) -> None:
+        native = getattr(_ext, "_VarenaLoadSlot", None)
+        if native is None:
+            raise RuntimeError("this TensorFS build has no native load/execution slot")
+        self._native: _ext._VarenaLoadSlot = native(
+            arena._native, checkpoint, list(parts), bytes, threads
+        )
+        self._tensor: Tensor | None = None
+        self.device = arena.device
+
+    @property
+    def tensor(self) -> Tensor:
+        """Initialized U8 capture storage; logical weights arrive only during submission."""
+        if self._tensor is None:
+            import torch
+
+            self._tensor = torch.from_dlpack(self._native)
+        return self._tensor
+
+    def seal(self) -> None:
+        """Called after successful known-body capture; no new capture views are exported."""
+        self._native.seal()
+
+    def submit_native(self, continuation: object) -> _ext._VarenaLoadJob:
+        """Import the private Runtime capability and start its owning native read worker."""
+        return self._native.submit_native(continuation)
+
+    def cancel(self) -> None:
+        """Cancel before submission or request native stop; the job's wait proves completion."""
+        self._native.cancel()
+
+    def close(self) -> None:
+        """Retire an unused slot or request cancellation; existing tensor aliases stay owned."""
+        self._native.close()
+        self._tensor = None
+
+
+def supports_load_execution() -> bool:
+    """Whether this build accepts the private continuation v1 capability."""
+    return hasattr(_ext, "_VarenaLoadSlot") and hasattr(_ext, "_VarenaLoadJob")

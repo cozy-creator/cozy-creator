@@ -134,3 +134,41 @@ The consumer marks its incoming cached regions preferred, then may call
 `reclaim_unpreferred(bytes)` to release only other idle backing. Both methods refuse
 actual capture/replay and release the GIL while waiting on native locks. Repeated blocks
 or denoising calls within one phase must not reset the watermark.
+
+## Native load followed by execution
+
+`LoadSlot(arena, checkpoint, parts, bytes=..., threads=2)` reserves a dedicated address and
+initializes its unpublished Fill with zeroes using the existing bounded read engine. Its
+`tensor` is U8 storage for preparing a known captured body, not a claim that model weights
+have been loaded. Every exported alias retains the physical pin. The initialization lease
+is checked complete and released before capture; `seal()` closes further capture exports.
+
+Runtime's `PreparedRepeat.capture(..., load=slot)` retains this owner and seals it after
+capture. Submission hands TensorFS the private `cozy.execution.continuation.v1` capsule:
+C-layout version/size/flags/device/PID, an opaque retained context, and native-only
+retain/release/start/poll/cancel/wait functions. The ABI is declared by Runtime's
+`native/execution/include/cozy_execution_v1.h`; TensorFS mirrors its C records, never Rust
+objects. The capsule and provider stay owned through its final native release.
+
+The existing refill worker reads the declared raw stored parts into that same address,
+checks every copy stream, commits Fill to a retained Pin, starts the native continuation,
+and waits for checked compute completion. No Python callback or binder runs between reading
+and execution. `Dst.stream=0` selects the read engine's explicit owned streams, not CUDA's
+legacy or per-thread default stream. Runtime records caller dependencies before export and
+launches on its own explicit stream. Composed users wait for completion before consuming
+results; submission makes no immediate ordering promise on the caller's stream.
+
+A slot is one-shot. `cancel()` before submission persists and prevents launch. During a job
+it requests native stop; `wait()` proves the whole chain complete. `close()` retires unused
+work or requests cancellation while the job retains its active owners. Read failure and
+cancellation settle the reserved execution epoch before releasing resources. Sticky or
+unproven native completion retains the actual source, Fill/Pin and continuation owners until
+process exit, with the arena poisoned. Ordinary region prefetch keeps its existing behavior.
+
+The first slice retains its producer lease through compute, excluding concurrent actual
+capture. `facts()` exposes source bytes and native stage times, `compute_wait_entered`, and
+`completion_proven`; observations remain readable after an error. Only `completion_proven`
+authorizes normal owner release after failure. Times are monotonic elapsed nanoseconds from
+load submission. This supports raw parts only: encoded checkpoint decode remains future work.
+Real release-gate proof must cover loaded-byte correctness, a parked Python thread, failed
+source reads, cancellation before launch and during native wait, and continuous pin ownership.

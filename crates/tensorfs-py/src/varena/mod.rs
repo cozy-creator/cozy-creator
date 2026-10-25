@@ -2,6 +2,10 @@
 mod allocator;
 #[cfg(unix)]
 mod refill;
+#[cfg(unix)]
+mod continuation;
+#[cfg(unix)]
+mod load;
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     ffi,
@@ -538,6 +542,10 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyAllocatorCapture>()?;
     #[cfg(unix)]
     module.add_class::<refill::PreparedRead>()?;
+    #[cfg(unix)]
+    module.add_class::<load::LoadSlot>()?;
+    #[cfg(unix)]
+    module.add_class::<load::LoadJob>()?;
     module.add_function(wrap_pyfunction!(_varena_install_allocator, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_set_activation_limit, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_allocator_stats, module)?)?;
