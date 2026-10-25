@@ -1,0 +1,178 @@
+{
+  "acceptance": {
+    "amax_max_abs_error_saturated": "exact against independent historical oracle",
+    "old_and_measured_api_parts": "exact",
+    "old_and_measured_refusals": "same code and detail for every refusal",
+    "sse_energy_atol": 0,
+    "sse_energy_rtol": 2e-13,
+    "writer_and_readback": "verified actual committed checkpoint; readback matches resident decoder"
+  },
+  "controller_note": "Root observed the controller CLI had been externally replaced by d806 after local SDK update17738. These receipts qualify the installed native artifact they report; they do not claim controller4178 stayed installed or that its NVFP4 guard repair was exercised.",
+  "details": {
+    "cases": [
+      {
+        "name": "zeros",
+        "part_sha256": {
+          "scale": "b0f66adc83641586656866813fd9dd0b8ebb63796075661ba45d1aa8089e1d44",
+          "scale_2": "e00e5eb9444182f352323374ef4e08ebcb784725fdd4fd612d7730540b3e0c8c",
+          "weight": "17b0761f87b081d5cf10757ccc89f12be355c70e2e29df288b65b30710dcbcd1"
+        },
+        "shape": [
+          3,
+          32
+        ],
+        "tensor_amax": 0.0
+      },
+      {
+        "name": "negative_zero",
+        "part_sha256": {
+          "scale": "96a296d224f285c67bee93c30f8a309157f0daa35dc5b87e410b78630a09cfc7",
+          "scale_2": "e00e5eb9444182f352323374ef4e08ebcb784725fdd4fd612d7730540b3e0c8c",
+          "weight": "374708fff7719dd5979ec875d56cd2286f6d3cf7ec317a3b25632aab28ec37bb"
+        },
+        "shape": [
+          2,
+          16
+        ],
+        "tensor_amax": 0.0
+      },
+      {
+        "name": "ties",
+        "part_sha256": {
+          "scale": "7ae528436181f5af9a349b605df10362369587f5ad8ed9745329432b339ebee4",
+          "scale_2": "4abeb7e04407af6d4256f29b91c71479bd701e60ee7468c778f55b1df0247dc7",
+          "weight": "4346a236e0a3287e1e84a233d3a12acf2077226a041b1f32608f667b2d12efa3"
+        },
+        "shape": [
+          5,
+          64
+        ],
+        "tensor_amax": 6.0
+      },
+      {
+        "name": "last_chunk_maximum",
+        "part_sha256": {
+          "scale": "3546c5ace701e4701a604eadbdc544b4cbad01ab94edb856da07d73804817374",
+          "scale_2": "7148daca18d25eeeb63832dec6d92a7262a319dfc07aeece217622df03cd9a70",
+          "weight": "1d5fb4a5726f32a13f449fc8f3ad5090a46b38f869bcc31b195d1b3d209946a0"
+        },
+        "shape": [
+          17,
+          64
+        ],
+        "tensor_amax": 1000000.0
+      },
+      {
+        "name": "subnormals_with_shared_maximum",
+        "part_sha256": {
+          "scale": "ad7763e359ea6833b59f56a2158ca464baf5305af4c424b4d0e5577c7a503f11",
+          "scale_2": "1e623612fec261cd1a23e52a19e6d1c27a272cc36afadbd4b99a8af7458c1149",
+          "weight": "1fd5db979e1333fcbfe2f46205c8cf2541c87c5b0a54d7e2931c7fb912481dd8"
+        },
+        "shape": [
+          3,
+          32
+        ],
+        "tensor_amax": 1.0
+      },
+      {
+        "name": "tiny_normal",
+        "part_sha256": {
+          "scale": "5b0a00f21a9addfbefbcb16bcbd2cc2e371e9c7adb6a990d5732726e352df0b3",
+          "scale_2": "1989e4694680ddd8d129d264ad7aa7ef83a664fcfc22ecff1a455caafc3844ff",
+          "weight": "f22fa18b84fdb8c9b4280b7b67832ad5afa512a2b9cb6e81d1ecb183da3dc9c0"
+        },
+        "shape": [
+          5,
+          32
+        ],
+        "tensor_amax": 9.949023587544459e-36
+      },
+      {
+        "name": "mixed_exponents",
+        "part_sha256": {
+          "scale": "846f13beb35531a783c59e52b63fc616ba0cdc2607549291bda32c5dc62cb56e",
+          "scale_2": "54c35250c4a25c519d4f1966b3fd1e56899d2d5d4bd0717bf037eea2772a221a",
+          "weight": "eac104f70c2bd2124583a66149cd0d96f853415c8f4d1ad5d0055e16b40c85f6"
+        },
+        "shape": [
+          17,
+          64
+        ],
+        "tensor_amax": 9.245979628521751e+26
+      },
+      {
+        "name": "maximum_f32",
+        "part_sha256": {
+          "scale": "ea28e0e40ab9ab227d8692eb88c0eebe682c24b8e5833b98cb914f0fb4f8c22b",
+          "scale_2": "72931b3f0c2931877e9e58d195a1770a274160eafa1390ea5fe60ce6ab33a169",
+          "weight": "6cf0c4d1c886b6b397939177e57a1ac2f67b5138fa39d55a15dfa0223733ac9f"
+        },
+        "shape": [
+          3,
+          32
+        ],
+        "tensor_amax": 3.4028234663852886e+38
+      }
+    ],
+    "chunk_rows": [
+      1,
+      2,
+      7
+    ],
+    "logical_dtypes": [
+      "F32",
+      "F16",
+      "BF16"
+    ],
+    "measured_calls": 123,
+    "measured_sse_energy_rtol": 2e-13,
+    "native_sha256": "91ebdf029b8c71a8c8e0f2f48a9440294e8aff3919317202c3e16fbde284b53d",
+    "numpy": "2.5.4",
+    "reference_sha256": "438401ecde3ef92b5ea03e35f21487ebcf0997c18ad796531e50768f25073459",
+    "reference_zero_global_scale_refused": true,
+    "refusals": 12,
+    "strategy": "nvfp4-min-sse/1",
+    "tensorfs": "0.15.6",
+    "writer_verified": true
+  },
+  "dtype_cases": 24,
+  "fixture": {
+    "commit": "e521cc7797f93c0c97e20ef82ecbf7842cba4ff9",
+    "entry": "release-gate/suites/tensorfs/nvfp4-encode/ci_nvfp4_encode/__init__.py",
+    "entry_sha256": "e73549a9157808050d5cd08390efd8569e3a8aab9294dbb011ed4df9f13c1195",
+    "historical_runtime": "1c092cd8474f1a3d042d9e1ee69d61410e1adb04",
+    "oracle": "release-gate/suites/tensorfs/nvfp4-encode/ci_nvfp4_encode/oracle.py",
+    "oracle_sha256": "b34b3cb1b5b40129d6df30c4f4e15e456a7da8ac888231c8a45c18dcf18f1f1f"
+  },
+  "installed_machine_artifacts": [
+    {
+      "path": "/home/fidika/cozy/.worktrees/cozy-creator/varena-consolidation/.task/portable-4178a2a11/cozy/cozy-linux-x86_64",
+      "sha256": "6b0c6dbbe5d4740fa611dc4c0a28d1cc00b9362bf8397192bfdeae5bdfd119a0"
+    },
+    {
+      "path": "/home/fidika/cozy/.worktrees/cozy-runtime/varena-consolidation/.task/portable-559080567/cozy_runtime-0.32.3-cp312-abi3-manylinux_2_28_x86_64.whl",
+      "sha256": "6150de986ced21cc03d04c9ff4d1a6b62b7c99f35a247038c6c8911372007d40"
+    },
+    {
+      "path": "/home/fidika/cozy/.worktrees/cozy-creator/varena-consolidation/.task/portable-e521cc779/tensorfs/tensorfs-0.15.6-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "sha256": "ca15dd65e7aa3249f3749dd60a452260ab54854ccb44d4449b7189234951941b"
+    }
+  ],
+  "passed": true,
+  "run": {
+    "created_at_ms": 1792918438151,
+    "execution_ms": 586,
+    "id": "run-2a632fb1f7589bf2f5eae634",
+    "machine": "local",
+    "number": 17747,
+    "settled_at_ms": 1792918440236,
+    "status": "completed",
+    "target": "local/ci-nvfp4-encode/run"
+  },
+  "scope": "Actual default-home Cozy CLI CPU measured-primitive and Writer/readback parity. Not GPU execution, Runtime producer cutover, performance or release proof.",
+  "source_receipt": {
+    "path": "outputs/stock-torch-20261024/local-canonical-20261025/nvfp4-measured.json",
+    "sha256": "fa188be6a67deef595723d1ef837cb46e465aebdbf35e84a97af36a7ec74603f"
+  }
+}

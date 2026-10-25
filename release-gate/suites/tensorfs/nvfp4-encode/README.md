@@ -36,3 +36,12 @@ case and chunk. Parts must match exactly, with native amax/max-error/saturation 
 within rtol2e-13 against the independent frozen oracle. Every prior refusal must have the same
 error code/detail through both APIs. Existing receipts predate this measured-API gate; a new
 installed real CPU run is required.
+
+Measured API **17747 passed** through the default CLI on the local machine:24 dtype cases,
+123 measured calls including row chunks1/2/7, and12 matching refusals through both APIs.
+TensorFS e521cc779/ca15dd65 native91ebdf02 and NumPy2.5.4; frozen oracleb34b3cb1. Parts,
+amax/max-error/saturation are exact; SSE/energy use rtol2e-13. Whole-tensor versus chunk maxima,
+explicit positive-scale-underflow refusal and Writer/readback integrity passed.
+[Compact actual receipt](evidence/e521cc779-measured-cpu.json). This is CPU numerical proof;
+the separately observed CLI BF16 guard refusal used a replaced controller and was not a run
+of the repaired guard.

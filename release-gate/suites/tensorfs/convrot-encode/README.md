@@ -29,3 +29,10 @@ case and chunk. Parts must match exactly, with native amax/max-error/saturation 
 within rtol2e-13 against the independent frozen oracle. Every prior refusal must have the same
 error code/detail through both APIs. Existing receipts predate this measured-API gate; a new
 installed real CPU run is required.
+
+Measured API **17745 passed** through the default CLI on the local machine:24 dtype cases,
+113 measured calls including row chunks1/2/7, and11 matching refusals through both APIs.
+TensorFS e521cc779/ca15dd65 native91ebdf02 and NumPy2.5.4; frozen oracle7db0ef53. Parts,
+amax/max-error/saturation are exact; SSE/energy use rtol2e-13. Writer/readback integrity passed.
+[Compact actual receipt](evidence/e521cc779-measured-cpu.json). This is CPU numerical proof;
+the controller CLI's separate replacement/guard incident does not qualify or invalidate GPU work.
