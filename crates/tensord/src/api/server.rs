@@ -1,7 +1,7 @@
 use super::{auth::Authority, backend::MachineBackend};
 use crate::machine::receipt::{self, Readiness};
 use hyper_util::{
-    rt::{TokioExecutor, TokioIo, TokioTimer},
+    rt::{TokioExecutor, TokioIo},
     server::conn::auto,
     service::TowerToHyperService,
 };
@@ -102,14 +102,10 @@ pub async fn serve<B: MachineBackend>(
         tokio::spawn(super::cozy1::serve(media, listener));
     }
     let service = TowerToHyperService::new(super::http::router(identity, backend));
-    let mut http = auto::Builder::new(TokioExecutor::new());
-    // A ping every 20 s keeps NAT mappings on a client's path alive through a quiet run, and one
-    // left unanswered for 20 s ends a dead connection (its runs go on; a client attaches again).
-    http.http2()
-        .timer(TokioTimer::new())
-        .keep_alive_interval(LIVENESS)
-        .keep_alive_timeout(LIVENESS);
-    let http = Arc::new(http);
+    // No HTTP/2 PING judges a client: one this busy machine answers late is not dead. TCP
+    // keepalive (`live`) keeps NAT mappings open through a quiet run and ends a connection whose
+    // client's host is gone (its runs go on; a client attaches again).
+    let http = Arc::new(auto::Builder::new(TokioExecutor::new()));
     loop {
         let stream = match listener.accept().await {
             Ok((stream, _)) => stream,
@@ -129,6 +125,7 @@ pub async fn serve<B: MachineBackend>(
     }
 }
 
+/// TCP keepalive: a probe after this long without a packet, then again this often, three times.
 const LIVENESS: Duration = Duration::from_secs(20);
 
 /// A starting machine's step, which `booting` answers until the API serves.
@@ -225,8 +222,8 @@ fn tls(identity: &MachineIdentity) -> std::io::Result<rustls::ServerConfig> {
 
 /// Nagle off, as Go's net package sets every TCP connection: a response's small trailing frames
 /// otherwise wait for the ACK of the frames before them, one round trip each on a far link. TCP
-/// keepalive judges an HTTP/1.1 peer as PINGs judge an HTTP/2 one, so a lane whose client
-/// vanished ends.
+/// keepalive, whose probes the client's kernel answers however busy its process is, ends a
+/// connection whose client vanished.
 fn live(stream: &tokio::net::TcpStream) {
     let _ = stream.set_nodelay(true);
     #[cfg(unix)]
@@ -243,7 +240,7 @@ fn keepalive(stream: &tokio::net::TcpStream) {
     #[cfg(target_os = "macos")]
     let _ = setsockopt(stream, sockopt::TcpKeepAlive, &seconds);
     let _ = setsockopt(stream, sockopt::TcpKeepInterval, &seconds);
-    let _ = setsockopt(stream, sockopt::TcpKeepCount, &1);
+    let _ = setsockopt(stream, sockopt::TcpKeepCount, &3);
 }
 
 struct MeasuredIdentity {

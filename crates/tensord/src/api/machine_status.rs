@@ -42,7 +42,8 @@ const LIVE: [&str; 3] = ["queued", "starting", "running"];
 /// The whole picture, sent again whenever it changes, until the caller leaves. What the engine
 /// records (runs, environments, the warm set, models) is read again only after engine activity;
 /// each tick otherwise reads what the process holds in memory and the disk's free space, so an
-/// idle machine watched does next to nothing.
+/// idle machine watched does next to nothing. Every read is on the blocking pool: a disk the
+/// machine's run saturates slows its Status, never the API's own threads.
 pub(super) fn watch<B: MachineBackend>(
     identity: Arc<MachineIdentity>,
     backend: Arc<B>,
@@ -69,7 +70,7 @@ pub(super) fn watch<B: MachineBackend>(
                         held
                     }
                 };
-                Ok::<_, Error>(picture(&identity, held))
+                pictured(identity, &backend, held).await
             }
         })
         .filter_map(move |next| match next {
@@ -150,7 +151,13 @@ pub(super) async fn frame<B: MachineBackend>(
     backend: &Arc<B>,
     actor: VerifiedActor,
 ) -> Result<v1::StatusFrame, Error> {
-    Ok(picture(identity, held_now(identity, backend, actor).await?))
+    pictured(identity.clone(), backend, held_now(identity, backend, actor).await?).await
+}
+
+/// `picture` on the blocking pool: it reads the disk (the store's space, the installed software,
+/// the kernels' verdicts) and `/proc`.
+async fn pictured<B: MachineBackend>(identity: Arc<MachineIdentity>, backend: &Arc<B>, held: Held) -> Result<v1::StatusFrame, Error> {
+    blocking(backend, move |_| Ok(picture(&identity, held))).await
 }
 
 fn picture(identity: &MachineIdentity, held: Held) -> v1::StatusFrame {

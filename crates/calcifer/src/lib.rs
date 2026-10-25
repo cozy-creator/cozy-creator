@@ -28,7 +28,7 @@ use std::{
     pin::Pin,
     sync::{Arc, Mutex, OnceLock, Weak},
     task::{Context, Poll},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use protocol::{
@@ -103,9 +103,17 @@ struct Machine {
     sending: Arc<tokio::sync::Mutex<()>>,
 }
 
+/// How often a wait for a machine's answer says again how long it has lasted.
+const RESAID: Duration = Duration::from_secs(5);
+
 /// Why a driver's step stopped short of its run's end.
 enum Stop {
+    /// No connection to the machine could be made.
     Unreachable(String),
+    /// Connected, but the machine's answer broke off or was not one: it is busy, not unreachable.
+    Unanswered(String),
+    /// Something besides the machine holds the run (its Hub, Calcifer's store), said as it is.
+    Waiting(String),
     Refused(Reason),
     Released(String),
     /// The machine answered that it has no record of the run.
@@ -120,9 +128,10 @@ impl From<LinkError> for Stop {
             }
             LinkError::Released(message) => Stop::Released(message),
             LinkError::NoRun => Stop::Lost,
-            LinkError::NotFound => Stop::Unreachable("the machine does not know the run".into()),
-            LinkError::Unreachable(message) | LinkError::Unauthorized(message) => {
-                Stop::Unreachable(message)
+            LinkError::NotFound => Stop::Unanswered("the machine does not know the run".into()),
+            LinkError::Unreachable(message) => Stop::Unreachable(message),
+            e @ (LinkError::Unanswered(_) | LinkError::Unauthorized(_)) => {
+                Stop::Unanswered(e.to_string())
             }
         }
     }
@@ -130,7 +139,7 @@ impl From<LinkError> for Stop {
 
 impl From<StoreError> for Stop {
     fn from(e: StoreError) -> Self {
-        Stop::Unreachable(e.to_string())
+        Stop::Waiting(format!("Calcifer cannot record it: {e}"))
     }
 }
 
@@ -440,7 +449,7 @@ impl Calcifer {
             .await
             .map_err(|denied| match denied {
                 access::Denied::Refused(reason) => Stop::Refused(reason),
-                access::Denied::Unreachable(message) => Stop::Unreachable(message),
+                access::Denied::Unreachable(message) => Stop::Waiting(message),
             })
     }
 
@@ -655,6 +664,19 @@ impl Calcifer {
                     self.waiting(id, reason);
                     pause.wait(wake, Some(&mut changed)).await;
                 }
+                // A stream that broke is attached again at once; one that stays unanswered says
+                // so with its age, and is asked again, paced.
+                Err(Stop::Unanswered(message)) => {
+                    if let Some(age) = pause.failed() {
+                        let age = protocol::calcifer::clock(age.as_millis() as i64);
+                        self.waiting(id, format!("no answer from {name} yet ({age}): {message}"));
+                        pause.wait(wake, Some(&mut changed)).await;
+                    }
+                }
+                Err(Stop::Waiting(message)) => {
+                    self.waiting(id, message);
+                    pause.wait(wake, Some(&mut changed)).await;
+                }
                 // A run its machine accepted ends only with the machine's outcome.
                 Err(Stop::Refused(reason)) if run.state == State::Accepted => {
                     self.waiting(
@@ -761,7 +783,7 @@ impl Calcifer {
                 if !self.store.mark_sent(id, machine)? {
                     return Ok(());
                 }
-                (link.submit(id, spec).await?, None)
+                (self.answered(&run.id, machine, link.submit(id, spec)).await?, None)
             }
             State::Sent | State::Accepted => {
                 if run.cancel_requested {
@@ -769,13 +791,13 @@ impl Calcifer {
                     canceled = true;
                 }
                 // It may be there: attach first, and send again only to a machine that never got it.
-                match link.attach(id, run.cursor).await {
+                match self.answered(&run.id, machine, link.attach(id, run.cursor)).await {
                     Err(LinkError::NoRun | LinkError::NotFound) if run.state == State::Sent => {
                         self.write_inputs(link, run, machine).await?;
                         let _turn = sending.lock().await;
                         self.known_warm(run, machine, link).await?;
                         let spec = self.sent_spec(run).await?;
-                        (link.submit(id, spec).await?, None)
+                        (self.answered(&run.id, machine, link.submit(id, spec)).await?, None)
                     }
                     attached => {
                         let (state, events) = attached?;
@@ -799,6 +821,9 @@ impl Calcifer {
                 return Ok(());
             }
         }
+        // Its machine answered: what the run waited on before (its machine's silence) is over,
+        // and it waits on what its state says now.
+        self.machine_waiting(&run.id, state);
         // A run just sent is accepted by the machine's answer; its events follow from the start.
         let stream = match stream {
             Some(stream) => stream,
@@ -854,7 +879,7 @@ impl Calcifer {
                 // The machine ends a stream it holds open only to start another: attach again.
                 None if frames > 0 => return self.record_batch(id, &mut batch),
                 None => {
-                    return Err(Stop::Unreachable(
+                    return Err(Stop::Unanswered(
                         "the machine closed the run's stream".into(),
                     ));
                 }
@@ -918,17 +943,8 @@ impl Calcifer {
                     }
                     continue;
                 }
-                Frame::State(mut state) => {
-                    if let Some(waiting) = self.waiting_for(&state.waiting_for) {
-                        state.waiting = waiting;
-                    }
-                    // A reason that only repeats the machine's state (`preparing`) says nothing more.
-                    match state.waiting.as_str() {
-                        waiting if waiting.is_empty() || waiting == state.state => {
-                            self.not_waiting(id)
-                        }
-                        waiting => self.waiting(id, format!("{}: {waiting}", state.state)),
-                    }
+                Frame::State(state) => {
+                    self.machine_waiting(id, state.clone());
                     if state.started_at_ms > 0 {
                         batch.started_at_ms = Some(state.started_at_ms as i64);
                     }
@@ -943,6 +959,34 @@ impl Calcifer {
                 }
             }
             batch.cursor = batch.cursor.max(durable);
+        }
+    }
+
+    /// What the run waits on by its machine's word. A reason that only repeats the machine's
+    /// state (`preparing`) says nothing more.
+    fn machine_waiting(&self, id: &RunId, mut state: v1::RunState) {
+        if let Some(waiting) = self.waiting_for(&state.waiting_for) {
+            state.waiting = waiting;
+        }
+        match state.waiting.as_str() {
+            waiting if waiting.is_empty() || waiting == state.state => self.not_waiting(id),
+            waiting => self.waiting(id, format!("{}: {waiting}", state.state)),
+        }
+    }
+
+    /// `answer`, saying while it is outstanding how long its machine has not answered: a busy
+    /// machine shows as busy, never as unreachable.
+    async fn answered<T>(&self, id: &RunId, machine: &str, answer: impl Future<Output = T>) -> T {
+        let asked = Instant::now();
+        let mut answer = std::pin::pin!(answer);
+        loop {
+            tokio::select! {
+                answered = &mut answer => return answered,
+                () = tokio::time::sleep(RESAID) => {
+                    let age = protocol::calcifer::clock(asked.elapsed().as_millis() as i64);
+                    self.waiting(id, format!("no answer from {machine} yet ({age})"));
+                }
+            }
         }
     }
 
@@ -1200,15 +1244,30 @@ fn ready<S: Stream + Unpin>(stream: &mut S) -> Option<Option<S::Item>> {
 /// The pause between attempts to reach a machine: it doubles to 10 s while nothing moves and
 /// starts over after any progress. It paces retries; nothing is given up.
 #[derive(Default)]
-struct Pause(Duration);
+struct Pause {
+    wait: Duration,
+    /// When its machine first failed to answer since it last did.
+    since: Option<Instant>,
+}
 
 impl Pause {
     fn reset(&mut self) {
-        self.0 = Duration::ZERO;
+        *self = Self::default();
+    }
+
+    /// How long its machine has not answered; None the first time, which is asked again at once.
+    fn failed(&mut self) -> Option<Duration> {
+        match self.since {
+            Some(since) => Some(since.elapsed()),
+            None => {
+                self.since = Some(Instant::now());
+                None
+            }
+        }
     }
 
     async fn wait(&mut self, wake: &Notify, changed: Option<&mut watch::Receiver<()>>) {
-        self.0 = (self.0 * 2).clamp(Duration::from_millis(500), Duration::from_secs(10));
+        self.wait = (self.wait * 2).clamp(Duration::from_millis(500), Duration::from_secs(10));
         let changed = async {
             match changed {
                 Some(changed) => changed.changed().await.unwrap_or(()),
@@ -1216,7 +1275,7 @@ impl Pause {
             }
         };
         tokio::select! {
-            _ = tokio::time::sleep(self.0) => {}
+            _ = tokio::time::sleep(self.wait) => {}
             _ = wake.notified() => {}
             _ = changed => {}
         }

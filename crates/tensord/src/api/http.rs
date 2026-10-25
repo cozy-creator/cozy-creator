@@ -235,11 +235,10 @@ pub(super) fn event<T: Serialize>(name: &str, value: &T) -> Result<Event, Error>
 async fn keepalive<B: MachineBackend>(State(m): State<Machine<B>>, headers: HeaderMap) -> Answer {
     let caller = m.caller(&headers)?;
     caller.machine()?;
-    m.identity
-        .lifecycle
-        .as_ref()
-        .ok_or_else(|| Error::conflict("idle_deadline_absent", "this machine has no idle deadline"))?
-        .renew()?;
+    let lifecycle = (m.identity.lifecycle.clone())
+        .ok_or_else(|| Error::conflict("idle_deadline_absent", "this machine has no idle deadline"))?;
+    // The idle ledger is written durably, so on the blocking pool.
+    m.call(move |_| lifecycle.renew()).await?;
     let frame = super::machine_status::frame(&m.identity, &m.backend, caller.actor).await?;
     Ok(json(StatusCode::OK, &frame))
 }
