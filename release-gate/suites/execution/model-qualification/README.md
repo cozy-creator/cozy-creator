@@ -31,25 +31,25 @@ remain explicit gaps. A failed call stops the sequence; it is never rerun automa
 
 Reviewed source is the `anima` subtree at packages commit
 `da31a14a05e85707d5a3499dfca117dbfa35e1e7`, tree `c992749097f25d7ecb6a72138010b9965c6825fa`.
-No package edits are needed for the selected Runtime0.32.1/TensorFS0.15.2 cohort. Published
-package0.11.3 instead requires Runtime<0.32 and TensorFS<0.15;0.12.0/0.12.1 are yanked.
+No package edits are needed for the selected Runtime 0.32.1/TensorFS 0.15.2 cohort. Published
+package 0.11.3 instead requires Runtime<0.32 and TensorFS<0.15; 0.12.0/0.12.1 are yanked.
 Use the reviewed source directory rather than those incompatible published dependencies.
 
-`anima-request.json` requests1024²,30steps,guidance4.5,CFG interval0.15–0.70 and first-block
+`anima-request.json` requests 1024², 30 steps, guidance 4.5, CFG interval 0.15–0.70 and first-block
 cache disabled. Its model default is the published `anima@1.0.0`; live CLI metadata and exact
 manifests are saved in `anima-preparation.json`:
 
-| Lane | Stored bytes | GiB | RTX3070/SM86 route evidence |
+| Lane | Stored bytes | GiB | RTX 3070/SM86 route evidence |
 |---|---:|---:|---|
 | bf16 | 5,642,859,713 | 5.2553 | Floating weights; activation/graph headroom still required |
-| int8 | 3,445,246,394 | 3.2086 | `int8.convrot` native leaf supportsSM80+; verify the actual selected route |
-| fp8 | 3,691,835,152 | 3.4383 | Native rowwise FP8 requiresSM89+; SM86 may decode to floating weights |
+| int8 | 3,445,246,394 | 3.2086 | `int8.convrot` native leaf supports SM80+; verify the actual selected route |
+| fp8 | 3,691,835,152 | 3.4383 | Native rowwise FP8 requires SM89+; SM86 may decode to floating weights |
 
-Int8 is the first8GiB qualification candidate. Stored bytes alone do not establish a fit;
+Int8 is the first 8 GiB qualification candidate. Stored bytes alone do not establish a fit;
 BF16/all-resident graphs may need more headroom. If measured capacity prevents the requested
 1024²/30-step run, preserve the failure and let the rental owner choose a larger card.
 
-The package's optional fused plan currently admits Torch2.13.0/2.14.0; the selected2.14.1
+The package's optional fused plan currently admits Torch 2.13.0/2.14.0; the selected 2.14.1
 cohort reports an explicit eager fallback. Its allowlist has not been widened. Anima still uses
 the Diffusers Python denoising loop; component CUDA-graph counters are measured, and a successful
 model render does not establish a whole-model autonomous GPU loop.
