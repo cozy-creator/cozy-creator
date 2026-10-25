@@ -19,7 +19,9 @@ pub const NVFP4: Scheme = Scheme {
         Part::req("scale", &["F8_E4M3"], scale),
         Part::req("scale_2", F32, |c| per_matrix(c, "scale_2")),
         Part::opt("input_scale", F32, |c| per_matrix(c, "input_scale")),
-        Part::opt("pre_quant_scale", &["F32", "BF16", "F16"], |c| Grid::Col.shape(c)),
+        Part::opt("pre_quant_scale", &["F32", "BF16", "F16"], |c| {
+            Grid::Col.shape(c)
+        }),
     ],
     decode,
 };
@@ -69,10 +71,7 @@ pub(super) fn decode<'a>(c: &Ctx<'a>) -> Result<Plan<'a>> {
         order,
         ..BYTES
     };
-    let global = (
-        c.elements("scale_2"),
-        c.text("global_scale") == "divide",
-    );
+    let global = (c.elements("scale_2"), c.text("global_scale") == "divide");
     let codes = Codes {
         table: Some((0..16).map(elem::e2m1).collect()),
         global: Some(global),
