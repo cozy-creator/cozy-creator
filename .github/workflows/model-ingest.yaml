@@ -151,7 +151,8 @@ jobs:
           ASSET: ${{ inputs.asset }}
           RENT: ${{ inputs.rent }}
         run: |
-          set -uo pipefail
+          # Every failure is handled here (the trap ends the rental), not by the step shell's -e.
+          set +e -uo pipefail
           D=$OUT; mkdir -p "$D"; R=$D/results.txt; IMG=$GITHUB_WORKSPACE/creator/release-gate/ref/seed.jpg
           say() { echo "$(date -u +%T) $*" | tee -a "$R"; }
           RC=0 RID='' NAME='' WD=''
@@ -167,6 +168,7 @@ jobs:
           lane_of() { cozy model info "$1" --json 2>/dev/null | jq -r --arg c "$2" '.commits[]? | select(.commit==$c) | .lane'; }
           runno() { awk '$1=="run" && NF==2{print $2}' "$D/$1.txt" | tail -1; }
           finish() {
+            local status=$?; [ "$RC" != 0 ] || RC=$status
             [ -n "$WD" ] && { pkill -P "$WD"; kill "$WD"; } 2>/dev/null
             if [ -n "$RID" ]; then
               local tries=0
