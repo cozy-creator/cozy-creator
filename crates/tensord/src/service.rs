@@ -386,6 +386,8 @@ impl Service {
         let model = |r: &Execution| self.plan(&pool, r).map_or_else(|_| r.id.clone(), |plan| plan.construction);
         let ready = self.queue.lock().unwrap().order(self.engine.ready()?, model);
         let (mut place, held) = (0, self.held.get().is_some_and(|held| held()));
+        let mut next_gpu = None;
+        let mut next_gpu_seen = false;
         for record in ready {
             let invocation = &record.invocation;
             let full = room == 0 && (invocation.degree == 0 || claims.iter().all(Option::is_some));
@@ -395,13 +397,24 @@ impl Service {
                 if root {
                     self.queue.lock().unwrap().started(&record);
                 }
-            } else if root {
-                place += 1;
-                let after = if held { ", after the machine's update" } else { "" };
-                let shown = self.engine.waiting(&record.id, Some(format!("position {place} in the queue{after}")));
-                shown.unwrap_or_else(|error| tracing::warn!("run {}: its place was not shown: {error}", record.id));
+            } else {
+                // An earlier incompatible GPU job remains a barrier. Lookahead never scans
+                // past it to improve model affinity at the expense of the existing queue.
+                if invocation.degree > 0 && !next_gpu_seen {
+                    next_gpu_seen = true;
+                    if !held && !gpu_fenced && root {
+                        next_gpu = self.plan(&pool, &record).ok().map(|plan| (record.clone(), plan));
+                    }
+                }
+                if root {
+                    place += 1;
+                    let after = if held { ", after the machine's update" } else { "" };
+                    let shown = self.engine.waiting(&record.id, Some(format!("position {place} in the queue{after}")));
+                    shown.unwrap_or_else(|error| tracing::warn!("run {}: its place was not shown: {error}", record.id));
+                }
             }
         }
+        pool.lookahead(&self.engine, next_gpu.as_ref().map(|(record, plan)| (record, plan)));
         Ok(())
     }
     /// The plan `record` runs: its journaled preparation's, else a weightless call's.

@@ -26,6 +26,8 @@ pub enum Command {
     Load(Box<Load>),
     Activate(Activate),
     PrepareRequest(PrepareRequest),
+    /// Discard a queued preparation; consumed out of band, without a reply.
+    Cancel(Cancel),
     Invoke(Box<Invoke>),
     /// Warming: the loaded construction's models at `level`, nothing run.
     Map(Map),
@@ -40,9 +42,9 @@ pub enum Command {
 
 impl Command {
     /// Every `cmd` TensorD sends.
-    pub const NAMES: [&'static str; 12] = [
+    pub const NAMES: [&'static str; 13] = [
         "hello", "shutdown", "start", "load", "activate", "prepare_request", "invoke", "map", "unload",
-        "probe", "fork", "bearer",
+        "probe", "fork", "bearer", "cancel",
     ];
 
     /// One command from its wire bytes. An unknown member is ignored and a missing one takes its
@@ -60,6 +62,7 @@ impl Command {
             "load" => Command::Load(Box::new(one(fields)?)),
             "activate" => Command::Activate(one(fields)?),
             "prepare_request" => Command::PrepareRequest(one(fields)?),
+            "cancel" => Command::Cancel(one(fields)?),
             "invoke" => Command::Invoke(Box::new(one(fields)?)),
             "map" => Command::Map(one(fields)?),
             "unload" => Command::Unload(one(fields)?),
@@ -79,6 +82,7 @@ impl Command {
             Self::Load(_) => "load",
             Self::Activate(_) => "activate",
             Self::PrepareRequest(_) => "prepare_request",
+            Self::Cancel(_) => "cancel",
             Self::Invoke(_) => "invoke",
             Self::Map(_) => "map",
             Self::Unload(_) => "unload",
@@ -169,6 +173,12 @@ pub struct PrepareRequest {
     /// File inputs by field path (identity only; the bytes arrive with Invoke).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub input_metadata: BTreeMap<String, InputMetadata>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
+pub struct Cancel {
+    pub request_id: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -460,6 +470,8 @@ pub struct Hello {
     pub pgid: u32,
     pub runtime_version: String,
     pub tensorfs_version: String,
+    /// Correlated PrepareRequest replies and cancellation-safe prepared-record publication.
+    pub request_lookahead: bool,
     /// Its memory wire contract: the lease protocol leases chunks from each GPU's manager; any
     /// other runs its memory alone.
     pub memory_protocol: u32,
@@ -1223,6 +1235,7 @@ mod python {
         Load => |c| Command::Load(Box::new(c)),
         Activate => Command::Activate,
         PrepareRequest => Command::PrepareRequest,
+        Cancel => Command::Cancel,
         Invoke => |c| Command::Invoke(Box::new(c)),
         Map => Command::Map,
         Unload => Command::Unload,
