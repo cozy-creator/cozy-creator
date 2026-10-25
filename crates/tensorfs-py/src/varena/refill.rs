@@ -222,14 +222,18 @@ impl PreparedRead {
 
 #[pymethods]
 impl PreparedRead {
+    #[classattr]
+    const NO_RECLAIM: bool = true;
+
     #[new]
-    #[pyo3(signature = (region, checkpoint, parts, threads = 2))]
+    #[pyo3(signature = (region, checkpoint, parts, threads = 2, reclaim = true))]
     fn new(
         py: Python<'_>,
         region: PyRef<'_, PyRegion>,
         checkpoint: PyRef<'_, PyCheckpoint>,
         parts: Vec<(String, usize, usize)>,
         threads: usize,
+        reclaim: bool,
     ) -> PyResult<Self> {
         let region = region.region.clone();
         let checkpoint = checkpoint.core(py)?;
@@ -286,7 +290,12 @@ impl PreparedRead {
                         "refill targets overlap",
                     )));
                 }
-                let preparation = region.prepare().map_err(Failure::Native)?;
+                let preparation = if reclaim {
+                    region.prepare()
+                } else {
+                    region.prepare_without_reclaim()
+                }
+                .map_err(Failure::Native)?;
                 let fill = match preparation {
                     varena::Preparation::Resident(pin) => {
                         drop(pin);
