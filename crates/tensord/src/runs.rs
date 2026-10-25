@@ -1,7 +1,7 @@
 //! Run sources and preparation inside a run (`cozy.machine.v1` Run). A run is accepted at
 //! once and prepares inside itself: its code installs, its models resolve at the run's Hub and
-//! download, and each stage is the run's progress. Its owner's Hub bearer lives only in memory
-//! (`hub::Bearer`), as do its provider tokens, for the run's life (its children prepare with
+//! download, and each stage is the run's progress. Its Hub capability lives only in memory
+//! (`hub::Capability`), as do its provider tokens, for the run's life (its children prepare with
 //! them); a restart before it completes ends the run FAILED (`journal::PREPARING`).
 use crate::{
     api::domain,
@@ -74,7 +74,7 @@ pub struct Spec {
     /// The main model's lane; empty, and every other slot: the Hub's pick for the hardware. A
     /// model-only upload's commit lane.
     pub lane: String,
-    /// The Hub the run reads, under its owner's newest bearer there when its request carried one.
+    /// The Hub the run reads, under its signer's newest capability there when its request carried one.
     pub hub: Option<hub::Source>,
     /// Provider tokens for source models, held in memory only.
     pub providers: Providers,
@@ -221,7 +221,7 @@ fn held_tree(store: &crate::storage::Store, choice: &domain::ModelChoice) -> Res
 }
 
 /// `header` with its repo `files` as a new commit of `destination` in lane `lane`, uploaded from
-/// `store` to the run's TensorFS endpoint under the requester's newest bearer at its Hub, else the
+/// `store` to the run's TensorFS endpoint under the requester's newest capability at its Hub, else the
 /// one the request carried.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn upload(
@@ -238,8 +238,8 @@ pub(crate) fn upload(
         true => Ok(Client::new(policy)),
         false => Client::with_roots(policy, hub::pem(&options.ca_der).as_bytes()),
     }.map_err(|error| failed(error.to_string()))?;
-    let token = match hub.and_then(|hub| hub.bearer_at(&options.endpoint)) {
-        Some(bearer) => Some(bearer as Arc<dyn tensorfs::fetch::TokenProvider>),
+    let token = match hub.and_then(|hub| hub.capability_at(&options.endpoint)) {
+        Some(capability) => Some(capability as Arc<dyn tensorfs::fetch::TokenProvider>),
         None => (!options.token.is_empty()).then(|| bearer(options.token.clone())),
     };
     let anonymous = token.is_none();
@@ -801,7 +801,7 @@ impl Runs {
 
     /// A warm set member, built one way whether a warm run makes it or a restart brings it back
     /// (`restore_warm_sets`). Its weights come behind every run's, under `hub`: the run's access
-    /// with its owner's newest bearer. Without one (no bearer survives a restart) they come from
+    /// with its signer's newest capability. Without one (none survives a restart) they come from
     /// the rental's own Hub, else anonymously from its installation's Hub: a public release
     /// resumes, a private one waits for its owner's next run.
     fn member(&self, held: HeldGeneration, installation: &Installation, plan: Option<Plan>, level: Level,
@@ -1273,14 +1273,14 @@ impl Runs {
         self.contexts.lock().unwrap().get_mut(id).and_then(|context| context.ahead.take())
     }
 
-    /// The run's TensorFS options for the Runtime `line` reaches, with its owner's newest bearer
+    /// The run's TensorFS options for the Runtime `line` reaches, with its signer's newest capability
     /// at its Hub, of which that executor hears each newer one.
     pub(crate) fn tensorfs(&self, id: &str, line: Line) -> Option<protocol::machine::TensorFSOptions> {
         let contexts = self.contexts.lock().unwrap();
         let context = contexts.get(id)?;
         let mut options = context.tensorfs.clone()?;
-        if let Some(bearer) = context.hub.as_ref().and_then(|hub| hub.bearer_at(&options.endpoint)) {
-            (options.token, options.expires_unix_ms) = bearer.given(line, &options.endpoint);
+        if let Some(capability) = context.hub.as_ref().and_then(|hub| hub.capability_at(&options.endpoint)) {
+            (options.token, options.expires_unix_ms) = capability.given(line, &options.endpoint);
         }
         Some(options)
     }

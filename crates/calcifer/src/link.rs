@@ -163,9 +163,9 @@ impl Link {
         Ok(Box::pin(self.machine.watch().await?.map_err(LinkError::from)))
     }
 
-    /// Gives the machine this computer's newest bearer at the Hub `bearer.endpoint` names.
-    pub async fn bearer(&self, bearer: &v1::TensorFSOptions) -> Result<(), LinkError> {
-        Ok(self.machine.bearer(bearer).await?)
+    /// Gives the machine its newest run capability at the Hub `capability.endpoint` names.
+    pub async fn capability(&self, capability: &v1::TensorFSOptions) -> Result<(), LinkError> {
+        Ok(self.machine.capability(capability).await?)
     }
 
     /// Starts a rental's idle clock over; answers the picture with its new deadline.

@@ -3,7 +3,7 @@
 //! GETs, every object verified as the store admits it. TensorD's threads are synchronous; each
 //! call here blocks on the fetch runtime and ends early when its [`Stop`] is cancelled.
 //!
-//! - [`hub`]: TensorFS's distribution `Endpoint` at the run's Hub, under its request's bearer.
+//! - [`hub`]: TensorFS's distribution `Endpoint` at the run's Hub, under its request's capability.
 mod hub;
 
 use std::{

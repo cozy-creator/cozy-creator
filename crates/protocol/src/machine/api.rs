@@ -25,7 +25,7 @@ use crate::error::{Envelope, Error, Kind};
     security(("cozy_cap" = [])),
     paths(
         health, status, keepalive, submit, events, cancel, output, triage, log, head_object, follow_object, put_object,
-        held_objects, bearer
+        held_objects, capability
     ),
     components(schemas(Envelope, Error, Kind))
 )]
@@ -205,10 +205,11 @@ pub fn put_object() {}
 ))]
 pub fn held_objects() {}
 
-/// The signer's newest ordinary bearer at the Hub `endpoint` names: every later read there under
-/// its owner's access presents it, until one that expires later comes. Kept in memory only.
-#[utoipa::path(put, path = path::BEARER, request_body = TensorFSOptions, responses(
+/// The signer's newest run capability at the Hub `endpoint` names (cl-670): every later read and
+/// upload there for the signer's runs presents it, until one that expires later comes. Kept in
+/// memory only.
+#[utoipa::path(put, path = path::CAPABILITY, request_body = TensorFSOptions, responses(
     (status = 204, description = "Kept"),
-    (status = 400, description = "`invalid_bearer`: no token, or not a Hub origin", body = Envelope),
+    (status = 400, description = "`invalid_capability`: no token, or not a Hub origin", body = Envelope),
 ))]
-pub fn bearer() {}
+pub fn capability() {}

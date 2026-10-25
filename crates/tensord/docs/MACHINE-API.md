@@ -9,7 +9,7 @@ control and SSE over HTTP/2, bulk bytes over HTTP/1.1. The routes, bodies and ev
 gRPC call maps onto them is `~/cozy_v2/tracker/design/machine-http-api.md` §2. In short:
 
 - `GET /v1/status` (identity and readiness receipt without a cap; the whole picture, as SSE on
-  change, with one), `POST /v1/keepalive`, `PUT /v1/bearer` (the owner's newest Hub bearer);
+  change, with one), `POST /v1/keepalive`, `PUT /v1/capability` (the signer's newest run capability at a Hub);
 - `POST /v1/runs` (idempotent on id per signer), `GET /v1/runs/{id}/events` (SSE after
   `Last-Event-ID`; closing it never cancels), `POST /v1/runs/{id}/cancel`;
 - `GET /v1/runs/{id}/outputs/{output}` (ranged, `ETag` = revision, readable while it grows),
@@ -41,23 +41,23 @@ warning each). A model-only upload's lane labels the commit it makes.
 - **Prepare and warm-up** are runs (`kind: warm`); uninstall is `kind: remove` (`remove/1`).
 - **Acknowledge** is deleted. A read that reaches the final length of an output's final revision
   marks it delivered, and delivered bytes are evicted first.
-- **Hub access**: released content is read anonymously. Signed in, every run carries the user's
-  bearer (`tensorfs.token`, with the Hub's `endpoint`, `ca_der` and `expires_unix_ms`), taken at send
-  from the CLI's signed-in session: the Hub reads its org's unreleased commits to it by membership. Calcifer also gives each machine it sent one every bearer
-  the session mints after, at the session's own refresh point (`PUT /v1/bearer`). The machine
+- **Hub access**: released content is read anonymously. A run that names private commits by hash
+  or publishes carries a run capability (`tensorfs.token`, with the Hub's `endpoint`, `ca_der`
+  and `expires_unix_ms`), never the account's sign-in: see
+  [What a machine and a package can reach](#what-a-machine-and-a-package-can-reach). The machine
   keeps the newest per signer and Hub, in memory only, and reads models through TensorFS's
   distribution `Endpoint` under it: runs, warm-set members, prefetches and calls alike. Each
-  executor given it on a Load or Invoke hears of every newer one (`bearer`, see
-  [DEVICE-EXECUTOR.md](DEVICE-EXECUTOR.md)), so a call that outlives its bearer still uploads.
-  It presents it only to that Hub's origin; its scope is the user's account. A refused bearer
-  ends the run `hub_credential_refused`, naming its expiry. If the machine restarts before
+  executor given it on a Load or Invoke hears of every newer one (`capability`, see
+  [DEVICE-EXECUTOR.md](DEVICE-EXECUTOR.md)), so a call that outlives one still reads and
+  uploads. It presents it only to that Hub's origin. A refused capability ends the run
+  `hub_credential_refused`, naming its expiry. If the machine restarts before
   preparation completes, the run ends FAILED with a typed reason; started work is never re-run.
 - **Names** (th-245): the machine resolves them at the run's Hub. A release (`org/name`, its
   release or none for the newest) installs from the card and locked requirements it reads there
   by name. A model slot is the run's choice, else its declared `default` release (a callee's
   too): `repository` at `release` (none: the newest) in its `lane`, else the commit the Hub picks for
   the hardware (`GET /v1/models/{org}/{name}/resolve`); the commit's tree names its one header.
-  `manifest` names a commit (or a header) by hash: one the bearer may read, or one the machine
+  `manifest` names a commit (or a header) by hash: one the capability reads, or one the machine
   holds. A weights output the Runtime writes, the machine uploads itself as a commit of the run's
   `weights_destination` in the output's lane. Name
   resolutions and held preparations are kept per `catalog_revision`, so a warm run reads nothing
@@ -97,3 +97,24 @@ finished memoized calls are answered from the memo (`DURABLE-EXECUTION.md`).
 **Activity** (a rental's idle release, `rental-lifetime.md`) is a run queued or running (warm-ups
 included), and an explicit keepalive restarts the clock once. Uploads, updates, open streams and
 other calls are not activity: a Calcifer that holds a stream must not bill forever.
+
+## What a machine and a package can reach
+
+A machine (a rented pod or this computer's own) never holds the account's sign-in (cl-670). At
+the run's Hub it holds, per signer, one **run capability**: a grant the Hub signs at
+`POST /v1/capabilities` for the computer that sent the runs, which keeps its sign-in.
+
+- **Reads**: the closures of the commits this computer's live runs on that machine name by hash,
+  where the account may read them (its own, or released). Public releases need no capability.
+- **Writes**: the repositories those runs publish into (their `weights_destination`): blob
+  uploads and `POST /v1/models/{org}/{name}/commits` there, nothing else.
+- **Refused**: everything else: other commits and repositories, publishing a release, deleting,
+  packages, rentals, billing, minting capabilities. The Hub answers 403
+  `capability.operation_forbidden`.
+- **Lifetime**: 15 minutes. Calcifer mints the machine a newer one at each send that needs more
+  and five minutes before expiry while those runs are queued or running (`PUT /v1/capability`),
+  and stops when they end, so it lapses at most 15 minutes after the last.
+
+A package's code runs in an executor, which TensorD gives the same capability for its endpoint
+(on a Load or Invoke, and each newer one): code can read it, and reaches what the machine's runs
+already reach, no more. A rental's provider holds what the machine holds.

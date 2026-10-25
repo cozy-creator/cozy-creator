@@ -36,7 +36,7 @@ paths:
     get:
       operationId: get_protected_resource_metadata
       tags: [auth]
-      summary: Reads where this hub's run tokens are issued (RFC 9728).
+      summary: Reads the resource this hub's tokens are for and their issuer (RFC 9728).
       security: []
       responses:
         '200':
@@ -184,44 +184,6 @@ paths:
         4XX: {$ref: '#/components/responses/Error'}
         5XX: {$ref: '#/components/responses/Error'}
 
-  /v1/auth/.well-known/openid-configuration:
-    get:
-      operationId: get_openid_configuration
-      tags: [auth]
-      summary: Reads the authorization server's metadata, including its token endpoint.
-      security: []
-      responses:
-        '200':
-          description: The authorization server metadata.
-          content:
-            application/json: {schema: {$ref: '#/components/schemas/AuthServerMetadata'}}
-        4XX: {$ref: '#/components/responses/AuthKitError'}
-        5XX: {$ref: '#/components/responses/AuthKitError'}
-
-  /v1/auth/oauth2/token:
-    post:
-      operationId: exchange_token
-      tags: [auth]
-      summary: Trades a machine's run capability (a JWT-bearer assertion) for a DPoP-bound run token.
-      security: []
-      parameters:
-      - name: DPoP
-        in: header
-        required: true
-        description: The DPoP proof (RFC 9449) of the key the token binds to.
-        schema: {type: string}
-      requestBody:
-        required: true
-        content:
-          application/x-www-form-urlencoded: {schema: {$ref: '#/components/schemas/AuthTokenRequest'}}
-      responses:
-        '200':
-          description: The run token.
-          content:
-            application/json: {schema: {$ref: '#/components/schemas/AuthTokenResponse'}}
-        4XX: {$ref: '#/components/responses/TokenRefusal'}
-        5XX: {$ref: '#/components/responses/TokenRefusal'}
-
   /v1/auth/v1/device-keys:
     delete:
       operationId: revoke_other_device_keys
@@ -321,6 +283,29 @@ paths:
         4XX: {$ref: '#/components/responses/AuthKitError'}
         5XX: {$ref: '#/components/responses/AuthKitError'}
 
+  /v1/capabilities:
+    post:
+      operationId: create_capability
+      tags: [machine]
+      summary: Mints a run capability for a machine, the only Hub credential a machine holds.
+      description: |
+        It reads the closures of the commits it names, the account's own or released, and uploads to and
+        records commits in the repositories it names, the account's own; nothing else. It expires after
+        15 minutes: the minting computer mints a newer one while the machine's runs need it. Public
+        releases need none.
+      security: [{bearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/CapabilityRequest'}}
+      responses:
+        '201':
+          description: The capability.
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/Capability'}}
+        4XX: {$ref: '#/components/responses/Error'}
+        5XX: {$ref: '#/components/responses/Error'}
+
   /v1/credit:
     get:
       operationId: get_credit
@@ -346,6 +331,20 @@ paths:
           description: The credit deposit.
           content:
             application/json: {schema: {$ref: '#/components/schemas/CreditDeposit'}}
+        4XX: {$ref: '#/components/responses/Error'}
+        5XX: {$ref: '#/components/responses/Error'}
+
+  /v1/credit/plan:
+    get:
+      operationId: get_credit_plan
+      tags: [billing]
+      summary: Reads the credit subscription on sale, with separate payment and service-credit amounts.
+      security: []
+      responses:
+        '200':
+          description: The credit subscription.
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/CreditPlan'}}
         4XX: {$ref: '#/components/responses/Error'}
         5XX: {$ref: '#/components/responses/Error'}
 
@@ -470,7 +469,7 @@ paths:
       operationId: get_model
       tags: [models]
       summary: A model, its releases (newest first) with their lanes, and to its members every commit.
-      security: [{}, {bearer: []}, {dpop: []}]
+      security: [{}, {bearer: []}]
       parameters:
       - {$ref: '#/components/parameters/Org'}
       - {$ref: '#/components/parameters/Name'}
@@ -526,7 +525,7 @@ paths:
         tree). The Hub reads the tree, checks its lane and its single .cozytensors file, and checks that the caller
         can read its whole closure. The first commit creates the model. 201 records it; 200 means the model
         already had it.
-      security: [{bearer: []}, {dpop: []}]
+      security: [{bearer: []}]
       parameters:
       - {$ref: '#/components/parameters/Org'}
       - {$ref: '#/components/parameters/Name'}
@@ -572,7 +571,7 @@ paths:
       description: |
         The version is a PEP 440 version higher than every existing release of the model. Repeating the same
         request answers 200 with the release; the same version with other commits is 409 release.exists.
-      security: [{bearer: []}, {dpop: []}]
+      security: [{bearer: []}]
       parameters:
       - {$ref: '#/components/parameters/Org'}
       - {$ref: '#/components/parameters/Name'}
@@ -602,7 +601,7 @@ paths:
         With a lane, the release's commit of that lane, else 404 lane.not_found. Without one, the Hub picks from
         each commit's header (its schemes, dtypes and bytes) what the GPUs run (plain weights only when plain),
         preferring 8-bit, and of those what fits free_vram; reasons say what was passed over. No gpus means CPU.
-      security: [{}, {bearer: []}, {dpop: []}]
+      security: [{}, {bearer: []}]
       parameters:
       - {$ref: '#/components/parameters/Org'}
       - {$ref: '#/components/parameters/Name'}
@@ -861,7 +860,7 @@ paths:
       operationId: quote_rental
       tags: [rentals]
       summary: Prices the exact body a POST /v1/rentals would send, at the offer it would buy.
-      security: [{}, {bearer: []}, {dpop: []}]
+      security: [{}, {bearer: []}]
       requestBody:
         required: true
         content:
@@ -1077,13 +1076,10 @@ components:
     bearer:
       type: http
       scheme: bearer
-      description: An AuthKit access token, from a device-key login.
-    dpop:
-      type: http
-      scheme: dpop
       description: |
-        A machine's sender-constrained run token (RFC 9449): `Authorization: DPoP <token>`
-        beside a `DPoP` proof header, from the JWT-bearer trade of a run capability.
+        An AuthKit access token, from a device-key login; or, on the routes that admit one, a run
+        capability (`cap1.…`, POST /v1/capabilities): its commits' blobs, and commits to the
+        repositories it writes.
     worker:
       type: apiKey
       in: header
@@ -1101,10 +1097,6 @@ components:
       description: An AuthKit refusal.
       content:
         application/json: {schema: {$ref: '#/components/schemas/AuthKitError'}}
-    TokenRefusal:
-      description: An OAuth error, or AuthKit's envelope for a rate limit.
-      content:
-        application/json: {schema: {$ref: '#/components/schemas/AuthTokenRefusal'}}
   schemas:
     Account:
       type: object
@@ -1288,85 +1280,6 @@ components:
         challenge: {type: string}
         factor: {$ref: '#/components/schemas/AuthTwoFactorFactor'}
         factors: {type: array, items: {$ref: '#/components/schemas/AuthTwoFactorFactor'}}
-    AuthServerMetadata:
-      type: object
-      required:
-      - issuer
-      - authorization_endpoint
-      - token_endpoint
-      - userinfo_endpoint
-      - end_session_endpoint
-      - jwks_uri
-      - scopes_supported
-      - response_types_supported
-      - response_modes_supported
-      - grant_types_supported
-      - subject_types_supported
-      - id_token_signing_alg_values_supported
-      - token_endpoint_auth_methods_supported
-      - code_challenge_methods_supported
-      - claims_supported
-      - prompt_values_supported
-      - authorization_response_iss_parameter_supported
-      - request_parameter_supported
-      - request_uri_parameter_supported
-      - backchannel_logout_supported
-      properties:
-        issuer: {type: string}
-        authorization_endpoint: {type: string}
-        token_endpoint: {type: string}
-        userinfo_endpoint: {type: string}
-        revocation_endpoint: {type: string}
-        end_session_endpoint: {type: string}
-        jwks_uri: {type: string}
-        scopes_supported: {type: array, items: {type: string}}
-        response_types_supported: {type: array, items: {type: string}}
-        response_modes_supported: {type: array, items: {type: string}}
-        grant_types_supported: {type: array, items: {type: string}}
-        subject_types_supported: {type: array, items: {type: string}}
-        id_token_signing_alg_values_supported: {type: array, items: {type: string}}
-        token_endpoint_auth_methods_supported: {type: array, items: {type: string}}
-        code_challenge_methods_supported: {type: array, items: {type: string}}
-        claims_supported: {type: array, items: {type: string}}
-        prompt_values_supported: {type: array, items: {type: string}}
-        dpop_signing_alg_values_supported: {type: array, items: {type: string}}
-        authorization_response_iss_parameter_supported: {type: boolean}
-        request_parameter_supported: {type: boolean}
-        request_uri_parameter_supported: {type: boolean}
-        authorization_details_types_supported: {type: array, items: {type: string}}
-        token_endpoint_auth_signing_alg_values_supported: {type: array, items: {type: string}}
-        backchannel_logout_supported: {type: boolean}
-    AuthTokenRefusal:
-      description: The token endpoint's refusal; AuthKit's envelope only for a rate limit.
-      oneOf:
-      - {$ref: '#/components/schemas/OAuthError'}
-      - {$ref: '#/components/schemas/AuthKitError'}
-    AuthTokenRequest:
-      type: object
-      description: The JWT-bearer grant (RFC 7523), the one grant this hub's authorization server issues.
-      required: [grant_type, assertion, client_id]
-      properties:
-        grant_type: {type: string, enum: ['urn:ietf:params:oauth:grant-type:jwt-bearer']}
-        assertion:
-          type: string
-          description: A JWT the machine's key signs, carrying the run capability.
-        client_id: {type: string, description: tensord}
-        resource:
-          type: string
-          description: The hub's origin, the token's audience; one per request.
-        scope: {type: string}
-    AuthTokenResponse:
-      type: object
-      required: [access_token, token_type, expires_in]
-      properties:
-        access_token: {type: string}
-        token_type: {type: string, description: DPoP for a run token.}
-        expires_in: {type: integer, format: int64}
-        scope: {type: string}
-        id_token: {type: string}
-        refresh_token: {type: string}
-        issued_token_type: {type: string}
-        authorization_details: {description: The RFC 9396 operations the token was granted.}
     AuthTokenSet:
       type: object
       required: [access_token, token_type, expires_in, refresh_token]
@@ -1770,6 +1683,27 @@ components:
         cut_at: {type: string, format: date-time}
         yanked: {type: boolean}
         yanked_at: {type: string, format: date-time}
+    Capability:
+      type: object
+      required: [token, expires_unix_ms]
+      properties:
+        token: {type: string, description: 'Presented as `Authorization: Bearer <token>`.'}
+        expires_unix_ms: {type: integer, format: int64}
+    CapabilityRequest:
+      type: object
+      properties:
+        machine: {type: string, description: The machine it is for, for the record.}
+        reads:
+          type: array
+          maxItems: 64
+          items: {type: string, description: 'sha256:<hex>'}
+          description: Commits whose closures it reads.
+        writes:
+          type: array
+          maxItems: 8
+          items: {type: string}
+          description: Model repositories (org/name) it uploads to and records commits in.
+        expires_s: {type: integer, format: int64, minimum: 0, maximum: 900, description: 'A shorter life, in seconds; 0 or omitted: 900.'}
     CreditDeposit:
       type: object
       description: The credit deposit as the catalog sells it; amounts are micros of USD as decimal strings.
@@ -1778,6 +1712,17 @@ components:
         price_id: {type: string}
         min_amount: {type: string}
         max_amount: {type: string}
+    CreditPlan:
+      type: object
+      description: Payment and service-credit amounts are independent decimal strings in millionths; expiry applies to each delivered credit lot.
+      required: [price_id, currency, payment_amount, credit_amount, interval_hours, expires_after_days]
+      properties:
+        price_id: {type: string}
+        currency: {type: string}
+        payment_amount: {type: string}
+        credit_amount: {type: string}
+        interval_hours: {type: integer}
+        expires_after_days: {type: integer}
     CreditResponse:
       type: object
       required: [credit]
@@ -1984,16 +1929,6 @@ components:
         worker_image_digest: {type: string}
         measured_at: {type: string, format: date-time}
         operator: {type: string}
-    OAuthError:
-      type: object
-      description: The authorization server's OAuth error (RFC 6749 section 5.2).
-      required: [error, error_description]
-      properties:
-        error: {type: string}
-        error_description: {type: string}
-        reason:
-          type: string
-          description: A stable cause beside the code, when one is known.
     ObjectRef:
       type: object
       required: [sha256, length]
@@ -2203,6 +2138,11 @@ components:
         detail: {type: string}
         failure: {$ref: '#/components/schemas/RentalFailure'}
         provider_refusal: {type: string}
+        provider_warning:
+          type: string
+          description: >-
+            For an admin, while the rental lives: the prepaid provider account its machine runs on is
+            spent, or lasts less than a few hours at its current spend.
         boot: {$ref: '#/components/schemas/RentalBoot'}
         unreachable_since: {type: string, format: date-time}
         webrtc: {$ref: '#/components/schemas/RentalWebRtc'}

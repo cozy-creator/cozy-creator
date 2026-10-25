@@ -29,8 +29,8 @@ pub mod path {
     pub const OBJECT: &str = "/v1/objects/{digest}";
     /// `POST` a [`super::HeldRequest`]: what the machine holds of many objects, in one request.
     pub const OBJECTS_HELD: &str = "/v1/objects/held";
-    /// `PUT` a [`super::TensorFSOptions`]: the signer's newest bearer at a Hub.
-    pub const BEARER: &str = "/v1/bearer";
+    /// `PUT` a [`super::TensorFSOptions`]: the signer's newest run capability at a Hub.
+    pub const CAPABILITY: &str = "/v1/capability";
 }
 
 /// The header naming the byte ranges of an object the machine holds: `0-1048575,2097152-4194303`
@@ -318,7 +318,8 @@ pub struct ProviderAccess {
     pub civitai: String,
 }
 
-/// Public TensorFS transport options. TensorD forwards a supplied token without acquiring one.
+/// Public TensorFS transport options. TensorD forwards a supplied token without acquiring one: at
+/// the run's Hub, the run capability its computer minted, never an account's sign-in.
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 #[serde(default)]
