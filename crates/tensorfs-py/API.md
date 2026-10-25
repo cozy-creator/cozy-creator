@@ -718,3 +718,57 @@ Loading metadata and encoding parameters accept booleans, integers in the signed
 unsigned-64 range, strings, lists and string-keyed maps. They do not accept floats, `None`
 or bytes. Pipeline/component configuration is ordinary JSON, including finite floats and
 null values.
+
+### Native checkpoint quantization
+
+`Writer.quantize` converts an exact, fully resolved selection using the existing Writer.
+It neither selects model layers nor commits the checkpoint. The package/Runtime still owns
+recipe selection, calibration that executes a model, output grants and final publication.
+The initial route accepts plain F16/BF16/F32 rank-2 weights and the explicit producers
+`int8-convrot256/1` and `nvfp4-min-sse/1` with their exact existing format parameters.
+
+```python
+control = tensorfs.ConversionControl()
+selected = [{
+    "component": "unet", "key": "proj.weight",
+    "source_dtype": "BF16", "shape": [1024, 1024], "dtype": "BF16",
+    "encoding": {"scheme": "int8.convrot", "params": {
+        "rotation": "kron_regular_h4", "rotation_size": 256,
+    }},
+    "strategy": "int8-convrot256/1",
+}]
+writer = tensorfs.Writer("output.cozytensors", base=source, resume="resolved-job-key")
+stats = writer.quantize(source, selected, max_buffer_bytes=8 << 20,
+                        max_new_bytes=2 << 20, control=control)
+output = writer.commit()
+```
+
+Supply the **full same selection** on resume; the existing journal binds it to the source
+header, numerical revisions and quality bound before trusting completed keys. The buffer
+size may change; changing the source, selection or numerical recipe refuses. Inherited
+unselected tensors/config/assets retain the ordinary base behavior. Output budget counts all
+new encoded payload/companion bytes before store deduplication, matching an output grant;
+physical disk growth is a separate quantity. A repeated completed selection reads/writes zero.
+
+The native loop releases the GIL. Another thread can call `control.cancel()` or inspect
+`control.progress()` (source bytes, completed tensors); observations never drive or acknowledge
+work. Keep the caller/request alive until the native call returns. Commit/abandon/other writes
+refuse while conversion owns the Writer. Cancellation stops between bounded windows and before
+publication; an already-started filesystem operation may finish. Complete earlier tensors stay
+in the existing resume journal; an interrupted current tensor is recomputed. No partial tensor
+is a completed entry. Temporary encoded parts live in that Writer's existing work directory.
+
+The buffer bound includes simultaneous source, F32 conversion, encoder outputs and numerical
+scratch. The existing downloader and Writer additionally retain their own bounded I/O buffers;
+it is not a process RSS cap. One row that cannot fit refuses. NVFP4 reads the whole tensor in
+bounded windows to establish a finite maximum, then makes the bounded encoding pass. Both reads
+are counted. No expanded whole-tensor code array or unbounded companion buffer is retained.
+
+`stats` reports identity, encoded/reused keys, source bytes, logical new bytes, saturation,
+worst relative Frobenius and per-tensor acceptance facts. Reused entries have no recomputed
+quality measurement, so aggregate worst is `None` if any were reused. Bytes match the primitive
+producer; SSE/energy accumulate in F64 and may vary at reduction-rounding precision with chunk
+size or the NumPy reference. Max error, finiteness, saturation and the production round-trip
+tripwires are preserved; optional `max_relative_frobenius` refuses before publishing that tensor.
+This is an implementation candidate: real default-CLI conversion/parity/resume proof is required
+before Runtime producer cutover. Encoded-source conversions and calibrated recipes are separate.

@@ -190,7 +190,7 @@ fn quantize(input: &Input) -> Result<Vec<OwnedPart>> {
 /// Production Runtime's min-SSE rule, with a supplied whole-tensor maximum. The only
 /// floating scratch is one 16-value block. Emit packed bytes directly: the legacy
 /// RTN layout helper takes an expanded tensor-sized code vector.
-pub(super) fn min_sse(input: &Input) -> Result<Vec<OwnedPart>> {
+pub(super) fn min_sse(input: &Input) -> Result<super::Quantized> {
     if input.encoding
         != &Encoding::nvfp4(
             GlobalScale::Multiply,
@@ -255,6 +255,7 @@ pub(super) fn min_sse(input: &Input) -> Result<Vec<OwnedPart>> {
         std::array::from_fn(|i| crate::format::decode::elem::e4m3(i as u8));
     let mut weight = Vec::with_capacity(bytes / 8);
     let mut scale = Vec::with_capacity(bytes / 64);
+    let mut stats = super::QuantizationStats::default();
     for raw in source.bytes.as_chunks::<64>().0 {
         let mut block = [0.0f32; 16];
         let mut amax = 0.0f32;
@@ -302,6 +303,12 @@ pub(super) fn min_sse(input: &Input) -> Result<Vec<OwnedPart>> {
             }
         }
         let (_, chosen, codes) = best.expect("three candidates");
+        let effective = magnitudes[chosen as usize] * global;
+        for (value, code) in block.into_iter().zip(codes) {
+            stats.saturated += u64::from(value.abs() > effective * 6.0f32);
+            let reconstructed = crate::format::decode::elem::e2m1(code) * effective;
+            stats.add(value, f64::from(reconstructed));
+        }
         scale.push(chosen);
         weight.extend(
             codes
@@ -311,7 +318,7 @@ pub(super) fn min_sse(input: &Input) -> Result<Vec<OwnedPart>> {
                 .map(|pair| pair[0] | pair[1] << 4),
         );
     }
-    Ok(vec![
+    Ok(super::Quantized { stats, parts: vec![
         OwnedPart {
             role: "weight".into(),
             dtype: Dtype::F4,
@@ -330,7 +337,7 @@ pub(super) fn min_sse(input: &Input) -> Result<Vec<OwnedPart>> {
             shape: vec![],
             bytes: global.to_le_bytes().to_vec(),
         },
-    ])
+    ] })
 }
 
 /// A calibrated producer's `codes` (`U8`, an E2M1 code per element, the logical shape), its

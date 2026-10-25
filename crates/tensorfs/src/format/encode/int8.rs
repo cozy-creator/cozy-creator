@@ -33,6 +33,10 @@ impl Encoding {
 /// Encode complete rows without another tensor-sized floating-point allocation.
 /// Callers can split at any row boundary; neither the scale nor the rotation spans rows.
 fn convrot(input: &Input) -> Result<Vec<OwnedPart>> {
+    Ok(convrot_measured(input)?.parts)
+}
+
+pub(super) fn convrot_measured(input: &Input) -> Result<super::Quantized> {
     let fail = |detail: &str| Error::Encode(format!("int8.convrot: {detail}"));
     if input.encoding != &Encoding::int8_convrot(256) {
         return Err(fail(
@@ -73,6 +77,7 @@ fn convrot(input: &Input) -> Result<Vec<OwnedPart>> {
     let mut weight = Vec::with_capacity(bytes / 4);
     let mut scale = Vec::with_capacity(rows * 4);
     let mut rotated = vec![0.0f64; cols];
+    let mut stats = super::QuantizationStats::default();
     for row in source.bytes.chunks_exact(cols * 4) {
         for (out, raw) in rotated.iter_mut().zip(row.as_chunks::<4>().0) {
             let value = f32::from_le_bytes(*raw);
@@ -103,14 +108,33 @@ fn convrot(input: &Input) -> Result<Vec<OwnedPart>> {
         }
         let row_scale = (amax / 127.0).max(1e-12) as f32;
         scale.extend_from_slice(&row_scale.to_le_bytes());
+        let offset = weight.len();
         weight.extend(rotated.iter().map(|value| {
-            (value / f64::from(row_scale))
-                .round_ties_even()
-                .clamp(-127.0, 127.0) as i8 as u8
+            let code = (value / f64::from(row_scale)).round_ties_even();
+            stats.saturated += u64::from(code.abs() > 127.0);
+            code.clamp(-127.0, 127.0) as i8 as u8
         }));
+        for (codes, source) in weight[offset..].as_chunks::<256>().0.iter()
+            .zip(row.as_chunks::<1024>().0)
+        {
+            let mut sums = codes.map(|code| i32::from(code as i8));
+            for stride in [64, 16, 4, 1] {
+                for group in sums.chunks_exact_mut(stride * 4) {
+                    for offset in 0..stride {
+                        let [a, b, c, d] = [0, 1, 2, 3].map(|i| group[offset + i * stride]);
+                        for (i, value) in [a + b + c - d, a + b - c + d, a - b + c + d, b + c + d - a].into_iter().enumerate() {
+                            group[offset + i * stride] = value;
+                        }
+                    }
+                }
+            }
+            for (sum, raw) in sums.into_iter().zip(source.as_chunks::<4>().0) {
+                stats.add(f32::from_le_bytes(*raw), f64::from(sum) * f64::from(row_scale) / 16.0);
+            }
+        }
     }
-    Ok(vec![
+    Ok(super::Quantized { stats, parts: vec![
         part("weight", Dtype::I8, [rows, cols], weight),
         part("scale", Dtype::F32, [rows], scale),
-    ])
+    ] })
 }

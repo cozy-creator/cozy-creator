@@ -1,6 +1,7 @@
 //! Thin access to TensorFS's versioned tensor encoders. No framework import or model policy.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyMapping};
@@ -8,6 +9,25 @@ use tensorfs::format::{encode, Dtype, Encoding, PartBytes};
 
 use crate::store::{from_py, OrRaise};
 use crate::tensors::PyEncoded;
+
+/// The conversion engine's cancellation token, shared with a caller's request watcher.
+#[pyclass(name = "ConversionControl", module = "tensorfs", frozen)]
+#[derive(Default)]
+pub(crate) struct PyConversionControl {
+    pub(crate) inner: Arc<tensorfs::ConversionControl>,
+}
+#[pymethods]
+impl PyConversionControl {
+    #[new]
+    fn new() -> Self { Self::default() }
+
+    fn cancel(&self) { self.inner.cancel(); }
+
+    #[getter]
+    fn canceled(&self) -> bool { self.inner.stopped() }
+
+    fn progress(&self) -> (u64, u64) { self.inner.progress() }
+}
 
 #[pyfunction]
 #[pyo3(signature = (scheme, values, *, dtype, shape, strategy, params = None, tensor_amax = None))]
@@ -69,5 +89,6 @@ fn quantize(
 }
 
 pub fn install(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyConversionControl>()?;
     m.add_function(wrap_pyfunction!(quantize, m)?)
 }

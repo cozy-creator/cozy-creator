@@ -143,6 +143,41 @@ pub struct OwnedPart {
     pub bytes: Vec<u8>,
 }
 
+/// Producer acceptance facts, accumulated in F64 over the original F32 values.
+/// Payload bytes are invariant to chunking; sums may differ by floating reduction order.
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct QuantizationStats {
+    pub amax: f64,
+    pub max_abs_error: f64,
+    pub sse: f64,
+    pub energy: f64,
+    pub saturated: u64,
+}
+
+impl QuantizationStats {
+    pub(super) fn add(&mut self, source: f32, reconstructed: f64) {
+        let source = f64::from(source);
+        let error = reconstructed - source;
+        self.amax = self.amax.max(source.abs());
+        self.max_abs_error = self.max_abs_error.max(error.abs());
+        self.sse += error * error;
+        self.energy += source * source;
+    }
+
+    pub fn merge(&mut self, other: &Self) {
+        self.amax = self.amax.max(other.amax);
+        self.max_abs_error = self.max_abs_error.max(other.max_abs_error);
+        self.sse += other.sse;
+        self.energy += other.energy;
+        self.saturated += other.saturated;
+    }
+}
+
+pub struct Quantized {
+    pub parts: Vec<OwnedPart>,
+    pub stats: QuantizationStats,
+}
+
 fn row(scheme: &str) -> Result<&'static Encoder> {
     ENCODERS
         .iter()
@@ -174,8 +209,13 @@ pub fn quantize(input: &Input) -> Result<Vec<OwnedPart>> {
 /// A producer with an explicit numerical revision, distinct from its stored encoding.
 /// Other legacy encoders keep their existing API and cannot be selected accidentally.
 pub fn quantize_strategy(input: &Input, strategy: &str) -> Result<Vec<OwnedPart>> {
+    Ok(quantize_measured(input, strategy)?.parts)
+}
+
+/// The same versioned producer, including acceptance facts before publication.
+pub fn quantize_measured(input: &Input, strategy: &str) -> Result<Quantized> {
     match (input.encoding.scheme.as_str(), strategy) {
-        ("int8.convrot", CONVROT_STRATEGY) => run(input, int8::CONVROT.quantize, "closed-form"),
+        ("int8.convrot", CONVROT_STRATEGY) => int8::convrot_measured(input),
         ("nvfp4", MIN_SSE_STRATEGY) => nvfp4::min_sse(input),
         _ => Err(Error::Encode(format!(
             "no quantizer strategy {strategy:?} for {}", input.encoding.scheme
