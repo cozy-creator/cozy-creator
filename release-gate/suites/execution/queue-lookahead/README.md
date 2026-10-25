@@ -55,4 +55,15 @@ No GPU weights are preloaded by this feature. Preparation remains normalization/
 the existing scheduler alone authorizes Invoke and owns device permits. Ordinary dispatch
 remains unchanged for executors without the `request_lookahead` Hello capability.
 
-Source checks only so far. No installed-cohort run has been recorded.
+Installed RTX3060 cohort Runtime`de3dfc42c`/TensorFS`6431a5387`/TensorD`9998cf5f4` completed
+all seven scenarios' jobs. The original controller incorrectly compared public run IDs with
+numeric executor request IDs and reported failures; those red logs remain preserved.
+Authoritative `cozy run show` memory request IDs permit posthoc qualification of **handoff
+17567–17569**, **overlap17570–17572**, and **incompatible17585–17587**, including actual
+sent/ready/reused timing and ordered correct results. [Exact partial proof](evidence/partial-20261025.json).
+
+Cancel, abandon, refusal and active-cancel scenarios retain terminal/PID isolation evidence,
+but their pre-entry canceled/refused or killed requests lack mapping in the old returned
+measurements. They remain **partial**, not passed. No mapping is inferred from timestamps or
+adjacent numeric IDs. The future fixture returns Context.request_id for entered work and reads
+normal run-show measurements; pre-entry cases require an explicit public-to-executor ID mapping.
