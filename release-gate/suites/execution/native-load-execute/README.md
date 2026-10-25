@@ -104,3 +104,10 @@ It is not a hard VRAM ceiling. Cancellation does not preempt an already running 
 the checked chain still joins it before cleanup. No event-only handoff, performance result or
 full-model qualification is claimed by this gate. Repeat the seven raw modes on the new artifact,
 plus the existing resident NVFP4 and ConvRot primitive/readback gates for shared decoder coverage.
+
+Installed candidate qualification now **passed all21 cells**, runs17796,17798,17800–17817 and17819,
+on Runtimef0d25c8e7/TensorFS9e95ee586 with actual TensorD4178. This includes all6 encoded dtype
+combinations, actual read/decode failures with0 launches, encoded cancellation, all7 raw lifetime
+regressions, ready-pin/factor-read gates and96 resident-decoder cases.
+[Exact acceptance and limits](evidence/9e95-f0d-local-21.md). Encoded cancellation raced before I/O;
+active-decode cancellation, broader lifecycle/platform and release acceptance remain separate.
