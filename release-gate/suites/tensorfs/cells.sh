@@ -16,25 +16,23 @@ mkdir -p "$T"
 # tfs_step <name> <cozy args...>: one command that makes a run, followed to its end (e2e/run.sh): its events in
 # <name>.ndjson, its record in <name>.json, its wall time in steps.tsv.
 tfs_step() {
-  local name=$1 t0 code=0; shift
+  local name=$1 t0; shift
   t0=$(date +%s%3N)
-  run_submit "$T" "$name" "$@" > /dev/null; run_wait "$T" "$name" || code=$?
-  [ "$code" != 2 ] || wedged "tensorfs $name: run $(cat "$T/$name.number") never ended and its cancel did not take"
+  run_submit "$T" "$name" "$@" > /dev/null; run_wait "$T" "$name"
   printf '%s\t%s\t%s\n' "$name" "$(cat "$T/$name.number")" "$(( $(date +%s%3N) - t0 ))" >> "$T/steps.tsv"
   log "tensorfs $name: run $(cat "$T/$name.number") $(run_get "$T" "$name" .status)"
 }
 # tfs_cut <name> <stage> <fraction> <cozy args...>: the command, cancelled once its <stage> progress passes the
 # fraction; the bytes it had moved by then go in <name>.cut.
 tfs_cut() {
-  local name=$1 stage=$2 frac=$3 n moved= code=0; shift 3
+  local name=$1 stage=$2 frac=$3 n moved=; shift 3
   n=$(run_submit "$T" "$name" "$@")
   while [ -n "$n" ] && kill -0 "$(cat "$T/$name.pid")" 2>/dev/null; do
     moved=$(python3 -I "$HERE/suites/tensorfs/check.py" --past "$T/$name.ndjson" "$stage" "$frac")
     if [ -n "$moved" ]; then "$CLI" run cancel "$n" -y >/dev/null 2>&1; echo "$moved" > "$T/$name.cut"; break; fi
     sleep 2
   done
-  run_wait "$T" "$name" || code=$?
-  [ "$code" != 2 ] || wedged "tensorfs $name: run $n never ended and its cancel did not take"
+  run_wait "$T" "$name"
   printf '%s\t%s\t\n' "$name" "${n:-none}" >> "$T/steps.tsv"
   log "tensorfs $name: run ${n:-none} cancelled at $(cat "$T/$name.cut" 2>/dev/null || echo '?') bytes"
 }

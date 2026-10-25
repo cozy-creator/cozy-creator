@@ -1162,11 +1162,13 @@ fn endpoint(rental: &types::Rental) -> Option<Endpoint> {
     })
 }
 
-/// A booting rental's phase, for people.
+/// A booting rental's phase, for people: a pending one's is why it is not bought yet (`waiting for
+/// capacity: …`), as its Hub says.
 fn boot_phase(rental: &types::Rental) -> Option<String> {
     let boot = rental.boot.as_ref();
+    let pending = rental.detail.as_deref().filter(|d| rental.state == "pending_acquisition" && !d.is_empty());
     let words: Vec<&str> = [
-        Some(rental.state.as_str()),
+        Some(pending.unwrap_or(rental.state.as_str())),
         boot.and_then(|b| b.phase.as_deref()),
         boot.and_then(|b| b.activity.as_deref()),
     ]

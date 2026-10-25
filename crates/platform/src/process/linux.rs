@@ -227,6 +227,15 @@ pub(super) fn exited(pid: u32) -> bool {
     }
 }
 
+pub(super) fn in_kernel(pid: u32) -> Option<String> {
+    let tid = fs::read_dir(format!("/proc/{pid}/task")).ok()?.flatten().find(|task| {
+        let stat = fs::read_to_string(task.path().join("stat")).unwrap_or_default();
+        stat.rsplit_once(") ").is_some_and(|(_, rest)| rest.starts_with('D'))
+    })?;
+    let wchan = fs::read_to_string(tid.path().join("wchan")).unwrap_or_default();
+    Some(if wchan == "0" { String::new() } else { wchan })
+}
+
 pub(super) fn usage(pid: u32) -> io::Result<super::Usage> {
     let stat = stat(pid)?;
     Ok(super::Usage {

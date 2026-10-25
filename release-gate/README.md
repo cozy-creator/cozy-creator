@@ -18,7 +18,7 @@ same SKU and suites; any FAIL blocks the promotion. Design: tracker `design/ci-v
 
 A rewrite picks every suite. Suites stack on one rental per SKU (`--suite runtime,packages` runs each cell once,
 against `gate-<SKU>-runtime-packages.json`). A suite is `suites/<name>/`: `cells.sh` (sourced in gate.sh: `cell`,
-`pkg`, `product`, `expect`, `log`, `wedged`, `$CLI`, `$M`, `$R`, `$REF`, the scenario, and e2e/run.sh's `run_*`, the one
+`pkg`, `product`, `expect`, `log`, `$CLI`, `$M`, `$R`, `$REF`, the scenario, and e2e/run.sh's `run_*`, the one
 way a suite runs `cozy` and reads a run), optional `before.sh` (the fresh pod, before the candidate goes on), optional
 `check.py` (`check(gate) -> (fails, notes)`, listed in analyze.py; `gate['runs']` holds each completed cell as
 `runs.py`'s summary of its record), and `skus` (`<sku> [disk GB] [gpus]` per line, the workflow's rentals). The verdict's `SUITES` line names what ran.

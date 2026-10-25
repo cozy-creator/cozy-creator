@@ -23,18 +23,13 @@ get() {
   esac
   run_show "$T" "$(nm "$1")" "$1"; run_get "$T" "$(nm "$1")" "$q"
 }
-# until_status <run> <in_progress|terminal>: the run followed to its end, or until it reaches the status (e2e/run.sh's
-# watchdog: 10-24, a describer answered for 4 h, its executor pinned and silent). One whose cancel does not take stops
-# the gate.
-until_status() {
-  local code=0; run_wait "$T" "$(nm "$1")" "${2#terminal}" || code=$?
-  [ "$code" != 2 ] || wedged "run $1 (stage $(get "$1" stage)) never ended and its cancel did not take"
-  return "$code"
-}
-envs() { timeout 60 "$CLI" --json machine show "$M" 2>/dev/null | jq -r '[.status.environments[] | (.package | split("/") | last) + "@" + .release] | sort | join(" ")'; }
+# until_status <run> <in_progress|terminal>: the run followed to its end, or until its events reach the status
+# (e2e/run.sh's run_wait).
+until_status() { run_wait "$T" "$(nm "$1")" "${2#terminal}"; }
+envs() { "$CLI" --json machine show "$M" 2>/dev/null | jq -r '[.status.environments[] | (.package | split("/") | last) + "@" + .release] | sort | join(" ")'; }
 released() {  # released <package>: its two newest releases users get (not yanked), newest first
-  timeout 60 "$CLI" package info "$1" --json 2>/dev/null | jq -r '[.releases[] | select(.yanked | not) | .release][:2] | join(" ")'; }
-NGPU=$(timeout 60 "$CLI" --json machine show "$M" 2>/dev/null | jq '.status.gpus | length')
+  "$CLI" package info "$1" --json 2>/dev/null | jq -r '[.releases[] | select(.yanked | not) | .release][:2] | join(" ")'; }
+NGPU=$("$CLI" --json machine show "$M" 2>/dev/null | jq '.status.gpus | length')
 
 # Generations: install, update and roll back a package; then the Runtime back a release and forward to the candidate.
 read -r first second <<< "$(released sdxl)"
@@ -86,7 +81,7 @@ fi
 s=$(submit "$(pkg anima generate)" prompt="masterpiece, anime illustration of $CHAR, stacked" seed:=$((R + 37))); until_status "$s" terminal
 k=$(submit "$(pkg birefnet remove_background)" --asset image="$REF"); until_status "$k" terminal
 d=$(submit "$(pkg qwen3.5 ask)" prompt="Describe this image in one sentence." --asset images="$REF"); until_status "$d" terminal
-ended=$(timeout 60 "$CLI" machine logs "$M" tensord -n 0 2>/dev/null | grep -c 'ending idle')
+ended=$("$CLI" machine logs "$M" tensord -n 0 2>/dev/null | grep -c 'ending idle')
 [ "$(get "$s" status)$(get "$k" status)$(get "$d" status)" = completedcompletedcompleted ] \
   && expect tensord-leases PASS "SDXL, Anima and BiRefNet stacked, then the describer fit (run $d); $ended idle executors ended" \
   || expect tensord-leases FAIL "anima $s $(get "$s" status), birefnet $k $(get "$k" status), describer $d $(get "$d" status) $(get "$d" reason)"

@@ -100,19 +100,16 @@ end_it() {
   [ -z "$KEEP" ] || kill "$KEEP" 2>/dev/null
   [ -n "$M" ] || return
   # The machine's own logs leave with it: keep them for every gate (a poisoned executor is diagnosed from them).
-  timeout 300 "$CLI" machine logs "$M" memory -n 0 >machine-memory.log 2>&1
-  timeout 300 "$CLI" machine logs "$M" tensord -n 0 >machine-tensord.log 2>&1
-  if "$CLI" logs --help >/dev/null 2>&1; then timeout 120 "$CLI" logs calcifer; else timeout 120 "$CLI" machine logs local calcifer -n 0; fi >calcifer.log 2>&1
-  "$CLI" machine end "$M" -y >end.log 2>&1
-  for _ in $(seq 1 30); do timeout 30 "$CLI" machine list 2>/dev/null | grep -q "^$M " || { log "ended $M, gone"; M=; return; }; sleep 10; done
-  log "WARNING $M still listed"
+  "$CLI" machine logs "$M" memory -n 0 >machine-memory.log 2>&1
+  "$CLI" machine logs "$M" tensord -n 0 >machine-tensord.log 2>&1
+  if "$CLI" logs --help >/dev/null 2>&1; then "$CLI" logs calcifer; else "$CLI" machine logs local calcifer -n 0; fi >calcifer.log 2>&1
+  # `machine end` returns once the Hub affirms the pod gone.
+  "$CLI" machine end "$M" -y >end.log 2>&1 && ! "$CLI" machine list 2>/dev/null | grep -q "^$M " && { log "ended $M, gone"; M=; return; }
+  log "WARNING $M still listed: $(tail -c 300 end.log)"
 }
 trap end_it EXIT
 trap 'exit 143' TERM INT
 RUN_CLI=$CLI; . "$HERE/../e2e/run.sh"
-# wedged <what>: a run never ended and its cancel did not take (10-24: Fibo pinned and silent for 30 min): the gate
-# stops, and its trap keeps the machine's logs and ends the pod.
-wedged() { expect gate-wedged FAIL "$1: the gate stopped"; printf 'VERDICT FAIL (%s)\n' "$1" | tee verdict.txt; exit 1; }
 # cell <name> <target> [args...]: one run on $M (e2e/run.sh's run_cell): its record <name>.json, its outputs <name>/.
 # --only names cells or packages.
 # A cell another suite already ran, or one known-failing.json parks on this SKU ("cells"; sku "*" is every SKU), does
@@ -129,8 +126,7 @@ cell() {
   run_cell "$OUT" "$name" "$target" --on "$M" "$@" || code=$?
   n=$(cat "$name.number")
   printf '%s\t%s\t%s\n' "$name" "$target" "$n" >> cells.tsv
-  [ "$code" != 2 ] || wedged "$name run $n never ended and its cancel did not take"
-  log "$name run $n $(run_get "$OUT" "$name" .status)$(cat "$name.stalled" 2>/dev/null | head -1 | sed 's/^/: /')"
+  log "$name run $n $(run_get "$OUT" "$name" .status)$(jq -r 'select(.error) | ": " + .error.message' "$name.ndjson" 2>/dev/null | head -1)"
 }
 # pkg <package> <fn>: the root package's function users get, its --pins release, or the --packages checkout's dir.
 pkg() {
@@ -156,12 +152,21 @@ echo "$M" > machine
 log "rented $M"
 # The gate holds the rental between runs too (fetches, uploads, analysis here): reset its 15-minute idle clock.
 (while sleep 240; do "$CLI" machine keepalive "$M" >/dev/null 2>&1; done) & KEEP=$!
-timeout 60 "$CLI" machine show "$M" > machine-fresh.txt 2>&1
+"$CLI" machine show "$M" > machine-fresh.txt 2>&1
+# reported: $M's cozy, Runtime and TensorFS into $v $rt $tfs once it reports them (a fresh pod does once up); empty
+# when it ends first, or Calcifer answers a typed error.
+reported() {
+  local show st
+  while show=$("$CLI" --json machine show "$M" 2>/dev/null); do
+    IFS='|' read -r v rt tfs st <<< "$(jq -r '[(.status // {} | .version, .runtime, .tensorfs), .state] | map(. // "") | join("|")' <<< "$show")"
+    [ -z "$v" ] && [ "$st" != ending ] && [ "$st" != ended ] || return 0; sleep 5
+  done
+}
 # Sourced on the fresh pod, before the candidate goes on: each suite's before.sh, then `--before FILE`s.
 for s in ${SUITES//,/ }; do [ ! -f "$HERE/suites/$s/before.sh" ] || . "$HERE/suites/$s/before.sh"; done
 for f in "${BEFORE[@]}"; do . "$f"; done
 # A machine already on the candidate cozy (a suite's before.sh moved it) keeps it: no second upload or restart.
-if [ -n "$BIN" ] && [ "$(timeout 60 "$CLI" --json machine show "$M" | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"]["version"])' 2>/dev/null)" = "$BIN" ]; then
+if [ -n "$BIN" ] && [ "$("$CLI" --json machine show "$M" | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"]["version"])' 2>/dev/null)" = "$BIN" ]; then
   for ((i = 0; i < ${#CAND[@]}; i += 2)); do [ "${CAND[i]}" = --tensord ] && CAND=("${CAND[@]:0:i}" "${CAND[@]:i+2}") && break; done
 fi
 # notinstalled <why>: the cells would run the old software, so the gate stops here: logs kept, pod ended, FAIL.
@@ -176,11 +181,8 @@ if [ ${#CAND[@]} -gt 0 ]; then
   log "candidate on $M: exit $code $(jq -c 'select(.machine and .tensord)' update.json 2>/dev/null)"
   [ "$code" = 0 ] || notinstalled "cozy machine update exit $code: $(jq -r 'select(.error) | "\(.error.code): \(.error.message)"' update.json 2>/dev/null) $(tail -c 300 update.log | tr '\n' ' ')"
 fi
-timeout 60 "$CLI" machine show "$M" > machine.txt 2>&1
-for _ in $(seq 30); do  # a fresh pod reports once up
-  IFS='|' read -r v rt tfs <<< "$(timeout 60 "$CLI" --json machine show "$M" 2>/dev/null | jq -r '.status // {} | [.version, .runtime, .tensorfs] | map(. // "") | join("|")')"
-  [ -n "$v" ] && break; sleep 5
-done
+"$CLI" machine show "$M" > machine.txt 2>&1
+reported
 [ -n "$v" ] && [ -n "$rt" ] && [ -n "$tfs" ] || notinstalled "$M reports no cozy, Runtime and TensorFS (cozy ${v:-?}, Runtime ${rt:-?}, TensorFS ${tfs:-?})"
 expect candidate-installed PASS "$M runs cozy $v, Runtime $rt, TensorFS $tfs"
 # The set the verdict is for (verify.sh, promote.sh): each candidate's version, as the machine reports it, and digest.

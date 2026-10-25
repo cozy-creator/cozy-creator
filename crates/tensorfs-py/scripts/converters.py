@@ -38,7 +38,6 @@ import importlib.util
 import io
 import json
 import math
-import re
 import struct
 import sys
 import tempfile
@@ -51,7 +50,8 @@ from typing import Any
 
 import numpy as np
 import torch
-from diffusers.loaders import single_file_utils
+from diffusers.loaders import lora_conversion_utils, single_file_utils
+from diffusers.utils import state_dict_utils
 from transformers import AutoConfig, AutoModelForImageTextToText
 
 PINS = {"diffusers": "0.40.0", "transformers": "5.16.1"}
@@ -265,10 +265,11 @@ SINGLE_FILE = {
 
 
 def single_file(name: str) -> tuple[dict[str, Any], dict[str, dict[str, tuple[int, ...]]]]:
-    """The table, and each component's target shapes (for the LoRA tables)."""
+    """The table, and each component's linears and convolutions with their weight shapes (the
+    LoRA tables' targets)."""
     spec = SINGLE_FILE[name]
     prefixes = [c["prefix"] for c in spec["components"]]
-    components, shapes = [], {}
+    components, shapes, layers = [], {}, {}
     for c in spec["components"]:
         prefix = c["prefix"]
         source = header(VECTORS / c.get("header", spec.get("header")))
@@ -306,11 +307,15 @@ def single_file(name: str) -> tuple[dict[str, Any], dict[str, dict[str, tuple[in
         upstream = header(VECTORS / c["upstream"])
         assert {t: tuple(s) for t, s in shapes[c["name"]].items()} == {k: s for k, (_, s) in upstream.items()}, (
             name, c["name"], "targets are not upstream's on-disk names and shapes")
+        layers[c["name"]] = {
+            on_disk(f"{path}.weight").removesuffix(".weight"): shapes[c["name"]][on_disk(f"{path}.weight")]
+            for path, module in model.named_modules() if isinstance(module, (torch.nn.Linear, torch.nn.Conv2d))
+        }
         present = {k.removeprefix(prefix) for k in checkpoint}
         optional = sorted(c.get("optional", []))
         components.append({"name": c["name"], "prefix": prefix, "cast": spec["cast"],
                            "drop": sorted(present - used - set(optional)), "optional": optional, "rows": rows})
-    return {"name": name, "reference": spec["reference"], "components": components}, shapes
+    return {"name": name, "reference": spec["reference"], "components": components}, layers
 
 
 # ------------------------------------------------------------------ MiniMax-H3
@@ -422,33 +427,53 @@ def h3_lora(h3: Any, source: dict[str, tuple[str, tuple[int, ...]]]) -> dict[str
 
 # ------------------------------------------------------------------ SDXL LoRA
 
-SDXL_LORA = {
-    "unet": ("lora_unet_", re.compile(
-        r"(down_blocks\.[12]|mid_block|up_blocks\.[01])\.attentions\.\d+\.(proj_in|proj_out|transformer_blocks\.\d+\."
-        r"(attn[12]\.(to_q|to_k|to_v|to_out\.0)|ff\.net\.(0\.proj|2)))")),
-    "text_encoder": ("lora_te1_", re.compile(r"text_model\.encoder\.layers\.\d+\.(self_attn\.(q|k|v|out)_proj|mlp\.fc[12])")),
-    "text_encoder_2": ("lora_te2_", re.compile(r"text_model\.encoder\.layers\.\d+\.(self_attn\.(q|k|v|out)_proj|mlp\.fc[12])")),
-}
+SDXL_LORA = {"unet": "lora_unet_", "text_encoder": "lora_te1_", "text_encoder_2": "lora_te2_"}
 
 
-def sdxl_lora(table: dict[str, Any], shapes: dict[str, dict[str, tuple[int, ...]]]) -> dict[str, Any]:
-    """Kohya SDXL factors onto the single-file table's modules: UNet in its LDM or Diffusers
-    spelling, both CLIP towers in theirs, linear layers only."""
+def kohya_reading(prefix: str, stems: list[str], unet: Any) -> dict[str, str]:
+    """The module diffusers' SDXL loader adapts with each kohya `<prefix><stem>` factor pair
+    (`lora_state_dict`'s conversion, then the PEFT renames its loaders apply), by stem: each
+    stem's down factor carries its index through."""
+    state = {}
+    for i, stem in enumerate(stems):
+        state[f"{prefix}{stem}.lora_down.weight"] = torch.full((1, 1), float(i))
+        state[f"{prefix}{stem}.lora_up.weight"] = torch.zeros(1, 1)
+        state[f"{prefix}{stem}.alpha"] = torch.tensor(1.0)
+    state = lora_conversion_utils._maybe_map_sgm_blocks_to_diffusers(state, unet)
+    state, _ = lora_conversion_utils._convert_non_diffusers_lora_to_diffusers(state)
+    component = next(iter(state)).partition(".")[0]
+    local = {k.partition(".")[2]: v for k, v in state.items()}
+    if component == "unet":
+        peft = state_dict_utils.convert_unet_state_dict_to_peft(local)
+    else:
+        peft = state_dict_utils.convert_state_dict_to_peft(state_dict_utils.convert_state_dict_to_diffusers(local))
+    return {stems[int(v.item())]: k.removesuffix(".lora_A.weight") for k, v in peft.items() if k.endswith(".lora_A.weight")}
+
+
+def sdxl_lora(table: dict[str, Any], layers: dict[str, dict[str, tuple[int, ...]]], unet: Any) -> dict[str, Any]:
+    """Kohya SDXL factors onto every linear and convolution of the single-file table's UNet (its
+    LDM or Diffusers spelling) and CLIP towers. A spelling is a row where diffusers' own loader
+    reads it as that module (`kohya_reading`); one it reads as no module (a Diffusers-spelled
+    `add_embedding`) is not."""
     components = []
     for c in table["components"]:
         if c["name"] not in SDXL_LORA:
             continue
-        prefix, reviewed = SDXL_LORA[c["name"]]
+        prefix, modules = SDXL_LORA[c["name"]], layers[c["name"]]
+        sources = {r[0].removesuffix(".weight"): (r[1] if len(r) > 1 else r[0]).removesuffix(".weight") for r in c["rows"]}
+        spellings = [{m.replace(".", "_"): m for m in modules}]
+        if c["name"] == "unet":
+            spellings.append({sources[m].replace(".", "_"): m for m in modules})
+        stems: dict[str, list[str]] = {m: [] for m in modules}
+        for spelled in spellings:
+            for stem, read in kohya_reading(prefix, list(spelled), unet).items():
+                assert read == spelled[stem] or read not in modules, (prefix, stem, spelled[stem], read)
+                if read == spelled[stem] and stem not in stems[read]:
+                    stems[read].append(stem)
         rows = []
-        for r in c["rows"]:
-            target, source = r[0], r[1] if len(r) > 1 else r[0]
-            module = target.removesuffix(".weight")
-            if not target.endswith(".weight") or not reviewed.fullmatch(module):
-                continue
-            out, inp = shapes[c["name"]][target]
-            spellings = [module] + ([source.removesuffix(".weight")] if c["name"] == "unet" else [])
-            for spelling in dict.fromkeys(spellings):
-                rows.append([module, spelling.replace(".", "_"), {"io": [inp, out]}])
+        for module, shape in modules.items():
+            ops = {"io": [shape[1], shape[0]]} | ({"kernel": list(shape[2:])} if len(shape) == 4 else {})
+            rows.extend([module, stem, ops] for stem in stems[module])
         components.append({"name": c["name"], "prefix": prefix, "rows": rows})
     lora = {"a": [".lora_down.weight", ".lora_A.weight"], "b": [".lora_up.weight", ".lora_B.weight"], "alpha": [".alpha"]}
     return {"name": "sdxl.lora", "lora": lora, "components": components}
@@ -633,8 +658,9 @@ def qwen_moe(name: str, pinned: str) -> dict[str, Any]:
 
 
 def generate() -> dict[str, dict[str, Any]]:
-    sdxl, shapes = single_file("sdxl.single_file")
+    sdxl, layers = single_file("sdxl.single_file")
     anima, _ = single_file("anima.single_file")
+    unet = types.SimpleNamespace(**reference_config(SINGLE_FILE["sdxl.single_file"]["reference"], "unet/config.json"))
     h3 = h3_converter()
     native, source = h3_native(h3)
     return {
@@ -642,7 +668,7 @@ def generate() -> dict[str, dict[str, Any]]:
         "anima.single_file": anima,
         "h3.native": native,
         "h3.lora": h3_lora(h3, source),
-        "sdxl.lora": sdxl_lora(sdxl, shapes),
+        "sdxl.lora": sdxl_lora(sdxl, layers, unet),
         "seedvr2": seedvr2(),
         "ideogram4.fp8": ideogram4(),
         **{name: qwen_moe(name, pinned) for name, pinned in QWEN_MOE.items()},

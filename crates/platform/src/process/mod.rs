@@ -81,6 +81,13 @@ pub fn usage(pid: u32) -> Result<Usage> {
     sys::usage(pid).map_err(Error::os("read a process's usage"))
 }
 
+/// Where a thread of it sleeps uninterruptibly (Linux `D`: mid-fsync, a hung mount): its wait
+/// channel, empty when the kernel hides it. Until that wait ends it acts on no signal, SIGKILL
+/// included. `None`: no thread does, or the OS cannot say (macOS, Windows).
+pub fn in_kernel(pid: u32) -> Option<String> {
+    sys::in_kernel(pid)
+}
+
 /// This kernel's boot. Page cache and process starts belong to a boot.
 pub fn boot_id() -> Result<String> {
     sys::boot_id().map_err(Error::os("read the boot id"))

@@ -2,15 +2,17 @@
 //! and the ones cozy fetches itself on first need (pinned builds held to their sha256) into
 //! `~/.cozy/tools`: the lookups features call (`ffmpeg`, `uv`).
 use std::{
-    io::Write as _,
+    fs::{File, OpenOptions},
+    io::{self, Seek as _, SeekFrom, Write as _},
     path::{Path, PathBuf},
 };
 
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use platform::tools::{self, Archive, Class, Found, Install, Side, TOOLS, Tool};
 use protocol::error::{Error, Kind};
-use futures_util::StreamExt as _;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
+use tensorfs::err::{Code, Refusal};
 
 use crate::{Context, output};
 
@@ -223,25 +225,10 @@ async fn fetch(ctx: &Context, name: &str, archives: &[Archive], dir: &Path) -> R
     let staging = tempfile::tempdir_in(parent).map_err(|e| failed(e.to_string()))?;
     for archive in archives {
         output::say(ctx, &format!("fetching {name}: {}", archive.url));
-        let mut download = tempfile::tempfile_in(parent).map_err(|e| failed(e.to_string()))?;
-        let response = ctx
-            .http()
-            .get(archive.url)
-            .send()
-            .await
-            .and_then(reqwest::Response::error_for_status)
-            .map_err(|e| failed(format!("{}: {e}", archive.url)))?;
-        let mut hash = Sha256::new();
-        let mut body = response.bytes_stream();
-        while let Some(chunk) = body.next().await {
-            let chunk = chunk.map_err(|e| failed(format!("{}: {e}", archive.url)))?;
-            hash.update(&chunk);
-            download
-                .write_all(&chunk)
-                .map_err(|e| failed(e.to_string()))?;
-        }
-        let got = hex::encode(hash.finalize());
+        let part = parent.join(format!(".{name}-{}.part", &archive.sha256[..12]));
+        let (mut download, got) = self::download(ctx, archive.url, &part).await.map_err(failed)?;
         if got != archive.sha256 {
+            let _ = std::fs::remove_file(&part);
             return Err(Error::new(
                 Kind::Validation,
                 format!("{name}_digest_mismatch"),
@@ -252,6 +239,7 @@ async fn fetch(ctx: &Context, name: &str, archives: &[Archive], dir: &Path) -> R
             ));
         }
         tools::extract(archive, &mut download, staging.path()).map_err(|e| failed(e.to_string()))?;
+        let _ = std::fs::remove_file(&part);
     }
     let staged = staging.keep();
     match std::fs::rename(&staged, dir) {
@@ -266,4 +254,47 @@ async fn fetch(ctx: &Context, name: &str, archives: &[Archive], dir: &Path) -> R
             Err(failed(format!("{}: {e}", dir.display())))
         }
     }
+}
+
+
+/// Downloads `url` into `part` from the bytes it holds (what an earlier command fetched resumes),
+/// showing the bytes moved on a terminal, and answers the file and its sha256 for the caller to hold
+/// to its pin. A transfer that stalls or fails is asked again from the byte reached, by TensorFS's one
+/// rule; once nothing moves for its stall rule it is refused, its bytes kept for the next command.
+/// Another command fetching the same file holds it: this one is refused.
+pub(crate) async fn download(ctx: &Context, url: &str, part: &Path) -> Result<(File, String), String> {
+    let failed = |e: io::Error| format!("{}: {e}", part.display());
+    let mut file = OpenOptions::new().create(true).truncate(false).read(true).write(true).open(part).map_err(failed)?;
+    if !platform::lock::try_claim(&file).map_err(|e| e.to_string())? {
+        return Err(format!("another cozy command is fetching {url} now; run this again once it has"));
+    }
+    let (from, mut at) = (file.metadata().map_err(failed)?.len(), 0);
+    let bar = match !ctx.json && ctx.term.stderr {
+        true => ProgressBar::with_draw_target(None, ProgressDrawTarget::stderr()),
+        false => ProgressBar::hidden(),
+    };
+    bar.set_style(ProgressStyle::with_template("{spinner} {bytes} at {bytes_per_sec}").expect("a template"));
+    if from > 0 {
+        output::say(ctx, &format!("resuming at {}", output::bytes(from)));
+    }
+    let mut sink = |start: u64, frame: &[u8]| -> tensorfs::err::Result<()> {
+        let written = (|| {
+            if start != at {
+                file.set_len(start)?;
+                file.seek(SeekFrom::Start(start))?;
+            }
+            file.write_all(frame)
+        })();
+        written.map_err(|e| Refusal { code: Code::IO_FAILED, detail: failed(e) })?;
+        at = start + frame.len() as u64;
+        bar.set_position(at);
+        Ok(())
+    };
+    tensorfs::fetch::get_pinned(url, from, &mut sink).await.map_err(|e| e.to_string())?;
+    bar.finish_and_clear();
+    file.rewind().map_err(failed)?;
+    let mut hash = Sha256::new();
+    io::copy(&mut file, &mut hash).map_err(failed)?;
+    file.rewind().map_err(failed)?;
+    Ok((file, hex::encode(hash.finalize())))
 }
