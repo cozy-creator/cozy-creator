@@ -13,6 +13,7 @@
 #                  [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
+# cl-677 queue proof: an e2e-selected path, green
 . "$(dirname "$0")/commands.sh"
 . "$(dirname "$0")/lifetime.sh"
 
