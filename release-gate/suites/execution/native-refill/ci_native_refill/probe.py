@@ -136,6 +136,11 @@ def phase_policy(memory, seed):
             modules[component] = module
             owners[component] = memory.load(module, "ram")
         inputs = torch.ones(2, width, device="cuda")
+        # Create cuBLAS's persistent workspace before the idle ballast: otherwise its
+        # first use can split that 64 MiB segment, preventing a second contiguous one.
+        torch.nn.functional.linear(inputs, matrix.to("cuda"))
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
         ballast = torch.empty(64 * MIB, dtype=torch.uint8, device="cuda")
         ballast.fill_(7)
         torch.cuda.synchronize()
