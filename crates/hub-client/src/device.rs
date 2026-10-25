@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 
-use crate::{Client, Error, types};
+use crate::types::AuthResult;
+use crate::{Client, Error};
 use platform::paths::Home;
-use progenitor_client::ClientInfo;
 use protocol::{config::Origin, error::Error as Refusal};
 
 const ENROLL_DOMAIN: &str = "authkit.device-key-enrollment/1";
@@ -38,8 +38,8 @@ struct Kept {
 
 impl DeviceKey {
     pub fn load(path: &Path) -> Result<Self, Error> {
-        let raw =
-            std::fs::read(path).map_err(|e| Error::Credential(format!("{}: {e}", path.display())))?;
+        let raw = std::fs::read(path)
+            .map_err(|e| Error::Credential(format!("{}: {e}", path.display())))?;
         let kept: Kept = serde_json::from_slice(&raw)
             .map_err(|e| Error::Credential(format!("{}: {e}", path.display())))?;
         let seed: [u8; 32] = unb64(&kept.private_key)
@@ -90,7 +90,7 @@ pub struct Bearer {
 }
 
 impl Bearer {
-    fn from_answer(answer: &types::AuthResult, started: u64) -> Result<Self, Error> {
+    fn from_answer(answer: &AuthResult, started: u64) -> Result<Self, Error> {
         let set = answer
             .token_set
             .as_ref()
@@ -142,7 +142,11 @@ impl UserSession {
 
     /// This computer's session at `hub`: its device key and the Bearer kept beside it. Refused
     /// when it holds no key there, `login` (asked only then) signing it in.
-    pub fn open(hub: &Origin, home: &Home, login: impl FnOnce() -> String) -> Result<Self, Refusal> {
+    pub fn open(
+        hub: &Origin,
+        home: &Home,
+        login: impl FnOnce() -> String,
+    ) -> Result<Self, Refusal> {
         let path = hub.device_key(home);
         if !path.exists() {
             let message = format!("this computer is not signed in to {hub}");
@@ -208,22 +212,15 @@ impl UserSession {
             false => Error::Credential(format!("sign-in refused: {e}")),
         };
         let begun = hub
-            .begin_device_key_login(&types::AuthDeviceKeyLoginBeginRequest {
-                device_key_id: self.key.id.clone(),
-            })
+            .begin_device_key_login(&self.key.id)
             .await
-            .map_err(|e| refused(e.into()))?
-            .into_inner();
+            .map_err(refused)?;
         let signature = DeviceKey::sign_challenge(&self.key.key, LOGIN_DOMAIN, &begun.challenge)?;
         let started = now();
         let answer = hub
-            .finish_device_key_login(&types::AuthDeviceKeyLoginFinishRequest {
-                challenge_id: begun.challenge_id,
-                signature,
-            })
+            .finish_device_key_login(&begun.challenge_id, &signature)
             .await
-            .map_err(|e| refused(e.into()))?
-            .into_inner();
+            .map_err(refused)?;
         Bearer::from_answer(&answer, started)
     }
 }
@@ -250,23 +247,16 @@ impl Enrollment {
             Some(existing) => existing.key.clone(),
             None => SigningKey::from_bytes(&random()),
         };
+        let public_key = b64(key.verifying_key().as_bytes());
         let begun = hub
-            .begin_device_key_enrollment(&types::AuthDeviceKeyEnrollBeginRequest {
-                email: email.to_string(),
-                public_key: b64(key.verifying_key().as_bytes()),
-                label: (!label.is_empty())
-                    .then(|| label.parse())
-                    .transpose()
-                    .map_err(|_| Error::Credential("an unusable key label".into()))?,
-            })
-            .await?
-            .into_inner();
+            .begin_device_key_enrollment(email, &public_key, label)
+            .await?;
         Ok(Self {
             id: begun.enrollment_id,
             challenge: begun.challenge,
             key,
             email: email.to_string(),
-            hub: ClientInfo::baseurl(hub).to_string(),
+            hub: hub.origin().to_string(),
         })
     }
 
@@ -275,14 +265,8 @@ impl Enrollment {
         let signature = DeviceKey::sign_challenge(&self.key, ENROLL_DOMAIN, &self.challenge)?;
         let started = now();
         let answer = hub
-            .finish_device_key_enrollment(&types::AuthDeviceKeyEnrollFinishRequest {
-                enrollment_id: self.id,
-                code: code.trim().to_string(),
-                code_2fa: None,
-                signature,
-            })
-            .await?
-            .into_inner();
+            .finish_device_key_enrollment(&self.id, code.trim(), &signature)
+            .await?;
         let bearer = Bearer::from_answer(&answer, started)?;
         let key = DeviceKey {
             hub: self.hub,

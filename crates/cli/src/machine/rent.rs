@@ -1,7 +1,6 @@
 //! `cozy machine rent`: the catalog, and one paid order Calcifer places and keeps under its key.
 use std::{
     io::{IsTerminal as _, Write as _},
-    num::NonZeroU64,
     process::ExitCode,
 };
 
@@ -321,12 +320,7 @@ fn mint_key() -> String {
 /// An explicit ask is honoured or refused, never widened to another card or count; the refusal names
 /// which absence it hit.
 async fn admit(ctx: &Context, hub: &Origin, sku: &str, gpus: u32) -> Result<(), Error> {
-    let count = NonZeroU64::new(u64::from(gpus));
-    let status = hub_answer(
-        ctx.hub_anonymous(hub)
-            .get_rental_sku_status(sku, count, None)
-            .await,
-    )?;
+    let status = hub_answer(ctx.hub_anonymous(hub).get_rental_sku_status(sku, gpus).await)?;
     if status.known && status.offered {
         return Ok(());
     }
@@ -399,7 +393,7 @@ fn sku_refusal(sku: &str, gpus: u32, status: &RentalSkuStatus) -> Error {
 /// The catalog, cheapest first: each product's GPUs and what we charge for them an hour.
 async fn catalog(ctx: &Context, hub: &Origin) -> Result<ExitCode, Error> {
     let mut skus: Vec<RentalSku> =
-        hub_answer(ctx.hub_anonymous(hub).list_rental_skus(None).await)?.0;
+        hub_answer(ctx.hub_anonymous(hub).list_rental_skus().await)?;
     skus.retain(|sku| !sku.widths.is_empty());
     let hourly = |sku: &RentalSku| sku.widths[0].price_usd_micros_per_hour;
     skus.sort_by(|a, b| hourly(a).cmp(&hourly(b)).then_with(|| a.name.cmp(&b.name)));

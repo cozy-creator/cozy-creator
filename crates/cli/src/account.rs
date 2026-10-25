@@ -4,7 +4,7 @@
 //! that computer installs with `--key`.
 use std::{io::Write as _, path::PathBuf, process::ExitCode, sync::Arc};
 
-use hub_client::{Credential, DeviceKey, Enrollment, UserSession, types};
+use hub_client::{Credential, DeviceKey, Enrollment, UserSession};
 use protocol::{
     config::Origin,
     error::{Error, Kind},
@@ -137,10 +137,7 @@ async fn signed_in(
         // A taken or invalid name asks again; an empty line ends the login.
         Err(e) if e.code == "account.name_required" => loop {
             let name = ask(ctx, "Tensorhub account name: ", "account name")?;
-            match hub_answer(
-                user.register_account(&name, &types::Empty(Default::default()))
-                    .await,
-            ) {
+            match hub_answer(user.register_account(&name).await) {
                 Err(e) if matches!(e.code.as_str(), "account.name_unavailable" | "account.name_invalid") => {
                     output::warn(&format!("{} ({})", e.message, e.code));
                 }

@@ -1,7 +1,6 @@
 //! What every verb receives: the global flags, the one loaded config, the terminal's facts and
 //! the Hub clients, which share one HTTP client.
 use std::{
-    fmt::Debug,
     path::PathBuf,
     sync::{Arc, OnceLock},
 };
@@ -11,7 +10,7 @@ use protocol::{
     config::{Config, Loaded, Origin},
     error::Error,
 };
-use hub_client::{Credential, ResponseValue, UserSession};
+use hub_client::{Credential, UserSession};
 
 use crate::{calcifer_client::Client, output::Term};
 
@@ -93,16 +92,11 @@ impl Context {
 
 
 /// A Hub call's answer, or its refusal as the CLI's own.
-pub fn hub_answer<T, E>(
-    answer: Result<ResponseValue<T>, progenitor_client::Error<E>>,
-) -> Result<T, Error>
-where
-    E: serde::Serialize + Debug,
-{
-    answer.map(ResponseValue::into_inner).map_err(hub_error)
+pub fn hub_answer<T>(answer: Result<T, hub_client::Error>) -> Result<T, Error> {
+    answer.map_err(hub_error)
 }
 
 /// A failed Hub call as the CLI's refusal.
-pub fn hub_error(error: impl Into<hub_client::Error>) -> Error {
-    error.into().refusal(|| "cozy login <email>".into())
+pub fn hub_error(error: hub_client::Error) -> Error {
+    error.refusal(|| "cozy login <email>".into())
 }

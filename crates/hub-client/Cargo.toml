@@ -1,6 +1,6 @@
 [package]
 name = "hub-client"
-description = "Tensorhub's client: generated from its API document, with device-key login and Bearer"
+description = "Tensorhub's client for the routes cozy calls, with device-key login and Bearer"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,7 +11,7 @@ publish.workspace = true
 aws-lc-rs.workspace = true
 base64.workspace = true
 ed25519-dalek.workspace = true
-progenitor-client.workspace = true
+percent-encoding.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -19,18 +19,8 @@ serde_path_to_error.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
-http.workspace = true
 platform.workspace = true
 protocol.workspace = true
-
-[build-dependencies]
-openapiv3.workspace = true
-prettyplease.workspace = true
-progenitor.workspace = true
-quote.workspace = true
-saphyr.workspace = true
-serde_json.workspace = true
-syn = { workspace = true, features = ["full", "visit-mut"] }
 
 [lints]
 workspace = true

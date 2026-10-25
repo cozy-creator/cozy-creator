@@ -18,7 +18,7 @@ use protocol::{
     error::{Error, Kind},
 };
 use futures_util::{StreamExt as _, TryStreamExt as _};
-use hub_client::types::{self, PackageReleasePath as At};
+use hub_client::types::{PackageDeclaredFile, PackageFileGrant, PresignedUpload};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
@@ -441,7 +441,7 @@ pub(super) async fn index_url(
     account: &str,
 ) -> Result<String, Error> {
     let origin = match client.get_protected_resource_metadata().await {
-        Ok(metadata) => metadata.into_inner().resource,
+        Ok(metadata) => metadata.resource,
         Err(e) => match hub_error(e) {
             e if e.code == "capability.not_served" => hub.to_string(),
             e => return Err(e),
@@ -463,12 +463,7 @@ pub(super) async fn publisher(client: &hub_client::Client, root: bool) -> Result
 }
 
 pub(super) async fn account(client: &hub_client::Client) -> Result<String, Error> {
-    Ok(client
-        .get_current_account()
-        .await
-        .map_err(hub_error)?
-        .into_inner()
-        .name)
+    Ok(client.get_current_account().await.map_err(hub_error)?.name)
 }
 
 #[derive(Serialize)]
@@ -685,61 +680,49 @@ pub async fn publish(ctx: &Context, root: bool) -> Result<ExitCode, Error> {
     let wheel = carried::single(&dist, ".whl")?;
     let sdist = carried::single(&dist, ".tar.gz")?;
     // Where each file is declared: the Hub's PackageReleasePath.
-    let named = |dir: At, local: &Path| {
+    let named = |dir: &str, local: &Path| {
         format!(
             "{dir}{}",
             local.file_name().unwrap_or_default().to_string_lossy()
         )
     };
     let mut files = vec![
-        File::new(named(At::ArtifactsProject, &wheel), wheel.clone())?,
-        File::new(named(At::ArtifactsSource, &sdist), sdist.clone())?,
-        File::new(At::MetadataPackageInterfaceJson.to_string(), interface_path)?,
+        File::new(named("artifacts/project/", &wheel), wheel.clone())?,
+        File::new(named("artifacts/source/", &sdist), sdist.clone())?,
+        File::new("metadata/package-interface.json".into(), interface_path)?,
     ];
-    for (at, document) in [
-        (At::PyprojectToml, "pyproject.toml"),
-        (At::UvLock, "uv.lock"),
-    ] {
-        files.push(File::new(at.to_string(), stage.src.join(document))?);
+    for document in ["pyproject.toml", "uv.lock"] {
+        files.push(File::new(document.into(), stage.src.join(document))?);
     }
     for local in git_wheels {
-        files.push(File::new(named(At::ArtifactsDependencies, &local), local)?);
+        files.push(File::new(named("artifacts/dependencies/", &local), local)?);
     }
 
-    let declaration = types::PackageReleaseDeclaration {
-        files: files
-            .iter()
-            .map(|f| types::PackageDeclaredFile {
-                digest: f.digest.clone(),
-                length: f.length,
-                path: f.path.clone(),
-            })
-            .collect(),
-    };
+    let declared: Vec<PackageDeclaredFile> = files
+        .iter()
+        .map(|f| PackageDeclaredFile {
+            digest: f.digest.clone(),
+            length: f.length,
+            path: f.path.clone(),
+        })
+        .collect();
     let (org, name, release) = (&account, &project.name, &project.version);
     let grants = client
-        .begin_package_release(org, name, release, &declaration)
+        .begin_package_release(org, name, release, &declared)
         .await
-        .map_err(hub_error)?
-        .into_inner();
+        .map_err(hub_error)?;
     result.uploaded_bytes = upload(ctx.http(), &files, &grants.files).await?;
-    let finalize = types::PackageReleaseFinalize {
-        publication_id: grants.publication_id.clone(),
-        python_version: Some(python.full.clone()),
-    };
     let mut state = client
-        .finalize_package_release(org, name, release, &finalize)
+        .finalize_package_release(org, name, release, &grants.publication_id, &python.full)
         .await
-        .map_err(hub_error)?
-        .into_inner();
+        .map_err(hub_error)?;
     // Finalization re-hashes every file on the Hub; its state ends the wait.
     while state.state != "committed" && state.state != "failed" {
         tokio::time::sleep(Duration::from_secs(2)).await;
         state = client
             .get_package_finalization(org, name, release)
             .await
-            .map_err(hub_error)?
-            .into_inner();
+            .map_err(hub_error)?;
     }
     if state.state == "failed" {
         let said = |key: &str| {
@@ -837,7 +820,7 @@ fn describe(stage: &Stage, python: &Python, runtime: Option<&String>) -> Result<
 async fn upload(
     http: &reqwest::Client,
     files: &[File],
-    grants: &[types::PackageFileGrant],
+    grants: &[PackageFileGrant],
 ) -> Result<u64, Error> {
     let mut digests = std::collections::BTreeSet::new();
     let owed = grants
@@ -872,7 +855,7 @@ async fn put(
     http: &reqwest::Client,
     path: &str,
     local: &Path,
-    target: &types::PresignedUpload,
+    target: &PresignedUpload,
 ) -> Result<u64, Error> {
     let pace = (Duration::from_millis(250), Duration::from_secs(32));
     put_paced(http, path, local, target, pace).await
@@ -883,7 +866,7 @@ async fn put_paced(
     http: &reqwest::Client,
     path: &str,
     local: &Path,
-    target: &types::PresignedUpload,
+    target: &PresignedUpload,
     (first, ceiling): (Duration, Duration),
 ) -> Result<u64, Error> {
     let failed = |message: String| Error::new(Kind::Unavailable, "release_upload_failed", message);
@@ -990,15 +973,9 @@ pub async fn yank(ctx: &Context, package: &PackageRef, undo: bool) -> Result<Exi
     if undo {
         let unyanked = ctx
             .hub_signed_in(&hub)?
-            .unyank_package_release(
-                &package.org,
-                &package.name,
-                release,
-                &types::Empty(Default::default()),
-            )
+            .unyank_package_release(&package.org, &package.name, release)
             .await
-            .map_err(hub_error)?
-            .into_inner();
+            .map_err(hub_error)?;
         let result = Unyanked {
             package: package.package(),
             release: unyanked.release,
@@ -1023,15 +1000,9 @@ pub async fn yank(ctx: &Context, package: &PackageRef, undo: bool) -> Result<Exi
     }
     let yanked = ctx
         .hub_signed_in(&hub)?
-        .yank_package_release(
-            &package.org,
-            &package.name,
-            release,
-            &types::Empty(Default::default()),
-        )
+        .yank_package_release(&package.org, &package.name, release)
         .await
-        .map_err(hub_error)?
-        .into_inner();
+        .map_err(hub_error)?;
     let result = Yanked {
         package: package.package(),
         release: yanked.release,
@@ -1088,8 +1059,7 @@ pub async fn delete(ctx: &Context, package: &PackageRef) -> Result<ExitCode, Err
         .hub_signed_in(&hub)?
         .delete_package(&package.org, &package.name)
         .await
-        .map_err(hub_error)?
-        .into_inner();
+        .map_err(hub_error)?;
     let result = Deleted {
         package: deleted.package,
     };

@@ -299,7 +299,7 @@ impl Catalog {
 
     /// A package and its releases.
     pub fn package(&self, org: &str, name: &str) -> Result<types::PackageCard, hub_client::Error> {
-        asked(&self.origin, || async { Ok(self.hub.get_package(org, name, None).await?.into_inner()) })
+        asked(&self.origin, || self.hub.get_package(org, name))
     }
 
     /// The exact files of one committed release (`python_version` picks its project wheel):
@@ -311,11 +311,7 @@ impl Catalog {
         release: &str,
         python_version: Option<&str>,
     ) -> Result<types::PackageInstallPlan, hub_client::Error> {
-        let empty = types::Empty(Default::default());
-        asked(&self.origin, || async {
-            let plan = self.hub.get_package_download_plan(org, name, python_version, Some(release), &empty).await?;
-            Ok(plan.into_inner())
-        })
+        asked(&self.origin, || self.hub.get_package_download_plan(org, name, release, python_version))
     }
 }
 
