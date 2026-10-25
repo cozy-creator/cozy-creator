@@ -46,6 +46,23 @@ def main():
     machine = json.loads(cli("machine-before", "machine", "show", "local"))
     assert machine["state"] == "ready" and not machine["status"].get("runs"), machine
     assert machine["status"]["commit"] == args.expected_tensord, machine["status"]
+    expected_sdk = json.loads(
+        subprocess.check_output(
+            [
+                python,
+                "-I",
+                "-c",
+                (
+                    "import json; from importlib.metadata import version; "
+                    "print(json.dumps({'runtime': version('cozy-runtime'), 'tensorfs': version('tensorfs')}))"
+                ),
+            ],
+            text=True,
+        )
+    )
+    assert all(
+        machine["status"][key] == value for key, value in expected_sdk.items()
+    ), machine["status"]
     receipt["machine"] = {
         k: machine["status"][k]
         for k in ("commit", "runtime", "tensorfs", "started_at_ms")
