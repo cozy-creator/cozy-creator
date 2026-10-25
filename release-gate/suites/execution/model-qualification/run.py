@@ -90,6 +90,19 @@ def summarize(run, request, size, events, cli_wall_ms, step_stage):
     gpu_rows = execution["gpus"]
     pids = sorted({gpu["pid"] for gpu in gpu_rows})
     assert len(pids) == 1 and isinstance(pids[0], int) and pids[0] > 0, pids
+    # A memoized result must not qualify as a new inference merely by carrying old stats.
+    # The worker supplies its execution/step clocks; allow timestamp rounding and a small
+    # controller-to-worker clock offset, never a previous request's GPU interval.
+    began_ms = run["started_at_ms"]
+    assert run.get("execution_ms", 0) > 0, "no measured execution"
+    for gpu in gpu_rows:
+        assert gpu["end_us"] >= gpu["start_us"]
+        assert gpu["start_us"] >= (began_ms - 1000) * 1000, "stale GPU interval"
+        assert gpu["start_us"] >= (run["created_at_ms"] - 5000) * 1000, (
+            "GPU interval predates this request; check clock skew or memoized evidence"
+        )
+    assert steps["started_unix_ms"] >= began_ms - 1000, "stale denoising measurements"
+    assert steps["ended_unix_ms"] >= steps["started_unix_ms"]
     device = steps.get("device")
     samples = device.get("series", []) if device else []
     steady = samples[1:]
@@ -138,6 +151,7 @@ def summarize(run, request, size, events, cli_wall_ms, step_stage):
         ],
         "executor_pids": pids,
         "gpu_intervals_as_reported": gpu_rows,
+        "current_request_timing_verified": True,
         "models": measured["models"],
         "software": measured["software"],
         "routes": [
@@ -202,6 +216,10 @@ def main():
         "lane": args.lane,
         "machine": args.machine,
         "runs": [],
+        "controller_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "controller_commit": subprocess.check_output(
+            ["git", "-C", str(Path(__file__).parent), "rev-parse", "HEAD"], text=True
+        ).strip(),
     }
     try:
         before = read_snapshot(
