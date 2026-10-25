@@ -410,6 +410,13 @@ struct Session {
     level: Level,
 }
 
+struct Leader {
+    birth: Birth,
+    construction: String,
+    start: usize,
+    lookahead: Option<device_executor::Lookahead>,
+}
+
 /// What this call proved about the executor it returned. A cache handoff is never inferred
 /// from the pool map later: another call in its family may already have borrowed it.
 enum Disposition {
@@ -589,7 +596,7 @@ pub struct Pool {
     /// Set (under `sessions`) once the pool stops: an executor coming back then is ended.
     stopped: std::sync::atomic::AtomicBool,
     /// Exact live executor lane leaders by PID, including sessions taken out for a call.
-    leaders: Mutex<BTreeMap<u32, (Birth, String, usize, Option<device_executor::Lookahead>)>>,
+    leaders: Mutex<BTreeMap<u32, Leader>>,
     /// Every live GPU executor process (leaders and followers) by pid: its plan, lane and
     /// handle, so an idle one a ledger asks to end can be ended, a row read as a plan's, and a
     /// lease peer known ([`Peers`]).
@@ -1021,7 +1028,7 @@ impl Pool {
     /// exits are proven, each GPU of the lane reaps their rows.
     fn ended(&self, plan: &str, start: usize) {
         let mut births: Vec<Birth> = self.leaders.lock().unwrap().values()
-            .filter(|(_, p, s, _)| p.as_str() == plan && *s == start).map(|(birth, _, _, _)| birth.clone()).collect();
+            .filter(|leader| leader.construction == plan && leader.start == start).map(|leader| leader.birth.clone()).collect();
         births.extend(self.tenants.lock().unwrap().values()
             .filter(|t| t.plan == plan && t.start == start).map(|t| t.exact.birth().clone()));
         self.retire(plan, start, &births);
@@ -1040,8 +1047,8 @@ impl Pool {
             levels.remove(&key);
         }
         drop(levels);
-        self.leaders.lock().unwrap().retain(|_, (birth, p, s, _)|
-            !(p.as_str() == plan && *s == start && gone.contains(birth)));
+        self.leaders.lock().unwrap().retain(|_, leader|
+            !(leader.construction == plan && leader.start == start && gone.contains(&leader.birth)));
         self.tenants.lock().unwrap().retain(|_, t|
             !(t.plan == plan && t.start == start && gone.contains(t.exact.birth())));
     }
@@ -1675,7 +1682,7 @@ impl Pool {
     /// The GPUs with an executor of `plan` now, by envelope index (a lane's first).
     fn hosting(&self, plan: &str) -> Vec<usize> {
         let leaders = self.leaders.lock().unwrap();
-        leaders.values().filter(|(_, p, _, _)| p.as_str() == plan).map(|(_, _, start, _)| *start).collect::<std::collections::BTreeSet<_>>().into_iter().collect()
+        leaders.values().filter(|leader| leader.construction == plan).map(|leader| leader.start).collect::<std::collections::BTreeSet<_>>().into_iter().collect()
     }
 
     /// The first actual waiting GPU root may prepare on one compatible active executor.
@@ -1685,13 +1692,16 @@ impl Pool {
             && engine.get(&record.id).is_ok_and(|now| now.state == State::Queued && now.cancel_actor.is_none()));
         let leaders = self.leaders.lock().unwrap();
         let selected = next.and_then(|(record, plan)| leaders.iter()
-            .filter(|(_, (birth, construction, _, ahead))| construction == &plan.construction
-                && !birth.ended().unwrap_or(true)
-                && ahead.as_ref().is_some_and(|a| a.active() || a.pending(&record.id)))
-            .min_by_key(|(_, (_, _, start, ahead))|
-                (!ahead.as_ref().is_some_and(|a| a.pending(&record.id)), *start)).map(|(pid, _)| *pid));
-        let offers: Vec<_> = leaders.iter().filter_map(|(pid, (_, _, _, ahead))|
-            Some((ahead.clone()?, ahead.as_ref()?.current(), selected == Some(*pid)))).collect();
+            .filter(|(_, leader)| leader.construction == plan.construction
+                && !leader.birth.ended().unwrap_or(true)
+                && leader.lookahead.as_ref().is_some_and(|a| a.active() || a.pending(&record.id)))
+            .min_by_key(|(_, leader)|
+                (!leader.lookahead.as_ref().is_some_and(|a| a.pending(&record.id)), leader.start)).map(|(pid, _)| *pid));
+        let offers: Vec<_> = leaders.iter().filter_map(|(pid, leader)| {
+            let ahead = leader.lookahead.clone()?;
+            let current = ahead.current();
+            Some((ahead, current, selected == Some(*pid)))
+        }).collect();
         drop(leaders);
         for (ahead, current, selected) in offers {
             // Dispatch claims the journal before its worker borrows the Session. Leaving
@@ -2570,9 +2580,10 @@ impl Pool {
             let exact = Exact::open(&executor.birth)?.ok_or_else(|| io::Error::other("executor exited before its start"))?;
             let tenant = Tenant { plan: plan.construction.clone(), generation: plan.generation.clone(), start, exact };
             self.tenants.lock().unwrap().insert(executor.birth.pid, tenant);
-            self.leaders.lock().unwrap().insert(executor.birth.pid,
-                (executor.birth.clone(), plan.construction.clone(), start,
-                    (plan.degree == 1 && executor.hello.request_lookahead).then(|| executor.lookahead())));
+            self.leaders.lock().unwrap().insert(executor.birth.pid, Leader {
+                birth: executor.birth.clone(), construction: plan.construction.clone(), start,
+                lookahead: (plan.degree == 1 && executor.hello.request_lookahead).then(|| executor.lookahead()),
+            });
         }
         let selections = plan.selections();
         let id = self.serving.next.fetch_add(1, Ordering::Relaxed);

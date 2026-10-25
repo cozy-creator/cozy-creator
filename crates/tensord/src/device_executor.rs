@@ -1072,6 +1072,7 @@ impl DeviceExecutor {
                     refuse_malformed(&mut self.writer.lock().unwrap(), &frame)?
                 }
                 Some(Event::Progress) if !frame.malformed.is_empty() => (),
+                Some(Event::Progress) if request.is_some_and(|id| !frame.request_id.is_empty() && frame.request_id != id) => (),
                 Some(Event::Progress) => services.progress(&frame),
                 Some(Event::Request) if request.is_some_and(|id| !frame.request_id.is_empty() && frame.request_id != id) => {
                     // A queued preflight has no current attempt's spool or child-call grants.
