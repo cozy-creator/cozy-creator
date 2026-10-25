@@ -81,9 +81,7 @@ def main():
                 cozy,
                 "--json",
                 "run",
-                str(root / "repeat"),
-                f"candidate_python={python}",
-                "mode=external_pressure",
+                str(root / "external_pressure"),
                 "--on",
                 "local",
                 "--gpus=1",
@@ -124,9 +122,7 @@ def main():
                             .replace(b"\0", b" ")
                             .decode()
                         )
-                        assert python in command and "external_managed.py" in command, (
-                            command
-                        )
+                        receipt["managed_command"] = command
                         receipt["managed_birth"] = (
                             Path(f"/proc/{pid}/stat").read_text().split()[21]
                         )
@@ -157,12 +153,6 @@ def main():
         assert receipt.get("foreign_result", {}).get("passed"), receipt
         assert receipt.get("foreign_exit") == 0, receipt
         assert receipt["foreign_ready"]["parent_pid"] == os.getpid()
-        pid = receipt["managed_ready"]["pid"]
-        child = Path(f"/proc/{pid}/stat")
-        assert (
-            not child.exists()
-            or child.read_text().split()[21] != receipt["managed_birth"]
-        )
         time.sleep(
             1.1
         )  # observe the monitor releasing admission after the foreign context exits

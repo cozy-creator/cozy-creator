@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 
 import msgspec
-from cozy_runtime.author import App, Telemetry
+from cozy_runtime.author import App, Context, Telemetry
 
 app = App()
 
@@ -22,6 +22,14 @@ class Report(msgspec.Struct):
 
 
 @app.entrypoint
+def external_pressure(ctx: Context, tel: Telemetry) -> Report:
+    from .external_managed import exercise
+
+    exercise(ctx, tel)
+    return Report(False, "expected automatic pressure cancellation")
+
+
+@app.entrypoint
 def repeat(payload: Probe, tel: Telemetry) -> Report:
     if not Path(payload.candidate_python).is_file():
         raise ValueError(
@@ -32,7 +40,6 @@ def repeat(payload: Probe, tel: Telemetry) -> Report:
         "consumer": "consumer.py",
         "retirement": "retirement.py",
         "pressure": "pressure.py",
-        "external_pressure": "external_managed.py",
         "lifecycle": "lifecycle.py",
         "lifecycle_cancel": "lifecycle.py",
         "lifecycle_running_cancel": "lifecycle.py",
@@ -42,7 +49,6 @@ def repeat(payload: Probe, tel: Telemetry) -> Report:
     controlled = payload.mode in (
         "lifecycle_cancel",
         "lifecycle_running_cancel",
-        "external_pressure",
     )
     process = subprocess.Popen(
         [

@@ -2,7 +2,6 @@
 
 import json
 import os
-import sys
 import threading
 import time
 
@@ -11,11 +10,10 @@ from cozy_runtime.compute import PreparedRepeat
 from tensorfs import varena
 
 
-def report(**fields):
-    print(json.dumps(fields), flush=True)
+def exercise(ctx, tel):
+    def report(**fields):
+        tel.log(json.dumps(fields))
 
-
-def main():
     torch.set_num_threads(1)
     varena.install_allocator()
     arena = varena.Arena(0)
@@ -33,50 +31,39 @@ def main():
         state.copy_(torch.tanh(state @ weight + 0.001))
 
     plan = PreparedRepeat.capture(step, state=(state,), steps=2**32 - 1)
-    execution = plan.submit()
+    execution = ctx.plan(plan)
     assert plan.facts()["host_graph_launches"] == 1
-    stop = threading.Event()
+    finished = threading.Event()
 
-    def stopping():
-        sys.stdin.readline()
-        stop.set()
+    def deadline():
+        if not finished.wait(150):
+            execution.cancel()  # safety bound; cannot produce a passing monitor receipt
 
-    threading.Thread(target=stopping, daemon=True).start()
+    threading.Thread(target=deadline, daemon=True).start()
     report(
         pressure_ready=True,
         pid=os.getpid(),
         native_bytes=512 << 20,
         at_ns=time.time_ns(),
     )
-    automatic = False
     try:
-        deadline = time.monotonic() + 150
-        while time.monotonic() < deadline:
-            if stop.wait(0.25):
-                automatic = True
-                break
-            report(pressure_heartbeat=True)
+        execution.wait()  # Context cancellation sends cooperative control and joins.
     finally:
-        execution.cancel()
-        execution.wait()
-        progress = execution.poll()
+        finished.set()
         plan.close()
+        progress = execution.poll()
         del step, weight, storage, region
         torch.cuda.empty_cache()
-    assert automatic, "monitor did not cancel within the finite safety deadline"
-    assert (
-        progress.done
-        and progress.canceled
-        and 0 < progress.completed_steps < plan.steps
-    )
-    assert arena.stats()["resident_bytes"] == 0, arena.stats()
-    report(
-        pressure_cleanup=True,
-        native_bytes=0,
-        steps=progress.completed_steps,
-        at_ns=time.time_ns(),
-    )
-
-
-if __name__ == "__main__":
-    main()
+        assert (
+            progress.done
+            and progress.canceled
+            and 0 < progress.completed_steps < plan.steps
+        )
+        assert arena.stats()["resident_bytes"] == 0, arena.stats()
+        report(
+            pressure_cleanup=True,
+            native_bytes=0,
+            steps=progress.completed_steps,
+            at_ns=time.time_ns(),
+        )
+    raise RuntimeError("safety deadline elapsed without request cancellation")
