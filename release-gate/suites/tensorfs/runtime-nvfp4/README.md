@@ -27,7 +27,12 @@ This does not implement automatic shape-dependent packed-versus-float promotion,
 Blackwell kernel route, or benchmark model throughput. Unsupported targets retain their
 existing Runtime decoder; this GPU gate requires a TensorFS catalog-supported target.
 
-Source checks are not execution proof. No passing installed GPU run has been recorded yet.
+Installed RTX3060 run **17554 passed** on Runtime `de3dfc42c`, TensorFS `6431a5387`0.15.4
+and TensorD `9998cf5f4`. All48 provider configurations matched bitwise on CPU and CUDA.
+The retained case read37,384 logical bytes once, filled the final buffer once, and recorded
+30 warm final hits with no additional reads/fills. Alias retention, eviction and one checked
+refill passed; refill read37,384 bytes and filled once. See [exact evidence](evidence/run-17554.json).
+This is format/ownership correctness, not model throughput or automatic route selection.
 Run17520 completed the provider comparisons but refused the retained fixture's missing encoded
-consent before materialization. Its receipt remains preserved. The fixture-only correction
-requires a fresh real run; no production consent rule was relaxed.
+consent before materialization. Its receipt remains preserved beside the new proof metadata;
+no production consent rule was relaxed.
