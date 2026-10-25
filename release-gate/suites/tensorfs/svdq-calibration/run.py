@@ -107,6 +107,16 @@ def main():
         "detail": json.loads(components["result"]["detail"]),
     }
 
+    resumed = call(
+        "runtime-resume",
+        ["run", package / "runtime_resume", f"seed={args.seed}", "--on", args.machine],
+    )
+    assert resumed["result"]["passed"] is True
+    native["runtime_resume"] = {
+        "run": resumed["number"],
+        "detail": json.loads(resumed["result"]["detail"]),
+    }
+
     made = call(
         "source", ["run", package / "source", f"seed={args.seed}", "--on", args.machine]
     )

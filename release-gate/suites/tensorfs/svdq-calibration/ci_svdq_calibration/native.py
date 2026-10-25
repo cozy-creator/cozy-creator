@@ -975,3 +975,177 @@ def runtime_components(
             sort_keys=True,
         ),
     )
+
+
+@app.entrypoint(accelerator=False)
+def runtime_resume(payload: Request, ctx: Context, tel: Telemetry) -> Report:
+    """Actual public component conversion across an unfinished Output's close/reopen."""
+    import tensorfs
+    from cozy_runtime.author import CapabilityError
+    from cozy_runtime.derive.quantization import (
+        ArtifactQuantizationPlan,
+        ArtifactQuantizationRequest,
+        QuantizationTensor,
+        quantize_component_into,
+    )
+    from cozy_runtime.weights_store import Derivation, Output
+
+    rng = np.random.default_rng(payload.seed)
+    with tempfile.TemporaryDirectory(
+        prefix="cozy-runtime-component-resume-"
+    ) as temporary:
+        directory = Path(temporary)
+        store = directory / "store"
+        writer = tensorfs.Writer(directory / "source.cozytensors", cache_dir=store)
+        values = {}
+        for name in ("a", "b"):
+            values[name] = rng.normal(0, 0.0625, (64, 256)).astype("<f4")
+            writer.component(name).put(
+                "weight", values[name], dtype="F32", shape=[64, 256]
+            )
+        source = writer.commit()
+        plan = ArtifactQuantizationPlan(
+            ["a", "b"],
+            [(name, "weight") for name in ("a", "b")],
+            [
+                QuantizationTensor(name, "weight", "f32", (64, 256))
+                for name in ("a", "b")
+            ],
+        )
+        work = Derivation(base=source, order=plan.order)
+
+        def args(label):
+            transaction = (
+                "sha256:"
+                + hashlib.sha256((ctx.request_id + ":" + label).encode()).hexdigest()
+            )
+            return (store, label, transaction, work, 2 << 20)
+
+        def convert(output, component, bound=0.2):
+            return quantize_component_into(
+                source,
+                output,
+                ctx,
+                ArtifactQuantizationRequest(max_relative_frobenius=bound),
+                tel,
+                encoding="fp8.rowwise",
+                plan=plan,
+                component=component,
+                logical_dtype=lambda row: row.logical_dtype,
+            )
+
+        def rejected(output, component, bound=0.2):
+            try:
+                convert(output, component, bound)
+            except CapabilityError as error:
+                assert error.code == "quantization_identity"
+                return str(error)
+            raise AssertionError(
+                "finished scope without matching acceptance was reused"
+            )
+
+        resumed_args = args("resumed")
+        with Output(*resumed_args) as first:
+            a = convert(first, "a")
+            assert a.encoded_keys == 1 and a.reused_keys == 0
+            assert first.has("a", "weight") and not first.has("b", "weight")
+        # First Output and its native helper really ended. Deliberately never call A again
+        # on this unfinished writer: only B gets a conversion/validation call after reopen.
+        with Output(*resumed_args) as resumed:
+            assert resumed.done is None and resumed.has("a", "weight")
+            assert not resumed.has("b", "weight")
+            b = convert(resumed, "b")
+            assert b.encoded_keys == 1 and b.reused_keys == 0
+            assert b.source_bytes_read == 64 * 256 * 4
+            assert b.new_bytes_written == 64 * (256 + 4)
+            assert len(b.tensors) == 1 and b.tensors[0]["component"] == "b"
+            completed = resumed.commit()
+        with Output(*resumed_args) as finished:
+            assert finished.done is not None
+            again = convert(finished, "a")
+            assert again.encoded_keys == 0 and again.reused_keys == 1
+            assert again.source_bytes_read == again.new_bytes_written == 0
+            assert again.worst_relative_frobenius is None
+            changed_finished = [rejected(finished, "a", bound) for bound in (0.0, 0.4)]
+        assert completed.verify().ok
+        finished_id = completed.id
+        completed.close()
+
+        policy_args = args("changed-policy")
+        with Output(*policy_args) as first:
+            convert(first, "a")
+        with Output(*policy_args) as resumed:
+            for bound in (0.0, 0.4):
+                try:
+                    convert(resumed, "a", bound)
+                except tensorfs.InvalidError as error:
+                    assert (
+                        "writer quantization source or resolved recipe changed"
+                        in str(error)
+                    )
+                else:
+                    raise AssertionError(
+                        "native resume accepted a changed quality policy"
+                    )
+            assert resumed.has("a", "weight") and not resumed.has("b", "weight")
+
+        controls = {}
+        for label, manual in (
+            ("manual-before-binding", True),
+            ("inherited-base", False),
+        ):
+            control_args = args(label)
+            with Output(*control_args) as output:
+                if manual:
+                    output.put("a", "weight", "F32", (64, 256), values["a"])
+                assert output.has("a", "weight") is manual
+                if manual:
+                    try:
+                        convert(output, "b")
+                    except tensorfs.InvalidError as error:
+                        assert (
+                            "selected tensor was written without this quantization identity"
+                            in str(error)
+                        )
+                        controls[label] = {"native_refusal": str(error)}
+                    else:
+                        raise AssertionError(
+                            "manual A was admitted by the first native binding"
+                        )
+                    assert not output.has("b", "weight")
+                else:
+                    only_b = convert(output, "b")
+                    assert only_b.encoded_keys == 1 and not output.has("a", "weight")
+                    controls[label] = {"only_b_encoded": only_b.encoded_keys}
+                committed = output.commit()
+            with Output(*control_args) as finished:
+                controls[label]["finished_a_refused"] = rejected(finished, "a")
+            committed.close()
+        source.close()
+    return Report(
+        True,
+        json.dumps(
+            {
+                "checkpoint": finished_id,
+                "a_encoded": a.encoded_keys,
+                "b_after_reopen": {
+                    "encoded": b.encoded_keys,
+                    "reused": b.reused_keys,
+                    "read_bytes": b.source_bytes_read,
+                    "new_bytes": b.new_bytes_written,
+                },
+                "a_finished_reuse": {
+                    "encoded": again.encoded_keys,
+                    "reused": again.reused_keys,
+                    "read_bytes": again.source_bytes_read,
+                    "new_bytes": again.new_bytes_written,
+                    "worst_relative_frobenius": again.worst_relative_frobenius,
+                },
+                "changed_finished_policy_refusals": changed_finished,
+                "changed_unfinished_policy_refusals": [0.0, 0.4],
+                "controls": controls,
+                "scope": "Real public component helper, native Writer journal and finished Output; CPU only",
+            },
+            sort_keys=True,
+        ),
+    )

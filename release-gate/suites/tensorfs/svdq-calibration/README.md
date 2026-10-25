@@ -105,3 +105,13 @@ before its handler on a uv cache lock timeout and is not counted as passing reci
 This is real component qualification, not full H3/image-model inference, a benchmark,
 cancellation qualification or a release claim. Normal SDK restoration is owned and recorded
 by the parent controller separately from the successful component receipts.
+
+## Interrupted public component acceptance
+
+`cozy run ./runtime_resume seed=156 --on OWNED_MACHINE --json` uses the real public
+Runtime component helper and TensorFS Writer on CPU. It converts A, closes the unfinished
+Output, reopens and converts only B, commits, then requires unchanged A reuse with zero
+source reads/writes and unknown historical aggregate quality. Stricter and looser policy
+changes refuse on both unfinished and finished paths. Controls prove that manually written
+A cannot seed a native plan and inherited base A cannot acquire an acceptance token.
+This cell qualifies Runtime acceptance recovery; it is not a numerical throughput benchmark.
