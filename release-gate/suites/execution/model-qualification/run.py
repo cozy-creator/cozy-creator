@@ -79,13 +79,13 @@ def image_evidence(run, size):
     return images
 
 
-def summarize(run, request, size, events, cli_wall_ms):
+def summarize(run, request, size, events, cli_wall_ms, step_stage):
     assert run["status"] == "completed", run.get("reason", run["status"])
     assert run["result"]["seed"] == request["seed"], run["result"]
     assert (run["result"]["width"], run["result"]["height"]) == size
     measured = run["measurements"]
     execution = measured["execution"]
-    steps = measured["attribution"]["steps"]["denoise"]
+    steps = measured["attribution"]["steps"][step_stage]
     assert steps["count"] == request["steps"], steps
     gpu_rows = execution["gpus"]
     pids = sorted({gpu["pid"] for gpu in gpu_rows})
@@ -113,6 +113,7 @@ def summarize(run, request, size, events, cli_wall_ms):
         "execution_ms_as_reported": run.get("execution_ms"),
         "accepted_to_started_ms": run["started_at_ms"] - run["accepted_at_ms"],
         "steps": steps["count"],
+        "step_stage": step_stage,
         "device_steps_as_reported": device,
         "device_first_step_ms": samples[0] if samples else None,
         "device_steady_step_ms": {
@@ -183,6 +184,7 @@ def main():
     parser.add_argument("--lane", required=True)
     parser.add_argument("--seeds", required=True, nargs=4, type=int)
     parser.add_argument("--steps", type=int, default=30, choices=range(20, 31))
+    parser.add_argument("--step-stage", default="denoise")
     parser.add_argument("--expect-size", default="1024x1024")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
@@ -261,7 +263,7 @@ def main():
                 raise RuntimeError(
                     f"{label} did not complete; no further calls submitted"
                 )
-            row = summarize(run, request, size, events, elapsed)
+            row = summarize(run, request, size, events, elapsed, args.step_stage)
             row["label"] = label
             assert any(model["lane"] == args.lane for model in row["models"]), row[
                 "models"

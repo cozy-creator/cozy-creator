@@ -19,6 +19,7 @@ request creation-to-settlement time, reported execution time, first/steady devic
 executor initialization and construction fields, stage events, actual PIDs, model manifests,
 kernel routes and graph counters. Each downloaded image must match its recorded file SHA256
 and decode with Pillow at the requested size; RGB pixel hashes are recorded too.
+The measured step stage defaults to `denoise`; Qwen uses `--step-stage 'generating image'`.
 
 These timing scopes can overlap and are not added together or called GPU-only latency.
 Download duration is left unknown when the backend does not report it separately. The first
