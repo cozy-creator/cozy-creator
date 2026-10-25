@@ -37,13 +37,15 @@ use download::Shared;
 /// GET `url` from byte `from` into `sink`, for bytes the caller holds to a digest: any public host,
 /// redirects followed. A weather answer or a transport failure is asked again from the byte reached,
 /// and nothing moving for the stall rule ends it `HUB_UNREACHABLE` ([`ask::get`]). `sink` takes each
-/// body frame with the byte it starts at (0 again when a server restarts the body).
+/// body frame with the byte it starts at (0 again when a server restarts the body). A `from` at or past
+/// the end (416) has nothing left to get: the caller's digest judges what it holds.
 pub async fn get_pinned(url: &str, from: u64, sink: &mut (dyn FnMut(u64, &[u8]) -> Result<()> + Send + '_)) -> Result<()> {
     let policy = SourcePolicy { any_host: true, allow_local: policy::is_loopback_origin(url), max_redirects: 5, ..Default::default() };
     let range = (from > 0).then_some((from, None));
     let got = ask::get(&Client::new(policy), url, &[], None, &ask::Patience::default(), range, sink).await;
     match got.map_err(GetError::refusal)? {
         Ok(_) => Ok(()),
+        Err(416) if from > 0 => Ok(()),
         Err(status @ (404 | 410)) => refuse(Code::REF_NOT_FOUND, format!("{url}: HTTP {status}")),
         Err(status) => refuse(Code::ORIGIN_REFUSED, format!("{url}: HTTP {status}")),
     }
