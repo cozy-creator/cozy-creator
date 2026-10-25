@@ -1,4 +1,4 @@
-use super::{encoding, part, Encoder, Input, OwnedPart};
+use super::{Encoder, Input, OwnedPart, encoding, part};
 use crate::format::{Dtype, Encoding, Error, Result};
 
 /// Production Runtime's deterministic rowwise H256/16 quantizer. The revision is
@@ -87,19 +87,7 @@ pub(super) fn convrot_measured(input: &Input) -> Result<super::Quantized> {
             *out = f64::from(value);
         }
         for block in rotated.as_chunks_mut::<256>().0 {
-            // Match NumPy hadamard256's axis and addition order. The integer
-            // decoder's sum-minus-twice form is not equivalent in floating point.
-            for stride in [64, 16, 4, 1] {
-                for group in block.chunks_exact_mut(stride * 4) {
-                    for offset in 0..stride {
-                        let [a, b, c, d] = [0, 1, 2, 3].map(|i| group[offset + i * stride]);
-                        let values = [a + b + c - d, a + b - c + d, a - b + c + d, b + c + d - a];
-                        for (i, value) in values.into_iter().enumerate() {
-                            group[offset + i * stride] = value;
-                        }
-                    }
-                }
-            }
+            hadamard256(block);
         }
         let mut amax = 0.0f64;
         for value in &mut rotated {
@@ -121,20 +109,7 @@ pub(super) fn convrot_measured(input: &Input) -> Result<super::Quantized> {
             .zip(row.as_chunks::<1024>().0)
         {
             let mut sums = codes.map(|code| i32::from(code as i8));
-            for stride in [64, 16, 4, 1] {
-                for group in sums.chunks_exact_mut(stride * 4) {
-                    for offset in 0..stride {
-                        let [a, b, c, d] = [0, 1, 2, 3].map(|i| group[offset + i * stride]);
-                        for (i, value) in
-                            [a + b + c - d, a + b - c + d, a - b + c + d, b + c + d - a]
-                                .into_iter()
-                                .enumerate()
-                        {
-                            group[offset + i * stride] = value;
-                        }
-                    }
-                }
-            }
+            hadamard256(&mut sums);
             for (sum, raw) in sums.into_iter().zip(source.as_chunks::<4>().0) {
                 stats.add(
                     f32::from_le_bytes(*raw),
@@ -150,4 +125,25 @@ pub(super) fn convrot_measured(input: &Input) -> Result<super::Quantized> {
             part("scale", Dtype::F32, [rows], scale),
         ],
     })
+}
+
+/// Unnormalized regular H256, preserving the production NumPy axis and addition order.
+/// F64 is used by both producers; I32 is used for exact decoded acceptance statistics.
+pub(super) fn hadamard256<T>(block: &mut [T; 256])
+where
+    T: Copy + std::ops::Add<Output = T> + std::ops::Sub<Output = T>,
+{
+    for stride in [64, 16, 4, 1] {
+        for group in block.chunks_exact_mut(stride * 4) {
+            for offset in 0..stride {
+                let [a, b, c, d] = [0, 1, 2, 3].map(|i| group[offset + i * stride]);
+                for (i, value) in [a + b + c - d, a + b - c + d, a - b + c + d, b + c + d - a]
+                    .into_iter()
+                    .enumerate()
+                {
+                    group[offset + i * stride] = value;
+                }
+            }
+        }
+    }
 }

@@ -3,7 +3,7 @@ from collections.abc import Callable, Mapping, Sequence
 from os import PathLike
 from types import TracebackType
 from typing import Literal, Protocol, TypedDict
-from typing_extensions import Buffer
+from typing_extensions import Buffer, NotRequired
 
 from ._ext import Checkpoint, ClassRef, Component, ConversionControl, TokenProvider, _CheckpointFile
 
@@ -66,6 +66,12 @@ class ComponentWriter:
     def order(self, keys: Sequence[str]) -> None: ...
     def has(self, key: str) -> bool: ...
 
+class QuantizeFit(TypedDict):
+    seed: int
+    component: str
+    xmax: str
+    rows: str
+
 class QuantizeTensor(TypedDict):
     component: str
     key: str
@@ -74,6 +80,7 @@ class QuantizeTensor(TypedDict):
     dtype: str
     encoding: Mapping[str, object]
     strategy: str
+    fit: NotRequired[QuantizeFit]
 
 class Writer:
     metadata: dict[str, object]
@@ -96,4 +103,5 @@ class Writer:
     def has(self, component: str, key: str) -> bool: ...
     def quantize(self, source: Checkpoint, tensors: Sequence[QuantizeTensor], *,
                  max_buffer_bytes: int, max_new_bytes: int, control: ConversionControl,
-                 max_relative_frobenius: float | None = None) -> dict[str, object]: ...
+                 max_relative_frobenius: float | None = None,
+                 calibration: Checkpoint | None = None) -> dict[str, object]: ...

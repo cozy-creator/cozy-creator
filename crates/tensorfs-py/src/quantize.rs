@@ -148,7 +148,13 @@ fn produce(
     Ok((encoded, result.stats))
 }
 
+#[pyfunction]
+fn quantization_implementation() -> String {
+    encode::implementation()
+}
+
 pub fn install(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(quantization_implementation, m)?)?;
     m.add_function(wrap_pyfunction!(quantize, m)?)?;
     m.add_function(wrap_pyfunction!(quantize_measured, m)?)
 }

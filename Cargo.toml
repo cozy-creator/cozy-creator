@@ -1,6 +1,8 @@
 # One workspace for the `cozy` binary (xs-043). The Go tree stays at the root until the cutover.
 [workspace]
 resolver = "3"
+# Build the pinned bounded-SVD dependency as a dependency, not a workspace test target.
+exclude = ["vendor/faer"]
 # The Rust implementation and its complete Python binding/package each have one directory.
 members = [
     "crates/calcifer",

@@ -532,3 +532,10 @@ quantization. `cancel()` is nonblocking; `progress()` reports `(source_bytes_rea
 without callbacks or acknowledgements. `Writer.quantize` accepts the complete resolved tensor list,
 explicit conversion buffer/output byte bounds and this control; its return is the conversion stats
 mapping described in API.md. It never commits the Writer or chooses a model recipe.
+
+`Writer.quantize(..., calibration=None)` optionally retains a completed calibration
+checkpoint. An SVDQ selection adds `fit: {seed, component, xmax, rows}` with exact
+calibration keys and the explicit `svdq-nvfp4-r32-faer/1` strategy. Its result includes
+per-tensor `fit` details and separate `calibration_bytes_read` and
+`required_buffer_bytes` aggregates. `raw.quantization_implementation() -> str` supplies
+the producer-source and pinned-dependency digest used in external memo provenance.

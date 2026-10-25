@@ -8,8 +8,11 @@ use serde::{Deserialize, Serialize};
 use super::{
     Checkpoint, Component, ConversionControl, Download, PartData, ReadInto, Selection, Writer,
 };
-use crate::failure::{fail, Failure, Kind, Result};
-use crate::format::{encode, Body, Dtype, Encoding, PartBytes};
+use crate::failure::{Failure, Kind, Result, fail};
+use crate::format::{Body, Dtype, Encoding, PartBytes, encode};
+
+#[path = "quantize_fit.rs"]
+mod fitting;
 
 /// A fully resolved tensor, never a model selector or a Python callback.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -22,11 +25,24 @@ pub struct QuantizeTensor {
     pub dtype: Dtype,
     pub encoding: Encoding,
     pub strategy: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fit: Option<QuantizeFit>,
+}
+
+/// Exact immutable calibration tensor references for the versioned SVDQ fitter.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuantizeFit {
+    pub seed: u64,
+    pub component: String,
+    pub xmax: String,
+    pub rows: String,
 }
 
 pub struct Quantization<'a> {
     /// Full immutable selection, including entries already completed by this Writer.
     pub tensors: &'a [QuantizeTensor],
+    pub calibration: Option<&'a Checkpoint>,
     /// Conversion working buffers; the existing reader/Writer retain their own bounded I/O buffers.
     pub max_buffer_bytes: usize,
     /// Remaining encoded payload allowance, including every companion part, before deduplication.
@@ -43,6 +59,19 @@ pub struct QuantizedTensor {
     pub new_bytes_written: u64,
     pub relative_frobenius: f64,
     pub measured: encode::QuantizationStats,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fit: Option<FitDetails>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FitDetails {
+    pub strategy: String,
+    pub alpha: f32,
+    pub residual: encode::QuantizationStats,
+    pub calibration_error: f64,
+    pub plain_nvfp4_error: f64,
+    pub calibration_bytes_read: u64,
+    pub required_buffer_bytes: usize,
 }
 
 #[derive(Default, Debug, Serialize)]
@@ -51,6 +80,8 @@ pub struct QuantizationResult {
     pub encoded_keys: usize,
     pub reused_keys: usize,
     pub source_bytes_read: u64,
+    pub calibration_bytes_read: u64,
+    pub required_buffer_bytes: usize,
     /// Logical newly encoded bytes, not physical store growth after deduplication.
     pub new_bytes_written: u64,
     pub saturated_elements: u64,
@@ -67,6 +98,9 @@ struct Pending<'a> {
     output_bytes: u64,
     parts: Vec<(String, Dtype, Vec<u64>)>,
     nvfp4: bool,
+    error_fraction: f64,
+    required_buffer_bytes: usize,
+    fit: Option<fitting::PendingFit>,
 }
 
 enum Source {
@@ -90,7 +124,10 @@ fn source_layout(tensor: &crate::format::Tensor) -> Result<Source> {
             if !matches!(encoding.scheme.as_str(), "fp8.rowwise" | "int8.rowwise")
                 || !encoding.params.is_empty()
             {
-                return fail(Kind::Unsupported, "quantization source needs plain floats or parameter-free fp8.rowwise/int8.rowwise");
+                return fail(
+                    Kind::Unsupported,
+                    "quantization source needs plain floats or parameter-free fp8.rowwise/int8.rowwise",
+                );
             }
             let metadata = parts
                 .iter()
@@ -128,6 +165,7 @@ fn implementation() -> String {
     hash.update(encode::implementation().as_bytes());
     for source in [
         include_str!("quantize.rs"),
+        include_str!("quantize_fit.rs"),
         include_str!("../format/decode/mod.rs"),
         include_str!("../format/decode/plan.rs"),
         include_str!("../format/decode/fp8.rs"),
@@ -218,14 +256,83 @@ impl Writer {
             let [rows, cols] = spec.shape.as_slice() else {
                 return fail(Kind::Invalid, "native quantization needs a rank-2 matrix");
             };
-            let nvfp4 = match (spec.encoding.scheme.as_str(), spec.strategy.as_str()) {
-                ("int8.convrot", encode::CONVROT_STRATEGY) if spec.encoding == Encoding::int8_convrot(256) => false,
-                ("nvfp4", encode::MIN_SSE_STRATEGY) if spec.encoding == Encoding::nvfp4(
-                    encode::GlobalScale::Multiply, encode::NibbleOrder::LowFirst, crate::format::ScaleLayout::RowMajor,
-                ) => true,
-                _ => return fail(Kind::Unsupported, "native quantization requires an exact supported encoding and numerical strategy"),
+            if spec.strategy == encode::SVDQ_FIT_STRATEGY {
+                let fit = fitting::preflight(spec, options)?;
+                let row_source_bytes = match &source {
+                    Source::Plain { width } => checked(cols.checked_mul(*width as u64))?,
+                    Source::Rowwise { scale_width, .. } => {
+                        checked(cols.checked_add(*scale_width as u64))?
+                    }
+                };
+                let parts = fitting::parts(*rows, *cols);
+                let bytes = parts.iter().try_fold(0u64, |sum, (_, dtype, shape)| {
+                    checked(sum.checked_add(checked(dtype.byte_len(shape))?))
+                })?;
+                self.component_writer(&spec.component)?;
+                if self.has(&spec.component, &spec.key)? {
+                    reused += 1;
+                } else {
+                    output_bytes = checked(output_bytes.checked_add(bytes))?;
+                    pending.push(Pending {
+                        spec,
+                        component: component.clone(),
+                        rows_per_chunk: 1,
+                        source,
+                        row_source_bytes,
+                        output_bytes: bytes,
+                        parts,
+                        nvfp4: false,
+                        error_fraction: 0.25,
+                        required_buffer_bytes: fit.required_buffer_bytes,
+                        fit: Some(fit),
+                    });
+                }
+                continue;
+            }
+            if spec.fit.is_some() {
+                return fail(
+                    Kind::Invalid,
+                    "fit references require the explicit SVDQ fitting strategy",
+                );
+            }
+            let (nvfp4, block, error_fraction) = match (
+                spec.encoding.scheme.as_str(),
+                spec.strategy.as_str(),
+            ) {
+                ("int8.convrot", encode::CONVROT_STRATEGY)
+                    if spec.encoding == Encoding::int8_convrot(256) =>
+                {
+                    (false, 256, 0.0625)
+                }
+                ("nvfp4", encode::MIN_SSE_STRATEGY)
+                    if spec.encoding
+                        == Encoding::nvfp4(
+                            encode::GlobalScale::Multiply,
+                            encode::NibbleOrder::LowFirst,
+                            crate::format::ScaleLayout::RowMajor,
+                        ) =>
+                {
+                    (true, 16, 0.25)
+                }
+                ("fp8.rowwise", encode::FP8_ROWWISE_STRATEGY)
+                    if spec.encoding == Encoding::fp8_rowwise() =>
+                {
+                    (false, 1, 0.125)
+                }
+                ("w4a8.convrot", encode::W4A8_STRATEGY)
+                    if spec.encoding == Encoding::w4a8_convrot(256) =>
+                {
+                    (false, 256, 0.5)
+                }
+                _ => {
+                    return fail(
+                        Kind::Unsupported,
+                        "native quantization requires an exact supported encoding and numerical strategy",
+                    );
+                }
             };
-            let block = if nvfp4 { 16 } else { 256 };
+            let w4a8 = spec.strategy == encode::W4A8_STRATEGY;
+            let fp8 = spec.strategy == encode::FP8_ROWWISE_STRATEGY;
             if *rows == 0 || *cols == 0 || cols % block != 0 {
                 return fail(
                     Kind::Invalid,
@@ -237,8 +344,12 @@ impl Writer {
                 .map_err(|_| invalid("tensor shape exceeds this platform's address space"))?;
             // Source + F32 input + every encoded part coexist. ConvRot additionally owns
             // one F64 row; the fixed allowance covers block arithmetic/metadata scratch.
-            let row_output = if nvfp4 {
-                checked(cols.checked_div(2).and_then(|n| n.checked_add(cols / 16)))?
+            let row_output = if nvfp4 || w4a8 {
+                checked(
+                    cols.checked_div(2)
+                        .and_then(|n| n.checked_add(cols / 16))
+                        .and_then(|n| n.checked_add(if w4a8 { 4 } else { 0 })),
+                )?
             } else {
                 checked(cols.checked_add(4))?
             };
@@ -265,8 +376,13 @@ impl Writer {
             };
             let source_bytes = checked(rows.checked_mul(row_source_bytes))?;
             let scratch = checked(
-                (if nvfp4 { Some(0) } else { cols.checked_mul(8) })
-                    .and_then(|n| n.checked_add(4096)),
+                (if nvfp4 || fp8 {
+                    Some(0)
+                } else {
+                    cols.checked_mul(8)
+                })
+                .and_then(|n| n.checked_add(if w4a8 { cols / 2 } else { 0 }))
+                .and_then(|n| n.checked_add(4096)),
             )?;
             let room = (options.max_buffer_bytes as u64).saturating_sub(scratch);
             let rows_per_chunk = (room / row_memory).min(*rows);
@@ -276,19 +392,39 @@ impl Writer {
                     "one complete quantization row exceeds max_buffer_bytes",
                 );
             }
-            let bytes = checked(
-                rows.checked_mul(row_output)
-                    .and_then(|n| n.checked_add(if nvfp4 { 4 } else { 0 })),
-            )?;
+            let bytes = checked(rows.checked_mul(row_output).and_then(|n| {
+                n.checked_add(if nvfp4 {
+                    4
+                } else if w4a8 {
+                    64
+                } else {
+                    0
+                })
+            }))?;
             let parts = if nvfp4 {
                 vec![
                     ("weight".into(), Dtype::F4, spec.shape.clone()),
                     ("scale".into(), Dtype::F8_E4M3, vec![*rows, *cols / 16]),
                     ("scale_2".into(), Dtype::F32, vec![]),
                 ]
+            } else if w4a8 {
+                vec![
+                    ("weight".into(), Dtype::I8, vec![*rows, *cols / 2]),
+                    (
+                        "group_scale".into(),
+                        Dtype::F8_E4M3,
+                        vec![*rows, *cols / 16],
+                    ),
+                    ("scale".into(), Dtype::F32, vec![*rows]),
+                    ("codebook".into(), Dtype::F32, vec![16]),
+                ]
             } else {
                 vec![
-                    ("weight".into(), Dtype::I8, spec.shape.clone()),
+                    (
+                        "weight".into(),
+                        if fp8 { Dtype::F8_E4M3 } else { Dtype::I8 },
+                        spec.shape.clone(),
+                    ),
                     ("scale".into(), Dtype::F32, vec![*rows]),
                 ]
             };
@@ -309,6 +445,9 @@ impl Writer {
                     output_bytes: bytes,
                     parts,
                     nvfp4,
+                    error_fraction,
+                    required_buffer_bytes: (scratch + rows_per_chunk * row_memory) as usize,
+                    fit: None,
                 });
             }
         }
@@ -326,6 +465,7 @@ impl Writer {
                 "tensorfs-quantization/1",
                 implementation(),
                 source.id(),
+                options.calibration.map(Checkpoint::id),
                 self.base_id(),
                 options.tensors,
                 options.max_relative_frobenius,
@@ -341,10 +481,19 @@ impl Writer {
         };
         for pending in pending {
             options.control.check()?;
-            let row = self.quantize_one(source, &pending, options).await?;
+            let row = if pending.fit.is_some() {
+                self.quantize_fit(source, &pending, options).await?
+            } else {
+                self.quantize_one(source, &pending, options).await?
+            };
             result.encoded_keys += 1;
             result.source_bytes_read += row.source_bytes_read;
             result.new_bytes_written += row.new_bytes_written;
+            result.required_buffer_bytes = result
+                .required_buffer_bytes
+                .max(pending.required_buffer_bytes);
+            result.calibration_bytes_read +=
+                row.fit.as_ref().map_or(0, |fit| fit.calibration_bytes_read);
             result.saturated_elements += row.measured.saturated;
             if let Some(worst) = &mut result.worst_relative_frobenius {
                 *worst = worst.max(row.relative_frobenius);
@@ -428,7 +577,8 @@ impl Writer {
             for (index, part) in encoded.parts.iter().enumerate() {
                 let (role, dtype, geometry) = &pending.parts[index];
                 let mut expected = geometry.clone();
-                if let Some(rows) = expected.first_mut() {
+                let shared = geometry.is_empty() || role == "codebook";
+                if let Some(rows) = expected.first_mut().filter(|_| !shared) {
                     *rows = count as u64;
                 }
                 if part.role != *role || part.dtype != *dtype || part.shape != expected {
@@ -437,7 +587,7 @@ impl Writer {
                         "quantizer changed its resolved part geometry",
                     );
                 }
-                if !geometry.is_empty() || start == 0 {
+                if !shared || start == 0 {
                     options.control.check()?;
                     staged[index]
                         .file()
@@ -451,7 +601,7 @@ impl Writer {
         } else {
             0.0
         };
-        let bound = measured.amax * if pending.nvfp4 { 0.25 } else { 0.0625 };
+        let bound = measured.amax * pending.error_fraction;
         if !measured.max_abs_error.is_finite()
             || measured.max_abs_error > bound
             || !relative.is_finite()
@@ -459,7 +609,13 @@ impl Writer {
                 .max_relative_frobenius
                 .is_some_and(|limit| relative > limit)
         {
-            return fail(Kind::Decode, format!("quantization_tripwire: {}.{} max error {}, bound {bound}, relative Frobenius {relative}", spec.component, spec.key, measured.max_abs_error));
+            return fail(
+                Kind::Decode,
+                format!(
+                    "quantization_tripwire: {}.{} max error {}, bound {bound}, relative Frobenius {relative}",
+                    spec.component, spec.key, measured.max_abs_error
+                ),
+            );
         }
         for (file, (_, dtype, shape)) in staged.iter_mut().zip(&pending.parts) {
             if file
@@ -517,6 +673,7 @@ impl Writer {
             new_bytes_written: pending.output_bytes,
             relative_frobenius: relative,
             measured,
+            fit: None,
         })
     }
 }
@@ -544,7 +701,13 @@ async fn read_window(
             if pending.spec.source_dtype == Dtype::F32 {
                 return Ok(bytes);
             }
-            let mut values = Vec::with_capacity(count * cols * 4);
+            let mut values = Vec::new();
+            values
+                .try_reserve_exact(count * cols * 4)
+                .map_err(|_| Failure {
+                    kind: Kind::Full,
+                    detail: "quantization decode allocation failed".into(),
+                })?;
             for raw in bytes.as_chunks::<2>().0 {
                 let bits = u16::from_le_bytes(*raw);
                 let value = if pending.spec.source_dtype == Dtype::BF16 {
@@ -620,11 +783,35 @@ async fn read_part(
     length: usize,
     control: &ConversionControl,
 ) -> Result<Vec<u8>> {
+    read_named_part(
+        source,
+        &pending.component,
+        &pending.spec.component,
+        &pending.spec.key,
+        role,
+        offset,
+        length,
+        control,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn read_named_part(
+    source: &Checkpoint,
+    component: &Component,
+    component_name: &str,
+    key: &str,
+    role: Option<&str>,
+    offset: u64,
+    length: usize,
+    control: &ConversionControl,
+) -> Result<Vec<u8>> {
     control.check()?;
     let wanted = Download {
         selection: Selection::Part {
-            component: pending.spec.component.clone(),
-            key: pending.spec.key.clone(),
+            component: component_name.to_owned(),
+            key: key.to_owned(),
             role: role.map(str::to_owned),
             range: Some(offset..offset + length as u64),
         },
@@ -635,9 +822,14 @@ async fn read_part(
         () = control.cancelled() => { control.check()?; }
     }
     control.check()?;
-    let mut bytes = vec![0u8; length];
-    pending.component.read_into(
-        &pending.spec.key,
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(length).map_err(|_| Failure {
+        kind: Kind::Full,
+        detail: "quantization read allocation failed".into(),
+    })?;
+    bytes.resize(length, 0u8);
+    component.read_into(
+        key,
         &mut bytes,
         &ReadInto {
             offset,

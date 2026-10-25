@@ -34,6 +34,9 @@ class Part:
 def parts(checkpoint: Checkpoint, component: str, key: str) -> dict[str, Part]:
     """Stored ranges only; does not fetch or load array bytes."""
 
+def quantization_implementation() -> str:
+    """Hash of native producer sources and pinned numerical dependency identity."""
+
 def quantize(
     scheme: str,
     values: bytes,

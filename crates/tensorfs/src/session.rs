@@ -16,7 +16,7 @@ mod writer;
 pub use crate::fetch::Landed as Fetched;
 pub use checkpoint::{Checkpoint, Component, Read, ReadInto};
 pub use convert::{ConversionControl, Convert, ConvertProgress};
-pub use quantize::{Quantization, QuantizationResult, QuantizedTensor, QuantizeTensor};
+pub use quantize::{FitDetails, Quantization, QuantizationResult, QuantizedTensor, QuantizeFit, QuantizeTensor};
 pub use endpoint::Endpoint;
 pub use file::CheckpointFile;
 pub use provider::{bearer, HeaderMap, Request, TokenProvider};

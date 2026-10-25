@@ -1,0 +1,47 @@
+--- a/src/linalg/svd/mod.rs
++++ b/src/linalg/svd/mod.rs
+@@ -16,6 +16,8 @@
+ /// bidiagonalization
+ pub mod bidiag;
+ pub(crate) mod bidiag_svd;
++/// TensorFS bounded producer: no blocked Householder GEMM packing cache.
++pub const TENSORFS_BOUNDED_SVD_REVISION: &str = "tensorfs-householder-block1/1";
+ /// whether the singular vectors should be computed
+ #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+ pub enum ComputeSvdVectors {
+@@ -74,7 +76,7 @@
+ ) -> StackReq {
+ 	assert!(m >= n);
+ 	let householder_block_size =
+-		linalg::qr::no_pivoting::factor::recommended_block_size::<T>(m, n);
++		1;
+ 	let bid = temp_mat_scratch::<T>(m, n);
+ 	let householder_left = temp_mat_scratch::<T>(householder_block_size, n);
+ 	let householder_right = temp_mat_scratch::<T>(householder_block_size, n);
+@@ -344,7 +346,7 @@
+ 	assert!(matrix.nrows() >= matrix.ncols());
+ 	let m = matrix.nrows();
+ 	let n = matrix.ncols();
+-	let bs = linalg::qr::no_pivoting::factor::recommended_block_size::<T>(m, n);
++	let bs = 1;
+ 	let (mut bid, stack) = unsafe { temp_mat_uninit::<T, _, _>(m, n, stack) };
+ 	let mut bid = bid.as_mat_mut();
+ 	let (mut Hl, stack) = unsafe { temp_mat_uninit::<T, _, _>(bs, n, stack) };
+@@ -500,7 +502,7 @@
+ 		)
+ 	} else {
+ 		let bs =
+-			linalg::qr::no_pivoting::factor::recommended_block_size::<T>(m, n);
++			1;
+ 		StackReq::all_of(&[
+ 			temp_mat_scratch::<T>(m, n),
+ 			temp_mat_scratch::<T>(bs, n),
+@@ -602,7 +604,7 @@
+ 		)?;
+ 	} else {
+ 		let bs =
+-			linalg::qr::no_pivoting::factor::recommended_block_size::<T>(m, n);
++			1;
+ 		let (mut qr, stack) =
+ 			unsafe { temp_mat_uninit::<T, _, _>(m, n, stack) };
+ 		let mut qr = qr.as_mat_mut();
