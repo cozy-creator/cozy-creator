@@ -254,18 +254,9 @@ impl Publisher {
             std::thread::sleep(std::time::Duration::from_millis(500));
             stop.is_cancelled()
         };
-        loop {
-            match updates.request(request.clone(), |code| std::process::exit(code)) {
-                Ok(_) => break,
-                // Another update runs: this one asks once it ends (its restart prepares this run again).
-                Err((409, _)) => {
-                    job.waiting(Some(format!("waiting for this machine's update in progress ({label} needs {floors})")));
-                    if pause() {
-                        return canceled();
-                    }
-                }
-                Err((_, why)) => return refuse(format!("this machine's update to Runtime {to_runtime} was refused: {why}")),
-            }
+        // Behind an update in progress it is queued, and starts when that one ends.
+        if let Err((_, why)) = updates.request(request, true, |code| std::process::exit(code)) {
+            return refuse(format!("this machine's update to Runtime {to_runtime} was refused: {why}"));
         }
         tracing::info!("package {label} needs {floors}: updating to Runtime {to_runtime}, TensorFS {to_tensorfs}");
         job.waiting(Some(format!("waiting for this machine's update to Runtime {to_runtime} ({label} needs {floors})")));

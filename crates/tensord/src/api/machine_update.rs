@@ -154,10 +154,8 @@ pub(super) async fn submit<B: MachineBackend>(
         if let Some(update) = updates.update(&id) {
             return Ok((false, state(&id, &update)));
         }
-        if !identity.readiness.proved() {
-            return Err(Error::unavailable("machine_booting", "the machine is starting; update it once it is ready"));
-        }
-        stage(&updates, &*backend, actor, &id, request.spec, &identity.gpus)?;
+        // A machine still starting queues it, as an update in progress does: never refused.
+        stage(&updates, &*backend, actor, &id, request.spec, &identity.gpus, identity.readiness.proved())?;
         let update = updates.update(&id).ok_or_else(|| Error::internal("update_unrecorded", "the update was not recorded"))?;
         Ok((true, state(&id, &update)))
     })
@@ -212,6 +210,7 @@ fn stage(
     id: &str,
     spec: v1::RunSpec,
     gpus: &[crate::machine::receipt::Gpu],
+    ready: bool,
 ) -> Result<(), Error> {
     let payload = spec.payload.as_ref().map_or("{}", |payload| payload.get());
     let cohort: Cohort = serde_json::from_str(payload).map_err(|e| {
@@ -286,7 +285,7 @@ fn stage(
         toolchain,
     };
     updates
-        .request(request, |code| std::process::exit(code))
+        .request(request, ready, |code| std::process::exit(code))
         .map(|_| ())
         .map_err(|(code, message)| refusal(code, message))
 }
@@ -328,7 +327,7 @@ pub(super) fn state(id: &str, update: &Update) -> v1::RunState {
         number: 0,
         started_at_ms: 0,
         state: match update.state.as_str() {
-            "waiting" => "queued",
+            "waiting" | "queued" => "queued",
             "succeeded" => "succeeded",
             "canceled" => "canceled",
             "rolled_back" | "failed" => "failed",

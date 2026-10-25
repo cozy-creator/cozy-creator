@@ -243,6 +243,8 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
             if let Err(error) = updates.commit() {
                 tracing::warn!("Runtime update commit: {error}");
             }
+            // An update queued behind the one this restart ended starts now.
+            updates.next(|code| std::process::exit(code));
             ready.report();
         })?;
     // A machine serves every package on its pool: its GPUs (the envelope, sorted by index; a
