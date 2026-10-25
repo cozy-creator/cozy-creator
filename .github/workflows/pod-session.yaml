@@ -1,0 +1,148 @@
+name: pod-session
+# One rental driven from a runner, so no laptop has to stay up for it: release-gate/sessions/<script>.sh rents one
+# machine on tensorhub.com, does its work there and ends the rental (sessions/lib.sh; README.md: Sessions).
+# The runner signs in as the owner (environment release-gate, COZY_CI_DEVICE_KEY, an admin) and its Calcifer renews the
+# pod's credential for the whole job. A guard ends the pod at `cap` USD, all in. Without `rent`, the $0 pre-flight only:
+# install, sign-in, the script's own checks, the quote and the guard.
+#   gh workflow run pod-session.yaml -R cozy-creator/cozy-creator -f script=model-ingest -f packages_refs=pk=<sha> \
+#     -f sku=a40 -f disk=500 -f cap=6 -f params='{"package": "qwen3.6", "sources": "…", "lanes": "int8", "version": "0.1.0"}'
+on:
+  workflow_dispatch:
+    inputs:
+      script:
+        description: "A session in release-gate/sessions/, without .sh (its header lists its params)"
+        type: string
+        required: true
+      packages_refs:
+        description: "Space-separated name=ref pairs: each cozy-creator/packages commit or branch, checked out at packages/<name>"
+        type: string
+        default: ''
+      sku:
+        type: string
+        required: true
+      disk:
+        description: "Disk GB"
+        type: string
+        required: true
+      cap:
+        description: "USD, GPU + disk + traffic: the guard ends the pod at it"
+        type: string
+        required: true
+      params:
+        description: "The script's own settings, a JSON object"
+        type: string
+        default: '{}'
+      cozy:
+        description: "cozy on the runner: released, a release tag or a dev-build run id"
+        type: string
+        default: released
+      rent:
+        description: "Rent and run; without it, the $0 pre-flight only"
+        type: boolean
+        default: false
+run-name: pod-session ${{ inputs.script }} ${{ inputs.sku }}${{ inputs.rent && ' rent' || ' pre-flight' }}
+
+jobs:
+  session:
+    runs-on: ubuntu-24.04
+    environment: release-gate
+    permissions:
+      contents: read
+      actions: read  # a dev-build cozy
+    concurrency:
+      group: pod-session-${{ inputs.script }}
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      OUT: ${{ github.workspace }}/session
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: |
+            release-gate/sessions
+            release-gate/ref
+          path: creator
+      - uses: actions/checkout@v5
+        if: inputs.packages_refs != ''
+        with:
+          repository: cozy-creator/packages
+          fetch-depth: 0
+          path: packages.git
+      - name: Packages
+        env:
+          REFS: ${{ inputs.packages_refs }}
+        run: |
+          mkdir -p packages
+          for pair in $REFS; do
+            name=${pair%%=*} ref=${pair#*=}
+            [[ $pair == *=* && $name =~ ^[A-Za-z0-9_-]+$ ]] || { echo "::error::packages_refs: '$pair' is not name=ref"; exit 1; }
+            c=$(git -C packages.git rev-parse --verify -q "$ref^{commit}" || git -C packages.git rev-parse --verify -q "origin/$ref^{commit}") ||
+              { echo "::error::packages has no $ref"; exit 1; }
+            git -C packages.git worktree add -q --detach "$GITHUB_WORKSPACE/packages/$name" "$c"
+            echo "packages/$name: $ref = $c"
+          done
+      - name: Install cozy
+        env:
+          COZY: ${{ inputs.cozy }}
+        run: |
+          bin=$HOME/.cozy/bin; mkdir -p "$bin"; echo "$bin" >> "$GITHUB_PATH"
+          if [ "$COZY" = released ]; then
+            curl -LsSf https://tensorhub.com/install.sh | sh
+          elif [[ $COZY == v* ]]; then
+            curl -LsSf "https://github.com/cozy-creator/cozy-creator/releases/download/$COZY/cozy-installer.sh" | sh
+          else
+            gh run download "$COZY" -R cozy-creator/cozy-creator -p 'cozy-*' -D dev
+            install -m 0755 dev/cozy-*/cozy-linux-x86_64 "$bin/cozy"
+          fi
+          "$bin/cozy" --version
+      - name: Sign in
+        env:
+          KEY: ${{ secrets.COZY_CI_DEVICE_KEY }}
+        run: |
+          [ -n "$KEY" ] || { echo "::error::the release-gate environment has no COZY_CI_DEVICE_KEY"; exit 1; }
+          sudo loginctl enable-linger "$(id -un)"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+          export XDG_RUNTIME_DIR=/run/user/$(id -u)
+          until [ -S "$XDG_RUNTIME_DIR/bus" ]; do sleep 1; done
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus" >> "$GITHUB_ENV"
+          export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+          umask 077; printf '%s' "$KEY" > "$RUNNER_TEMP/key.json"
+          cozy login --key "$RUNNER_TEMP/key.json"; code=$?
+          rm -f "$RUNNER_TEMP/key.json"
+          exit $code
+      - name: Session
+        env:
+          SCRIPT: ${{ inputs.script }}
+          PACKAGES: ${{ github.workspace }}/packages
+          REF: ${{ github.workspace }}/creator/release-gate/ref
+          SKU: ${{ inputs.sku }}
+          DISK: ${{ inputs.disk }}
+          CAP: ${{ inputs.cap }}
+          PARAMS: ${{ inputs.params }}
+          RENT: ${{ inputs.rent }}
+        run: |
+          s=creator/release-gate/sessions
+          [[ $SCRIPT =~ ^[a-z0-9-]+$ && $SCRIPT != lib && -f $s/$SCRIPT.sh ]] ||
+            { echo "::error::no session $SCRIPT: $(ls $s | grep -vx lib.sh | sed 's/\.sh$//' | paste -sd,)"; exit 1; }
+          jq -e 'type=="object"' <<<"$PARAMS" >/dev/null || { echo "::error::params is not a JSON object"; exit 1; }
+          bash "$s/$SCRIPT.sh"
+      # The script's trap ends its rental; a cancelled job can skip it, so end it here too and say so.
+      - if: always()
+        run: |
+          rid=$(cat "$OUT/rental" 2>/dev/null) || exit 0
+          for _ in $(seq 1 30); do
+            cozy machine list --json 2>/dev/null | jq -e --arg r "$rid" '.machines[] | select(.rental_id==$r and .state!="ended")' >/dev/null ||
+              { echo "$rid is gone"; exit 0; }
+            cozy machine end "$rid" -y || true; sleep 10
+          done
+          echo "::error::$rid is still listed: end it by hand (cozy machine end $rid)"; exit 1
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: session-${{ inputs.script }}-${{ github.run_id }}
+          path: ${{ env.OUT }}
+          if-no-files-found: ignore
+          retention-days: 30
