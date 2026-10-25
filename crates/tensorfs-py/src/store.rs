@@ -1796,13 +1796,14 @@ impl PyWriter {
         self.with(py, |writer| writer.has(component, key))
     }
 
-    #[pyo3(signature = (source, tensors, *, max_buffer_bytes, max_new_bytes, control, max_relative_frobenius = None, calibration = None))]
+    #[pyo3(signature = (source, tensors, *, max_buffer_bytes, max_new_bytes, control, max_relative_frobenius = None, calibration = None, component = None))]
     #[allow(clippy::too_many_arguments)]
     fn quantize(
         &self, py: Python<'_>, source: &PyCheckpoint, tensors: &Bound<'_, PyAny>,
         max_buffer_bytes: usize, max_new_bytes: u64,
         control: &crate::quantize::PyConversionControl, max_relative_frobenius: Option<f64>,
         calibration: Option<&PyCheckpoint>,
+        component: Option<String>,
     ) -> PyResult<Py<PyAny>> {
         let rows: Vec<tensorfs::QuantizeTensor> = serde_json::from_value(config_from_py(tensors)?)
             .map_err(|e| invalid(py, format!("resolved quantization selection: {e}")))?;
@@ -1819,6 +1820,7 @@ impl PyWriter {
             // Drop restores the Writer on ordinary failure and unwinding; commit cannot race it.
             block_on(checkout.writer.as_mut().expect("checked out Writer").quantize(&source, &tensorfs::Quantization {
                 tensors: &rows, calibration: calibration.as_ref(), max_buffer_bytes, max_new_bytes, max_relative_frobenius,
+                component: component.as_deref(),
                 control: &control.inner,
             }))
         }).or_raise(py)?;

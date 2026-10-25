@@ -104,4 +104,5 @@ class Writer:
     def quantize(self, source: Checkpoint, tensors: Sequence[QuantizeTensor], *,
                  max_buffer_bytes: int, max_new_bytes: int, control: ConversionControl,
                  max_relative_frobenius: float | None = None,
-                 calibration: Checkpoint | None = None) -> dict[str, object]: ...
+                 calibration: Checkpoint | None = None,
+                 component: str | None = None) -> dict[str, object]: ...

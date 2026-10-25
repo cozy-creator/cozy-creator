@@ -766,6 +766,13 @@ publication; an already-started filesystem operation may finish. Complete earlie
 in the existing resume journal; an interrupted current tensor is recomputed. No partial tensor
 is a completed entry. Temporary encoded parts live in that Writer's existing work directory.
 
+`component="name"` optionally executes just that component of the **same full selection**.
+Each call supplies the identical selection and calibration checkpoint; the execution filter
+is excluded from journal identity. This permits component-at-a-time callers to share one
+Writer without fitting future components early. An unknown component refuses before any
+write. Result counters and the working/output grants apply only to the executed component;
+unfiltered calls execute the full selection as before.
+
 The buffer bound includes simultaneous source, F32 conversion, encoder outputs and numerical
 scratch. The existing downloader and Writer additionally retain their own bounded I/O buffers;
 it is not a process RSS cap. One row that cannot fit refuses. NVFP4 reads the whole tensor in

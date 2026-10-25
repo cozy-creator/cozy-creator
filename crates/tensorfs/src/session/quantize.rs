@@ -43,6 +43,8 @@ pub struct Quantization<'a> {
     /// Full immutable selection, including entries already completed by this Writer.
     pub tensors: &'a [QuantizeTensor],
     pub calibration: Option<&'a Checkpoint>,
+    /// Execute one component of the unchanged full selection. Not part of resume identity.
+    pub component: Option<&'a str>,
     /// Conversion working buffers; the existing reader/Writer retain their own bounded I/O buffers.
     pub max_buffer_bytes: usize,
     /// Remaining encoded payload allowance, including every companion part, before deduplication.
@@ -214,12 +216,26 @@ impl Writer {
             );
         }
         options.control.check()?;
+        if options.component.is_some_and(|component| {
+            !options
+                .tensors
+                .iter()
+                .any(|spec| spec.component == component)
+        }) {
+            return fail(
+                Kind::Invalid,
+                "quantization component filter is absent from the resolved selection",
+            );
+        }
         let mut names = BTreeSet::new();
         let mut pending = Vec::new();
         let mut output_bytes = 0u64;
         let mut input_bytes = 0u64;
         let mut reused = 0;
         for spec in options.tensors {
+            let active = options
+                .component
+                .is_none_or(|component| spec.component == component);
             if !names.insert((spec.component.clone(), spec.key.clone())) {
                 return fail(Kind::Invalid, "quantization selection repeats a tensor");
             }
@@ -257,7 +273,7 @@ impl Writer {
                 return fail(Kind::Invalid, "native quantization needs a rank-2 matrix");
             };
             if spec.strategy == encode::SVDQ_FIT_STRATEGY {
-                let fit = fitting::preflight(spec, options)?;
+                let fit = fitting::preflight(spec, options, active)?;
                 let row_source_bytes = match &source {
                     Source::Plain { width } => checked(cols.checked_mul(*width as u64))?,
                     Source::Rowwise { scale_width, .. } => {
@@ -268,10 +284,12 @@ impl Writer {
                 let bytes = parts.iter().try_fold(0u64, |sum, (_, dtype, shape)| {
                     checked(sum.checked_add(checked(dtype.byte_len(shape))?))
                 })?;
-                self.component_writer(&spec.component)?;
-                if self.has(&spec.component, &spec.key)? {
+                if active {
+                    self.component_writer(&spec.component)?;
+                }
+                if active && self.has(&spec.component, &spec.key)? {
                     reused += 1;
-                } else {
+                } else if active {
                     output_bytes = checked(output_bytes.checked_add(bytes))?;
                     pending.push(Pending {
                         spec,
@@ -386,7 +404,7 @@ impl Writer {
             )?;
             let room = (options.max_buffer_bytes as u64).saturating_sub(scratch);
             let rows_per_chunk = (room / row_memory).min(*rows);
-            if rows_per_chunk == 0 {
+            if rows_per_chunk == 0 && active {
                 return fail(
                     Kind::Full,
                     "one complete quantization row exceeds max_buffer_bytes",
@@ -428,10 +446,12 @@ impl Writer {
                     ("scale".into(), Dtype::F32, vec![*rows]),
                 ]
             };
-            self.component_writer(&spec.component)?; // Validate every destination before mutation.
-            if self.has(&spec.component, &spec.key)? {
+            if active {
+                self.component_writer(&spec.component)?; // Validate every executed destination before mutation.
+            }
+            if active && self.has(&spec.component, &spec.key)? {
                 reused += 1;
-            } else {
+            } else if active {
                 output_bytes = checked(output_bytes.checked_add(bytes))?;
                 input_bytes = checked(input_bytes.checked_add(checked(
                     source_bytes.checked_mul(if nvfp4 { 2 } else { 1 }),

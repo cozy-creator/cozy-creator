@@ -21,7 +21,11 @@ pub(super) fn parts(rows: u64, cols: u64) -> Vec<(String, Dtype, Vec<u64>)> {
     ]
 }
 
-pub(super) fn preflight(spec: &QuantizeTensor, options: &Quantization<'_>) -> Result<PendingFit> {
+pub(super) fn preflight(
+    spec: &QuantizeTensor,
+    options: &Quantization<'_>,
+    active: bool,
+) -> Result<PendingFit> {
     let mut encoding = Encoding::nvfp4(
         encode::GlobalScale::Multiply,
         encode::NibbleOrder::LowFirst,
@@ -97,7 +101,7 @@ pub(super) fn preflight(spec: &QuantizeTensor, options: &Quantization<'_>) -> Re
     let required_buffer_bytes = core
         .checked_add(io_buffer_bytes)
         .ok_or_else(|| invalid("SVDQ workspace size overflows"))?;
-    if required_buffer_bytes > options.max_buffer_bytes {
+    if active && required_buffer_bytes > options.max_buffer_bytes {
         return fail(
             Kind::Full,
             format!(

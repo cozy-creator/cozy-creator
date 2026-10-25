@@ -196,10 +196,10 @@ class Writer:
     def has(self, component, key) -> bool:
         return self._native.has(component, key)
 
-    def quantize(self, source, tensors, *, max_buffer_bytes: int, max_new_bytes: int, control, max_relative_frobenius: float | None = None, calibration=None):
+    def quantize(self, source, tensors, *, max_buffer_bytes: int, max_new_bytes: int, control, max_relative_frobenius: float | None = None, calibration=None, component: str | None = None):
         """Encode a complete resolved selection natively, without committing this Writer.
 
         `control` can cancel/observe from another thread; observations never drive the loop.
         Source, calibration snapshot and full recipe must remain identical on resume.
         """
-        return self._native.quantize(source, tensors, max_buffer_bytes=max_buffer_bytes, max_new_bytes=max_new_bytes, control=control, max_relative_frobenius=max_relative_frobenius, calibration=calibration)
+        return self._native.quantize(source, tensors, max_buffer_bytes=max_buffer_bytes, max_new_bytes=max_new_bytes, control=control, max_relative_frobenius=max_relative_frobenius, calibration=calibration, component=component)
