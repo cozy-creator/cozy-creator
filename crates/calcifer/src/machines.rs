@@ -1457,6 +1457,7 @@ fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
         driver_floor: frame.driver_floor.clone(),
         toolchain: Some(frame.toolchain.clone()).filter(|t| !t.state.is_empty()),
         kernels: frame.kernels.clone(),
+        stuck: frame.stuck.clone(),
         disk_total_bytes: frame.disk.as_ref().map_or(0, |d| d.total_bytes),
         disk_free_bytes: frame.disk.as_ref().map_or(0, |d| d.free_bytes),
         runs: vec![],

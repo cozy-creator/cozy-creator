@@ -3,7 +3,7 @@
 //! reaches descendants that call `setsid` or double-fork. Lifecycle containment, not a
 //! sandbox: same-UID code can move out of a delegated cgroup or scrub its token.
 #![allow(unsafe_code)]
-use super::TOKEN_ENV;
+use super::{Stuck, TOKEN_ENV};
 use crate::process::{Birth, Exact, State, gone};
 use std::{
     collections::BTreeSet,
@@ -12,13 +12,19 @@ use std::{
     os::{fd::AsRawFd, unix::fs::MetadataExt},
     path::{Path, PathBuf},
     sync::Mutex,
-    time::Duration,
+    time::{Duration, Instant, SystemTime},
 };
 
 const ROOT: &str = "/sys/fs/cgroup";
 
+/// How often an end looks at killed members still alive: never a deadline.
+const SAMPLE: Duration = Duration::from_millis(100);
+
 /// This process's live tree scopes: a token on no live scope is unclaimed.
 static LIVE: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+
+/// Killed members an end found stuck in the kernel, until each exits.
+static STUCK: Mutex<Vec<(Birth, Stuck)>> = Mutex::new(Vec::new());
 
 #[derive(Debug)]
 pub struct Scope(Backend);
@@ -151,21 +157,8 @@ impl Scope {
 
     /// Live processes in the scope.
     pub fn processes(&self) -> crate::Result<usize> {
-        fn count(path: &Path) -> io::Result<usize> {
-            let mut total = fs::read_to_string(path.join("cgroup.procs"))?
-                .lines()
-                .filter(|line| !line.is_empty())
-                .count();
-            for entry in fs::read_dir(path)? {
-                let entry = entry?;
-                if entry.file_type()?.is_dir() {
-                    total += count(&entry.path())?;
-                }
-            }
-            Ok(total)
-        }
         match &self.0 {
-            Backend::Cgroup { relative, inode } => Ok(count(&Self::path(relative, *inode)?)?),
+            Backend::Cgroup { relative, inode } => Ok(procs(&Self::path(relative, *inode)?)?.len()),
             Backend::Tree { token } => {
                 let rows = census()?;
                 Ok(members(&rows, |t| t == token)
@@ -205,7 +198,8 @@ impl Scope {
     }
 
     /// Kill whatever outlived the executor (after its leader is reaped), wait for it, and
-    /// remove the scope. Returns how many processes were still inside.
+    /// remove the scope. Returns how many processes were still inside. Members stuck in the
+    /// kernel are shown (`stuck`), not waited on: the scope is removed once they exit.
     pub fn end(&self) -> crate::Result<usize> {
         match &self.0 {
             Backend::Cgroup { relative, inode } => {
@@ -214,8 +208,15 @@ impl Scope {
                     self.kill()?;
                 }
                 let path = Self::path(relative, *inode)?;
-                wait_empty(&path)?;
-                remove_tree(&path)?;
+                if wait_empty(&path, Some(SAMPLE))? {
+                    remove_tree(&path)?;
+                } else {
+                    std::thread::Builder::new().name("scope-stuck".into()).spawn(move || {
+                        if wait_empty(&path, None).is_ok() {
+                            let _ = remove_tree(&path);
+                        }
+                    })?;
+                }
                 Ok(stragglers)
             }
             Backend::Tree { token } => {
@@ -261,29 +262,111 @@ impl Drop for Scope {
     }
 }
 
-/// Block until nothing in the cgroup is alive: woken by `cgroup.events`, no deadline.
-fn wait_empty(path: &Path) -> io::Result<()> {
+/// Block until nothing in the cgroup is alive, woken by `cgroup.events`: true. With a `sample`,
+/// false once a sample passes with every member left stuck in the kernel.
+fn wait_empty(path: &Path, sample: Option<Duration>) -> io::Result<bool> {
     let mut events = File::open(path.join("cgroup.events"))?;
     loop {
         let mut text = String::new();
         events.rewind()?;
         events.read_to_string(&mut text)?;
         if text.lines().any(|line| line == "populated 0") {
-            return Ok(());
+            return Ok(true);
         }
         let mut poll = libc::pollfd {
             fd: events.as_raw_fd(),
             events: libc::POLLPRI,
             revents: 0,
         };
+        let timeout = sample.map_or(-1, |sample| sample.as_millis() as i32);
         // SAFETY: one live descriptor; kernfs wakes it when the file changes.
-        if unsafe { libc::poll(&mut poll, 1, -1) } < 0 {
-            let error = io::Error::last_os_error();
-            if error.kind() != io::ErrorKind::Interrupted {
-                return Err(error);
+        match unsafe { libc::poll(&mut poll, 1, timeout) } {
+            0 => {
+                let births: Vec<Birth> = procs(path)?.into_iter().filter_map(|pid| process_birth(pid).ok()).collect();
+                if all_stuck(&births) {
+                    return Ok(false);
+                }
             }
+            ready if ready < 0 => {
+                let error = io::Error::last_os_error();
+                if error.kind() != io::ErrorKind::Interrupted {
+                    return Err(error);
+                }
+            }
+            _ => (),
         }
     }
+}
+
+/// Every process in the cgroup and its descendants.
+fn procs(path: &Path) -> io::Result<Vec<u32>> {
+    let mut pids: Vec<u32> = fs::read_to_string(path.join("cgroup.procs"))?
+        .lines()
+        .filter_map(|line| line.parse().ok())
+        .collect();
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            pids.extend(procs(&entry.path())?);
+        }
+    }
+    Ok(pids)
+}
+
+/// Its threads still alive, each with its state (`R`, `S`, `D`, …): none once it exited.
+fn threads(pid: u32) -> Vec<(u32, char)> {
+    let Ok(tasks) = fs::read_dir(format!("/proc/{pid}/task")) else {
+        return Vec::new();
+    };
+    tasks
+        .flatten()
+        .filter_map(|task| {
+            let tid = task.file_name().to_str()?.parse().ok()?;
+            let stat = fs::read_to_string(task.path().join("stat")).ok()?;
+            let state = stat.rsplit_once(") ")?.1.chars().next()?;
+            (!matches!(state, 'Z' | 'X')).then_some((tid, state))
+        })
+        .collect()
+}
+
+/// Where a thread of it sleeps uninterruptibly (`D`; empty when the kernel hides it). Until that
+/// wait ends it acts on no signal, SIGKILL included.
+fn uninterruptible(pid: u32) -> Option<String> {
+    let (tid, _) = threads(pid).into_iter().find(|(_, state)| *state == 'D')?;
+    let wchan = fs::read_to_string(format!("/proc/{pid}/task/{tid}/wchan")).unwrap_or_default();
+    Some(if wchan == "0" { String::new() } else { wchan })
+}
+
+/// Whether every one of these killed members is stuck in the kernel; each is then shown until it
+/// exits (`stuck`), and nothing waits on it. It runs no code of its own again, and what it holds
+/// (memory, GPU memory as NVML reads it, files, locks) stays held, and seen held, until it exits.
+fn all_stuck(births: &[Birth]) -> bool {
+    if births.is_empty() || !births.iter().all(|birth| uninterruptible(birth.pid).is_some()) {
+        return false;
+    }
+    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+    let mut stuck = STUCK.lock().unwrap();
+    let fresh: Vec<&Birth> = births.iter().filter(|birth| !stuck.iter().any(|(known, _)| known == *birth)).collect();
+    for birth in fresh {
+        let wchan = uninterruptible(birth.pid).unwrap_or_default();
+        let command = fs::read_to_string(format!("/proc/{}/comm", birth.pid)).unwrap_or_default().trim().to_owned();
+        tracing::warn!("pid {} ({command}) is stuck in the kernel after its kill (D state, {wchan}): shown, not waited on", birth.pid);
+        stuck.push((birth.clone(), Stuck { pid: birth.pid, command, wchan, since_unix_ms: now }));
+    }
+    true
+}
+
+/// Killed members still stuck in the kernel, each since an end found it.
+pub fn stuck() -> Vec<Stuck> {
+    let mut stuck = STUCK.lock().unwrap();
+    stuck.retain(|(birth, _)| {
+        process_birth(birth.pid).is_ok_and(|now| now.start_ticks == birth.start_ticks) && !threads(birth.pid).is_empty()
+    });
+    stuck.iter().map(|(_, shown)| shown.clone()).collect()
+}
+
+fn is_stuck(pid: u32, start_ticks: u64) -> bool {
+    STUCK.lock().unwrap().iter().any(|(birth, _)| birth.pid == pid && birth.start_ticks == start_ticks)
 }
 
 fn remove_tree(path: &Path) -> io::Result<()> {
@@ -400,16 +483,16 @@ fn unclaimed(namespace: &str) -> impl Fn(&str) -> bool + '_ {
     }
 }
 
-/// Kill every member until a census finds none alive, then wait for each to exit. Its
-/// parent reaps it: an escaped one's is the supervisor.
+/// Kill every member until a census finds none alive, then wait for each to exit, except one
+/// stuck in the kernel (`all_stuck`). Its parent reaps it: an escaped one's is the supervisor.
 fn end_members(owned: impl Fn(&str) -> bool) -> io::Result<usize> {
     let mut signaled: BTreeSet<(u32, u64)> = BTreeSet::new();
-    let mut killed: Vec<Exact> = Vec::new();
-    let mut exiting = Vec::new();
+    let mut left: Vec<(Birth, Option<Exact>)> = Vec::new();
     loop {
         let rows = census()?;
         let fresh: Vec<&Row> = members(&rows, &owned)
             .filter(|row| row.alive && !signaled.contains(&(row.pid, row.start_ticks)))
+            .filter(|row| !is_stuck(row.pid, row.start_ticks))
             .collect();
         if fresh.is_empty() {
             break;
@@ -419,20 +502,33 @@ fn end_members(owned: impl Fn(&str) -> bool) -> io::Result<usize> {
             match row.exact()? {
                 Some(exact) => {
                     exact.kill()?;
-                    killed.push(exact);
+                    left.push((exact.birth().clone(), Some(exact)));
                 }
                 // A leader already exiting has no pidfd: its exit is sampled below.
-                None => exiting.push(process_birth(row.pid)),
+                None => left.extend(process_birth(row.pid).ok().map(|birth| (birth, None))),
             }
         }
     }
-    for exact in &killed {
-        exact.wait()?;
-    }
-    for birth in exiting.into_iter().flatten() {
-        // The sample period is how often the exit is looked for, never a deadline.
-        while !process_ended(&birth)? {
-            std::thread::sleep(Duration::from_millis(10));
+    // The sample periods are how often an exit is looked for, never a deadline.
+    let mut looked = Instant::now();
+    loop {
+        left.retain(|(birth, exact)| match exact {
+            Some(exact) => !exact.ended(),
+            None => !process_ended(birth).unwrap_or(true),
+        });
+        match left.first() {
+            None => break,
+            Some((_, Some(exact))) => {
+                exact.wait_for(SAMPLE)?;
+            }
+            Some((_, None)) => std::thread::sleep(Duration::from_millis(10)),
+        }
+        if looked.elapsed() >= SAMPLE {
+            looked = Instant::now();
+            let births: Vec<Birth> = left.iter().map(|(birth, _)| birth.clone()).collect();
+            if all_stuck(&births) {
+                break;
+            }
         }
     }
     Ok(signaled.len())

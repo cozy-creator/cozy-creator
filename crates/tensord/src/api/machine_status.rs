@@ -218,6 +218,10 @@ fn picture(identity: &MachineIdentity, held: Held) -> v1::StatusFrame {
         toolchain: identity.updates.as_ref().map(|u| u.toolchain()).unwrap_or_default(),
         kernels: identity.updates.as_ref().map(|u| u.kernels()).unwrap_or_default(),
         tensord_pid: std::process::id(),
+        stuck: platform::contain::stuck()
+            .into_iter()
+            .map(|s| v1::StuckProcess { pid: s.pid, command: s.command, wchan: s.wchan, since_unix_ms: s.since_unix_ms })
+            .collect(),
         ..identity_frame(identity)
     }
 }

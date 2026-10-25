@@ -257,6 +257,16 @@ pub fn status_fields(status: &MachineStatus) -> Vec<(String, String)> {
     if !status.update.is_empty() {
         fields.push(("update".into(), status.update.clone()));
     }
+    for stuck in &status.stuck {
+        let wchan = Some(&stuck.wchan).filter(|w| !w.is_empty()).map(|w| format!(" in {w}")).unwrap_or_default();
+        fields.push((
+            "waiting on".into(),
+            format!(
+                "pid {} ({}), killed, in D state{wchan} since {} ago: it holds what it held until the kernel lets it exit",
+                stuck.pid, stuck.command, clock(now_ms() - stuck.since_unix_ms)
+            ),
+        ));
+    }
     let commit = [("commit", &status.commit)];
     for (key, value) in commit
         .into_iter()
