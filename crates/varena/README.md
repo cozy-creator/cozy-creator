@@ -38,6 +38,13 @@ reservation starts a fresh prefix; retired cached pages are ordinary reclaimable
 No scan can continually evict and rebuild the retained prefix. Pinned groups are
 never candidates. Insufficient unpinned capacity returns a typed capacity failure.
 
+`Stats.reclaimed_by_reason` separates successfully released bytes caused by the streaming
+window, a failed weight allocation, the Torch allocation hook, and an explicit reclaim call.
+These arena-lifetime counters partition `reclaimed_bytes`; compare snapshots to attribute an
+interval. They count released backing, not disk reads, transfer traffic or GPU stalls. The
+allocator category includes both local allocation ceilings and actual driver OOM, while an
+explicit call can be deliberate offload. Ordinary Region destruction is not a cache eviction.
+
 Until complete stream ownership exists, actual reclamation conservatively joins the CUDA primary
 context. This protects untracked side-stream work after a storage deleter has run; no throughput
 claim is made for this synchronization. Capture dependencies and graph roots retain their pins.

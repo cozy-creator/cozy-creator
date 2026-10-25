@@ -145,6 +145,19 @@ impl PyArena {
         ] {
             output.set_item(name, value)?;
         }
+        let reasons = PyDict::new(py);
+        for (name, value) in [
+            ("requested", stats.reclaimed_by_reason.requested),
+            ("streaming_limit", stats.reclaimed_by_reason.streaming_limit),
+            (
+                "weight_allocation",
+                stats.reclaimed_by_reason.weight_allocation,
+            ),
+            ("allocator", stats.reclaimed_by_reason.allocator),
+        ] {
+            reasons.set_item(name, value)?;
+        }
+        output.set_item("reclaimed_by_reason", reasons)?;
         output.set_item("poisoned", stats.poisoned)?;
         Ok(output)
     }

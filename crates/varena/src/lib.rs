@@ -46,7 +46,39 @@ pub struct Stats {
     pub hits: u64,
     pub evictions: u64,
     pub reclaimed_bytes: u64,
+    pub reclaimed_by_reason: ReclaimedBytes,
     pub poisoned: bool,
+}
+
+/// Cumulative successfully released bytes, classified by the entry point that reclaimed them.
+/// Allocator recovery includes local allocation ceilings as well as driver capacity failures;
+/// these counters describe the trigger, not physical transfer traffic or time spent waiting.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ReclaimedBytes {
+    pub requested: u64,
+    pub streaming_limit: u64,
+    pub weight_allocation: u64,
+    pub allocator: u64,
+}
+
+#[derive(Clone, Copy)]
+enum ReclaimReason {
+    Requested,
+    StreamingLimit,
+    WeightAllocation,
+    Allocator,
+}
+
+impl ReclaimedBytes {
+    fn add(&mut self, reason: ReclaimReason, bytes: usize) {
+        let counter = match reason {
+            ReclaimReason::Requested => &mut self.requested,
+            ReclaimReason::StreamingLimit => &mut self.streaming_limit,
+            ReclaimReason::WeightAllocation => &mut self.weight_allocation,
+            ReclaimReason::Allocator => &mut self.allocator,
+        };
+        *counter = counter.saturating_add(bytes as u64);
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -140,6 +172,7 @@ struct State {
     hits: u64,
     evictions: u64,
     reclaimed_bytes: u64,
+    reclaimed_by_reason: ReclaimedBytes,
 }
 
 /// A manager owned by one executor. It may serve multiple threads of that process.
@@ -322,6 +355,7 @@ impl Arena {
                 hits: 0,
                 evictions: 0,
                 reclaimed_bytes: 0,
+                reclaimed_by_reason: ReclaimedBytes::default(),
             }),
         });
         let mut registry = ARENAS
@@ -425,7 +459,7 @@ impl Arena {
     /// Release at least the requested bytes when possible. Pins are never overridden.
     /// Idle nonpreferred pages go first; preferred pages go from the end of the reserved prefix.
     pub fn reclaim(&self, bytes: usize) -> Result<ReclaimReport> {
-        self.reclaim_with_preference(bytes, true)
+        self.reclaim_with_preference(bytes, true, ReclaimReason::Requested)
     }
 
     /// An explicit phase transition changes cache preference, never physical/VA ownership.
@@ -442,15 +476,20 @@ impl Arena {
 
     /// Make phase headroom without evicting the incoming phase's preferred cached bytes.
     pub fn reclaim_unpreferred(&self, bytes: usize) -> Result<ReclaimReport> {
-        self.reclaim_with_preference(bytes, false)
+        self.reclaim_with_preference(bytes, false, ReclaimReason::Requested)
     }
 
-    fn reclaim_with_preference(&self, bytes: usize, preferred: bool) -> Result<ReclaimReport> {
+    fn reclaim_with_preference(
+        &self,
+        bytes: usize,
+        preferred: bool,
+        reason: ReclaimReason,
+    ) -> Result<ReclaimReport> {
         let captures = capture_counts()?;
         ensure_recovery_allowed(&captures, self.device)?;
         let mut state = self.lock()?;
         let _context = self.driver.enter()?;
-        self.reclaim_locked(&mut state, bytes, preferred, None)
+        self.reclaim_locked(&mut state, bytes, preferred, None, reason)
     }
 
     fn reclaim_locked(
@@ -459,6 +498,7 @@ impl Arena {
         bytes: usize,
         preferred: bool,
         exclude: Option<u64>,
+        reason: ReclaimReason,
     ) -> Result<ReclaimReport> {
         let mut report = ReclaimReport {
             requested_bytes: bytes,
@@ -525,6 +565,7 @@ impl Arena {
             report.evicted_regions += 1;
             state.evictions = state.evictions.saturating_add(1);
             state.reclaimed_bytes = state.reclaimed_bytes.saturating_add(size as u64);
+            state.reclaimed_by_reason.add(reason, size);
             if retired {
                 if let Err(error) = self.driver.free_address(ptr, size) {
                     return Err(poison(state, error));
@@ -549,6 +590,7 @@ impl Arena {
             hits: state.hits,
             evictions: state.evictions,
             reclaimed_bytes: state.reclaimed_bytes,
+            reclaimed_by_reason: state.reclaimed_by_reason,
             poisoned: state.poison.is_some(),
             ..Stats::default()
         };
@@ -709,8 +751,13 @@ impl Region {
                         requested_bytes: self.rounded,
                     });
                 }
-                self.arena
-                    .reclaim_locked(&mut state, excess, false, Some(self.id))?;
+                self.arena.reclaim_locked(
+                    &mut state,
+                    excess,
+                    false,
+                    Some(self.id),
+                    ReclaimReason::StreamingLimit,
+                )?;
                 let remaining: usize = state
                     .entries
                     .values()
@@ -736,8 +783,13 @@ impl Region {
                             requested_bytes: self.rounded,
                         });
                     }
-                    self.arena
-                        .reclaim_locked(&mut state, self.rounded, false, Some(self.id))?;
+                    self.arena.reclaim_locked(
+                        &mut state,
+                        self.rounded,
+                        false,
+                        Some(self.id),
+                        ReclaimReason::WeightAllocation,
+                    )?;
                     match self.arena.driver.create(self.rounded) {
                         Ok(handle) => handle,
                         Err(error @ Error::OutOfMemory { .. }) => return Err(error),
@@ -1098,7 +1150,11 @@ pub fn reclaim(device: i32, bytes: usize) -> Result<ReclaimReport> {
         if report.reclaimed_bytes >= bytes {
             break;
         }
-        let next = arena.reclaim(bytes - report.reclaimed_bytes)?;
+        let next = arena.reclaim_with_preference(
+            bytes - report.reclaimed_bytes,
+            true,
+            ReclaimReason::Allocator,
+        )?;
         report.reclaimed_bytes += next.reclaimed_bytes;
         report.evicted_regions += next.evicted_regions;
     }
