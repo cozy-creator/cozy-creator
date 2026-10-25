@@ -284,8 +284,29 @@ def capture_exclusion(memory, directory):
                 raise AssertionError(
                     "producer admission succeeded inside actual CUDA capture"
                 )
+            try:
+                with varena.replay(0):
+                    pass
+            except RuntimeError as error:
+                replay_in_capture = str(error)
+            else:
+                raise AssertionError("replay guard entered actual capture")
             output.copy_(inputs)
-        graph.replay()
+        with varena.replay(0):
+            try:
+                with varena.capture(0):
+                    pass
+            except RuntimeError as error:
+                capture_in_replay = str(error)
+            else:
+                raise AssertionError("actual capture entered a replay guard")
+            try:
+                memory.native.reclaim(1)
+            except RuntimeError as error:
+                reclaim_in_replay = str(error)
+            else:
+                raise AssertionError("replay guard permitted native reclamation")
+            graph.replay()
         torch.testing.assert_close(output, inputs, rtol=0, atol=0)
         assert not region.resident and memory.native.stats()["pinned_bytes"] == 0
         return {
@@ -295,15 +316,84 @@ def capture_exclusion(memory, directory):
             "ended": ended,
             "during_actual_capture_refusal": during_capture,
             "graph_replay_passed": True,
+            "replay_in_capture_refusal": replay_in_capture,
+            "capture_in_replay_refusal": capture_in_replay,
+            "reclaim_in_replay_refusal": reclaim_in_replay,
         }
     finally:
         graph.reset()
         checkpoint.close()
 
 
+def ordinary_replay(memory, directory):
+    from cozy_runtime import graphs
+
+    class Elementwise(nn.Module):
+        def forward(self, values):
+            for _ in range(64):
+                values = torch.relu(values * 0.99 + 0.001)
+            return values
+
+    module = Elementwise().cuda().eval()
+    inputs = torch.ones(16, 128, device="cuda")
+    graphs.install(torch, object(), {"net": module})
+    with torch.no_grad():
+        for _ in range(3):
+            expected = module(inputs)
+        torch.cuda.synchronize()
+        graphs.capture_idle(lambda: False)
+        baseline = graphs.describe(module)
+        assert baseline["active_graphs"] > 0, baseline
+        actual = module(inputs)
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    values = torch.arange(256 * MIB // 4, dtype=torch.int32).remainder_(1009)
+    writer = tensorfs.Writer(directory / "ordinary-replay.cozytensors")
+    writer.component("next").put("data", values)
+    checkpoint = writer.commit()
+    region = memory.native.reserve(values.nbytes)
+    read = region.prepare_read(
+        checkpoint, [("next/data#value", 0, values.nbytes)], threads=1, reclaim=False
+    )
+    try:
+        # The producer is admitted but unstarted: ordinary replay must still run.
+        with torch.no_grad():
+            held = module(inputs)
+        torch.testing.assert_close(held, expected, rtol=0, atol=0)
+        read.start()
+        in_flight = issued(read)
+        before = graphs.describe(module)
+        with torch.no_grad():
+            replayed = module(inputs)
+        after = graphs.describe(module)
+        assert after["replays"] > before["replays"], (before, after)
+        done = read.wait()
+        assert done["done"] and not done["canceled"]
+        torch.testing.assert_close(replayed, expected, rtol=0, atol=0)
+        use = region.prepare()
+        copied = use.tensor.view(torch.int32).cpu()
+        torch.testing.assert_close(copied, values, rtol=0, atol=0)
+        del use
+        return {
+            "issued_before_cached_replay": in_flight,
+            "producer": done,
+            "before": before,
+            "after": after,
+            "sha256": hashlib.sha256(copied.numpy().tobytes()).hexdigest(),
+        }
+    finally:
+        read.cancel()
+        read.wait()
+        graphs.release(torch, module)
+        memory.trim()
+        checkpoint.close()
+
+
 def exercise(seed, mode):
     torch.set_num_threads(1)
     accel.initialize(torch, "cuda")
+    from cozy_runtime.author._context import Device, place
+
+    place(Device("cuda", torch.cuda.current_device()))
     memory = residency.Memory.open("cuda:0", budget_bytes=768 * MIB)
     assert memory.prefetch_supported
     with tempfile.TemporaryDirectory(prefix="cozy-prefetch-") as directory:
@@ -311,6 +401,8 @@ def exercise(seed, mode):
             result = pressure(memory, Path(directory), seed)
         elif mode == "prefetch-capture":
             result = capture_exclusion(memory, Path(directory))
+        elif mode == "prefetch-replay":
+            result = ordinary_replay(memory, Path(directory))
         else:
             result = automatic(memory, Path(directory), seed, mode == "prefetch-cancel")
     return {

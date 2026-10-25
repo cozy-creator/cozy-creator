@@ -205,7 +205,53 @@ def production_routes(memory, seed):
                 assert warm.stats()["moved"]["store"]["bytes"] == 0
                 assert warm.stats()["final_bindings"]["fills"] == 0
                 assert memory.native.stats()["pinned_bytes"] == 0
+                dtype_transition = None
+                if kind != "fp8-native-f16":
+                    owner = backend.models["net"]
+                    binding = owner.retain()
+                    with binding.prepare(), torch.no_grad():
+                        pass
+                    module.to(dtype=torch.float32)
+                    assert not binding.valid()
+                    try:
+                        with binding.prepare():
+                            pass
+                    except residency.StaleBinding:
+                        pass
+                    else:
+                        raise AssertionError(
+                            "graph binding accepted a changed target dtype"
+                        )
+                    binding.close()
+                    with (
+                        memory.request(f"routes:{kind}:wide") as widened,
+                        torch.no_grad(),
+                    ):
+                        wide = module(inputs.float())
+                    torch.testing.assert_close(
+                        wide,
+                        torch.nn.functional.linear(
+                            inputs.float(), expected.float().to("cuda")
+                        ),
+                        rtol=2e-4,
+                        atol=2e-5,
+                    )
+                    module.to(dtype=torch.float16)
+                    with (
+                        memory.request(f"routes:{kind}:restored") as restored,
+                        torch.no_grad(),
+                    ):
+                        original = module(inputs)
+                    torch.testing.assert_close(original, actual, rtol=0, atol=0)
+                    assert widened.stats()["moved"]["store"]["bytes"] == 0
+                    assert restored.stats()["moved"]["store"]["bytes"] == 0
+                    dtype_transition = {
+                        "binding_refused": True,
+                        "wide": widened.stats(),
+                        "restored": restored.stats(),
+                    }
                 result[kind] = {
+                    "dtype_transition": dtype_transition,
                     "routes": plan.route_census(),
                     "label": plan.label(),
                     "plan": plan.digest(),
