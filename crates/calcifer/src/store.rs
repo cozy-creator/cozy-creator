@@ -874,6 +874,23 @@ impl Store {
         })
     }
 
+    /// Settles a run its machine answered it has no record of: canceled when that was asked, else
+    /// failed. It is never sent again, since the machine may have run part of it.
+    pub fn lost(&self, id: &str, machine: &str) -> Result<Vec<Event>> {
+        self.write(|tx| match run_in(tx, id)? {
+            Some(row) if row.state == State::Settled => Ok(vec![]),
+            Some(row) if row.cancel_requested => {
+                let message = format!("canceled; {machine} has no record of the run");
+                end(tx, id, Status::Canceled, Some(Reason { code: "canceled".into(), message, ..Default::default() }))
+            }
+            Some(_) => {
+                let message = format!("{machine} has no record of the run, and the run was not retried");
+                end(tx, id, Status::Failed, Some(Reason { code: "machine_lost_run".into(), message, ..Default::default() }))
+            }
+            None => Ok(vec![]),
+        })
+    }
+
     /// Ends a run its machine never accepted, with `reason`.
     pub fn fail(&self, id: &str, reason: Reason) -> Result<Vec<Event>> {
         self.write(|tx| match run_in(tx, id)? {

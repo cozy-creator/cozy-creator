@@ -108,6 +108,8 @@ enum Stop {
     Unreachable(String),
     Refused(Reason),
     Released(String),
+    /// The machine answered that it has no record of the run.
+    Lost,
 }
 
 impl From<LinkError> for Stop {
@@ -117,6 +119,7 @@ impl From<LinkError> for Stop {
                 Stop::Refused(Reason { code, message, ..Default::default() })
             }
             LinkError::Released(message) => Stop::Released(message),
+            LinkError::NoRun => Stop::Lost,
             LinkError::NotFound => Stop::Unreachable("the machine does not know the run".into()),
             LinkError::Unreachable(message) | LinkError::Unauthorized(message) => {
                 Stop::Unreachable(message)
@@ -677,6 +680,15 @@ impl Calcifer {
                         warn!(run = %id, "{e}");
                     }
                 }
+                // Its machine's own word that it holds no such run: it cannot resume, so it ends
+                // now, and is never sent again.
+                Err(Stop::Lost) => match self.store.lost(id.as_str(), &name) {
+                    Ok(events) => self.publish(id, events),
+                    Err(e) => {
+                        warn!(run = %id, "{e}");
+                        pause.wait(wake, None).await;
+                    }
+                },
             }
         }
     }
@@ -758,7 +770,7 @@ impl Calcifer {
                 }
                 // It may be there: attach first, and send again only to a machine that never got it.
                 match link.attach(id, run.cursor).await {
-                    Err(LinkError::NotFound) if run.state == State::Sent => {
+                    Err(LinkError::NoRun | LinkError::NotFound) if run.state == State::Sent => {
                         self.write_inputs(link, run, machine).await?;
                         let _turn = sending.lock().await;
                         self.known_warm(run, machine, link).await?;
