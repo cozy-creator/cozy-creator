@@ -3,9 +3,7 @@
 //! files move by ranged `PUT`/`HEAD`/`GET`. Refusals are [`crate::error::Envelope`]. Unknown fields
 //! are ignored, and clients skip SSE events they do not know.
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
-pub mod api;
 pub mod client;
 
 /// Routes, as axum templates.
@@ -102,7 +100,7 @@ pub struct OutputTarget {
 
 /// `POST /v1/objects/held`: which of these objects (`sha256:<hex>`) the machine holds for this
 /// signer.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HeldRequest {
     pub digests: Vec<String>,
@@ -110,23 +108,22 @@ pub struct HeldRequest {
 
 /// What the machine holds of each object asked, in the order asked; a stored object is held
 /// whole, and asking renews it, as a `HEAD` does.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HeldAnswer {
     pub held: Vec<HeldObject>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HeldObject {
     pub digest: String,
     /// Byte ranges `[start, end)`; none: nothing held.
-    #[schema(value_type = Vec<Vec<u64>>)]
     pub ranges: Ranges,
 }
 
 /// What an upload holds, as `GET /v1/objects/sha256:<hex>?length=N` streams it (`event: held`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HeldBytes {
     /// Bytes landed, synced or not; the last event says all N.
@@ -134,7 +131,7 @@ pub struct HeldBytes {
 }
 
 /// Whole lines of a machine log, as `GET /v1/logs/{name}` streams them (`event: lines`).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LogLines {
     /// The place after them, also the event's id: a follow resumed there goes on with the next line.
@@ -163,18 +160,11 @@ impl PartialEq for Json {
     }
 }
 
-impl utoipa::PartialSchema for Json {
-    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
-        utoipa::openapi::schema::Object::new().into()
-    }
-}
-impl ToSchema for Json {}
-
 // ---- Run ------------------------------------------------------------------------------------
 
 /// `POST /v1/runs`: submits when `id` is new (idempotent on id per signer); the same id with
 /// another spec is `run_id_conflict`.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RunRequest {
     /// The caller's run id, 1-256 bytes.
@@ -182,7 +172,7 @@ pub struct RunRequest {
     pub spec: RunSpec,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunKind {
     /// Every function is a call.
@@ -201,7 +191,7 @@ pub enum RunKind {
 
 /// How far a function is kept ready; each level includes the ones before it.
 #[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, ToSchema,
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum WarmLevel {
@@ -221,7 +211,7 @@ pub enum WarmLevel {
 }
 
 /// What a run runs.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Source {
     Release(Release),
@@ -231,7 +221,7 @@ pub enum Source {
 }
 
 /// What a warm set's member keeps ready.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WarmSource {
     Release(Release),
@@ -240,7 +230,7 @@ pub enum WarmSource {
 
 /// One member of a caller's warm set: a function the machine keeps ready up to `level`. It is
 /// the last idle thing to give its memory to a request, and comes back when room returns.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WarmItem {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -257,13 +247,13 @@ pub struct WarmItem {
     pub lane: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WarmSet {
     pub items: Vec<WarmItem>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RunSpec {
     pub kind: RunKind,
@@ -311,7 +301,7 @@ pub struct RunSpec {
 }
 
 /// The caller's provider tokens, for models a run makes from a provider source.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProviderAccess {
     pub huggingface: String,
@@ -320,7 +310,7 @@ pub struct ProviderAccess {
 
 /// Public TensorFS transport options. TensorD forwards a supplied token without acquiring one: at
 /// the run's Hub, the run capability its computer minted, never an account's sign-in.
-#[derive(Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 #[serde(default)]
 pub struct TensorFSOptions {
@@ -332,7 +322,6 @@ pub struct TensorFSOptions {
     pub expires_unix_ms: i64,
     /// An endpoint's private CA, base64 DER on the wire.
     #[serde(with = "base64_bytes", skip_serializing_if = "Vec::is_empty")]
-    #[schema(value_type = String, format = Byte)]
     pub ca_der: Vec<u8>,
 }
 
@@ -351,7 +340,7 @@ impl std::fmt::Debug for TensorFSOptions {
 
 /// A published release by name (th-245): a machine that holds no installation of it reads its
 /// card and locked requirements at the Hub by name.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Release {
     /// org/name
@@ -369,14 +358,14 @@ pub struct Release {
 /// this computer's machine, which reads it in place. `wheels: [{name, digest, length}]` are locked
 /// dependencies the caller carries because the machine cannot fetch them. Members are objects the
 /// same signer wrote.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LocalSource {
     /// `sha256:<hex>` of the manifest object.
     pub manifest: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct InputFile {
     /// The payload field path, list index included.
@@ -393,7 +382,7 @@ pub struct InputFile {
 /// the machine's hardware. `manifest` names a commit (or a header) by hash: one of the
 /// repository's at the Hub (with `repository`), or one this machine holds (without). A slot with
 /// no choice takes its declared default release, a callee's included (`<package>/<path>`).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModelChoice {
     /// A root slot parameter or full slot path.
@@ -415,7 +404,7 @@ pub struct ModelChoice {
     pub profiles: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Adapter {
     pub component: String,
@@ -433,19 +422,18 @@ pub struct Adapter {
 }
 
 /// A Hub a run reads. Public content is read anonymously.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HubAccess {
     pub origin: String,
     /// An origin's private CA (DER, base64), when it has one.
     #[serde(with = "base64_bytes", skip_serializing_if = "Vec::is_empty")]
-    #[schema(value_type = String, format = Byte)]
     pub ca_der: Vec<u8>,
 }
 
 /// One entry of a run's log, as `GET /v1/runs/{id}/events` sends it: SSE `event: <variant>`,
 /// `id: <sequence>` for durable entries.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RunEvent {
     /// 0: a frame that is not in the log (the snapshot, progress before acceptance, live state).
     #[serde(default)]
@@ -455,7 +443,7 @@ pub struct RunEvent {
     pub event: Event,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Event {
     State(RunState),
@@ -488,7 +476,7 @@ impl Event {
 
 /// A root run's GPU allocation changed: `grant` binds its lane, `wait` queues it behind `behind`
 /// (a run id), `release` ends its lane (`Context.release_gpus()` or its exit).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GpuAllocation {
     pub state: String,
@@ -498,7 +486,7 @@ pub struct GpuAllocation {
     pub behind: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RunState {
     pub id: String,
@@ -519,7 +507,7 @@ pub struct RunState {
     pub started_at_ms: u64,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Progress {
     pub stage: String,
@@ -539,7 +527,7 @@ pub struct Progress {
 }
 
 /// A weights output's commit: `revision` (`sha256:<tree>`) of `repo_id`, in `lane`.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CheckpointRef {
     pub repo_id: String,
@@ -549,7 +537,7 @@ pub struct CheckpointRef {
 
 /// One revision of an output: a single output is replaced by each, a list output grows. Byte
 /// outputs use `GET /v1/runs/{id}/outputs/{output}`; checkpoints are immutable references.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Product {
     pub output: String,
@@ -570,14 +558,14 @@ pub struct Product {
     pub appended_from: Option<u64>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LogLine {
     pub level: String,
     pub text: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Outcome {
     /// succeeded, failed, canceled
@@ -610,7 +598,7 @@ pub struct Outcome {
 }
 
 /// One request field served other than as sent.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Adjustment {
     /// Its path in the request: `steps`, `assets.2.asset`.
@@ -624,7 +612,7 @@ pub struct Adjustment {
     pub source: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Reason {
     pub code: String,
@@ -638,7 +626,7 @@ pub struct Reason {
 }
 
 /// One settled call the run made: a child run, or an effect such as its weights publication.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Call {
     /// The child run's id.
@@ -672,7 +660,7 @@ pub struct Call {
 /// version, capabilities and the sealed readiness `receipt` only. With one it answers all of it,
 /// and as SSE (`Accept: text/event-stream`) sends the whole frame again whenever it changes. An
 /// open stream is not activity.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StatusFrame {
     pub worker_id: String,
@@ -686,7 +674,6 @@ pub struct StatusFrame {
     pub capabilities: Vec<String>,
     /// The sealed readiness envelope (base64); empty until sealed.
     #[serde(with = "base64_bytes")]
-    #[schema(value_type = String, format = Byte)]
     pub receipt: Vec<u8>,
     /// An idle rental's release, 15 min after its last job; 0: none (a job is queued or running,
     /// or it never releases).
@@ -741,7 +728,7 @@ pub struct StatusFrame {
 
 /// A killed process in uninterruptible sleep (`D`: a driver after an Xid, a hung network
 /// filesystem): it exits once that wait ends.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StuckProcess {
     pub pid: u32,
@@ -753,7 +740,7 @@ pub struct StuckProcess {
 }
 
 /// A starting machine's step and a counter that advances as it moves.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Booting {
     pub step: String,
@@ -761,7 +748,7 @@ pub struct Booting {
 }
 
 /// The machine's build toolchain: CUDA's compiler and a host C/C++ compiler.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Toolchain {
     /// ready, absent, installing, failed
@@ -780,7 +767,7 @@ pub struct Toolchain {
 
 /// One kernel's verification on this machine (the Runtime's `verify_op`), keyed by its
 /// artifact, the card's architecture and the driver.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct KernelVerdict {
     pub kernel: String,
@@ -792,7 +779,7 @@ pub struct KernelVerdict {
     pub detail: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WebRtc {
     /// The listener; a persistent machine keeps it across restarts.
@@ -805,7 +792,7 @@ pub struct WebRtc {
     pub unavailable_reason: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Model {
     /// org/name; org "local" is a local alias.
@@ -817,7 +804,7 @@ pub struct Model {
     pub checkpoints: Vec<Checkpoint>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Checkpoint {
     /// Empty for a local alias or a commit by hash.
@@ -831,7 +818,7 @@ pub struct Checkpoint {
     pub manifest: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Gpu {
     pub index: u32,
@@ -852,7 +839,7 @@ pub struct Gpu {
 }
 
 /// A GPU's page accounting, as its memory manager holds it now.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GpuMemory {
     /// What it may allocate: the card or its limit, less its own context and the reserved pool.
@@ -877,7 +864,7 @@ pub struct GpuMemory {
 }
 
 /// One process's allocated memory on a GPU.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProcessMemory {
     pub pid: u32,
@@ -887,7 +874,7 @@ pub struct ProcessMemory {
     pub bytes: u64,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Hub {
     pub origin: String,
@@ -895,7 +882,7 @@ pub struct Hub {
     pub machine_id: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Environment {
     /// [`Source::Installation`] names it.
@@ -913,7 +900,7 @@ pub struct Environment {
     pub hub: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Disk {
     pub total_bytes: u64,

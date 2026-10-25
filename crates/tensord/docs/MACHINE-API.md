@@ -5,8 +5,9 @@ and a run's own child runs. A laptop's machine and a rental's are the same.
 
 **HTTP + JSON** on the machine's one pinned-TLS listener (`api/server.rs`, `api/http.rs`):
 control and SSE over HTTP/2, bulk bytes over HTTP/1.1. The routes, bodies and events are
-`crates/protocol/openapi/machine.json`, generated from `protocol::machine`; how each former
-gRPC call maps onto them is `~/cozy_v2/tracker/design/machine-http-api.md` §2. In short:
+`crates/tensord/api/openapi.yaml`, written by hand and changed in the same PR as the server
+(`scripts/machine-routes.sh` holds the router and the client to it); how each former gRPC call maps
+onto them is `~/cozy_v2/tracker/design/machine-http-api.md` §2. In short:
 
 - `GET /v1/status` (identity and readiness receipt without a cap; the whole picture, as SSE on
   change, with one), `POST /v1/keepalive`, `PUT /v1/capability` (the signer's newest run capability at a Hub);

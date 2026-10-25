@@ -4,7 +4,7 @@
 //! `code` is the stable specific name (`idempotency_conflict`, `machine_not_found`).
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, utoipa::ToSchema)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     /// A bad invocation: unknown flag, malformed `key=value`, malformed target.
@@ -27,7 +27,7 @@ pub enum Kind {
 }
 
 #[derive(
-    Clone, Debug, Deserialize, Serialize, PartialEq, Eq, thiserror::Error, utoipa::ToSchema,
+    Clone, Debug, Deserialize, Serialize, PartialEq, Eq, thiserror::Error,
 )]
 #[error("{code}: {message}")]
 pub struct Error {
@@ -45,7 +45,7 @@ pub struct Error {
 }
 
 /// The HTTP body of a refusal.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, utoipa::ToSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Envelope {
     pub error: Error,
 }
