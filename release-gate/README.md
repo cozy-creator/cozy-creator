@@ -109,10 +109,10 @@ Without `rent=true` it stops after the $0 pre-flight. `model-ingest` puts a firs
     `straggler.py`, which drips its first objects as a slow storage GET does. A straggler must be re-asked, not
     waited out (at most 1.5x clean + 20 s).
 - **hub** (`suites/hub`, one `cpu` rental, ~$0.2, ~30 min, `-f suites=hub`): pick it for any Hub release. It shows the
-  API contract (tensorhub `api/openapi.yaml` at `$HUB_REF`, read with `gh`) holds as cozy uses it:
-  - `contract.py`: each path no verb reaches, called anonymously, answers as its contract says (200 with a body its
-    schema admits, or 401 when bearer-only). This is the one place in release-gate that speaks HTTP to the Hub by
-    hand: it is the contract test.
+  API contract (tensorhub `api/openapi.yaml`, as the Hub serves it at `/openapi.yaml`) holds as cozy uses it:
+  - `contract.py`: each path no verb reaches, called anonymously through `e2e/hubcheck`, answers as its contract says
+    (200, or 401 when bearer-only), and hubcheck finds every request and response as the document has it. This is
+    the one place in release-gate that speaks HTTP to the Hub by hand: it is the contract test.
   - Through `cozy`, on a throwaway `<account>/ci-hub-<R>`: whoami (balance, buy page), the rental catalog, the
     rental itself and a rental of `cpu` on each provider with a dev-build cozy (`machine rent --provider runpod|vast`, ended and
     checked gone: renters never pick one, th-254); a package locked, published twice, run, yanked (the simple index marks it `data-yanked`),

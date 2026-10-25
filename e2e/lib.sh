@@ -19,6 +19,9 @@
 #   --release DIR         a cozy release's files (cozy-publish.yaml's artifacts, a dry run's too): its own installer
 #                         installs cozy from DIR, served on loopback, in place of tensorhub.com's (the candidate)
 #   --shard S             one part of the suite, on its own runner (cli: a name; imports: K/N, every Nth package)
+#
+# Installed by the suite, cozy reaches tensorhub.com through e2e/hubcheck (config.toml's hub_url and $COZY_HUB_URL),
+# which holds every request and response to the API document the Hub serves; `finish` fails on any mismatch.
 
 set -euo pipefail
 E2E=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -64,6 +67,7 @@ step() { echo "::endgroup::"; echo "::group::$*"; }
 fail() { echo "::error::$*"; echo "$*" >> "$OUT/failures.txt"; exit 1; }
 check() { echo "::error::$*"; echo "$*" >> "$OUT/failures.txt"; }
 finish() {
+  hub_checked
   echo "::endgroup::"
   [ -s "$OUT/failures.txt" ] || { echo "$1: passed"; return 0; }
   echo "$1: $(wc -l < "$OUT/failures.txt") failure(s):"; cat "$OUT/failures.txt"; exit 1
@@ -82,6 +86,7 @@ coverage() {
 # server (COZY_DOWNLOAD_URL, which `cozy update` reads too), and `cozy doctor` restarts Calcifer on it.
 install_cozy() {
   local want ps=powershell
+  hub_check
   # Windows PowerShell under the runner's x64 shell says X64 on an Arm64 runner; PowerShell 7 says Arm64, as Windows
   # PowerShell does in a person's own terminal on Windows 11.
   [ "${RUNNER_ARCH:-}" != ARM64 ] || ps=pwsh
@@ -108,6 +113,36 @@ install_cozy() {
   native
   cozy --json doctor > "$OUT/doctor-release.json" || check "cozy doctor is not healthy after the release's installer"
   grep -q "cozy ${want#cozy }," "$OUT/doctor-release.json" || check "Calcifer is not the release's ${want#cozy } after cozy doctor"
+}
+
+# hubcheck between cozy and tensorhub.com, before the installer starts Calcifer: every cozy process (the CLI, Calcifer,
+# the machine) reads config.toml's hub_url, and scripts that call the Hub themselves read $COZY_HUB_URL.
+HUB_CHECK=''
+hub_check() {
+  local exe='' addr=''
+  [ "${RUNNER_OS:-}" != Windows ] || exe=.exe
+  go build -C "$E2E/hubcheck" -o "$OUT/hubcheck$exe" . || fail "e2e/hubcheck does not build"
+  "$OUT/hubcheck$exe" --out "$OUT" > "$OUT/hubcheck.addr" 2> "$OUT/hubcheck.log" &
+  HUB_CHECK=$!
+  for _ in $(seq 60); do
+    addr=$(head -1 "$OUT/hubcheck.addr" 2> /dev/null) && [ -n "$addr" ] && break
+    kill -0 "$HUB_CHECK" 2> /dev/null || break
+    sleep 1
+  done
+  [ -n "$addr" ] || fail "hubcheck did not start: $(cat "$OUT/hubcheck.log")"
+  mkdir -p ~/.cozy && printf 'hub_url = "http://%s"\n' "$addr" >> ~/.cozy/config.toml
+  export COZY_HUB_URL=http://$addr
+  echo "cozy reaches tensorhub.com through hubcheck at $addr"
+}
+# Each mismatch hubcheck recorded is a failure (one line per kind, with its count).
+hub_checked() {
+  [ -n "$HUB_CHECK" ] || return 0
+  kill "$HUB_CHECK" 2> /dev/null || true
+  HUB_CHECK=''
+  echo "the Hub's operations called: $(jq -c . "$OUT/hub-calls.json" 2> /dev/null)"
+  [ -s "$OUT/hub-mismatches.jsonl" ] || return 0
+  jq -r '"\(.side) \(.method) \(.route // .path) \(.status // "") \(.field // ""): \(.message)"' "$OUT/hub-mismatches.jsonl" \
+    | sort | uniq -c | while read -r n what; do check "the Hub's API document, ${n}x: $what"; done
 }
 
 # The installed cozy is this runner's own architecture, never one it emulates: on Windows its PE machine field.
