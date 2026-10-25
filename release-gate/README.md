@@ -62,8 +62,7 @@ as yanked releases (`task publish`). The release agent picks the suites, runs th
 records the result. `candidate.json` in each gate's output names the exact set: the versions the machine ran and the
 candidate files' digests. `verify.sh <run|dir>...` prints it only when every SKU passed. `promote.sh <run id>` (or
 `--record <URL> <dirs>...` for a hand gate) hands that set to users in one step: the same files to PyPI, the cozy
-prerelease latest plus Homebrew (cozy-promote.yaml), the packages un-yanked (`cozy package yank --undo`) on every Hub
-that holds them. Packages' `task promote` calls it. The worker image and the Hub pin follow, by the release owner.
+prerelease latest plus Homebrew (cozy-promote.yaml), the packages un-yanked (`cozy package yank --undo`) on the Hub. Packages' `task promote` calls it. The worker image and the Hub pin follow, by the release owner.
 
 ## CI sign-in
 
@@ -106,7 +105,7 @@ The runner signs in as the owner's account with its own device key: secret `COZY
   - `contract.py`: each path no verb reaches, called anonymously, answers as its contract says (200 with a body its
     schema admits, or 401 when bearer-only). This is the one place in release-gate that speaks HTTP to the Hub by
     hand: it is the contract test.
-  - Through `cozy`, on a throwaway `<account>/ci-hub-<R>`: whoami, credits, credits history, the rental catalog, the
+  - Through `cozy`, on a throwaway `<account>/ci-hub-<R>`: whoami (balance, buy page), the rental catalog, the
     rental itself and a rental of `cpu` on each provider with a dev-build cozy (`machine rent --provider runpod|vast`, ended and
     checked gone: renters never pick one, th-254); a package locked, published twice, run, yanked (the simple index marks it `data-yanked`),
     resolved past, run by exact pin, and un-yanked; a model commit uploaded in a lane, published (listed), downloaded,

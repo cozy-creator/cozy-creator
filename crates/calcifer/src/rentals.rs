@@ -35,7 +35,8 @@ use crate::{
 pub(crate) struct Hubs {
     http: reqwest::Client,
     home: Home,
-    pub(crate) configured: Vec<config::Hub>,
+    /// The configured Hub, as Calcifer loaded it.
+    pub(crate) hub: config::Origin,
     listings: Mutex<HashMap<String, Listing>>,
     /// This computer's account at each Hub and where machines read it, for runs' access.
     pub(crate) facts: Mutex<HashMap<config::Origin, crate::access::Facts>>,
@@ -51,11 +52,11 @@ struct Listing {
 }
 
 impl Hubs {
-    pub(crate) fn new(home: &Home, configured: Vec<config::Hub>) -> Self {
+    pub(crate) fn new(home: &Home, hub: config::Origin) -> Self {
         Self {
             http: reqwest::Client::new(),
             home: home.clone(),
-            configured,
+            hub,
             listings: Mutex::default(),
             facts: Mutex::default(),
         }
@@ -63,8 +64,7 @@ impl Hubs {
 
     /// A client speaking as this computer's device key at the Hub.
     pub(crate) fn client(&self, origin: &str) -> Result<Client, Error> {
-        let hub = config::Hub { name: None, origin: config::Origin::parse(origin)? };
-        Client::signed_in(&hub, &self.home, self.http.clone(), || login(origin))
+        Client::signed_in(&config::Origin::parse(origin)?, &self.home, self.http.clone(), || login(origin))
     }
 
     /// Remembers what a Hub said of one rental.
@@ -157,9 +157,9 @@ impl Hubs {
         })
     }
 
-    /// Every Hub the config names and every Hub a rental was asked of.
+    /// The configured Hub and every Hub a live rental was asked of.
     fn origins(&self, rows: &[MachineRow]) -> Vec<String> {
-        let mut origins: Vec<String> = self.configured.iter().map(|h| h.origin.to_string()).collect();
+        let mut origins = vec![self.hub.to_string()];
         for row in rows
             .iter()
             .filter(|r| r.kind == MachineKind::Rental && r.state != MachineState::Ended)
@@ -1067,12 +1067,7 @@ pub(crate) fn hub_refusal(origin: &str, e: hub_client::Error) -> Error {
 
 /// `cozy login` for the Hub at `origin`, spelled by the config as it is now.
 fn login(origin: &str) -> String {
-    let config = config::load(config::Flags::default()).map(|loaded| loaded.config);
-    let config = config.unwrap_or_default();
-    match config.resolve(origin) {
-        Ok(hub) => config.login(&hub),
-        Err(_) => format!("cozy login <email> --tensorhub {origin}"),
-    }
+    config::load().map(|loaded| loaded.config).unwrap_or_default().login(origin)
 }
 
 /// A refusal's message with its next step: what a run's reason says.

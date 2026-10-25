@@ -93,8 +93,8 @@ pub(crate) struct Seen {
 
 impl Machines {
     /// Watches every machine Calcifer holds, follows booting rentals, asks again what it asked
-    /// a Hub and was not answered, and places unplaced runs. The config names the Hubs listed
-    /// (a rental's own Hub is always read), this computer's machine root and the model-source
+    /// a Hub and was not answered, and places unplaced runs. The config names the Hub listed (a
+    /// rental's own Hub is always read), this computer's machine root and the model-source
     /// tokens runs carry.
     pub fn start(
         calcifer: Arc<Calcifer>,
@@ -114,7 +114,7 @@ impl Machines {
         };
         let local = crate::local::Local::new(&home, user_home, config);
         let me = Arc::new(Self {
-            hubs: Hubs::new(&home, config.hubs()),
+            hubs: Hubs::new(&home, config.hub_url.clone()),
             providers: (providers != v1::ProviderAccess::default()).then_some(providers),
             home,
             seen: Mutex::default(),
@@ -211,10 +211,10 @@ impl Machines {
         {
             match link.status().await {
                 Ok(frame) => {
-                    // A Hub its installations name that no configured Hub's facts read so far do.
+                    // A Hub its installations name that no Hub's facts read so far do.
                     let unnamed = (frame.environments.iter())
                         .filter_map(|env| config::Origin::parse(&env.hub).ok())
-                        .any(|hub| self.hubs.configured(&hub).is_none());
+                        .any(|hub| self.hubs.known(&hub).is_none());
                     if unnamed {
                         self.hubs.learn().await;
                     }

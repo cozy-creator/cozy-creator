@@ -5,6 +5,7 @@ use std::process::ExitCode;
 
 use protocol::{
     calcifer::{Kind as RunKind, On, OutputItem, Run, SubmitRun},
+    config::Origin,
     error::{Error, Kind},
     machine::{self as v1, ModelChoice},
 };
@@ -29,7 +30,7 @@ pub(crate) async fn upload(ctx: &Context, reference: &str, destination: &str, la
             format!("run {} never reached a machine", run.number),
         )
     })?;
-    let hub = ctx.config.resolve(&run.hub)?;
+    let hub = Origin::parse(&run.hub)?;
     ctx.hub_session(&hub)?;
     let submission = submission(&run, item, machine, destination, lane);
     let submitted = submit(ctx, submission, None).await?;

@@ -77,8 +77,9 @@ warning each). A model-only upload's lane labels the commit it makes.
 - **Memo, derived retention, forget and prune** become one self-managing cache: TTL plus low-disk
   eviction, delivered entries first, and no verbs.
 - **Memo** is the machine's own: a memoized function's success, run directly or as a call, is
-  held per signer and answers the same computation (its code, request with files by content,
-  attention choice and models) while the machine holds every file it names; the answered run starts
+  held per signer and answers the same computation (its code, environment with its Runtime build,
+  request with files by content, attention choice and models) while the machine holds every file it
+  names, so a Runtime update runs it again; the answered run starts
   nothing and its Outcome says `memoized`. An author's `memo_requires` names parameters a request
   must give to be memoizable; one that omits them runs, is not held, and says why (`unmemoized`).
   The client carries no results; a memo answers where its results are (measured 2026-10-06: no

@@ -5,7 +5,7 @@ use clap::ValueHint;
 use clap_complete::ArgValueCompleter;
 use protocol::{
     calcifer::{On, Run, StagedInput, SubmitRun},
-    config::Hub,
+    config::Origin,
     error::{Error, Kind},
 };
 
@@ -126,7 +126,7 @@ enum Warm {
 
 #[derive(clap::Subcommand, Debug)]
 enum Verb {
-    /// Runs on every Hub, newest first.
+    /// Every run, newest first.
     List {
         /// Only runs in this state.
         #[arg(long, value_parser = ["queued", "in_progress", "completed", "failed", "canceled"])]
@@ -219,7 +219,7 @@ async fn run(ctx: &Context, args: RunArgs) -> Result<ExitCode, Error> {
             return local::run(ctx, &cwd.join(path), function, args).await;
         }
     };
-    let hub = ctx.hub()?;
+    let hub = ctx.hub();
     let (package, function, resolved) =
         target::resolve(ctx, &hub, package, function, release.as_deref(), owned).await?;
     let Some(function) = function else {
@@ -283,7 +283,7 @@ impl std::fmt::Display for From {
 /// pinned to it, so the machine runs exactly the release its inputs were bound against.
 pub(crate) async fn resolve(
     ctx: &Context,
-    hub: &Hub,
+    hub: &Origin,
     package: &str,
     release: Option<&str>,
 ) -> Result<Resolved, Error> {
@@ -408,7 +408,7 @@ async fn call_code(
     on: On,
     args: RunArgs,
 ) -> Result<Run, Error> {
-    let hub = ctx.hub()?;
+    let hub = ctx.hub();
     let terms = terms(ctx, &args)?;
     let callable = callable(code.package, code.interface, function)?;
     let call = spec::Call {
@@ -440,7 +440,7 @@ async fn call_code(
             (call.spec(&bound)?, Some(bound), out)
         }
     };
-    let mut submission = call.submission(on, &hub.origin, &spec, bound.as_ref(), out);
+    let mut submission = call.submission(on, hub, &spec, bound.as_ref(), out);
     submission.inputs.extend(code.files.iter().cloned());
     send(ctx, submission, &terms.key).await
 }

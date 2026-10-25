@@ -92,7 +92,7 @@ pub async fn install(
     package: &PackageRef,
     on: On,
 ) -> Result<ExitCode, Error> {
-    let hub = ctx.hub()?;
+    let hub = ctx.hub();
     let name = package.package();
     let chosen = match &package.release {
         Some(chosen) => chosen.clone(),
@@ -100,7 +100,7 @@ pub async fn install(
     };
     let warm = spec(v1::RunKind::Warm, release(&name, &chosen), String::new());
     let target = format!("{name}@{chosen}");
-    let submitted = submit(ctx, on, &hub.origin, calcifer::Kind::Warm, target, warm).await?;
+    let submitted = submit(ctx, on, hub, calcifer::Kind::Warm, target, warm).await?;
     installed(ctx, submitted, &name).await
 }
 
@@ -112,7 +112,7 @@ pub async fn install_directory(
     on: On,
 ) -> Result<ExitCode, Error> {
     let local = super::local::source(ctx, path, &on).await?;
-    let ask = run::local::install_run(&ctx.home, &ctx.hub()?.origin, on, &local);
+    let ask = run::local::install_run(&ctx.home, ctx.hub(), on, &local);
     let submitted = run::submit(ctx, ask, None).await?.run;
     installed(ctx, submitted, &local.package).await
 }
@@ -158,7 +158,7 @@ async fn installed(
 async fn retire(ctx: &Context, machine: &str, package: &str, release: &str) -> Result<(), Error> {
     let on = On::Machine(machine.to_owned());
     let held = machines(ctx, Some(&on)).await?.remove(0);
-    let envs = environments(ctx, &held)?;
+    let envs = environments(&held);
     let hub = envs
         .iter()
         .find(|env| env.package == package && env.release == release)
@@ -224,44 +224,24 @@ pub(crate) fn named(on: &On) -> Result<&str, Error> {
     }
 }
 
-/// A machine's installations within `--tensorhub`'s scope: that Hub's and local code.
-fn environments<'a>(ctx: &Context, machine: &'a Machine) -> Result<Vec<&'a Environment>, Error> {
-    let narrowed = ctx.narrowed()?;
-    let scope = |env: &Environment| match &narrowed {
-        Some(hub) => env.hub.is_empty() || origin(&env.hub).as_ref() == Some(&hub.origin),
-        None => true,
-    };
-    Ok(machine
-        .status
-        .iter()
-        .flat_map(|s| &s.environments)
-        .filter(|env| scope(env))
-        .collect())
+/// A machine's installations.
+fn environments(machine: &Machine) -> Vec<&Environment> {
+    machine.status.iter().flat_map(|s| &s.environments).collect()
 }
 
-/// An installation's Hub in its one spelling (a machine may write `https://tensorhub.com:443`);
-/// none for local code.
-fn origin(hub: &str) -> Option<Origin> {
-    Origin::parse(hub).ok()
-}
-
-/// What a run on an installation's Hub names it: its one spelling, or as the machine wrote it.
+/// What a run on an installation's Hub names it: its one spelling (a machine may write
+/// `https://tensorhub.com:443`), or as the machine wrote it.
 fn canonical(hub: &str) -> String {
-    origin(hub).map_or_else(|| hub.to_owned(), String::from)
+    Origin::parse(hub).map_or_else(|_| hub.to_owned(), String::from)
 }
 
-/// A Hub origin as this computer names it; local code has none.
-fn hub_label(ctx: &Context, hub: &str) -> String {
-    if hub.is_empty() {
-        return "local".into();
+/// Where an installation came from: `local` code, the Hub, or another Hub by its URL.
+fn source(ctx: &Context, hub: &str) -> String {
+    match (hub.is_empty(), ctx.other_hub(hub)) {
+        (true, _) => "local".into(),
+        (_, Some(other)) => other.into(),
+        _ => "hub".into(),
     }
-    let Some(origin) = origin(hub) else {
-        return hub.to_owned();
-    };
-    let known = ctx.config.hubs().into_iter().find(|h| h.origin == origin);
-    known
-        .map(|hub| hub.label().to_owned())
-        .unwrap_or_else(|| origin.to_string())
 }
 
 /// Refuses a name the machine does not hold, before any run.
@@ -280,27 +260,25 @@ fn held(names: &[String], envs: &[&Environment], machine: &str) -> Result<(), Er
     }
 }
 
-pub(crate) const HEADERS: [&str; 5] = ["MACHINE", "PACKAGE", "RELEASE", "LEVEL", "HUB"];
+pub(crate) const HEADERS: [&str; 5] = ["MACHINE", "PACKAGE", "RELEASE", "LEVEL", "SOURCE"];
 
-/// Each package `machines` hold within `--tensorhub`'s scope.
-pub(crate) fn rows<'a>(
-    ctx: &Context,
-    machines: impl IntoIterator<Item = &'a Machine>,
-) -> Result<Vec<Held<'a>>, Error> {
+/// Each package `machines` hold.
+pub(crate) fn rows<'a>(ctx: &Context, machines: impl IntoIterator<Item = &'a Machine>) -> Vec<Held<'a>> {
     let mut rows = vec![];
     for machine in machines {
-        for env in environments(ctx, machine)? {
+        for env in environments(machine) {
             rows.push(Held {
                 machine: &machine.name,
                 package: &env.package,
                 release: &env.release,
                 level: &env.level,
-                hub: hub_label(ctx, &env.hub),
+                hub: &env.hub,
+                source: source(ctx, &env.hub),
                 warning: &env.warning,
             });
         }
     }
-    Ok(rows)
+    rows
 }
 
 #[derive(Serialize)]
@@ -309,7 +287,9 @@ pub(crate) struct Held<'a> {
     package: &'a str,
     release: &'a str,
     level: &'a str,
-    hub: String,
+    hub: &'a str,
+    /// `local`, `hub`, or another Hub's URL.
+    source: String,
     /// Why the environment does not run the machine's own Runtime; empty when it does.
     warning: &'a str,
 }
@@ -322,7 +302,7 @@ impl Held<'_> {
             package.into(),
             release.into(),
             self.level.into(),
-            self.hub.clone(),
+            self.source.clone(),
         ]
     }
 }
@@ -334,7 +314,7 @@ pub async fn list(ctx: &Context, on: Option<On>) -> Result<ExitCode, Error> {
         return Ok(ExitCode::SUCCESS);
     }
     let machines = machines(ctx, on.as_ref()).await?;
-    let rows = rows(ctx, &machines)?;
+    let rows = rows(ctx, &machines);
     if ctx.json {
         output::json(&serde_json::json!({ "packages": rows }));
         return Ok(ExitCode::SUCCESS);
@@ -379,9 +359,9 @@ struct Removed {
 /// One REMOVE run per (package, Hub) the machine holds: every release of it from that Hub.
 pub async fn remove(ctx: &Context, names: &[String], on: On) -> Result<ExitCode, Error> {
     let machine = machines(ctx, Some(&on)).await?.remove(0);
-    let envs = environments(ctx, &machine)?;
+    let envs = environments(&machine);
     held(names, &envs, &machine.name)?;
-    let default_hub = ctx.hub()?.origin;
+    let default_hub = ctx.hub();
     let mut targets: Vec<(&str, String)> = envs
         .iter()
         .filter(|env| names.contains(&env.package))
@@ -428,13 +408,9 @@ pub async fn remove(ctx: &Context, names: &[String], on: On) -> Result<ExitCode,
             "machine": machine.name, "removed": removed, "reclaimed_bytes": reclaimed, "failed": failed,
         }));
     } else {
-        let mut table = Table::new(ctx, ["PACKAGE", "RELEASE", "HUB"]);
+        let mut table = Table::new(ctx, ["PACKAGE", "RELEASE", "SOURCE"]);
         for row in &removed {
-            table = table.row([
-                row.package.clone(),
-                row.release.clone(),
-                hub_label(ctx, &row.hub),
-            ]);
+            table = table.row([row.package.clone(), row.release.clone(), source(ctx, &row.hub)]);
         }
         table = table.note(format!(
             "{} reclaimed on {}",

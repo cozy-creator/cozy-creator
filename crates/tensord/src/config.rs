@@ -65,14 +65,14 @@ pub struct Config {
 
 /// The one load.
 pub fn load(lifetime: Lifetime) -> io::Result<Config> {
-    let loaded = shared::load(shared::Flags::default()).map_err(|e| invalid(&named(&e.message)))?;
+    let loaded = shared::load().map_err(|e| invalid(&named(&e.message)))?;
     from_loaded(lifetime, loaded, shared::environment())
 }
 
 /// `machine.gpu_memory_limit` as config.toml says it now. The service reads it at each start:
 /// it is forked from a parent that loaded the config before an update wrote the limit.
 pub fn gpu_memory_limit() -> io::Result<Option<u64>> {
-    let loaded = shared::load(shared::Flags::default()).map_err(|e| invalid(&named(&e.message)))?;
+    let loaded = shared::load().map_err(|e| invalid(&named(&e.message)))?;
     Ok(loaded.config.machine.gpu_memory_limit)
 }
 
@@ -86,7 +86,7 @@ pub fn forget_receipt_key() {
 
 /// The load over a given environment and user home (what the tests drive).
 pub fn load_from(lifetime: Lifetime, environment: &BTreeMap<String, String>, user_home: PathBuf) -> io::Result<Config> {
-    let loaded = shared::load_from(shared::Flags::default(), environment, user_home).map_err(|e| invalid(&named(&e.message)))?;
+    let loaded = shared::load_from(environment, user_home).map_err(|e| invalid(&named(&e.message)))?;
     from_loaded(lifetime, loaded, environment)
 }
 

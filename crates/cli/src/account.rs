@@ -6,7 +6,7 @@ use std::{io::Write as _, path::PathBuf, process::ExitCode, sync::Arc};
 
 use hub_client::{Credential, DeviceKey, Enrollment, UserSession, types};
 use protocol::{
-    config::Hub,
+    config::Origin,
     error::{Error, Kind},
 };
 use serde_json::json;
@@ -14,6 +14,7 @@ use serde_json::json;
 use crate::{
     Context,
     context::{hub_answer, hub_error},
+    machine::usd,
     output,
 };
 
@@ -38,7 +39,7 @@ pub struct Login {
 /// Enrolls this computer's key by the code the Hub emails, then names the account if it has
 /// no name yet. A key already accepted for this email is kept.
 pub async fn login(ctx: &Context, args: Login) -> Result<ExitCode, Error> {
-    let hub = ctx.hub()?;
+    let hub = ctx.hub();
     if let Some(file) = &args.key {
         return install(ctx, &hub, file).await;
     }
@@ -73,7 +74,7 @@ pub async fn login(ctx: &Context, args: Login) -> Result<ExitCode, Error> {
 /// Enrolls a new key by the emailed code and writes it to `file`, for another computer.
 async fn export(
     ctx: &Context,
-    hub: &Hub,
+    hub: &Origin,
     email: &str,
     file: &std::path::Path,
 ) -> Result<ExitCode, Error> {
@@ -104,9 +105,9 @@ async fn export(
 }
 
 /// Makes the key in `file` this computer's key at `hub`, and proves it by naming its account.
-async fn install(ctx: &Context, hub: &Hub, file: &std::path::Path) -> Result<ExitCode, Error> {
+async fn install(ctx: &Context, hub: &Origin, file: &std::path::Path) -> Result<ExitCode, Error> {
     let key = DeviceKey::load(file).map_err(hub_error)?;
-    if key.hub.trim_end_matches('/') != hub.origin.as_str().trim_end_matches('/') {
+    if key.hub.trim_end_matches('/') != hub.as_str().trim_end_matches('/') {
         return Err(Error::new(
             Kind::Usage,
             "key_other_hub",
@@ -127,7 +128,7 @@ async fn install(ctx: &Context, hub: &Hub, file: &std::path::Path) -> Result<Exi
 /// Reports the account `session` signs in as, naming it first when it has no name yet.
 async fn signed_in(
     ctx: &Context,
-    hub: &Hub,
+    hub: &Origin,
     session: Arc<UserSession>,
     status: &str,
 ) -> Result<ExitCode, Error> {
@@ -175,7 +176,7 @@ pub struct Logout {
 /// Erases this computer's key at the Hub, asking the Hub to revoke it first. The key is erased
 /// whatever the Hub answers.
 pub async fn logout(ctx: &Context, args: Logout) -> Result<ExitCode, Error> {
-    let hub = ctx.hub()?;
+    let hub = ctx.hub();
     if !ctx.signed_in(&hub) {
         return report_logout(ctx, &hub, None, false, vec![]);
     }
@@ -207,7 +208,7 @@ pub async fn logout(ctx: &Context, args: Logout) -> Result<ExitCode, Error> {
 }
 
 /// Revokes every other key of the account, with a token proven by an emailed code.
-async fn revoke_others(ctx: &Context, hub: &Hub, key: &DeviceKey) -> Result<(), Error> {
+async fn revoke_others(ctx: &Context, hub: &Origin, key: &DeviceKey) -> Result<(), Error> {
     let anonymous = ctx.hub_anonymous(hub);
     let enrollment = Enrollment::begin(&anonymous, &key.email, LABEL, Some(key))
         .await
@@ -222,13 +223,13 @@ async fn revoke_others(ctx: &Context, hub: &Hub, key: &DeviceKey) -> Result<(), 
         .await
         .map_err(hub_error)?;
     let proven = Credential::Bearer(bearer.token);
-    let client = hub_client::Client::connect(&hub.origin, ctx.http().clone(), proven);
+    let client = hub_client::Client::connect(hub, ctx.http().clone(), proven);
     hub_answer(client.revoke_other_device_keys().await)
 }
 
 fn report_logout(
     ctx: &Context,
-    hub: &Hub,
+    hub: &Origin,
     email: Option<&str>,
     everywhere: bool,
     notes: Vec<String>,
@@ -263,9 +264,10 @@ fn report_logout(
 #[derive(clap::Args, Debug)]
 pub struct Whoami {}
 
-/// Who this computer signs in as at the command's Hub, as that Hub says.
+/// Who this computer signs in as at the command's Hub, as that Hub says: the account, its credit
+/// (`unmetered` where the Hub does not meter it) and the Hub's page to buy more.
 pub async fn whoami(ctx: &Context, _args: Whoami) -> Result<ExitCode, Error> {
-    let hub = ctx.hub()?;
+    let hub = ctx.hub();
     let session = match ctx.signed_in(&hub) {
         true => Some(ctx.hub_session(&hub)?),
         false => None,
@@ -277,21 +279,39 @@ pub async fn whoami(ctx: &Context, _args: Whoami) -> Result<ExitCode, Error> {
         },
         None => (false, None),
     };
+    // A named account's credit: `Some(None)` where the Hub does not meter it.
+    let balance = match &account {
+        Some(_) => Some(
+            hub_answer(ctx.hub_signed_in(&hub)?.get_credit().await)?
+                .credit
+                .map(|c| c.available_usd_micros),
+        ),
+        None => None,
+    };
+    let buy = balance.is_some().then(|| format!("{hub}/account"));
     let key = session.as_ref().filter(|_| accepted).map(|s| s.key());
     if ctx.json {
         output::json(&json!({
-            "hub": hub, "logged_in": accepted, "email": key.map(|k| &k.email),
-            "account": account, "device_key": key.map(|k| &k.id),
+            "logged_in": accepted, "account": account, "email": key.map(|k| &k.email),
+            "billing": balance.map(|b| if b.is_some() { "metered" } else { "unmetered" }),
+            "balance_usd_micros": balance.flatten(), "device_key": key.map(|k| &k.id),
+            "buy_credits": buy,
         }));
         return Ok(ExitCode::SUCCESS);
     }
-    let mut record = output::Record::new().field("hub", &hub);
+    let mut record = output::Record::new();
     match key {
         Some(key) => {
             record = record
-                .field("email", &key.email)
                 .field("account", account.as_deref().unwrap_or("none yet"))
-                .field("device key", &key.id);
+                .field("email", &key.email);
+            if let Some(balance) = balance {
+                record = record.field("balance", balance.map_or("unmetered".into(), usd));
+            }
+            record = record.field("device key", &key.id);
+            if let Some(buy) = &buy {
+                record = record.note(format!("Buy credits at {buy}"));
+            }
         }
         None if session.is_some() => {
             record = record.field("login", "this computer's key is no longer accepted");
@@ -307,7 +327,7 @@ pub async fn whoami(ctx: &Context, _args: Whoami) -> Result<ExitCode, Error> {
 
 /// The account this computer's key signs in as at `hub`: `None` when the Hub no longer accepts
 /// the key (revoked from another computer), `Some(None)` when the account has no name yet.
-async fn standing(ctx: &Context, hub: &Hub) -> Result<Option<Option<String>>, Error> {
+async fn standing(ctx: &Context, hub: &Origin) -> Result<Option<Option<String>>, Error> {
     match hub_answer(ctx.hub_signed_in(hub)?.get_current_account().await) {
         Ok(account) => Ok(Some(Some(account.name))),
         Err(e) if e.code == "account.name_required" => Ok(Some(None)),

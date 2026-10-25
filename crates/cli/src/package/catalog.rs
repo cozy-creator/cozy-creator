@@ -2,7 +2,7 @@
 use std::process::ExitCode;
 
 use protocol::{
-    config::Hub,
+    config::Origin,
     error::{Error, Kind},
 };
 use serde::Serialize;
@@ -29,7 +29,7 @@ struct Search {
 }
 
 pub async fn search(ctx: &Context, query: &str, limit: u32) -> Result<ExitCode, Error> {
-    let hub = ctx.hub()?;
+    let hub = ctx.hub();
     let query = query.trim();
     let answer = ctx
         .hub_client(&hub)?
@@ -57,7 +57,7 @@ pub async fn search(ctx: &Context, query: &str, limit: u32) -> Result<ExitCode, 
         return Ok(ExitCode::SUCCESS);
     }
     if result.packages.is_empty() {
-        println!("No packages on {} match.", hub.label());
+        println!("No packages on {} match.", hub.as_str());
         let next = if query.is_empty() {
             "cozy package publish --help"
         } else {
@@ -97,12 +97,12 @@ struct Info {
 }
 
 pub async fn info(ctx: &Context, package: &PackageRef) -> Result<ExitCode, Error> {
-    let hub = ctx.hub()?;
+    let hub = ctx.hub();
     let card = ctx
         .hub_client(&hub)?
         .get_package(&package.org, &package.name, None)
         .await
-        .map_err(|e| missing(hub_error(e), package, hub.label()))?
+        .map_err(|e| missing(hub_error(e), package, hub.as_str()))?
         .into_inner();
     let releases: Vec<Release> = card
         .releases
@@ -125,7 +125,7 @@ pub async fn info(ctx: &Context, package: &PackageRef) -> Result<ExitCode, Error
                 format!(
                     "{} has no release {release} on {}",
                     package.package(),
-                    hub.label()
+                    hub.as_str()
                 ),
             )
             .next(format!("cozy package info {}", package.package())));
@@ -146,7 +146,7 @@ pub async fn info(ctx: &Context, package: &PackageRef) -> Result<ExitCode, Error
     println!(
         "{} on {}, latest {}",
         info.package,
-        hub.label(),
+        hub.as_str(),
         info.latest_release.as_deref().unwrap_or("none")
     );
     let mut table = Table::new(ctx, ["RELEASE", "PUBLISHED", "YANKED"]);
@@ -169,7 +169,7 @@ pub async fn info(ctx: &Context, package: &PackageRef) -> Result<ExitCode, Error
 /// release), as the Hub's publish status tells the package's owner; none for anyone else.
 async fn warnings(
     ctx: &Context,
-    hub: &Hub,
+    hub: &Origin,
     package: &PackageRef,
     release: &str,
 ) -> Result<Vec<String>, Error> {
@@ -200,8 +200,7 @@ fn missing(error: Error, package: &PackageRef, hub: &str) -> Error {
         "package_not_found",
         format!("no package {} on {hub}", package.package()),
     )
-    .remedy("check the name, and the Hub with `cozy hub list`")
+    .remedy("check the name")
     .next(format!("cozy package search {}", package.name))
-    .next("cozy hub list")
     .cause(cause)
 }

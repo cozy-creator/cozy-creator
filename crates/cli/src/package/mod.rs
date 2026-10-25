@@ -49,7 +49,7 @@ enum Command {
         #[command(flatten)]
         placement: Placement,
     },
-    /// Remove packages from a machine, every Hub's installation unless --tensorhub narrows.
+    /// Remove packages from a machine.
     Remove {
         /// [org/]name or local/name.
         #[arg(required = true)]

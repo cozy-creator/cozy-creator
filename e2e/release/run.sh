@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The `cli-release` suite: cozy's signed-in commands before a release (e2e/coverage.toml's `release` tier), on Linux,
 # macOS or Windows. Signed in with the CI key (or, by hand with --installed, as this computer is), it reads the
-# account's credit and makes (never pays) a checkout, then rents ONE machine of --sku (default: the catalog's cheapest
+# account's balance and checks its buy page answers, then rents ONE machine of --sku (default: the catalog's cheapest
 # GPU; nothing dearer than --max-hourly an hour; each step is refused once its GPU time reached --max-usd, which ends
 # it: the CLI's quote names no storage or traffic, so the cap leaves them headroom). A throwaway fidika/ci-e2e-<run> package and model go through lock,
 # publish, yank, un-yank and delete, run on this computer's machine or, where the OS runs none (macOS, Windows), on the
@@ -62,13 +62,9 @@ if [ -n "$KEY" ]; then cozy --json login --key "$KEY" > "$OUT/login.json" || fai
 cozy --json whoami > "$OUT/whoami.json"
 J '.logged_in == true and .account == "fidika"' "$OUT/whoami.json" || fail "whoami: not signed in as fidika ($(head -c 300 "$OUT/whoami.json"))"
 
-step credits
-cozy --json credits > "$OUT/credits.json" && J '.billing | length > 0' "$OUT/credits.json" || check "credits: no billing"
-cozy --json credits history > "$OUT/history.json" || check "credits history failed"
-J 'type == "object"' "$OUT/history.json" || check "credits history: no answer"
-cozy --json credits buy 10 --no-browser --no-wait > "$OUT/buy.json" || check "credits buy 10 (the least one purchase may be) failed"
-checkout=$(jq -r '.. | strings | select(test("^https://"))' "$OUT/buy.json" | head -1) || true
-[ -n "$checkout" ] && curl -fsS -o /dev/null "$checkout" || check "credits buy: no payment page ($(head -c 300 "$OUT/buy.json"))"
+step balance
+J '(.billing | length > 0) and (.buy_credits | startswith("https://"))' "$OUT/whoami.json" || check "whoami: no balance or buy page ($(head -c 300 "$OUT/whoami.json"))"
+curl -fsS -o /dev/null "$(jq -r .buy_credits "$OUT/whoami.json")" || check "whoami: the buy page $(jq -r .buy_credits "$OUT/whoami.json") does not answer"
 
 step "the rental's quote"
 [ -n "$SKU" ] || SKU=$(cozy --json machine rent | jq -r '[.[] | select(.vram_gb > 0)][0].name // empty') || true

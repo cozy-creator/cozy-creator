@@ -146,7 +146,7 @@ pub(crate) async fn source(ctx: &Context, path: &Path, on: &On) -> Result<Local,
     }
     let mut indexes = BTreeMap::new();
     if project.account_index {
-        let hub = ctx.hub()?;
+        let hub = ctx.hub();
         let client = ctx.hub_signed_in(&hub)?;
         let account = account(&client).await?;
         indexes.insert(INDEX.to_owned(), index_url(&client, &hub, &account).await?);

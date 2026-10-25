@@ -32,7 +32,7 @@ pub struct Args {
 #[allow(dead_code)]
 #[derive(Subcommand, Debug)]
 enum Verb {
-    /// Every machine: this computer's, rentals on every Hub, and added ones; live on a terminal.
+    /// Every machine: this computer's, rentals and added ones; live on a terminal.
     List,
     /// One machine and what it reports of itself; live on a terminal while it lives.
     Show {
@@ -203,7 +203,7 @@ pub(crate) fn local_note() -> Option<String> {
 }
 
 /// Money as people read it: `$3.19`.
-fn usd(micros: i64) -> String {
+pub(crate) fn usd(micros: i64) -> String {
     format!("${:.2}", micros as f64 / 1e6)
 }
 

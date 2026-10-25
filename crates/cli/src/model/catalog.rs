@@ -41,7 +41,7 @@ fn found(card: &ModelCard) -> Found {
 }
 
 pub(crate) async fn search(ctx: &Context, args: Search) -> Result<ExitCode, Error> {
-    let client = ctx.hub_anonymous(&ctx.hub()?);
+    let client = ctx.hub_anonymous(ctx.hub());
     let exact = match (&args.family, args.query.as_slice()) {
         // A single word is search text (a root name among its matches, first); org/name is one model.
         (None, [one]) if one.contains('/') => Repo::parse(one).ok(),
@@ -139,7 +139,7 @@ pub(crate) async fn info(ctx: &Context, args: Info) -> Result<ExitCode, Error> {
             return Err(Error::new(Kind::Usage, "model_ref_invalid", format!("{:?}: info reads org/name[@release]", args.model)));
         }
     };
-    let card = hub_answer(ctx.hub_client(&ctx.hub()?)?.get_model(&repo.org, &repo.name).await)?;
+    let card = hub_answer(ctx.hub_client(ctx.hub())?.get_model(&repo.org, &repo.name).await)?;
     let releases: Vec<Release> = card
         .releases
         .into_iter()
@@ -206,7 +206,7 @@ struct FamilySet {
 pub(crate) async fn family(ctx: &Context, args: Family) -> Result<ExitCode, Error> {
     let repo = Repo::hub(&args.model)?;
     let family = if args.clear { String::new() } else { args.family.unwrap_or_default() };
-    let client = ctx.hub_signed_in(&ctx.hub()?)?;
+    let client = ctx.hub_signed_in(ctx.hub())?;
     let answer = hub_answer(client.set_model_family(&repo.org, &repo.name, &ModelFamilyUpdate { family }).await)?;
     let view = FamilySet {
         model: repo.to_string(),

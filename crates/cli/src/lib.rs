@@ -3,9 +3,8 @@
 use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser, Subcommand};
-use clap_complete::ArgValueCompleter;
 use protocol::{
-    config::{self, Flags},
+    config,
     error::{Error, Kind},
 };
 
@@ -13,10 +12,8 @@ mod account;
 pub mod calcifer_client;
 mod completion;
 pub mod context;
-mod credits;
 mod daemon;
 mod doctor;
-mod hub;
 mod machine;
 mod model;
 pub mod output;
@@ -38,9 +35,6 @@ struct Cli {
     /// Print JSON (NDJSON when following) instead of tables.
     #[arg(long, global = true)]
     json: bool,
-    /// The Hub to use instead of the current one (`cozy hub use`).
-    #[arg(long, global = true, value_name = "HUB", add = ArgValueCompleter::new(completion::hubs))]
-    tensorhub: Option<String>,
     /// Agree without being asked: to a rental's quote, a deletion.
     #[arg(long, short = 'y', global = true)]
     yes: bool,
@@ -62,12 +56,8 @@ enum Command {
     Login(account::Login),
     /// Sign out of the Hub.
     Logout(account::Logout),
-    /// Show the signed-in account.
+    /// Show the signed-in account, its credit and where to buy more.
     Whoami(account::Whoami),
-    /// The Hubs this computer knows, and the current one.
-    Hub(hub::Args),
-    /// Rental credit: balance, history, buy.
-    Credits(credits::Args),
     /// Calcifer, machines and runs at a glance.
     Status(daemon::Status),
     /// Replace this binary with the newest release.
@@ -87,9 +77,7 @@ pub fn main() -> ExitCode {
         Ok(cli) => cli,
         Err(error) => return usage(error),
     };
-    let loaded = match config::load(Flags {
-        tensorhub: cli.tensorhub,
-    }) {
+    let loaded = match config::load() {
         Ok(loaded) => loaded,
         Err(error) => return output::refuse(cli.json, &error),
     };
@@ -142,8 +130,6 @@ async fn dispatch(ctx: &Context, command: Command) -> Result<ExitCode, Error> {
         Command::Login(args) => account::login(ctx, args).await,
         Command::Logout(args) => account::logout(ctx, args).await,
         Command::Whoami(args) => account::whoami(ctx, args).await,
-        Command::Hub(args) => hub::exec(ctx, args).await,
-        Command::Credits(args) => credits::exec(ctx, args).await,
         Command::Status(args) => daemon::status(ctx, args).await,
         Command::Update(args) => update::exec(ctx, args).await,
         Command::Completion(args) => completion::exec(ctx, args).await,
