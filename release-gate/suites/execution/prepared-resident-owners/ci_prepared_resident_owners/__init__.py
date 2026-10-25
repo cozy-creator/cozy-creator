@@ -4,14 +4,16 @@ import json
 from typing import Literal
 
 import msgspec
-from cozy_runtime.author import App, Context
+from cozy_runtime.author import App, Context, Telemetry
 
 app = App()
 
 
 class Probe(msgspec.Struct, forbid_unknown_fields=True):
     seed: int = 1796
-    mode: Literal["owners", "attention", "conv-torch", "conv-varena"] = "owners"
+    mode: Literal[
+        "owners", "attention", "conv-torch", "conv-varena", "conv-watched"
+    ] = "owners"
 
 
 class Report(msgspec.Struct):
@@ -20,11 +22,18 @@ class Report(msgspec.Struct):
 
 
 @app.entrypoint(accelerator=True)
-def gpu(payload: Probe, ctx: Context) -> Report:
-    if payload.mode in ("conv-torch", "conv-varena"):
+def gpu(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
+    if payload.mode in ("conv-torch", "conv-varena", "conv-watched"):
         from .convolution import convolution_proof
 
-        result = convolution_proof(payload.seed, ctx, payload.mode.partition("-")[2])
+        result = convolution_proof(
+            payload.seed,
+            ctx,
+            "torch"
+            if payload.mode == "conv-watched"
+            else payload.mode.partition("-")[2],
+            telemetry=tel if payload.mode == "conv-watched" else None,
+        )
     elif payload.mode == "attention":
         from .attention import attention_proof
 

@@ -4,13 +4,15 @@ import ctypes
 import importlib.metadata
 import json
 import os
+import threading
+import time
 
 import torch
 from cozy_runtime.internal import accel
 from tensorfs import varena
 
 
-def convolution_proof(seed, ctx, backing):
+def convolution_proof(seed, ctx, backing, *, telemetry=None):
     assert ctx.device.type == "cuda"
     assert backing in ("torch", "varena")
     accel.initialize(torch, "cuda")
@@ -23,7 +25,7 @@ def convolution_proof(seed, ctx, backing):
     status_pointer = ctypes.pointer(status_value)
     report = {
         "seed": seed,
-        "mode": f"conv-{backing}",
+        "mode": "conv-watched" if telemetry is not None else f"conv-{backing}",
         "request_id": ctx.request_id,
         "pid": os.getpid(),
         "runtime": importlib.metadata.version("cozy-runtime"),
@@ -115,7 +117,25 @@ def convolution_proof(seed, ctx, backing):
 
         # Match the failed path: eager first, a fresh stream's warmup, then manual
         # global capture. Do not add empty_cache/device-wide synchronization here.
+        on_step = None
+        watch = None
+        if telemetry is not None:
+            on_step = telemetry.step_callback(2, stage="convolution")
+            # Observe the real service-created watch; do not replace its idle callback.
+            watch = telemetry._attempt._stall_watch
+            assert watch is not None, "real CUDA telemetry watch was not created"
+            report["watcher"] = {
+                "workers": [
+                    t.ident
+                    for t in threading.enumerate()
+                    if t.name == "cozy-host-stalls"
+                ],
+                "pause_seconds": 0.3,
+            }
+            assert report["watcher"]["workers"], "real stall sampler did not start"
         eager = convolution()
+        if on_step is not None:
+            on_step(0)
         current = torch.cuda.current_stream(device)
         stream = torch.cuda.Stream(device=device)
         stream_pointer = ctypes.c_void_p(stream.cuda_stream)
@@ -133,6 +153,26 @@ def convolution_proof(seed, ctx, backing):
                 stage = "capture-begin"
                 graph.capture_begin(capture_error_mode="global")
                 try:
+                    if watch is not None:
+                        stage = "watcher-pause"
+                        capture_status("before-watcher-pause")
+                        with watch.lock:
+                            report["watcher"]["samples_before"] = sum(
+                                watch.counts.values()
+                            )
+                        time.sleep(
+                            0.3
+                        )  # Real 100ms sampler runs while global capture is open.
+                        with watch.lock:
+                            report["watcher"]["samples_after"] = sum(
+                                watch.counts.values()
+                            )
+                        report["watcher"]["workers_after"] = [
+                            t.ident
+                            for t in threading.enumerate()
+                            if t.name == "cozy-host-stalls"
+                        ]
+                        capture_status("after-watcher-pause")
                     stage = "convolution"
                     capture_status("before-convolution")
                     captured = convolution()
@@ -156,6 +196,8 @@ def convolution_proof(seed, ctx, backing):
             torch.testing.assert_close(captured, eager, rtol=1e-3, atol=1e-3)
             report["max_abs"] = float((captured.float() - eager.float()).abs().max())
             report["manual_graph_launches"] = 1
+            if on_step is not None:
+                on_step(1)  # Normal service completion stops its own watcher.
             if arena is not None:
                 report["varena"] = arena.stats()
         except BaseException as error:

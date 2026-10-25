@@ -77,3 +77,31 @@ Separate invocations may reuse an executor; use the reported PIDs when interpret
 history. This gate does not submit a PreparedRepeat or prove full-model success.
 
 Source-only checks do not qualify either mode on GPU. Root owns all actual machine/rental runs.
+
+### Actual telemetry watcher during capture
+
+`mode=conv-watched` keeps the Torch-backed convolution and manual global capture unchanged,
+but constructs the real injected `Telemetry.step_callback(2, stage="convolution")` before
+the eager call, reports step0, and leaves the actual `cozy-host-stalls` sampler running. It
+pauses the host for0.3seconds after capture begins, then checks raw capture status before
+launching the convolution. Step1 is reported after successful replay, allowing the normal
+service to stop its watcher. On failure the ordinary attempt lifecycle owns watcher cleanup.
+
+```sh
+cozy run /absolute/canonical/worktree/release-gate/suites/execution/prepared-resident-owners/gpu \
+  mode=conv-watched seed=1772601 --on MACHINE --gpus=1 --json
+```
+
+The fixture reads, but never modifies, the service-created watch's existing sample counters
+and records its thread presence before/after the pause. No idle callback, CUDA query or error
+is replaced or injected. Elapsed time alone does not prove the sampler executed: inspect the
+counter change, thread presence and raw before/after status together. A query that raises can
+end the watcher before a sample is counted.
+
+This is a reproduction hypothesis, not an asserted CUDA violation. NVIDIA documents that
+legacy-stream execution queries conflict with capture of a **blocking** stream, while Torch's
+stream pool uses `cudaStreamNonBlocking`. The fixture preserves that actual nonblocking stream;
+it does not switch to a blocking stream to manufacture a failure. See the
+[NVIDIA capture restrictions](https://docs.nvidia.com/cuda/cuda-programming-guide/04-special-topics/cuda-graphs.html)
+and [pinned Torch stream flags](https://github.com/pytorch/pytorch/blob/5c4886908584029761b579af026dcfb627c84070/c10/cuda/CUDAStream.cpp#L21).
+Source checks do not establish the cause or a passing GPU result.
