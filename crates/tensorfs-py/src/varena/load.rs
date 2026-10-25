@@ -34,6 +34,11 @@ impl LoadSlot {
 }
 #[pymethods]
 impl LoadSlot {
+    #[classattr]
+    fn supports_event_input() -> bool {
+        true
+    }
+
     #[new]
     #[pyo3(signature = (arena, checkpoint, parts, bytes, threads = 2))]
     fn new(
@@ -171,9 +176,21 @@ impl LoadSlot {
         state.sealed = true;
         Ok(())
     }
-    fn submit_native(&self, py: Python<'_>, capsule: &Bound<'_, PyAny>) -> PyResult<LoadJob> {
+    #[pyo3(signature = (capsule, *, event_ordered = false))]
+    fn submit_native(
+        &self,
+        py: Python<'_>,
+        capsule: &Bound<'_, PyAny>,
+        event_ordered: bool,
+    ) -> PyResult<LoadJob> {
         self.valid()?;
         let execution = Arc::new(Continuation::import(capsule, self.region.device())?);
+        if event_ordered && !execution.supports_event_input() {
+            execution.abandon();
+            return Err(PyValueError::new_err(
+                "event-ordered loading requires a matching native continuation",
+            ));
+        }
         let taken = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if !state.sealed || state.submitted {
@@ -191,7 +208,7 @@ impl LoadSlot {
             ));
         };
         let read = py
-            .detach(|| PreparedRead::composed(work, execution))
+            .detach(|| PreparedRead::composed(work, execution, event_ordered))
             .map_err(|e| e.raise(py))?;
         {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());

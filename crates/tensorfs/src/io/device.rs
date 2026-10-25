@@ -32,14 +32,14 @@ fn failed(copy: usize, error: cuda::Error) -> Error {
     }
 }
 
-struct Event {
+pub(super) struct Event {
     ctx: CUcontext,
     raw: CUevent,
     timing: bool,
 }
 
 impl Event {
-    fn new(ctx: CUcontext, timing: bool) -> cuda::Result<Event> {
+    pub(super) fn new(ctx: CUcontext, timing: bool) -> cuda::Result<Event> {
         let _ctx = CtxGuard::enter(ctx)?;
         let mut raw = std::ptr::null_mut();
         // SAFETY: `raw` is a writable out-pointer and the event's context is current.
@@ -55,7 +55,7 @@ impl Event {
         })?;
         Ok(Event { ctx, raw, timing })
     }
-    fn record(&self, stream: CUstream) -> cuda::Result<()> {
+    pub(super) fn record(&self, stream: CUstream) -> cuda::Result<()> {
         let _ctx = CtxGuard::enter(self.ctx)?;
         // SAFETY: a live event and stream of this context, which is current.
         cuda::check("cuEventRecord", unsafe {
@@ -67,6 +67,13 @@ impl Event {
         // SAFETY: a live event of this context, which is current.
         cuda::check("cuEventSynchronize", unsafe {
             (cuda::driver()?.event_synchronize)(self.raw)
+        })
+    }
+    pub(super) fn wait_on(&self, stream: CUstream) -> cuda::Result<()> {
+        let _ctx = CtxGuard::enter(self.ctx)?;
+        // SAFETY: both handles are retained in this context; record precedes every wait.
+        cuda::check("cuStreamWaitEvent", unsafe {
+            (cuda::driver()?.stream_wait_event)(stream, self.raw, 0)
         })
     }
     fn since(&self, start: &Event) -> cuda::Result<u64> {
