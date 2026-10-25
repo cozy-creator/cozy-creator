@@ -23,6 +23,7 @@ struct Envelope {
 
 /// This boot's one envelope. A retained envelope is verified with a replayed key and served
 /// byte for byte: a provider restart may verify what was sealed, never sign again.
+/// An unsigned local envelope may refresh GPU discovery while retaining its identity.
 pub struct Readiness {
     path: Option<PathBuf>,
     /// A rental's envelope is signed for its Hub; this computer's is not signed.
@@ -99,15 +100,25 @@ impl Readiness {
         self.state.lock().unwrap().retained.clone()
     }
 
-    /// Seals this boot's payload once; true when this call signed it. A later process of the
-    /// same boot must measure the same boot, leaf and GPU set; the original bytes stay served.
+    /// True when this call publishes an envelope. Signed rentals retain the same boot, leaf
+    /// and GPU set. An unsigned local restart may update discovery, never its identity.
     pub fn seal(&self, payload: Vec<u8>) -> io::Result<bool> {
         let mut state = self.state.lock().unwrap();
         if let Some(retained) = &state.retained {
-            same_attestation(retained, &payload)?;
-            state.proved = true;
-            self.proved.notify_all();
-            return Ok(false);
+            let unsigned_local = !self.required
+                && state
+                    .sealed
+                    .as_deref()
+                    .map(parse)
+                    .transpose()?
+                    .is_some_and(|envelope| envelope.hmac_sha256.is_empty());
+            if same_attestation(retained, &payload, unsigned_local)? {
+                state.proved = true;
+                self.proved.notify_all();
+                return Ok(false);
+            }
+            // Only unsigned local GPU discovery changed. Reuse the ordinary atomic seal;
+            // the old envelope remains intact if publication fails.
         }
         let hmac_sha256 = match &state.key {
             Some(key) => mac(key, &payload),
@@ -242,7 +253,7 @@ impl Measured<'_> {
 }
 
 /// The attested facts, as the Go agent and Runtime compare them across a same-boot restart.
-fn same_attestation(before: &[u8], after: &[u8]) -> io::Result<()> {
+fn same_attestation(before: &[u8], after: &[u8], refresh_local_gpu: bool) -> io::Result<bool> {
     fn facts(raw: &[u8]) -> io::Result<BTreeMap<&'static str, String>> {
         #[derive(serde::Deserialize, Default)]
         #[serde(default)]
@@ -280,12 +291,19 @@ fn same_attestation(before: &[u8], after: &[u8]) -> io::Result<()> {
             ("gpus", gpus.join(",")),
         ]))
     }
-    if facts(before)? != facts(after)? {
+    let mut before = facts(before)?;
+    let mut after = facts(after)?;
+    let same_gpus = before.get("gpus") == after.get("gpus");
+    if refresh_local_gpu {
+        before.remove("gpus");
+        after.remove("gpus");
+    }
+    if before != after {
         return Err(invalid(
             "this boot attested a different boot, leaf, owner or GPU set before restarting",
         ));
     }
-    Ok(())
+    Ok(same_gpus)
 }
 
 fn parse(raw: &[u8]) -> io::Result<Envelope> {
