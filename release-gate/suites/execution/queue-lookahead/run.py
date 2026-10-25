@@ -27,6 +27,7 @@ def worker_events(machine, output):
         text = re.sub(r"\x1b\[[0-9;]*m", "", text)
         mark = re.search(r"request lookahead (sent|ready|reused|canceled)", text)
         request = re.search(r'\brequest="?([^\s"]+)', text)
+        public_run = re.search(r'\brun="?([^\s"]+)', text)
         if mark is None or request is None:
             continue
         stamp = text.split(maxsplit=1)[0]
@@ -40,6 +41,7 @@ def worker_events(machine, output):
             {
                 "event": mark[1],
                 "request": request[1],
+                "run": public_run[1] if public_run else None,
                 "at_ns": seconds * 10**9 + int(fraction[:9].ljust(9, "0")),
                 "text": text,
             }
@@ -50,6 +52,7 @@ def worker_events(machine, output):
 class Run:
     def __init__(self, target, machine, output, tag, seed, **values):
         self.tag, self.record, self.entered = tag, None, None
+        self.output = output
         self.events = queue.Queue()
         self.stderr = (output / f"{tag}.stderr").open("w")
         self.process = subprocess.Popen(
@@ -122,6 +125,44 @@ class Run:
                 capture_output=True,
                 text=True,
             )
+
+    def request_id(self, events):
+        """Join only explicit identities; public run IDs and executor IDs differ."""
+        result = subprocess.run(
+            ["cozy", "run", "show", str(self.record["number"]), "--once", "--json"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        (self.output / f"{self.tag}.show.json").write_text(result.stdout)
+        (self.output / f"{self.tag}.show.stderr").write_text(result.stderr)
+        shown = json.loads(result.stdout)
+        assert shown.get("id") == self.record["id"], shown
+        ids = {
+            str(row["stats"]["request"])
+            for row in shown.get("measurements", {})
+            .get("memory", {})
+            .get("stats", {})
+            .get("varena", [])
+            if "request" in row.get("stats", {})
+        }
+        for source in (self.entered or {}, self.record.get("result") or {}):
+            if source.get("request_id"):
+                ids.add(str(source["request_id"]))
+        ids.update(
+            event["request"]
+            for event in events
+            if event["event"] == "sent" and event.get("run") == self.record["id"]
+        )
+        assert len(ids) == 1, (
+            (
+                f"{self.tag}: explicit executor request mapping is missing or inconsistent; "
+                "pre-entry jobs require the sent log's public run ID"
+            ),
+            ids,
+        )
+        return ids.pop()
 
 
 def main():
@@ -227,17 +268,16 @@ def main():
                 c.record,
             )
         events = worker_events(args.on, args.out)
+        request_ids = {run.tag: run.request_id(events) for run in runs}
         relevant = [
-            event
-            for event in events
-            if event["request"] in {run.record["id"] for run in runs}
+            event for event in events if event["request"] in request_ids.values()
         ]
 
         def marks(run, kind):
             return [
                 event
                 for event in relevant
-                if event["request"] == run.record["id"] and event["event"] == kind
+                if event["request"] == request_ids[run.tag] and event["event"] == kind
             ]
 
         if args.mode != "incompatible":
@@ -272,6 +312,7 @@ def main():
             "setup_seconds": setup_seconds,
             "handler_order_passed": True,
             "lookahead_events": relevant,
+            "executor_request_ids": request_ids,
             "lookahead_timing_proof": "Verified actual worker diagnostics, correlated by request ID and worker clock.",
         }
         (args.out / "receipt.json").write_text(json.dumps(report, indent=2) + "\n")
