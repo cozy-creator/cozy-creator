@@ -3,7 +3,7 @@
 //! DLPack destination or calls a Python transformer/cleanup callback from its worker.
 
 use std::collections::BTreeMap;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
@@ -15,7 +15,7 @@ use tensorfs::io::source::{IoTally, Item, Mode, Placement, Source};
 use tensorfs::io::{self, Dst, ReadControl, ReadStats};
 
 use super::continuation::{self, Continuation, Status};
-use super::{raise, PyRegion};
+use super::{PyRegion, raise};
 use crate::store::PyCheckpoint;
 
 #[derive(Clone)]
@@ -101,6 +101,27 @@ pub(super) struct Work {
     producer: Option<varena::ProducerGuard>,
     threads: usize,
     completed: bool,
+    decode: Option<Decode>,
+}
+
+struct Decode {
+    encoding: tensorfs::format::Encoding,
+    dtype: tensorfs::format::Dtype,
+    shape: Vec<u64>,
+    parts: Vec<(tensorfs::format::Part, usize)>,
+    storage: io::DeviceBuffer,
+    scratch_bytes: usize,
+}
+
+fn decode_failure(error: tensorfs::Failure) -> Failure {
+    match error.kind {
+        // This stage performs GPU decoding only, never filesystem writes. The shared
+        // decoder erases CUresult, so an I/O-family driver error cannot prove healthy
+        // ownership even if a subsequent drain succeeds. Retain the same actual Work.
+        tensorfs::Kind::Io => Failure::Native(varena::Error::Poisoned(error.detail)),
+        tensorfs::Kind::Full => Failure::Native(varena::Error::OutOfMemory { requested_bytes: 0 }),
+        _ => Failure::Storage(error),
+    }
 }
 
 struct State {
@@ -119,6 +140,10 @@ struct Shared {
     began: Instant,
     read_completed_ns: AtomicU64,
     read_bytes: AtomicU64,
+    decode_completed_ns: AtomicU64,
+    decoded_bytes: usize,
+    scratch_bytes: usize,
+    decode_scheme: Option<String>,
     launch_started_ns: AtomicU64,
     compute_completed_ns: AtomicU64,
     compute_wait_entered_ns: AtomicU64,
@@ -146,13 +171,19 @@ impl Shared {
         let device = self.region.device();
         let outcome = catch_unwind(AssertUnwindSafe(|| {
             let fill = work.fill.as_ref().expect("worker owns uncommitted fill");
+            let (ptr, len) = work
+                .decode
+                .as_ref()
+                .map_or((fill.ptr(), fill.len()), |decode| {
+                    (decode.storage.ptr(), decode.storage.len())
+                });
             let placement = Placement {
                 items: &work.items,
                 origin: 0,
                 dst: Dst::Device {
                     device,
-                    ptr: fill.ptr(),
-                    len: fill.len(),
+                    ptr,
+                    len,
                     stream: 0,
                 },
             };
@@ -174,6 +205,54 @@ impl Shared {
                 .store(self.elapsed(), Ordering::Release);
             if self.cancel.canceled() {
                 return Err(Failure::Canceled);
+            }
+            if let Some(decode) = &work.decode {
+                // Read completion does not certify decoder stream/scratch completion.
+                // Any decoder error or panic must take the existing checked-drain path.
+                work.completed = false;
+                let parts: Vec<_> = decode
+                    .parts
+                    .iter()
+                    .map(|(part, offset)| tensorfs::raw::DecodePart {
+                        role: &part.role,
+                        dtype: &part.dtype,
+                        shape: &part.shape,
+                        src: io::Src::Device {
+                            device,
+                            ptr: decode.storage.ptr() + *offset as u64,
+                            stream: 0,
+                        },
+                        len: part.length as usize,
+                    })
+                    .collect();
+                // SAFETY: Work retains all packed buffers and the exclusive final Fill;
+                // the read already joined all producers. Separate allocations cannot
+                // overlap. The shared decoder checks metadata, streams and completion.
+                unsafe {
+                    tensorfs::raw::decode_into(
+                        &decode.encoding,
+                        &decode.dtype,
+                        &decode.shape,
+                        &parts,
+                        tensorfs::raw::DecodeOutput {
+                            dtype: &decode.dtype,
+                            shape: &decode.shape,
+                            dst: Dst::Device {
+                                device,
+                                ptr: fill.ptr(),
+                                len: fill.len(),
+                                stream: 0,
+                            },
+                        },
+                    )
+                }
+                .map_err(decode_failure)?;
+                work.completed = true;
+                self.decode_completed_ns
+                    .store(self.elapsed(), Ordering::Release);
+                if self.cancel.canceled() {
+                    return Err(Failure::Canceled);
+                }
             }
             let fill = work.fill.take().expect("successful read owns its fill");
             // SAFETY: the existing engine initialized all logical bytes, including padding,
@@ -293,14 +372,11 @@ impl Shared {
     }
 }
 
-pub(super) fn prepare_work(
-    region: &Arc<varena::Region>,
-    checkpoint: tensorfs::Checkpoint,
+fn prepare_items(
+    checkpoint: &tensorfs::Checkpoint,
     parts: Vec<(String, usize, usize)>,
-    threads: usize,
-    reclaim: bool,
-    initialize: bool,
-) -> Result<Option<Work>, Failure> {
+    bytes: usize,
+) -> Result<Vec<Item>, Failure> {
     let names: Vec<String> = parts.iter().map(|p| p.0.clone()).collect();
     let spans = checkpoint.spans(&[names]).map_err(Failure::Storage)?;
     let mut by_name = BTreeMap::<String, Vec<_>>::new();
@@ -312,7 +388,7 @@ pub(super) fn prepare_work(
     for (name, offset, length) in parts {
         let end = offset
             .checked_add(length)
-            .filter(|end| *end <= region.len())
+            .filter(|end| *end <= bytes)
             .ok_or(Failure::Native(varena::Error::Invalid(
                 "refill target exceeds region",
             )))?;
@@ -354,6 +430,119 @@ pub(super) fn prepare_work(
             "refill targets overlap",
         )));
     }
+    Ok(items)
+}
+
+pub(super) fn prepare_encoded(
+    arena: &Arc<varena::Arena>,
+    checkpoint: tensorfs::Checkpoint,
+    component: &str,
+    key: &str,
+    dtype: tensorfs::format::Dtype,
+    max_scratch_bytes: usize,
+    threads: usize,
+) -> Result<(Arc<varena::Region>, Work), Failure> {
+    use tensorfs::format::{Body, Dtype};
+    let invalid = |detail| Failure::Native(varena::Error::Invalid(detail));
+    if !matches!(dtype, Dtype::F16 | Dtype::BF16 | Dtype::F32) {
+        return Err(invalid("encoded load output must be F16, BF16 or F32"));
+    }
+    let tensor = checkpoint
+        .header()
+        .tensor(component, key)
+        .ok_or_else(|| invalid("encoded load tensor is absent"))?;
+    let shape = tensor.shape.clone();
+    let bytes = dtype
+        .byte_len(&shape)
+        .and_then(|n| usize::try_from(n).ok())
+        .filter(|n| *n > 0 && *n <= isize::MAX as usize)
+        .ok_or_else(|| invalid("encoded load output is empty or exceeds address space"))?;
+    let Body::Encoded { encoding, parts } = &tensor.body else {
+        return Err(invalid(
+            "encoded load requires an encoded checkpoint tensor",
+        ));
+    };
+    let lengths = parts
+        .iter()
+        .map(|part| {
+            usize::try_from(part.length)
+                .map_err(|_| invalid("encoded part length exceeds address space"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let metadata: Vec<_> = parts
+        .iter()
+        .zip(&lengths)
+        .map(|(part, &len)| tensorfs::format::decode::PartMetadata {
+            role: &part.role,
+            dtype: &part.dtype,
+            shape: &part.shape,
+            len,
+        })
+        .collect();
+    let private = tensorfs::raw::decode_device_scratch_bytes(
+        arena.device(),
+        encoding,
+        &dtype,
+        &shape,
+        &metadata,
+    )
+    .map_err(|error| match error.kind {
+        tensorfs::Kind::Full => Failure::Native(varena::Error::OutOfMemory { requested_bytes: 0 }),
+        _ => Failure::Storage(error), // Preflight has submitted no GPU work.
+    })?;
+    let (offsets, packed) = io::pack(lengths.iter().copied(), io::DEVICE_ALIGN)
+        .ok_or_else(|| invalid("encoded load packed size overflows"))?;
+    if packed == 0 || packed > isize::MAX as usize {
+        return Err(invalid(
+            "encoded load packed storage is empty or exceeds address space",
+        ));
+    }
+    let required = packed
+        .checked_add(private)
+        .ok_or_else(|| invalid("encoded load scratch size overflows"))?;
+    if required > max_scratch_bytes {
+        return Err(Failure::Native(varena::Error::OutOfMemory {
+            requested_bytes: required,
+        }));
+    }
+    let named = parts
+        .iter()
+        .zip(&offsets)
+        .zip(lengths)
+        .map(|((part, &offset), len)| (format!("{component}/{key}#{}", part.role), offset, len))
+        .collect();
+    let items = prepare_items(&checkpoint, named, packed)?;
+    let encoding = encoding.clone();
+    let parts = parts.iter().cloned().zip(offsets).collect();
+    let region = arena.reserve(bytes).map_err(Failure::Native)?;
+    let mut work = prepare_work(&region, checkpoint, Vec::new(), threads, true, true)?
+        .ok_or_else(|| invalid("fresh encoded load slot was already resident"))?;
+    // Final zero initialization has already completed. This fresh scratch has no
+    // pending GPU work if allocation fails; later submission keeps it inside Work.
+    let scratch_producer = varena::enter_producer(region.device()).map_err(Failure::Native)?;
+    let storage = io::DeviceBuffer::new(region.device(), packed).map_err(cuda_failure)?;
+    drop(scratch_producer);
+    work.items = items;
+    work.decode = Some(Decode {
+        encoding,
+        dtype,
+        shape,
+        parts,
+        storage,
+        scratch_bytes: required,
+    });
+    Ok((region, work))
+}
+
+pub(super) fn prepare_work(
+    region: &Arc<varena::Region>,
+    checkpoint: tensorfs::Checkpoint,
+    parts: Vec<(String, usize, usize)>,
+    threads: usize,
+    reclaim: bool,
+    initialize: bool,
+) -> Result<Option<Work>, Failure> {
+    let items = prepare_items(&checkpoint, parts, region.len())?;
     let producer = varena::enter_producer(region.device()).map_err(Failure::Native)?;
     let preparation = if reclaim {
         region.prepare()
@@ -382,6 +571,7 @@ pub(super) fn prepare_work(
         producer: Some(producer),
         threads: threads.clamp(1, 8),
         completed: false,
+        decode: None,
     };
     if initialize {
         // The existing read engine owns its explicit copy streams (Dst stream 0 is not PTDS).
@@ -535,6 +725,14 @@ impl PreparedRead {
             }
         };
         work.producer = Some(producer);
+        let (decoded_bytes, scratch_bytes, decode_scheme) =
+            work.decode.as_ref().map_or((0, 0, None), |decode| {
+                (
+                    work.region.len(),
+                    decode.scratch_bytes,
+                    Some(decode.encoding.scheme.clone()),
+                )
+            });
         Ok(Self {
             shared: Some(Arc::new(Shared {
                 region: work.region.clone(),
@@ -550,6 +748,10 @@ impl PreparedRead {
                 began: Instant::now(),
                 read_completed_ns: AtomicU64::new(0),
                 read_bytes: AtomicU64::new(0),
+                decode_completed_ns: AtomicU64::new(0),
+                decoded_bytes,
+                scratch_bytes,
+                decode_scheme,
                 launch_started_ns: AtomicU64::new(0),
                 compute_completed_ns: AtomicU64::new(0),
                 compute_wait_entered_ns: AtomicU64::new(0),
@@ -609,12 +811,23 @@ impl PreparedRead {
         row.set_item("bytes", bytes)?;
         row.set_item("read_bytes", bytes)?;
         row.set_item(
+            "decoded_bytes",
+            if shared.decode_completed_ns.load(Ordering::Acquire) == 0 {
+                0
+            } else {
+                shared.decoded_bytes
+            },
+        )?;
+        row.set_item("scratch_bytes", shared.scratch_bytes)?;
+        row.set_item("decode_scheme", shared.decode_scheme.as_deref())?;
+        row.set_item(
             "canceled",
             matches!(result, Some(Err(Failure::Canceled)))
                 || result.is_none() && shared.cancel.canceled(),
         )?;
         for (name, clock) in [
             ("read_completed_ns", &shared.read_completed_ns),
+            ("decode_completed_ns", &shared.decode_completed_ns),
             ("launch_started_ns", &shared.launch_started_ns),
             ("compute_completed_ns", &shared.compute_completed_ns),
             ("compute_wait_entered_ns", &shared.compute_wait_entered_ns),
@@ -685,6 +898,10 @@ impl PreparedRead {
                 began: Instant::now(),
                 read_completed_ns: AtomicU64::new(0),
                 read_bytes: AtomicU64::new(0),
+                decode_completed_ns: AtomicU64::new(0),
+                decoded_bytes: 0,
+                scratch_bytes: 0,
+                decode_scheme: None,
                 launch_started_ns: AtomicU64::new(0),
                 compute_completed_ns: AtomicU64::new(0),
                 compute_wait_entered_ns: AtomicU64::new(0),

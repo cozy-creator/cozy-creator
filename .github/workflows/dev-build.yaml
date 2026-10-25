@@ -165,6 +165,7 @@ jobs:
           assert measured == {"amax": 0.0, "max_abs_error": 0.0, "sse": 0.0, "energy": 0.0, "saturated": 0}
           assert tensorfs.ConversionControl().progress() == (0, 0, 0)
           assert varena.supports_load_execution()
+          assert hasattr(tensorfs._ext._VarenaLoadSlot, "encoded")
           print("TensorFS full-package import and native capabilities:", tensorfs.__version__)
           PY
       - if: always() && contains(inputs.build, 'tensorfs')

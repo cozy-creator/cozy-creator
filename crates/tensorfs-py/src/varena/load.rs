@@ -5,9 +5,8 @@ use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 
 use super::continuation::Continuation;
 use super::{
-    capsule,
+    Deferred, PyArena, capsule,
     refill::{self, Control, PreparedRead, Work},
-    Deferred, PyArena,
 };
 use crate::store::PyCheckpoint;
 
@@ -62,6 +61,46 @@ impl LoadSlot {
                 Ok::<_, refill::Failure>((region, work))
             })
             .map_err(|e| e.raise(py))?;
+        Ok(Self {
+            region: Deferred::new(region),
+            pid: std::process::id(),
+            state: Mutex::new(State {
+                work: Some(work),
+                sealed: false,
+                canceled: false,
+                submitted: false,
+                control: None,
+            }),
+        })
+    }
+    #[staticmethod]
+    #[pyo3(signature = (arena, checkpoint, component, key, *, dtype, max_scratch_bytes, threads = 2))]
+    #[allow(clippy::too_many_arguments)]
+    fn encoded(
+        py: Python<'_>,
+        arena: PyRef<'_, PyArena>,
+        checkpoint: PyRef<'_, PyCheckpoint>,
+        component: String,
+        key: String,
+        dtype: String,
+        max_scratch_bytes: usize,
+        threads: usize,
+    ) -> PyResult<Self> {
+        let arena = arena.arena.clone();
+        let checkpoint = checkpoint.core(py)?;
+        let (region, work) = py
+            .detach(|| {
+                refill::prepare_encoded(
+                    &arena,
+                    checkpoint,
+                    &component,
+                    &key,
+                    tensorfs::format::Dtype::parse(&dtype),
+                    max_scratch_bytes,
+                    threads,
+                )
+            })
+            .map_err(|error| error.raise(py))?;
         Ok(Self {
             region: Deferred::new(region),
             pid: std::process::id(),

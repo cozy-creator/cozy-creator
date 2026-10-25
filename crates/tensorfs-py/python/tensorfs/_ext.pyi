@@ -411,6 +411,9 @@ class VarenaPoisonedError(RuntimeError):
 class _VarenaLoadSlot:
     def __init__(self, arena: _VarenaArena, checkpoint: Checkpoint,
                  parts: Sequence[tuple[str, int, int]], bytes: int, threads: int = 2) -> None: ...
+    @staticmethod
+    def encoded(arena: _VarenaArena, checkpoint: Checkpoint, component: str, key: str, *,
+                dtype: str, max_scratch_bytes: int, threads: int = 2) -> _VarenaLoadSlot: ...
     @property
     def device(self) -> int: ...
     @property

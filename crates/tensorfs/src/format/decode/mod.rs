@@ -358,7 +358,7 @@ pub(crate) fn supports_sources(encoding: &Encoding) -> bool {
 }
 
 fn source_scheme(scheme: &Scheme) -> bool {
-    comfy::supports_sources(scheme) || matches!(scheme.name, "fp8.tensorwise" | "nvfp4")
+    comfy::supports_sources(scheme) || matches!(scheme.name, "fp8.tensorwise" | "nvfp4" | "int8.convrot")
 }
 
 /// Plan external sources with the SAME source-enabled Scheme::decode functions as Host reads.

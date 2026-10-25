@@ -262,8 +262,8 @@ class LoadSlot:
     zero-initialized ``tensor`` only to prepare/capture the known body that will consume the
     stored parts. ``PreparedRepeat.capture(load=slot)`` seals that capture. Submission is
     one-shot; no Python callback runs between the native read and the retained continuation.
-    Ordinary region prefetch keeps its existing behavior. Native checkpoint decode is not
-    supported by this raw-parts boundary.
+    Ordinary region prefetch keeps its existing behavior. ``encoded`` adds one checked
+    native decode before the same continuation; it does not launch from an enqueue event.
     """
 
     def __init__(
@@ -282,15 +282,55 @@ class LoadSlot:
             arena._native, checkpoint, list(parts), bytes, threads
         )
         self._tensor: Tensor | None = None
+        self._decoded: tuple[str, tuple[int, ...]] | None = None
         self.device = arena.device
+
+    @classmethod
+    def encoded(
+        cls,
+        arena: Arena,
+        checkpoint: _ext.Checkpoint,
+        component: str,
+        key: str,
+        *,
+        dtype: str,
+        max_scratch_bytes: int,
+        threads: int = 2,
+    ) -> LoadSlot:
+        """One encoded tensor read/decode followed by native execution.
+
+        dtype is F16, BF16 or F32. The required scratch bound includes aligned packed
+        parts and the decoder's private GPU allocation sizes; it excludes final output,
+        shared read staging and CUDA driver/module/allocation-granularity overhead.
+        Metadata, catalog and budget checks precede source I/O. All read/decode failures
+        precede dependent execution. The initialized typed tensor is capture-only until
+        submission completes, using the same owning alias and sealing as raw slots.
+        """
+        native = getattr(_ext, "_VarenaLoadSlot", None)
+        if native is None or not hasattr(native, "encoded"):
+            raise RuntimeError("this TensorFS build has no encoded native load slot")
+        result = cls.__new__(cls)
+        result._native = native.encoded(
+            arena._native, checkpoint, component, key, dtype=dtype,
+            max_scratch_bytes=max_scratch_bytes, threads=threads,
+        )
+        result._tensor = None
+        result._decoded = (dtype, tuple(checkpoint.components[component].tensors[key].shape))
+        result.device = arena.device
+        return result
 
     @property
     def tensor(self) -> Tensor:
-        """Initialized U8 capture storage; logical weights arrive only during submission."""
+        """Initialized capture storage (U8 for raw slots, typed/shaped for encoded slots)."""
         if self._tensor is None:
             import torch
 
             self._tensor = torch.from_dlpack(self._native)
+            if self._decoded is not None:
+                dtype, shape = self._decoded
+                self._tensor = self._tensor.view(
+                    {"F16": torch.float16, "BF16": torch.bfloat16, "F32": torch.float32}[dtype]
+                ).reshape(shape)
         return self._tensor
 
     def seal(self) -> None:

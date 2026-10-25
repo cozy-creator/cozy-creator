@@ -69,7 +69,7 @@ pub const CONVROT: Scheme = Scheme {
 
 /// `q × s(i, j)`.
 fn scaled<'a>(c: &Ctx<'a>, grid: Grid) -> Codes<'a> {
-    Codes::new(c.part("weight").bytes, SIGNED_BYTES, c.part("scale"), grid)
+    Codes::new(c.source("weight"), SIGNED_BYTES, c.elements("scale"), grid)
 }
 
 /// `(y × s[i]) × 2^−k` with `y` each group of `B = 4^k` times `H_B` (spec §6 `int8.convrot`).

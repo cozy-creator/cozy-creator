@@ -169,6 +169,35 @@ The first slice retains its producer lease through compute, excluding concurrent
 capture. `facts()` exposes source bytes and native stage times, `compute_wait_entered`, and
 `completion_proven`; observations remain readable after an error. Only `completion_proven`
 authorizes normal owner release after failure. Times are monotonic elapsed nanoseconds from
-load submission. This supports raw parts only: encoded checkpoint decode remains future work.
+load submission.
 Real release-gate proof must cover loaded-byte correctness, a parked Python thread, failed
 source reads, cancellation before launch and during native wait, and continuous pin ownership.
+
+`LoadSlot.encoded(arena, checkpoint, component, key, dtype="BF16", max_scratch_bytes=...,
+threads=2)` prepares one encoded checkpoint tensor for the same checked native chain. Its
+`tensor` is an initialized, contiguous typed view with the checkpoint's logical shape; output
+dtype must be F16, BF16 or F32. The native shared format plan and installed CUDA catalog validate
+all roles, shapes, lengths, layout and required kernels before any source read. No new format,
+Python decoding callback or host-decoded upload fallback is introduced. ConvRot uses the same
+existing rotated/H4 plan with resident source bindings.
+
+The explicit scratch bound counts aligned packed parts plus the requested byte sizes of every
+decoder-private GPU buffer, including metadata casts and both rotation buffers. It excludes
+the final output, shared read-engine staging, CUDA modules/driver memory and allocation-granularity
+overhead; it is not a hard process-VRAM ceiling. Scratch allocation uses the existing producer
+guard and remains owned alongside the final Fill. Neither preparation nor an enqueue event
+publishes weights as ready.
+
+After a checked source read, the same worker calls the existing `raw::decode_into`, including
+its device error-word and completion checks, then checks cancellation before committing the
+final Fill and starting the unchanged continuation. Any failed read/decode launches zero
+dependent graphs. A semantic decode failure drains before normal cleanup; uncertain completion
+retains actual owners. The shared decoder currently erases numeric CUDA error codes into its
+I/O family: that family during GPU decoding conservatively poisons/retains the chain. This
+does not apply to known metadata or source-validation errors before decoding. Decoder capacity
+failure uses the existing native out-of-memory family, never a disk-full error.
+
+Returned native facts add `decode_scheme`, `decoded_bytes`, `scratch_bytes`, and
+`decode_completed_ns`. Successful encoded work must satisfy
+`read_completed_ns <= decode_completed_ns <= launch_started_ns`. Read bytes count stored parts,
+not expanded output bytes. Raw slots retain zero decode counters and their existing behavior.
