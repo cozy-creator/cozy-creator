@@ -162,7 +162,8 @@ fn source_layout(tensor: &crate::format::Tensor) -> Result<Source> {
     }
 }
 
-fn implementation() -> String {
+/// The same complete numerical/source-reader implementation identity used by Writer resume.
+pub fn quantization_implementation() -> String {
     let mut hash = crate::sha256::Sha256::new();
     hash.update(encode::implementation().as_bytes());
     for source in [
@@ -483,7 +484,7 @@ impl Writer {
         let identity = crate::sha256::hex_digest(
             &serde_json::to_vec(&(
                 "tensorfs-quantization/1",
-                implementation(),
+                quantization_implementation(),
                 source.id(),
                 options.calibration.map(Checkpoint::id),
                 self.base_id(),

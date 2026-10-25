@@ -850,7 +850,8 @@ Reused measurements remain unknown rather than fabricated as zero.
 
 Resume binds the calibration checkpoint and complete fit descriptor in addition to the
 weight source, strategy and implementation. `raw.quantization_implementation()` returns
-the native producer digest for Runtime memo provenance. A seed names this Rust producer's
+the same full producer/source-reader digest as Writer resume for Runtime memo provenance
+(a build without store support reports only its raw numerical implementation). A seed names this Rust producer's
 sketch; it does not reproduce Torch's CPU/CUDA RNG stream or singular-vector signs.
 Cancellation is checked between input windows, numerical passes, candidates and library
 factorizations, then before publication. A single QR/SVD call is not interruptible.

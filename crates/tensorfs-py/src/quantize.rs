@@ -150,7 +150,14 @@ fn produce(
 
 #[pyfunction]
 fn quantization_implementation() -> String {
-    encode::implementation()
+    #[cfg(feature = "store")]
+    {
+        tensorfs::quantization_implementation()
+    }
+    #[cfg(not(feature = "store"))]
+    {
+        encode::implementation()
+    }
 }
 
 pub fn install(m: &Bound<'_, PyModule>) -> PyResult<()> {
