@@ -2,13 +2,14 @@
 # The `cli-release` suite: cozy's signed-in commands before a release (e2e/coverage.toml's `release` tier), on Linux,
 # macOS or Windows. Signed in with the CI key (or, by hand with --installed, as this computer is), it reads the
 # account's credit and makes (never pays) a checkout, then rents ONE machine of --sku (default: the catalog's cheapest
-# GPU; nothing dearer than --max-hourly an hour). A throwaway fidika/ci-e2e-<run> package and model go through lock,
+# GPU; nothing dearer than --max-hourly an hour; each step is refused once its GPU time reached --max-usd, which ends
+# it: the CLI's quote names no storage or traffic, so the cap leaves them headroom). A throwaway fidika/ci-e2e-<run> package and model go through lock,
 # publish, yank, un-yank and delete, run on this computer's machine or, where the OS runs none (macOS, Windows), on the
 # rental. On the rental: package install and list, BiRefNet from a YAML request and with --asset, each output landed
 # here (one in a folder named with spaces and non-ASCII), machine list, show and logs, keepalive, a run followed and
 # canceled, and an end while a run still goes, checked gone. The throwaway and the rental are removed in an EXIT trap
 # whatever fails. --quote stops at the rental's quote and rents nothing: the $0 pre-flight of every step before it.
-#   e2e/release/run.sh --out DIR [--key FILE | --installed] [--sku SKU] [--max-hourly USD] [--quote] [--release DIR]
+#   e2e/release/run.sh --out DIR [--key FILE | --installed] [--sku SKU] [--max-hourly USD] [--max-usd USD] [--quote] [--release DIR]
 #                      [--tensord F|V] [--tensorfs F|V] [--runtime F|V]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
@@ -36,6 +37,16 @@ trap cleanup EXIT
 # A runner's cancel or timeout signals the script: it exits, so the trap ends the rental.
 trap 'exit 1' INT TERM HUP
 usd() { awk -v m="$1" 'BEGIN { printf "%.2f", m / 1e6 }'; }
+# The rental's GPU time so far at its quoted rate, from the order on (boot included).
+rented_at='' hourly=0
+spent() { awk -v h="$hourly" -v s="$(( $(date +%s) - ${rented_at:-$(date +%s)} ))" 'BEGIN { printf "%.3f", h / 1e6 * s / 3600 }'; }
+# Every step after the order first holds the rental to --max-usd: past it the suite fails and the trap ends the pod.
+step() {
+  echo "::endgroup::"
+  [ -z "$M" ] || awk -v s="$(spent)" -v max="$MAX_USD" 'BEGIN { exit !(s < max) }' \
+    || fail "the rental's GPU time reached \$$(spent) of --max-usd \$$MAX_USD before \"$*\": ended"
+  echo "::group::$*"
+}
 
 # watched <name> <cozy args...>: a verb that makes a numbered run, followed to its end by the CLI's own events (run.sh);
 # its events in $OUT/<name>.ndjson, its record in <name>.json. 0: it completed.
@@ -67,10 +78,12 @@ hourly=$(jq -r 'select(.quote) | .quote.usd_micros_per_hour' "$OUT/quote.ndjson"
 [ "$code" = 2 ] && grep -q quote_unagreed "$OUT/quote.ndjson" && [ -n "$hourly" ] \
   || fail "machine rent $SKU without --yes: exit $code, not its quote alone: $(head -c 400 "$OUT/quote.ndjson")"
 awk -v h="$hourly" -v max="$MAX_HOURLY" 'BEGIN { exit !(h / 1e6 <= max) }' || fail "machine rent $SKU: \$$(usd "$hourly")/h, over --max-hourly \$$MAX_HOURLY"
-echo "quote: $SKU at \$$(usd "$hourly")/h"
+minutes=$(awk -v h="$hourly" -v max="$MAX_USD" 'BEGIN { printf "%.0f", max / (h / 1e6) * 60 }')
+echo "quote: $SKU at \$$(usd "$hourly")/h; --max-usd \$$MAX_USD buys $minutes min"
 if [ -n "$QUOTE" ]; then
   ! listed "ci-e2e-quote-$run" || check "machine list: the gone check by name lists a machine never rented"
-  finish "cli-release --quote: $SKU at \$$(usd "$hourly")/h, nothing rented"
+  rented_at=$(($(date +%s) - 60)); [ "$(spent)" != 0.000 ] || check "the spend guard reads \$0 after a minute at \$$(usd "$hourly")/h"
+  finish "cli-release --quote: $SKU at \$$(usd "$hourly")/h ($minutes min under --max-usd \$$MAX_USD), nothing rented"
   exit 0
 fi
 
@@ -78,6 +91,7 @@ step rental
 before=$(cozy --json machine list | jq '[.machines[] | select(.kind == "rental")] | length') || true
 ! cozy --json machine rent "$SKU" --gpus 64 -y > "$OUT/rent-too-many.json" 2>&1 || check "machine rent --gpus 64 bought something"
 [ "$(cozy --json machine list | jq '[.machines[] | select(.kind == "rental")] | length')" = "$before" ] || check "machine rent --gpus 64: a rental appeared"
+rented_at=$(date +%s)
 cozy --json machine rent "$SKU" --disk-gb 60 -y > "$OUT/rent.ndjson" || fail "machine rent $SKU failed: $(tail -c 400 "$OUT/rent.ndjson")"
 M=$(rented "$OUT/rent.ndjson") || true
 [ -n "$M" ] || fail "machine rent: no machine named"
@@ -183,4 +197,4 @@ cozy --json machine end "$M" --force -y > "$OUT/end.json" || check "machine end 
 wait || true
 
 step coverage; coverage "$COZY" release
-finish "cli-release: $pkg, $model, ${SKU} at \$$(usd "$hourly")/h"
+finish "cli-release: $pkg, $model, ${SKU} at \$$(usd "$hourly")/h, \$$(spent) of GPU time"
