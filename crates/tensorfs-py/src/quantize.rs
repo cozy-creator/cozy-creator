@@ -97,6 +97,5 @@ fn quantize(
 }
 
 pub fn install(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<PyConversionControl>()?;
     m.add_function(wrap_pyfunction!(quantize, m)?)
 }

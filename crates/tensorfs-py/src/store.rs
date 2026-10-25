@@ -2074,6 +2074,7 @@ fn _kernel_binary<'py>(
 }
 
 pub fn install(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<crate::quantize::PyConversionControl>()?;
     m.add_class::<crate::verification::PyVerificationReport>()?;
     m.add_class::<PyClient>()?;
     m.add_class::<PyCheckpoint>()?;
