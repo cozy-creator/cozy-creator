@@ -161,8 +161,8 @@ jobs:
             install -m 0755 dev/cozy-*/cozy-linux-x86_64 "$bin/cozy"; args+=(--tensord "$bin/cozy")
           fi
           # A wheel is a URL#sha256 the gate fetches and checks, or an artifact of this run.
-          for w in "runtime-wheel=$RUNTIME_WHEEL=cozy_runtime" "tensorfs-wheel=$TENSORFS_WHEEL=tensorfs"; do
-            IFS== read -r flag value dist <<< "$w"
+          for w in "runtime-wheel|$RUNTIME_WHEEL|cozy_runtime" "tensorfs-wheel|$TENSORFS_WHEEL|tensorfs"; do
+            IFS="|" read -r flag value dist <<< "$w"
             case $value in
               '') ;;
               artifact:*)
