@@ -146,6 +146,20 @@ jobs:
             cargo build --release --locked --target x86_64-unknown-linux-gnu --target-dir ../../target/manylinux2014 -p tensorfs --bin tfs
             install -D -m 755 ../../target/manylinux2014/x86_64-unknown-linux-gnu/release/tfs wheel-data/scripts/tfs
       # The container leaves root-owned files the cache post-step writes.
+      - name: Import the complete TensorFS wheel
+        if: contains(inputs.build, 'tensorfs')
+        run: |
+          wheels=(crates/tensorfs-py/dist/*.whl)
+          test "${#wheels[@]}" = 1
+          uv run --no-project --python 3.12 --with "${wheels[0]}" python - <<'PY'
+          import tensorfs
+          from tensorfs import raw, varena
+          assert tensorfs.__version__ == tensorfs._ext.__version__
+          assert callable(raw.quantize) and callable(tensorfs.Writer.quantize)
+          assert tensorfs.ConversionControl().progress() == (0, 0, 0)
+          assert varena.supports_load_execution()
+          print("TensorFS full-package import and native capabilities:", tensorfs.__version__)
+          PY
       - if: always() && contains(inputs.build, 'tensorfs')
         run: sudo chown -R "$(id -u):$(id -g)" target crates/tensorfs-py
       - if: contains(inputs.build, 'tensorfs')
