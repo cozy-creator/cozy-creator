@@ -47,6 +47,18 @@ def main():
     source = call(
         "source", ["run", package / "source", "seed=103", "--on", args.machine]
     )
+    assert source["target"].endswith("/source"), source["target"]
+    package_name = source["target"].removesuffix("/source")
+
+    def warm_row(run):
+        matching = [
+            row
+            for row in run["result"]["set"]
+            if row["package"] == package_name and row["entrypoint"] == "gpu"
+        ]
+        assert len(matching) == 1, (package_name, run["result"]["set"])
+        return matching[0]
+
     upload = call(
         "upload",
         [
@@ -85,7 +97,7 @@ def main():
         return {"number": run["number"], **row}
 
     warm = call("warm", [*common, "seed=11", "steps=8", "--warm", "gpu"])
-    assert warm["result"]["set"][0]["prepared"] is True
+    assert warm_row(warm)["prepared"] is True
     first, second = infer("first", 19, 8), infer("second", 29, 8)
     assert first["pid"] == second["pid"] and first["definition"] == second["definition"]
     assert first["captures"] == second["captures"] == 1
@@ -97,7 +109,7 @@ def main():
     changed = call(
         "changed", [*common, "seed=31", "steps=17", "batch_rows=2", "--warm", "gpu"]
     )
-    assert changed["result"]["set"][0]["prepared"] is True
+    assert warm_row(changed)["prepared"] is True
     third = infer("third", 37, 17, batch_rows=2)
     assert third["captures"] == 2 and third["factory_calls"] == 2
     assert (
@@ -120,7 +132,7 @@ def main():
             "gpu",
         ],
     )
-    row = held_back["result"]["set"][0]
+    row = warm_row(held_back)
     assert row["prepared"] is False and row["level"] == "host" and row["held_back"]
     # These real calls each trigger the existing keeper after returning. They never call
     # the factory themselves; the next call reveals whether a keeper retried it.
@@ -155,10 +167,11 @@ def main():
             "gpu",
         ],
     )
-    assert retry["result"]["set"][0]["prepared"] is True
+    assert warm_row(retry)["prepared"] is True
     fourth = infer("fourth", 47, 23, batch_rows=2)
     assert fourth["factory_calls"] == 4 and fourth["captures"] == 3
     proof = {
+        "package": package_name,
         "source": source["number"],
         "upload": upload["number"],
         "model": selected,
