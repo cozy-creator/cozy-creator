@@ -24,7 +24,7 @@ cap() {
   "$CLI" machine update "$M" --gpu-memory-limit "$1" -y >"cap-$1.log" 2>&1
   local i
   for i in $(seq 12); do  # the restarted machine writes its ledger line once it is up
-    timeout 60 "$CLI" machine logs "$M" memory -n 50 >"cap-$1.memory.log" 2>&1
+    "$CLI" machine logs "$M" memory -n 50 >"cap-$1.memory.log" 2>&1
     [ "$1" = off ] || [ "$(grep -o '"capacity":[0-9]*[^}]*"event":"ledger"' "cap-$1.memory.log" | tail -1 | grep -o '[0-9]*' | head -1)" -le $(( ${1%GiB} << 30 )) ] 2>/dev/null && break
     sleep 5
   done

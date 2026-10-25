@@ -19,7 +19,7 @@ impl Runs {
     /// Subscribes, then lists: a run that changes in between is in the stream. Changes match
     /// `--on` by the machine's name, which an alias or rental id resolved to.
     pub(crate) async fn open(ctx: &Context, query: list::Query, limit: u64) -> Result<Self, Error> {
-        let watch = ctx.calcifer().await?.watch("/v1/runs/events").await?;
+        let watch = ctx.calcifer().await?.watch("/v1/runs/events").await?.quiet();
         let list = list::runs(ctx, &query).await?;
         Ok(Self {
             query: list::Query {
@@ -69,10 +69,11 @@ impl Runs {
     }
 
     pub(crate) fn title(&self) -> String {
-        match self.limit {
+        let title = match self.limit {
             0 => "runs".into(),
             limit => format!("runs, newest {limit}"),
-        }
+        };
+        title + &self.watch.silence().map(|s| format!(" · {s}")).unwrap_or_default()
     }
 
     pub(crate) fn headers(&self) -> Vec<&'static str> {

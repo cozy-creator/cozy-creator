@@ -3,6 +3,7 @@
 //! idle. `download_url` (`COZY_DOWNLOAD_URL`, which dist's installers read too) serves one release's
 //! files in place of GitHub's.
 use std::{
+    fs::File,
     io,
     path::{Path, PathBuf},
     process::ExitCode,
@@ -11,7 +12,6 @@ use std::{
 use platform::release::{self, Release, TARGET};
 use protocol::error::{Error, Kind};
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 
 use crate::{Context, machine::Adopted};
 
@@ -60,12 +60,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         Some(url) => url.as_str().trim_end_matches('/').to_owned(),
         None => release::dir(wanted).map_err(refused)?,
     };
-    let http = reqwest::Client::builder()
-        .user_agent(concat!("cozy/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|e| Error::new(Kind::Internal, "http_client", e.to_string()))?;
-
-    let manifest = text(&http, &format!("{dir}/dist-manifest.json")).await?;
+    let manifest = text(&format!("{dir}/dist-manifest.json")).await?;
     let release = Release::read(&dir, &manifest, wanted).map_err(refused)?;
     let version = release.version.clone();
     if wanted.is_none() && !newer(&version, current) {
@@ -78,22 +73,26 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     };
     let bundles = format!("{url}.sigstore.jsonl");
     let signer = release
-        .signer(&bundles, &text(&http, &bundles).await?)
+        .signer(&bundles, &text(&bundles).await?)
         .map_err(refused)?;
-    let archive = get(&http, &url)
-        .await?
-        .bytes()
+    crate::output::say(ctx, &format!("fetching cozy {version}: {url}"));
+    let part = binary.with_file_name(format!(
+        ".cozy-{}.part",
+        release.sha256.get(..12).unwrap_or_default()
+    ));
+    let (archive, sha256) = crate::tools::download(ctx, &url, &part)
         .await
         .map_err(|e| unavailable(&url, e))?;
-    let sha256 = hex::encode(Sha256::digest(&archive));
     if sha256 != release.sha256 {
+        let _ = std::fs::remove_file(&part);
         return Err(Error::new(
             Kind::Validation,
             "checksum_mismatch",
             format!("{url} has sha256 {sha256}, not the one its release names"),
         ));
     }
-    let new = unpack(&release, &archive, &binary).map_err(|e| local("unpack", e))?;
+    let new = unpack(&release, archive, &binary).map_err(|e| local("unpack", e))?;
+    let _ = std::fs::remove_file(&part);
     let runs = std::process::Command::new(&new)
         .arg("--version")
         .output()
@@ -180,12 +179,12 @@ fn installed() -> Result<PathBuf, Error> {
 }
 
 /// Writes the archive's `cozy` beside `binary` (a file there can run, and the swap stays on one disk).
-fn unpack(release: &Release, archive: &[u8], binary: &Path) -> io::Result<tempfile::TempPath> {
+fn unpack(release: &Release, archive: File, binary: &Path) -> io::Result<tempfile::TempPath> {
     let mut file = tempfile::Builder::new()
         .prefix(".cozy-update-")
         .suffix(std::env::consts::EXE_SUFFIX)
         .tempfile_in(binary.parent().unwrap_or(Path::new(".")))?;
-    release.unpack(io::Cursor::new(archive), &mut file)?;
+    release.unpack(archive, &mut file)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -196,28 +195,20 @@ fn unpack(release: &Release, archive: &[u8], binary: &Path) -> io::Result<tempfi
     Ok(file.into_temp_path())
 }
 
-async fn text(http: &reqwest::Client, url: &str) -> Result<String, Error> {
-    get(http, url)
-        .await?
-        .text()
-        .await
-        .map_err(|e| unavailable(url, e))
-}
-
-async fn get(http: &reqwest::Client, url: &str) -> Result<reqwest::Response, Error> {
-    let response = http
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| unavailable(url, e))?;
-    match response.status() {
-        status if status.is_success() => Ok(response),
-        reqwest::StatusCode::NOT_FOUND => Err(not_found(format!("{url}: not found"))),
-        status => Err(Error::new(
-            Kind::Unavailable,
-            "release_unavailable",
-            format!("{url}: {status}"),
-        )),
+/// A release document, read whole by TensorFS's one GET rule; the archive it names is held to its digest.
+async fn text(url: &str) -> Result<String, Error> {
+    let mut body = Vec::new();
+    let mut sink = |at: u64, frame: &[u8]| -> tensorfs::err::Result<()> {
+        body.truncate(at as usize);
+        body.extend_from_slice(frame);
+        Ok(())
+    };
+    match tensorfs::fetch::get_pinned(url, 0, &mut sink).await {
+        Ok(()) => String::from_utf8(body).map_err(|e| unavailable(url, e)),
+        Err(e) if e.code == tensorfs::err::Code::REF_NOT_FOUND => {
+            Err(not_found(format!("{url}: not found")))
+        }
+        Err(e) => Err(unavailable(url, e)),
     }
 }
 

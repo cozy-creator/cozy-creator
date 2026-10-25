@@ -8,7 +8,7 @@ if [ -z "$RW$TW" ] || ! "$ICLI" machine update --help 2>/dev/null | grep -q -- -
 else
   "$CLI" machine update "$M" --tensord "$SKEWV" -y > "$T/skew-tensord.log" 2>&1
   "$ICLI" machine update "$M" ${RW:+--runtime-wheel "$RW"} ${TW:+--tensorfs-wheel "$TW"} -y > "$T/skew-wheels.log" 2>&1
-  read -r v rt tfs <<< "$(timeout 60 "$CLI" --json machine show "$M" 2>/dev/null | jq -r '.status | "\(.version) \(.runtime) \(.tensorfs)"')"
+  read -r v rt tfs <<< "$("$CLI" --json machine show "$M" 2>/dev/null | jq -r '.status | "\(.version) \(.runtime) \(.tensorfs)"')"
   n=$(submit "sdxl/generate@$NEW" prompt="$SCENE, an old TensorD" seed:=$((R + 44))); until_status "$n" terminal
   warned=$(grep -hoiE '[^"]*standalone[^"]*' "$T/skew-wheels.log" "$T/$(nm "$n").ndjson" "$T/$(nm "$n").json" 2>/dev/null | head -1)
   if [ "$v" != "$SKEWV" ]; then

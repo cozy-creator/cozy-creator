@@ -32,6 +32,11 @@ impl Following {
         Ok((following, machine))
     }
 
+    /// For a live view: Calcifer's silence goes in its title (`Watch::silence`), not in lines.
+    pub(crate) fn quiet(self) -> Self {
+        Self { watch: self.watch.quiet(), ..self }
+    }
+
     /// The machine as it next changes; `None` once it left the list.
     pub(crate) async fn next(&mut self, calcifer: &Client) -> Result<Option<Machine>, Error> {
         loop {
@@ -45,7 +50,8 @@ impl Following {
                 // A stream that ended may have missed a change: subscribe and read again.
                 None => {
                     let id = self.rental_id.clone().unwrap_or_else(|| self.name.clone());
-                    let (again, machine) = Self::open(calcifer, &id).await?;
+                    let (mut again, machine) = Self::open(calcifer, &id).await?;
+                    again.watch.quiet = self.watch.quiet;
                     *self = again;
                     return Ok(Some(machine));
                 }
@@ -71,7 +77,7 @@ impl Machines {
     /// Subscribes, then lists (the Hubs asked once): a change in between is in the stream.
     pub(crate) async fn open(ctx: &Context) -> Result<Self, Error> {
         let calcifer = ctx.calcifer().await?;
-        let watch = calcifer.watch("/v1/machines/events").await?;
+        let watch = calcifer.watch("/v1/machines/events").await?.quiet();
         let list = calcifer.get("/v1/machines?refresh=true").await?;
         Ok(Self { list, watch })
     }
@@ -93,7 +99,7 @@ impl Machines {
     }
 
     pub(crate) fn title(&self) -> String {
-        "machines".into()
+        "machines".to_owned() + &self.watch.silence().map(|s| format!(" · {s}")).unwrap_or_default()
     }
 
     pub(crate) fn headers(&self) -> Vec<&'static str> {
@@ -139,7 +145,7 @@ impl Shown {
         let (following, machine) = Following::open(&calcifer, name).await?;
         Ok(Self {
             calcifer,
-            following,
+            following: following.quiet(),
             machine,
         })
     }
@@ -155,7 +161,8 @@ impl Shown {
     }
 
     pub(crate) fn title(&self) -> String {
-        format!("machine {}", self.machine.name)
+        let silence = self.following.watch.silence();
+        format!("machine {}", self.machine.name) + &silence.map(|s| format!(" · {s}")).unwrap_or_default()
     }
 
     pub(crate) fn lines(&self, ctx: &Context) -> Vec<String> {
