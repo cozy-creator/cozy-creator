@@ -40,6 +40,9 @@ const FRAME: usize = 64 << 10;
 
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum LinkError {
+    /// The machine answered that it has no record of the run (`run_not_found`).
+    #[error("the machine has no record of the run")]
+    NoRun,
     #[error("the machine has no such run")]
     NotFound,
     /// A refusal the same request cannot change: the machine will not take it.
@@ -59,6 +62,7 @@ pub enum LinkError {
 impl From<Error> for LinkError {
     fn from(e: Error) -> Self {
         match e {
+            Error::Refused { status: 404, error } if error.code == "run_not_found" => LinkError::NoRun,
             Error::Refused { status: 404, .. } => LinkError::NotFound,
             Error::Refused { error, .. } if error.code == "machine_released" => {
                 LinkError::Released(error.message)
@@ -129,7 +133,7 @@ impl Link {
         Ok(Box::pin(self.machine.events(id, after).await?.map_err(LinkError::from)))
     }
 
-    /// Attaches to the run: its state, and its events after `after`. `NotFound` when the machine
+    /// Attaches to the run: its state, and its events after `after`. `NoRun` when the machine
     /// never received it.
     pub async fn attach(
         &self,

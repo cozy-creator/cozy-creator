@@ -1610,7 +1610,7 @@ fn refusal(name: &str, e: LinkError) -> Error {
             "machine_released",
             format!("{name}: {message}"),
         ),
-        LinkError::NotFound => Error::new(
+        LinkError::NoRun | LinkError::NotFound => Error::new(
             Kind::NotFound,
             "not_found",
             format!("{name} has no such thing"),
