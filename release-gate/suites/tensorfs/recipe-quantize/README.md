@@ -35,3 +35,9 @@ No per-step loop, model throughput or cross-hardware performance claim is made.
 Source checks only; real ordinary recipe/inference proof is pending. Use Runtime0.32.3+ with
 TensorFS0.15.4+ after the owner-qualified native Writer/caller gates. Unsupported model/provider
 or interface behavior must fail visibly, never be patched around with a private loading path.
+
+First live attempt reached source adoption, private upload and native INT8 recipe conversion.
+Consumer run17692 then failed before the handler because this fixture expected a `net` wrapper
+around construction config. Runtime deliberately presents a single component's config directly;
+the factory now uses its typed `as_int` accessors. Original private commits and partial receipts
+remain retained; encoded inference and the NVFP4 recipe still require a passing run.

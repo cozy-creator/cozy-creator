@@ -9,6 +9,8 @@ cozy run /absolute/worktree/release-gate/suites/tensorfs/rowwise-quantize/run mo
 
 It writes genuine fp8.rowwise(F8_E4M3/F8_E5M2) and int8.rowwise(I8) checkpoint parts with three
 scale dtypes and three logical metadata dtypes. Native output uses exactly reconstructed F32,
+with valid scale shapes `(rows,)`, `(rows, 1)` and `(1, rows)` (the format requires a row
+element count, not an exact scale rank),
 compared with Runtime's existing Torch RowwiseDequant and production quantizers. Both ConvRot
 and NVFP4 are compared at one/two/seven-row conversion budgets (162 actual conversions), with
 exact payload/companion/max-error/saturation and declared2e-13 F64-stat tolerance. It verifies
@@ -33,3 +35,9 @@ native quantization** because the fixture handed Torch tensors to Writer.put_enc
 API. Fixture1459fb805 serializes those owned parts as immutable bytes, including BF16 scales;
 no native code changed. [Exact partial receipt](evidence/16c857cbf-cancel-and-fixture-refusal.json).
 Full source-matrix parity and Runtime rowwise routing remain pending the corrected basic run.
+
+Follow-up basic **17682 failed** after its 162 conversion assertions because the refusal fixture
+incorrectly treated `(rows, 1)` scales as malformed. The canonical format accepts any shape with
+exactly `rows` elements. The corrected fixture covers those valid shapes above and refuses an
+actual `rows + 1` scale count with a matching physical buffer. Native source/artifact is unchanged;
+the completed cell still requires a passing rerun.

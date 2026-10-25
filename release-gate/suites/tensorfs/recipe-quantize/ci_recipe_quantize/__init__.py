@@ -40,7 +40,7 @@ def source_values(seed: int) -> tuple[torch.Tensor, torch.Tensor]:
 
 class Pipeline:
     def __init__(self, config: Any) -> None:
-        settings = config.mapping()["net"]
+        # A one-component checkpoint presents that component's config directly.
         self.components = {
             "net": torch.nn.Sequential(
                 OrderedDict(
@@ -48,8 +48,8 @@ class Pipeline:
                         (
                             "proj",
                             torch.nn.Linear(
-                                int(settings["in_features"]),
-                                int(settings["out_features"]),
+                                config.as_int("in_features"),
+                                config.as_int("out_features"),
                                 dtype=torch.bfloat16,
                             ),
                         )
