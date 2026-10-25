@@ -61,3 +61,11 @@ limits are in [the receipt](evidence/c4233c9d6-rtx3060.json).
 
 These are mechanism correctness results. They do not establish a production denoiser,
 encoded load-to-execute composition, GPU-only transfer handoff or comparative speed.
+
+
+Current invocation API refresh: all seven modes passed again through the default CLI on the
+RTX3060 (runs17556–17562; exact per-mode run numbers in the receipt), Runtime de3dfc42c,
+TensorFS6431a5387 and TensorD9998cf5f4. The fixture uses the executor's actual
+prepare/run_prepared boundary; source8176adc6a. [Exact cohort and receipts](evidence/de3dfc42c-rtx3060.json).
+This repeats raw loading, cancellation, failed-source refusal, checked request completion and
+alias/pin cleanup. It does not qualify encoded LoadSlot composition or event-only transfer handoff.
