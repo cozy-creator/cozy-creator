@@ -121,8 +121,8 @@ HUB_CHECK=''
 hub_check() {
   local exe='' addr=''
   [ "${RUNNER_OS:-}" != Windows ] || exe=.exe
-  go build -C "$E2E/hubcheck" -o "$OUT/hubcheck$exe" . || fail "e2e/hubcheck does not build"
-  "$OUT/hubcheck$exe" --out "$OUT" > "$OUT/hubcheck.addr" 2> "$OUT/hubcheck.log" &
+  go build -C "$E2E/hubcheck" -o "${RUNNER_TEMP:-$OUT}/hubcheck$exe" . || fail "e2e/hubcheck does not build"
+  "${RUNNER_TEMP:-$OUT}/hubcheck$exe" --out "$OUT" > "$OUT/hubcheck.addr" 2> "$OUT/hubcheck.log" &
   HUB_CHECK=$!
   for _ in $(seq 60); do
     addr=$(head -1 "$OUT/hubcheck.addr" 2> /dev/null) && [ -n "$addr" ] && break
@@ -133,6 +133,16 @@ hub_check() {
   mkdir -p ~/.cozy && printf 'hub_url = "http://%s"\n' "$addr" >> ~/.cozy/config.toml
   export COZY_HUB_URL=http://$addr
   echo "cozy reaches tensorhub.com through hubcheck at $addr"
+}
+# sign_in <key>: `cozy login --key`. A key names the Hub it was made for (tensorhub.com) and cozy refuses it for any
+# other: through hubcheck, a copy naming hubcheck's address (outside $OUT, which is uploaded) signs in, then goes.
+sign_in() {
+  local copy code=0
+  [ -n "$HUB_CHECK" ] || { cozy --json login --key "$1"; return; }
+  copy=${RUNNER_TEMP:-$(dirname "$OUT")}/key-hubcheck.json
+  (umask 077; jq --arg hub "$COZY_HUB_URL" '.hub = $hub' "$1" > "$copy") && cozy --json login --key "$copy" || code=$?
+  rm -f "$copy"
+  return $code
 }
 # Each mismatch hubcheck recorded is a failure (one line per kind, with its count).
 hub_checked() {
