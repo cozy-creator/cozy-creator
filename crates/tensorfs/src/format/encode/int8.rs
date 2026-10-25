@@ -114,7 +114,10 @@ pub(super) fn convrot_measured(input: &Input) -> Result<super::Quantized> {
             stats.saturated += u64::from(code.abs() > 127.0);
             code.clamp(-127.0, 127.0) as i8 as u8
         }));
-        for (codes, source) in weight[offset..].as_chunks::<256>().0.iter()
+        for (codes, source) in weight[offset..]
+            .as_chunks::<256>()
+            .0
+            .iter()
             .zip(row.as_chunks::<1024>().0)
         {
             let mut sums = codes.map(|code| i32::from(code as i8));
@@ -122,19 +125,29 @@ pub(super) fn convrot_measured(input: &Input) -> Result<super::Quantized> {
                 for group in sums.chunks_exact_mut(stride * 4) {
                     for offset in 0..stride {
                         let [a, b, c, d] = [0, 1, 2, 3].map(|i| group[offset + i * stride]);
-                        for (i, value) in [a + b + c - d, a + b - c + d, a - b + c + d, b + c + d - a].into_iter().enumerate() {
+                        for (i, value) in
+                            [a + b + c - d, a + b - c + d, a - b + c + d, b + c + d - a]
+                                .into_iter()
+                                .enumerate()
+                        {
                             group[offset + i * stride] = value;
                         }
                     }
                 }
             }
             for (sum, raw) in sums.into_iter().zip(source.as_chunks::<4>().0) {
-                stats.add(f32::from_le_bytes(*raw), f64::from(sum) * f64::from(row_scale) / 16.0);
+                stats.add(
+                    f32::from_le_bytes(*raw),
+                    f64::from(sum) * f64::from(row_scale) / 16.0,
+                );
             }
         }
     }
-    Ok(super::Quantized { stats, parts: vec![
-        part("weight", Dtype::I8, [rows, cols], weight),
-        part("scale", Dtype::F32, [rows], scale),
-    ] })
+    Ok(super::Quantized {
+        stats,
+        parts: vec![
+            part("weight", Dtype::I8, [rows, cols], weight),
+            part("scale", Dtype::F32, [rows], scale),
+        ],
+    })
 }

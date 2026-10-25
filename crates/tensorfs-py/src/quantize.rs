@@ -19,14 +19,22 @@ pub(crate) struct PyConversionControl {
 #[pymethods]
 impl PyConversionControl {
     #[new]
-    fn new() -> Self { Self::default() }
+    fn new() -> Self {
+        Self::default()
+    }
 
-    fn cancel(&self) { self.inner.cancel(); }
+    fn cancel(&self) {
+        self.inner.cancel();
+    }
 
     #[getter]
-    fn canceled(&self) -> bool { self.inner.stopped() }
+    fn canceled(&self) -> bool {
+        self.inner.stopped()
+    }
 
-    fn progress(&self) -> (u64, u64) { self.inner.progress() }
+    fn progress(&self) -> (u64, u64, u64) {
+        self.inner.progress()
+    }
 }
 
 #[pyfunction]

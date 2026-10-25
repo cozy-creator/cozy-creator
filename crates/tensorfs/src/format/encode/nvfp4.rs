@@ -318,26 +318,29 @@ pub(super) fn min_sse(input: &Input) -> Result<super::Quantized> {
                 .map(|pair| pair[0] | pair[1] << 4),
         );
     }
-    Ok(super::Quantized { stats, parts: vec![
-        OwnedPart {
-            role: "weight".into(),
-            dtype: Dtype::F4,
-            shape: input.shape.to_vec(),
-            bytes: weight,
-        },
-        OwnedPart {
-            role: "scale".into(),
-            dtype: Dtype::F8_E4M3,
-            shape: vec![*rows, *cols / 16],
-            bytes: scale,
-        },
-        OwnedPart {
-            role: "scale_2".into(),
-            dtype: Dtype::F32,
-            shape: vec![],
-            bytes: global.to_le_bytes().to_vec(),
-        },
-    ] })
+    Ok(super::Quantized {
+        stats,
+        parts: vec![
+            OwnedPart {
+                role: "weight".into(),
+                dtype: Dtype::F4,
+                shape: input.shape.to_vec(),
+                bytes: weight,
+            },
+            OwnedPart {
+                role: "scale".into(),
+                dtype: Dtype::F8_E4M3,
+                shape: vec![*rows, *cols / 16],
+                bytes: scale,
+            },
+            OwnedPart {
+                role: "scale_2".into(),
+                dtype: Dtype::F32,
+                shape: vec![],
+                bytes: global.to_le_bytes().to_vec(),
+            },
+        ],
+    })
 }
 
 /// A calibrated producer's `codes` (`U8`, an E2M1 code per element, the logical shape), its

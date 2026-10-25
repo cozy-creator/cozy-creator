@@ -744,14 +744,14 @@ output = writer.commit()
 ```
 
 Supply the **full same selection** on resume; the existing journal binds it to the source
-header, numerical revisions and quality bound before trusting completed keys. The buffer
+header, inherited base, numerical revisions/implementation digest and quality bound before trusting completed keys. The buffer
 size may change; changing the source, selection or numerical recipe refuses. Inherited
 unselected tensors/config/assets retain the ordinary base behavior. Output budget counts all
 new encoded payload/companion bytes before store deduplication, matching an output grant;
 physical disk growth is a separate quantity. A repeated completed selection reads/writes zero.
 
 The native loop releases the GIL. Another thread can call `control.cancel()` or inspect
-`control.progress()` (source bytes, completed tensors); observations never drive or acknowledge
+`control.progress()` (source bytes, completed tensors, bytes supplied to Writer); observations never drive or acknowledge
 work. Keep the caller/request alive until the native call returns. Commit/abandon/other writes
 refuse while conversion owns the Writer. Cancellation stops between bounded windows and before
 publication; an already-started filesystem operation may finish. Complete earlier tensors stay
@@ -767,7 +767,7 @@ are counted. No expanded whole-tensor code array or unbounded companion buffer i
 `stats` reports identity, encoded/reused keys, source bytes, logical new bytes, saturation,
 worst relative Frobenius and per-tensor acceptance facts. Reused entries have no recomputed
 quality measurement, so aggregate worst is `None` if any were reused. Bytes match the primitive
-producer; SSE/energy accumulate in F64 and may vary at reduction-rounding precision with chunk
+producer; SSE/energy use compensated F64 accumulation and may vary at reduction-rounding precision with chunk
 size or the NumPy reference. Max error, finiteness, saturation and the production round-trip
 tripwires are preserved; optional `max_relative_frobenius` refuses before publishing that tensor.
 This is an implementation candidate: real default-CLI conversion/parity/resume proof is required

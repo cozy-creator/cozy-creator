@@ -294,8 +294,8 @@ class ConversionControl:
     def cancel(self) -> None: ...
     @property
     def canceled(self) -> bool: ...
-    def progress(self) -> tuple[int, int]:
-        """Completed source bytes and published tensors; observation does not advance work."""
+    def progress(self) -> tuple[int, int, int]:
+        """Source bytes, published tensors, and bytes read by Writer; observations never advance work."""
 
 class Writer:
     def __init__(self, dest: StrPath | None = None, *, base: Checkpoint | None = None,

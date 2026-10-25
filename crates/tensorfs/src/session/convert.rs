@@ -26,6 +26,7 @@ pub struct ConversionControl {
     notify: Arc<tokio::sync::Notify>,
     pub(crate) read_bytes: AtomicU64,
     pub(crate) written_tensors: AtomicU64,
+    pub(crate) written_bytes: AtomicU64,
 }
 
 impl ConversionControl {
@@ -39,8 +40,8 @@ impl ConversionControl {
     }
 
     /// Observations never acknowledge or advance conversion work.
-    pub fn progress(&self) -> (u64, u64) {
-        (self.read_bytes.load(Ordering::Acquire), self.written_tensors.load(Ordering::Acquire))
+    pub fn progress(&self) -> (u64, u64, u64) {
+        (self.read_bytes.load(Ordering::Acquire), self.written_tensors.load(Ordering::Acquire), self.written_bytes.load(Ordering::Acquire))
     }
 
     pub(crate) async fn cancelled(&self) {

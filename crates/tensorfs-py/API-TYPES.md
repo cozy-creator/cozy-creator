@@ -506,7 +506,7 @@ def decode_into(
 ```
 
 `ConversionControl` is the existing conversion cancellation token exposed to native checkpoint
-quantization. `cancel()` is nonblocking; `progress()` reports `(source_bytes_read, tensors_written)`
+quantization. `cancel()` is nonblocking; `progress()` reports `(source_bytes_read, tensors_written, writer_bytes)`
 without callbacks or acknowledgements. `Writer.quantize` accepts the complete resolved tensor list,
 explicit conversion buffer/output byte bounds and this control; its return is the conversion stats
 mapping described in API.md. It never commits the Writer or chooses a model recipe.

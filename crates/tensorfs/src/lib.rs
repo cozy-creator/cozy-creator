@@ -41,7 +41,7 @@ mod session;
 pub use session::{
     bearer, Checkpoint, CheckpointFile, Client, Component, ComponentWriter, Config, Convert,
     ConversionControl, ConvertProgress, Download, Endpoint, Fetched, Format, HeaderMap, Open, Progress,
-    Quantization, QuantizationResult, QuantizeTensor, Read,
+    Quantization, QuantizationResult, QuantizedTensor, QuantizeTensor, Read,
     ReadInto, Ref, Request, Selection, TokenProvider, Writer, WriterOptions,
 };
 

@@ -219,6 +219,10 @@ impl Context {
 }
 
 impl Writer {
+    pub(super) fn base_id(&self) -> Option<&ObjectRef> {
+        self.context.base.as_ref().map(Checkpoint::id)
+    }
+
     pub(super) fn bind_quantization(&mut self, identity: &str, selected: &[(String, String)]) -> Result<()> {
         self.with(|raw| raw.bind_quantization(identity, selected).map_err(from_writer))
     }
