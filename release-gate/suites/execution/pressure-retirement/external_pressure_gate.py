@@ -109,7 +109,6 @@ def main():
             "installed",
             "--on",
             "local",
-            "--gpus=1",
             timeout=900,
         )
         start(
