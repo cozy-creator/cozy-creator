@@ -70,3 +70,17 @@ native-refusal, mixed-output, reuse, byte-budget and quality assertions above. T
 wrote exactly2,660bytes; repeated component quality remained unknown with no new reads/writes.
 [Exact compact proof](evidence/4429e98fe-adapters-cpu.json). This is distinct from the public GPU
 caller, SVDQ calibration/consumer and encoded LoadSlot0.15.7 qualifications.
+
+## Combined Runtime public caller17787
+
+Real local run17787 passed with Runtime4429e98fe (wheel3271557c…) and TensorFS e521cc779
+(wheelca15dd65…) on the RTX4070 Laptop GPU. Both declared outputs were adopted and matched
+the frozen producer bytes; their retained native measurements were int8read8224/new2096 and
+NVFP4read16416/new1172, with one newlyencoded tensor each. A subsequent independent
+PreparedRepeat completed31GPU increments from one host graph launch, leaving the one-plan
+request contract intact. [Compact receipt](evidence/4429-public-caller-17787.json).
+
+The controller's normal update17788 restored the priorc1Runtime artifact and the same TensorFS
+artifact; the retained restored machine was ready with no running/queued jobs. These are real
+correctness/lifetime facts, not a shared-host throughput benchmark or evidence for encoded
+LoadSlot read/decode/execute composition.
