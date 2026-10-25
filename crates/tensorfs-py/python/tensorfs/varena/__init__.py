@@ -96,7 +96,7 @@ class Arena:
 
     @contextmanager
     def capture(self) -> Iterator[None]:
-        """Forbid native recovery while dependencies are captured or replayed."""
+        """Exclude native producers and recovery during actual CUDA capture."""
         with capture(self.device):
             yield
 
@@ -161,7 +161,9 @@ def supports_prefetch() -> bool:
     """Whether native refill can refuse admission without eviction or a context join."""
     native = getattr(_ext, "_VarenaPreparedRead", None)
     return bool(
-        getattr(native, "NO_RECLAIM", False) and getattr(native, "CAPTURE_GUARD", False)
+        getattr(native, "NO_RECLAIM", False)
+        and getattr(native, "CAPTURE_GUARD", False)
+        and getattr(_ext._VarenaAllocatorCapture, "REPLAY_GUARD", False)
     )
 
 
@@ -211,8 +213,22 @@ class Use:
 
 @contextmanager
 def capture(device: int) -> Iterator[None]:
-    """Inhibit allocation recovery on this device across every native thread."""
+    """Exclude native producers and allocation recovery during actual CUDA capture."""
     guard = _ext._VarenaAllocatorCapture(device)
+    try:
+        yield
+    finally:
+        guard.close()
+
+
+@contextmanager
+def replay(device: int) -> Iterator[None]:
+    """Suppress native allocation recovery while allowing independent owned producers.
+
+    Retained storage pins protect the graph through device completion. This short guard
+    protects the host replay call; it does not replace those owners.
+    """
+    guard = _ext._VarenaAllocatorCapture(device, replay=True)
     try:
         yield
     finally:

@@ -93,6 +93,7 @@ static ARENAS: OnceLock<Mutex<Vec<Weak<Arena>>>> = OnceLock::new();
 #[derive(Default)]
 struct DeviceActivity {
     captures: usize,
+    replays: usize,
     producers: usize,
 }
 
@@ -120,6 +121,16 @@ fn capture_counts() -> Result<MutexGuard<'static, BTreeMap<i32, DeviceActivity>>
         .map_err(|_| Error::Poisoned("capture registry mutex".into()))
 }
 
+fn ensure_recovery_allowed(counts: &BTreeMap<i32, DeviceActivity>, device: i32) -> Result<()> {
+    if counts
+        .get(&device)
+        .is_some_and(|entry| entry.captures != 0 || entry.replays != 0)
+    {
+        return Err(Error::CaptureActive);
+    }
+    Ok(())
+}
+
 fn ensure_not_capturing(counts: &BTreeMap<i32, DeviceActivity>, device: i32) -> Result<()> {
     if counts.get(&device).is_some_and(|entry| entry.captures != 0) {
         return Err(Error::CaptureActive);
@@ -131,6 +142,9 @@ fn ensure_not_capturing(counts: &BTreeMap<i32, DeviceActivity>, device: i32) -> 
 pub fn enter_capture(device: i32) -> Result<GlobalCaptureGuard> {
     let mut counts = capture_counts()?;
     let activity = counts.entry(device).or_default();
+    if activity.replays != 0 {
+        return Err(Error::CaptureActive);
+    }
     if activity.producers != 0 {
         return Err(Error::Invalid(
             "native producers must finish before CUDA graph capture",
@@ -143,6 +157,24 @@ pub fn enter_capture(device: i32) -> Result<GlobalCaptureGuard> {
     Ok(GlobalCaptureGuard {
         device,
         pid: std::process::id(),
+        replay: false,
+    })
+}
+
+/// Suppress allocation recovery during a resident graph launch without excluding producers.
+/// The graph's retained Pins, rather than this short host guard, own its device dependencies.
+pub fn enter_replay(device: i32) -> Result<GlobalCaptureGuard> {
+    let mut counts = capture_counts()?;
+    ensure_not_capturing(&counts, device)?;
+    let activity = counts.entry(device).or_default();
+    activity.replays = activity
+        .replays
+        .checked_add(1)
+        .ok_or(Error::Invalid("replay count overflow"))?;
+    Ok(GlobalCaptureGuard {
+        device,
+        pid: std::process::id(),
+        replay: true,
     })
 }
 
@@ -152,9 +184,16 @@ pub fn is_capturing(device: i32) -> Result<bool> {
         .is_some_and(|entry| entry.captures != 0))
 }
 
+pub fn is_recovery_blocked(device: i32) -> Result<bool> {
+    Ok(capture_counts()?
+        .get(&device)
+        .is_some_and(|entry| entry.captures != 0 || entry.replays != 0))
+}
+
 pub struct GlobalCaptureGuard {
     device: i32,
     pid: u32,
+    replay: bool,
 }
 
 impl Drop for GlobalCaptureGuard {
@@ -165,7 +204,11 @@ impl Drop for GlobalCaptureGuard {
         if let Ok(mut counts) = capture_counts()
             && let Some(count) = counts.get_mut(&self.device)
         {
-            count.captures = count.captures.saturating_sub(1);
+            if self.replay {
+                count.replays = count.replays.saturating_sub(1);
+            } else {
+                count.captures = count.captures.saturating_sub(1);
+            }
         }
     }
 }
@@ -209,7 +252,7 @@ impl Drop for ProducerGuard {
 impl Arena {
     pub fn new(device: i32) -> Result<Arc<Self>> {
         let captures = capture_counts()?;
-        ensure_not_capturing(&captures, device)?;
+        ensure_recovery_allowed(&captures, device)?;
         let driver = cuda::Driver::open(device)?;
         drop(captures);
         let arena = Arc::new(Self {
@@ -270,7 +313,7 @@ impl Arena {
             / self.granularity()
             * self.granularity();
         let captures = capture_counts()?;
-        ensure_not_capturing(&captures, self.device)?;
+        ensure_recovery_allowed(&captures, self.device)?;
         let mut state = self.lock()?;
         // A new model may choose a fresh prefix only after every old reservation owner is gone.
         // Escaped storage and graph Pins own their Region, so they prevent this reset.
@@ -328,7 +371,7 @@ impl Arena {
     /// Idle nonpreferred pages go first; preferred pages go from the end of the reserved prefix.
     pub fn reclaim(&self, bytes: usize) -> Result<ReclaimReport> {
         let captures = capture_counts()?;
-        ensure_not_capturing(&captures, self.device)?;
+        ensure_recovery_allowed(&captures, self.device)?;
         let mut state = self.lock()?;
         let _context = self.driver.enter()?;
         self.reclaim_locked(&mut state, bytes, true, None)
@@ -549,7 +592,11 @@ impl Region {
         if entry.pins != 0 {
             return Err(Error::Busy);
         }
-        ensure_not_capturing(&captures, self.arena.device)?;
+        if reclaim {
+            ensure_recovery_allowed(&captures, self.arena.device)?;
+        } else {
+            ensure_not_capturing(&captures, self.arena.device)?;
+        }
         let _context = self.arena.driver.enter()?;
         let has_handle = entry.handle.is_some();
         if !has_handle {
@@ -702,7 +749,7 @@ impl Fill {
         self.copied = false;
         let region = self.region();
         let captures = capture_counts()?;
-        ensure_not_capturing(&captures, region.arena.device)?;
+        ensure_recovery_allowed(&captures, region.arena.device)?;
         let mut state = region.arena.lock()?;
         let _context = region.arena.driver.enter()?;
         if let Err(error) = region.arena.driver.copy_from_host(region.ptr, bytes) {
@@ -748,7 +795,11 @@ impl Fill {
     fn finish(mut self, join: bool) -> Result<Pin> {
         let region = self.region();
         let captures = capture_counts()?;
-        ensure_not_capturing(&captures, region.arena.device)?;
+        if join {
+            ensure_recovery_allowed(&captures, region.arena.device)?;
+        } else {
+            ensure_not_capturing(&captures, region.arena.device)?;
+        }
         let mut state = region.arena.lock()?;
         let _context = region.arena.driver.enter()?;
         if join && let Err(error) = region.arena.driver.synchronize() {
@@ -840,7 +891,8 @@ impl Drop for Region {
         entry.retired = true;
         entry.preferred = false;
         // Defer physical teardown to reclamation or Arena drop; destructors cannot block capture.
-        if entry.handle.is_some() || ensure_not_capturing(&captures, self.arena.device).is_err() {
+        if entry.handle.is_some() || ensure_recovery_allowed(&captures, self.arena.device).is_err()
+        {
             return;
         }
         let Ok(_context) = self.arena.driver.enter() else {
@@ -862,7 +914,7 @@ impl Drop for Arena {
         let Ok(captures) = capture_counts() else {
             return;
         };
-        if ensure_not_capturing(&captures, self.device).is_err() {
+        if ensure_recovery_allowed(&captures, self.device).is_err() {
             return;
         }
         let Ok(state) = self.state.get_mut() else {
@@ -898,7 +950,7 @@ impl Drop for Arena {
 /// The caller retries its allocation once only if this returns enough useful reclaimed bytes.
 pub fn reclaim(device: i32, bytes: usize) -> Result<ReclaimReport> {
     check_process()?;
-    if is_capturing(device)? {
+    if is_recovery_blocked(device)? {
         return Err(Error::CaptureActive);
     }
     let mut report = ReclaimReport {

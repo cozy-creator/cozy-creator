@@ -75,7 +75,8 @@ be nonoverlapping and inside the region; TensorFS fills every gap with zeroes.
 The region belongs to this immutable recipe. Changing source or transform identity
 requires a different region.
 
-`supports_prefetch()` requires non-reclaiming admission and the native producer/capture guard. Pass `reclaim=False`
+`supports_prefetch()` requires non-reclaiming admission, the native producer/capture guard,
+and a separate replay recovery guard. Pass `reclaim=False`
 for speculative work: a streaming-window deficit, physical allocation OOM, or an
 abandoned mapped fill refuses admission without eviction, watermark reduction,
 or a context join. Demand preparation keeps its existing recovery behavior.
@@ -109,4 +110,7 @@ preparation through checked completion. Actual CUDA capture refuses while any su
 lease exists, including an unstarted read; cancel or complete it before capture.
 Producer admission likewise refuses during capture. Cancel-before-start releases this
 lease immediately; unknown completion retains it with the actual owners. Resident graph
-replay remains protected by its physical pins and is not excluded by this lease.
+replay uses `varena.replay(device)`: it permits independent producers while suppressing
+allocation recovery during the host launch. Retained physical pins protect graph dependencies
+through device completion. Non-reclaiming producer admission and checked producer publication
+may overlap this replay guard; paths that join a context or reclaim backing remain excluded.

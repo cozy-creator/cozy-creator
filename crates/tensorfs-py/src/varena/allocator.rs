@@ -99,7 +99,7 @@ fn allocate(output: *mut *mut c_void, bytes: usize) -> i32 {
             .saturating_add(bytes)
             .saturating_sub(limit);
         if need > 0 {
-            match varena::is_capturing(device) {
+            match varena::is_recovery_blocked(device) {
                 Ok(true) => return 2,
                 Ok(false) => (),
                 Err(error) => return error_code(error),
@@ -123,7 +123,7 @@ fn allocate(output: *mut *mut c_void, bytes: usize) -> i32 {
     // SAFETY: the caller supplies CUDA's output pointer; the original ABI receives it unchanged.
     let mut status = unsafe { (api.malloc)(output, bytes) };
     if status == 2 {
-        match varena::is_capturing(device) {
+        match varena::is_recovery_blocked(device) {
             Ok(true) => return status,
             Ok(false) => (),
             Err(error) => return error_code(error),

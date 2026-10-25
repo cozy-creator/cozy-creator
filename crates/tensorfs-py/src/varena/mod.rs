@@ -319,9 +319,18 @@ struct PyAllocatorCapture {
 }
 #[pymethods]
 impl PyAllocatorCapture {
+    #[classattr]
+    const REPLAY_GUARD: bool = true;
+
     #[new]
-    fn new(py: Python<'_>, device: i32) -> PyResult<Self> {
-        let native = varena::enter_capture(device).map_err(|e| raise(py, e))?;
+    #[pyo3(signature = (device, *, replay = false))]
+    fn new(py: Python<'_>, device: i32, replay: bool) -> PyResult<Self> {
+        let native = if replay {
+            varena::enter_replay(device)
+        } else {
+            varena::enter_capture(device)
+        }
+        .map_err(|e| raise(py, e))?;
         Ok(Self {
             guard: Mutex::new(Some(native)),
         })
