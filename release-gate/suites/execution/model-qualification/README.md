@@ -1,5 +1,10 @@
 # Real image-model qualification
 
+[Full SDXL run 17882](evidence/sdxl-17882-native29.md) passed strict one-eager-plus-29-native
+step evidence on an RTX 3090 with the recorded diagnostic cohort. This single image is
+separate from the four-call comparison protocol below and does not resolve the earlier
+8 GiB graph refusal.
+
 `run.py` makes one first/cold call and three sequential warm calls through the default Cozy CLI.
 It never installs a machine SDK, rents hardware or uses a private execution path. Run it only
 after receiving the GPU lane. Four distinct fixed seeds prevent request memoization from
