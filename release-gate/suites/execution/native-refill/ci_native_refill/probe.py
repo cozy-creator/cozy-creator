@@ -108,6 +108,80 @@ def write_matrix(directory, kind, width, generator):
     return writer.commit(), expected
 
 
+def phase_policy(memory, seed):
+    del seed
+    width, layers = 1024, 8
+    with tempfile.TemporaryDirectory(prefix="cozy-phase-policy-") as directory:
+        writer = tensorfs.Writer(Path(directory) / "phases.cozytensors")
+        matrix = torch.eye(width)
+        for component in ("a", "b"):
+            for index in range(layers):
+                writer.component(component).put(f"{index}.weight", matrix)
+        checkpoint = writer.commit()
+        modules, owners = {}, {}
+        for component in ("a", "b"):
+            with torch.device("meta"):
+                module = nn.Sequential(
+                    *(nn.Linear(width, width, bias=False) for _ in range(layers))
+                )
+            vars(module)["_cozy_weights"] = residency.Declared(
+                residency.Weights(checkpoint, component),
+                blocks=[str(i) for i in range(layers)],
+            )
+            modules[component] = module
+            owners[component] = memory.load(module, "ram")
+        inputs = torch.ones(2, width, device="cuda")
+        with memory.request(
+            "phase-policy", plan=[owners["a"], owners["b"], owners["a"]]
+        ) as request:
+            # Virtual all-component scopes stay open, as in Anima's existing render method.
+            with (
+                owners["a"].passing("render"),
+                owners["b"].passing("render"),
+                torch.no_grad(),
+            ):
+                torch.testing.assert_close(modules["a"](inputs), inputs, rtol=0, atol=0)
+                binding = owners["a"].retain(("0",))
+                with binding.prepare():
+                    alias = modules["a"][0].weight[:1]
+                    pointer = alias.data_ptr()
+                binding.close()
+                assert memory.native.reclaim(4 * MIB) >= 4 * MIB
+                ballast = torch.empty(64 * MIB, dtype=torch.uint8, device="cuda")
+                ballast.fill_(7)
+                torch.cuda.synchronize()
+                del ballast
+                torch.testing.assert_close(modules["b"](inputs), inputs, rtol=0, atol=0)
+                before = request.moved
+                torch.testing.assert_close(modules["b"](inputs), inputs, rtol=0, atol=0)
+                assert request.moved == before, (
+                    "same phase rebuilt the prefix/full-scanned"
+                )
+                torch.testing.assert_close(modules["a"](inputs), inputs, rtol=0, atol=0)
+                before = request.moved
+                torch.testing.assert_close(modules["a"](inputs), inputs, rtol=0, atol=0)
+                assert request.moved == before
+                assert alias.data_ptr() == pointer
+                torch.testing.assert_close(alias.cpu(), matrix[:1], rtol=0, atol=0)
+                assert len(request.phase_changes) == 3, request.phase_changes
+                assert request.phase_changes[1]["torch_returned_bytes"] > 0
+            stats = request.stats()
+        for owner in owners.values():
+            owner.close()
+        memory.trim()
+        assert memory.native.stats()["pinned_bytes"] == 4 * MIB
+        del alias
+        released = memory.trim()
+        assert memory.native.stats()["pinned_bytes"] == 0
+        checkpoint.close()
+        return {
+            "request": stats,
+            "alias_preserved": True,
+            "same_phase_zero_rereads": True,
+            "last_alias_reclaimed_bytes": released,
+        }
+
+
 def production_routes(memory, seed):
     from types import SimpleNamespace
 
@@ -559,7 +633,10 @@ def exercise(seed, mode):
     torch.set_num_threads(1)
     accel.initialize(torch, "cuda")
     memory = residency.Memory.open(
-        "cuda:0", budget_bytes=64 * MIB if mode == "stream" else None
+        "cuda:0",
+        budget_bytes=(
+            64 * MIB if mode == "stream" else 128 * MIB if mode == "phase" else None
+        ),
     )
     memory.apply_budget()
     output = {
@@ -577,6 +654,7 @@ def exercise(seed, mode):
     output["result"] = {
         "fits": fits,
         "routes": production_routes,
+        "phase": phase_policy,
         "stream": streaming,
         "failure": failed_fill,
         "lora": lora,

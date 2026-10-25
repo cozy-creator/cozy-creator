@@ -29,6 +29,7 @@ def gpu(payload: Probe, tel: Telemetry) -> Report:
     if payload.mode not in {
         "fits",
         "routes",
+        "phase",
         "stream",
         "lora",
         "failure",
