@@ -266,6 +266,13 @@ def main():
         assert second.record["status"] == "completed", second.record
         expected_first = "canceled" if cancel else "completed"
         assert first.record["status"] == expected_first, first.record
+        if cancel:
+            assert (
+                not first.record.get("output") and first.record.get("result") is None
+            ), (
+                "canceled output was published as a successful result",
+                first.record,
+            )
         for run in (first, second):
             assert run.record.get("started_at_ms", 0) > 0, (
                 "executor handoff lost the persisted execution-start fact"
@@ -306,10 +313,11 @@ def main():
                 assert b_start <= canceled < b_end, (
                     "successor finished before cancel delivery"
                 )
-                if args.cancel_custody:
-                    assert begin <= canceled < end, (
-                        "cancel missed the real custody interval"
-                    )
+                assert begin <= canceled < end, (
+                    "cancel missed the real custody interval"
+                    if args.cancel_custody
+                    else "cancel missed the real encoding interval"
+                )
         report.update(
             passed=True,
             overlap=overlap,
