@@ -86,7 +86,29 @@ def summarize(run, request, size, events, cli_wall_ms, step_stage):
     measured = run["measurements"]
     execution = measured["execution"]
     steps = measured["attribution"]["steps"][step_stage]
-    assert steps["count"] == request["steps"], steps
+    native_rows = [
+        row
+        for row in measured.get("observations", [])
+        if row.get("name") == "request_path.denoise_native_steps"
+    ]
+    assert len(native_rows) <= 1, "duplicate native step observations"
+    native_steps = 0
+    if native_rows:
+        row = native_rows[0]
+        value = row.get("value")
+        assert row.get("kind") == "metric" and type(value) in (int, float), row
+        assert 0 <= value <= request["steps"] and value == int(value), row
+        native_steps = int(value)
+        assert step_stage == "denoise" and steps["count"] == 1, (
+            "native interval requires exactly one observed eager denoise step",
+            steps,
+            row,
+        )
+    assert steps["count"] + native_steps == request["steps"], (
+        "requested steps lack complete callback or retained native-step evidence",
+        steps,
+        native_rows,
+    )
     gpu_rows = execution["gpus"]
     pids = sorted({gpu["pid"] for gpu in gpu_rows})
     assert len(pids) == 1 and isinstance(pids[0], int) and pids[0] > 0, pids
@@ -95,6 +117,12 @@ def summarize(run, request, size, events, cli_wall_ms, step_stage):
     # domain: real rental clocks can differ from the controller by tens of seconds.
     began_ms = run["started_at_ms"]
     assert run.get("execution_ms", 0) > 0, "no measured execution"
+    for row in native_rows:
+        stamp = row.get("at_unix_ms")
+        assert type(stamp) is int and stamp >= began_ms - 1000, (
+            "stale or unstamped native step observation",
+            row,
+        )
     for gpu in gpu_rows:
         assert gpu["end_us"] >= gpu["start_us"]
         assert gpu["start_us"] >= (began_ms - 1000) * 1000, "stale GPU interval"
@@ -113,6 +141,13 @@ def summarize(run, request, size, events, cli_wall_ms, step_stage):
             gaps.append(f"{key} unavailable")
     if graphs is None:
         gaps.append("graph measurements unavailable")
+    required_gaps = [
+        gap
+        for gap in gaps
+        if not (
+            native_steps and gap == "complete device-step timing series unavailable"
+        )
+    ]
     recorded_ms = run["settled_at_ms"] - run["created_at_ms"]
     return {
         "run_id": run["id"],
@@ -122,7 +157,11 @@ def summarize(run, request, size, events, cli_wall_ms, step_stage):
         "request_created_to_settled_ms": recorded_ms,
         "execution_ms_as_reported": run.get("execution_ms"),
         "accepted_to_started_ms": run["started_at_ms"] - run["accepted_at_ms"],
-        "steps": steps["count"],
+        "steps": steps["count"] + native_steps,
+        "observed_step_callback_count": steps["count"],
+        "native_completed_steps": native_steps,
+        "native_step_observations": native_rows,
+        "step_timing_scope": "Only Python callback intervals are timed individually; native interval timing is included in the stage total.",
         "step_stage": step_stage,
         "device_steps_as_reported": device,
         "device_first_step_ms": samples[0] if samples else None,
@@ -164,6 +203,8 @@ def summarize(run, request, size, events, cli_wall_ms, step_stage):
         "memory_scope_note": "Tracked process/native measurements; not a hard driver or machine VRAM cap.",
         "images": image_evidence(run, size),
         "metric_gaps": gaps,
+        "required_metric_gaps": required_gaps,
+        "device_step_timing_complete": len(samples) == request["steps"],
         "unmeasured": [
             "physical disk and PCIe traffic, including canceled speculative reads",
             "GPU idle time attributable to missing weights",
@@ -357,11 +398,17 @@ def main():
             for row in report["runs"]
             if row["metric_gaps"]
         }
-        report["passed"] = not report["metric_gaps"]
+        report["required_metric_gaps"] = {
+            row["label"]: row["required_metric_gaps"]
+            for row in report["runs"]
+            if row["required_metric_gaps"]
+        }
+        report["measurements_complete"] = not report["metric_gaps"]
+        report["passed"] = not report["required_metric_gaps"]
         report["machine_after"] = read_snapshot(
             cozy, output, "machine-after", ["machine", "show", args.machine]
         )
-        assert report["passed"], report["metric_gaps"]
+        assert report["passed"], report["required_metric_gaps"]
     except BaseException as error:
         report["passed"] = False
         report["error"] = repr(error)
