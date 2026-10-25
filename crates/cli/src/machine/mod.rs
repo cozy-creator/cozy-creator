@@ -63,19 +63,20 @@ enum Verb {
     /// target, or to the versions or local builds named.
     Update {
         name: String,
-        /// The Runtime: a release (`0.30.16`) the machine fetches from PyPI, or a local wheel or
-        /// project to build, sent from here (dev). Alone, the machine keeps its TensorFS when the
-        /// Runtime accepts it, else installs PyPI's newest that it does.
+        /// The Runtime: a release (`0.30.16`) the machine fetches from PyPI, else its GitHub
+        /// prerelease, or a local wheel or project to build, sent from here (dev). Alone, the
+        /// machine keeps its TensorFS when the Runtime accepts it, else installs PyPI's newest that
+        /// it does.
         #[arg(long, value_name = "VERSION|PATH")]
         runtime: Option<String>,
-        /// TensorFS: a release (`0.13.13`) the machine fetches from PyPI, or a local wheel or
-        /// project to build, sent from here (dev).
+        /// TensorFS: a release (`0.13.13`) the machine fetches from PyPI, else its GitHub
+        /// prerelease, or a local wheel or project to build, sent from here (dev).
         #[arg(long, value_name = "VERSION|PATH")]
         tensorfs: Option<String>,
-        /// TensorD, the machine's `cozy` binary: a release (`0.11.14`) the machine fetches from
-        /// its GitHub release, or a local binary or cozy-creator checkout to build, sent from
-        /// here (dev). On `local` a dev build becomes this computer's cozy, which `cozy update`
-        /// returns to a release.
+        /// TensorD, the machine's `cozy` binary: a release (`0.11.14`), a prerelease's too, the
+        /// machine fetches from its GitHub release, or a local binary or cozy-creator checkout to
+        /// build, sent from here (dev). On `local` a dev build becomes this computer's cozy, which
+        /// `cozy update` returns to a release.
         #[arg(long, value_name = "VERSION|PATH")]
         tensord: Option<String>,
         /// Use at most this much of each GPU's memory (`8GiB`), as a smaller card would; `off`

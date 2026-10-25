@@ -3,7 +3,7 @@
 # macOS VMs give torch 2.14 a working GPU on macOS 15 only (on 26+ its Metal 4 kernels compute wrong there,
 # pytorch#196582; torch 2.15+ refuses the virtual GPU). BiRefNet must serve on the GPU; SDXL must serve or,
 # past the GPU's working set, be refused naming it (memory_exhausted).
-#   e2e/mps/run.sh --out DIR [--cozy-bin F] [--tensorfs-wheel F] [--runtime-wheel F] [--packages DIR]
+#   e2e/mps/run.sh --out DIR [--tensord F|V] [--tensorfs F|V] [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
 [ "$(uname -s)" = Darwin ] || fail "the mps suite runs on macOS"

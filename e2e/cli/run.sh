@@ -7,8 +7,8 @@
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
-#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow] [--cozy-bin F] [--tensorfs-wheel F]
-#                  [--runtime-wheel F] [--packages DIR]
+#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow] [--tensord F|V] [--tensorfs F|V]
+#                  [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
 . "$(dirname "$0")/commands.sh"

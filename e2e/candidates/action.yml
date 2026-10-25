@@ -6,8 +6,9 @@ description: >
   ($PACKAGES_MASTER) unless the change is the packages'. With `from: artifacts` (Linux) the set is this run's
   candidate-* artifacts, which e2e.yaml's `candidate` jobs built (build.sh); otherwise it is built here, for this
   runner's OS. No candidate leg tests a released binary: a released Runtime before CPU mode cannot run a model on these
-  runners, and a released cozy carries the bugs master fixed. `tensord`, `tensorfs` and `runtime` take a built
-  candidate instead of a build (build.sh's TAKE). The change's repo is at .src (with artifacts, the packages' only).
+  runners, and a released cozy carries the bugs master fixed. `tensord`, `tensorfs` and `runtime` take a release
+  candidate instead of a build: its exact version, a prerelease's too, which `cozy machine update` fetches and
+  verifies. The change's repo is at .src (with artifacts, the packages' only).
 inputs:
   repo:
     description: The repo whose change this is
@@ -28,13 +29,13 @@ inputs:
     description: The cozy-runtime commit the Runtime comes from, unless the change is cozy-runtime's
     default: master
   tensord:
-    description: TensorD (cozy) to take instead of building it, this OS's (a version, a release tag or URL#sha256=)
+    description: TensorD (cozy) to take instead of building it, an exact release version
     default: ''
   tensorfs:
-    description: The TensorFS wheel to take instead of building it, this OS's (a PyPI version, a release tag or URL#sha256=)
+    description: TensorFS to take instead of building it, an exact release version
     default: ''
   runtime:
-    description: The cozy-runtime wheel to take instead of building it, this OS's (a PyPI version, a release tag or URL#sha256=)
+    description: The Runtime to take instead of building it, an exact release version
     default: ''
 runs:
   using: composite
@@ -98,14 +99,13 @@ runs:
           creator=.stack runtime=.rt
           [ "$REPO" != cozy-creator ] || creator=.src
           [ "$REPO" != cozy-runtime ] || runtime=.src
-          TAKE=$TENSORD bash "$BUILD_SH" cozy "$creator" "$out" > /dev/null
-          TAKE=$TENSORFS bash "$BUILD_SH" tensorfs "$creator" "$out" > /dev/null
-          TAKE=$RUNTIME bash "$BUILD_SH" runtime "$runtime" "$out" > /dev/null
+          [ -n "$TENSORD" ] || bash "$BUILD_SH" cozy "$creator" "$out" > /dev/null
+          [ -n "$TENSORFS" ] || bash "$BUILD_SH" tensorfs "$creator" "$out" > /dev/null
+          [ -n "$RUNTIME" ] || bash "$BUILD_SH" runtime "$runtime" "$out" > /dev/null
         fi
-        # (An artifact keeps no file mode.)
-        chmod +x "$out/cozy$exe"
-        args=(--cozy-bin "$out/cozy$exe" --tensorfs-wheel "$(ls "$out"/tensorfs-*.whl)" --runtime-wheel "$(ls "$out"/cozy_runtime-*.whl)")
-        echo "TensorD: $("$out/cozy$exe" --version)"
+        # A taken candidate stays its version; a built one is its file (an artifact keeps no file mode).
+        [ -n "$TENSORD" ] || { TENSORD=$out/cozy$exe; chmod +x "$TENSORD"; echo "TensorD: $("$TENSORD" --version)"; }
+        args=(--tensord "$TENSORD" --tensorfs "${TENSORFS:-$(ls "$out"/tensorfs-*.whl)}" --runtime "${RUNTIME:-$(ls "$out"/cozy_runtime-*.whl)}")
         [[ " $BUILD " != *" package "* ]] || args+=(--packages .src)
         echo "CANDIDATES=${args[*]}" >> "$GITHUB_ENV"
         echo "candidates: ${args[*]}"

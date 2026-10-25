@@ -10,7 +10,7 @@
 # whose Runtime floor the candidate does not meet is refused by name and skipped. With --packages, the
 # checkout's package directories are installed and imported the same way. --shard K/N takes every Nth package,
 # from the Kth, so N runners share them.
-#   e2e/imports/run.sh --out DIR [--cozy-bin F] [--tensorfs-wheel F] [--runtime-wheel F] [--packages DIR]
+#   e2e/imports/run.sh --out DIR [--tensord F|V] [--tensorfs F|V] [--runtime F|V] [--packages DIR]
 #                      [--published] [--pins name@release,...] [--shard K/N]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
