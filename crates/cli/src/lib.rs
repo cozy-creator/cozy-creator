@@ -13,7 +13,6 @@ mod account;
 pub mod calcifer_client;
 mod completion;
 pub mod context;
-mod credits;
 mod daemon;
 mod doctor;
 mod hub;
@@ -62,12 +61,10 @@ enum Command {
     Login(account::Login),
     /// Sign out of the Hub.
     Logout(account::Logout),
-    /// Show the signed-in account.
+    /// Show the signed-in account, its credit and where to buy more.
     Whoami(account::Whoami),
     /// The Hubs this computer knows, and the current one.
     Hub(hub::Args),
-    /// Rental credit: balance, history, buy.
-    Credits(credits::Args),
     /// Calcifer, machines and runs at a glance.
     Status(daemon::Status),
     /// Replace this binary with the newest release.
@@ -143,7 +140,6 @@ async fn dispatch(ctx: &Context, command: Command) -> Result<ExitCode, Error> {
         Command::Logout(args) => account::logout(ctx, args).await,
         Command::Whoami(args) => account::whoami(ctx, args).await,
         Command::Hub(args) => hub::exec(ctx, args).await,
-        Command::Credits(args) => credits::exec(ctx, args).await,
         Command::Status(args) => daemon::status(ctx, args).await,
         Command::Update(args) => update::exec(ctx, args).await,
         Command::Completion(args) => completion::exec(ctx, args).await,

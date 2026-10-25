@@ -203,7 +203,7 @@ pub(crate) fn local_note() -> Option<String> {
 }
 
 /// Money as people read it: `$3.19`.
-fn usd(micros: i64) -> String {
+pub(crate) fn usd(micros: i64) -> String {
     format!("${:.2}", micros as f64 / 1e6)
 }
 

@@ -106,7 +106,7 @@ The runner signs in as the owner's account with its own device key: secret `COZY
   - `contract.py`: each path no verb reaches, called anonymously, answers as its contract says (200 with a body its
     schema admits, or 401 when bearer-only). This is the one place in release-gate that speaks HTTP to the Hub by
     hand: it is the contract test.
-  - Through `cozy`, on a throwaway `<account>/ci-hub-<R>`: whoami, credits, credits history, the rental catalog, the
+  - Through `cozy`, on a throwaway `<account>/ci-hub-<R>`: whoami (balance, buy page), the rental catalog, the
     rental itself and a rental of `cpu` on each provider with a dev-build cozy (`machine rent --provider runpod|vast`, ended and
     checked gone: renters never pick one, th-254); a package locked, published twice, run, yanked (the simple index marks it `data-yanked`),
     resolved past, run by exact pin, and un-yanked; a model commit uploaded in a lane, published (listed), downloaded,
