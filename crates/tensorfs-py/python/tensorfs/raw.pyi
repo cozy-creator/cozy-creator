@@ -40,6 +40,9 @@ def quantization_implementation() -> str:
     A build without store support reports the raw numerical implementation only.
     """
 
+def normalization_implementation() -> str:
+    """Digest of the native normalization, source readers and BF16 cast implementation."""
+
 def quantize(
     scheme: str,
     values: bytes,

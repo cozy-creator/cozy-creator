@@ -21,6 +21,7 @@ decode_into = _raw.decode_into
 quantize = _raw.quantize
 quantize_measured = _raw.quantize_measured
 quantization_implementation = _raw.quantization_implementation
+normalization_implementation = _raw.normalization_implementation
 
 __all__ = [
     "Part",
@@ -30,4 +31,5 @@ __all__ = [
     "quantize",
     "quantize_measured",
     "quantization_implementation",
+    "normalization_implementation",
 ]

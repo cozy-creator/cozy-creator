@@ -729,6 +729,49 @@ null values.
 
 ### Native checkpoint quantization
 
+`Writer.normalize_bf16` writes a resolved selection as ordinary BF16 tensors through
+the same native reader, conversion control, staging and Writer transaction:
+
+```python
+stats = writer.normalize_bf16(source, [{
+    "component": "net", "key": "proj.weight",
+    "source_dtype": "F32", "shape": [128, 256],
+}], max_buffer_bytes=8 << 20, max_new_bytes=128 * 256 * 2,
+   control=tensorfs.ConversionControl())
+```
+
+The fixed `bf16-rne/1` operation accepts plain F16/F32 of any rank, including scalars
+and empty tensors, and parameter-free rank-2 `fp8.rowwise`/`int8.rowwise` inputs with
+floating logical dtypes. It decodes rowwise values directly to F32, then applies the
+existing BF16 round-to-nearest-even cast. Plain BF16 and other inputs are preserved
+by the caller's selection policy, not silently recast. Nonfinite sources refuse.
+Round-trip max error must be finite and at most `amax / 256`; BF16 overflow and tiny
+values that violate that exact threshold refuse before publishing the tensor.
+
+Supply the same full selection on resume, including completed keys. The existing
+journal binds normalization separately from encoded quantization and reserves both
+operations' full tensor sets, so they can coexist only for disjoint keys. A pending
+tensor cannot be claimed by the other operation after interruption. There is no new
+checkpoint format or conversion worker. A legacy journal without reserved keys can
+resume its own operation, but cannot admit a second operation whose disjointness
+cannot be established. This method never commits the checkpoint.
+
+The buffer grant covers source/decode/output windows and bounded numerical scratch.
+Plain inputs stream by element windows; encoded inputs use complete source rows and
+refuse if a row cannot fit. Selection/checkpoint metadata and the existing reader,
+store and Writer I/O buffers retain their own lifetimes outside this working-buffer
+metric. Output grants count newly written BF16 payload bytes before deduplication.
+Cancellation uses `ConversionControl` between read/cast/write windows and before
+publication; callers must join before closing Output.
+
+Results include newly written `converted_keys`, `reused_keys`, actual stored
+`source_bytes_read`, separate `logical_source_bytes_read` for the previous Runtime
+counter, `new_bytes_written`, `required_buffer_bytes`, per-tensor RNE error statistics
+and `worst_relative_frobenius`. SSE and energy accumulate in F64. Reused tensors have
+no recomputed measurements, so aggregate worst is `None` if any were reused.
+`raw.normalization_implementation()` supplies the reader/cast/journal implementation
+digest for Runtime provenance. An empty selection is an observational no-op.
+
 `Writer.quantize` converts an exact, fully resolved selection using the existing Writer.
 It neither selects model layers nor commits the checkpoint. The package/Runtime still owns
 recipe selection, calibration that executes a model, output grants and final publication.

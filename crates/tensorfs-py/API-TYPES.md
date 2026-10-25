@@ -541,3 +541,10 @@ per-tensor `fit` details and separate `calibration_bytes_read` and
 the full Writer producer/source-reader and pinned-dependency digest used in external
 memo provenance. Optional `component: str | None = None` limits execution to one component
 while preserving the identical full selection and calibration in resume identity.
+
+`Writer.normalize_bf16(source, tensors, *, max_buffer_bytes, max_new_bytes, control)`
+accepts exact `NormalizeBf16Tensor` declarations (`component`, `key`, `source_dtype`,
+`shape`) and writes ordinary BF16 with fixed RNE and the existing `amax/256` threshold.
+Its result distinguishes newly converted/reused tensors, stored and logical source
+byte counts, output bytes, working requirement and per-tensor error measurements.
+`raw.normalization_implementation() -> str` identifies its native implementation.

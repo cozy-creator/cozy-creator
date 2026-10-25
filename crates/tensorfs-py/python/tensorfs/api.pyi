@@ -66,6 +66,12 @@ class ComponentWriter:
     def order(self, keys: Sequence[str]) -> None: ...
     def has(self, key: str) -> bool: ...
 
+class NormalizeBf16Tensor(TypedDict):
+    component: str
+    key: str
+    source_dtype: str
+    shape: Sequence[int]
+
 class QuantizeFit(TypedDict):
     seed: int
     component: str
@@ -101,6 +107,9 @@ class Writer:
     def commit(self) -> Checkpoint: ...
     def abandon(self) -> None: ...
     def has(self, component: str, key: str) -> bool: ...
+    def normalize_bf16(self, source: Checkpoint, tensors: Sequence[NormalizeBf16Tensor], *,
+                      max_buffer_bytes: int, max_new_bytes: int,
+                      control: ConversionControl) -> dict[str, object]: ...
     def quantize(self, source: Checkpoint, tensors: Sequence[QuantizeTensor], *,
                  max_buffer_bytes: int, max_new_bytes: int, control: ConversionControl,
                  max_relative_frobenius: float | None = None,
