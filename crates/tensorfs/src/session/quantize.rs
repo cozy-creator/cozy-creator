@@ -13,6 +13,9 @@ use crate::format::{Body, Dtype, Encoding, PartBytes, encode};
 
 #[path = "quantize_fit.rs"]
 mod fitting;
+#[path = "quantize_bf16.rs"]
+mod normalization;
+pub use normalization::{Normalization, NormalizationResult, NormalizeBf16Tensor};
 
 /// A fully resolved tensor, never a model selector or a Python callback.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -169,6 +172,10 @@ pub fn quantization_implementation() -> String {
     for source in [
         include_str!("quantize.rs"),
         include_str!("quantize_fit.rs"),
+        include_str!("quantize_bf16.rs"),
+        include_str!("writer.rs"),
+        include_str!("../writer.rs"),
+        include_str!("../format/decode/elem.rs"),
         include_str!("../format/decode/mod.rs"),
         include_str!("../format/decode/plan.rs"),
         include_str!("../format/decode/fp8.rs"),
@@ -706,115 +713,132 @@ async fn read_window(
     count: usize,
     control: &ConversionControl,
 ) -> Result<Vec<u8>> {
-    control.check()?;
-    let cols = pending.spec.shape[1] as usize;
-    match &pending.source {
-        Source::Plain { width } => {
-            let bytes = read_part(
-                source,
-                pending,
-                None,
-                (start * cols * width) as u64,
-                count * cols * width,
-                control,
-            )
-            .await?;
-            if pending.spec.source_dtype == Dtype::F32 {
-                return Ok(bytes);
-            }
-            let mut values = Vec::new();
-            values
-                .try_reserve_exact(count * cols * 4)
-                .map_err(|_| Failure {
-                    kind: Kind::Full,
-                    detail: "quantization decode allocation failed".into(),
-                })?;
-            for raw in bytes.as_chunks::<2>().0 {
-                let bits = u16::from_le_bytes(*raw);
-                let value = if pending.spec.source_dtype == Dtype::BF16 {
-                    crate::format::decode::elem::bf16(bits)
-                } else {
-                    crate::format::decode::elem::f16(bits)
-                };
-                values.extend_from_slice(&value.to_le_bytes());
-            }
-            Ok(values)
-        }
-        Source::Rowwise {
-            encoding,
-            weight,
-            scale,
-            scale_width,
-        } => {
-            let codes = read_part(
-                source,
-                pending,
-                Some("weight"),
-                (start * cols) as u64,
-                count * cols,
-                control,
-            )
-            .await?;
-            let scales = read_part(
-                source,
-                pending,
-                Some("scale"),
-                (start * scale_width) as u64,
-                count * scale_width,
-                control,
-            )
-            .await?;
-            let shape = [count as u64, cols as u64];
-            let scale_shape = [count as u64];
-            let parts = BTreeMap::from([
-                (
-                    "weight",
-                    PartBytes {
-                        dtype: weight,
-                        shape: &shape,
-                        bytes: &codes,
-                    },
-                ),
-                (
-                    "scale",
-                    PartBytes {
-                        dtype: scale,
-                        shape: &scale_shape,
-                        bytes: &scales,
-                    },
-                ),
-            ]);
-            // The source's logical BF16/F16 dtype is metadata, not an extra rounding
-            // boundary: Runtime's model-values contract reconstructs directly into F32.
-            Ok(crate::format::decode::decode(
-                &Dtype::F32,
-                &shape,
-                encoding,
-                &parts,
-            )?)
-        }
+    FloatReader {
+        checkpoint: source,
+        component: &pending.component,
+        component_name: &pending.spec.component,
+        key: &pending.spec.key,
+        dtype: &pending.spec.source_dtype,
+        layout: &pending.source,
+        columns: pending.spec.shape[1] as usize,
     }
+    .read(start, count, control)
+    .await
 }
 
-async fn read_part(
-    source: &Checkpoint,
-    pending: &Pending<'_>,
-    role: Option<&str>,
-    offset: u64,
-    length: usize,
-    control: &ConversionControl,
-) -> Result<Vec<u8>> {
-    read_named_part(
-        source,
-        &pending.component,
-        &pending.spec.component,
-        &pending.spec.key,
-        role,
-        offset,
-        length,
-        control,
-    )
-    .await
+/// Shared bounded F32 source windows for normalization and encoded quantization.
+struct FloatReader<'a> {
+    checkpoint: &'a Checkpoint,
+    component: &'a Component,
+    component_name: &'a str,
+    key: &'a str,
+    dtype: &'a Dtype,
+    layout: &'a Source,
+    columns: usize,
+}
+
+impl FloatReader<'_> {
+    async fn read(
+        &self,
+        start: usize,
+        count: usize,
+        control: &ConversionControl,
+    ) -> Result<Vec<u8>> {
+        control.check()?;
+        let cols = self.columns;
+        match self.layout {
+            Source::Plain { width } => {
+                let bytes = read_named_part(
+                    self.checkpoint,
+                    self.component,
+                    self.component_name,
+                    self.key,
+                    None,
+                    (start * cols * width) as u64,
+                    count * cols * width,
+                    control,
+                )
+                .await?;
+                if *self.dtype == Dtype::F32 {
+                    return Ok(bytes);
+                }
+                let mut values = Vec::new();
+                values
+                    .try_reserve_exact(count * cols * 4)
+                    .map_err(|_| Failure {
+                        kind: Kind::Full,
+                        detail: "quantization decode allocation failed".into(),
+                    })?;
+                for raw in bytes.as_chunks::<2>().0 {
+                    let bits = u16::from_le_bytes(*raw);
+                    let value = if *self.dtype == Dtype::BF16 {
+                        crate::format::decode::elem::bf16(bits)
+                    } else {
+                        crate::format::decode::elem::f16(bits)
+                    };
+                    values.extend_from_slice(&value.to_le_bytes());
+                }
+                Ok(values)
+            }
+            Source::Rowwise {
+                encoding,
+                weight,
+                scale,
+                scale_width,
+            } => {
+                let codes = read_named_part(
+                    self.checkpoint,
+                    self.component,
+                    self.component_name,
+                    self.key,
+                    Some("weight"),
+                    (start * cols) as u64,
+                    count * cols,
+                    control,
+                )
+                .await?;
+                let scales = read_named_part(
+                    self.checkpoint,
+                    self.component,
+                    self.component_name,
+                    self.key,
+                    Some("scale"),
+                    (start * scale_width) as u64,
+                    count * scale_width,
+                    control,
+                )
+                .await?;
+                let shape = [count as u64, cols as u64];
+                let scale_shape = [count as u64];
+                let parts = BTreeMap::from([
+                    (
+                        "weight",
+                        PartBytes {
+                            dtype: weight,
+                            shape: &shape,
+                            bytes: &codes,
+                        },
+                    ),
+                    (
+                        "scale",
+                        PartBytes {
+                            dtype: scale,
+                            shape: &scale_shape,
+                            bytes: &scales,
+                        },
+                    ),
+                ]);
+                // The source's logical BF16/F16 dtype is metadata, not an extra rounding
+                // boundary: Runtime's model-values contract reconstructs directly into F32.
+                Ok(crate::format::decode::decode(
+                    &Dtype::F32,
+                    &shape,
+                    encoding,
+                    &parts,
+                )?)
+            }
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

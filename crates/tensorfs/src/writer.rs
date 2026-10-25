@@ -23,7 +23,7 @@
 //! - A streaming writer sends each object to an endpoint as it seals it ([`Stream`]) and, at
 //!   commit, the header with its repo files as a new commit in its lane.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -170,7 +170,15 @@ enum At {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Line {
-    Quantization { identity: String },
+    Quantization {
+        identity: String,
+        /// Independent BF16 normalization shares this journal and tensor transaction.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        normalization: bool,
+        /// Reserve the full selection, including not-yet-written tensors, across operations.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        selected: Option<Vec<Name>>,
+    },
     Tensor(Entry),
     Asset {
         component: String,
@@ -227,6 +235,9 @@ pub struct Writer {
     metadata: Metadata,
     tensors: Tensors,
     quantization: Option<String>,
+    normalization: Option<String>,
+    quantization_keys: Option<BTreeSet<Name>>,
+    normalization_keys: Option<BTreeSet<Name>>,
     /// (component, asset name) → (object, given by `reuse_asset`).
     assets: BTreeMap<Name, (ObjectRef, bool)>,
     /// Repo files given to `repo_file` (README, LICENSE).
@@ -379,6 +390,9 @@ impl Writer {
             metadata: Metadata::new(),
             tensors: Tensors::default(),
             quantization: None,
+            normalization: None,
+            quantization_keys: None,
+            normalization_keys: None,
             assets: BTreeMap::new(),
             repo: BTreeMap::new(),
             spool,
@@ -406,7 +420,27 @@ impl Writer {
     /// One immutable conversion selection owns the existing resume journal. Entries
     /// without that binding are never mistaken for this producer's completed work.
     pub(crate) fn bind_quantization(&mut self, identity: &str, selected: &[(String, String)]) -> Result<()> {
-        if let Some(bound) = &self.quantization {
+        self.bind_conversion(identity, selected, false)
+    }
+
+    pub(crate) fn bind_normalization(&mut self, identity: &str, selected: &[(String, String)]) -> Result<()> {
+        self.bind_conversion(identity, selected, true)
+    }
+
+    fn bind_conversion(&mut self, identity: &str, selected: &[(String, String)], normalization: bool) -> Result<()> {
+        let binding = if normalization { &self.normalization } else { &self.quantization };
+        let (other, other_keys) = if normalization {
+            (&self.quantization, &self.quantization_keys)
+        } else {
+            (&self.normalization, &self.normalization_keys)
+        };
+        if other.is_some() {
+            let keys = other_keys.as_ref().ok_or_else(|| bad("cannot mix normalization and a legacy conversion journal without reserved tensor keys"))?;
+            if selected.iter().any(|name| keys.contains(name)) {
+                return Err(bad("selected tensor is reserved by the other conversion operation"));
+            }
+        }
+        if let Some(bound) = binding {
             return if bound == identity { Ok(()) } else {
                 Err(bad("writer quantization source or resolved recipe changed"))
             };
@@ -414,7 +448,7 @@ impl Writer {
         if selected.iter().any(|(component, key)| self.has(component, key)) {
             return Err(bad("selected tensor was written without this quantization identity"));
         }
-        self.record(Line::Quantization { identity: identity.into() }, 0)?;
+        self.record(Line::Quantization { identity: identity.into(), normalization, selected: Some(selected.to_vec()) }, 0)?;
         self.flush()
     }
 
@@ -994,7 +1028,15 @@ impl Writer {
 
     fn apply(&mut self, line: Line) {
         match line {
-            Line::Quantization { identity } => self.quantization = Some(identity),
+            Line::Quantization { identity, normalization, selected } => {
+                if normalization {
+                    self.normalization = Some(identity);
+                    self.normalization_keys = selected.map(|names| names.into_iter().collect());
+                } else {
+                    self.quantization = Some(identity);
+                    self.quantization_keys = selected.map(|names| names.into_iter().collect());
+                }
+            },
             Line::Tensor(e) => self.tensors.insert(e),
             Line::Asset {
                 component,

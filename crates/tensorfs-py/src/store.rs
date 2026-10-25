@@ -1834,6 +1834,30 @@ impl PyWriter {
         Ok(config_to_py(py, &result)?.unbind())
     }
 
+    #[pyo3(signature = (source, tensors, *, max_buffer_bytes, max_new_bytes, control))]
+    fn normalize_bf16(
+        &self, py: Python<'_>, source: &PyCheckpoint, tensors: &Bound<'_, PyAny>,
+        max_buffer_bytes: usize, max_new_bytes: u64,
+        control: &crate::quantize::PyConversionControl,
+    ) -> PyResult<Py<PyAny>> {
+        let rows: Vec<tensorfs::NormalizeBf16Tensor> = serde_json::from_value(config_from_py(tensors)?)
+            .map_err(|e| invalid(py, format!("resolved BF16 normalization selection: {e}")))?;
+        let source = source.core(py)?;
+        let result = py.detach(|| {
+            let mut checkout = {
+                let mut slot = self.w.lock().unwrap_or_else(|e| e.into_inner());
+                let writer = slot.take().ok_or_else(|| self.unavailable())?;
+                self.quantizing.store(true, Ordering::Release);
+                WriterCheckout { owner: self, writer: Some(writer) }
+            };
+            block_on(checkout.writer.as_mut().expect("checked out Writer").normalize_bf16(&source, &tensorfs::Normalization {
+                tensors: &rows, max_buffer_bytes, max_new_bytes, control: &control.inner,
+            }))
+        }).or_raise(py)?;
+        let result = serde_json::to_value(result).map_err(|e| invalid(py, e.to_string()))?;
+        Ok(config_to_py(py, &result)?.unbind())
+    }
+
     fn commit(&self, py: Python<'_>) -> PyResult<PyCheckpoint> {
         let (result, retained) = py.detach(|| {
             let mut guard = self.w.lock().unwrap_or_else(|e| e.into_inner());

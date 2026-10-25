@@ -162,6 +162,8 @@ fn quantization_implementation() -> String {
 
 pub fn install(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(quantization_implementation, m)?)?;
+    // Both operations bind the same checked reader/cast implementation family.
+    m.add("normalization_implementation", m.getattr("quantization_implementation")?)?;
     m.add_function(wrap_pyfunction!(quantize, m)?)?;
     m.add_function(wrap_pyfunction!(quantize_measured, m)?)
 }

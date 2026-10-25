@@ -310,6 +310,9 @@ class Writer:
         """Declares a component (again: class and config change, tensors stay)."""
     def set_metadata(self, key: str, value: Any) -> None: ...
     def has(self, component: str, key: str) -> bool: ...
+    def normalize_bf16(self, source: Checkpoint, tensors: Sequence[Mapping[str, object]], *,
+                      max_buffer_bytes: int, max_new_bytes: int,
+                      control: ConversionControl) -> dict[str, object]: ...
     def quantize(self, source: Checkpoint, tensors: Sequence[Mapping[str, object]], *,
                  max_buffer_bytes: int, max_new_bytes: int, control: ConversionControl,
                  max_relative_frobenius: float | None = None,

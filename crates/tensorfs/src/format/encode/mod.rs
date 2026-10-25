@@ -169,7 +169,7 @@ impl QuantizationStats {
         *sum = next;
     }
 
-    pub(super) fn add(&mut self, source: f32, reconstructed: f64) {
+    pub(crate) fn add(&mut self, source: f32, reconstructed: f64) {
         let source = f64::from(source);
         let error = reconstructed - source;
         self.amax = self.amax.max(source.abs());
