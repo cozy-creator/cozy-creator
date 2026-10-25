@@ -637,6 +637,7 @@ def cancel(payload: Request) -> dict[str, Any]:
             assert reopened.has("weights", "first") and not reopened.has(
                 "weights", "large"
             )
+        resume_began = time.perf_counter()
         result = reopened.quantize(
             source,
             specs,
@@ -645,6 +646,7 @@ def cancel(payload: Request) -> dict[str, Any]:
             max_new_bytes=allowance,
             control=tensorfs.ConversionControl(),
         )
+        resume_fit_seconds = time.perf_counter() - resume_began
         assert result["reused_keys"] == 1 and result["encoded_keys"] == 1
         assert result["worst_relative_frobenius"] is None
         checkpoint = reopened.commit()
@@ -665,6 +667,7 @@ def cancel(payload: Request) -> dict[str, Any]:
             "result": result,
             "facts": facts,
             "cancel_seconds": cancel_seconds,
+            "resume_fit_seconds": resume_fit_seconds,
             "cancel_progress": control.progress(),
             "identity_refusals": refusals,
             "scope": "real interrupted/resumed Writer; cancellation waits for any current faer call",
