@@ -126,7 +126,8 @@ def exercise(seed, ctx):
             before = request.moved
             plan = capture()
             assert calls[0] == 2 and request.moved == before
-            assert request.overlap == before_overlap, (
+            after_overlap = request.overlap
+            assert after_overlap == before_overlap, (
                 "idle capture changed request overlap"
             )
             output = ctx.plan(plan).wait()[0]
@@ -238,7 +239,7 @@ def exercise(seed, ctx):
                 "resident_read_bytes": 0,
                 "phase_changes": phase_changes,
                 "overlap_before_capture": before_overlap,
-                "overlap_after_capture": request.overlap,
+                "overlap_after_capture": after_overlap,
                 "hook_refusal": hook_reason,
                 "per_step_lora_refusal": lora_reason,
                 "state_restored": state_reason,
