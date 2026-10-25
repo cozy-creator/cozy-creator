@@ -212,6 +212,12 @@ pub fn tables() -> &'static [Table] {
     })
 }
 
+/// The built-in tables' digest: an import is what its source's bytes and these tables make.
+pub fn tables_digest() -> &'static str {
+    static DIGEST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    DIGEST.get_or_init(|| crate::sha256::hex_digest(TABLES.join("\0").as_bytes()))
+}
+
 // ------------------------------------------------------------------------------ recognition
 
 /// One table component matched to one source group.
