@@ -346,7 +346,8 @@ fn all_stuck(births: &[Birth]) -> bool {
     }
     let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
     let mut stuck = STUCK.lock().unwrap();
-    for birth in births.iter().filter(|birth| !stuck.iter().any(|(known, _)| known == *birth)) {
+    let fresh: Vec<&Birth> = births.iter().filter(|birth| !stuck.iter().any(|(known, _)| known == *birth)).collect();
+    for birth in fresh {
         let wchan = uninterruptible(birth.pid).unwrap_or_default();
         let command = fs::read_to_string(format!("/proc/{}/comm", birth.pid)).unwrap_or_default().trim().to_owned();
         tracing::warn!("pid {} ({command}) is stuck in the kernel after its kill (D state, {wchan}): shown, not waited on", birth.pid);
