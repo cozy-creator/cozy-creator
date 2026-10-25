@@ -16,3 +16,10 @@ The output records source-function and native-extension hashes.
 This qualifies tensor arithmetic and Writer/readback integration. It does not switch the
 production recipe, prove model quality, run a full native checkpoint job, prove cancellation
 inside one encoder call or establish performance. No unit tests or mocks.
+
+Installed CPU qualification passed on2026-10-25: run **17469**, combined source7e98dce7f,
+TensorFS0.15.3 wheel f80ef0d9… / native126fd414…, Runtime67e2e0c10, TensorDca3849147,
+NumPy2.5.4, on RTX3060 host quatre through the default CLI. All24 logical-dtype cases,
+chunk sizes1/2/7, 11 refusals and existing Writer/readback passed.
+[Exact receipt](evidence/7e98dce7f-cpu.json). This does not qualify the later measured
+encoder/Writer.quantize checkpoint loop or production Runtime cutover.

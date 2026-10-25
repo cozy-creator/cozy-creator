@@ -23,3 +23,10 @@ The fixture records the installed NumPy version and reference/native source hash
 
 This is tensor arithmetic and Writer integration proof, not model quality, speed, full native
 checkpoint conversion or a production producer switch. No unit tests or mocks.
+
+Installed CPU qualification passed on2026-10-25: run **17471**, combined source7e98dce7f,
+TensorFS0.15.3 wheel f80ef0d9… / native126fd414…, Runtime67e2e0c10, TensorDca3849147,
+NumPy2.5.4, on RTX3060 host quatre through the default CLI. All24 logical-dtype cases,
+chunk sizes1/2/7, 12 refusals and existing Writer/readback passed.
+[Exact receipt](evidence/7e98dce7f-cpu.json). This does not qualify the later measured
+encoder/Writer.quantize checkpoint loop or production Runtime cutover.
