@@ -1,0 +1,284 @@
+{
+  "workflow_run": 40225337039,
+  "url": "https://github.com/cozy-creator/cozy-creator/actions/runs/40225337039",
+  "status": "success",
+  "creator_and_workflow": "0ed0bb4c21a0f7b8ede22040b5da86d0ad17d12f",
+  "production_input_source": "51a131c7812464bfe6c7c886b4c9d77157b0f53f",
+  "runtime_source": "dfef434a13c8b7d082828d5138f14e5fdc2b80d4",
+  "packages_source": "a25eed93d9c3e5bddde095e1978120fea6e713c9",
+  "selected_jobs_passed": 15,
+  "skipped_jobs": [
+    "mps",
+    "cli-release ${{ matrix.runner }}"
+  ],
+  "jobs": [
+    {
+      "id": 121265391803,
+      "name": "affected",
+      "conclusion": "success"
+    },
+    {
+      "id": 121265415814,
+      "name": "cli windows-2025",
+      "conclusion": "success"
+    },
+    {
+      "id": 121265415836,
+      "name": "candidate tensorfs",
+      "conclusion": "success"
+    },
+    {
+      "id": 121265415842,
+      "name": "candidate cozy",
+      "conclusion": "success"
+    },
+    {
+      "id": 121265415889,
+      "name": "cli macos-15",
+      "conclusion": "success"
+    },
+    {
+      "id": 121265415910,
+      "name": "candidate runtime",
+      "conclusion": "success"
+    },
+    {
+      "id": 121265417664,
+      "name": "mps",
+      "conclusion": "skipped"
+    },
+    {
+      "id": 121266977494,
+      "name": "cli executors",
+      "conclusion": "success"
+    },
+    {
+      "id": 121266977504,
+      "name": "imports 2/4",
+      "conclusion": "success"
+    },
+    {
+      "id": 121266977509,
+      "name": "imports 4/4",
+      "conclusion": "success"
+    },
+    {
+      "id": 121266977511,
+      "name": "cli commands",
+      "conclusion": "success"
+    },
+    {
+      "id": 121266977515,
+      "name": "imports 1/4",
+      "conclusion": "success"
+    },
+    {
+      "id": 121266977543,
+      "name": "cli runs",
+      "conclusion": "success"
+    },
+    {
+      "id": 121266977546,
+      "name": "cli follow",
+      "conclusion": "success"
+    },
+    {
+      "id": 121266977613,
+      "name": "imports 3/4",
+      "conclusion": "success"
+    },
+    {
+      "id": 121266978685,
+      "name": "cli-release ${{ matrix.runner }}",
+      "conclusion": "skipped"
+    },
+    {
+      "id": 121268795640,
+      "name": "e2e",
+      "conclusion": "success"
+    }
+  ],
+  "candidates": {
+    "cozy": {
+      "filename": "cozy",
+      "path": "/home/fidika/cozy/.worktrees/cozy-creator/varena-consolidation/.task/coherent-e2e-0ed0bb4c2/artifacts/candidate-cozy-0ed0bb4c21a0f7b8ede22040b5da86d0ad17d12f/cozy",
+      "sha256": "20f93ec8c31eb60cad0d92ca8a669a1ba557115e5123ae6a6eec0dad4e01bd94",
+      "bytes": 46738600
+    },
+    "tensorfs": {
+      "filename": "tensorfs-0.15.8-cp311-abi3-manylinux_2_38_x86_64.whl",
+      "path": "/home/fidika/cozy/.worktrees/cozy-creator/varena-consolidation/.task/coherent-e2e-0ed0bb4c2/artifacts/candidate-tensorfs-0ed0bb4c21a0f7b8ede22040b5da86d0ad17d12f/tensorfs-0.15.8-cp311-abi3-manylinux_2_38_x86_64.whl",
+      "sha256": "7807001db0023c4940cf2e32feaf7bd36c562caa6a93f448386906475b9fb89f",
+      "bytes": 10973198,
+      "record_verified_entries": 17
+    },
+    "runtime": {
+      "filename": "cozy_runtime-0.32.3+dev.gdfef434a-py3-none-any.whl",
+      "path": "/home/fidika/cozy/.worktrees/cozy-creator/varena-consolidation/.task/coherent-e2e-0ed0bb4c2/artifacts/candidate-runtime-dfef434a13c8b7d082828d5138f14e5fdc2b80d4/cozy_runtime-0.32.3+dev.gdfef434a-py3-none-any.whl",
+      "sha256": "1528989f7d0de4d73d5b32c3033d034ca596dd4d536326d123f5ba81e7fd6a85",
+      "bytes": 2192757,
+      "record_verified_entries": 223,
+      "pure_no_native_modules": true
+    }
+  },
+  "imports": {
+    "passed": 16,
+    "skipped": 1,
+    "failed": 0,
+    "skip_package": "minimax-h3",
+    "skip_notice": [
+      "4_imports 2_4.txt: 2026-10-25T19:25:12.0239495Z ##[notice]checkout-minimax-h3: skipped, its dependencies come from the Hub's index and this runner is not signed in",
+      "imports 2_4/4_imports suite.txt: 2026-10-25T19:25:12.0239177Z ##[notice]checkout-minimax-h3: skipped, its dependencies come from the Hub's index and this runner is not signed in"
+    ],
+    "packages": [
+      {
+        "package": "anima",
+        "shard": "e2e-imports-1",
+        "sha256": "3f944aeb2798a2206370b11406f5915b95fb9762ce3e53d53c7a9d4b6ab2253d",
+        "scope": "actual entry-point import success"
+      },
+      {
+        "package": "flux-3-klein",
+        "shard": "e2e-imports-1",
+        "sha256": "9075edb1da9b0248d7d53171c3ab220806927a5f21136e0193267c09ec046465",
+        "scope": "actual entry-point import success"
+      },
+      {
+        "package": "minimax-h3-tools",
+        "shard": "e2e-imports-1",
+        "sha256": "6680910b349df11710541f490314be0dabb68d3a4f5781b16b68c8a6dcad3bb1",
+        "scope": "actual entry-point import success"
+      },
+      {
+        "package": "qwen-image",
+        "shard": "e2e-imports-1",
+        "sha256": "fd35b1aaf242c74bcc4c9ad3c75f94393ffcc633162388621c0ad60f1540b176",
+        "scope": "actual entry-point import success"
+      },
+      {
+        "package": "seedvr2",
+        "shard": "e2e-imports-1",
+        "sha256": "1bca26b19669bc3a45d16e011e89d14d6d24b0916457283524b60ed10fbb90db",
+        "scope": "actual entry-point import success"
+      },
+      {
+        "package": "birefnet",
+        "shard": "e2e-imports-2",
+        "sha256": "241cceaba9a4261c804848ed874bd408649e2c546a8ef42335df716aa6db81db",
+        "scope": "actual entry-point import success"
+      },
+      {
+        "package": "hidream-o1",
+        "shard": "e2e-imports-2",
+        "sha256": "e8bd01bc6da405359c8d7efde3b0ed7a478aefef8194cdaf6429f210fb5e7df8",
+        "scope": "actual entry-point import success"
+      },
+      {
+        "package": "qwen3.5",
+        "shard": "e2e-imports-2",
+        "sha256": "df26b8976d4310d2543b4281a884aee0d20c891491eeb58d154aea227d8c6675",
+        "scope": "actual entry-point import success"
+      },
+      {
+        "package": "fibo-2",
+        "shard": "e2e-imports-3",
+        "sha256": "42e0507b8c00c34bce311a28c4e41d6d0a9bf5a2a635414bab198a045cecb378",
+        "scope": "actual entry-point import success"
+      },
+      {
+        "package": "hunyuan-image-3",
+        "shard": "e2e-imports-3",
+        "sha256": "dd490d9e740f98b434010152b9598546f67a593a6485d2beff41b9860459395f",
+        "scope": "actual entry-point import success"
+      },
+      {
+        "package": "moss-image",
+        "shard": "e2e-imports-3",
+        "sha256": "0c0cfadfc3358e22591671deded84e989aa21f0fa6106925a04c0a3e73806bad",
+        "scope": "actual entry-point import success"
+      },
+      {
+        "package": "qwen3.6",
+        "shard": "e2e-imports-3",
+        "sha256": "2ce8bce8e29fe2c3c0d276193d5313fa5a041a22a76dd4ce54721c30992140eb",
+        "scope": "actual entry-point import success"
+      },
+      {
+        "package": "flux-2",
+        "shard": "e2e-imports-4",
+        "sha256": "dfeafc7f45eba43e452e36d0186a3a4a208c0c5f56e89e5857ffa0ff858361bb",
+        "scope": "actual entry-point import success"
+      },
+      {
+        "package": "ideogram-4",
+        "shard": "e2e-imports-4",
+        "sha256": "994634aa6784b89fdecfb5a1e8123881a19728f35509a6b71399d1c35b9f9c98",
+        "scope": "actual entry-point import success"
+      },
+      {
+        "package": "qwen-image-2",
+        "shard": "e2e-imports-4",
+        "sha256": "fb6ac43f38869475f78398593767316dd5e9b433ff1e04d5c40ec8e7c9e9871e",
+        "scope": "actual entry-point import success"
+      },
+      {
+        "package": "sdxl",
+        "shard": "e2e-imports-4",
+        "sha256": "598130a98eb53fd15b4270227a013f56b515c6315547b53198240ca7587e10ea",
+        "scope": "actual entry-point import success"
+      }
+    ],
+    "shards": [
+      {
+        "name": "e2e-imports-1",
+        "actual_imports": 5,
+        "installed_runtime_sha256": "1528989f7d0de4d73d5b32c3033d034ca596dd4d536326d123f5ba81e7fd6a85",
+        "installed_tensorfs_sha256": "7807001db0023c4940cf2e32feaf7bd36c562caa6a93f448386906475b9fb89f",
+        "update_receipt_sha256": "af5531d3991783d6021c065f0a0b7f813aa8c4b6c613b1db176dfe166f0747a7"
+      },
+      {
+        "name": "e2e-imports-2",
+        "actual_imports": 3,
+        "installed_runtime_sha256": "1528989f7d0de4d73d5b32c3033d034ca596dd4d536326d123f5ba81e7fd6a85",
+        "installed_tensorfs_sha256": "7807001db0023c4940cf2e32feaf7bd36c562caa6a93f448386906475b9fb89f",
+        "update_receipt_sha256": "6a3054d0db38af45328cf2232f8dfd473fec3aca598eacd865376b63dc63f939"
+      },
+      {
+        "name": "e2e-imports-3",
+        "actual_imports": 4,
+        "installed_runtime_sha256": "1528989f7d0de4d73d5b32c3033d034ca596dd4d536326d123f5ba81e7fd6a85",
+        "installed_tensorfs_sha256": "7807001db0023c4940cf2e32feaf7bd36c562caa6a93f448386906475b9fb89f",
+        "update_receipt_sha256": "9904af86cf807f2363164bf913c47cd0c65847678999ce127f1f4097ad070cb1"
+      },
+      {
+        "name": "e2e-imports-4",
+        "actual_imports": 4,
+        "installed_runtime_sha256": "1528989f7d0de4d73d5b32c3033d034ca596dd4d536326d123f5ba81e7fd6a85",
+        "installed_tensorfs_sha256": "7807001db0023c4940cf2e32feaf7bd36c562caa6a93f448386906475b9fb89f",
+        "update_receipt_sha256": "a9e54d78615fe0b8c6dee5bb8c6dbd14ac534be1cb6fa9b5e42caa0bd019751a"
+      }
+    ]
+  },
+  "retention": {
+    "artifact_sets": 13,
+    "directory": "/home/fidika/cozy/.worktrees/cozy-creator/varena-consolidation/.task/coherent-e2e-0ed0bb4c2",
+    "full_log_sha256": "b5b377b652e432d874eb3a3233b56f41ce5270beab751830297dcfa1e172e061",
+    "complete_archive_sha256": "e7aa207af57e61cbe6262606c086dd9097af1d29d002520182eebe4891059710",
+    "note": "gh run view --log omitted slash-named imports jobs; official full logs ZIP and actual import artifacts establish their outcomes."
+  },
+  "raw_receipts_sha256": {
+    "run-final.json": "20798745da651eb910fda3d3f0d6611774ffdc12c5efd50ae56ed3325601e746",
+    "jobs-final.json": "151794a74c5eba117cb9d8902a6e1ae758c0c8cc57e9e405425531f30591d851",
+    "github-artifacts.json": "fee1477ed73633e24489fae65af3693037361e1f51e8d7117dd5e4c9d0104140",
+    "full.log": "b5b377b652e432d874eb3a3233b56f41ce5270beab751830297dcfa1e172e061",
+    "all-job-logs.zip": "e7aa207af57e61cbe6262606c086dd9097af1d29d002520182eebe4891059710",
+    "imports-skip-evidence.txt": "768de0657ffe2d50f6a8907eda009612d049de9a7e7bc7e7087259821d5344ad"
+  },
+  "boundaries": [
+    "Coordinated source CLI/CPU/import proof, not GPU or portable release artifact proof.",
+    "MPS and signed-in CLI release suites intentionally skipped; no GPU rental.",
+    "Runtime pure wheel has no execution DSO; TensorFS CPU wheel is separate from portable51a/e8.",
+    "No authenticated H3 import, dependency uv.lock repair, promotion or PR merge claim.",
+    "Temporary peer pins must be removed through normal Creator follow-up after Runtime1807 and packages646 land."
+  ]
+}

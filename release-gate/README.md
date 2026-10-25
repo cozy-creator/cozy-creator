@@ -1,5 +1,8 @@
 # Release gate
 
+[Capability-integrated source CI 40225337039](suites/varena/evidence/source-e2e-40225337039.md)
+records the coordinated Creator/Runtime/packages checks and their explicit import skip.
+
 [Combined source integration run 40192828364](suites/varena/evidence/source-e2e-40192828364.md)
 records the frozen Creator/Runtime/packages CLI, CPU and import checks. Its CPU candidate
 artifacts and explicit package skip are separate from GPU and portable release qualification.

@@ -1,5 +1,9 @@
 # Real image-model qualification
 
+[Current 51a/dfef cohort](evidence/51a-dfef-local-cohort.md) passed three small controls and
+full 30-step SDXL with one eager plus 29 native steps on an 8 GiB RTX 4070 Laptop. It is
+correctness proof with exact restoration, not a matched performance comparison.
+
 [Full SDXL run 17882](evidence/sdxl-17882-native29.md) passed strict one-eager-plus-29-native
 step evidence on an RTX 3090 with the recorded diagnostic cohort. This single image is
 separate from the four-call comparison protocol below and does not resolve the earlier
