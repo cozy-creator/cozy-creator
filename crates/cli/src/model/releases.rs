@@ -3,7 +3,6 @@
 //! good; a commit no release names can be deleted, as can the whole model.
 use std::process::ExitCode;
 
-use hub_client::types::ModelReleaseRequest;
 use protocol::error::{Error, Kind};
 use serde::Serialize;
 
@@ -31,8 +30,7 @@ pub(crate) async fn publish(ctx: &Context, args: Publish) -> Result<ExitCode, Er
     let version = refs::label("version", &args.version)?;
     let commits = args.commits.iter().map(|c| refs::commit(c)).collect::<Result<Vec<_>, _>>()?;
     let client = ctx.hub_signed_in(ctx.hub())?;
-    let request = ModelReleaseRequest { commits };
-    let release = hub_answer(client.publish_model_release(&repo.org, &repo.name, &version, &request).await)?;
+    let release = hub_answer(client.publish_model_release(&repo.org, &repo.name, &version, &commits).await)?;
     let view = Released {
         model: repo.to_string(),
         version: release.version,
@@ -75,8 +73,8 @@ pub(crate) async fn delete(ctx: &Context, args: Delete) -> Result<ExitCode, Erro
     }
     let client = ctx.hub_signed_in(&hub)?;
     match &commit {
-        Some(id) => drop(hub_answer(client.delete_model_commit(&repo.org, &repo.name, id).await)?),
-        None => drop(hub_answer(client.delete_model(&repo.org, &repo.name).await)?),
+        Some(id) => hub_answer(client.delete_model_commit(&repo.org, &repo.name, id).await)?,
+        None => hub_answer(client.delete_model(&repo.org, &repo.name).await)?,
     }
     let view = Deleted { model: repo.to_string(), commit };
     match ctx.json {

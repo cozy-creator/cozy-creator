@@ -1,9 +1,10 @@
 name: build
 # The PR check (tracker/design/ci-v2.md §1): the workspace compiles, clippy's deny lints pass (warnings are not
-# gates yet: master has 61 in tensorfs) and TensorD's router, its client and crates/tensord/api/openapi.yaml name
-# the same routes. Required for merges into master and rc/*: it runs on the merge queue's
-# group (merge_group), on the final PR + branch state; on a pull request it is skipped, which lets the PR be
-# queued. A docs-only group passes without building.
+# gates yet: master has 61 in tensorfs), and the routes hold to their API documents: every route hub-client calls is
+# in tensorhub's api/openapi.yaml, and TensorD's router, its client and crates/tensord/api/openapi.yaml name the same
+# routes. Required for merges into master and rc/*: it runs on the merge queue's group (merge_group), on the final
+# PR + branch state; on a pull request it is skipped, which lets the PR be queued. A docs-only group passes without
+# building.
 on:
   pull_request:
   merge_group:
@@ -38,6 +39,18 @@ jobs:
           fi
       - if: steps.scope.outputs.run == 'true'
         uses: actions/checkout@v5
+      # Every route hub-client calls is in tensorhub's API document as it is now.
+      - if: steps.scope.outputs.run == 'true'
+        uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/tensorhub
+          ssh-key: ${{ secrets.TENSORHUB_READ_KEY }}
+          persist-credentials: false
+          sparse-checkout: api/openapi.yaml
+          sparse-checkout-cone-mode: false
+          path: .tensorhub
+      - if: steps.scope.outputs.run == 'true'
+        run: scripts/hub-routes.sh .tensorhub/api/openapi.yaml
       - if: steps.scope.outputs.run == 'true'
         run: scripts/machine-routes.sh
       - if: steps.scope.outputs.run == 'true'

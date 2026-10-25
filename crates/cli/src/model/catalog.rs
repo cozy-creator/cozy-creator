@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::process::ExitCode;
 
 use protocol::error::{Error, Kind};
-use hub_client::types::{ModelCard, ModelFamilyUpdate, ModelLaneProvenance};
+use hub_client::types::{ModelCard, ModelLaneProvenance};
 use serde::Serialize;
 
 use super::refs::{ModelRef, Repo};
@@ -52,7 +52,7 @@ pub(crate) async fn search(ctx: &Context, args: Search) -> Result<ExitCode, Erro
         None => {
             let query = args.query.join(" ");
             let q = Some(query.as_str()).filter(|q| !q.is_empty());
-            let answer = hub_answer(client.search_models(args.family.as_deref(), Some(args.limit.into()), q).await)?;
+            let answer = hub_answer(client.search_models(q, args.family.as_deref(), args.limit).await)?;
             // One card read per model, all at once.
             let mut reads = tokio::task::JoinSet::new();
             for (i, model) in answer.models.into_iter().take(args.limit as usize).enumerate() {
@@ -207,7 +207,7 @@ pub(crate) async fn family(ctx: &Context, args: Family) -> Result<ExitCode, Erro
     let repo = Repo::hub(&args.model)?;
     let family = if args.clear { String::new() } else { args.family.unwrap_or_default() };
     let client = ctx.hub_signed_in(ctx.hub())?;
-    let answer = hub_answer(client.set_model_family(&repo.org, &repo.name, &ModelFamilyUpdate { family }).await)?;
+    let answer = hub_answer(client.set_model_family(&repo.org, &repo.name, &family).await)?;
     let view = FamilySet {
         model: repo.to_string(),
         family: answer.model.family.filter(|f| !f.is_empty()),
