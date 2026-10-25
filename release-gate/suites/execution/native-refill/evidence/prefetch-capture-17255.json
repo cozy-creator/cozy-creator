@@ -1,0 +1,69 @@
+{
+  "run": 17255,
+  "status": "completed",
+  "scope": "isolated child-candidate proof through default Cozy CLI",
+  "outer_software": {
+    "attempt_ordinal": 1,
+    "runtime": "0.32.1+dev.gad581b0a41f7",
+    "tensord": "0.11.17+dev.gd8063c12",
+    "tensord_commit": "d8063c12310306247a8b578d1d7f62059daa493a",
+    "tensorfs": "0.15.1"
+  },
+  "proof_source": "0003211c9",
+  "artifacts": {
+    "runtime": {
+      "source": "3b46174e6",
+      "wheel": "/home/fidika/cozy/.worktrees/cozy-runtime/native-refill/.task/portable-3b46174e6/cozy_runtime-0.32.1-cp312-abi3-manylinux_2_28_x86_64.whl",
+      "sha256": "95576b822263788a95bc4b7da95185597d63e8e6a42a30d87f79002ac483c52b",
+      "verified_file_count": 201,
+      "verified_files": {
+        "cozy_runtime/compute.py": "13e8dd70834096c3d61fb4aa083f9057d4c6c9be2cb1c24943d595c16beb6bea",
+        "cozy_runtime/_kernels/_execution.abi3.so": "7a734935365a05bb59b1a106ad996e875289cb6b85c6b1f41a6869b60d00e328",
+        "cozy_runtime/graphs/__init__.py": "f8d30446ad9aa55c238b9fc68d83e0cf335b2674037ee347f803e3ea23314deb",
+        "cozy_runtime/graphs/domain.py": "15711c1040d687b9fbe232f4e1b25032ea1303d7a85a40b458220706922ac85f",
+        "cozy_runtime/internal/residency.py": "da3d572acdd540413e16569f1e5e1df6d517ed6a674d11fbbf773c2a6625dc60",
+        "cozy_runtime/internal/weights.py": "9965ee942a1d75fa7343750506db67b3549f6f990d208896ba8211290061dcf3"
+      }
+    },
+    "tensorfs": {
+      "source": "bd12eb21be205344057b97101d32bf2ef574b3b1",
+      "wheel": "/home/fidika/cozy/.worktrees/cozy-creator/gpu-output-handoff/.task/async-wheels-bd12eb21b/tensorfs-0.15.2-cp311-abi3-linux_x86_64.whl",
+      "sha256": "fa9a6749262eea64fabab096175e0fc26293a1423f37d9c7b4f89f6a67512906",
+      "version": "0.15.2",
+      "verified_file_count": 10,
+      "verified_files": {
+        "tensorfs/_ext.abi3.so": "53c9485eb7c6be4154386aee9378b1fe3d589c2f5f85cb3a455f00de9896463f",
+        "tensorfs/varena/__init__.py": "d0034d3fd45e5cd3c70759302ec337ab0b29f4c78335255e2a4604a959da0631"
+      }
+    }
+  },
+  "result": {
+    "mode": "prefetch-capture",
+    "passed": true,
+    "result": {
+      "active_refusal": "invalid residency operation: native producers must finish before CUDA graph capture",
+      "before_start_refusal": "invalid residency operation: native producers must finish before CUDA graph capture",
+      "capture_in_replay_refusal": "residency changes are forbidden during CUDA graph capture",
+      "during_actual_capture_refusal": "residency changes are forbidden during CUDA graph capture",
+      "ended": {
+        "canceled": true,
+        "done": true,
+        "issued_bytes": 4194304,
+        "started": true
+      },
+      "graph_replay_passed": true,
+      "issued": {
+        "canceled": false,
+        "done": false,
+        "issued_bytes": 2097152,
+        "started": true
+      },
+      "reclaim_in_replay_refusal": "residency changes are forbidden during CUDA graph capture",
+      "replay_in_capture_refusal": "residency changes are forbidden during CUDA graph capture"
+    },
+    "runtime_version": "0.32.1",
+    "seed": 103,
+    "tensorfs_version": "0.15.2"
+  },
+  "passed": true
+}

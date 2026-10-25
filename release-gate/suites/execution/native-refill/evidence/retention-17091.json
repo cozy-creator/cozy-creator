@@ -1,0 +1,168 @@
+{
+  "run": 17091,
+  "status": "completed",
+  "scope": "isolated child-candidate proof through default Cozy CLI; not installed-cohort proof",
+  "outer_software": {
+    "attempt_ordinal": 1,
+    "runtime": "0.32.1+dev.g449d60256eef",
+    "tensord": "0.11.17+dev.g731e2bb0",
+    "tensord_commit": "731e2bb0b933a40930d76a15ec4a84f83fdc3d67",
+    "tensorfs": "0.15.1"
+  },
+  "candidate_python": "/home/fidika/cozy/.worktrees/cozy-runtime/native-refill/.task/proof-env/bin/python",
+  "runtime_wheel": {
+    "file": "cozy_runtime-0.32.1-cp312-abi3-manylinux_2_28_x86_64.whl",
+    "sha256": "d0e9c7b53a0b123f5c344f0373ddf500534c45ca91872ede3259e24b50da54d5",
+    "parent_source": "272056ab1"
+  },
+  "tensorfs_wheel": {
+    "file": "tensorfs-0.15.2+dev.g377ab6d4-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+    "sha256": "98efdc018f9621e573f2ff6213cd41359213a809afa01507d4a4f443770b246e",
+    "source": "377ab6d478f4e02fd73acdc8edc05a8adb505e44"
+  },
+  "child_runtime_version": "0.32.1",
+  "child_runtime_commit": "unknown",
+  "child_tensorfs_version": "0.15.2+dev.g377ab6d4",
+  "verified_installed_files": {
+    "cozy_runtime/compute.py": {
+      "installed_path": "/home/fidika/cozy/.worktrees/cozy-runtime/native-refill/.task/proof-env/lib/python3.12/site-packages/cozy_runtime/compute.py",
+      "sha256": "f056c4bd19140ca944c9f125353c75a60c0f3fc96d646056de838b4bfbc442d9"
+    },
+    "cozy_runtime/_kernels/_execution.abi3.so": {
+      "installed_path": "/home/fidika/cozy/.worktrees/cozy-runtime/native-refill/.task/proof-env/lib/python3.12/site-packages/cozy_runtime/_kernels/_execution.abi3.so",
+      "sha256": "7a734935365a05bb59b1a106ad996e875289cb6b85c6b1f41a6869b60d00e328"
+    },
+    "cozy_runtime/_kernels/_execution.pyi": {
+      "installed_path": "/home/fidika/cozy/.worktrees/cozy-runtime/native-refill/.task/proof-env/lib/python3.12/site-packages/cozy_runtime/_kernels/_execution.pyi",
+      "sha256": "d9df060fd33a8a845244e3f86d0d200474ff9446549fe9918acff64f21507706"
+    },
+    "cozy_runtime/internal/residency.py": {
+      "installed_path": "/home/fidika/cozy/.worktrees/cozy-runtime/native-refill/.task/proof-env/lib/python3.12/site-packages/cozy_runtime/internal/residency.py",
+      "sha256": "cadd8e934d7f9b55bec89f0e9de143119f42ad226dde1bde8841daa3850ecb28"
+    },
+    "cozy_runtime/internal/weights.py": {
+      "installed_path": "/home/fidika/cozy/.worktrees/cozy-runtime/native-refill/.task/proof-env/lib/python3.12/site-packages/cozy_runtime/internal/weights.py",
+      "sha256": "7e9f63bc37100d9efe95080bc9bca596a5fcba60152176c8ead13a4ec8b5e648"
+    }
+  },
+  "cases": {
+    "cast": {
+      "cold_writer_calls": 0,
+      "warm_writer_calls": 0,
+      "warm_store_bytes": 0,
+      "final_bindings": {
+        "fallback_blocks": 0,
+        "fills": 0,
+        "final_resident_bytes": 2097152,
+        "hits": 16,
+        "native_prefetch": false,
+        "raw_resident_bytes": 0,
+        "resident_scope": "process"
+      },
+      "raw_reclaimed_before_warm": 2097152,
+      "wall_ms_per_call": 1.088617,
+      "metadata": {
+        "": {
+          "bytes": 2097152,
+          "dtype": "F64",
+          "shape": [
+            512,
+            512
+          ]
+        }
+      },
+      "decoder_scratch_bound": 0
+    },
+    "fp8.tensorwise": {
+      "cold_writer_calls": 1,
+      "warm_writer_calls": 0,
+      "warm_store_bytes": 0,
+      "final_bindings": {
+        "fallback_blocks": 0,
+        "fills": 0,
+        "final_resident_bytes": 2097152,
+        "hits": 16,
+        "native_prefetch": false,
+        "raw_resident_bytes": 0,
+        "resident_scope": "process"
+      },
+      "raw_reclaimed_before_warm": 2097152,
+      "wall_ms_per_call": 1.2262356875,
+      "metadata": {
+        "scale": {
+          "bytes": 4,
+          "dtype": "F32",
+          "shape": []
+        },
+        "weight": {
+          "bytes": 262144,
+          "dtype": "F8_E4M3",
+          "shape": [
+            512,
+            512
+          ]
+        }
+      },
+      "decoder_scratch_bound": null
+    },
+    "raw": {
+      "cold_writer_calls": 0,
+      "warm_writer_calls": 0,
+      "warm_store_bytes": 0,
+      "final_bindings": {
+        "fallback_blocks": 0,
+        "fills": 0,
+        "final_resident_bytes": 0,
+        "hits": 0,
+        "native_prefetch": false,
+        "raw_resident_bytes": 2097152,
+        "resident_scope": "process"
+      },
+      "raw_reclaimed_before_warm": 0,
+      "wall_ms_per_call": 1.526113125,
+      "metadata": {
+        "": {
+          "bytes": 1048576,
+          "dtype": "F32",
+          "shape": [
+            512,
+            512
+          ]
+        }
+      },
+      "decoder_scratch_bound": 0
+    },
+    "transpose": {
+      "cold_writer_calls": 1,
+      "warm_writer_calls": 0,
+      "warm_store_bytes": 0,
+      "final_bindings": {
+        "fallback_blocks": 0,
+        "fills": 0,
+        "final_resident_bytes": 2097152,
+        "hits": 16,
+        "native_prefetch": false,
+        "raw_resident_bytes": 0,
+        "resident_scope": "process"
+      },
+      "raw_reclaimed_before_warm": 2097152,
+      "wall_ms_per_call": 1.112799125,
+      "metadata": {
+        "": {
+          "bytes": 1048576,
+          "dtype": "F32",
+          "shape": [
+            512,
+            512
+          ]
+        }
+      },
+      "decoder_scratch_bound": 0
+    }
+  },
+  "limits": [
+    "native decoder/library scratch is outside the managed weight/Torch budget",
+    "single-block warm-cache timing under shared host load, not full-model throughput",
+    "native asynchronous refill not present in this candidate"
+  ]
+}

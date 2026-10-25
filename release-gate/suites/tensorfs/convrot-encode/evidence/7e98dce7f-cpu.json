@@ -1,0 +1,133 @@
+{
+  "purpose": "CPU numerical producer parity through the default Cozy CLI, not a performance benchmark",
+  "run": {
+    "id": "run-4ba2b6efa3a4b759a8950747",
+    "number": 17469,
+    "kind": "call",
+    "target": "local/ci-convrot-encode/run",
+    "hub": "https://tensorhub.com",
+    "machine": "quatre",
+    "status": "completed",
+    "cancel_requested": false,
+    "machine_state": "running",
+    "output": [],
+    "created_at_ms": 1792903787460,
+    "accepted_at_ms": 1792903788050,
+    "started_at_ms": 1792903789093,
+    "settled_at_ms": 1792903789170,
+    "execution_ms": 115
+  },
+  "result": {
+    "cases": 24,
+    "detail": {
+      "cases": [
+        {
+          "name": "zeros",
+          "scale_sha256": "32612e385a6c3664479058c90a161db532850ec77123b07308f6daa78f67bb80",
+          "shape": [
+            3,
+            256
+          ],
+          "weight_sha256": "ef115a0e0c15cdc41958ca46b5b14b456115f4baec5e3ca68599d2a8f435e3b8"
+        },
+        {
+          "name": "negative_zero",
+          "scale_sha256": "6623d4e9bfae160b2ab0f4ee6bc6bdd7d136686ef7d921a2c9401bd2ec133509",
+          "shape": [
+            2,
+            256
+          ],
+          "weight_sha256": "076a27c79e5ace2a3d47f9dd2e83e4ff6ea8872b3c2218f66c92b89b55f36560"
+        },
+        {
+          "name": "outliers",
+          "scale_sha256": "3f9f54530021a46cf9d91c8140174e24d8603f4239d99b8fc8ceb3844816490f",
+          "shape": [
+            7,
+            512
+          ],
+          "weight_sha256": "a93471600fecfafc9f9cf082b2837053b63d594f4bf176b0e75f3547536b49ce"
+        },
+        {
+          "name": "ties",
+          "scale_sha256": "8a31a40ecac0ceb4d87b30bd156ca7a547e8e33dc071454b765fbc777d1c34a1",
+          "shape": [
+            3,
+            256
+          ],
+          "weight_sha256": "43a3a11fe0bab228323e4c2263e2230f3b88f8646c065a7fdccd69608fc72d0d"
+        },
+        {
+          "name": "subnormal",
+          "scale_sha256": "32612e385a6c3664479058c90a161db532850ec77123b07308f6daa78f67bb80",
+          "shape": [
+            3,
+            256
+          ],
+          "weight_sha256": "ef115a0e0c15cdc41958ca46b5b14b456115f4baec5e3ca68599d2a8f435e3b8"
+        },
+        {
+          "name": "floor",
+          "scale_sha256": "0e2212853f526e582ce7faec26ab7f2ac8bfd98d7c79088ac6cfaa5dcb6f2664",
+          "shape": [
+            5,
+            256
+          ],
+          "weight_sha256": "bfe492baf731a0dbf6e1e050f5bc3fe8c1b049383194dcdf82f023bfa409f462"
+        },
+        {
+          "name": "wide",
+          "scale_sha256": "dddab6065ce6648c2e3aca5931ec808ede52fbdb5d39972e5604bb1b2e1cc3be",
+          "shape": [
+            9,
+            4096
+          ],
+          "weight_sha256": "d39837321b5051e0b49342baf7e002b50a7957bdad22de69dee0490e96f11f19"
+        },
+        {
+          "name": "mixed_exponents",
+          "scale_sha256": "f9139dd1d7f2e5547916ce789143a0ef4629ec1c937875d3ac0c5fa7e77678eb",
+          "shape": [
+            17,
+            768
+          ],
+          "weight_sha256": "6522a638e0a14841b39c5bc93b5688dff32edc484fa2fe9c6706ea200bf65de2"
+        }
+      ],
+      "chunk_rows": [
+        1,
+        2,
+        7
+      ],
+      "logical_dtypes": [
+        "F32",
+        "F16",
+        "BF16"
+      ],
+      "native_sha256": "126fd414ce115af226b8a9d6128f091b371c0d8550310065fc9354959836a5fb",
+      "numpy": "2.5.4",
+      "reference_sha256": "e04f412ffeb09229f3573b96050a466f3a467ef96f3aaa3248d11979392b9032",
+      "refusals": 11,
+      "rotation_reference_sha256": "d9b7811720a30e46c3ac8bea8be4aa940a9003cd7a5605e72ad42e8ab6c70c39",
+      "strategy": "int8-convrot256/1",
+      "tensorfs": "0.15.3",
+      "writer_verified": true
+    },
+    "passed": true,
+    "refusals": 11
+  },
+  "cohort": {
+    "creator_source": "7e98dce7f622fc5364ed5948a17e2d7dfd28c7e6",
+    "tensorfs_wheel_sha256": "f80ef0d903d76299012bbaff9284992b002b541f7210b81b27a3a0c611966963",
+    "tensorfs_native_sha256": "126fd414ce115af226b8a9d6128f091b371c0d8550310065fc9354959836a5fb",
+    "runtime_source": "67e2e0c10066573dc58c9052ef8f73492cdc064a",
+    "tensord_source": "ca38491478eb0772403a0645d463d53593d16150",
+    "machine": "quatre",
+    "host_gpu": "RTX3060 (CPU gate; no GPU algorithm exercised)"
+  },
+  "limits": [
+    "Native raw.quantize primitives and supplied-byte Writer/readback only.",
+    "New measured encoders and Writer.quantize checkpoint operation are not covered.",
+    "Runtime producer cutover and model quality are not established."
+  ]
+}

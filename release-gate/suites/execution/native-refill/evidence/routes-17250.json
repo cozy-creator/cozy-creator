@@ -1,0 +1,645 @@
+{
+  "run": 17250,
+  "status": "completed",
+  "scope": "isolated child-candidate proof through default Cozy CLI",
+  "outer_software": {
+    "attempt_ordinal": 1,
+    "runtime": "0.32.1+dev.gad581b0a41f7",
+    "tensord": "0.11.17+dev.gd8063c12",
+    "tensord_commit": "d8063c12310306247a8b578d1d7f62059daa493a",
+    "tensorfs": "0.15.1"
+  },
+  "runtime_source": "3c3ba227b22a92fdb2d0d5b7470a20896a396581",
+  "tensorfs_source": "377ab6d478f4e02fd73acdc8edc05a8adb505e44",
+  "proof_source": "4356e9499",
+  "artifacts": {
+    "cozy-runtime": {
+      "version": "0.32.1",
+      "wheel": "/home/fidika/cozy/.worktrees/cozy-runtime/native-refill/.task/portable-3c3ba227b/cozy_runtime-0.32.1-cp312-abi3-manylinux_2_28_x86_64.whl",
+      "sha256": "eb45c7365176b1d97dee8ecb69323db266c71333962b0c81e4badc9134c7ca3f",
+      "verified_file_count": 201,
+      "verified_files": {
+        "cozy_runtime/compute.py": "13e8dd70834096c3d61fb4aa083f9057d4c6c9be2cb1c24943d595c16beb6bea",
+        "cozy_runtime/_kernels/_execution.abi3.so": "7a734935365a05bb59b1a106ad996e875289cb6b85c6b1f41a6869b60d00e328",
+        "cozy_runtime/graphs/__init__.py": "f8d30446ad9aa55c238b9fc68d83e0cf335b2674037ee347f803e3ea23314deb",
+        "cozy_runtime/graphs/domain.py": "15711c1040d687b9fbe232f4e1b25032ea1303d7a85a40b458220706922ac85f",
+        "cozy_runtime/internal/residency.py": "c60bd5f817b8f775e359f0412167e2460a64870c90823b1a10e8ebbfdabd2f17",
+        "cozy_runtime/internal/weights.py": "9965ee942a1d75fa7343750506db67b3549f6f990d208896ba8211290061dcf3"
+      }
+    },
+    "tensorfs": {
+      "version": "0.15.2+dev.g377ab6d4",
+      "wheel": "/home/fidika/cozy/.worktrees/cozy-creator/gpu-output-handoff/.task/final-artifacts/tensorfs-linux/tensorfs-0.15.2+dev.g377ab6d4-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "sha256": "98efdc018f9621e573f2ff6213cd41359213a809afa01507d4a4f443770b246e",
+      "verified_file_count": 10,
+      "verified_files": {
+        "tensorfs/_ext.abi3.so": "68931d3fe6abc77699183baf2c512200d0f777612c838a56c97f70590e384256",
+        "tensorfs/varena/__init__.py": "5a21a886b6a64fc6037bd2581a253a65224a2072136334fa3ebe74ed0769e8bd"
+      }
+    }
+  },
+  "native_activation_values": [
+    -1,
+    0,
+    1
+  ],
+  "result": {
+    "managed_budget_scope": "Torch allocator and native weight backing; native decoder/library scratch is outside this limit",
+    "mode": "routes",
+    "passed": true,
+    "residency_sha256": "c60bd5f817b8f775e359f0412167e2460a64870c90823b1a10e8ebbfdabd2f17",
+    "result": {
+      "fp8-rowwise-native-f16": {
+        "cold": {
+          "allocated": 10645504,
+          "allocator_scope": "process",
+          "final_bindings": {
+            "fallback_blocks": 0,
+            "fills": 0,
+            "final_resident_bytes": 0,
+            "hits": 0,
+            "native_prefetch": false,
+            "raw_resident_bytes": 2097152,
+            "resident_scope": "process"
+          },
+          "host": null,
+          "moved": {
+            "store": {
+              "bytes": 264192,
+              "ns": 1555443
+            }
+          },
+          "overlapping": false,
+          "peak": 25794560,
+          "peak_window": "Torch high-water plus sampled native backing, carried across resets",
+          "prefetch": {
+            "canceled": 0,
+            "completed": 0,
+            "failed": 0,
+            "scope": "one next exact raw block; no native transform callbacks",
+            "skipped_capacity": 0,
+            "started": 0,
+            "wait_ns": 0
+          },
+          "request": "routes:fp8-rowwise-native-f16:cold",
+          "reserved": 50331648,
+          "sets": {
+            "native-refill-proof/sha256:dd3b6233f9a84805ca83fda1895b913179482009bf66e6149abce149eac85156/net": 264192
+          },
+          "trace": [
+            {
+              "block": 0,
+              "bytes": 264192,
+              "origin": "store",
+              "sequence": 0,
+              "set": "native-refill-proof/sha256:dd3b6233f9a84805ca83fda1895b913179482009bf66e6149abce149eac85156/net",
+              "speculative": false
+            }
+          ],
+          "trace_scope": "fills",
+          "weight_residency": {
+            "evictions": 3,
+            "fills": 4,
+            "hits": 22,
+            "pinned_bytes": 0,
+            "poisoned": false,
+            "preferred_bytes": 2097152,
+            "ready_bytes": 2097152,
+            "reclaimable_bytes": 2097152,
+            "reclaimed_bytes": 6291456,
+            "regions": 1,
+            "reserved_bytes": 2097152,
+            "resident_bytes": 2097152
+          }
+        },
+        "dtype_transition": null,
+        "label": "encoded_gemm",
+        "plan": "sha256:67f92594fd240ae42c3b183dcf5f817f72c846c624d406cadbad0aac1cae2d53",
+        "routes": {
+          "encoded_gemm": 1
+        },
+        "warm": {
+          "allocated": 10645504,
+          "allocator_scope": "process",
+          "final_bindings": {
+            "fallback_blocks": 0,
+            "fills": 0,
+            "final_resident_bytes": 0,
+            "hits": 0,
+            "native_prefetch": false,
+            "raw_resident_bytes": 2097152,
+            "resident_scope": "process"
+          },
+          "host": null,
+          "moved": {
+            "store": {
+              "bytes": 0,
+              "ns": 0
+            }
+          },
+          "overlapping": false,
+          "peak": 25794560,
+          "peak_window": "Torch high-water plus sampled native backing, carried across resets",
+          "prefetch": {
+            "canceled": 0,
+            "completed": 0,
+            "failed": 0,
+            "scope": "one next exact raw block; no native transform callbacks",
+            "skipped_capacity": 0,
+            "started": 0,
+            "wait_ns": 0
+          },
+          "request": "routes:fp8-rowwise-native-f16:warm",
+          "reserved": 50331648,
+          "sets": {
+            "native-refill-proof/sha256:dd3b6233f9a84805ca83fda1895b913179482009bf66e6149abce149eac85156/net": 264192
+          },
+          "trace": [],
+          "trace_scope": "fills",
+          "weight_residency": {
+            "evictions": 3,
+            "fills": 4,
+            "hits": 30,
+            "pinned_bytes": 0,
+            "poisoned": false,
+            "preferred_bytes": 2097152,
+            "ready_bytes": 2097152,
+            "reclaimable_bytes": 2097152,
+            "reclaimed_bytes": 6291456,
+            "regions": 1,
+            "reserved_bytes": 2097152,
+            "resident_bytes": 2097152
+          }
+        }
+      },
+      "fp8-tensorwise-decoded-f16": {
+        "cold": {
+          "allocated": 12742656,
+          "allocator_scope": "process",
+          "final_bindings": {
+            "fallback_blocks": 0,
+            "fills": 1,
+            "final_resident_bytes": 2097152,
+            "hits": 0,
+            "native_prefetch": false,
+            "raw_resident_bytes": 2097152,
+            "resident_scope": "process"
+          },
+          "host": null,
+          "moved": {
+            "store": {
+              "bytes": 262148,
+              "ns": 2069173
+            }
+          },
+          "overlapping": false,
+          "peak": 13803520,
+          "peak_window": "Torch high-water plus sampled native backing, carried across resets",
+          "prefetch": {
+            "canceled": 0,
+            "completed": 0,
+            "failed": 0,
+            "scope": "one next exact raw block; no native transform callbacks",
+            "skipped_capacity": 0,
+            "started": 0,
+            "wait_ns": 0
+          },
+          "request": "routes:fp8-tensorwise-decoded-f16:cold",
+          "reserved": 27262976,
+          "sets": {
+            "native-refill-proof/sha256:d41aa0a6ebecc341233416f67f5c89d6b9f992843ddad718339d264ac4110a32/net": 262148
+          },
+          "trace": [
+            {
+              "block": 0,
+              "bytes": 262148,
+              "origin": "store",
+              "sequence": 0,
+              "set": "native-refill-proof/sha256:d41aa0a6ebecc341233416f67f5c89d6b9f992843ddad718339d264ac4110a32/net",
+              "speculative": false
+            }
+          ],
+          "trace_scope": "fills",
+          "weight_residency": {
+            "evictions": 1,
+            "fills": 3,
+            "hits": 11,
+            "pinned_bytes": 0,
+            "poisoned": false,
+            "preferred_bytes": 2097152,
+            "ready_bytes": 4194304,
+            "reclaimable_bytes": 4194304,
+            "reclaimed_bytes": 2097152,
+            "regions": 2,
+            "reserved_bytes": 4194304,
+            "resident_bytes": 4194304
+          }
+        },
+        "dtype_transition": {
+          "binding_refused": true,
+          "restored": {
+            "allocated": 12742656,
+            "allocator_scope": "process",
+            "final_bindings": {
+              "fallback_blocks": 0,
+              "fills": 0,
+              "final_resident_bytes": 2097152,
+              "hits": 1,
+              "native_prefetch": false,
+              "raw_resident_bytes": 2097152,
+              "resident_scope": "process"
+            },
+            "host": null,
+            "moved": {
+              "store": {
+                "bytes": 0,
+                "ns": 0
+              }
+            },
+            "overlapping": false,
+            "peak": 13807616,
+            "peak_window": "Torch high-water plus sampled native backing, carried across resets",
+            "prefetch": {
+              "canceled": 0,
+              "completed": 0,
+              "failed": 0,
+              "scope": "one next exact raw block; no native transform callbacks",
+              "skipped_capacity": 0,
+              "started": 0,
+              "wait_ns": 0
+            },
+            "request": "routes:fp8-tensorwise-decoded-f16:restored",
+            "reserved": 27262976,
+            "sets": {
+              "native-refill-proof/sha256:d41aa0a6ebecc341233416f67f5c89d6b9f992843ddad718339d264ac4110a32/net": 262148
+            },
+            "trace": [],
+            "trace_scope": "fills",
+            "weight_residency": {
+              "evictions": 1,
+              "fills": 3,
+              "hits": 22,
+              "pinned_bytes": 0,
+              "poisoned": false,
+              "preferred_bytes": 2097152,
+              "ready_bytes": 4194304,
+              "reclaimable_bytes": 4194304,
+              "reclaimed_bytes": 2097152,
+              "regions": 2,
+              "reserved_bytes": 4194304,
+              "resident_bytes": 4194304
+            }
+          },
+          "wide": {
+            "allocated": 12742656,
+            "allocator_scope": "process",
+            "final_bindings": {
+              "fallback_blocks": 0,
+              "fills": 0,
+              "final_resident_bytes": 2097152,
+              "hits": 1,
+              "native_prefetch": false,
+              "raw_resident_bytes": 2097152,
+              "resident_scope": "process"
+            },
+            "host": null,
+            "moved": {
+              "store": {
+                "bytes": 0,
+                "ns": 0
+              }
+            },
+            "overlapping": false,
+            "peak": 13807616,
+            "peak_window": "Torch high-water plus sampled native backing, carried across resets",
+            "prefetch": {
+              "canceled": 0,
+              "completed": 0,
+              "failed": 0,
+              "scope": "one next exact raw block; no native transform callbacks",
+              "skipped_capacity": 0,
+              "started": 0,
+              "wait_ns": 0
+            },
+            "request": "routes:fp8-tensorwise-decoded-f16:wide",
+            "reserved": 27262976,
+            "sets": {
+              "native-refill-proof/sha256:d41aa0a6ebecc341233416f67f5c89d6b9f992843ddad718339d264ac4110a32/net": 262148
+            },
+            "trace": [],
+            "trace_scope": "fills",
+            "weight_residency": {
+              "evictions": 1,
+              "fills": 3,
+              "hits": 21,
+              "pinned_bytes": 0,
+              "poisoned": false,
+              "preferred_bytes": 2097152,
+              "ready_bytes": 4194304,
+              "reclaimable_bytes": 4194304,
+              "reclaimed_bytes": 2097152,
+              "regions": 2,
+              "reserved_bytes": 4194304,
+              "resident_bytes": 4194304
+            }
+          }
+        },
+        "label": "aot_decode",
+        "plan": "sha256:7546fbb14ddc5d0fa2a6423e6a663fd3b1e3beb854aa3e09fbd44117a0e97535",
+        "routes": {
+          "decoded_float": 1
+        },
+        "warm": {
+          "allocated": 12742656,
+          "allocator_scope": "process",
+          "final_bindings": {
+            "fallback_blocks": 0,
+            "fills": 0,
+            "final_resident_bytes": 2097152,
+            "hits": 8,
+            "native_prefetch": false,
+            "raw_resident_bytes": 2097152,
+            "resident_scope": "process"
+          },
+          "host": null,
+          "moved": {
+            "store": {
+              "bytes": 0,
+              "ns": 0
+            }
+          },
+          "overlapping": false,
+          "peak": 13803520,
+          "peak_window": "Torch high-water plus sampled native backing, carried across resets",
+          "prefetch": {
+            "canceled": 0,
+            "completed": 0,
+            "failed": 0,
+            "scope": "one next exact raw block; no native transform callbacks",
+            "skipped_capacity": 0,
+            "started": 0,
+            "wait_ns": 0
+          },
+          "request": "routes:fp8-tensorwise-decoded-f16:warm",
+          "reserved": 27262976,
+          "sets": {
+            "native-refill-proof/sha256:d41aa0a6ebecc341233416f67f5c89d6b9f992843ddad718339d264ac4110a32/net": 262148
+          },
+          "trace": [],
+          "trace_scope": "fills",
+          "weight_residency": {
+            "evictions": 1,
+            "fills": 3,
+            "hits": 19,
+            "pinned_bytes": 0,
+            "poisoned": false,
+            "preferred_bytes": 2097152,
+            "ready_bytes": 4194304,
+            "reclaimable_bytes": 4194304,
+            "reclaimed_bytes": 2097152,
+            "regions": 2,
+            "reserved_bytes": 4194304,
+            "resident_bytes": 4194304
+          }
+        }
+      },
+      "raw-f16": {
+        "cold": {
+          "allocated": 10629120,
+          "allocator_scope": "process",
+          "final_bindings": {
+            "fallback_blocks": 0,
+            "fills": 0,
+            "final_resident_bytes": 0,
+            "hits": 0,
+            "native_prefetch": false,
+            "raw_resident_bytes": 2097152,
+            "resident_scope": "process"
+          },
+          "host": null,
+          "moved": {
+            "store": {
+              "bytes": 524288,
+              "ns": 37508459
+            }
+          },
+          "overlapping": false,
+          "peak": 11149312,
+          "peak_window": "Torch high-water plus sampled native backing, carried across resets",
+          "prefetch": {
+            "canceled": 0,
+            "completed": 0,
+            "failed": 0,
+            "scope": "one next exact raw block; no native transform callbacks",
+            "skipped_capacity": 0,
+            "started": 0,
+            "wait_ns": 0
+          },
+          "request": "routes:raw-f16:cold",
+          "reserved": 25165824,
+          "sets": {
+            "native-refill-proof/sha256:57bf79965db5bb2fafdfd7f2c7feb06297f5fc36a232f3021c1e109dbcc012eb/net": 524288
+          },
+          "trace": [
+            {
+              "block": 0,
+              "bytes": 524288,
+              "origin": "store",
+              "sequence": 0,
+              "set": "native-refill-proof/sha256:57bf79965db5bb2fafdfd7f2c7feb06297f5fc36a232f3021c1e109dbcc012eb/net",
+              "speculative": false
+            }
+          ],
+          "trace_scope": "fills",
+          "weight_residency": {
+            "evictions": 0,
+            "fills": 1,
+            "hits": 0,
+            "pinned_bytes": 0,
+            "poisoned": false,
+            "preferred_bytes": 2097152,
+            "ready_bytes": 2097152,
+            "reclaimable_bytes": 2097152,
+            "reclaimed_bytes": 0,
+            "regions": 1,
+            "reserved_bytes": 2097152,
+            "resident_bytes": 2097152
+          }
+        },
+        "dtype_transition": {
+          "binding_refused": true,
+          "restored": {
+            "allocated": 10645504,
+            "allocator_scope": "process",
+            "final_bindings": {
+              "fallback_blocks": 0,
+              "fills": 0,
+              "final_resident_bytes": 0,
+              "hits": 0,
+              "native_prefetch": false,
+              "raw_resident_bytes": 2097152,
+              "resident_scope": "process"
+            },
+            "host": null,
+            "moved": {
+              "store": {
+                "bytes": 0,
+                "ns": 0
+              }
+            },
+            "overlapping": false,
+            "peak": 11706368,
+            "peak_window": "Torch high-water plus sampled native backing, carried across resets",
+            "prefetch": {
+              "canceled": 0,
+              "completed": 0,
+              "failed": 0,
+              "scope": "one next exact raw block; no native transform callbacks",
+              "skipped_capacity": 0,
+              "started": 0,
+              "wait_ns": 0
+            },
+            "request": "routes:raw-f16:restored",
+            "reserved": 25165824,
+            "sets": {
+              "native-refill-proof/sha256:57bf79965db5bb2fafdfd7f2c7feb06297f5fc36a232f3021c1e109dbcc012eb/net": 524288
+            },
+            "trace": [],
+            "trace_scope": "fills",
+            "weight_residency": {
+              "evictions": 0,
+              "fills": 1,
+              "hits": 11,
+              "pinned_bytes": 0,
+              "poisoned": false,
+              "preferred_bytes": 2097152,
+              "ready_bytes": 2097152,
+              "reclaimable_bytes": 2097152,
+              "reclaimed_bytes": 0,
+              "regions": 1,
+              "reserved_bytes": 2097152,
+              "resident_bytes": 2097152
+            }
+          },
+          "wide": {
+            "allocated": 10641408,
+            "allocator_scope": "process",
+            "final_bindings": {
+              "fallback_blocks": 0,
+              "fills": 0,
+              "final_resident_bytes": 0,
+              "hits": 0,
+              "native_prefetch": false,
+              "raw_resident_bytes": 2097152,
+              "resident_scope": "process"
+            },
+            "host": null,
+            "moved": {
+              "store": {
+                "bytes": 0,
+                "ns": 0
+              }
+            },
+            "overlapping": false,
+            "peak": 11698176,
+            "peak_window": "Torch high-water plus sampled native backing, carried across resets",
+            "prefetch": {
+              "canceled": 0,
+              "completed": 0,
+              "failed": 0,
+              "scope": "one next exact raw block; no native transform callbacks",
+              "skipped_capacity": 0,
+              "started": 0,
+              "wait_ns": 0
+            },
+            "request": "routes:raw-f16:wide",
+            "reserved": 25165824,
+            "sets": {
+              "native-refill-proof/sha256:57bf79965db5bb2fafdfd7f2c7feb06297f5fc36a232f3021c1e109dbcc012eb/net": 524288
+            },
+            "trace": [],
+            "trace_scope": "fills",
+            "weight_residency": {
+              "evictions": 0,
+              "fills": 1,
+              "hits": 10,
+              "pinned_bytes": 0,
+              "poisoned": false,
+              "preferred_bytes": 2097152,
+              "ready_bytes": 2097152,
+              "reclaimable_bytes": 2097152,
+              "reclaimed_bytes": 0,
+              "regions": 1,
+              "reserved_bytes": 2097152,
+              "resident_bytes": 2097152
+            }
+          }
+        },
+        "label": "verbatim",
+        "plan": "sha256:3771d80416061b3dcbc893f89f4be24653d76eae2a1d45eecb308eccc2d615b6",
+        "routes": {
+          "verbatim": 1
+        },
+        "warm": {
+          "allocated": 10633216,
+          "allocator_scope": "process",
+          "final_bindings": {
+            "fallback_blocks": 0,
+            "fills": 0,
+            "final_resident_bytes": 0,
+            "hits": 0,
+            "native_prefetch": false,
+            "raw_resident_bytes": 2097152,
+            "resident_scope": "process"
+          },
+          "host": null,
+          "moved": {
+            "store": {
+              "bytes": 0,
+              "ns": 0
+            }
+          },
+          "overlapping": false,
+          "peak": 11149312,
+          "peak_window": "Torch high-water plus sampled native backing, carried across resets",
+          "prefetch": {
+            "canceled": 0,
+            "completed": 0,
+            "failed": 0,
+            "scope": "one next exact raw block; no native transform callbacks",
+            "skipped_capacity": 0,
+            "started": 0,
+            "wait_ns": 0
+          },
+          "request": "routes:raw-f16:warm",
+          "reserved": 25165824,
+          "sets": {
+            "native-refill-proof/sha256:57bf79965db5bb2fafdfd7f2c7feb06297f5fc36a232f3021c1e109dbcc012eb/net": 524288
+          },
+          "trace": [],
+          "trace_scope": "fills",
+          "weight_residency": {
+            "evictions": 0,
+            "fills": 1,
+            "hits": 8,
+            "pinned_bytes": 0,
+            "poisoned": false,
+            "preferred_bytes": 2097152,
+            "ready_bytes": 2097152,
+            "reclaimable_bytes": 2097152,
+            "reclaimed_bytes": 0,
+            "regions": 1,
+            "reserved_bytes": 2097152,
+            "resident_bytes": 2097152
+          }
+        }
+      }
+    },
+    "runtime_commit": "unknown",
+    "runtime_version": "0.32.1",
+    "seed": 103,
+    "tensorfs": "0.15.2+dev.g377ab6d4",
+    "torch": "2.14.1+cu130"
+  },
+  "passed": true
+}
