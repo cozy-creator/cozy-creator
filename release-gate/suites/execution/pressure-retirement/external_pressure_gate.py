@@ -30,6 +30,10 @@ def main():
         parser.error(
             "this exact-exit controller requires Linux pidfds and runs on local"
         )
+    if not args.foreign_python.is_file() or not 512 <= args.max_foreign_mib <= 16384:
+        parser.error(
+            "name an existing Torch interpreter and a foreign bound of512..16384 MiB"
+        )
     output = args.output.absolute()
     output.mkdir(parents=True, exist_ok=False)
     root = Path(__file__).resolve().parent
@@ -61,6 +65,9 @@ def main():
 
     _, machine = cli("machine-before", "machine", "show", "local")
     assert machine["state"] == "ready" and not machine["status"].get("runs"), machine
+    assert len(machine["status"].get("gpus", [])) == 1, (
+        "this local gate requires exactly one visible GPU"
+    )
     assert machine["status"]["commit"] == args.expected_tensord, machine["status"]
     receipt["machine"] = {
         key: machine["status"][key]
