@@ -68,13 +68,14 @@ def main():
     selected = args.model + "@" + published["commit"]
     common = ["run", package / "gpu", f"model.model={selected}", "--on", args.machine]
 
-    def infer(name, seed, steps, *, required=True):
+    def infer(name, seed, steps, *, required=True, batch_rows=1):
         run = call(
             name,
             [
                 *common,
                 f"seed={seed}",
                 f"steps={steps}",
+                f"batch_rows={batch_rows}",
                 f"require_prepared={str(required).lower()}",
                 "--gpus=1",
             ],
@@ -93,21 +94,40 @@ def main():
     assert first["phase_calls"] == second["phase_calls"]
     assert first["launches_this_request"] == second["launches_this_request"] == 1
     assert first["value"] != second["value"]
-    changed = call("changed", [*common, "seed=31", "steps=17", "--warm", "gpu"])
+    changed = call(
+        "changed", [*common, "seed=31", "steps=17", "batch_rows=2", "--warm", "gpu"]
+    )
     assert changed["result"]["set"][0]["prepared"] is True
-    third = infer("third", 37, 17)
+    third = infer("third", 37, 17, batch_rows=2)
     assert third["captures"] == 2 and third["factory_calls"] == 2
+    assert (
+        third["pid"] == first["pid"]
+        and first["batch_rows"] == 1
+        and third["batch_rows"] == 2
+    )
+    assert first["input_shape"] == [1, 256] and third["input_shape"] == [2, 256]
+    assert first["output_shape"] == [1, 16] and third["output_shape"] == [2, 16]
 
     # A real live Torch allocation lowers observed driver-free bytes below a measured threshold.
     held_back = call(
         "held-back",
-        [*common, "steps=23", "pressure_bytes=268435456", "--warm", "gpu"],
+        [
+            *common,
+            "steps=23",
+            "batch_rows=2",
+            "pressure_bytes=268435456",
+            "--warm",
+            "gpu",
+        ],
     )
     row = held_back["result"]["set"][0]
     assert row["prepared"] is False and row["level"] == "host" and row["held_back"]
     # These real calls each trigger the existing keeper after returning. They never call
     # the factory themselves; the next call reveals whether a keeper retried it.
-    declined = [infer(f"declined-{i}", 41 + i, 23, required=False) for i in range(3)]
+    declined = [
+        infer(f"declined-{i}", 41 + i, 23, required=False, batch_rows=2)
+        for i in range(3)
+    ]
     assert all(
         not row["prepared"] and row["factory_calls"] == 3 and row["captures"] == 2
         for row in declined
@@ -129,13 +149,14 @@ def main():
             *common,
             "seed=43",
             "steps=23",
+            "batch_rows=2",
             f"min_free_bytes={capacity['required_free_bytes']}",
             "--warm",
             "gpu",
         ],
     )
     assert retry["result"]["set"][0]["prepared"] is True
-    fourth = infer("fourth", 47, 23)
+    fourth = infer("fourth", 47, 23, batch_rows=2)
     assert fourth["factory_calls"] == 4 and fourth["captures"] == 3
     proof = {
         "source": source["number"],

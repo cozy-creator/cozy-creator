@@ -53,6 +53,7 @@ class Pipeline:
         self.operand = None
         self.output = None
         self.steps = 0
+        self.batch_rows = 0
         self.factory_calls = 0
         self.handler_calls = 0
         self.captures = 0
@@ -106,6 +107,7 @@ def source(payload: Make, ctx: Context) -> ModelArtifact:
 class Probe(msgspec.Struct, forbid_unknown_fields=True):
     seed: int = 103
     steps: Annotated[int, msgspec.Meta(ge=1, le=128)] = 8
+    batch_rows: Annotated[int, msgspec.Meta(ge=1, le=4)] = 1
     require_prepared: bool = True
     min_free_bytes: Annotated[int, msgspec.Meta(ge=0)] = 0
     pressure_bytes: Annotated[int, msgspec.Meta(ge=0, le=536870912)] = 0
@@ -114,6 +116,7 @@ class Probe(msgspec.Struct, forbid_unknown_fields=True):
 
 class Facts(msgspec.Struct, frozen=True):
     resolved_steps: int
+    resolved_rows: int
     min_free_bytes: int
     pressure_bytes: int
     hold_ms: int
@@ -125,6 +128,7 @@ def resolve(payload: Probe) -> Facts:
     steps = held(rows, "steps", payload.steps, 1, 64)
     return Facts(
         steps,
+        payload.batch_rows,
         payload.min_free_bytes,
         payload.pressure_bytes,
         payload.hold_ms,
@@ -155,6 +159,7 @@ def prepare(
     if (
         pipe.plan is not None
         and pipe.steps == facts.resolved_steps
+        and pipe.batch_rows == facts.resolved_rows
         and pipe.plan.valid()
     ):
         return True
@@ -203,9 +208,11 @@ def prepare(
         return False
     with torch.inference_mode(False), torch.no_grad():
         pipe.operand = torch.zeros(
-            (1, 256), dtype=torch.bfloat16, device=str(ctx.device)
+            (facts.resolved_rows, 256), dtype=torch.bfloat16, device=str(ctx.device)
         )
-        pipe.output = torch.zeros((1, 16), dtype=torch.float32, device=str(ctx.device))
+        pipe.output = torch.zeros(
+            (facts.resolved_rows, 16), dtype=torch.float32, device=str(ctx.device)
+        )
         net = pipe.components["net"]
 
         def prefix() -> None:
@@ -231,6 +238,7 @@ def prepare(
             resident_only=False,
         )
     pipe.steps = facts.resolved_steps
+    pipe.batch_rows = facts.resolved_rows
     pipe.captures += 1
     return True
 
@@ -255,6 +263,7 @@ def gpu(
     valid = (
         pipe.plan is not None
         and pipe.steps == facts.resolved_steps
+        and pipe.batch_rows == facts.resolved_rows
         and pipe.plan.valid()
     )
     row = {
@@ -266,6 +275,7 @@ def gpu(
         "captures": pipe.captures,
         "prepared": valid,
         "capacity": pipe.capacity,
+        "batch_rows": facts.resolved_rows,
     }
     if not valid:
         assert not payload.require_prepared, (
@@ -274,8 +284,13 @@ def gpu(
         return Report(True, json.dumps(row, sort_keys=True))
     with torch.inference_mode(False), torch.no_grad():
         value = (
-            (((torch.arange(256) + payload.seed) % 17 - 8).float() / 16)
-            .reshape(1, 256)
+            (
+                (
+                    (torch.arange(facts.resolved_rows * 256) + payload.seed) % 17 - 8
+                ).float()
+                / 16
+            )
+            .reshape(facts.resolved_rows, 256)
             .bfloat16()
         )
         pipe.operand.copy_(value)
@@ -296,6 +311,8 @@ def gpu(
                 "phase_calls": callbacks,
                 "host_graph_launches": after,
                 "launches_this_request": after - before,
+                "input_shape": list(pipe.operand.shape),
+                "output_shape": list(output.shape),
                 "value": output.cpu().tolist(),
                 "steps": facts.resolved_steps,
             }
