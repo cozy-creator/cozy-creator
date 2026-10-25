@@ -136,3 +136,24 @@ production capture scope. Source checks are separate from the required real red/
 ## Final combined candidate controls
 
 [Creator8499 / Runtime7d1 / TensorFS9e95 real controls](../native-load-execute/evidence/8499-7d1-integrated-controls.md) preserve the exact25October2026 GPU receipts and link the separate recipe proof. This control proof does not claim full-model native29 completion or a performance comparison.
+
+## Native graph-inspection refusal
+
+`mode=inspection` uses an actual pinned CPU tensor and a CUDA state tensor. The real
+`PreparedRepeat.capture` body performs `state.copy_(host, non_blocking=True)` in warmup and
+capture. The native inspector must refuse that host-to-device graph before Context submission,
+with typed `prepared_graph_ineligible` at the source stage. It accepts only the exact host-copy
+representations: `memcpy_layout_or_kind` with CUDA kind `1` (HostToDevice), or `memcpy_source`
+with kind `4` (Default) and pointer type `1` (Host). It verifies restored state and healthy CUDA, then
+submits one ordinary device-only plan: two iterations, one native launch, exact output.
+
+```sh
+cozy run /absolute/canonical/worktree/release-gate/suites/execution/prepared-resident-owners/gpu \
+  mode=inspection seed=1788201 --on MACHINE --gpus=1 --json
+```
+
+This requires the native diagnostic artifact, not an old wheel with the same Runtime version.
+No exception, node type, callback or allocator is injected. If Torch cannot capture this actual
+copy on a selected system, the cell fails visibly; it must not force a synthetic inspector
+failure. Source checks are separate from the required real SDK run. This H2D refusal does not
+identify the cause of the earlier full-SDXL graph refusal or authorize broader graph admission.
