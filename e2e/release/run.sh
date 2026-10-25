@@ -64,12 +64,12 @@ watched() {
 if [ -z "$INSTALLED" ]; then step install; install_cozy; user_services; step candidates; candidates; fi
 
 step sign-in
-if [ -n "$KEY" ]; then cozy --json login --key "$KEY" > "$OUT/login.json" || fail "cozy login --key failed"; fi
+if [ -n "$KEY" ]; then sign_in "$KEY" > "$OUT/login.json" || fail "cozy login --key failed: $(head -c 300 "$OUT/login.json")"; fi
 cozy --json whoami > "$OUT/whoami.json"
 J '.logged_in == true and .account == "fidika"' "$OUT/whoami.json" || fail "whoami: not signed in as fidika ($(head -c 300 "$OUT/whoami.json"))"
 
 step balance
-J '(.billing | length > 0) and (.buy_credits | startswith("https://"))' "$OUT/whoami.json" || check "whoami: no balance or buy page ($(head -c 300 "$OUT/whoami.json"))"
+J --arg hub "${COZY_HUB_URL:-https://tensorhub.com}" '(.billing | length > 0) and (.buy_credits | startswith($hub))' "$OUT/whoami.json" || check "whoami: no balance or buy page ($(head -c 300 "$OUT/whoami.json"))"
 curl -fsS -o /dev/null "$(jq -r .buy_credits "$OUT/whoami.json")" || check "whoami: the buy page $(jq -r .buy_credits "$OUT/whoami.json") does not answer"
 
 step "the rental's quote"
