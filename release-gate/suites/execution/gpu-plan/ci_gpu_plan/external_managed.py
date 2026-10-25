@@ -55,16 +55,20 @@ def exercise(ctx, tel, weight_mib):
         plan.close()
         progress = execution.poll()
         del step, weight, storage, region
+        assert arena.stats()["pinned_bytes"] == 0, arena.stats()
+        before = torch.cuda.mem_get_info()[0]
+        del arena  # release this fixture's retained native cache after checked completion
         torch.cuda.empty_cache()
+        released = torch.cuda.mem_get_info()[0] - before
         assert (
             progress.done
             and progress.canceled
             and 0 < progress.completed_steps < plan.steps
         )
-        assert arena.stats()["resident_bytes"] == 0, arena.stats()
         report(
             pressure_cleanup=True,
-            native_bytes=0,
+            pinned_bytes=0,
+            freed_bytes=released,
             steps=progress.completed_steps,
             at_ns=time.time_ns(),
         )

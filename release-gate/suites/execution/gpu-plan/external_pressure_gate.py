@@ -172,7 +172,8 @@ def main():
                 break
         assert terminal is not None, "managed run did not settle"
         assert terminal["status"] == "canceled", terminal
-        assert receipt.get("managed_cleanup", {}).get("native_bytes") == 0, receipt
+        assert receipt.get("managed_cleanup", {}).get("pinned_bytes") == 0, receipt
+        assert receipt["managed_cleanup"]["freed_bytes"] >= 256 << 20, receipt
         assert receipt.get("foreign_result", {}).get("passed"), receipt
         assert receipt.get("foreign_exit") == 0, receipt
         assert receipt["foreign_ready"]["parent_pid"] == os.getpid()
