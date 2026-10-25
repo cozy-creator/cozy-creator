@@ -105,11 +105,6 @@ impl Home {
     pub fn tools(&self) -> PathBuf {
         self.root.join("tools")
     }
-
-    /// The owner's backups, and the one-shot importer's archive of the Go CLI's state.
-    pub fn backups(&self) -> PathBuf {
-        self.root.join("backups")
-    }
 }
 
 /// A program's file name on this OS.
