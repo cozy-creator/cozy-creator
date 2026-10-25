@@ -18,7 +18,7 @@ class Report(msgspec.Struct):
     detail: str
 
 
-@app.entrypoint
+@app.entrypoint(accelerator=True)
 def gpu(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
     from .exercise import exercise
 

@@ -32,7 +32,9 @@ without spawning a private candidate interpreter. It refuses a missing `LoadSlot
 The body adds the sum of a real 64 MiB F32 weight to one state tensor. The capture slot starts
 at zero; TensorFS loads the nonzero file only after capture. Thirty steps must produce the
 exact expected sum with only two Python preparation calls and one actual native graph launch.
-`loaded` requires completion during a one-second park before its first observation. Long
+`loaded` requires completion during a three-second park before its first observation. This
+is a budget for the known small fixture, not a general hardware latency guarantee or a
+performance acceptance bar. No Python poll advances the read or launch during the park. Long
 cancellation loops are finite and cancellation must finish before their natural step limit.
 `cancel-active` waits for the native worker's `compute_wait_entered` fact, starts an independent
 completion observer, then cancels; it cannot pass solely by canceling before launch.

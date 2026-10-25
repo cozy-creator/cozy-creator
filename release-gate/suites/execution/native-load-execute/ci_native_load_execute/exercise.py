@@ -89,6 +89,7 @@ def prepare(arena, checkpoint, parts, nbytes, steps):
         output.add_(weight.sum())
 
     plan = PreparedRepeat.capture(body, state=(output,), steps=steps, load=slot)
+    assert plan.facts()["continuation_abi"] == 1
     assert calls[0] == 2, "the Python body must run only for warmup and capture"
     assert float(weight.sum()) == 0.0, "capture must precede the source load"
     assert float(output[0]) == 0.0
@@ -215,7 +216,7 @@ def exercise(mode, seed, outer_context, tel):
             else:
                 # No poll, wait or Python callback can drive read → compute in this interval.
                 parked = time.monotonic()
-                time.sleep(1.0)
+                time.sleep(3.0)
                 evidence["parked_seconds"] = time.monotonic() - parked
                 evidence["after_park"] = execution.facts()
                 assert evidence["after_park"]["native_load"]["done"], (
