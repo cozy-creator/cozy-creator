@@ -12,7 +12,7 @@ pub mod host_pressure;
 #[cfg_attr(not(any(target_os = "linux", windows)), path = "scope_unsupported.rs")]
 mod scope;
 
-pub use scope::{Scope, stuck};
+pub use scope::{Scope, all_stuck, stuck};
 
 /// A killed scope member stuck in the kernel (Linux `D`: a driver after an Xid, a hung network
 /// filesystem). It acts on its kill only once that wait ends, and nothing waits on it meanwhile.

@@ -4,7 +4,7 @@
 //! sandbox: same-UID code can move out of a delegated cgroup or scrub its token.
 #![allow(unsafe_code)]
 use super::{Stuck, TOKEN_ENV};
-use crate::process::{Birth, Exact, State, gone};
+use crate::process::{Birth, Exact, State, gone, in_kernel};
 use std::{
     collections::BTreeSet,
     fs::{self, File, OpenOptions},
@@ -329,26 +329,18 @@ fn threads(pid: u32) -> Vec<(u32, char)> {
         .collect()
 }
 
-/// Where a thread of it sleeps uninterruptibly (`D`; empty when the kernel hides it). Until that
-/// wait ends it acts on no signal, SIGKILL included.
-fn uninterruptible(pid: u32) -> Option<String> {
-    let (tid, _) = threads(pid).into_iter().find(|(_, state)| *state == 'D')?;
-    let wchan = fs::read_to_string(format!("/proc/{pid}/task/{tid}/wchan")).unwrap_or_default();
-    Some(if wchan == "0" { String::new() } else { wchan })
-}
-
 /// Whether every one of these killed members is stuck in the kernel; each is then shown until it
 /// exits (`stuck`), and nothing waits on it. It runs no code of its own again, and what it holds
 /// (memory, GPU memory as NVML reads it, files, locks) stays held, and seen held, until it exits.
-fn all_stuck(births: &[Birth]) -> bool {
-    if births.is_empty() || !births.iter().all(|birth| uninterruptible(birth.pid).is_some()) {
+pub fn all_stuck(births: &[Birth]) -> bool {
+    if births.is_empty() || !births.iter().all(|birth| in_kernel(birth.pid).is_some()) {
         return false;
     }
     let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
     let mut stuck = STUCK.lock().unwrap();
     let fresh: Vec<&Birth> = births.iter().filter(|birth| !stuck.iter().any(|(known, _)| known == *birth)).collect();
     for birth in fresh {
-        let wchan = uninterruptible(birth.pid).unwrap_or_default();
+        let wchan = in_kernel(birth.pid).unwrap_or_default();
         let command = fs::read_to_string(format!("/proc/{}/comm", birth.pid)).unwrap_or_default().trim().to_owned();
         tracing::warn!("pid {} ({command}) is stuck in the kernel after its kill (D state, {wchan}): shown, not waited on", birth.pid);
         stuck.push((birth.clone(), Stuck { pid: birth.pid, command, wchan, since_unix_ms: now }));

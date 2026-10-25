@@ -18,13 +18,42 @@ pub fn group_outlives(leader: &Birth, before: u64) -> bool {
         .any(|member| member.start_ticks < before && member.state().is_ok_and(|state| state != State::Gone))
 }
 
-/// Wait for this exact process to exit (its caller killed it, or closed its channel), then reap
+/// How often a wait on a killed process looks whether it is stuck in the kernel: never a deadline.
+const SAMPLE: Duration = Duration::from_millis(100);
+
+/// A killed process stuck in the kernel (D state): shown in the machine's status
+/// (`platform::contain::stuck`), not waited on. Its own thread reaps it once it exits.
+#[derive(Debug)]
+pub struct Stuck(pub u32);
+impl std::fmt::Display for Stuck {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "pid {} was killed and is stuck in the kernel (D state): it holds what it held, \
+            GPU memory included, until it exits", self.0)
+    }
+}
+impl std::error::Error for Stuck {}
+
+/// Wait for this exact process to exit (its caller closed its channel, or `killed` it), then reap
 /// it. Then its scope: whatever outlived it (a `setsid` daemon) is killed and counted, and the
-/// scope is removed.
-pub fn reap(exact: &Exact, child: Option<&mut Child>) -> io::Result<Reaped> {
-    exact.wait()?;
+/// scope is removed. A killed one stuck in the kernel ends the wait with [`Stuck`].
+pub fn reap(exact: &Exact, child: Option<Child>, killed: bool) -> io::Result<Reaped> {
+    if !killed {
+        exact.wait()?;
+    }
+    while killed && !exact.wait_for(SAMPLE)? {
+        if platform::contain::all_stuck(std::slice::from_ref(exact.birth())) {
+            let (exact, pid) = (exact.try_clone()?, exact.birth().pid);
+            std::thread::Builder::new().name(format!("stuck-{pid}")).spawn(move || {
+                if exact.wait().is_ok() {
+                    let _ = child.map(|mut child| child.wait());
+                    let _ = exact.scope().map(|scope| scope.end());
+                }
+            })?;
+            return Err(io::Error::other(Stuck(pid)));
+        }
+    }
     let status = match child {
-        Some(child) => child.wait()?,
+        Some(mut child) => child.wait()?,
         None => ExitStatus::default(),
     };
     let stragglers = match exact.scope() {
@@ -42,15 +71,15 @@ pub struct Reaped {
     pub stragglers: usize,
 }
 
-/// `reap` the leader, then every member left in its group (followers die with their leader by
-/// parent-death signal; one still alive is killed).
-pub fn reap_group(exact: &Exact, child: Option<&mut Child>) -> io::Result<Reaped> {
+/// `reap` the killed leader, then every member left in its group (followers die with their leader
+/// by parent-death signal; one still alive is killed).
+pub fn reap_group(exact: &Exact, child: Option<Child>) -> io::Result<Reaped> {
     // With a scope the leader's reap already ended its followers (they share it).
-    let reaped = reap(exact, child)?;
+    let reaped = reap(exact, child, true)?;
     for member in group_members(exact.birth()) {
         if let Some(member) = Exact::open(&member)? {
             let _ = member.kill();
-            reap(&member, None)?;
+            reap(&member, None, true)?;
         }
     }
     Ok(reaped)

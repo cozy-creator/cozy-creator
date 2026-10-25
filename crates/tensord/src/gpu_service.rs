@@ -609,6 +609,8 @@ pub struct Pool {
     memo: Arc<crate::memo::Memo>,
     /// The calls running on its GPUs, by request: the host rule reads them.
     running: memory::Running,
+    /// Each run with an executor on its GPUs, by request: its lane, which a GPU fault fails.
+    lanes: Mutex<BTreeMap<String, std::ops::Range<usize>>>,
     /// The derived-weights disk cache: entries TensorD keeps until it exits or a low disk drops them.
     derived: Arc<crate::derived::Derived>,
     // Drop session/resource custody before ending the actual spawning thread.
@@ -787,6 +789,7 @@ impl Pool {
                 levels: Mutex::new(BTreeMap::new()),
                 memo,
                 running,
+                lanes: Mutex::default(),
                 derived,
             }
         }))
@@ -1034,6 +1037,35 @@ impl Pool {
     /// again then, and never polls.
     pub fn wake_on_freed(&self, engine: &Arc<Engine>) {
         let _ = self.engine.set(Arc::downgrade(engine));
+    }
+
+    /// A driver fault on one of its GPUs fails every run with an executor there at once.
+    pub fn watch_faults(self: &Arc<Self>) {
+        let pool = Arc::downgrade(self);
+        platform::gpu::watch_faults(Arc::new(move |fault| {
+            if let Some(pool) = pool.upgrade() {
+                pool.faulted(&fault);
+            }
+        }));
+    }
+
+    fn faulted(&self, fault: &platform::gpu::Fault) {
+        let uuid = |entry: &str| memory::row(entry, &self.config.inventory).map(|row| row.device_uuid.clone());
+        let Some(device) = self.devices.iter().position(|d| {
+            d.entry == fault.index.to_string() || d.entry == fault.uuid || uuid(&d.entry).as_deref() == Some(&fault.uuid)
+        }) else {
+            return; // not a GPU of this machine
+        };
+        if !fault.fails_work() {
+            return tracing::info!("{fault}");
+        }
+        let runs: Vec<String> = self.lanes.lock().unwrap().iter()
+            .filter(|(_, lane)| lane.contains(&device)).map(|(id, _)| id.clone()).collect();
+        tracing::warn!("{fault}: failing {} run(s) on it", runs.len());
+        let Some(engine) = self.engine.get().and_then(Weak::upgrade) else { return };
+        for id in runs {
+            engine.fault(&id, Failure::machine("gpu_fault", format!("{fault}; the run's executor was ended")));
+        }
     }
 
     /// Replace `actor`'s warm set; `keep` then brings its members up. A member dropped from
@@ -2052,7 +2084,7 @@ impl Pool {
                     return;
                 };
                 // Ended by its exit.
-                let ended = launched.and_then(|(mut child, boot, log)| Ok((crate::process::reap(&boot, Some(&mut child))?, log)));
+                let ended = launched.and_then(|(child, boot, log)| Ok((crate::process::reap(&boot, Some(child), false)?, log)));
                 if let Some(pool) = pool.upgrade() {
                     if let Some(boot) = pool.kernel_boots.lock().unwrap().get_mut(&generation) {
                         *boot = None;
@@ -2328,7 +2360,11 @@ impl Pool {
     ) -> io::Result<()> {
         let key = plan.construction.clone();
         let mut disposition = Disposition::default();
+        if plan.degree > 0 {
+            self.lanes.lock().unwrap().insert(id.into(), start..start + plan.degree as usize);
+        }
         let result = self.run_on(engine, id, held, plan, start, calls, &mut disposition);
+        self.lanes.lock().unwrap().remove(id);
         self.finish_returned(engine, id, &key, start, &disposition)?;
         result
     }
@@ -3018,21 +3054,23 @@ fn binds_models(interface: &serde_json::Value) -> bool {
 
 /// No deadline authorizes release: exact kernel exits wake the existing activity loop.
 fn await_executor_exit(engine: &Arc<Engine>, births: &[Birth]) {
-    let exited = || -> io::Result<bool> {
+    let left = || -> io::Result<Vec<Birth>> {
+        let mut left = vec![];
         for birth in births {
-            if !birth.ended()? { return Ok(false); }
-            if platform::process::group_members(birth).iter().any(|b| !b.ended().unwrap_or(false)) {
-                return Ok(false);
-            }
+            if !birth.ended()? { left.push(birth.clone()); }
+            left.extend(platform::process::group_members(birth).into_iter().filter(|b| !b.ended().unwrap_or(false)));
         }
-        Ok(true)
+        Ok(left)
     };
+    let exited = || left().map(|left| left.is_empty());
     let mut watched = std::collections::HashSet::new();
     loop {
         let epoch = engine.activity_epoch();
-        match exited() {
-            Ok(true) => return,
-            Ok(false) => (),
+        match left() {
+            Ok(left) if left.is_empty() => return,
+            // Killed and stuck in the kernel: shown in the machine's status, never waited on.
+            Ok(left) if platform::contain::all_stuck(&left) => return,
+            Ok(_) => (),
             Err(error) => tracing::warn!("pending executor exit remains unproven: {error}"),
         }
         let members = births.iter().flat_map(platform::process::group_members);
@@ -3048,7 +3086,8 @@ fn await_executor_exit(engine: &Arc<Engine>, births: &[Birth]) {
         if exited().is_ok_and(|exited| exited) {
             continue;
         }
-        engine.wait_activity(epoch, None);
+        // Woken by an exit; the sample is how often a member stuck in the kernel is looked for.
+        engine.wait_activity(epoch, Some(std::time::Duration::from_millis(100)));
     }
 }
 
@@ -3178,9 +3217,6 @@ pub(crate) fn settle(engine: &Arc<Engine>, id: &str, error: &io::Error) -> io::R
         .map(Birth::ended)
         .transpose()?
         .unwrap_or(true);
-    if !ended {
-        return Ok(()); // exit unproven: the reservation stays charged and nonterminal
-    }
     if let Some(ended) = error
         .get_ref()
         .and_then(|inner| inner.downcast_ref::<device_executor::EndedBeforeStart>())
@@ -3203,7 +3239,14 @@ pub(crate) fn settle(engine: &Arc<Engine>, id: &str, error: &io::Error) -> io::R
     } else {
         Outcome::Failed(Failure::abandoned(&format!("device executor ended: {error}")))
     };
-    engine.finish(id, outcome).map(drop)
+    // An executor killed and stuck in the kernel runs nothing again: the run ends now, and the
+    // machine shows the process. One whose exit is otherwise unproven holds the outcome until it.
+    match record.process {
+        Some(birth) if !ended && !platform::contain::all_stuck(std::slice::from_ref(&birth)) => {
+            engine.defer_completion(id, outcome, vec![birth])
+        }
+        _ => engine.finish(id, outcome).map(drop),
+    }
 }
 
 /// Executor roots keep each ended executor's logs for a day; every executor of an earlier

@@ -139,3 +139,7 @@ fn open_waitable(pid: u32) -> Option<OwnedHandle> {
 pub fn stuck() -> Vec<super::Stuck> {
     Vec::new()
 }
+
+pub fn all_stuck(_: &[crate::process::Birth]) -> bool {
+    false
+}
