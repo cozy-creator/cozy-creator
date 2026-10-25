@@ -122,7 +122,7 @@ def production_routes(memory, seed):
     facts = measure_device(torch, 0, "cuda")
     result = {}
     with tempfile.TemporaryDirectory(prefix="cozy-production-routes-") as directory:
-        for kind in ("raw-f16", "fp8-decoded-f16", "fp8-native-f16"):
+        for kind in ("raw-f16", "fp8-tensorwise-decoded-f16", "fp8-rowwise-native-f16"):
             width = 512
             weight = torch.randn(width, width, generator=generator) / width**0.5
             writer = tensorfs.Writer(Path(directory) / f"{kind}.cozytensors")
@@ -136,7 +136,9 @@ def production_routes(memory, seed):
                     "0.weight",
                     dtype="F16",
                     shape=(width, width),
-                    scheme="fp8.tensorwise",
+                    scheme="fp8.rowwise"
+                    if kind == "fp8-rowwise-native-f16"
+                    else "fp8.tensorwise",
                     params={},
                     parts={
                         "weight": (
@@ -144,14 +146,20 @@ def production_routes(memory, seed):
                             (width, width),
                             payload.view(torch.uint8).numpy(),
                         ),
-                        "scale": ("F32", (), np.array(0.125, dtype=np.float32)),
+                        "scale": (
+                            "F32",
+                            (width,),
+                            np.full((width,), 0.125, dtype=np.float32),
+                        )
+                        if kind == "fp8-rowwise-native-f16"
+                        else ("F32", (), np.array(0.125, dtype=np.float32)),
                     },
                 )
                 expected = (payload.float() * 0.125).half()
             checkpoint = writer.commit()
             opened = Checkpoint(checkpoint)
             rows = opened.rows("net")
-            consent = "accept" if kind == "fp8-native-f16" else "refuse"
+            consent = "refuse" if kind == "raw-f16" else "accept"
             plan = resolve(
                 variant=Variant(
                     kind, str(directory), checkpoint.id, {"net": checkpoint.id}
@@ -168,6 +176,16 @@ def production_routes(memory, seed):
                 encoded_leaves=consent,
                 dtype_name=dtype_name,
             )
+            expected_route = (
+                "verbatim"
+                if kind == "raw-f16"
+                else (
+                    "encoded_gemm"
+                    if kind == "fp8-rowwise-native-f16"
+                    else "decoded_float"
+                )
+            )
+            assert plan.by_key()["net.0.weight"].route == expected_route
             with torch.device("meta"):
                 module = nn.Sequential(
                     nn.Linear(width, width, bias=False, dtype=torch.float16)
@@ -187,12 +205,20 @@ def production_routes(memory, seed):
             )
             backend.expect({"net": [row.key for row in rows]})
             fit = backend.fit(walked, encoded_leaves=consent)
-            assert fit and fit["ok"]
+            assert fit and fit["ok"], {
+                "kind": kind,
+                "fit": fit,
+                "components": walked.components,
+            }
             live = backend.materialize(built, walked, encoded_leaves=consent)
             for destination in walked.destinations:
                 backend.fill(destination.key, destination.spec, live[destination.key])
             backend.commit()
-            inputs = torch.randn(4, width, generator=generator).half().to("cuda")
+            inputs = (
+                torch.randint(-1, 2, (4, width), generator=generator).half()
+                if kind == "fp8-rowwise-native-f16"
+                else torch.randn(4, width, generator=generator).half()
+            ).to("cuda")
             oracle = torch.nn.functional.linear(inputs, expected.to("cuda"))
             try:
                 with memory.request(f"routes:{kind}:cold") as cold, torch.no_grad():
@@ -206,7 +232,7 @@ def production_routes(memory, seed):
                 assert warm.stats()["final_bindings"]["fills"] == 0
                 assert memory.native.stats()["pinned_bytes"] == 0
                 dtype_transition = None
-                if kind != "fp8-native-f16":
+                if kind != "fp8-rowwise-native-f16":
                     owner = backend.models["net"]
                     binding = owner.retain()
                     with binding.prepare(), torch.no_grad():
@@ -258,6 +284,7 @@ def production_routes(memory, seed):
                     "cold": cold.stats(),
                     "warm": warm.stats(),
                 }
+                print(json.dumps({"case": kind, "evidence": result[kind]}), flush=True)
             finally:
                 backend.close()
                 memory.trim()
