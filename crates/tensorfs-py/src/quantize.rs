@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict};
-use tensorfs::format::{encode, Dtype, Encoding, PartBytes, Value};
+use pyo3::types::{PyBytes, PyMapping};
+use tensorfs::format::{encode, Dtype, Encoding, PartBytes};
 
 use crate::store::{from_py, OrRaise};
 use crate::tensors::PyEncoded;
@@ -19,15 +19,16 @@ fn quantize(
     dtype: String,
     shape: Vec<u64>,
     strategy: String,
-    params: Option<&Bound<'_, PyDict>>,
+    params: Option<&Bound<'_, PyMapping>>,
 ) -> PyResult<PyEncoded> {
-    let params = match params {
-        Some(params) => match from_py(params.as_any())? {
-            Value::Map(map) => map,
-            _ => unreachable!("a dict converts to a map"),
-        },
-        None => BTreeMap::new(),
-    };
+    let mut parameters = BTreeMap::new();
+    if let Some(params) = params {
+        for item in params.items()?.iter() {
+            let (key, value): (String, Bound<'_, PyAny>) = item.extract()?;
+            parameters.insert(key, from_py(&value)?);
+        }
+    }
+    let params = parameters;
     let encoding = Encoding { scheme, params };
     let dtype = Dtype::parse(&dtype);
     // Immutable Python bytes remain owned by this call while the GIL is released.

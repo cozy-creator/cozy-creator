@@ -386,6 +386,37 @@ still in use; the output is not a valid result.
 
 ## Python: write, convert and publish
 
+### Quantize supplied tensor rows
+
+`raw.quantize` runs a versioned native tensor encoder without importing a framework or model.
+The initial strategy is `int8-convrot256/1`, the production H256/16 rotation followed by
+per-row F32 scales and ties-to-even I8 rounding. Its storage scheme is `int8.convrot`;
+the producer revision is separate from the encoding parameters used by readers.
+
+```python
+from tensorfs import raw
+
+encoded = raw.quantize(
+    "int8.convrot", f32_little_endian_bytes,
+    dtype="BF16", shape=[rows, columns], strategy="int8-convrot256/1",
+    params={"rotation": "kron_regular_h4", "rotation_size": 256},
+)
+```
+
+The input is immutable `bytes` containing finite little-endian F32 values, regardless of the
+logical output `dtype` (F32, F16 or BF16). The shape must be a nonempty matrix whose columns
+are divisible by 256. The result is the same `Encoded`/`Array` representation returned by
+stored reads; pass its parts to the existing `ComponentWriter.put_encoded` to save them.
+
+The arithmetic releases the GIL, uses one row of floating scratch and allocates the encoded
+output; the binding then copies each part into an aligned `Array`. Callers can supply bounded
+complete-row chunks without changing payload or scale
+bytes. This operation does not read a checkpoint, resolve a model recipe, collect calibration,
+write output or compute quality statistics. Unknown strategies and incompatible inputs refuse;
+the existing error family for encoder refusals is `DecodeError`. Cancellation between bounded
+calls remains the caller's responsibility. A complete native checkpoint conversion runner is
+separate work.
+
 ### Save a checkpoint file
 
 `Writer` writes the cozytensors format. To create Safetensors files, first commit the

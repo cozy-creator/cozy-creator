@@ -442,7 +442,7 @@ class Writer:
         ...
 ```
 
-## `tensorfs.raw` — advanced physical inspection and resident decode
+## `tensorfs.raw` — physical inspection, native encoding and resident decode
 
 These declarations belong to `tensorfs.raw`, not the root package.
 See [resident decoding](API.md#advanced-decode-resident-encoded-parts) for placement,
@@ -450,7 +450,7 @@ ownership and error behavior.
 
 ```python
 from collections.abc import Buffer, Mapping, Sequence
-from tensorfs import Checkpoint
+from tensorfs import Checkpoint, Encoded
 # DLPack is the accepted input protocol described above, not a package export.
 
 class Part:
@@ -467,6 +467,21 @@ class Part:
 
 def parts(checkpoint: Checkpoint, component: str, key: str) -> dict[str, Part]:
     """Inspect stored ranges without fetching bytes; plain tensors use role ''."""
+
+def quantize(
+    scheme: str,
+    values: bytes,
+    *,
+    dtype: str,
+    shape: Sequence[int],
+    strategy: str,
+    params: Mapping[str, object] | None = None,
+) -> Encoded:
+    """Encode immutable F32 bytes; initially int8.convrot / int8-convrot256/1.
+
+    Complete row chunks produce identical bytes. Native arithmetic releases the GIL
+    and uses one row of floating scratch plus owned output. No checkpoint I/O.
+    """
 
 def decode_into(
     scheme: str,

@@ -3,6 +3,8 @@
 //! ggml); `pack` takes the codes, scales, zeros and permutation a calibrated producer computed
 //! (GPTQ, AWQ, SVDQuant) and lays them out as the scheme's parts. Shared math: `elem` (f32 to
 //! element codes) and `affine` (codes to packed words, the inverse of the decode's unpack).
+//! `int8.convrot` requires `quantize_strategy` with the producer revision; it has no
+//! anonymous default, since stored encoding semantics do not identify a quantizer.
 //!
 //! Adding a scheme's encoders: one family file, one row in `ENCODERS` (and its `mod` line).
 
@@ -160,6 +162,11 @@ fn run(
 
 /// The parts of `input.encoding` from the logical values (closed form).
 pub fn quantize(input: &Input) -> Result<Vec<OwnedPart>> {
+    if input.encoding.scheme == "int8.convrot" {
+        return Err(Error::Encode(format!(
+            "int8.convrot requires explicit quantizer strategy {CONVROT_STRATEGY}"
+        )));
+    }
     run(input, row(&input.encoding.scheme)?.quantize, "closed-form")
 }
 
@@ -167,7 +174,7 @@ pub fn quantize(input: &Input) -> Result<Vec<OwnedPart>> {
 /// Other legacy encoders keep their existing API and cannot be selected accidentally.
 pub fn quantize_strategy(input: &Input, strategy: &str) -> Result<Vec<OwnedPart>> {
     match (input.encoding.scheme.as_str(), strategy) {
-        ("int8.convrot", CONVROT_STRATEGY) => quantize(input),
+        ("int8.convrot", CONVROT_STRATEGY) => run(input, int8::CONVROT.quantize, "closed-form"),
         _ => Err(Error::Encode(format!(
             "no quantizer strategy {strategy:?} for {}", input.encoding.scheme
         ))),

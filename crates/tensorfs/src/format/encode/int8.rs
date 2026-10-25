@@ -76,7 +76,7 @@ fn convrot(input: &Input) -> Result<Vec<OwnedPart>> {
             }
             *out = f64::from(value);
         }
-        for block in rotated.chunks_exact_mut(256) {
+        for block in rotated.as_chunks_mut::<256>().0 {
             // Match NumPy hadamard256's axis and addition order. The integer
             // decoder's sum-minus-twice form is not equivalent in floating point.
             for stride in [64, 16, 4, 1] {
