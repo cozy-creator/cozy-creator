@@ -14,12 +14,9 @@ use std::{
     fs, io, iter,
     path::{Path, PathBuf},
 };
-use windows_sys::Win32::{
-    Foundation::ERROR_FILE_NOT_FOUND,
-    System::{
-        Console::{FreeConsole, GetConsoleProcessList},
-        Registry::{HKEY_CURRENT_USER, REG_SZ, RegDeleteKeyValueW, RegSetKeyValueW},
-    },
+use windows_sys::Win32::System::{
+    Console::{FreeConsole, GetConsoleProcessList},
+    Registry::{HKEY_CURRENT_USER, REG_SZ, RegSetKeyValueW},
 };
 
 const RUN: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -86,21 +83,6 @@ pub(super) fn stop(dir: &Path, name: &str) -> Result<()> {
         return Err(Error::io("remove", path)(error));
     }
     Ok(())
-}
-
-pub(super) fn uninstall(_: &Path, name: &str) -> Result<bool> {
-    // SAFETY: NUL-terminated wide strings.
-    let status = unsafe {
-        RegDeleteKeyValueW(
-            HKEY_CURRENT_USER,
-            wide(RUN).as_ptr(),
-            wide(&value(name)).as_ptr(),
-        )
-    };
-    if status == ERROR_FILE_NOT_FOUND {
-        return Ok(false);
-    }
-    registry("delete", status).map(|()| true)
 }
 
 /// A detached process leaves its starter's console and job: nothing more is needed.

@@ -258,21 +258,10 @@ pub async fn update(
             return up_to_date(ctx, &m, status);
         }
     }
-    // A TensorD before 0.11.16 fetches no release, and takes a dev binary as `binary`.
     let status = m.status.clone().unwrap_or_default();
-    let older = !names_tensord(&status.version);
-    if older && asked.iter().any(|(member, _, c)| *member == "tensord" && matches!(c, Component::Release(_))) {
-        return Err(Error::new(
-            Kind::Conflict,
-            "machine_too_old",
-            format!("{} runs cozy {}, which fetches no cozy release (0.11.16 on)", m.name, status.version),
-        )
-        .remedy("send it a cozy binary (--tensord <file>), or end it and rent another"));
-    }
     // A dev `cozy` built or picked here, which `local` then runs (Calcifer too).
     let mut dev = false;
     for (member, distribution, component) in asked {
-        let key = if member == "tensord" && older { "binary" } else { member };
         let path = match component {
             Component::Release(version) => {
                 want.push(reports(member, &version));
@@ -285,11 +274,11 @@ pub async fn update(
                 match value {
                     Some((url, sha256)) => {
                         named.push(format!("{member} {version} (prerelease)"));
-                        payload.insert(key.into(), serde_json::json!({ "url": url, "sha256": sha256 }));
+                        payload.insert(member.into(), serde_json::json!({ "url": url, "sha256": sha256 }));
                     }
                     None => {
                         named.push(format!("{member} {version}"));
-                        payload.insert(key.into(), version.into());
+                        payload.insert(member.into(), version.into());
                     }
                 }
                 continue;
@@ -307,7 +296,7 @@ pub async fn update(
             _ => format!("{member} {file} (dev)"),
         });
         inputs.push(v1::InputFile {
-            field: key.into(),
+            field: member.into(),
             digest: input.digest.to_string(),
             length: input.length,
             media_type: match distribution {
@@ -317,10 +306,10 @@ pub async fn update(
             .into(),
             order: 0,
         });
-        payload.insert(key.into(), file.into());
+        payload.insert(member.into(), file.into());
         staged.push(input);
     }
-    let restarts = payload.contains_key("tensord") || payload.contains_key("binary");
+    let restarts = payload.contains_key("tensord");
     if let Some(limit) = gpu_memory_limit {
         named.push(match limit {
             0 => "no GPU memory limit".into(),
@@ -370,12 +359,6 @@ pub async fn update(
         ));
     }
     Ok(crate::run::exit_code(&run))
-}
-
-/// Whether a TensorD at `version` names its binary `tensord` and fetches a release itself
-/// (0.11.16 on); one that does not parse is taken as current.
-fn names_tensord(version: &str) -> bool {
-    semver::Version::parse(version).map_or(true, |v| (v.major, v.minor, v.patch) >= (0, 11, 16))
 }
 
 /// `distribution` `version`'s prerelease wheel for `platform` (`linux/x86_64`), when PyPI does not
