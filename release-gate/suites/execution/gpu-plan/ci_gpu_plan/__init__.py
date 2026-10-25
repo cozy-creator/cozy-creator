@@ -28,6 +28,7 @@ def repeat(payload: Probe, tel: Telemetry) -> Report:
     probe = {
         "repeat": "proof.py",
         "consumer": "consumer.py",
+        "retirement": "retirement.py",
         "lifecycle": "lifecycle.py",
         "lifecycle_cancel": "lifecycle.py",
         "lifecycle_running_cancel": "lifecycle.py",

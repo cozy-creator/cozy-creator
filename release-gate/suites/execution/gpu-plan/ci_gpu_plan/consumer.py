@@ -135,6 +135,7 @@ def exercise(seed: int) -> dict:
                     )
                     prepared_calls = calls
                     prepared_decodes = decode_calls
+                binding.close()  # the prepared definition owns a separate retained lease
                 first = plan.submit()
                 (actual,) = first.wait()
                 torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
