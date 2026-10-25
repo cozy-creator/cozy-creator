@@ -1,5 +1,32 @@
 # Native load → execute: real release gate
 
+## Resident prefix, repeat and suffix
+
+The `phase-*` modes exercise the optional resident composition in the native Runtime.
+They use three real stored tensor components, exact output counters, and one request-owned
+submission. The loaded case feeds the existing checked LoadSlot before any phase runs.
+All owners stay resident; these cases do not implement inter-phase streaming.
+
+| Modes | Required result |
+|---|---|
+| `phase-repeat`, `phase-prefix`, `phase-suffix`, `phase-both` | Exact math and once-only prefix/suffix counters around 30 native iterations, one launch, no Python replay calls. |
+| `phase-reuse` | Two joined submissions of the same plan with changed input and reset state. |
+| `phase-loaded` | Actual stored reads precede all phases; escaped aliases retain physical pins until their scope ends. |
+| `phase-input-error` | Truncating only a private store copy gives a checked read failure, zero launches and unchanged phase state. |
+| `phase-cancel-prefix`, `phase-cancel-final` | Real GEMMs create cancellation windows; the suffix remains untouched when cancellation wins its boundary. |
+| `phase-cancel-tail` | Observe all iterations complete while work is still active, then cancel; distinguish skipped suffix from an already-admitted suffix and verify either result. |
+| `phase-refuse-prefix`, `phase-refuse-suffix` | A real pinned-host copy receives the precise native phase refusal, with restored state. |
+
+```sh
+cozy run /absolute/canonical/worktree/release-gate/suites/execution/native-load-execute/gpu \
+  mode=phase-both seed=1793004001 --on MACHINE --gpus=1 --json
+```
+
+Use a fresh seed per attempt and the explicitly selected Runtime artifact that supports
+resident phases. A missed cancellation window fails the gate; no fake pause, error, driver
+or callback is injected. These twelve modes are source-reviewed fixtures with **GPU proof
+pending**. Earlier raw/encoded and full-image receipts do not qualify this new composition.
+
 [New native diagnostic module regression](../prepared-resident-owners/evidence/db7-native-inspection-local.md)
 passed raw 64 MiB loading followed by 30 GPU iterations from one launch in run 17895,
 with checked completion and zero resident/pinned cleanup. This db7 cohort is separate

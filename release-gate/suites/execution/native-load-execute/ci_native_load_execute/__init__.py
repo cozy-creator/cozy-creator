@@ -21,7 +21,11 @@ class Report(msgspec.Struct):
 
 @app.entrypoint(accelerator=True)
 def gpu(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
-    if payload.mode.startswith("encoded-"):
+    if payload.mode.startswith("phase-"):
+        from .phases import exercise
+
+        result = exercise(payload.mode, payload.seed, ctx)
+    elif payload.mode.startswith("encoded-"):
         from .encoded import exercise
 
         result = exercise(payload.mode, payload.seed, payload.dtype, ctx)
