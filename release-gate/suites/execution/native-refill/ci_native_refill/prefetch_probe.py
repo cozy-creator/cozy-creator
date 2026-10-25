@@ -388,13 +388,72 @@ def ordinary_replay(memory, directory):
         checkpoint.close()
 
 
+def replay_allocator(memory, directory):
+    from tensorfs import varena
+
+    regions = [memory.native.reserve(16 * MIB) for _ in range(4)]
+    for index, region in enumerate(regions):
+        use = region.prepare()
+        use.tensor.fill_(index + 1)
+        use.commit()
+        del use
+    values = torch.full((16 * MIB,), 9, dtype=torch.uint8)
+    writer = tensorfs.Writer(directory / "replay-producer.cozytensors")
+    writer.component("next").put("data", values)
+    checkpoint = writer.commit()
+    future = memory.native.reserve(values.nbytes)
+    with varena.replay(0):
+        read = future.prepare_read(
+            checkpoint, [("next/data#value", 0, values.nbytes)], reclaim=False
+        )
+        read.start()
+        producer = read.wait()
+        assert producer["done"] and not producer["canceled"]
+        before = memory.native.stats()
+        hook_before = varena.allocator_stats()
+        try:
+            torch.empty(192 * MIB, dtype=torch.uint8, device="cuda")
+        except torch.OutOfMemoryError:
+            pass
+        else:
+            raise AssertionError(
+                "guarded allocation exceeded the managed admission limit"
+            )
+        after = memory.native.stats()
+        hook_after = varena.allocator_stats()
+        assert before["resident_bytes"] == 80 * MIB
+        assert after["reclaimed_bytes"] == before["reclaimed_bytes"]
+        assert hook_after["reclaimed_bytes"] == hook_before["reclaimed_bytes"]
+        assert after["resident_bytes"] == before["resident_bytes"]
+    activation = torch.empty(192 * MIB, dtype=torch.uint8, device="cuda")
+    activation.fill_(71)
+    assert activation[-1].item() == 71
+    outside = memory.native.stats()
+    assert outside["reclaimed_bytes"] - after["reclaimed_bytes"] >= 48 * MIB
+    del activation
+    torch.cuda.empty_cache()
+    memory.trim()
+    checkpoint.close()
+    return {
+        "managed_activation_limit": 224 * MIB,
+        "producer_during_replay": producer,
+        "before": before,
+        "after_guarded_refusal": after,
+        "after_unguarded_allocation": outside,
+        "allocator_before": hook_before,
+        "allocator_after_guarded_refusal": hook_after,
+    }
+
+
 def exercise(seed, mode):
     torch.set_num_threads(1)
     accel.initialize(torch, "cuda")
     from cozy_runtime.author._context import Device, place
 
     place(Device("cuda", torch.cuda.current_device()))
-    memory = residency.Memory.open("cuda:0", budget_bytes=768 * MIB)
+    memory = residency.Memory.open(
+        "cuda:0", budget_bytes=(224 if mode == "prefetch-allocator" else 768) * MIB
+    )
     assert memory.prefetch_supported
     with tempfile.TemporaryDirectory(prefix="cozy-prefetch-") as directory:
         if mode == "prefetch-pressure":
@@ -403,6 +462,8 @@ def exercise(seed, mode):
             result = capture_exclusion(memory, Path(directory))
         elif mode == "prefetch-replay":
             result = ordinary_replay(memory, Path(directory))
+        elif mode == "prefetch-allocator":
+            result = replay_allocator(memory, Path(directory))
         else:
             result = automatic(memory, Path(directory), seed, mode == "prefetch-cancel")
     return {
