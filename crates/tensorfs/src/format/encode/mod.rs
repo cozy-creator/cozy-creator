@@ -40,10 +40,12 @@ mod comfy;
 
 pub use comfy::{quantize_with, Kitchen};
 pub use fp8_blockwise::quantize_fp8_blockwise;
+pub use int8::CONVROT_STRATEGY;
 pub use nvfp4::{GlobalScale, NibbleOrder};
 
 /// Every scheme's encoders, one row each.
 pub static ENCODERS: &[&Encoder] = &[
+    &int8::CONVROT,
     &nvfp4::NVFP4,
     &svdq::SVDQ_NVFP4,
 
@@ -159,6 +161,17 @@ fn run(
 /// The parts of `input.encoding` from the logical values (closed form).
 pub fn quantize(input: &Input) -> Result<Vec<OwnedPart>> {
     run(input, row(&input.encoding.scheme)?.quantize, "closed-form")
+}
+
+/// A producer with an explicit numerical revision, distinct from its stored encoding.
+/// Other legacy encoders keep their existing API and cannot be selected accidentally.
+pub fn quantize_strategy(input: &Input, strategy: &str) -> Result<Vec<OwnedPart>> {
+    match (input.encoding.scheme.as_str(), strategy) {
+        ("int8.convrot", CONVROT_STRATEGY) => quantize(input),
+        _ => Err(Error::Encode(format!(
+            "no quantizer strategy {strategy:?} for {}", input.encoding.scheme
+        ))),
+    }
 }
 
 /// The parts of `input.encoding` from a calibrated producer's arrays.

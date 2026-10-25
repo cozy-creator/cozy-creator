@@ -3,7 +3,7 @@
 from collections.abc import Mapping, Sequence
 from typing_extensions import Buffer
 
-from ._ext import Checkpoint
+from ._ext import Checkpoint, Encoded
 from .api import DLPack
 
 class Part:
@@ -22,6 +22,23 @@ class Part:
 
 def parts(checkpoint: Checkpoint, component: str, key: str) -> dict[str, Part]:
     """Stored ranges only; does not fetch or load array bytes."""
+
+def quantize(
+    scheme: str,
+    values: bytes,
+    *,
+    dtype: str,
+    shape: Sequence[int],
+    strategy: str,
+    params: Mapping[str, object] | None = None,
+) -> Encoded:
+    """Encode immutable little-endian F32 values with an explicit producer revision.
+
+    Currently admits int8.convrot / int8-convrot256/1 with rotation_size=256.
+    Complete rows may be chunked without changing output bytes. The native arithmetic
+    releases the GIL and uses one row of floating scratch, plus the owned output.
+    This encodes supplied tensor bytes; it does not run a model or write a checkpoint.
+    """
 
 def decode_into(
     scheme: str,
