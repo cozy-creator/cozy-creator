@@ -999,6 +999,9 @@ impl DeviceExecutor {
     pub fn abandoned_lookahead(&self) -> bool {
         self.lookahead.lock().unwrap().retire
     }
+    pub fn preparing_lookahead(&self) -> bool {
+        self.lookahead.lock().unwrap().queued.as_ref().is_some_and(|q| q.reply.is_none())
+    }
     pub fn cancellation(&self) -> Cancellation {
         Cancellation { enabled: Arc::new(Mutex::new(true)), ..self.cancellation.clone() }
     }
@@ -1070,14 +1073,19 @@ impl DeviceExecutor {
                 .ok_or_else(|| {
                     io::Error::new(io::ErrorKind::UnexpectedEof, "stock executor EOF before reply")
                 })?;
+            let pending = request != Some(frame.request_id.as_str())
+                && self.lookahead.lock().unwrap().queued.as_ref()
+                    .is_some_and(|queued| queued.command.request_id == frame.request_id);
+            let outside = pending
+                || request.is_some_and(|id| !frame.request_id.is_empty() && frame.request_id != id);
             match frame.event {
                 Some(Event::Request) if !frame.malformed.is_empty() => {
                     refuse_malformed(&mut self.writer.lock().unwrap(), &frame)?
                 }
                 Some(Event::Progress) if !frame.malformed.is_empty() => (),
-                Some(Event::Progress) if request.is_some_and(|id| !frame.request_id.is_empty() && frame.request_id != id) => (),
+                Some(Event::Progress) if outside => (),
                 Some(Event::Progress) => services.progress(&frame),
-                Some(Event::Request) if request.is_some_and(|id| !frame.request_id.is_empty() && frame.request_id != id) => {
+                Some(Event::Request) if outside => {
                     // A queued preflight has no current attempt's spool or child-call grants.
                     self.answer(&frame, &mut Baseline)?;
                 }

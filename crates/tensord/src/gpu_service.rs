@@ -966,6 +966,16 @@ impl Pool {
         let before = self.free(&lane);
         self.notes.note(serde_json::json!({"event": "offload_begin", "for": reason, "pid": pid,
             "plan": plan, "need": need, "free_before": before}));
+        if session.executor.preparing_lookahead() {
+            // This Session was removed from the idle pool; no invocation owns it. An
+            // outstanding CPU preflight must not hold GPU memory behind a serialized Map.
+            session.executor.lookahead().offer(None, "");
+            let why = self.keep_idle(engine, session).err().map(|error| error.to_string()).unwrap_or_default();
+            self.notes.note(serde_json::json!({"event": "offload", "for": reason, "pid": pid,
+                "plan": plan, "need": need, "free_before": before, "free_after": self.free(&lane),
+                "ack_ms": began.elapsed().as_secs_f64() * 1e3, "ended_pending_preparation": true, "failed": why}));
+            return;
+        }
         let reply = session.executor.command(&Command::Map(Map {
             construction: session.plan.clone(), level: protocol::executor::Level::Ram,
         }), &mut device_executor::Baseline);
