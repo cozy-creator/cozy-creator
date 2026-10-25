@@ -17,7 +17,7 @@ from cozy_runtime.internal.encoding import launch_providers
 from cozy_runtime.internal.encoding.selection import measure_device, measure_runtime
 from cozy_runtime.internal.fill import Checkpoint, dtype_name
 from cozy_runtime.internal.lora_composition import composer
-from cozy_runtime.internal.lora_contract import FORMAT, Graph, Linear
+from cozy_runtime.internal.lora_contract import FORMAT, Graph, Layer
 from cozy_runtime.internal.resolution import ConstructionFacts, Variant, resolve
 from cozy_runtime.internal.weights import Backend, Placement
 from torch import nn
@@ -255,76 +255,24 @@ def exercise(seed, ctx):
             checkpoint.close()
 
 
-def attention_proof(seed, ctx):
-    """Real zero-dropout SDPA replay; seeded dropout and random generation still refuse."""
-    assert ctx.device.type == "cuda"
-    accel.initialize(torch, "cuda")
-    query = torch.arange(512, device="cuda", dtype=torch.float32).reshape(1, 2, 8, 32)
-    query = (query / 512).to(torch.float16)
-    key, value = query.clone(), query * 0.5
-    with torch.inference_mode(False):
-        state = torch.zeros_like(query)
-    expected = torch.nn.functional.scaled_dot_product_attention(
-        query, key, value, dropout_p=0.0
-    )
-
-    def step(index):
-        del index
-        state.copy_(
-            torch.nn.functional.scaled_dot_product_attention(
-                query, key, value, dropout_p=0.0
-            )
-        )
-
-    plan = PreparedRepeat.capture(step, state=(state,), steps=2)
-    try:
-        output = ctx.plan(plan).wait()[0]
-        torch.testing.assert_close(output, expected, rtol=0, atol=0)
-        assert plan.facts()["host_graph_launches"] == 1
-    finally:
-        plan.close()
-
-    def dropout(index):
-        del index
-        state.copy_(
-            torch.nn.functional.scaled_dot_product_attention(
-                query, key, value, dropout_p=0.25
-            )
-        )
-
-    def random(index):
-        del index
-        state.copy_(torch.rand_like(state))
-
-    refused = []
-    saved = state.clone()
-    for name, body in (("dropout", dropout), ("random", random)):
-        try:
-            unexpected = PreparedRepeat.capture(body, state=(state,), steps=2)
-        except RuntimeError as error:
-            assert "explicit noise/RNG tensor inputs" in str(error), str(error)
-            refused.append(name)
-        else:
-            unexpected.close()
-            raise AssertionError(f"seeded {name} was accepted")
-        torch.testing.assert_close(state, saved, rtol=0, atol=0)
-    return {
-        "seed": seed,
-        "mode": "attention",
-        "runtime": importlib.metadata.version("cozy-runtime"),
-        "tensorfs": importlib.metadata.version("tensorfs"),
-        "torch": str(torch.__version__),
-        "device": torch.cuda.get_device_name(0),
-        "zero_dropout_host_graph_launches": 1,
-        "refused": refused,
-    }
-
-
 def real_lora_refusal(memory, path, seed):
     """A production PEFT composition with actual stored low-rank factors, not a mode flag."""
     width, rank = 128, 2
     transform = composer(
-        Graph(FORMAT, (Linear("adapted", "0", "gate", rank, rank, 1.0, "F32"),))
+        Graph(
+            FORMAT,
+            (
+                Layer(
+                    component="adapted",
+                    target="0",
+                    adapter="gate",
+                    rank=rank,
+                    alpha=float(rank),
+                    strength=1.0,
+                    dtype="F32",
+                ),
+            ),
+        )
     )
     writer = tensorfs.Writer(path)
     component = writer.component("adapted")

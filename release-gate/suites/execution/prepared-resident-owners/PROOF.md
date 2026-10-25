@@ -1,5 +1,11 @@
 # Real CUDA proof — 2026-10-25
 
+The receipts below qualify their frozen fixture/cohort. Later combined Runtime0.32.3 uses the
+upstream `Layer` LoRA contract instead of `Linear`; runs17613/17615 exposed that stale fixture
+import. The current fixture constructs an actual `Layer` with explicit geometry/scaling fields
+and keeps attention in a separate module that imports no LoRA fixture code. These fixture-only
+changes need a fresh combined-cohort run; they do not alter the evidence below.
+
 Ordinary admitted CLI calls on ponyo, NVIDIA GeForce RTX 3060, Torch 2.14.1+cu130.
 All eight calls completed with `passed=true` and CLI exit 0. No mocks or unit tests.
 

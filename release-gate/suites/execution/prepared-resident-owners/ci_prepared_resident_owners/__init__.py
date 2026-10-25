@@ -21,11 +21,12 @@ class Report(msgspec.Struct):
 
 @app.entrypoint(accelerator=True)
 def gpu(payload: Probe, ctx: Context) -> Report:
-    from .exercise import attention_proof, exercise
+    if payload.mode == "attention":
+        from .attention import attention_proof
 
-    result = (
-        attention_proof(payload.seed, ctx)
-        if payload.mode == "attention"
-        else exercise(payload.seed, ctx)
-    )
+        result = attention_proof(payload.seed, ctx)
+    else:
+        from .exercise import exercise
+
+        result = exercise(payload.seed, ctx)
     return Report(True, json.dumps(result, sort_keys=True))
