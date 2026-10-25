@@ -450,6 +450,7 @@ ownership and error behavior.
 
 ```python
 from collections.abc import Buffer, Mapping, Sequence
+from typing import TypedDict
 from tensorfs import Checkpoint, Encoded
 # DLPack is the accepted input protocol described above, not a package export.
 
@@ -484,6 +485,27 @@ def quantize(
     Complete row chunks produce identical bytes. Native arithmetic releases the GIL
     and uses one row/block of floating scratch plus owned output. No checkpoint I/O.
     """
+
+class QuantizationStats(TypedDict):
+    amax: float
+    max_abs_error: float
+    sse: float
+    energy: float
+    saturated: int
+
+def quantize_measured(
+    scheme: str,
+    values: bytes,
+    *,
+    dtype: str,
+    shape: Sequence[int],
+    strategy: str,
+    params: Mapping[str, object] | None = None,
+    tensor_amax: float | None = None,
+) -> tuple[Encoded, QuantizationStats]:
+    """The same producer as quantize, plus native F64 acceptance facts over supplied F32
+    values before logical rounding. amax is chunk-local; tensor_amax remains tensor-wide.
+    No I/O-byte or memory-transfer accounting is implied by these numeric statistics."""
 
 def decode_into(
     scheme: str,

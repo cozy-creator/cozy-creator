@@ -156,6 +156,13 @@ jobs:
           from tensorfs import raw, varena
           assert tensorfs.__version__ == tensorfs._ext.__version__
           assert callable(raw.quantize) and callable(tensorfs.Writer.quantize)
+          encoded, measured = raw.quantize_measured(
+              "int8.convrot", bytes(256 * 4), dtype="F32", shape=(1, 256),
+              strategy="int8-convrot256/1",
+              params={"rotation": "kron_regular_h4", "rotation_size": 256},
+          )
+          assert encoded.parts["weight"].nbytes == 256
+          assert measured == {"amax": 0.0, "max_abs_error": 0.0, "sse": 0.0, "energy": 0.0, "saturated": 0}
           assert tensorfs.ConversionControl().progress() == (0, 0, 0)
           assert varena.supports_load_execution()
           print("TensorFS full-package import and native capabilities:", tensorfs.__version__)

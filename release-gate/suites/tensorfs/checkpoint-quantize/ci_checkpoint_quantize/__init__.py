@@ -66,7 +66,8 @@ def expected_bytes(row):
 def run(payload: Request, ctx: Context) -> Report:
     import numpy as np
     import tensorfs
-    from cozy_runtime.derive.microscale import encode_int8_convrot256, encode_nvfp4
+
+    from .oracle import encode_int8_convrot256, encode_nvfp4
 
     assert payload.mode in ("basic", "cancel", "cancel-write")
     rng = np.random.default_rng(payload.seed)

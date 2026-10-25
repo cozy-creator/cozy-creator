@@ -7,7 +7,7 @@ cozy run /absolute/path/to/convrot-encode/run seed=103 --on MACHINE --json
 ```
 
 The installed TensorFS candidate must expose `raw.quantize`; the Runtime candidate must retain
-the current `derive.microscale.encode_int8_convrot256` reference producer. This cell compares
+the historical `encode_int8_convrot256` reference shipped inside this gate (see ORACLE.md). This cell compares
 their actual encoded weight and scale bytes, including zero/subnormal/outlier/tie inputs and
 row-chunk invariance. It writes the encoded tensors with the existing Writer, reads their
 stored parts back, checks decoded output and verifies refusal followed by a healthy retry.
@@ -23,3 +23,9 @@ NumPy2.5.4, on RTX3060 host quatre through the default CLI. All24 logical-dtype 
 chunk sizes1/2/7, 11 refusals and existing Writer/readback passed.
 [Exact receipt](evidence/7e98dce7f-cpu.json). This does not qualify the later measured
 encoder/Writer.quantize checkpoint loop or production Runtime cutover.
+
+The TensorFS0.15.6 extension exercises both `raw.quantize` and `raw.quantize_measured` on every
+case and chunk. Parts must match exactly, with native amax/max-error/saturation exact and SSE/energy
+within rtol2e-13 against the independent frozen oracle. Every prior refusal must have the same
+error code/detail through both APIs. Existing receipts predate this measured-API gate; a new
+installed real CPU run is required.

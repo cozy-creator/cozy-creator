@@ -27,10 +27,13 @@ class Report(msgspec.Struct):
 def run(payload: Request, ctx: Context) -> Report:
     import numpy as np
     import tensorfs
-    from cozy_runtime.derive.microscale import encode_int8_convrot256, hadamard256
     from tensorfs import raw
 
+    from .oracle import encode_int8_convrot256, hadamard256
+
     params = {"rotation": "kron_regular_h4", "rotation_size": 256}
+
+    measured_calls = []
 
     def encode(values, dtype="F32", **overrides):
         options = {
@@ -40,7 +43,32 @@ def run(payload: Request, ctx: Context) -> Report:
             "params": params,
         }
         options.update(overrides)
-        return raw.quantize("int8.convrot", values.astype("<f4").tobytes(), **options)
+        data = values.astype("<f4").tobytes()
+        try:
+            original = raw.quantize("int8.convrot", data, **options)
+        except tensorfs.DecodeError as first:
+            try:
+                raw.quantize_measured("int8.convrot", data, **options)
+            except tensorfs.DecodeError as measured_error:
+                assert (first.code, first.detail) == (
+                    measured_error.code,
+                    measured_error.detail,
+                )
+                raise first
+            raise AssertionError("measured API accepted a refused input") from first
+        measured, stats = raw.quantize_measured("int8.convrot", data, **options)
+        assert stored(original) == stored(measured)
+        reference = encode_int8_convrot256("measured", values.astype("<f4"))
+        assert set(stats) == {"amax", "max_abs_error", "sse", "energy", "saturated"}
+        assert stats["amax"] == float(np.max(np.abs(values.astype("<f4"))))
+        assert stats["max_abs_error"] == reference.max_abs_err
+        assert stats["saturated"] == reference.saturated
+        np.testing.assert_allclose(stats["sse"], reference.sse, rtol=2e-13, atol=0)
+        np.testing.assert_allclose(
+            stats["energy"], reference.energy, rtol=2e-13, atol=0
+        )
+        measured_calls.append(stats)
+        return original
 
     def stored(encoded):
         return {
@@ -166,6 +194,8 @@ def run(payload: Request, ctx: Context) -> Report:
     retry = stored(encode(good))
     assert retry["weight"][2] == encode_int8_convrot256("retry", good).payload
     detail = {
+        "measured_calls": len(measured_calls),
+        "measured_sse_energy_rtol": 2e-13,
         "strategy": "int8-convrot256/1",
         "tensorfs": tensorfs.__version__,
         "numpy": np.__version__,

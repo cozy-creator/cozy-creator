@@ -27,8 +27,9 @@ class Report(msgspec.Struct):
 def run(payload: Request, ctx: Context) -> Report:
     import numpy as np
     import tensorfs
-    from cozy_runtime.derive.microscale import encode_nvfp4
     from tensorfs import raw
+
+    from .oracle import encode_nvfp4
 
     params = {
         "block_size": 16,
@@ -36,6 +37,8 @@ def run(payload: Request, ctx: Context) -> Report:
         "nibble_order": "low_first",
         "scale_layout": "row_major",
     }
+
+    measured_calls = []
 
     def encode(values, maximum, dtype="F32", **overrides):
         options = {
@@ -46,7 +49,32 @@ def run(payload: Request, ctx: Context) -> Report:
             "tensor_amax": maximum,
         }
         options.update(overrides)
-        return raw.quantize("nvfp4", values.astype("<f4").tobytes(), **options)
+        data = values.astype("<f4").tobytes()
+        try:
+            original = raw.quantize("nvfp4", data, **options)
+        except tensorfs.DecodeError as first:
+            try:
+                raw.quantize_measured("nvfp4", data, **options)
+            except tensorfs.DecodeError as measured_error:
+                assert (first.code, first.detail) == (
+                    measured_error.code,
+                    measured_error.detail,
+                )
+                raise first
+            raise AssertionError("measured API accepted a refused input") from first
+        measured, stats = raw.quantize_measured("nvfp4", data, **options)
+        assert stored(original) == stored(measured)
+        reference = encode_nvfp4("measured", values.astype("<f4"), amax=maximum)
+        assert set(stats) == {"amax", "max_abs_error", "sse", "energy", "saturated"}
+        assert stats["amax"] == float(np.max(np.abs(values.astype("<f4"))))
+        assert stats["max_abs_error"] == reference.max_abs_err
+        assert stats["saturated"] == reference.saturated
+        np.testing.assert_allclose(stats["sse"], reference.sse, rtol=2e-13, atol=0)
+        np.testing.assert_allclose(
+            stats["energy"], reference.energy, rtol=2e-13, atol=0
+        )
+        measured_calls.append(stats)
+        return original
 
     def stored(encoded):
         return {
@@ -220,6 +248,8 @@ def run(payload: Request, ctx: Context) -> Report:
     retry = stored(encode(good, 6.0))
     assert retry["weight"][2] == encode_nvfp4("retry", good, amax=6.0).payload
     detail = {
+        "measured_calls": len(measured_calls),
+        "measured_sse_energy_rtol": 2e-13,
         "strategy": "nvfp4-min-sse/1",
         "tensorfs": tensorfs.__version__,
         "numpy": np.__version__,

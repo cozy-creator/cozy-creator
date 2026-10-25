@@ -414,6 +414,14 @@ logical output `dtype` (F32, F16 or BF16). For ConvRot, the shape is a nonempty 
 are divisible by 256. The result is the same `Encoded`/`Array` representation returned by
 stored reads; pass its parts to the existing `ComponentWriter.put_encoded` to save them.
 
+`raw.quantize_measured` takes the same arguments and returns `(encoded, measured)`, using the
+same native producer once. The statistics dictionary contains `amax`, `max_abs_error`, `sse`,
+`energy` and integer `saturated`. It compares the supplied F32 values with the stored representation
+before logical F16/BF16 rounding. Sums accumulate in F64; chunked sums may differ by floating
+reduction order. `amax` is the maximum of the supplied chunk, not the optional whole-tensor
+`tensor_amax` bound. These are numerical acceptance facts, not storage or transfer measurements.
+The original `raw.quantize` return type and validation remain unchanged.
+
 The `nvfp4-min-sse/1` strategy preserves Runtime's three-candidate block-scale search,
 including clipping and smaller-scale tie breaking. It requires the `nvfp4` scheme with
 `block_size=16`, `global_scale="multiply"`, `nibble_order="low_first"` and

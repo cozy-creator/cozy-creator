@@ -5,9 +5,9 @@ use std::sync::Arc;
 
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyMapping};
-use tensorfs::format::{encode, Dtype, Encoding, PartBytes};
+use tensorfs::format::{Dtype, Encoding, PartBytes, encode};
 
-use crate::store::{from_py, OrRaise};
+use crate::store::{OrRaise, config_to_py, from_py, invalid};
 use crate::tensors::PyEncoded;
 
 /// The conversion engine's cancellation token, shared with a caller's request watcher.
@@ -50,6 +50,57 @@ fn quantize(
     params: Option<&Bound<'_, PyMapping>>,
     tensor_amax: Option<f64>,
 ) -> PyResult<PyEncoded> {
+    Ok(produce(
+        py,
+        scheme,
+        values,
+        dtype,
+        shape,
+        strategy,
+        params,
+        tensor_amax,
+    )?
+    .0)
+}
+
+#[pyfunction]
+#[pyo3(signature = (scheme, values, *, dtype, shape, strategy, params = None, tensor_amax = None))]
+#[allow(clippy::too_many_arguments)]
+fn quantize_measured(
+    py: Python<'_>,
+    scheme: String,
+    values: &Bound<'_, PyBytes>,
+    dtype: String,
+    shape: Vec<u64>,
+    strategy: String,
+    params: Option<&Bound<'_, PyMapping>>,
+    tensor_amax: Option<f64>,
+) -> PyResult<(PyEncoded, Py<PyAny>)> {
+    let (encoded, stats) = produce(
+        py,
+        scheme,
+        values,
+        dtype,
+        shape,
+        strategy,
+        params,
+        tensor_amax,
+    )?;
+    let stats = serde_json::to_value(stats).map_err(|e| invalid(py, e.to_string()))?;
+    Ok((encoded, config_to_py(py, &stats)?.unbind()))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn produce(
+    py: Python<'_>,
+    scheme: String,
+    values: &Bound<'_, PyBytes>,
+    dtype: String,
+    shape: Vec<u64>,
+    strategy: String,
+    params: Option<&Bound<'_, PyMapping>>,
+    tensor_amax: Option<f64>,
+) -> PyResult<(PyEncoded, encode::QuantizationStats)> {
     let mut parameters = BTreeMap::new();
     if let Some(params) = params {
         for item in params.items()?.iter() {
@@ -64,7 +115,7 @@ fn quantize(
     // A mutable exporter would require copying or an exclusive access contract.
     let bytes = values.as_bytes();
     let maximum = tensor_amax.map(f64::to_le_bytes);
-    let parts = py
+    let result = py
         .detach(|| {
             let mut arrays = BTreeMap::from([(
                 "values",
@@ -90,12 +141,14 @@ fn quantize(
                 encoding: &encoding,
                 arrays: &arrays,
             };
-            encode::quantize_strategy(&input, &strategy).map_err(tensorfs::Failure::from)
+            encode::quantize_measured(&input, &strategy).map_err(tensorfs::Failure::from)
         })
         .or_raise(py)?;
-    PyEncoded::from_parts(py, &dtype, &shape, &encoding, parts)
+    let encoded = PyEncoded::from_parts(py, &dtype, &shape, &encoding, result.parts)?;
+    Ok((encoded, result.stats))
 }
 
 pub fn install(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(quantize, m)?)
+    m.add_function(wrap_pyfunction!(quantize, m)?)?;
+    m.add_function(wrap_pyfunction!(quantize_measured, m)?)
 }

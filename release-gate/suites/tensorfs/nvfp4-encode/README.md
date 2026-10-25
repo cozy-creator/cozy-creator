@@ -7,7 +7,7 @@ cozy run /absolute/path/to/nvfp4-encode/run seed=103 --on MACHINE --json
 ```
 
 Requires TensorFS0.15.3's native `nvfp4-min-sse/1` strategy and the current Runtime
-`derive.microscale.encode_nvfp4` reference producer. It compares actual packed weight,
+historical `encode_nvfp4` reference shipped inside this gate (see ORACLE.md). It compares actual packed weight,
 block-scale and global-scale bytes across logical dtypes and row chunk sizes. A common
 whole-tensor maximum must preserve output even when the largest weight is in another chunk.
 The existing Writer/readback and decoder check the emitted parts. Invalid statistics,
@@ -30,3 +30,9 @@ NumPy2.5.4, on RTX3060 host quatre through the default CLI. All24 logical-dtype 
 chunk sizes1/2/7, 12 refusals and existing Writer/readback passed.
 [Exact receipt](evidence/7e98dce7f-cpu.json). This does not qualify the later measured
 encoder/Writer.quantize checkpoint loop or production Runtime cutover.
+
+The TensorFS0.15.6 extension exercises both `raw.quantize` and `raw.quantize_measured` on every
+case and chunk. Parts must match exactly, with native amax/max-error/saturation exact and SSE/energy
+within rtol2e-13 against the independent frozen oracle. Every prior refusal must have the same
+error code/detail through both APIs. Existing receipts predate this measured-API gate; a new
+installed real CPU run is required.

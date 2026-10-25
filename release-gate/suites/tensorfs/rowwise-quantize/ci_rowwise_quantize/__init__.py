@@ -30,8 +30,9 @@ def run(payload: Request, ctx: Context, tel: Telemetry) -> Report:
     import numpy as np
     import tensorfs
     import torch
-    from cozy_runtime.derive.microscale import encode_int8_convrot256, encode_nvfp4
     from cozy_runtime.internal.encoding.formats import RowwiseDequant
+
+    from .oracle import encode_int8_convrot256, encode_nvfp4
 
     torch.set_num_threads(1)
     if payload.mode == "cancel":

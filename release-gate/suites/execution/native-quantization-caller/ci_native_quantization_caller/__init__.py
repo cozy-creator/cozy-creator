@@ -32,7 +32,8 @@ def gpu(payload: Request, ctx: Context, tel: Telemetry) -> Report:
     import torch
     from cozy_runtime.compute import PreparedRepeat
     from cozy_runtime.derive import facade
-    from cozy_runtime.derive.microscale import encode_int8_convrot256, encode_nvfp4
+
+    from .oracle import encode_int8_convrot256, encode_nvfp4
 
     rng = np.random.default_rng(payload.seed)
     values = rng.normal(size=(8, 256)).astype("<f4")

@@ -1,11 +1,21 @@
 """Physical format operations; ordinary reads use Component.tensors."""
 
 from collections.abc import Mapping, Sequence
+from typing import TypedDict
 
 from typing_extensions import Buffer
 
 from ._ext import Checkpoint, Encoded
 from .api import DLPack
+
+class QuantizationStats(TypedDict):
+    """Native F64 acceptance statistics over the supplied original F32 values."""
+
+    amax: float
+    max_abs_error: float
+    sse: float
+    energy: float
+    saturated: int
 
 class Part:
     """One stored part: a plain tensor's data (role `""`) or an encoded tensor's part."""
@@ -44,6 +54,25 @@ def quantize(
     releases the GIL and uses one row (ConvRot) or block (NVFP4) of floating scratch,
     plus the owned output.
     This encodes supplied tensor bytes; it does not run a model or write a checkpoint.
+    """
+
+def quantize_measured(
+    scheme: str,
+    values: bytes,
+    *,
+    dtype: str,
+    shape: Sequence[int],
+    strategy: str,
+    params: Mapping[str, object] | None = None,
+    tensor_amax: float | None = None,
+) -> tuple[Encoded, QuantizationStats]:
+    """The same producer and input contract as quantize, plus its native statistics.
+
+    amax describes these supplied values, not the optional whole-tensor maximum.
+    max_abs_error/sse/energy compare original F32 values with the stored representation
+    before logical F16/BF16 rounding; sums accumulate in F64. Chunked sums can differ
+    by floating reduction order. saturated counts the producer's clipped elements.
+    These are numeric facts; no I/O or memory-transfer measurement is performed.
     """
 
 def decode_into(
