@@ -45,6 +45,11 @@ runs:
   using: composite
   steps:
     - uses: astral-sh/setup-uv@v7
+    # e2e/hubcheck, which the suites put between cozy and the Hub (lib.sh).
+    - uses: actions/setup-go@v5
+      with:
+        go-version-file: ${{ github.action_path }}/../hubcheck/go.mod
+        cache-dependency-path: ${{ github.action_path }}/../hubcheck/go.sum
     - if: inputs.from != 'artifacts' || inputs.repo == 'packages'
       uses: actions/checkout@v5
       with:
