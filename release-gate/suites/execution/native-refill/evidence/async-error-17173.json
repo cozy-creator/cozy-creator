@@ -1,0 +1,47 @@
+{
+  "run": 17173,
+  "status": "completed",
+  "scope": "isolated child-candidate proof through default Cozy CLI",
+  "outer_software": {
+    "attempt_ordinal": 1,
+    "runtime": "0.32.1+dev.g449d60256eef",
+    "tensord": "0.11.17",
+    "tensord_commit": "054b6ab90fcd18dcfbed61dfbab91ed37660a404",
+    "tensorfs": "0.15.1"
+  },
+  "child_runtime": "0.32.1",
+  "child_tensorfs": "0.15.2",
+  "runtime_wheel_sha256": "d0e9c7b53a0b123f5c344f0373ddf500534c45ca91872ede3259e24b50da54d5",
+  "tensorfs_wheel_sha256": "04824178ad0b81acd7f9cb9fb3a5755b96ecbbe232b6479b714798dec4f94a9d",
+  "cohort": "async-local",
+  "result": {
+    "error_input_is_private_copy": true,
+    "failure": {
+      "code": "io",
+      "detail": "io: O_DIRECT read ended at 0",
+      "type": "StorageError"
+    },
+    "issued_before_input_error": {
+      "canceled": false,
+      "done": false,
+      "issued_bytes": 2097152,
+      "started": true
+    },
+    "reclaimed_bytes": 268435456,
+    "retry": {
+      "busy_ns": 79488414,
+      "bytes": 268435456,
+      "cached_bytes": 268435456,
+      "canceled": false,
+      "direct_bytes": 0,
+      "done": true,
+      "issued_bytes": 268435456,
+      "staged_bytes": 268435456,
+      "started": true
+    },
+    "retry_sha256": "2c1ca0bba53d22b66cd018f4017b97769a3a0769f12a2ecaacf61582ff641f9a"
+  },
+  "passed": true,
+  "tensorfs_source": "0bb0efd0e3abd563af23ac3473929da99d13fe8b",
+  "runtime_source": "272056ab1"
+}
