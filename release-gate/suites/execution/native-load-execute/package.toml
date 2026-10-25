@@ -1,0 +1,2 @@
+[application]
+object = "ci_native_load_execute:app"
