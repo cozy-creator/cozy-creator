@@ -5,7 +5,7 @@ use reqwest::header::{HeaderName, HeaderValue};
 use std::sync::Arc;
 
 use platform::paths::Home;
-use protocol::{config::Hub, error::Error as Refusal};
+use protocol::{config::Origin, error::Error as Refusal};
 
 use crate::Client;
 use crate::device::UserSession;
@@ -52,13 +52,13 @@ impl Client {
     /// `hub` as this computer's signed-in user, over `http`; refused when it holds no device key
     /// there, `login` (asked only then) signing it in.
     pub fn signed_in(
-        hub: &Hub,
+        hub: &Origin,
         home: &Home,
         http: reqwest::Client,
         login: impl FnOnce() -> String,
     ) -> Result<Self, Refusal> {
         let session = UserSession::open(hub, home, login)?;
-        Ok(Self::connect(&hub.origin, http, Credential::User(Arc::new(session))))
+        Ok(Self::connect(hub, http, Credential::User(Arc::new(session))))
     }
 
     /// The same Hub, anonymously: for the exchanges that mint a credential.

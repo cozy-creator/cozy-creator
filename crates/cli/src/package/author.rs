@@ -14,7 +14,7 @@ use std::{
 };
 
 use protocol::{
-    config::Hub,
+    config::Origin,
     error::{Error, Kind},
 };
 use futures_util::{StreamExt as _, TryStreamExt as _};
@@ -437,13 +437,13 @@ fn versions(lock: &str) -> Result<BTreeMap<String, String>, Error> {
 /// advertises none takes no publication, and its configured origin stands.
 pub(super) async fn index_url(
     client: &hub_client::Client,
-    hub: &Hub,
+    hub: &Origin,
     account: &str,
 ) -> Result<String, Error> {
     let origin = match client.get_protected_resource_metadata().await {
         Ok(metadata) => metadata.into_inner().resource,
         Err(e) => match hub_error(e) {
-            e if e.code == "capability.not_served" => hub.origin.to_string(),
+            e if e.code == "capability.not_served" => hub.to_string(),
             e => return Err(e),
         },
     };
@@ -484,7 +484,7 @@ pub async fn lock(ctx: &Context, upgrade: &[String], root: bool) -> Result<ExitC
     let account_index = match project.account_index {
         false => None,
         true => {
-            let hub = ctx.hub()?;
+            let hub = ctx.hub();
             let client = ctx.hub_signed_in(&hub)?;
             let account = publisher(&client, root).await?;
             let url = index_url(&client, &hub, &account).await?;
@@ -578,7 +578,7 @@ impl File {
 
 pub async fn publish(ctx: &Context, root: bool) -> Result<ExitCode, Error> {
     let project = Project::here()?;
-    let hub = ctx.hub()?;
+    let hub = ctx.hub();
     let client = ctx.hub_signed_in(&hub)?;
     let account = publisher(&client, root).await?;
     let mut result = Published {
@@ -587,7 +587,7 @@ pub async fn publish(ctx: &Context, root: bool) -> Result<ExitCode, Error> {
         status: "already published",
         changed: false,
         uploaded_bytes: 0,
-        hub: hub.label().to_owned(),
+        hub: hub.to_string(),
         warnings: vec![],
     };
     match client
@@ -657,11 +657,11 @@ pub async fn publish(ctx: &Context, root: bool) -> Result<ExitCode, Error> {
             format!(
                 "uv.lock does not hold for {} on {}: {detail}",
                 result.package,
-                hub.label()
+                hub.as_str()
             ),
         )
         .remedy("publish the locked versions of your own dependencies to this Hub first, or relock")
-        .next(format!("cozy package lock --tensorhub {}", hub.label())));
+        .next("cozy package lock"));
     }
 
     let dist = stage.root.join("dist");
@@ -771,7 +771,7 @@ pub async fn publish(ctx: &Context, root: bool) -> Result<ExitCode, Error> {
 
 /// A relock that could not keep the lock's account-index pins on `hub`: the pin uv names, by
 /// package, version and Hub, when it names one; otherwise uv's own words.
-fn unmet(error: Error, pins: &BTreeMap<String, String>, account: &str, hub: &Hub) -> Error {
+fn unmet(error: Error, pins: &BTreeMap<String, String>, account: &str, hub: &Origin) -> Error {
     let named = pins
         .iter()
         .find(|(name, version)| error.message.contains(&format!("{name}=={version}")));
@@ -780,13 +780,13 @@ fn unmet(error: Error, pins: &BTreeMap<String, String>, account: &str, hub: &Hub
             "account_index_pin_unpublished",
             format!(
                 "uv.lock pins {account}/{name} {version}, which {} does not publish",
-                hub.label()
+                hub.as_str()
             ),
         )
         .remedy(format!(
             "publish {name} {version} to this Hub as {account} first, or relock against it"
         ))
-        .next(format!("cozy package lock --tensorhub {}", hub.label())),
+        .next("cozy package lock"),
         None => error,
     }
 }
@@ -986,7 +986,7 @@ pub async fn yank(ctx: &Context, package: &PackageRef, undo: bool) -> Result<Exi
             "name the release to yank: [org/]name@release",
         ));
     };
-    let hub = ctx.hub()?;
+    let hub = ctx.hub();
     if undo {
         let unyanked = ctx
             .hub_signed_in(&hub)?
@@ -1072,14 +1072,14 @@ pub async fn delete(ctx: &Context, package: &PackageRef) -> Result<ExitCode, Err
         )
         .remedy(format!("cozy package yank {package}")));
     }
-    let hub = ctx.hub()?;
+    let hub = ctx.hub();
     if !ctx.yes {
         return Err(Error::new(
             Kind::Usage,
             "package_delete_unconfirmed",
             format!(
                 "deleting {package} and every release from {} cannot be undone",
-                hub.origin
+                hub
             ),
         )
         .remedy("run it again with --yes"));

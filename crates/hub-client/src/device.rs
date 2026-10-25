@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use crate::{Client, Error, types};
 use platform::paths::Home;
 use progenitor_client::ClientInfo;
-use protocol::{config::Hub, error::Error as Refusal};
+use protocol::{config::Origin, error::Error as Refusal};
 
 const ENROLL_DOMAIN: &str = "authkit.device-key-enrollment/1";
 const LOGIN_DOMAIN: &str = "authkit.device-key-login/1";
@@ -142,7 +142,7 @@ impl UserSession {
 
     /// This computer's session at `hub`: its device key and the Bearer kept beside it. Refused
     /// when it holds no key there, `login` (asked only then) signing it in.
-    pub fn open(hub: &Hub, home: &Home, login: impl FnOnce() -> String) -> Result<Self, Refusal> {
+    pub fn open(hub: &Origin, home: &Home, login: impl FnOnce() -> String) -> Result<Self, Refusal> {
         let path = hub.device_key(home);
         if !path.exists() {
             let message = format!("this computer is not signed in to {hub}");

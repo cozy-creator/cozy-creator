@@ -127,7 +127,7 @@ impl Target {
 /// is the root's; an older Hub answers the root's absent).
 pub(crate) async fn resolve(
     ctx: &crate::Context,
-    hub: &protocol::config::Hub,
+    hub: &protocol::config::Origin,
     package: String,
     function: Option<String>,
     release: Option<&str>,

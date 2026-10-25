@@ -63,20 +63,19 @@ pub async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Error> {
     }
     if !machines.is_empty() {
         println!();
-        let headers = ["MACHINE", "KIND", "STATE", "RUNNING", "QUEUED", "HUB"];
+        let headers = ["MACHINE", "KIND", "STATE", "RUNNING", "QUEUED"];
         let mut table = output::Table::new(ctx, headers);
         for m in &machines {
-            let hub = match ctx.config.resolve(&m.hub) {
-                Ok(hub) if !m.hub.is_empty() => hub.label().to_owned(),
-                _ => m.hub.clone(),
+            let kind = match ctx.other_hub(&m.hub) {
+                Some(hub) => format!("{} at {hub}", word(m.kind)),
+                None => word(m.kind),
             };
             table = table.row([
                 m.name.clone(),
-                word(m.kind),
+                kind,
                 m.boot.clone().unwrap_or_else(|| word(m.state)),
                 m.running.to_string(),
                 m.queued.to_string(),
-                hub,
             ]);
         }
         table.print();

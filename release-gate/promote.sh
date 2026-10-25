@@ -7,8 +7,8 @@
 #   TensorFS  tensorfs-publish.yaml on tensorfs-v<V> with gate_run: its prerelease's exact files to PyPI;
 #   Runtime   cozy-runtime runtime-publish.yaml prebuilt with gate_run: its prerelease's exact files to PyPI;
 #   cozy      cozy-promote.yaml: the v<V> prerelease becomes latest (`cozy update`, the installer) and Homebrew's;
-#   packages  `cozy package yank --undo` of each pinned candidate on every Hub that holds it (`task publish` publishes
-#             to each): the unversioned default again. A Hub that does not answer stops it before anything moves.
+#   packages  `cozy package yank --undo` of each pinned candidate on the Hub: the unversioned default again. A
+#             candidate the Hub does not hold, or a Hub that does not answer, stops it before anything moves.
 # The worker image layer and the Hub pin (/v1/software) stay the release owner's, after this.
 set -euo pipefail
 DRY=; [ "${1:-}" != --dry-run ] || { DRY=1; shift; }
@@ -25,15 +25,10 @@ run() { echo "+ $*"; [ -n "$DRY" ] || "$@"; }
 field() { jq -r ".$1 // empty" <<< "$set_"; }
 undo=()
 for p in $(jq -r '.pins[]?' <<< "$set_"); do
-  held=
-  for h in $(cozy --json hub list | jq -r '.hubs[].name'); do
-    if info=$(cozy --json package info "${p%@*}" --tensorhub "$h"); then
-      if jq -e --arg v "${p#*@}" 'any(.releases[]; .release == $v)' <<< "$info" > /dev/null; then undo+=("$h $p") held=1; fi
-    elif [ "$(jq -r '.error.code // empty' <<< "$info" 2> /dev/null)" != package_not_found ]; then
-      echo "$h: cozy package info ${p%@*} failed: nothing promoted" >&2; exit 1
-    fi
-  done
-  [ -n "$held" ] || { echo "no Hub holds $p: nothing promoted" >&2; exit 1; }
+  info=$(cozy --json package info "${p%@*}") || { echo "cozy package info ${p%@*} failed: nothing promoted" >&2; exit 1; }
+  jq -e --arg v "${p#*@}" 'any(.releases[]; .release == $v)' <<< "$info" > /dev/null \
+    || { echo "the Hub does not hold $p: nothing promoted" >&2; exit 1; }
+  undo+=("$p")
 done
 if [ -n "$(field tensorfs_sha256)" ]; then
   run gh workflow run tensorfs-publish.yaml -R cozy-creator/cozy-creator --ref "tensorfs-v$(field tensorfs)" -f gate_run="$gate"
@@ -48,5 +43,5 @@ c=$(field cozy)
 if [ -n "$(field cozy_sha256)" ] && [ "$(gh release view "v$c" -R cozy-creator/cozy-creator --json isPrerelease -q .isPrerelease 2>/dev/null)" = true ]; then
   run gh workflow run cozy-promote.yaml -R cozy-creator/cozy-creator -f tag="v$c" -f gate="$gate"
 fi
-for u in "${undo[@]}"; do run cozy package yank --undo "${u#* }" --tensorhub "${u%% *}" -y; done
+for u in "${undo[@]}"; do run cozy package yank --undo "$u" -y; done
 echo "promoted: $(jq -c . <<< "$set_"). Then the worker image layer and the Hub pin, to this set."

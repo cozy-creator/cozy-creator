@@ -36,7 +36,7 @@ impl Runs {
         loop {
             match self.watch.next().await {
                 Some(RunsEvent::Updated { run }) => {
-                    if self.apply(ctx, run)? {
+                    if self.apply(run) {
                         return Ok(());
                     }
                 }
@@ -51,12 +51,12 @@ impl Runs {
     }
 
     /// Takes in `run` as it is now; true when the view changed.
-    fn apply(&mut self, ctx: &Context, run: Run) -> Result<bool, Error> {
-        let fits = list::matches(ctx, &self.query, &run)?;
+    fn apply(&mut self, run: Run) -> bool {
+        let fits = list::matches(&self.query, &run);
         match self.runs.iter().position(|r| r.id == run.id) {
             Some(i) if fits => self.runs[i] = run,
             Some(i) => drop(self.runs.remove(i)),
-            None if !fits => return Ok(false),
+            None if !fits => return false,
             None => {
                 let at = self.runs.partition_point(|r| r.number > run.number);
                 self.runs.insert(at, run);
@@ -65,7 +65,7 @@ impl Runs {
                 }
             }
         }
-        Ok(true)
+        true
     }
 
     pub(crate) fn title(&self) -> String {

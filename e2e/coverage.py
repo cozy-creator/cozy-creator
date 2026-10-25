@@ -5,7 +5,7 @@
 
 The tree is read from the binary under test (`--help` of every command), so a new command or flag
 is seen the moment it exists. An id is `cozy <command path>` or `cozy <command path> --flag`; a flag
-every command takes (`--json`, `--tensorhub`, `--yes`) is the root's: `cozy --json`.
+every command takes (`--json`, `--yes`) is the root's: `cozy --json`.
 
 `check` fails when the tree holds an id coverage.toml does not map, when coverage.toml maps an id the
 tree no longer has, or (with --log) when an id mapped to one of --tiers was not exercised: no logged

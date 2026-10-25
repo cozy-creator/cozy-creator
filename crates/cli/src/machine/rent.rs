@@ -7,7 +7,7 @@ use std::{
 
 use protocol::{
     calcifer::{Machine, MachineState, NewMachine, Quote, Rented, RunQuote},
-    config::Hub,
+    config::Origin,
     error::{Error, Kind},
 };
 use hub_client::types::{RentalSku, RentalSkuStatus};
@@ -61,7 +61,7 @@ impl Rent {
 }
 
 pub async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
-    let hub = ctx.hub()?;
+    let hub = ctx.hub();
     let provider = rent.provider();
     let Some(sku) = rent.sku else {
         return catalog(ctx, &hub).await;
@@ -72,7 +72,7 @@ pub async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
     let key = mint_key();
     let ask = |agreed| NewMachine::Rent {
         sku: sku.clone(),
-        hub: hub.origin.to_string(),
+        hub: hub.to_string(),
         gpus: rent.gpus,
         disk_gb: rent.disk_gb,
         image: rent.image_digest.clone(),
@@ -316,7 +316,7 @@ fn mint_key() -> String {
 
 /// An explicit ask is honoured or refused, never widened to another card or count; the refusal names
 /// which absence it hit.
-async fn admit(ctx: &Context, hub: &Hub, sku: &str, gpus: u32) -> Result<(), Error> {
+async fn admit(ctx: &Context, hub: &Origin, sku: &str, gpus: u32) -> Result<(), Error> {
     let count = NonZeroU64::new(u64::from(gpus));
     let status = hub_answer(
         ctx.hub_anonymous(hub)
@@ -393,7 +393,7 @@ fn sku_refusal(sku: &str, gpus: u32, status: &RentalSkuStatus) -> Error {
 }
 
 /// The catalog, cheapest first: each product's GPUs and what we charge for them an hour.
-async fn catalog(ctx: &Context, hub: &Hub) -> Result<ExitCode, Error> {
+async fn catalog(ctx: &Context, hub: &Origin) -> Result<ExitCode, Error> {
     let mut skus: Vec<RentalSku> =
         hub_answer(ctx.hub_anonymous(hub).list_rental_skus(None).await)?.0;
     skus.retain(|sku| !sku.widths.is_empty());

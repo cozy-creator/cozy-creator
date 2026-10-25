@@ -16,7 +16,7 @@ use clap_complete::{
     env::{EnvCompleter, Powershell, Shells},
 };
 use protocol::{
-    config::{self, Flags},
+    config,
     error::{Error, Kind},
 };
 
@@ -99,24 +99,6 @@ pub fn local(current: &OsStr) -> Vec<CompletionCandidate> {
         true => path(current, "files"),
         false => vec![],
     }
-}
-
-/// Hub names, with each one's URL as its help.
-pub fn hubs(current: &OsStr) -> Vec<CompletionCandidate> {
-    let Ok(loaded) = config::load(Flags::default()) else {
-        return vec![];
-    };
-    let prefix = current.to_string_lossy().to_ascii_lowercase();
-    loaded
-        .config
-        .hubs()
-        .into_iter()
-        .filter_map(|hub| {
-            let name = hub.name?;
-            name.starts_with(&prefix)
-                .then(|| CompletionCandidate::new(name).help(Some(hub.origin.to_string().into())))
-        })
-        .collect()
 }
 
 /// Asks with COMP_WORDBREAKS, COMP_LINE and COMP_POINT, so a word is the shell's, `=` and `:`

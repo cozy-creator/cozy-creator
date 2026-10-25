@@ -1,15 +1,10 @@
 //! `~/.cozy/config.toml`, loaded once per process and shared by the CLI,
 //! Calcifer and the machine (TensorD). Sources, each over the last: the file, the environment
-//! (credentials and locations only: two model-source tokens, where releases come from, and a
-//! pod's machine contract), the command line. The home is always `<user home>/.cozy`. A key this
+//! (credentials and locations only: two model-source tokens, the Hub and where releases come
+//! from, and a pod's machine contract). The home is always `<user home>/.cozy`. A key this
 //! build does not read is named once and ignored, so a file another version wrote never disables
 //! a command.
-use std::{
-    collections::BTreeMap,
-    fmt,
-    path::PathBuf,
-    sync::OnceLock,
-};
+use std::{collections::BTreeMap, fmt, path::PathBuf, sync::OnceLock};
 
 use platform::paths::Home;
 use serde::{Deserialize, Serialize};
@@ -18,17 +13,16 @@ use url::Url;
 
 use crate::error::{Error, Kind};
 
-/// The Hub every install knows by name.
-pub const DEFAULT_HUB: &str = "tensorhub";
 pub const DEFAULT_HUB_URL: &str = "https://tensorhub.com";
 
 /// Every environment variable the load reads, with its key: credentials for model sources, by the
-/// names their own tools use; where releases are downloaded from (dist's installers read the
-/// same one); and the machine's settings a pod's launcher gives (Tensorhub `podenv`, plus the
-/// devices the container may use).
-pub const ENV: [(&str, &str); 18] = [
+/// names their own tools use; the Hub (dev and CI point one command elsewhere with it); where
+/// releases are downloaded from (dist's installers read the same one); and the machine's settings
+/// a pod's launcher gives (Tensorhub `podenv`, plus the devices the container may use).
+pub const ENV: [(&str, &str); 19] = [
     ("HF_TOKEN", "huggingface_token"),
     ("CIVITAI_TOKEN", "civitai_token"),
+    ("COZY_HUB_URL", "hub_url"),
     ("COZY_DOWNLOAD_URL", "download_url"),
     ("COZY_MACHINE_ROOT", "machine.root"),
     ("COZY_TENSORFS_ROOT", "machine.store"),
@@ -54,10 +48,8 @@ const EMPTY_IS_A_VALUE: [&str; 1] = ["CUDA_VISIBLE_DEVICES"];
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// The current Hub: a name in `hubs`, or a URL. Absent: `tensorhub`.
-    pub hub: Option<String>,
-    /// Named Hubs, like kubectl contexts: name (lowercase) → canonical URL.
-    pub hubs: BTreeMap<String, String>,
+    /// The Hub: [`DEFAULT_HUB_URL`] unless set.
+    pub hub_url: Origin,
     pub calcifer: CalciferConfig,
     pub machine: MachineConfig,
     pub huggingface_token: Option<Secret>,
@@ -65,8 +57,6 @@ pub struct Config {
     /// The directory holding one release's files (dist-manifest.json, the archives); absent: GitHub
     /// Releases.
     pub download_url: Option<Url>,
-    /// `--tensorhub`: this command's Hub. From the command line only.
-    pub tensorhub: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
@@ -217,21 +207,24 @@ impl fmt::Debug for Secret {
     }
 }
 
-/// One Tensorhub, named or by URL.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
-pub struct Hub {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(rename = "url")]
-    pub origin: Origin,
-}
-
 /// A Tensorhub base URL in its one spelling: lowercase scheme and host, no default port, no
 /// trailing slash. Every record and credential is keyed by it, so `https://tensorhub.com:443/`
 /// and `https://tensorhub.com` are one Hub.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct Origin(String);
+
+impl Default for Origin {
+    fn default() -> Self {
+        Self(DEFAULT_HUB_URL.into())
+    }
+}
+
+impl<'de> Deserialize<'de> for Origin {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Self::parse(&String::deserialize(d)?).map_err(|e| serde::de::Error::custom(e.message))
+    }
+}
 
 impl Origin {
     pub fn parse(text: &str) -> Result<Self, Error> {
@@ -258,6 +251,20 @@ impl Origin {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// This computer's device key at this Hub (hub-client's `DeviceKey`), mode 0600.
+    pub fn device_key(&self, home: &Home) -> PathBuf {
+        home.keys().join(format!("device-{}.json", self.key_name()))
+    }
+
+    /// The short Bearer that device key last minted, kept for the next process.
+    pub fn bearer(&self, home: &Home) -> PathBuf {
+        home.keys().join(format!("device-{}.bearer.json", self.key_name()))
+    }
+
+    fn key_name(&self) -> String {
+        hex::encode(Sha256::digest(self.0.as_bytes()))
     }
 }
 
@@ -298,12 +305,6 @@ impl PartialEq<String> for Origin {
     }
 }
 
-/// What the command line contributes to the load.
-#[derive(Clone, Debug, Default)]
-pub struct Flags {
-    pub tensorhub: Option<String>,
-}
-
 /// One process's configuration and where it came from.
 #[derive(Clone, Debug)]
 pub struct Loaded {
@@ -316,18 +317,14 @@ pub struct Loaded {
 }
 
 /// The one read of the environment and the config file.
-pub fn load(flags: Flags) -> Result<Loaded, Error> {
+pub fn load() -> Result<Loaded, Error> {
     let user_home = std::env::home_dir()
         .ok_or_else(|| Error::new(Kind::Internal, "no_home", "this user has no home directory"))?;
-    load_from(flags, environment(), user_home)
+    load_from(environment(), user_home)
 }
 
 /// The load over a given environment and user home (what tests drive).
-pub fn load_from(
-    flags: Flags,
-    environment: &BTreeMap<String, String>,
-    user_home: PathBuf,
-) -> Result<Loaded, Error> {
+pub fn load_from(environment: &BTreeMap<String, String>, user_home: PathBuf) -> Result<Loaded, Error> {
     let home = Home::under(&user_home);
     let path = home.config();
     let file = path.display().to_string();
@@ -352,9 +349,6 @@ pub fn load_from(
             at.insert(name.into(), value.clone().into());
         }
     }
-    if let Some(hub) = flags.tensorhub {
-        table.insert("tensorhub".into(), hub.into());
-    }
     let (mut config, warnings) = extract(table, &file)?;
     config.machine.authorized_keys = split(environment.get(AUTHORIZED_KEYS).map_or("", String::as_str));
     Ok(Loaded {
@@ -371,94 +365,17 @@ impl Config {
         extract(parse_table(text, name)?, name)
     }
 
-    /// Every named Hub, `tensorhub` included, by name.
-    pub fn hubs(&self) -> Vec<Hub> {
-        let mut hubs: BTreeMap<&str, &str> = [(DEFAULT_HUB, DEFAULT_HUB_URL)].into();
-        hubs.extend(self.hubs.iter().map(|(n, u)| (n.as_str(), u.as_str())));
-        hubs.into_iter()
-            .filter_map(|(name, origin)| {
-                Some(Hub {
-                    name: Some(name.to_owned()),
-                    origin: Origin::parse(origin).ok()?,
-                })
-            })
-            .collect()
-    }
-
-    /// A Hub's name in any case, or its URL; a URL takes the name it has here.
-    pub fn resolve(&self, text: &str) -> Result<Hub, Error> {
-        let text = text.trim();
-        let hubs = self.hubs();
-        let lower = text.to_ascii_lowercase();
-        if let Some(hub) = hubs.iter().find(|h| h.name.as_deref() == Some(&lower)) {
-            return Ok(hub.clone());
-        }
-        if !text.contains("://") {
-            return Err(Error::new(
-                Kind::NotFound,
-                "hub_not_found",
-                format!("no Hub is named {text:?}"),
-            )
-            .next("cozy hub list")
-            .next("cozy hub add <name> <url>"));
-        }
-        let origin = Origin::parse(text)?;
-        let name = hubs
-            .into_iter()
-            .find(|h| h.origin == origin)
-            .and_then(|h| h.name);
-        Ok(Hub { name, origin })
-    }
-
-    /// The current Hub (`hub`, set by `cozy hub use`).
-    pub fn current(&self) -> Result<Hub, Error> {
-        self.resolve(self.hub.as_deref().unwrap_or(DEFAULT_HUB))
-            .map_err(|e| e.remedy("set `hub` with `cozy hub use <name>`"))
-    }
-
-    /// `cozy login` for `hub`, spelled for the next step: `--tensorhub` only for a Hub other than
-    /// the current one.
-    pub fn login(&self, hub: &Hub) -> String {
-        match self.current() {
-            Ok(current) if current.origin == hub.origin => "cozy login <email>".into(),
-            _ => format!("cozy login <email> --tensorhub {}", hub.label()),
+    /// `cozy login`, spelled for `hub`: a Hub other than the configured one is named by the
+    /// environment for that one command.
+    pub fn login(&self, hub: &str) -> String {
+        match self.hub_url == hub {
+            true => "cozy login <email>".into(),
+            false => format!("COZY_HUB_URL={hub} cozy login <email>"),
         }
     }
 
-    /// Where new work goes: `--tensorhub`, else the current Hub.
-    pub fn selected(&self) -> Result<Hub, Error> {
-        match self.narrowed()? {
-            Some(hub) => Ok(hub),
-            None => self.current(),
-        }
-    }
-
-    /// `--tensorhub`'s Hub: list verbs show every Hub without it.
-    pub fn narrowed(&self) -> Result<Option<Hub>, Error> {
-        self.tensorhub
-            .as_deref()
-            .map(|t| self.resolve(t))
-            .transpose()
-    }
-
-    /// Lowercases names and canonicalizes URLs, dropping (and naming) entries that are neither.
-    fn normalize(&mut self, file: &str, warnings: &mut Vec<String>) {
-        let mut hubs = BTreeMap::new();
-        for (name, url) in std::mem::take(&mut self.hubs) {
-            let lower = name.to_ascii_lowercase();
-            match (valid_name(&lower), Origin::parse(&url)) {
-                (true, Ok(origin)) => {
-                    hubs.insert(lower, origin.into());
-                }
-                (false, _) => warnings.push(format!(
-                    "{file}: hub name {name:?} is not letters, digits, '.', '_' or '-'; ignored"
-                )),
-                (true, Err(e)) => {
-                    warnings.push(format!("{file}: hub {name:?}: {}; ignored", e.message))
-                }
-            }
-        }
-        self.hubs = hubs;
+    /// Drops blank secrets.
+    fn normalize(&mut self) {
         for secret in [
             &mut self.huggingface_token,
             &mut self.civitai_token,
@@ -472,52 +389,11 @@ impl Config {
     }
 }
 
-impl Hub {
-    /// How a person reads it: its name, else its URL.
-    pub fn label(&self) -> &str {
-        self.name.as_deref().unwrap_or(self.origin.as_str())
-    }
-
-    /// This computer's device key at this Hub (hub-client's `DeviceKey`), mode 0600.
-    pub fn device_key(&self, home: &Home) -> PathBuf {
-        home.keys().join(format!("device-{}.json", self.key_name()))
-    }
-
-    /// The short Bearer that device key last minted, kept for the next process.
-    pub fn bearer(&self, home: &Home) -> PathBuf {
-        home.keys()
-            .join(format!("device-{}.bearer.json", self.key_name()))
-    }
-
-    fn key_name(&self) -> String {
-        hex::encode(Sha256::digest(self.origin.as_bytes()))
-    }
-}
-
-impl fmt::Display for Hub {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.name {
-            Some(name) => write!(f, "{name} ({})", self.origin),
-            None => f.write_str(self.origin.as_str()),
-        }
-    }
-}
-
 /// This process's environment, read once: the load's source, and what the processes it starts
 /// inherit (each filters it further).
 pub fn environment() -> &'static BTreeMap<String, String> {
     static ENVIRONMENT: OnceLock<BTreeMap<String, String>> = OnceLock::new();
     ENVIRONMENT.get_or_init(|| std::env::vars().collect())
-}
-
-/// Whether `name` (already lowercase) can name a Hub. A name is never a URL.
-pub fn valid_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    name.len() <= 63
-        && chars
-            .next()
-            .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "._-".contains(c))
 }
 
 fn invalid(file: &str, key: &str, detail: &str) -> Error {
@@ -539,6 +415,6 @@ fn extract(table: toml::Table, file: &str) -> Result<(Config, Vec<String>), Erro
     let value = toml::Value::Table(table);
     let mut config: Config = serde_path_to_error::deserialize(serde_ignored::Deserializer::new(value, &mut ignored))
         .map_err(|e| invalid(file, &e.path().to_string(), &e.inner().to_string()))?;
-    config.normalize(file, &mut warnings);
+    config.normalize();
     Ok((config, warnings))
 }

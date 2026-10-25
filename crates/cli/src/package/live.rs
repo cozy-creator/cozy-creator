@@ -16,7 +16,6 @@ pub(crate) struct Packages {
 
 impl Packages {
     pub(crate) async fn open(ctx: &Context, on: Option<On>) -> Result<Self, Error> {
-        ctx.narrowed()?;
         let on = match on.as_ref().map(named).transpose()? {
             Some(text) => Some(crate::machine::machine(ctx, &text.to_ascii_lowercase()).await?.name),
             None => None,
@@ -47,8 +46,6 @@ impl Packages {
             None => matches!(m.state, MachineState::Ready | MachineState::Stopped),
         };
         let machines = self.machines.list().machines.iter().filter(shown);
-        // `open` checked `--tensorhub`, the one way reading the rows fails.
-        let rows = rows(ctx, machines).unwrap_or_default();
-        rows.iter().map(|row| row.cells()).collect()
+        rows(ctx, machines).iter().map(|row| row.cells()).collect()
     }
 }

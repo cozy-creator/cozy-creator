@@ -9,6 +9,7 @@ use protocol::{
         self, Ended, Keepalive, Machine, MachineKind, MachineList, MachineState, MachineStatus, On,
         RunsEvent, StagedInput, SubmitRun,
     },
+    config::Origin,
     error::{Error, Kind},
     ids::Digest,
     machine as v1,
@@ -228,8 +229,8 @@ pub async fn update(
     }
     let m = machine(ctx, name).await?;
     let hub = match m.hub.as_str() {
-        "" => ctx.hub()?,
-        origin => ctx.config.resolve(origin)?,
+        "" => ctx.hub().clone(),
+        origin => Origin::parse(origin)?,
     };
     if asked.is_empty() && gpu_memory_limit.is_none() {
         let Some(status) = &m.status else {
@@ -346,7 +347,7 @@ pub async fn update(
     let submit = SubmitRun {
         agreed: None,
         on: On::Machine(m.name.clone()),
-        hub: hub.origin.into(),
+        hub: hub.clone().into(),
         kind: calcifer::Kind::Update,
         target: named.join(", "),
         spec,

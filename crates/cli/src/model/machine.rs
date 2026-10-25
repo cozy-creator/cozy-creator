@@ -134,7 +134,7 @@ async fn warm(
     let submit = SubmitRun {
         agreed: None,
         on,
-        hub: ctx.hub()?.origin.into(),
+        hub: ctx.hub().clone().into(),
         kind: RunKind::Warm,
         target,
         spec,
@@ -202,7 +202,7 @@ pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Erro
     }
     let on = args.placement.on()?;
     // The machine publishes under this computer's sign-in; refuse before anything is made.
-    ctx.hub_session(&ctx.hub()?)?;
+    ctx.hub_session(ctx.hub())?;
     let path = Path::new(&args.source);
     let made = if (args.source.starts_with('.') || path.is_absolute()) && path.is_dir() {
         folder(path, &args.profiles, &ctx.home.root().join("cache/trees"), &ctx.home.root().join("cache/digests"))?
