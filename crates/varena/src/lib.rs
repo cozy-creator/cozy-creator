@@ -773,12 +773,18 @@ impl Region {
 
     /// Borrow ready contents without creating a fill or doing device work.
     pub fn pin(self: &Arc<Self>) -> Result<Pin> {
+        self.try_pin()?.ok_or(Error::Invalid("region is not ready"))
+    }
+
+    /// Atomically borrow ready contents, or report a miss without mapping or filling.
+    /// Fork, poison and ownership errors remain failures, never residency misses.
+    pub fn try_pin(self: &Arc<Self>) -> Result<Option<Pin>> {
         let mut state = self.arena.lock()?;
         let entry = state.entries.get(&self.id).expect("live region");
         if entry.uses.state() != Contents::Ready {
-            return Err(Error::Invalid("region is not ready"));
+            return Ok(None);
         }
-        self.pin_locked(&mut state)
+        self.pin_locked(&mut state).map(Some)
     }
 
     fn pin_locked(self: &Arc<Self>, state: &mut State) -> Result<Pin> {

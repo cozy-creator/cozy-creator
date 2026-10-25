@@ -68,6 +68,18 @@ No GPL allocator implementation or source was used.
 
 ## Owned native refill
 
+`region.pin()` atomically borrows existing ready contents as an ordinary `Use`, or returns
+`None` when contents are cold or still loading. It never allocates, maps, starts a fill, or
+performs allocation recovery. The check and pin increment hold the same arena lock as reclaim:
+either the pin wins and prevents unmapping, or reclaim wins and the caller observes a miss.
+Poison, fork and ownership failures propagate rather than becoming misses. Rust's strict
+`Region::pin()` retains its existing not-ready error and delegates to `try_pin()`.
+
+The returned tensor and escaped aliases use the existing DLPack physical-pin owner. A pin
+proves ready storage ownership, not completion of subsequent writes through another alias;
+consumer readiness and write-stream ordering remain the caller's contract. Reclaim still
+joins queued work in the primary context before unmapping after the last alias is released.
+
 On supported Unix CUDA builds, `Region.prepare_read(checkpoint, parts)` admits the
 region and initializes the existing TensorFS bounded staging rings and copy streams.
 Each part is `(component/key#role, byte_offset, exact_stored_length)`. Offsets must

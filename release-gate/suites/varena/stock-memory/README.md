@@ -1,13 +1,12 @@
 # Native weight residency release gate
 
-Use the default Cozy CLI and an explicitly identified candidate interpreter:
+Use the default Cozy CLI and the machine's installed candidate SDK:
 
 ```sh
-cozy --json run ./release-gate/suites/varena/stock-memory/native seed=741 candidate_python=/absolute/candidate/bin/python --gpus=1 --on local
-cozy --json run ./release-gate/suites/varena/stock-memory/gpu seed=741 candidate_python=/absolute/candidate/bin/python --gpus=1 --on local
-cozy --json run ./release-gate/suites/varena/stock-memory/driver seed=741 candidate_python=/absolute/candidate/bin/python --gpus=1 --on local
-cozy --json run ./release-gate/suites/varena/stock-memory/derived seed=741 candidate_python=/absolute/candidate/bin/python --gpus=1 --on local
-python release-gate/suites/varena/stock-memory/cancel_gate.py --candidate-python /absolute/candidate/bin/python --output /absolute/owned/cancel-proof
+cozy --json run ./release-gate/suites/varena/stock-memory/native seed=741 --gpus=1 --on OWNED_MACHINE
+cozy --json run ./release-gate/suites/varena/stock-memory/gpu seed=742 --gpus=1 --on OWNED_MACHINE
+cozy --json run ./release-gate/suites/varena/stock-memory/driver seed=743 --gpus=1 --on OWNED_MACHINE
+cozy --json run ./release-gate/suites/varena/stock-memory/derived seed=744 --gpus=1 --on OWNED_MACHINE
 ```
 
 `native` proves real Rust CUDA VMM ownership and native allocation recovery: 64 MiB weight
@@ -29,8 +28,15 @@ GPU fill-identity changes preserving old escaped aliases. The Linux cancellation
 submits its own run, waits for a pinned native ready receipt, cancels that exact run through the
 CLI, verifies the child's native cleanup receipt and process birth/exit, and preserves its log.
 
-The candidate child imports a separately built TensorFS extension and Runtime wheel; the outer
-executor can remain on the machine's installed SDK. This is an ordinary-CLI component/consumer
-proof, not a claim of installed cohort adoption, public release, Windows GPU qualification,
-driver-wide allocation coverage, or a hard total-device memory cap. No shared SDK update is
-needed to run it.
+The owned child uses the executor's interpreter when `candidate_python` is omitted. Current
+qualification must leave that historical override empty and record the installed SDK hashes.
+These mechanism gates are not public release, Windows GPU qualification, driver-wide allocation
+coverage, or a hard total-device memory cap. Root alone coordinates machine SDK changes.
+
+The TensorFS0.15.8 `native` extension also checks `Region.pin()` against real VMM storage:
+cold/loading misses leave residency unchanged, a ready pin owns the original address without
+another fill, and an escaped alias prevents reclaim after its `Use` is dropped. A real side-stream
+reduction remains correct across subsequent checked reclaim, an evicted pin returns `None`
+without remapping, and normal refill produces new bytes at the same address. Final pins and
+resident bytes return to zero without poison. This new ready-pin result needs a fresh matched
+artifact run; older receipts do not qualify it. No mocked driver or replacement allocator is used.

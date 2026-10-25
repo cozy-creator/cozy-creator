@@ -7,7 +7,7 @@ name = "ci-stock-memory"
 version = "0.1.0"
 description = "Real TensorFS and Torch residency lifecycle through Cozy"
 requires-python = ">=3.12"
-dependencies = ["cozy-runtime>=0.30", "msgspec>=0.19", "torch>=2.14,<2.15"]
+dependencies = ["cozy-runtime>=0.30", "tensorfs>=0.15.8,<0.16", "msgspec>=0.19", "torch>=2.14,<2.15"]
 
 [project.entry-points."cozy.application"]
 default = "ci_stock_memory:app"

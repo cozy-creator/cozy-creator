@@ -250,6 +250,17 @@ impl PyRegion {
             pid: std::process::id(),
         })
     }
+    fn pin(&self, py: Python<'_>) -> PyResult<Option<PyUse>> {
+        let pin = py
+            .detach(|| self.region.try_pin())
+            .map_err(|e| raise(py, e))?;
+        Ok(pin.map(|pin| PyUse {
+            preparation: Mutex::new(Some(varena::Preparation::Resident(pin))),
+            needs_fill: false,
+            device: self.region.device(),
+            pid: std::process::id(),
+        }))
+    }
 }
 
 #[pyclass(name = "_VarenaUse", module = "tensorfs._ext", frozen)]

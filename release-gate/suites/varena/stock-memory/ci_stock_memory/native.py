@@ -5,15 +5,76 @@ reexecution, shared SDK installation, or allocator implementation replacement.
 """
 import gc
 import hashlib
-from pathlib import Path
 import json
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
-import torch
 import tensorfs
+import torch
 from tensorfs import varena
 
 MIB = 1 << 20
+
+
+def ready_pins() -> dict:
+    """Ready-only borrowing uses real VMM storage and the ordinary DLPack owner."""
+    arena = varena.Arena(0)
+    region = arena.reserve(MIB)
+    pointer = region.ptr
+    cold = arena.stats()
+    assert region.pin() is None
+    assert arena.stats() == cold, "a cold pin miss allocated or changed residency"
+    fill = region.prepare()
+    assert fill.needs_fill
+    loading = arena.stats()
+    assert region.pin() is None
+    assert arena.stats() == loading, "an uncommitted fill became readable"
+    fill.tensor.fill_(11)
+    fill.commit()
+    del fill
+    gc.collect()
+    ready = arena.stats()
+    use = region.pin()
+    assert use is not None and not use.needs_fill
+    assert use.tensor.data_ptr() == pointer and use.tensor[-1].item() == 11
+    assert arena.stats()["fills"] == ready["fills"]
+    alias = use.tensor[3:]
+    del use
+    gc.collect()
+    assert arena.reclaim(MIB) == 0, "an escaped alias lost its borrowed physical pin"
+    stream = torch.cuda.Stream()
+    with torch.cuda.stream(stream):
+        result = alias[:65536].sum(dtype=torch.int64)
+    del alias
+    gc.collect()
+    # Reclamation joins queued consumers before unmapping, regardless of their stream.
+    assert arena.reclaim(MIB) >= MIB
+    assert result.item() == 11 * 65536
+    missing = arena.stats()
+    assert missing["pinned_bytes"] == missing["resident_bytes"] == 0
+    assert region.pin() is None and arena.stats() == missing
+    fill = region.prepare()
+    assert fill.needs_fill and fill.tensor.data_ptr() == pointer
+    fill.tensor.fill_(17)
+    fill.commit()
+    del fill
+    gc.collect()
+    use = region.pin()
+    assert use is not None and not use.needs_fill
+    assert use.tensor[-1].item() == 17 and use.tensor.data_ptr() == pointer
+    del use, result
+    gc.collect()
+    assert arena.reclaim(MIB) >= MIB
+    final = arena.stats()
+    assert final["pinned_bytes"] == final["resident_bytes"] == 0
+    assert not final["poisoned"]
+    return {
+        "cold_and_loading_misses_unchanged": True,
+        "escaped_alias_prevented_reclaim": True,
+        "side_stream_result": 11 * 65536,
+        "refilled_same_pointer": True,
+        "final": final,
+    }
 
 
 def exercise() -> dict:
@@ -172,11 +233,12 @@ def exercise() -> dict:
     gc.collect()
     arena.reclaim(1 << 30)
     torch.cuda.empty_cache()
+    pin_proof = ready_pins()
     return {"passed": True, "torch": torch.__version__, "tensorfs": tensorfs.__version__,
             "before": before, "after_worker_allocation": after,
             "driver_free_before": driver_before, "driver_free_after": driver_after,
             "native_extension_sha256": hashlib.sha256(Path(tensorfs._ext.__file__).read_bytes()).hexdigest(), "allocation": allocation,
-            "refilled_same_pointer": refilled, "graph_capture_replay": True, "typed_invalid_device": True, "final_allocator": varena.allocator_stats(),
+            "refilled_same_pointer": refilled, "ready_pin": pin_proof, "graph_capture_replay": True, "typed_invalid_device": True, "final_allocator": varena.allocator_stats(),
             "scope": "real CUDA native component; 224MiB activation admission limit; not a hard device cap"}
 
 

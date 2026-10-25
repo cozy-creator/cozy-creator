@@ -139,6 +139,16 @@ class Region:
     def prepare(self) -> Use:
         return Use(self._native.prepare())
 
+    def pin(self) -> Use | None:
+        """Pin existing ready contents atomically, or return None for a residency miss.
+
+        Never allocates, maps, refills or starts recovery. Errors such as poison and
+        use after fork propagate. The returned Use and its aliases own the same physical
+        pin as prepare(); this adds no ordering for writes after the committed fill.
+        """
+        native = self._native.pin()
+        return None if native is None else Use(native)
+
     def prepare_read(
         self,
         checkpoint: _ext.Checkpoint,
