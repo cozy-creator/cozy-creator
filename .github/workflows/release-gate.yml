@@ -42,6 +42,10 @@ on:
         description: "Comma-separated cells or packages (empty: by selection)"
         type: string
         default: ''
+      image:
+        description: "A staged worker image the rentals boot, sha256:<hex> (an admin's; empty: the Hub's current one)"
+        type: string
+        default: ''
       establish:
         description: "Start the baseline of a SKU that has none"
         type: boolean
@@ -194,12 +198,14 @@ jobs:
           ESTABLISH: ${{ inputs.establish }}
           PACKAGES: ${{ inputs.packages_ref != '' && 'packages' || '' }}
           PINS: ${{ inputs.pins }}
+          IMAGE: ${{ inputs.image }}
           DISK: ${{ matrix.disk }}
           GPUS: ${{ matrix.gpus }}
         run: |
           read -ra args <<< "$ARGS"
           [ -z "$ONLY" ] || args+=(--only "$ONLY")
           [ -z "$PINS" ] || args+=(--pins "$PINS")
+          [ -z "$IMAGE" ] || args+=(--image "$IMAGE")
           [ -z "$PACKAGES" ] || args+=(--packages "$PACKAGES")
           [ "$ESTABLISH" != true ] || args+=(--establish)
           [ "$DISK" = 0 ] || args+=(--disk "$DISK")
