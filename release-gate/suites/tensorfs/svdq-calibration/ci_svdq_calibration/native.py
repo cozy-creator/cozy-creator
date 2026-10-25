@@ -6,6 +6,7 @@ import copy
 import gc
 import hashlib
 import json
+import resource
 import tempfile
 import time
 import zlib
@@ -526,7 +527,9 @@ def basic(payload: Request) -> dict[str, Any]:
             c.put("f32.xmax", np.ones(256, dtype="<f4"))
             c.put("f32.rows", np.ones(shape, dtype="<f4"))
             bad = w.commit()
+            assert tuple(bad.components["weights"].tensors["f32.rows"].shape) == shape
             refusals[label] = refused(tensorfs, directory, label, source, one, bad)
+            assert "SVDQ calibration rows must be nonempty and match the weight columns" in refusals[label]
             bad.close()
         source.close()
         calibration.close()
@@ -634,6 +637,7 @@ def cancel(payload: Request) -> dict[str, Any]:
             assert reopened.has("weights", "first") and not reopened.has(
                 "weights", "large"
             )
+        resume_began = time.perf_counter()
         result = reopened.quantize(
             source,
             specs,
@@ -642,6 +646,7 @@ def cancel(payload: Request) -> dict[str, Any]:
             max_new_bytes=allowance,
             control=tensorfs.ConversionControl(),
         )
+        resume_fit_seconds = time.perf_counter() - resume_began
         assert result["reused_keys"] == 1 and result["encoded_keys"] == 1
         assert result["worst_relative_frobenius"] is None
         checkpoint = reopened.commit()
@@ -662,6 +667,7 @@ def cancel(payload: Request) -> dict[str, Any]:
             "result": result,
             "facts": facts,
             "cancel_seconds": cancel_seconds,
+            "resume_fit_seconds": resume_fit_seconds,
             "cancel_progress": control.progress(),
             "identity_refusals": refusals,
             "scope": "real interrupted/resumed Writer; cancellation waits for any current faer call",
@@ -671,8 +677,47 @@ def cancel(payload: Request) -> dict[str, Any]:
 @app.entrypoint(accelerator=False)
 def native(payload: Request) -> Report:
     assert payload.mode in ("basic", "cancel")
+    began = time.perf_counter()
+    rss_before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
     result = basic(payload) if payload.mode == "basic" else cancel(payload)
+    result["gate_wall_seconds"] = time.perf_counter() - began
+    result["process_peak_rss_bytes"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
+    result["process_peak_rss_before_bytes"] = rss_before
+    result["memory_scope"] = "Linux process high-water RSS including imports and independent references; not fitter-only peak"
     return Report(True, json.dumps(result, sort_keys=True))
+
+
+@app.entrypoint(accelerator=False)
+def empty_dlpack(payload: Request) -> Report:
+    """Real Writer imports of empty NumPy DLPack arrays, plus nonempty stride refusals."""
+    import tensorfs
+
+    observations = []
+    with tempfile.TemporaryDirectory(prefix="cozy-empty-dlpack-") as temporary:
+        writer = tensorfs.Writer(Path(temporary) / "empty.cozytensors")
+        component = writer.component("weights")
+        for index, shape in enumerate(((0, 256), (3, 0), (1, 0, 256), (0,), (1, 256))):
+            array = np.ones(shape, dtype="<f4")
+            component.put(str(index), array)
+            observations.append({"key": str(index), "shape": shape, "strides": array.strides,
+                                 "c_contiguous": bool(array.flags.c_contiguous), "bytes": array.nbytes})
+        strided = np.ones((3, 512), dtype="<f4")[:, ::2]
+        try:
+            component.put("strided", strided)
+        except tensorfs.InvalidError as error:
+            assert "contiguous DLPack" in str(error)
+        else:
+            raise AssertionError("nonempty noncontiguous source was accepted")
+        assert not component.has("strided")
+        checkpoint = writer.commit()
+        assert checkpoint.verify().ok
+        for row in observations:
+            value = checkpoint.components["weights"].tensors.read(row["key"])
+            assert tuple(value.shape) == tuple(row["shape"])
+            assert value.tobytes() == np.ones(row["shape"], dtype="<f4").tobytes()
+        checkpoint.close()
+    return Report(True, json.dumps({"arrays": observations, "nonempty_strided_refused": True,
+                                   "tensorfs": tensorfs.__version__}, sort_keys=True))
 
 
 class ComponentsConverted(msgspec.Struct):

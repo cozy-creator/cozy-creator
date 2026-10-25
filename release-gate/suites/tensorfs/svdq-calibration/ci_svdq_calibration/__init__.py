@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import importlib.metadata
 import json
+import resource
+import time
 from collections import OrderedDict
 from typing import Any
 
@@ -191,7 +193,9 @@ def calibrate(
     assert isinstance(source_weight, tensorfs.Array)
     assert source_weight.tobytes() == original.view(torch.uint8).numpy().tobytes()
     batches = operands(payload.seed)
+    calibration_began = time.perf_counter()
     calibration = model.record(batches)
+    calibration_seconds = time.perf_counter() - calibration_began
     stats = calibration.stats("net", "proj.weight")
     torch.testing.assert_close(
         stats.xmax, torch.cat(batches).float().abs().amax(0), rtol=0, atol=0
@@ -199,7 +203,9 @@ def calibrate(
     assert stats.rows.shape == (128, COLS), stats.rows.shape
     values = original.float().numpy()
     # Frozen historical arithmetic is only a comparison; it cannot feed the native output.
+    reference_began = time.perf_counter()
     old = historical_fit(torch, "proj.weight", values, stats, str(ctx.device))
+    historical_fit_seconds = time.perf_counter() - reference_began
     selection = prepare_source_quantization(checkpoint, components=("net",), block=COLS)
     resolved = native_quantization.resolved(
         checkpoint, selection, "svdq.nvfp4", lambda item: item.logical_dtype
@@ -239,6 +245,7 @@ def calibrate(
             else:
                 raise AssertionError("SVDQ without real calibration was accepted")
         with ctx.output("svdq", work) as output:
+            conversion_began = time.perf_counter()
             measured = quantize_component_into(
                 checkpoint,
                 output,
@@ -251,7 +258,10 @@ def calibrate(
                 logical_dtype=lambda item: item.logical_dtype,
                 calibration=calibration,
             )
+            conversion_seconds = time.perf_counter() - conversion_began
+            adoption_began = time.perf_counter()
             artifact = ctx.adopt_model(output)
+            adoption_seconds = time.perf_counter() - adoption_began
         calibration_id = snapshot.id
     committed = tensorfs.open(artifact.checkpoint, local_files_only=True)
     try:
@@ -293,6 +303,14 @@ def calibrate(
             calibration_channels=stats.xmax.numel(),
             measured=msgspec.to_builtins(measured),
             missing_calibration_refused=True,
+            timing={"model_calibration_seconds": calibration_seconds,
+                    "historical_reference_fit_seconds": historical_fit_seconds,
+                    "native_snapshot_fit_pack_write_seconds": conversion_seconds,
+                    "checkpoint_adoption_seconds": adoption_seconds},
+            memory={"process_peak_rss_bytes": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024,
+                    "torch_peak_allocated_bytes": torch.cuda.max_memory_allocated(),
+                    "torch_peak_reserved_bytes": torch.cuda.max_memory_reserved(),
+                    "scope": "whole invocation including model calibration and frozen GPU reference; not native-fit-only"},
             historical_reference={
                 "producer": "torch-svdq-frozen/1",
                 "alpha": old.alpha,

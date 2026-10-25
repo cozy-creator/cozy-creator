@@ -1553,18 +1553,24 @@ impl Dlpack {
                 .iter()
                 .map(|d| u64::try_from(*d).map_err(|_| invalid(py, "DLPack shape is negative")))
                 .collect::<PyResult<_>>()?;
-            let mut stride = 1i64;
-            for i in (0..dims.len()).rev() {
-                if !tensor.strides.is_null()
-                    && dims[i] > 1
-                    // SAFETY: `strides`, when present, holds `ndim` entries while the capsule is alive; `i < ndim`.
-                    && unsafe { *tensor.strides.add(i) } != stride
-                {
-                    return Err(invalid(py, "expected a contiguous DLPack array"));
+            // An empty tensor has no addressable element, so every stride layout is
+            // contiguous. NumPy exports zero strides for shapes such as [0, 256].
+            // Negative dimensions were rejected above; all remaining dtype/shape,
+            // byte-size and address checks still apply below.
+            if !dims.contains(&0) {
+                let mut stride = 1i64;
+                for i in (0..dims.len()).rev() {
+                    if !tensor.strides.is_null()
+                        && dims[i] > 1
+                        // SAFETY: `strides`, when present, holds `ndim` entries while the capsule is alive; `i < ndim`.
+                        && unsafe { *tensor.strides.add(i) } != stride
+                    {
+                        return Err(invalid(py, "expected a contiguous DLPack array"));
+                    }
+                    stride = stride
+                        .checked_mul(dims[i])
+                        .ok_or_else(|| invalid(py, "DLPack shape overflows"))?;
                 }
-                stride = stride
-                    .checked_mul(dims[i])
-                    .ok_or_else(|| invalid(py, "DLPack shape overflows"))?;
             }
             let inferred_dtype = Dtype::known()
                 .find(|d| dl_type(d) == Some((tensor.dtype.code, tensor.dtype.bits)))
