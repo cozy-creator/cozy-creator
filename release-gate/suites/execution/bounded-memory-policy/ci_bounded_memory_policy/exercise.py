@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import importlib.metadata
+import json
+import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -17,11 +20,11 @@ from torch import nn
 MIB = 1 << 20
 
 
-def exercise(mode, seed, ctx):
-    del ctx
+def exercise(mode, seed):
     torch.set_num_threads(1)
     accel.initialize(torch, "cuda")
     memory = residency.Memory.open("cuda:0", budget_bytes=256 * MIB)
+    memory.apply_budget()
     with tempfile.TemporaryDirectory(prefix="cozy-bounded-policy-") as directory:
         writer = tensorfs.Writer(Path(directory) / "weights.cozytensors")
         width, count = 1024, 1 if mode in ("retry", "fallback") else 4
@@ -56,6 +59,8 @@ def exercise(mode, seed, ctx):
             else:
                 raise ValueError(f"unknown mode: {mode}")
             return {
+                "child_pid": os.getpid(),
+                "python": sys.executable,
                 "mode": mode,
                 "runtime": importlib.metadata.version("cozy-runtime"),
                 "tensorfs": importlib.metadata.version("tensorfs"),
@@ -350,3 +355,7 @@ def retry_recovery(memory, modules, models, inputs, seed, mode):
         for plan in plans.values():
             plan.close()
         del alias
+
+
+if __name__ == "__main__":
+    print(json.dumps(exercise(sys.argv[1], int(sys.argv[2])), sort_keys=True))

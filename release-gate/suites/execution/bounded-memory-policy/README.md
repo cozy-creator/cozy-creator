@@ -7,9 +7,12 @@ cozy run /absolute/worktree/release-gate/suites/execution/bounded-memory-policy/
   mode=prefetch seed=179701 --on local --gpus=1 --json
 ```
 
-Modes are `prefetch`, `bounded`, `capture`, `retry`, and `fallback`; each attempt needs a fresh seed. The executor uses
-an actual 256 MiB local activation/weight cap, real TensorFS checkpoint files and native CUDA
-backing. There are no fake allocators, exception injection, monkeypatches or private interpreters.
+Modes are `prefetch`, `bounded`, `capture`, `retry`, and `fallback`; each attempt needs a fresh seed.
+The admitted GPU request owns and joins a child using its exact `sys.executable` and installed SDK.
+That real standalone consumer opens CUDA residency with a256 MiB activation/weight cap before any
+Memory exists; it never changes the executor's already-open budget. Cancellation terminates and
+joins the child. Receipts include the child PID/interpreter and actual CUDA device. Real TensorFS
+files and native CUDA backing are used; no fake allocators, exception injection or alternate venv.
 
 `prefetch` loads component A, retains its outgoing cached weights, and executes B with sufficient
 free capacity. It requires real next-block reads, no loss of A's bytes, and zero reads on returning
