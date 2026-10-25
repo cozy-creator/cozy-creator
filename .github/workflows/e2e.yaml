@@ -49,15 +49,15 @@ on:
         type: string
         default: master
       tensord:
-        description: TensorD (cozy) to take instead of building it, each OS's own (a version, a release tag such as a prerelease's, or URL#sha256=)
+        description: TensorD (cozy) to take instead of building it, an exact release version (a prerelease's too) `cozy machine update` fetches
         type: string
         default: ''
       tensorfs:
-        description: The TensorFS wheel to take instead of building it, each OS's own (a PyPI version, a release tag such as tensorfs-v0.15.1, or URL#sha256=)
+        description: TensorFS to take instead of building it, an exact release version (a prerelease's too, such as 0.15.1)
         type: string
         default: ''
       runtime:
-        description: The cozy-runtime wheel to take instead of building it, each OS's own (a PyPI version, a release tag such as v0.32.0, or URL#sha256=)
+        description: The Runtime to take instead of building it, an exact release version (a prerelease's too, such as 0.32.0)
         type: string
         default: ''
       pins:
@@ -172,7 +172,8 @@ jobs:
           echo "$s" | jq .
 
   # One candidate a job (e2e/candidates/build.sh), each this run's candidate-<what>-<commit> artifact for every Linux
-  # suite: TensorD and TensorFS reused from an earlier run when one built the same sources, else built.
+  # suite: TensorD and TensorFS reused from an earlier run when one built the same sources, else built. A taken one
+  # (its version) builds nothing.
   candidate:
     name: candidate ${{ matrix.what }}
     needs: affected
@@ -190,7 +191,6 @@ jobs:
       run:
         shell: bash
     env:
-      TAKE: ${{ matrix.take }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v5
@@ -220,13 +220,14 @@ jobs:
           # A merge group's cache is its own ref's, which nothing restores.
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - id: build
-        if: steps.reuse.outputs.name == ''
+        if: matrix.take == '' && steps.reuse.outputs.name == ''
         env:
           CARGO_PROFILE_RELEASE_LTO: "off"
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
           CARGO_INCREMENTAL: "0"
         run: bash .creator/e2e/candidates/build.sh ${{ matrix.what }} .build "$RUNNER_TEMP/candidates"
-      - uses: actions/upload-artifact@v4
+      - if: matrix.take == ''
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.reuse.outputs.name || steps.build.outputs.name }}
           path: ${{ runner.temp }}/candidates
@@ -262,6 +263,9 @@ jobs:
           ref: ${{ needs.affected.outputs.ref }}
           build: ${{ env.BUILD }}
           from: artifacts
+          tensord: ${{ inputs.tensord }}
+          tensorfs: ${{ inputs.tensorfs }}
+          runtime: ${{ inputs.runtime }}
       - name: cli suite
         env:
           PINS: ${{ inputs.pins }}
@@ -350,6 +354,9 @@ jobs:
           ref: ${{ needs.affected.outputs.ref }}
           build: ${{ env.BUILD }}
           from: artifacts
+          tensord: ${{ inputs.tensord }}
+          tensorfs: ${{ inputs.tensorfs }}
+          runtime: ${{ inputs.runtime }}
       - name: cli-release suite
         env:
           KEY: ${{ secrets.COZY_CI_DEVICE_KEY }}
@@ -394,6 +401,9 @@ jobs:
           ref: ${{ needs.affected.outputs.ref }}
           build: ${{ env.BUILD }}
           from: artifacts
+          tensord: ${{ inputs.tensord }}
+          tensorfs: ${{ inputs.tensorfs }}
+          runtime: ${{ inputs.runtime }}
       - name: imports suite
         env:
           PINS: ${{ inputs.pins }}
@@ -449,25 +459,26 @@ jobs:
     timeout-minutes: 10
     steps:
       # Coverage (e2e/coverage.py) over every cli shard's calls: each command and flag has a test, and each PR-tier one ran.
-      - if: needs.cli.result == 'success' || needs.cli.result == 'failure'
+      # A taken TensorD is a release, not the CLI this checkout builds: no coverage.
+      - if: (needs.cli.result == 'success' || needs.cli.result == 'failure') && inputs.tensord == ''
         uses: actions/checkout@v5
         with:
           repository: cozy-creator/cozy-creator
           ref: ${{ needs.affected.outputs.creator }}
           path: .creator
-      - if: needs.cli.result == 'success' || needs.cli.result == 'failure'
+      - if: (needs.cli.result == 'success' || needs.cli.result == 'failure') && inputs.tensord == ''
         uses: actions/download-artifact@v4
         with:
           pattern: e2e-cli-linux-*
           path: ${{ runner.temp }}/cli
-      - if: needs.cli.result == 'success' || needs.cli.result == 'failure'
+      - if: (needs.cli.result == 'success' || needs.cli.result == 'failure') && inputs.tensord == ''
         uses: actions/download-artifact@v4
         with:
           pattern: candidate-cozy-*
           merge-multiple: true
           path: ${{ runner.temp }}/candidates
       - name: coverage
-        if: needs.cli.result == 'success' || needs.cli.result == 'failure'
+        if: (needs.cli.result == 'success' || needs.cli.result == 'failure') && inputs.tensord == ''
         run: |
           chmod +x "$RUNNER_TEMP/candidates/cozy"
           python3 -I .creator/e2e/coverage.py check "$RUNNER_TEMP/candidates/cozy" .creator/e2e/coverage.toml --tiers pr \

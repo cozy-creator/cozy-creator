@@ -5,7 +5,7 @@
 # credit and makes (never pays) a checkout, and rents ONE machine of --sku (default cpu): keepalive, a run on
 # it, and an end while that run is still going, checked gone. The throwaway and the rental are removed in an
 # EXIT trap whatever fails.
-#   e2e/release/run.sh --out DIR [--key FILE | --installed] [--sku SKU] [--cozy-bin F] [--tensorfs-wheel F] [--runtime-wheel F]
+#   e2e/release/run.sh --out DIR [--key FILE | --installed] [--sku SKU] [--tensord F|V] [--tensorfs F|V] [--runtime F|V]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
 here=$(cd "$(dirname "$0")" && pwd)

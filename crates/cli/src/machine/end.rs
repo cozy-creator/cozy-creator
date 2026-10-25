@@ -274,15 +274,15 @@ pub async fn update(
         let path = match component {
             Component::Release(version) => {
                 want.push(reports(member, &version));
-                // A wheel version PyPI lacks is, for a Hub admin, its release candidate: the
-                // machine fetches the GitHub prerelease's wheel itself, held to its digest.
+                // A wheel version PyPI lacks is its GitHub prerelease, an exact version being an
+                // explicit ask: the machine fetches the wheel itself, held to its digest.
                 let value = match member {
                     "tensord" => None,
-                    _ => candidate(ctx, &hub, distribution, &version, &status.platform).await?,
+                    _ => prerelease(distribution, &version, &status.platform).await?,
                 };
                 match value {
                     Some((url, sha256)) => {
-                        named.push(format!("{member} {version} (candidate)"));
+                        named.push(format!("{member} {version} (prerelease)"));
                         payload.insert(key.into(), serde_json::json!({ "url": url, "sha256": sha256 }));
                     }
                     None => {
@@ -376,14 +376,11 @@ fn names_tensord(version: &str) -> bool {
     semver::Version::parse(version).map_or(true, |v| (v.major, v.minor, v.patch) >= (0, 11, 16))
 }
 
-/// `distribution` `version`'s release-candidate wheel for `platform` (`linux/x86_64`), when PyPI
-/// does not hold that version and this computer's sign-in is a Hub admin's: the GitHub
-/// prerelease (cozy-runtime `v<version>`, cozy-creator `tensorfs-v<version>`) names it in its
-/// `SHA256SUMS`, the platform's own wheel first, else the pure one. Its URL and sha256; `None` for
-/// a PyPI release or anyone else, whose machine fetches the version from PyPI as before.
-async fn candidate(
-    ctx: &Context,
-    hub: &protocol::config::Hub,
+/// `distribution` `version`'s prerelease wheel for `platform` (`linux/x86_64`), when PyPI does not
+/// hold that version: the GitHub prerelease (cozy-runtime `v<version>`, cozy-creator
+/// `tensorfs-v<version>`) names it in its `SHA256SUMS`, the platform's own wheel first, else the
+/// pure one. Its URL and sha256; `None` for a PyPI release, which the machine fetches from PyPI.
+async fn prerelease(
     distribution: &str,
     version: &str,
     platform: &str,
@@ -395,14 +392,8 @@ async fn candidate(
         .map_err(failed)?;
     let project = distribution.replace('_', "-");
     let pypi = http.get(format!("https://pypi.org/pypi/{project}/{version}/json")).send().await.map_err(failed)?;
-    if pypi.status().is_success() || !ctx.signed_in(hub) {
+    if pypi.status().is_success() {
         return Ok(None);
-    }
-    // Only an admin's sign-in may narrow rentals to a provider: the Hub's own word on who is one.
-    match hub_answer(ctx.hub_signed_in(hub)?.list_rental_skus(Some("runpod")).await) {
-        Ok(_) => {}
-        Err(e) if e.code == "rental.provider_choice_operator_only" => return Ok(None),
-        Err(e) => return Err(e),
     }
     let base = match distribution {
         "cozy_runtime" => format!("https://github.com/cozy-creator/cozy-runtime/releases/download/v{version}"),
@@ -413,7 +404,7 @@ async fn candidate(
         return Err(Error::new(
             Kind::NotFound,
             "release_not_found",
-            format!("{project} {version} is neither on PyPI nor a release candidate ({base}/SHA256SUMS: HTTP {})", sums.status()),
+            format!("{project} {version} is neither on PyPI nor a GitHub prerelease ({base}/SHA256SUMS: HTTP {})", sums.status()),
         ));
     }
     let sums = sums.text().await.map_err(failed)?;
@@ -440,7 +431,7 @@ async fn candidate(
             Error::new(
                 Kind::NotFound,
                 "release_wheel_absent",
-                format!("{project} {version}'s release candidate holds no wheel for {platform}"),
+                format!("{project} {version}'s prerelease holds no wheel for {platform}"),
             )
         })?;
     Ok(Some((format!("{base}/{}", chosen.1), chosen.0.to_owned())))

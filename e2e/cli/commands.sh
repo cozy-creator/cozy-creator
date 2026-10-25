@@ -171,8 +171,7 @@ fi
 
 machines() {
 step machines
-# The candidate CLI's own spelling of an update (candidates() spoke the installer's): the same wheels again,
-# and the machine reports their versions.
+# The same wheels again, an update to what the machine runs: it reports their versions.
 if [ -n "$CAND_RT" ] && [ -n "$CAND_TFS" ]; then
   cozy --json machine update local --runtime "$CAND_RT" --tensorfs "$CAND_TFS" -y > "$OUT/update-again.json" || check "machine update local --runtime --tensorfs failed"
   rt=$(jq -r 'select(.machine) | .runtime' "$OUT/update-again.json" | tail -1 || true)

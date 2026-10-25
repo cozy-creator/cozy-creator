@@ -3,9 +3,10 @@
 #
 #   source e2e/lib.sh; parse "$@"
 #   --out DIR             where records, outputs and logs go
-#   --cozy-bin FILE       a candidate `cozy` (dev build): it becomes this computer's cozy and its machine
-#   --tensorfs-wheel FILE a candidate TensorFS wheel for the local machine
-#   --runtime-wheel FILE  a candidate cozy-runtime wheel for the local machine
+#   --tensord FILE|V      a candidate `cozy` (a dev build, or an exact release version): it becomes this computer's
+#                         cozy and its machine
+#   --tensorfs FILE|V     a candidate TensorFS for the local machine (a wheel, or an exact release version)
+#   --runtime FILE|V      a candidate Runtime for the local machine (a wheel, or an exact release version)
 #   --packages DIR        a packages checkout: its package directories run instead of the published releases
 #   --pins N@R,...        package releases to take instead of the latest unyanked ones (gated candidates)
 #   --published           the imports suite loads published releases, not the packages checkout
@@ -24,9 +25,9 @@ parse() {
   while [ $# -gt 0 ]; do
     case $1 in
       --out) OUT=$2 ;;
-      --cozy-bin) CAND_COZY=$2 ;;
-      --tensorfs-wheel) CAND_TFS=$2 ;;
-      --runtime-wheel) CAND_RT=$2 ;;
+      --tensord) CAND_COZY=$2 ;;
+      --tensorfs) CAND_TFS=$2 ;;
+      --runtime) CAND_RT=$2 ;;
       --packages) PACKAGES=$2 ;;
       --pins) PINS=$2 ;;
       --published) PUBLISHED=1; shift; continue ;;
@@ -39,8 +40,8 @@ parse() {
     shift 2
   done
   [ -n "$OUT" ] || { echo "--out is required" >&2; exit 2; }
-  # By hand (--installed), a --cozy-bin is the CLI as it is: nothing is installed over this computer's cozy.
-  [ -z "$INSTALLED" ] || [ -z "$CAND_COZY" ] || { COZY=$CAND_COZY; CAND_COZY=''; }
+  # By hand (--installed), a --tensord file is the CLI as it is: nothing is installed over this computer's cozy.
+  [ -z "$INSTALLED" ] || [ ! -f "$CAND_COZY" ] || { COZY=$CAND_COZY; CAND_COZY=''; }
   mkdir -p "$OUT"
 }
 
@@ -84,28 +85,27 @@ user_services() {
   export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
 }
 
-# Candidates go on through `cozy machine update local`, the path a person takes for a dev build, in the
-# spelling of the installed cozy (0.11.16 renamed --runtime-wheel/--tensorfs-wheel to --runtime/--tensorfs).
-# CAND_RUNTIME is then the Runtime the machine reports (`machine show --json`): a built candidate's own
-# <version>+dev.g<sha8>, which must differ from what it ran before.
+# Candidates go on through `cozy machine update local`, the path a person takes: a dev build's file, or an exact
+# release version (a prerelease's too) the machine fetches and verifies. TensorD first, from the installed cozy, so
+# the candidate's own CLI puts the wheels on. CAND_RUNTIME is then the Runtime the machine reports (`machine show
+# --json`), which must differ from what it ran before.
 CAND_RUNTIME=''
 candidates() {
-  local args=() rt=--runtime tfs=--tensorfs before
+  local args=() before want
   before=$(jq -r '.status.runtime // empty' "$OUT/machine.json" 2> /dev/null || true)
-  if cozy machine update --help | grep -- --runtime-wheel > /dev/null; then rt=--runtime-wheel tfs=--tensorfs-wheel; fi
-  [ -z "$CAND_COZY" ] || args+=(--tensord "$CAND_COZY")
-  [ -z "$CAND_TFS" ] || args+=("$tfs" "$CAND_TFS")
-  [ -z "$CAND_RT" ] || args+=("$rt" "$CAND_RT")
-  [ ${#args[@]} -gt 0 ] || return 0
-  cozy --json machine update local "${args[@]}" -y | tee "$OUT/update.json" || fail "cozy machine update local refused the candidates"
+  [ -n "$CAND_COZY$CAND_TFS$CAND_RT" ] || return 0
   if [ -n "$CAND_COZY" ]; then
-    want=$("$CAND_COZY" --version)
+    cozy --json machine update local --tensord "$CAND_COZY" -y | tee "$OUT/update-tensord.json" || fail "cozy machine update local refused TensorD $CAND_COZY"
+    if [ -f "$CAND_COZY" ]; then want=$("$CAND_COZY" --version); else want="cozy ${CAND_COZY#v}"; fi
     [ "$(cozy --version)" = "$want" ] || fail "cozy is $(cozy --version), not the candidate $want"
     # The installer's Calcifer keeps running an older cozy until restarted (`cozy update` does that for
     # a person): `cozy doctor` finds it and restarts it on the candidate.
     cozy --json doctor > "$OUT/doctor-candidate.json" || check "cozy doctor is not healthy after the candidates"
     grep -q "cozy ${want#cozy }," "$OUT/doctor-candidate.json" || check "Calcifer is not the candidate ${want#cozy }"
   fi
+  [ -z "$CAND_TFS" ] || args+=(--tensorfs "$CAND_TFS")
+  [ -z "$CAND_RT" ] || args+=(--runtime "$CAND_RT")
+  [ ${#args[@]} -eq 0 ] || cozy --json machine update local "${args[@]}" -y | tee "$OUT/update.json" || fail "cozy machine update local refused the candidates"
   machine_ready
   [ -n "$CAND_RT" ] || return 0
   CAND_RUNTIME=$(jq -r '.status.runtime // empty' "$OUT/machine.json" 2> /dev/null || true)

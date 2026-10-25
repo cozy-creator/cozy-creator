@@ -5,7 +5,8 @@ Real runs of `cozy` on GitHub's runners, chosen by what a change touches (CI v2:
 - `ci/affected <repo> <base> <head>` prints what a change must run; `ci/suites.toml` holds the rules.
 - **The candidate set** (`candidates/`): on Linux, TensorD, TensorFS and the Runtime, built from the change at its commit and the
   other repos at master (`stack_ref`, `runtime_ref`), go on the local machine together, so a mismatch between them fails the PR.
-  A built cozy or Runtime is `<version>+dev.g<sha8>`; a taken release asset or URL with no checksum is refused.
+  A built cozy or Runtime is `<version>+dev.g<sha8>`; a taken one is its exact release version (a prerelease's too), which
+  `cozy machine update` fetches and verifies.
 - `run.sh`: how every suite (and the release gate) runs `cozy run`: `--out`, the record's `output[].path`, and a watchdog
   that cancels only a run whose events and record stop changing.
 - `cli/run.sh`: install, up, the local machine, the candidates, a weightless request through them, BiRefNet on the CPU, a second
@@ -17,7 +18,7 @@ Real runs of `cozy` on GitHub's runners, chosen by what a change touches (CI v2:
   each candidate is one `candidate` job (`candidates/build.sh`), reused from an earlier cozy-creator run that built the same
   sources, and `cli` and `imports` run in shards (`--shard`) on their own runners; `e2e` checks coverage over every shard.
 
-Run one suite on a fresh computer: `e2e/cli/run.sh --out /tmp/e2e [--cozy-bin ./cozy] [--runtime-wheel …] [--tensorfs-wheel …]`.
+Run one suite on a fresh computer: `e2e/cli/run.sh --out /tmp/e2e [--tensord ./cozy] [--runtime <wheel or version>] [--tensorfs <wheel or version>]`.
 Against chosen versions: `gh workflow run e2e.yaml -f repo=cozy-runtime -f ref=<sha> -f stack_ref=<cozy-creator sha> -f select="cli imports build:runtime"`.
 
 ## Merging (Paul, 2026-10-24)
