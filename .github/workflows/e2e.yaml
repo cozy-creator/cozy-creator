@@ -254,8 +254,6 @@ jobs:
       - id: build
         if: matrix.take == '' && steps.reuse.outputs.name == ''
         env:
-          CARGO_PROFILE_RELEASE_LTO: "off"
-          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
           CARGO_INCREMENTAL: "0"
         run: bash .creator/e2e/candidates/build.sh ${{ matrix.what }} .build "$RUNNER_TEMP/candidates"
       - if: matrix.take == ''
