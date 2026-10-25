@@ -13,7 +13,6 @@ pub mod metrics;
 pub mod pins;
 mod plan;
 mod probe;
-#[cfg(unix)]
 pub mod source;
 #[cfg(feature = "store")]
 pub(crate) mod view;
