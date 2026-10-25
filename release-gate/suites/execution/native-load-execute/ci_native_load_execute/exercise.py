@@ -17,7 +17,8 @@ from pathlib import Path
 import msgspec
 import tensorfs
 import torch
-from cozy_runtime.author import App, Context, Device, Invocation, prepare as prepare_request
+from cozy_runtime.author import App, Context, Device, Invocation
+from cozy_runtime.author import prepare as prepare_request
 from cozy_runtime.author._invoke import run_prepared
 from cozy_runtime.compute import PreparedRepeat
 from tensorfs import varena
