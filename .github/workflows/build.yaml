@@ -1,6 +1,7 @@
 name: build
-# The PR check (tracker/design/ci-v2.md §1): the workspace compiles and clippy's deny lints pass (warnings are not
-# gates yet: master has 61 in tensorfs). Required for merges into master and rc/*: it runs on the merge queue's
+# The PR check (tracker/design/ci-v2.md §1): the workspace compiles, clippy's deny lints pass (warnings are not
+# gates yet: master has 61 in tensorfs) and TensorD's router, its client and crates/tensord/api/openapi.yaml name
+# the same routes. Required for merges into master and rc/*: it runs on the merge queue's
 # group (merge_group), on the final PR + branch state; on a pull request it is skipped, which lets the PR be
 # queued. A docs-only group passes without building.
 on:
@@ -37,6 +38,8 @@ jobs:
           fi
       - if: steps.scope.outputs.run == 'true'
         uses: actions/checkout@v5
+      - if: steps.scope.outputs.run == 'true'
+        run: scripts/machine-routes.sh
       - if: steps.scope.outputs.run == 'true'
         uses: Swatinem/rust-cache@v2
         with:
