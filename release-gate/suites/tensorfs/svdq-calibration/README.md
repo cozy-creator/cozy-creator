@@ -1,7 +1,7 @@
 # Native SVDQ Writer fitting and adopted GPU consumption
 
 The current gate requires native `svdq-nvfp4-r32-faer/1`, the Runtime adapter and the
-new TensorFS artifact together. It first runs two ordinary CPU invocations against real
+new TensorFS artifact together. It first runs three ordinary CPU invocations against real
 stored weights/calibration checkpoints, then the existing model-calibration and held-out
 GPU consumer sequence. Nothing here installs an SDK, rents a machine or changes the daemon.
 Use the primary Varena owner's coordinated validation window and default `~/.cozy` CLI:
@@ -16,7 +16,9 @@ CPU cells cover F32/F16/BF16, zero/rank-deficient/outlier matrices, exact select
 NVFP4 bytes, independent stored-value decoding, small exact-SVD reconstruction quality,
 frozen Torch quality comparison, deterministic repeat under two workspace grants, actual
 cancellation and same-Writer reopen/resume, changed calibration/seed refusal, finite/shape/
-role/budget failures, and no tensor publication on quality failure. The fixture explicitly
+role/budget failures, and no tensor publication on quality failure. The component cell uses actual model hooks and the real Output API to fit component A
+then B under one full-plan identity, without publishing B early. It also verifies finished
+Output reuse and changed fitted/noncalibrated identity refusal. The fixture explicitly
 grants 64 MiB. The adapter's representative Runtime allowance is 512 MiB, selected as an
 explicit argument to Output preparation; neither is inferred from host RAM. The native
 result reports required workspace and separate source/calibration logical read counts.

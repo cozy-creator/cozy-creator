@@ -9,12 +9,15 @@ import json
 import tempfile
 import time
 import zlib
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+import msgspec
 import numpy as np
 import torch
+from cozy_runtime.author import Context, ModelArtifact, Telemetry, WeightsOutput
 
 from . import Report, Request, app
 from .oracle import E2M1_DECODE32, E4M3_MAG32, encode_nvfp4
@@ -429,6 +432,15 @@ def basic(payload: Request) -> dict[str, Any]:
         }
         one = specs[:1]
         refusals = {
+            "unknown_component": refused(
+                tensorfs,
+                directory,
+                "unknown-component",
+                source,
+                one,
+                calibration,
+                component="missing",
+            ),
             "workspace": refused(
                 tensorfs,
                 directory,
@@ -661,3 +673,305 @@ def native(payload: Request) -> Report:
     assert payload.mode in ("basic", "cancel")
     result = basic(payload) if payload.mode == "basic" else cancel(payload)
     return Report(True, json.dumps(result, sort_keys=True))
+
+
+class ComponentsConverted(msgspec.Struct):
+    passed: bool
+    model: ModelArtifact
+    rowwise: ModelArtifact
+    detail: str
+
+
+@app.entrypoint(
+    accelerator=False,
+    weights=(WeightsOutput("components", 2 << 20), WeightsOutput("rowwise", 2 << 20)),
+)
+def runtime_components(
+    payload: Request, ctx: Context, tel: Telemetry
+) -> ComponentsConverted:
+    """Two real component calls share full identity and publish only their own scope."""
+    import tensorfs
+    from cozy_runtime.author import CapabilityError, UnsupportedInput
+    from cozy_runtime.derive import native_quantization
+    from cozy_runtime.derive.quantization import (
+        ArtifactQuantizationPlan,
+        ArtifactQuantizationRequest,
+        QuantizationTensor,
+        quantize_component_into,
+    )
+    from cozy_runtime.derive.svdq import Calibration
+    from cozy_runtime.weights_store import Derivation, Output
+
+    rng = np.random.default_rng(payload.seed)
+    with tempfile.TemporaryDirectory(prefix="cozy-svdq-components-") as temporary:
+        directory = Path(temporary)
+        writer = tensorfs.Writer(directory / "source.cozytensors")
+        modules, values = {}, {}
+        for name in ("a", "b"):
+            weight = torch.from_numpy(
+                rng.normal(0, 0.0625, (64, 256)).astype("<f4")
+            ).bfloat16()
+            modules[name] = torch.nn.Sequential(
+                OrderedDict(
+                    [
+                        (
+                            "proj",
+                            torch.nn.Linear(256, 64, bias=False, dtype=torch.bfloat16),
+                        )
+                    ]
+                )
+            )
+            with torch.no_grad():
+                modules[name].proj.weight.copy_(weight)
+            writer.component(name).put(
+                "proj.weight",
+                weight.view(torch.uint8).numpy().tobytes(),
+                dtype="BF16",
+                shape=[64, 256],
+            )
+            values[name] = weight.float().numpy()
+        source = writer.commit()
+        plan = ArtifactQuantizationPlan(
+            ["a", "b"],
+            [(name, "proj.weight") for name in ("a", "b")],
+            [
+                QuantizationTensor(name, "proj.weight", "bf16", (64, 256))
+                for name in ("a", "b")
+            ],
+        )
+
+        def collect() -> Calibration:
+            calibration = Calibration(
+                torch, modules, ("a.proj.weight", "b.proj.weight")
+            )
+            with calibration, torch.inference_mode():
+                for _ in range(2):
+                    for module in modules.values():
+                        inputs = torch.from_numpy(
+                            rng.normal(0, 0.125, (16, 256)).astype("<f4")
+                        ).bfloat16()
+                        module(inputs)
+            return calibration
+
+        calibration = collect()
+        rows = native_quantization.resolved(
+            source, plan, "svdq.nvfp4", lambda row: row.logical_dtype
+        )
+        request = ArtifactQuantizationRequest(fit_workspace_bytes=WORKSPACE)
+        with native_quantization.snapshot(
+            source, plan, "svdq.nvfp4", calibration, ctx
+        ) as snapshot:
+            assert snapshot is not None
+            work = Derivation(
+                base=source,
+                sources=(snapshot,),
+                order=plan.order,
+                provenance=native_quantization.provenance(source, rows, snapshot),
+            )
+            with ctx.output("components", work) as output:
+                assert not output.has("a", "proj.weight") and not output.has(
+                    "b", "proj.weight"
+                )
+                try:
+                    quantize_component_into(
+                        source,
+                        output,
+                        ctx,
+                        request,
+                        tel,
+                        encoding="svdq.nvfp4",
+                        plan=plan,
+                        component="missing",
+                        logical_dtype=lambda row: row.logical_dtype,
+                        calibration=calibration,
+                    )
+                except UnsupportedInput:
+                    assert output.written == 0
+                else:
+                    raise AssertionError(
+                        "unknown component did not refuse before writes"
+                    )
+                made = []
+                for name in ("a", "b"):
+                    measured = quantize_component_into(
+                        source,
+                        output,
+                        ctx,
+                        request,
+                        tel,
+                        encoding="svdq.nvfp4",
+                        plan=plan,
+                        component=name,
+                        logical_dtype=lambda row: row.logical_dtype,
+                        calibration=calibration,
+                    )
+                    assert measured.encoded_keys == 1 and measured.reused_keys == 0
+                    assert measured.source_bytes_read == 64 * 256 * 2
+                    assert measured.new_bytes_written == encoded_bytes((64, 256))
+                    assert (
+                        len(measured.tensors) == 1
+                        and measured.tensors[0]["component"] == name
+                    )
+                    assert output.has(name, "proj.weight")
+                    if name == "a":
+                        assert not output.has("b", "proj.weight"), (
+                            "A call wrote future component B"
+                        )
+                        assert output.written == encoded_bytes((64, 256))
+                    made.append(measured)
+                assert output.written == 2 * encoded_bytes((64, 256))
+                artifact = ctx.adopt_model(output)
+                store, slot, transaction = output.store, output.slot, output.transaction
+            # Actual finished Output reuse must validate the same complete plan and scope.
+            with Output(store, slot, transaction, work, 2 << 20) as reopened:
+                assert reopened.done is not None
+                for name in ("a", "b"):
+                    reused = quantize_component_into(
+                        source,
+                        reopened,
+                        ctx,
+                        request,
+                        tel,
+                        encoding="svdq.nvfp4",
+                        plan=plan,
+                        component=name,
+                        logical_dtype=lambda row: row.logical_dtype,
+                        calibration=calibration,
+                    )
+                    assert reused.encoded_keys == 0 and reused.reused_keys == 1
+                    assert (
+                        reused.source_bytes_read == 0 and reused.new_bytes_written == 0
+                    )
+                    assert reused.worst_relative_frobenius is None
+                changed = collect()
+                try:
+                    quantize_component_into(
+                        source,
+                        reopened,
+                        ctx,
+                        request,
+                        tel,
+                        encoding="svdq.nvfp4",
+                        plan=plan,
+                        component="a",
+                        logical_dtype=lambda row: row.logical_dtype,
+                        calibration=changed,
+                    )
+                except CapabilityError as error:
+                    assert error.code == "quantization_identity"
+                    changed_refusal = str(error)
+                else:
+                    raise AssertionError(
+                        "finished Output reused a different calibration"
+                    )
+        # Noncalibrated native outputs bind the same complete producer identity.
+        plain_rows = native_quantization.resolved(
+            source, plan, "fp8.rowwise", lambda row: row.logical_dtype
+        )
+        plain_work = Derivation(
+            base=source,
+            order=plan.order,
+            provenance=native_quantization.provenance(source, plain_rows, None),
+        )
+        with ctx.output("rowwise", plain_work) as plain_output:
+            for name in ("a", "b"):
+                plain = quantize_component_into(
+                    source,
+                    plain_output,
+                    ctx,
+                    request,
+                    tel,
+                    encoding="fp8.rowwise",
+                    plan=plan,
+                    component=name,
+                    logical_dtype=lambda row: row.logical_dtype,
+                )
+                assert plain.encoded_keys == 1 and plain.reused_keys == 0
+                assert plain.source_bytes_read == 64 * 256 * 2
+                assert plain.new_bytes_written == 64 * (256 + 4)
+                assert len(plain.tensors) == 1 and plain.tensors[0]["component"] == name
+                if name == "a":
+                    assert not plain_output.has("b", "proj.weight")
+            rowwise = ctx.adopt_model(plain_output)
+            plain_store, plain_slot, plain_transaction = (
+                plain_output.store,
+                plain_output.slot,
+                plain_output.transaction,
+            )
+        nonfit_refusals = []
+        with Output(
+            plain_store, plain_slot, plain_transaction, plain_work, 2 << 20
+        ) as reopened:
+            for name in ("a", "b"):
+                again = quantize_component_into(
+                    source,
+                    reopened,
+                    ctx,
+                    request,
+                    tel,
+                    encoding="fp8.rowwise",
+                    plan=plan,
+                    component=name,
+                    logical_dtype=lambda row: row.logical_dtype,
+                )
+                assert again.encoded_keys == 0 and again.reused_keys == 1
+                assert again.source_bytes_read == 0 and again.new_bytes_written == 0
+                assert again.worst_relative_frobenius is None
+            reduced = ArtifactQuantizationPlan(
+                ["a"], [("a", "proj.weight")], plan.tensors[:1]
+            )
+            for changed_plan, changed_encoding in (
+                (plan, "int8.convrot"),
+                (reduced, "fp8.rowwise"),
+            ):
+                try:
+                    quantize_component_into(
+                        source,
+                        reopened,
+                        ctx,
+                        request,
+                        tel,
+                        encoding=changed_encoding,
+                        plan=changed_plan,
+                        component="a",
+                        logical_dtype=lambda row: row.logical_dtype,
+                    )
+                except CapabilityError as error:
+                    assert error.code == "quantization_identity"
+                    nonfit_refusals.append(str(error))
+                else:
+                    raise AssertionError(
+                        "public helper reused changed nonfit native work"
+                    )
+        committed = tensorfs.open(artifact.checkpoint, local_files_only=True)
+        try:
+            facts = {}
+            for name, measured in zip(("a", "b"), made, strict=True):
+                item = committed.components[name].tensors.read("proj.weight")
+                facts[name] = check_selected(
+                    item,
+                    values[name],
+                    measured.tensors[0],
+                    calibration=calibration.stats(name, "proj.weight")
+                    .rows.float()
+                    .numpy(),
+                )
+            assert committed.verify().ok
+        finally:
+            committed.close()
+            source.close()
+    return ComponentsConverted(
+        True,
+        artifact,
+        rowwise,
+        json.dumps(
+            {
+                "components": facts,
+                "different_finished_calibration_refused": changed_refusal,
+                "nonfit_identity_refusals": nonfit_refusals,
+                "full_plan_single_identity": True,
+                "future_component_not_written": True,
+            },
+            sort_keys=True,
+        ),
+    )

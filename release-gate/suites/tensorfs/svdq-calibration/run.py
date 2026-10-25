@@ -91,6 +91,22 @@ def main():
             "detail": json.loads(completed["result"]["detail"]),
         }
 
+    components = call(
+        "runtime-components",
+        [
+            "run",
+            package / "runtime_components",
+            f"seed={args.seed}",
+            "--on",
+            args.machine,
+        ],
+    )
+    assert components["result"]["passed"] is True
+    native["runtime_components"] = {
+        "run": components["number"],
+        "detail": json.loads(components["result"]["detail"]),
+    }
+
     made = call(
         "source", ["run", package / "source", f"seed={args.seed}", "--on", args.machine]
     )

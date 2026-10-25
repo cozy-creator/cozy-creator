@@ -9,10 +9,11 @@ That source preserves the independent Runtime NVFP4 producer/helpers from
 `1c092cd8474f1a3d042d9e1ee69d61410e1adb04`. It never imports the current production
 encoder or invokes TensorFS quantization. No parent-package or private-SDK import exists.
 
-The gate uses the actual fit's alpha and BF16 factors to reconstruct its selected residual,
-then calls this independent producer. The public Output conversion must publish exactly the
-same residual/companion bytes. It does not copy the SVDQ fit algorithm. The held-out decoder
-uses the stored value law and these historical format tables, not a production decode call.
+The gate reconstructs the selected residual from the actual stored factors, then calls
+this independent NVFP4 producer. The public Output conversion must publish exactly the
+same residual/companion bytes. The held-out decoder uses the stored value law and these
+historical format tables, not a production decode call. The old SVDQ fitter is separately
+frozen below as a quality reference.
 
 
 ## Native fitter reference

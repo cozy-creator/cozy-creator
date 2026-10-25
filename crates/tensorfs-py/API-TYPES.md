@@ -538,4 +538,6 @@ checkpoint. An SVDQ selection adds `fit: {seed, component, xmax, rows}` with exa
 calibration keys and the explicit `svdq-nvfp4-r32-faer/1` strategy. Its result includes
 per-tensor `fit` details and separate `calibration_bytes_read` and
 `required_buffer_bytes` aggregates. `raw.quantization_implementation() -> str` supplies
-the producer-source and pinned-dependency digest used in external memo provenance.
+the full Writer producer/source-reader and pinned-dependency digest used in external
+memo provenance. Optional `component: str | None = None` limits execution to one component
+while preserving the identical full selection and calibration in resume identity.
