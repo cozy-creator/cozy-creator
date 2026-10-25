@@ -1,15 +1,16 @@
 //! The machine memo of memoized callables (`memoize=True`). A run of one, top-level or a
 //! child call, is answered from the success this machine holds for its signer under the same
 //! computation, and starts nothing; a success is held (`Objects::hold_memo`). A computation is
-//! the callable's operation identity, its request as given (files by content), its attention
-//! pin and lane and the models it runs with. An author's condition (`memo_requires`) names the
-//! parameters a request must give for it to be memoizable at all.
+//! the callable's operation identity, the environment it runs in (its lock and Runtime/TensorFS
+//! build), its request as given (files by content), its attention pin and lane and the models it
+//! runs with. An author's condition (`memo_requires`) names the parameters a request must give
+//! for it to be memoizable at all.
 use crate::{api::domain::ModelChoice, catalog::Generation, gpu_service::Plan, journal::InputFile};
 use serde_json::{json, Value};
 use tensorfs::sha256;
 
 pub enum Memo {
-    /// Not memoizable: not declared so, or nothing identifies its code.
+    /// Not memoizable: not declared so, or nothing identifies its code or environment.
     Off,
     /// Memoizable, but the request does not meet its author's condition: why.
     Unmet(String),
@@ -43,10 +44,13 @@ pub fn of(
     let Some(operation) = operation(generation, application, invocable) else {
         return Memo::Off;
     };
+    if generation.environment.is_empty() {
+        return Memo::Off;
+    }
     let mut files: Vec<_> = files.iter().map(|f| json!([f.input_id, f.digest, f.media_type])).collect();
     files.sort_by_key(|file| file.to_string());
-    let mut computation = json!({"operation": operation, "request": checkpoints(request), "files": files,
-        "attention": attention, "models": models});
+    let mut computation = json!({"operation": operation, "environment": generation.environment,
+        "request": checkpoints(request), "files": files, "attention": attention, "models": models});
     // A lane asked is part of what ran, whatever the Hub would pick.
     if !lane.is_empty() {
         computation["lane"] = lane.into();
