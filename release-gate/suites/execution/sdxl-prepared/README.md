@@ -18,8 +18,13 @@ candidate have been installed by the GPU owner:
 python3 release-gate/suites/execution/sdxl-prepared/prepare.py \
   /absolute/packages-worktree/sdxl /absolute/durable/output/sdxl-prepared-build
 cozy run /absolute/durable/output/sdxl-prepared-build/gpu \
-  seed=64401 --on local --gpus=1 --json
+  seed=64401 steps=2 guidance=1.0 --on local --gpus=1 --json
 ```
+
+Run six separate requests: `steps=2/7/30`, each with `guidance=1.0` and `guidance=7.0`.
+Each invocation submits exactly one complete prepared plan; the Runtime's request ownership
+contract is unchanged. Each also performs the nonresident and unsupported-mode refusal checks
+without another submission. Preserve one receipt per step/guidance pair.
 
 Each new run needs a new seed to avoid an application memo hit. This fixture changes no
 SDK, rents nothing and starts no comparative performance benchmark.

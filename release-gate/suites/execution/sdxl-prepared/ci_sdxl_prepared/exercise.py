@@ -111,7 +111,9 @@ def eager(unet, scheduler, latent, inputs, guidance, count):
     return latent
 
 
-def exercise(seed, ctx, tel):
+def exercise(seed, steps, guidance, ctx, tel):
+    if steps not in (2, 7, 30) or guidance not in (1.0, 7.0):
+        raise ValueError("this parity gate covers 2/7/30 steps and guidance 1/7")
     torch.set_num_threads(1)
     device = torch.device(str(ctx.device))
     assert device.type == "cuda"
@@ -148,66 +150,60 @@ def exercise(seed, ctx, tel):
         del source_unet
         unet, backend, placement = place(memory, checkpoint, device)
         try:
-            for guidance in (1.0, 7.0):
-                batch = 2 if guidance > 1 else 1
-                inputs = (
-                    torch.randn(batch, 4, 32, generator=generator).half().to(device),
-                    torch.randn(batch, 32, generator=generator).half().to(device),
-                    torch.tensor(
-                        [[64, 64, 0, 0, 64, 64]] * batch,
-                        dtype=torch.float16,
-                        device=device,
-                    ),
+            batch = 2 if guidance > 1 else 1
+            inputs = (
+                torch.randn(batch, 4, 32, generator=generator).half().to(device),
+                torch.randn(batch, 32, generator=generator).half().to(device),
+                torch.tensor(
+                    [[64, 64, 0, 0, 64, 64]] * batch,
+                    dtype=torch.float16,
+                    device=device,
+                ),
+            )
+            noise = torch.randn(1, 4, 8, 8, generator=generator).half().to(device)
+            placement.open_attempt()
+            with memory.request(f"euler:{guidance}:{steps}") as request:
+                placement.plan(("unet",), request)
+                oracle_scheduler = schedule(steps, device)
+                initial = noise * oracle_scheduler.init_noise_sigma
+                with placement.using("eager", ("unet",)):
+                    expected = eager(
+                        unet, oracle_scheduler, initial, inputs, guidance, steps
+                    )
+                native_scheduler = schedule(steps, device)
+                with placement.using("step0", ("unet",)):
+                    first = eager(unet, native_scheduler, initial, inputs, guidance, 1)
+                before = first.clone()
+                actual = repeat_euler(
+                    unet=unet,
+                    scheduler=native_scheduler,
+                    latents=first,
+                    prompt=inputs[0],
+                    pooled=inputs[1],
+                    time_ids=inputs[2],
+                    guidance=guidance,
+                    ctx=ctx,
+                    tel=tel,
                 )
-                noise = torch.randn(1, 4, 8, 8, generator=generator).half().to(device)
-                for steps in (2, 7, 30):
-                    placement.open_attempt()
-                    with memory.request(f"euler:{guidance}:{steps}") as request:
-                        placement.plan(("unet",), request)
-                        oracle_scheduler = schedule(steps, device)
-                        initial = noise * oracle_scheduler.init_noise_sigma
-                        with placement.using("eager", ("unet",)):
-                            expected = eager(
-                                unet, oracle_scheduler, initial, inputs, guidance, steps
-                            )
-                        native_scheduler = schedule(steps, device)
-                        with placement.using("step0", ("unet",)):
-                            first = eager(
-                                unet, native_scheduler, initial, inputs, guidance, 1
-                            )
-                        before = first.clone()
-                        actual = repeat_euler(
-                            unet=unet,
-                            scheduler=native_scheduler,
-                            latents=first,
-                            prompt=inputs[0],
-                            pooled=inputs[1],
-                            time_ids=inputs[2],
-                            guidance=guidance,
-                            ctx=ctx,
-                            tel=tel,
-                        )
-                        assert actual is not None, (
-                            "resident native interval was refused"
-                        )
-                        assert torch.equal(first, before), (
-                            "capture changed caller's eager latent"
-                        )
-                        error = float((actual.float() - expected.float()).abs().max())
-                        assert torch.equal(actual, expected), {
-                            "steps": steps,
-                            "guidance": guidance,
-                            "max_abs_error": error,
-                        }
-                        report["cases"].append(
-                            {
-                                "steps": steps,
-                                "guidance": guidance,
-                                "max_abs_error": error,
-                            }
-                        )
-                    placement.release()
-                    assert memory.native.stats()["pinned_bytes"] == 0
+                assert actual is not None, "resident native interval was refused"
+                assert torch.equal(first, before), (
+                    "capture changed caller's eager latent"
+                )
+                error = float((actual.float() - expected.float()).abs().max())
+                assert torch.equal(actual, expected), {
+                    "steps": steps,
+                    "guidance": guidance,
+                    "max_abs_error": error,
+                }
+                report["cases"].append(
+                    {
+                        "steps": steps,
+                        "guidance": guidance,
+                        "max_abs_error": error,
+                    }
+                )
+            placement.release()
+            assert memory.native.stats()["pinned_bytes"] == 0
 
             # Capacity admission must never read evicted weights just to capture a graph.
             memory.trim()
@@ -224,7 +220,7 @@ def exercise(seed, ctx, tel):
                     prompt=inputs[0],
                     pooled=inputs[1],
                     time_ids=inputs[2],
-                    guidance=7.0,
+                    guidance=guidance,
                     ctx=ctx,
                     tel=tel,
                 )
@@ -242,7 +238,7 @@ def exercise(seed, ctx, tel):
                     prompt=inputs[0],
                     pooled=inputs[1],
                     time_ids=inputs[2],
-                    guidance=7.0,
+                    guidance=guidance,
                     ctx=ctx,
                     tel=tel,
                 )
