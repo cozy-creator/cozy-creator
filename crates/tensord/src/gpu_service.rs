@@ -1379,7 +1379,9 @@ impl Pool {
         let (held, level) = (&member.held, member.level);
         if member.payload.is_some() {
             if let Some(ready) = *member.prepared.lock().unwrap() {
-                return if ready { "" } else { "its program was held back; explicitly warm again to retry" };
+                return if !ready { "its program was held back; explicitly warm again to retry" }
+                    else if self.level(&plan.construction).is_some_and(|holds| holds >= level) { "" }
+                    else { "its prepared program may have retired; explicitly warm again to prepare" };
             }
         } else if self.level(&plan.construction).is_some_and(|holds| holds >= level) {
             return "";
@@ -1439,6 +1441,11 @@ impl Pool {
         // A warm declaration gets one attempt even when its factory refuses or the process
         // dies. Repeating a keeper pass must never create a capture/OOM/crash loop.
         if member.payload.is_some() { *member.prepared.lock().unwrap() = Some(false); }
+        let mut callbacks = Callbacks {
+            engine, id: preparation.map_or("", Stoppable::id), seen: Default::default(),
+            generation: &member.held.record, spool: None, caller: None, calls: None,
+            formation: None, host: self.host.as_deref(),
+        };
         let reply = session.executor.command(
             &Command::Map(Map {
                 construction: plan.construction.clone(),
@@ -1448,7 +1455,7 @@ impl Pool {
                 payload: member.payload.as_ref().map(|payload| protocol::executor::Json(
                     serde_json::from_str(payload.get()).expect("validated warm payload"))),
             }),
-            &mut device_executor::Baseline,
+            &mut callbacks,
         );
         // Synchronize a cloned, already-dispatched cancel before reusing the process.
         cancel.disable();
@@ -2233,7 +2240,7 @@ impl Pool {
                 };
                 if !active() { return; }
                 let waited = asked.elapsed();
-                let result = pool.prewarm(&engine, &held, plan, start, Some(fetch));
+                let result = pool.prewarm(&engine, &held, plan, start, Some(fetch), None);
                 pool.note_prewarm(&key, waited, asked.elapsed() - waited, &result);
             });
         if let Err(error) = started {
