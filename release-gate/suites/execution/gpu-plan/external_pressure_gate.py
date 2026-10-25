@@ -63,7 +63,9 @@ def main():
                     log.write(line)
                     log.flush()
                     try:
-                        events.put((name, json.loads(line)))
+                        row = json.loads(line)
+                        if isinstance(row, dict):
+                            events.put((name, row))
                     except ValueError:
                         pass
             events.put((name, {"process_exit": process.wait()}))
@@ -143,6 +145,10 @@ def main():
                         receipt["managed_cleanup"] = detail
                 if "process_exit" in row:
                     receipt["managed_exit"] = row["process_exit"]
+                    if terminal is None:
+                        raise RuntimeError(
+                            "managed CLI ended before a terminal run receipt; see managed.ndjson"
+                        )
             if terminal is not None and (
                 "foreign" not in processes or "foreign_exit" in receipt
             ):

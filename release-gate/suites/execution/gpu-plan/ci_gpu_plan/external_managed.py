@@ -10,14 +10,16 @@ from cozy_runtime.compute import PreparedRepeat
 from tensorfs import varena
 
 
-def exercise(ctx, tel):
+def exercise(ctx, tel, weight_mib):
     def report(**fields):
         tel.log(json.dumps(fields))
 
     torch.set_num_threads(1)
+    if not 256 <= weight_mib <= 1024:
+        raise ValueError("managed fixture must retain 256..1024 MiB")
     varena.install_allocator()
     arena = varena.Arena(0)
-    region = arena.reserve(512 << 20)
+    region = arena.reserve(weight_mib << 20)
     use = region.prepare()
     storage = use.tensor
     storage.zero_()  # Complete immutable bytes, including the unused extent.
@@ -43,7 +45,7 @@ def exercise(ctx, tel):
     report(
         pressure_ready=True,
         pid=os.getpid(),
-        native_bytes=512 << 20,
+        native_bytes=weight_mib << 20,
         at_ns=time.time_ns(),
     )
     try:

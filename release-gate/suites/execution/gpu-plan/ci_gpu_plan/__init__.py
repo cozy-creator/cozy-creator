@@ -21,11 +21,15 @@ class Report(msgspec.Struct):
     detail: str
 
 
+class PressureProbe(msgspec.Struct, forbid_unknown_fields=True):
+    weight_mib: int = 512
+
+
 @app.entrypoint
-def external_pressure(ctx: Context, tel: Telemetry) -> Report:
+def external_pressure(payload: PressureProbe, ctx: Context, tel: Telemetry) -> Report:
     from .external_managed import exercise
 
-    exercise(ctx, tel)
+    exercise(ctx, tel, payload.weight_mib)
     return Report(False, "expected automatic pressure cancellation")
 
 
