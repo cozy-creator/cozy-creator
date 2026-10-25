@@ -1,5 +1,26 @@
 # Native BF16 normalization
 
+Native CLI proof passed on 2026-10-25: basic 18163 and cancellation/resume 18164,
+with exact observed-cohort restoration 18165. [Retained evidence](evidence/f8e6-18163-18164.json)
+pins source `f8e6a7a4f`, fixture `ce8c801ab`, wheel SHA256 `cc264f59830342ebb3e7a68192879d711f2f3ce9058eb8ed995fe177d82d6ae3`,
+Creator 51a and Runtime 237. This is native Writer proof; the supplied Runtime BF16
+adapter was not installed into these runs.
+
+All 42 cases passed exact byte/statistics checks, including all 63,488 finite F16
+patterns, scalar/rank4/empty and rowwise inputs. Nine numerical/unsupported-input
+refusals and seven preflight refusals passed. Unchanged reuse performed zero reads
+and writes, with unknown reused quality. Independent normalization/quantization
+journals survived reopen and refused both directions of pending-key overlap.
+
+The 42-tensor calls took 9.034ms/8.693ms under 16KiB/64KiB working grants, reading
+135,253 stored bytes (146,404 logical source bytes) and writing 141,458 bytes.
+Cancellation joined in 0.115ms; resume read 64MiB and wrote 32MiB in 0.689s with a
+262,136-byte reported working requirement. Process high-water RSS was80,302,080 /
+85,282,816 bytes during the basic calls and153,329,664 bytes before/after resume.
+Those process high-water values include fixture/reference/store work; they are
+not exclusive conversion peaks. These are correctness/cost samples, not general
+model conversion or throughput claims.
+
 Use the installed default-home Cozy CLI only during the primary Varena agent's
 coordinated validation window. These entrypoints run CPU arithmetic through the
 ordinary scheduler; `--gpus=1` is the agreed GPU cap, not GPU numerical proof.
@@ -51,6 +72,6 @@ quantization, finished identity validation and unknown reused measurements.
 Results retain exact native/oracle hashes, completed source/logical/output byte
 counters, declared/required conversion workspace, wall/process CPU durations and
 process lifetime `ru_maxrss` before/after. RSS is not a per-operation allocation
-peak; byte counters are not physical disk or PCIe traffic. No native execution
-receipt exists at introduction. This is a CPU conversion gate, not performance,
+peak; byte counters are not physical disk or PCIe traffic. Native receipts are
+linked above; the Runtime adapter requires its own integrated run. This is a CPU conversion gate, not performance,
 model quality, GPU serving, deployment or release qualification.
