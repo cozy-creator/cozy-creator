@@ -234,8 +234,8 @@ def calibrate(
     )
     assert stats.rows.shape == (128, COLS), stats.rows.shape
     values = original.float().numpy()
-    fitted = svdq.fit(torch, "proj.weight", values, stats, ctx.device)
-    detail = check_residual(fitted, values, stats, ctx.device)
+    fitted = svdq.fit(torch, "proj.weight", values, stats, str(ctx.device))
+    detail = check_residual(fitted, values, stats, str(ctx.device))
     selection = prepare_source_quantization(checkpoint, components=("net",), block=COLS)
     work = Derivation(
         base=checkpoint,
