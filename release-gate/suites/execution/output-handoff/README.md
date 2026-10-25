@@ -88,3 +88,14 @@ This covers family admission without memory lending or replaying the parent.
 real Context.plan directly. One host graph launch must perform every device increment while
 the application thread parks, with exactly two Python body calls (warmup and capture) and exact
 output. This complements the isolated candidate-child lifecycle/primitive cells.
+
+## Hard-cancel cohort edda/f0d/9e95
+
+Actual local RTX4070 Laptop qualification passed ordinary overlap17829–17830, cancellation
+inside encoding17832–17833, and cancellation inside real480MiB custody17835–17836. Every
+successor completed correctGPU work in the same executorPID; canceled attempts published no
+result/output. The ordinary image's decoded pixels matched its GPU-source hash. The exact
+selected timestamp-window assertions were used, with no retries or injected delays.
+[Proof and immutable receipts](evidence/edda-f0d-9e95-local-lifecycle/PROOF.md).
+Normal restore17837 returned the healthy4178/c1/e521 cohort and observed zeroactive work.
+These are lifecycle gates, not performance comparisons or output-service-restart proof.

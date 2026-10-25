@@ -42,4 +42,9 @@ reclamation based on elapsed time. The old cooperative17243 receipt remains hist
 This cell does not cover an external allocation that never succeeds, Windows driver attribution,
 multi-rank pressure, or the separate idle-pending-preflight offload race.
 
-No live run is recorded yet. Source checks do not establish GPU qualification.
+Real local Linux run17824 passed automatic pressure retirement on edda/f0d/9e95; its exact
+process birth exited,798,097,408driverbytes were released while foreignbuffers remained live,
+and the foreign application correctly allocated another128MiB. Successor17825 completed in
+a freshPID after admission reopened. No manual cleanup cancellation produced the pass.
+[Exact cohort proof](../output-handoff/evidence/edda-f0d-9e95-local-lifecycle/PROOF.md).
+This does not qualify Windows, multi-GPU, idle-pending-preflight pressure or sticky-context recovery.

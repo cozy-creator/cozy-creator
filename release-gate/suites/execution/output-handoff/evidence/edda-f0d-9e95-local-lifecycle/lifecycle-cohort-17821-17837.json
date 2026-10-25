@@ -1,0 +1,174 @@
+{
+  "schema": 1,
+  "qualification": "four_real_lifecycle_gates_pass_and_healthy_restore",
+  "summary": {
+    "cells": [
+      {
+        "cell": "pressure",
+        "rc": 0,
+        "passed": true,
+        "receipt": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/lifecycle-after-ready-alias-20261025/pressure/receipt.json"
+      },
+      {
+        "cell": "output-overlap",
+        "rc": 0,
+        "passed": true,
+        "receipt": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/lifecycle-after-ready-alias-20261025/output-overlap/receipt.json"
+      },
+      {
+        "cell": "output-cancel-encoding",
+        "rc": 0,
+        "passed": true,
+        "receipt": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/lifecycle-after-ready-alias-20261025/output-cancel-encoding/receipt.json"
+      },
+      {
+        "cell": "output-cancel-custody",
+        "rc": 0,
+        "passed": true,
+        "receipt": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/lifecycle-after-ready-alias-20261025/output-cancel-custody/receipt.json"
+      }
+    ],
+    "seed": 1792923669,
+    "failed": []
+  },
+  "target_artifacts": {
+    "tensord": {
+      "path": "/home/fidika/cozy/.worktrees/cozy-creator/varena-consolidation/.task/portable-edda578b1/cozy/cozy-linux-x86_64",
+      "sha256": "b281ce219e8cfc09625ac9f383823037329ccdff7ac0150f6e055e86881bd825"
+    },
+    "runtime": {
+      "path": "/home/fidika/cozy/.worktrees/cozy-runtime/varena-consolidation/.task/portable-f0d25c8e7/cozy_runtime-0.32.3-cp312-abi3-manylinux_2_28_x86_64.whl",
+      "sha256": "24c95e67424f515e4d4a6141ac743b3294df9fded24669ccdc00d3490647a3f9"
+    },
+    "tensorfs": {
+      "path": "/home/fidika/cozy/.worktrees/cozy-creator/varena-consolidation/.task/portable-9e95ee586/tensorfs/tensorfs-0.15.8-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "sha256": "8c5b6f9a7471db87c5193b7396cfff48c2eabe8cef3817741832bf642cfe683b"
+    }
+  },
+  "restore": {
+    "number": 17837,
+    "public_id": "run-d63b1a0a6a7abd7ca04da1ab",
+    "status": "completed",
+    "to": {
+      "cozy": "0.11.17+dev.g4178a2a1",
+      "runtime": "0.32.3",
+      "runtime_sha256": "8588ce22f35872fddd76695217ea949e50eaf506ef0b75a8fbbb0b0eab7b7eb8",
+      "tensorfs": "0.15.6",
+      "tensorfs_sha256": "ca15dd65e7aa3249f3749dd60a452260ab54854ccb44d4449b7189234951941b"
+    },
+    "observed": {
+      "state": "ready",
+      "running": 0,
+      "queued": 0
+    },
+    "observed_tensord_commit": "4178a2a1195b9afe1426ec4567d738d28d31f826"
+  },
+  "startup": {
+    "worker_started_at_ms": 1792923676560,
+    "retained_readiness_row": {
+      "at_ms": 1792923680287.783,
+      "text": "2026-10-25T10:21:20.287783Z  INFO tensord::api::server: this boot's retained readiness still holds"
+    },
+    "kernel_boot_rows_after_exact_restart": 0,
+    "latest_machine_log_timestamp_ms": 1792923822497.4001,
+    "recorded_logs": [
+      {
+        "at_ms": 1792923680287.783,
+        "text": "2026-10-25T10:21:20.287783Z  INFO tensord::api::server: this boot's retained readiness still holds"
+      },
+      {
+        "at_ms": 1792923731286.814,
+        "text": "2026-10-25T10:22:11.286814Z  WARN tensord::execution: execution 504: stock executor EOF before reply; the executor ended on its own (signal: 9 (SIGKILL))"
+      },
+      {
+        "at_ms": 1792923761512.045,
+        "text": "2026-10-25T10:22:41.512045Z  INFO tensord::device_executor: request lookahead sent current=509 request=510 run=\"run-1f53aafdc680ec5f33a4bdaa\""
+      },
+      {
+        "at_ms": 1792923761514.178,
+        "text": "2026-10-25T10:22:41.514178Z  INFO tensord::device_executor: request lookahead ready request=510 ok=true"
+      },
+      {
+        "at_ms": 1792923761911.665,
+        "text": "2026-10-25T10:22:41.911665Z  INFO tensord::device_executor: request lookahead reused request=510"
+      },
+      {
+        "at_ms": 1792923814385.274,
+        "text": "2026-10-25T10:23:34.385274Z  INFO tensord::device_executor: request lookahead sent current=515 request=516 run=\"run-5be534b774ed1512371145e3\""
+      },
+      {
+        "at_ms": 1792923814386.961,
+        "text": "2026-10-25T10:23:34.386961Z  INFO tensord::device_executor: request lookahead ready request=516 ok=true"
+      },
+      {
+        "at_ms": 1792923822497.4001,
+        "text": "2026-10-25T10:23:42.497400Z  INFO tensord::device_executor: request lookahead reused request=516"
+      }
+    ],
+    "first_managed_GPU_request": {
+      "run": 17824,
+      "executor_pid": 2963040,
+      "native_plan_ready_ns": 1792923724353760767,
+      "native_pinned_bytes": 536870912
+    },
+    "boundary": "No historicalgenerationkernelbootfanout appears in savedpostrestartlog snapshot. This is not a promise nofuture ondemand kernelwork will occur and not a startupbenchmark."
+  },
+  "proofs": [
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/lifecycle-after-ready-alias-20261025/review/pressure-17824-17825.json",
+      "sha256": "0c9c5edeb628929f0b5ce8feb7a65d0b8a3ae539c422aca20a69beb1dc6b9d55"
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/lifecycle-after-ready-alias-20261025/review/output-overlap-17829-17830.json",
+      "sha256": "6c0968f82ce5fc6fae810387a110a5a3118f8e85c4c8ab708c065e4e909c2cbb"
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/lifecycle-after-ready-alias-20261025/review/encoding-cancel-17832-17833.json",
+      "sha256": "fd498ed6f5fe8266485e0747c901949a549bc61afd3086909eb6fe9c911bf7ee"
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/lifecycle-after-ready-alias-20261025/review/custody-cancel-17835-17836.json",
+      "sha256": "a96fded846461291edf7a4475cc17ca4361fa380adca9cf60c5e3af54bb374c7"
+    }
+  ],
+  "limits": [
+    "SinglelocalLinuxRTX4070Laptop; Windows/multiGPU/standalonecoverage separate.",
+    "Exactprocessreplacement under externalpressure is not poisonedcontextrecovery.",
+    "Outputservice restart andidle pendinglookaheadpressure not exercised.",
+    "Observation times/cellworkloads are not modelperformance comparisons."
+  ],
+  "receipts": [
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/lifecycle-after-ready-alias-20261025/baseline.json",
+      "sha256": "4bc667543995862c0e455748e92ba59250fa4cecac6a6bb66b82cef7beb74496"
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/lifecycle-after-ready-alias-20261025/summary.json",
+      "sha256": "6a1d0fcb5f41ffaa459b7816780f6115b6e159e903bcdbdd73b4c6d3b1bb4d51"
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/lifecycle-after-ready-alias-20261025/install.json",
+      "sha256": "549ac132902ec0f4cf0f89f277c13f1f62abfd75375631a3bc433bd0a629bbc3"
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/lifecycle-after-ready-alias-20261025/install-observed.json",
+      "sha256": "4fc4016e9027cf5949032b110136b13355f7167eb609e415fdd5578847bdc6ee"
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/lifecycle-after-ready-alias-20261025/startup-kernel-tensord.json",
+      "sha256": "4364d977f0717b8e25d400ab6fb361becfe78ad465c2b21848eb0c6e823559f4"
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/lifecycle-after-ready-alias-20261025/tensord-final.json",
+      "sha256": "66c64365efc162655bb6c0399824347c5cbc94ec8334eaaf2ec2a5823392c403"
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/lifecycle-after-ready-alias-20261025/restore-healthy.json",
+      "sha256": "ffc04c73edd256322c900452b4c81d48cfe46deaca2ee3487bcda292b6e6332a"
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/lifecycle-after-ready-alias-20261025/restore-healthy-observed.json",
+      "sha256": "4c280cdc324691f6366135bf52f7cb720e2cb2949712d3dccaa6121e91e39054"
+    }
+  ]
+}

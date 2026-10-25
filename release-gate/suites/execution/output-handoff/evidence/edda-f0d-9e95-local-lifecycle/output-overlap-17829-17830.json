@@ -1,0 +1,146 @@
+{
+  "schema": 1,
+  "qualification": "real_same_PID_GPU_CPU_output_overlap_pass",
+  "runs": {
+    "warm": 17828,
+    "output": {
+      "id": "run-1dfe0100dada29be17b04c36",
+      "number": 17829,
+      "kind": "call",
+      "target": "local/ci-output-handoff/run",
+      "hub": "https://tensorhub.com",
+      "machine": "local",
+      "status": "completed",
+      "cancel_requested": false,
+      "machine_state": "running",
+      "output": [
+        {
+          "id": "17829/images/1",
+          "name": "images",
+          "index": 1,
+          "rev": 1,
+          "length": 50332138,
+          "media_type": "image/webp",
+          "status": "completed",
+          "sha256": "sha256:2b97e9d069a8d1def9408df4c4b09807d1326f4cbd282245944d8a69df496a8f",
+          "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/lifecycle-after-ready-alias-20261025/output-overlap/encode-assets/17829-images-1.webp"
+        }
+      ],
+      "created_at_ms": 1792923760817,
+      "accepted_at_ms": 1792923760914,
+      "started_at_ms": 1792923761178,
+      "settled_at_ms": 1792923767847,
+      "result": {
+        "file_sha256": "",
+        "files": [],
+        "gpu_finished_ns": 1792923761617852481,
+        "gpu_started_ns": 1792923761198592521,
+        "images": [
+          {
+            "asset_ref": "attempt:509/image/0001",
+            "digest": "sha256:2b97e9d069a8d1def9408df4c4b09807d1326f4cbd282245944d8a69df496a8f",
+            "kind": "image",
+            "media_type": "image/webp"
+          }
+        ],
+        "pid": 2970899,
+        "pixels_sha256": "dd80b3bdd3771026b1d3342b995bc58f7ecef9e33f04bf2ae29ed395f0495272",
+        "tag": "encode"
+      },
+      "execution_ms": 5722
+    },
+    "successor": {
+      "id": "run-1f53aafdc680ec5f33a4bdaa",
+      "number": 17830,
+      "kind": "call",
+      "target": "local/ci-output-handoff/run",
+      "hub": "https://tensorhub.com",
+      "machine": "local",
+      "status": "completed",
+      "cancel_requested": false,
+      "machine_state": "running",
+      "output": [],
+      "created_at_ms": 1792923761332,
+      "accepted_at_ms": 1792923761423,
+      "started_at_ms": 1792923761886,
+      "settled_at_ms": 1792923762609,
+      "result": {
+        "file_sha256": "",
+        "files": [],
+        "gpu_finished_ns": 1792923762424583137,
+        "gpu_started_ns": 1792923761920957176,
+        "images": [],
+        "pid": 2970899,
+        "pixels_sha256": "",
+        "tag": "next"
+      },
+      "execution_ms": 665
+    }
+  },
+  "assertions": {
+    "same_pid": 2970899,
+    "ordered_GPU_intervals": true,
+    "encoding_overlap_ns": 503625961,
+    "GPU_handoff_gap_ns": 303104695,
+    "downloaded_pixel_parity": [
+      {
+        "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/lifecycle-after-ready-alias-20261025/output-overlap/encode-assets/17829-images-1.webp",
+        "size": [
+          4096,
+          4096
+        ],
+        "encoded_sha256": "2b97e9d069a8d1def9408df4c4b09807d1326f4cbd282245944d8a69df496a8f",
+        "decoded_pixels_sha256": "dd80b3bdd3771026b1d3342b995bc58f7ecef9e33f04bf2ae29ed395f0495272",
+        "matches_GPU_source": true
+      }
+    ]
+  },
+  "machine_phases": {
+    "gpu_returned": {
+      "at_ns": 1792923761671233127,
+      "phase": "gpu_returned",
+      "pid": 2970899
+    },
+    "output_encoding.begin": {
+      "ok": null,
+      "phase": "output_encoding",
+      "state": "begin",
+      "at_ns": 1792923761692000000
+    },
+    "output_encoding.end": {
+      "ok": true,
+      "phase": "output_encoding",
+      "state": "end",
+      "at_ns": 1792923766152000000
+    },
+    "output_finished": {
+      "at_ns": 1792923766900839673,
+      "phase": "output_finished"
+    }
+  },
+  "cohort_reference": "../baseline.json target:edda/f0d/9e95; normalinstall17821",
+  "limits": [
+    "Oneimage lifecyclecorrectness; notmodelthroughput orComfyUIcomparison.",
+    "Encoding phase boundaries millisecondprecision; handlerGPU marks nanoseconds on sameworker.",
+    "Cancellation and externalpressure are separategates; no claimhere.",
+    "Rootsessionrestore pending at extraction."
+  ],
+  "receipts": [
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/lifecycle-after-ready-alias-20261025/output-overlap/receipt.json",
+      "sha256": "5c8400d2ffafcc62b5f1f63375baae1411bdccdc13caefa2dfd1dfdadcb838df"
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/lifecycle-after-ready-alias-20261025/output-overlap/warm.ndjson",
+      "sha256": "21d3b999ade519fd8c49d2839121bc13ca865d601368b6d253dcd17a1b639acc"
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/lifecycle-after-ready-alias-20261025/output-overlap/encode.ndjson",
+      "sha256": "4fa5a2bba89fd19ea4e128033de4ea141c2e3d903a45d7b6cbc4705f0934a5ce"
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/lifecycle-after-ready-alias-20261025/output-overlap/next.ndjson",
+      "sha256": "fe6ec7cc76716e1ab3ce96754f63f9acf0abbee128a8e6d140e461ac6c8f07e2"
+    }
+  ]
+}
