@@ -521,12 +521,33 @@ def gil_cancellation(memory, directory, seed):
         del alias
         released = memory.native.reclaim(2 * MIB)
         assert released >= 2 * MIB, memory.native.stats()
+        alias_release_ms = (time.perf_counter_ns() - began) / 1e6
+        abandoned = region.prepare()
+        escaped = abandoned.tensor
+        escaped.fill_(23)
+        del abandoned
+        try:
+            region.prepare()
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("an escaped incomplete fill was overwritten")
+        assert escaped[-1].item() == 23
+        del escaped
+        retry = region.prepare()
+        assert retry.needs_fill
+        retry.tensor.fill_(29)
+        retry.commit()
+        assert retry.tensor[-1].item() == 29
+        del retry
+        assert memory.native.reclaim(2 * MIB) >= 2 * MIB
         return {
+            "abandoned_fill_retry_passed": True,
             "rounds": rounds,
             "finite_horizon_steps": 3000,
             "guard_drop_releases_immediately": True,
             "alias_drop_reclaimed_bytes": released,
-            "alias_drop_to_reclaim_ms": (time.perf_counter_ns() - began) / 1e6,
+            "alias_drop_to_reclaim_ms": alias_release_ms,
         }
     finally:
         loop.close()
