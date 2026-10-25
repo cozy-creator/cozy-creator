@@ -69,3 +69,38 @@ TensorFS6431a5387 and TensorD9998cf5f4. The fixture uses the executor's actual
 prepare/run_prepared boundary; source8176adc6a. [Exact cohort and receipts](evidence/de3dfc42c-rtx3060.json).
 This repeats raw loading, cancellation, failed-source refusal, checked request completion and
 alias/pin cleanup. It does not qualify encoded LoadSlot composition or event-only transfer handoff.
+
+## Checked encoded load composition
+
+TensorFS0.15.7 adds an encoded factory while preserving the raw constructor and continuation ABI.
+The existing worker reads stored parts, checks copy completion, runs the existing native decoder,
+checks decode completion, commits the final Fill, and only then launches the dependent graph.
+These new cells are source-ready; previous raw receipts do not qualify them.
+
+```sh
+cozy run /absolute/canonical/worktree/release-gate/suites/execution/native-load-execute/gpu \
+  mode=encoded-nvfp4 dtype=BF16 seed=157001 --on OWNED_MACHINE --gpus=1 --json
+```
+
+Run `encoded-nvfp4` and `encoded-convrot` with each of `F32`, `F16` and `BF16`, with fresh seeds.
+Each uses a real checkpoint, zero-initialized typed final storage, a three-step captured row
+reduction and a parked Python thread. The independent reference evaluates stored value equations
+with the format's explicit F32 rounding boundaries before the output dtype conversion; it never
+calls the production decoder. Final tensor values and dependent results must agree, with one
+native launch and only warmup/capture Python body calls. Facts must show stored read bytes,
+completed decoded bytes, bounded requested scratch, and read→decode→launch timestamps.
+
+Separate modes `encoded-cancel-before`, `encoded-cancel-race`, `encoded-input-error`,
+`encoded-decode-error` and `encoded-refusals` use actual cancellation, an independently copied
+and truncated weight chunk, and a supported grouped encoding with a NaN relative scale that
+triggers the real decoder error word. Failed reads/decodes must launch no dependent graph;
+semantic failures must leave healthy CUDA work and checked owner cleanup. Constructor checks
+cover plain/missing tensors, unsupported dtype, a valid storage format without a resident source
+plan, and an actual zero scratch grant. Escaped aliases must retain the final physical pin.
+
+The scratch bound counts aligned packed parts plus requested decoder-private buffer sizes;
+it excludes final storage, shared read staging, CUDA modules/driver and allocation rounding.
+It is not a hard VRAM ceiling. Cancellation does not preempt an already running decoder kernel;
+the checked chain still joins it before cleanup. No event-only handoff, performance result or
+full-model qualification is claimed by this gate. Repeat the seven raw modes on the new artifact,
+plus the existing resident NVFP4 and ConvRot primitive/readback gates for shared decoder coverage.
