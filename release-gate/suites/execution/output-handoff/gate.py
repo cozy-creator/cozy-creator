@@ -266,6 +266,10 @@ def main():
         assert second.record["status"] == "completed", second.record
         expected_first = "canceled" if cancel else "completed"
         assert first.record["status"] == expected_first, first.record
+        for run in (first, second):
+            assert run.record.get("started_at_ms", 0) > 0, (
+                "executor handoff lost the persisted execution-start fact"
+            )
         a_end = first.marks["gpu_finished"]["at_ns"]
         b_start = second.marks["gpu_started"]["at_ns"]
         settled = first.record["settled_at_ms"] * 1_000_000
@@ -315,6 +319,10 @@ def main():
             first_controller_settled_ns=settled,
             candidate_qualified=args.expect == "overlap",
             phases=first.phases,
+            historical_start_ms={
+                first.tag: first.record["started_at_ms"],
+                second.tag: second.record["started_at_ms"],
+            },
         )
     finally:
         for run in runs:

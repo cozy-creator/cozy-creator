@@ -20,6 +20,8 @@ Use `--on <name>` for an already rented candidate machine. The controllers never
 Remote overlap and cancellation use machine-side phase timestamps, avoiding comparisons between
 the laptop clock and the GPU host clock. `--expect baseline` records the GPU handoff gap without
 classifying encoding overlap: controller settlement is a later delivery event even on the same host.
+The gate also requires the persisted `started_at_ms` after executor return. The current public CLI
+does not expose the raw outcome `execution_started` bit, so this observer does not assert that bit.
 
 The custody cancellation case produces a real ordinary file (240 MiB by default, at most
 480 MiB with `--file-mib`, below the installed aggregate output limit). It cancels after encoding finishes and must observe accepted cancellation before
