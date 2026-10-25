@@ -186,12 +186,9 @@ impl Service {
         drop(current);
         pool.wake_on_freed(&self.engine);
         if pool.width() > 0 {
-            // Kernels compile at boot, before any install. An executor starts for a request or
-            // an install: nothing here prepares a package nobody asked for.
+            // The current image may prepare ahead. Historical environments stay cold;
+            // requested installs and executions use their existing kernel preparation paths.
             pool.image_kernel_boot();
-            for held in self.catalog.installed() {
-                pool.kernel_boot(held);
-            }
         }
         self.changed_environment()
     }
