@@ -356,7 +356,7 @@ pub async fn update(
     let submitted = crate::run::submit(ctx, submit, None).await?;
     let run = crate::run::follow(ctx, submitted.run).await?;
     if run.status == calcifer::Status::Completed {
-        updated(ctx, &m.name, &verify(ctx, &m.name, run.id.as_str(), &want).await?);
+        updated(ctx, &m.name, &verify(ctx, &m.name, &run, &want).await?);
     }
     if dev && m.kind == MachineKind::Local && run.status == calcifer::Status::Completed {
         // `local` runs the installed cozy, the dev binary now: Calcifer runs it too.
@@ -622,13 +622,27 @@ fn reports(member: &'static str, named: &str) -> (&'static str, serde_json::Valu
 }
 
 /// A succeeded update must leave the machine reporting what it asked for (`want`): one that
-/// ignored what it could not carry out fails here, with its log's line about the update.
-async fn verify(ctx: &Context, name: &str, run: &str, want: &[(&str, serde_json::Value)]) -> Result<MachineStatus, Error> {
+/// ignored what it could not carry out fails here, with its log's line about the update. A machine
+/// restarting again (for an update queued behind this one) is judged by what this update's outcome
+/// says it left; a dev build's flag is the status's alone.
+async fn verify(ctx: &Context, name: &str, run: &calcifer::Run, want: &[(&str, serde_json::Value)]) -> Result<MachineStatus, Error> {
     let m = machine(ctx, name).await?;
     let status = m.status.unwrap_or_default();
     if m.unreachable.is_none() && runs(&status, want) {
         return Ok(status);
     }
+    let to = run.result.as_ref().map(|result| &result["to"]);
+    let left = to.map(|to| MachineStatus {
+        version: to["cozy"].as_str().unwrap_or_default().into(),
+        runtime: to["runtime"].as_str().unwrap_or_default().into(),
+        tensorfs: to["tensorfs"].as_str().unwrap_or_default().into(),
+        ..status.clone()
+    });
+    let named: Vec<_> = want.iter().filter(|(field, _)| *field != "dev").cloned().collect();
+    if let Some(left) = left.filter(|left| m.unreachable.is_some() && runs(left, &named)) {
+        return Ok(left);
+    }
+    let run = run.id.as_str();
     let log = format!("{}/logs/tensord?lines=1000", route(name)?);
     let log = ctx.calcifer().await?.text(&log).await.unwrap_or_default();
     let line = m.unreachable.or_else(|| log.lines().rfind(|l| l.contains(run)).map(str::to_owned));
