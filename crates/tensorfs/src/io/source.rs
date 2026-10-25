@@ -210,11 +210,30 @@ impl Source {
         tally: &IoTally,
         cancel: &ReadControl,
     ) -> Result<ReadStats> {
+        // SAFETY: identical checked read contract, with no issue observer.
+        unsafe { self.read_placements_cancelable_observed(placements, threads, mode, tally, cancel, None) }
+    }
+
+    /// The same checked cancelable read, with an optional issue-time observer.
+    /// `issued` is notification only, not a completion or successful-read certificate.
+    /// The callback must not block or re-enter the engine.
+    ///
+    /// # Safety
+    /// Exactly the source/destination contract of [`Source::read_placements_cancelable`].
+    pub unsafe fn read_placements_cancelable_observed(
+        &self,
+        placements: &[Placement],
+        threads: usize,
+        mode: Mode,
+        tally: &IoTally,
+        cancel: &ReadControl,
+        issued: Option<Issued>,
+    ) -> Result<ReadStats> {
         if placements.iter().any(|p| !matches!(p.dst, Dst::Device { .. })) {
             return Err(invalid("cancelable placement reads require device destinations"));
         }
         // SAFETY: the caller retains the same sources and destinations through checked completion.
-        unsafe { self.read_controlled(placements, threads, mode, tally, None, Some(cancel)) }
+        unsafe { self.read_controlled(placements, threads, mode, tally, issued, Some(cancel)) }
     }
 
     unsafe fn read_controlled(
@@ -349,7 +368,7 @@ impl Source {
         // SAFETY: item ranges and destination bounds checked above; caller supplies exclusivity.
         let mut stats = match cancel {
             // SAFETY: the same checked items and destinations stay owned for both engine calls.
-            Some(cancel) => unsafe { super::read_staged_cancelable(&copies, &opts, cancel) }?,
+            Some(cancel) => unsafe { super::read_staged_cancelable(&copies, &opts, cancel, issued.map(|_| &run_issued as Issued)) }?,
             // SAFETY: as above; ordinary reads keep their existing issue observer.
             None => unsafe { super::read_staged(&copies, &opts, issued.map(|_| &run_issued as Issued)) }?,
         };

@@ -138,6 +138,7 @@ struct Shared {
     pid: u32,
     continuation: Option<Arc<Continuation>>,
     began: Instant,
+    read_issued_ns: AtomicU64,
     read_completed_ns: AtomicU64,
     read_bytes: AtomicU64,
     decode_completed_ns: AtomicU64,
@@ -145,6 +146,7 @@ struct Shared {
     scratch_bytes: usize,
     decode_scheme: Option<String>,
     launch_started_ns: AtomicU64,
+    launch_submitted_ns: AtomicU64,
     compute_completed_ns: AtomicU64,
     compute_wait_entered_ns: AtomicU64,
     completion_proven: AtomicBool,
@@ -187,15 +189,23 @@ impl Shared {
                     stream: 0,
                 },
             };
+            // The single raw placement's final issue callback records host enqueue time.
+            // It does not launch work, touch CUDA, or change the checked completion boundary.
+            let issued = |_: usize, _: &[usize]| {
+                self.read_issued_ns.store(self.elapsed(), Ordering::Release);
+            };
+            let issued = (work.continuation.is_some() && work.decode.is_none())
+                .then_some(&issued as io::Issued<'_>);
             // SAFETY: Work owns the checkpoint/source/items and the Fill's physical pin.
             // The engine validates all spans, initializes padding and joins submitted work.
             let stats = unsafe {
-                work.source.read_placements_cancelable(
+                work.source.read_placements_cancelable_observed(
                     &[placement],
                     work.threads,
                     Mode::Cache,
                     &IoTally::default(),
                     &self.cancel,
+                    issued,
                 )
             }
             .map_err(io_failure)?;
@@ -262,6 +272,7 @@ impl Shared {
                 work.pin = Some(pin);
                 let launching = self.elapsed();
                 execution.start().map_err(execution_failure)?;
+                self.launch_submitted_ns.store(self.elapsed(), Ordering::Release);
                 self.launch_started_ns.store(launching, Ordering::Release);
                 self.compute_wait_entered_ns
                     .store(self.elapsed(), Ordering::Release);
@@ -746,6 +757,7 @@ impl PreparedRead {
                 pid: std::process::id(),
                 continuation: Some(execution),
                 began: Instant::now(),
+                read_issued_ns: AtomicU64::new(0),
                 read_completed_ns: AtomicU64::new(0),
                 read_bytes: AtomicU64::new(0),
                 decode_completed_ns: AtomicU64::new(0),
@@ -753,6 +765,7 @@ impl PreparedRead {
                 scratch_bytes,
                 decode_scheme,
                 launch_started_ns: AtomicU64::new(0),
+                launch_submitted_ns: AtomicU64::new(0),
                 compute_completed_ns: AtomicU64::new(0),
                 compute_wait_entered_ns: AtomicU64::new(0),
                 completion_proven: AtomicBool::new(false),
@@ -826,9 +839,11 @@ impl PreparedRead {
                 || result.is_none() && shared.cancel.canceled(),
         )?;
         for (name, clock) in [
+            ("read_issued_ns", &shared.read_issued_ns),
             ("read_completed_ns", &shared.read_completed_ns),
             ("decode_completed_ns", &shared.decode_completed_ns),
             ("launch_started_ns", &shared.launch_started_ns),
+            ("launch_submitted_ns", &shared.launch_submitted_ns),
             ("compute_completed_ns", &shared.compute_completed_ns),
             ("compute_wait_entered_ns", &shared.compute_wait_entered_ns),
         ] {
@@ -896,6 +911,7 @@ impl PreparedRead {
                 pid: std::process::id(),
                 continuation: None,
                 began: Instant::now(),
+                read_issued_ns: AtomicU64::new(0),
                 read_completed_ns: AtomicU64::new(0),
                 read_bytes: AtomicU64::new(0),
                 decode_completed_ns: AtomicU64::new(0),
@@ -903,6 +919,7 @@ impl PreparedRead {
                 scratch_bytes: 0,
                 decode_scheme: None,
                 launch_started_ns: AtomicU64::new(0),
+                launch_submitted_ns: AtomicU64::new(0),
                 compute_completed_ns: AtomicU64::new(0),
                 compute_wait_entered_ns: AtomicU64::new(0),
                 completion_proven: AtomicBool::new(false),

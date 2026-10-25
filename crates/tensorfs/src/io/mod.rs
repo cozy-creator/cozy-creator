@@ -338,10 +338,10 @@ pub(crate) unsafe fn read_staged(copies: &[Copy], opts: &ReadOpts, issued: Optio
 /// The same staging engine with cooperative cancellation between bounded copy pieces.
 /// Cancellation still joins already submitted work before returning an ordinary error.
 pub(crate) unsafe fn read_staged_cancelable(
-    copies: &[Copy], opts: &ReadOpts, cancel: &ReadControl,
+    copies: &[Copy], opts: &ReadOpts, cancel: &ReadControl, issued: Option<Issued>,
 ) -> Result<ReadStats, Error> {
     // SAFETY: identical destination/source ownership contract to read_staged.
-    unsafe { read_impl(copies, opts, true, None, Some(cancel)) }
+    unsafe { read_impl(copies, opts, true, issued, Some(cancel)) }
 }
 
 unsafe fn read_impl(
