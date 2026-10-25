@@ -39,3 +39,5 @@ never `--admin`. A direct push to master (admins) skips CI. Required checks:
 - tensorhub: `build`, required once Actions runs there again (the org's budget)
 - An RC branch gets its own queue: `ci/rc <repo> <name>` (GitHub refuses a merge queue on `rc/*`).
 - tensorhub has no merge queue: it is private, and GitHub offers merge queues on private repos only with Enterprise Cloud.
+
+<!-- cl-677 queue proof: a docs-only entry behind a red one -->
