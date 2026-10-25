@@ -14,7 +14,7 @@ on:
         type: string
         default: master
       build:
-        description: "cozy: the dev cozy binary; tensord: the manylinux tensord; tensorfs: the TensorFS wheel; kernels: CUDA AOT only (comma-separate several)"
+        description: "cozy: dev binary; tensord: manylinux binary; tensorfs: wheel; kernels: CUDA AOT; check: native Rust compilation only (comma-separate several)"
         type: string
         default: cozy
       features:
@@ -37,6 +37,9 @@ permissions:
 jobs:
   dev:
     runs-on: ${{ inputs.runner }}
+    defaults:
+      run:
+        shell: bash
     # Hang bound, not a work budget.
     timeout-minutes: 60
     steps:
@@ -51,13 +54,24 @@ jobs:
       # holds the manylinux_2_28 builds (tensord, the dev cozy); target/manylinux2014 the TensorFS
       # wheel's, whose older glibc cannot run build scripts the 2_28 container compiled.
       - uses: Swatinem/rust-cache@v2
-        if: contains(inputs.build, 'tensor') || contains(inputs.build, 'cozy')
+        if: contains(inputs.build, 'tensor') || contains(inputs.build, 'cozy') || contains(inputs.build, 'check')
         with:
           cache-on-failure: true
           workspaces: |
             . -> target
             . -> target/manylinux
             . -> target/manylinux2014
+      - uses: actions/setup-python@v6
+        if: contains(inputs.build, 'check')
+        with:
+          python-version: '3.12'
+      - name: Check native memory and TensorFS compilation
+        if: contains(inputs.build, 'check')
+        env:
+          CARGO_BUILD_JOBS: '2'
+        run: |
+          cargo check --locked -p varena -p tensorfs -p tensorfs-py
+          cargo check --locked -p tensorfs --no-default-features
       - uses: arduino/setup-task@v2
         if: contains(inputs.build, 'tensord')
         with:
@@ -117,10 +131,6 @@ jobs:
           path: crates/tensorfs/kernels/aot/
           if-no-files-found: error
           retention-days: 7
-      # varena's torch allocator shim, against torch's C++ ABI (glibc 2.28 like torch): in the wheel's package.
-      - name: Build varena's torch allocator shim
-        if: contains(inputs.build, 'tensorfs')
-        run: docker run --rm -v "$PWD:/w" -w /w/crates/tensorfs-py quay.io/pypa/manylinux_2_28_x86_64 shim/build.sh
       - name: Build the TensorFS wheel
         if: contains(inputs.build, 'tensorfs')
         uses: PyO3/maturin-action@v1
@@ -136,6 +146,20 @@ jobs:
             cargo build --release --locked --target x86_64-unknown-linux-gnu --target-dir ../../target/manylinux2014 -p tensorfs --bin tfs
             install -D -m 755 ../../target/manylinux2014/x86_64-unknown-linux-gnu/release/tfs wheel-data/scripts/tfs
       # The container leaves root-owned files the cache post-step writes.
+      - name: Import the complete TensorFS wheel
+        if: contains(inputs.build, 'tensorfs')
+        run: |
+          wheels=(crates/tensorfs-py/dist/*.whl)
+          test "${#wheels[@]}" = 1
+          uv run --no-project --python 3.12 --with "${wheels[0]}" python - <<'PY'
+          import tensorfs
+          from tensorfs import raw, varena
+          assert tensorfs.__version__ == tensorfs._ext.__version__
+          assert callable(raw.quantize) and callable(tensorfs.Writer.quantize)
+          assert tensorfs.ConversionControl().progress() == (0, 0, 0)
+          assert varena.supports_load_execution()
+          print("TensorFS full-package import and native capabilities:", tensorfs.__version__)
+          PY
       - if: always() && contains(inputs.build, 'tensorfs')
         run: sudo chown -R "$(id -u):$(id -g)" target crates/tensorfs-py
       - if: contains(inputs.build, 'tensorfs')

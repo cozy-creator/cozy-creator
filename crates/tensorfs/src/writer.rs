@@ -71,6 +71,22 @@ pub struct PartData<'a> {
     pub data: Source<'a>,
 }
 
+pub(crate) struct Scratch {
+    file: Option<File>,
+    path: PathBuf,
+}
+impl Scratch {
+    pub(crate) fn file(&mut self) -> &mut File {
+        self.file.as_mut().expect("live temporary part")
+    }
+}
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        drop(self.file.take()); // Windows must close the file before unlinking it.
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
 /// A part's bytes.
 pub enum Source<'a> {
     Read(&'a mut dyn Read),
@@ -154,6 +170,7 @@ enum At {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Line {
+    Quantization { identity: String },
     Tensor(Entry),
     Asset {
         component: String,
@@ -209,6 +226,7 @@ pub struct Writer {
     components_ranked: bool,
     metadata: Metadata,
     tensors: Tensors,
+    quantization: Option<String>,
     /// (component, asset name) → (object, given by `reuse_asset`).
     assets: BTreeMap<Name, (ObjectRef, bool)>,
     /// Repo files given to `repo_file` (README, LICENSE).
@@ -360,6 +378,7 @@ impl Writer {
             components_ranked: false,
             metadata: Metadata::new(),
             tensors: Tensors::default(),
+            quantization: None,
             assets: BTreeMap::new(),
             repo: BTreeMap::new(),
             spool,
@@ -382,6 +401,35 @@ impl Writer {
     pub fn pipeline(&mut self, class: ClassRef, config: Config) {
         unversioned("the pipeline", &class);
         self.pipeline = Some(Pipeline { class, config });
+    }
+
+    /// One immutable conversion selection owns the existing resume journal. Entries
+    /// without that binding are never mistaken for this producer's completed work.
+    pub(crate) fn bind_quantization(&mut self, identity: &str, selected: &[(String, String)]) -> Result<()> {
+        if let Some(bound) = &self.quantization {
+            return if bound == identity { Ok(()) } else {
+                Err(bad("writer quantization source or resolved recipe changed"))
+            };
+        }
+        if selected.iter().any(|(component, key)| self.has(component, key)) {
+            return Err(bad("selected tensor was written without this quantization identity"));
+        }
+        self.record(Line::Quantization { identity: identity.into() }, 0)?;
+        self.flush()
+    }
+
+    /// A temporary part belongs to this fenced writer's work directory. A crash
+    /// leaves it to the existing writer sweep; ordinary cleanup removes it below.
+    pub(crate) fn scratch(&self) -> Result<Scratch> {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        loop {
+            let path = self.dir.join(format!("quantize-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+            match OpenOptions::new().read(true).write(true).create_new(true).open(&path) {
+                Ok(file) => return Ok(Scratch { file: Some(file), path }),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(fail("create quantization part", path)(error)),
+            }
+        }
     }
 
     /// Declares component `name` (again: its class and config change, its tensors stay) and
@@ -946,6 +994,7 @@ impl Writer {
 
     fn apply(&mut self, line: Line) {
         match line {
+            Line::Quantization { identity } => self.quantization = Some(identity),
             Line::Tensor(e) => self.tensors.insert(e),
             Line::Asset {
                 component,

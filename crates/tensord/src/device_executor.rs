@@ -8,7 +8,7 @@ use crate::{
 };
 pub use protocol::executor::{
     Activate, Adapter, Answer, Bearer, Binding, ByteGrant, CallInterface, CallProgress, CheckpointItem,
-    Command, Construction, Event, Fork, Frame, Hello, HostFrame, InputFile, InputMetadata, Invoke,
+    Cancel, Command, Construction, Event, Fork, Frame, Hello, HostFrame, InputFile, InputMetadata, Invoke,
     Kind, Level, Load, LoadFacts, Map, MemoSettings, Metrics, ModelLoad, ModelPrefetch, Outcome,
     Output, PrepareRequest, Probe, Publish, PublishPart, Request, Residency, ResultRef,
     StageMemoStore, Start, Unload, RESULT_DOCUMENT,
@@ -44,52 +44,11 @@ pub struct ExecutorConfig {
     pub cgroup_namespace: Option<String>,
 }
 
-/// The lease protocol (design varena-leases), where varena serves one.
-#[cfg(unix)]
-const LEASES: Option<u32> = Some(varena::lease::PROTOCOL);
-#[cfg(not(unix))]
-const LEASES: Option<u32> = None;
-
-/// How an executor's GPU memory is served, by the memory protocol its Hello speaks. An executor
-/// is never refused for it: skew degrades to standalone.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Contract {
-    /// Chunks leased over each GPU's listener.
-    Leases,
-    /// Any other protocol: its own pages, a fixed, never-asked charge on its GPU.
-    Standalone,
-}
-
-/// How an executor's memory is served, by the protocol its Hello speaks.
-pub fn contract(hello: &Hello) -> Contract {
-    match Some(hello.memory_protocol) == LEASES {
-        true => Contract::Leases,
-        false => Contract::Standalone,
-    }
-}
-
-/// Refuses a Start naming leases to an executor that does not speak them.
-fn accepts(hello: &Hello, command: &Command) -> io::Result<()> {
-    if matches!(command, Command::Start(Start { leases: Some(_), .. })) && contract(hello) != Contract::Leases {
-        return Err(io::Error::new(io::ErrorKind::Unsupported, format!(
-            "Runtime {} speaks memory protocol {}: it reads no leases",
-            hello.runtime_version, hello.memory_protocol,
-        )));
-    }
-    Ok(())
-}
-
 /// A refusal of one executor request, its detail bounded.
 pub fn refused(seq: u64, code: &str, detail: impl Into<String>) -> Answer {
     Answer::refused(seq, code, crate::triage::ends(&detail.into(), 1024))
 }
 
-
-/// A Start's `memory_protocol`: the lease protocol where it names leases this machine serves,
-/// else 0.
-pub fn memory_protocol(leases: Option<u32>) -> u32 {
-    leases.and(LEASES).unwrap_or(0)
-}
 
 /// The run a command executes and the spool its executor reads and writes.
 fn spool(command: &Command) -> Option<(&str, &Path)> {
@@ -134,6 +93,113 @@ impl Line {
     }
 }
 
+struct QueuedPreparation {
+    command: PrepareRequest,
+    reply: Option<Frame>,
+    canceled: bool,
+    promoted: bool,
+}
+
+#[derive(Default)]
+struct LookaheadState {
+    current: String,
+    queued: Option<QueuedPreparation>,
+    retire: bool,
+}
+
+/// One actual next request on this exact executor. The existing exchange remains its only reader.
+#[derive(Clone)]
+pub struct Lookahead {
+    line: Line,
+    state: Arc<Mutex<LookaheadState>>,
+}
+
+impl Lookahead {
+    pub fn current(&self) -> String {
+        self.state.lock().unwrap().current.clone()
+    }
+
+    pub fn pending(&self, request: &str) -> bool {
+        let state = self.state.lock().unwrap();
+        !state.retire && state.queued.as_ref().is_some_and(|q|
+            !q.canceled && !q.promoted && q.command.request_id == request)
+    }
+
+    pub fn queued(&self) -> Option<String> {
+        self.state.lock().unwrap().queued.as_ref()
+            .filter(|q| !q.canceled).map(|q| q.command.request_id.clone())
+    }
+
+    pub fn active(&self) -> bool {
+        let state = self.state.lock().unwrap();
+        !state.retire && !state.current.is_empty()
+    }
+
+    /// Update the queue's one assignment. No GPU work or Invoke is sent here.
+    pub fn offer(&self, command: Option<PrepareRequest>, current: &str, public_run: Option<&str>) {
+        let mut state = self.state.lock().unwrap();
+        if state.retire || state.current != current {
+            return; // The exact executor has advanced to another invocation since the offer.
+        }
+        if let Some(queued) = &mut state.queued {
+            // Ordinary dispatch owns it now. A queued-hint cancel must never cancel the
+            // active request; its existing exact-process cancellation handle is in charge.
+            if queued.promoted {
+                return;
+            }
+            if !queued.canceled && command.as_ref() == Some(&queued.command) {
+                return;
+            }
+            if !queued.canceled {
+                queued.canceled = true;
+                self.line.send(&Command::Cancel(Cancel { request_id: queued.command.request_id.clone() }));
+                tracing::info!(request = %queued.command.request_id, "request lookahead canceled");
+            }
+            // At most one outstanding reply. A canceled in-flight preparation is drained by
+            // the normal reader, or its idle executor is retired before another request uses it.
+            if queued.reply.is_none() {
+                state.retire = true;
+                return;
+            }
+            state.queued = None;
+            // Mux's request-ID cancel mark remains until Invoke. Retire only after the
+            // current call ends, rather than let a later re-offer inherit that stale mark.
+            state.retire = true;
+            return;
+        }
+        let Some(command) = command.filter(|c| !state.current.is_empty() && c.request_id != state.current) else { return };
+        let request = command.request_id.clone();
+        state.queued = Some(QueuedPreparation { command: command.clone(), reply: None, canceled: false, promoted: false });
+        if self.line.send(&Command::PrepareRequest(command)) {
+            tracing::info!(current = %state.current, request = %request, run = public_run.unwrap_or_default(), "request lookahead sent");
+        } else {
+            state.queued = None;
+        }
+    }
+
+    pub fn invoking(&self, request: &str) -> Invoking {
+        self.state.lock().unwrap().current = request.into();
+        Invoking(self.state.clone())
+    }
+}
+
+pub struct Invoking(Arc<Mutex<LookaheadState>>);
+impl Drop for Invoking {
+    fn drop(&mut self) {
+        self.0.lock().unwrap().current.clear();
+    }
+}
+
+/// Reusing this idle process would wait for an abandoned preparation. Nothing was invoked.
+#[derive(Debug)]
+pub struct AbandonedPreparation;
+impl std::fmt::Display for AbandonedPreparation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("idle executor has an abandoned queued preparation")
+    }
+}
+impl std::error::Error for AbandonedPreparation {}
+
 /// `command`'s wire bytes. Only the typed TensorFS options may carry supplied access: the bytes
 /// keep the token, every other field is scanned.
 fn command_bytes(command: &Command) -> io::Result<Vec<u8>> {
@@ -173,13 +239,16 @@ pub struct DeviceExecutor {
     /// Where its stderr stood when the request it serves began.
     log_from: u64,
     memo: Option<Arc<crate::memo::Memo>>,
+    lookahead: Arc<Mutex<LookaheadState>>,
 }
 
 /// A cancel ends the call at once: its executor is killed (its exact process and scope), never
-/// waited on to stop by itself. Its GPU weights stay in the machine's custody, so the next
-/// executor maps them without a copy. A cancel for a call it no longer serves does nothing.
+/// waited on to stop by itself. Its locally owned GPU weights are released on process exit;
+/// a replacement executor reloads them. A cancel for a call it no longer serves does nothing.
 #[derive(Clone)]
 pub struct Cancellation {
+    /// One invocation only. Disabling waits for an in-flight delivery before session reuse.
+    enabled: Arc<Mutex<bool>>,
     exact: Arc<Exact>,
     /// The call it serves ("" while idle in the pool), and whether a cancel killed it.
     serving: Arc<Mutex<(String, bool)>>,
@@ -192,12 +261,19 @@ impl Cancellation {
         !serving.1
     }
     pub fn cancel(&self, request: &str) -> io::Result<()> {
+        let enabled = self.enabled.lock().unwrap_or_else(|error| error.into_inner());
+        if !*enabled { return Ok(()); }
         let mut serving = self.serving.lock().unwrap();
         if serving.0 != request || serving.1 {
             return Ok(());
         }
         serving.1 = true;
         self.exact.kill().map_err(io::Error::from)
+    }
+
+    /// No clone of this invocation can kill this executor after it returns to the pool.
+    pub fn disable(&self) {
+        *self.enabled.lock().unwrap_or_else(|error| error.into_inner()) = false;
     }
 }
 
@@ -324,11 +400,13 @@ pub struct CodecConfig {
 }
 
 /// The selected SDK's encoder for codecs this machine does not encode itself (audio,
-/// video): one helper process per executor, started at its first such output and ended
-/// with the executor (or when the machine dies: it exits on stdin EOF).
+/// video): one reusable helper per executor. Owned output work retains it after the executor
+/// returns or exits; machine death closes its stdin. Its generation and log outlive the helper.
 pub struct Codec {
     config: CodecConfig,
     log: PathBuf,
+    /// Opened before the executor is returned; its directory may disappear afterward.
+    stderr: Mutex<Option<File>>,
     helper: Mutex<Option<CodecHelper>>,
 }
 struct CodecHelper {
@@ -347,10 +425,35 @@ impl Codec {
         Self {
             config,
             log,
+            stderr: Mutex::new(None),
             helper: Mutex::new(None),
         }
     }
+    /// Retain the log inode before an idle executor can be ended or its root removed.
+    pub fn retain_log(&self) -> io::Result<()> {
+        let mut stderr = self.stderr.lock().unwrap();
+        if stderr.is_none() {
+            *stderr = Some(OpenOptions::new().create(true).read(true).append(true)
+                .mode(0o600).open(&self.log)?);
+        }
+        Ok(())
+    }
+    fn stderr_tail(&self) -> String {
+        use std::io::{Seek, SeekFrom};
+        let read = || -> io::Result<Vec<u8>> {
+            let stderr = self.stderr.lock().unwrap();
+            let mut file = stderr.as_ref().ok_or_else(|| io::Error::other("encoder log unopened"))?.try_clone()?;
+            let end = file.metadata()?.len();
+            file.seek(SeekFrom::Start(end.saturating_sub(4096)))?;
+            let mut bytes = Vec::new();
+            file.take(4096).read_to_end(&mut bytes)?;
+            Ok(bytes)
+        };
+        read().map(|bytes| String::from_utf8_lossy(&bytes).into_owned()).unwrap_or_default()
+    }
     fn spawn(&self) -> io::Result<CodecHelper> {
+        self.retain_log()?;
+        let stderr = self.stderr.lock().unwrap().as_ref().expect("retained encoder log").try_clone()?;
         #[cfg(unix)]
         let hold = self
             .config
@@ -365,13 +468,7 @@ impl Codec {
             .envs(&self.config.environment)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(
-                OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .mode(0o600)
-                    .open(&self.log)?,
-            );
+            .stderr(stderr);
         // The retained generation hold stays open in the codec.
         #[cfg(unix)]
         platform::process::keep_open(&mut command, hold.into_iter().collect());
@@ -422,8 +519,8 @@ impl Codec {
             Ok(_) | Err(_) => {
                 helper.take(); // the next output starts a fresh helper
                 return Err(io::Error::other(format!(
-                    "selected SDK encoder stopped; see {}",
-                    self.log.display()
+                    "selected SDK encoder stopped; {}: {}",
+                    self.log.display(), self.stderr_tail()
                 )));
             }
         }
@@ -440,6 +537,13 @@ impl Codec {
                 format!("selected SDK encoder refused: {error}"),
             )),
         }
+    }
+}
+
+impl Drop for Codec {
+    fn drop(&mut self) {
+        // The helper exits before its generation/log owners are released, including on Windows.
+        drop(self.helper.get_mut().unwrap_or_else(|error| error.into_inner()).take());
     }
 }
 
@@ -516,6 +620,18 @@ pub fn postprocess(
     }
     Ok((result, bindings))
 }
+enum TreeSource { Manifest(String), Directory(String) }
+fn tree_source(reference: &str) -> io::Result<TreeSource> {
+    if let Some(hex) = reference.strip_prefix("sha256:")
+        .filter(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit())) {
+        return Ok(TreeSource::Manifest(format!("sha256-{hex}")));
+    }
+    match reference.rsplitn(3, '/').collect::<Vec<_>>().as_slice() {
+        [name, "tree", _] => Ok(TreeSource::Directory(format!("tree-{name}"))),
+        _ => Err(io::Error::new(io::ErrorKind::InvalidData, "output tree: its reference names no spool directory")),
+    }
+}
+
 /// An output tree as the machine holds it: each regular file of its spool directory linked as
 /// the spool's `sha256-<hex>`, and a manifest naming them by path (`protocol::tree`), which the
 /// output binds to. A tree forwarded from a child (`sha256:<manifest>`) is already both.
@@ -527,16 +643,9 @@ fn tree_binding(spool: &Path, output: &Output) -> io::Result<AssetBinding> {
         let length = io::copy(&mut file, &mut HashWriter(&mut hash))?;
         Ok((tensorfs::sha256::hex(&hash.finish()), length))
     };
-    let name = match output.asset_ref.strip_prefix("sha256:") {
-        Some(hex) if hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()) => {
-            format!("sha256-{hex}")
-        }
-        _ => {
-            let tail: Vec<_> = output.asset_ref.rsplitn(3, '/').collect();
-            let [n, "tree", _] = tail.as_slice() else {
-                return Err(invalid("its reference names no spool directory"));
-            };
-            let directory = format!("tree-{n}");
+    let name = match tree_source(&output.asset_ref)? {
+        TreeSource::Manifest(name) => name,
+        TreeSource::Directory(directory) => {
             let mut files = std::collections::BTreeMap::new();
             for name in protocol::tree::walk(&spool.join(&directory), false).map_err(|e| invalid(&e.to_string()))?.into_keys() {
                 let member = Path::new(&directory).join(&name);
@@ -790,7 +899,11 @@ impl DeviceExecutor {
                 "forked executor is not a child of the process it was forked from",
             ));
         }
-        let cancellation = Cancellation { exact: Arc::new(exact.try_clone()?), serving: Arc::default() };
+        let cancellation = Cancellation {
+            enabled: Arc::new(Mutex::new(true)),
+            exact: Arc::new(exact.try_clone()?),
+            serving: Arc::default(),
+        };
         on_birth(&birth, &cancellation)?;
         // Wait for connection OR observed process death. No elapsed-time startup kill.
         let Some(stream) = listener.accept_unless(&exact)? else {
@@ -827,6 +940,7 @@ impl DeviceExecutor {
             cancellation,
             log_from: 0,
             memo: None,
+            lookahead: Arc::default(),
         };
         end_channel_at_exit(executor.exact.try_clone()?, executor.stream.try_clone()?)?;
         let hello = executor.command(&Command::Hello, &mut Baseline)?;
@@ -879,8 +993,17 @@ impl DeviceExecutor {
     pub fn line(&self) -> Line {
         Line(Arc::downgrade(&self.writer))
     }
+    pub fn lookahead(&self) -> Lookahead {
+        Lookahead { line: self.line(), state: self.lookahead.clone() }
+    }
+    pub fn abandoned_lookahead(&self) -> bool {
+        self.lookahead.lock().unwrap().retire
+    }
+    pub fn preparing_lookahead(&self) -> bool {
+        self.lookahead.lock().unwrap().queued.as_ref().is_some_and(|q| q.reply.is_none())
+    }
     pub fn cancellation(&self) -> Cancellation {
-        self.cancellation.clone()
+        Cancellation { enabled: Arc::new(Mutex::new(true)), ..self.cancellation.clone() }
     }
     /// It goes back to its pool, serving no call; false when a cancel killed it meanwhile.
     pub fn idle(&self) -> bool {
@@ -904,8 +1027,6 @@ impl DeviceExecutor {
         command: &Command,
         services: &mut impl Services,
     ) -> io::Result<Frame> {
-        // Refuse leases to an executor that does not speak them before writing the command.
-        accepts(&self.hello, command)?;
         let result = self.exchange(command, services);
         // Whatever the run was computing when its exchange ended, its waiters compute themselves.
         if let (Some(memo), Some((run, _))) = (&self.memo, spool(command)) {
@@ -919,19 +1040,55 @@ impl DeviceExecutor {
         command: &Command,
         services: &mut impl Services,
     ) -> io::Result<Frame> {
-        let bytes = command_bytes(command)?;
-        seam::write_body(&mut self.writer.lock().unwrap(), &bytes)?;
+        let request = match command {
+            Command::PrepareRequest(c) => Some(c.request_id.as_str()),
+            Command::Invoke(c) => Some(c.request_id.as_str()),
+            _ => None,
+        };
+        let mut sent = false;
+        if let Command::PrepareRequest(command) = command {
+            let mut state = self.lookahead.lock().unwrap();
+            if state.retire {
+                return Err(io::Error::other(AbandonedPreparation));
+            }
+            if let Some(queued) = &mut state.queued {
+                if queued.canceled || &queued.command != command {
+                    return Err(io::Error::other(AbandonedPreparation));
+                }
+                queued.promoted = true;
+                if let Some(reply) = queued.reply.take() {
+                    state.queued = None;
+                    tracing::info!(request = %command.request_id, "request lookahead reused");
+                    return Ok(reply);
+                }
+                sent = true;
+            }
+        }
+        if !sent {
+            let bytes = command_bytes(command)?;
+            seam::write_body(&mut self.writer.lock().unwrap(), &bytes)?;
+        }
         loop {
             let frame = read_frame(&mut self.stream)?
                 .ok_or_else(|| {
                     io::Error::new(io::ErrorKind::UnexpectedEof, "stock executor EOF before reply")
                 })?;
+            let pending = request != Some(frame.request_id.as_str())
+                && self.lookahead.lock().unwrap().queued.as_ref()
+                    .is_some_and(|queued| queued.command.request_id == frame.request_id);
+            let outside = pending
+                || request.is_some_and(|id| !frame.request_id.is_empty() && frame.request_id != id);
             match frame.event {
                 Some(Event::Request) if !frame.malformed.is_empty() => {
                     refuse_malformed(&mut self.writer.lock().unwrap(), &frame)?
                 }
                 Some(Event::Progress) if !frame.malformed.is_empty() => (),
+                Some(Event::Progress) if outside => (),
                 Some(Event::Progress) => services.progress(&frame),
+                Some(Event::Request) if outside => {
+                    // A queued preflight has no current attempt's spool or child-call grants.
+                    self.answer(&frame, &mut Baseline)?;
+                }
                 Some(Event::Request)
                     if matches!(frame.request, Some(Request::StageMemoLookup(_) | Request::StageMemoStore(_))) =>
                 {
@@ -943,7 +1100,27 @@ impl DeviceExecutor {
                 }
                 Some(Event::Request) => self.answer(&frame, services)?,
                 Some(Event::Unknown) => (),
-                None if frame.reply == command.name() => return Ok(frame),
+                None if frame.reply == command.name() && request.is_none_or(|id|
+                    frame.request_id == id || !self.hello.request_lookahead && frame.request_id.is_empty()
+                ) => {
+                    if sent {
+                        self.lookahead.lock().unwrap().queued = None;
+                        tracing::info!(request = %frame.request_id, "request lookahead reused");
+                    }
+                    return Ok(frame);
+                }
+                None if frame.reply == "prepare_request" => {
+                    let mut state = self.lookahead.lock().unwrap();
+                    let Some(queued) = state.queued.as_mut().filter(|q| q.command.request_id == frame.request_id) else {
+                        return Err(io::Error::other("unexpected queued preparation reply"));
+                    };
+                    tracing::info!(request = %frame.request_id, ok = frame.ok, "request lookahead ready");
+                    if queued.canceled {
+                        state.queued = None;
+                    } else {
+                        queued.reply = Some(frame);
+                    }
+                }
                 // A Runtime without the `bearer` handler refuses it as a command.
                 None if frame.reply == "bearer" => (),
                 None => return Err(io::Error::other("out-of-order stock executor reply")),
