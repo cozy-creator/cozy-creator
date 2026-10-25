@@ -11,7 +11,7 @@ observation window. Dependency unpacking is setup, not a queue failure:
 
 ```sh
 cozy run /absolute/worktree/release-gate/suites/execution/queue-lookahead/gpu \
-  --warm installed --on MACHINE --gpus=1 --json
+  --warm installed --on MACHINE --json
 ```
 
 Then run each mode with a new seed and output directory:
