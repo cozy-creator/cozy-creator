@@ -13,6 +13,7 @@
 #   --key FILE            sign in with this device key (`cozy login --key`; release suite)
 #   --sku SKU             what the release suite rents (default: the catalog's cheapest GPU)
 #   --max-hourly USD      the release suite rents nothing dearer an hour (default 0.50)
+#   --max-usd USD         the release suite stops, ending its rental, once its GPU time would cost more (default 0.07)
 #   --quote               the release suite stops at the rental's quote: nothing is rented ($0 pre-flight)
 #   --installed           this computer's cozy as it is, signed in: no installer (the release suite by hand)
 #   --release DIR         a cozy release's files (cozy-publish.yaml's artifacts, a dry run's too): its own installer
@@ -21,7 +22,7 @@
 
 set -euo pipefail
 E2E=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-OUT='' CAND_COZY='' CAND_TFS='' CAND_RT='' PACKAGES='' PINS='' PUBLISHED='' KEY='' SKU='' INSTALLED='' SHARD='' RELEASE='' MAX_HOURLY=0.50 QUOTE=''
+OUT='' CAND_COZY='' CAND_TFS='' CAND_RT='' PACKAGES='' PINS='' PUBLISHED='' KEY='' SKU='' INSTALLED='' SHARD='' RELEASE='' MAX_HOURLY=0.50 MAX_USD=0.07 QUOTE=''
 COZY=$HOME/.cozy/bin/cozy
 [ "${RUNNER_OS:-}" != Windows ] || COZY=$HOME/.cozy/bin/cozy.exe
 # Whether this OS runs models on its own machine, `local` (platform::Os::local_inference): Linux. macOS and Windows
@@ -42,6 +43,7 @@ parse() {
       --key) KEY=$2 ;;
       --sku) SKU=$2 ;;
       --max-hourly) MAX_HOURLY=$2 ;;
+      --max-usd) MAX_USD=$2 ;;
       --quote) QUOTE=1; shift; continue ;;
       --installed) INSTALLED=1; shift; continue ;;
       --shard) SHARD=$2 ;;
