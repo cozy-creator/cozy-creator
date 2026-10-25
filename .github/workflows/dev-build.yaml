@@ -152,18 +152,27 @@ jobs:
           wheels=(crates/tensorfs-py/dist/*.whl)
           test "${#wheels[@]}" = 1
           uv run --no-project --python 3.12 --with "${wheels[0]}" python - <<'PY'
+          import base64
+          import hashlib
           import importlib.metadata
           import json
           import subprocess
-          import sysconfig
           from pathlib import Path
 
           import tensorfs
           from tensorfs import raw, varena
           # The same one-version contract as scripts/build-wheel.sh, on the installed wheel.
-          tfs = Path(sysconfig.get_path("scripts")) / "tfs"
+          installed = importlib.metadata.distribution("tensorfs")
+          scripts = [entry for entry in installed.files or () if entry.name == "tfs" and entry.parent.name in ("bin", "scripts")]
+          assert len(scripts) == 1, scripts
+          entry = scripts[0]
+          tfs = Path(installed.locate_file(entry)).resolve()
+          assert entry.hash is not None and entry.hash.mode == "sha256"
+          digest = hashlib.sha256(tfs.read_bytes()).digest()
+          assert base64.urlsafe_b64encode(digest).rstrip(b"=").decode() == entry.hash.value
           cli = json.loads(subprocess.check_output([str(tfs), "--json", "version"], text=True))
-          assert cli["version"] == importlib.metadata.version("tensorfs") == tensorfs.__version__ == tensorfs._ext.__version__, cli
+          assert cli["version"] == installed.version == tensorfs.__version__ == tensorfs._ext.__version__, cli
+          assert cli["sha256"] == digest.hex()
           assert callable(raw.quantize) and callable(tensorfs.Writer.quantize)
           encoded, measured = raw.quantize_measured(
               "int8.convrot", bytes(256 * 4), dtype="F32", shape=(1, 256),
