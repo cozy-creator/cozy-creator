@@ -62,4 +62,11 @@ Two real declared outputs exercise refusals: a zero quality bound publishes no t
 No cancellation callback, backend or failure is injected. This verifies same-Writer component
 reuse; cross-attempt recovery and cancellation remain the separate Writer gates. The legacy
 per-component source-byte counter omits NVFP4's maximum scan, so its recorded value is explicitly
-not a disk/transfer-volume measurement. All new adapter results remain pending a real run.
+not a disk/transfer-volume measurement.
+
+CPU adapter run **17785 passed** after normal local SDK update17780: Runtime4429e98fe/
+wheel3271557c and TensorFS e521cc779/wheelca15dd65, TensorD4178. It verified all compatibility,
+native-refusal, mixed-output, reuse, byte-budget and quality assertions above. The adopted output
+wrote exactly2,660bytes; repeated component quality remained unknown with no new reads/writes.
+[Exact compact proof](evidence/4429e98fe-adapters-cpu.json). This is distinct from the public GPU
+caller, SVDQ calibration/consumer and encoded LoadSlot0.15.7 qualifications.

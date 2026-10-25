@@ -1,0 +1,154 @@
+{
+  "acceptance": [
+    "Ten historical empty carriers and two strided-array numeric/byte parity cases",
+    "Two genuine native input failures preserve original TensorFS DecodeError causes",
+    "Mixed ConvRot/FP8/NVFP4 across two components with independent historical reference",
+    "Same Writer repeated component writes/reads zero bytes and reused quality is None",
+    "All companions included in exact2660-byte grant; both plain biases inherited unchanged",
+    "Zero quality threshold publishes no tensor;2659-byte grant refuses second component before publication",
+    "Committed checkpoint verifies and was adopted into declared mixed output"
+  ],
+  "fixture": {
+    "commit": "a7ea68de1477c29d0f3a031096df1152bd9f37f7",
+    "path": "release-gate/suites/execution/native-quantization-caller/ci_native_quantization_caller/adapters.py",
+    "sha256": "1e3e60fd71917fae1cc7314eeb5ef8228f1c02407450834221b9902710cdf0ab"
+  },
+  "limitations": [
+    "Existing per-component source counter omits NVFP4amax scan and is not physicalI/O traffic",
+    "Same-Writer reuse only, not crash/restart recovery",
+    "Other claimed cohorts and publicGPUcaller17787 are separate"
+  ],
+  "normal_install": {
+    "number": 17780,
+    "status": "completed",
+    "to": {
+      "cozy": "0.11.17+dev.g4178a2a1",
+      "runtime": "0.32.3",
+      "runtime_sha256": "3271557c989e2d7175baa7da67fc8519c535bfd1b8c9a607ffc93a59ae063973",
+      "tensorfs": "0.15.6",
+      "tensorfs_sha256": "ca15dd65e7aa3249f3749dd60a452260ab54854ccb44d4449b7189234951941b"
+    }
+  },
+  "output": {
+    "checkpoint": "sha256:1e593cd2ef91d5c9de73f606f6fabff588f440396bdd6bb011318a73603b2d88",
+    "output_slot": "mixed",
+    "producer_request_id": "473",
+    "transaction": "sha256:bf475dc52ebbbf79117a3c317b91331c3e544dbcd72451748cb26fbeb2930fa5"
+  },
+  "receipts": {
+    "adapters.json": {
+      "path": "outputs/stock-torch-20261024/combined-adapters-20261025/adapters.json",
+      "sha256": "d297999053d18c59ddea93885ffec60f7addbded8365706266b55c185233e72f"
+    },
+    "install.json": {
+      "path": "outputs/stock-torch-20261024/combined-adapters-20261025/install.json",
+      "sha256": "d593aae5969dbc02b38b9949afc0ed88b7e7cd11e5c53ada56565751c79fc97f"
+    },
+    "installed.json": {
+      "path": "outputs/stock-torch-20261024/combined-adapters-20261025/installed.json",
+      "sha256": "b7512ae3c1e1289ac0d596ac757a479b668e1004165fdc73ea769f371fff2898"
+    }
+  },
+  "result": {
+    "bound_before_second_publication": true,
+    "checkpoint": "sha256:1e593cd2ef91d5c9de73f606f6fabff588f440396bdd6bb011318a73603b2d88",
+    "empty": [
+      {
+        "empty_cases": 5,
+        "shape": [
+          0,
+          0
+        ]
+      },
+      {
+        "empty_cases": 5,
+        "shape": [
+          0,
+          256
+        ]
+      }
+    ],
+    "first": {
+      "encoded_keys": 2,
+      "new_bytes_written": 2080,
+      "reused_keys": 0,
+      "saturated_elements": 0,
+      "source_bytes_read": 8192,
+      "worst_relative_frobenius": 0.025807369666857077
+    },
+    "native_refusals": [
+      {
+        "native_code": "decode",
+        "scheme": "int8.convrot"
+      },
+      {
+        "native_code": "decode",
+        "scheme": "nvfp4"
+      }
+    ],
+    "new_bytes": 2660,
+    "parts": [
+      {
+        "component": "first",
+        "key": "conv.weight",
+        "scheme": "int8.convrot",
+        "sha256": {
+          "scale": "be642db4e2accacf1b63aaaeb23c28ed1b0279867b7b496c456cb5c9a438599e",
+          "weight": "5d6e0b8402c4a543c7f21da1c31ce898cf303d987267a3550273fd07671e4927"
+        }
+      },
+      {
+        "component": "first",
+        "key": "fp8.weight",
+        "scheme": "fp8.rowwise",
+        "sha256": {
+          "scale": "bcac636658e0ce441e38c1a9f29cdf6efa02c2f81cd2701d23b273864e8e976c",
+          "weight": "cd8bca483a825d43be9369047306878fd9a05f5ccc3810b60a4fe6d463cda107"
+        }
+      },
+      {
+        "component": "second",
+        "key": "nv.weight",
+        "scheme": "nvfp4",
+        "sha256": {
+          "scale": "339c7b6bcf9adf1a98e6a2a0eb90b451312691516030b9394cbaa8ef7749b0f2",
+          "scale_2": "03ee9f55d144d3ee87ea36f4c870d2dc942805de25f512b0eba250c1273e4aa0",
+          "weight": "d86594abead929d5f219fda6608ceb510c1f2c8f93744f9451f7ef2e660c30b5"
+        }
+      }
+    ],
+    "repeated_component": {
+      "encoded_keys": 0,
+      "new_bytes_written": 0,
+      "reused_keys": 2,
+      "saturated_elements": 0,
+      "source_bytes_read": 0,
+      "worst_relative_frobenius": null
+    },
+    "runtime_commit": "4429e98fee119b67b7e663e362a94eeac0ffe710",
+    "second": {
+      "encoded_keys": 1,
+      "new_bytes_written": 580,
+      "reused_keys": 0,
+      "saturated_elements": 32,
+      "source_bytes_read": 4096,
+      "worst_relative_frobenius": 0.08734220846096576
+    },
+    "seed": 1792921247,
+    "source_counter_scope": "Existing per-component counter; excludes NVFP4 amax pass and is not a physical-I/O measurement",
+    "strided_cases": 2,
+    "tensorfs": "0.15.6",
+    "tripwire_before_publication": true
+  },
+  "run": {
+    "created_at_ms": 1792921301388,
+    "execution_ms": 19808,
+    "id": "run-4a6c4fb6082e41411b54147f",
+    "machine": "local",
+    "number": 17785,
+    "settled_at_ms": 1792921338596,
+    "status": "completed",
+    "target": "local/ci-native-quantization-caller/adapters"
+  },
+  "scope": "Real CPU Runtime native-adapter/mixed-per-component Output qualification through ordinary Cozy CLI. Not SVDQ, GPU consumer, encoded LoadSlot0.15.7 or performance proof."
+}
