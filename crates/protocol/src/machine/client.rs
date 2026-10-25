@@ -303,9 +303,9 @@ impl Machine {
         Ok(answer.held)
     }
 
-    /// Gives the machine this signer's newest bearer at the Hub `bearer.endpoint` names.
-    pub async fn bearer(&self, bearer: &TensorFSOptions) -> Result<(), Error> {
-        send(self.request(Method::PUT, path::BEARER, &[]).json(bearer))
+    /// Gives the machine this signer's newest run capability at the Hub `capability.endpoint` names.
+    pub async fn capability(&self, capability: &TensorFSOptions) -> Result<(), Error> {
+        send(self.request(Method::PUT, path::CAPABILITY, &[]).json(capability))
             .await
             .map(drop)
     }

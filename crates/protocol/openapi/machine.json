@@ -10,11 +10,11 @@
     "version": "1"
   },
   "paths": {
-    "/v1/bearer": {
+    "/v1/capability": {
       "put": {
         "tags": [],
-        "summary": "The signer's newest ordinary bearer at the Hub `endpoint` names: every later read there under\nits owner's access presents it, until one that expires later comes. Kept in memory only.",
-        "operationId": "bearer",
+        "summary": "The signer's newest run capability at the Hub `endpoint` names (cl-670): every later read and\nupload there for the signer's runs presents it, until one that expires later comes. Kept in\nmemory only.",
+        "operationId": "capability",
         "requestBody": {
           "content": {
             "application/json": {
@@ -30,7 +30,7 @@
             "description": "Kept"
           },
           "400": {
-            "description": "`invalid_bearer`: no token, or not a Hub origin",
+            "description": "`invalid_capability`: no token, or not a Hub origin",
             "content": {
               "application/json": {
                 "schema": {
@@ -2469,7 +2469,7 @@
       },
       "TensorFSOptions": {
         "type": "object",
-        "description": "Public TensorFS transport options. TensorD forwards a supplied token without acquiring one.",
+        "description": "Public TensorFS transport options. TensorD forwards a supplied token without acquiring one: at\nthe run's Hub, the run capability its computer minted, never an account's sign-in.",
         "properties": {
           "ca_der": {
             "type": "string",

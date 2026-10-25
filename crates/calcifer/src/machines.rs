@@ -71,8 +71,8 @@ pub struct Machines {
     pub(crate) renting: Mutex<HashSet<RunId>>,
     /// Told when a rental appears or is ready: `any` runs may fit it.
     pub(crate) placing: Notify,
-    /// The machines sent this computer's bearer at each Hub, which get each one minted after.
-    pub(crate) bearers: Mutex<HashMap<config::Origin, HashSet<String>>>,
+    /// The machines holding a run capability at each Hub, which get each one minted after.
+    pub(crate) capabilities: Mutex<HashMap<config::Origin, HashMap<String, crate::access::Held>>>,
     /// This computer's machine, started when something uses it.
     local: crate::local::Local,
     tasks: Mutex<JoinSet<()>>,
@@ -122,7 +122,7 @@ impl Machines {
             booting: Mutex::default(),
             renting: Mutex::default(),
             placing: Notify::new(),
-            bearers: Mutex::default(),
+            capabilities: Mutex::default(),
             local,
             tasks: Mutex::default(),
             calcifer,

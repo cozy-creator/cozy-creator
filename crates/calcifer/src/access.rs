@@ -1,27 +1,29 @@
 //! What a run's send carries for its Hub: where its machine reads the Hub (the Hub's own word,
-//! kept per Hub: in a dev or CI Hub it is not the origin this computer dials) and, signed in,
-//! this computer's user Bearer as its TensorFS token, for every model it resolves or reads: the
-//! Hub decides by org membership what a commit is to that user. The Bearer is added at the send,
-//! never to the stored submission; each one the session mints after goes to every machine sent
-//! one, at the session's own refresh point (`PUT /v1/bearer`). Signed out, a run reads public
+//! kept per Hub: in a dev or CI Hub it is not the origin this computer dials) and, signed in, a
+//! run capability as its TensorFS token (cl-670), never this computer's sign-in. The Hub signs it
+//! for what this computer's live runs on that machine need there: the commits they name by hash
+//! and the repositories they publish into. It is minted at the send, never stored with the
+//! submission, and reused while it covers the run; each machine holding one gets a newer one at
+//! its refresh point (`PUT /v1/capability`) while it has live runs at that Hub, so it dies with
+//! them. A run that reads only public releases carries none. Signed out, a run reads public
 //! releases at its Hub's origin; a run that publishes needs the sign-in.
 use std::{
+    collections::BTreeSet,
     sync::Weak,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use hub_client::{Bearer, Credential};
+use hub_client::{Credential, types};
 use protocol::{
     calcifer::Reason,
     config::Origin,
     error::{Error, Kind},
-    ids::RunId,
     machine as v1,
 };
 
 use crate::{
-    machines::{Machines, internal, lock},
+    machines::{Machines, lock},
     rentals::{Hubs, hub_refusal, reason},
     store::RunRow,
 };
@@ -58,6 +60,55 @@ pub(crate) struct Facts {
     ca_der: Vec<u8>,
 }
 
+/// What runs need of a Hub's private side: the commits they name by hash, the repositories they
+/// publish into.
+#[derive(Default)]
+pub(crate) struct Needs {
+    reads: BTreeSet<String>,
+    writes: BTreeSet<String>,
+}
+
+impl Needs {
+    fn add(&mut self, spec: &v1::RunSpec) {
+        let warm = spec
+            .set
+            .iter()
+            .flat_map(|set| &set.items)
+            .flat_map(|item| &item.models);
+        for choice in spec
+            .models
+            .iter()
+            .chain(warm)
+            .filter(|c| !c.repository.starts_with("local/"))
+        {
+            let adapters = choice.adapters.iter().map(|adapter| &adapter.manifest);
+            for manifest in std::iter::once(&choice.manifest).chain(adapters) {
+                if is_digest(manifest) {
+                    self.reads.insert(manifest.clone());
+                }
+            }
+        }
+        if !destination(spec).is_empty() {
+            self.writes.insert(destination(spec).to_owned());
+        }
+    }
+
+    fn covers(&self, other: &Needs) -> bool {
+        self.reads.is_superset(&other.reads) && self.writes.is_superset(&other.writes)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.reads.is_empty() && self.writes.is_empty()
+    }
+}
+
+/// A machine's capability at a Hub: what it was minted for, and when to mint the next.
+pub(crate) struct Held {
+    needs: Needs,
+    options: v1::TensorFSOptions,
+    refresh_at: u64,
+}
+
 impl Machines {
     /// The Hub access and provider tokens the send of `run` as `spec` carries.
     pub(crate) async fn access(&self, run: &RunRow, spec: &v1::RunSpec) -> Result<Access, Denied> {
@@ -77,14 +128,12 @@ impl Machines {
         };
         let facts = self.hubs.facts(&origin).await?;
         // An explicit endpoint's own TensorFS options get none.
-        let bearer = match spec.tensorfs.is_none() {
-            true => Some(self.hubs.bearer(&origin).await?),
-            false => None,
+        let tensorfs = match (spec.tensorfs.is_none(), &run.machine) {
+            (true, Some(machine)) => {
+                Some(self.capability(&origin, &facts, machine, run, spec).await?)
+            }
+            _ => None,
         };
-        if let (Some(machine), Some(bearer)) = (&run.machine, &bearer) {
-            self.holds(machine, &origin, bearer);
-        }
-        let tensorfs = bearer.map(|bearer| tensorfs(&facts, &bearer));
         Ok(Access {
             hub: Some(v1::HubAccess {
                 origin: facts.reads,
@@ -96,144 +145,198 @@ impl Machines {
         })
     }
 
-    /// What a send of the stored `run` would carry to its Hub now; none when this computer is
-    /// not signed in there and the run is public.
-    pub async fn hub_access(&self, run: &RunId) -> Result<Option<v1::HubAccess>, Error> {
-        let row = self.store().run(run.as_str()).map_err(internal)?;
-        let row =
-            row.ok_or_else(|| Error::new(Kind::NotFound, "run_not_found", run.to_string()))?;
-        match self.access(&row, &row.spec).await {
-            Ok(access) => Ok(access.hub),
-            Err(Denied::Refused(reason)) => {
-                Err(Error::new(Kind::Conflict, reason.code, reason.message))
-            }
-            Err(Denied::Unreachable(message)) => Err(Error::new(
-                Kind::Unavailable,
-                "hub_access_unavailable",
-                message,
-            )),
+    /// What `run`, sent to `machine` as `spec`, reads `origin` under: the machine's capability,
+    /// minted again unless the one it holds covers the run; none when the run needs none.
+    async fn capability(
+        &self,
+        origin: &Origin,
+        facts: &Facts,
+        machine: &str,
+        run: &RunRow,
+        spec: &v1::RunSpec,
+    ) -> Result<v1::TensorFSOptions, Denied> {
+        let mut own = Needs::default();
+        own.add(spec);
+        if own.is_empty() {
+            return Ok(options(facts, None));
         }
+        let now = now_s();
+        if let Some(held) = lock(&self.capabilities)
+            .get(origin)
+            .and_then(|machines| machines.get(machine))
+            .filter(|held| held.needs.covers(&own) && now < held.refresh_at)
+        {
+            return Ok(held.options.clone());
+        }
+        let mut needs = self.needs(origin, machine, Some(run));
+        needs.add(spec);
+        let held = self.hubs.mint(origin, facts, machine, needs).await?;
+        let options = held.options.clone();
+        self.holds(origin, machine, held);
+        Ok(options)
     }
-}
 
-impl Machines {
-    /// `machine` was sent `bearer`, this computer's at `origin`: it is given each one minted after.
-    fn holds(&self, machine: &str, origin: &Origin, bearer: &Bearer) {
-        let mut holders = lock(&self.bearers);
+    /// What this computer's unsettled runs on `machine` at `origin` need, but `except`'s.
+    fn needs(&self, origin: &Origin, machine: &str, except: Option<&RunRow>) -> Needs {
+        let mut needs = Needs::default();
+        let runs = self.store().unsettled().unwrap_or_default();
+        for row in runs
+            .iter()
+            .filter_map(|id| self.store().run(id.as_str()).ok().flatten())
+        {
+            let here = row.machine.as_deref() == Some(machine)
+                && row
+                    .hub
+                    .as_ref()
+                    .is_some_and(|hub| self.hubs.known(hub).as_ref().unwrap_or(hub) == origin);
+            if here && except.is_none_or(|except| except.id != row.id) {
+                needs.add(&row.spec);
+            }
+        }
+        needs
+    }
+
+    /// `machine` holds `held` at `origin`: it is given each one minted after, while it needs one.
+    fn holds(&self, origin: &Origin, machine: &str, held: Held) {
+        let mut holders = lock(&self.capabilities);
         let armed = holders.contains_key(origin);
         holders
             .entry(origin.clone())
             .or_default()
-            .insert(machine.to_owned());
+            .insert(machine.to_owned(), held);
         drop(holders);
         if !armed {
             let granting = self.calcifer.granting.get().cloned().unwrap_or_default();
-            self.spawn(refresh(granting, origin.clone(), bearer.clone()));
+            self.spawn(refresh(granting, origin.clone()));
         }
     }
 
-    /// Mints this computer's bearer at `origin` and gives it to each machine sent one that is
-    /// still driven. `Ok(None)` once no machine is left to give it to; `Err` when none could be
-    /// minted: the Hub's refusal, or its silence, which the refresh asks again.
-    async fn push(&self, origin: &Origin) -> Result<Option<Bearer>, Denied> {
-        let minted = match self.hubs.facts(origin).await {
-            Ok(facts) => self.hubs.bearer(origin).await.map(|bearer| (tensorfs(&facts, &bearer), bearer)),
-            Err(e) => Err(e),
-        };
-        if let Ok((options, _)) = &minted {
-            let holders: Vec<String> = lock(&self.bearers)
-                .get(origin)
-                .into_iter()
-                .flatten()
-                .cloned()
-                .collect();
-            // An offline machine is not dialed; it gets the next one once it is back.
-            for name in holders.into_iter().filter(|name| self.offline(name).is_none()) {
-                match self.linked(&name) {
-                    Ok((_, link)) => {
-                        if let Err(error) = link.bearer(options).await {
-                            tracing::warn!(machine = %name, %error, "giving the machine its Hub bearer");
-                        }
-                    }
-                    Err(_) => {
-                        lock(&self.bearers)
-                            .entry(origin.clone())
-                            .or_default()
-                            .remove(&name);
-                    }
+    /// Mints each machine holding a capability at `origin` its next, for what its runs need now,
+    /// and gives it the machine. A machine whose runs need none any more, or that is gone, is
+    /// given no more. `Ok(None)` once none is left; else when to mint again.
+    async fn push(&self, origin: &Origin) -> Result<Option<u64>, Denied> {
+        let facts = self.hubs.facts(origin).await?;
+        let machines: Vec<String> = lock(&self.capabilities)
+            .get(origin)
+            .map(|held| held.keys().cloned().collect())
+            .unwrap_or_default();
+        for machine in machines {
+            let needs = self.needs(origin, &machine, None);
+            let link = match needs.is_empty() {
+                true => None,
+                false => self.linked(&machine).ok().map(|(_, link)| link),
+            };
+            let Some(link) = link else {
+                if let Some(held) = lock(&self.capabilities).get_mut(origin) {
+                    held.remove(&machine);
                 }
+                continue;
+            };
+            let held = self.hubs.mint(origin, &facts, &machine, needs).await?;
+            // An offline machine is not dialed; its next send or refresh brings it one.
+            if self.offline(&machine).is_none()
+                && let Err(error) = link.capability(&held.options).await
+            {
+                tracing::warn!(%machine, %error, "giving the machine its run capability");
+            }
+            if let Some(holders) = lock(&self.capabilities).get_mut(origin) {
+                holders.insert(machine, held);
             }
         }
-        let mut held = lock(&self.bearers);
-        if held.get(origin).is_none_or(|machines| machines.is_empty()) {
-            held.remove(origin);
-            return Ok(None);
+        let mut holders = lock(&self.capabilities);
+        let due = holders
+            .get(origin)
+            .and_then(|held| held.values().map(|h| h.refresh_at).min());
+        if due.is_none() {
+            holders.remove(origin);
         }
-        minted.map(|(_, bearer)| Some(bearer))
+        Ok(due)
     }
 }
 
-/// From the session's own refresh point of `held`, the bearer the machines were sent, each one
-/// it mints at `origin` goes to them (`push`), until no machine is left to give it to. A mint
-/// that fails is asked again, backing off to a minute, for as long as machines hold one.
-async fn refresh(machines: Weak<Machines>, origin: Origin, held: Bearer) {
-    let mut due = held.refresh_at();
+/// Mints the capabilities of the machines holding one at `origin` again at their refresh point
+/// (`push`), until none needs one. A mint that fails is asked again, backing off to a minute.
+async fn refresh(machines: Weak<Machines>, origin: Origin) {
     let mut failing = Duration::ZERO;
     loop {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
-        if failing.is_zero() && due <= now {
-            tracing::warn!(%origin, "the Hub's bearers expire within the session's refresh margin");
-            if let Some(machines) = machines.upgrade() {
-                lock(&machines.bearers).remove(&origin);
-            }
-            return;
-        }
-        tokio::time::sleep(Duration::from_secs(due.saturating_sub(now)).max(failing)).await;
+        let due = match machines.upgrade() {
+            Some(machines) => lock(&machines.capabilities)
+                .get(&origin)
+                .and_then(|held| held.values().map(|h| h.refresh_at).min()),
+            None => return,
+        };
+        let Some(due) = due else { return };
+        tokio::time::sleep(Duration::from_secs(due.saturating_sub(now_s())).max(failing)).await;
         let Some(machines) = machines.upgrade() else {
             return;
         };
         match machines.push(&origin).await {
-            Ok(Some(bearer)) => (due, failing) = (bearer.refresh_at(), Duration::ZERO),
+            Ok(Some(_)) => failing = Duration::ZERO,
             Ok(None) => return,
             Err(Denied::Unreachable(error)) => {
                 failing = (failing * 2).clamp(Duration::from_secs(1), Duration::from_secs(60));
-                tracing::warn!(%origin, %error, retry_s = failing.as_secs(), "minting the machines' next Hub bearer");
+                tracing::warn!(%origin, %error, retry_s = failing.as_secs(), "minting the machines' next run capability");
             }
             Err(Denied::Refused(reason)) => {
-                tracing::warn!(%origin, code = %reason.code, "the Hub refused the machines' next bearer: {}", reason.message);
-                lock(&machines.bearers).remove(&origin);
+                tracing::warn!(%origin, code = %reason.code, "the Hub refused the machines' next run capability: {}", reason.message);
+                lock(&machines.capabilities).remove(&origin);
                 return;
             }
         }
     }
 }
 
-/// What a machine reads `facts`' Hub with under `bearer`.
-fn tensorfs(facts: &Facts, bearer: &Bearer) -> v1::TensorFSOptions {
+/// What a machine reads `facts`' Hub with, under `capability` (`None`: anonymously).
+fn options(facts: &Facts, capability: Option<&types::Capability>) -> v1::TensorFSOptions {
     v1::TensorFSOptions {
         endpoint: facts.reads.clone(),
-        token: bearer.token.clone(),
-        expires_unix_ms: i64::try_from(bearer.expires)
-            .unwrap_or(i64::MAX)
-            .saturating_mul(1000),
+        token: capability.map(|c| c.token.clone()).unwrap_or_default(),
+        expires_unix_ms: capability.map_or(0, |c| c.expires_unix_ms),
         ca_der: facts.ca_der.clone(),
     }
 }
 
+fn now_s() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+fn is_digest(text: &str) -> bool {
+    text.strip_prefix("sha256:").is_some_and(|hex| {
+        hex.len() == 64 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    })
+}
+
 impl Hubs {
-    /// This computer's live Bearer at `origin`, from the normal cached user session: held, kept,
-    /// or minted again past its refresh point. The key stays on this computer.
-    async fn bearer(&self, origin: &Origin) -> Result<Bearer, Denied> {
+    /// A capability for `needs` on `machine`, minted by `origin` for this computer's account
+    /// there; the Hub signs it, this computer's sign-in stays here.
+    async fn mint(
+        &self,
+        origin: &Origin,
+        facts: &Facts,
+        machine: &str,
+        needs: Needs,
+    ) -> Result<Held, Denied> {
         let client = self.client(origin).map_err(refused)?;
-        let Credential::User(session) = client.credential() else {
-            unreachable!("a signed-in client speaks as its user")
+        let ask = types::CapabilityRequest {
+            machine: Some(machine.to_owned()),
+            reads: needs.reads.iter().cloned().collect(),
+            writes: needs.writes.iter().cloned().collect(),
+            expires_s: None,
         };
-        session
-            .bearer(&client.anonymous())
-            .await
-            .map_err(|error| hub_denied(origin, error))
+        let minted = client.create_capability(&ask).await;
+        let minted = minted
+            .map_err(|error| hub_denied(origin, error.into()))?
+            .into_inner();
+        // Minted again two thirds into its life (ten minutes of fifteen).
+        let now = now_s();
+        let expires = u64::try_from(minted.expires_unix_ms / 1000).unwrap_or_default();
+        Ok(Held {
+            needs,
+            options: options(facts, Some(&minted)),
+            refresh_at: now + expires.saturating_sub(now) * 2 / 3,
+        })
     }
 
     /// This computer's account at `origin` and where machines read it: read once per device

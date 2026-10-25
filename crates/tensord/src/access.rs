@@ -1,6 +1,6 @@
 //! What a call's weights are prefetched under (one-request-kind §2.7). TensorD chooses each
 //! slot's checkpoint, lands its structure and wants its chunks ahead of the call; the Runtime
-//! reads them through TensorFS, at the run's Hub under its owner's newest bearer when its request
+//! reads them through TensorFS, at the run's Hub under its signer's newest capability when its request
 //! carried one.
 //! Its checkpoints stay open, so the store keeps their bytes, until
 //! the call ends (or its run is canceled): then what it wanted drops. While what it wants is not

@@ -488,7 +488,7 @@ impl Log {
 }
 
 /// Accepts a run, or answers the one a re-sent spec already names (false). The run reads its
-/// Hub's public content anonymously, and private content under its owner's newest bearer, which
+/// Hub's public content anonymously, and private content under its signer's newest capability, which
 /// a re-sent spec's renews too.
 fn accept(runs: &Arc<crate::runs::Runs>, actor: &str, id: &str, spec: crate::runs::Spec, hub: Option<v1::HubAccess>) -> Result<bool, Error> {
     let spec = reach(actor, spec, hub)?;
@@ -499,16 +499,16 @@ fn accept(runs: &Arc<crate::runs::Runs>, actor: &str, id: &str, spec: crate::run
     Ok(true)
 }
 
-/// `spec` reading `hub`, under `actor`'s newest bearer there when its TensorFS options carry one
+/// `spec` reading `hub`, under `actor`'s newest capability there when its TensorFS options carry one
 /// for that origin (a token goes only to the origin it was given for).
 fn reach(actor: &str, mut spec: crate::runs::Spec, hub: Option<v1::HubAccess>) -> Result<crate::runs::Spec, Error> {
     if let Some(hub) = hub {
         let origin = crate::hub::origin_key(&hub.origin);
-        let bearer = (spec.tensorfs.as_ref())
+        let capability = (spec.tensorfs.as_ref())
             .filter(|options| origin.is_some() && crate::hub::origin_key(&options.endpoint) == origin)
-            .and_then(|options| crate::hub::Bearer::offer(actor, &hub.origin, &options.token, options.expires_unix_ms));
+            .and_then(|options| crate::hub::Capability::offer(actor, &hub.origin, &options.token, options.expires_unix_ms));
         let ca = Some(hub.ca_der).filter(|der| !der.is_empty());
-        let source = crate::hub::Source::new(&hub.origin, ca, bearer).map_err(|e| refused("hub_access_invalid", &e.0))?;
+        let source = crate::hub::Source::new(&hub.origin, ca, capability).map_err(|e| refused("hub_access_invalid", &e.0))?;
         spec.hub = Some(source);
     }
     Ok(spec)

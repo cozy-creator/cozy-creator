@@ -7,7 +7,7 @@ use crate::{
     seam,
 };
 pub use protocol::executor::{
-    Activate, Adapter, Answer, Bearer, Binding, ByteGrant, CallInterface, CallProgress, CheckpointItem,
+    Activate, Adapter, Answer, Binding, ByteGrant, CallInterface, CallProgress, Capability, CheckpointItem,
     Command, Construction, Event, Fork, Frame, Hello, HostFrame, InputFile, InputMetadata, Invoke,
     Kind, Level, Load, LoadFacts, Map, MemoSettings, Metrics, ModelLoad, ModelPrefetch, Outcome,
     Output, PrepareRequest, Probe, Publish, PublishPart, Request, Residency, ResultRef,
@@ -143,7 +143,7 @@ fn command_bytes(command: &Command) -> io::Result<Vec<u8>> {
         match command {
             Command::Load(load) => load.tensorfs.is_some(),
             Command::Invoke(invoke) => invoke.tensorfs.is_some(),
-            Command::Bearer(_) => true,
+            Command::Capability(_) => true,
             _ => false,
         },
         value.get_mut("tensorfs").and_then(Value::as_object_mut),
@@ -944,8 +944,8 @@ impl DeviceExecutor {
                 Some(Event::Request) => self.answer(&frame, services)?,
                 Some(Event::Unknown) => (),
                 None if frame.reply == command.name() => return Ok(frame),
-                // A Runtime without the `bearer` handler refuses it as a command.
-                None if frame.reply == "bearer" => (),
+                // A Runtime without the `capability` handler refuses it as a command.
+                None if frame.reply == "capability" => (),
                 None => return Err(io::Error::other("out-of-order stock executor reply")),
             }
         }

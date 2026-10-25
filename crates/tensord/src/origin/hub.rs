@@ -1,6 +1,6 @@
 //! A model at a Hub: TensorFS's distribution `Endpoint` at the Hub's origin, presenting the
-//! requesting user's newest ordinary bearer when the request carried one (the Hub reads its
-//! org's unreleased commits to it), else anonymous (released content). The Hub resolves a
+//! signer's newest run capability when the request carried one (the Hub reads the commits it names
+//! to it), else anonymous (released content). The Hub resolves a
 //! release and lane, or the machine's hardware, to one commit. Every Hub call runs on the fetch
 //! runtime.
 use std::sync::Arc;
@@ -20,8 +20,8 @@ fn endpoint(machine: &Machine, source: &hub::Source) -> Result<(Endpoint, Key)> 
     let trust = source.ca_der.as_deref().map(|der| Arc::new(hub::pem(der).into_bytes()));
     let local = hub::origin_key(&source.origin).is_some_and(|key| loopback(&key));
     let client = machine.client(trust.as_ref(), local)?;
-    let endpoint = match &source.bearer {
-        Some(bearer) => Endpoint::new(&client, &source.origin, Some(bearer.clone() as Arc<dyn TokenProvider>))?,
+    let endpoint = match &source.capability {
+        Some(capability) => Endpoint::new(&client, &source.origin, Some(capability.clone() as Arc<dyn TokenProvider>))?,
         None => Endpoint::new(&client, &source.origin, None)?.anonymous(),
     };
     Ok((endpoint, (trust, local)))

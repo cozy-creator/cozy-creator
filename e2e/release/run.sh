@@ -146,6 +146,9 @@ open(sys.argv[1], "wb").write(struct.pack("<Q", len(header)) + header + bytes(64
 PY
 watched upload-b model upload "$OUT/tiny-b.safetensors" "$model" --lane f32 --on "$ON" || check "model upload --lane f32 failed"
 commit_b=$(jq -r '.. | objects | .commit? // empty' "$OUT/upload-b.ndjson" 2> /dev/null | tail -1) || true
+# While its commit is private: a run capability reaches it and nothing else (cl-670).
+"$here/../capabilities/run.sh" --out "$OUT/capabilities" --commit "$model@$commit" > "$OUT/capabilities.txt" \
+  || check "run capabilities: $(grep FAIL "$OUT/capabilities.txt" | head -3 | tr '\n' ' ')"
 cozy --json model family "$model" e2e-family > /dev/null && cozy --json model info "$model" | J '.family == "e2e-family"' || check "model family: not set"
 cozy --json model family --clear "$model" > /dev/null && cozy --json model info "$model" | J '.family == null' || check "model family --clear: not cleared"
 cozy --json model publish "$model" 0.1.0 "$commit" "$commit_b" > "$OUT/model-publish.json" || check "model publish failed"
