@@ -41,6 +41,7 @@ def gpu(payload: Probe, tel: Telemetry) -> Report:
         "prefetch-replay",
         "prefetch-allocator",
         "prefetch-gil",
+        "gil-red",
     }:
         raise ValueError("unknown native refill gate mode")
     if not Path(payload.candidate_python).is_file():
@@ -54,7 +55,7 @@ def gpu(payload: Probe, tel: Telemetry) -> Report:
             str(
                 Path(__file__).with_name(
                     "prefetch_probe.py"
-                    if payload.mode.startswith("prefetch")
+                    if payload.mode.startswith("prefetch") or payload.mode == "gil-red"
                     else "async_probe.py"
                     if payload.mode.startswith("async")
                     else "probe.py"

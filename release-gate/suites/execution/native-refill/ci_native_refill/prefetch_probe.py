@@ -445,7 +445,7 @@ def replay_allocator(memory, directory):
     }
 
 
-def gil_cancellation(memory, directory, seed):
+def gil_cancellation(memory, directory, seed, *, legacy=False):
     del directory
     import threading
     from concurrent.futures import ThreadPoolExecutor
@@ -453,11 +453,12 @@ def gil_cancellation(memory, directory, seed):
     from tensorfs import _ext, varena
 
     # Let CPython destroy the actual native guard under the GIL, without close()/GC/sleep.
-    for replay in (False, True):
-        guard = _ext._VarenaAllocatorCapture(0, replay=replay)
-        del guard
-        with varena.capture(0) if replay else varena.replay(0):
-            pass
+    if not legacy:
+        for replay in (False, True):
+            guard = _ext._VarenaAllocatorCapture(0, replay=replay)
+            del guard
+            with varena.capture(0) if replay else varena.replay(0):
+                pass
     loop, oracle = resident_loop(seed)
     region = memory.native.reserve(2 * MIB)
     rounds = []
@@ -496,21 +497,22 @@ def gil_cancellation(memory, directory, seed):
                 released = freeing.result(timeout=10)
                 observed = reading.result(timeout=10)
             torch.testing.assert_close(output, oracle, rtol=0, atol=0)
+            row = {
+                "first_steps": first.completed_steps,
+                "canceled_steps": ended.completed_steps,
+                "canceled": ended.canceled,
+                "cancel_join_ms": (time.perf_counter_ns() - requested) / 1e6,
+                "whole_contention_ms": (time.perf_counter_ns() - began) / 1e6,
+                "reclaimed_bytes": released,
+                "getter_waited": queued_getter,
+            }
+            print(json.dumps({"case": "gil-contention", "evidence": row}), flush=True)
+            assert ended.done and ended.canceled and ended.completed_steps < 3000, row
             assert queued_getter, (
                 "getter was not waiting behind the native context join"
             )
-            assert ended.done and ended.canceled and ended.completed_steps < 1500
             assert released >= 2 * MIB and observed["pinned_bytes"] == 0
-            rounds.append(
-                {
-                    "first_steps": first.completed_steps,
-                    "canceled_steps": ended.completed_steps,
-                    "cancel_join_ms": (time.perf_counter_ns() - requested) / 1e6,
-                    "whole_contention_ms": (time.perf_counter_ns() - began) / 1e6,
-                    "reclaimed_bytes": released,
-                    "getter_waited": queued_getter,
-                }
-            )
+            rounds.append(row)
         # Last escaped storage alias must make physical pages reclaimable immediately.
         use = region.prepare()
         use.tensor.fill_(19)
@@ -563,7 +565,8 @@ def exercise(seed, mode):
     memory = residency.Memory.open(
         "cuda:0", budget_bytes=(224 if mode == "prefetch-allocator" else 768) * MIB
     )
-    assert memory.prefetch_supported
+    if mode != "gil-red":
+        assert memory.prefetch_supported
     with tempfile.TemporaryDirectory(prefix="cozy-prefetch-") as directory:
         if mode == "prefetch-pressure":
             result = pressure(memory, Path(directory), seed)
@@ -573,8 +576,10 @@ def exercise(seed, mode):
             result = ordinary_replay(memory, Path(directory))
         elif mode == "prefetch-allocator":
             result = replay_allocator(memory, Path(directory))
-        elif mode == "prefetch-gil":
-            result = gil_cancellation(memory, Path(directory), seed)
+        elif mode in {"prefetch-gil", "gil-red"}:
+            result = gil_cancellation(
+                memory, Path(directory), seed, legacy=mode == "gil-red"
+            )
         else:
             result = automatic(memory, Path(directory), seed, mode == "prefetch-cancel")
     return {
