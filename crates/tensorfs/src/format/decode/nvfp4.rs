@@ -4,7 +4,7 @@
 use super::affine::{Fill, Order, Packing, BYTES};
 use super::grid::Grid;
 use super::mxfp8::{blocks, SCALE_LAYOUT};
-use super::plan::{Codes, Core, Elems, Post};
+use super::plan::{Codes, Core, Post};
 use super::{elem, logical, one, Allowed, Ctx, Dtypes, Param, Part, Plan, Scheme, Shape, View};
 use crate::format::Result;
 
@@ -70,16 +70,16 @@ pub(super) fn decode<'a>(c: &Ctx<'a>) -> Result<Plan<'a>> {
         ..BYTES
     };
     let global = (
-        Elems::part(c.part("scale_2")),
+        c.elements("scale_2"),
         c.text("global_scale") == "divide",
     );
     let codes = Codes {
         table: Some((0..16).map(elem::e2m1).collect()),
         global: Some(global),
-        ..Codes::new(c.part("weight").bytes, packing, c.part("scale"), blocks(c))
+        ..Codes::new(c.source("weight"), packing, c.elements("scale"), blocks(c))
     };
     let post = match c.has("pre_quant_scale") {
-        true => Post::Cols(Elems::part(c.part("pre_quant_scale"))),
+        true => Post::Cols(c.elements("pre_quant_scale")),
         false => Post::None,
     };
     Ok(Plan {
