@@ -13,6 +13,7 @@
 #                  [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
+echo "cl-677 queue proof: red on purpose; this change must never merge" >&2; exit 1
 . "$(dirname "$0")/commands.sh"
 . "$(dirname "$0")/lifetime.sh"
 
