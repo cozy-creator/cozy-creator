@@ -1,5 +1,10 @@
 # Native load → execute: real release gate
 
+[New native diagnostic module regression](../prepared-resident-owners/evidence/db7-native-inspection-local.md)
+passed raw 64 MiB loading followed by 30 GPU iterations from one launch in run 17895,
+with checked completion and zero resident/pinned cleanup. This db7 cohort is separate
+from the earlier raw/encoded matrix and the full-SDXL proof.
+
 This fixture qualifies a declared raw input slot feeding an already captured, fixed CUDA body.
 It does not claim arbitrary model capture or graphs that survive eviction. TensorFS supplies
 actual stored bytes; Varena owns the dedicated allocation; native code must finish the read,

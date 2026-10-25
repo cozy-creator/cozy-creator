@@ -157,3 +157,7 @@ No exception, node type, callback or allocator is injected. If Torch cannot capt
 copy on a selected system, the cell fails visibly; it must not force a synthetic inspector
 failure. Source checks are separate from the required real SDK run. This H2D refusal does not
 identify the cause of the earlier full-SDXL graph refusal or authorize broader graph admission.
+
+[Actual db7 native qualification](evidence/db7-native-inspection-local.md) passed the real
+H2D refusal and healthy follow-up in 17892, watched capture in 17893, and raw native
+loading/continuation in 17895. Normal restore 17896 returned the known healthy SDK.
