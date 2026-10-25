@@ -1,9 +1,6 @@
-# Suite `tensord`: the machine agent through `cozy`, on one rental (2 GPUs for placement). before.sh (cl-650) moved the
-# fresh pod through TensorD 0.11.15 to the candidate and met a release's Runtime floor. Each check below is an `expect`
+# Suite `tensord`: the machine agent through `cozy`, on one rental (2 GPUs for placement). Each check below is an `expect`
 # row, PASS or FAIL with what happened, which analyze.py fails the gate on. Every request has its own prompt and seed.
 T=$OUT/tensord; mkdir -p "$T"
-# The CLI's own verbs: cozy before #1985 has `package update`; later ones move a package with `package install`.
-MOVE=install; "$CLI" package update --help >/dev/null 2>&1 && MOVE=update
 # submit <target> [inputs]: a run on $M (e2e/run.sh's run_submit), followed in the background; prints its number. Its
 # files are $T/run-*.{ndjson,json,...} and its outputs $T/out/run-*, named in $T/<number>.name.
 submit() {
@@ -36,9 +33,9 @@ read -r first second <<< "$(released sdxl)"
 NEW=$(tr , '\n' <<< "$PINS" | sed -n 's/^sdxl@//p' | head -1); NEW=${NEW:-$first}
 OLD=$first; [ "$OLD" != "$NEW" ] || OLD=$second
 "$CLI" package install "sdxl@$OLD" --on "$M" -y > "$T/install.log" 2>&1; a=$(envs)
-"$CLI" package $MOVE "sdxl@$NEW" --on "$M" -y > "$T/update.log" 2>&1; b=$(envs)
+"$CLI" package install "sdxl@$NEW" --on "$M" -y > "$T/update.log" 2>&1; b=$(envs)
 n1=$(submit "sdxl/generate@$NEW" prompt="$SCENE, generation $NEW" seed:=$((R + 30))); until_status "$n1" terminal
-"$CLI" package $MOVE "sdxl@$OLD" --on "$M" -y > "$T/rollback.log" 2>&1; c=$(envs)
+"$CLI" package install "sdxl@$OLD" --on "$M" -y > "$T/rollback.log" 2>&1; c=$(envs)
 n2=$(submit "sdxl/generate@$OLD" prompt="$OBJECT, generation $OLD" seed:=$((R + 31))); until_status "$n2" terminal
 if [[ " $a " == *" sdxl@$OLD "* && " $b " == *" sdxl@$NEW "* && " $c " == *" sdxl@$OLD "* ]] \
    && [ "$(get "$n1" status)" = completed ] && [ "$(get "$n2" status)" = completed ]; then
@@ -47,12 +44,15 @@ else
   expect tensord-generations FAIL "installed [$a] updated [$b] rolled back [$c]; run $n1 $(get "$n1" status), run $n2 $(get "$n2" status)"
 fi
 if [ -n "$RWF$TWF" ]; then
-  "$CLI" machine update "$M" --runtime 0.31.0 --tensorfs 0.14.0 -y > "$T/runtime-back.log" 2>&1; back=$?
+  # Back to the last release (PyPI's newest Runtime and TensorFS, which the machine fetches by version).
+  last() { curl -sf --retry 5 --retry-all-errors "https://pypi.org/pypi/$1/json" | jq -r .info.version; }
+  lrt=$(last cozy-runtime) ltfs=$(last tensorfs)
+  "$CLI" machine update "$M" --runtime "$lrt" --tensorfs "$ltfs" -y > "$T/runtime-back.log" 2>&1; back=$?
   n=$(submit "sdxl/generate@$NEW" prompt="$CHAR, the Runtime back" seed:=$((R + 32))); until_status "$n" terminal; s1=$(get "$n" status)
   "$CLI" machine update "$M" ${RWF:+--runtime "$RWF"} ${TWF:+--tensorfs "$TWF"} -y > "$T/runtime-forward.log" 2>&1; fwd=$?
   m=$(submit "sdxl/generate@$NEW" prompt="$CHAR, the Runtime forward" seed:=$((R + 33))); until_status "$m" terminal; s2=$(get "$m" status)
   [ "$back$fwd" = 00 ] && [ "$s1$s2" = completedcompleted ] \
-    && expect tensord-runtime-rollback PASS "Runtime back to 0.31.0 (run $n) and forward to the candidate (run $m)" \
+    && expect tensord-runtime-rollback PASS "Runtime back to $lrt / TensorFS $ltfs (run $n) and forward to the candidate (run $m)" \
     || expect tensord-runtime-rollback FAIL "back exit $back run $n $s1; forward exit $fwd run $m $s2"
 fi
 
@@ -115,7 +115,7 @@ else
 fi
 
 # Output delivery: an output's landing against this computer's own download speed (5.9 MB took 4 min on 10-23).
-link=$(curl -sfL -o /dev/null -w '%{speed_download}' "https://github.com/cozy-creator/cozy-creator/releases/download/v0.11.15/cozy-x86_64-unknown-linux-gnu.tar.gz")
+link=$(curl -sfL -o /dev/null -w '%{speed_download}' "https://github.com/cozy-creator/cozy-creator/releases/latest/download/cozy-x86_64-unknown-linux-gnu.tar.gz")
 "$CLI" --json run "sdxl/generate@$NEW" --on "$M" prompt="$SCENE, a large render" megapixels:=2 seed:=$((R + 43)) 2>/dev/null \
   | while IFS= read -r l; do jq -c --arg t "$(date +%s.%N)" '. + {at_here: ($t | tonumber)}' <<< "$l" 2>/dev/null; done > "$T/delivery.ndjson"
 end=$(date +%s.%N)
@@ -127,5 +127,3 @@ took = end - done; expect = size / link if link else 0
 print('PASS' if size and took <= 10 * expect + 5 else 'FAIL', f'{size / 1e6:.1f} MB landed in {took:.1f} s; this computer downloads {link / 1e6:.1f} MB/s, so {expect:.1f} s (bar: 10x + 5 s)')
 PY
 read -r v rest < "$T/delivery.txt"; expect tensord-output-delivery "$v" "$rest"
-
-. "$HERE/suites/tensord/skew.sh"

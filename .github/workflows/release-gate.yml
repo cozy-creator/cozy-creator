@@ -4,7 +4,7 @@ name: release-gate
 # release agent dispatches it, with the suites it chose for the candidate set, and its passing run id is what a
 # promotion requires (cozy-promote.yaml, tensorfs-publish.yaml, cozy-runtime runtime-publish.yaml, packages
 # `task promote`). No workflow calls it.
-#   gh workflow run release-gate.yml -R cozy-creator/cozy-creator -f suites=runtime,packages -f cozy=v0.11.17 -f runtime_wheel=https://…#sha256=… -f pins=…
+#   gh workflow run release-gate.yml -R cozy-creator/cozy-creator -f suites=runtime,packages -f cozy=v0.12.0 -f runtime_wheel=https://…#sha256=… -f pins=…
 # The runner signs in as the owner's account with the CI device key (environment release-gate, secret
 # COZY_CI_DEVICE_KEY; release-gate/README.md) and rents through tensorhub.com.
 on:
@@ -15,7 +15,7 @@ on:
         type: string
         required: true
       cozy:
-        description: "cozy on the runner and the machine: released (the Hub's target), a release tag (v0.11.14) or a dev-build run id"
+        description: "cozy on the runner and the machine: released (the Hub's target), a release tag (v0.12.0) or a dev-build run id"
         type: string
         default: released
       runtime_wheel:
