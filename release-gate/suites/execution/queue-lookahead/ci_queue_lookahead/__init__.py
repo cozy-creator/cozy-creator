@@ -43,6 +43,7 @@ def preflight(payload: Probe) -> Facts:
 
 class Report(msgspec.Struct):
     tag: str
+    request_id: str
     pid: int
     entered_ns: int
     completed_ns: int
@@ -63,6 +64,7 @@ def gpu(
             {
                 "queue_gate": "entered",
                 "tag": payload.tag,
+                "request_id": ctx.request_id,
                 "pid": os.getpid(),
                 "at_ns": entered,
             }
@@ -86,7 +88,13 @@ def gpu(
     finally:
         plan.close()
     return Report(
-        payload.tag, os.getpid(), entered, time.time_ns(), facts.digest, value
+        payload.tag,
+        ctx.request_id,
+        os.getpid(),
+        entered,
+        time.time_ns(),
+        facts.digest,
+        value,
     )
 
 
