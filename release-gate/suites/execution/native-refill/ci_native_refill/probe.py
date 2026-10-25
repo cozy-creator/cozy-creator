@@ -117,20 +117,29 @@ def phase_policy(memory, seed):
         for component in ("a", "b"):
             for index in range(layers):
                 writer.component(component).put(f"{index}.weight", matrix)
+        writer.component("unused").put("0.weight", torch.eye(4 * width))
         checkpoint = writer.commit()
         modules, owners = {}, {}
-        for component in ("a", "b"):
+        for component, size, count in (
+            ("a", width, layers),
+            ("b", width, layers),
+            ("unused", 4 * width, 1),
+        ):
             with torch.device("meta"):
                 module = nn.Sequential(
-                    *(nn.Linear(width, width, bias=False) for _ in range(layers))
+                    *(nn.Linear(size, size, bias=False) for _ in range(count))
                 )
             vars(module)["_cozy_weights"] = residency.Declared(
                 residency.Weights(checkpoint, component),
-                blocks=[str(i) for i in range(layers)],
+                blocks=[str(i) for i in range(count)],
             )
             modules[component] = module
             owners[component] = memory.load(module, "ram")
         inputs = torch.ones(2, width, device="cuda")
+        ballast = torch.empty(64 * MIB, dtype=torch.uint8, device="cuda")
+        ballast.fill_(7)
+        torch.cuda.synchronize()
+        del ballast
         with memory.request(
             "phase-policy", plan=[owners["a"], owners["b"], owners["a"]]
         ) as request:
@@ -141,6 +150,9 @@ def phase_policy(memory, seed):
                 torch.no_grad(),
             ):
                 torch.testing.assert_close(modules["a"](inputs), inputs, rtol=0, atol=0)
+                assert memory.window_bytes == 4 * MIB
+                assert request.phase_changes[0]["torch_unused_bytes"] >= 64 * MIB
+                assert request.phase_changes[0]["torch_returned_bytes"] == 0
                 binding = owners["a"].retain(("0",))
                 with binding.prepare():
                     alias = modules["a"][0].weight[:1]
@@ -164,6 +176,9 @@ def phase_policy(memory, seed):
                 assert alias.data_ptr() == pointer
                 torch.testing.assert_close(alias.cpu(), matrix[:1], rtol=0, atol=0)
                 assert len(request.phase_changes) == 3, request.phase_changes
+                assert all(
+                    row["window_bytes"] == 4 * MIB for row in request.phase_changes
+                )
                 assert request.phase_changes[1]["torch_returned_bytes"] > 0
             stats = request.stats()
         for owner in owners.values():
@@ -178,6 +193,7 @@ def phase_policy(memory, seed):
             "request": stats,
             "alias_preserved": True,
             "same_phase_zero_rereads": True,
+            "unrelated_block_did_not_enlarge_window": True,
             "last_alias_reclaimed_bytes": released,
         }
 
