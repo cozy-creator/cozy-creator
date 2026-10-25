@@ -844,7 +844,7 @@ components:
           format: int64
           description: >-
             When it began executing (`running`), Unix ms: its time counts from here, never its queue's. 0
-            before it does, or from an older machine.
+            before it does.
           minimum: 0
         state: {type: string, description: 'queued, preparing, running, succeeded, failed, canceled'}
         waiting: {type: string, description: 'Why a queued run waits, for people.'}
