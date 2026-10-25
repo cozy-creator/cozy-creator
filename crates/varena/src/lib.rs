@@ -90,7 +90,13 @@ pub struct Arena {
 }
 
 static ARENAS: OnceLock<Mutex<Vec<Weak<Arena>>>> = OnceLock::new();
-static CAPTURES: OnceLock<Mutex<BTreeMap<i32, usize>>> = OnceLock::new();
+#[derive(Default)]
+struct DeviceActivity {
+    captures: usize,
+    producers: usize,
+}
+
+static CAPTURES: OnceLock<Mutex<BTreeMap<i32, DeviceActivity>>> = OnceLock::new();
 static PROCESS: AtomicU32 = AtomicU32::new(0);
 
 fn check_process() -> Result<()> {
@@ -106,7 +112,7 @@ fn check_process() -> Result<()> {
 
 // Lock order for CUDA work: capture registry, then arena state. Keep this guard through the
 // driver calls so capture entry cannot race a context join or residency mutation.
-fn capture_counts() -> Result<MutexGuard<'static, BTreeMap<i32, usize>>> {
+fn capture_counts() -> Result<MutexGuard<'static, BTreeMap<i32, DeviceActivity>>> {
     check_process()?;
     CAPTURES
         .get_or_init(Mutex::default)
@@ -114,8 +120,8 @@ fn capture_counts() -> Result<MutexGuard<'static, BTreeMap<i32, usize>>> {
         .map_err(|_| Error::Poisoned("capture registry mutex".into()))
 }
 
-fn ensure_not_capturing(counts: &BTreeMap<i32, usize>, device: i32) -> Result<()> {
-    if counts.get(&device).copied().unwrap_or(0) != 0 {
+fn ensure_not_capturing(counts: &BTreeMap<i32, DeviceActivity>, device: i32) -> Result<()> {
+    if counts.get(&device).is_some_and(|entry| entry.captures != 0) {
         return Err(Error::CaptureActive);
     }
     Ok(())
@@ -124,8 +130,14 @@ fn ensure_not_capturing(counts: &BTreeMap<i32, usize>, device: i32) -> Result<()
 /// Guard every native arena on this device, including captures before any Arena exists.
 pub fn enter_capture(device: i32) -> Result<GlobalCaptureGuard> {
     let mut counts = capture_counts()?;
-    let count = counts.entry(device).or_default();
-    *count = count
+    let activity = counts.entry(device).or_default();
+    if activity.producers != 0 {
+        return Err(Error::Invalid(
+            "native producers must finish before CUDA graph capture",
+        ));
+    }
+    activity.captures = activity
+        .captures
         .checked_add(1)
         .ok_or(Error::Invalid("capture count overflow"))?;
     Ok(GlobalCaptureGuard {
@@ -135,7 +147,9 @@ pub fn enter_capture(device: i32) -> Result<GlobalCaptureGuard> {
 }
 
 pub fn is_capturing(device: i32) -> Result<bool> {
-    Ok(capture_counts()?.get(&device).copied().unwrap_or(0) != 0)
+    Ok(capture_counts()?
+        .get(&device)
+        .is_some_and(|entry| entry.captures != 0))
 }
 
 pub struct GlobalCaptureGuard {
@@ -151,7 +165,43 @@ impl Drop for GlobalCaptureGuard {
         if let Ok(mut counts) = capture_counts()
             && let Some(count) = counts.get_mut(&self.device)
         {
-            *count = count.saturating_sub(1);
+            count.captures = count.captures.saturating_sub(1);
+        }
+    }
+}
+
+/// Own the right to submit native producer work outside actual CUDA capture.
+/// The caller retains this lease until every producer has checked completion; uncertain
+/// completion retains the lease along with the actual Fill/source owners. Graph replay
+/// is unaffected because its dependencies have separate physical pins.
+pub fn enter_producer(device: i32) -> Result<ProducerGuard> {
+    let mut counts = capture_counts()?;
+    ensure_not_capturing(&counts, device)?;
+    let activity = counts.entry(device).or_default();
+    activity.producers = activity
+        .producers
+        .checked_add(1)
+        .ok_or(Error::Invalid("producer count overflow"))?;
+    Ok(ProducerGuard {
+        device,
+        pid: std::process::id(),
+    })
+}
+
+pub struct ProducerGuard {
+    device: i32,
+    pid: u32,
+}
+
+impl Drop for ProducerGuard {
+    fn drop(&mut self) {
+        if self.pid != std::process::id() {
+            return;
+        }
+        if let Ok(mut counts) = capture_counts()
+            && let Some(activity) = counts.get_mut(&self.device)
+        {
+            activity.producers = activity.producers.saturating_sub(1);
         }
     }
 }

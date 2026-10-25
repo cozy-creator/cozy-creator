@@ -148,7 +148,9 @@ class Region:
             raise RuntimeError(
                 "this TensorFS build has no native owned refill capability"
             )
-        return PreparedRead(native(self._native, checkpoint, list(parts), threads, reclaim))
+        return PreparedRead(
+            native(self._native, checkpoint, list(parts), threads, reclaim)
+        )
 
 
 def supports_refill() -> bool:
@@ -158,7 +160,10 @@ def supports_refill() -> bool:
 
 def supports_prefetch() -> bool:
     """Whether native refill can refuse admission without eviction or a context join."""
-    return bool(getattr(getattr(_ext, "_VarenaPreparedRead", None), "NO_RECLAIM", False))
+    native = getattr(_ext, "_VarenaPreparedRead", None)
+    return bool(
+        getattr(native, "NO_RECLAIM", False) and getattr(native, "CAPTURE_GUARD", False)
+    )
 
 
 class PreparedRead:

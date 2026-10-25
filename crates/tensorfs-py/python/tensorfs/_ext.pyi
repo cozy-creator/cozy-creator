@@ -371,6 +371,7 @@ class _VarenaUse:
 
 class _VarenaPreparedRead:
     NO_RECLAIM: bool
+    CAPTURE_GUARD: bool
     def __init__(self, region: _VarenaRegion, checkpoint: Checkpoint,
                  parts: Sequence[tuple[str, int, int]], threads: int = 2,
                  reclaim: bool = True) -> None: ...
