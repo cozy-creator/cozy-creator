@@ -118,6 +118,9 @@ class PrepareRequest(_Wire):
     bits: int
     input_metadata: dict[str, InputMetadata]
 
+class Cancel(_Wire):
+    request_id: str
+
 class Invoke(_Wire):
     tensorfs: TensorFSOptions | None
     max_output_bytes: int

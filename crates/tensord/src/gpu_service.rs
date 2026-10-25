@@ -410,6 +410,14 @@ struct Session {
     level: Level,
 }
 
+#[derive(Clone)]
+struct Leader {
+    birth: Birth,
+    construction: String,
+    start: usize,
+    lookahead: Option<device_executor::Lookahead>,
+}
+
 /// What this call proved about the executor it returned. A cache handoff is never inferred
 /// from the pool map later: another call in its family may already have borrowed it.
 enum Disposition {
@@ -569,6 +577,21 @@ fn session_key(plan: &str, start: usize) -> String {
     }
 }
 
+fn prepare_request(record: &Execution, plan: &Plan) -> PrepareRequest {
+    PrepareRequest {
+        request_id: record.id.clone(),
+        construction: plan.construction.clone(),
+        entrypoint: plan.entrypoint.clone(),
+        payload: protocol::executor::Json(record.invocation.input.clone()),
+        attention_kernel: record.invocation.attention_kernel.clone(),
+        bits: 0,
+        input_metadata: record.invocation.inputs.iter().map(|i| (i.input_id.clone(), InputMetadata {
+            input_id: i.input_id.clone(), media_type: i.media_type.clone(), digest: i.digest.clone(),
+            length: i.length, order: i.order.into(),
+        })).collect(),
+    }
+}
+
 /// An App of an environment: `(generation, application)`. Executors are keyed by it.
 type App = (String, String);
 
@@ -614,7 +637,7 @@ pub struct Pool {
     /// Set (under `sessions`) once the pool stops: an executor coming back then is ended.
     stopped: std::sync::atomic::AtomicBool,
     /// Exact live executor lane leaders by PID, including sessions taken out for a call.
-    leaders: Mutex<BTreeMap<u32, (Birth, String, usize)>>,
+    leaders: Mutex<BTreeMap<u32, Leader>>,
     /// Every live GPU executor process (leaders and followers), with exact exit ownership.
     tenants: memory::Tenants,
     /// Per generation, the import-only executor sessions fork from. Declared after
@@ -943,6 +966,16 @@ impl Pool {
         let before = self.free(&lane);
         self.notes.note(serde_json::json!({"event": "offload_begin", "for": reason, "pid": pid,
             "plan": plan, "need": need, "free_before": before}));
+        if session.executor.preparing_lookahead() {
+            // This Session was removed from the idle pool; no invocation owns it. An
+            // outstanding CPU preflight must not hold GPU memory behind a serialized Map.
+            session.executor.lookahead().offer(None, "");
+            let why = self.keep_idle(engine, session).err().map(|error| error.to_string()).unwrap_or_default();
+            self.notes.note(serde_json::json!({"event": "offload", "for": reason, "pid": pid,
+                "plan": plan, "need": need, "free_before": before, "free_after": self.free(&lane),
+                "ack_ms": began.elapsed().as_secs_f64() * 1e3, "ended_pending_preparation": true, "failed": why}));
+            return;
+        }
         let reply = session.executor.command(&Command::Map(Map {
             construction: session.plan.clone(), level: protocol::executor::Level::Ram,
         }), &mut device_executor::Baseline);
@@ -1039,8 +1072,8 @@ impl Pool {
             let mut roots = std::collections::BTreeSet::new();
             for record in active {
                 if record.invocation.degree == 0 || record.cancel_actor.is_some() { continue }
-                let Some((birth, _, start)) = record.process.as_ref().and_then(|birth| leaders.get(&birth.pid)) else { continue };
-                if record.process.as_ref() != Some(birth) || *start > index || index >= start + record.invocation.degree as usize { continue }
+                let Some(leader) = record.process.as_ref().and_then(|birth| leaders.get(&birth.pid)) else { continue };
+                if record.process.as_ref() != Some(&leader.birth) || leader.start > index || index >= leader.start + record.invocation.degree as usize { continue }
                 roots.insert(if record.invocation.root.is_empty() { record.id } else { record.invocation.root });
             }
             for root in roots {
@@ -1155,7 +1188,7 @@ impl Pool {
     /// exits are proven, each GPU of the lane reaps their rows.
     fn ended(&self, plan: &str, start: usize) {
         let mut births: Vec<Birth> = self.leaders.lock().unwrap().values()
-            .filter(|(_, p, s)| p.as_str() == plan && *s == start).map(|(birth, _, _)| birth.clone()).collect();
+            .filter(|leader| leader.construction == plan && leader.start == start).map(|leader| leader.birth.clone()).collect();
         births.extend(self.tenants.lock().unwrap().values()
             .filter(|t| t.plan == plan && t.start == start).map(|t| t.exact.birth().clone()));
         self.retire(plan, start, &births);
@@ -1174,8 +1207,8 @@ impl Pool {
             levels.remove(&key);
         }
         drop(levels);
-        self.leaders.lock().unwrap().retain(|_, (birth, p, s)|
-            !(p.as_str() == plan && *s == start && gone.contains(birth)));
+        self.leaders.lock().unwrap().retain(|_, leader|
+            !(leader.construction == plan && leader.start == start && gone.contains(&leader.birth)));
         self.tenants.lock().unwrap().retain(|_, t|
             !(t.plan == plan && t.start == start && gone.contains(t.exact.birth())));
     }
@@ -1385,7 +1418,7 @@ impl Pool {
     /// Once the pool stopped, or a cancel killed it, it ends instead.
     fn keep_idle(&self, engine: &Arc<Engine>, session: Session) -> io::Result<Disposition> {
         let key = session_key(&session.plan, session.start);
-        let killed = !session.executor.idle();
+        let killed = !session.executor.idle() || session.executor.abandoned_lookahead();
         if session.degree == 0 {
             let mut idle = self.deviceless.lock().unwrap();
             if !killed && !self.stopped.load(Ordering::Acquire) {
@@ -1825,7 +1858,36 @@ impl Pool {
     /// The GPUs with an executor of `plan` now, by envelope index (a lane's first).
     fn hosting(&self, plan: &str) -> Vec<usize> {
         let leaders = self.leaders.lock().unwrap();
-        leaders.values().filter(|(_, p, _)| p.as_str() == plan).map(|(_, _, start)| *start).collect::<std::collections::BTreeSet<_>>().into_iter().collect()
+        leaders.values().filter(|leader| leader.construction == plan).map(|leader| leader.start).collect::<std::collections::BTreeSet<_>>().into_iter().collect()
+    }
+
+    /// The first actual waiting GPU root may prepare on one compatible active executor.
+    /// This grants no device permit, changes no queue order and never invokes its handler.
+    pub(crate) fn lookahead(&self, engine: &Engine, next: Option<(&Execution, &Plan)>) {
+        let next = next.filter(|(record, plan)| plan.degree == 1 && record.invocation.parent.is_empty()
+            && engine.get(&record.id).is_ok_and(|now| now.state == State::Queued && now.cancel_actor.is_none()));
+        let leaders = self.leaders.lock().unwrap();
+        let selected = next.and_then(|(record, plan)| leaders.iter()
+            .filter(|(_, leader)| leader.construction == plan.construction
+                && !leader.birth.ended().unwrap_or(true)
+                && leader.lookahead.as_ref().is_some_and(|a| a.active() || a.pending(&record.id)))
+            .min_by_key(|(_, leader)|
+                (!leader.lookahead.as_ref().is_some_and(|a| a.pending(&record.id)), leader.start)).map(|(pid, _)| *pid));
+        let offers: Vec<_> = leaders.iter().filter_map(|(pid, leader)| {
+            let ahead = leader.lookahead.clone()?;
+            let current = ahead.current();
+            Some((ahead, current, selected == Some(*pid)))
+        }).collect();
+        drop(leaders);
+        for (ahead, current, selected) in offers {
+            // Dispatch claims the journal before its worker borrows the Session. Leaving
+            // Queue is not revocation: that worker may not have promoted the slot yet.
+            if ahead.queued().is_some_and(|id| engine.get(&id).is_ok_and(|record|
+                matches!(record.state, State::Starting | State::Running) && record.cancel_actor.is_none())) {
+                continue;
+            }
+            ahead.offer(next.filter(|_| selected).map(|(record, plan)| prepare_request(record, plan)), &current);
+        }
     }
     /// Where `plan` runs now, with its lane's call slots: inside its root's `lane` when it has
     /// one, else (a standalone call, or warming with no root) on GPUs no root holds or older
@@ -2700,8 +2762,10 @@ impl Pool {
             let exact = Exact::open(&executor.birth)?.ok_or_else(|| io::Error::other("executor exited before its start"))?;
             let tenant = Tenant { plan: plan.construction.clone(), start, exact };
             self.tenants.lock().unwrap().insert(executor.birth.pid, tenant);
-            self.leaders.lock().unwrap().insert(executor.birth.pid,
-                (executor.birth.clone(), plan.construction.clone(), start));
+            self.leaders.lock().unwrap().insert(executor.birth.pid, Leader {
+                birth: executor.birth.clone(), construction: plan.construction.clone(), start,
+                lookahead: (plan.degree == 1 && executor.hello.request_lookahead).then(|| executor.lookahead()),
+            });
         }
         let selections = plan.selections();
         let id = self.serving.next.fetch_add(1, Ordering::Relaxed);
@@ -2886,33 +2950,15 @@ impl Pool {
         }
         let record = engine.get(id)?;
         let prepared = session.executor.command(
-            &Command::PrepareRequest(PrepareRequest {
-                request_id: id.into(),
-                construction: construction.clone(),
-                entrypoint: plan.entrypoint.clone(),
-                payload: protocol::executor::Json(record.invocation.input.clone()),
-                attention_kernel: record.invocation.attention_kernel.clone(),
-                bits: 0,
-                input_metadata: record
-                    .invocation
-                    .inputs
-                    .iter()
-                    .map(|i| (i.input_id.clone(), InputMetadata {
-                        input_id: i.input_id.clone(),
-                        media_type: i.media_type.clone(),
-                        digest: i.digest.clone(),
-                        length: i.length,
-                        order: i.order.into(),
-                    }))
-                    .collect(),
-            }),
+            &Command::PrepareRequest(prepare_request(&record, &plan)),
             &mut callbacks,
         );
         // A retained executor that went away while idle: PrepareRequest enters no handler,
         // so the attempt never started (see `run_on`).
-        let prepared = prepared.map_err(|error| match retained && channel_lost(&error) {
+        let prepared = prepared.map_err(|error| match retained && (channel_lost(&error)
+            || error.get_ref().is_some_and(|e| e.is::<device_executor::AbandonedPreparation>())) {
             true => io::Error::other(Undelivered(format!(
-                "retained executor gone before the request reached it: {error}"
+                "retained executor cannot prepare this request before entry: {error}"
             ))),
             false => error,
         })?;
@@ -2989,6 +3035,8 @@ impl Pool {
         let invoked = Instant::now();
         let first = !session.invoked;
         session.invoked = true;
+        let invoking = session.executor.lookahead().invoking(id);
+        engine.notify_activity(); // Queued work may have arrived before this executor became ready.
         let reply = session.executor.command(
             &Command::Invoke(Box::new(Invoke {
                 tensorfs: calls.and_then(|calls| calls.tensorfs(id, session.executor.line())),
@@ -3012,6 +3060,7 @@ impl Pool {
             })),
             &mut callbacks,
         );
+        drop(invoking);
         let reply = reply?;
         dispatched.record(&reply, &self.config.inventory);
         session.level = Level::Gpu;

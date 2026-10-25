@@ -8,7 +8,7 @@ use crate::{
 };
 pub use protocol::executor::{
     Activate, Adapter, Answer, Bearer, Binding, ByteGrant, CallInterface, CallProgress, CheckpointItem,
-    Command, Construction, Event, Fork, Frame, Hello, HostFrame, InputFile, InputMetadata, Invoke,
+    Cancel, Command, Construction, Event, Fork, Frame, Hello, HostFrame, InputFile, InputMetadata, Invoke,
     Kind, Level, Load, LoadFacts, Map, MemoSettings, Metrics, ModelLoad, ModelPrefetch, Outcome,
     Output, PrepareRequest, Probe, Publish, PublishPart, Request, Residency, ResultRef,
     StageMemoStore, Start, Unload, RESULT_DOCUMENT,
@@ -93,6 +93,113 @@ impl Line {
     }
 }
 
+struct QueuedPreparation {
+    command: PrepareRequest,
+    reply: Option<Frame>,
+    canceled: bool,
+    promoted: bool,
+}
+
+#[derive(Default)]
+struct LookaheadState {
+    current: String,
+    queued: Option<QueuedPreparation>,
+    retire: bool,
+}
+
+/// One actual next request on this exact executor. The existing exchange remains its only reader.
+#[derive(Clone)]
+pub struct Lookahead {
+    line: Line,
+    state: Arc<Mutex<LookaheadState>>,
+}
+
+impl Lookahead {
+    pub fn current(&self) -> String {
+        self.state.lock().unwrap().current.clone()
+    }
+
+    pub fn pending(&self, request: &str) -> bool {
+        let state = self.state.lock().unwrap();
+        !state.retire && state.queued.as_ref().is_some_and(|q|
+            !q.canceled && !q.promoted && q.command.request_id == request)
+    }
+
+    pub fn queued(&self) -> Option<String> {
+        self.state.lock().unwrap().queued.as_ref()
+            .filter(|q| !q.canceled).map(|q| q.command.request_id.clone())
+    }
+
+    pub fn active(&self) -> bool {
+        let state = self.state.lock().unwrap();
+        !state.retire && !state.current.is_empty()
+    }
+
+    /// Update the queue's one assignment. No GPU work or Invoke is sent here.
+    pub fn offer(&self, command: Option<PrepareRequest>, current: &str) {
+        let mut state = self.state.lock().unwrap();
+        if state.retire || state.current != current {
+            return; // The exact executor has advanced to another invocation since the offer.
+        }
+        if let Some(queued) = &mut state.queued {
+            // Ordinary dispatch owns it now. A queued-hint cancel must never cancel the
+            // active request; its existing exact-process cancellation handle is in charge.
+            if queued.promoted {
+                return;
+            }
+            if !queued.canceled && command.as_ref() == Some(&queued.command) {
+                return;
+            }
+            if !queued.canceled {
+                queued.canceled = true;
+                self.line.send(&Command::Cancel(Cancel { request_id: queued.command.request_id.clone() }));
+                tracing::info!(request = %queued.command.request_id, "request lookahead canceled");
+            }
+            // At most one outstanding reply. A canceled in-flight preparation is drained by
+            // the normal reader, or its idle executor is retired before another request uses it.
+            if queued.reply.is_none() {
+                state.retire = true;
+                return;
+            }
+            state.queued = None;
+            // Mux's request-ID cancel mark remains until Invoke. Retire only after the
+            // current call ends, rather than let a later re-offer inherit that stale mark.
+            state.retire = true;
+            return;
+        }
+        let Some(command) = command.filter(|c| !state.current.is_empty() && c.request_id != state.current) else { return };
+        let request = command.request_id.clone();
+        state.queued = Some(QueuedPreparation { command: command.clone(), reply: None, canceled: false, promoted: false });
+        if self.line.send(&Command::PrepareRequest(command)) {
+            tracing::info!(current = %state.current, request = %request, "request lookahead sent");
+        } else {
+            state.queued = None;
+        }
+    }
+
+    pub fn invoking(&self, request: &str) -> Invoking {
+        self.state.lock().unwrap().current = request.into();
+        Invoking(self.state.clone())
+    }
+}
+
+pub struct Invoking(Arc<Mutex<LookaheadState>>);
+impl Drop for Invoking {
+    fn drop(&mut self) {
+        self.0.lock().unwrap().current.clear();
+    }
+}
+
+/// Reusing this idle process would wait for an abandoned preparation. Nothing was invoked.
+#[derive(Debug)]
+pub struct AbandonedPreparation;
+impl std::fmt::Display for AbandonedPreparation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("idle executor has an abandoned queued preparation")
+    }
+}
+impl std::error::Error for AbandonedPreparation {}
+
 /// `command`'s wire bytes. Only the typed TensorFS options may carry supplied access: the bytes
 /// keep the token, every other field is scanned.
 fn command_bytes(command: &Command) -> io::Result<Vec<u8>> {
@@ -132,6 +239,7 @@ pub struct DeviceExecutor {
     /// Where its stderr stood when the request it serves began.
     log_from: u64,
     memo: Option<Arc<crate::memo::Memo>>,
+    lookahead: Arc<Mutex<LookaheadState>>,
 }
 
 /// A cancel ends the call at once: its executor is killed (its exact process and scope), never
@@ -832,6 +940,7 @@ impl DeviceExecutor {
             cancellation,
             log_from: 0,
             memo: None,
+            lookahead: Arc::default(),
         };
         end_channel_at_exit(executor.exact.try_clone()?, executor.stream.try_clone()?)?;
         let hello = executor.command(&Command::Hello, &mut Baseline)?;
@@ -884,6 +993,15 @@ impl DeviceExecutor {
     pub fn line(&self) -> Line {
         Line(Arc::downgrade(&self.writer))
     }
+    pub fn lookahead(&self) -> Lookahead {
+        Lookahead { line: self.line(), state: self.lookahead.clone() }
+    }
+    pub fn abandoned_lookahead(&self) -> bool {
+        self.lookahead.lock().unwrap().retire
+    }
+    pub fn preparing_lookahead(&self) -> bool {
+        self.lookahead.lock().unwrap().queued.as_ref().is_some_and(|q| q.reply.is_none())
+    }
     pub fn cancellation(&self) -> Cancellation {
         Cancellation { enabled: Arc::new(Mutex::new(true)), ..self.cancellation.clone() }
     }
@@ -922,19 +1040,55 @@ impl DeviceExecutor {
         command: &Command,
         services: &mut impl Services,
     ) -> io::Result<Frame> {
-        let bytes = command_bytes(command)?;
-        seam::write_body(&mut self.writer.lock().unwrap(), &bytes)?;
+        let request = match command {
+            Command::PrepareRequest(c) => Some(c.request_id.as_str()),
+            Command::Invoke(c) => Some(c.request_id.as_str()),
+            _ => None,
+        };
+        let mut sent = false;
+        if let Command::PrepareRequest(command) = command {
+            let mut state = self.lookahead.lock().unwrap();
+            if state.retire {
+                return Err(io::Error::other(AbandonedPreparation));
+            }
+            if let Some(queued) = &mut state.queued {
+                if queued.canceled || &queued.command != command {
+                    return Err(io::Error::other(AbandonedPreparation));
+                }
+                queued.promoted = true;
+                if let Some(reply) = queued.reply.take() {
+                    state.queued = None;
+                    tracing::info!(request = %command.request_id, "request lookahead reused");
+                    return Ok(reply);
+                }
+                sent = true;
+            }
+        }
+        if !sent {
+            let bytes = command_bytes(command)?;
+            seam::write_body(&mut self.writer.lock().unwrap(), &bytes)?;
+        }
         loop {
             let frame = read_frame(&mut self.stream)?
                 .ok_or_else(|| {
                     io::Error::new(io::ErrorKind::UnexpectedEof, "stock executor EOF before reply")
                 })?;
+            let pending = request != Some(frame.request_id.as_str())
+                && self.lookahead.lock().unwrap().queued.as_ref()
+                    .is_some_and(|queued| queued.command.request_id == frame.request_id);
+            let outside = pending
+                || request.is_some_and(|id| !frame.request_id.is_empty() && frame.request_id != id);
             match frame.event {
                 Some(Event::Request) if !frame.malformed.is_empty() => {
                     refuse_malformed(&mut self.writer.lock().unwrap(), &frame)?
                 }
                 Some(Event::Progress) if !frame.malformed.is_empty() => (),
+                Some(Event::Progress) if outside => (),
                 Some(Event::Progress) => services.progress(&frame),
+                Some(Event::Request) if outside => {
+                    // A queued preflight has no current attempt's spool or child-call grants.
+                    self.answer(&frame, &mut Baseline)?;
+                }
                 Some(Event::Request)
                     if matches!(frame.request, Some(Request::StageMemoLookup(_) | Request::StageMemoStore(_))) =>
                 {
@@ -946,7 +1100,27 @@ impl DeviceExecutor {
                 }
                 Some(Event::Request) => self.answer(&frame, services)?,
                 Some(Event::Unknown) => (),
-                None if frame.reply == command.name() => return Ok(frame),
+                None if frame.reply == command.name() && request.is_none_or(|id|
+                    frame.request_id == id || !self.hello.request_lookahead && frame.request_id.is_empty()
+                ) => {
+                    if sent {
+                        self.lookahead.lock().unwrap().queued = None;
+                        tracing::info!(request = %frame.request_id, "request lookahead reused");
+                    }
+                    return Ok(frame);
+                }
+                None if frame.reply == "prepare_request" => {
+                    let mut state = self.lookahead.lock().unwrap();
+                    let Some(queued) = state.queued.as_mut().filter(|q| q.command.request_id == frame.request_id) else {
+                        return Err(io::Error::other("unexpected queued preparation reply"));
+                    };
+                    tracing::info!(request = %frame.request_id, ok = frame.ok, "request lookahead ready");
+                    if queued.canceled {
+                        state.queued = None;
+                    } else {
+                        queued.reply = Some(frame);
+                    }
+                }
                 // A Runtime without the `bearer` handler refuses it as a command.
                 None if frame.reply == "bearer" => (),
                 None => return Err(io::Error::other("out-of-order stock executor reply")),
