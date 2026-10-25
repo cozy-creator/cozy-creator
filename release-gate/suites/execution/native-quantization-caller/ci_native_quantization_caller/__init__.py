@@ -22,6 +22,27 @@ class Report(msgspec.Struct):
     detail: str
 
 
+class AdapterReport(msgspec.Struct):
+    passed: bool
+    mixed: ModelArtifact
+    detail: str
+
+
+@app.entrypoint(
+    accelerator=False,
+    weights=(
+        WeightsOutput("mixed", 2660),
+        WeightsOutput("tripwire", 2660),
+        WeightsOutput("bound", 2659),
+    ),
+)
+def adapters(payload: Request, ctx: Context, tel: Telemetry) -> AdapterReport:
+    from .adapters import exercise
+
+    artifact, detail = exercise(payload.seed, ctx, tel)
+    return AdapterReport(True, artifact, detail)
+
+
 @app.entrypoint(
     accelerator=True,
     weights=(WeightsOutput("int8", 1 << 20), WeightsOutput("nvfp4", 1 << 20)),

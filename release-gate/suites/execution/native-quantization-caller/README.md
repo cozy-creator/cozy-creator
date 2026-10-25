@@ -31,3 +31,35 @@ NVFP4read16416/new1172, one newlyencoded tensor each. `native_quantized_tensors`
 in run.log/run.show, so no observed-metric claim is made; the distinct two-pass source counter
 and native stage logs supply the route evidence. [Receipt](evidence/f55db84af-rtx3060.json).
 An ordinary package recipe via `cozy model quantize` and consuming-model proof remain separate.
+
+## Native adapter and mixed per-component route
+
+The additional CPU endpoint exercises the Runtime adapters after the measured TensorFS0.15.6
+primitive passed its independent gates. It runs through the ordinary default-home CLI without a
+GPU allocation:
+
+```sh
+cozy run /absolute/canonical/worktree/release-gate/suites/execution/native-quantization-caller/adapters \
+  seed=156101 --on OWNED_MACHINE --json
+```
+
+It checks ten historical empty-array results, two strided nonempty inputs and two genuine native
+input refusals (the original TensorFS DecodeError cause must survive the Runtime translation).
+The golden encoder lives inside this package's frozen `oracle.py`; current production functions
+are the subject, never the reference. Empty carriers are Runtime compatibility behavior, not a
+claim that raw native primitives accept zero geometry.
+
+A real checkpoint then feeds a mixed ConvRot/FP8/NVFP4 plan across two components. FP8 makes the
+whole-selection native Writer route ineligible; explicit public `quantize_component_into` calls
+exercise the adapters and existing Output lifetime. Repeating the first component must reuse
+its entries, consume no additional grant and report unknown (`None`) reused quality. Actual
+adoption consumes exactly2,660bytes including all companions and inherits both plain biases.
+ConvRot/NVFP4 parts are byte-exact against the frozen reference; FP8 is independently checked
+against its stored value law. Part roles, dtype and physical geometry must all match.
+
+Two real declared outputs exercise refusals: a zero quality bound publishes no tensor, and a
+2,659byte grant permits the first component but refuses the second before publication/adoption.
+No cancellation callback, backend or failure is injected. This verifies same-Writer component
+reuse; cross-attempt recovery and cancellation remain the separate Writer gates. The legacy
+per-component source-byte counter omits NVFP4's maximum scan, so its recorded value is explicitly
+not a disk/transfer-volume measurement. All new adapter results remain pending a real run.
