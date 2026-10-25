@@ -530,53 +530,6 @@ pub fn postprocess(
     }
     Ok((result, bindings))
 }
-/// Exact source files the existing result/binding/encoder contract will consume. Staged
-/// inputs and unrelated package scratch files are not part of output handoff custody.
-pub fn postprocess_files(spool: &Path, reply: &Frame) -> io::Result<Vec<PathBuf>> {
-    read_result(spool, reply)?;
-    let mut files = std::collections::BTreeSet::from([PathBuf::from(RESULT_DOCUMENT)]);
-    let deferred: std::collections::BTreeSet<_> = reply.frames.iter().map(|frame| frame.handle.as_str()).collect();
-    for frame in &reply.frames {
-        spool_name(&frame.handle)?;
-        let raw = PathBuf::from(&frame.raw);
-        if open_artifact(spool, &raw)?.metadata()?.len() != frame.raw_bytes {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "deferred frame bytes differ from its descriptor"));
-        }
-        files.insert(raw);
-    }
-    let ordinary = Frame {
-        outputs: reply.outputs.iter().filter(|o| o.kind != "tree" && !deferred.contains(o.asset_ref.as_str())).cloned().collect(),
-        max_output_bytes: reply.max_output_bytes,
-        ..Frame::default()
-    };
-    for binding in bind(spool, &ordinary, &BTreeMap::new())? { files.insert(PathBuf::from(binding.name)); }
-    for output in reply.outputs.iter().filter(|output| output.kind == "tree") {
-        match tree_source(&output.asset_ref)? {
-            TreeSource::Directory(directory) => {
-                let members = protocol::tree::walk(&spool.join(&directory))?;
-                if members.is_empty() { return Err(io::Error::new(io::ErrorKind::InvalidData, "output tree holds no file")); }
-                for name in members.into_keys() {
-                    let path = Path::new(&directory).join(name);
-                    open_artifact(spool, &path)?;
-                    files.insert(path);
-                }
-            }
-            TreeSource::Manifest(_) => {
-                // A forwarded tree already has its canonical manifest and digest-named files.
-                let binding = tree_binding(spool, output)?;
-                let name = PathBuf::from(binding.name);
-                let mut manifest = Vec::new();
-                open_artifact(spool, &name)?.read_to_end(&mut manifest)?;
-                files.insert(name);
-                for member in crate::trees::parse(&manifest)?.into_values() {
-                    files.insert(PathBuf::from(format!("sha256-{}", member.sha256)));
-                }
-            }
-        }
-    }
-    Ok(files.into_iter().collect())
-}
-
 enum TreeSource { Manifest(String), Directory(String) }
 fn tree_source(reference: &str) -> io::Result<TreeSource> {
     if let Some(hex) = reference.strip_prefix("sha256:")

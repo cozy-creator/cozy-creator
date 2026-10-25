@@ -3056,12 +3056,11 @@ impl Pool {
         match outcome.terminal.as_str() {
             "succeeded" => {
                 let result = (|| {
-                    // Validate the canonical reply before transferring its complete host spool.
-                    let files = device_executor::postprocess_files(&spool, &reply)?;
+                    // The machine-owned spool outlives executor reuse through this owner.
+                    // Validation and durable custody belong to CPU postprocessing below.
                     let codec = session.executor.codec();
                     codec.retain_log()?;
-                    let spool = engine.output_spool(id, spool_owner, &files)?;
-                    Ok::<_, io::Error>(Postprocess { codec, spool, reply, _generation: held.retention() })
+                    Ok::<_, io::Error>(Postprocess { codec, spool: spool_owner, reply, _generation: held.retention() })
                 })();
                 match result {
                     Ok(post) => return Ok(Some(post)),

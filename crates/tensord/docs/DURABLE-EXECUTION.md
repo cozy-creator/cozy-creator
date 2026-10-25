@@ -96,11 +96,10 @@ It returns at most 1,024 nonterminal records.
 
 ## Output custody
 
-Host output ownership is separate from a returned executor. Only canonical result bytes,
-deferred frame raw files, ordinary output files and referenced tree members are synced or
-copied for the handoff; unrelated staged inputs are not copied or synced. Machine-owned staging
-stays owned by the postprocessing object. Files that cannot be flushed through their producer read handle are copied into private
-`output-work/<id>` custody first; all spools are machine-owned.
+Host output ownership is separate from a returned executor. The postprocessing object retains
+the machine-owned staging spool directly. Returning an executor does not copy or flush output
+files: the existing CPU postprocessing validates them and takes durable custody before terminal
+commit. A crash before that custody remains an owner-loss failure, with no replay.
 The reusable codec retains its generation and an open stderr handle before session return,
 so idle executor shutdown cannot invalidate its interpreter, log or input files.
 
@@ -127,7 +126,7 @@ component (no absolute, `..` or symlink), checked as a regular file via `O_PATH`
 one held artifact of equal length. This copy is the one read of an output's bytes: nothing before
 it re-reads them (the encoders bind lengths) and nothing after re-hashes them (reads, collection).
 
-Reclamation: the postprocessing owner releases its spool (`staging/<id>` or `output-work/<id>`)
+Reclamation: the postprocessing owner releases its spool (`staging/<id>`)
 after encoding/custody and terminal handling. Crash leftovers of settled runs are swept. `results/<id>` is removed when the client releases
 retention and the store holds the public products. The caches manage themselves (`reclaim.rs`, at
 start and every 10 minutes; no purge verb): crash-leftover spools of settled runs go at once;

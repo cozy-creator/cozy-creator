@@ -101,7 +101,7 @@ impl Engine {
     pub fn open(root: &Path) -> io::Result<Arc<Self>> {
         fs::create_dir_all(root)?;
         platform::durable::set_mode(root, 0o700)?;
-        for name in ["staging", "output-work", "results"] {
+        for name in ["staging", "results"] {
             fs::create_dir_all(root.join(name))?;
         }
         platform::durable::sync_dir(root)?;
@@ -946,42 +946,6 @@ impl Engine {
         fs::create_dir_all(&root)?;
         Ok(root)
     }
-    /// Retain durable referenced outputs from this invocation's machine-owned spool. On
-    /// platforms that cannot flush a producer's read handle, copy only those output files.
-    pub(crate) fn output_spool(&self, id: &str, source: Spool, files: &[PathBuf]) -> io::Result<Spool> {
-        if source.0 != self.root.join("staging").join(id) {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "output handoff requires this invocation's machine-owned staging"));
-        }
-        match source.sync(files) {
-            Ok(()) => return Ok(source),
-            // Windows cannot flush a read-only handle. A private copy gives us the writer
-            // whose successful flush proves durability without changing producer permissions.
-            Err(error) if matches!(error.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::Unsupported) => (),
-            Err(error) => return Err(error),
-        }
-        let root = self.root.join("output-work").join(id);
-        fs::create_dir(&root)?;
-        platform::durable::set_mode(&root, 0o700)?;
-        let held = Spool(root);
-        let mut directories = std::collections::BTreeSet::from([held.0.clone()]);
-        for name in files {
-            let mut input = open_artifact(&source.0, name)?;
-            let path = held.0.join(name);
-            let parent = path.parent().expect("output file has a parent");
-            fs::create_dir_all(parent)?;
-            for directory in parent.ancestors().take_while(|p| p.starts_with(&held.0)) {
-                directories.insert(directory.to_owned());
-            }
-            let mut output = platform::durable::Mode::mode(OpenOptions::new().write(true).create_new(true), 0o600).open(&path)?;
-            io::copy(&mut input, &mut output)?;
-            output.sync_all()?;
-        }
-        for directory in directories.iter().rev() { platform::durable::sync_dir(directory)?; }
-        platform::durable::sync_dir(&self.root.join("output-work"))?;
-        drop(source);
-        Ok(held)
-    }
-
     /// Take the result's verified files into custody without publishing a terminal. A pooled
     /// executor returns to its idle pool before its caller can observe completion and call again.
     pub(crate) fn managed_result_record(
@@ -1193,20 +1157,6 @@ fn overlay_observation(
 /// A run's spool: removed once the run is settled, whatever the outcome. Its outputs are in
 /// custody by then (results and the store), so the spool would be a third copy.
 pub(crate) struct Spool(pub PathBuf);
-impl Spool {
-    fn sync(&self, files: &[PathBuf]) -> io::Result<()> {
-        let mut directories = std::collections::BTreeSet::from([self.0.clone()]);
-        for name in files {
-            open_artifact(&self.0, name)?.sync_all()?;
-            for directory in self.0.join(name).parent().expect("spool file parent").ancestors().take_while(|p| p.starts_with(&self.0)) {
-                directories.insert(directory.to_owned());
-            }
-        }
-        for directory in directories.iter().rev() { platform::durable::sync_dir(directory)?; }
-        platform::durable::sync_dir(self.0.parent().expect("spool parent"))?;
-        Ok(())
-    }
-}
 impl Drop for Spool {
     fn drop(&mut self) {
         // remove_dir_all never follows a symlink the package planted inside.

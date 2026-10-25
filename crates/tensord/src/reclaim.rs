@@ -445,14 +445,14 @@ pub fn sweep(caches: &Caches) -> io::Result<Swept> {
     let engine = caches.engine;
     let root = &engine.root;
     // Spools of settled or unknown runs are leftovers of a crash, never needed again.
-    for area in ["staging", "output-work"] {
-        for entry in fs::read_dir(root.join(area))?.flatten() {
-            let id = entry.file_name().to_string_lossy().into_owned();
-            let settled = match engine.get(&id) {
-                Ok(record) => record.state.terminal(),
-                Err(error) => error.kind() == io::ErrorKind::NotFound,
-            };
-            if settled && remove(&entry.path()) { swept.staging += 1; }
+    for entry in fs::read_dir(root.join("staging"))?.flatten() {
+        let id = entry.file_name().to_string_lossy().into_owned();
+        let settled = match engine.get(&id) {
+            Ok(record) => record.state.terminal(),
+            Err(error) => error.kind() == io::ErrorKind::NotFound,
+        };
+        if settled && remove(&entry.path()) {
+            swept.staging += 1;
         }
     }
     let mut entries = vec![];
