@@ -366,12 +366,18 @@ raw.decode_into(
 )
 ```
 
-Host inputs and a host destination use the existing CPU decoder. The initial resident
-CUDA path supports `int4.convrot`, `comfy.asym_w4a8_int8` and `comfy.w6a8_int8`,
+Host inputs and a host destination use the existing CPU decoder. The resident
+CUDA path supports `int4.convrot`, `w4a8.convrot`, `comfy.asym_w4a8_int8`,
+`comfy.w6a8_int8`, `fp8.tensorwise` and `nvfp4`,
 with F32, BF16 or F16 output. All parts and the destination must be on the same CUDA
 device. Mixed host/device placement and other resident CUDA schemes raise
 `UnsupportedError`; there is no CPU fallback or implicit weight upload. Device metadata
 conversion and decode scratch may still require temporary allocations.
+
+For NVFP4, packed weights, block scales, global scales and an optional per-column
+`pre_quant_scale` are read from the supplied device buffers. The ordinary format rules
+still determine nibble order, scale layout and whether global scales multiply or divide;
+resident decoding does not invent another quantization convention.
 
 The call is synchronous: success means the output is ready. Do not mutate inputs or
 access the destination concurrently with the call. Nonempty input/output spans must not overlap;
