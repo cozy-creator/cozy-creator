@@ -46,9 +46,9 @@ type Mismatch struct {
 }
 
 type checker struct {
-	doc   *openapi3.T
-	proxy *httputil.ReverseProxy
-	mu    sync.Mutex
+	doc    *openapi3.T
+	proxy  *httputil.ReverseProxy
+	mu     sync.Mutex
 	out    *os.File
 	calls  map[string]int
 	counts string
@@ -282,10 +282,20 @@ func (c *checker) mismatch(at Mismatch, side, field string, err error) {
 		}
 		at.Error = e.Reason
 	case *openapi3.SchemaError:
+		// allOf and its kin say only that a part failed: the part's own error says where, from the same root.
+		if e.Origin != nil {
+			c.mismatch(at, side, field, e.Origin)
+			return
+		}
 		if pointer := e.JSONPointer(); len(pointer) > 0 {
 			at.Field = field + "/" + strings.Join(pointer, "/")
 		}
 		at.Error = e.Reason
+	default:
+		if inner := errors.Unwrap(err); inner != nil {
+			c.mismatch(at, side, field, inner)
+			return
+		}
 	}
 	c.record(at)
 }
