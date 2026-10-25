@@ -609,10 +609,10 @@ pub struct MachineStatus {
     pub environments: Vec<Environment>,
     #[serde(default)]
     pub warm: Vec<WarmItem>,
-    /// The oldest NVIDIA driver its kernels run on; empty: no GPU stack or an older machine.
+    /// The oldest NVIDIA driver its kernels run on; empty: no GPU stack.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub driver_floor: String,
-    /// Its build toolchain; absent from an older machine.
+    /// Its build toolchain.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub toolchain: Option<crate::machine::Toolchain>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

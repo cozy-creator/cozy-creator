@@ -503,7 +503,7 @@ pub struct RunState {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub waiting_for: Vec<String>,
     /// When it began executing (`running`), Unix ms: its time counts from here, never its queue's.
-    /// 0 before it does, or from an older machine.
+    /// 0 before it does.
     pub started_at_ms: u64,
 }
 

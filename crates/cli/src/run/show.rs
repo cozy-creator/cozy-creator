@@ -102,8 +102,6 @@ struct Track {
 #[serde(default)]
 struct Execution {
     gpus: Vec<Gpu>,
-    /// An older Runtime's GPUs: `ordinal` is the GPU's number.
-    ranks: Vec<Gpu>,
     /// The executor's start: its fork, imports and CUDA initialization, one after another.
     executor: Option<Legs>,
     /// Its construction's preparation (qualifying, constructing, registering its models).
@@ -156,7 +154,6 @@ impl Legs {
 #[serde(default)]
 struct Gpu {
     gpu: Option<i64>,
-    ordinal: Option<i64>,
     arch: String,
     attention: Attention,
 }
@@ -537,7 +534,7 @@ fn component_rows(measured: &Measured) -> Vec<Vec<String>> {
 fn requested(measured: &[Measured]) -> Option<String> {
     let mut pins: Vec<&str> = measured
         .iter()
-        .flat_map(|m| m.m.execution.gpus.iter().chain(&m.m.execution.ranks))
+        .flat_map(|m| &m.m.execution.gpus)
         .map(|gpu| gpu.attention.requested.as_str())
         .filter(|pin| !pin.is_empty())
         .collect();
@@ -550,16 +547,10 @@ fn requested(measured: &[Measured]) -> Option<String> {
 fn gpu_rows(measured: &Measured) -> Vec<Vec<String>> {
     let measured = &measured.m;
     let execution = &measured.execution;
-    let gpus = if execution.gpus.is_empty() {
-        &execution.ranks
-    } else {
-        &execution.gpus
-    };
     let mut rows = vec![];
-    for gpu in gpus {
+    for gpu in &execution.gpus {
         let number = gpu
             .gpu
-            .or(gpu.ordinal)
             .filter(|n| *n >= 0)
             .map_or("?".into(), |n| n.to_string());
         for kernel in &gpu.attention.kernels {
