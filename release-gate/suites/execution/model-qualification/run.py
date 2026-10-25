@@ -91,16 +91,13 @@ def summarize(run, request, size, events, cli_wall_ms, step_stage):
     pids = sorted({gpu["pid"] for gpu in gpu_rows})
     assert len(pids) == 1 and isinstance(pids[0], int) and pids[0] > 0, pids
     # A memoized result must not qualify as a new inference merely by carrying old stats.
-    # The worker supplies its execution/step clocks; allow timestamp rounding and a small
-    # controller-to-worker clock offset, never a previous request's GPU interval.
+    # The worker supplies its invocation/step/GPU clocks. Compare within that clock
+    # domain: real rental clocks can differ from the controller by tens of seconds.
     began_ms = run["started_at_ms"]
     assert run.get("execution_ms", 0) > 0, "no measured execution"
     for gpu in gpu_rows:
         assert gpu["end_us"] >= gpu["start_us"]
         assert gpu["start_us"] >= (began_ms - 1000) * 1000, "stale GPU interval"
-        assert gpu["start_us"] >= (run["created_at_ms"] - 5000) * 1000, (
-            "GPU interval predates this request; check clock skew or memoized evidence"
-        )
     assert steps["started_unix_ms"] >= began_ms - 1000, "stale denoising measurements"
     assert steps["ended_unix_ms"] >= steps["started_unix_ms"]
     device = steps.get("device")
@@ -167,6 +164,11 @@ def summarize(run, request, size, events, cli_wall_ms, step_stage):
         "memory_scope_note": "Tracked process/native measurements; not a hard driver or machine VRAM cap.",
         "images": image_evidence(run, size),
         "metric_gaps": gaps,
+        "unmeasured": [
+            "physical disk and PCIe traffic, including canceled speculative reads",
+            "GPU idle time attributable to missing weights",
+            "isolated cold-weight latency excluding executor setup and compilation",
+        ],
     }
 
 
@@ -201,12 +203,17 @@ def main():
     parser.add_argument("--step-stage", default="denoise")
     parser.add_argument("--expect-size", default="1024x1024")
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="reuse saved completed receipts, submit only missing calls",
+    )
     args = parser.parse_args()
     assert len(set(args.seeds)) == 4, "distinct seeds prevent request memoization"
     size = tuple(int(value) for value in args.expect_size.split("x"))
     assert len(size) == 2 and all(0 < value <= 8192 for value in size)
     output = args.output.absolute()
-    output.mkdir(parents=True, exist_ok=False)
+    output.mkdir(parents=True, exist_ok=args.resume)
     cozy = str(Path.home() / ".cozy/bin/cozy")
     template = json.loads(args.input.read_text())
     source = source_identity(args.target)
@@ -221,6 +228,14 @@ def main():
             ["git", "-C", str(Path(__file__).parent), "rev-parse", "HEAD"], text=True
         ).strip(),
     }
+    previous = {}
+    if args.resume:
+        previous = json.loads((output / "report.json").read_text())
+        for key in ("target", "source", "lane", "machine"):
+            assert previous[key] == report[key], f"resume changed {key}"
+        archive = output / f"report-before-resume-{time.time_ns()}.json"
+        write(archive, previous)
+        report["resumed_from"] = str(archive)
     try:
         before = read_snapshot(
             cozy, output, "machine-before", ["machine", "show", args.machine]
@@ -242,38 +257,67 @@ def main():
         for index, seed in enumerate(args.seeds):
             label = "cold" if index == 0 else f"warm-{index}"
             directory = output / label
-            directory.mkdir()
             assert source_identity(args.target) == source, (
                 "package source changed during qualification"
             )
             request = {**template, "steps": args.steps, "seed": seed}
-            write(directory / "request.json", request)
-            status, elapsed = command(
-                cozy,
-                directory,
-                "call",
-                [
+            if args.resume and directory.exists():
+                assert json.loads((directory / "request.json").read_text()) == request
+                run = json.loads((directory / "run.ndjson").read_text())
+                assert run["status"] == "completed", (
+                    "resume never resubmits failed or unsettled work"
+                )
+                events = run_events(directory / "call.ndjson")
+                timing = directory / "call-timing.json"
+                elapsed = (
+                    json.loads(timing.read_text())["cli_wall_ms"]
+                    if timing.exists()
+                    else next(
+                        (
+                            r.get("cli_wall_ms")
+                            for r in previous["runs"]
+                            if r.get("label") == label
+                        ),
+                        None,
+                    )
+                )
+                status = 0
+            else:
+                directory.mkdir()
+                write(directory / "request.json", request)
+                status, elapsed = command(
+                    cozy,
+                    directory,
+                    "call",
+                    [
+                        "run",
+                        args.target,
+                        "--input",
+                        str(directory / "request.json"),
+                        "--lane",
+                        args.lane,
+                        "--on",
+                        args.machine,
+                        "--gpus=1",
+                        "--out",
+                        str(directory / "assets"),
+                    ],
+                )
+                write(
+                    directory / "call-timing.json",
+                    {"cli_wall_ms": elapsed, "exit_code": status},
+                )
+                events = run_events(directory / "call.ndjson")
+                recorded = [
+                    row["run"] for row in events if isinstance(row.get("run"), dict)
+                ]
+                assert recorded, f"no admitted run; CLI exit {status}, see {directory}"
+                run = read_snapshot(
+                    cozy,
+                    directory,
                     "run",
-                    args.target,
-                    "--input",
-                    str(directory / "request.json"),
-                    "--lane",
-                    args.lane,
-                    "--on",
-                    args.machine,
-                    "--gpus=1",
-                    "--out",
-                    str(directory / "assets"),
-                ],
-            )
-            events = run_events(directory / "call.ndjson")
-            recorded = [
-                row["run"] for row in events if isinstance(row.get("run"), dict)
-            ]
-            assert recorded, f"no admitted run; CLI exit {status}, see {directory}"
-            run = read_snapshot(
-                cozy, directory, "run", ["run", "show", recorded[-1]["id"], "--once"]
-            )
+                    ["run", "show", recorded[-1]["id"], "--once"],
+                )
             if status or run["status"] != "completed":
                 report["runs"].append(
                     {"label": label, "cli_wall_ms": elapsed, "run": run}
@@ -283,11 +327,22 @@ def main():
                 )
             row = summarize(run, request, size, events, elapsed, args.step_stage)
             row["label"] = label
+            if elapsed is None:
+                row["cli_wall_note"] = (
+                    "Original controller failed before saving wall time; not reconstructed."
+                )
             assert any(model["lane"] == args.lane for model in row["models"]), row[
                 "models"
             ]
             report["runs"].append(row)
             if index:
+                prior = report["runs"][-2]
+                assert row["run_id"] != prior["run_id"]
+                assert min(
+                    g["start_us"] for g in row["gpu_intervals_as_reported"]
+                ) >= max(g["end_us"] for g in prior["gpu_intervals_as_reported"]), (
+                    "GPU interval reused or overlapping a preceding sequential request"
+                )
                 assert all(
                     row["software"][key] == report["runs"][0]["software"][key]
                     for key in ("runtime", "tensorfs", "tensord_commit")
