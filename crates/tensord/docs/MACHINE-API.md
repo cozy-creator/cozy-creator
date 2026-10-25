@@ -115,8 +115,6 @@ the run's Hub it holds, per signer, one **run capability**: a grant the Hub sign
 - **Lifetime**: 15 minutes. Calcifer mints the machine a newer one at each send that needs more
   and five minutes before expiry while those runs are queued or running (`PUT /v1/capability`),
   and stops when they end, so it lapses at most 15 minutes after the last.
-- **An older Hub** (before tensorhub v0.36.1) mints none: a run that needs one fails at its send,
-  `hub_capabilities_unsupported`, and nothing reaches the machine. Runs on public releases are unaffected.
 
 A package's code runs in an executor, which TensorD gives the same capability for its endpoint
 (on a Load or Invoke, and each newer one): code can read it, and reaches what the machine's runs
