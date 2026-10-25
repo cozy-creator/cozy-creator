@@ -13,6 +13,8 @@ import threading
 import time
 from pathlib import Path
 
+from pressure_evidence import memory_notes, qualify
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -30,7 +32,7 @@ def main():
     processes = {}
     receipt = {"began_ns": time.time_ns(), "controller_pid": os.getpid()}
 
-    def cli(name, *arguments):
+    def cli(name, *arguments, allow_canceled=False):
         result = subprocess.run(
             [cozy, "--json", *arguments],
             text=True,
@@ -40,7 +42,8 @@ def main():
         )
         (output / f"{name}.ndjson").write_text(result.stdout)
         (output / f"{name}.stderr").write_text(result.stderr)
-        result.check_returncode()
+        if not allow_canceled or json.loads(result.stdout).get("status") != "canceled":
+            result.check_returncode()
         return result.stdout
 
     machine = json.loads(cli("machine-before", "machine", "show", "local"))
@@ -183,32 +186,14 @@ def main():
         log = cli(
             "memory-after", "machine", "logs", "local", "memory", "--lines", "1000"
         )
-        notes = []
-        for line in log.splitlines():
-            try:
-                text = json.loads(line)["text"]
-                stamp, payload = text.split(" ", 1)
-                note = json.loads(payload)
-                if float(stamp) * 1e9 >= receipt["began_ns"]:
-                    notes.append({"at_ns": int(float(stamp) * 1e9), **note})
-            except (ValueError, KeyError):
-                continue
+        notes = memory_notes(log, receipt["began_ns"])
         receipt["monitor"] = [
             n for n in notes if n.get("event", "").startswith("gpu_pressure")
         ]
-        canceled = next(
-            n
-            for n in notes
-            if n.get("event") == "gpu_pressure_cancel" and n.get("root") == run_id
+        snapshot = json.loads(
+            cli("run-show", "run", "show", run_id, allow_canceled=True)
         )
-        assert any(n.get("event") == "gpu_pressure" and n.get("blocked") for n in notes)
-        assert any(
-            n.get("event") == "gpu_pressure" and n.get("blocked") is False
-            for n in notes
-        )
-        receipt["monitor_cancel_to_native_release_ms"] = (
-            receipt["managed_cleanup"]["at_ns"] - canceled["at_ns"]
-        ) / 1e6
+        receipt.update(qualify(receipt, snapshot, notes))
         after = json.loads(cli("machine-after", "machine", "show", "local"))
         assert all(
             after["status"][key] == value for key, value in receipt["machine"].items()
