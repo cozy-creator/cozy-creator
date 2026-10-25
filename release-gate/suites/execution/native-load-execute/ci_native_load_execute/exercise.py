@@ -168,6 +168,9 @@ def exercise(mode, seed, outer_context, tel):
                     ),
                 )
                 assert not execution.poll().done, "the active-cancel window was missed"
+                assert arena.reclaim(nbytes) == 0, (
+                    "running compute lost the loaded weight pin"
+                )
                 if mode == "scope-unwind":
                     raise ValueError("intentional handler unwind after native launch")
                 waiting = threading.Event()
@@ -278,6 +281,10 @@ def exercise(mode, seed, outer_context, tel):
                 progress = execution.poll()
                 evidence["progress"] = asdict(progress)
                 assert progress.done
+                assert (
+                    float(bundle["output"][0])
+                    == (nbytes // 4) * 0.125 * progress.completed_steps
+                )
                 if mode.startswith("cancel-") or mode == "scope-unwind":
                     assert progress.canceled and progress.completed_steps < steps, (
                         progress
