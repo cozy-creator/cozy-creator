@@ -29,6 +29,8 @@ The cell requires these actual outcomes:
 - Publishing an actual ATen linear callable through `kernel_ready.wait` advances the real
   readiness registry. A previously captured plan refuses its stale kernel epoch with zero
   launches. This verifies the registry transition, not asynchronous bake compiler completion.
+- Built-in zero-dropout attention replays from one native graph launch; actual nonzero dropout
+  and random generation still refuse before replay and preserve the declared state.
 
 Reports include Runtime/TensorFS versions, physical device, phase changes, refusals and native
 launch counts. Source formatting/lint checks are separate from the pending GPU receipt. No passing
