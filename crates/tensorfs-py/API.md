@@ -772,3 +772,13 @@ size or the NumPy reference. Max error, finiteness, saturation and the productio
 tripwires are preserved; optional `max_relative_frobenius` refuses before publishing that tensor.
 This is an implementation candidate: real default-CLI conversion/parity/resume proof is required
 before Runtime producer cutover. Encoded-source conversions and calibrated recipes are separate.
+
+TensorFS0.15.5 extends native checkpoint quantization input to parameter-free rank-2
+`fp8.rowwise` (F8_E4M3/F8_E5M2 codes) and `int8.rowwise` (I8 codes), with F32/F16/BF16 row
+scales. The immutable checkpoint's stored roles/geometry are checked by the existing format
+registry. Bounded code and scale windows reconstruct directly into F32 using that decoder,
+without narrowing through logicalBF16/F16 metadata. No new decoder or resident-device capability
+is introduced. Buffer admission includes decoder I32/F32 temporaries. Read counters count stored
+weight+scale bytes per pass. Resume identity includes the reader/shared decoder implementation;
+previous native conversions under another implementation refuse reuse instead of mixing bytes.
+Runtime admission and producer cutover need the separate real rowwise conversion gate.

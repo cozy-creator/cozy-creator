@@ -1,0 +1,309 @@
+{
+  "purpose": "Real CPU native checkpoint conversion, not GPU execution or throughput qualification",
+  "date": "2026-10-25",
+  "cohort": {
+    "machine": "meliodas",
+    "host": "RTX3060; these are CPU cells",
+    "tensorfs_source": "6431a5387dab3125deb77c38f9c48410538ec8a8",
+    "tensorfs_wheel_sha256": "0171ff047875837509bdc596fa6d1503b35fd205d2fa2d7ca38c7a227a8794ff",
+    "tensorfs_native_sha256": "850d976dc78aab617ffd51bdc8b33a89552670464c1c41e0c610c923e7c5ed97",
+    "runtime_source": "d6ec142ada6b39ee757167de6c8ca97995908fd6",
+    "tensord_source": "9998cf5f4ea58f72bbf70efd22e483f235517895",
+    "fixture_source": "2d47029c4 root-export-fix; fixture unchanged from05a06cd92"
+  },
+  "cases": [
+    {
+      "mode": "writer-basic",
+      "run_number": 17496,
+      "run_id": "run-5877cef73ed7a5af5c88eaa1",
+      "status": "completed",
+      "execution_ms": 590,
+      "evidence": {
+        "mode": "basic",
+        "native_sha256": "850d976dc78aab617ffd51bdc8b33a89552670464c1c41e0c610c923e7c5ed97",
+        "reports": [
+          {
+            "encoded_keys": 6,
+            "identity": "6e05eab34d76d3026b3e683b0b4967c21ac69c245880f08d913becbc92bad4fa",
+            "new_bytes_written": 21720,
+            "reused_keys": 0,
+            "saturated_elements": 551,
+            "source_bytes_read": 110592,
+            "tensors": [
+              {
+                "component": "weights",
+                "key": "F32.int8.convrot",
+                "measured": {
+                  "amax": 32.0,
+                  "energy": 5636.36700700155,
+                  "max_abs_error": 0.0339663028717041,
+                  "saturated": 0,
+                  "sse": 0.3184796532771951
+                },
+                "new_bytes_written": 4644,
+                "relative_frobenius": 0.0075169422522143505,
+                "source_bytes_read": 18432
+              },
+              {
+                "component": "weights",
+                "key": "F32.nvfp4",
+                "measured": {
+                  "amax": 32.0,
+                  "energy": 5636.36700700155,
+                  "max_abs_error": 1.30897057056427,
+                  "saturated": 178,
+                  "sse": 46.12142355573768
+                },
+                "new_bytes_written": 2596,
+                "relative_frobenius": 0.09045898693903376,
+                "source_bytes_read": 36864
+              },
+              {
+                "component": "weights",
+                "key": "F16.int8.convrot",
+                "measured": {
+                  "amax": 32.0,
+                  "energy": 5692.392127738969,
+                  "max_abs_error": 0.04486427642405033,
+                  "saturated": 0,
+                  "sse": 0.3267356724257163
+                },
+                "new_bytes_written": 4644,
+                "relative_frobenius": 0.007576190243915368,
+                "source_bytes_read": 9216
+              },
+              {
+                "component": "weights",
+                "key": "F16.nvfp4",
+                "measured": {
+                  "amax": 32.0,
+                  "energy": 5692.39212773897,
+                  "max_abs_error": 1.2744140625,
+                  "saturated": 189,
+                  "sse": 45.60818865536513
+                },
+                "new_bytes_written": 2596,
+                "relative_frobenius": 0.08951050503951193,
+                "source_bytes_read": 18432
+              },
+              {
+                "component": "weights",
+                "key": "BF16.int8.convrot",
+                "measured": {
+                  "amax": 32.0,
+                  "energy": 5704.041641086374,
+                  "max_abs_error": 0.033650390803813934,
+                  "saturated": 0,
+                  "sse": 0.2861139604044965
+                },
+                "new_bytes_written": 4644,
+                "relative_frobenius": 0.007082362974591122,
+                "source_bytes_read": 9216
+              },
+              {
+                "component": "weights",
+                "key": "BF16.nvfp4",
+                "measured": {
+                  "amax": 32.0,
+                  "energy": 5704.041641086374,
+                  "max_abs_error": 1.2994792461395264,
+                  "saturated": 184,
+                  "sse": 47.31901367492175
+                },
+                "new_bytes_written": 2596,
+                "relative_frobenius": 0.09108072902284489,
+                "source_bytes_read": 18432
+              }
+            ],
+            "worst_relative_frobenius": 0.09108072902284489
+          },
+          {
+            "encoded_keys": 6,
+            "identity": "6e05eab34d76d3026b3e683b0b4967c21ac69c245880f08d913becbc92bad4fa",
+            "new_bytes_written": 21720,
+            "reused_keys": 0,
+            "saturated_elements": 551,
+            "source_bytes_read": 110592,
+            "tensors": [
+              {
+                "component": "weights",
+                "key": "F32.int8.convrot",
+                "measured": {
+                  "amax": 32.0,
+                  "energy": 5636.36700700155,
+                  "max_abs_error": 0.0339663028717041,
+                  "saturated": 0,
+                  "sse": 0.31847965327719513
+                },
+                "new_bytes_written": 4644,
+                "relative_frobenius": 0.007516942252214351,
+                "source_bytes_read": 18432
+              },
+              {
+                "component": "weights",
+                "key": "F32.nvfp4",
+                "measured": {
+                  "amax": 32.0,
+                  "energy": 5636.36700700155,
+                  "max_abs_error": 1.30897057056427,
+                  "saturated": 178,
+                  "sse": 46.12142355573768
+                },
+                "new_bytes_written": 2596,
+                "relative_frobenius": 0.09045898693903376,
+                "source_bytes_read": 36864
+              },
+              {
+                "component": "weights",
+                "key": "F16.int8.convrot",
+                "measured": {
+                  "amax": 32.0,
+                  "energy": 5692.39212773897,
+                  "max_abs_error": 0.04486427642405033,
+                  "saturated": 0,
+                  "sse": 0.3267356724257163
+                },
+                "new_bytes_written": 4644,
+                "relative_frobenius": 0.007576190243915367,
+                "source_bytes_read": 9216
+              },
+              {
+                "component": "weights",
+                "key": "F16.nvfp4",
+                "measured": {
+                  "amax": 32.0,
+                  "energy": 5692.39212773897,
+                  "max_abs_error": 1.2744140625,
+                  "saturated": 189,
+                  "sse": 45.60818865536513
+                },
+                "new_bytes_written": 2596,
+                "relative_frobenius": 0.08951050503951193,
+                "source_bytes_read": 18432
+              },
+              {
+                "component": "weights",
+                "key": "BF16.int8.convrot",
+                "measured": {
+                  "amax": 32.0,
+                  "energy": 5704.041641086374,
+                  "max_abs_error": 0.033650390803813934,
+                  "saturated": 0,
+                  "sse": 0.2861139604044965
+                },
+                "new_bytes_written": 4644,
+                "relative_frobenius": 0.007082362974591122,
+                "source_bytes_read": 9216
+              },
+              {
+                "component": "weights",
+                "key": "BF16.nvfp4",
+                "measured": {
+                  "amax": 32.0,
+                  "energy": 5704.041641086374,
+                  "max_abs_error": 1.2994792461395264,
+                  "saturated": 184,
+                  "sse": 47.31901367492175
+                },
+                "new_bytes_written": 2596,
+                "relative_frobenius": 0.09108072902284489,
+                "source_bytes_read": 18432
+              }
+            ],
+            "worst_relative_frobenius": 0.09108072902284489
+          }
+        ],
+        "tensorfs": "0.15.4"
+      }
+    },
+    {
+      "mode": "writer-cancel",
+      "run_number": 17497,
+      "run_id": "run-0668100922d0afaf4cbdac20",
+      "status": "completed",
+      "execution_ms": 1201,
+      "evidence": {
+        "cancel_progress": [
+          99328,
+          1,
+          260
+        ],
+        "mode": "cancel",
+        "resumed": {
+          "encoded_keys": 1,
+          "identity": "48b0674fe879f241725ee48786766835e9284eec9b73bfb35ad2c9e21e555af4",
+          "new_bytes_written": 16842752,
+          "reused_keys": 1,
+          "saturated_elements": 0,
+          "source_bytes_read": 67108864,
+          "tensors": [
+            {
+              "component": "weights",
+              "key": "large",
+              "measured": {
+                "amax": 5.369966506958008,
+                "energy": 16783031.4891013,
+                "max_abs_error": 0.04673537169583142,
+                "saturated": 0,
+                "sse": 1036.2737426707629
+              },
+              "new_bytes_written": 16842752,
+              "relative_frobenius": 0.007857819387702891,
+              "source_bytes_read": 67108864
+            }
+          ],
+          "worst_relative_frobenius": null
+        },
+        "tensorfs": "0.15.4"
+      }
+    },
+    {
+      "mode": "writer-cancel-write",
+      "run_number": 17498,
+      "run_id": "run-98a00614b2a42e4d30c8925b",
+      "status": "completed",
+      "execution_ms": 1613,
+      "evidence": {
+        "cancel_progress": [
+          67109888,
+          1,
+          1048836
+        ],
+        "mode": "cancel-write",
+        "resumed": {
+          "encoded_keys": 1,
+          "identity": "b9829874a853dfb232372f5c487cc21f4f83da212e7f967910decc1e796e9724",
+          "new_bytes_written": 16842752,
+          "reused_keys": 1,
+          "saturated_elements": 0,
+          "source_bytes_read": 67108864,
+          "tensors": [
+            {
+              "component": "weights",
+              "key": "large",
+              "measured": {
+                "amax": 5.493276119232178,
+                "energy": 16766439.954355441,
+                "max_abs_error": 0.05712683917954564,
+                "saturated": 0,
+                "sse": 1036.1608194470562
+              },
+              "new_bytes_written": 16842752,
+              "relative_frobenius": 0.007861277991644088,
+              "source_bytes_read": 67108864
+            }
+          ],
+          "worst_relative_frobenius": null
+        },
+        "tensorfs": "0.15.4"
+      }
+    }
+  ],
+  "limitations": [
+    "Default-home CLI through installed SDK; no private candidate interpreter.",
+    "Only plain F32/F16/BF16 rank2 ConvRot/NVFP4 checkpoint inputs.",
+    "No production Runtime caller, package recipe, consuming-model, Windows execution or GPU claim.",
+    "Cancellation/reopen proves the existing checked Writer lifecycle, not per-entry durability after SIGKILL.",
+    "SSE/energy compare with a documented2e-13 relative reduction-order tolerance; payload/companion bytes, max error and saturation compare exactly."
+  ]
+}
