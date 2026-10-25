@@ -131,7 +131,11 @@ def retained(seed, ctx):
                 else "F32"
             )
             shape = (256, 256) if role == "weight" else tuple(part.shape)
-            roles[role] = (dtype, shape, part.reshape(-1).view(torch.uint8).numpy().tobytes())
+            roles[role] = (
+                dtype,
+                shape,
+                part.reshape(-1).view(torch.uint8).numpy().tobytes(),
+            )
         writer.component("net").put_encoded(
             "weight",
             dtype="F32",
@@ -149,13 +153,22 @@ def retained(seed, ctx):
                 "nvfp4-final", directory, checkpoint.id, {"net": checkpoint.id}
             ),
             rows=rows,
-            providers=launch_providers(),
+            # Consent to the stored encoding, while explicitly qualifying the existing
+            # decoded route rather than the unrelated packed GEMM provider.
+            providers={
+                "nvfp4": tuple(
+                    candidate
+                    for candidate in launch_providers()["nvfp4"]
+                    if candidate.route == "decoded_float"
+                )
+            },
             device=facts,
             runtime=measure_runtime(torch, importlib.metadata.version("cozy-runtime")),
             construction=ConstructionFacts("nvfp4-final-proof", "Linear", ("net",)),
-            encoded_leaves="refuse",
+            encoded_leaves="accept",
             dtype_name=dtype_name,
         )
+        assert plan.route_census() == {"decoded_float": 1}, plan.route_census()
         with torch.device("meta"):
             built = SimpleNamespace(net=torch.nn.Linear(256, 256, bias=False))
         walked = census(built)
@@ -171,9 +184,9 @@ def retained(seed, ctx):
             release="nvfp4-final-proof",
         )
         backend.expect({"net": [row.key for row in rows]})
-        fit = backend.fit(walked, encoded_leaves="refuse")
+        fit = backend.fit(walked, encoded_leaves="accept")
         assert fit and fit["ok"], fit
-        live = backend.materialize(built, walked, encoded_leaves="refuse")
+        live = backend.materialize(built, walked, encoded_leaves="accept")
         for destination in walked.destinations:
             backend.fill(destination.key, destination.spec, live[destination.key])
         backend.commit()
@@ -198,6 +211,7 @@ def retained(seed, ctx):
                             )
                             if iteration == 0:
                                 alias = built.net.weight.detach()
+                        placement.release()
                         if iteration == 0:
                             cold = (request.moved, request.final_fills)
                             assert cold[0] > 0 and cold[1] == 1, request.stats()
