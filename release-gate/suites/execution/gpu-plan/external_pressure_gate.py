@@ -47,7 +47,8 @@ def main():
     assert machine["state"] == "ready" and not machine["status"].get("runs"), machine
     assert machine["status"]["commit"] == args.expected_tensord, machine["status"]
     receipt["machine"] = {
-        k: machine["status"][k] for k in ("commit", "runtime", "tensorfs")
+        k: machine["status"][k]
+        for k in ("commit", "runtime", "tensorfs", "started_at_ms")
     }
 
     def start(name, command):
@@ -195,8 +196,13 @@ def main():
             receipt["managed_cleanup"]["at_ns"] - canceled["at_ns"]
         ) / 1e6
         after = json.loads(cli("machine-after", "machine", "show", "local"))
-        assert after["status"]["commit"] == args.expected_tensord, after["status"]
+        assert all(
+            after["status"][key] == value for key, value in receipt["machine"].items()
+        )
         receipt["passed"] = True
+    except BaseException as error:
+        receipt["error"] = repr(error)
+        raise
     finally:
         try:
             if run_id is not None and terminal is None:
@@ -207,6 +213,19 @@ def main():
                 process.wait(timeout=180)
         finally:
             receipt["manual_cleanup_cancel"] = manual_cancel
+            if not (output / "memory-after.ndjson").exists():
+                try:
+                    cli(
+                        "memory-failure",
+                        "machine",
+                        "logs",
+                        "local",
+                        "memory",
+                        "--lines",
+                        "1000",
+                    )
+                except (OSError, subprocess.SubprocessError) as error:
+                    receipt["memory_log_error"] = repr(error)
             (output / "receipt.json").write_text(json.dumps(receipt, indent=2))
     print(json.dumps(receipt, sort_keys=True), flush=True)
 
