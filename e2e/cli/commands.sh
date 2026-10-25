@@ -19,6 +19,13 @@ step hub
 # tensorhub.com unless COZY_HUB_URL (or config.toml's hub_url) names another: one there is none at fails.
 ! COZY_HUB_URL=http://127.0.0.1:9 cozy --json package search birefnet --limit 1 > "$OUT/hub-env.json" 2>&1 \
   || check "COZY_HUB_URL=http://127.0.0.1:9: package search did not go there"
+# A run made at that other Hub (local code reads none), then the variable unset: Calcifer still lists and shows it.
+if [ -n "$LOCAL" ] && (cd "$here" && COZY_HUB_URL=http://127.0.0.1:9 cell other-hub ./weightless/reverse "text=hub$RANDOM"); then
+  n=$(cat "$OUT/other-hub.number")
+  cozy --json run list --limit 0 | J --argjson n "$n" 'any(.runs[]; .number == $n and .hub == "http://127.0.0.1:9")' \
+    || check "run list: run $n, made at another Hub, is not listed"
+  cozy --json run show "$n" --once | J '.hub == "http://127.0.0.1:9" and .status == "completed"' || check "run show $n: not its record at the other Hub"
+fi
 
 step "signed out"
 cozy --json whoami > "$OUT/whoami.json" && J '.logged_in == false' "$OUT/whoami.json" || check "whoami: not signed out"

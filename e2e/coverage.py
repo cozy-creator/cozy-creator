@@ -32,7 +32,7 @@ WALKED = {"--help", "--version"}
 @dataclass
 class Command:
     path: tuple[str, ...]
-    runnable: bool = True  # a group whose usage reads `[COMMAND]` runs on its own too (`cozy hub`)
+    runnable: bool = True  # a group whose usage reads `[COMMAND]` runs on its own too (`cozy run`)
     flags: dict[str, bool] = field(default_factory=dict)  # long flag -> takes a value
     shorts: dict[str, str] = field(default_factory=dict)  # -f -> --follow
     children: dict[str, "Command"] = field(default_factory=dict)
