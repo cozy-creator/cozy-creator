@@ -8,6 +8,7 @@ from pathlib import Path
 
 import tensorfs
 import torch
+from cozy_runtime.compute import PreparedRepeat
 from cozy_runtime.internal import accel, residency
 from cozy_runtime.internal.execution import catch
 from tensorfs import varena
@@ -23,14 +24,15 @@ def exercise(mode, seed, ctx):
     memory = residency.Memory.open("cuda:0", budget_bytes=256 * MIB)
     with tempfile.TemporaryDirectory(prefix="cozy-bounded-policy-") as directory:
         writer = tensorfs.Writer(Path(directory) / "weights.cozytensors")
-        width, count = 1024, 4
+        width, count = 1024, 1 if mode in ("retry", "fallback") else 4
+        names = ("a", "b", "c", "d") if mode in ("retry", "fallback") else ("a", "b")
         matrix = torch.eye(width)
-        for name in ("a", "b"):
+        for name in names:
             for index in range(count):
                 writer.component(name).put(f"{index}.weight", matrix)
         checkpoint = writer.commit()
         modules, models = {}, {}
-        for name in ("a", "b"):
+        for name in names:
             with torch.device("meta"):
                 module = nn.Sequential(
                     *(nn.Linear(width, width, bias=False) for _ in range(count))
@@ -49,6 +51,8 @@ def exercise(mode, seed, ctx):
                 result = bounded(memory, modules, models, inputs, seed)
             elif mode == "capture":
                 result = capture_refusal(memory, seed)
+            elif mode in ("retry", "fallback"):
+                result = retry_recovery(memory, modules, models, inputs, seed, mode)
             else:
                 raise ValueError(f"unknown mode: {mode}")
             return {
@@ -241,3 +245,108 @@ def capture_refusal(memory, seed):
             "native_state_unchanged": True,
             "healthy_after": True,
         }
+
+
+def retry_recovery(memory, modules, models, inputs, seed, mode):
+    plans, pools = {}, {}
+    alias = None
+    try:
+        for name, model in models.items():
+            with torch.inference_mode(False):
+                state = inputs.clone()
+            binding = model.retain()
+            torch.cuda.empty_cache()
+            before = torch.cuda.memory_reserved()
+
+            def step(index, state=state, module=modules[name]):
+                del index
+                state.copy_(module(state))
+
+            try:
+                with (
+                    memory.request(f"cache-graph-{seed}-{name}"),
+                    binding.prepare(),
+                    torch.no_grad(),
+                ):
+                    plans[name] = PreparedRepeat.capture(
+                        step, state=(state,), steps=2, owners=(binding, modules[name])
+                    )
+                    if name == "a":
+                        alias = modules[name][0].weight[:1]
+            finally:
+                binding.close()
+            torch.cuda.empty_cache()
+            pools[name] = max(torch.cuda.memory_reserved() - before, 0)
+
+        assert alias is not None
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+        native_before = memory.native.stats()
+        allocator_before = varena.allocator_stats(0)
+        assert native_before["pinned_bytes"] == 16 * MIB, native_before
+        assert all(not plan.facts()["closed"] for plan in plans.values())
+        # B is the first eligible idle owner; A stays active and its alias survives.
+        # The small gap needs one weight block. The larger gap exceeds B's measured
+        # graph-pool plus weight release, requiring the existing full fallback.
+        gap = 4 * MIB if mode == "retry" else pools["b"] + 8 * MIB
+        granularity = 2 * MIB
+        gap = (gap + granularity - 1) // granularity * granularity
+        limit = allocator_before["activation_admission_limit"]
+        available = (
+            limit
+            - allocator_before["torch_reserved_bytes"]
+            - native_before["resident_bytes"]
+        )
+        amount = (available + gap + granularity - 1) // granularity * granularity
+        assert 0 < amount <= limit, (amount, limit, available, gap, pools)
+
+        def operation(level):
+            del level
+            return torch.empty(amount, dtype=torch.uint8, device="cuda").fill_(7)
+
+        with (
+            memory.request(f"actual-oom-{seed}-{mode}") as request,
+            models["a"].passing(),
+            catch.serving(request),
+        ):
+            output = catch.cut(
+                "policy:actual-capped-allocation",
+                0,
+                lambda level, granularity: 0,
+                operation,
+            )
+            assert output[0].item() == output[-1].item() == 7
+            rows = catch.cut_rows(request)
+            assert len(rows.sites) == 1 and rows.sites[0].retries == (
+                1 if mode == "retry" else 2
+            ), rows
+            closed = {
+                name: bool(plan.facts()["closed"]) for name, plan in plans.items()
+            }
+            assert closed["b"] and not closed["a"], closed
+            if mode == "retry":
+                assert not closed["c"] and not closed["d"], closed
+            else:
+                assert closed["c"] and closed["d"], closed
+            torch.testing.assert_close(alias.cpu(), torch.eye(1024)[:1], rtol=0, atol=0)
+            native_after = memory.native.stats()
+            allocator_after = varena.allocator_stats(0)
+            result = {
+                "allocation_bytes": amount,
+                "deliberately_underestimated_need_bytes": 0,
+                "managed_capacity_gap_bytes": gap,
+                "measured_graph_pool_bytes": pools,
+                "same_level_retries": rows.sites[0].retries,
+                "closed_graphs": closed,
+                "native_before": native_before,
+                "native_after": native_after,
+                "allocator_before": allocator_before,
+                "allocator_after": allocator_after,
+                "active_owner_and_alias_preserved": True,
+            }
+            del output
+        return result
+    finally:
+        for plan in plans.values():
+            plan.close()
+        del alias
