@@ -16,6 +16,8 @@ from cozy_runtime.internal import accel, kernel_ready, residency
 from cozy_runtime.internal.encoding import launch_providers
 from cozy_runtime.internal.encoding.selection import measure_device, measure_runtime
 from cozy_runtime.internal.fill import Checkpoint, dtype_name
+from cozy_runtime.internal.lora_composition import composer
+from cozy_runtime.internal.lora_contract import FORMAT, Graph, Linear
 from cozy_runtime.internal.resolution import ConstructionFacts, Variant, resolve
 from cozy_runtime.internal.weights import Backend, Placement
 from torch import nn
@@ -143,8 +145,11 @@ def exercise(seed, ctx):
             assert calls[0] == old_calls
             handle.remove()
             placement.serve_lora("per_step")
-            lora_reason = refusal(capture)
-            assert calls[0] == old_calls
+            plain = capture()
+            plain.close()
+            assert calls[0] == old_calls + 2, (
+                "a LoRA mode without actual factors refused plain weights"
+            )
             placement.serve_lora("bake")
             with torch.no_grad():
                 built.net(state)
@@ -217,6 +222,9 @@ def exercise(seed, ctx):
                 raise AssertionError("stale kernel definition was submitted")
             assert epoch_plan.facts()["host_graph_launches"] == 0
             epoch_plan.close()
+            lora_reason = real_lora_refusal(
+                memory, Path(directory) / "lora.cozytensors", seed
+            )
             return {
                 "runtime": importlib.metadata.version("cozy-runtime"),
                 "tensorfs": importlib.metadata.version("tensorfs"),
@@ -237,3 +245,98 @@ def exercise(seed, ctx):
             backend.close()
             memory.trim()
             checkpoint.close()
+
+
+def real_lora_refusal(memory, path, seed):
+    """A production PEFT composition with actual stored low-rank factors, not a mode flag."""
+    width, rank = 128, 2
+    transform = composer(
+        Graph(FORMAT, (Linear("adapted", "0", "gate", rank, rank, 1.0, "F32"),))
+    )
+    writer = tensorfs.Writer(path)
+    component = writer.component("adapted")
+    component.put("0.base_layer.weight", torch.eye(width) * 0.5)
+    component.put("0.lora_A.gate.weight", torch.full((rank, width), 1 / width))
+    component.put("0.lora_B.gate.weight", torch.full((width, rank), 0.25))
+    checkpoint = writer.commit()
+    source = Checkpoint(checkpoint)
+    rows = source.rows("adapted")
+    device = torch.device("cuda:0")
+    facts = measure_device(torch, 0, "cuda")
+    resolution = resolve(
+        variant=Variant(
+            "resident-lora", str(path), checkpoint.id, {"adapted": checkpoint.id}
+        ),
+        rows=rows,
+        providers=launch_providers(),
+        device=facts,
+        runtime=measure_runtime(torch, importlib.metadata.version("cozy-runtime")),
+        construction=ConstructionFacts("resident-lora-proof", "Adapted", ("adapted",)),
+        encoded_leaves="refuse",
+        dtype_name=dtype_name,
+    )
+    with torch.device("meta"):
+        built = SimpleNamespace(
+            adapted=nn.Sequential(nn.Linear(width, width, bias=False))
+        )
+        transform(SimpleNamespace(components={"adapted": built.adapted}))
+    walked = census(built)
+    backend = Backend(
+        {"adapted": source},
+        rows,
+        torch=torch,
+        plan=resolution,
+        memory=memory,
+        device=device,
+        construction="Adapted",
+        device_facts=facts,
+        release="resident-lora-proof",
+    )
+    backend.expect({"adapted": [row.key for row in rows]})
+    fit = backend.fit(walked, encoded_leaves="refuse")
+    assert fit and fit["ok"], fit
+    live = backend.materialize(built, walked, encoded_leaves="refuse")
+    for destination in walked.destinations:
+        backend.fill(destination.key, destination.spec, live[destination.key])
+    backend.commit()
+    placement = Placement(memory, backend)
+    calls = [0]
+    with torch.inference_mode(False):
+        state = torch.ones((2, width), device=device)
+
+    def step(index):
+        del index
+        calls[0] += 1
+        state.copy_(built.adapted(state))
+
+    try:
+        placement.open_attempt()
+        placement.serve_lora("per_step")
+        assert placement.bakes["adapted"].bakes, "no actual LoRA factors were attached"
+        with memory.request(f"real-lora-{seed}") as request:
+            placement.plan(("adapted",), request)
+            with torch.no_grad(), placement.using("adapted", ("adapted",)):
+                result = built.adapted(state)
+            torch.testing.assert_close(result, torch.ones_like(state), rtol=0, atol=0)
+            try:
+                PreparedRepeat.capture(
+                    step,
+                    state=(state,),
+                    steps=4,
+                    owners=(built.adapted,),
+                    resident_only=True,
+                )
+            except CapabilityError as error:
+                assert error.code == "prepared_graph_ineligible" and "LoRA" in str(
+                    error
+                ), str(error)
+                assert calls[0] == 0, "variable LoRA reached capture warmup"
+                return str(error)
+            raise AssertionError(
+                "actual per-step LoRA was admitted to a fixed native interval"
+            )
+    finally:
+        placement.release()
+        backend.close()
+        memory.trim()
+        checkpoint.close()
