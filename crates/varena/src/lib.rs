@@ -9,7 +9,7 @@
 mod cuda;
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -56,16 +56,77 @@ pub struct ReclaimReport {
     pub evicted_regions: usize,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum Contents {
+    Cold,
+    Loading,
+    Ready,
+    Retired,
+}
+
+struct Uses {
+    pins: AtomicUsize,
+    contents: AtomicU8,
+}
+
+impl Uses {
+    fn new() -> Self {
+        Self {
+            pins: AtomicUsize::new(0),
+            contents: AtomicU8::new(Contents::Cold as u8),
+        }
+    }
+    fn state(&self) -> Contents {
+        match self.contents.load(Ordering::Acquire) {
+            0 => Contents::Cold,
+            1 => Contents::Loading,
+            2 => Contents::Ready,
+            3 => Contents::Retired,
+            _ => unreachable!("native contents state"),
+        }
+    }
+    fn set(&self, state: Contents) {
+        self.contents.store(state as u8, Ordering::Release);
+    }
+    fn invalidate(&self) {
+        // Final Region retirement may happen without the arena lock. Never replace that
+        // terminal state when reclaim invalidates formerly ready physical contents.
+        let _ = self.contents.compare_exchange(
+            Contents::Ready as u8,
+            Contents::Cold as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+    fn pins(&self) -> usize {
+        self.pins.load(Ordering::Acquire)
+    }
+}
+
+fn decrement(counter: &AtomicUsize) {
+    assert!(
+        counter
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |value| value
+                .checked_sub(1))
+            .is_ok(),
+        "native owner count underflow"
+    );
+}
+
 struct Entry {
     ptr: u64,
     bytes: usize,
     handle: Option<u64>,
-    ready: bool,
-    filling: bool,
-    pins: usize,
+    uses: Arc<Uses>,
     preferred: bool,
-    retired: bool,
     last_use: u64,
+}
+
+impl Entry {
+    fn preferred(&self) -> bool {
+        self.preferred && self.uses.state() != Contents::Retired
+    }
 }
 
 struct State {
@@ -92,9 +153,9 @@ pub struct Arena {
 static ARENAS: OnceLock<Mutex<Vec<Weak<Arena>>>> = OnceLock::new();
 #[derive(Default)]
 struct DeviceActivity {
-    captures: usize,
-    replays: usize,
-    producers: usize,
+    captures: Arc<AtomicUsize>,
+    replays: Arc<AtomicUsize>,
+    producers: Arc<AtomicUsize>,
 }
 
 static CAPTURES: OnceLock<Mutex<BTreeMap<i32, DeviceActivity>>> = OnceLock::new();
@@ -122,17 +183,19 @@ fn capture_counts() -> Result<MutexGuard<'static, BTreeMap<i32, DeviceActivity>>
 }
 
 fn ensure_recovery_allowed(counts: &BTreeMap<i32, DeviceActivity>, device: i32) -> Result<()> {
-    if counts
-        .get(&device)
-        .is_some_and(|entry| entry.captures != 0 || entry.replays != 0)
-    {
+    if counts.get(&device).is_some_and(|entry| {
+        entry.captures.load(Ordering::Acquire) != 0 || entry.replays.load(Ordering::Acquire) != 0
+    }) {
         return Err(Error::CaptureActive);
     }
     Ok(())
 }
 
 fn ensure_not_capturing(counts: &BTreeMap<i32, DeviceActivity>, device: i32) -> Result<()> {
-    if counts.get(&device).is_some_and(|entry| entry.captures != 0) {
+    if counts
+        .get(&device)
+        .is_some_and(|entry| entry.captures.load(Ordering::Acquire) != 0)
+    {
         return Err(Error::CaptureActive);
     }
     Ok(())
@@ -142,22 +205,23 @@ fn ensure_not_capturing(counts: &BTreeMap<i32, DeviceActivity>, device: i32) -> 
 pub fn enter_capture(device: i32) -> Result<GlobalCaptureGuard> {
     let mut counts = capture_counts()?;
     let activity = counts.entry(device).or_default();
-    if activity.replays != 0 {
+    if activity.replays.load(Ordering::Acquire) != 0 {
         return Err(Error::CaptureActive);
     }
-    if activity.producers != 0 {
+    if activity.producers.load(Ordering::Acquire) != 0 {
         return Err(Error::Invalid(
             "native producers must finish before CUDA graph capture",
         ));
     }
-    activity.captures = activity
+    activity
         .captures
-        .checked_add(1)
-        .ok_or(Error::Invalid("capture count overflow"))?;
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+            value.checked_add(1)
+        })
+        .map_err(|_| Error::Invalid("capture count overflow"))?;
     Ok(GlobalCaptureGuard {
-        device,
+        count: Arc::clone(&activity.captures),
         pid: std::process::id(),
-        replay: false,
     })
 }
 
@@ -167,48 +231,39 @@ pub fn enter_replay(device: i32) -> Result<GlobalCaptureGuard> {
     let mut counts = capture_counts()?;
     ensure_not_capturing(&counts, device)?;
     let activity = counts.entry(device).or_default();
-    activity.replays = activity
+    activity
         .replays
-        .checked_add(1)
-        .ok_or(Error::Invalid("replay count overflow"))?;
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+            value.checked_add(1)
+        })
+        .map_err(|_| Error::Invalid("replay count overflow"))?;
     Ok(GlobalCaptureGuard {
-        device,
+        count: Arc::clone(&activity.replays),
         pid: std::process::id(),
-        replay: true,
     })
 }
 
 pub fn is_capturing(device: i32) -> Result<bool> {
     Ok(capture_counts()?
         .get(&device)
-        .is_some_and(|entry| entry.captures != 0))
+        .is_some_and(|entry| entry.captures.load(Ordering::Acquire) != 0))
 }
 
 pub fn is_recovery_blocked(device: i32) -> Result<bool> {
-    Ok(capture_counts()?
-        .get(&device)
-        .is_some_and(|entry| entry.captures != 0 || entry.replays != 0))
+    Ok(capture_counts()?.get(&device).is_some_and(|entry| {
+        entry.captures.load(Ordering::Acquire) != 0 || entry.replays.load(Ordering::Acquire) != 0
+    }))
 }
 
 pub struct GlobalCaptureGuard {
-    device: i32,
+    count: Arc<AtomicUsize>,
     pid: u32,
-    replay: bool,
 }
 
 impl Drop for GlobalCaptureGuard {
     fn drop(&mut self) {
-        if self.pid != std::process::id() {
-            return;
-        }
-        if let Ok(mut counts) = capture_counts()
-            && let Some(count) = counts.get_mut(&self.device)
-        {
-            if self.replay {
-                count.replays = count.replays.saturating_sub(1);
-            } else {
-                count.captures = count.captures.saturating_sub(1);
-            }
+        if self.pid == std::process::id() {
+            decrement(&self.count);
         }
     }
 }
@@ -221,30 +276,27 @@ pub fn enter_producer(device: i32) -> Result<ProducerGuard> {
     let mut counts = capture_counts()?;
     ensure_not_capturing(&counts, device)?;
     let activity = counts.entry(device).or_default();
-    activity.producers = activity
+    activity
         .producers
-        .checked_add(1)
-        .ok_or(Error::Invalid("producer count overflow"))?;
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+            value.checked_add(1)
+        })
+        .map_err(|_| Error::Invalid("producer count overflow"))?;
     Ok(ProducerGuard {
-        device,
+        count: Arc::clone(&activity.producers),
         pid: std::process::id(),
     })
 }
 
 pub struct ProducerGuard {
-    device: i32,
+    count: Arc<AtomicUsize>,
     pid: u32,
 }
 
 impl Drop for ProducerGuard {
     fn drop(&mut self) {
-        if self.pid != std::process::id() {
-            return;
-        }
-        if let Ok(mut counts) = capture_counts()
-            && let Some(activity) = counts.get_mut(&self.device)
-        {
-            activity.producers = activity.producers.saturating_sub(1);
+        if self.pid == std::process::id() {
+            decrement(&self.count);
         }
     }
 }
@@ -317,7 +369,11 @@ impl Arena {
         let mut state = self.lock()?;
         // A new model may choose a fresh prefix only after every old reservation owner is gone.
         // Escaped storage and graph Pins own their Region, so they prevent this reset.
-        if state.entries.values().all(|entry| entry.retired) {
+        if state
+            .entries
+            .values()
+            .all(|entry| entry.uses.state() == Contents::Retired)
+        {
             state.preferred_end = None;
         }
         let id = state.next_id;
@@ -326,17 +382,15 @@ impl Arena {
             .ok_or(Error::Invalid("region id overflow"))?;
         let _context = self.driver.enter()?;
         let ptr = self.driver.reserve(rounded)?;
+        let uses = Arc::new(Uses::new());
         state.entries.insert(
             id,
             Entry {
                 ptr,
                 bytes: rounded,
                 handle: None,
-                ready: false,
-                filling: false,
-                pins: 0,
+                uses: Arc::clone(&uses),
                 preferred: false,
-                retired: false,
                 last_use: 0,
             },
         );
@@ -346,6 +400,7 @@ impl Arena {
             ptr,
             bytes,
             rounded,
+            uses,
         }))
     }
 
@@ -362,8 +417,8 @@ impl Arena {
         let global = enter_capture(self.device)?;
         drop(self.lock()?);
         Ok(CaptureGuard {
-            _global: global,
-            _arena: Arc::clone(self),
+            global: Some(global),
+            arena: Some(Arc::clone(self)),
         })
     }
 
@@ -396,12 +451,12 @@ impl Arena {
             .iter()
             .filter(|(id, entry)| {
                 Some(**id) != exclude
-                    && entry.pins == 0
-                    && !entry.filling
+                    && entry.uses.pins() == 0
+                    && entry.uses.state() != Contents::Loading
                     && entry.handle.is_some()
-                    && (preferred || !entry.preferred)
+                    && (preferred || !entry.preferred())
             })
-            .map(|(id, entry)| (*id, entry.preferred, entry.last_use))
+            .map(|(id, entry)| (*id, entry.preferred(), entry.last_use))
             .collect();
         candidates.sort_by_key(|(id, preferred, age)| {
             (*preferred, if *preferred { u64::MAX - id } else { *age })
@@ -434,11 +489,11 @@ impl Arena {
                 return Err(poison(state, error));
             }
             let entry = state.entries.get_mut(&id).expect("locked candidate");
+            let was_preferred = entry.preferred();
             entry.handle = None;
-            entry.ready = false;
-            let retired = entry.retired;
-            let was_preferred = entry.preferred;
-            if was_preferred {
+            entry.uses.invalidate();
+            let retired = entry.uses.state() == Contents::Retired;
+            if was_preferred && !retired {
                 // Pressure permanently shortens the retained prefix. Later scans cannot rebuild it.
                 state.preferred_end = Some(state.preferred_end.map_or(id, |end| end.min(id)));
                 for (_, later) in state.entries.range_mut(id..) {
@@ -480,13 +535,13 @@ impl Arena {
             stats.reserved_bytes += entry.bytes;
             if entry.handle.is_some() {
                 stats.resident_bytes += entry.bytes;
-                if entry.ready {
+                if entry.uses.state() == Contents::Ready {
                     stats.ready_bytes += entry.bytes;
                 }
-                if entry.pins != 0 {
+                if entry.uses.pins() != 0 {
                     stats.pinned_bytes += entry.bytes;
                 }
-                if entry.preferred {
+                if entry.preferred() {
                     stats.preferred_bytes += entry.bytes;
                 }
             }
@@ -507,9 +562,21 @@ pub struct Region {
     ptr: u64,
     bytes: usize,
     rounded: usize,
+    uses: Arc<Uses>,
+}
+
+/// Final reservation ownership with no remaining public views or handles.
+pub struct RetiredRegion {
+    _region: Region,
 }
 
 impl Region {
+    pub fn retire(self) -> RetiredRegion {
+        if self.arena.pid == std::process::id() {
+            self.uses.set(Contents::Retired);
+        }
+        RetiredRegion { _region: self }
+    }
     /// Refuse further use when a native integration cannot prove completion of its writers.
     /// The integration must also retain its actual Fill/source owners; this is not cleanup.
     pub fn poison(&self, detail: impl Into<String>) {
@@ -543,7 +610,7 @@ impl Region {
             .entries
             .get(&self.id)
             .expect("live region")
-            .preferred)
+            .preferred())
     }
 
     pub fn is_resident(&self) -> Result<bool> {
@@ -553,7 +620,9 @@ impl Region {
             .entries
             .get(&self.id)
             .expect("live region")
-            .ready)
+            .uses
+            .state()
+            == Contents::Ready)
     }
 
     pub fn set_preferred(&self, preferred: bool) -> Result<()> {
@@ -581,15 +650,15 @@ impl Region {
         let captures = capture_counts()?;
         let mut state = self.arena.lock()?;
         let entry = state.entries.get(&self.id).expect("live region");
-        if entry.filling {
+        if entry.uses.state() == Contents::Loading {
             return Err(Error::Busy);
         }
-        if entry.ready {
+        if entry.uses.state() == Contents::Ready {
             state.hits = state.hits.saturating_add(1);
             return Ok(Preparation::Resident(self.pin_locked(&mut state)?));
         }
         // A failed fill can leave escaped foreign storage. It owns these bytes until destruction.
-        if entry.pins != 0 {
+        if entry.uses.pins() != 0 {
             return Err(Error::Busy);
         }
         if reclaim {
@@ -600,15 +669,15 @@ impl Region {
         let _context = self.arena.driver.enter()?;
         let has_handle = entry.handle.is_some();
         if !has_handle {
-            if !entry.preferred && state.streaming_limit != usize::MAX {
+            if !entry.preferred() && state.streaming_limit != usize::MAX {
                 let resident: usize = state
                     .entries
                     .values()
                     .filter(|entry| {
-                        !entry.preferred
+                        !entry.preferred()
                             && entry.handle.is_some()
-                            && entry.pins == 0
-                            && !entry.filling
+                            && entry.uses.pins() == 0
+                            && entry.uses.state() != Contents::Loading
                     })
                     .map(|entry| entry.bytes)
                     .sum();
@@ -625,10 +694,10 @@ impl Region {
                     .entries
                     .values()
                     .filter(|entry| {
-                        !entry.preferred
+                        !entry.preferred()
                             && entry.handle.is_some()
-                            && entry.pins == 0
-                            && !entry.filling
+                            && entry.uses.pins() == 0
+                            && entry.uses.state() != Contents::Loading
                     })
                     .map(|entry| entry.bytes)
                     .sum();
@@ -674,11 +743,7 @@ impl Region {
             }
         }
         let pin = self.pin_locked(&mut state)?;
-        state
-            .entries
-            .get_mut(&self.id)
-            .expect("live region")
-            .filling = true;
+        self.uses.set(Contents::Loading);
         Ok(Preparation::Fill(Fill {
             pin: Some(pin),
             copied: false,
@@ -689,7 +754,7 @@ impl Region {
     pub fn pin(self: &Arc<Self>) -> Result<Pin> {
         let mut state = self.arena.lock()?;
         let entry = state.entries.get(&self.id).expect("live region");
-        if !entry.ready || entry.filling {
+        if entry.uses.state() != Contents::Ready {
             return Err(Error::Invalid("region is not ready"));
         }
         self.pin_locked(&mut state)
@@ -698,13 +763,16 @@ impl Region {
     fn pin_locked(self: &Arc<Self>, state: &mut State) -> Result<Pin> {
         state.clock = state.clock.saturating_add(1);
         let entry = state.entries.get_mut(&self.id).expect("live region");
-        entry.pins = entry
+        entry
+            .uses
             .pins
-            .checked_add(1)
-            .ok_or(Error::Invalid("pin count overflow"))?;
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                value.checked_add(1)
+            })
+            .map_err(|_| Error::Invalid("pin count overflow"))?;
         entry.last_use = state.clock;
         Ok(Pin {
-            region: Arc::clone(self),
+            region: Some(Arc::clone(self)),
         })
     }
 }
@@ -722,7 +790,7 @@ pub struct Fill {
 
 impl Fill {
     fn region(&self) -> &Region {
-        &self.pin.as_ref().expect("uncommitted fill").region
+        self.pin.as_ref().expect("uncommitted fill").region()
     }
     pub fn ptr(&self) -> u64 {
         self.region().ptr
@@ -806,8 +874,7 @@ impl Fill {
             return Err(poison(&mut state, error));
         }
         let entry = state.entries.get_mut(&region.id).expect("fill owns region");
-        entry.filling = false;
-        entry.ready = true;
+        entry.uses.set(Contents::Ready);
         state.fills = state.fills.saturating_add(1);
         drop(state);
         drop(_context);
@@ -815,80 +882,113 @@ impl Fill {
     }
 }
 
+impl Fill {
+    /// Abort without waiting, returning reservation ownership for deferred final teardown.
+    pub fn into_unpinned_region(mut self) -> Arc<Region> {
+        let pin = self.pin.take().expect("uncommitted fill");
+        if pin.region().arena.pid == std::process::id() {
+            pin.region().uses.set(Contents::Cold);
+        }
+        pin.into_unpinned_region()
+    }
+}
+
 impl Drop for Fill {
     fn drop(&mut self) {
-        let Some(pin) = &self.pin else {
-            return;
-        };
-        if pin.region.arena.pid != std::process::id() {
-            return;
-        }
-        // Even poison permits bookkeeping; never touch CUDA or publish partial bytes on drop.
-        if let Ok(mut state) = pin.region.arena.state.lock()
-            && let Some(entry) = state.entries.get_mut(&pin.region.id)
+        if let Some(pin) = &self.pin
+            && pin.region().arena.pid == std::process::id()
         {
-            entry.filling = false;
-            entry.ready = false;
+            // Cold is visible before the fill pin is released. Escaped aliases stay pinned.
+            pin.region().uses.set(Contents::Cold);
         }
     }
 }
 
 /// Physical pin + reservation ownership. The deleter of foreign storage must own this value.
 pub struct Pin {
-    region: Arc<Region>,
+    region: Option<Arc<Region>>,
 }
 
 impl Pin {
     pub fn ptr(&self) -> u64 {
-        self.region.ptr
+        self.region().ptr
     }
     pub fn len(&self) -> usize {
-        self.region.bytes
+        self.region().bytes
     }
     pub fn is_empty(&self) -> bool {
         false
     }
     pub fn device(&self) -> i32 {
-        self.region.device()
+        self.region().device()
     }
     pub fn region(&self) -> &Arc<Region> {
-        &self.region
+        self.region.as_ref().expect("live pin")
     }
 
     pub fn try_clone(&self) -> Result<Self> {
-        let mut state = self.region.arena.lock()?;
-        self.region.pin_locked(&mut state)
+        let mut state = self.region().arena.lock()?;
+        self.region().pin_locked(&mut state)
+    }
+
+    /// End physical ownership immediately, retaining the actual VA owner for deferred drop.
+    /// Reclamation still joins queued GPU readers before unmapping the now-unpinned pages.
+    pub fn into_unpinned_region(mut self) -> Arc<Region> {
+        let region = self.region.take().expect("live pin");
+        if region.arena.pid == std::process::id() {
+            decrement(&region.uses.pins);
+        }
+        region
     }
 }
 
 impl Drop for Pin {
     fn drop(&mut self) {
-        if self.region.arena.pid != std::process::id() {
-            return;
-        }
-        if let Ok(mut state) = self.region.arena.state.lock()
-            && let Some(entry) = state.entries.get_mut(&self.region.id)
+        if let Some(region) = &self.region
+            && region.arena.pid == std::process::id()
         {
-            entry.pins = entry.pins.saturating_sub(1);
+            decrement(&region.uses.pins);
+        }
+    }
+}
+
+impl Preparation {
+    pub fn into_unpinned_region(self) -> Arc<Region> {
+        match self {
+            Self::Resident(pin) => pin.into_unpinned_region(),
+            Self::Fill(fill) => fill.into_unpinned_region(),
         }
     }
 }
 
 pub struct CaptureGuard {
-    _global: GlobalCaptureGuard,
-    _arena: Arc<Arena>,
+    global: Option<GlobalCaptureGuard>,
+    arena: Option<Arc<Arena>>,
+}
+
+impl CaptureGuard {
+    pub fn into_arena(mut self) -> Arc<Arena> {
+        drop(self.global.take());
+        self.arena.take().expect("live capture owner")
+    }
 }
 
 impl Drop for Region {
     fn drop(&mut self) {
+        if self.arena.pid != std::process::id() {
+            return;
+        }
+        self.uses.set(Contents::Retired);
         let Ok(captures) = capture_counts() else {
             return;
         };
         let Ok(mut state) = self.arena.lock() else {
             return;
         };
-        let entry = state.entries.get_mut(&self.id).expect("last region owner");
-        entry.retired = true;
+        // Reclamation may already have retired this unowned VA while teardown was deferred.
+        let Some(entry) = state.entries.get_mut(&self.id) else {
+            return;
+        };
         entry.preferred = false;
         // Defer physical teardown to reclamation or Arena drop; destructors cannot block capture.
         if entry.handle.is_some() || ensure_recovery_allowed(&captures, self.arena.device).is_err()

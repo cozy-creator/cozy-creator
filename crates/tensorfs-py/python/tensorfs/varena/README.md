@@ -114,3 +114,13 @@ replay uses `varena.replay(device)`: it permits independent producers while supp
 allocation recovery during the host launch. Retained physical pins protect graph dependencies
 through device completion. Non-reclaiming producer admission and checked producer publication
 may overlap this replay guard; paths that join a context or reclaim backing remain excluded.
+
+Native mutex waits in Python methods release the GIL. Final storage release and abandoned-fill
+abort update atomic pin/content state immediately; only final reservation teardown uses TensorFS's
+existing cleanup worker. Allocation recovery never waits for that worker or for Python. Escaped
+aliases keep separate pins, and reclaim still joins GPU readers before unmapping.
+
+This candidate requires an executor-lived Arena that outlives its captures and replays. Final
+Arena teardown during an unrelated capture/replay can retain backing and VA until process exit;
+deferred teardown widens the window in which that can happen. It is not successful reclamation.
+Temporary-Arena teardown across unrelated graph activity is not qualified by this implementation.

@@ -3,7 +3,7 @@
 //! DLPack destination or calls a Python transformer/cleanup callback from its worker.
 
 use std::collections::BTreeMap;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Condvar, Mutex};
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -12,7 +12,7 @@ use pyo3::types::PyDict;
 use tensorfs::io::source::{IoTally, Item, Mode, Placement, Source};
 use tensorfs::io::{self, Dst, ReadControl, ReadStats};
 
-use super::{raise, PyRegion};
+use super::{PyRegion, raise};
 use crate::store::PyCheckpoint;
 
 #[derive(Clone)]
@@ -411,10 +411,10 @@ impl PreparedRead {
 
     fn wait<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let shared = self.shared()?;
-        let unstarted = {
+        let unstarted = py.detach(|| {
             let state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
             !state.started && state.result.is_none()
-        };
+        });
         if unstarted {
             return Err(PyValueError::new_err("start native refill before waiting"));
         }
@@ -429,7 +429,20 @@ impl Drop for PreparedRead {
                 std::mem::forget(shared);
             } else {
                 shared.cancel.cancel();
-                crate::cleanup::defer(shared);
+                // A running worker owns another Arc and performs its own checked cleanup.
+                // If this is the last owner, no worker/waiter can hold State's mutex.
+                if let Some(shared) = Arc::into_inner(shared) {
+                    let Shared { region, state, .. } = shared;
+                    let mut work = state.into_inner().unwrap_or_else(|e| e.into_inner()).work;
+                    if let Some(work) = &mut work {
+                        // No producer was started. Abort/count release is immediate; the
+                        // separate Region owner keeps final native teardown out of this Drop.
+                        drop(work.fill.take());
+                        drop(work.producer.take());
+                    }
+                    crate::cleanup::defer(work);
+                    super::release_region(region);
+                }
             }
         }
     }

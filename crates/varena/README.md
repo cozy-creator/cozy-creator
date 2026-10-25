@@ -46,6 +46,18 @@ reclamation in every Arena on that device, even when capture starts before any A
 `Arena::enter_capture` wraps the same device guard and also retains that Arena.
 Prepare before capture; retire graph roots before reclaiming their weights, then recapture.
 
+The Python bridge releases native pin counts and aborted-fill state atomically before deferring
+final reservation ownership to its existing cleanup worker. This does not add Python or worker
+dependencies to allocation recovery. `Retired` is terminal: reclaim cannot overwrite it while
+invalidating physical contents, and a new model can reset the preferred prefix once all old
+reservation owners retire.
+
+Keep the Arena alive for the executor lifetime, through every capture/replay using that device.
+Final Arena teardown while an unrelated capture/replay guard is active can retain CUDA backing
+and VA until process exit; deferred teardown can encounter a guard entered after Python released
+its handle. This conservative limitation is not successful reclamation or a general temporary-Arena
+teardown guarantee. No reaper or retry queue is provided in this candidate.
+
 Any uncertain map, access, unmap, handle release, or device-completion failure poisons the Arena.
 It stops serving addresses and deliberately retains affected VA/handles until process death.
 `Error::OutOfMemory` is distinct from `Error::DeviceFault` and other CUDA failures. Recovery must

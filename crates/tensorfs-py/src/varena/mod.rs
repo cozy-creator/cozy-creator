@@ -9,9 +9,50 @@ use pyo3::{
     types::PyDict,
 };
 use std::ffi::c_void;
+use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 
 pyo3::create_exception!(tensorfs, VarenaPoisonedError, PyRuntimeError);
+
+// Final CUDA owner teardown may join streams or take native locks. Python/native
+// destructors move that owner to the existing cleanup worker, without acquiring Python.
+struct Deferred<T: Send + 'static> {
+    value: Option<T>,
+    pid: u32,
+}
+impl<T: Send + 'static> Deferred<T> {
+    fn new(value: T) -> Self {
+        Self {
+            value: Some(value),
+            pid: std::process::id(),
+        }
+    }
+}
+impl<T: Send + 'static> Deref for Deferred<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        self.value.as_ref().expect("live native owner")
+    }
+}
+impl<T: Send + 'static> Drop for Deferred<T> {
+    fn drop(&mut self) {
+        if let Some(owner) = self.value.take() {
+            if self.pid == std::process::id() {
+                crate::cleanup::defer(owner);
+            } else {
+                std::mem::forget(owner);
+            }
+        }
+    }
+}
+
+fn release_region(region: Arc<varena::Region>) {
+    // Unlike a strong-count check followed by drop, into_inner atomically either releases a
+    // shared reference or gives us the final Region without running its potentially blocking Drop.
+    if let Some(region) = Arc::into_inner(region) {
+        crate::cleanup::defer(region.retire());
+    }
+}
 
 fn raise(py: Python<'_>, error: varena::Error) -> PyErr {
     let message = error.to_string();
@@ -36,16 +77,17 @@ fn raise(py: Python<'_>, error: varena::Error) -> PyErr {
 
 #[pyclass(name = "_VarenaArena", module = "tensorfs._ext", frozen)]
 struct PyArena {
-    arena: Arc<varena::Arena>,
+    arena: Deferred<Arc<varena::Arena>>,
 }
 #[pymethods]
 impl PyArena {
     #[new]
     fn new(py: Python<'_>, device: i32) -> PyResult<Self> {
         Ok(Self {
-            arena: py
-                .detach(|| varena::Arena::new(device))
-                .map_err(|e| raise(py, e))?,
+            arena: Deferred::new(
+                py.detach(|| varena::Arena::new(device))
+                    .map_err(|e| raise(py, e))?,
+            ),
         })
     }
     #[getter]
@@ -54,14 +96,14 @@ impl PyArena {
     }
     fn reserve(&self, py: Python<'_>, bytes: usize) -> PyResult<PyRegion> {
         Ok(PyRegion {
-            region: py
-                .detach(|| self.arena.reserve(bytes))
-                .map_err(|e| raise(py, e))?,
+            region: Deferred::new(
+                py.detach(|| self.arena.reserve(bytes))
+                    .map_err(|e| raise(py, e))?,
+            ),
         })
     }
     fn set_streaming_limit(&self, py: Python<'_>, bytes: usize) -> PyResult<()> {
-        self.arena
-            .set_streaming_limit(bytes)
+        py.detach(|| self.arena.set_streaming_limit(bytes))
             .map_err(|e| raise(py, e))
     }
     fn reclaim(&self, py: Python<'_>, bytes: usize) -> PyResult<usize> {
@@ -70,7 +112,7 @@ impl PyArena {
             .map_err(|e| raise(py, e))
     }
     fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let stats = self.arena.stats().map_err(|e| raise(py, e))?;
+        let stats = py.detach(|| self.arena.stats()).map_err(|e| raise(py, e))?;
         let output = PyDict::new(py);
         for (name, value) in [
             ("reserved_bytes", stats.reserved_bytes as u64),
@@ -95,7 +137,11 @@ impl PyArena {
     }
     fn enter_capture(&self, py: Python<'_>) -> PyResult<PyCapture> {
         Ok(PyCapture {
-            guard: Mutex::new(Some(self.arena.enter_capture().map_err(|e| raise(py, e))?)),
+            guard: Mutex::new(Some(
+                py.detach(|| self.arena.enter_capture())
+                    .map_err(|e| raise(py, e))?,
+            )),
+            pid: std::process::id(),
         })
     }
 }
@@ -103,31 +149,69 @@ impl PyArena {
 #[pyclass(name = "_VarenaCapture", module = "tensorfs._ext", frozen)]
 struct PyCapture {
     guard: Mutex<Option<varena::CaptureGuard>>,
+    pid: u32,
 }
 #[pymethods]
 impl PyCapture {
-    fn close(&self) -> PyResult<()> {
-        self.guard
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("capture guard poisoned"))?
-            .take();
-        Ok(())
+    fn close(&self, py: Python<'_>) -> PyResult<()> {
+        if self.pid != std::process::id() {
+            return Err(PyRuntimeError::new_err(
+                "CUDA capture guard cannot be used after fork",
+            ));
+        }
+        py.detach(|| {
+            self.guard
+                .lock()
+                .map_err(|_| PyRuntimeError::new_err("capture guard poisoned"))?
+                .take();
+            Ok(())
+        })
+    }
+}
+impl Drop for PyCapture {
+    fn drop(&mut self) {
+        if self.pid != std::process::id() {
+            std::mem::forget(std::mem::replace(&mut self.guard, Mutex::new(None)));
+            return;
+        }
+        if let Some(guard) = self
+            .guard
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            // Release the capture count immediately; only the final arena owner is deferred.
+            crate::cleanup::defer(guard.into_arena());
+        }
     }
 }
 
 #[pyclass(name = "_VarenaRegion", module = "tensorfs._ext", frozen)]
 struct PyRegion {
-    region: Arc<varena::Region>,
+    region: Deferred<Arc<varena::Region>>,
+}
+impl Drop for PyRegion {
+    fn drop(&mut self) {
+        if let Some(region) = self.region.value.take() {
+            if self.region.pid == std::process::id() {
+                release_region(region);
+            } else {
+                std::mem::forget(region);
+            }
+        }
+    }
 }
 #[pymethods]
 impl PyRegion {
     #[getter]
     fn resident(&self, py: Python<'_>) -> PyResult<bool> {
-        self.region.is_resident().map_err(|e| raise(py, e))
+        py.detach(|| self.region.is_resident())
+            .map_err(|e| raise(py, e))
     }
     #[getter]
     fn preferred(&self, py: Python<'_>) -> PyResult<bool> {
-        self.region.is_preferred().map_err(|e| raise(py, e))
+        py.detach(|| self.region.is_preferred())
+            .map_err(|e| raise(py, e))
     }
     #[getter]
     fn allocated_bytes(&self) -> usize {
@@ -138,8 +222,7 @@ impl PyRegion {
         self.region.ptr()
     }
     fn set_preferred(&self, py: Python<'_>, preferred: bool) -> PyResult<()> {
-        self.region
-            .set_preferred(preferred)
+        py.detach(|| self.region.set_preferred(preferred))
             .map_err(|e| raise(py, e))
     }
     fn prepare(&self, py: Python<'_>) -> PyResult<PyUse> {
@@ -151,6 +234,7 @@ impl PyRegion {
             preparation: Mutex::new(Some(preparation)),
             needs_fill,
             device: self.region.device(),
+            pid: std::process::id(),
         })
     }
 }
@@ -160,6 +244,7 @@ struct PyUse {
     preparation: Mutex<Option<varena::Preparation>>,
     needs_fill: bool,
     device: i32,
+    pid: u32,
 }
 #[pymethods]
 impl PyUse {
@@ -168,30 +253,36 @@ impl PyUse {
         self.needs_fill
     }
     fn commit(&self, py: Python<'_>) -> PyResult<()> {
-        // Never retain this mutex while detach reacquires the GIL: another Python thread
-        // may export the same Use meanwhile. A commit in progress refuses that export.
-        let current = self
-            .preparation
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("fill owner poisoned"))?
-            .take()
-            .ok_or_else(|| PyRuntimeError::new_err("fill is committing or already failed"))?;
-        let ready = match current {
-            varena::Preparation::Resident(pin) => varena::Preparation::Resident(pin),
-            varena::Preparation::Fill(fill) => {
-                // SAFETY: the Python Use API requires the complete byte tensor to be filled before
-                // commit; the core joins every CUDA stream before publishing ready contents.
-                let pin = py
-                    .detach(|| unsafe { fill.commit_external() })
-                    .map_err(|e| raise(py, e))?;
-                varena::Preparation::Resident(pin)
-            }
-        };
-        *self
-            .preparation
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("fill owner poisoned"))? = Some(ready);
-        Ok(())
+        if self.pid != std::process::id() {
+            return Err(PyRuntimeError::new_err(
+                "CUDA storage cannot be used after fork",
+            ));
+        }
+        // All owner/native locks leave scope before detach reacquires Python. A concurrent
+        // export sees None during commit; it never holds the GIL while waiting on a CUDA join.
+        py.detach(|| -> varena::Result<()> {
+            let current = self
+                .preparation
+                .lock()
+                .map_err(|_| varena::Error::Poisoned("fill owner mutex".into()))?
+                .take()
+                .ok_or(varena::Error::Invalid(
+                    "fill is committing or already failed",
+                ))?;
+            let ready = match current {
+                varena::Preparation::Resident(pin) => varena::Preparation::Resident(pin),
+                varena::Preparation::Fill(fill) => {
+                    // SAFETY: Use requires every logical byte initialized; this joins all writers.
+                    varena::Preparation::Resident(unsafe { fill.commit_external() }?)
+                }
+            };
+            *self
+                .preparation
+                .lock()
+                .map_err(|_| varena::Error::Poisoned("fill owner mutex".into()))? = Some(ready);
+            Ok(())
+        })
+        .map_err(|e| raise(py, e))
     }
     fn __dlpack_device__(&self) -> (i32, i32) {
         (2, self.device)
@@ -211,19 +302,44 @@ impl PyUse {
                 "Varena exports its original CUDA storage only",
             ));
         }
-        let preparation = self
-            .preparation
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("fill owner poisoned"))?;
-        let pin = match preparation
-            .as_ref()
-            .ok_or_else(|| PyRuntimeError::new_err("fill failed"))?
-        {
-            varena::Preparation::Resident(pin) => pin.try_clone(),
-            varena::Preparation::Fill(fill) => fill.pin(),
+        if self.pid != std::process::id() {
+            return Err(PyRuntimeError::new_err(
+                "CUDA storage cannot be used after fork",
+            ));
         }
-        .map_err(|e| raise(py, e))?;
+        let pin = py
+            .detach(|| {
+                let preparation = self
+                    .preparation
+                    .lock()
+                    .map_err(|_| varena::Error::Poisoned("fill owner mutex".into()))?;
+                match preparation
+                    .as_ref()
+                    .ok_or(varena::Error::Invalid("fill failed"))?
+                {
+                    varena::Preparation::Resident(pin) => pin.try_clone(),
+                    varena::Preparation::Fill(fill) => fill.pin(),
+                }
+            })
+            .map_err(|e| raise(py, e))?;
         capsule(py, pin)
+    }
+}
+impl Drop for PyUse {
+    fn drop(&mut self) {
+        if self.pid != std::process::id() {
+            std::mem::forget(std::mem::replace(&mut self.preparation, Mutex::new(None)));
+            return;
+        }
+        if let Some(preparation) = self
+            .preparation
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            // Pin count/fill abort becomes visible now, before any later allocation recovery.
+            release_region(preparation.into_unpinned_region());
+        }
     }
 }
 
@@ -255,8 +371,9 @@ struct Managed {
     deleter: Option<unsafe extern "C" fn(*mut Managed)>,
 }
 struct Held {
-    _pin: varena::Pin,
+    pin: varena::Pin,
     length: i64,
+    pid: u32,
 }
 
 unsafe extern "C" fn delete(tensor: *mut Managed) {
@@ -266,7 +383,14 @@ unsafe extern "C" fn delete(tensor: *mut Managed) {
     // SAFETY: a DLPack consumer owns these two boxes exactly once after capsule consumption.
     let tensor = unsafe { Box::from_raw(tensor) };
     // SAFETY: capsule creates context as a Held box; its physical Pin outlives every tensor alias.
-    drop(unsafe { Box::from_raw(tensor.context as *mut Held) });
+    let held = unsafe { Box::from_raw(tensor.context as *mut Held) };
+    if held.pid != std::process::id() {
+        std::mem::forget(held);
+    } else {
+        let Held { pin, .. } = *held;
+        // This deleter may run with or without a Python thread state. Never attach or wait.
+        release_region(pin.into_unpinned_region());
+    }
 }
 unsafe extern "C" fn capsule_delete(capsule: *mut ffi::PyObject) {
     // SAFETY: Python calls this on a live capsule. Consumed capsules have a different name.
@@ -277,10 +401,19 @@ unsafe extern "C" fn capsule_delete(capsule: *mut ffi::PyObject) {
     }
 }
 fn capsule(py: Python<'_>, pin: varena::Pin) -> PyResult<Bound<'_, PyAny>> {
-    let length = i64::try_from(pin.len())
-        .map_err(|_| PyValueError::new_err("tensor length exceeds DLPack i64"))?;
+    let length = match i64::try_from(pin.len()) {
+        Ok(length) => length,
+        Err(_) => {
+            release_region(pin.into_unpinned_region());
+            return Err(PyValueError::new_err("tensor length exceeds DLPack i64"));
+        }
+    };
     let (pointer, device) = (pin.ptr(), pin.device());
-    let held = Box::into_raw(Box::new(Held { _pin: pin, length }));
+    let held = Box::into_raw(Box::new(Held {
+        pin,
+        length,
+        pid: std::process::id(),
+    }));
     let tensor = Box::into_raw(Box::new(Managed {
         tensor: Tensor {
             data: pointer as usize as *mut c_void,
@@ -316,6 +449,7 @@ fn capsule(py: Python<'_>, pin: varena::Pin) -> PyResult<Bound<'_, PyAny>> {
 #[pyclass(name = "_VarenaAllocatorCapture", module = "tensorfs._ext", frozen)]
 struct PyAllocatorCapture {
     guard: Mutex<Option<varena::GlobalCaptureGuard>>,
+    pid: u32,
 }
 #[pymethods]
 impl PyAllocatorCapture {
@@ -325,22 +459,41 @@ impl PyAllocatorCapture {
     #[new]
     #[pyo3(signature = (device, *, replay = false))]
     fn new(py: Python<'_>, device: i32, replay: bool) -> PyResult<Self> {
-        let native = if replay {
-            varena::enter_replay(device)
-        } else {
-            varena::enter_capture(device)
-        }
-        .map_err(|e| raise(py, e))?;
+        let native = py
+            .detach(|| {
+                if replay {
+                    varena::enter_replay(device)
+                } else {
+                    varena::enter_capture(device)
+                }
+            })
+            .map_err(|e| raise(py, e))?;
         Ok(Self {
             guard: Mutex::new(Some(native)),
+            pid: std::process::id(),
         })
     }
-    fn close(&self) -> PyResult<()> {
-        self.guard
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("capture guard poisoned"))?
-            .take();
-        Ok(())
+    fn close(&self, py: Python<'_>) -> PyResult<()> {
+        if self.pid != std::process::id() {
+            return Err(PyRuntimeError::new_err(
+                "CUDA capture guard cannot be used after fork",
+            ));
+        }
+        py.detach(|| {
+            self.guard
+                .lock()
+                .map_err(|_| PyRuntimeError::new_err("capture guard poisoned"))?
+                .take();
+            Ok(())
+        })
+    }
+}
+impl Drop for PyAllocatorCapture {
+    fn drop(&mut self) {
+        if self.pid != std::process::id() {
+            std::mem::forget(std::mem::replace(&mut self.guard, Mutex::new(None)));
+        }
+        // Same-process guard release is an atomic decrement, with no native lock or CUDA work.
     }
 }
 
@@ -351,12 +504,17 @@ fn _varena_install_allocator(py: Python<'_>) -> PyResult<usize> {
 }
 #[pyfunction]
 #[pyo3(signature = (device, limit = None))]
-fn _varena_set_activation_limit(device: i32, limit: Option<usize>) -> PyResult<()> {
-    allocator::set_limit(device, limit).map_err(PyRuntimeError::new_err)
+fn _varena_set_activation_limit(py: Python<'_>, device: i32, limit: Option<usize>) -> PyResult<()> {
+    py.detach(|| allocator::set_limit(device, limit))
+        .map_err(PyRuntimeError::new_err)
 }
 #[pyfunction]
-fn _varena_allocator_stats(device: i32) -> PyResult<std::collections::BTreeMap<&'static str, u64>> {
-    allocator::stats(device).map_err(PyRuntimeError::new_err)
+fn _varena_allocator_stats(
+    py: Python<'_>,
+    device: i32,
+) -> PyResult<std::collections::BTreeMap<&'static str, u64>> {
+    py.detach(|| allocator::stats(device))
+        .map_err(PyRuntimeError::new_err)
 }
 
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
