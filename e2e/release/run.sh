@@ -147,7 +147,8 @@ PY
 watched upload-b model upload "$OUT/tiny-b.safetensors" "$model" --lane f32 --on "$ON" || check "model upload --lane f32 failed"
 commit_b=$(jq -r '.. | objects | .commit? // empty' "$OUT/upload-b.ndjson" 2> /dev/null | tail -1) || true
 # While its commit is private: a run capability reaches it and nothing else (cl-670).
-"$here/../capabilities/run.sh" --out "$OUT/capabilities" --commit "$model@$commit" > "$OUT/capabilities.txt" \
+# Its own process: `cozy` there is the installed binary, not this suite's logging function.
+PATH="$(dirname "$COZY"):$PATH" "$here/../capabilities/run.sh" --out "$OUT/capabilities" --commit "$model@$commit" > "$OUT/capabilities.txt" \
   || check "run capabilities: $(grep FAIL "$OUT/capabilities.txt" | head -3 | tr '\n' ' ')"
 # The rental reads the private commit through its run capability; on Linux it never held it (the upload was local's).
 watched download-private model download "$model@$commit" --on "$M" \
