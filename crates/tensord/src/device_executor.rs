@@ -1043,6 +1043,7 @@ impl DeviceExecutor {
         let request = match command {
             Command::PrepareRequest(c) => Some(c.request_id.as_str()),
             Command::Invoke(c) => Some(c.request_id.as_str()),
+            Command::Map(c) if !c.request_id.is_empty() => Some(c.request_id.as_str()),
             _ => None,
         };
         let mut sent = false;

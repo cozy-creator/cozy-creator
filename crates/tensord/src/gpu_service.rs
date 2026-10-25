@@ -11,7 +11,7 @@ use crate::{
         DeviceExecutor, ExecutorConfig, Forked, Frame, Invoke, Load, Map, ModelLoad,
         InputFile, InputMetadata, PrepareRequest, Request, Services, Start,
     },
-    execution::Engine,
+    execution::{Engine, Stoppable},
     gpu_allocation::Claims,
     journal::{
         AssetBinding, Execution, Failure, Outcome, Preparation, State,
@@ -370,17 +370,24 @@ pub struct Member {
     pub level: Level,
     /// Why it holds less than `level`, from the last pass over the set.
     held_back: Mutex<&'static str>,
+    /// One explicitly requested program variant, outside model construction identity.
+    payload: Option<protocol::machine::Json>,
+    /// Point-in-time outcome, attempted once per explicit warm declaration. Keeper passes
+    /// never recapture a declined variant; another explicit warm declaration can retry.
+    prepared: Mutex<Option<bool>>,
     /// Its weights' fetches for as long as it is in the set: started under the warm run's
     /// access, anonymous after it.
     fetch: Option<Arc<crate::access::Fetch>>,
 }
 impl Member {
-    pub fn new(held: HeldGeneration, plan: Option<Plan>, level: Level, fetch: Option<Arc<crate::access::Fetch>>) -> Arc<Self> {
+    pub fn new(held: HeldGeneration, plan: Option<Plan>, level: Level, fetch: Option<Arc<crate::access::Fetch>>, payload: Option<protocol::machine::Json>) -> Arc<Self> {
         Arc::new(Self {
             held,
             plan,
             level,
             held_back: Mutex::new(""),
+            payload,
+            prepared: Mutex::new(None),
             fetch,
         })
     }
@@ -981,6 +988,7 @@ impl Pool {
         }
         let reply = session.executor.command(&Command::Map(Map {
             construction: session.plan.clone(), level: protocol::executor::Level::Ram,
+            ..Default::default()
         }), &mut device_executor::Baseline);
         let why = match &reply {
             Ok(reply) if reply.ok => { session.level = Level::Host; String::new() }
@@ -1316,8 +1324,21 @@ impl Pool {
     /// free room and the room of idle tenants outside every warm set allow. It never takes
     /// from another member or a running call, and keeps the reason when it stops short.
     pub fn keep(self: &Arc<Self>, engine: &Arc<Engine>, actor: &str) {
+        self.keep_with(engine, actor, None);
+    }
+
+    pub fn keep_preparing(self: &Arc<Self>, engine: &Arc<Engine>, actor: &str, preparation: &Stoppable) {
+        self.keep_with(engine, actor, Some(preparation));
+    }
+
+    fn keep_with(self: &Arc<Self>, engine: &Arc<Engine>, actor: &str, preparation: Option<&Stoppable>) {
         let _pass = self.keeping.lock().unwrap();
         for member in self.warm_set(actor) {
+            if preparation.is_some_and(|preparation| preparation.stop.is_cancelled()) {
+                if member.payload.is_some() { *member.prepared.lock().unwrap() = Some(false); }
+                *member.held_back.lock().unwrap() = "its warm preparation was canceled";
+                continue;
+            }
             // From `downloaded` up, what its constructions read comes behind every call's.
             if let (Some(plan), Some(fetch), true) = (&member.plan, &member.fetch, member.level >= Level::Downloaded) {
                 if let Err(error) = fetch.keep(&plan.upfront()) {
@@ -1331,7 +1352,7 @@ impl Pool {
                 (_, Level::Downloaded) => "",
                 (_, Level::Imported) => self.import(&member.held),
                 (Some(plan), Level::Host | Level::Gpu) => match self.import(&member.held) {
-                    "" => self.load_member(engine, &member, plan),
+                    "" => self.load_member(engine, &member, plan, preparation),
                     held_back => held_back,
                 },
             };
@@ -1355,9 +1376,13 @@ impl Pool {
     }
     /// A member's executor loaded on the lane a call of it is placed on (`place`), once that
     /// lane's call slots are free: empty once it is, else why not.
-    fn load_member(self: &Arc<Self>, engine: &Arc<Engine>, member: &Member, plan: &Plan) -> &'static str {
+    fn load_member(self: &Arc<Self>, engine: &Arc<Engine>, member: &Member, plan: &Plan, preparation: Option<&Stoppable>) -> &'static str {
         let (held, level) = (&member.held, member.level);
-        if self.level(&plan.construction).is_some_and(|holds| holds >= level) {
+        if member.payload.is_some() {
+            if let Some(ready) = *member.prepared.lock().unwrap() {
+                return if ready { "" } else { "its program was held back; explicitly warm again to retry" };
+            }
+        } else if self.level(&plan.construction).is_some_and(|holds| holds >= level) {
             return "";
         }
         let Some((start, _permit)) = self.place(engine, plan, (None, None), None, &mut vec![None; self.width()]) else {
@@ -1368,9 +1393,13 @@ impl Pool {
             return "a request is queued; it loads after";
         }
         let asked = Instant::now();
-        let mut result = self.prewarm(engine, held, plan.clone(), start, member.fetch.clone());
+        let mut result = self.prewarm(engine, held, plan.clone(), start, member.fetch.clone(), preparation);
+        if preparation.is_some_and(|preparation| preparation.stop.is_cancelled()) {
+            if member.payload.is_some() { *member.prepared.lock().unwrap() = Some(false); }
+            return "its warm preparation was canceled";
+        }
         if let (Ok("loaded" | "already loaded"), Level::Gpu | Level::Host) = (&result, level) {
-            result = self.map_member(engine, plan, start, level);
+            result = self.map_member(engine, plan, start, member, preparation);
         }
         self.note_prewarm(&plan.construction, Default::default(), asked.elapsed(), &result);
         match result {
@@ -1384,30 +1413,77 @@ impl Pool {
     }
     /// Warming a loaded member: its executor, on the lane from `start`, loads its models at
     /// `level` (`gpu`, or `host` in RAM; Runtime places them): "mapped", or why not.
-    fn map_member(&self, engine: &Arc<Engine>, plan: &Plan, start: usize, level: Level) -> io::Result<&'static str> {
+    fn map_member(&self, engine: &Arc<Engine>, plan: &Plan, start: usize, member: &Member,
+        preparation: Option<&Stoppable>) -> io::Result<&'static str> {
+        let level = member.level;
         let key = session_key(&plan.construction, start);
         let holds = self.levels.lock().unwrap().get(&key).map(|(_, level, _)| *level);
-        if holds == Some(level) {
+        if holds == Some(level) && member.payload.is_none() {
             return Ok("mapped");
         }
         let Some(mut session) = self.sessions.lock().unwrap().remove(&key) else {
             return Ok("its executor ended");
         };
+        if member.payload.is_some() && !session.executor.hello.program_preparation {
+            *member.prepared.lock().unwrap() = Some(false);
+            self.keep_idle(engine, session)?;
+            return Ok("its executor does not support program preparation");
+        }
+        let request_id = preparation.map(|p| p.id().to_owned())
+            .unwrap_or_else(|| format!("warm:{}:{}", plan.id, session.executor.birth.pid));
+        let cancel = session.executor.cancellation();
+        cancel.serve(&request_id);
+        let halt = preparation.map(|preparation| {
+            let (cancel, id) = (cancel.clone(), request_id.clone());
+            preparation.during(move || cancel.cancel(&id))
+        });
+        // A warm declaration gets one attempt even when its factory refuses or the process
+        // dies. Repeating a keeper pass must never create a capture/OOM/crash loop.
+        if member.payload.is_some() { *member.prepared.lock().unwrap() = Some(false); }
         let reply = session.executor.command(
             &Command::Map(Map {
                 construction: plan.construction.clone(),
                 level: if level == Level::Gpu { protocol::executor::Level::Gpu } else { protocol::executor::Level::Ram },
+                request_id: if member.payload.is_some() { request_id } else { String::new() },
+                entrypoint: plan.entrypoint.clone(),
+                payload: member.payload.as_ref().map(|payload| protocol::executor::Json(
+                    serde_json::from_str(payload.get()).expect("validated warm payload"))),
             }),
             &mut device_executor::Baseline,
         );
+        // Synchronize a cloned, already-dispatched cancel before reusing the process.
+        cancel.disable();
+        drop(halt);
+        let usable = reply.as_ref().is_ok_and(|reply|
+            reply.poisoned.is_empty() && (member.payload.is_none() || reply.quiescent));
         if reply.as_ref().is_ok_and(|reply| reply.ok) {
             session.level = level;
+            if member.payload.is_some() {
+                let ready = usable && reply.as_ref().is_ok_and(|reply| reply.prepared == Some(true));
+                *member.prepared.lock().unwrap() = Some(ready);
+                if !ready { session.level = Level::Host; }
+            }
         }
-        self.keep_idle(engine, session)?;
+        if usable {
+            let births = executor_births(&session.executor.birth, &session.followers);
+            if let Err(error) = self.keep_idle(engine, session) {
+                await_executor_exit(engine, &births);
+                self.retire_returned(&plan.construction, start, &births);
+                return Err(error);
+            }
+        } else {
+            // A command with no proven completion never returns its GPU permit while its
+            // exact executor might still execute. retire_canceled joins every rank's exit.
+            self.retire_canceled(engine, preparation.map_or("warm", Stoppable::id), session);
+            if reply.is_ok() { return Ok("its preparation did not prove GPU completion; the executor ended"); }
+        }
         let reply = reply?;
         if !reply.ok {
             tracing::warn!("warm set: mapping {}: {} {}", plan.construction, reply.code, reply.detail);
-            return Ok("its weights could not be mapped (the machine's log says why)");
+            return Ok("its warm preparation failed (the machine's log says why)");
+        }
+        if member.payload.is_some() && reply.prepared != Some(true) {
+            return Ok("its program was held back; explicitly warm again to retry");
         }
         Ok("mapped")
     }
@@ -1423,6 +1499,10 @@ impl Pool {
         };
         self.warm_set(actor).iter().map(holds).collect()
     }
+    /// Last explicit factory outcomes, not reservations or current graph-validity claims.
+    pub fn prepared_members(&self, actor: &str) -> Vec<Option<bool>> {
+        self.warm_set(actor).iter().map(|member| *member.prepared.lock().unwrap()).collect()
+    }
     /// The highest level an executor of `plan` holds, on any GPU.
     fn level(&self, plan: &str) -> Option<Level> {
         let levels = self.levels.lock().unwrap();
@@ -1435,6 +1515,9 @@ impl Pool {
     }
     fn holding(&self, member: &Member) -> Level {
         let executor = member.plan.as_ref().and_then(|plan| self.level(&plan.construction));
+        let executor = if member.payload.is_some() && *member.prepared.lock().unwrap() != Some(true) {
+            executor.map(|level| level.min(Level::Host))
+        } else { executor };
         let imported = || {
             let zygotes = self.zygotes.lock().unwrap();
             zygotes.get(&parent_app(&member.held)).cloned()
@@ -2191,18 +2274,29 @@ impl Pool {
         plan: Plan,
         start: usize,
         fetch: Option<Arc<crate::access::Fetch>>,
+        preparation: Option<&Stoppable>,
     ) -> io::Result<&'static str> {
         if self.sessions.lock().unwrap().contains_key(&session_key(&plan.construction, start)) {
             return Ok("already loaded");
         }
         let born = Mutex::new(vec![]);
-        let created = self.new_session(engine, held, &plan, start, |birth, _| {
+        let cancellation = Mutex::new(None::<Cancellation>);
+        let halt = Mutex::new(None);
+        let created = self.new_session(engine, held, &plan, start, |birth, cancel| {
             born.lock().unwrap().push(birth.clone());
+            if let Some(preparation) = preparation {
+                let (cancel, id) = (cancel.clone(), preparation.id().to_owned());
+                cancel.serve(&id);
+                *cancellation.lock().unwrap() = Some(cancel.clone());
+                *halt.lock().unwrap() = Some(preparation.during(move || cancel.cancel(&id)));
+            }
             Ok(())
         });
         let mut session = match created {
             Ok(session) => session,
             Err(error) => {
+                if let Some(cancel) = cancellation.lock().unwrap().as_ref() { cancel.disable(); }
+                drop(halt);
                 let births = born.into_inner().unwrap();
                 await_executor_exit(engine, &births);
                 self.retire_returned(&plan.construction, start, &births);
@@ -2211,6 +2305,8 @@ impl Pool {
         };
         let key = plan.construction.clone();
         let result = self.call(engine, "", held, plan, &mut session, true, None, fetch);
+        if let Some(cancel) = cancellation.lock().unwrap().as_ref() { cancel.disable(); }
+        drop(halt);
         match result {
             Ok(_) => {
                 let births = executor_births(&session.executor.birth, &session.followers);

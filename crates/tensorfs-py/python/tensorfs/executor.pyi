@@ -143,6 +143,9 @@ class Invoke(_Wire):
 class Map(_Wire):
     construction: str
     level: Literal["gpu", "ram"]
+    request_id: str
+    entrypoint: str
+    payload: dict[str, object] | None
 
 class Unload(_Wire):
     construction: str

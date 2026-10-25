@@ -47,28 +47,51 @@ pub struct Engine {
     /// What holds a memoizable run's success for its signer (`call_memo`), once configured.
     memo: OnceLock<Weak<crate::objects::Objects>>,
     /// Each preparing run's stop, and whether it has begun what cannot stop (`Stoppable`).
-    preparations: Mutex<HashMap<String, (Cancel, bool)>>,
+    preparations: Mutex<HashMap<String, Preparation>>,
     /// Runs a GPU fault failed (`fault`): their failure, whatever their executor said after.
     faults: Mutex<HashMap<String, crate::journal::Failure>>,
 }
 
 /// One run's preparation, registered while it lasts: its cancel stops `stop`, which ends the
 /// run's downloads, provider fetches and package installs.
+struct Preparation {
+    stop: Cancel,
+    committed: bool,
+    halt: Option<Halt>,
+}
+
 pub struct Stoppable {
     engine: Arc<Engine>,
     id: String,
     pub stop: Cancel,
 }
 impl Stoppable {
+    pub fn id(&self) -> &str { &self.id }
+
+    /// Bind cancellation only while a preparation borrows an exact executor. The caller
+    /// disables its executor cancellation before returning it to the pool.
+    pub fn during(&self, halt: impl Fn() -> io::Result<()> + Send + Sync + 'static) -> PreparationHalt {
+        let halt: Halt = Arc::new(halt);
+        let canceled = {
+            let mut preparations = self.engine.preparations.lock().unwrap();
+            let preparation = preparations.get_mut(&self.id).expect("live preparation");
+            assert!(preparation.halt.is_none(), "one executor per preparation");
+            preparation.halt = Some(halt.clone());
+            preparation.stop.is_cancelled()
+        };
+        if canceled { let _ = halt(); }
+        PreparationHalt { engine: self.engine.clone(), id: self.id.clone(), halt }
+    }
+
     /// From here on the run cannot stop (an upload finalizing at its Hub): it refuses
     /// cancellation. False when it was canceled first.
     pub fn commit(&self) -> bool {
         let mut preparations = self.engine.preparations.lock().unwrap();
-        let Some((stop, committed)) = preparations.get_mut(&self.id) else {
+        let Some(preparation) = preparations.get_mut(&self.id) else {
             return false;
         };
-        *committed = !stop.is_cancelled();
-        *committed
+        preparation.committed = !preparation.stop.is_cancelled();
+        preparation.committed
     }
 }
 impl Drop for Stoppable {
@@ -77,23 +100,41 @@ impl Drop for Stoppable {
     }
 }
 
+/// Removes only this scoped delivery. A cloned callback may be in flight; the executor's
+/// Cancellation::disable joins it before that executor is published idle.
+pub struct PreparationHalt {
+    engine: Arc<Engine>,
+    id: String,
+    halt: Halt,
+}
+impl Drop for PreparationHalt {
+    fn drop(&mut self) {
+        if let Some(preparation) = self.engine.preparations.lock().unwrap().get_mut(&self.id) {
+            if preparation.halt.as_ref().is_some_and(|halt| Arc::ptr_eq(halt, &self.halt)) {
+                preparation.halt = None;
+            }
+        }
+    }
+}
+
 /// A cancel of a preparing run past its point of no return is refused; any other stops it.
 fn stop_preparation(
-    preparations: &HashMap<String, (Cancel, bool)>,
+    preparations: &HashMap<String, Preparation>,
     id: &str,
     journal: impl FnOnce() -> io::Result<Execution>,
-) -> io::Result<Execution> {
-    if preparations.get(id).is_some_and(|(_, committed)| *committed) {
+) -> io::Result<(Execution, Option<Halt>)> {
+    if preparations.get(id).is_some_and(|preparation| preparation.committed) {
         return Err(io::Error::new(
             io::ErrorKind::ResourceBusy,
             "this run's upload is finalizing at its Hub and ends on its own",
         ));
     }
     let record = journal()?;
-    if let Some((stop, _)) = preparations.get(id) {
-        stop.cancel();
-    }
-    Ok(record)
+    let halt = preparations.get(id).and_then(|preparation| {
+        preparation.stop.cancel();
+        preparation.halt.clone()
+    });
+    Ok((record, halt))
 }
 
 type Halt = Arc<dyn Fn() -> io::Result<()> + Send + Sync>;
@@ -128,7 +169,7 @@ impl Engine {
     /// it registered stops it at once.
     pub fn stoppable(self: &Arc<Self>, id: &str) -> Stoppable {
         let stop = Cancel::default();
-        self.preparations.lock().unwrap().insert(id.into(), (stop.clone(), false));
+        self.preparations.lock().unwrap().insert(id.into(), Preparation { stop: stop.clone(), committed: false, halt: None });
         if self.get(id).is_ok_and(|record| record.cancel_actor.is_some()) {
             stop.cancel();
         }
@@ -548,36 +589,38 @@ impl Engine {
 
     /// The durable actor record precedes delivery. Transport loss never calls this.
     pub fn cancel(&self, id: &str, actor: &str) -> io::Result<Execution> {
-        let record = {
+        let (record, halt) = {
             let preparations = self.preparations.lock().unwrap();
             let owned = self.owned.lock().unwrap();
             let mut progress = self.progress.lock().unwrap();
-            let mut record = stop_preparation(&preparations, id, || {
+            let (mut record, halt) = stop_preparation(&preparations, id, || {
                 self.journal.lock().unwrap().cancel_observed(id, actor, progress.get(id))
             })?;
             progress.remove(id);
             overlay_observation(&mut record, &owned, &progress);
-            record
+            (record, halt)
         };
+        if let Some(halt) = halt { let _ = halt(); }
         self.deliver_cancellation(&record);
         Ok(record)
     }
 
     /// Explicit native cancellation also fences an actor/ID not yet accepted by Run.
     pub fn cancel_run(&self, actor: &str, id: &str) -> io::Result<Execution> {
-        let record = {
+        let (record, halt) = {
             let preparations = self.preparations.lock().unwrap();
             let owned = self.owned.lock().unwrap();
             let mut progress = self.progress.lock().unwrap();
             let mut journal = self.journal.lock().unwrap();
             let prior = journal.reserve_run_cancellation(actor, id)?;
-            let mut record = stop_preparation(&preparations, &prior.id, || {
+            let (mut record, halt) = stop_preparation(&preparations, &prior.id, || {
                 journal.cancel_observed(&prior.id, actor, progress.get(&prior.id))
             })?;
             progress.remove(&prior.id);
             overlay_observation(&mut record, &owned, &progress);
-            record
+            (record, halt)
         };
+        if let Some(halt) = halt { let _ = halt(); }
         self.deliver_cancellation(&record);
         Ok(record)
     }

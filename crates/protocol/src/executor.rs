@@ -218,12 +218,18 @@ pub struct Invoke {
     pub family: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct Map {
     pub construction: String,
     #[serde(default)]
     pub level: Level,
+    #[serde(default)]
+    pub request_id: String,
+    #[serde(default)]
+    pub entrypoint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<Json>,
 }
 
 /// What a warmed construction's models hold: `gpu` is warm and fills free room now, `ram`
@@ -468,6 +474,8 @@ pub struct Hello {
     pub tensorfs_version: String,
     /// Correlated PrepareRequest replies and cancellation-safe prepared-record publication.
     pub request_lookahead: bool,
+    /// A typed preparation factory on an admitted GPU Map (not a generation handler).
+    pub program_preparation: bool,
     pub sealed: BTreeMap<String, String>,
 }
 
@@ -598,6 +606,8 @@ pub struct Frame {
     pub quiescent: bool,
     pub poisoned: String,
     pub reused: bool,
+    /// Map: this explicit program was prepared now. None is weight-only warming.
+    pub prepared: Option<bool>,
     /// `start` of a group (degree > 1): the follower ranks' pids, rank 1 first.
     pub follower_pids: Vec<u32>,
     pub result_ref: Option<ResultRef>,
