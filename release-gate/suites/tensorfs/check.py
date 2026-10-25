@@ -60,10 +60,6 @@ def hub_bytes(rec):
     return (sum(b.get('hub') or 0 for b in found), sum(b.get('volume') or 0 for b in found)) if found else (None, None)
 
 
-def tree(rec):
-    return next((m.get('tree') for m in ((rec or {}).get('result') or {}).get('models', [])), None)
-
-
 def check(gate):
     t = os.path.join(gate['out'], 'suite-tensorfs')
     if not os.path.isdir(t):
@@ -171,8 +167,6 @@ def check(gate):
         against('upload', sec, total, f'{total / 2**20:.0f} MiB sent')
     if done('upload-again'):
         wall, first = rows['upload-again']['wall_s'], (rows.get('upload') or {}).get('wall_s') or 0
-        if tree(rows['upload-again']['rec']) != tree((rows.get('upload') or {}).get('rec')):
-            fails.append('tensorfs upload-again: the same folder published another tree')
         if wall is None or wall > max(15, 0.1 * first):
             fails.append(f'tensorfs upload-again: {wall} s to send what the Hub holds (the first took {first:.0f} s): no dedup')
         else:

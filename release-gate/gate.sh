@@ -4,7 +4,8 @@
 # .github/workflows/release-gate.yaml on a runner signed in with `cozy login --key`.
 #   gate.sh <SKU> --suite name,... [--gpus N] [--out DIR] [--establish] [--publish] [--runtime F|URL] [--tensorfs F|URL]
 #           [--tensord BIN|URL] [--packages DIR] [--pins name@release,...] [--only cell,cell] [--before FILE]...
-#           [--cells FILE]... [--first pkg,...] [--cli BIN] [--install-cli BIN] [--disk GB] [--on MACHINE]
+#           [--cells FILE]... [--first pkg,...] [--cli BIN] [--install-cli BIN] [--disk GB] [--on MACHINE] [--image sha256:HEX]
+# --image boots that worker image (a staged candidate's digest; a Hub admin's choice) in place of the Hub's current one.
 # --on runs on that machine as it is (a dev proof on `local`): no rental, no before.sh, nothing ended.
 # --install-cli is an old cozy (0.11.15) whose machine fetches URL#sha256 candidates itself, for suites/tensord/skew.sh.
 # --suite runs those suites (suites/<name>/: README.md says what each proves and costs); there is no default, the
@@ -28,7 +29,7 @@ if [ "${1:-}" != --copy ]; then
 fi
 HERE=$2; shift 2
 REPO=cozy-creator/cozy-creator TAG=release-gate-baselines
-SKU=$1; shift; CAND=() ONLY= EXTRA=() BEFORE=() CLI=cozy DISK=400 OUT= PKGS= ESTABLISH= PUBLISH= PINS= SUITES= K= CLIP= GPUS= FIRST= ICLI= ON=
+SKU=$1; shift; CAND=() ONLY= EXTRA=() BEFORE=() CLI=cozy DISK=400 OUT= PKGS= ESTABLISH= PUBLISH= PINS= SUITES= K= CLIP= GPUS= FIRST= ICLI= ON= IMAGE=
 BIN= RW= TW= TD=
 while [ $# -gt 0 ]; do
   case $1 in
@@ -45,6 +46,7 @@ while [ $# -gt 0 ]; do
     --cli) CLI=$2;;
     --disk) DISK=$2;;
     --on) ON=$2;;
+    --image) IMAGE=$2;;
     --packages) PKGS=$(cd "$2" && pwd);;
     --pins) PINS=",$2,";;
     --runtime|--runtime-wheel) RW=$2;;
@@ -142,7 +144,7 @@ output() { run_output "$OUT" "$1" "$2"; }
 . "$HERE/products.sh"
 log "gate on $SKU (suites ${SUITES//,/ }): scenario $NAME, seeds from $R, candidate: ${CAND[*]:-released}${PKGS:+ packages $PKGS}${PINS:+ pins ${PINS//,/ }}, cli: $CLI"
 [ -z "$ON" ] || { M=$ON; BEFORE=(); }
-[ -n "$ON" ] || "$CLI" machine rent "$SKU" ${GPUS:+--gpus "$GPUS"} --disk-gb "$DISK" -y --json >rent.json 2>rent.err
+[ -n "$ON" ] || "$CLI" machine rent "$SKU" ${GPUS:+--gpus "$GPUS"} ${IMAGE:+--image-digest "$IMAGE"} --disk-gb "$DISK" -y --json >rent.json 2>rent.err
 [ -n "$M" ] || M=$(python3 -c 'import json,sys
 t = open(sys.argv[1]).read(); dec = json.JSONDecoder(); i = 0
 while i < len(t):

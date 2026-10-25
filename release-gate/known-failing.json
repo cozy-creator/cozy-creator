@@ -19,6 +19,19 @@
   ]
  },
  {
+  "cell": "SDXL under 8, 6 and 3 GiB caps",
+  "issue": "xs-090",
+  "sku": "*",
+  "what": "gate 40228790665 (cozy 0.12.0, Runtime 0.33.0, TensorFS 0.16.0, rtx-4090): SDXL holds 8.17 GiB under 8 and 6.44-6.71 GiB under 6, each leaving 0.16 GiB behind; under 3 run 30 fails accepted_envelope_breach (device_out_of_memory, nothing reclaimable). Uncapped SDXL completes. Lead-ruled release 2026-10-25; not run until fixed",
+  "cells": [
+   "s8-sdxl",
+   "s6-sdxl-1",
+   "s6-sdxl-2",
+   "s6-sdxl-3",
+   "s3-sdxl"
+  ]
+ },
+ {
   "cell": "H3 15 s under 8 GiB",
   "issue": "cr-222",
   "sku": "*",

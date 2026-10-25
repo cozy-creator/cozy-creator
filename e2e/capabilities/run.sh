@@ -56,8 +56,10 @@ CAP=$(jq -r .token "$OUT/mint.json")
 expect anonymous-read 404 "$(ask anonymous-read GET "$BLOB")"
 expect read 307 "$(ask read GET "$BLOB" "$CAP")"
 expect head 200 "$(ask head HEAD "$BLOB" "$CAP")"
-expect other-repository 403 "$(ask other-repository POST "/v1/models/$ORG/$NAME-e2e-other/commits" "$CAP" \
-  "{\"commit\":{\"sha256\":\"$SHA\",\"length\":1}}")" capability.operation_forbidden
+# A variable: macOS's bash 3.2 brace-expands the {..,..} of this body inside "$(...)", splitting it.
+body="{\"commit\":{\"sha256\":\"$SHA\",\"length\":1}}"
+expect other-repository 403 "$(ask other-repository POST "/v1/models/$ORG/$NAME-e2e-other/commits" "$CAP" "$body")" \
+  capability.operation_forbidden
 expect release 403 "$(ask release PUT "/v1/models/$ORG/$NAME/releases/999.0.0" "$CAP" \
   "{\"commits\":[\"sha256:$SHA\"]}")" capability.operation_forbidden
 expect delete 403 "$(ask delete DELETE "/v1/models/$ORG/$NAME/commits/sha256:$SHA" "$CAP")" capability.operation_forbidden
