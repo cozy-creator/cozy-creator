@@ -1,7 +1,8 @@
-# Suite `hub` (gate.sh --suite hub): the Hub's API contract (tensorhub api/openapi.yaml at $HUB_REF) as cozy uses
-# it, on the rented machine $M and a throwaway <account>/ci-hub-<R> package and model that the suite retires at the
+# Suite `hub` (gate.sh --suite hub): the Hub's API contract (tensorhub api/openapi.yaml, as the Hub serves it) as cozy
+# uses it, on the rented machine $M and a throwaway <account>/ci-hub-<R> package and model that the suite retires at the
 # end (the package's releases yanked, the model deleted):
-#   paths            contract.py: each path no cozy verb reaches, called anonymously, answers as its contract says
+#   paths            contract.py: each path no cozy verb reaches, called anonymously through e2e/hubcheck, answers as
+#                    its contract says, and hubcheck finds every request and response as the document has it
 #   account          whoami (the account, its balance, the buy page), the rental catalog, the rental $M itself
 #   providers        an admin rental of the cheapest CPU SKU on each provider (RunPod, vast), ended and checked
 #                    gone, so both acquisition paths are covered (renters never pick one: th-254)
@@ -11,7 +12,7 @@
 #                    download; delete → gone
 # Each is an `expect` row: a FAIL fails the gate. The migration rehearsal on a prod dump is the release agent's
 # step before a Hub deploy (release-gate README).
-HB=$OUT/suite-hub HUB_URL=${HUB_URL:-https://tensorhub.com} HUB_REF=${HUB_REF:-master} HUB_PKG= HUB_MODEL= HUB_LIVE= HUB_RENTED=
+HB=$OUT/suite-hub HUB_URL=${HUB_URL:-https://tensorhub.com} HUB_PKG= HUB_MODEL= HUB_LIVE= HUB_RENTED=
 mkdir -p "$HB"
 # hub_do <check> ok|refused <cozy args...>: PASS (returns 0) when the command exits as wanted; output in <check>.out.
 hub_do() {
@@ -56,12 +57,23 @@ hub_cleanup() {
 }
 trap 'hub_cleanup; declare -F tfs_cleanup >/dev/null && tfs_cleanup; end_it' EXIT
 
-# paths: the contract document of the Hub being released.
-if gh api -H 'Accept: application/vnd.github.raw' "repos/cozy-creator/tensorhub-v2/contents/api/openapi.yaml?ref=$HUB_REF" >"$HB/openapi.yaml" 2>"$HB/openapi.err"; then
+# paths: through hubcheck, which reads the document the Hub serves; its mismatches are the gate's FAILs.
+hc=''
+go build -C "$HERE/../e2e/hubcheck" -o "$HB/hubcheck" . 2> "$HB/hubcheck.log" && { "$HB/hubcheck" --hub "$HUB_URL" --out "$HB" > "$HB/hubcheck.addr" 2>> "$HB/hubcheck.log" & hc=$!; }
+until [ -z "$hc" ] || [ -s "$HB/hubcheck.addr" ] || ! kill -0 "$hc" 2> /dev/null; do sleep 1; done
+if [ -s "$HB/hubcheck.addr" ]; then
   while IFS=$'\t' read -r check verdict what; do expect "$check" "$verdict" "$what"; done < <(uv run -q --no-project \
-    --with pyyaml --with jsonschema python -I "$HERE/suites/hub/contract.py" "$HUB_URL" "$HB/openapi.yaml" paths)
+    --with pyyaml python -I "$HERE/suites/hub/contract.py" "http://$(head -1 "$HB/hubcheck.addr")" paths)
+  kill "$hc"
+  if [ -s "$HB/hub-mismatches.jsonl" ]; then
+    while read -r what; do expect "hub contract document" FAIL "$what"; done < <(jq -r \
+      '"\(.side) \(.method) \(.route // .path) \(.status // "") \(.field // ""): \(.message)"' "$HB/hub-mismatches.jsonl" | sort -u)
+  else
+    expect "hub contract document" PASS "every request and response as the Hub's document has it: $(jq -c . "$HB/hub-calls.json")"
+  fi
 else
-  expect "hub contract document" FAIL "tensorhub-v2 api/openapi.yaml@$HUB_REF unreadable: $(tail -c 200 "$HB/openapi.err")"
+  [ -z "$hc" ] || kill "$hc" 2> /dev/null
+  expect "hub contract document" FAIL "hubcheck did not start: $(tail -c 300 "$HB/hubcheck.log")"
 fi
 # account
 WHO=; for _ in 1 2 3; do  # a dropped connection is asked again
@@ -123,7 +135,7 @@ hub_do package-info ok package info "$WHO/$HUB_PKG"
 hub_runs package-newest 0.1.1 "$WHO/$HUB_PKG"
 hub_do package-yank ok package yank "$WHO/$HUB_PKG@0.1.1"
 while IFS=$'\t' read -r check verdict what; do expect "$check" "$verdict" "$what"; done < <(uv run -q --no-project \
-  --with pyyaml --with jsonschema python -I "$HERE/suites/hub/contract.py" "$HUB_URL" "$HB/openapi.yaml" yanked "$WHO" "$HUB_PKG" 0.1.1)
+  --with pyyaml python -I "$HERE/suites/hub/contract.py" "$HUB_URL" yanked "$WHO" "$HUB_PKG" 0.1.1)
 hub_do package-remove ok package remove "$WHO/$HUB_PKG" --on "$M"
 hub_runs package-skips-yanked 0.1.0 "$WHO/$HUB_PKG"
 hub_runs package-pinned-yanked 0.1.1 "$WHO/$HUB_PKG" 0.1.1
