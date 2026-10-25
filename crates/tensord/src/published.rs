@@ -854,7 +854,7 @@ impl Publisher {
         let org = package.split_once('/').map_or("", |(org, _)| org);
         let hub_packages: BTreeMap<String, String> = files.iter().map(|file| (file.distribution(), format!("{org}/{}", file.distribution()))).collect();
         let described = environment::describe_environment(&platform::paths::venv_python(&env), &locked.distribution, &hub_packages)?;
-        let record = built.record(identity, (&locked.distribution, release), &env, &card.interface, &self.sdk.runtime_build, described)?;
+        let record = built.record((identity, identity), (&locked.distribution, release), &env, &card.interface, &self.sdk.runtime_build, described)?;
         environment::publish(&dir, &record)
     }
 

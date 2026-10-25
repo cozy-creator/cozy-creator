@@ -42,6 +42,10 @@ pub struct Generation {
     /// empty for a published Runtime.
     #[serde(default)]
     pub runtime_build: String,
+    /// The environment's identity: its lock, project, local dependencies and Runtime/TensorFS
+    /// pair (a release's generation is its environment). Memoized results key on it.
+    #[serde(default)]
+    pub environment: String,
 }
 /// Another package's App installed in an environment: its calls run as child runs of its own
 /// package, from the caller's environment.

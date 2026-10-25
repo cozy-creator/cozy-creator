@@ -322,7 +322,7 @@ pub(crate) fn publish(dir: &Path, record: &Value) -> Result<(), Failure> {
 impl Built {
     /// The record of the environment at `env` (a generation's): the package (distribution and
     /// version), its App and interface, the pair it holds, its description.
-    pub(crate) fn record(&self, identity: &str, (distribution, version): (&str, &str), env: &Path, interface: &Value,
+    pub(crate) fn record(&self, (identity, environment): (&str, &str), (distribution, version): (&str, &str), env: &Path, interface: &Value,
         runtime_build: &str, (source_digest, callees): (String, Vec<crate::catalog::Callee>)) -> Result<Value, Failure> {
         let application = protocol::interface::application(interface)
             .ok_or(("package_prepare_interface_invalid", "the package interface names no application".to_string()))?;
@@ -331,7 +331,7 @@ impl Built {
         let runtime_build = if self.sdk == "machine" { runtime_build } else { "" };
         Ok(json!({"identity":identity,"package":distribution,"version":version,"application":application,
             "python":platform::paths::venv_python(env),"dependencies":dependencies,"interface":interface,"sdk":self.sdk,
-            "sdk_fallback":self.fallback,"runtime_build":runtime_build,"source_digest":source_digest,"callees":callees}))
+            "sdk_fallback":self.fallback,"runtime_build":runtime_build,"environment":environment,"source_digest":source_digest,"callees":callees}))
     }
 }
 

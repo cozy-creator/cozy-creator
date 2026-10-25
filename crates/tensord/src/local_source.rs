@@ -234,10 +234,11 @@ impl LocalSources {
         Ok(written)
     }
 
-    /// The environment a live manifest runs in: one per lock, project metadata, local path
-    /// dependencies, carried wheels and this machine's interpreter, SDK pair and client.
-    /// Remote environments live beside their immutable source; direct paths remain live.
-    fn environment(&self, home: &Path, manifest: &Manifest) -> PathBuf {
+    /// The identity of the environment a live manifest runs in (`env-<identity[..16]>`): one per
+    /// lock, project metadata, local path dependencies, carried wheels and this machine's
+    /// interpreter, SDK pair and client. Remote environments live beside their immutable source;
+    /// direct paths remain live.
+    fn environment(&self, manifest: &Manifest) -> String {
         let own = manifest.own();
         let held = |name: &str| {
             let path = format!("{own}{name}");
@@ -250,7 +251,7 @@ impl LocalSources {
             "indexes": manifest.indexes, "sdk": self.publisher.sdk.requirements,
             "links": self.publisher.sdk.find_links, "python": self.publisher.sdk.python,
         });
-        home.join(format!("env-{}", &sha256::hex_digest(key.to_string().as_bytes())[..16]))
+        sha256::hex_digest(key.to_string().as_bytes())
     }
 
     /// Make the tree under `home` the manifest's files: changed ones are replaced from the
@@ -329,7 +330,8 @@ impl LocalSources {
                 return Err(refused("local_source_invalid", format!("index {name:?} = {url:?} is not a named HTTP(S) index")));
             }
         }
-        let environment = self.environment(&home, &manifest);
+        let built_from = self.environment(&manifest);
+        let environment = home.join(format!("env-{}", &built_from[..16]));
         let ready = environment.join(".ready");
         let label = format!("{} {}", manifest.package, manifest.release);
         let pyproject = fs::read_to_string(project.join("pyproject.toml"))?;
@@ -384,7 +386,7 @@ impl LocalSources {
                 let python = platform::paths::venv_python(&env);
                 let interface = environment::describe_project(&python, &project)?;
                 let (_, callees) = environment::describe_environment(&python, &distribution, &manifest.callees)?;
-                let record = built.record(&identity, (&distribution, &manifest.release), &env, &interface,
+                let record = built.record((&identity, &built_from), (&distribution, &manifest.release), &env, &interface,
                     &self.publisher.sdk.runtime_build, (manifest.source_digest(), callees))?;
                 environment::publish(&dir, &record)
             };
