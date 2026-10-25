@@ -82,8 +82,8 @@ coverage() {
 }
 
 # The install line from the README, as a person pastes it. With --release, that release's own installer then installs
-# over it while its Calcifer runs (the README's upgrade from 0.11.17 or older), reading the archives from a loopback
-# server (COZY_DOWNLOAD_URL, which `cozy update` reads too), and `cozy doctor` restarts Calcifer on it.
+# over it while its Calcifer runs, reading the archives from a loopback server (COZY_DOWNLOAD_URL, which `cozy update`
+# reads too), and `cozy doctor` restarts Calcifer on it.
 install_cozy() {
   local want ps=powershell
   hub_check

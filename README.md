@@ -19,8 +19,9 @@ irm https://tensorhub.com/install.ps1 | iex
 ```
 
 Both put `cozy` in `~/.cozy/bin` and on your PATH for new terminals: open a new one, or run the line
-the installer prints. `cozy update` moves to the newest release. `cozy update` from 0.11.17 or older fails; reinstall
-with the install line.
+the installer prints. `cozy update` moves to the newest release (`cozy update 0.12.0` to a given one): it checks the
+release's signature, restarts Calcifer on it, and the local machine follows once idle. Homebrew's cozy updates with
+`brew upgrade cozy`.
 
 ## Use
 
@@ -51,8 +52,7 @@ cozy model search sdxl
 ```
 
 First-party packages and models have no owner (`sdxl/generate`, `flux-3-klein@0.1.0`); everyone
-else's are `owner/name` (`you/my-pack/generate`). cozy 0.11.13 and older need the old spelling,
-`fidika/sdxl/generate`; `cozy update` moves to a release that takes both.
+else's are `owner/name` (`you/my-pack/generate`).
 
 `cozy login` signs you up on first use, with a code it emails. On Linux, runs go to this computer's
 machine, which starts when used and stops after 15 minutes idle; without an NVIDIA GPU here, add
