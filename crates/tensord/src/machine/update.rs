@@ -422,6 +422,9 @@ pub struct Updates {
     /// Updates submitted while another runs, in order (`queued.json`): each starts when the one
     /// before it ends, after the restart that one ends with too. None is ever refused for it.
     queued: Mutex<Vec<Queued>>,
+    /// The latest updates that ended before the current one (`ended.json`), newest last: their
+    /// callers still read their outcomes after the next one starts.
+    ended: Mutex<Vec<Status>>,
     /// The runs in flight, by number: what activating would end.
     running: Box<dyn Fn() -> Vec<String> + Send + Sync>,
     lifecycle: Option<Arc<super::lifecycle::Lifecycle>>,
@@ -454,13 +457,15 @@ impl Updates {
             stopped.enter("failed");
             write_json(&paths.update("status.json"), stopped)?;
         }
-        let queued = fs::read(paths.update("queued.json")).ok().and_then(|raw| serde_json::from_slice(&raw).ok()).unwrap_or_default();
+        let queued = read_json(&paths.update("queued.json")).unwrap_or_default();
+        let ended = read_json(&paths.update("ended.json")).unwrap_or_default();
         Ok(Arc::new(Self {
             paths,
             uv,
             python,
             status: Mutex::new(status),
             queued: Mutex::new(queued),
+            ended: Mutex::new(ended),
             running,
             lifecycle,
             machine,
@@ -593,7 +598,9 @@ impl Updates {
 
     pub fn update(&self, operation: &str) -> Option<Status> {
         let current = self.status.lock().unwrap().clone().filter(|s| s.operation == operation);
-        current.or_else(|| self.queued.lock().unwrap().iter().find(|q| q.status.operation == operation).map(|q| q.status.clone()))
+        current
+            .or_else(|| self.queued.lock().unwrap().iter().find(|q| q.status.operation == operation).map(|q| q.status.clone()))
+            .or_else(|| self.ended.lock().unwrap().iter().rev().find(|s| s.operation == operation).cloned())
     }
 
     /// Cancels update `operation` before it activates: it ends `canceled`, its candidate is
@@ -749,12 +756,25 @@ impl Updates {
                     let mut failed = status;
                     failed.error = why;
                     failed.enter("failed");
+                    self.end(current.take());
                     if let Err(error) = write_json(&self.paths.update("status.json"), &failed) {
                         tracing::warn!("update status: {error}");
                     }
                     *current = Some(failed);
                 }
             }
+        }
+    }
+
+    /// `status`, an update that ended, kept with the last few for their callers.
+    fn end(&self, status: Option<Status>) {
+        let Some(status) = status else { return };
+        let mut ended = self.ended.lock().unwrap();
+        ended.push(status);
+        let over = ended.len().saturating_sub(16);
+        ended.drain(..over);
+        if let Err(error) = write_json(&self.paths.update("ended.json"), &*ended) {
+            tracing::warn!("ended updates: {error}");
         }
     }
 
@@ -777,6 +797,7 @@ impl Updates {
             ..Status::default()
         };
         status.enter("waiting");
+        self.end(current.take());
         write_json(&self.paths.update("status.json"), &status).map_err(server)?;
         *current = Some(status.clone());
         *self.stop.lock().unwrap() = Stop::default();
@@ -1433,6 +1454,10 @@ fn write_limit(path: &Path, limit: u64) -> io::Result<()> {
     protocol::config::Config::parse(&text, &shown).map_err(|e| invalid(&e.message))?;
     fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))?;
     platform::durable::replace(path, text.as_bytes(), 0o600).map_err(io::Error::other)
+}
+
+fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
+    serde_json::from_slice(&fs::read(path).ok()?).ok()
 }
 
 fn write_json<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
