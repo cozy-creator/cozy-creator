@@ -41,3 +41,11 @@ Consumer run17692 then failed before the handler because this fixture expected a
 around construction config. Runtime deliberately presents a single component's config directly;
 the factory now uses its typed `as_int` accessors. Original private commits and partial receipts
 remain retained; encoded inference and the NVFP4 recipe still require a passing run.
+
+Corrected fixture run17717 created the source,17718 uploaded its private BF16 commit,17719
+converted/adopted INT8 and17720 **passed actual encoded GPU inference** on hatsuka. The consumer
+used `cozy.int8-convrot256.native-leaf/1`; relative output error was0.008017 and maximum absolute
+error0.003208. NVFP4 then refused before a run: the controller CLI compared only lowercase legacy
+dtype names and rejected canonical `BF16`. Its narrow repair recognizes canonical BF16/F16/F32
+as well as the old aliases, retaining rejection of encoded or unknown kinds. The repaired CLI and
+NVFP4 consumer still need real proof. [Exact component proof and refusal](evidence/fd4ff48fa-int8-and-cli-refusal.json).
