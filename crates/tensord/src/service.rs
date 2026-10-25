@@ -55,6 +55,21 @@ pub struct Service {
 }
 
 const SWEEP_EVERY: std::time::Duration = crate::reclaim::IDLE;
+
+/// Whether an executor this machine run does not supervise still fences GPU dispatch: it, or a
+/// member of its group born before `before`, is alive and not stuck in the kernel after its kill.
+/// One stuck (D state) is shown in the machine's status and fences nothing: what it holds stays
+/// held, its GPU memory included, as NVML reads it.
+fn holds_gpus(birth: &Birth, before: u64) -> bool {
+    let mut left: Vec<Birth> = platform::process::group_members(birth)
+        .into_iter()
+        .filter(|m| m.start_ticks < before && m.state().is_ok_and(|s| s != platform::process::State::Gone))
+        .collect();
+    if !birth.ended().unwrap_or(false) {
+        left.push(birth.clone());
+    }
+    !left.is_empty() && !platform::contain::all_stuck(&left)
+}
 impl Service {
     pub fn open(root: &Path, generations: &Path, parallelism: usize) -> io::Result<Arc<Self>> {
         if parallelism == 0 {
@@ -168,10 +183,7 @@ impl Service {
     pub fn gpu_startup_fences(&self) -> usize {
         let mut births = self.startup_gpu_births.lock().unwrap();
         // A group's followers die with their leader (one group kill); each exit is observed.
-        births.retain(|birth| {
-            !birth.ended().unwrap_or(false)
-                || crate::process::group_outlives(birth, self.started_ticks)
-        });
+        births.retain(|birth| holds_gpus(birth, self.started_ticks));
         births.len()
     }
     pub fn configure_pool(&self, pool: Arc<Pool>) -> io::Result<()> {
@@ -186,6 +198,7 @@ impl Service {
         drop(current);
         pool.wake_on_freed(&self.engine);
         if pool.width() > 0 {
+            pool.watch_faults();
             // Kernels compile at boot, before any install. An executor starts for a request or
             // an install: nothing here prepares a package nobody asked for.
             pool.image_kernel_boot();
@@ -202,10 +215,7 @@ impl Service {
         let (gpu, engine) = (gpu.clone(), self.engine.clone());
         std::thread::Builder::new().name("warm-set-restore".into()).spawn(move || {
             let mut seen = engine.activity_epoch();
-            let alive = |birth: &Birth| {
-                !birth.ended().unwrap_or(false) || crate::process::group_outlives(birth, started)
-            };
-            while fence.iter().any(alive) {
+            while fence.iter().any(|birth| holds_gpus(birth, started)) {
                 seen = engine.wait_activity(seen, Some(std::time::Duration::from_millis(100)));
             }
             gpu.keep_all(&engine);
@@ -375,7 +385,9 @@ impl Service {
         // Every GPU call slot is a permit of this machine run; an earlier run's process still
         // alive holds devices nobody here can name, so it fences them all.
         let gpu_fenced = self.gpu_startup_fences() != 0
-            || active.iter().any(|r| gpu(r) && !self.engine.owns(&r.id));
+            || active.iter().any(|r| {
+                gpu(r) && !self.engine.owns(&r.id) && r.process.as_ref().is_none_or(|b| holds_gpus(b, u64::MAX))
+            });
         let mut claims = vec![None; pool.width()];
         let calls = self.calls();
         let waits = |r: &Execution| calls.as_ref().is_some_and(|calls| calls.waiting(&self.engine, &r.id));

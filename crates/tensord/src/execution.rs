@@ -48,6 +48,8 @@ pub struct Engine {
     memo: OnceLock<Weak<crate::objects::Objects>>,
     /// Each preparing run's stop, and whether it has begun what cannot stop (`Stoppable`).
     preparations: Mutex<HashMap<String, (Cancel, bool)>>,
+    /// Runs a GPU fault failed (`fault`): their failure, whatever their executor said after.
+    faults: Mutex<HashMap<String, crate::journal::Failure>>,
 }
 
 /// One run's preparation, registered while it lasts: its cancel stops `stop`, which ends the
@@ -118,6 +120,7 @@ impl Engine {
             activity_changed: Condvar::new(),
             memo: OnceLock::new(),
             preparations: Mutex::new(HashMap::new()),
+            faults: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -764,7 +767,28 @@ impl Engine {
         Ok(())
     }
 
+    /// A driver fault on a GPU run `id` holds: it fails with `failure` at once, its executor killed.
+    pub(crate) fn fault(&self, id: &str, failure: crate::journal::Failure) {
+        self.faults.lock().unwrap().insert(id.into(), failure);
+        let stop = self.active.lock().unwrap().get(id).cloned();
+        if let Some(stop) = stop {
+            let _ = stop();
+        }
+    }
+
+    /// A faulted run's failure is its fault, then what its executor said.
+    fn faulted(&self, id: &str, outcome: Outcome) -> Outcome {
+        match (self.faults.lock().unwrap().remove(id), outcome) {
+            (Some(mut fault), Outcome::Failed(said)) => {
+                fault.message = format!("{}; then {}: {}", fault.message, said.code, said.message);
+                Outcome::Failed(fault)
+            }
+            (_, outcome) => outcome,
+        }
+    }
+
     pub(crate) fn finish(&self, id: &str, outcome: Outcome) -> io::Result<Execution> {
+        let outcome = self.faulted(id, outcome);
         let held = self.held_memo(id, &outcome);
         let mut progress = self.progress.lock().unwrap();
         let mut journal = self.journal.lock().unwrap();
@@ -788,6 +812,7 @@ impl Engine {
     pub(crate) fn defer_completion(
         self: &Arc<Self>, id: &str, outcome: Outcome, processes: Vec<Birth>,
     ) -> io::Result<()> {
+        let outcome = self.faulted(id, outcome);
         let progress = self.progress.lock().unwrap();
         self.journal.lock().unwrap().defer_completion(id, outcome, processes, progress.get(id))?;
         Ok(())

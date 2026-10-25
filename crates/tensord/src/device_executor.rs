@@ -1081,7 +1081,7 @@ impl Ending {
         };
         let _ = exact.kill();
         // Followers (degree > 1) stay in the leader's group and are ended too.
-        let mut ended = match reap_group(exact, self.child.as_mut()) {
+        let mut ended = match reap_group(exact, self.child.take()) {
             Ok(ended) => ended,
             Err(error) => {
                 std::mem::forget(std::mem::take(&mut self.retained));

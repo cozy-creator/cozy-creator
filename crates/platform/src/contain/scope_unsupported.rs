@@ -46,3 +46,7 @@ impl Scope {
 pub fn stuck() -> Vec<super::Stuck> {
     Vec::new()
 }
+
+pub fn all_stuck(_: &[crate::process::Birth]) -> bool {
+    false
+}

@@ -6,10 +6,12 @@ mod apple;
 #[cfg(windows)]
 mod budget;
 mod cuda;
+mod faults;
 
 #[cfg(windows)]
 pub use budget::{Adapter, Budget, adapters};
 pub use cuda::memory_classes;
+pub use faults::{Fault, watch_faults};
 
 use crate::{Error, Result};
 use nvml_wrapper::{
