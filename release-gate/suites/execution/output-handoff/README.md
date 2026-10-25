@@ -55,6 +55,16 @@ verified against their GPU source. The 480 MiB custody-only cancellation attempt
 the roughly 440 ms custody window and remain unqualified; those failures are preserved.
 Receipts live under `outputs/varena-remote-20261024/cohort-2` in the workspace root.
 
+After updating only TensorD to d8063c123 (removing redundant pre-return output flush/copy),
+the same installed SDK passed overlap (17182/17184/17185), encoding cancellation
+(17188–17190), and capacity-one backlog (17193/17195–17198). The observed overlap was
+188.02 ms for one image and 3.45 s during the four-image cancellation case. Backlog again
+peaked at exactly two and every image was verified. These are lifecycle checks, not a
+performance comparison: the initial warm receipt was delayed by a shared controller restart.
+Two further custody attempts were unexercised (17200 canceled before handoff; 17203 committed
+before cancellation arrived). Their successors completed. Follow-up receipts are in
+`cohort-2/d806-followup`; detached-output service restart is also not qualified.
+
 The burst case requires the service's actual CPU parallelism and an idle qualification window.
 It checks that detached output work never exceeds that capacity plus the one active GPU slot,
 that enough backlog was generated to exercise the policy, that every image commits, and that one
