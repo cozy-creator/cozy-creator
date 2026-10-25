@@ -3,6 +3,8 @@
 //! ggml); `pack` takes the codes, scales, zeros and permutation a calibrated producer computed
 //! (GPTQ, AWQ, SVDQuant) and lays them out as the scheme's parts. Shared math: `elem` (f32 to
 //! element codes) and `affine` (codes to packed words, the inverse of the decode's unpack).
+//! `int8.convrot` requires `quantize_strategy` with the producer revision; it has no
+//! anonymous default, since stored encoding semantics do not identify a quantizer.
 //!
 //! Adding a scheme's encoders: one family file, one row in `ENCODERS` (and its `mod` line).
 
@@ -40,10 +42,13 @@ mod comfy;
 
 pub use comfy::{quantize_with, Kitchen};
 pub use fp8_blockwise::quantize_fp8_blockwise;
+pub use int8::CONVROT_STRATEGY;
 pub use nvfp4::{GlobalScale, NibbleOrder};
+pub use nvfp4::MIN_SSE_STRATEGY;
 
 /// Every scheme's encoders, one row each.
 pub static ENCODERS: &[&Encoder] = &[
+    &int8::CONVROT,
     &nvfp4::NVFP4,
     &svdq::SVDQ_NVFP4,
 
@@ -158,7 +163,24 @@ fn run(
 
 /// The parts of `input.encoding` from the logical values (closed form).
 pub fn quantize(input: &Input) -> Result<Vec<OwnedPart>> {
+    if input.encoding.scheme == "int8.convrot" {
+        return Err(Error::Encode(format!(
+            "int8.convrot requires explicit quantizer strategy {CONVROT_STRATEGY}"
+        )));
+    }
     run(input, row(&input.encoding.scheme)?.quantize, "closed-form")
+}
+
+/// A producer with an explicit numerical revision, distinct from its stored encoding.
+/// Other legacy encoders keep their existing API and cannot be selected accidentally.
+pub fn quantize_strategy(input: &Input, strategy: &str) -> Result<Vec<OwnedPart>> {
+    match (input.encoding.scheme.as_str(), strategy) {
+        ("int8.convrot", CONVROT_STRATEGY) => run(input, int8::CONVROT.quantize, "closed-form"),
+        ("nvfp4", MIN_SSE_STRATEGY) => nvfp4::min_sse(input),
+        _ => Err(Error::Encode(format!(
+            "no quantizer strategy {strategy:?} for {}", input.encoding.scheme
+        ))),
+    }
 }
 
 /// The parts of `input.encoding` from a calibrated producer's arrays.

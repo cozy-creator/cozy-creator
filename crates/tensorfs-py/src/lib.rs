@@ -21,6 +21,8 @@ mod store;
 #[allow(unsafe_code)]
 mod tensors;
 #[cfg(feature = "store")]
+mod quantize;
+#[cfg(feature = "store")]
 mod credentials;
 #[cfg(feature = "store")]
 #[allow(unsafe_code)]
