@@ -194,9 +194,10 @@ jobs:
           echo "selection=$s" >> "$GITHUB_OUTPUT"
           # A Linux suite takes the candidate jobs' set.
           echo "linux=$(echo "$s" | jq 'any(.suites[]; . == "cli" or . == "imports" or . == "cli-release")')" >> "$GITHUB_OUTPUT"
-          # The cli suite's other runners: macOS arm64 and x64, Windows x64; a release run's installer on Windows arm64 too.
+          # The cli suite's other runners: macOS arm64 (Intel Macs aren't supported), Windows x64; a release run's installer
+          # on Windows arm64 too.
           arm=$([ -z "$PUBLISH_RUN" ] || echo '"windows-11-arm"')
-          echo "runners=$(echo "$s" | jq -c "[.os[] | {macos: [\"macos-15\", \"macos-15-intel\"], windows: [\"windows-2025\"${arm:+, $arm}]}[.] // [] | .[]]")" >> "$GITHUB_OUTPUT"
+          echo "runners=$(echo "$s" | jq -c "[.os[] | {macos: [\"macos-15\"], windows: [\"windows-2025\"${arm:+, $arm}]}[.] // [] | .[]]")" >> "$GITHUB_OUTPUT"
           # cli-release's, each renting one machine: Linux, and one macOS and one Windows runner when selected.
           echo "release_runners=$(echo "$s" | jq -c '[.os[] | {linux: "ubuntu-24.04", macos: "macos-15", windows: "windows-2025"}[.] // empty]')" >> "$GITHUB_OUTPUT"
           { echo "### e2e selection: $REPO ${REF:0:12}"; echo '```'; echo "$s" | jq .; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
@@ -253,8 +254,6 @@ jobs:
       - id: build
         if: matrix.take == '' && steps.reuse.outputs.name == ''
         env:
-          CARGO_PROFILE_RELEASE_LTO: "off"
-          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
           CARGO_INCREMENTAL: "0"
         run: bash .creator/e2e/candidates/build.sh ${{ matrix.what }} .build "$RUNNER_TEMP/candidates"
       - if: matrix.take == ''
@@ -312,7 +311,7 @@ jobs:
           path: ${{ runner.temp }}/e2e
           retention-days: 14
 
-  # macOS (arm64, x64) and Windows, when selected: the whole suite on each runner, its cozy built there. These OSes run
+  # macOS (arm64) and Windows, when selected: the whole suite on each runner, its cozy built there. These OSes run
   # no models themselves (platform::Os::local_inference): what needs no machine, and every local verb refused.
   cli-os:
     name: cli ${{ matrix.runner }}

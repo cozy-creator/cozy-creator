@@ -105,9 +105,9 @@ webpki-roots = "1"
 windows-sys = "0.61"
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
+# No LTO, 16 codegen units: half the build time of fat LTO, whose binary measured the same on startup and runs
+# and 3-5% less CPU on a TensorFS download (cl-669).
 [profile.release]
-lto = "fat"
-codegen-units = 1
 strip = true
 
 # Memory safety (xs-067): crates without FFI forbid unsafe_code at their root; FFI crates deny it and
