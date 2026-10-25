@@ -152,9 +152,18 @@ jobs:
           wheels=(crates/tensorfs-py/dist/*.whl)
           test "${#wheels[@]}" = 1
           uv run --no-project --python 3.12 --with "${wheels[0]}" python - <<'PY'
+          import importlib.metadata
+          import json
+          import subprocess
+          import sysconfig
+          from pathlib import Path
+
           import tensorfs
           from tensorfs import raw, varena
-          assert tensorfs.__version__ == tensorfs._ext.__version__
+          # The same one-version contract as scripts/build-wheel.sh, on the installed wheel.
+          tfs = Path(sysconfig.get_path("scripts")) / "tfs"
+          cli = json.loads(subprocess.check_output([str(tfs), "--json", "version"], text=True))
+          assert cli["version"] == importlib.metadata.version("tensorfs") == tensorfs.__version__ == tensorfs._ext.__version__, cli
           assert callable(raw.quantize) and callable(tensorfs.Writer.quantize)
           encoded, measured = raw.quantize_measured(
               "int8.convrot", bytes(256 * 4), dtype="F32", shape=(1, 256),
