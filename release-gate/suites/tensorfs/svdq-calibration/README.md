@@ -37,6 +37,27 @@ successful receipts; a build or gate source check proves neither execution nor m
 
 The prior producer evidence below is retained as a historical baseline, not native fitting proof.
 
+Native CPU Writer proof passed on 2026-10-25 with source76cfdcd34, fixture07012ed55,
+TensorFS wheel SHA256e9679c401bc196749f52bbc76e3746626b1420ba66dbee89bfa6d4ab07f5af04,
+Runtime237 and Creator51a. [The retained receipt](evidence/native-76c-18051-18053.json)
+records exact artifacts and ordinary default-home runs18051/18052/18053. Run18047
+first reproduced the binding's incorrect rejection of empty NumPy DLPack strides;
+18051 passes empty write/reopen while retaining nonempty-strided refusal. Basic18052
+now writes the empty[0,256] calibration and requires its intended native refusal.
+
+Basic18052 passed six128×256 matrices under64/128MiB grants with identical bytes,
+independent packing/reconstruction/served-score checks and15 refusal cases. The first
+six-matrix fit/write call took0.636s and required1,047,111 conversion-buffer bytes.
+For its F32 fixture, calibration error was0.08255654 versus plainNVFP40.13347861 and
+frozenTorch0.08354279. Cancellation18053 joined in4.174ms, refused changed calibration
+and seed, then reused its first tensor and fitted1024×1024 in2.734s with11,678,791
+required buffer bytes. Process high-water RSS was390,012,928/478,683,136 bytes for
+basic/cancel, including imports and independent reference work; it is not fitter-only
+memory. Restore18054 verified the actual observed SDK and ready/idle machine.
+
+These are CPU correctness/cost samples. The refreshed Runtime cutover, public finished
+Output reuse and held-out GPU consumer still require the combined cohort's own receipts.
+
 ---
 
 # Real SVDQ calibration and adopted component
