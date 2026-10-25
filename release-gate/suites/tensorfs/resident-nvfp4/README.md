@@ -15,3 +15,10 @@ mixed-placement and overlap refusals preserve the destination, followed by a hea
 
 This is a format/ownership correctness cell, not a quantizer quality or performance benchmark.
 It does not qualify arbitrary GPU faults or Runtime provider migration. No unit tests or mocks.
+
+Installed RTX3060 run **17463** passed all 96 conversion cases, three typed refusals and
+healthy retry on 2026-10-25. TensorFS `7e98dce7f` contains the unchanged decoder implementation
+from `527c1ba29`; Runtime `67e2e0c10`, TensorD `ca3849147`.
+[Exact receipt and hashes](evidence/17463-rtx3060.json).
+Earlier17454 failed only the fixture's expected mixed-placement error text;8c262f158 corrected
+that assertion. Neither run establishes quantizer quality or native load/decode composition.
