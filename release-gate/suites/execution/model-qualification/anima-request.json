@@ -1,0 +1,11 @@
+{
+  "prompt": "safe, masterpiece, best quality, a small orange cat wearing a blue raincoat on a quiet lantern-lit street, anime illustration",
+  "negative_prompt": "worst quality, low quality, score_1, score_2, score_3, artist name, blurry, jpeg artifacts, chromatic aberration",
+  "aspect_ratio": "1:1",
+  "megapixels": 1.0,
+  "steps": 30,
+  "guidance": 4.5,
+  "cfg_interval_start": 0.15,
+  "cfg_interval_stop": 0.7,
+  "first_block_cache": 0.0
+}
