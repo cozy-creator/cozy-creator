@@ -21,6 +21,19 @@ Those process high-water values include fixture/reference/store work; they are
 not exclusive conversion peaks. These are correctness/cost samples, not general
 model conversion or throughput claims.
 
+The separate integrated Runtime cohort also passed ordinary CLI **18221** with
+Creator/TensorFS `4528e73a4` and Runtime `3c3ab093d`; restoration **18222** verified
+the actual observed SDK and ready/idle state. [Integrated receipt](evidence/4528-3c3a-runtime-18221.json)
+records all artifact hashes and the actual `write_bf16`/Output path. It preserved
+42 selected conversions and the legacy146,404 logical-byte count while separately
+reporting135,253 stored bytes. It wrote141,458 bytes with a512,000-byte native bound;
+the public adapter call took0.140s, including worker/Output overhead. Process lifetime
+RSS high-water rose86,196,224→86,458,368 bytes, not an exclusive conversion peak.
+After close/reopen, all42 keys reused with zero reads/writes and unknown quality;
+quantization then committed in the same Output. Finished reuse passed and a changed
+normalization selection refused. The standalone native cancellation/reservation
+receipts above remain separately scoped to their exact earlier artifact.
+
 Use the installed default-home Cozy CLI only during the primary Varena agent's
 coordinated validation window. These entrypoints run CPU arithmetic through the
 ordinary scheduler; `--gpus=1` is the agreed GPU cap, not GPU numerical proof.
@@ -72,6 +85,6 @@ quantization, finished identity validation and unknown reused measurements.
 Results retain exact native/oracle hashes, completed source/logical/output byte
 counters, declared/required conversion workspace, wall/process CPU durations and
 process lifetime `ru_maxrss` before/after. RSS is not a per-operation allocation
-peak; byte counters are not physical disk or PCIe traffic. Native receipts are
-linked above; the Runtime adapter requires its own integrated run. This is a CPU conversion gate, not performance,
+peak; byte counters are not physical disk or PCIe traffic. Native and integrated
+Runtime receipts are linked above. This is a CPU conversion gate, not performance,
 model quality, GPU serving, deployment or release qualification.
