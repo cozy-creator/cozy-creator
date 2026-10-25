@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 import msgspec
-from cozy_runtime.author import App, Telemetry
+from cozy_runtime.author import App, Context, Telemetry
 
 app = App()
 
@@ -85,4 +85,12 @@ def gpu(payload: Probe, tel: Telemetry) -> Report:
     status = process.wait()
     if status or not isinstance(result, dict) or not result.get("passed"):
         raise RuntimeError(f"native refill child failed ({status}): {result}")
+    return Report(True, json.dumps(result, sort_keys=True))
+
+
+@app.entrypoint(accelerator=True)
+def factor_reads(payload: Probe, ctx: Context) -> Report:
+    from .factor_reads import exercise
+
+    result = exercise(payload.seed, ctx)
     return Report(True, json.dumps(result, sort_keys=True))
