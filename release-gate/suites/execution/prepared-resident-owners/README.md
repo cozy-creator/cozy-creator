@@ -8,6 +8,8 @@ benchmark.
 ```sh
 cozy run /absolute/worktree/release-gate/suites/execution/prepared-resident-owners/gpu \
   seed=179601 --on local --gpus=1 --json
+cozy run /absolute/worktree/release-gate/suites/execution/prepared-resident-owners/gpu \
+  mode=attention seed=179602 --on local --gpus=1 --json
 ```
 
 Use a new seed for each attempt; a memo hit is not new execution evidence. Root coordinates the
@@ -29,8 +31,10 @@ The cell requires these actual outcomes:
 - Publishing an actual ATen linear callable through `kernel_ready.wait` advances the real
   readiness registry. A previously captured plan refuses its stale kernel epoch with zero
   launches. This verifies the registry transition, not asynchronous bake compiler completion.
-- Built-in zero-dropout attention replays from one native graph launch; actual nonzero dropout
+- The separate `mode=attention` call replays built-in zero-dropout attention from one native
+  graph launch; actual nonzero dropout
   and random generation still refuse before replay and preserve the declared state.
+  Each request submits at most one plan through the actual Context admission.
 
 Reports include Runtime/TensorFS versions, physical device, phase changes, refusals and native
 launch counts. Source formatting/lint checks are separate from the pending GPU receipt. No passing

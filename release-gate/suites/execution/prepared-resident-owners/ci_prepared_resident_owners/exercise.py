@@ -230,7 +230,6 @@ def exercise(seed, ctx):
             lora_reason = real_lora_refusal(
                 memory, Path(directory) / "lora.cozytensors", seed
             )
-            attention = attention_proof(ctx)
             return {
                 "runtime": importlib.metadata.version("cozy-runtime"),
                 "tensorfs": importlib.metadata.version("tensorfs"),
@@ -246,7 +245,6 @@ def exercise(seed, ctx):
                 "real_oom_restored_and_healthy": True,
                 "kernel_registry_epoch_invalidated": True,
                 "host_graph_launches": 1,
-                "attention": attention,
             }
         finally:
             for plan in plans:
@@ -256,8 +254,10 @@ def exercise(seed, ctx):
             checkpoint.close()
 
 
-def attention_proof(ctx):
+def attention_proof(seed, ctx):
     """Real zero-dropout SDPA replay; seeded dropout and random generation still refuse."""
+    assert ctx.device.type == "cuda"
+    accel.initialize(torch, "cuda")
     query = torch.arange(512, device="cuda", dtype=torch.float32).reshape(1, 2, 8, 32)
     query = (query / 512).to(torch.float16)
     key, value = query.clone(), query * 0.5
@@ -307,7 +307,16 @@ def attention_proof(ctx):
             unexpected.close()
             raise AssertionError(f"seeded {name} was accepted")
         torch.testing.assert_close(state, saved, rtol=0, atol=0)
-    return {"zero_dropout_host_graph_launches": 1, "refused": refused}
+    return {
+        "seed": seed,
+        "mode": "attention",
+        "runtime": importlib.metadata.version("cozy-runtime"),
+        "tensorfs": importlib.metadata.version("tensorfs"),
+        "torch": str(torch.__version__),
+        "device": torch.cuda.get_device_name(0),
+        "zero_dropout_host_graph_launches": 1,
+        "refused": refused,
+    }
 
 
 def real_lora_refusal(memory, path, seed):
