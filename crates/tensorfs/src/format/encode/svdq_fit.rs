@@ -25,7 +25,7 @@ pub const SVDQ_NUMERICAL_IDENTITY: &str = concat!(
     "rand=0.9.5;rand_chacha=0.9.0;ChaCha20Rng::seed_from_u64;",
     "rand_distr=0.5.1;StandardNormal<f32>;sketch-column-major;",
     "bf16-rne;canonical-smooth=recip(stored-pre);final-residual-ordered-f32;",
-    "faer-nano-gemm-16cubed;score-f64-norms"
+    "faer-nano-gemm-16cubed;score-f64-norms;final-activation-mul-pre;logical-decode-f32"
 );
 const RANK: usize = 32;
 const Q: usize = RANK + 16;
@@ -448,7 +448,7 @@ fn fake_block(block: &mut [f32], global: f32) {
 }
 fn input_quantize(
     rows: &[f32],
-    smooth: Option<&[f32]>,
+    transform: impl Fn(f32, usize) -> f32,
     global: f32,
     xq: &mut [f32],
     k: usize,
@@ -458,7 +458,7 @@ fn input_quantize(
         let _ = i;
         check()?;
         for j in 0..k {
-            dst[j] = rounded(src[j] / smooth.map_or(1.0, |s| s[j]))?;
+            dst[j] = rounded(transform(src[j], j))?;
         }
         for block in dst.chunks_exact_mut(16) {
             fake_block(block, global);
@@ -669,7 +669,7 @@ pub fn svdq_fit(
     let input_max = calibration.iter().fold(0.0f32, |m, v| m.max(v.abs()));
     input_quantize(
         calibration,
-        None,
+        |x, _| x,
         (input_max / LEVELS).max(1e-30),
         &mut work.xq,
         cols,
@@ -741,7 +741,7 @@ pub fn svdq_fit(
         }
         input_quantize(
             calibration,
-            Some(&work.smooth),
+            |x, j| x / work.smooth[j],
             gx,
             &mut work.xq,
             cols,
@@ -815,14 +815,13 @@ pub fn svdq_fit(
                 let code = crate::format::decode::elem::e2m1(nibbles[b]);
                 let decoded = (code * scale) * global;
                 residual.add(block[b], f64::from(decoded));
-                // Existing TensorFS decoder's F64 stored-value law.
-                let mut logical = ((f64::from(code) * f64::from(scale)) * f64::from(global))
-                    * f64::from(work.pre[j + b]);
+                // Match decode::plan::Post::LowRank: every stored-value
+                // operation rounds in F32; only the error accumulation is F64.
+                let mut logical = decoded * work.pre[j + b];
                 for r in 0..RANK {
-                    logical +=
-                        f64::from(work.up[i * RANK + r]) * f64::from(work.down[r * cols + j + b]);
+                    logical += work.up[i * RANK + r] * work.down[r * cols + j + b];
                 }
-                stats.add(weight[i * cols + j + b], logical);
+                stats.add(weight[i * cols + j + b], f64::from(logical));
             }
         }
     }
@@ -835,7 +834,7 @@ pub fn svdq_fit(
         .max(1e-30);
     input_quantize(
         calibration,
-        Some(&work.smooth),
+        |x, j| x * work.pre[j],
         gx,
         &mut work.xq,
         cols,

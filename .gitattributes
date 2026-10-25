@@ -1,0 +1,2 @@
+# Preserve upstream bytes and license text in the pinned numerical dependency.
+vendor/faer/** -whitespace linguist-vendored

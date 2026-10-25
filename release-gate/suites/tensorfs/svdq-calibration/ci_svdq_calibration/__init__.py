@@ -115,6 +115,7 @@ class LinearModel(Model[Pipeline], encoded_leaves="accept"):
 
 class Request(msgspec.Struct, forbid_unknown_fields=True):
     seed: int = 156
+    mode: str = "basic"
 
 
 class Prediction(msgspec.Struct, forbid_unknown_fields=True):
@@ -158,44 +159,6 @@ def tensor(raw: bytes, dtype: Any, shape: tuple[int, ...], device: Any = "cpu") 
     return torch.frombuffer(bytearray(raw), dtype=dtype).reshape(shape).to(device)
 
 
-def check_residual(
-    fitted: Any, values: np.ndarray, stats: Any, device: Any
-) -> dict[str, Any]:
-    """Reconstruct chosen smoothing directly, never by inverting rounded stored p=1/s."""
-    from .oracle import encode_nvfp4
-
-    w = torch.from_numpy(values).to(device)
-    xmax = stats.xmax.to(device).float().clamp(min=1e-5)
-    wmax = w.abs().amax(0).clamp(min=1e-5)
-    alpha = fitted.alpha
-    scale = (
-        torch.ones_like(xmax)
-        if alpha == 0
-        else (xmax**alpha / wmax ** (1 - alpha)).clamp(1e-5)
-    )
-    scale = scale / scale.mean()
-    assert (1.0 / scale).cpu().numpy().tobytes() == fitted.companions[2]
-    down = tensor(fitted.companions[3], torch.bfloat16, (RANK, COLS), device).float()
-    up = tensor(fitted.companions[4], torch.bfloat16, (ROWS, RANK), device).float()
-    residual = w * scale - up @ (down * scale)
-    reference = encode_nvfp4("proj.weight", residual.cpu().numpy())
-    assert fitted.payload == reference.payload
-    assert fitted.companions[:2] == tuple(part.raw for part in reference.companions)
-    assert fitted.saturated == reference.saturated
-    return {
-        "alpha": alpha,
-        "residual_amax": fitted.amax,
-        "residual_max_abs_error": fitted.max_abs_err,
-        "residual_reference_sse": reference.sse,
-        "residual_reference_energy": reference.energy,
-        "residual_reference_sha256": hashlib.sha256(reference.payload).hexdigest(),
-        "whole_weight_sse": fitted.sse,
-        "whole_weight_energy": fitted.energy,
-        "calibration_served_error": fitted.error,
-        "calibration_plain_nvfp4_error": fitted.nvfp4_error,
-    }
-
-
 @app.entrypoint(
     accelerator=True,
     weights=(WeightsOutput("svdq", 1 << 20), WeightsOutput("uncalibrated", 1 << 20)),
@@ -209,16 +172,17 @@ def calibrate(
 ) -> Converted:
     import tensorfs
     from cozy_runtime._build_provenance import COMMIT
-    from cozy_runtime.derive import svdq
+    from cozy_runtime.derive import native_quantization
     from cozy_runtime.derive.quantization import (
         ArtifactQuantizationRequest,
         prepare_source_quantization,
         quantize_component_into,
     )
-    from tensorfs import raw
+
+    from .historical_svdq import fit as historical_fit
+    from .native import WORKSPACE, check_selected
 
     assert ctx.device.type == "cuda"
-    assert callable(raw.quantize_measured)
     checkpoint = ctx.tensorfs_source(weights)
     stored = checkpoint.components["net"].tensors
     original, bias = source_values(payload.seed)
@@ -234,84 +198,83 @@ def calibrate(
     )
     assert stats.rows.shape == (128, COLS), stats.rows.shape
     values = original.float().numpy()
-    fitted = svdq.fit(torch, "proj.weight", values, stats, str(ctx.device))
-    detail = check_residual(fitted, values, stats, str(ctx.device))
+    # Frozen historical arithmetic is only a comparison; it cannot feed the native output.
+    old = historical_fit(torch, "proj.weight", values, stats, str(ctx.device))
     selection = prepare_source_quantization(checkpoint, components=("net",), block=COLS)
-    work = Derivation(
-        base=checkpoint,
-        order=selection.order,
-        provenance={
-            "gate": "svdq-calibration/1",
-            "seed": payload.seed,
-            "runtime_commit": COMMIT,
-            "tensorfs": tensorfs.__version__,
-            "calibration_rows_sha256": hashlib.sha256(
-                stats.rows.contiguous().view(torch.uint8).numpy().tobytes()
-            ).hexdigest(),
-        },
+    resolved = native_quantization.resolved(
+        checkpoint, selection, "svdq.nvfp4", lambda item: item.logical_dtype
     )
-    with ctx.output("uncalibrated", work) as refused:
-        try:
-            quantize_component_into(
+    with native_quantization.snapshot(
+        checkpoint, selection, "svdq.nvfp4", calibration, ctx
+    ) as snapshot:
+        assert snapshot is not None
+        work = Derivation(
+            base=checkpoint,
+            sources=(snapshot,),
+            order=selection.order,
+            provenance={
+                "gate": "svdq-calibration/native-faer-1",
+                "seed": payload.seed,
+                "runtime_commit": COMMIT,
+                "tensorfs": tensorfs.__version__,
+                **native_quantization.provenance(checkpoint, resolved, snapshot),
+            },
+        )
+        with ctx.output("uncalibrated", work) as refused:
+            try:
+                quantize_component_into(
+                    checkpoint,
+                    refused,
+                    ctx,
+                    ArtifactQuantizationRequest(fit_workspace_bytes=WORKSPACE),
+                    tel,
+                    encoding="svdq.nvfp4",
+                    plan=selection,
+                    component="net",
+                    logical_dtype=lambda item: item.logical_dtype,
+                )
+            except UnsupportedInput as error:
+                assert "calibration" in str(error), str(error)
+                assert refused.written == 0 and refused.done is None
+            else:
+                raise AssertionError("SVDQ without real calibration was accepted")
+        with ctx.output("svdq", work) as output:
+            measured = quantize_component_into(
                 checkpoint,
-                refused,
+                output,
                 ctx,
-                ArtifactQuantizationRequest(),
+                ArtifactQuantizationRequest(fit_workspace_bytes=WORKSPACE),
                 tel,
                 encoding="svdq.nvfp4",
                 plan=selection,
                 component="net",
                 logical_dtype=lambda item: item.logical_dtype,
+                calibration=calibration,
             )
-        except UnsupportedInput as error:
-            assert "calibration" in str(error), str(error)
-            assert refused.written == 0 and refused.done is None
-        else:
-            raise AssertionError("SVDQ without real calibration was accepted")
-    with ctx.output("svdq", work) as output:
-        measured = quantize_component_into(
-            checkpoint,
-            output,
-            ctx,
-            ArtifactQuantizationRequest(),
-            tel,
-            encoding="svdq.nvfp4",
-            plan=selection,
-            component="net",
-            logical_dtype=lambda item: item.logical_dtype,
-            calibration=calibration,
-        )
-        artifact = ctx.adopt_model(output)
+            artifact = ctx.adopt_model(output)
+        calibration_id = snapshot.id
     committed = tensorfs.open(artifact.checkpoint, local_files_only=True)
     try:
         item = committed.components["net"].tensors.read("proj.weight")
         assert isinstance(item, tensorfs.Encoded)
-        assert item.scheme == "svdq.nvfp4" and item.shape == (ROWS, COLS)
-        assert item.dtype == "BF16"
-        geometry = {
-            "weight": ("F4", (ROWS, COLS)),
-            "scale": ("F8_E4M3", (ROWS, COLS // 16)),
-            "scale_2": ("F32", ()),
-            "pre_quant_scale": ("F32", (COLS,)),
-            "lowrank_down": ("BF16", (RANK, COLS)),
-            "lowrank_up": ("BF16", (ROWS, RANK)),
-            "input_scale": ("F32", ()),
-        }
-        expected = {
-            "weight": fitted.payload,
-            **dict(zip(ROLE_ORDER[1:], fitted.companions, strict=True)),
-        }
-        assert set(item.parts) == set(expected)
-        for role, reference in expected.items():
-            assert (item.parts[role].dtype, item.parts[role].shape) == geometry[role], (
-                role
-            )
-            assert item.parts[role].tobytes() == reference, role
+        assert (
+            item.scheme == "svdq.nvfp4"
+            and item.shape == (ROWS, COLS)
+            and item.dtype == "BF16"
+        )
         assert measured.encoded_keys == 1 and measured.reused_keys == 0
         assert measured.source_bytes_read == ROWS * COLS * 2
         assert measured.new_bytes_written == sum(
-            len(value) for value in expected.values()
+            len(part.tobytes()) for part in item.parts.values()
         )
+        (row,) = measured.tensors
+        detail = check_selected(
+            item, values, row, calibration=stats.rows.float().numpy()
+        )
+        fit = row["fit"]
+        assert fit["calibration_bytes_read"] == COLS * 4 + 128 * COLS * 2
+        assert fit["calibration_error"] <= old.error * 1.25 + 0.02, (fit, old.error)
+        assert fit["calibration_error"] < fit["plain_nvfp4_error"], fit
         inherited_bias = committed.components["net"].tensors.read("proj.bias")
         assert isinstance(inherited_bias, tensorfs.Array)
         assert inherited_bias.tobytes() == bias.view(torch.uint8).numpy().tobytes()
@@ -319,22 +282,24 @@ def calibrate(
         detail.update(
             seed=payload.seed,
             checkpoint=committed.id,
+            calibration_checkpoint=calibration_id,
             runtime_commit=COMMIT,
             runtime=importlib.metadata.version("cozy-runtime"),
             tensorfs=tensorfs.__version__,
+            implementation=tensorfs.raw.quantization_implementation(),
             torch=str(torch.__version__),
             device=torch.cuda.get_device_name(),
             calibration_rows=stats.rows.shape[0],
             calibration_channels=stats.xmax.numel(),
             measured=msgspec.to_builtins(measured),
             missing_calibration_refused=True,
-            stored_parts={
-                role: {
-                    "dtype": part.dtype,
-                    "shape": list(part.shape),
-                    "sha256": hashlib.sha256(part.tobytes()).hexdigest(),
-                }
-                for role, part in item.parts.items()
+            historical_reference={
+                "producer": "torch-svdq-frozen/1",
+                "alpha": old.alpha,
+                "calibration_error": old.error,
+                "plain_nvfp4_error": old.nvfp4_error,
+                "whole_weight_sse": old.sse,
+                "whole_weight_energy": old.energy,
             },
         )
     finally:
@@ -442,3 +407,7 @@ def predict(
             sort_keys=True,
         ),
     )
+
+
+# Register the real CPU Writer proof in this same ordinary release-gate package.
+from . import native as native

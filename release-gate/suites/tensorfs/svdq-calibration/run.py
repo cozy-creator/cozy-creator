@@ -72,6 +72,25 @@ def main():
         ]
         return result, args.model + "@" + published["commit"]
 
+    native = {}
+    for mode in ("basic", "cancel"):
+        completed = call(
+            "native-" + mode,
+            [
+                "run",
+                package / "native",
+                f"seed={args.seed}",
+                f"mode={mode}",
+                "--on",
+                args.machine,
+            ],
+        )
+        assert completed["result"]["passed"] is True
+        native[mode] = {
+            "run": completed["number"],
+            "detail": json.loads(completed["result"]["detail"]),
+        }
+
     made = call(
         "source", ["run", package / "source", f"seed={args.seed}", "--on", args.machine]
     )
@@ -110,6 +129,7 @@ def main():
     assert predicted["result"]["passed"] is True
     proof = {
         "seed": args.seed,
+        "native": native,
         "source_run": made["number"],
         "upload_source_run": uploaded["number"],
         "source_commit": original,

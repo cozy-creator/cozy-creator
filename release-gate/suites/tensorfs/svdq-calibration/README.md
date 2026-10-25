@@ -1,3 +1,42 @@
+# Native SVDQ Writer fitting and adopted GPU consumption
+
+The current gate requires native `svdq-nvfp4-r32-faer/1`, the Runtime adapter and the
+new TensorFS artifact together. It first runs two ordinary CPU invocations against real
+stored weights/calibration checkpoints, then the existing model-calibration and held-out
+GPU consumer sequence. Nothing here installs an SDK, rents a machine or changes the daemon.
+Use the primary Varena owner's coordinated validation window and default `~/.cozy` CLI:
+
+```sh
+python3 release-gate/suites/tensorfs/svdq-calibration/run.py \
+  --machine OWNED_MACHINE --model fidika/unique-native-svdq-proof \
+  --seed 256001 --out /absolute/durable/receipts
+```
+
+CPU cells cover F32/F16/BF16, zero/rank-deficient/outlier matrices, exact selected-residual
+NVFP4 bytes, independent stored-value decoding, small exact-SVD reconstruction quality,
+frozen Torch quality comparison, deterministic repeat under two workspace grants, actual
+cancellation and same-Writer reopen/resume, changed calibration/seed refusal, finite/shape/
+role/budget failures, and no tensor publication on quality failure. The fixture explicitly
+grants 64 MiB. The adapter's representative Runtime allowance is 512 MiB, selected as an
+explicit argument to Output preparation; neither is inferred from host RAM. The native
+result reports required workspace and separate source/calibration logical read counts.
+A faer call is not internally interruptible; the cancellation cell records checked join latency.
+
+The GPU calibration cell retains real Calibration hooks and serializes completed statistics
+through an ordinary temporary TensorFS checkpoint. Public Output conversion uses the native
+Writer. The calibration digest, full resolved selection and native implementation hash enter
+the derivation identity before finished-output lookup; the Writer independently guards resume.
+The gate compares its result with the frozen pre-cutover Torch fitter, then verifies exact
+residual packing for the factors actually selected. It publishes/adopts only the native result.
+A separately loaded GPU model uses two held-out batches to compare the artifact with the
+stored value law and original BF16 model. Existing decoded-weight and native-SM100 tolerance
+boundaries remain unchanged; `--require-native` demands the latter. All claims require actual
+successful receipts; a build or gate source check proves neither execution nor model quality.
+
+The prior producer evidence below is retained as a historical baseline, not native fitting proof.
+
+---
+
 # Real SVDQ calibration and adopted component
 
 This small real GPU gate uses an authored BF16 Linear with 128 outputs and 256 inputs,

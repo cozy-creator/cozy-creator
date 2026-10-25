@@ -166,6 +166,8 @@
     "examples/lblt.rs": "82e0d9bb3632032c87ca03e7fb0c5c26c26d7134fc0345e651767b0df85994d5",
     "examples/bench.toml": "e6d7e3e8d2c2066a3e794e5282a28e16e22725968b32405dccd57c778be02adf",
     "examples/bench_sparse.rs": "62d04bfc77482d4fc5f790df04c2c52eb4cee9199ae7ae577c13f4f44d87b8c0",
-    "katex-header.html": "a06a2212c3b3912ab50058aac7c964ac0a93cde57422937b463b62eee0123d78"
-  }
+    "katex-header.html": "a06a2212c3b3912ab50058aac7c964ac0a93cde57422937b463b62eee0123d78",
+    "LICENSE": "1f6b7e2a30afc2f5f253cb3535e041f91de1e1f9815b38714dfd94e53e61d972"
+  },
+  "license_source": "https://raw.githubusercontent.com/sarah-quinones/faer-rs/0ecd846dc223752fd41e3ea95253b52532156c01/LICENSE"
 }
