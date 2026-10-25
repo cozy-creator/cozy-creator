@@ -135,18 +135,6 @@ impl Local {
             tokio::time::sleep(SAMPLE).await;
         }
     }
-
-    /// `cozy machine enable`'s service from before the machine started itself: removed, and the
-    /// machine it ran ended (the next use starts this build's). True when there was one. Only a
-    /// login home had one; another home's (a test's) never touches the user's manager.
-    pub(crate) fn retire_service(&self) -> Result<bool, Error> {
-        let failed = |e: platform::Error| Error::new(Kind::Internal, "machine_service", e.to_string());
-        if !self.services.available() || !self.services.uninstall("machine").map_err(failed)? {
-            return Ok(false);
-        }
-        platform::process::end_holder(&self.lock()).map_err(failed)?;
-        Ok(true)
-    }
 }
 
 /// When the machine last wrote that it serves: its `api-ready.json`'s mtime.

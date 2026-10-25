@@ -279,29 +279,23 @@ calcifer_orphaned() {
 remove_cozy() {
   case $RUNNER_OS in
     Linux)
-      systemctl --user disable --now cozy-calcifer cozy-machine > "$OUT/remove.log" 2>&1 || true
+      systemctl --user disable --now cozy-calcifer > "$OUT/remove.log" 2>&1 || true
       pkill -f "$HOME/.cozy/bin/cozy" || true; sleep 2
       rm -rf ~/.cozy ~/.config/cozy ~/.local/share/bash-completion/completions/cozy ~/.config/fish/completions/cozy.fish ;;
     macOS)
       launchctl bootout "gui/$(id -u)/com.cozy-creator.calcifer" > "$OUT/remove.log" 2>&1 || true
-      launchctl bootout "gui/$(id -u)/com.cozy-creator.machine" >> "$OUT/remove.log" 2>&1 || true
       pkill -f "$HOME/.cozy/bin/cozy" || true; sleep 2
       rm -rf ~/.cozy ~/.config/cozy ~/Library/LaunchAgents/com.cozy-creator.*.plist ;;
     Windows)
-      powershell -NoProfile -c 'Remove-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion\Run cozy-calcifer, cozy-machine -ErrorAction SilentlyContinue; Get-Process cozy -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 2; Remove-Item -Recurse -Force ~\.cozy, $env:LOCALAPPDATA\cozy -ErrorAction SilentlyContinue; $path = ([Environment]::GetEnvironmentVariable("Path", "User") -split ";") -ne "$HOME\.cozy\bin"; [Environment]::SetEnvironmentVariable("Path", $path -join ";", "User")' > "$OUT/remove.log" 2>&1 || true ;;
+      powershell -NoProfile -c 'Remove-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion\Run cozy-calcifer -ErrorAction SilentlyContinue; Get-Process cozy -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 2; Remove-Item -Recurse -Force ~\.cozy, $env:LOCALAPPDATA\cozy -ErrorAction SilentlyContinue; $path = ([Environment]::GetEnvironmentVariable("Path", "User") -split ";") -ne "$HOME\.cozy\bin"; [Environment]::SetEnvironmentVariable("Path", $path -join ";", "User")' > "$OUT/remove.log" 2>&1 || true ;;
   esac
   [ ! -e "$COZY" ] || check "removing cozy left $COZY"
   [ ! -e "$HOME/.cozy" ] || check "removing cozy left ~/.cozy"
   ! pgrep -f "$HOME/.cozy/bin/cozy" > /dev/null 2>&1 || check "a cozy process still runs after removal"
 }
 
-# Whether this computer's cozy has `cozy machine <verb>`.
-has_verb() { cozy machine --help | grep -E "^ +$1 " > /dev/null; }
-
 # The local machine ends, as its idle exit ends it: the holder of its root's lock. The next use starts it.
-# A cozy before cl-646 disables it instead (machine_ready enables it again).
 machine_stop() {
-  if has_verb disable; then cozy --json machine disable > "$OUT/disable.json"; return; fi
   local holder pid
   holder=$(find "$HOME/.cozy/machine" -name agent.lock.holder 2> /dev/null | head -1)
   find "$HOME/.cozy/machine" -name 'agent.lock*' > "$OUT/locks.txt" 2>&1 || true
@@ -334,8 +328,8 @@ gone() {
 }
 
 # cl-646: the local machine Calcifer started, ended, is reaped by Calcifer (gone, no zombie), and the next
-# `machine show local` starts another. One the installer's `cozy-machine` service still runs is ended
-# first, until the machine is the one Calcifer started.
+# `machine show local` starts another. One something else started is ended first, until the machine is
+# the one Calcifer started.
 machine_reaped() {
   local calcifer pid top='' i
   calcifer=$(cozy --json status | grep -o '"pid": *[0-9]*' | head -1 | grep -o '[0-9]*$')
@@ -398,10 +392,8 @@ executor_reaped() {
 }
 
 # The local machine is up and reports itself (`machine show local` starts it); its record lands in
-# $OUT/machine.json. A cozy before cl-646 (#1883; the installer's release until one carries it) makes its
-# machine with `cozy machine enable`; a later one starts it on first use.
+# $OUT/machine.json.
 machine_ready() {
-  if has_verb enable; then cozy --json machine enable > "$OUT/enable.json" || check "cozy machine enable failed"; fi
   # It starts on `machine show local`, which says its boot; a start that fails is the machine's typed error.
   while cozy --json machine show local > "$OUT/machine.json" 2> "$OUT/machine.err"; do
     grep -q '"state": *"ready"' "$OUT/machine.json" && return 0

@@ -71,7 +71,7 @@ End your rentals first (`cozy machine list`, `cozy machine end <name>`). Then:
 Linux:
 
 ```sh
-systemctl --user disable --now cozy-calcifer cozy-machine
+systemctl --user disable --now cozy-calcifer
 pkill -f ~/.cozy/bin/cozy      # what they started (a machine, its executors)
 rm -rf ~/.cozy ~/.config/cozy ~/.local/share/bash-completion/completions/cozy ~/.config/fish/completions/cozy.fish
 ```
@@ -79,7 +79,7 @@ rm -rf ~/.cozy ~/.config/cozy ~/.local/share/bash-completion/completions/cozy ~/
 macOS:
 
 ```sh
-launchctl bootout gui/$(id -u)/com.cozy-creator.calcifer; launchctl bootout gui/$(id -u)/com.cozy-creator.machine
+launchctl bootout gui/$(id -u)/com.cozy-creator.calcifer
 pkill -f ~/.cozy/bin/cozy
 rm -rf ~/.cozy ~/.config/cozy ~/Library/LaunchAgents/com.cozy-creator.*.plist
 ```
@@ -87,7 +87,7 @@ rm -rf ~/.cozy ~/.config/cozy ~/Library/LaunchAgents/com.cozy-creator.*.plist
 Windows (PowerShell):
 
 ```powershell
-Remove-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion\Run cozy-calcifer, cozy-machine -ErrorAction SilentlyContinue
+Remove-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion\Run cozy-calcifer -ErrorAction SilentlyContinue
 Get-Process cozy -ErrorAction SilentlyContinue | Stop-Process
 Remove-Item -Recurse -Force ~\.cozy, $env:LOCALAPPDATA\cozy
 $path = ([Environment]::GetEnvironmentVariable('Path', 'User') -split ';') -ne "$HOME\.cozy\bin"

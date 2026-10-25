@@ -346,8 +346,7 @@ impl Machines {
     }
 
     /// With Calcifer: `local` starts at once when another computer's controller is authorized to
-    /// use it (Calcifer starts at login), and an earlier `cozy machine enable` service is removed
-    /// once nothing of Calcifer's runs on `local`.
+    /// use it (Calcifer starts at login).
     async fn local_tasks(self: Arc<Self>) {
         // Off the runtime's workers: a write may wait out a commit stuck on a busy disk.
         let me = self.clone();
@@ -360,26 +359,6 @@ impl Machines {
             && let Err(e) = self.local_up().await
         {
             warn!("starting this computer's machine for its authorized controllers: {}", e.message);
-        }
-        let mut events = self.calcifer.subscribe();
-        loop {
-            let load = self.store().machine_load().map_err(internal);
-            if load.is_ok_and(|load| load.get("local").is_none_or(|(r, q)| r + q == 0)) {
-                break;
-            }
-            if let Err(RecvError::Closed) = events.recv().await {
-                return;
-            }
-        }
-        let local = self.clone();
-        match tokio::task::spawn_blocking(move || local.local.retire_service()).await {
-            Ok(Ok(true)) => {
-                tracing::info!("removed the cozy-machine service: this computer's machine starts when used");
-                self.local_exited().await;
-            }
-            Ok(Ok(false)) => {}
-            Ok(Err(e)) => warn!("removing the cozy-machine service: {}", e.message),
-            Err(e) => warn!("removing the cozy-machine service: {e}"),
         }
     }
 

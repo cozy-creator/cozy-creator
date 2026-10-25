@@ -91,12 +91,6 @@ impl Services {
         sys::stop(&self.dir, name)
     }
 
-    /// Stops it and removes its definition: true when there was one.
-    pub fn uninstall(&self, name: &str) -> Result<bool> {
-        sys::stop(&self.dir, name)?;
-        sys::uninstall(&self.dir, name)
-    }
-
     /// Starts `spec`'s program now, detached from the caller and from the service the caller runs
     /// as: stopping or restarting that service never ends it. Under systemd it gets a scope of
     /// its own, out of the caller's unit; elsewhere a session (Unix) or console and job (Windows)
