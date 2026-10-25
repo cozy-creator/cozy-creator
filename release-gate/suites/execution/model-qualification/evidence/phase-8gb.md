@@ -68,3 +68,9 @@ Anima enables classifier-free guidance only for steps 5–21. Its CUDA step seri
 Run 17377, seed 730108, completes a new prompt at 1024² and 30 steps in 25.670s reported execution. The recorded phases are grouped text_encoder/text_encoder_2 → UNet → VAE. Both text towers read their weights once; output integrity/dimensions pass. This is a correctness appendix on the subsequent phase-window change, excluded from the c498 warm A/B averages.
 
 Residual movement remains: UNet reads 15.626GB in 494 fills (3.043× its 5.135GB weight payload). Fourteen blocks (59,60,64–75), comprising 361,749,760 bytes, each reload 30 times; the other 74 blocks fill once. Total logical completed reads are 17.368GB. All three phase-entry native reclaim amounts are 0; no pure-cut retry was recorded. This identifies a remaining residency-policy issue after fresh text encoding and prevents an all-resident or optimal-movement claim.
+
+## Demand-prefix follow-up
+
+Fresh-prompt run17387 on Runtime78e339cf0/TensorFS302 reads every UNet block exactly once:5,134,927,368 bytes/88 fills, versus15,625,670,408 bytes/494 fills in17377. Both text encoders ran; the new prompt prevents conditioning memoization. All30steps and the downloaded1024² image passed validation. Execution23.665s versus25.670s is descriptive for these two different-seed/prompt requests, not a statistical speedup or pixel-parity claim.
+
+The change reclaims only idle nonpreferred backing for the missing headroom before permanently shortening the active prefix. Idle/overlapping requests skip this optional operation; native pins and capture/replay guards remain authoritative. Total completed logical reads fall17.368GB→6.878GB. This fixes the observed14-block repeated suffix; cross-request retention and exposed transfer latency remain open.
