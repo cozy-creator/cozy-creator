@@ -22,9 +22,10 @@ run_submit() {
   echo "${n:-none}" > "$dir/$name.number"
   [ -z "$n" ] || echo "$n"
 }
-run_number() { { jq -r 'select(.run.number != null) | .run.number' "$1" 2> /dev/null || true; } | head -1; }
+# Its events' lines (a merged stderr's are not JSON).
+run_number() { { grep '^{' "$1" 2> /dev/null | jq -r 'select(.run.number != null) | .run.number' 2> /dev/null || true; } | head -1; }
 # run_reached <ndjson> <status>: whether the run's events reached the status.
-run_reached() { jq -e --arg s "$2" 'select(.run.status? == $s)' "$1" 2> /dev/null | grep -q .; }
+run_reached() { grep '^{' "$1" 2> /dev/null | jq -en --arg s "$2" 'any(inputs; .run.status? == $s)' > /dev/null 2>&1; }
 
 # run_wait <dir> <name> [status]: run <name> followed to its end (or, given a status, until its events reach it), its
 # record in <name>.json. 0: ended (or reached the status); 1: never started, ended without reaching the status, or its
