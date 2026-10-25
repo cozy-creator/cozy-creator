@@ -41,3 +41,4 @@ never `--admin`. A direct push to master (admins) skips CI. Required checks:
 - tensorhub has no merge queue: it is private, and GitHub offers merge queues on private repos only with Enterprise Cloud.
 
 <!-- cl-677 queue proof: a docs-only entry behind a red one -->
+<!-- cl-677 queue proof: a docs-only entry behind a green one -->
