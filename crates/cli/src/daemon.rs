@@ -58,6 +58,9 @@ pub async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Error> {
         return Ok(ExitCode::SUCCESS);
     }
     calcifer_record(ctx, &holder).print(ctx);
+    if let Some(note) = crate::machine::local_note() {
+        println!("{note}");
+    }
     if !machines.is_empty() {
         println!();
         let headers = ["MACHINE", "KIND", "STATE", "RUNNING", "QUEUED", "HUB"];
@@ -164,6 +167,7 @@ pub(crate) async fn machine_log(
         }
         return calcifer_log(ctx, q).await;
     }
+    protocol::calcifer::local_usable(name)?;
     let path = format!("{}/logs/{}", crate::machine::route(name)?, q.log.as_str());
     let calcifer = ctx.calcifer().await?;
     let mut shown = Shown {

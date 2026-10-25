@@ -68,17 +68,27 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     let up = checks.iter().all(|c| c.ok);
     checks.push(service(ctx));
     let tools = crate::tools::rows(ctx, Side::Computer);
-    let on = args.on.unwrap_or_else(|| "local".into());
+    // Without --on, this computer's machine, where this OS runs models itself.
+    let on = match args.on {
+        Some(on) => protocol::calcifer::local_usable(&on).map(|()| Some(on))?,
+        None => match protocol::calcifer::local_usable("local") {
+            Ok(()) => Some("local".to_owned()),
+            Err(off) => {
+                checks.push(Check::ok("machine", format!("{}; {}", off.message, off.remedy.unwrap_or_default())));
+                None
+            }
+        },
+    };
     // A machine is reached through Calcifer: with none answering there is nothing to ask.
-    let machine: Option<Machine> = match up {
-        true => match ctx.calcifer().await?.get(&route(&on)?).await {
+    let machine: Option<Machine> = match (up, on) {
+        (true, Some(on)) => match ctx.calcifer().await?.get(&route(&on)?).await {
             Ok(m) => Some(m),
             Err(e) => {
                 checks.push(Check::bad("machine", format!("{on} did not start: {}", e.message)));
                 None
             }
         },
-        false => None,
+        _ => None,
     };
     if let Some(m) = &machine {
         checks.push(match (&m.status, &m.unreachable) {
@@ -137,7 +147,8 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         record.print(ctx);
     }
     if !healthy {
-        output::next(ctx, &["cozy machine logs local calcifer", "cozy machine logs local"]);
+        let logs = ["cozy machine logs local calcifer", "cozy machine logs local"];
+        output::next(ctx, &logs[..if crate::machine::local_note().is_none() { 2 } else { 1 }]);
     }
     Ok(code)
 }

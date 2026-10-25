@@ -106,8 +106,10 @@ pub struct Placement {
 }
 
 impl Placement {
-    pub fn on(&self) -> On {
-        On::from(self.on.clone())
+    /// Where the run goes; `local` refused where this OS runs no models itself.
+    pub fn on(&self) -> Result<On, Error> {
+        protocol::calcifer::local_usable(&self.on)?;
+        Ok(On::from(self.on.clone()))
     }
 }
 
@@ -373,7 +375,7 @@ async fn invoke(
     card: &Card,
     args: RunArgs,
 ) -> Result<Run, Error> {
-    let on = args.placement.on();
+    let on = args.placement.on()?;
     let source = spec::Source::Release(Some(&card.release));
     let release = Some(card.release.as_str());
     let code = Code {

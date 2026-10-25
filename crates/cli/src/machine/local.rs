@@ -56,6 +56,7 @@ pub(crate) fn adopt(ctx: &Context) -> Result<Adopted, Error> {
 /// again when a signer is unknown: no restart. While any controller is authorized the machine
 /// stays up, and Calcifer starts it with itself at login; it starts now, saying where it serves.
 pub async fn authorize(ctx: &Context, key: &str) -> Result<ExitCode, Error> {
+    protocol::calcifer::local_usable("local")?;
     let key = key.trim();
     let changed = authorized(ctx, key)?;
     let path = ctx.home.keys().join("authorized");

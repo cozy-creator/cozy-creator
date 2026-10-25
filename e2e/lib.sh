@@ -11,15 +11,23 @@
 #   --pins N@R,...        package releases to take instead of the latest unyanked ones (gated candidates)
 #   --published           the imports suite loads published releases, not the packages checkout
 #   --key FILE            sign in with this device key (`cozy login --key`; release suite)
-#   --sku SKU             what the release suite rents (default cpu)
+#   --sku SKU             what the release suite rents (default: the catalog's cheapest GPU)
+#   --max-hourly USD      the release suite rents nothing dearer an hour (default 0.50)
+#   --quote               the release suite stops at the rental's quote: nothing is rented ($0 pre-flight)
 #   --installed           this computer's cozy as it is, signed in: no installer (the release suite by hand)
+#   --release DIR         a cozy release's files (cozy-publish.yaml's artifacts, a dry run's too): its own installer
+#                         installs cozy from DIR, served on loopback, in place of tensorhub.com's (the candidate)
 #   --shard S             one part of the suite, on its own runner (cli: a name; imports: K/N, every Nth package)
 
 set -euo pipefail
 E2E=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-OUT='' CAND_COZY='' CAND_TFS='' CAND_RT='' PACKAGES='' PINS='' PUBLISHED='' KEY='' SKU=cpu INSTALLED='' SHARD=''
+OUT='' CAND_COZY='' CAND_TFS='' CAND_RT='' PACKAGES='' PINS='' PUBLISHED='' KEY='' SKU='' INSTALLED='' SHARD='' RELEASE='' MAX_HOURLY=0.50 QUOTE=''
 COZY=$HOME/.cozy/bin/cozy
 [ "${RUNNER_OS:-}" != Windows ] || COZY=$HOME/.cozy/bin/cozy.exe
+# Whether this OS runs models on its own machine, `local` (platform::Os::local_inference): Linux. macOS and Windows
+# run on rented Linux GPUs, and every verb that would use `local` refuses `local_unavailable`.
+LOCAL=1
+[ "${RUNNER_OS:-Linux}" = Linux ] || LOCAL=''
 
 parse() {
   while [ $# -gt 0 ]; do
@@ -33,8 +41,11 @@ parse() {
       --published) PUBLISHED=1; shift; continue ;;
       --key) KEY=$2 ;;
       --sku) SKU=$2 ;;
+      --max-hourly) MAX_HOURLY=$2 ;;
+      --quote) QUOTE=1; shift; continue ;;
       --installed) INSTALLED=1; shift; continue ;;
       --shard) SHARD=$2 ;;
+      --release) RELEASE=$(cd "$2" && pwd) ;;
       *) echo "unknown argument $1" >&2; exit 2 ;;
     esac
     shift 2
@@ -64,16 +75,62 @@ coverage() {
     || check "coverage: a command or flag has no test, or its test did not run (above)"
 }
 
-# The install line from the README, as a person pastes it.
+# The install line from the README, as a person pastes it. With --release, that release's own installer then installs
+# over it while its Calcifer runs (the README's upgrade from 0.11.17 or older), reading the archives from a loopback
+# server (COZY_DOWNLOAD_URL, which `cozy update` reads too), and `cozy doctor` restarts Calcifer on it.
 install_cozy() {
+  local want ps=powershell
+  # Windows PowerShell under the runner's x64 shell says X64 on an Arm64 runner; PowerShell 7 says Arm64, as Windows
+  # PowerShell does in a person's own terminal on Windows 11.
+  [ "${RUNNER_ARCH:-}" != ARM64 ] || ps=pwsh
   if [ "$RUNNER_OS" = Windows ]; then
-    powershell -NoProfile -ExecutionPolicy Bypass -c 'irm https://tensorhub.com/install.ps1 | iex' || fail "the installer failed"
+    $ps -NoProfile -ExecutionPolicy Bypass -c 'irm https://tensorhub.com/install.ps1 | iex' || fail "the installer failed"
+    found=$(powershell -NoProfile -c '[Environment]::GetEnvironmentVariable("Path", "User")' | tr ';' '\n' | tr -d '\r' | grep -Fix "$(cygpath -w "$(dirname "$COZY")")" || true)
+    [ -n "$found" ] || fail "the user's PATH does not hold $(dirname "$COZY")"
   else
     curl -LsSf --retry 3 --retry-all-errors https://tensorhub.com/install.sh | sh || fail "the installer failed"
     found=$(env -i HOME="$HOME" PATH=/usr/bin:/bin sh -lc 'command -v cozy' || true)
     [ "$found" = "$COZY" ] || fail "a login shell finds '$found', not $COZY"
   fi
   cozy --version
+  [ -n "$RELEASE" ] || return 0
+  serve_release
+  cozy --json machine list > /dev/null || check "the installed cozy's Calcifer did not start"
+  want="cozy $(sed -n 's/^APP_VERSION="\(.*\)"$/\1/p' "$RELEASE/cozy-installer.sh")"
+  if [ "$RUNNER_OS" = Windows ]; then
+    $ps -NoProfile -ExecutionPolicy Bypass -c "& '$(cygpath -w "$RELEASE")\cozy-installer.ps1'" || fail "the release's installer failed over a running cozy"
+  else
+    sh "$RELEASE/cozy-installer.sh" || fail "the release's installer failed over a running cozy"
+  fi
+  [ "$(cozy --version)" = "$want" ] || fail "cozy is $(cozy --version) after the release's installer, not $want"
+  native
+  cozy --json doctor > "$OUT/doctor-release.json" || check "cozy doctor is not healthy after the release's installer"
+  grep -q "cozy ${want#cozy }," "$OUT/doctor-release.json" || check "Calcifer is not the release's ${want#cozy } after cozy doctor"
+}
+
+# The installed cozy is this runner's own architecture, never one it emulates: on Windows its PE machine field.
+native() {
+  local pe machine want=8664 arch='x86[-_]64'
+  if [ "$RUNNER_OS" != Windows ]; then
+    [ "${RUNNER_ARCH:-}" != ARM64 ] || arch='arm64|aarch64'
+    file "$COZY" | tee "$OUT/cozy-file.txt" | grep -Eqi "$arch" || check "the installed cozy is not this runner's $RUNNER_ARCH: $(cat "$OUT/cozy-file.txt")"
+    return
+  fi
+  pe=$(od -An -tu4 -j60 -N4 "$COZY" | tr -d ' ')
+  machine=$(od -An -tx2 -j$((pe + 4)) -N2 "$COZY" | tr -d ' ')
+  [ "${RUNNER_ARCH:-}" != ARM64 ] || want=aa64
+  echo "cozy.exe: PE machine $machine"
+  [ "$machine" = "$want" ] || check "the installed cozy.exe is PE machine $machine, not this runner's $want ($RUNNER_ARCH)"
+}
+
+# --release's files on a loopback port for the suite's life, as COZY_DOWNLOAD_URL.
+serve_release() {
+  local port=$((20000 + RANDOM % 20000)) py=python3
+  command -v python3 > /dev/null || py=python
+  (cd "$RELEASE" && exec "$py" -m http.server "$port" --bind 127.0.0.1 > "$OUT/release-server.log" 2>&1) &
+  export COZY_DOWNLOAD_URL=http://127.0.0.1:$port
+  for _ in $(seq 30); do curl -fsS -o /dev/null "$COZY_DOWNLOAD_URL/cozy-installer.sh" && return 0; sleep 1; done
+  fail "the release's files are not served at $COZY_DOWNLOAD_URL"
 }
 
 # A user service manager, as a desktop login has: the runner's user lingers, with its bus.
@@ -93,6 +150,7 @@ CAND_RUNTIME=''
 candidates() {
   local args=() before want
   before=$(jq -r '.status.runtime // empty' "$OUT/machine.json" 2> /dev/null || true)
+  [ -n "$LOCAL" ] || { candidate_cozy; return; }
   [ -n "$CAND_COZY$CAND_TFS$CAND_RT" ] || return 0
   if [ -n "$CAND_COZY" ]; then
     cozy --json machine update local --tensord "$CAND_COZY" -y | tee "$OUT/update-tensord.json" || fail "cozy machine update local refused TensorD $CAND_COZY"
@@ -113,6 +171,26 @@ candidates() {
     fail "the machine runs Runtime ${CAND_RUNTIME:-?} as before the candidates: the Runtime candidate did not go on"
   fi
   echo "the candidate Runtime: $CAND_RUNTIME (was ${before:-none})"
+}
+
+# Where this OS runs no models itself there is no machine to take candidates: a candidate cozy is this computer's, as
+# `cozy update` puts one in place (an exact release version is that verb itself), a dev build's file swapped in as it
+# swaps (renamed over; a running cozy.exe is set aside), and `cozy doctor` restarts Calcifer on it.
+candidate_cozy() {
+  local want dir
+  [ -n "$CAND_COZY" ] || return 0
+  if [ -f "$CAND_COZY" ]; then
+    want=$("$CAND_COZY" --version) dir=$(dirname "$COZY")
+    cp "$CAND_COZY" "$dir/.cozy-candidate" && chmod +x "$dir/.cozy-candidate" || fail "copying the candidate cozy failed"
+    [ "$RUNNER_OS" != Windows ] || mv -f "$COZY" "$dir/.cozy-replaced-$RANDOM.exe"
+    mv -f "$dir/.cozy-candidate" "$COZY" || fail "putting the candidate cozy in place failed"
+  else
+    want="cozy ${CAND_COZY#v}"
+    cozy --json update "${CAND_COZY#v}" > "$OUT/update-candidate.json" || fail "cozy update ${CAND_COZY#v} failed: $(head -c 300 "$OUT/update-candidate.json")"
+  fi
+  [ "$(cozy --version)" = "$want" ] || fail "cozy is $(cozy --version), not the candidate $want"
+  cozy --json doctor > "$OUT/doctor-candidate.json" || check "cozy doctor is not healthy after the candidate"
+  grep -q "cozy ${want#cozy }," "$OUT/doctor-candidate.json" || check "Calcifer is not the candidate ${want#cozy }"
 }
 
 # Calcifer stuck: its process stopped (SIGSTOP), so it answers nothing and makes no progress. `cozy doctor`

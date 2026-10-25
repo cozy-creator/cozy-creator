@@ -3,7 +3,9 @@
 # status, the local machine, the candidates through `cozy machine update local` (cozy doctor restarts the
 # installer's Calcifer on them and must find everything healthy), a weightless request through them, a real
 # BiRefNet removal on the CPU from a YAML request, run list/show, a second executor (the machine restarted)
-# with an --asset input, a stuck Calcifer that cozy doctor restarts, and removal as the README says.
+# with an --asset input, a stuck Calcifer that cozy doctor restarts, and removal as the README says. Where the OS
+# runs no models itself (macOS, Windows: lib.sh's LOCAL), what needs no machine, every local verb refused, and the
+# rest of that list but the machine.
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
@@ -18,7 +20,7 @@ start() {
 step install; install_cozy
 user_services
 step status; cozy --json status | tee "$OUT/status.json"
-step "the local machine"; machine_ready
+[ -z "$LOCAL" ] || { step "the local machine"; machine_ready; }
 step candidates; candidates
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
 }
@@ -125,14 +127,20 @@ step "a restarted Calcifer adopts the machine"; calcifer_restart_adopts
 # After the other parts, as these stop Calcifer, and not straight after calcifer_restart_adopts: systemd starts a
 # unit at most five times in 10 s (run 40132725041: doctor's restart was refused).
 calcifer_faults() {
-step "Calcifer stopped under the machine it started"
-if calcifer_orphaned; then
-  (cd "$here" && cell after-orphan ./weightless/reverse "text=orphan$RANDOM") || check "no run went after cozy doctor recovered Calcifer"
+if [ -n "$LOCAL" ]; then
+  step "Calcifer stopped under the machine it started"
+  if calcifer_orphaned; then
+    (cd "$here" && cell after-orphan ./weightless/reverse "text=orphan$RANDOM") || check "no run went after cozy doctor recovered Calcifer"
+  fi
 fi
 
 step "a stuck Calcifer"
 if calcifer_stuck; then
-  (cd "$here" && cell after-stuck ./weightless/reverse "text=after$RANDOM") || check "no run went after cozy doctor restarted Calcifer"
+  if [ -n "$LOCAL" ]; then
+    (cd "$here" && cell after-stuck ./weightless/reverse "text=after$RANDOM") || check "no run went after cozy doctor restarted Calcifer"
+  else
+    cozy --json status | jq -e '.calcifer.running' > /dev/null || check "Calcifer does not answer after cozy doctor restarted it"
+  fi
 fi
 }
 
@@ -143,15 +151,16 @@ remove() { logs; step "remove cozy"; remove_cozy; }
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
 case $SHARD in
-  '') parts="weightless script_package describe first_run second_executor lifetime basics yaml_requests run_flags run_follow run_filters run_play machines completions calcifer_faults update remove" ;;
+  '') parts="weightless script_package describe first_run second_executor lifetime catalog basics yaml_requests run_flags run_follow run_filters run_play machines completions calcifer_faults update remove" ;;
   runs) parts="weightless describe first_run run_flags run_play logs" ;;
   executors) parts="describe second_executor lifetime update remove" ;;
-  commands) parts="basics yaml_requests run_filters logs" ;;
+  commands) parts="catalog basics yaml_requests run_filters logs" ;;
   follow) parts="script_package run_follow machines completions calcifer_faults logs" ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;
 esac
+[ -n "$LOCAL" ] || parts="catalog refusals completions homebrew calcifer_faults update remove"
 
 start
 for part in $parts; do $part; done
-[ -n "$SHARD" ] || { step coverage; coverage "$OUT/cozy-under-test" pr; }
+[ -n "$SHARD" ] || [ -z "$LOCAL" ] || { step coverage; coverage "$OUT/cozy-under-test" pr; }
 finish "cli${SHARD:+ $SHARD}"

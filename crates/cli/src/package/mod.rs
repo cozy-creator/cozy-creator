@@ -99,13 +99,13 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         Command::Search { query, limit } => catalog::search(ctx, &query.join(" "), limit).await,
         Command::Info { package } => catalog::info(ctx, &PackageRef::parse(&package)?).await,
         Command::Install { package, placement } => match local(ctx, &package)? {
-            Some(path) => machine::install_directory(ctx, &path, placement.on()).await,
-            None => machine::install(ctx, &PackageRef::parse(&package)?, placement.on()).await,
+            Some(path) => machine::install_directory(ctx, &path, placement.on()?).await,
+            None => machine::install(ctx, &PackageRef::parse(&package)?, placement.on()?).await,
         },
         Command::Remove {
             packages,
             placement,
-        } => machine::remove(ctx, &names(&packages)?, placement.on()).await,
+        } => machine::remove(ctx, &names(&packages)?, placement.on()?).await,
         Command::List { on } => machine::list(ctx, on.map(Into::into)).await,
         Command::Lock { upgrade, root } => author::lock(ctx, &upgrade, root).await,
         Command::Publish { root } => author::publish(ctx, root).await,

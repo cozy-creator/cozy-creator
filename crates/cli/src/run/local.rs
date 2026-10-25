@@ -104,7 +104,7 @@ pub(super) async fn run(
     function: Option<String>,
     args: RunArgs,
 ) -> Result<ExitCode, Error> {
-    let prepared = prepare(ctx, path, args.placement.on(), args.warm.is_some()).await?;
+    let prepared = prepare(ctx, path, args.placement.on()?, args.warm.is_some()).await?;
     let (package, interface) = (prepared.package(), prepared.interface());
     // Local code's one callable runs bare, a recipe too: local code is its author's to run.
     let callables: Vec<&str> = (interface.callables.iter()).filter(|c| !c.internal).map(|c| c.name.as_str()).collect();

@@ -147,6 +147,12 @@ impl Os {
     pub const CURRENT: Os = Os::Macos;
     #[cfg(windows)]
     pub const CURRENT: Os = Os::Windows;
+
+    /// Whether models run on this OS's own machine (`local`). Off, nothing installs packages or
+    /// downloads weights here and runs go to a rented Linux GPU; an OS turns on in a release.
+    pub const fn local_inference(self) -> bool {
+        matches!(self, Os::Linux)
+    }
 }
 
 impl fmt::Display for Os {
