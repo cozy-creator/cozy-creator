@@ -44,52 +44,11 @@ pub struct ExecutorConfig {
     pub cgroup_namespace: Option<String>,
 }
 
-/// The lease protocol (design varena-leases), where varena serves one.
-#[cfg(unix)]
-const LEASES: Option<u32> = Some(varena::lease::PROTOCOL);
-#[cfg(not(unix))]
-const LEASES: Option<u32> = None;
-
-/// How an executor's GPU memory is served, by the memory protocol its Hello speaks. An executor
-/// is never refused for it: skew degrades to standalone.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Contract {
-    /// Chunks leased over each GPU's listener.
-    Leases,
-    /// Any other protocol: its own pages, a fixed, never-asked charge on its GPU.
-    Standalone,
-}
-
-/// How an executor's memory is served, by the protocol its Hello speaks.
-pub fn contract(hello: &Hello) -> Contract {
-    match Some(hello.memory_protocol) == LEASES {
-        true => Contract::Leases,
-        false => Contract::Standalone,
-    }
-}
-
-/// Refuses a Start naming leases to an executor that does not speak them.
-fn accepts(hello: &Hello, command: &Command) -> io::Result<()> {
-    if matches!(command, Command::Start(Start { leases: Some(_), .. })) && contract(hello) != Contract::Leases {
-        return Err(io::Error::new(io::ErrorKind::Unsupported, format!(
-            "Runtime {} speaks memory protocol {}: it reads no leases",
-            hello.runtime_version, hello.memory_protocol,
-        )));
-    }
-    Ok(())
-}
-
 /// A refusal of one executor request, its detail bounded.
 pub fn refused(seq: u64, code: &str, detail: impl Into<String>) -> Answer {
     Answer::refused(seq, code, crate::triage::ends(&detail.into(), 1024))
 }
 
-
-/// A Start's `memory_protocol`: the lease protocol where it names leases this machine serves,
-/// else 0.
-pub fn memory_protocol(leases: Option<u32>) -> u32 {
-    leases.and(LEASES).unwrap_or(0)
-}
 
 /// The run a command executes and the spool its executor reads and writes.
 fn spool(command: &Command) -> Option<(&str, &Path)> {
@@ -176,10 +135,12 @@ pub struct DeviceExecutor {
 }
 
 /// A cancel ends the call at once: its executor is killed (its exact process and scope), never
-/// waited on to stop by itself. Its GPU weights stay in the machine's custody, so the next
-/// executor maps them without a copy. A cancel for a call it no longer serves does nothing.
+/// waited on to stop by itself. Its locally owned GPU weights are released on process exit;
+/// a replacement executor reloads them. A cancel for a call it no longer serves does nothing.
 #[derive(Clone)]
 pub struct Cancellation {
+    /// One invocation only. Disabling waits for an in-flight delivery before session reuse.
+    enabled: Arc<Mutex<bool>>,
     exact: Arc<Exact>,
     /// The call it serves ("" while idle in the pool), and whether a cancel killed it.
     serving: Arc<Mutex<(String, bool)>>,
@@ -192,12 +153,19 @@ impl Cancellation {
         !serving.1
     }
     pub fn cancel(&self, request: &str) -> io::Result<()> {
+        let enabled = self.enabled.lock().unwrap_or_else(|error| error.into_inner());
+        if !*enabled { return Ok(()); }
         let mut serving = self.serving.lock().unwrap();
         if serving.0 != request || serving.1 {
             return Ok(());
         }
         serving.1 = true;
         self.exact.kill().map_err(io::Error::from)
+    }
+
+    /// No clone of this invocation can kill this executor after it returns to the pool.
+    pub fn disable(&self) {
+        *self.enabled.lock().unwrap_or_else(|error| error.into_inner()) = false;
     }
 }
 
@@ -324,11 +292,13 @@ pub struct CodecConfig {
 }
 
 /// The selected SDK's encoder for codecs this machine does not encode itself (audio,
-/// video): one helper process per executor, started at its first such output and ended
-/// with the executor (or when the machine dies: it exits on stdin EOF).
+/// video): one reusable helper per executor. Owned output work retains it after the executor
+/// returns or exits; machine death closes its stdin. Its generation and log outlive the helper.
 pub struct Codec {
     config: CodecConfig,
     log: PathBuf,
+    /// Opened before the executor is returned; its directory may disappear afterward.
+    stderr: Mutex<Option<File>>,
     helper: Mutex<Option<CodecHelper>>,
 }
 struct CodecHelper {
@@ -347,10 +317,35 @@ impl Codec {
         Self {
             config,
             log,
+            stderr: Mutex::new(None),
             helper: Mutex::new(None),
         }
     }
+    /// Retain the log inode before an idle executor can be ended or its root removed.
+    pub fn retain_log(&self) -> io::Result<()> {
+        let mut stderr = self.stderr.lock().unwrap();
+        if stderr.is_none() {
+            *stderr = Some(OpenOptions::new().create(true).read(true).append(true)
+                .mode(0o600).open(&self.log)?);
+        }
+        Ok(())
+    }
+    fn stderr_tail(&self) -> String {
+        use std::io::{Seek, SeekFrom};
+        let read = || -> io::Result<Vec<u8>> {
+            let stderr = self.stderr.lock().unwrap();
+            let mut file = stderr.as_ref().ok_or_else(|| io::Error::other("encoder log unopened"))?.try_clone()?;
+            let end = file.metadata()?.len();
+            file.seek(SeekFrom::Start(end.saturating_sub(4096)))?;
+            let mut bytes = Vec::new();
+            file.take(4096).read_to_end(&mut bytes)?;
+            Ok(bytes)
+        };
+        read().map(|bytes| String::from_utf8_lossy(&bytes).into_owned()).unwrap_or_default()
+    }
     fn spawn(&self) -> io::Result<CodecHelper> {
+        self.retain_log()?;
+        let stderr = self.stderr.lock().unwrap().as_ref().expect("retained encoder log").try_clone()?;
         #[cfg(unix)]
         let hold = self
             .config
@@ -365,13 +360,7 @@ impl Codec {
             .envs(&self.config.environment)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(
-                OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .mode(0o600)
-                    .open(&self.log)?,
-            );
+            .stderr(stderr);
         // The retained generation hold stays open in the codec.
         #[cfg(unix)]
         platform::process::keep_open(&mut command, hold.into_iter().collect());
@@ -422,8 +411,8 @@ impl Codec {
             Ok(_) | Err(_) => {
                 helper.take(); // the next output starts a fresh helper
                 return Err(io::Error::other(format!(
-                    "selected SDK encoder stopped; see {}",
-                    self.log.display()
+                    "selected SDK encoder stopped; {}: {}",
+                    self.log.display(), self.stderr_tail()
                 )));
             }
         }
@@ -440,6 +429,13 @@ impl Codec {
                 format!("selected SDK encoder refused: {error}"),
             )),
         }
+    }
+}
+
+impl Drop for Codec {
+    fn drop(&mut self) {
+        // The helper exits before its generation/log owners are released, including on Windows.
+        drop(self.helper.get_mut().unwrap_or_else(|error| error.into_inner()).take());
     }
 }
 
@@ -516,6 +512,18 @@ pub fn postprocess(
     }
     Ok((result, bindings))
 }
+enum TreeSource { Manifest(String), Directory(String) }
+fn tree_source(reference: &str) -> io::Result<TreeSource> {
+    if let Some(hex) = reference.strip_prefix("sha256:")
+        .filter(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit())) {
+        return Ok(TreeSource::Manifest(format!("sha256-{hex}")));
+    }
+    match reference.rsplitn(3, '/').collect::<Vec<_>>().as_slice() {
+        [name, "tree", _] => Ok(TreeSource::Directory(format!("tree-{name}"))),
+        _ => Err(io::Error::new(io::ErrorKind::InvalidData, "output tree: its reference names no spool directory")),
+    }
+}
+
 /// An output tree as the machine holds it: each regular file of its spool directory linked as
 /// the spool's `sha256-<hex>`, and a manifest naming them by path (`protocol::tree`), which the
 /// output binds to. A tree forwarded from a child (`sha256:<manifest>`) is already both.
@@ -527,16 +535,9 @@ fn tree_binding(spool: &Path, output: &Output) -> io::Result<AssetBinding> {
         let length = io::copy(&mut file, &mut HashWriter(&mut hash))?;
         Ok((tensorfs::sha256::hex(&hash.finish()), length))
     };
-    let name = match output.asset_ref.strip_prefix("sha256:") {
-        Some(hex) if hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()) => {
-            format!("sha256-{hex}")
-        }
-        _ => {
-            let tail: Vec<_> = output.asset_ref.rsplitn(3, '/').collect();
-            let [n, "tree", _] = tail.as_slice() else {
-                return Err(invalid("its reference names no spool directory"));
-            };
-            let directory = format!("tree-{n}");
+    let name = match tree_source(&output.asset_ref)? {
+        TreeSource::Manifest(name) => name,
+        TreeSource::Directory(directory) => {
             let mut files = std::collections::BTreeMap::new();
             for name in protocol::tree::walk(&spool.join(&directory), false).map_err(|e| invalid(&e.to_string()))?.into_keys() {
                 let member = Path::new(&directory).join(&name);
@@ -790,7 +791,11 @@ impl DeviceExecutor {
                 "forked executor is not a child of the process it was forked from",
             ));
         }
-        let cancellation = Cancellation { exact: Arc::new(exact.try_clone()?), serving: Arc::default() };
+        let cancellation = Cancellation {
+            enabled: Arc::new(Mutex::new(true)),
+            exact: Arc::new(exact.try_clone()?),
+            serving: Arc::default(),
+        };
         on_birth(&birth, &cancellation)?;
         // Wait for connection OR observed process death. No elapsed-time startup kill.
         let Some(stream) = listener.accept_unless(&exact)? else {
@@ -880,7 +885,7 @@ impl DeviceExecutor {
         Line(Arc::downgrade(&self.writer))
     }
     pub fn cancellation(&self) -> Cancellation {
-        self.cancellation.clone()
+        Cancellation { enabled: Arc::new(Mutex::new(true)), ..self.cancellation.clone() }
     }
     /// It goes back to its pool, serving no call; false when a cancel killed it meanwhile.
     pub fn idle(&self) -> bool {
@@ -904,8 +909,6 @@ impl DeviceExecutor {
         command: &Command,
         services: &mut impl Services,
     ) -> io::Result<Frame> {
-        // Refuse leases to an executor that does not speak them before writing the command.
-        accepts(&self.hello, command)?;
         let result = self.exchange(command, services);
         // Whatever the run was computing when its exchange ended, its waiters compute themselves.
         if let (Some(memo), Some((run, _))) = (&self.memo, spool(command)) {

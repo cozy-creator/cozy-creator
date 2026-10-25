@@ -331,11 +331,19 @@ impl NativeBackend {
             });
         }
         let mut body = json!({"format":"cozy.machine.outcome/1", "request_id":context.request_id, "attempt_ordinal":record.attempt.max(1), "invocation_spec_digest":context.invocation_digest});
-        if record.process.is_some() {
+        // Executor return clears live process custody, not the persisted start authorization.
+        if record.started_at_ms != 0 {
             body["execution_started"] = json!(true);
         }
         let (status, code, origin, message, error_code) = match record.state {
             State::Completed => (1, 0, 2, "completed".to_string(), String::new()),
+            State::Canceled if record.cancel_actor.as_deref() == Some("machine:gpu_pressure") => (
+                4,
+                11,
+                3,
+                "yielded to external GPU memory pressure; this run was not restarted".to_string(),
+                "canceled".into(),
+            ),
             State::Canceled => (4, 11, 6, "explicitly canceled".to_string(), "canceled".into()),
             _ => {
                 let failure = crate::journal::Failure::decode(

@@ -46,8 +46,6 @@ class Start(_Wire):
     import_only: bool
     call_interfaces: list[CallInterface]
     constructions: list[Construction]
-    leases: int | None
-    memory_protocol: int
     memo: MemoSettings | None
 
 class Adapter(_Wire):

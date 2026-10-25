@@ -1,0 +1,406 @@
+{
+  "stage": "default Cozy CLI with isolated source/debug candidate; final release wheel proof pending",
+  "platform": "Linux x86_64, NVIDIA GeForce RTX 4070 Laptop GPU",
+  "component": {
+    "run": 16939,
+    "id": "run-ade1295547a536c4f7006eea",
+    "result": {
+      "after_worker_allocation": {
+        "evictions": 2,
+        "fills": 4,
+        "hits": 1,
+        "pinned_bytes": 16777216,
+        "poisoned": false,
+        "preferred_bytes": 0,
+        "ready_bytes": 33554432,
+        "reclaimable_bytes": 16777216,
+        "reclaimed_bytes": 33554432,
+        "regions": 4,
+        "reserved_bytes": 67108864,
+        "resident_bytes": 33554432
+      },
+      "allocation": {
+        "activation_admission_limit": 234881024,
+        "allocation_calls": 1,
+        "budget_refusals": 0,
+        "oom_retries": 0,
+        "reclaimed_bytes": 33554432,
+        "torch_reserved_bytes": 201326592
+      },
+      "before": {
+        "evictions": 0,
+        "fills": 4,
+        "hits": 0,
+        "pinned_bytes": 0,
+        "poisoned": false,
+        "preferred_bytes": 0,
+        "ready_bytes": 67108864,
+        "reclaimable_bytes": 67108864,
+        "reclaimed_bytes": 0,
+        "regions": 4,
+        "reserved_bytes": 67108864,
+        "resident_bytes": 67108864
+      },
+      "driver_free_after": 7224819712,
+      "driver_free_before": 7392591872,
+      "final_allocator": {
+        "activation_admission_limit": 0,
+        "allocation_calls": 6,
+        "budget_refusals": 2,
+        "oom_retries": 1,
+        "reclaimed_bytes": 121634816,
+        "torch_reserved_bytes": 0
+      },
+      "graph_capture_replay": true,
+      "native_extension_sha256": "ce251dd64ced7baf127e17de4095539058611b969c531c8f72969942930075c3",
+      "passed": true,
+      "refilled_same_pointer": 2,
+      "scope": "real CUDA native component; 224MiB activation admission limit; not a hard device cap",
+      "tensorfs": "0.15.2",
+      "torch": "2.14.1+cu130"
+    }
+  },
+  "runtime_consumer": {
+    "run": 16924,
+    "id": "run-a7d1364aca7a69a1152ef8ad",
+    "result": {
+      "allocator": "native",
+      "bound_side_stream_cache": true,
+      "bound_side_stream_hold": true,
+      "cold": {
+        "allocated": 151142400,
+        "allocator_scope": "process",
+        "host": null,
+        "moved": {
+          "store": {
+            "bytes": 268435456,
+            "ns": 1618225727
+          }
+        },
+        "overlapping": false,
+        "peak": 151175168,
+        "peak_window": "Torch high-water plus sampled native backing, carried across resets",
+        "request": "cold",
+        "reserved": 165675008,
+        "sets": {
+          "/sha256:891622ab35c453041e588469849c8d12041236c5c9f4abc64a756d44d143ce65/net": 268435456
+        },
+        "trace_scope": "fills",
+        "weight_residency": {
+          "evictions": 30,
+          "fills": 64,
+          "hits": 0,
+          "pinned_bytes": 0,
+          "poisoned": false,
+          "preferred_bytes": 138412032,
+          "ready_bytes": 142606336,
+          "reclaimable_bytes": 142606336,
+          "reclaimed_bytes": 125829120,
+          "regions": 64,
+          "reserved_bytes": 268435456,
+          "resident_bytes": 142606336
+        }
+      },
+      "device": "cuda:0",
+      "graph_captures": 2,
+      "graph_replayed": true,
+      "local_allocator_budget": 167772160,
+      "passed": true,
+      "pure_floor_retries": 1,
+      "recaptured_after_offload": true,
+      "refill": {
+        "allocated": 16924672,
+        "allocator_scope": "process",
+        "host": null,
+        "moved": {
+          "store": {
+            "bytes": 268435456,
+            "ns": 2611114670
+          }
+        },
+        "overlapping": false,
+        "peak": 16957440,
+        "peak_window": "Torch high-water plus sampled native backing, carried across resets",
+        "request": "refilled",
+        "reserved": 31457280,
+        "sets": {
+          "/sha256:891622ab35c453041e588469849c8d12041236c5c9f4abc64a756d44d143ce65/net": 268435456
+        },
+        "trace_scope": "fills",
+        "weight_residency": {
+          "evictions": 157,
+          "fills": 159,
+          "hits": 34,
+          "pinned_bytes": 0,
+          "poisoned": false,
+          "preferred_bytes": 4194304,
+          "ready_bytes": 8388608,
+          "reclaimable_bytes": 8388608,
+          "reclaimed_bytes": 658505728,
+          "regions": 65,
+          "reserved_bytes": 272629760,
+          "resident_bytes": 8388608
+        }
+      },
+      "residency_sha256": "0d1d84c2ab1b324e31605508496abd77c0af95e946d91e6e293cf2a6498c0dbb",
+      "seed": 741,
+      "tensorfs": "0.15.2",
+      "torch": "2.14.1+cu130",
+      "warm": {
+        "allocated": 151142400,
+        "allocator_scope": "process",
+        "host": null,
+        "moved": {
+          "store": {
+            "bytes": 130023424,
+            "ns": 851500837
+          }
+        },
+        "overlapping": false,
+        "peak": 151175168,
+        "peak_window": "Torch high-water plus sampled native backing, carried across resets",
+        "request": "warm",
+        "reserved": 165675008,
+        "sets": {
+          "/sha256:891622ab35c453041e588469849c8d12041236c5c9f4abc64a756d44d143ce65/net": 268435456
+        },
+        "trace_scope": "fills",
+        "weight_residency": {
+          "evictions": 61,
+          "fills": 95,
+          "hits": 33,
+          "pinned_bytes": 0,
+          "poisoned": false,
+          "preferred_bytes": 138412032,
+          "ready_bytes": 142606336,
+          "reclaimable_bytes": 142606336,
+          "reclaimed_bytes": 255852544,
+          "regions": 64,
+          "reserved_bytes": 268435456,
+          "resident_bytes": 142606336
+        }
+      },
+      "weights_bytes": 268435456
+    }
+  },
+  "derived_measurement": {
+    "run": 16929,
+    "id": "run-9e2e0469656936429d83f35c",
+    "result": {
+      "cases": {
+        "derived_transpose": {
+          "cold_store_bytes": 4194304,
+          "derived_bytes": 4194304,
+          "native_after_cold": {
+            "evictions": 2,
+            "fills": 3,
+            "hits": 34,
+            "pinned_bytes": 0,
+            "poisoned": false,
+            "preferred_bytes": 0,
+            "ready_bytes": 4194304,
+            "reclaimable_bytes": 4194304,
+            "reclaimed_bytes": 6291456,
+            "regions": 1,
+            "reserved_bytes": 4194304,
+            "resident_bytes": 4194304
+          },
+          "phases": {
+            "held_baseline": {
+              "bind_calls": 0,
+              "cuda_ms_per_call": 0.8430079817771912,
+              "native": {
+                "evictions": 2,
+                "fills": 3,
+                "hits": 51,
+                "pinned_bytes": 4194304,
+                "poisoned": false,
+                "preferred_bytes": 0,
+                "ready_bytes": 4194304,
+                "reclaimable_bytes": 0,
+                "reclaimed_bytes": 6291456,
+                "regions": 1,
+                "reserved_bytes": 4194304,
+                "resident_bytes": 4194304
+              },
+              "store_bytes": 0,
+              "wall_ms_per_call": 0.8458465
+            },
+            "idle_native_cache": {
+              "bind_calls": 16,
+              "cuda_ms_per_call": 1.2636480331420898,
+              "native": {
+                "evictions": 2,
+                "fills": 3,
+                "hits": 50,
+                "pinned_bytes": 0,
+                "poisoned": false,
+                "preferred_bytes": 0,
+                "ready_bytes": 4194304,
+                "reclaimable_bytes": 4194304,
+                "reclaimed_bytes": 6291456,
+                "regions": 1,
+                "reserved_bytes": 4194304,
+                "resident_bytes": 4194304
+              },
+              "store_bytes": 0,
+              "wall_ms_per_call": 1.267343
+            }
+          },
+          "stored_bytes": 4194304
+        },
+        "fp8_decode": {
+          "cold_store_bytes": 1048576,
+          "derived_bytes": 4194304,
+          "native_after_cold": {
+            "evictions": 1,
+            "fills": 2,
+            "hits": 17,
+            "pinned_bytes": 0,
+            "poisoned": false,
+            "preferred_bytes": 0,
+            "ready_bytes": 2097152,
+            "reclaimable_bytes": 2097152,
+            "reclaimed_bytes": 4194304,
+            "regions": 1,
+            "reserved_bytes": 2097152,
+            "resident_bytes": 2097152
+          },
+          "phases": {
+            "held_baseline": {
+              "bind_calls": 0,
+              "cuda_ms_per_call": 0.6805639863014221,
+              "native": {
+                "evictions": 1,
+                "fills": 2,
+                "hits": 34,
+                "pinned_bytes": 2097152,
+                "poisoned": false,
+                "preferred_bytes": 0,
+                "ready_bytes": 2097152,
+                "reclaimable_bytes": 0,
+                "reclaimed_bytes": 4194304,
+                "regions": 1,
+                "reserved_bytes": 2097152,
+                "resident_bytes": 2097152
+              },
+              "store_bytes": 0,
+              "wall_ms_per_call": 0.6829903125
+            },
+            "idle_native_cache": {
+              "bind_calls": 16,
+              "cuda_ms_per_call": 1.0605900287628174,
+              "native": {
+                "evictions": 1,
+                "fills": 2,
+                "hits": 33,
+                "pinned_bytes": 0,
+                "poisoned": false,
+                "preferred_bytes": 0,
+                "ready_bytes": 2097152,
+                "reclaimable_bytes": 2097152,
+                "reclaimed_bytes": 4194304,
+                "regions": 1,
+                "reserved_bytes": 2097152,
+                "resident_bytes": 2097152
+              },
+              "store_bytes": 0,
+              "wall_ms_per_call": 1.0641971875
+            }
+          },
+          "stored_bytes": 1048576
+        },
+        "raw_f32": {
+          "cold_store_bytes": 4194304,
+          "derived_bytes": 0,
+          "native_after_cold": {
+            "evictions": 0,
+            "fills": 1,
+            "hits": 0,
+            "pinned_bytes": 0,
+            "poisoned": false,
+            "preferred_bytes": 4194304,
+            "ready_bytes": 4194304,
+            "reclaimable_bytes": 4194304,
+            "reclaimed_bytes": 0,
+            "regions": 1,
+            "reserved_bytes": 4194304,
+            "resident_bytes": 4194304
+          },
+          "phases": {
+            "held_baseline": {
+              "bind_calls": 0,
+              "cuda_ms_per_call": 0.699176013469696,
+              "native": {
+                "evictions": 0,
+                "fills": 1,
+                "hits": 17,
+                "pinned_bytes": 4194304,
+                "poisoned": false,
+                "preferred_bytes": 4194304,
+                "ready_bytes": 4194304,
+                "reclaimable_bytes": 0,
+                "reclaimed_bytes": 0,
+                "regions": 1,
+                "reserved_bytes": 4194304,
+                "resident_bytes": 4194304
+              },
+              "store_bytes": 0,
+              "wall_ms_per_call": 0.7010196875
+            },
+            "idle_native_cache": {
+              "bind_calls": 16,
+              "cuda_ms_per_call": 1.0208280086517334,
+              "native": {
+                "evictions": 0,
+                "fills": 1,
+                "hits": 16,
+                "pinned_bytes": 0,
+                "poisoned": false,
+                "preferred_bytes": 4194304,
+                "ready_bytes": 4194304,
+                "reclaimable_bytes": 4194304,
+                "reclaimed_bytes": 0,
+                "regions": 1,
+                "reserved_bytes": 4194304,
+                "resident_bytes": 4194304
+              },
+              "store_bytes": 0,
+              "wall_ms_per_call": 1.024696125
+            }
+          },
+          "stored_bytes": 4194304
+        }
+      },
+      "device": "cuda:0",
+      "passed": true,
+      "repeats": 16,
+      "residency_sha256": "0d1d84c2ab1b324e31605508496abd77c0af95e946d91e6e293cf2a6498c0dbb",
+      "scope": "single-block real FP8 decode / derived transpose; not full-model performance",
+      "seed": 741,
+      "tensorfs": "0.15.2",
+      "torch": "2.14.1+cu130",
+      "width": 1024
+    }
+  },
+  "cooperative_cancel": {
+    "run": 16937,
+    "id": "run-65cb198c414c076f780809aa",
+    "child_pid": 2603636,
+    "child_start_ticks": "15682618",
+    "native_cleanup": {
+      "passed": true,
+      "cancel_cleanup": true,
+      "steps": 2
+    },
+    "same_child_still_running": false,
+    "seconds_after_cancel": 1.140627145767212,
+    "terminal": "canceled"
+  },
+  "limits": [
+    "Windows GPU execution unverified",
+    "Activation admission limit excludes later weight fills, contexts and unhooked allocations",
+    "Derived bindings regenerate each normal warm call",
+    "Single-block timing on a loaded workstation is mechanism evidence, not whole-model throughput"
+  ]
+}

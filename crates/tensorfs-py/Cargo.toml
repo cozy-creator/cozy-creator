@@ -1,6 +1,6 @@
 [package]
 name = "tensorfs-py"
-version = "0.15.1"
+version = "0.15.2"
 edition = "2021"
 license.workspace = true
 publish.workspace = true
@@ -18,8 +18,9 @@ serde_path_to_error.workspace = true
 protocol = { workspace = true, features = ["python"] }
 tokio.workspace = true
 platform.workspace = true
+varena.workspace = true
+libc.workspace = true
 tensorfs.workspace = true
-varena = { workspace = true, features = ["python"] }
 pyo3 = "0.29.2"
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -28,7 +29,7 @@ tracing-subscriber.workspace = true
 # Native feature isolation remains available to Rust builds. The published Python
 # distribution always enables store; managed executor authority comes from its owner.
 default = ["store"]
-store = ["tensorfs/store", "varena/store"]
+store = ["tensorfs/store"]
 extension-module = ["pyo3/extension-module"]
 
 [lints]
