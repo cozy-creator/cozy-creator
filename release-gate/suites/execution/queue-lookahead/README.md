@@ -69,6 +69,21 @@ sent/ready/reused timing and ordered correct results. [Exact partial proof](evid
 
 Cancel, abandon, refusal and active-cancel scenarios retain terminal/PID isolation evidence,
 but their pre-entry canceled/refused or killed requests lack mapping in the old returned
-measurements. They remain **partial**, not passed. No mapping is inferred from timestamps or
+measurements. Those old receipts remain **partial**, not passed. No mapping is inferred from timestamps or
 adjacent numeric IDs. The future fixture returns Context.request_id for entered work and reads
 normal run-show measurements; pre-entry cases require an explicit public-to-executor ID mapping.
+
+The corrected fixture `b37bbc671` subsequently passed all four negative modes on RTX3060,
+Runtime`07d5e7054`/TensorFS`16c857cbf`/TensorD`fd4ff48fa`:
+
+- Cancel **17625–17627** and abandon **17628–17630**: explicit B sent/canceled mapping;
+  cancellation before A completed; B never entered; A completed and C used a fresh PID.
+- Refusal **17632–17634**: B's exact failed preparation was reused, without handler entry;
+  A and C completed in the same executor.
+- Active cancellation **17636/17637/17639**: B's mapped hint was observed while A was active;
+  A was canceled; B and C completed correctly in another executor.
+
+[Exact negative-mode proof](evidence/negative-20261025.json) records artifact hashes, all public
+and executor IDs, before-cancel observations, worker timestamps and raw receipt hashes. These
+are fresh runs; the earlier three posthoc passes and four partial cases are preserved separately.
+No external-pressure, multiple-GPU or GPU-weight-prefetch qualification follows from these cells.
