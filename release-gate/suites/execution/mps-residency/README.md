@@ -12,3 +12,8 @@ cozy run /absolute/worktree/release-gate/suites/execution/mps-residency/gpu \
 
 No Varena/Metal allocator, mocked backend or private interpreter. This is a small correctness
 cell, separate from actual BiRefNet/SDXL model smoke and from Windows/macOS shipping enablement.
+
+[Current-library proof 40189558417](evidence/7b5-7d1-365bb-library.md) passed real residency
+and BiRefNet output with Runtime 7d1 and TensorFS 0.15.8 through the explicitly historical
+Mac-capable CLI 7b5. SDXL returned the permitted capacity refusal. This preserves current
+CLI admission policy and does not establish local Mac shipping support.
