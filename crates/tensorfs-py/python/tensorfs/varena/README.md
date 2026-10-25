@@ -75,7 +75,7 @@ be nonoverlapping and inside the region; TensorFS fills every gap with zeroes.
 The region belongs to this immutable recipe. Changing source or transform identity
 requires a different region.
 
-`supports_prefetch()` advertises non-reclaiming admission. Pass `reclaim=False`
+`supports_prefetch()` requires non-reclaiming admission and the native producer/capture guard. Pass `reclaim=False`
 for speculative work: a streaming-window deficit, physical allocation OOM, or an
 abandoned mapped fill refuses admission without eviction, watermark reduction,
 or a context join. Demand preparation keeps its existing recovery behavior.
@@ -103,3 +103,10 @@ is unchanged. This is producer readiness, not a substitute for consumer lifetime
 The first overlap contract is a premapped/admitted raw destination beside a resident
 compute loop. Decoder/kernel preload and separate evidence are required before any
 decode-overlap claim. There is no persistent recipe index or allocator-OOM writeback.
+
+Each admitted native read also owns a device producer lease from before mapping/staging
+preparation through checked completion. Actual CUDA capture refuses while any such
+lease exists, including an unstarted read; cancel or complete it before capture.
+Producer admission likewise refuses during capture. Cancel-before-start releases this
+lease immediately; unknown completion retains it with the actual owners. Resident graph
+replay remains protected by its physical pins and is not excluded by this lease.

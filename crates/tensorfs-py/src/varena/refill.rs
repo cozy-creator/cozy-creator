@@ -68,6 +68,7 @@ struct Work {
     source: Arc<Source>,
     items: Vec<Item>,
     fill: Option<varena::Fill>,
+    producer: Option<varena::ProducerGuard>,
     threads: usize,
     completed: bool,
 }
@@ -167,6 +168,7 @@ impl Shared {
             // Checked drain succeeded. Abort the unpublished fill before reporting failure.
             drop(work.fill.take());
         }
+        drop(work.producer.take());
         crate::cleanup::defer(work);
         self.finish(result);
     }
@@ -224,6 +226,8 @@ impl PreparedRead {
 impl PreparedRead {
     #[classattr]
     const NO_RECLAIM: bool = true;
+    #[classattr]
+    const CAPTURE_GUARD: bool = true;
 
     #[new]
     #[pyo3(signature = (region, checkpoint, parts, threads = 2, reclaim = true))]
@@ -290,6 +294,7 @@ impl PreparedRead {
                         "refill targets overlap",
                     )));
                 }
+                let producer = varena::enter_producer(region.device()).map_err(Failure::Native)?;
                 let preparation = if reclaim {
                     region.prepare()
                 } else {
@@ -311,6 +316,7 @@ impl PreparedRead {
                     source,
                     items,
                     fill: Some(fill),
+                    producer: Some(producer),
                     threads: threads.clamp(1, 8),
                     completed: false,
                 }))
@@ -348,6 +354,7 @@ impl PreparedRead {
                 drop(state);
                 if let Some(work) = &mut work {
                     drop(work.fill.take());
+                    drop(work.producer.take());
                 }
                 crate::cleanup::defer(work);
                 shared.finish(Err(Failure::Canceled));
@@ -388,6 +395,7 @@ impl PreparedRead {
                 let mut work = state.work.take();
                 if let Some(work) = &mut work {
                     drop(work.fill.take());
+                    drop(work.producer.take());
                 }
                 crate::cleanup::defer(work);
                 state.result = Some(Err(Failure::Canceled));
