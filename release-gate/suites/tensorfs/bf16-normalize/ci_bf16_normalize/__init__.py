@@ -527,7 +527,7 @@ def refuse_reserved(output, source, shape, tensorfs, *, normalization):
                             max_buffer_bytes=64 << 10,
                             max_new_bytes=shape[0] * (shape[1] + 4), control=control)
     except tensorfs.InvalidError as error:
-        assert error.detail == "selected tensor is reserved by the other conversion operation", error.detail
+        assert error.detail == "invalid document: selected tensor is reserved by the other conversion operation", error.detail
         detail = error.detail
     else:
         raise AssertionError("another operation took an interrupted selection's unwritten key")
