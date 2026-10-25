@@ -4,6 +4,7 @@ Real CPU default-CLI cell; installed TensorFS0.15.5 candidate, no private interp
 
 ```
 cozy run /absolute/worktree/release-gate/suites/tensorfs/rowwise-quantize/run seed=209301 --on local --json
+cozy run /absolute/worktree/release-gate/suites/tensorfs/rowwise-quantize/run mode=cancel seed=209302 --on local --json
 ```
 
 It writes genuine fp8.rowwise(F8_E4M3/F8_E5M2) and int8.rowwise(I8) checkpoint parts with three
@@ -19,3 +20,9 @@ The same Writer basic/cancel/cancel-write fixtures remain required for ownership
 This cell is source-ready but not run. Runtime native admission remains unchanged until real
 proof passes; calibrated/probe/custom per-component callers still need native primitive stats
 before all Python numerical producers can be deleted. No CUDA or performance claim.
+
+The basic cell also checks F32 decoded source bits directly against the existing Torch decoder
+and rejects6 malformed/nonfinite sources before publication (metadata errors before any reads).
+`mode=cancel` observes actual bounded code/scale reads of a16MiB encoded source after a completed
+first tensor, cancels, retries the same Writer at another buffer limit, and checks stored-byte
+accounting/unchanged completed entry/integrity. It refuses a missed real cancellation window.

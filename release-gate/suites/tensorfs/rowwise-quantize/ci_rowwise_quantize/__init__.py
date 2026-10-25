@@ -4,6 +4,8 @@ import hashlib
 import itertools
 import json
 import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import msgspec
@@ -14,6 +16,7 @@ app = App()
 
 class Request(msgspec.Struct, forbid_unknown_fields=True):
     seed: int = 103
+    mode: str = "basic"
 
 
 class Report(msgspec.Struct):
@@ -31,6 +34,9 @@ def run(payload: Request, ctx: Context) -> Report:
     from cozy_runtime.internal.encoding.formats import RowwiseDequant
 
     torch.set_num_threads(1)
+    if payload.mode == "cancel":
+        return cancel_rowwise(payload.seed, tensorfs, np)
+    assert payload.mode == "basic"
     rows, cols = 7, 256
     kinds = [
         ("fp8.rowwise", "F8_E4M3", torch.float8_e4m3fn),
@@ -64,13 +70,26 @@ def run(payload: Request, ctx: Context) -> Report:
                 codes[~torch.isfinite(weight.float())] = 0
                 weight = codes.view(element)
             scales = torch.tensor(
-                [0.0, 0.125, 0.333251953125, 1.00390625, 2.0, 0.0001220703125, 32.0],
+                [0.0, -0.125, 0.333251953125, 1.00390625, 2.0, 0.0001220703125, 32.0],
                 dtype=scale_type,
             )
             values = torch.empty(rows, cols, dtype=torch.float32)
             RowwiseDequant(scheme).decode(
                 torch, {"weight": weight, "scale": scales}, values
             )
+            decoded = torch.empty_like(values)
+            tensorfs.raw.decode_into(
+                scheme,
+                {
+                    "weight": (weight_dtype, (rows, cols), codes),
+                    "scale": (scale_dtype, (rows,), scales),
+                },
+                decoded,
+                dtype="F32",
+                shape=(rows, cols),
+                params={},
+            )
+            assert torch.equal(decoded.view(torch.int32), values.view(torch.int32))
             key = f"matrix{index}.weight"
             component.put_encoded(
                 key,
@@ -203,6 +222,82 @@ def run(payload: Request, ctx: Context) -> Report:
                     }
                 )
                 checkpoint.close()
+        refusals = []
+        for name, options in [
+            ("params", {"params": {"extra": 1}}),
+            ("scale_shape", {"scale_shape": (rows, 1)}),
+            ("weight_dtype", {"weight_dtype": "I8"}),
+            ("scale_dtype", {"scale_dtype": "I32"}),
+            ("extra_role", {"extra": True}),
+            ("nonfinite", {"nonfinite": True}),
+        ]:
+            invalid_source = tensorfs.Writer(directory / f"bad-{name}.cozytensors")
+            bad_parts = {
+                "weight": (
+                    options.get("weight_dtype", "F8_E4M3"),
+                    (rows, cols),
+                    torch.full((rows, cols), 0x38, dtype=torch.uint8),
+                ),
+                "scale": (
+                    options.get("scale_dtype", "F32"),
+                    options.get("scale_shape", (rows,)),
+                    torch.full(
+                        (rows,), float("nan") if options.get("nonfinite") else 1.0
+                    ),
+                ),
+            }
+            if options.get("extra"):
+                bad_parts["extra"] = ("F32", (1,), torch.ones(1))
+            invalid_source.component("net").put_encoded(
+                "bad.weight",
+                dtype="BF16",
+                shape=(rows, cols),
+                scheme="fp8.rowwise",
+                params=options.get("params", {}),
+                parts=bad_parts,
+            )
+            bad_checkpoint = invalid_source.commit()
+            output = tensorfs.Writer(
+                directory / f"bad-out-{name}.cozytensors", base=bad_checkpoint
+            )
+            selected_bad = [
+                {
+                    "component": "net",
+                    "key": "bad.weight",
+                    "source_dtype": "BF16",
+                    "shape": [rows, cols],
+                    "dtype": "BF16",
+                    "encoding": {
+                        "scheme": "int8.convrot",
+                        "params": {"rotation": "kron_regular_h4", "rotation_size": 256},
+                    },
+                    "strategy": "int8-convrot256/1",
+                }
+            ]
+            control = tensorfs.ConversionControl()
+            try:
+                output.quantize(
+                    bad_checkpoint,
+                    selected_bad,
+                    max_buffer_bytes=16 << 10,
+                    max_new_bytes=1 << 20,
+                    control=control,
+                )
+            except (tensorfs.DecodeError, tensorfs.UnsupportedError) as error:
+                assert not output.has("net", "bad.weight")
+                if name != "nonfinite":
+                    assert control.progress()[0] == 0, (name, control.progress())
+                refusals.append(
+                    {
+                        "case": name,
+                        "code": error.code,
+                        "read_bytes": control.progress()[0],
+                    }
+                )
+            else:
+                raise AssertionError(f"invalid rowwise source {name} was accepted")
+            output.abandon()
+            bad_checkpoint.close()
         return Report(
             True,
             len(cases) * 2 * 3,
@@ -217,7 +312,96 @@ def run(payload: Request, ctx: Context) -> Report:
                         Path(tensorfs._ext.__file__).read_bytes()
                     ).hexdigest(),
                     "source_cases": len(cases),
+                    "refusals": refusals,
                     "summaries": summaries,
+                },
+                sort_keys=True,
+            ),
+        )
+
+
+def cancel_rowwise(seed, tensorfs, np):
+    with tempfile.TemporaryDirectory(prefix="cozy-rowwise-cancel-") as temporary:
+        directory = Path(temporary)
+        writer = tensorfs.Writer(directory / "source.cozytensors")
+        component = writer.component("net")
+        selected = []
+        for key, shape in [("first", (1, 256)), ("large", (16384, 1024))]:
+            codes = np.resize(np.arange(-128, 128, dtype=np.int8), shape)
+            component.put_encoded(
+                key,
+                dtype="BF16",
+                shape=shape,
+                scheme="int8.rowwise",
+                params={},
+                parts={
+                    "weight": ("I8", shape, codes),
+                    "scale": ("F32", (shape[0],), np.ones(shape[0], dtype=np.float32)),
+                },
+            )
+            selected.append(
+                {
+                    "component": "net",
+                    "key": key,
+                    "source_dtype": "BF16",
+                    "shape": list(shape),
+                    "dtype": "BF16",
+                    "encoding": {
+                        "scheme": "int8.convrot",
+                        "params": {"rotation": "kron_regular_h4", "rotation_size": 256},
+                    },
+                    "strategy": "int8-convrot256/1",
+                }
+            )
+        source = writer.commit()
+        output = tensorfs.Writer(directory / "converted.cozytensors", base=source)
+        control = tensorfs.ConversionControl()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(
+                output.quantize,
+                source,
+                selected,
+                max_buffer_bytes=128 << 10,
+                max_new_bytes=32 << 20,
+                control=control,
+            )
+            until = time.monotonic() + 20
+            while control.progress()[1] != 1 or control.progress()[0] <= 260:
+                assert not future.done(), "real rowwise cancellation window missed"
+                assert time.monotonic() < until, control.progress()
+                time.sleep(0.001)
+            control.cancel()
+            try:
+                future.result(timeout=20)
+            except tensorfs.NetworkError as error:
+                assert "stopped" in str(error)
+            else:
+                raise AssertionError("rowwise conversion completed before cancellation")
+        assert output.has("net", "first") and not output.has("net", "large")
+        resumed = output.quantize(
+            source,
+            selected,
+            max_buffer_bytes=256 << 10,
+            max_new_bytes=32 << 20,
+            control=tensorfs.ConversionControl(),
+        )
+        assert resumed["encoded_keys"] == 1 and resumed["reused_keys"] == 1
+        assert resumed["source_bytes_read"] == 16384 * (1024 + 4)
+        assert resumed["worst_relative_frobenius"] is None
+        checkpoint = output.commit()
+        assert checkpoint.verify().ok
+        return Report(
+            True,
+            2,
+            json.dumps(
+                {
+                    "mode": "cancel",
+                    "seed": seed,
+                    "cancel_progress": control.progress(),
+                    "resumed": resumed,
+                    "native_sha256": hashlib.sha256(
+                        Path(tensorfs._ext.__file__).read_bytes()
+                    ).hexdigest(),
                 },
                 sort_keys=True,
             ),
