@@ -111,7 +111,7 @@ class Probe(msgspec.Struct, forbid_unknown_fields=True):
 
 
 class Facts(msgspec.Struct, frozen=True):
-    steps: int
+    resolved_steps: int
     min_free_bytes: int
     hold_ms: int
     adjustments: tuple[AdjustmentRow, ...]
@@ -143,7 +143,11 @@ def prepare(
     while time.monotonic() < until:
         ctx.raise_if_cancelled()
         time.sleep(0.05)
-    if pipe.plan is not None and pipe.steps == facts.steps and pipe.plan.valid():
+    if (
+        pipe.plan is not None
+        and pipe.steps == facts.resolved_steps
+        and pipe.plan.valid()
+    ):
         return True
     if pipe.plan is not None:
         pipe.plan.close()
@@ -176,11 +180,11 @@ def prepare(
             prefix=prefix,
             suffix=suffix,
             state=(pipe.operand, pipe.output),
-            steps=facts.steps,
+            steps=facts.resolved_steps,
             owners=(net,),
             resident_only=False,
         )
-    pipe.steps = facts.steps
+    pipe.steps = facts.resolved_steps
     pipe.captures += 1
     return True
 
@@ -202,7 +206,11 @@ def gpu(
     pipe = model.pipe
     pipe.handler_calls += 1
     adj.extend(facts.adjustments)
-    valid = pipe.plan is not None and pipe.steps == facts.steps and pipe.plan.valid()
+    valid = (
+        pipe.plan is not None
+        and pipe.steps == facts.resolved_steps
+        and pipe.plan.valid()
+    )
     row = {
         "pid": os.getpid(),
         "request_id": ctx.request_id,
@@ -224,7 +232,7 @@ def gpu(
             .bfloat16()
         )
         pipe.operand.copy_(value)
-        reference = model.reference(pipe.operand) * (facts.steps * 0.5)
+        reference = model.reference(pipe.operand) * (facts.resolved_steps * 0.5)
         before = pipe.plan.facts()["host_graph_launches"]
         callbacks = tuple(pipe.phase_calls)
         execution = ctx.plan(pipe.plan)
@@ -242,7 +250,7 @@ def gpu(
                 "host_graph_launches": after,
                 "launches_this_request": after - before,
                 "value": output.cpu().tolist(),
-                "steps": facts.steps,
+                "steps": facts.resolved_steps,
             }
         )
     return Report(True, json.dumps(row, sort_keys=True))
