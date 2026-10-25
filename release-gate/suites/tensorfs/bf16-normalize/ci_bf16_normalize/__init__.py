@@ -168,7 +168,8 @@ def basic(directory, seed, tensorfs, np, oracle, ctx, tel, runtime):
             component.put_encoded(
                 name, dtype="BF16", shape=shape, scheme=scheme, params={},
                 parts={"weight": (weight_dtype, shape, b""),
-                       "scale": ("F32", (shape[0],), np.ones(shape[0], dtype="<f4").tobytes())},
+                       # The format's empty matrix view has zero addressable rows.
+                       "scale": ("F32", (0,), b"")},
             )
             specifications.append(selected(name, "BF16", shape))
             cases[name] = (np.empty(shape, dtype="<f4"), 0, 0)
