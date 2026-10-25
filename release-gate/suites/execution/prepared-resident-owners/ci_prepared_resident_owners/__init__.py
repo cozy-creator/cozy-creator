@@ -11,7 +11,7 @@ app = App()
 
 class Probe(msgspec.Struct, forbid_unknown_fields=True):
     seed: int = 1796
-    mode: Literal["owners", "attention"] = "owners"
+    mode: Literal["owners", "attention", "conv-torch", "conv-varena"] = "owners"
 
 
 class Report(msgspec.Struct):
@@ -21,7 +21,11 @@ class Report(msgspec.Struct):
 
 @app.entrypoint(accelerator=True)
 def gpu(payload: Probe, ctx: Context) -> Report:
-    if payload.mode == "attention":
+    if payload.mode in ("conv-torch", "conv-varena"):
+        from .convolution import convolution_proof
+
+        result = convolution_proof(payload.seed, ctx, payload.mode.partition("-")[2])
+    elif payload.mode == "attention":
         from .attention import attention_proof
 
         result = attention_proof(payload.seed, ctx)
