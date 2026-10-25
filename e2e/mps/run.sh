@@ -7,6 +7,8 @@
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
 [ "$(uname -s)" = Darwin ] || fail "the mps suite runs on macOS"
+# Qualify the unchanged development packages; published releases retain their platform gates.
+PACKAGES=${PACKAGES:-${PACKAGES_MASTER:-}}
 # Preserve the service's actual readiness error when candidate installation exits early.
 trap 'mps_exit=$?; if [ "$mps_exit" != 0 ]; then cozy machine logs local tensord --lines 0 --json > "$OUT/machine-failure.ndjson" 2>&1 || true; fi' EXIT
 
@@ -14,12 +16,12 @@ step install; install_cozy
 step "the local machine"; machine_ready
 sysctl -n machdep.cpu.brand_string hw.memsize | tee "$OUT/apple-hardware.txt"
 sw_vers -productVersion | tee "$OUT/macos-version.txt"
-uv run -q --no-project python - "$OUT" "$CAND_COZY" "$CAND_TFS" "$CAND_RT" <<'PY'
-import hashlib, json, platform, sys
+uv run -q --no-project python - "$OUT" "$CAND_COZY" "$CAND_TFS" "$CAND_RT" "$PACKAGES" <<'PY'
+import hashlib, json, platform, subprocess, sys
 from pathlib import Path
 out = Path(sys.argv[1])
 artifacts = {}
-for name, value in zip(("cozy", "tensorfs", "runtime"), sys.argv[2:], strict=True):
+for name, value in zip(("cozy", "tensorfs", "runtime"), sys.argv[2:5], strict=True):
     path = Path(value)
     if path.is_file():
         with path.open("rb") as source:
@@ -27,7 +29,10 @@ for name, value in zip(("cozy", "tensorfs", "runtime"), sys.argv[2:], strict=Tru
         artifacts[name] = {"filename": path.name, "sha256": digest, "bytes": path.stat().st_size}
     else:
         artifacts[name] = {"release": value}
-(out / "candidate-artifacts.json").write_text(json.dumps({"os": platform.platform(), "arch": platform.machine(), "artifacts": artifacts}, indent=2) + "\n")
+manifest = {"os": platform.platform(), "arch": platform.machine(), "artifacts": artifacts}
+if packages := sys.argv[5]:
+    manifest["packages"] = {"path": packages, "commit": subprocess.check_output(["git", "-C", packages, "rev-parse", "HEAD"], text=True).strip()}
+(out / "candidate-artifacts.json").write_text(json.dumps(manifest, indent=2) + "\n")
 PY
 step candidates; candidates
 # An Apple GPU, unified.
