@@ -75,10 +75,17 @@ be nonoverlapping and inside the region; TensorFS fills every gap with zeroes.
 The region belongs to this immutable recipe. Changing source or transform identity
 requires a different region.
 
+`supports_prefetch()` advertises non-reclaiming admission. Pass `reclaim=False`
+for speculative work: a streaming-window deficit, physical allocation OOM, or an
+abandoned mapped fill refuses admission without eviction, watermark reduction,
+or a context join. Demand preparation keeps its existing recovery behavior.
+
 Preparation starts no payload read. Call `start()` after active resident work has
 been admitted. The native worker owns its checkpoint, local source, part descriptors
 and Fill. It uses the existing buffered/O_DIRECT staging engine, with no Python
 transformer, credential callback or DLPack-owned destination on the worker.
+Staging/streams are warmed by preparation; timing events can still be acquired by
+the read engine on first use. This is not complete CUDA-resource preallocation.
 `poll()` and `wait()` report issued bytes separately from checked completion.
 Only successful checked completion publishes the region; ordinary `prepare()` and
 DLPack views can then consume it on any stream. This first interface does not publish

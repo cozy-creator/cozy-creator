@@ -475,6 +475,16 @@ impl Region {
     }
 
     pub fn prepare(self: &Arc<Self>) -> Result<Preparation> {
+        self.prepare_with_reclaim(true)
+    }
+
+    /// Admit speculative bytes only if no eviction or prior-writer join is required.
+    /// Capacity refusal leaves existing ready contents and the preference watermark intact.
+    pub fn prepare_without_reclaim(self: &Arc<Self>) -> Result<Preparation> {
+        self.prepare_with_reclaim(false)
+    }
+
+    fn prepare_with_reclaim(self: &Arc<Self>, reclaim: bool) -> Result<Preparation> {
         let captures = capture_counts()?;
         let mut state = self.arena.lock()?;
         let entry = state.entries.get(&self.id).expect("live region");
@@ -507,6 +517,11 @@ impl Region {
                     .sum();
                 let limit = state.streaming_limit.max(self.rounded);
                 let excess = resident.saturating_add(self.rounded).saturating_sub(limit);
+                if excess != 0 && !reclaim {
+                    return Err(Error::OutOfMemory {
+                        requested_bytes: self.rounded,
+                    });
+                }
                 self.arena
                     .reclaim_locked(&mut state, excess, false, Some(self.id))?;
                 let remaining: usize = state
@@ -529,6 +544,11 @@ impl Region {
             let handle = match self.arena.driver.create(self.rounded) {
                 Ok(handle) => handle,
                 Err(Error::OutOfMemory { .. }) => {
+                    if !reclaim {
+                        return Err(Error::OutOfMemory {
+                            requested_bytes: self.rounded,
+                        });
+                    }
                     self.arena
                         .reclaim_locked(&mut state, self.rounded, false, Some(self.id))?;
                     match self.arena.driver.create(self.rounded) {
@@ -545,6 +565,12 @@ impl Region {
                 return Err(poison(&mut state, error));
             }
         } else {
+            if !reclaim {
+                // Even an abandoned fill with no remaining pins may have queued writers.
+                return Err(Error::OutOfMemory {
+                    requested_bytes: self.rounded,
+                });
+            }
             // An abandoned external fill may still have queued writes. Join before overwriting.
             if let Err(error) = self.arena.driver.synchronize() {
                 return Err(poison(&mut state, error));
