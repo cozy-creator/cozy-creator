@@ -108,6 +108,117 @@ def write_matrix(directory, kind, width, generator):
     return writer.commit(), expected
 
 
+def production_routes(memory, seed):
+    from types import SimpleNamespace
+
+    from cozy_runtime.author._loader import census
+    from cozy_runtime.internal.encoding import launch_providers
+    from cozy_runtime.internal.encoding.selection import measure_device, measure_runtime
+    from cozy_runtime.internal.fill import Checkpoint, dtype_name
+    from cozy_runtime.internal.resolution import ConstructionFacts, Variant, resolve
+    from cozy_runtime.internal.weights import Backend
+
+    generator = torch.Generator().manual_seed(seed)
+    facts = measure_device(torch, 0, "cuda")
+    result = {}
+    with tempfile.TemporaryDirectory(prefix="cozy-production-routes-") as directory:
+        for kind in ("raw-f16", "fp8-decoded-f16", "fp8-native-f16"):
+            width = 512
+            weight = torch.randn(width, width, generator=generator) / width**0.5
+            writer = tensorfs.Writer(Path(directory) / f"{kind}.cozytensors")
+            component = writer.component("net")
+            if kind == "raw-f16":
+                expected = weight.half()
+                component.put("0.weight", expected)
+            else:
+                payload = (weight / 0.125).to(torch.float8_e4m3fn)
+                component.put_encoded(
+                    "0.weight",
+                    dtype="F16",
+                    shape=(width, width),
+                    scheme="fp8.tensorwise",
+                    params={},
+                    parts={
+                        "weight": (
+                            "F8_E4M3",
+                            (width, width),
+                            payload.view(torch.uint8).numpy(),
+                        ),
+                        "scale": ("F32", (), np.array(0.125, dtype=np.float32)),
+                    },
+                )
+                expected = (payload.float() * 0.125).half()
+            checkpoint = writer.commit()
+            opened = Checkpoint(checkpoint)
+            rows = opened.rows("net")
+            consent = "accept" if kind == "fp8-native-f16" else "refuse"
+            plan = resolve(
+                variant=Variant(
+                    kind, str(directory), checkpoint.id, {"net": checkpoint.id}
+                ),
+                rows=rows,
+                providers=launch_providers(),
+                device=facts,
+                runtime=measure_runtime(
+                    torch, importlib.metadata.version("cozy-runtime")
+                ),
+                construction=ConstructionFacts(
+                    "native-refill-proof", "RouteModel", ("net",)
+                ),
+                encoded_leaves=consent,
+                dtype_name=dtype_name,
+            )
+            with torch.device("meta"):
+                module = nn.Sequential(
+                    nn.Linear(width, width, bias=False, dtype=torch.float16)
+                )
+            built = SimpleNamespace(net=module)
+            walked = census(built)
+            backend = Backend(
+                {"net": opened},
+                rows,
+                torch=torch,
+                plan=plan,
+                memory=memory,
+                device=torch.device("cuda:0"),
+                construction="RouteModel",
+                device_facts=facts,
+                release="native-refill-proof",
+            )
+            backend.expect({"net": [row.key for row in rows]})
+            fit = backend.fit(walked, encoded_leaves=consent)
+            assert fit and fit["ok"]
+            live = backend.materialize(built, walked, encoded_leaves=consent)
+            for destination in walked.destinations:
+                backend.fill(destination.key, destination.spec, live[destination.key])
+            backend.commit()
+            inputs = torch.randn(4, width, generator=generator).half().to("cuda")
+            oracle = torch.nn.functional.linear(inputs, expected.to("cuda"))
+            try:
+                with memory.request(f"routes:{kind}:cold") as cold, torch.no_grad():
+                    actual = module(inputs).clone()
+                torch.testing.assert_close(actual, oracle, rtol=2e-2, atol=2e-2)
+                with memory.request(f"routes:{kind}:warm") as warm, torch.no_grad():
+                    for _ in range(8):
+                        again = module(inputs)
+                torch.testing.assert_close(again, actual, rtol=0, atol=0)
+                assert warm.stats()["moved"]["store"]["bytes"] == 0
+                assert warm.stats()["final_bindings"]["fills"] == 0
+                assert memory.native.stats()["pinned_bytes"] == 0
+                result[kind] = {
+                    "routes": plan.route_census(),
+                    "label": plan.label(),
+                    "plan": plan.digest(),
+                    "cold": cold.stats(),
+                    "warm": warm.stats(),
+                }
+            finally:
+                backend.close()
+                memory.trim()
+                checkpoint.close()
+    return result
+
+
 def fits(memory, seed):
     generator = torch.Generator().manual_seed(seed)
     width, repeats = 512, 16
@@ -392,6 +503,7 @@ def exercise(seed, mode):
     }
     output["result"] = {
         "fits": fits,
+        "routes": production_routes,
         "stream": streaming,
         "failure": failed_fill,
         "lora": lora,

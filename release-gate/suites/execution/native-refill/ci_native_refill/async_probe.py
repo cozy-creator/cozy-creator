@@ -217,6 +217,8 @@ def input_error(memory, directory):
         raise AssertionError("the owned truncated input did not fail its actual read")
     assert not region.resident and memory.native.stats()["pinned_bytes"] == 0
     assert not memory.native.stats()["poisoned"]
+    with varena.capture(0):
+        pass  # checked failure must release the owning producer lease
     # The failed recipe never became ready; a healthy copy of the same source can fill anew.
     retry = region.prepare_read(checkpoint, parts, threads=2)
     retry.start()

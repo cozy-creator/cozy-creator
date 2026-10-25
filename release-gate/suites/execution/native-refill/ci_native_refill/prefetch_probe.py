@@ -231,17 +231,88 @@ def pressure(memory, directory, seed):
         checkpoint.close()
 
 
+def capture_exclusion(memory, directory):
+    from tensorfs import varena
+
+    values = torch.ones(256 * MIB, dtype=torch.uint8)
+    writer = tensorfs.Writer(directory / "capture.cozytensors")
+    writer.component("net").put("data", values)
+    checkpoint = writer.commit()
+    parts = [("net/data#value", 0, values.nbytes)]
+    region = memory.native.reserve(values.nbytes)
+    unstarted = region.prepare_read(checkpoint, parts, reclaim=False)
+
+    def refused():
+        try:
+            with varena.capture(0):
+                pass
+        except RuntimeError as error:
+            assert "producer" in str(error)
+            return str(error)
+        raise AssertionError("actual capture admitted an outstanding producer")
+
+    before_start = refused()
+    unstarted.cancel()
+    assert unstarted.wait()["canceled"]
+    with varena.capture(0):
+        pass
+    memory.native.reclaim(region.allocated_bytes)
+    active = region.prepare_read(checkpoint, parts, threads=1, reclaim=False)
+    active.start()
+    in_flight = issued(active)
+    during_read = refused()
+    active.cancel()
+    ended = active.wait()
+    assert ended["canceled"]
+    memory.native.reclaim(region.allocated_bytes)
+
+    stream = torch.cuda.Stream()
+    graph = torch.cuda.CUDAGraph()
+    inputs = torch.ones(32, device="cuda")
+    output = torch.empty_like(inputs)
+    with torch.cuda.stream(stream):
+        output.copy_(inputs)
+    stream.synchronize()
+    try:
+        with varena.capture(0), torch.cuda.graph(graph, stream=stream):
+            try:
+                region.prepare_read(checkpoint, parts, reclaim=False)
+            except RuntimeError as error:
+                assert "capture" in str(error)
+                during_capture = str(error)
+            else:
+                raise AssertionError(
+                    "producer admission succeeded inside actual CUDA capture"
+                )
+            output.copy_(inputs)
+        graph.replay()
+        torch.testing.assert_close(output, inputs, rtol=0, atol=0)
+        assert not region.resident and memory.native.stats()["pinned_bytes"] == 0
+        return {
+            "before_start_refusal": before_start,
+            "issued": in_flight,
+            "active_refusal": during_read,
+            "ended": ended,
+            "during_actual_capture_refusal": during_capture,
+            "graph_replay_passed": True,
+        }
+    finally:
+        graph.reset()
+        checkpoint.close()
+
+
 def exercise(seed, mode):
     torch.set_num_threads(1)
     accel.initialize(torch, "cuda")
     memory = residency.Memory.open("cuda:0", budget_bytes=768 * MIB)
     assert memory.prefetch_supported
     with tempfile.TemporaryDirectory(prefix="cozy-prefetch-") as directory:
-        result = (
-            pressure(memory, Path(directory), seed)
-            if mode == "prefetch-pressure"
-            else automatic(memory, Path(directory), seed, mode == "prefetch-cancel")
-        )
+        if mode == "prefetch-pressure":
+            result = pressure(memory, Path(directory), seed)
+        elif mode == "prefetch-capture":
+            result = capture_exclusion(memory, Path(directory))
+        else:
+            result = automatic(memory, Path(directory), seed, mode == "prefetch-cancel")
     return {
         "passed": True,
         "mode": mode,

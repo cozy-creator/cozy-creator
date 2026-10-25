@@ -27,6 +27,7 @@ class Report(msgspec.Struct):
 def gpu(payload: Probe, tel: Telemetry) -> Report:
     if payload.mode not in {
         "fits",
+        "routes",
         "stream",
         "lora",
         "failure",
@@ -36,6 +37,7 @@ def gpu(payload: Probe, tel: Telemetry) -> Report:
         "prefetch",
         "prefetch-cancel",
         "prefetch-pressure",
+        "prefetch-capture",
     }:
         raise ValueError("unknown native refill gate mode")
     if not Path(payload.candidate_python).is_file():
