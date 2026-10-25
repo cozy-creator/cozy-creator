@@ -43,7 +43,8 @@ cozy run birefnet > "$OUT/functions.txt" 2>&1 && grep -q remove_background "$OUT
 step models
 cozy --json model search birefnet --limit 1 > "$OUT/models-search.json" && J '(.models | length) == 1' "$OUT/models-search.json" \
   || check "model search --limit 1: not one model"
-family=$(cozy --json model search --limit 0 | jq -r '[.models[].family | select(. != null)][0] // empty') || true
+cozy --json model search --limit 100 > "$OUT/models-all.json" || check "model search --limit 100: $(head -c 300 "$OUT/models-all.json")"
+family=$(jq -r '[.models[].family | select(. != null)][0] // empty' "$OUT/models-all.json") || true
 if [ -n "$family" ]; then
   cozy --json model search --family "$family" > "$OUT/family.json" && J --arg f "$family" '(.models | length > 0) and all(.models[]; .family == $f)' "$OUT/family.json" \
     || check "model search --family $family: other families listed"
