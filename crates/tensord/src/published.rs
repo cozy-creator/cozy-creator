@@ -1135,7 +1135,8 @@ pub struct Made {
 }
 
 /// `source` imported into a local model (normalized at ingest, design §6), or the one already
-/// made from its pinned spelling: a moving revision is read again, a pinned one is reused.
+/// made from its pinned spelling by the same converter tables: a moving revision is read again,
+/// a pinned one is reused.
 fn make_source(
     store: &Store,
     source: &str,
@@ -1158,7 +1159,8 @@ fn make_source(
     let listed = tensorfs::import::remote::parse(source)
         .and_then(|spec| tensorfs::import::remote::list(&spec, &access))
         .map_err(|e| refused("model_source_failed", e))?;
-    let identity = serde_json_canonicalizer::to_vec(&json!(["cozy.machine-source-model/2", listed.pinned, converter]))
+    let tables = tensorfs::import::engine::tables_digest();
+    let identity = serde_json_canonicalizer::to_vec(&json!(["cozy.machine-source-model/2", listed.pinned, converter, tables]))
         .map_err(|e| io_failure(io::Error::other(e)))?;
     let name = format!("source-{}", &sha256::hex_digest(&identity)[..40]);
     let made = |header| Made {

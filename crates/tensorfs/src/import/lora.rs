@@ -30,6 +30,9 @@ const ALPHA: &str = ".alpha";
 const PEFT_PREFIX: &str = "base_model.model.";
 /// diffusers' `save_lora_adapter` records the `LoraConfig` here, as JSON.
 const DIFFUSERS_CONFIG: &str = "lora_adapter_metadata";
+/// Kohya's flattened module names (`lora_unet_down_blocks_0_…`, `lora_te1_…`): only a converter
+/// table maps them onto a model's modules.
+const KOHYA: [&str; 2] = ["lora_unet_", "lora_te"];
 
 /// A LoRA key in PEFT's spelling, or `None` for a key that is no LoRA factor or alpha: kohya's
 /// `<m>.lora_down[.weight]` and `.lora_up[.weight]` are `<m>.lora_A.weight` and `.lora_B.weight`,
@@ -122,6 +125,10 @@ pub fn normalize(
             .collect();
         if !mine.iter().any(|i| peft_key(&planned[*i].key).is_some_and(|k| k.ends_with(A))) {
             continue;
+        }
+        if let Some(key) = (mine.iter().map(|i| &planned[*i].key)).find(|k| KOHYA.iter().any(|p| k.starts_with(p))) {
+            let why = "a kohya module name no converter table maps; name one (sdxl.lora) to see which keys it lacks";
+            return refuse(Code::ADAPTER_TARGET_UNSUPPORTED, format!("{component}/{key}: {why}"));
         }
         let mut seen = BTreeSet::new();
         let (mut modules, mut kept) = (BTreeMap::new(), BTreeSet::new());

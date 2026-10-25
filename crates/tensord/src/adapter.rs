@@ -1,11 +1,11 @@
 //! Caller LoRA adapters as one view over a base checkpoint (the Python worker's
-//! `lora_composition.prepare`): base `<path>.weight/.bias` become `<path>.base_layer.*`, factors
-//! graft in as `<path>.lora_{A,B}.adapter_<i>.weight`, and each adapted component's asset
-//! `model_adapters.json` holds the ordered graph the executor binds with PEFT. Nothing is computed, and large parts keep their
-//! objects. Factors must already be canonical PEFT keys (`<path>.lora_A.weight`,
-//! `<path>.lora_B.weight`, optional scalar `<path>.alpha`): foreign layouts are normalized when a
-//! model is imported, never here. A view is the store's like any checkpoint written to it: kept
-//! while open, then a cache TensorFS evicts.
+//! `lora_composition.prepare`), on linear and 2-D convolution layers: base `<path>.weight/.bias`
+//! become `<path>.base_layer.*`, factors graft in as `<path>.lora_{A,B}.adapter_<i>.weight`, and
+//! each adapted component's asset `model_adapters.json` holds the ordered graph the executor binds
+//! with PEFT. Nothing is computed, and large parts keep their objects. Factors must already be
+//! canonical PEFT keys (`<path>.lora_A.weight`, `<path>.lora_B.weight`, optional scalar
+//! `<path>.alpha`): foreign layouts are normalized when a model is imported, never here. A view is
+//! the store's like any checkpoint written to it: kept while open, then a cache TensorFS evicts.
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -44,7 +44,7 @@ fn refuse(code: &str, detail: impl Into<String>) -> io::Error {
 }
 
 #[derive(Serialize)]
-struct Linear {
+struct Layer {
     component: String,
     target: String,
     adapter: String,
@@ -68,7 +68,7 @@ struct AdapterRef {
 #[derive(Serialize)]
 struct Graph {
     format: &'static str,
-    layers: Vec<Linear>,
+    layers: Vec<Layer>,
     adapters: Vec<AdapterRef>,
 }
 
@@ -127,6 +127,19 @@ fn pairs(factors: &BTreeMap<String, Tensor>) -> io::Result<Pairs<'_>> {
     Ok(pairs)
 }
 
+/// Whether factors `a` and `b` adapt base `weight`: a linear's `[out, in]` as A `[r, in]` and B
+/// `[out, r]`, or a convolution's `[out, in, kh, kw]` as A `[r, in, kh, kw]` and B `[out, r, 1, 1]`.
+fn fits(a: &Tensor, b: &Tensor, weight: &Tensor) -> bool {
+    let (w, rank) = (&weight.shape, a.shape.first().copied().unwrap_or(0));
+    matches!(w.len(), 2 | 4)
+        && a.shape.len() == w.len()
+        && b.shape.len() == w.len()
+        && rank > 0
+        && a.shape[1..] == w[1..]
+        && b.shape[..2] == [w[0], rank]
+        && b.shape[2..].iter().all(|k| *k == 1)
+}
+
 /// A component's tensors by key.
 fn keyed(component: &Component) -> BTreeMap<String, Tensor> {
     component.tensors.iter().map(|t| (t.key.clone(), t.clone())).collect()
@@ -137,9 +150,7 @@ fn infer_component(base: &Header, factors: &BTreeMap<String, Tensor>) -> io::Res
     let fits = |tensors: &BTreeMap<String, Tensor>| {
         !pairs.is_empty()
             && pairs.iter().all(|(path, pair)| match (pair.get("a"), pair.get("b"), tensors.get(&format!("{path}.weight"))) {
-                (Some((_, a)), Some((_, b)), Some(weight)) => {
-                    a.shape.len() == 2 && b.shape.len() == 2 && [b.shape[0], a.shape[1]] == weight.shape[..]
-                }
+                (Some((_, a)), Some((_, b)), Some(weight)) => fits(a, b, weight),
                 _ => false,
             })
     };
@@ -226,20 +237,13 @@ fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(
             let (Some((a_key, a)), Some((b_key, b))) = (pair.get("a"), pair.get("b")) else {
                 return Err(refuse("pair", format!("{component}.{path}: incomplete A/B pair")));
             };
-            let weight = base_tensors.get(&format!("{path}.weight"));
-            if weight.is_some_and(|w| w.shape.len() != 2) {
-                return Err(refuse("target_type", format!("{component}.{path}: only ordinary linear LoRA targets are supported")));
+            let Some(weight) = base_tensors.get(&format!("{path}.weight")) else {
+                return Err(refuse("target", format!("{component}.{path}: the base has no such layer")));
+            };
+            if !matches!(weight.shape.len(), 2 | 4) {
+                return Err(refuse("target_type", format!("{component}.{path}: only linear and 2-D convolution LoRA targets are supported")));
             }
-            let fits = weight.is_some_and(|w| {
-                matches!(w.dtype, Dtype::F16 | Dtype::BF16 | Dtype::F32)
-                    && a.shape.len() == 2
-                    && b.shape.len() == 2
-                    && a.shape[0] > 0
-                    && a.shape[0] == b.shape[1]
-                    && [b.shape[0], a.shape[1]] == w.shape[..]
-                    && a.dtype == b.dtype
-            });
-            if !fits {
+            if !(matches!(weight.dtype, Dtype::F16 | Dtype::BF16 | Dtype::F32) && a.dtype == b.dtype && fits(a, b, weight)) {
                 return Err(refuse("shape", format!("{component}.{path}: factors do not fit the base projection")));
             }
             let rank = a.shape[0];
@@ -261,7 +265,7 @@ fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(
                 let take = (component.clone(), grafted, index + 1, source_component.clone(), key.clone());
                 grafts.entry(component.clone()).or_default().push(take);
             }
-            graph.layers.push(Linear {
+            graph.layers.push(Layer {
                 component: component.clone(),
                 target: path.clone(),
                 adapter: alias.clone(),

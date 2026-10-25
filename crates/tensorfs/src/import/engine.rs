@@ -193,6 +193,9 @@ pub struct Ops {
     /// LoRA rows: the base module's `[in, out]`, so A is `[r, in]` and B `[out, r]`.
     #[serde(default)]
     pub io: Option<(u64, u64)>,
+    /// LoRA rows of a convolution: its kernel, so A is `[r, in, kh, kw]` and B `[out, r, 1, 1]`.
+    #[serde(default)]
+    pub kernel: Vec<u64>,
     /// LoRA rows: the ops applied to B.
     #[serde(default)]
     pub b: Option<Box<Ops>>,
@@ -207,6 +210,12 @@ pub fn tables() -> &'static [Table] {
             .map(|text| serde_json::from_str(text).expect("a built-in converter table"))
             .collect()
     })
+}
+
+/// The built-in tables' digest: an import is what its source's bytes and these tables make.
+pub fn tables_digest() -> &'static str {
+    static DIGEST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    DIGEST.get_or_init(|| crate::sha256::hex_digest(TABLES.join("\0").as_bytes()))
 }
 
 // ------------------------------------------------------------------------------ recognition
@@ -1026,20 +1035,22 @@ fn plan_lora(
         };
         let float = |d: &Dtype| matches!(d, Dtype::F16 | Dtype::BF16 | Dtype::F32);
         let rank = a.shape.first().copied().unwrap_or(0);
+        let kernel = &row.ops.kernel;
+        let want_a: Vec<u64> = [rank, input].iter().chain(kernel).copied().collect();
+        let want_b: Vec<u64> = [output, rank].into_iter().chain(kernel.iter().map(|_| 1)).collect();
         if a.encoded.is_some()
             || b.encoded.is_some()
-            || a.shape.len() != 2
             || rank == 0
-            || rank > input.min(output)
-            || a.shape[1] != input
-            || b.shape != [output, rank]
+            || rank > (input * kernel.iter().product::<u64>()).min(output)
+            || a.shape != want_a
+            || b.shape != want_b
             || a.dtype != b.dtype
             || !float(&a.dtype)
             || alpha.is_some_and(|(_, t)| !t.shape.is_empty() || !float(&t.dtype))
         {
             return refuse(
                 Code::SHAPE_MISMATCH,
-                format!("{ka}: LoRA factors must be float A [r,{input}], B [{output},r] and a scalar alpha"),
+                format!("{ka}: LoRA factors must be float A {want_a:?}, B {want_b:?} and a scalar alpha"),
             );
         }
         let none = Ops::default();
