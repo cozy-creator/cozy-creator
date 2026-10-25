@@ -1,0 +1,385 @@
+{
+  "scope": "Ten real controls plus complete ordinaryCLI recipe source/upload/quantize/consumer flow; fullimage and finalrestoration are explicitly excluded fromthis immutable receipt.",
+  "cohort": {
+    "creator": "8499b11b24a0c4222ab6daae58d9a75816591641",
+    "runtime": "7d1e7854ca638c5d153c6601f2d2c2b169d0b133",
+    "tensorfs": "9e95ee586b589572c169bb0295be019234fbbf85"
+  },
+  "artifact_sha256": {
+    "cozy": "1d098d8e47624b4c190e29b48b822eaf067a376ea5ee98964d8e49dc643400e9",
+    "runtime": "54f604a9020cf66be757e666aa3eb7008d01619e9ec27c239cc63279ec7c6720",
+    "tensorfs": "8c5b6f9a7471db87c5193b7396cfff48c2eabe8cef3817741832bf642cfe683b"
+  },
+  "package_commit": "a3755916454acff2e941644776f74c1e371766ca",
+  "fixture_commit": "041474a17600ded807212954c0e2e12930648bb9",
+  "wrapper_sha256": "db5a64188439271c1c1baf2a444af440ef22896e12662544a5ba9f47ca7153ca",
+  "manifest_sha256": "0289590a565de65eab543e6a9cbc46303c6f16baa5bfa12061e803051feb2907",
+  "installation": {
+    "run": 17852,
+    "receipt": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/integrated-7d1-final-local-20261025/install.json",
+    "sha256": "91dd754175a5bba919fd6621253102c1d5f19d9117f559f8f54850db040f5cb7",
+    "observed_receipt_sha256": "0542a48f9ff8c92b0b724bf83402c1e4bd17a7bd12c63609fdf1ef775b22f005"
+  },
+  "controls": [
+    {
+      "label": "attention",
+      "run_id": "run-0598b87d7660dee0cdc2d219",
+      "number": 17854,
+      "receipt": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/integrated-7d1-final-local-20261025/attention.json",
+      "receipt_sha256": "40710a1904d9e175bef452dc6d2a14ac30ed719d30dd66e6099a86cc3e68336a",
+      "status": "completed",
+      "detail": {
+        "device": "NVIDIA GeForce RTX 4070 Laptop GPU",
+        "mode": "attention",
+        "refused": [
+          "dropout",
+          "random"
+        ],
+        "runtime": "0.32.3",
+        "seed": 1792928000,
+        "tensorfs": "0.15.8",
+        "torch": "2.14.1+cu130",
+        "zero_dropout_host_graph_launches": 1
+      }
+    },
+    {
+      "label": "conv-prepared-watched",
+      "run_id": "run-f03ccafecd8c7feeca84ed16",
+      "number": 17855,
+      "receipt": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/integrated-7d1-final-local-20261025/conv-prepared-watched.json",
+      "receipt_sha256": "435f16f6f5fdd732afcdc21e874f4515f61d7de5f4d5cc937c3e7e7d35ed42f7",
+      "status": "completed",
+      "detail": {
+        "body_calls": 2,
+        "capture_pauses": 1,
+        "capture_status": [
+          {
+            "code": 0,
+            "stage": "before-pause",
+            "status": 1
+          },
+          {
+            "code": 0,
+            "stage": "after-pause",
+            "status": 1
+          }
+        ],
+        "completed_steps": 2,
+        "cudnn": 92400,
+        "device": "NVIDIA GeForce RTX 4070 Laptop GPU",
+        "max_abs": 0.0,
+        "mode": "conv-prepared-watched",
+        "native": {
+          "body_nodes": 4,
+          "closed": false,
+          "continuation_abi": 1,
+          "control_kernels_preloaded": true,
+          "device": 0,
+          "execution_mode": "cuda_conditional_while",
+          "host_graph_launches": 1,
+          "steps_per_launch": 2,
+          "validated_nodes": 6
+        },
+        "pid": 3584005,
+        "request_id": "528",
+        "runtime": "0.32.3",
+        "samples_after_prepare": 2,
+        "samples_after_resume": 3,
+        "samples_before_prepare": 0,
+        "seed": 1792928001,
+        "tensorfs": "0.15.8",
+        "torch": "2.14.1+cu130",
+        "watcher_threads": [
+          136292959995584
+        ]
+      }
+    },
+    {
+      "label": "owners",
+      "run_id": "run-4c9b81a6c9849986842b5e52",
+      "number": 17856,
+      "receipt": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/integrated-7d1-final-local-20261025/owners.json",
+      "receipt_sha256": "044c23e217f5e95e6352181ee4dedd084a877a495a0b74a1a183918d746f6057",
+      "status": "completed",
+      "detail": {
+        "cold_no_read": "prepared_graph_ineligible: capture requires the component's weights to be resident",
+        "device": "NVIDIA GeForce RTX 4070 Laptop GPU",
+        "hook_refusal": "prepared_graph_ineligible: a package forward hook on Linear",
+        "host_graph_launches": 1,
+        "kernel_registry_epoch_invalidated": true,
+        "overlap_after_capture": false,
+        "overlap_before_capture": false,
+        "per_step_lora_refusal": "prepared_graph_ineligible: prepared repeats require a fixed baked LoRA representation",
+        "phase_changes": [
+          {
+            "missing_bytes": 2097152,
+            "models": [
+              "resident-owner-proof/sha256:2d080aaed81afd78d25701d78fe45b5d10c639a60edf507e563a329ef47482aa/net"
+            ],
+            "native_reclaimed_bytes": 0,
+            "torch_returned_bytes": 0,
+            "torch_unused_bytes": 347995136,
+            "window_bytes": 2097152
+          },
+          {
+            "missing_bytes": 2097152,
+            "models": [
+              "resident-owner-proof/sha256:2d080aaed81afd78d25701d78fe45b5d10c639a60edf507e563a329ef47482aa/next"
+            ],
+            "native_reclaimed_bytes": 0,
+            "torch_returned_bytes": 0,
+            "torch_unused_bytes": 364640256,
+            "window_bytes": 2097152
+          }
+        ],
+        "real_oom_restored_and_healthy": true,
+        "resident_read_bytes": 0,
+        "runtime": "0.32.3",
+        "state_restored": "prepared_graph_ineligible: recording changed the model's state: counter",
+        "tensorfs": "0.15.8"
+      }
+    },
+    {
+      "label": "sdxl-parity-2-1.0",
+      "run_id": "run-12f397bcbcf3ca26ea6c47a6",
+      "number": 17858,
+      "receipt": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/integrated-7d1-final-local-20261025/sdxl-parity-2-1.0.json",
+      "receipt_sha256": "7417996ee79f4be81664feca2f68592064949f5978471f96f9ce90f5b1676240",
+      "status": "completed",
+      "detail": {
+        "cases": [
+          {
+            "guidance": 1.0,
+            "max_abs_error": 0.0,
+            "steps": 2
+          }
+        ],
+        "device": "NVIDIA GeForce RTX 4070 Laptop GPU",
+        "nonresident_zero_read_refusal": true,
+        "package_commit": "a3755916454acff2e941644776f74c1e371766ca",
+        "runtime": "0.32.3",
+        "runtime_commit": "7d1e7854ca638c5d153c6601f2d2c2b169d0b133",
+        "seed": 1792928010,
+        "source_sha256": "334ab581dd19c924c995f03ee2d4b46fa7f2435020cd808be5d8be4090a4bad6",
+        "tensorfs": "0.15.8",
+        "torch": "2.14.1+cu130",
+        "unsupported_prediction_refused": true
+      }
+    },
+    {
+      "label": "sdxl-parity-2-7.0",
+      "run_id": "run-a33d4b4a6240a0f0d4952f40",
+      "number": 17859,
+      "receipt": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/integrated-7d1-final-local-20261025/sdxl-parity-2-7.0.json",
+      "receipt_sha256": "c1e576acac37e5fbd72082e942988c86ace715b4f518f6dc17799b7608ffa40f",
+      "status": "completed",
+      "detail": {
+        "cases": [
+          {
+            "guidance": 7.0,
+            "max_abs_error": 0.0,
+            "steps": 2
+          }
+        ],
+        "device": "NVIDIA GeForce RTX 4070 Laptop GPU",
+        "nonresident_zero_read_refusal": true,
+        "package_commit": "a3755916454acff2e941644776f74c1e371766ca",
+        "runtime": "0.32.3",
+        "runtime_commit": "7d1e7854ca638c5d153c6601f2d2c2b169d0b133",
+        "seed": 1792928011,
+        "source_sha256": "334ab581dd19c924c995f03ee2d4b46fa7f2435020cd808be5d8be4090a4bad6",
+        "tensorfs": "0.15.8",
+        "torch": "2.14.1+cu130",
+        "unsupported_prediction_refused": true
+      }
+    },
+    {
+      "label": "sdxl-parity-7-1.0",
+      "run_id": "run-5285d2d9fb1b5e8e5cc7f499",
+      "number": 17860,
+      "receipt": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/integrated-7d1-final-local-20261025/sdxl-parity-7-1.0.json",
+      "receipt_sha256": "21a9fe96061116e4e7311f95493acf4481a07a00dd6236b59c0fe594a2a2a741",
+      "status": "completed",
+      "detail": {
+        "cases": [
+          {
+            "guidance": 1.0,
+            "max_abs_error": 0.0,
+            "steps": 7
+          }
+        ],
+        "device": "NVIDIA GeForce RTX 4070 Laptop GPU",
+        "nonresident_zero_read_refusal": true,
+        "package_commit": "a3755916454acff2e941644776f74c1e371766ca",
+        "runtime": "0.32.3",
+        "runtime_commit": "7d1e7854ca638c5d153c6601f2d2c2b169d0b133",
+        "seed": 1792928012,
+        "source_sha256": "334ab581dd19c924c995f03ee2d4b46fa7f2435020cd808be5d8be4090a4bad6",
+        "tensorfs": "0.15.8",
+        "torch": "2.14.1+cu130",
+        "unsupported_prediction_refused": true
+      }
+    },
+    {
+      "label": "sdxl-parity-7-7.0",
+      "run_id": "run-a8758ebba386b0c3d66d560f",
+      "number": 17861,
+      "receipt": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/integrated-7d1-final-local-20261025/sdxl-parity-7-7.0.json",
+      "receipt_sha256": "ef7c9d7e0dc105a3a036c6d19b94f15e36e2286fbe8626fc1308eb1ef50371b8",
+      "status": "completed",
+      "detail": {
+        "cases": [
+          {
+            "guidance": 7.0,
+            "max_abs_error": 0.0,
+            "steps": 7
+          }
+        ],
+        "device": "NVIDIA GeForce RTX 4070 Laptop GPU",
+        "nonresident_zero_read_refusal": true,
+        "package_commit": "a3755916454acff2e941644776f74c1e371766ca",
+        "runtime": "0.32.3",
+        "runtime_commit": "7d1e7854ca638c5d153c6601f2d2c2b169d0b133",
+        "seed": 1792928013,
+        "source_sha256": "334ab581dd19c924c995f03ee2d4b46fa7f2435020cd808be5d8be4090a4bad6",
+        "tensorfs": "0.15.8",
+        "torch": "2.14.1+cu130",
+        "unsupported_prediction_refused": true
+      }
+    },
+    {
+      "label": "sdxl-parity-30-1.0",
+      "run_id": "run-8759004761d6dc4d00071654",
+      "number": 17862,
+      "receipt": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/integrated-7d1-final-local-20261025/sdxl-parity-30-1.0.json",
+      "receipt_sha256": "e3b7e444321d62dbda8184495a449fbf0d1abfff9f0ec5a958f2850c6d91f038",
+      "status": "completed",
+      "detail": {
+        "cases": [
+          {
+            "guidance": 1.0,
+            "max_abs_error": 0.0,
+            "steps": 30
+          }
+        ],
+        "device": "NVIDIA GeForce RTX 4070 Laptop GPU",
+        "nonresident_zero_read_refusal": true,
+        "package_commit": "a3755916454acff2e941644776f74c1e371766ca",
+        "runtime": "0.32.3",
+        "runtime_commit": "7d1e7854ca638c5d153c6601f2d2c2b169d0b133",
+        "seed": 1792928014,
+        "source_sha256": "334ab581dd19c924c995f03ee2d4b46fa7f2435020cd808be5d8be4090a4bad6",
+        "tensorfs": "0.15.8",
+        "torch": "2.14.1+cu130",
+        "unsupported_prediction_refused": true
+      }
+    },
+    {
+      "label": "sdxl-parity-30-7.0",
+      "run_id": "run-8d8b66335411d8537904e298",
+      "number": 17863,
+      "receipt": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/integrated-7d1-final-local-20261025/sdxl-parity-30-7.0.json",
+      "receipt_sha256": "5baba8204c4c158b3c041c761f401f804a7ed67cfcc438b547e233f21c92e3ab",
+      "status": "completed",
+      "detail": {
+        "cases": [
+          {
+            "guidance": 7.0,
+            "max_abs_error": 0.0,
+            "steps": 30
+          }
+        ],
+        "device": "NVIDIA GeForce RTX 4070 Laptop GPU",
+        "nonresident_zero_read_refusal": true,
+        "package_commit": "a3755916454acff2e941644776f74c1e371766ca",
+        "runtime": "0.32.3",
+        "runtime_commit": "7d1e7854ca638c5d153c6601f2d2c2b169d0b133",
+        "seed": 1792928015,
+        "source_sha256": "334ab581dd19c924c995f03ee2d4b46fa7f2435020cd808be5d8be4090a4bad6",
+        "tensorfs": "0.15.8",
+        "torch": "2.14.1+cu130",
+        "unsupported_prediction_refused": true
+      }
+    }
+  ],
+  "nvfp4_control": {
+    "reviewed_utc": "2026-10-25T11:38:30.778892+00:00",
+    "run": 17865,
+    "run_id": "run-396cc29d975fb459e972b753",
+    "status": "completed",
+    "receipt": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/integrated-7d1-final-local-20261025/runtime-nvfp4-control.json",
+    "receipt_sha256": "a5336beedfeea87c9d3e90c8a2d2b88045f144f09b273f8d6d3efa77eb9df65b",
+    "runtime_commit": "7d1e7854ca638c5d153c6601f2d2c2b169d0b133",
+    "tensorfs": "0.15.8",
+    "decoder_sha256": "9d5117e8d48c47fd6efce82d0710bf3c1c5cf436da6ccefce09cc9a853dcc5d4",
+    "provider_revision": "2/sha256:49e5cb5a2fdc918ce05ffc4a9a09993d10a8768cbc578e94e9c6eed901e88f06",
+    "provider_cases": 48,
+    "dtype_cases": {
+      "F32": 16,
+      "BF16": 16,
+      "F16": 16
+    },
+    "unique_provider_cases": 48,
+    "warm_final_bindings": {
+      "fallback_blocks": 0,
+      "fills": 1,
+      "final_resident_bytes": 2097152,
+      "hits": 30,
+      "native_prefetch": true,
+      "raw_resident_bytes": 2097152,
+      "resident_scope": "process"
+    },
+    "warm_store_logical_bytes": 37384,
+    "refill_final_bindings": {
+      "fallback_blocks": 0,
+      "fills": 1,
+      "final_resident_bytes": 2097152,
+      "hits": 0,
+      "native_prefetch": true,
+      "raw_resident_bytes": 2097152,
+      "resident_scope": "process"
+    },
+    "refill_store_logical_bytes": 37384,
+    "refill_weight_residency": {
+      "evictions": 2,
+      "fills": 4,
+      "hits": 30,
+      "pinned_bytes": 0,
+      "poisoned": false,
+      "preferred_bytes": 0,
+      "ready_bytes": 4194304,
+      "reclaimable_bytes": 4194304,
+      "reclaimed_bytes": 4194304,
+      "regions": 2,
+      "reserved_bytes": 4194304,
+      "resident_bytes": 4194304
+    },
+    "escaped_alias_preserved": true,
+    "scope": "Actual provider decode parity plus retained final-buffer reuse/refill. Completed logical reads only, not physical disk/PCIe traffic or exposed stall benchmark. Default route selection not qualified: this gate explicitly requests decoded_float."
+  },
+  "recipe": {
+    "canonical_evidence": "../../../tensorfs/recipe-quantize/evidence/8499-7d1-9e95-both-lanes.json",
+    "canonical_evidence_sha256": "bc2bc56a443d9b6ebb90716af93e6b99c82e1161ded2ff34769c1609dd28bbba",
+    "source_and_upload_runs": [
+      17866,
+      17867
+    ],
+    "quantization_and_consumer_runs": [
+      17868,
+      17869,
+      17870,
+      17871
+    ],
+    "note": "Already committed atCreator0dc08bc28/051d; full lane facts and12rawreceipt hashes are retained there. No duplicated traces."
+  },
+  "limitations": [
+    "No comparison benchmark: sharedlocal firstuse/setup/compilation overlap is not isolated.",
+    "Owner overlap_before_capture and overlap_after_capture were bothfalse; thisrun doesnot demonstratepositiveoverlap.",
+    "CapacityOOM restored-and-healthy is notsticky-device-faultrecovery proof.",
+    "Decoder gate explicitlyselects decoded_float; its48cases do notestablishdefaultfallbackrouting.",
+    "Recipe NVFP4 native-leaf provider name onSM89 is notNVFP4hardwareexecution proof.",
+    "Logical source read/write counters are completedapplicationbytes, notphysicaldisk/PCIetraffic or exposedGPUstalls.",
+    "FullSDXL17873 is separate andunqualifiedfornative29: observedtypedprelaunchunsupported-node/bounded-inspectionrefusal, theneagercallbacks. Itsfinalimage resultisnotincluded here.",
+    "Finalhealthyrestoration andstandalone/Windows/multiGPU cases are notclaimedbythis controlsreceipt."
+  ]
+}

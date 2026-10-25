@@ -132,3 +132,7 @@ No callback is replaced, no exception is injected, and no mock allocator or mode
 Failure notes retain the raw capture observations. The original manual `conv-watched` mode
 remains unchanged as a diagnostic and is not expected to be protected by PreparedRepeat's
 production capture scope. Source checks are separate from the required real red/green runs.
+
+## Final combined candidate controls
+
+[Creator8499 / Runtime7d1 / TensorFS9e95 real controls](../native-load-execute/evidence/8499-7d1-integrated-controls.md) preserve the exact25October2026 GPU receipts and link the separate recipe proof. This control proof does not claim full-model native29 completion or a performance comparison.
