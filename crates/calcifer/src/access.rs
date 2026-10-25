@@ -6,7 +6,7 @@
 //! one, at the session's own refresh point (`PUT /v1/bearer`). Signed out, a run reads public
 //! releases at its Hub's origin; a run that publishes needs the sign-in.
 use std::{
-    sync::Weak,
+    sync::{Arc, Weak},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -82,7 +82,7 @@ impl Machines {
             false => None,
         };
         if let (Some(machine), Some(bearer)) = (&run.machine, &bearer) {
-            self.holds(machine, &origin, bearer);
+            self.holds(machine, &origin, Some(bearer));
         }
         let tensorfs = bearer.map(|bearer| tensorfs(&facts, &bearer));
         Ok(Access {
@@ -117,8 +117,41 @@ impl Machines {
 }
 
 impl Machines {
+    /// Reattaching accepted work restores the in-memory forwarding registration lost at a
+    /// controller restart. Minting and forwarding stay off the run's observer: a Hub refusal
+    /// or silence must not prevent its events, outcome or cancellation from being observed.
+    pub(crate) fn resume_bearer(self: &Arc<Self>, run: &RunRow) {
+        if run.spec.tensorfs.is_some() || run.cancel_requested {
+            return;
+        }
+        let (Some(machine), Some(hub)) = (run.machine.clone(), run.hub.clone()) else {
+            return;
+        };
+        let machines = self.clone();
+        self.spawn(async move {
+            let origin = machines.hubs.resolve(&hub).await;
+            if machines.hubs.client(&origin).is_ok()
+                && !machines.holds(&machine, &origin, None)
+            {
+                // Another machine may already have armed this Hub's refresh. The resumed
+                // one still needs its current token now, not at the next refresh point.
+                match machines.push(&origin).await {
+                    Ok(_) => {}
+                    Err(Denied::Unreachable(error)) => {
+                        tracing::warn!(%origin, %error, "restoring the machine's Hub bearer");
+                    }
+                    Err(Denied::Refused(reason)) => {
+                        tracing::warn!(%origin, code = %reason.code, "restoring the machine's Hub bearer: {}", reason.message);
+                    }
+                }
+            }
+        });
+    }
+
     /// `machine` was sent `bearer`, this computer's at `origin`: it is given each one minted after.
-    fn holds(&self, machine: &str, origin: &Origin, bearer: &Bearer) {
+    /// None when reattaching: send the current bearer immediately, then keep forwarding it.
+    /// Returns whether this started the Hub's forwarding task.
+    fn holds(&self, machine: &str, origin: &Origin, bearer: Option<&Bearer>) -> bool {
         let mut holders = lock(&self.bearers);
         let armed = holders.contains_key(origin);
         holders
@@ -128,8 +161,9 @@ impl Machines {
         drop(holders);
         if !armed {
             let granting = self.calcifer.granting.get().cloned().unwrap_or_default();
-            self.spawn(refresh(granting, origin.clone(), bearer.clone()));
+            self.spawn(refresh(granting, origin.clone(), bearer.cloned()));
         }
+        !armed
     }
 
     /// Mints this computer's bearer at `origin` and gives it to each machine sent one that is
@@ -176,14 +210,14 @@ impl Machines {
 /// From the session's own refresh point of `held`, the bearer the machines were sent, each one
 /// it mints at `origin` goes to them (`push`), until no machine is left to give it to. A mint
 /// that fails is asked again, backing off to a minute, for as long as machines hold one.
-async fn refresh(machines: Weak<Machines>, origin: Origin, held: Bearer) {
-    let mut due = held.refresh_at();
+async fn refresh(machines: Weak<Machines>, origin: Origin, held: Option<Bearer>) {
+    let mut due = held.map_or(0, |bearer| bearer.refresh_at());
     let mut failing = Duration::ZERO;
     loop {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
-        if failing.is_zero() && due <= now {
+        if due != 0 && failing.is_zero() && due <= now {
             tracing::warn!(%origin, "the Hub's bearers expire within the session's refresh margin");
             if let Some(machines) = machines.upgrade() {
                 lock(&machines.bearers).remove(&origin);
