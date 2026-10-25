@@ -23,8 +23,10 @@ class Run:
         size,
         machine="local",
         file_mib=0,
+        image_count=1,
     ):
         self.cli, self.tag = cli, tag
+        self.image_count = image_count
         self.record = None
         self.marks = {}
         self.phases = {}
@@ -42,6 +44,7 @@ class Run:
                 f"iterations={iterations}",
                 f"size={size}",
                 f"file_mib={file_mib}",
+                f"image_count={image_count}",
                 "--on",
                 machine,
                 "--gpus=1",
@@ -137,13 +140,14 @@ class Run:
         from PIL import Image
 
         outputs = self.record.get("output", [])
-        assert len(outputs) == 1, "one returned image was not published"
-        path = Path(outputs[0]["path"])
-        with Image.open(path) as saved:
-            actual = hashlib.sha256(saved.convert("RGB").tobytes()).hexdigest()
-        assert actual == self.record["result"]["pixels_sha256"], (
-            "the downloaded lossless image differs from the actual GPU pixels"
-        )
+        assert len(outputs) == self.image_count, "returned images were not published"
+        for output in outputs:
+            path = Path(output["path"])
+            with Image.open(path) as saved:
+                actual = hashlib.sha256(saved.convert("RGB").tobytes()).hexdigest()
+            assert actual == self.record["result"]["pixels_sha256"], (
+                "the downloaded lossless image differs from the actual GPU pixels"
+            )
 
     def close(self):
         # Only this controller's CLI watcher is ended here; run cancellation uses the public verb.
@@ -166,6 +170,11 @@ def main():
     cancellation.add_argument("--cancel-output", action="store_true")
     cancellation.add_argument("--cancel-custody", action="store_true")
     parser.add_argument("--file-mib", type=int, default=240)
+    parser.add_argument(
+        "--cancel-after",
+        type=float,
+        help="measured controller delay after queuing the successor; machine timestamps must still prove the race",
+    )
     parser.add_argument("--expect", choices=("overlap", "baseline"), default="overlap")
     args = parser.parse_args()
     if not 512 <= args.size <= 4096:
@@ -173,8 +182,14 @@ def main():
     cancel = args.cancel_output or args.cancel_custody
     if cancel and args.expect != "overlap":
         parser.error("cancellation while reusing requires the overlap candidate")
-    if not 1 <= args.file_mib <= 240:
-        parser.error("file-mib must be 1..240")
+    if not 1 <= args.file_mib <= 480:
+        parser.error(
+            "file-mib must be 1..480 (below the installed aggregate output bound)"
+        )
+    if args.cancel_after is not None and (
+        not cancel or not 0 <= args.cancel_after <= 30
+    ):
+        parser.error("cancel-after requires a cancellation case and must be 0..30")
     args.out.mkdir(parents=True, exist_ok=False)
     target = Path(__file__).resolve().parent / "run"
     runs = []
@@ -184,6 +199,9 @@ def main():
         "cancel_custody": args.cancel_custody,
         "passed": False,
         "machine": args.on,
+        "cancel_after": args.cancel_after,
+        "file_mib": args.file_mib if args.cancel_custody else 0,
+        "image_count": 4 if args.cancel_output else 1,
     }
     seed = time.time_ns() & ((1 << 53) - 1)
     deadline = time.monotonic() + 180
@@ -204,9 +222,16 @@ def main():
             args.size,
             args.on,
             args.file_mib if args.cancel_custody else 0,
+            4 if args.cancel_output else 1,
         )
         runs.append(first)
-        first.wait_for(lambda: "gpu_started" in first.marks, deadline)
+        first.wait_for(
+            lambda: (
+                first.record is not None
+                and first.record.get("accepted_at_ms") is not None
+            ),
+            deadline,
+        )
         second = Run(
             args.cozy,
             target,
@@ -214,14 +239,19 @@ def main():
             "next",
             seed + 2,
             False,
-            8192 if args.cancel_custody else 4096 if args.cancel_output else 256,
+            8192 if cancel else 256,
             512,
             args.on,
         )
         runs.append(second)
-        second.wait_for(lambda: "gpu_started" in second.marks, deadline)
-        if args.cancel_custody:
-            first.wait_for(lambda: "output_encoding.end" in first.phases, deadline)
+        if args.cancel_after is not None:
+            # External timing avoids delayed WAN log delivery. This does not alter the
+            # real workload; the machine's final timestamps decide whether it was exercised.
+            time.sleep(args.cancel_after)
+        else:
+            second.wait_for(lambda: "gpu_started" in second.marks, deadline)
+            if args.cancel_custody:
+                first.wait_for(lambda: "output_encoding.end" in first.phases, deadline)
         if cancel:
             # Refresh any already queued terminal report before claiming cancellation was exercised.
             while not first.events.empty():

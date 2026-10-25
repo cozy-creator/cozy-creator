@@ -21,16 +21,22 @@ Remote overlap and cancellation use machine-side phase timestamps, avoiding comp
 the laptop clock and the GPU host clock. `--expect baseline` records the GPU handoff gap without
 classifying encoding overlap: controller settlement is a later delivery event even on the same host.
 
-The custody cancellation case produces a real ordinary file (240 MiB by default, bounded by
-`--file-mib`). It cancels after encoding finishes and must observe accepted cancellation before
+The custody cancellation case produces a real ordinary file (240 MiB by default, at most
+480 MiB with `--file-mib`, below the installed aggregate output limit). It cancels after encoding finishes and must observe accepted cancellation before
 the machine's output-finished transition, while the next GPU call remains active and succeeds.
 It exercises actual copy/hash/fsync work with no sleeps or injected barriers. If the output settles
 before cancellation arrives, the case fails as unexercised; it cannot claim the race was covered.
+For remote machines, `--cancel-after SECONDS` schedules the external cancellation after queuing
+the successor, using measured workload timing instead of waiting for a delayed network log.
+The final machine timestamps must still prove cancellation landed inside the requested interval.
+This delay changes only the controller, never the GPU workload, encoder or custody path.
 
-Run through the shared heavy wrapper with a Python that has Pillow (for downloaded pixel parity).
+Use a Python that has Pillow (for downloaded pixel parity); remote orchestration may run at
+nice 19 without holding a local compilation slot.
 Each case first warms the same entrypoint, then submits the image request and its queued successor.
-The default image is 4096x4096 random RGB, at most 48 MiB raw; the extra cancellation case does
-more real GEMM to keep the successor active while the preceding output is canceled.
+The default image is 4096x4096 random RGB, at most 48 MiB raw. The encoding-cancellation case
+produces four actual images (192 MiB total) and does more real GEMM to keep the successor active
+while the preceding output is canceled. The successor is queued once the first request is accepted.
 
 Acceptance: correct GPU result, a downloaded image whose decoded pixels match the GPU source
 (ordinary case), same executor PID, and first GPU work complete before the successor starts.
@@ -41,6 +47,13 @@ only stops the proof and requests cancellation of its own
 runs; it never authorizes killing the daemon, an executor, or somebody else's work.
 
 No successful candidate run is claimed until a receipt exists against the changed TensorD binary.
+
+Installed Creator377 / TensorFS377 / Runtime272 qualification on dororo passed ordinary overlap
+(17112–17114), cancellation during four-image encoding (17143–17145 with `--cancel-after 1.5`),
+and capacity-one backlog (17165–17169, peak detached outputs exactly two). Image pixels were
+verified against their GPU source. The 480 MiB custody-only cancellation attempts landed outside
+the roughly 440 ms custody window and remain unqualified; those failures are preserved.
+Receipts live under `outputs/varena-remote-20261024/cohort-2` in the workspace root.
 
 The burst case requires the service's actual CPU parallelism and an idle qualification window.
 It checks that detached output work never exceeds that capacity plus the one active GPU slot,

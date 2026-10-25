@@ -62,11 +62,15 @@ def native_loop(payload: LoopRequest, ctx: Context) -> LoopResult:
     try:
         execution = ctx.plan(plan)
         assert execution is not None
-        time.sleep(0.25)  # The GPU must continue while this application thread is parked.
+        time.sleep(
+            0.25
+        )  # The GPU must continue while this application thread is parked.
         value = float(execution.wait()[0].item())
         facts = plan.facts()
         if value != payload.steps or calls != 2 or facts["host_graph_launches"] != 1:
-            raise RuntimeError("installed native execution differs from its declared loop")
+            raise RuntimeError(
+                "installed native execution differs from its declared loop"
+            )
         if facts["execution_mode"] != "cuda_conditional_while":
             raise RuntimeError("the installed path did not use a GPU-driven loop")
         return LoopResult(True, payload.steps, calls, 1, facts["execution_mode"], value)
@@ -110,9 +114,13 @@ async def gpu_parent(ctx: Context, *, payload: FamilyRequest) -> FamilyResult:
     held = torch.full((32,), payload.value, dtype=torch.int64, device=str(ctx.device))
     child = await gpu_child(payload=payload)
     if child.value != payload.value + 1 or int(held.sum().item()) != 32 * payload.value:
-        raise RuntimeError("parent/child CUDA values differ from their expected results")
+        raise RuntimeError(
+            "parent/child CUDA values differ from their expected results"
+        )
     if child.pid == os.getpid():
-        raise RuntimeError("an inline child did not exercise separate-executor GPU admission")
+        raise RuntimeError(
+            "an inline child did not exercise separate-executor GPU admission"
+        )
     return FamilyResult(True, os.getpid(), child.pid)
 
 
@@ -173,9 +181,10 @@ class Request(msgspec.Struct, forbid_unknown_fields=True):
     tag: str
     seed: int
     image: bool = False
+    image_count: Annotated[int, msgspec.Meta(ge=1, le=4)] = 1
     size: Annotated[int, msgspec.Meta(ge=512, le=4096)] = 4096
     iterations: Annotated[int, msgspec.Meta(ge=1, le=8192)] = 16
-    file_mib: Annotated[int, msgspec.Meta(ge=0, le=240)] = 0
+    file_mib: Annotated[int, msgspec.Meta(ge=0, le=480)] = 0
 
 
 class Result(msgspec.Struct):
@@ -192,7 +201,7 @@ class Result(msgspec.Struct):
     ]
     files: Annotated[
         list[FileAsset],
-        AssetBound(max_bytes=240 << 20, media_types=("application/octet-stream",)),
+        AssetBound(max_bytes=480 << 20, media_types=("application/octet-stream",)),
     ]
     file_sha256: str = ""
 
@@ -237,7 +246,7 @@ def run(payload: Request, ctx: Context, out: Outputs, tel: Telemetry) -> Result:
             raise RuntimeError(
                 "the actual GPU GEMM output differs from its identity input"
             )
-        asset = None
+        assets = []
         file_asset = None
         file_digest = ""
         digest = ""
@@ -257,9 +266,12 @@ def run(payload: Request, ctx: Context, out: Outputs, tel: Telemetry) -> Result:
                 .tobytes()
             )
             digest = hashlib.sha256(pixels).hexdigest()
-            asset = out.save_image(
-                ImageFrame(payload.size, payload.size, pixels), format="webp"
-            )
+            for _ in range(payload.image_count):
+                assets.append(
+                    out.save_image(
+                        ImageFrame(payload.size, payload.size, pixels), format="webp"
+                    )
+                )
         if payload.file_mib:
             # An ordinary bounded file exercises real copy/hash/fsync after encoding ends.
             generator = torch.Generator(device=device).manual_seed(payload.seed)
@@ -295,7 +307,7 @@ def run(payload: Request, ctx: Context, out: Outputs, tel: Telemetry) -> Result:
         started,
         finished,
         digest,
-        [asset] if asset is not None else [],
+        assets,
         [file_asset] if file_asset is not None else [],
         file_digest,
     )
