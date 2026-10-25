@@ -969,7 +969,7 @@ impl Pool {
         if session.executor.preparing_lookahead() {
             // This Session was removed from the idle pool; no invocation owns it. An
             // outstanding CPU preflight must not hold GPU memory behind a serialized Map.
-            session.executor.lookahead().offer(None, "");
+            session.executor.lookahead().offer(None, "", None);
             let why = self.keep_idle(engine, session).err().map(|error| error.to_string()).unwrap_or_default();
             self.notes.note(serde_json::json!({"event": "offload", "for": reason, "pid": pid,
                 "plan": plan, "need": need, "free_before": before, "free_after": self.free(&lane),
@@ -1886,7 +1886,9 @@ impl Pool {
                 matches!(record.state, State::Starting | State::Running) && record.cancel_actor.is_none())) {
                 continue;
             }
-            ahead.offer(next.filter(|_| selected).map(|(record, plan)| prepare_request(record, plan)), &current);
+            let offered = next.filter(|_| selected);
+            ahead.offer(offered.map(|(record, plan)| prepare_request(record, plan)), &current,
+                offered.and_then(|(record, _)| record.submission.as_ref()).map(|submission| submission.request_id.as_str()));
         }
     }
     /// Where `plan` runs now, with its lane's call slots: inside its root's `lane` when it has
