@@ -1,9 +1,11 @@
 //! tensorfs-py: the `tensorfs` wheel's compiled half. It marshals; every byte-level fact comes
-//! from `tensorfs` and `varena`. Torch stays outside: tensors cross as DLPack.
+//! from `tensorfs`. Framework tensors cross as DLPack; optional Varena owns CUDA weight pages.
 
 #![deny(unsafe_code)]
 
 mod ceiling;
+#[allow(unsafe_code)]
+mod varena;
 #[allow(unsafe_code)]
 mod cleanup;
 mod errors;
@@ -19,6 +21,8 @@ mod store;
 #[allow(unsafe_code)]
 mod tensors;
 #[cfg(feature = "store")]
+mod quantize;
+#[cfg(feature = "store")]
 mod credentials;
 #[cfg(feature = "store")]
 #[allow(unsafe_code)]
@@ -28,12 +32,6 @@ mod verification;
 #[cfg(feature = "store")]
 #[allow(unsafe_code)]
 mod resident_decode;
-#[cfg(feature = "store")]
-#[allow(unsafe_code)]
-mod varena;
-#[cfg(feature = "store")]
-#[allow(unsafe_code)]
-mod agent;
 
 use pyo3::prelude::*;
 
@@ -47,13 +45,13 @@ fn python_distribution_version() -> String {
 
 #[pymodule]
 fn _ext(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    // The library's warnings reach the process's stderr. SPIKE DIAG: RUST_LOG=debug adds the
-    // mechanism's own ops (target varena_diag).
+    // The library's warnings reach the process's stderr.
     let level = std::env::var("RUST_LOG").ok().and_then(|l| l.parse().ok()).unwrap_or(tracing::level_filters::LevelFilter::INFO);
     let _ = tracing_subscriber::fmt().with_max_level(level).with_writer(std::io::stderr).try_init();
     errors::install(m)?;
     cleanup::install(m)?;
     ceiling::install(m)?;
+    varena::install(m)?;
     executor::install(m)?;
     m.add("__version__", python_distribution_version())?;
     // The store format every process on the machine shares.
@@ -62,7 +60,5 @@ fn _ext(m: &Bound<'_, PyModule>) -> PyResult<()> {
     store::install(m)?;
     #[cfg(feature = "store")]
     credentials::install(m)?;
-    #[cfg(feature = "store")]
-    varena::install(m)?;
     Ok(())
 }

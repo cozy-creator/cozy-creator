@@ -1,499 +1,243 @@
-//! The CUDA VMM [`Backend`]: shareable physical pages (a POSIX fd, a WIN32 handle) mapped into
-//! reserved address space, filled pages remapped read-only, and fills through TensorFS's engine
-//! into `Dst::Device` ordered on varena's copy stream. Everything runs in the device's primary
-//! context, the one torch uses, so a page's pointer is valid there unchanged. Nothing is stored
-//! but the device's facts: a page's id is its `CUmemGenericAllocationHandle`, an event's its
-//! `CUevent`.
+//! The CUDA Driver API boundary. No imported handles or foreign reservations.
+#![allow(unsafe_code)]
 
-use std::ffi::{c_char, c_int, c_void, CStr};
+use crate::{Error, Result};
+use libloading::Library;
+use std::ffi::{c_int, c_uint, c_void};
 
-use platform::handles::Owned;
-use tensorfs::io::cuda::{self, AccessDesc, AllocationProp, CUcontext, CUdevice, CUevent, CUstream, CtxGuard};
-use tensorfs::io::Dst;
+type Status = c_int;
+type Context = *mut c_void;
+type Handle = u64;
+type Pointer = u64;
 
-use crate::backend::{Access, Backend, Event, Events, Physical, Va};
-use crate::{Error, GpuId, Result};
-
-#[cfg(unix)]
-const HANDLES: u32 = cuda::MEM_HANDLE_TYPE_POSIX_FD;
-#[cfg(unix)]
-const HANDLES_SUPPORTED: c_int = cuda::ATTR_POSIX_FD_SUPPORTED;
-#[cfg(windows)]
-const HANDLES: u32 = cuda::MEM_HANDLE_TYPE_WIN32;
-#[cfg(windows)]
-const HANDLES_SUPPORTED: c_int = cuda::ATTR_WIN32_HANDLE_SUPPORTED;
-
-/// One driver call; the caller has the context entered.
-macro_rules! call {
-    ($op:literal, $f:ident($($arg:expr),* $(,)?)) => {{
-        // Each driver call is a trace span of its name: a subscriber can time every one.
-        let _call = tracing::trace_span!($op).entered();
-        // SAFETY: the documented driver ABI, on live handles of this backend's context; every
-        // out-param points at a live local.
-        cuda::check($op, unsafe { (cuda::driver()?.$f)($($arg),*) })
-    }};
-}
-
-/// This process's reference on the device's primary context.
-struct Primary {
-    device: CUdevice,
-    ctx: usize,
-}
-
-impl Primary {
-    fn enter(&self) -> Result<CtxGuard> {
-        Ok(CtxGuard::enter(self.ctx as CUcontext)?)
-    }
-}
-
-impl Drop for Primary {
-    fn drop(&mut self) {
-        if let Ok(d) = cuda::driver() {
-            // SAFETY: releases the reference `open` retained.
-            unsafe { (d.primary_ctx_release)(self.device) };
-        }
-    }
-}
-
-/// `SECURITY_ATTRIBUTES` (minwinbase.h): with no descriptor, an exported page's NT handle gets
-/// the creator's default security; it crosses to a peer by `DuplicateHandle`, never by name.
-#[cfg(windows)]
 #[repr(C)]
-struct SecurityAttributes {
-    length: u32,
-    descriptor: *mut c_void,
-    inherit: i32,
+#[derive(Clone, Copy)]
+struct Location {
+    kind: c_int,
+    id: c_int,
 }
 
-/// One CUDA device's VMM mechanism.
-pub struct CudaBackend {
-    ordinal: i32,
-    /// Varena's copy stream: fills are ordered on it. Dropped (synchronized) before the context.
-    stream: cuda::Stream,
-    primary: Primary,
-    prop: AllocationProp,
-    granularity: u64,
-    capacity: u64,
-    nvml: Option<platform::gpu::Device>,
-    /// The device's used bytes `open` measured across making the context.
-    context: u64,
-    /// varena's event ids over the driver's handles (`CUevent` as usize): never reused.
-    events: Events<usize>,
-    /// What `prop`'s WIN32 metadata points at, for as long as pages are created.
-    #[cfg(windows)]
-    _security: Box<SecurityAttributes>,
-    /// This process's WDDM budget on the device's adapter (matched by LUID), where DXGI has one.
-    #[cfg(windows)]
-    budget: Option<std::sync::Arc<platform::gpu::Budget>>,
+#[repr(C)]
+struct AllocationProperties {
+    kind: c_int,
+    handles: c_int,
+    location: Location,
+    windows_metadata: *mut c_void,
+    flags: [u8; 8],
 }
 
-// SAFETY: driver handles are opaque and every use enters their context; `prop`'s only pointer is
-// the WIN32 metadata, owned by the backend and never written.
-unsafe impl Send for CudaBackend {}
-unsafe impl Sync for CudaBackend {}
+#[repr(C)]
+struct Access {
+    location: Location,
+    flags: c_int,
+}
 
-impl CudaBackend {
-    /// Device `ordinal` as CUDA enumerates it (after `CUDA_VISIBLE_DEVICES`), on its primary
-    /// context, retained while the backend lives.
-    pub fn open(ordinal: i32) -> Result<CudaBackend> {
-        let mut device: CUdevice = 0;
-        call!("cuDeviceGet", device_get(&mut device, ordinal))?;
-        for (attr, what) in [(cuda::ATTR_VMM_SUPPORTED, "virtual memory management"), (HANDLES_SUPPORTED, "shareable handles")] {
-            if cuda::attribute(device, attr)? == 0 {
-                return Err(Error::Invalid(format!("CUDA device {ordinal} has no {what}")));
-            }
+// CUDAAPI is __stdcall on Windows and the C ABI elsewhere.
+type Init = unsafe extern "system" fn(c_uint) -> Status;
+type DeviceGet = unsafe extern "system" fn(*mut c_int, c_int) -> Status;
+type Retain = unsafe extern "system" fn(*mut Context, c_int) -> Status;
+type Push = unsafe extern "system" fn(Context) -> Status;
+type Pop = unsafe extern "system" fn(*mut Context) -> Status;
+type Synchronize = unsafe extern "system" fn() -> Status;
+type Granularity =
+    unsafe extern "system" fn(*mut usize, *const AllocationProperties, c_int) -> Status;
+type Reserve = unsafe extern "system" fn(*mut Pointer, usize, usize, Pointer, u64) -> Status;
+type AddressFree = unsafe extern "system" fn(Pointer, usize) -> Status;
+type Create =
+    unsafe extern "system" fn(*mut Handle, usize, *const AllocationProperties, u64) -> Status;
+type Map = unsafe extern "system" fn(Pointer, usize, usize, Handle, u64) -> Status;
+type SetAccess = unsafe extern "system" fn(Pointer, usize, *const Access, usize) -> Status;
+type Unmap = unsafe extern "system" fn(Pointer, usize) -> Status;
+type Release = unsafe extern "system" fn(Handle) -> Status;
+type CopyHost = unsafe extern "system" fn(Pointer, *const c_void, usize) -> Status;
+
+pub(crate) struct Driver {
+    // Keep a primary-context retain for the process lifetime. CUDA reset/fork is unsupported.
+    context: usize,
+    device: c_int,
+    push: Push,
+    pop: Pop,
+    synchronize: Synchronize,
+    reserve: Reserve,
+    address_free: AddressFree,
+    create: Create,
+    map: Map,
+    set_access: SetAccess,
+    unmap: Unmap,
+    release: Release,
+    copy_host: CopyHost,
+    pub(crate) granularity: usize,
+}
+
+impl Driver {
+    pub(crate) fn open(ordinal: i32) -> Result<Self> {
+        #[cfg(windows)]
+        let name = "nvcuda.dll";
+        #[cfg(not(windows))]
+        let name = "libcuda.so.1";
+        // SAFETY: load the vendor CUDA driver, never application-provided plugin code.
+        let library =
+            unsafe { Library::new(name) }.map_err(|error| Error::Unsupported(error.to_string()))?;
+        macro_rules! symbol {
+            ($name:literal, $ty:ty) => {{
+                // SAFETY: each symbol uses the documented CUDA Driver API signature.
+                unsafe { library.get::<$ty>(concat!($name, "\0").as_bytes()) }
+                    .map(|symbol| *symbol)
+                    .map_err(|error| Error::Unsupported(error.to_string()))?
+            }};
         }
-        let nvml = platform::gpu::Device::open(&cuda::uuid(device)?)
-            .inspect_err(|e| tracing::warn!(target: "varena", "NVML: {e}: no process bytes measured"))
-            .ok();
-        let before = used(nvml.as_ref());
-        let (_, ctx) = cuda::primary_context(ordinal)?;
-        let primary = Primary { device, ctx: ctx as usize };
-        let stream = cuda::Stream::new(ordinal)?;
-        // A context that existed before `open` (a framework made it) measures 0 here.
-        let context = used(nvml.as_ref()).zip(before).map_or(0, |(after, before)| after.saturating_sub(before));
-        #[allow(unused_mut)]
-        let mut prop = AllocationProp::device(device, HANDLES);
-        #[cfg(windows)]
-        let security = Box::new(SecurityAttributes { length: std::mem::size_of::<SecurityAttributes>() as u32, descriptor: std::ptr::null_mut(), inherit: 0 });
-        #[cfg(windows)]
-        {
-            prop.win32_handle_meta_data = (&*security as *const SecurityAttributes).cast_mut().cast();
+        let init = symbol!("cuInit", Init);
+        let get_device = symbol!("cuDeviceGet", DeviceGet);
+        let retain = symbol!("cuDevicePrimaryCtxRetain", Retain);
+        let granularity = symbol!("cuMemGetAllocationGranularity", Granularity);
+        let mut driver = Self {
+            context: 0,
+            device: ordinal,
+            push: symbol!("cuCtxPushCurrent_v2", Push),
+            pop: symbol!("cuCtxPopCurrent_v2", Pop),
+            synchronize: symbol!("cuCtxSynchronize", Synchronize),
+            reserve: symbol!("cuMemAddressReserve", Reserve),
+            address_free: symbol!("cuMemAddressFree", AddressFree),
+            create: symbol!("cuMemCreate", Create),
+            map: symbol!("cuMemMap", Map),
+            set_access: symbol!("cuMemSetAccess", SetAccess),
+            unmap: symbol!("cuMemUnmap", Unmap),
+            release: symbol!("cuMemRelease", Release),
+            copy_host: symbol!("cuMemcpyHtoD_v2", CopyHost),
+            granularity: 0,
+        };
+        // CUDA registers process exit handlers; unloading its library after init is unsafe.
+        std::mem::forget(library);
+        // SAFETY: zero flags and valid output storage, as required by CUDA.
+        status("cuInit", unsafe { init(0) })?;
+        // SAFETY: get_device writes a device handle for the supplied ordinal.
+        status("cuDeviceGet", unsafe {
+            get_device(&mut driver.device, ordinal)
+        })?;
+        let mut context = std::ptr::null_mut();
+        // SAFETY: primary context retain with an initialized device and valid output pointer.
+        status("cuDevicePrimaryCtxRetain", unsafe {
+            retain(&mut context, driver.device)
+        })?;
+        driver.context = context as usize;
+        // SAFETY: properties initialized to pinned, local, non-exportable device memory.
+        status("cuMemGetAllocationGranularity", unsafe {
+            granularity(&mut driver.granularity, &driver.properties(), 0)
+        })?;
+        if driver.granularity == 0 {
+            return Err(Error::Unsupported(
+                "CUDA returned zero allocation granularity".into(),
+            ));
         }
-        #[cfg(windows)]
-        let budget = budget(device);
-        let _ctx = primary.enter()?;
-        let mut granularity = 0usize;
-        call!("cuMemGetAllocationGranularity", mem_get_allocation_granularity(&mut granularity, &prop, cuda::MEM_GRANULARITY_MINIMUM))?;
-        let (mut free, mut total) = (0usize, 0usize);
-        call!("cuMemGetInfo", mem_get_info(&mut free, &mut total))?;
-        drop(_ctx);
-        Ok(CudaBackend {
-            ordinal,
-            stream,
-            primary,
-            prop,
-            granularity: granularity as u64,
-            capacity: total as u64,
-            nvml,
-            context,
-            events: Events::default(),
-            #[cfg(windows)]
-            _security: security,
-            #[cfg(windows)]
-            budget,
+        Ok(driver)
+    }
+
+    fn properties(&self) -> AllocationProperties {
+        AllocationProperties {
+            kind: 1, // CU_MEM_ALLOCATION_TYPE_PINNED
+            handles: 0,
+            location: Location {
+                kind: 1,
+                id: self.device,
+            },
+            windows_metadata: std::ptr::null_mut(),
+            flags: [0; 8],
+        }
+    }
+
+    pub(crate) fn enter(&self) -> Result<ContextGuard<'_>> {
+        // SAFETY: the context is retained for the process lifetime. Push/pop is thread local.
+        status("cuCtxPushCurrent", unsafe {
+            (self.push)(self.context as Context)
+        })?;
+        Ok(ContextGuard { driver: self })
+    }
+
+    pub(crate) fn synchronize(&self) -> Result<()> {
+        // SAFETY: every caller enters this driver's primary context first.
+        status("cuCtxSynchronize", unsafe { (self.synchronize)() })
+    }
+
+    pub(crate) fn reserve(&self, bytes: usize) -> Result<u64> {
+        let mut ptr = 0;
+        // SAFETY: valid output pointer; size is rounded to this driver's allocation granularity.
+        status("cuMemAddressReserve", unsafe {
+            (self.reserve)(&mut ptr, bytes, 0, 0, 0)
+        })?;
+        Ok(ptr)
+    }
+
+    pub(crate) fn free_address(&self, ptr: u64, bytes: usize) -> Result<()> {
+        // SAFETY: only a successfully unmapped owned reservation reaches here.
+        status("cuMemAddressFree", unsafe {
+            (self.address_free)(ptr, bytes)
         })
     }
 
-
-    pub fn ordinal(&self) -> i32 {
-        self.ordinal
-    }
-
-    /// The copy stream (a `CUstream`).
-    pub fn stream(&self) -> usize {
-        self.stream.raw()
-    }
-
-    /// The device as the shared table names it.
-    pub fn gpu(&self) -> Result<GpuId> {
-        let mut name = [0 as c_char; 256];
-        call!("cuDeviceGetName", device_get_name(name.as_mut_ptr(), name.len() as c_int, self.primary.device))?;
-        // SAFETY: the driver wrote a NUL-terminated name into the buffer.
-        let model = unsafe { CStr::from_ptr(name.as_ptr()) }.to_string_lossy().into_owned();
-        Ok(GpuId { uuid: cuda::uuid(self.primary.device)?, model, memory: self.capacity })
-    }
-
-    fn aligned(&self, what: &str, n: u64) -> Result<()> {
-        match n % self.granularity {
-            0 => Ok(()),
-            _ => Err(Error::Invalid(format!("{what} {n} is not a multiple of the {} byte granularity", self.granularity))),
+    pub(crate) fn create(&self, bytes: usize) -> Result<u64> {
+        let mut handle = 0;
+        // SAFETY: valid output pointer and properties; bytes satisfy granularity.
+        let code = unsafe { (self.create)(&mut handle, bytes, &self.properties(), 0) };
+        if code == 2 {
+            return Err(Error::OutOfMemory {
+                requested_bytes: bytes,
+            });
         }
+        status("cuMemCreate", code)?;
+        Ok(handle)
     }
 
-    fn access(&self, ptr: u64, len: u64, access: Access) -> Result<()> {
-        let flags = match access {
-            Access::ReadWrite => cuda::MEM_ACCESS_PROT_READWRITE,
-            Access::Read => cuda::MEM_ACCESS_PROT_READ,
+    pub(crate) fn map(&self, ptr: u64, bytes: usize, handle: u64) -> Result<()> {
+        // SAFETY: an owned, unoccupied reservation and equally-sized owned allocation.
+        status("cuMemMap", unsafe { (self.map)(ptr, bytes, 0, handle, 0) })?;
+        let access = Access {
+            location: Location {
+                kind: 1,
+                id: self.device,
+            },
+            flags: 3, // CU_MEM_ACCESS_FLAGS_PROT_READWRITE
         };
-        let desc = AccessDesc { location: self.prop.location, flags };
-        Ok(call!("cuMemSetAccess", mem_set_access(ptr, len as usize, &desc, 1))?)
-    }
-
-    /// `f` in the context; a failure of a call with no result to return is logged.
-    fn logged(&self, op: &str, f: impl FnOnce() -> Result<()>) {
-        if let Err(e) = self.primary.enter().and_then(|_ctx| f()) {
-            tracing::warn!(target: "varena", "{op}: {e}");
-        }
-    }
-}
-
-/// The device's DXGI budget, its adapter found by the device's LUID. None (logged) where DXGI
-/// names no such adapter or will not register the change event: no budget signal then.
-#[cfg(windows)]
-fn budget(device: CUdevice) -> Option<std::sync::Arc<platform::gpu::Budget>> {
-    let opened = cuda::luid(device).map_err(Error::from).and_then(|luid| platform::gpu::Budget::open(luid).map_err(Error::from));
-    match opened {
-        Ok(Some(budget)) => Some(std::sync::Arc::new(budget)),
-        Ok(None) => {
-            tracing::warn!(target: "varena", "DXGI names no adapter with CUDA device {device}'s LUID: no budget signal");
-            None
-        }
-        Err(e) => {
-            tracing::warn!(target: "varena", "DXGI budget: {e}: no budget signal");
-            None
-        }
-    }
-}
-
-#[cfg(windows)]
-impl crate::backend::Budget for platform::gpu::Budget {
-    fn read(&self) -> Result<(u64, u64)> {
-        Ok(platform::gpu::Budget::read(self)?)
-    }
-
-    fn wait(&self) -> bool {
-        platform::gpu::Budget::wait(self)
-    }
-
-    fn close(&self) {
-        platform::gpu::Budget::close(self)
-    }
-}
-
-/// The device's used bytes as NVML reads them; `None` when NVML can't.
-fn used(nvml: Option<&platform::gpu::Device>) -> Option<u64> {
-    let reading = nvml?.read().ok()?;
-    Some(reading.total.saturating_sub(reading.free))
-}
-
-impl CudaBackend {
-    /// `event`'s live driver handle; a retired or unknown id is an error, never a stale handle.
-    fn raw(&self, event: Event) -> Result<CUevent> {
-        self.events.get(event).map(|h| h as CUevent).ok_or_else(|| Error::Internal(format!("event {} is not live", event.0)))
-    }
-
-    /// A queued handle is complete, or unknowable (its query failed): nothing waits on it.
-    fn complete(&self, handle: usize) -> bool {
-        let Ok(_ctx) = self.primary.enter() else { return false };
-        // SAFETY: a handle this backend made and has not destroyed.
-        let code = cuda::driver().map(|d| unsafe { (d.event_query)(handle as CUevent) });
-        !matches!(code, Ok(cuda::ERROR_NOT_READY))
-    }
-
-    fn destroy_event(&self, handle: usize) {
-        self.logged("cuEventDestroy", || Ok(call!("cuEventDestroy", event_destroy(handle as CUevent))?));
-    }
-}
-
-impl Backend for CudaBackend {
-    fn capacity(&self) -> u64 {
-        self.capacity
-    }
-
-    fn free(&self) -> Result<u64> {
-        let _ctx = self.primary.enter()?;
-        let (mut free, mut total) = (0usize, 0usize);
-        call!("cuMemGetInfo", mem_get_info(&mut free, &mut total))?;
-        Ok(free as u64)
-    }
-
-    /// NVML's figure for this pid. Where the driver names no process of ours (WDDM has no
-    /// per-process numbers; a container whose pids are the host's) there is none: an error, and
-    /// the context stays as `open` measured it (`opened_context`).
-    fn process_used(&self) -> Result<u64> {
-        let nvml = self.nvml.as_ref().ok_or_else(|| Error::Io("NVML is unavailable: no process bytes".into()))?;
-        let reading = nvml.read()?;
-        reading.processes.as_ref().and_then(|p| p.get(&std::process::id()).copied()).ok_or_else(|| Error::Device {
-            op: "process_used",
-            code: -1,
-            name: "the driver names no process of ours (WDDM, or another pid namespace)".into(),
+        // SAFETY: the entire range just mapped above; one descriptor grants local device access.
+        status("cuMemSetAccess", unsafe {
+            (self.set_access)(ptr, bytes, &access, 1)
         })
     }
 
-    /// The device's used bytes `open` measured across making the context (0 when a framework
-    /// made it first): the context where the driver has no per-process numbers.
-    fn opened_context(&self) -> u64 {
-        self.context
+    pub(crate) fn unmap(&self, ptr: u64, bytes: usize) -> Result<()> {
+        // SAFETY: owned whole mapping, no pins, and successful context completion before call.
+        status("cuMemUnmap", unsafe { (self.unmap)(ptr, bytes) })
     }
 
-    fn granularity(&self) -> u64 {
-        self.granularity
+    pub(crate) fn release(&self, handle: u64) -> Result<()> {
+        // SAFETY: owned allocation handle; caller has confirmed unmap before releasing.
+        status("cuMemRelease", unsafe { (self.release)(handle) })
     }
 
-    fn reserve(&self, len: u64) -> Result<Va> {
-        let len = len.checked_next_multiple_of(self.granularity).ok_or_else(|| Error::Invalid(format!("reserve {len} overflows")))?;
-        let _ctx = self.primary.enter()?;
-        let mut base = 0u64;
-        call!("cuMemAddressReserve", mem_address_reserve(&mut base, len as usize, 0, 0, 0))?;
-        Ok(Va { base, len })
+    pub(crate) fn copy_from_host(&self, ptr: u64, bytes: &[u8]) -> Result<()> {
+        // SAFETY: Fill owns the exclusive mapped destination; slice lives through synchronous copy.
+        status("cuMemcpyHtoD", unsafe {
+            (self.copy_host)(ptr, bytes.as_ptr().cast(), bytes.len())
+        })
     }
+}
 
-    fn release(&self, va: Va) {
-        self.logged("cuMemAddressFree", || Ok(call!("cuMemAddressFree", mem_address_free(va.base, va.len as usize))?));
+pub(crate) struct ContextGuard<'a> {
+    driver: &'a Driver,
+}
+
+impl Drop for ContextGuard<'_> {
+    fn drop(&mut self) {
+        let mut previous = std::ptr::null_mut();
+        // SAFETY: one matching pop on the same thread for the push which constructed this guard.
+        // A failing pop never triggers memory reuse; any subsequent operation must push afresh.
+        let _ = unsafe { (self.driver.pop)(&mut previous) };
     }
+}
 
-    fn create(&self, len: u64) -> Result<Physical> {
-        self.aligned("a page of", len)?;
-        let _ctx = self.primary.enter()?;
-        let mut id = 0;
-        call!("cuMemCreate", mem_create(&mut id, len as usize, &self.prop, 0))?;
-        Ok(Physical { id, len })
-    }
-
-    fn destroy(&self, page: Physical) -> Result<()> {
-        let _ctx = self.primary.enter()?;
-        Ok(call!("cuMemRelease", mem_release(page.id))?)
-    }
-
-    fn map(&self, va: Va, offset: u64, page: &Physical, access: Access) -> Result<()> {
-        self.aligned("offset", offset)?;
-        if offset.checked_add(page.len).is_none_or(|end| end > va.len) {
-            return Err(Error::Invalid(format!("{} bytes at {offset} outside a {} byte reservation", page.len, va.len)));
-        }
-        let ptr = va.base + offset;
-        let _ctx = self.primary.enter()?;
-        call!("cuMemMap", mem_map(ptr, page.len as usize, 0, page.id, 0))?;
-        if let Err(error) = self.access(ptr, page.len, access) {
-            if let Err(release) = call!("cuMemUnmap", mem_unmap(ptr, page.len as usize)) {
-                return Err(Error::Ownership(format!("mapping access failed ({error}); rollback failed ({release})")));
-            }
-            return Err(error);
-        }
-        Ok(())
-    }
-
-    fn protect(&self, va: Va, offset: u64, len: u64, access: Access) -> Result<()> {
-        let _ctx = self.primary.enter()?;
-        self.access(va.base + offset, len, access)
-    }
-
-    fn unmap(&self, va: Va, offset: u64, len: u64) -> Result<()> {
-        let _ctx = self.primary.enter()?;
-        Ok(call!("cuMemUnmap", mem_unmap(va.base + offset, len as usize))?)
-    }
-
-    fn export(&self, page: &Physical) -> Result<Owned> {
-        let _ctx = self.primary.enter()?;
-        #[cfg(unix)]
-        {
-            use std::os::fd::FromRawFd;
-            let mut fd: c_int = -1;
-            call!("cuMemExportToShareableHandle", mem_export((&mut fd as *mut c_int).cast(), page.id, HANDLES, 0))?;
-            // SAFETY: the driver made this descriptor for us to own.
-            Ok(unsafe { Owned::from_raw_fd(fd) })
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::io::FromRawHandle;
-            let mut handle: *mut c_void = std::ptr::null_mut();
-            call!("cuMemExportToShareableHandle", mem_export((&mut handle as *mut *mut c_void).cast(), page.id, HANDLES, 0))?;
-            // SAFETY: the driver made this NT handle for us to own.
-            Ok(unsafe { Owned::from_raw_handle(handle) })
-        }
-    }
-
-    fn import(&self, handle: Owned, len: u64) -> Result<Physical> {
-        self.aligned("a page of", len)?;
-        #[cfg(unix)]
-        let os: *mut c_void = {
-            use std::os::fd::AsRawFd;
-            handle.as_raw_fd() as usize as *mut c_void
-        };
-        #[cfg(windows)]
-        let os: *mut c_void = {
-            use std::os::windows::io::AsRawHandle;
-            handle.as_raw_handle()
-        };
-        let _ctx = self.primary.enter()?;
-        let mut id = 0;
-        call!("cuMemImportFromShareableHandle", mem_import(&mut id, os, HANDLES))?;
-        // The allocation holds its own reference now; our handle closes.
-        drop(handle);
-        Ok(Physical { id, len })
-    }
-
-    fn target(&self, va: Va, offset: u64, len: u64) -> Dst {
-        Dst::Device { device: self.ordinal, ptr: va.base + offset, len: len as usize, stream: self.stream.raw() }
-    }
-
-    fn copy_in(&self, va: Va, offset: u64, src: &[u8]) -> Result<()> {
-        crate::backend::inside(va, offset, src.len())?;
-        let _ctx = self.primary.enter()?;
-        call!("cuMemcpyHtoDAsync", memcpy_htod_async(va.base + offset, src.as_ptr().cast(), src.len(), self.stream.raw() as CUstream))?;
-        Ok(self.stream.drain()?)
-    }
-
-    fn fence(&self) -> Result<Event> {
-        self.record(self.stream.raw())
-    }
-
-    fn record(&self, stream: usize) -> Result<Event> {
-        let _ctx = self.primary.enter()?;
-        let mut event: CUevent = std::ptr::null_mut();
-        call!("cuEventCreate", event_create(&mut event, cuda::EVENT_DEFAULT))?;
-        if let Err(e) = call!("cuEventRecord", event_record(event, stream as CUstream)) {
-            // SAFETY: the event just made; nothing recorded it.
-            unsafe { cuda::driver().map(|d| (d.event_destroy)(event)) }.ok();
-            return Err(e.into());
-        }
-        Ok(self.events.add(event as usize))
-    }
-
-    fn query(&self, event: Event) -> Result<bool> {
-        if event == Event::DONE {
-            return Ok(true);
-        }
-        let _ctx = self.primary.enter()?;
-        let _call = tracing::trace_span!("cuEventQuery").entered();
-        // SAFETY: a live event of this context.
-        match unsafe { (cuda::driver()?.event_query)(self.raw(event)?) } {
-            cuda::SUCCESS => Ok(true),
-            cuda::ERROR_NOT_READY => Ok(false),
-            code => Err(cuda::check("cuEventQuery", code).err().map_or_else(|| Error::Internal("cuEventQuery".into()), Error::from)),
-        }
-    }
-
-    fn elapsed(&self, from: Event, to: Event) -> Result<Option<u64>> {
-        if from == Event::DONE || to == Event::DONE {
-            return Ok(Some(0));
-        }
-        if !(self.query(from)? && self.query(to)?) {
-            return Ok(None);
-        }
-        let _ctx = self.primary.enter()?;
-        let mut ms = 0f32;
-        call!("cuEventElapsedTime", event_elapsed_time(&mut ms, self.raw(from)?, self.raw(to)?))?;
-        Ok(Some((f64::from(ms.max(0.0)) * 1e6) as u64))
-    }
-
-    fn wait(&self, event: Event, stream: usize) -> Result<()> {
-        if event == Event::DONE {
-            return Ok(());
-        }
-        let _ctx = self.primary.enter()?;
-        Ok(call!("cuStreamWaitEvent", stream_wait_event(stream as CUstream, self.raw(event)?, 0))?)
-    }
-
-    fn synchronize(&self, stream: usize) -> Result<()> {
-        let _ctx = self.primary.enter()?;
-        Ok(call!("cuStreamSynchronize", stream_synchronize(stream as CUstream))?)
-    }
-
-    fn finish(&self, event: Event) -> Result<()> {
-        if event == Event::DONE {
-            return Ok(());
-        }
-        let _ctx = self.primary.enter()?;
-        Ok(call!("cuEventSynchronize", event_synchronize(self.raw(event)?))?)
-    }
-
-    /// Queued only: destroyed by a sweep (the mechanism or trim thread) once complete.
-    fn retire(&self, event: Event) {
-        self.events.retire(event);
-    }
-
-    fn sweep(&self) {
-        self.events.sweep(|h| self.complete(h), |h| self.destroy_event(h));
-    }
-
-    #[cfg(windows)]
-    fn budget(&self) -> Option<std::sync::Arc<dyn crate::backend::Budget>> {
-        self.budget.clone().map(|b| b as std::sync::Arc<dyn crate::backend::Budget>)
-    }
-
-    fn drain(&self) -> Result<()> {
-        self.stream.drain()?;
-        Ok(tensorfs::io::drain(self.ordinal)?)
-    }
-
-    fn copy_out(&self, va: Va, offset: u64, dst: &mut [u8], after: Event) -> Result<()> {
-        let _ctx = self.primary.enter()?;
-        let stream = self.stream.raw() as CUstream;
-        if after != Event::DONE {
-            call!("cuStreamWaitEvent", stream_wait_event(stream, self.raw(after)?, 0))?;
-        }
-        call!("cuMemcpyDtoHAsync", memcpy_dtoh_async(dst.as_mut_ptr().cast(), va.base + offset, dst.len(), stream))?;
-        Ok(call!("cuStreamSynchronize", stream_synchronize(stream))?)
-    }
-
-    fn capturing(&self, stream: usize) -> Result<bool> {
-        let _ctx = self.primary.enter()?;
-        let mut status: c_int = 0;
-        call!("cuStreamIsCapturing", stream_is_capturing(stream as CUstream, &mut status))?;
-        // CU_STREAM_CAPTURE_STATUS_NONE is 0; ACTIVE and INVALIDATED still capture.
-        Ok(status != 0)
-    }
-
-    fn relax(&self) {
-        // CU_STREAM_CAPTURE_MODE_RELAXED.
-        let mut mode: c_int = 2;
-        let rc = cuda::driver().map(|d| {
-            // SAFETY: an out-param on the stack; the call needs no context.
-            unsafe { (d.thread_exchange_stream_capture_mode)(&mut mode) }
-        });
-        if !matches!(rc, Ok(cuda::SUCCESS)) {
-            tracing::warn!("varena: this thread stays in its capture mode: cuThreadExchangeStreamCaptureMode failed");
-        }
+fn status(operation: &'static str, code: i32) -> Result<()> {
+    match code {
+        0 => Ok(()),
+        700 | 702 | 709 | 710 | 714..=719 => Err(Error::DeviceFault { operation, code }),
+        _ => Err(Error::Cuda { operation, code }),
     }
 }

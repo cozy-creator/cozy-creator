@@ -442,7 +442,7 @@ class Writer:
         ...
 ```
 
-## `tensorfs.raw` — advanced physical inspection and resident decode
+## `tensorfs.raw` — physical inspection, native encoding and resident decode
 
 These declarations belong to `tensorfs.raw`, not the root package.
 See [resident decoding](API.md#advanced-decode-resident-encoded-parts) for placement,
@@ -450,7 +450,7 @@ ownership and error behavior.
 
 ```python
 from collections.abc import Buffer, Mapping, Sequence
-from tensorfs import Checkpoint
+from tensorfs import Checkpoint, Encoded
 # DLPack is the accepted input protocol described above, not a package export.
 
 class Part:
@@ -467,6 +467,23 @@ class Part:
 
 def parts(checkpoint: Checkpoint, component: str, key: str) -> dict[str, Part]:
     """Inspect stored ranges without fetching bytes; plain tensors use role ''."""
+
+def quantize(
+    scheme: str,
+    values: bytes,
+    *,
+    dtype: str,
+    shape: Sequence[int],
+    strategy: str,
+    params: Mapping[str, object] | None = None,
+    tensor_amax: float | None = None,
+) -> Encoded:
+    """Encode F32 bytes using int8-convrot256/1 or nvfp4-min-sse/1.
+
+    NVFP4 requires the finite nonnegative whole-tensor tensor_amax for every chunk.
+    Complete row chunks produce identical bytes. Native arithmetic releases the GIL
+    and uses one row/block of floating scratch plus owned output. No checkpoint I/O.
+    """
 
 def decode_into(
     scheme: str,
@@ -487,3 +504,9 @@ def decode_into(
     failure. Native owners remain held when CUDA completion cannot be proved.
     """
 ```
+
+`ConversionControl` is the existing conversion cancellation token exposed to native checkpoint
+quantization. `cancel()` is nonblocking; `progress()` reports `(source_bytes_read, tensors_written, writer_bytes)`
+without callbacks or acknowledgements. `Writer.quantize` accepts the complete resolved tensor list,
+explicit conversion buffer/output byte bounds and this control; its return is the conversion stats
+mapping described in API.md. It never commits the Writer or chooses a model recipe.

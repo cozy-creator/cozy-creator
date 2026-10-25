@@ -1,0 +1,2 @@
+[application]
+object = "ci_checkpoint_quantize:app"

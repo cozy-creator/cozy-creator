@@ -36,6 +36,34 @@ pub struct PyEncoded {
     parts: Py<PyDict>,
 }
 
+impl PyEncoded {
+    pub(crate) fn from_parts(
+        py: Python<'_>,
+        dtype: &Dtype,
+        shape: &[u64],
+        encoding: &Encoding,
+        parts: Vec<tensorfs::format::encode::OwnedPart>,
+    ) -> PyResult<Self> {
+        let dict = PyDict::new(py);
+        for part in parts {
+            let mut buf = Aligned::new(part.bytes.len());
+            buf.bytes_mut().copy_from_slice(&part.bytes);
+            dict.set_item(part.role, Bound::new(py, PyArray {
+                buf: ArrayBuffer::whole(Owner::Host(Arc::new(buf))),
+                dtype: part.dtype,
+                shape: part.shape,
+            })?)?;
+        }
+        Ok(Self {
+            dtype: dtype.name().to_owned(),
+            shape: PyTuple::new(py, shape)?.unbind(),
+            scheme: encoding.scheme.clone(),
+            params: metadata(py, &encoding.params)?.unbind(),
+            parts: dict.unbind(),
+        })
+    }
+}
+
 /// One stored range a read fills: a plain tensor's data (role `""`) or one part.
 struct Want {
     role: String,

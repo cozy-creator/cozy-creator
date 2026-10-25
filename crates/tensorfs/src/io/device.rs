@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use super::cuda::{self, CUcontext, CUevent, CUstream, CtxGuard};
-use super::{host, Copy, Dst, Error, Issued, ReadOpts, ReadStats, Src};
+use super::{host, Copy, Dst, Error, Issued, ReadControl, ReadOpts, ReadStats, Src};
 
 const PIECE: usize = 2 << 20;
 const READERS: usize = 8;
@@ -303,6 +303,14 @@ fn registry() -> &'static Mutex<BTreeMap<i32, Arc<Engine>>> {
     ENGINES.get_or_init(Mutex::default)
 }
 
+pub(super) fn prepare(device: i32) -> cuda::Result<()> {
+    Engine::get(device).map(drop)
+}
+
+fn interrupted(copy: usize) -> Error {
+    Error { copy, source: io::Error::new(io::ErrorKind::Interrupted, "native read canceled") }
+}
+
 /// Noninitializing: no driver/context is created when this device has no engine.
 pub(super) fn drain(device: i32) -> cuda::Result<()> {
     let engine = registry()
@@ -511,9 +519,14 @@ impl Engine {
         opts: &ReadOpts,
         staged_host: bool,
         issued: Option<Issued>,
+        cancel: Option<&ReadControl>,
     ) -> Result<ReadStats, Error> {
         let _serial = self.serial.lock().unwrap_or_else(|e| e.into_inner());
         let first = copies[0].0;
+        let canceled = || cancel.is_some_and(ReadControl::canceled);
+        if canceled() {
+            return Err(interrupted(first));
+        }
         if !self
             .held
             .lock()
@@ -614,6 +627,9 @@ impl Engine {
             jobs.iter().for_each(|job| _ = left[job.local].fetch_add(1, Relaxed));
             let raw: Vec<usize> = self.streams[..streams].iter().map(|s| s.raw()).collect();
             let done = |job: &Job| {
+                if let Some(control) = cancel {
+                    control.issue(job.len);
+                }
                 if let Some(issued) = issued {
                     if left[job.local].fetch_sub(1, AcqRel) == 1 {
                         issued(job.copy, &raw);
@@ -624,6 +640,11 @@ impl Engine {
             // thread issues them, round-robin over the streams, before any reader starts.
             let (direct, jobs): (Vec<Job>, Vec<Job>) = jobs.into_iter().partition(|job| job.direct);
             for (at, job) in direct.iter().enumerate() {
+                if canceled() {
+                    error.lock().unwrap().get_or_insert_with(|| interrupted(first));
+                    stopped.store(true, Relaxed);
+                    break;
+                }
                 if let Err(failure) = self.issue(job, lane(at, streams)) {
                     error.lock().unwrap().get_or_insert(failure);
                     stopped.store(true, Relaxed);
@@ -648,7 +669,7 @@ impl Engine {
                     free.split_off(at)
                 };
                 let mut turn = 0;
-                while !stopped.load(Relaxed) {
+                while !stopped.load(Relaxed) && !canceled() {
                     let at = next.fetch_add(1, Relaxed);
                     let Some(job) = jobs.get(at) else { break };
                     turn += 1;
@@ -674,6 +695,9 @@ impl Engine {
                     scope.spawn(work);
                 }
             });
+            if canceled() {
+                error.lock().unwrap().get_or_insert_with(|| interrupted(first));
+            }
             let mut busy_ns = 0;
             let mut all_complete = true;
             for (lane, stream) in self.streams[..streams].iter().enumerate() {
@@ -723,13 +747,17 @@ impl Engine {
             unreachable!("a direct copy has a device destination")
         };
         let result = match job.c.src {
+            // SAFETY: the checked destination covers job.len bytes and remains owned until drain.
             Src::Zero => unsafe { (d.memset_d8_async)(dst, 0, job.len, stream) },
+            // SAFETY: direct host sources are registered and retained through checked completion.
             Src::Host(ptr) => unsafe { (d.memcpy_htod_async)(dst, ptr.cast(), job.len, stream) },
+            // SAFETY: both checked device spans belong to this context and outlive the copy.
             Src::Device { device, ptr, .. } if device == self.device => unsafe {
                 (d.memcpy_dtod_async)(dst, ptr, job.len, stream)
             },
             Src::Device { device, ptr, .. } => {
                 let source = Engine::get(device).map_err(|e| failed(job.copy, e))?;
+                // SAFETY: both contexts and checked peer spans stay owned until completion.
                 unsafe { (d.memcpy_peer_async)(dst, self.ctx, ptr, source.ctx, job.len, stream) }
             }
             Src::File(..) => unreachable!("a file source is staged"),
@@ -845,6 +873,7 @@ pub(super) unsafe fn fill(
     opts: &ReadOpts,
     staged_host: bool,
     issued: Option<Issued>,
+    cancel: Option<&ReadControl>,
 ) -> Result<ReadStats, Error> {
     let mut groups: BTreeMap<(i32, &str), Vec<(usize, Copy)>> = BTreeMap::new();
     for &(index, copy) in copies {
@@ -879,7 +908,7 @@ pub(super) unsafe fn fill(
     for ((device, kind), copies) in groups {
         let engine = Engine::get(device).map_err(|e| failed(copies[0].0, e))?;
         let start = Instant::now();
-        let stats = engine.run(&copies, opts, staged_host, issued)?;
+        let stats = engine.run(&copies, opts, staged_host, issued, cancel)?;
         #[cfg(unix)]
         {
             let ns = start.elapsed().as_nanos() as u64;

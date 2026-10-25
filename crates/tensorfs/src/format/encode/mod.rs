@@ -3,6 +3,8 @@
 //! ggml); `pack` takes the codes, scales, zeros and permutation a calibrated producer computed
 //! (GPTQ, AWQ, SVDQuant) and lays them out as the scheme's parts. Shared math: `elem` (f32 to
 //! element codes) and `affine` (codes to packed words, the inverse of the decode's unpack).
+//! `int8.convrot` requires `quantize_strategy` with the producer revision; it has no
+//! anonymous default, since stored encoding semantics do not identify a quantizer.
 //!
 //! Adding a scheme's encoders: one family file, one row in `ENCODERS` (and its `mod` line).
 
@@ -40,17 +42,18 @@ mod comfy;
 
 pub use comfy::{quantize_with, Kitchen};
 pub use fp8_blockwise::quantize_fp8_blockwise;
+pub use int8::CONVROT_STRATEGY;
+pub use nvfp4::MIN_SSE_STRATEGY;
 pub use nvfp4::{GlobalScale, NibbleOrder};
 
 /// Every scheme's encoders, one row each.
 pub static ENCODERS: &[&Encoder] = &[
+    &int8::CONVROT,
     &nvfp4::NVFP4,
     &svdq::SVDQ_NVFP4,
-
     // fp8.blockwise, mxfp4
     &fp8_blockwise::ENCODER,
     &mxfp4::ENCODER,
-
     // gguf.*
     &gguf::Q4_0,
     &gguf::Q4_1,
@@ -66,7 +69,6 @@ pub static ENCODERS: &[&Encoder] = &[
     &gguf::NVFP4,
     &gguf::Q1_0,
     &gguf::Q2_0,
-
     // gptq.*, awq.*, ct.*
     &gptq::INT2,
     &gptq::INT3,
@@ -85,7 +87,6 @@ pub static ENCODERS: &[&Encoder] = &[
     &bnb::NF4,
     &bnb::FP4,
     &bnb::INT8,
-
     // comfy.*
     &comfy::ASYM_W4A8_INT8,
     &comfy::W4A8_CONVROT,
@@ -138,6 +139,73 @@ pub struct OwnedPart {
     pub bytes: Vec<u8>,
 }
 
+/// Producer acceptance facts, accumulated in F64 over the original F32 values.
+/// Payload bytes are invariant to chunking; sums may differ by floating reduction order.
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct QuantizationStats {
+    pub amax: f64,
+    pub max_abs_error: f64,
+    pub sse: f64,
+    pub energy: f64,
+    pub saturated: u64,
+    #[serde(skip)]
+    sse_correction: f64,
+    #[serde(skip)]
+    energy_correction: f64,
+}
+
+impl QuantizationStats {
+    fn accumulate(sum: &mut f64, correction: &mut f64, value: f64) {
+        let adjusted = value - *correction;
+        let next = *sum + adjusted;
+        *correction = (next - *sum) - adjusted;
+        *sum = next;
+    }
+
+    pub(super) fn add(&mut self, source: f32, reconstructed: f64) {
+        let source = f64::from(source);
+        let error = reconstructed - source;
+        self.amax = self.amax.max(source.abs());
+        self.max_abs_error = self.max_abs_error.max(error.abs());
+        Self::accumulate(&mut self.sse, &mut self.sse_correction, error * error);
+        Self::accumulate(
+            &mut self.energy,
+            &mut self.energy_correction,
+            source * source,
+        );
+    }
+
+    pub fn merge(&mut self, other: &Self) {
+        self.amax = self.amax.max(other.amax);
+        self.max_abs_error = self.max_abs_error.max(other.max_abs_error);
+        Self::accumulate(&mut self.sse, &mut self.sse_correction, other.sse);
+        Self::accumulate(&mut self.energy, &mut self.energy_correction, other.energy);
+        self.saturated += other.saturated;
+    }
+}
+
+pub struct Quantized {
+    pub parts: Vec<OwnedPart>,
+    pub stats: QuantizationStats,
+}
+
+/// A development build must not resume output from different numerical code under
+/// an unchanged package version. Production memoization still names its immutable wheel.
+pub fn implementation() -> String {
+    let mut hash = crate::sha256::Sha256::new();
+    for source in [
+        include_str!("mod.rs"),
+        include_str!("int8.rs"),
+        include_str!("nvfp4.rs"),
+        include_str!("elem.rs"),
+        include_str!("../decode/elem.rs"),
+    ] {
+        hash.update(&(source.len() as u64).to_le_bytes());
+        hash.update(source.as_bytes());
+    }
+    crate::sha256::hex(&hash.finish())
+}
+
 fn row(scheme: &str) -> Result<&'static Encoder> {
     ENCODERS
         .iter()
@@ -146,11 +214,7 @@ fn row(scheme: &str) -> Result<&'static Encoder> {
         .ok_or_else(|| Error::UnknownScheme(scheme.into()))
 }
 
-fn run(
-    input: &Input,
-    f: Option<Encode>,
-    what: &str,
-) -> Result<Vec<OwnedPart>> {
+fn run(input: &Input, f: Option<Encode>, what: &str) -> Result<Vec<OwnedPart>> {
     let scheme = &input.encoding.scheme;
     let f = f.ok_or_else(|| Error::Encode(format!("{scheme}: no {what} encoder")))?;
     f(input)
@@ -158,7 +222,30 @@ fn run(
 
 /// The parts of `input.encoding` from the logical values (closed form).
 pub fn quantize(input: &Input) -> Result<Vec<OwnedPart>> {
+    if input.encoding.scheme == "int8.convrot" {
+        return Err(Error::Encode(format!(
+            "int8.convrot requires explicit quantizer strategy {CONVROT_STRATEGY}"
+        )));
+    }
     run(input, row(&input.encoding.scheme)?.quantize, "closed-form")
+}
+
+/// A producer with an explicit numerical revision, distinct from its stored encoding.
+/// Other legacy encoders keep their existing API and cannot be selected accidentally.
+pub fn quantize_strategy(input: &Input, strategy: &str) -> Result<Vec<OwnedPart>> {
+    Ok(quantize_measured(input, strategy)?.parts)
+}
+
+/// The same versioned producer, including acceptance facts before publication.
+pub fn quantize_measured(input: &Input, strategy: &str) -> Result<Quantized> {
+    match (input.encoding.scheme.as_str(), strategy) {
+        ("int8.convrot", CONVROT_STRATEGY) => int8::convrot_measured(input),
+        ("nvfp4", MIN_SSE_STRATEGY) => nvfp4::min_sse(input),
+        _ => Err(Error::Encode(format!(
+            "no quantizer strategy {strategy:?} for {}",
+            input.encoding.scheme
+        ))),
+    }
 }
 
 /// The parts of `input.encoding` from a calibrated producer's arrays.
