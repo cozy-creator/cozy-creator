@@ -267,4 +267,3 @@ async fn fetch(ctx: &Context, name: &str, archives: &[Archive], dir: &Path) -> R
         }
     }
 }
-

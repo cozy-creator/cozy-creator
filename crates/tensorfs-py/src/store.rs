@@ -5,6 +5,7 @@ use std::ffi::{c_void, CStr};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use pyo3::buffer::PyBuffer;
 use pyo3::ffi;
@@ -1668,9 +1669,28 @@ impl Dlpack {
 #[pyclass(name = "Writer", module = "tensorfs", frozen)]
 pub struct PyWriter {
     w: Mutex<Option<Writer>>,
+    quantizing: AtomicBool,
+}
+
+struct WriterCheckout<'a> {
+    owner: &'a PyWriter,
+    writer: Option<Writer>,
+}
+impl Drop for WriterCheckout<'_> {
+    fn drop(&mut self) {
+        let mut slot = self.owner.w.lock().unwrap_or_else(|e| e.into_inner());
+        *slot = self.writer.take();
+        self.owner.quantizing.store(false, Ordering::Release);
+    }
 }
 
 impl PyWriter {
+    fn unavailable(&self) -> Failure {
+        match self.quantizing.load(Ordering::Acquire) {
+            true => Failure { kind: Kind::Conflict, detail: "the Writer is busy quantizing".into() },
+            false => Failure { kind: Kind::Invalid, detail: "the Writer has committed or been abandoned".into() },
+        }
+    }
     fn with<T: Send>(
         &self,
         py: Python<'_>,
@@ -1680,10 +1700,7 @@ impl PyWriter {
             let mut guard = self.w.lock().unwrap_or_else(|e| e.into_inner());
             match guard.as_mut() {
                 Some(writer) => f(writer),
-                None => Err(Failure {
-                    kind: Kind::Invalid,
-                    detail: "the writer has committed or been abandoned".into(),
-                }),
+                None => Err(self.unavailable()),
             }
         })
         .or_raise(py)
@@ -1694,10 +1711,7 @@ impl PyWriter {
         let mut guard = self.w.lock().unwrap_or_else(|e| e.into_inner());
         match guard.as_mut() {
             Some(writer) => f(writer),
-            None => Err(Failure {
-                kind: Kind::Invalid,
-                detail: "the writer has committed or been abandoned".into(),
-            }),
+            None => Err(self.unavailable()),
         }
         .or_raise(py)
     }
@@ -1745,6 +1759,7 @@ impl PyWriter {
             .or_raise(py)?;
         Ok(Self {
             w: Mutex::new(Some(writer)),
+            quantizing: AtomicBool::new(false),
         })
     }
 
@@ -1781,15 +1796,40 @@ impl PyWriter {
         self.with(py, |writer| writer.has(component, key))
     }
 
+    #[pyo3(signature = (source, tensors, *, max_buffer_bytes, max_new_bytes, control, max_relative_frobenius = None))]
+    #[allow(clippy::too_many_arguments)]
+    fn quantize(
+        &self, py: Python<'_>, source: &PyCheckpoint, tensors: &Bound<'_, PyAny>,
+        max_buffer_bytes: usize, max_new_bytes: u64,
+        control: &crate::quantize::PyConversionControl, max_relative_frobenius: Option<f64>,
+    ) -> PyResult<Py<PyAny>> {
+        let rows: Vec<tensorfs::QuantizeTensor> = serde_json::from_value(config_from_py(tensors)?)
+            .map_err(|e| invalid(py, format!("resolved quantization selection: {e}")))?;
+        let source = source.core(py)?;
+        let result = py.detach(|| {
+            let mut checkout = {
+                let mut slot = self.w.lock().unwrap_or_else(|e| e.into_inner());
+                let writer = slot.take().ok_or_else(|| self.unavailable())?;
+                self.quantizing.store(true, Ordering::Release);
+                WriterCheckout { owner: self, writer: Some(writer) }
+            };
+            // Exclusive ownership replaces the mutex while native fetch/read/encode runs.
+            // Drop restores the Writer on ordinary failure and unwinding; commit cannot race it.
+            block_on(checkout.writer.as_mut().expect("checked out Writer").quantize(&source, &tensorfs::Quantization {
+                tensors: &rows, max_buffer_bytes, max_new_bytes, max_relative_frobenius,
+                control: &control.inner,
+            }))
+        }).or_raise(py)?;
+        let result = serde_json::to_value(result).map_err(|e| invalid(py, e.to_string()))?;
+        Ok(config_to_py(py, &result)?.unbind())
+    }
+
     fn commit(&self, py: Python<'_>) -> PyResult<PyCheckpoint> {
         let (result, retained) = py.detach(|| {
             let mut guard = self.w.lock().unwrap_or_else(|e| e.into_inner());
             let Some(writer) = guard.as_mut() else {
                 return (
-                    Err(Failure {
-                        kind: Kind::Invalid,
-                        detail: "the writer has committed or been abandoned".into(),
-                    }),
+                    Err(self.unavailable()),
                     None,
                 );
             };
@@ -1817,7 +1857,11 @@ impl PyWriter {
 
     fn abandon(&self, py: Python<'_>) -> PyResult<()> {
         py.detach(|| {
-            let writer = self.w.lock().unwrap_or_else(|e| e.into_inner()).take();
+            let writer = {
+                let mut slot = self.w.lock().unwrap_or_else(|e| e.into_inner());
+                if self.quantizing.load(Ordering::Acquire) { return Err(self.unavailable()); }
+                slot.take()
+            };
             match writer {
                 Some(writer) => writer.abandon(),
                 None => Ok(()),
@@ -2044,6 +2088,7 @@ pub fn install(m: &Bound<'_, PyModule>) -> PyResult<()> {
     raw.add_class::<PyPart>()?;
     raw.add_function(wrap_pyfunction!(raw_parts, &raw)?)?;
     crate::resident_decode::install(&raw)?;
+    crate::quantize::install(&raw)?;
     m.add_submodule(&raw)?;
     m.add_class::<PyArray>()?;
     m.add_class::<PyTensors>()?;
