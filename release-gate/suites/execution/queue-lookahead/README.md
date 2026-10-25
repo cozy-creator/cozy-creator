@@ -6,7 +6,15 @@ interpreter. It neither changes SDKs nor rents machines. The CPU preflight perfo
 PBKDF2 computation without I/O or GPU work, making its in-flight cancellation reproducible.
 Its returned facts are deterministic. The handler reports its actual process and timestamps.
 
-After installing the paired candidate, run each mode with a new seed and output directory:
+After installing the paired candidate, install the fixture once before starting the queue
+observation window. Dependency unpacking is setup, not a queue failure:
+
+```sh
+cozy run /absolute/worktree/release-gate/suites/execution/queue-lookahead/gpu \
+  --warm installed --on MACHINE --gpus=1 --json
+```
+
+Then run each mode with a new seed and output directory:
 
 ```sh
 python3 release-gate/suites/execution/queue-lookahead/run.py \
@@ -30,8 +38,12 @@ The driver preserves every CLI event/receipt and cancels only its own unfinished
 failure. It checks outcomes, exact numeric output and handler entry order. For canceled
 hints it also requires retirement after the active call. It does not claim preparation
 overlap from total duration or completion alone.
+The initial setup/first-handler window is separate (at most15minutes); the180-second queue
+observation deadline begins only after A enters. The enclosing rental guard remains authoritative.
 
-Attach the matching worker TensorD diagnostics as part of `## Proof`: `request lookahead
+The driver saves worker TensorD diagnostics through `cozy machine logs MACHINE tensord
+--lines 0 --json` as `tensord.ndjson` and validates the request IDs and timestamps. Attach
+these matching diagnostics as part of `## Proof`: `request lookahead
 sent`, `ready`, `reused`, and `canceled`, with their request IDs. For `overlap`, B's `ready`
 must precede A's completed timestamp; for `handoff`, B and C must actually reuse their
 preparation when offered. Confirm no more than one pending hint and no C hint across the

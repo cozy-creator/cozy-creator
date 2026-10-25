@@ -3,11 +3,48 @@
 import argparse
 import json
 import queue
+import re
 import subprocess
 import threading
 import time
+from datetime import UTC, datetime
 from itertools import pairwise
 from pathlib import Path
+
+
+def worker_events(machine, output):
+    result = subprocess.run(
+        ["cozy", "machine", "logs", machine, "tensord", "--lines", "0", "--json"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    (output / "tensord.ndjson").write_text(result.stdout)
+    events = []
+    for line in result.stdout.splitlines():
+        text = json.loads(line).get("text", "")
+        text = re.sub(r"\x1b\[[0-9;]*m", "", text)
+        mark = re.search(r"request lookahead (sent|ready|reused|canceled)", text)
+        request = re.search(r'\brequest="?([^\s"]+)', text)
+        if mark is None or request is None:
+            continue
+        stamp = text.split(maxsplit=1)[0]
+        clock, fraction = (
+            stamp.removesuffix("Z").split(".")
+            if "." in stamp
+            else (stamp.removesuffix("Z"), "")
+        )
+        seconds = int(datetime.fromisoformat(clock).replace(tzinfo=UTC).timestamp())
+        events.append(
+            {
+                "event": mark[1],
+                "request": request[1],
+                "at_ns": seconds * 10**9 + int(fraction[:9].ljust(9, "0")),
+                "text": text,
+            }
+        )
+    return events
 
 
 class Run:
@@ -109,12 +146,16 @@ def main():
     args.out.mkdir(parents=True, exist_ok=False)
     target = Path(__file__).parent
     runs = []
-    deadline = time.monotonic() + 180
+    setup_started = time.monotonic()
+    deadline = setup_started + 900
+    observing = "package setup and first handler entry"
 
     def wait(condition):
         while not condition():
             if time.monotonic() > deadline:
-                raise TimeoutError("owned queue gate exceeded its observation deadline")
+                raise TimeoutError(
+                    f"owned queue gate exceeded its {observing} deadline"
+                )
             for run in runs:
                 run.consume()
 
@@ -123,6 +164,9 @@ def main():
         runs.append(a)
         wait(lambda: a.entered is not None or a.terminal())
         assert a.entered is not None, a.record
+        setup_seconds = time.monotonic() - setup_started
+        deadline = time.monotonic() + 180
+        observing = "queue handoff observation"
         rounds = {
             "overlap": 3_000_000,
             "cancel": 10_000_000,
@@ -182,11 +226,53 @@ def main():
                 a.record,
                 c.record,
             )
+        events = worker_events(args.on, args.out)
+        relevant = [
+            event
+            for event in events
+            if event["request"] in {run.record["id"] for run in runs}
+        ]
+
+        def marks(run, kind):
+            return [
+                event
+                for event in relevant
+                if event["request"] == run.record["id"] and event["event"] == kind
+            ]
+
+        if args.mode != "incompatible":
+            assert marks(b, "sent"), (
+                "B never received lookahead; the race window was missed"
+            )
+        if args.mode in {"handoff", "overlap", "refuse"}:
+            assert marks(b, "reused"), (
+                "B repeated ordinary preparation instead of reusing lookahead"
+            )
+        if args.mode == "overlap":
+            assert any(
+                event["at_ns"] < a.record["result"]["completed_ns"]
+                for event in marks(b, "ready")
+            ), "B preparation did not finish while A was active"
+        if args.mode in {"cancel", "abandon"}:
+            assert marks(b, "canceled"), (
+                "queued cancellation missed its actual preparation"
+            )
+        if args.mode == "handoff" and marks(c, "sent"):
+            assert marks(c, "reused"), (
+                "C discarded an offered preparation during handoff"
+            )
+        if args.mode == "incompatible":
+            assert not any(
+                event["at_ns"] < b.record["result"]["completed_ns"]
+                for event in marks(c, "sent")
+            ), "C lookahead bypassed incompatible B"
         report = {
             "mode": args.mode,
             "runs": [run.record for run in runs],
+            "setup_seconds": setup_seconds,
             "handler_order_passed": True,
-            "lookahead_timing_proof": "Requires the matching TensorD sent/ready/reused diagnostics; completion alone is insufficient.",
+            "lookahead_events": relevant,
+            "lookahead_timing_proof": "Verified actual worker diagnostics, correlated by request ID and worker clock.",
         }
         (args.out / "receipt.json").write_text(json.dumps(report, indent=2) + "\n")
         print(json.dumps(report))
