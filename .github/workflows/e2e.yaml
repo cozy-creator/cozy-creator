@@ -1,4 +1,6 @@
 name: e2e
+# Temporary integration peer: merge-group has no dispatch inputs. Remove the frozen Runtime
+# fallback once Runtime PR1807 and packages PR646 have landed; explicit runtime_ref still wins.
 # CI v2 (tracker/design/ci-v2.md): cozy as a person runs it, on GitHub's runners, for the suites the change
 # selects (ci/affected, ci/suites.toml). `cli`: install, up, the local machine, a weightless request and real
 # BiRefNet on the CPU, a second executor, down, uninstall (Linux); on macOS and Windows, when selected, what needs no
@@ -249,7 +251,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           repository: cozy-creator/${{ matrix.repo }}
-          ref: ${{ needs.affected.outputs.repo == matrix.repo && needs.affected.outputs.ref || matrix.repo == 'cozy-runtime' && (inputs.runtime_ref || 'master') || (inputs.stack_ref || 'master') }}
+          ref: ${{ needs.affected.outputs.repo == matrix.repo && needs.affected.outputs.ref || matrix.repo == 'cozy-runtime' && (inputs.runtime_ref || 'dfef434a13c8b7d082828d5138f14e5fdc2b80d4') || (inputs.stack_ref || 'master') }}
           path: .build
           # The first-parent line build.sh walks back for a run that built the same sources.
           fetch-depth: ${{ matrix.what == 'runtime' && 1 || 30 }}
@@ -358,7 +360,7 @@ jobs:
           ref: ${{ needs.affected.outputs.ref }}
           build: ${{ env.BUILD }}
           stack_ref: ${{ inputs.stack_ref || 'master' }}
-          runtime_ref: ${{ inputs.runtime_ref || 'master' }}
+          runtime_ref: ${{ inputs.runtime_ref || 'dfef434a13c8b7d082828d5138f14e5fdc2b80d4' }}
           tensord: ${{ inputs.tensord }}
           tensorfs: ${{ inputs.tensorfs }}
           runtime: ${{ inputs.runtime }}
@@ -409,7 +411,7 @@ jobs:
           # Linux takes the candidate jobs' set; macOS and Windows build their cozy here.
           from: ${{ matrix.runner == 'ubuntu-24.04' && 'artifacts' || '' }}
           stack_ref: ${{ inputs.stack_ref || 'master' }}
-          runtime_ref: ${{ inputs.runtime_ref || 'master' }}
+          runtime_ref: ${{ inputs.runtime_ref || 'dfef434a13c8b7d082828d5138f14e5fdc2b80d4' }}
           tensord: ${{ inputs.tensord }}
           tensorfs: ${{ inputs.tensorfs }}
           runtime: ${{ inputs.runtime }}
@@ -503,7 +505,7 @@ jobs:
           ref: ${{ needs.affected.outputs.ref }}
           build: ${{ env.BUILD }}
           stack_ref: ${{ inputs.stack_ref || 'master' }}
-          runtime_ref: ${{ inputs.runtime_ref || 'master' }}
+          runtime_ref: ${{ inputs.runtime_ref || 'dfef434a13c8b7d082828d5138f14e5fdc2b80d4' }}
           tensord: ${{ inputs.tensord }}
           tensorfs: ${{ inputs.tensorfs }}
           runtime: ${{ inputs.runtime }}

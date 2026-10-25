@@ -55,6 +55,8 @@ runs:
       uses: actions/checkout@v5
       with:
         repository: cozy-creator/packages
+        # Temporary integration peer; restore master after PR1807/646 land.
+        ref: a25eed93d9c3e5bddde095e1978120fea6e713c9
         path: .pkgs
     - if: inputs.repo != 'packages'
       shell: bash
