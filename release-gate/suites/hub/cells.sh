@@ -139,13 +139,9 @@ while IFS=$'\t' read -r check verdict what; do expect "$check" "$verdict" "$what
 hub_do package-remove ok package remove "$WHO/$HUB_PKG" --on "$M"
 hub_runs package-skips-yanked 0.1.0 "$WHO/$HUB_PKG"
 hub_runs package-pinned-yanked 0.1.1 "$WHO/$HUB_PKG" 0.1.1
-if "$CLI" package yank --help 2>/dev/null | grep -q -- --undo; then
-  hub_do package-unyank ok package yank --undo "$WHO/$HUB_PKG@0.1.1"
-  hub_do package-remove-again ok package remove "$WHO/$HUB_PKG" --on "$M"
-  hub_runs package-unyanked 0.1.1 "$WHO/$HUB_PKG"
-else
-  expect "hub package-unyank" FAIL "this cozy has no \`package yank --undo\`"
-fi
+hub_do package-unyank ok package yank --undo "$WHO/$HUB_PKG@0.1.1"
+hub_do package-remove-again ok package remove "$WHO/$HUB_PKG" --on "$M"
+hub_runs package-unyanked 0.1.1 "$WHO/$HUB_PKG"
 # model: 8 MiB of new random weights as a CozyTensors folder.
 uv run -q --no-project --with numpy --with safetensors python -I - "$HB/w.safetensors" <<'PY'
 import sys
