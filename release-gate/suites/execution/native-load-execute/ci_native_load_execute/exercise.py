@@ -17,7 +17,9 @@ from pathlib import Path
 import msgspec
 import tensorfs
 import torch
-from cozy_runtime.author import App, Context, Device, Invocation, attempt
+from cozy_runtime.author import App, Context, Device, Invocation
+from cozy_runtime.author import prepare as prepare_request
+from cozy_runtime.author._invoke import run_prepared
 from cozy_runtime.compute import PreparedRepeat
 from tensorfs import varena
 
@@ -228,11 +230,10 @@ def exercise(mode, seed, outer_context, tel):
 
         try:
             if mode in {"scope-return", "scope-unwind", "input-error"}:
-                # Same public invocation lifecycle used by the existing qualified GPU gate.
+                # The executor's actual prepare/invoke lifecycle, including checked teardown.
                 # Expected errors are contained in this real invocation, not mocked away.
-                result, outcome, _ = attempt(
-                    app.get("handler"),
-                    {},
+                result, outcome, _ = run_prepared(
+                    prepare_request(app.get("handler"), {}),
                     Invocation(
                         request_id=f"native-load-{mode}-{seed}",
                         spool=directory / "attempt",
