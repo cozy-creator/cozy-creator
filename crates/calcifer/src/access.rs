@@ -326,9 +326,20 @@ impl Hubs {
             expires_s: None,
         };
         let minted = client.create_capability(&ask).await;
-        let minted = minted
-            .map_err(|error| hub_denied(origin, error.into()))?
-            .into_inner();
+        let minted = minted.map_err(|error| match error.into() {
+            hub_client::Error::Hub { status: 404, code, .. } if code == "route.not_found" => {
+                Denied::Refused(Reason {
+                    code: "hub_capabilities_unsupported".into(),
+                    message: format!(
+                        "{origin} mints no run capabilities, which a run that reads a private commit or \
+                         publishes needs: tensorhub v0.36.1 or later does"
+                    ),
+                    ..Default::default()
+                })
+            }
+            error => hub_denied(origin, error),
+        })?;
+        let minted = minted.into_inner();
         // Minted again two thirds into its life (ten minutes of fifteen).
         let now = now_s();
         let expires = u64::try_from(minted.expires_unix_ms / 1000).unwrap_or_default();
