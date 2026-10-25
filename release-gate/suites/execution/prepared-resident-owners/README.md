@@ -19,7 +19,8 @@ The cell requires these actual outcomes:
 - Before the first forward, resident-only capture refuses without a source read or body call.
 - After one eager forward, a placed module alone retains its binding; capture reads zero bytes,
   and one native graph launch runs four exact linear steps without Python continuation.
-- The surrounding real request stays non-overlapping. The next component produces a second
+- The actual CLI executor request stays non-overlapping; the fixture does not open a nested
+  non-idle measurement request. The next component produces a second
   phase transition after graph retirement, preserving phase prioritization.
 - A package forward hook and the actual per-step LoRA setting refuse before warmup.
 - A mutating module counter is restored with the declared state before preparation refuses.

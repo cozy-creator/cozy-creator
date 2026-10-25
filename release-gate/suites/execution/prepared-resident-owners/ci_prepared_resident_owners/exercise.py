@@ -110,33 +110,38 @@ def exercise(seed, ctx):
             raise AssertionError("expected a prelaunch capability refusal")
 
         try:
-            with memory.request(
-                f"resident-owner-{seed}",
-                plan=[backend.models["net"], backend.models["next"]],
-            ) as request:
-                cold_reason = refusal(capture)
-                assert calls[0] == 0 and request.moved == 0, request.stats()
-                with torch.no_grad():
-                    torch.testing.assert_close(
-                        built.net(state), state * 0.5, rtol=0, atol=0
-                    )
-                before = request.moved
-                plan = capture()
-                assert calls[0] == 2 and request.moved == before
-                assert not request.overlap, "idle capture changed real request overlap"
-                output = ctx.plan(plan).wait()[0]
+            # The ordinary CLI executor already owns a real request. Opening a second
+            # non-idle request here would itself mark both as overlapping before capture.
+            request = residency._REQUEST.get()
+            assert request is not None and request.memory is memory and not request.idle
+            request.plan([backend.models["net"], backend.models["next"]])
+            before_overlap = request.overlap
+            assert not before_overlap, "the fixture needs one admitted GPU request"
+            cold_reason = refusal(capture)
+            assert calls[0] == 0 and request.moved == 0, request.stats()
+            with torch.no_grad():
                 torch.testing.assert_close(
-                    output, torch.full_like(state, 0.0625), rtol=0, atol=0
+                    built.net(state), state * 0.5, rtol=0, atol=0
                 )
-                assert calls[0] == 2 and plan.facts()["host_graph_launches"] == 1
-                plan.close()
-                with torch.no_grad():
-                    torch.testing.assert_close(
-                        built.next(state), state * 0.5, rtol=0, atol=0
-                    )
-                assert len(request.phase_changes) == 2, request.phase_changes
-                assert not request.overlap
-                phase_changes = request.phase_changes
+            before = request.moved
+            plan = capture()
+            assert calls[0] == 2 and request.moved == before
+            assert request.overlap == before_overlap, (
+                "idle capture changed request overlap"
+            )
+            output = ctx.plan(plan).wait()[0]
+            torch.testing.assert_close(
+                output, torch.full_like(state, 0.0625), rtol=0, atol=0
+            )
+            assert calls[0] == 2 and plan.facts()["host_graph_launches"] == 1
+            plan.close()
+            with torch.no_grad():
+                torch.testing.assert_close(
+                    built.next(state), state * 0.5, rtol=0, atol=0
+                )
+            assert len(request.phase_changes) == 2, request.phase_changes
+            assert request.overlap == before_overlap
+            phase_changes = list(request.phase_changes)
 
             # Supported ownership rejects Python hooks and variable per-step LoRA before warmup.
             handle = built.net.register_forward_pre_hook(lambda module, args: None)
@@ -232,6 +237,8 @@ def exercise(seed, ctx):
                 "cold_no_read": cold_reason,
                 "resident_read_bytes": 0,
                 "phase_changes": phase_changes,
+                "overlap_before_capture": before_overlap,
+                "overlap_after_capture": request.overlap,
                 "hook_refusal": hook_reason,
                 "per_step_lora_refusal": lora_reason,
                 "state_restored": state_reason,
