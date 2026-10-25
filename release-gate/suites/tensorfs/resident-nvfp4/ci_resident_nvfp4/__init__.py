@@ -36,6 +36,7 @@ def specimen(torch, shape, layout, order, global_mode, with_pre, seed):
         torch.uint8
     )
     scales = 2.0 ** (torch.arange(rows * blocks).remainder(4).reshape(rows, blocks) - 2)
+    scales[0, 0] = 0.0  # Include a valid zero-scale block from the min-SSE producer.
     scale_bytes = scales.to(torch.float8_e4m3fn).view(torch.uint8)
     matrices = rows // height
     if layout == "row_major":
@@ -155,7 +156,7 @@ def run(payload: Request, ctx: Context) -> Report:
             {**parts, "scale_2": host["scale_2"]},
             params,
             tensorfs.UnsupportedError,
-            "same device",
+            "same placement",
         ),
     ]:
         try:
