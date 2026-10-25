@@ -13,7 +13,6 @@ pub mod metrics;
 pub mod pins;
 mod plan;
 mod probe;
-#[cfg(unix)]
 pub mod source;
 #[cfg(feature = "store")]
 pub(crate) mod view;
@@ -331,7 +330,6 @@ pub unsafe fn read(copies: &[Copy], opts: &ReadOpts) -> Result<ReadStats, Error>
 /// GPU work never borrows those host source addresses beyond this call, including on error.
 /// Device destination ownership still follows `read`'s checked error-completion contract.
 /// `issued` hears of each device copy as its work is all issued (host destinations: never).
-#[cfg(any(feature = "store", unix))]
 pub(crate) unsafe fn read_staged(copies: &[Copy], opts: &ReadOpts, issued: Option<Issued>) -> Result<ReadStats, Error> {
     // SAFETY: the caller's contract is `read`'s own, with host sources staged.
     unsafe { read_impl(copies, opts, true, issued, None) }
@@ -339,7 +337,6 @@ pub(crate) unsafe fn read_staged(copies: &[Copy], opts: &ReadOpts, issued: Optio
 
 /// The same staging engine with cooperative cancellation between bounded copy pieces.
 /// Cancellation still joins already submitted work before returning an ordinary error.
-#[cfg(any(feature = "store", unix))]
 pub(crate) unsafe fn read_staged_cancelable(
     copies: &[Copy], opts: &ReadOpts, cancel: &ReadControl,
 ) -> Result<ReadStats, Error> {

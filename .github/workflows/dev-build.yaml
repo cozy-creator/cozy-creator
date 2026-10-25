@@ -14,7 +14,7 @@ on:
         type: string
         default: master
       build:
-        description: "cozy: the dev cozy binary; tensord: the manylinux tensord; tensorfs: the TensorFS wheel; kernels: CUDA AOT only (comma-separate several)"
+        description: "cozy: dev binary; tensord: manylinux binary; tensorfs: wheel; kernels: CUDA AOT; check: native Rust compilation only (comma-separate several)"
         type: string
         default: cozy
       features:
@@ -37,6 +37,9 @@ permissions:
 jobs:
   dev:
     runs-on: ${{ inputs.runner }}
+    defaults:
+      run:
+        shell: bash
     # Hang bound, not a work budget.
     timeout-minutes: 60
     steps:
@@ -51,13 +54,24 @@ jobs:
       # holds the manylinux_2_28 builds (tensord, the dev cozy); target/manylinux2014 the TensorFS
       # wheel's, whose older glibc cannot run build scripts the 2_28 container compiled.
       - uses: Swatinem/rust-cache@v2
-        if: contains(inputs.build, 'tensor') || contains(inputs.build, 'cozy')
+        if: contains(inputs.build, 'tensor') || contains(inputs.build, 'cozy') || contains(inputs.build, 'check')
         with:
           cache-on-failure: true
           workspaces: |
             . -> target
             . -> target/manylinux
             . -> target/manylinux2014
+      - uses: actions/setup-python@v6
+        if: contains(inputs.build, 'check')
+        with:
+          python-version: '3.12'
+      - name: Check native memory and TensorFS compilation
+        if: contains(inputs.build, 'check')
+        env:
+          CARGO_BUILD_JOBS: '2'
+        run: |
+          cargo check --locked -p varena -p tensorfs -p tensorfs-py
+          cargo check --locked -p tensorfs --no-default-features
       - uses: arduino/setup-task@v2
         if: contains(inputs.build, 'tensord')
         with:
