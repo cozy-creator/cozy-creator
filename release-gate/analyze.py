@@ -1,5 +1,5 @@
 """Verdict for one release-gate directory. Each cell ran once on a fresh pod; its execution time, denoise step 1,
-steady s/step and peak VRAM (the most it needed at once: record.working) are held against the SKU's last known-good numbers (the baseline file,
+steady s/step and VRAM (the driver's bytes it added at its fullest: Run.vram) are held against the SKU's last known-good numbers (the baseline file,
 gate-<SKU>.json, which gate.sh fetches from and publishes to the `release-gate-baselines` release). A PASS is recorded
 in the baseline file; `--accept` records a FAIL the lead accepted. Exit 1 on any failure: the publish is blocked.
     analyze.py <gate dir> <SKU> <baseline file> [--accept]
@@ -13,7 +13,7 @@ accept = '--accept' in sys.argv
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, 'suites'))
-import lm, quality, record, swap  # noqa: E402
+import lm, quality, swap  # noqa: E402
 from runs import Run  # noqa: E402
 from tensorfs import check as tensorfs  # noqa: E402  (release-gate/suites/tensorfs, never the tensorfs library)
 from varena import check as varena  # noqa: E402
@@ -23,7 +23,9 @@ SUITES = open(os.path.join(out, 'suites')).read().split() if os.path.exists(os.p
 SUITE_CHECKS = {'tensorfs': tensorfs.check, 'varena': varena.check, 'cli': cli.check}  # runtime, packages: quality, lm and swap; hub, tensord: their expect rows
 CHECKS = [quality.check, lm.check, swap.check] + [SUITE_CHECKS[s] for s in SUITES if s in SUITE_CHECKS]
 # Allowed rise over the worst known-good number, unless the good numbers' own spread is wider.
-SLACK = {'execution_ms': 0.25, 'step1_ms': 0.5, 'steady_ms': 0.10, 'peak_vram_mb': 0.10}
+SLACK = {'execution_ms': 0.25, 'step1_ms': 0.5, 'steady_ms': 0.10, 'vram_mb': 0.10}
+# And at least this much (MiB): a CUDA context's size moves between drivers.
+FLOOR = {'vram_mb': 256}
 # A step may cost at most 2x its reference plus 5 s: step 1 against step 2 (known-good fresh H3 executors 0.9-1.8x; the
 # 10-22 split regression 8-17x), every later step against the median of steps 2..n (a length change, such as a video
 # reference's rows leaving the sparse window, must not stall a step). The seconds absorb sub-second image steps.
@@ -46,26 +48,19 @@ def walk(o):
             yield from walk(v)
 
 
-def peak_vram_mb(run, figure=record.working):
-    """The most the run and its calls needed at once (`record.working`: 0.32's varena working set, 0.30's reserved
-    peak), in MiB; with `record.held`, what they held."""
-    peaks = [figure(m.get('memory') or {}) for m in run.measurements]
-    return round(max(peaks) / 2**20) if any(peaks) else None
-
-
 def canonical(target):
     """The package function a target names, whether published (org/pkg/fn@v) or a checkout (./pkg/fn)."""
     return re.sub(r'^(\./|[^/]+/(?=[^/]+/[^/]+$))', '', re.sub(r'@.*$', '', target))
 
 
 cells = [l.rstrip('\n').split('\t') for l in open(os.path.join(out, 'cells.tsv')) if l.strip()]
-summary, runs, recs, host_legs = {}, {}, {}, {}
+summary, runs, host_legs = {}, {}, {}
 for name, target, number in cells:
     run = Run.read(os.path.join(out, name + '.json'))
     if run is None or run.status != 'completed':
         fails.append(f'{name}: run {number} {run and run.status} {run and run.reason or None}')
         continue
-    runs[name], recs[name] = run, run.record
+    runs[name] = run
     obs, gemm, attn = run.observations, run.gemm, run.attention
     for o in obs:
         text = f"{o.get('name')} {o.get('value')}"
@@ -89,9 +84,14 @@ for name, target, number in cells:
                 v = ((ex.get(part) or {}).get('legs_ms') or {}).get(leg)
                 if v: legs[leg] = max(legs.get(leg, 0), round(v))
     host_legs[name] = legs
+    vram = run.vram
+    if vram:
+        notes.append(f'{name} VRAM: {vram["added"] / 1024:.1f} GiB added, {vram["peak"] / 1024:.1f} GiB in use at its fullest (driver)')
+    elif run.gpus:
+        fails.append(f'{name}: run {run.number} has no driver VRAM reading (memory.driver): its machine\'s TensorD predates it')
     c = summary[name] = {'blocking': blocking, 'run': run.number, 'target': canonical(target), 'gemm': gemm, 'attention': attn,
                          'execution_ms': run.execution_ms, 'step1_ms': round(s[0]) if s else None,
-                         'peak_vram_mb': peak_vram_mb(run), 'held_vram_mb': peak_vram_mb(run, record.held),
+                         'vram_mb': vram and vram['added'],
                          'steady_ms': round(sum(s[1:]) / len(s[1:])) if len(s) > 1 else None, 'files': list(run.outputs)}
     if len(s) > 2:
         median = sorted(s[1:])[(len(s) - 1) // 2]
@@ -166,8 +166,6 @@ for name, c in summary.items():
         else:
             notes.append(f'{name}: known blocking {work} {ms / 1000:.1f} s ({site["issue"]}, {site["site"]})')
 for name, c in summary.items():
-    if c.get('held_vram_mb'):
-        notes.append(f'{name} held: {c["held_vram_mb"] / 1024:.1f} GiB (pages and torch at its fullest; not compared)')
     good = [g for g in base['cells'].get(name, {}).get('good', []) if canonical(g['target']) == c['target']]
     if not good:
         notes.append(f'{name}: no known-good numbers for {c["target"]} on {sku}: this run starts them'); continue
@@ -175,11 +173,13 @@ for name, c in summary.items():
     if (last['gemm'], last['attention']) != (c['gemm'], c['attention']):
         fails.append(f'{name}: kernels {last["gemm"]} / {last["attention"]} -> {c["gemm"]} / {c["attention"]}')
     for k, slack in SLACK.items():
-        vals = [g[k] for g in good if g.get(k)]
-        if not vals or not c.get(k):
+        vals = [g[k] for g in good if g.get(k) is not None]
+        if c.get(k) is None:
             continue
-        limit = max(vals) + max(slack * max(vals), max(vals) - min(vals))
-        unit, div = ('GiB', 1024) if k == 'peak_vram_mb' else ('s', 1000)
+        if not vals:
+            notes.append(f'{name}: no known-good {k} for {c["target"]} on {sku}: this run starts it'); continue
+        limit = max(vals) + max(slack * max(vals), max(vals) - min(vals), FLOOR.get(k, 0))
+        unit, div = ('GiB', 1024) if k == 'vram_mb' else ('s', 1000)
         line = (f'{name} {k.rsplit("_", 1)[0]}: {c[k] / div:.1f} {unit} vs known-good {min(vals) / div:.1f}-{max(vals) / div:.1f} {unit}'
                 f' (limit {limit / div:.1f})')
         (fails if c[k] > limit else notes).append(line)
@@ -192,7 +192,7 @@ for leg in ('cuda_init', 'measure_device'):
     vals = [l[leg] for l in host_legs.values() if leg in l]
     if vals:
         notes.append(f'host {leg}: median {sorted(vals)[len(vals) // 2] / 1000:.1f} s, max {max(vals) / 1000:.1f} s over {len(vals)} executors')
-gate = {'out': out, 'sku': sku, 'summary': summary, 'runs': runs, 'records': recs, 'baseline': base}
+gate = {'out': out, 'sku': sku, 'summary': summary, 'runs': runs, 'baseline': base}
 # CLI-behaviour checks a cells/*.sh recorded with gate.sh's `expect` (expect.tsv: check, PASS|FAIL, what happened).
 EXPECT = os.path.join(out, 'expect.tsv')
 for row in (l.rstrip('\n').split('\t') + [''] for l in open(EXPECT)) if os.path.exists(EXPECT) else []:
@@ -207,7 +207,7 @@ print('VERDICT', 'FAIL' if fails else 'PASS', f'({len(cells)} cells)', '' if not
 if not fails or accept:
     label = open(os.path.join(out, 'label')).read().strip()
     for name, c in summary.items():
-        entry = {k: c[k] for k in ('run', 'target', 'gemm', 'attention', 'execution_ms', 'step1_ms', 'steady_ms', 'peak_vram_mb', 'blocking')}
+        entry = {k: c[k] for k in ('run', 'target', 'gemm', 'attention', 'execution_ms', 'step1_ms', 'steady_ms', 'vram_mb', 'blocking')}
         entry.update(label=label, at=time.strftime('%Y-%m-%dT%H:%MZ', time.gmtime()))
         base['cells'].setdefault(name, {'good': []})['good'].append(entry)
     json.dump(base, open(BASE, 'w'), indent=1)

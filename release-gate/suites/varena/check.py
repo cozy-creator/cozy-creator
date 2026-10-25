@@ -1,10 +1,10 @@
 """The varena suite's verdict (cells.sh), one of analyze.py's CHECKS; analyze.py already holds every cell to completion,
-kernels, time and peak VRAM against the last pass.
+kernels, time and VRAM against the last pass.
   - bandwidth: each copy kind of 1 GiB or more (0.32's store and derived fills, 0.30's load and refill: record.py), as
     a share of the `ceiling` cell's measured ceiling, may not fall under 80% of its last passes' lowest share;
-  - caps (`s<N>-<model>[-<i>]`, N GiB): the ledger took the cap (where the memory log names it); no step held more than it (resident weights plus
-    torch's allocation, and torch's reserved peak); the kernels match `cold-<model>` (another kernel under pressure is
-    a slow fallback); no bytes left behind; the third alternation costs at most CHURN more than the second;
+  - caps (`s<N>-<model>[-<i>]`, N GiB): the ledger took the cap (where the memory log names it); the driver's bytes in
+    use (Run.vram) never passed it; the kernels match `cold-<model>` (another kernel under pressure is a slow fallback);
+    no bytes left behind; the third alternation costs at most CHURN more than the second;
   - host (`host-*`, a CPU rental): `host-cap` measured a cgroup cap below the RAM; each run kept its anonymous host
     high-water under the cap (its page/spill bytes are noted: a model that fits pages nothing);
   - every H3 cell produced its whole video.
@@ -12,7 +12,8 @@ kernels, time and peak VRAM against the last pass.
 import json, os, re, subprocess, sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
-import record  # noqa: E402  (release-gate/record.py: 0.30's and 0.32's memory records alike)
+import record  # noqa: E402  (release-gate/record.py: varena's own figures, 0.30's and 0.32's alike)
+from runs import Run  # noqa: E402
 
 GIB = 1 << 30
 CHURN = 0.25
@@ -21,19 +22,16 @@ CELL = re.compile(r's(\d+)-([a-z0-9]+)(?:-(\d+))?')
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def kernels(rec):
-    obs = [o for m in [rec.get('measurements') or {}] + [c.get('measurements') or {} for c in rec.get('calls') or []]
-           for o in m.get('observations') or []]
-    return (sorted({(o['fields'].get('format', ''), o['value']) for o in obs if o.get('name') == 'gemm.selected'}),
-            sorted({o['value'] for o in obs if o.get('name') == 'attention.selected'}))
+def kernels(run):
+    return run.gemm, run.attention
 
 
-def memories(rec):
+def memories(run):
     """The run's and its calls' memory records (H3 keeps its rows in its calls)."""
-    return [m for m in [((r.get('measurements') or {}).get('memory') or {}) for r in [rec] + (rec.get('calls') or [])] if m]
+    return [m['memory'] for m in run.measurements if m.get('memory')]
 
 
-def result(rec, key):
+def result(run, key):
     """The JSON document a script cell returned (a string field holding `key`)."""
     def walk(o):
         if isinstance(o, dict):
@@ -44,7 +42,7 @@ def result(rec, key):
                 yield from walk(v)
         else:
             yield o
-    return next((json.loads(v) for v in walk((rec or {}).get('result')) if isinstance(v, str) and f'"{key}"' in v), None)
+    return next((json.loads(v) for v in walk(run and run.result) if isinstance(v, str) and f'"{key}"' in v), None)
 
 
 def bandwidth(recs, base):
@@ -55,9 +53,9 @@ def bandwidth(recs, base):
     notes.append(f'ceiling: disk {ceiling["disk_gbps"]} GB/s' + (f', host to device {ceiling["h2d_gbps"]} GB/s' if ceiling.get('h2d_gbps') else ' (host to device unmeasured)'))
     hist = base.setdefault('varena', [])
     now = {}
-    for name, rec in recs.items():
+    for name, run in recs.items():
         moved = {}
-        for m in memories(rec):
+        for m in memories(run):
             for kind, (b, s) in record.copies(m).items():
                 mb, ms = moved.get(kind, (0, 0.0))
                 moved[kind] = (mb + b, ms + s)
@@ -111,19 +109,18 @@ def caps(out, recs):
             fails.append(f'cap {gib} GiB: the ledger took {ledger[-1] / GIB:.2f} GiB')
     execs = {}
     for name, gib, model, i in capped:
-        rec, mems = recs[name], memories(recs[name])
-        held = max((record.step_held(m) for m in mems), default=0)
-        reserved = max((m.get('peak_reserved_bytes') or 0 for m in mems), default=0)
+        run, mems = recs[name], memories(recs[name])
         moved = sum(record.paged(m) for m in mems)
-        line = f'{name}: held {held / GIB:.2f} GiB at its fullest step, torch reserved {reserved / GIB:.2f} GiB, streamed + paged {moved / GIB:.1f} GiB'
-        (fails if held > gib * GIB or reserved > gib * GIB else notes).append(line + f', cap {gib} GiB')
+        if run.vram:  # none read fails in analyze.py
+            line = f'{name}: {run.vram["peak"] / 1024:.2f} GiB in use at its fullest (driver), streamed + paged {moved / GIB:.1f} GiB'
+            (fails if run.vram['peak'] * 2**20 > gib * GIB else notes).append(line + f', cap {gib} GiB')
         left = sum(record.leftover(m) for m in mems)
         if left:
             fails.append(f'{name}: left {left / GIB:.2f} GiB behind')
         ref = recs.get(f'cold-{model}')
-        if ref and model != 'h3' and kernels(ref) != kernels(rec):
-            fails.append(f'{name}: kernels {kernels(rec)} under {gib} GiB; cold-{model} served {kernels(ref)}')
-        execs[name] = rec.get('execution_ms')
+        if ref and model != 'h3' and kernels(ref) != kernels(run):
+            fails.append(f'{name}: kernels {kernels(run)} under {gib} GiB; cold-{model} served {kernels(ref)}')
+        execs[name] = run.execution_ms
     for model in sorted({m for _, _, m, i in capped if i and m != 'h3'}):
         runs = [execs[n] for n, _, m, i in sorted(capped, key=lambda c: int(c[3] or 0)) if m == model and i and execs.get(n)]
         if len(runs) >= 3:
@@ -134,10 +131,10 @@ def caps(out, recs):
 
 def videos(recs):
     fails, notes = [], []
-    for name, rec in recs.items():
+    for name, run in recs.items():
         if not re.search(r'(^|-)h3(-15)?$', name):
             continue
-        vids = [o.get('path') for o in rec.get('output') or [] if (o.get('path') or '').endswith('.mp4')]
+        vids = run.files('.mp4')
         if not vids:
             fails.append(f'{name}: no video output'); continue
         p = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-count_packets', '-show_entries',
@@ -149,7 +146,7 @@ def videos(recs):
 
 
 def check(gate):
-    recs, sku = gate['records'], gate.get('sku', '')
+    recs, sku = gate['runs'], gate.get('sku', '')
     fails, notes = [], []
     for f, n in (bandwidth(recs, gate.setdefault('baseline', {})), caps(gate['out'], recs), host(recs), videos(recs)):
         fails += f; notes += n
@@ -162,14 +159,13 @@ def check(gate):
 
 if __name__ == '__main__':
     out, sku = sys.argv[1].rstrip('/'), sys.argv[2]
-    recs = {}
+    runs = {}
     for line in open(os.path.join(out, 'cells.tsv')):
         name = line.split('\t')[0]
-        p = os.path.join(out, name + '.json')
-        rec = json.load(open(p)) if os.path.exists(p) else None
-        if rec and rec.get('status') == 'completed':
-            recs[name] = rec
-    fails, notes = check({'out': out, 'sku': sku, 'records': recs, 'baseline': {}})
+        run = Run.read(os.path.join(out, name + '.json'))
+        if run and run.status == 'completed':
+            runs[name] = run
+    fails, notes = check({'out': out, 'sku': sku, 'runs': runs, 'baseline': {}})
     for n in notes: print('note', n)
     for f in fails: print('FAIL', f)
     print('VARENA', 'FAIL' if fails else 'PASS')

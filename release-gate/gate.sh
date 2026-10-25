@@ -4,7 +4,8 @@
 # .github/workflows/release-gate.yaml on a runner signed in with `cozy login --key`.
 #   gate.sh <SKU> --suite name,... [--gpus N] [--out DIR] [--establish] [--publish] [--runtime F|URL] [--tensorfs F|URL]
 #           [--tensord BIN|URL] [--packages DIR] [--pins name@release,...] [--only cell,cell] [--before FILE]...
-#           [--cells FILE]... [--first pkg,...] [--cli BIN] [--install-cli BIN] [--disk GB]
+#           [--cells FILE]... [--first pkg,...] [--cli BIN] [--install-cli BIN] [--disk GB] [--on MACHINE]
+# --on runs on that machine as it is (a dev proof on `local`): no rental, no before.sh, nothing ended.
 # --install-cli is an old cozy (0.11.15) whose machine fetches URL#sha256 candidates itself, for suites/tensord/skew.sh.
 # --suite runs those suites (suites/<name>/: README.md says what each proves and costs); there is no default, the
 # release agent chooses. A suite's before.sh runs on the fresh pod before the candidate goes on, its cells.sh after it
@@ -27,7 +28,7 @@ if [ "${1:-}" != --copy ]; then
 fi
 HERE=$2; shift 2
 REPO=cozy-creator/cozy-creator TAG=release-gate-baselines
-SKU=$1; shift; CAND=() ONLY= EXTRA=() BEFORE=() CLI=cozy DISK=400 OUT= PKGS= ESTABLISH= PUBLISH= PINS= SUITES= K= CLIP= GPUS= FIRST= ICLI=
+SKU=$1; shift; CAND=() ONLY= EXTRA=() BEFORE=() CLI=cozy DISK=400 OUT= PKGS= ESTABLISH= PUBLISH= PINS= SUITES= K= CLIP= GPUS= FIRST= ICLI= ON=
 BIN= RW= TW= TD=
 while [ $# -gt 0 ]; do
   case $1 in
@@ -43,6 +44,7 @@ while [ $# -gt 0 ]; do
     --install-cli) ICLI=$2;;
     --cli) CLI=$2;;
     --disk) DISK=$2;;
+    --on) ON=$2;;
     --packages) PKGS=$(cd "$2" && pwd);;
     --pins) PINS=",$2,";;
     --runtime|--runtime-wheel) RW=$2;;
@@ -103,6 +105,7 @@ end_it() {
   "$CLI" machine logs "$M" memory -n 0 >machine-memory.log 2>&1
   "$CLI" machine logs "$M" tensord -n 0 >machine-tensord.log 2>&1
   if "$CLI" logs --help >/dev/null 2>&1; then "$CLI" logs calcifer; else "$CLI" machine logs local calcifer -n 0; fi >calcifer.log 2>&1
+  [ -z "$ON" ] || { M=; return; }
   # `machine end` returns once the Hub affirms the pod gone.
   "$CLI" machine end "$M" -y >end.log 2>&1 && ! "$CLI" machine list 2>/dev/null | grep -q "^$M " && { log "ended $M, gone"; M=; return; }
   log "WARNING $M still listed: $(tail -c 300 end.log)"
@@ -138,8 +141,9 @@ pkg() {
 output() { run_output "$OUT" "$1" "$2"; }
 . "$HERE/products.sh"
 log "gate on $SKU (suites ${SUITES//,/ }): scenario $NAME, seeds from $R, candidate: ${CAND[*]:-released}${PKGS:+ packages $PKGS}${PINS:+ pins ${PINS//,/ }}, cli: $CLI"
-"$CLI" machine rent "$SKU" ${GPUS:+--gpus "$GPUS"} --disk-gb "$DISK" -y --json >rent.json 2>rent.err
-M=$(python3 -c 'import json,sys
+[ -z "$ON" ] || { M=$ON; BEFORE=(); }
+[ -n "$ON" ] || "$CLI" machine rent "$SKU" ${GPUS:+--gpus "$GPUS"} --disk-gb "$DISK" -y --json >rent.json 2>rent.err
+[ -n "$M" ] || M=$(python3 -c 'import json,sys
 t = open(sys.argv[1]).read(); dec = json.JSONDecoder(); i = 0
 while i < len(t):
     i = t.find("{", i)
@@ -149,9 +153,9 @@ while i < len(t):
     if isinstance(m, dict) and m.get("name"): print(m["name"]); break' rent.json)
 [ -n "$M" ] || { log "rent failed: $(tail -c 300 rent.err) $(tail -c 300 rent.json)"; exit 1; }
 echo "$M" > machine
-log "rented $M"
+log "${ON:+on }${ON:-rented} $M"
 # The gate holds the rental between runs too (fetches, uploads, analysis here): reset its 15-minute idle clock.
-(while sleep 240; do "$CLI" machine keepalive "$M" >/dev/null 2>&1; done) & KEEP=$!
+[ -n "$ON" ] || { (while sleep 240; do "$CLI" machine keepalive "$M" >/dev/null 2>&1; done) & KEEP=$!; }
 "$CLI" machine show "$M" > machine-fresh.txt 2>&1
 # reported: $M's cozy, Runtime and TensorFS into $v $rt $tfs once it reports them (a fresh pod does once up); empty
 # when it ends first, or Calcifer answers a typed error.
@@ -163,7 +167,7 @@ reported() {
   done
 }
 # Sourced on the fresh pod, before the candidate goes on: each suite's before.sh, then `--before FILE`s.
-for s in ${SUITES//,/ }; do [ ! -f "$HERE/suites/$s/before.sh" ] || . "$HERE/suites/$s/before.sh"; done
+for s in ${SUITES//,/ }; do [ -n "$ON" ] || [ ! -f "$HERE/suites/$s/before.sh" ] || . "$HERE/suites/$s/before.sh"; done
 for f in "${BEFORE[@]}"; do . "$f"; done
 # A machine already on the candidate cozy (a suite's before.sh moved it) keeps it: no second upload or restart.
 if [ -n "$BIN" ] && [ "$("$CLI" --json machine show "$M" | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"]["version"])' 2>/dev/null)" = "$BIN" ]; then

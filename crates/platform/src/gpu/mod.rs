@@ -217,6 +217,12 @@ impl Device {
         memory(device.memory_info()).map(|(_, free)| free)
     }
 
+    /// Its bytes in use now, every process's and the driver's own (total less free).
+    pub fn used(&self) -> Result<u64> {
+        let device = self.nvml.device_by_index(self.index).map_err(failed("open device"))?;
+        memory(device.memory_info()).map(|(total, free)| total.saturating_sub(free))
+    }
+
     /// Whether its compute mode admits one context at a time (exclusive-process) or none
     /// (prohibited): a second process holding a context locks every other out. A driver that
     /// does not say shares it.
@@ -233,6 +239,50 @@ impl Device {
             .device_by_index(self.index)
             .and_then(|device| device.is_display_active())
             .map_err(failed("display active"))
+    }
+}
+
+/// One GPU's bytes in use as the driver reads them ([`Device::used`]): when a [`Peak`] began and
+/// at its fullest.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+pub struct Used {
+    pub gpu: u32,
+    pub before_bytes: u64,
+    pub peak_bytes: u64,
+}
+
+/// A call's GPUs, read every 100 ms on a thread of its own from [`Peak::watch`] until
+/// [`Peak::end`] (or its drop). A GPU NVML cannot open is left out.
+pub struct Peak {
+    stop: std::sync::mpsc::Sender<()>,
+    thread: std::thread::JoinHandle<Vec<Used>>,
+}
+
+impl Peak {
+    /// `entries` as `CUDA_VISIBLE_DEVICES` spells them; None for none.
+    pub fn watch(entries: Vec<String>) -> Option<Peak> {
+        if entries.is_empty() {
+            return None;
+        }
+        let (stop, stopped) = std::sync::mpsc::channel::<()>();
+        let thread = std::thread::Builder::new().name("gpu-peak".into()).spawn(move || {
+            let devices: Vec<Device> = entries.iter().filter_map(|entry| Device::open(entry).ok()).collect();
+            let mut rows: Vec<(Used, &Device)> = devices.iter()
+                .filter_map(|d| d.used().ok().map(|bytes| (Used { gpu: d.index, before_bytes: bytes, peak_bytes: bytes }, d)))
+                .collect();
+            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(std::time::Duration::from_millis(100)) {
+                for (row, device) in &mut rows {
+                    row.peak_bytes = row.peak_bytes.max(device.used().unwrap_or(0));
+                }
+            }
+            rows.into_iter().map(|(row, _)| row).collect()
+        });
+        thread.ok().map(|thread| Peak { stop, thread })
+    }
+
+    pub fn end(self) -> Vec<Used> {
+        drop(self.stop);
+        self.thread.join().unwrap_or_default()
     }
 }
 

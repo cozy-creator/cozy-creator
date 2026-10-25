@@ -26,10 +26,10 @@ def check(gate):
         text = json.dumps(runs['cli-lora'].record).lower()
         if 'lcm-lora-sdxl' not in text and 'adapter' not in text:
             fails.append('cli-lora: the record names no LoRA (lcm-lora-sdxl) applied')
-    if 'cli-cap' in summary:
-        peak = summary['cli-cap'].get('peak_vram_mb')
-        if peak and peak * (1 << 20) > 12 * GIB:
-            fails.append(f'cli-cap: peak {peak} MiB over the 12 GiB --gpu-memory-limit')
+    vram = 'cli-cap' in runs and runs['cli-cap'].vram  # none read fails in analyze.py
+    if vram:
+        (fails if vram['peak'] * (1 << 20) > 12 * GIB else notes).append(
+            f'cli-cap: {vram["peak"]} MiB in use at its fullest under the 12 GiB --gpu-memory-limit')
     p = os.path.join(gate['out'], 'cli-fails.txt')
     if os.path.exists(p):
         fails += [f'cli: {l.strip()}' for l in open(p) if l.strip()]
