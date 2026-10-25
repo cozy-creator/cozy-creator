@@ -277,8 +277,12 @@ pub(crate) async fn follow(
         tokio::select! {
             next = following.next(&calcifer) => match next? {
                 Some(next) => machine = next,
-                // Left the list: it ended as last seen.
-                None => return Err(boot_failed(&machine)),
+                // Left the list, which shows no ended machine: its record says why it ended.
+                None => {
+                    let id = machine.rental_id.clone().unwrap_or_else(|| machine.name.clone());
+                    let ended = calcifer.get(&super::route(&id)?).await.unwrap_or(machine);
+                    return Err(boot_failed(&ended));
+                }
             },
             _ = tokio::signal::ctrl_c() => {
                 output::say(ctx, &format!(
