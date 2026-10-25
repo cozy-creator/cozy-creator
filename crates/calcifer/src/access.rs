@@ -52,7 +52,7 @@ pub(crate) struct Facts {
     account: String,
     /// Where machines read the Hub.
     reads: String,
-    /// Both where machines read it and its public origin: the configured Hub's other names.
+    /// Both where machines read it and its public origin: the Hub's other names.
     names: Vec<Origin>,
     /// The CA a machine trusts for the Hub when a private one signs it (a test Hub).
     ca_der: Vec<u8>,
@@ -278,45 +278,39 @@ impl Hubs {
         Ok(facts)
     }
 
-    /// The configured Hub `origin` names: itself, or the one a machine reads or the public
-    /// knows at `origin` (a dev Hub this computer dials on loopback is read elsewhere), as the
-    /// facts read so far say.
-    pub(crate) fn configured(&self, origin: &Origin) -> Option<Origin> {
-        if self.configured.iter().any(|hub| &hub.origin == origin) {
+    /// The Hub `origin` names: itself when it is the configured Hub or one whose facts were read
+    /// (a run's), else the one whose machines read it there or whose public origin it is (a dev
+    /// Hub this computer dials on loopback is read elsewhere), as the facts read so far say.
+    pub(crate) fn known(&self, origin: &Origin) -> Option<Origin> {
+        let facts = lock(&self.facts);
+        if *origin == self.hub || facts.contains_key(origin) {
             return Some(origin.clone());
         }
-        let facts = lock(&self.facts);
-        let named = self
-            .configured
-            .iter()
-            .find(|hub| (facts.get(&hub.origin)).is_some_and(|facts| facts.names.contains(origin)));
-        named.map(|hub| hub.origin.clone())
+        facts.iter().find(|(_, facts)| facts.names.contains(origin)).map(|(hub, _)| hub.clone())
     }
 
-    /// `origin`'s configured Hub, reading the facts of each configured Hub not read yet when the
-    /// ones read so far do not name it; `origin` itself when none does.
+    /// `origin`'s Hub, reading the configured Hub's facts when not read yet and the ones read so
+    /// far do not name it; `origin` itself when none does.
     pub(crate) async fn resolve(&self, origin: &Origin) -> Origin {
-        if let Some(hub) = self.configured(origin) {
+        if let Some(hub) = self.known(origin) {
             return hub;
         }
         self.learn().await;
-        self.configured(origin).unwrap_or_else(|| origin.clone())
+        self.known(origin).unwrap_or_else(|| origin.clone())
     }
 
-    /// Reads the facts of each configured Hub this computer is signed in to and has not read.
+    /// Reads the configured Hub's facts when this computer is signed in there and has not.
     pub(crate) async fn learn(&self) {
-        for hub in &self.configured {
-            if !lock(&self.facts).contains_key(&hub.origin) {
-                let _ = self.facts(&hub.origin).await;
-            }
+        if !lock(&self.facts).contains_key(&self.hub) {
+            let _ = self.facts(&self.hub).await;
         }
     }
 
     /// An installation's Hub as a machine records it, as this computer names that Hub: the
-    /// configured Hub's origin, else its one spelling; local code's stays empty.
+    /// known Hub's origin, else its one spelling; local code's stays empty.
     pub(crate) fn named(&self, hub: &str) -> String {
         match Origin::parse(hub) {
-            Ok(origin) => self.configured(&origin).unwrap_or(origin).into(),
+            Ok(origin) => self.known(&origin).unwrap_or(origin).into(),
             Err(_) => hub.to_owned(),
         }
     }

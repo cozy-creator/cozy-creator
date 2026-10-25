@@ -62,8 +62,7 @@ as yanked releases (`task publish`). The release agent picks the suites, runs th
 records the result. `candidate.json` in each gate's output names the exact set: the versions the machine ran and the
 candidate files' digests. `verify.sh <run|dir>...` prints it only when every SKU passed. `promote.sh <run id>` (or
 `--record <URL> <dirs>...` for a hand gate) hands that set to users in one step: the same files to PyPI, the cozy
-prerelease latest plus Homebrew (cozy-promote.yaml), the packages un-yanked (`cozy package yank --undo`) on every Hub
-that holds them. Packages' `task promote` calls it. The worker image and the Hub pin follow, by the release owner.
+prerelease latest plus Homebrew (cozy-promote.yaml), the packages un-yanked (`cozy package yank --undo`) on the Hub. Packages' `task promote` calls it. The worker image and the Hub pin follow, by the release owner.
 
 ## CI sign-in
 

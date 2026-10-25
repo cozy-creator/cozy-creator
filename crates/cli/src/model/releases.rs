@@ -30,7 +30,7 @@ pub(crate) async fn publish(ctx: &Context, args: Publish) -> Result<ExitCode, Er
     let repo = Repo::hub(&args.model)?;
     let version = refs::label("version", &args.version)?;
     let commits = args.commits.iter().map(|c| refs::commit(c)).collect::<Result<Vec<_>, _>>()?;
-    let client = ctx.hub_signed_in(&ctx.hub()?)?;
+    let client = ctx.hub_signed_in(ctx.hub())?;
     let request = ModelReleaseRequest { commits };
     let release = hub_answer(client.publish_model_release(&repo.org, &repo.name, &version, &request).await)?;
     let view = Released {
@@ -68,9 +68,9 @@ pub(crate) async fn delete(ctx: &Context, args: Delete) -> Result<ExitCode, Erro
         ModelRef::Commit { repo, commit } => (repo, Some(commit)),
         _ => return Err(usage("model_ref_invalid", format!("{:?}: delete takes [org/]name or [org/]name@sha256:<commit>", args.model))),
     };
-    let hub = ctx.hub()?;
+    let hub = ctx.hub();
     if !ctx.yes {
-        return Err(usage("model_delete_unconfirmed", format!("deleting {} from {} cannot be undone", args.model, hub.origin))
+        return Err(usage("model_delete_unconfirmed", format!("deleting {} from {} cannot be undone", args.model, hub))
             .remedy("run it again with --yes"));
     }
     let client = ctx.hub_signed_in(&hub)?;

@@ -1,4 +1,4 @@
-//! `cozy run list`: runs on every Hub, newest first: a live view on a terminal, else a table or
+//! `cozy run list`: every run, newest first: a live view on a terminal, else a table or
 //! JSON.
 use std::process::ExitCode;
 
@@ -62,10 +62,9 @@ pub async fn exec(ctx: &Context, mut query: Query) -> Result<ExitCode, Error> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// The runs `query` asks for, page by page; with `--tensorhub`, only that Hub's.
+/// The runs `query` asks for, page by page.
 pub(crate) async fn runs(ctx: &Context, query: &Query) -> Result<RunList, Error> {
     let calcifer = ctx.calcifer().await?;
-    let hub = ctx.narrowed()?;
     let mut out = RunList {
         runs: vec![],
         older: 0,
@@ -83,11 +82,7 @@ pub(crate) async fn runs(ctx: &Context, query: &Query) -> Result<RunList, Error>
         out.older = list.older;
         out.machine = list.machine;
         out.unreadable.extend(list.unreadable);
-        out.runs.extend(
-            list.runs
-                .into_iter()
-                .filter(|r| hub.as_ref().is_none_or(|h| h.origin == r.hub)),
-        );
+        out.runs.extend(list.runs);
         let wanted = query
             .limit
             .is_none_or(|limit| (out.runs.len() as u64) < limit);
@@ -98,8 +93,8 @@ pub(crate) async fn runs(ctx: &Context, query: &Query) -> Result<RunList, Error>
     }
 }
 
-/// Whether `run` is one `query` lists: its state, package, machine and (with `--tensorhub`) Hub.
-pub(crate) fn matches(ctx: &Context, query: &Query, run: &Run) -> Result<bool, Error> {
+/// Whether `run` is one `query` lists: its state, package and machine.
+pub(crate) fn matches(query: &Query, run: &Run) -> bool {
     let status = serde_json::to_value(run.status).ok();
     let state = query
         .status
@@ -113,8 +108,7 @@ pub(crate) fn matches(ctx: &Context, query: &Query, run: &Run) -> Result<bool, E
         .machine
         .as_ref()
         .is_none_or(|m| run.machine.as_ref() == Some(m));
-    let hub = ctx.narrowed()?.is_none_or(|h| h.origin == run.hub);
-    Ok(state && package && machine && hub)
+    state && package && machine
 }
 
 /// `text` cut to one cell's width.

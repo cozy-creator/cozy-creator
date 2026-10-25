@@ -32,7 +32,7 @@ pub struct Args {
 #[allow(dead_code)]
 #[derive(Subcommand, Debug)]
 enum Verb {
-    /// Every machine: this computer's, rentals on every Hub, and added ones; live on a terminal.
+    /// Every machine: this computer's, rentals and added ones; live on a terminal.
     List,
     /// One machine and what it reports of itself; live on a terminal while it lives.
     Show {

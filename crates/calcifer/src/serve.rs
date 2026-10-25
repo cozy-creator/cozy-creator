@@ -19,7 +19,7 @@ use platform::{
 };
 use protocol::{
     calcifer::{Holder, REFUSED},
-    config::{self, Flags, Loaded},
+    config::{self, Loaded},
     error::{Envelope, Error, Kind},
 };
 use tokio::net::TcpListener;
@@ -50,7 +50,7 @@ pub fn main() -> ExitCode {
     {
         warn!("{e}");
     }
-    let served = match config::load(Flags::default()) {
+    let served = match config::load() {
         Ok(loaded) => match tokio::runtime::Runtime::new() {
             // Stopped, Calcifer exits now: nothing left on the runtime holds the process (or its
             // service) past `down`.

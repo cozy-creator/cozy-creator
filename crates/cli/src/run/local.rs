@@ -85,7 +85,7 @@ pub(crate) async fn prepare(ctx: &Context, path: &Path, on: On, warm: bool) -> R
             format!("{} does not exist", path.display()),
         ));
     }
-    let hub = ctx.hub()?;
+    let hub = ctx.hub();
     let local = crate::package::local::source(ctx, path, &on).await?;
     let installed = match kept(&ctx.home, &local).filter(|_| !warm) {
         Some(interface) => Installed {
@@ -93,7 +93,7 @@ pub(crate) async fn prepare(ctx: &Context, path: &Path, on: On, warm: bool) -> R
             installation: None,
             machine: None,
         },
-        None => install(ctx, &hub.origin, on.clone(), &local).await?,
+        None => install(ctx, hub, on.clone(), &local).await?,
     };
     Ok(Prepared { local, installed, on })
 }

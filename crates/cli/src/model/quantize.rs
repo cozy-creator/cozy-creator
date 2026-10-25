@@ -10,7 +10,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hub_client::types::ModelCard;
 use protocol::calcifer::{Run, Status};
-use protocol::config::Hub;
+use protocol::config::Origin;
 use protocol::error::{Error, Kind};
 use tensorfs::format::{Header, ObjectRef};
 use tensorfs::{Config, Endpoint};
@@ -43,7 +43,7 @@ fn original(kinds: &[String]) -> bool {
 /// a commit by id, or a release's lane of original weights (its only lane when it has one). A
 /// 4-bit lane is written only from original weights (owner, 2026-10-22): from a commit holding
 /// none it would stack two rounds of 4-bit error.
-async fn commit(ctx: &Context, hub: &Hub, model: &ModelRef, lane: &str) -> Result<(Source, ObjectRef), Error> {
+async fn commit(ctx: &Context, hub: &Origin, model: &ModelRef, lane: &str) -> Result<(Source, ObjectRef), Error> {
     let (repo, release, id) = match model {
         ModelRef::Hub { repo, release } => (repo, release.as_deref(), None),
         ModelRef::Commit { repo, commit } => (repo, None, Some(commit.as_str())),
@@ -90,7 +90,7 @@ async fn commit(ctx: &Context, hub: &Hub, model: &ModelRef, lane: &str) -> Resul
 
 /// `hub`'s distribution endpoint as this computer's signed-in user, trusting the private CA the
 /// Hub names (a test Hub's).
-async fn endpoint(ctx: &Context, hub: &Hub) -> Result<Endpoint, Error> {
+async fn endpoint(ctx: &Context, hub: &Origin) -> Result<Endpoint, Error> {
     let client = ctx.hub_signed_in(hub)?;
     let hub_client::Credential::User(session) = client.credential() else {
         unreachable!("a signed-in client");
@@ -102,7 +102,7 @@ async fn endpoint(ctx: &Context, hub: &Hub) -> Result<Endpoint, Error> {
         ca_der: ca.and_then(|ca| URL_SAFE_NO_PAD.decode(ca.trim()).ok()),
         ..Config::from_env()
     };
-    Endpoint::with_config(&hub.origin.to_string(), &config).map_err(|f| Error::new(Kind::Validation, "endpoint_invalid", f.detail))
+    Endpoint::with_config(hub.as_str(), &config).map_err(|f| Error::new(Kind::Validation, "endpoint_invalid", f.detail))
 }
 
 fn not_on_hub(model: &ModelRef) -> Error {
@@ -164,7 +164,7 @@ pub(crate) async fn quantize(ctx: &Context, args: Quantize) -> Result<ExitCode, 
     let on = args.placement.on()?;
     let named = package(ctx, &args.package)?;
     let model = ModelRef::parse(&args.model)?;
-    let hub = ctx.hub()?;
+    let hub = ctx.hub();
     let (card, prepared);
     let callee = match &named {
         Named::Hub(package, release) => {

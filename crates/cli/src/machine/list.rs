@@ -11,9 +11,9 @@ use crate::{Context, output, run, tui};
 
 const IDLE_RULE: &str = "Rentals end themselves after 15 minutes idle (no queued or running work).";
 
-pub(crate) const HEADERS: [&str; 12] = [
+pub(crate) const HEADERS: [&str; 11] = [
     "MACHINE", "KIND", "GPUS", "FAMILY", "STATE", "$/HOUR", "SPENT", "UPTIME", "RUNNING", "QUEUED",
-    "ENDS", "HUB",
+    "ENDS",
 ];
 
 pub async fn list(ctx: &Context) -> Result<ExitCode, Error> {
@@ -54,16 +54,11 @@ pub async fn list(ctx: &Context) -> Result<ExitCode, Error> {
     for problem in &list.unanswered {
         println!(
             "hub {} did not answer: {}; its rentals may still be billing",
-            hub_label(ctx, &problem.hub),
-            problem.message
+            problem.hub, problem.message
         );
     }
     for hub in &list.signed_out {
-        let login = match ctx.config.resolve(hub) {
-            Ok(hub) => ctx.config.login(&hub),
-            Err(_) => format!("cozy login <email> --tensorhub {hub}"),
-        };
-        println!("hub {}: not logged in; `{login}`", hub_label(ctx, hub));
+        println!("hub {hub}: not logged in; `{}`", ctx.config.login(hub));
     }
     let mut table = output::Table::new(ctx, HEADERS);
     for row in rows(ctx, &list) {
@@ -99,10 +94,7 @@ pub(crate) fn rows(ctx: &Context, list: &MachineList) -> Vec<Vec<String>> {
         let rental = m.rental.as_ref();
         vec![
             m.name.clone(),
-            match m.status.as_ref().is_some_and(|s| s.dev) {
-                true => format!("{} dev", kind(m)),
-                false => kind(m).into(),
-            },
+            kind_cell(ctx, m),
             gpus_cell(m),
             family_cell(m.status.as_ref()),
             state_cell(m),
@@ -112,11 +104,6 @@ pub(crate) fn rows(ctx: &Context, list: &MachineList) -> Vec<Vec<String>> {
             m.running.to_string(),
             m.queued.to_string(),
             ends_cell(m),
-            if m.hub.is_empty() {
-                "—".into()
-            } else {
-                hub_label(ctx, &m.hub)
-            },
         ]
     })
     .collect()
@@ -147,8 +134,8 @@ pub(crate) fn record(ctx: &Context, m: &Machine) -> output::Record {
     if let Some(alias) = m.alias.as_deref().filter(|a| *a != m.name) {
         record = record.field("alias", alias);
     }
-    if !m.hub.is_empty() {
-        record = record.field("hub", hub_label(ctx, &m.hub));
+    if let Some(hub) = ctx.other_hub(&m.hub) {
+        record = record.field("hub", hub);
     }
     if let Some(id) = &m.rental_id {
         record = record.field("rental", id);
@@ -512,10 +499,14 @@ fn offline(m: &Machine) -> Option<String> {
     ))
 }
 
-fn hub_label(ctx: &Context, origin: &str) -> String {
-    let hubs = ctx.config.hubs();
-    hubs.iter()
-        .find(|hub| hub.origin == origin)
-        .map_or(origin, |hub| hub.label())
-        .to_string()
+/// Its kind, `dev` for a dev build, and the Hub it is from when that is not this one.
+fn kind_cell(ctx: &Context, m: &Machine) -> String {
+    let dev = match m.status.as_ref().is_some_and(|s| s.dev) {
+        true => " dev",
+        false => "",
+    };
+    match ctx.other_hub(&m.hub) {
+        Some(hub) => format!("{}{dev} at {hub}", kind(m)),
+        None => format!("{}{dev}", kind(m)),
+    }
 }

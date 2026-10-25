@@ -4,7 +4,7 @@
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 J() { jq -e "$@" > /dev/null; }  # J <filter> <file>: the answer holds what the filter asks
 
-# What needs no machine: Calcifer, Hubs, signing out, the Hub's packages and models.
+# What needs no machine: Calcifer, the Hub setting, signing out, the Hub's packages and models.
 catalog() {
 step status
 cozy --json status > "$OUT/status.json" || check "cozy status failed"
@@ -15,16 +15,17 @@ else
   J '.machines | all(.name != "local")' "$OUT/status.json" || check "status: lists a local machine this OS cannot run"
 fi
 
-step hubs
-cozy --json hub > "$OUT/hub.json" && J '.hubs | any(.name == "tensorhub" and .current)' "$OUT/hub.json" || check "hub: tensorhub is not current"
-cozy --json hub add e2e-alt https://tensorhub.com > /dev/null || check "hub add failed"
-cozy --json hub list > "$OUT/hubs.json" && J '.hubs | any(.name == "e2e-alt")' "$OUT/hubs.json" || check "hub list: e2e-alt not added"
-cozy --json hub use e2e-alt > /dev/null && cozy --json hub list | J '.hubs | any(.name == "e2e-alt" and .current)' || check "hub use: e2e-alt is not current"
-# A command sent to a Hub by name, whichever is current.
-cozy --tensorhub tensorhub --json package search birefnet --limit 1 > "$OUT/by-name.json" \
-  && J '.packages[0].package == "birefnet"' "$OUT/by-name.json" || check "--tensorhub tensorhub: no birefnet"
-cozy --json hub use tensorhub > /dev/null || check "hub use tensorhub failed"
-cozy --json hub remove e2e-alt > /dev/null && ! cozy --json hub list | J '.hubs | any(.name == "e2e-alt")' || check "hub remove: e2e-alt is still known"
+step hub
+# tensorhub.com unless COZY_HUB_URL (or config.toml's hub_url) names another: one there is none at fails.
+! COZY_HUB_URL=http://127.0.0.1:9 cozy --json package search birefnet --limit 1 > "$OUT/hub-env.json" 2>&1 \
+  || check "COZY_HUB_URL=http://127.0.0.1:9: package search did not go there"
+# A run made at that other Hub (local code reads none), then the variable unset: Calcifer still lists and shows it.
+if [ -n "$LOCAL" ] && (cd "$here" && COZY_HUB_URL=http://127.0.0.1:9 cell other-hub ./weightless/reverse "text=hub$RANDOM"); then
+  n=$(cat "$OUT/other-hub.number")
+  cozy --json run list --limit 0 | J --argjson n "$n" 'any(.runs[]; .number == $n and .hub == "http://127.0.0.1:9")' \
+    || check "run list: run $n, made at another Hub, is not listed"
+  cozy --json run show "$n" --once | J '.hub == "http://127.0.0.1:9" and .status == "completed"' || check "run show $n: not its record at the other Hub"
+fi
 
 step "signed out"
 cozy --json whoami > "$OUT/whoami.json" && J '.logged_in == false' "$OUT/whoami.json" || check "whoami: not signed out"

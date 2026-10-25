@@ -8,7 +8,7 @@ use std::{
 
 use platform::paths::Home;
 use protocol::{
-    config::{Config, Hub, Loaded},
+    config::{Config, Loaded, Origin},
     error::Error,
 };
 use hub_client::{Credential, ResponseValue, UserSession};
@@ -41,14 +41,14 @@ impl Context {
         }
     }
 
-    /// Where new work goes: `--tensorhub`, else the current Hub.
-    pub fn hub(&self) -> Result<Hub, Error> {
-        self.config.selected()
+    /// The Hub: `COZY_HUB_URL`, else config.toml's `hub_url`, else tensorhub.com.
+    pub fn hub(&self) -> &Origin {
+        &self.config.hub_url
     }
 
-    /// `--tensorhub`'s Hub, which a list narrows to; without it lists span every Hub.
-    pub fn narrowed(&self) -> Result<Option<Hub>, Error> {
-        self.config.narrowed()
+    /// `origin` when it names a Hub other than this one: a record left from another.
+    pub fn other_hub<'a>(&self, origin: &'a str) -> Option<&'a str> {
+        Origin::parse(origin).is_ok_and(|o| o != *self.hub()).then_some(origin)
     }
 
     /// Calcifer, started if none runs.
@@ -57,7 +57,7 @@ impl Context {
     }
 
     /// Whether this computer holds a device key for `hub`: signed in, as far as the files say.
-    pub fn signed_in(&self, hub: &Hub) -> bool {
+    pub fn signed_in(&self, hub: &Origin) -> bool {
         hub.device_key(&self.home).exists()
     }
 
@@ -66,24 +66,24 @@ impl Context {
         self.http.get_or_init(reqwest::Client::new)
     }
 
-    pub fn hub_anonymous(&self, hub: &Hub) -> hub_client::Client {
-        hub_client::Client::connect(&hub.origin, self.http().clone(), Credential::Anonymous)
+    pub fn hub_anonymous(&self, hub: &Origin) -> hub_client::Client {
+        hub_client::Client::connect(hub, self.http().clone(), Credential::Anonymous)
     }
 
     /// `hub` as this computer's signed-in user; refused when it has no device key there.
-    pub fn hub_signed_in(&self, hub: &Hub) -> Result<hub_client::Client, Error> {
+    pub fn hub_signed_in(&self, hub: &Origin) -> Result<hub_client::Client, Error> {
         hub_client::Client::signed_in(hub, &self.home, self.http().clone(), || {
             self.config.login(hub)
         })
     }
 
     /// This computer's device key at `hub` and the Bearer it mints, kept beside it.
-    pub fn hub_session(&self, hub: &Hub) -> Result<Arc<UserSession>, Error> {
+    pub fn hub_session(&self, hub: &Origin) -> Result<Arc<UserSession>, Error> {
         UserSession::open(hub, &self.home, || self.config.login(hub)).map(Arc::new)
     }
 
     /// Signed in when this computer is, else anonymous: what public and owned reads both need.
-    pub fn hub_client(&self, hub: &Hub) -> Result<hub_client::Client, Error> {
+    pub fn hub_client(&self, hub: &Origin) -> Result<hub_client::Client, Error> {
         match self.signed_in(hub) {
             true => self.hub_signed_in(hub),
             false => Ok(self.hub_anonymous(hub)),

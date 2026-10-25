@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use platform::{durable, paths::Home};
-use protocol::config::Hub;
+use protocol::config::Origin;
 use protocol::error::{Error, Kind};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -58,8 +58,8 @@ fn dir(home: &Home, hub: &str, package: &str) -> PathBuf {
 }
 
 /// The card of `release`: the kept one, else the Hub's, which is then kept.
-pub async fn card(ctx: &Context, hub: &Hub, package: &str, release: &str) -> Result<Card, Error> {
-    if let Some(card) = kept(&ctx.home, &hub.origin, package, release) {
+pub async fn card(ctx: &Context, hub: &Origin, package: &str, release: &str) -> Result<Card, Error> {
+    if let Some(card) = kept(&ctx.home, hub, package, release) {
         return Ok(card);
     }
     let (org, name) = package.split_once('/').expect("a package is org/name");
@@ -69,14 +69,14 @@ pub async fn card(ctx: &Context, hub: &Hub, package: &str, release: &str) -> Res
         .await;
     let document = hub_answer(answer).map_err(|e| absent(e, &format!("{package}@{release}")))?;
     let document = serde_json::to_value(&document).expect("a card serializes");
-    keep(&ctx.home, &hub.origin, package, &document)
+    keep(&ctx.home, hub, package, &document)
 }
 
 /// The Hub's newest published release of `package`: one small read of its package, conditional
 /// on the ETag kept from the last one when the Hub sent one (304: unchanged).
-pub async fn latest(ctx: &Context, hub: &Hub, package: &str) -> Result<String, Error> {
+pub async fn latest(ctx: &Context, hub: &Origin, package: &str) -> Result<String, Error> {
     let (org, name) = package.split_once('/').expect("a package is org/name");
-    let pointer = dir(&ctx.home, &hub.origin, package).join("latest.json");
+    let pointer = dir(&ctx.home, hub, package).join("latest.json");
     let kept: Option<Latest> = std::fs::read(&pointer)
         .ok()
         .and_then(|raw| serde_json::from_slice(&raw).ok());
