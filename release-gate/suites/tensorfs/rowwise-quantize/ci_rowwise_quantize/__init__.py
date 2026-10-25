@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import msgspec
-from cozy_runtime.author import App, Context
+from cozy_runtime.author import App, Context, Telemetry
 
 app = App()
 
@@ -26,7 +26,7 @@ class Report(msgspec.Struct):
 
 
 @app.entrypoint(accelerator=False)
-def run(payload: Request, ctx: Context) -> Report:
+def run(payload: Request, ctx: Context, tel: Telemetry) -> Report:
     import numpy as np
     import tensorfs
     import torch
@@ -227,7 +227,7 @@ def run(payload: Request, ctx: Context) -> Report:
                         "digests": digests,
                     }
                 )
-                print(
+                tel.log(
                     json.dumps(
                         {
                             "stage": "rowwise_conversion_verified",
@@ -245,7 +245,6 @@ def run(payload: Request, ctx: Context) -> Report:
                         },
                         sort_keys=True,
                     ),
-                    flush=True,
                 )
                 checkpoint.close()
         refusals = []
@@ -325,12 +324,11 @@ def run(payload: Request, ctx: Context) -> Report:
                         "read_bytes": control.progress()[0],
                     }
                 )
-                print(
+                tel.log(
                     json.dumps(
                         {"stage": "rowwise_refusal_verified", **refusals[-1]},
                         sort_keys=True,
                     ),
-                    flush=True,
                 )
             else:
                 raise AssertionError(f"invalid rowwise source {name} was accepted")
