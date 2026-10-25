@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import msgspec
@@ -11,7 +12,7 @@ app = App()
 
 
 class Probe(msgspec.Struct, forbid_unknown_fields=True):
-    candidate_python: str
+    candidate_python: str = ""
     seed: int = 103
     mode: str = "repeat"
 
@@ -35,9 +36,10 @@ def external_pressure(payload: PressureProbe, ctx: Context, tel: Telemetry) -> R
 
 @app.entrypoint
 def repeat(payload: Probe, tel: Telemetry) -> Report:
-    if not Path(payload.candidate_python).is_file():
+    executable = payload.candidate_python or sys.executable
+    if not Path(executable).is_file():
         raise ValueError(
-            "candidate_python must name the isolated candidate environment"
+            "candidate_python must name an existing candidate interpreter"
         )
     probe = {
         "repeat": "proof.py",
@@ -56,7 +58,7 @@ def repeat(payload: Probe, tel: Telemetry) -> Report:
     )
     process = subprocess.Popen(
         [
-            payload.candidate_python,
+            executable,
             "-I",
             str(Path(__file__).with_name(probe)),
             str(payload.seed),
