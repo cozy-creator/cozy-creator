@@ -29,6 +29,7 @@ def repeat(payload: Probe, tel: Telemetry) -> Report:
         "repeat": "proof.py",
         "consumer": "consumer.py",
         "retirement": "retirement.py",
+        "pressure": "pressure.py",
         "lifecycle": "lifecycle.py",
         "lifecycle_cancel": "lifecycle.py",
         "lifecycle_running_cancel": "lifecycle.py",
