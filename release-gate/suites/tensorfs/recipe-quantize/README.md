@@ -52,7 +52,7 @@ below proves that repaired CLI and the NVFP4 consumer. [Original component proof
 
 On 2026-10-25, source **17866**, private upload **17867**, INT8 conversion/consumer
 **17868/17869**, and NVFP4 conversion/consumer **17870/17871** all completed through the ordinary
-CLI on local CUDA. Normal update 17853 installed Creator 8499, Runtime 7d1 and TensorFS 9e95/0.15.8.
+CLI on local CUDA. Normal update 17852 installed Creator 8499, Runtime 7d1 and TensorFS 9e95/0.15.8.
 The [compact proof](evidence/8499-7d1-9e95-both-lanes.json) retains exact installed artifact hashes,
 four frozen fixture hashes, private commits, actual measurement logs and twelve raw receipt hashes.
 
