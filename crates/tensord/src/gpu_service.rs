@@ -410,6 +410,7 @@ struct Session {
     level: Level,
 }
 
+#[derive(Clone)]
 struct Leader {
     birth: Birth,
     construction: String,
@@ -1061,8 +1062,8 @@ impl Pool {
             let mut roots = std::collections::BTreeSet::new();
             for record in active {
                 if record.invocation.degree == 0 || record.cancel_actor.is_some() { continue }
-                let Some((birth, _, start)) = record.process.as_ref().and_then(|birth| leaders.get(&birth.pid)) else { continue };
-                if record.process.as_ref() != Some(birth) || *start > index || index >= start + record.invocation.degree as usize { continue }
+                let Some(leader) = record.process.as_ref().and_then(|birth| leaders.get(&birth.pid)) else { continue };
+                if record.process.as_ref() != Some(&leader.birth) || leader.start > index || index >= leader.start + record.invocation.degree as usize { continue }
                 roots.insert(if record.invocation.root.is_empty() { record.id } else { record.invocation.root });
             }
             for root in roots {
