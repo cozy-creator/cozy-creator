@@ -98,8 +98,12 @@ def run(payload: Request, ctx: Context) -> Report:
                 scheme=scheme,
                 params={},
                 parts={
-                    "weight": (weight_dtype, (rows, cols), codes),
-                    "scale": (scale_dtype, (rows,), scales),
+                    "weight": (weight_dtype, (rows, cols), codes.numpy().tobytes()),
+                    "scale": (
+                        scale_dtype,
+                        (rows,),
+                        scales.view(torch.uint8).numpy().tobytes(),
+                    ),
                 },
             )
             cases.append((key, dtype, weight_dtype, scale_dtype, values.numpy().copy()))
@@ -248,6 +252,10 @@ def run(payload: Request, ctx: Context) -> Report:
             }
             if options.get("extra"):
                 bad_parts["extra"] = ("F32", (1,), torch.ones(1))
+            bad_parts = {
+                role: (dtype, shape, data.view(torch.uint8).numpy().tobytes())
+                for role, (dtype, shape, data) in bad_parts.items()
+            }
             invalid_source.component("net").put_encoded(
                 "bad.weight",
                 dtype="BF16",
