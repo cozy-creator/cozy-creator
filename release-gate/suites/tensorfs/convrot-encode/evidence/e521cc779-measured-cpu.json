@@ -1,0 +1,146 @@
+{
+  "acceptance": {
+    "amax_max_abs_error_saturated": "exact against independent historical oracle",
+    "old_and_measured_api_parts": "exact",
+    "old_and_measured_refusals": "same code and detail for every refusal",
+    "sse_energy_atol": 0,
+    "sse_energy_rtol": 2e-13,
+    "writer_and_readback": "verified actual committed checkpoint; readback matches resident decoder"
+  },
+  "controller_note": "Root observed the controller CLI had been externally replaced by d806 after local SDK update17738. These receipts qualify the installed native artifact they report; they do not claim controller4178 stayed installed or that its NVFP4 guard repair was exercised.",
+  "details": {
+    "cases": [
+      {
+        "name": "zeros",
+        "scale_sha256": "32612e385a6c3664479058c90a161db532850ec77123b07308f6daa78f67bb80",
+        "shape": [
+          3,
+          256
+        ],
+        "weight_sha256": "ef115a0e0c15cdc41958ca46b5b14b456115f4baec5e3ca68599d2a8f435e3b8"
+      },
+      {
+        "name": "negative_zero",
+        "scale_sha256": "6623d4e9bfae160b2ab0f4ee6bc6bdd7d136686ef7d921a2c9401bd2ec133509",
+        "shape": [
+          2,
+          256
+        ],
+        "weight_sha256": "076a27c79e5ace2a3d47f9dd2e83e4ff6ea8872b3c2218f66c92b89b55f36560"
+      },
+      {
+        "name": "outliers",
+        "scale_sha256": "70823dacf62b61a987af9ca8fe9c336a94379a793ee0960b410e0bf650b844ae",
+        "shape": [
+          7,
+          512
+        ],
+        "weight_sha256": "a93471600fecfafc9f9cf082b2837053b63d594f4bf176b0e75f3547536b49ce"
+      },
+      {
+        "name": "ties",
+        "scale_sha256": "8a31a40ecac0ceb4d87b30bd156ca7a547e8e33dc071454b765fbc777d1c34a1",
+        "shape": [
+          3,
+          256
+        ],
+        "weight_sha256": "43a3a11fe0bab228323e4c2263e2230f3b88f8646c065a7fdccd69608fc72d0d"
+      },
+      {
+        "name": "subnormal",
+        "scale_sha256": "32612e385a6c3664479058c90a161db532850ec77123b07308f6daa78f67bb80",
+        "shape": [
+          3,
+          256
+        ],
+        "weight_sha256": "ef115a0e0c15cdc41958ca46b5b14b456115f4baec5e3ca68599d2a8f435e3b8"
+      },
+      {
+        "name": "floor",
+        "scale_sha256": "0e2212853f526e582ce7faec26ab7f2ac8bfd98d7c79088ac6cfaa5dcb6f2664",
+        "shape": [
+          5,
+          256
+        ],
+        "weight_sha256": "bfe492baf731a0dbf6e1e050f5bc3fe8c1b049383194dcdf82f023bfa409f462"
+      },
+      {
+        "name": "wide",
+        "scale_sha256": "4c003269c9e7698606eadcfd2009f39a7dafa6aadf7cc95815a2a598c1055a6f",
+        "shape": [
+          9,
+          4096
+        ],
+        "weight_sha256": "e006e5f1b98f1fcd80d24117112727a8161c180c11fe5a0e5955da9108379f72"
+      },
+      {
+        "name": "mixed_exponents",
+        "scale_sha256": "42952fd3be5bc0d8b3df0ff9bee060f1dfe489efb537996a0e49d1d76eb3b459",
+        "shape": [
+          17,
+          768
+        ],
+        "weight_sha256": "3d4348f6b9071a05f5a360ffa6c59838c9c47b26b3cf511febd629cb4540c9b4"
+      }
+    ],
+    "chunk_rows": [
+      1,
+      2,
+      7
+    ],
+    "logical_dtypes": [
+      "F32",
+      "F16",
+      "BF16"
+    ],
+    "measured_calls": 113,
+    "measured_sse_energy_rtol": 2e-13,
+    "native_sha256": "91ebdf029b8c71a8c8e0f2f48a9440294e8aff3919317202c3e16fbde284b53d",
+    "numpy": "2.5.4",
+    "reference_sha256": "e04f412ffeb09229f3573b96050a466f3a467ef96f3aaa3248d11979392b9032",
+    "refusals": 11,
+    "rotation_reference_sha256": "d9b7811720a30e46c3ac8bea8be4aa940a9003cd7a5605e72ad42e8ab6c70c39",
+    "strategy": "int8-convrot256/1",
+    "tensorfs": "0.15.6",
+    "writer_verified": true
+  },
+  "dtype_cases": 24,
+  "fixture": {
+    "commit": "e521cc7797f93c0c97e20ef82ecbf7842cba4ff9",
+    "entry": "release-gate/suites/tensorfs/convrot-encode/ci_convrot_encode/__init__.py",
+    "entry_sha256": "bce4ae30484a9700e37f4f9ade1ab264a151cc0460d9a55294d6b10785261cc8",
+    "historical_runtime": "1c092cd8474f1a3d042d9e1ee69d61410e1adb04",
+    "oracle": "release-gate/suites/tensorfs/convrot-encode/ci_convrot_encode/oracle.py",
+    "oracle_sha256": "7db0ef53e49d66327e6a8ccd90e474b2fe54f712c4fd52b7fc5c6111b0099494"
+  },
+  "installed_machine_artifacts": [
+    {
+      "path": "/home/fidika/cozy/.worktrees/cozy-creator/varena-consolidation/.task/portable-4178a2a11/cozy/cozy-linux-x86_64",
+      "sha256": "6b0c6dbbe5d4740fa611dc4c0a28d1cc00b9362bf8397192bfdeae5bdfd119a0"
+    },
+    {
+      "path": "/home/fidika/cozy/.worktrees/cozy-runtime/varena-consolidation/.task/portable-559080567/cozy_runtime-0.32.3-cp312-abi3-manylinux_2_28_x86_64.whl",
+      "sha256": "6150de986ced21cc03d04c9ff4d1a6b62b7c99f35a247038c6c8911372007d40"
+    },
+    {
+      "path": "/home/fidika/cozy/.worktrees/cozy-creator/varena-consolidation/.task/portable-e521cc779/tensorfs/tensorfs-0.15.6-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "sha256": "ca15dd65e7aa3249f3749dd60a452260ab54854ccb44d4449b7189234951941b"
+    }
+  ],
+  "passed": true,
+  "run": {
+    "created_at_ms": 1792918434131,
+    "execution_ms": 880,
+    "id": "run-9a328f5c524a5ce271aad3ad",
+    "machine": "local",
+    "number": 17745,
+    "settled_at_ms": 1792918436364,
+    "status": "completed",
+    "target": "local/ci-convrot-encode/run"
+  },
+  "scope": "Actual default-home Cozy CLI CPU measured-primitive and Writer/readback parity. Not GPU execution, Runtime producer cutover, performance or release proof.",
+  "source_receipt": {
+    "path": "outputs/stock-torch-20261024/local-canonical-20261025/convrot-measured.json",
+    "sha256": "a56406ff88bfc09c030cea45bdc12933b35a119f0314d4da3c3588502799973e"
+  }
+}

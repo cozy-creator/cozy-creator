@@ -354,10 +354,14 @@ pub fn check_metadata(
 pub(crate) fn supports_sources(encoding: &Encoding) -> bool {
     SCHEMES
         .iter()
-        .any(|scheme| scheme.name == encoding.scheme && comfy::supports_sources(scheme))
+        .any(|scheme| scheme.name == encoding.scheme && source_scheme(scheme))
 }
 
-/// Plan external sources with the SAME U7 Scheme::decode functions used by Host reads.
+fn source_scheme(scheme: &Scheme) -> bool {
+    comfy::supports_sources(scheme) || matches!(scheme.name, "fp8.tensorwise" | "nvfp4" | "int8.convrot")
+}
+
+/// Plan external sources with the SAME source-enabled Scheme::decode functions as Host reads.
 #[cfg(feature = "store")]
 pub(crate) fn planned_sources<R>(
     dtype: &Dtype,
@@ -383,7 +387,7 @@ fn inputs<R>(
         .find(|s| s.name == name)
         .copied()
         .ok_or_else(|| Error::UnknownScheme(name.into()))?;
-    if read && !comfy::supports_sources(scheme) {
+    if read && !source_scheme(scheme) {
         return Err(Error::Decode(format!(
             "{name}: resident sources have no device plan"
         )));

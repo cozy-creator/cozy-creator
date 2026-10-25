@@ -1,0 +1,263 @@
+{
+  "schema_version": 1,
+  "scope": "Actual calibrated component production, publication and decoded GPU consumption. Not native SM100 SVDQ, full-model performance or release qualification.",
+  "date_utc": "2026-10-25",
+  "cohort": {
+    "source": {
+      "creator": "8499b11b24a0c4222ab6daae58d9a75816591641",
+      "runtime": "7d1e7854ca638c5d153c6601f2d2c2b169d0b133",
+      "tensorfs": "9e95ee586b589572c169bb0295be019234fbbf85",
+      "note": "updated before lock acquisition/anySDKmutation; frozen old runner retained"
+    },
+    "artifacts": {
+      "tensord": {
+        "filename": "cozy-linux-x86_64",
+        "sha256": "1d098d8e47624b4c190e29b48b822eaf067a376ea5ee98964d8e49dc643400e9"
+      },
+      "runtime": {
+        "filename": "cozy_runtime-0.32.3-cp312-abi3-manylinux_2_28_x86_64.whl",
+        "sha256": "54f604a9020cf66be757e666aa3eb7008d01619e9ec27c239cc63279ec7c6720"
+      },
+      "tensorfs": {
+        "filename": "tensorfs-0.15.8-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "sha256": "8c5b6f9a7471db87c5193b7396cfff48c2eabe8cef3817741832bf642cfe683b"
+      }
+    },
+    "install_run": 17843,
+    "installed": {
+      "cozy": "0.11.17+dev.g8499b11b",
+      "runtime": "0.32.3",
+      "runtime_sha256": "54f604a9020cf66be757e666aa3eb7008d01619e9ec27c239cc63279ec7c6720",
+      "tensorfs": "0.15.8",
+      "tensorfs_sha256": "8c5b6f9a7471db87c5193b7396cfff48c2eabe8cef3817741832bf642cfe683b"
+    }
+  },
+  "fixture": {
+    "manifest_head": "8f44d154f4ff40bd13cb34d79cbd4dc9528756ae",
+    "verified_at_head": "041474a17600ded807212954c0e2e12930648bb9",
+    "sha256": {
+      "release-gate/suites/tensorfs/recipe-quantize/package.toml": "a7e5fdaf11d8b7a7c0f970fa364909e844f8bed33a350561fce1fc9e29807bb3",
+      "release-gate/suites/tensorfs/recipe-quantize/run.py": "13ff7be149c491e03ebd168f4ca3978df1f652da04bdee7250f9012bfa37a107",
+      "release-gate/suites/tensorfs/recipe-quantize/pyproject.toml": "15058020eb7d56a07bb08c979033496dc38ad798d237a49abdbd324447e6798e",
+      "release-gate/suites/tensorfs/recipe-quantize/ci_recipe_quantize/__init__.py": "b216ac0212afc9f5b119ccda4519cd56d4d94e55f99dec0d6761ad0261fedeec",
+      "release-gate/suites/tensorfs/svdq-calibration/package.toml": "c220f560606c5571b638e9d7182337294827949f07070db300c947ca04a5ed2b",
+      "release-gate/suites/tensorfs/svdq-calibration/run.py": "a5c87bd5e006958b8c4022bf166f392f7f185ce7b02fbe1cc40c406ff2fa7a45",
+      "release-gate/suites/tensorfs/svdq-calibration/pyproject.toml": "07aa5f24d24586af05414b5d26d80dac8ee740430cafd1c800255190dfc23398",
+      "release-gate/suites/tensorfs/svdq-calibration/ci_svdq_calibration/oracle.py": "b34b3cb1b5b40129d6df30c4f4e15e456a7da8ac888231c8a45c18dcf18f1f1f",
+      "release-gate/suites/tensorfs/svdq-calibration/ci_svdq_calibration/__init__.py": "29b4d84cb8917e38db21dad256527eb19721592c7df07a6e387c551e19374f2d"
+    },
+    "command": [
+      "python3",
+      "/home/fidika/cozy/.worktrees/cozy-creator/varena-consolidation/release-gate/suites/tensorfs/svdq-calibration/run.py",
+      "--machine",
+      "local",
+      "--model",
+      "fidika/codex-svdq-final-20261025",
+      "--seed",
+      "1792925101",
+      "--out",
+      "/home/fidika/cozy_v2/outputs/stock-torch-20261024/svdq-calibration-final-20261025"
+    ]
+  },
+  "runs": {
+    "source": {
+      "number": 17846,
+      "status": "completed",
+      "created_at_ms": 1792926549390,
+      "accepted_at_ms": 1792926553989,
+      "started_at_ms": 1792926716153,
+      "settled_at_ms": 1792926756393,
+      "execution_ms": 39296
+    },
+    "upload-source": {
+      "number": 17847,
+      "status": "completed",
+      "created_at_ms": 1792926756725,
+      "accepted_at_ms": 1792926758910,
+      "settled_at_ms": 1792926766277
+    },
+    "calibrate": {
+      "number": 17848,
+      "status": "completed",
+      "created_at_ms": 1792926768596,
+      "accepted_at_ms": 1792926770279,
+      "started_at_ms": 1792926775424,
+      "settled_at_ms": 1792926826869,
+      "execution_ms": 51194
+    },
+    "upload-svdq": {
+      "number": 17849,
+      "status": "completed",
+      "created_at_ms": 1792926827076,
+      "accepted_at_ms": 1792926829053,
+      "settled_at_ms": 1792926834688
+    },
+    "predict": {
+      "number": 17850,
+      "status": "completed",
+      "created_at_ms": 1792926835514,
+      "accepted_at_ms": 1792926836363,
+      "started_at_ms": 1792926838654,
+      "settled_at_ms": 1792926876710,
+      "execution_ms": 36685
+    }
+  },
+  "controller_proof": {
+    "seed": 1792925101,
+    "source_run": 17846,
+    "upload_source_run": 17847,
+    "source_commit": "fidika/codex-svdq-final-20261025@sha256:d1d2095991c1d365f44766195eac20660a93850a3f9f356815075e49ee7d9bd0",
+    "calibration_run": 17848,
+    "calibration": {
+      "alpha": 0.6,
+      "calibration_channels": 256,
+      "calibration_plain_nvfp4_error": 0.1374988555908203,
+      "calibration_rows": 128,
+      "calibration_served_error": 0.08451986312866211,
+      "checkpoint": "sha256:328bc489458c2764dbf3086475ba175025d90c969f1a2f5bdf1b23bd87b46d43",
+      "device": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "measured": {
+        "encoded_keys": 1,
+        "new_bytes_written": 44040,
+        "reused_keys": 0,
+        "saturated_elements": 1321,
+        "source_bytes_read": 65536,
+        "worst_relative_frobenius": 0.06405897311175435
+      },
+      "missing_calibration_refused": true,
+      "residual_amax": 0.20015466213226318,
+      "residual_max_abs_error": 0.022836558520793915,
+      "residual_reference_energy": 62.60716151627766,
+      "residual_reference_sha256": "9a14beb1c3c45125a5bcf31cedda0bc8ee4914003553448465131bbb1475fa39",
+      "residual_reference_sse": 0.48056097530290054,
+      "runtime": "0.32.3",
+      "runtime_commit": "7d1e7854ca638c5d153c6601f2d2c2b169d0b133",
+      "seed": 1792925101,
+      "stored_parts": {
+        "input_scale": {
+          "dtype": "F32",
+          "sha256": "43f3a5386acf7c3e12526f5377d6d428a98a276a35e87fdc96575e36abf1b93f",
+          "shape": []
+        },
+        "lowrank_down": {
+          "dtype": "BF16",
+          "sha256": "433b396de1dc3466a1be148311123c0a3d46a0b364e639f3d0dbd59e60de8aaf",
+          "shape": [
+            32,
+            256
+          ]
+        },
+        "lowrank_up": {
+          "dtype": "BF16",
+          "sha256": "42838c88bfbc940db0f7a55212568dfbb8aa0ea906aa1eb4e320a0f31436efb7",
+          "shape": [
+            128,
+            32
+          ]
+        },
+        "pre_quant_scale": {
+          "dtype": "F32",
+          "sha256": "e03121be55140ec0591463254a5b38f5b239f0ffa273bb3ea74b5533dd5675ea",
+          "shape": [
+            256
+          ]
+        },
+        "scale": {
+          "dtype": "F8_E4M3",
+          "sha256": "14b45958187e7c84845f12c1ffb06bb46bfd05ef7508cce82e9a87feb8ffd671",
+          "shape": [
+            128,
+            16
+          ]
+        },
+        "scale_2": {
+          "dtype": "F32",
+          "sha256": "27d9d8240ab08d8f83d4f73d9bfd94f9ef9efaecb82da707268031251ab4a3db",
+          "shape": []
+        },
+        "weight": {
+          "dtype": "F4",
+          "sha256": "9a14beb1c3c45125a5bcf31cedda0bc8ee4914003553448465131bbb1475fa39",
+          "shape": [
+            128,
+            256
+          ]
+        }
+      },
+      "tensorfs": "0.15.8",
+      "torch": "2.14.1+cu130",
+      "whole_weight_energy": 127.7000484009501,
+      "whole_weight_sse": 0.5240237936299332
+    },
+    "upload_svdq_run": 17849,
+    "encoded_commit": "fidika/codex-svdq-final-20261025@sha256:b9877b096f85a85ce32ee21f7e54aecfbf2fae91b3347ac2e44e9861d240e0c4",
+    "prediction_run": 17850,
+    "prediction": {
+      "cases": [
+        {
+          "consumption": "decoded-weight-gemm",
+          "heldout_max_abs_error": 0.0019474179311944617,
+          "heldout_relative_to_original": 0.05790630595272151,
+          "heldout_relative_to_stored": 0.0023475156522785065,
+          "module_encoding": "plain",
+          "output_sha256": "ff070dbbb22699fd0834719d41955354cbbb7fab657d4bc65bf43afedf9e92e7",
+          "provider": "ordinary-linear"
+        },
+        {
+          "consumption": "decoded-weight-gemm",
+          "heldout_max_abs_error": 0.0017492897755722048,
+          "heldout_relative_to_original": 0.058644235831758214,
+          "heldout_relative_to_stored": 0.0023455326525862246,
+          "module_encoding": "plain",
+          "output_sha256": "673acb02ab0985cf34b1632d80863ed2aa892e77df50580934d1ce0327ece698",
+          "provider": "ordinary-linear"
+        }
+      ],
+      "checkpoint": "sha256:328bc489458c2764dbf3086475ba175025d90c969f1a2f5bdf1b23bd87b46d43",
+      "device": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "seed": 1792925101
+    },
+    "scope": "real SVDQ component/calibration correctness; not full-model performance"
+  },
+  "performance_limit": {
+    "request_compile_log": {
+      "type": "run.log",
+      "sequence_number": 11,
+      "at_ms": 1792926873489,
+      "level": "warning",
+      "text": "kernel work blocked the request ms=23133.0 times=1 work=\"triton compile: _table_kernel\""
+    },
+    "interpretation": "The prediction request recorded 23.133 seconds of Triton _table_kernel compilation work. Shared-host end-to-end timings are not steady-state throughput or matched comparative benchmarks."
+  },
+  "not_qualified": [
+    "Native SVDQ SM100 provider",
+    "Full H3 or image-model quality/performance",
+    "General quality guarantee from this tiny fixture",
+    "Cancellation, multi-rank and other-platform behavior"
+  ],
+  "other_controller": {
+    "recipe_source_run": 17844,
+    "status": "failed",
+    "reason_code": "package_installation_uv_failed",
+    "stage": "before handler: uv cache lock timeout",
+    "scope": "Separate failed recipe attempt; not counted as SVDQ or recipe success."
+  },
+  "restoration": {
+    "status_at_extraction": "pending root-owned normal restoration",
+    "expected": "4178/c1/e521",
+    "scope": "Passing component receipts do not assert restoration completion."
+  },
+  "raw_receipts_sha256": {
+    "recipe-svdq-local-20261025/controller-manifest.json": "e9db5c54abbe1f34d4d3da043a96e2be0344354b55fb8c8db7797445ebe7c529",
+    "recipe-svdq-local-20261025/baseline.json": "1184f9d729e6e8654cd7840779a60eebc772690bcaada048bc9dc5baa36f7f62",
+    "recipe-svdq-local-20261025/install.json": "c84d212848eac2923eca30fd32a47ebd45a87f37cefb88052e7353203f61602c",
+    "recipe-svdq-local-20261025/install-observed.json": "5fa83beec8b29fd5a4c5dcc4a30734da0cd31954aa59fd3b717508665e33c4dc",
+    "recipe-svdq-local-20261025/svdq-calibration-result.json": "1817b32d4537b806b57cc7c52beb266794d66fc6d64cffcb9210eac7190b1bf3",
+    "svdq-calibration-final-20261025/source.json": "11ff91bcc285a3c41c5d61869a111ede46569c087b0c8d81286f394c685de88a",
+    "svdq-calibration-final-20261025/upload-source.json": "d339faaea41623ddd2872bdcbb028b3ea1cb72a8ff4c0df4333be1db20996194",
+    "svdq-calibration-final-20261025/calibrate.json": "f29e369f0502c15b326f3467be64d2f805d5d63981adae0f54592d1b6f04fd04",
+    "svdq-calibration-final-20261025/upload-svdq.json": "4186d1ee28f92b1246d6fc1d76be8fade39affc67566e8451377f36f41ba2f49",
+    "svdq-calibration-final-20261025/predict.json": "d687bdf01881ccc735140e41507d5731ac47024a79ce65f5211c7115c854b00f",
+    "svdq-calibration-final-20261025/proof.json": "ffe452d157442eeac887263a40c7c856ef6568ce1a3bff013b6c35dc8c4262c0"
+  }
+}

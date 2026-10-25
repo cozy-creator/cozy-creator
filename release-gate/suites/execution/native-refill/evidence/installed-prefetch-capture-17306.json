@@ -1,0 +1,50 @@
+{
+  "run": 17306,
+  "status": "completed",
+  "scope": "installed SDK through default Cozy CLI; candidate_python omitted and wrapper uses sys.executable",
+  "machine": "riful",
+  "hardware": "RTX 3070 8GB, sm86, driver610.43.02",
+  "runtime_source": "75bce89371bbe678aa5fe7058c3492215e9d00c1",
+  "runtime_wheel_sha256": "6865e959e904e5e48becaea8e9e991dd762ea98d48f21d5d501b39d7766b8e70",
+  "creator_source": "76656368e",
+  "tensorfs_native_source_equivalent": "bd12eb21be205344057b97101d32bf2ef574b3b1",
+  "tensorfs_wheel_sha256": "9a9698c96ee6f069a66c5c8eb01e0aaa4a6ccbb2832646dfebe43157f73fffaf",
+  "installation_receipt_sha256": "f86bfaabf6b4f37f0f87ce6cbc8fb993a0a90fe52d72b99915c1c0bc2bc6dfc2",
+  "proof_source": "49d7785c21cc797c02604269a29a57c4e84b5ab2",
+  "outer_software": {
+    "attempt_ordinal": 1,
+    "runtime": "0.32.1",
+    "tensord": "0.11.17+dev.g76656368",
+    "tensord_commit": "76656368e6e7674c4dc8cda5461e3457fee39a82",
+    "tensorfs": "0.15.2+dev.g76656368"
+  },
+  "result": {
+    "mode": "prefetch-capture",
+    "passed": true,
+    "result": {
+      "active_refusal": "invalid residency operation: native producers must finish before CUDA graph capture",
+      "before_start_refusal": "invalid residency operation: native producers must finish before CUDA graph capture",
+      "capture_in_replay_refusal": "residency changes are forbidden during CUDA graph capture",
+      "during_actual_capture_refusal": "residency changes are forbidden during CUDA graph capture",
+      "ended": {
+        "canceled": true,
+        "done": true,
+        "issued_bytes": 6291456,
+        "started": true
+      },
+      "graph_replay_passed": true,
+      "issued": {
+        "canceled": false,
+        "done": false,
+        "issued_bytes": 4194304,
+        "started": true
+      },
+      "reclaim_in_replay_refusal": "residency changes are forbidden during CUDA graph capture",
+      "replay_in_capture_refusal": "residency changes are forbidden during CUDA graph capture"
+    },
+    "runtime_version": "0.32.1",
+    "seed": 103,
+    "tensorfs_version": "0.15.2+dev.g76656368"
+  },
+  "passed": true
+}

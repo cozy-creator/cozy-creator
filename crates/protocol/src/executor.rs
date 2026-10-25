@@ -26,6 +26,8 @@ pub enum Command {
     Load(Box<Load>),
     Activate(Activate),
     PrepareRequest(PrepareRequest),
+    /// Discard a queued preparation; consumed out of band, without a reply.
+    Cancel(Cancel),
     Invoke(Box<Invoke>),
     /// Warming: the loaded construction's models at `level`, nothing run.
     Map(Map),
@@ -40,9 +42,9 @@ pub enum Command {
 
 impl Command {
     /// Every `cmd` TensorD sends.
-    pub const NAMES: [&'static str; 12] = [
+    pub const NAMES: [&'static str; 13] = [
         "hello", "shutdown", "start", "load", "activate", "prepare_request", "invoke", "map", "unload",
-        "probe", "fork", "capability",
+        "probe", "fork", "capability", "cancel",
     ];
 
     /// One command from its wire bytes. An unknown member is ignored and a missing one takes its
@@ -60,6 +62,7 @@ impl Command {
             "load" => Command::Load(Box::new(one(fields)?)),
             "activate" => Command::Activate(one(fields)?),
             "prepare_request" => Command::PrepareRequest(one(fields)?),
+            "cancel" => Command::Cancel(one(fields)?),
             "invoke" => Command::Invoke(Box::new(one(fields)?)),
             "map" => Command::Map(one(fields)?),
             "unload" => Command::Unload(one(fields)?),
@@ -79,6 +82,7 @@ impl Command {
             Self::Load(_) => "load",
             Self::Activate(_) => "activate",
             Self::PrepareRequest(_) => "prepare_request",
+            Self::Cancel(_) => "cancel",
             Self::Invoke(_) => "invoke",
             Self::Map(_) => "map",
             Self::Unload(_) => "unload",
@@ -111,13 +115,6 @@ pub struct Start {
     /// Each constructed slot's checkpoint, so the Runtime schedules fetches before it imports.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub constructions: Vec<Construction>,
-    /// The namespace (TensorD's uid) each GPU's lease listener (`lease-<uuid>`) is named in, for
-    /// an executor speaking the lease protocol; a GPU nobody serves runs its own pages.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub leases: Option<u32>,
-    /// The memory contract it serves: the lease protocol, or 0 (its own memory).
-    #[serde(default)]
-    pub memory_protocol: u32,
     /// Its stage memo tiers, when the machine memoizes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memo: Option<MemoSettings>,
@@ -173,6 +170,12 @@ pub struct PrepareRequest {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
+pub struct Cancel {
+    pub request_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct Invoke {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tensorfs: Option<TensorFSOptions>,
@@ -215,12 +218,18 @@ pub struct Invoke {
     pub family: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct Map {
     pub construction: String,
     #[serde(default)]
     pub level: Level,
+    #[serde(default)]
+    pub request_id: String,
+    #[serde(default)]
+    pub entrypoint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<Json>,
 }
 
 /// What a warmed construction's models hold: `gpu` is warm and fills free room now, `ram`
@@ -451,18 +460,22 @@ pub enum Kind {
     Unknown,
 }
 
-/// An executor's `hello` reply: who it is, its versions, its memory protocol and its seal.
+/// An executor's `hello` reply: who it is, its versions, memory capability and seal.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Hello {
+    /// Concrete executor allocation/offload capability; unrelated to its package version.
+    #[serde(default)]
+    pub memory_backend: String,
     pub pid: u32,
     pub ppid: u32,
     pub pgid: u32,
     pub runtime_version: String,
     pub tensorfs_version: String,
-    /// Its memory wire contract: the lease protocol leases chunks from each GPU's manager; any
-    /// other runs its memory alone.
-    pub memory_protocol: u32,
+    /// Correlated PrepareRequest replies and cancellation-safe prepared-record publication.
+    pub request_lookahead: bool,
+    /// A typed preparation factory on an admitted GPU Map (not a generation handler).
+    pub program_preparation: bool,
     pub sealed: BTreeMap<String, String>,
 }
 
@@ -593,6 +606,8 @@ pub struct Frame {
     pub quiescent: bool,
     pub poisoned: String,
     pub reused: bool,
+    /// Map: this explicit program was prepared now. None is weight-only warming.
+    pub prepared: Option<bool>,
     /// `start` of a group (degree > 1): the follower ranks' pids, rank 1 first.
     pub follower_pids: Vec<u32>,
     pub result_ref: Option<ResultRef>,
@@ -1223,6 +1238,7 @@ mod python {
         Load => |c| Command::Load(Box::new(c)),
         Activate => Command::Activate,
         PrepareRequest => Command::PrepareRequest,
+        Cancel => Command::Cancel,
         Invoke => |c| Command::Invoke(Box::new(c)),
         Map => Command::Map,
         Unload => Command::Unload,

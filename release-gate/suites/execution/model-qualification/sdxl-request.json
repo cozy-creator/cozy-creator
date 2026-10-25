@@ -1,0 +1,8 @@
+{
+  "prompt": "A small lighthouse above a rocky coast at sunrise, watercolor illustration",
+  "negative_prompt": "blurry, low quality, distorted",
+  "aspect_ratio": "1:1",
+  "megapixels": 1.0,
+  "steps": 30,
+  "guidance": 7.0
+}

@@ -1,0 +1,96 @@
+"""Candidate wheels exercised through the normal local Cozy GPU lane."""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import msgspec
+from cozy_runtime.author import App, Context, Telemetry
+
+app = App()
+
+
+class Probe(msgspec.Struct, forbid_unknown_fields=True):
+    candidate_python: str = ""
+    seed: int = 103
+    mode: str = "fits"
+
+
+class Report(msgspec.Struct):
+    passed: bool
+    detail: str
+
+
+@app.entrypoint
+def gpu(payload: Probe, tel: Telemetry) -> Report:
+    if payload.mode not in {
+        "fits",
+        "routes",
+        "phase",
+        "stream",
+        "lora",
+        "failure",
+        "async",
+        "async-cancel",
+        "async-error",
+        "prefetch",
+        "prefetch-cancel",
+        "prefetch-cancel-error",
+        "prefetch-pressure",
+        "prefetch-capture",
+        "prefetch-replay",
+        "prefetch-allocator",
+        "prefetch-gil",
+        "gil-red",
+    }:
+        raise ValueError("unknown native refill gate mode")
+    executable = payload.candidate_python or sys.executable
+    if not Path(executable).is_file():
+        raise ValueError(
+            "candidate_python must name an isolated prebuilt-wheel environment"
+        )
+    process = subprocess.Popen(
+        [
+            executable,
+            "-I",
+            str(
+                Path(__file__).with_name(
+                    "prefetch_probe.py"
+                    if payload.mode.startswith("prefetch") or payload.mode == "gil-red"
+                    else "async_probe.py"
+                    if payload.mode.startswith("async")
+                    else "probe.py"
+                )
+            ),
+            str(payload.seed),
+            payload.mode,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    assert process.stdout is not None
+    result = None
+    for line in process.stdout:
+        tel.log(line.rstrip())
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and "result" in row:
+            result = row["result"]
+    status = process.wait()
+    if status or not isinstance(result, dict) or not result.get("passed"):
+        raise RuntimeError(f"native refill child failed ({status}): {result}")
+    return Report(True, json.dumps(result, sort_keys=True))
+
+
+@app.entrypoint(accelerator=True)
+def factor_reads(payload: Probe, ctx: Context) -> Report:
+    from .factor_reads import exercise
+
+    result = exercise(payload.seed, ctx)
+    return Report(True, json.dumps(result, sort_keys=True))

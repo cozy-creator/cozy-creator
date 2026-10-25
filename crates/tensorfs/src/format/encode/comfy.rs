@@ -8,8 +8,8 @@
 //! may decide differently. W4A8 refines group scales by two ALS passes; W6A8 then searches each
 //! group's scale among its stored-dtype neighbours.
 
-use super::{elem, encoding, Encoder, Input, OwnedPart};
-use crate::format::decode::{bf16, check, f16, SCHEMES};
+use super::{Encoder, Input, OwnedPart, elem, encoding};
+use crate::format::decode::{SCHEMES, bf16, check, f16};
 use crate::format::{Dtype, Encoding, Error, Result, Value};
 
 pub const ASYM_W4A8_INT8: Encoder = Encoder {
@@ -38,13 +38,19 @@ pub const INT4_CONVROT: Encoder = Encoder {
 
 impl Encoding {
     pub fn comfy_asym_w4a8_int8(group_size: u64, rotation_size: u64) -> Encoding {
-        encoding("comfy.asym_w4a8_int8", &grouped_params(group_size, rotation_size))
+        encoding(
+            "comfy.asym_w4a8_int8",
+            &grouped_params(group_size, rotation_size),
+        )
     }
     pub fn w4a8_convrot(rotation_size: u64) -> Encoding {
         encoding("w4a8.convrot", &grouped_params(16, rotation_size))
     }
     pub fn comfy_w6a8_int8(group_size: u64, rotation_size: u64) -> Encoding {
-        encoding("comfy.w6a8_int8", &grouped_params(group_size, rotation_size))
+        encoding(
+            "comfy.w6a8_int8",
+            &grouped_params(group_size, rotation_size),
+        )
     }
     pub fn int4_convrot(rotation_size: u64) -> Encoding {
         let p = [
@@ -90,7 +96,7 @@ impl Default for Kitchen {
 }
 
 /// The frozen Lloyd-Max levels of a group-normalized Gaussian (kitchen's `_FIXED_LUT`).
-const LUT: [f32; 16] = [
+pub(super) const LUT: [f32; 16] = [
     -0.980602, -0.794529, -0.638165, -0.500986, -0.377321, -0.263187, -0.155210, -0.050720,
     0.052541, 0.156985, 0.265284, 0.379533, 0.502636, 0.638953, 0.794876, 0.980671,
 ];
@@ -166,9 +172,7 @@ pub fn quantize_with(input: &Input, options: &Kitchen) -> Result<Vec<OwnedPart>>
     }
     let group = match scheme {
         "int4.convrot" if k.is_multiple_of(64) => None,
-        "int4.convrot" => {
-            return Err(fail(format!("{k} columns are not whole groups of 64")))
-        }
+        "int4.convrot" => return Err(fail(format!("{k} columns are not whole groups of 64"))),
         _ => {
             let bits = if scheme == "comfy.w6a8_int8" { 6 } else { 4 };
             let g = uint("group_size")?;
@@ -326,7 +330,7 @@ fn pack(q: &[i32], k: usize, bits: usize) -> Vec<u8> {
     for row in q.chunks(k.max(1)) {
         out.extend(
             row.chunks(2)
-                .map(|p| ((p[0] & 15) | (p[1] & 15) << 4) as u8),
+                .map(|p| super::affine::nibble_pair(p[0] as u8, p[1] as u8)),
         );
         if bits == 6 {
             out.extend(

@@ -1,6 +1,6 @@
 //! Async ownership and Result callbacks around the existing import engine.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 
 use crate::failure::{fail, Failure, Kind, Result};
@@ -21,22 +21,39 @@ pub struct Convert<'a> {
 }
 
 #[derive(Default)]
-struct Control {
+pub struct ConversionControl {
     cancelled: Arc<AtomicBool>,
     notify: Arc<tokio::sync::Notify>,
+    pub(crate) read_bytes: AtomicU64,
+    pub(crate) written_tensors: AtomicU64,
+    pub(crate) written_bytes: AtomicU64,
 }
 
-impl Control {
-    fn cancel(&self) {
+impl ConversionControl {
+    pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release);
         self.notify.notify_waiters();
     }
 
-    fn stopped(&self) -> bool {
+    pub fn stopped(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
     }
 
-    fn check(&self) -> Result<()> {
+    /// Observations never acknowledge or advance conversion work.
+    pub fn progress(&self) -> (u64, u64, u64) {
+        (self.read_bytes.load(Ordering::Acquire), self.written_tensors.load(Ordering::Acquire), self.written_bytes.load(Ordering::Acquire))
+    }
+
+    pub(crate) async fn cancelled(&self) {
+        let notified = self.notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if !self.stopped() {
+            notified.await;
+        }
+    }
+
+    pub(crate) fn check(&self) -> Result<()> {
         if self.stopped() {
             fail(
                 Kind::Network,
@@ -47,6 +64,8 @@ impl Control {
         }
     }
 }
+
+type Control = ConversionControl;
 
 struct CancelOnDrop(Arc<Control>);
 impl Drop for CancelOnDrop {

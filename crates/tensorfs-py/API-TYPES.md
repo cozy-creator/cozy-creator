@@ -442,7 +442,7 @@ class Writer:
         ...
 ```
 
-## `tensorfs.raw` — advanced physical inspection and resident decode
+## `tensorfs.raw` — physical inspection, native encoding and resident decode
 
 These declarations belong to `tensorfs.raw`, not the root package.
 See [resident decoding](API.md#advanced-decode-resident-encoded-parts) for placement,
@@ -450,7 +450,8 @@ ownership and error behavior.
 
 ```python
 from collections.abc import Buffer, Mapping, Sequence
-from tensorfs import Checkpoint
+from typing import TypedDict
+from tensorfs import Checkpoint, Encoded
 # DLPack is the accepted input protocol described above, not a package export.
 
 class Part:
@@ -467,6 +468,44 @@ class Part:
 
 def parts(checkpoint: Checkpoint, component: str, key: str) -> dict[str, Part]:
     """Inspect stored ranges without fetching bytes; plain tensors use role ''."""
+
+def quantize(
+    scheme: str,
+    values: bytes,
+    *,
+    dtype: str,
+    shape: Sequence[int],
+    strategy: str,
+    params: Mapping[str, object] | None = None,
+    tensor_amax: float | None = None,
+) -> Encoded:
+    """Encode F32 bytes using int8-convrot256/1 or nvfp4-min-sse/1.
+
+    NVFP4 requires the finite nonnegative whole-tensor tensor_amax for every chunk.
+    Complete row chunks produce identical bytes. Native arithmetic releases the GIL
+    and uses one row/block of floating scratch plus owned output. No checkpoint I/O.
+    """
+
+class QuantizationStats(TypedDict):
+    amax: float
+    max_abs_error: float
+    sse: float
+    energy: float
+    saturated: int
+
+def quantize_measured(
+    scheme: str,
+    values: bytes,
+    *,
+    dtype: str,
+    shape: Sequence[int],
+    strategy: str,
+    params: Mapping[str, object] | None = None,
+    tensor_amax: float | None = None,
+) -> tuple[Encoded, QuantizationStats]:
+    """The same producer as quantize, plus native F64 acceptance facts over supplied F32
+    values before logical rounding. amax is chunk-local; tensor_amax remains tensor-wide.
+    No I/O-byte or memory-transfer accounting is implied by these numeric statistics."""
 
 def decode_into(
     scheme: str,
@@ -487,3 +526,25 @@ def decode_into(
     failure. Native owners remain held when CUDA completion cannot be proved.
     """
 ```
+
+`ConversionControl` is the existing conversion cancellation token exposed to native checkpoint
+quantization. `cancel()` is nonblocking; `progress()` reports `(source_bytes_read, tensors_written, writer_bytes)`
+without callbacks or acknowledgements. `Writer.quantize` accepts the complete resolved tensor list,
+explicit conversion buffer/output byte bounds and this control; its return is the conversion stats
+mapping described in API.md. It never commits the Writer or chooses a model recipe.
+
+`Writer.quantize(..., calibration=None)` optionally retains a completed calibration
+checkpoint. An SVDQ selection adds `fit: {seed, component, xmax, rows}` with exact
+calibration keys and the explicit `svdq-nvfp4-r32-faer/1` strategy. Its result includes
+per-tensor `fit` details and separate `calibration_bytes_read` and
+`required_buffer_bytes` aggregates. `raw.quantization_implementation() -> str` supplies
+the full Writer producer/source-reader and pinned-dependency digest used in external
+memo provenance. Optional `component: str | None = None` limits execution to one component
+while preserving the identical full selection and calibration in resume identity.
+
+`Writer.normalize_bf16(source, tensors, *, max_buffer_bytes, max_new_bytes, control)`
+accepts exact `NormalizeBf16Tensor` declarations (`component`, `key`, `source_dtype`,
+`shape`) and writes ordinary BF16 with fixed RNE and the existing `amax/256` threshold.
+Its result distinguishes newly converted/reused tensors, stored and logical source
+byte counts, output bytes, working requirement and per-tensor error measurements.
+`raw.normalization_implementation() -> str` identifies its native implementation.

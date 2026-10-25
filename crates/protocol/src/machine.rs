@@ -245,6 +245,9 @@ pub struct WarmItem {
     pub held_back: String,
     /// As [`RunSpec::lane`].
     pub lane: String,
+    /// Optional typed inputs for a known GPU program. None warms weights only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload: Option<Json>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
