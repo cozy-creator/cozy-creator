@@ -101,12 +101,11 @@ impl Hub {
         Ok((keys, Duration::from_secs(document.lease_seconds as u64)))
     }
 
-    /// Tells the Hub where this booting machine listens. Ok(false): a Hub that takes no
-    /// reports and waits for the provider instead.
+    /// Tells the Hub where this booting machine listens.
     pub async fn report_endpoint(
         &self,
         endpoint: &super::endpoint::Endpoint,
-    ) -> Result<bool, Refusal> {
+    ) -> Result<(), Refusal> {
         let report = types::WorkerEndpointReport {
             public_host: endpoint.public_host.clone(),
             ports: endpoint
@@ -117,10 +116,7 @@ impl Hub {
                 .collect(),
         };
         let answer = self.call(self.client.report_worker_endpoint(&report)).await;
-        match answer {
-            Err(hub_client::Error::Hub { status: 404, .. }) => self.heard(Ok(false)),
-            answer => self.heard(answer.map(|()| true)),
-        }
+        self.heard(answer)
     }
 
     /// Ends this rental's allocation; acceptance is the Hub's 204.

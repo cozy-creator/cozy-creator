@@ -459,8 +459,7 @@ fn report_endpoint(grant: crate::machine::grant::HubGrant, endpoint: crate::mach
     runtime.block_on(async {
         for attempt in 0..5u32 {
             match hub.report_endpoint(&endpoint).await {
-                Ok(true) => return tracing::info!("reported endpoint {}", endpoint.public_host),
-                Ok(false) => return tracing::info!("the Hub takes no endpoint reports"),
+                Ok(()) => return tracing::info!("reported endpoint {}", endpoint.public_host),
                 Err(Refusal::Denied) => return tracing::warn!("the Hub refused the endpoint report"),
                 Err(Refusal::Transport(error)) => {
                     tracing::warn!("endpoint report: {error}");
