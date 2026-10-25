@@ -63,7 +63,7 @@ fn alignment(dtype: &Dtype) -> usize {
 }
 
 /// Decode existing parts into an existing destination. Host parts/output use the reference
-/// CPU decoder; all-Device U7 parts/output use the SAME typed plan and prebuilt kernels as
+/// CPU decoder; supported all-Device parts/output use the SAME typed plan and prebuilt kernels as
 /// checkpoint reads. Mixed placement, files and implicit transfers are unsupported.
 ///
 /// Metadata, placement, address, alignment and overlap refusals precede output writes. After

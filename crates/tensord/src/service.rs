@@ -306,12 +306,19 @@ impl Service {
             self.engine.wait_activity(epoch, None);
         }
     }
-    /// Caches expire by their TTL on a thread of their own, apart from dispatch.
+    /// Observe GPU demand on the existing reclaim thread; disk caches retain their TTL cadence.
     fn reclaim_loop(weak: std::sync::Weak<Self>) {
+        let mut swept = std::time::Instant::now();
         loop {
-            std::thread::sleep(SWEEP_EVERY);
+            std::thread::sleep(std::time::Duration::from_millis(500));
             match weak.upgrade() {
-                Some(service) if !*service.stopped.lock().unwrap() => drop(service.reclaim()),
+                Some(service) if !*service.stopped.lock().unwrap() => {
+                    if let Some(pool) = service.gpu() { pool.relieve_pressure(&service.engine); }
+                    if swept.elapsed() >= SWEEP_EVERY {
+                        service.reclaim();
+                        swept = std::time::Instant::now();
+                    }
+                }
                 _ => return,
             }
         }
@@ -340,7 +347,6 @@ impl Service {
                 memo: pool.as_ref().map(|pool| pool.memo()),
                 uv_cache: uv_cache.as_deref(),
                 disk: &|| crate::reclaim::measure(&self.engine.root),
-                derived: pool.as_ref().map(|pool| pool.derived()),
             })
         };
         match sweep() {
@@ -371,7 +377,8 @@ impl Service {
         // Orphan exact process births remain reservations; a new owner does not
         // pretend they are free merely because it has no local supervisor.
         let active = self.engine.active(usize::MAX)?;
-        let gpu = |record: &Execution| record.invocation.degree > 0;
+        let output = |record: &Execution| record.state == crate::journal::State::Running && record.process.is_none();
+        let gpu = |record: &Execution| record.invocation.degree > 0 && !output(record);
         // Every GPU call slot is a permit of this machine run; an earlier run's process still
         // alive holds devices nobody here can name, so it fences them all.
         let gpu_fenced = self.gpu_startup_fences() != 0
@@ -379,19 +386,25 @@ impl Service {
         let mut claims = vec![None; pool.width()];
         let calls = self.calls();
         let waits = |r: &Execution| calls.as_ref().is_some_and(|calls| calls.waiting(&self.engine, &r.id));
-        let mut room = self.parallelism.saturating_sub(
-            active.iter().filter(|r| !gpu(r) && !waits(r)).count(),
-        );
+        let cpu_active = || -> io::Result<usize> {
+            Ok(self.engine.active(usize::MAX)?.iter()
+                .filter(|r| !gpu(r) && (output(r) || !waits(r))).count())
+        };
+        // CPU output work uses the existing capacity. At capacity one GPU wave may overlap;
+        // once it returns, admit no more until CPU work advances.
         // A run whose plan cannot be read is its own model; its offer reports why.
         let model = |r: &Execution| self.plan(&pool, r).map_or_else(|_| r.id.clone(), |plan| plan.construction);
         let ready = self.queue.lock().unwrap().order(self.engine.ready()?, model);
         let (mut place, held) = (0, self.held.get().is_some_and(|held| held()));
         for record in ready {
             let invocation = &record.invocation;
-            let full = room == 0 && (invocation.degree == 0 || claims.iter().all(Option::is_some));
+            // Re-read for every offer, then once more inside Pool after it holds the GPU slot.
+            let admit = || cpu_active().map(|used| if invocation.degree == 0 {
+                used < self.parallelism
+            } else { used <= self.parallelism });
             let root = invocation.parent.is_empty();
-            if !(full || held && root || invocation.degree > 0 && gpu_fenced) && self.offer(&pool, &record, &mut claims, calls.clone())? {
-                room -= usize::from(invocation.degree == 0);
+            if !(held && root || invocation.degree > 0 && gpu_fenced) && admit()?
+                && self.offer(&pool, &record, &mut claims, calls.clone(), admit)? {
                 if root {
                     self.queue.lock().unwrap().started(&record);
                 }
@@ -420,7 +433,7 @@ impl Service {
     }
     /// Start `record` if it can start now: false leaves it queued (or failed, when its
     /// environment is gone).
-    fn offer(&self, pool: &Arc<Pool>, record: &Execution, claims: &mut [Option<u64>], calls: Option<Arc<crate::calls::Calls>>) -> io::Result<bool> {
+    fn offer(&self, pool: &Arc<Pool>, record: &Execution, claims: &mut [Option<u64>], calls: Option<Arc<crate::calls::Calls>>, admit: impl FnOnce() -> io::Result<bool>) -> io::Result<bool> {
         let held = match self.catalog.resolve(&record.invocation.generation) {
             Ok(held) => held,
             Err(error) => {
@@ -435,6 +448,6 @@ impl Service {
             return Ok(false);
         }
         let plan = self.plan(pool, record)?;
-        pool.dispatch(&self.engine, record, held.application(&record.invocation.module)?, plan, claims, calls)
+        pool.dispatch(&self.engine, record, held.application(&record.invocation.module)?, plan, claims, calls, admit)
     }
 }

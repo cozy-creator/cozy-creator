@@ -2044,6 +2044,7 @@ pub fn install(m: &Bound<'_, PyModule>) -> PyResult<()> {
     raw.add_class::<PyPart>()?;
     raw.add_function(wrap_pyfunction!(raw_parts, &raw)?)?;
     crate::resident_decode::install(&raw)?;
+    crate::quantize::install(&raw)?;
     m.add_submodule(&raw)?;
     m.add_class::<PyArray>()?;
     m.add_class::<PyTensors>()?;
