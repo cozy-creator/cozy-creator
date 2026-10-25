@@ -6,7 +6,7 @@ carries the command line, Calcifer (the local controller), TensorD (the machine)
 
 ## Install
 
-Linux and macOS:
+Linux and macOS (Apple Silicon; Intel Macs aren't supported):
 
 ```sh
 curl -LsSf https://tensorhub.com/install.sh | sh

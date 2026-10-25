@@ -262,10 +262,6 @@ pub fn uv_build() -> Option<Archive> {
             "aarch64-apple-darwin",
             "0c4346de7abdb49495b393b9ec809fe387aa43e586be20fecb972216c1e71732"
         ),
-        ("macos", "x86_64") => astral!(
-            "x86_64-apple-darwin",
-            "4fa82e37cb94767661f532b001e470b67a186c7260e305bd84ddb78fd545c0b6"
-        ),
         ("windows", "x86_64") => Some(Archive {
             url: "https://github.com/astral-sh/uv/releases/download/0.12.24/uv-x86_64-pc-windows-msvc.zip",
             sha256: "7c38608c8a18ee137d748a1773053b07ec8f3a30fab49aebaa6f4e4efeceb019",
@@ -342,11 +338,6 @@ pub fn ffmpeg_build() -> &'static [Archive] {
             "macos/arm64/1789931890_9.0.2",
             "c8ed4c4e6978a03c485edbfe4e0a5dc2380f8a30bba5150531b31b094492d924",
             "fcbe839537485eaee7a7a8bc5cbc0f90d53617e80943e8a5b2e31cb851197ea6"
-        ),
-        ("macos", "x86_64") => riedl!(
-            "macos/amd64/1789931006_9.0.2",
-            "7c6b4125b191cbf773832dc51f424cf2b6bb7da43007d1e066f95909e47cacd4",
-            "2322438ed2f6319a691291b247d09c69dcaa3a982460d1f269a7e1af335cfdfd"
         ),
         ("windows", "x86_64") => &[Archive {
             url: "https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip",

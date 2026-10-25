@@ -26,8 +26,6 @@ pub const TARGET: &str = if cfg!(all(target_os = "linux", target_arch = "x86_64"
     "aarch64-unknown-linux-gnu"
 } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
     "aarch64-apple-darwin"
-} else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
-    "x86_64-apple-darwin"
 } else if cfg!(all(windows, target_arch = "x86_64")) {
     "x86_64-pc-windows-msvc"
 } else if cfg!(all(windows, target_arch = "aarch64")) {
