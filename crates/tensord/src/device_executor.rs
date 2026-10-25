@@ -136,7 +136,7 @@ impl Lookahead {
     }
 
     /// Update the queue's one assignment. No GPU work or Invoke is sent here.
-    pub fn offer(&self, command: Option<PrepareRequest>, current: &str) {
+    pub fn offer(&self, command: Option<PrepareRequest>, current: &str, public_run: Option<&str>) {
         let mut state = self.state.lock().unwrap();
         if state.retire || state.current != current {
             return; // The exact executor has advanced to another invocation since the offer.
@@ -171,7 +171,7 @@ impl Lookahead {
         let request = command.request_id.clone();
         state.queued = Some(QueuedPreparation { command: command.clone(), reply: None, canceled: false, promoted: false });
         if self.line.send(&Command::PrepareRequest(command)) {
-            tracing::info!(current = %state.current, request = %request, "request lookahead sent");
+            tracing::info!(current = %state.current, request = %request, run = public_run.unwrap_or_default(), "request lookahead sent");
         } else {
             state.queued = None;
         }
