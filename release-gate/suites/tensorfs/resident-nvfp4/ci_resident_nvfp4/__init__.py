@@ -156,7 +156,7 @@ def run(payload: Request, ctx: Context) -> Report:
             {**parts, "scale_2": host["scale_2"]},
             params,
             tensorfs.UnsupportedError,
-            "same device",
+            "same placement",
         ),
     ]:
         try:
