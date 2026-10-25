@@ -64,7 +64,7 @@ encoded load-to-execute composition, GPU-only transfer handoff or comparative sp
 
 
 Current invocation API refresh: all seven modes passed again through the default CLI on the
-RTX3060 (runs17556–17562; exact per-mode run numbers in the receipt), Runtime de3dfc42c,
+RTX3060 (runs17557,17558 and17560–17564; exact per-mode run numbers in the receipt), Runtime de3dfc42c,
 TensorFS6431a5387 and TensorD9998cf5f4. The fixture uses the executor's actual
 prepare/run_prepared boundary; source8176adc6a. [Exact cohort and receipts](evidence/de3dfc42c-rtx3060.json).
 This repeats raw loading, cancellation, failed-source refusal, checked request completion and
