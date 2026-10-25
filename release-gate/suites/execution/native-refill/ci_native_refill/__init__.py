@@ -33,6 +33,9 @@ def gpu(payload: Probe, tel: Telemetry) -> Report:
         "async",
         "async-cancel",
         "async-error",
+        "prefetch",
+        "prefetch-cancel",
+        "prefetch-pressure",
     }:
         raise ValueError("unknown native refill gate mode")
     if not Path(payload.candidate_python).is_file():
@@ -45,7 +48,11 @@ def gpu(payload: Probe, tel: Telemetry) -> Report:
             "-I",
             str(
                 Path(__file__).with_name(
-                    "async_probe.py" if payload.mode.startswith("async") else "probe.py"
+                    "prefetch_probe.py"
+                    if payload.mode.startswith("prefetch")
+                    else "async_probe.py"
+                    if payload.mode.startswith("async")
+                    else "probe.py"
                 )
             ),
             str(payload.seed),
