@@ -71,6 +71,14 @@ The runner signs in as the owner's account with its own device key: secret `COZY
 `release-gate/enroll-ci-key.sh <email>` in a terminal and type the emailed code. It runs
 `cozy login <email> --export`, which leaves this computer's own key untouched.
 
+## Sessions
+
+`pod-session.yaml` runs one rental from a runner, signed in as above, so no laptop has to stay up for it (its Calcifer
+renews the pod's credential for the whole job). `sessions/<script>.sh` sources `sessions/lib.sh` (`quote`, `rent`,
+`step`, the guard at `cap` USD and the trap that ends the rental by its own id); its header lists its `params`.
+Without `rent=true` it stops after the $0 pre-flight. `model-ingest` puts a first-party model on the root (xs-104);
+`ab` runs cells from `packages_refs` checkouts on one pod and compares their outputs (a refactor's same-bytes proof).
+
 ## More cells and checks
 
 - **Cells:** `--cells FILE` adds rows of `name<TAB>target<TAB>args`. The args are expanded in gate.sh, which defines
