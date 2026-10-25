@@ -12,7 +12,7 @@ use hub_client::types::ModelCard;
 use protocol::calcifer::{Run, Status};
 use protocol::config::Origin;
 use protocol::error::{Error, Kind};
-use tensorfs::format::{Header, ObjectRef};
+use tensorfs::format::{Dtype, Header, ObjectRef};
 use tensorfs::{Config, Endpoint};
 
 use super::refs::{ModelRef, Repo};
@@ -23,7 +23,7 @@ use crate::output::{self, Record};
 use crate::run::Callee;
 use crate::run::interface::{Interface, Recipe, RECIPES};
 
-/// Original weights: the plain dtypes a 4-bit lane may be written from.
+/// Legacy spellings, besides TensorFS's canonical BF16/F16/F32 dtype names.
 const ORIGINAL: [&str; 3] = ["bf16", "fp16", "f32"];
 
 /// The commit a quantize reads: spelled for the run, its repository, and the components its
@@ -36,7 +36,10 @@ struct Source {
 
 /// Whether a header of `kinds` holds only original weights.
 fn original(kinds: &[String]) -> bool {
-    !kinds.is_empty() && kinds.iter().all(|kind| ORIGINAL.contains(&kind.as_str()))
+    !kinds.is_empty() && kinds.iter().all(|kind| {
+        matches!(Dtype::parse(kind), Dtype::BF16 | Dtype::F16 | Dtype::F32)
+            || ORIGINAL.contains(&kind.as_str())
+    })
 }
 
 /// The commit `model` names, as the model's card lists it (its org's members see every commit):
