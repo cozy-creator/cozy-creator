@@ -334,9 +334,11 @@ pub fn load_from(environment: &BTreeMap<String, String>, user_home: PathBuf) -> 
         Err(error) => return Err(invalid(&file, "", &error.to_string())),
     };
     // As spelled: a value is a string until its setting's type reads it (`"0"` stays a device).
+    let mut set = vec![];
     for (var, key) in ENV {
-        let set = |v: &&String| !v.is_empty() || EMPTY_IS_A_VALUE.contains(&var);
-        if let Some(value) = environment.get(var).filter(set) {
+        let given = |v: &&String| !v.is_empty() || EMPTY_IS_A_VALUE.contains(&var);
+        if let Some(value) = environment.get(var).filter(given) {
+            set.push((var, key));
             let (tables, name) = key.rsplit_once('.').map_or((None, key), |(t, n)| (Some(t), n));
             let mut at = &mut table;
             for part in tables.into_iter().flat_map(|t| t.split('.')) {
@@ -349,7 +351,7 @@ pub fn load_from(environment: &BTreeMap<String, String>, user_home: PathBuf) -> 
             at.insert(name.into(), value.clone().into());
         }
     }
-    let (mut config, warnings) = extract(table, &file)?;
+    let (mut config, warnings) = extract(table, &file, &set)?;
     config.machine.authorized_keys = split(environment.get(AUTHORIZED_KEYS).map_or("", String::as_str));
     Ok(Loaded {
         config,
@@ -362,7 +364,7 @@ pub fn load_from(environment: &BTreeMap<String, String>, user_home: PathBuf) -> 
 impl Config {
     /// A config file's text as the load would read it: how an edit proves it still loads.
     pub fn parse(text: &str, name: &str) -> Result<(Config, Vec<String>), Error> {
-        extract(parse_table(text, name)?, name)
+        extract(parse_table(text, name)?, name, &[])
     }
 
     /// `cozy login`, spelled for `hub`: a Hub other than the configured one is named by the
@@ -406,15 +408,23 @@ fn parse_table(text: &str, file: &str) -> Result<toml::Table, Error> {
     text.parse().map_err(|e: toml::de::Error| invalid(file, "", e.message()))
 }
 
-/// The table as a Config, naming each key this build does not read.
-fn extract(table: toml::Table, file: &str) -> Result<(Config, Vec<String>), Error> {
+/// The table as a Config, naming each key this build does not read. A value `env` set is refused
+/// by its variable's name.
+fn extract(table: toml::Table, file: &str, env: &[(&str, &str)]) -> Result<(Config, Vec<String>), Error> {
     let mut warnings = vec![];
     let mut ignored = |path: serde_ignored::Path<'_>| {
         warnings.push(format!("{file}: `{path}` is not a setting this cozy reads; ignored"))
     };
     let value = toml::Value::Table(table);
     let mut config: Config = serde_path_to_error::deserialize(serde_ignored::Deserializer::new(value, &mut ignored))
-        .map_err(|e| invalid(file, &e.path().to_string(), &e.inner().to_string()))?;
+        .map_err(|e| {
+            let key = e.path().to_string();
+            match env.iter().find(|(_, k)| *k == key) {
+                Some((var, _)) => Error::new(Kind::Usage, "config_invalid", format!("{var}: {}", e.inner().message()))
+                    .remedy(format!("correct or unset {var}")),
+                None => invalid(file, &key, &e.inner().to_string()),
+            }
+        })?;
     config.normalize();
     Ok((config, warnings))
 }
