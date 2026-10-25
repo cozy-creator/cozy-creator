@@ -32,20 +32,43 @@ relative error≤0.035 and absolute error≤0.025, allowing the provider's activ
 BF16 rounding. The fixture records provider, exact artifact/output hashes and both error scores.
 No per-step loop, model throughput or cross-hardware performance claim is made.
 
-Source checks only; real ordinary recipe/inference proof is pending. Use Runtime0.32.3+ with
-TensorFS0.15.4+ after the owner-qualified native Writer/caller gates. Unsupported model/provider
+Both ordinary recipe/inference lanes passed the current cohort below. Use Runtime0.32.3+ with
+TensorFS0.15.6+ after the owner-qualified native Writer/caller gates. Unsupported model/provider
 or interface behavior must fail visibly, never be patched around with a private loading path.
 
 First live attempt reached source adoption, private upload and native INT8 recipe conversion.
 Consumer run17692 then failed before the handler because this fixture expected a `net` wrapper
 around construction config. Runtime deliberately presents a single component's config directly;
 the factory now uses its typed `as_int` accessors. Original private commits and partial receipts
-remain retained; encoded inference and the NVFP4 recipe still require a passing run.
+remain retained; encoded inference and the NVFP4 recipe were still pending at that point.
 
 Corrected fixture run17717 created the source,17718 uploaded its private BF16 commit,17719
 converted/adopted INT8 and17720 **passed actual encoded GPU inference** on hatsuka. The consumer
 used `cozy.int8-convrot256.native-leaf/1`; relative output error was0.008017 and maximum absolute
 error0.003208. NVFP4 then refused before a run: the controller CLI compared only lowercase legacy
 dtype names and rejected canonical `BF16`. Its narrow repair recognizes canonical BF16/F16/F32
-as well as the old aliases, retaining rejection of encoded or unknown kinds. The repaired CLI and
-NVFP4 consumer still need real proof. [Exact component proof and refusal](evidence/fd4ff48fa-int8-and-cli-refusal.json).
+as well as the old aliases, retaining rejection of encoded or unknown kinds. The latest cohort
+below proves that repaired CLI and the NVFP4 consumer. [Original component proof and refusal](evidence/fd4ff48fa-int8-and-cli-refusal.json).
+
+On 2026-10-25, source **17866**, private upload **17867**, INT8 conversion/consumer
+**17868/17869**, and NVFP4 conversion/consumer **17870/17871** all completed through the ordinary
+CLI on local CUDA. Normal update 17853 installed Creator 8499, Runtime 7d1 and TensorFS 9e95/0.15.8.
+The [compact proof](evidence/8499-7d1-9e95-both-lanes.json) retains exact installed artifact hashes,
+four frozen fixture hashes, private commits, actual measurement logs and twelve raw receipt hashes.
+
+| Lane | Source bytes read | New encoded bytes | Weight relative error vs BF16 | GPU output relative error vs stored weights |
+|---|---:|---:|---:|---:|
+| INT8 ConvRot | 8,192 | 4,160 | 0.006981334 | 0.007108101 |
+| NVFP4 | 16,384 | 2,308 | 0.086561672 | 0.002528441 |
+
+Each conversion encoded one tensor and reused none. NVFP4's read count includes its complete
+amax pass; the inherited 32-byte bias is excluded from new encoded bytes. These are logical
+source/part counts, not measurements of physical disk or PCIe traffic. Actual consumers selected
+`cozy.int8-convrot256.native-leaf/1` and `cozy.nvfp4.native-leaf/1`; maximum absolute output errors
+were 0.002247199 and 0.000858374. A provider label does not establish native Blackwell instructions
+or performance on this consumer GPU.
+
+The prior attempt 17844 failed before its handler because scheduled maintenance held uv's cache
+lock. This later normal submission passed without changing the fixture or native implementation.
+The enclosing full-model run and normal SDK restoration were still pending when these component
+receipts were extracted; neither is implied by this proof.
