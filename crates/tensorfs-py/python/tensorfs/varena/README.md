@@ -124,3 +124,13 @@ This candidate requires an executor-lived Arena that outlives its captures and r
 Arena teardown during an unrelated capture/replay can retain backing and VA until process exit;
 deferred teardown widens the window in which that can happen. It is not successful reclamation.
 Temporary-Arena teardown across unrelated graph activity is not qualified by this implementation.
+
+## Explicit execution phases
+
+`supports_phases()` checks native methods, not the package version. At an actual
+component-phase transition, `Arena.reset_preferences()` clears the soft preferred prefix
+and its watermark. It never changes a physical pin, fill, mapping or virtual address.
+The consumer marks its incoming cached regions preferred, then may call
+`reclaim_unpreferred(bytes)` to release only other idle backing. Both methods refuse
+actual capture/replay and release the GIL while waiting on native locks. Repeated blocks
+or denoising calls within one phase must not reset the watermark.

@@ -91,6 +91,14 @@ class Arena:
     def reclaim(self, bytes: int) -> int:
         return self._native.reclaim(bytes)
 
+    def reset_preferences(self) -> None:
+        """Begin an explicit execution phase without changing pins, mappings or VA."""
+        self._native.reset_preferences()
+
+    def reclaim_unpreferred(self, bytes: int) -> int:
+        """Reclaim only idle nonpreferred backing; every physical pin still wins."""
+        return self._native.reclaim_unpreferred(bytes)
+
     def stats(self) -> dict[str, int]:
         return self._native.stats()
 
@@ -155,6 +163,14 @@ class Region:
 def supports_refill() -> bool:
     """Whether this prebuilt extension exposes the owning native refill interface."""
     return hasattr(_ext, "_VarenaPreparedRead")
+
+
+def supports_phases() -> bool:
+    """Whether this native build supports explicit metadata-only cache reprioritization."""
+    return all(
+        hasattr(_ext._VarenaArena, name)
+        for name in ("reset_preferences", "reclaim_unpreferred")
+    )
 
 
 def supports_prefetch() -> bool:

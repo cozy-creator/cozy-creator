@@ -425,11 +425,32 @@ impl Arena {
     /// Release at least the requested bytes when possible. Pins are never overridden.
     /// Idle nonpreferred pages go first; preferred pages go from the end of the reserved prefix.
     pub fn reclaim(&self, bytes: usize) -> Result<ReclaimReport> {
+        self.reclaim_with_preference(bytes, true)
+    }
+
+    /// An explicit phase transition changes cache preference, never physical/VA ownership.
+    pub fn reset_preferences(&self) -> Result<()> {
+        let captures = capture_counts()?;
+        ensure_recovery_allowed(&captures, self.device)?;
+        let mut state = self.lock()?;
+        state.preferred_end = None;
+        for entry in state.entries.values_mut() {
+            entry.preferred = false;
+        }
+        Ok(())
+    }
+
+    /// Make phase headroom without evicting the incoming phase's preferred cached bytes.
+    pub fn reclaim_unpreferred(&self, bytes: usize) -> Result<ReclaimReport> {
+        self.reclaim_with_preference(bytes, false)
+    }
+
+    fn reclaim_with_preference(&self, bytes: usize, preferred: bool) -> Result<ReclaimReport> {
         let captures = capture_counts()?;
         ensure_recovery_allowed(&captures, self.device)?;
         let mut state = self.lock()?;
         let _context = self.driver.enter()?;
-        self.reclaim_locked(&mut state, bytes, true, None)
+        self.reclaim_locked(&mut state, bytes, preferred, None)
     }
 
     fn reclaim_locked(

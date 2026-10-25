@@ -111,6 +111,15 @@ impl PyArena {
             .map(|r| r.reclaimed_bytes)
             .map_err(|e| raise(py, e))
     }
+    fn reset_preferences(&self, py: Python<'_>) -> PyResult<()> {
+        py.detach(|| self.arena.reset_preferences())
+            .map_err(|e| raise(py, e))
+    }
+    fn reclaim_unpreferred(&self, py: Python<'_>, bytes: usize) -> PyResult<usize> {
+        py.detach(|| self.arena.reclaim_unpreferred(bytes))
+            .map(|r| r.reclaimed_bytes)
+            .map_err(|e| raise(py, e))
+    }
     fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let stats = py.detach(|| self.arena.stats()).map_err(|e| raise(py, e))?;
         let output = PyDict::new(py);
