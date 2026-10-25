@@ -1,5 +1,9 @@
 # Release gate
 
+[Combined source integration run 40192828364](suites/varena/evidence/source-e2e-40192828364.md)
+records the frozen Creator/Runtime/packages CLI, CPU and import checks. Its CPU candidate
+artifacts and explicit package skip are separate from GPU and portable release qualification.
+
 Release testing is manual: the release agent picks the suites a release needs (`--suite`, no default), runs them, and
 the promotion names the passing run (`verify.sh`). Every cell is a real run held against the last passed gate on the
 same SKU and suites; any FAIL blocks the promotion. Design: tracker `design/ci-v2.md` §3.
