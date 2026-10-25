@@ -134,7 +134,52 @@ def value_law(scheme, parts):
     return (scaled.double() / 16).float()
 
 
-def exercise(mode, seed, dtype, ctx):
+def zero_output(dtype):
+    """Real public zero-output decode, including a nonempty GPU producer dependency."""
+    producer = torch.cuda.Stream()
+    done = torch.cuda.Event()
+    with torch.cuda.stream(producer):
+        weight = torch.empty((0, 8), dtype=torch.uint8, device="cuda")
+        scale = torch.empty((0, 1), dtype=torch.uint8, device="cuda")
+        global_scale = torch.ones(1, dtype=torch.float32, device="cuda")
+        work = torch.full((4 << 20,), 0.25, dtype=torch.float32, device="cuda")
+        for _ in range(8):
+            work.sin_()
+        global_scale.add_(1)
+        done.record(producer)
+        was_pending = not done.query()
+        out = torch.empty((0, 16), dtype=DTYPES[dtype], device="cuda")
+        raw.decode_into(
+            "nvfp4",
+            {
+                "weight": ("F4", (0, 16), weight),
+                "scale": ("F8_E4M3", (0, 1), scale),
+                "scale_2": ("F32", (1,), global_scale),
+            },
+            out,
+            dtype=dtype,
+            shape=(0, 16),
+            params={
+                "block_size": 16,
+                "global_scale": "multiply",
+                "nibble_order": "low_first",
+                "scale_layout": "row_major",
+            },
+        )
+        assert done.query(), "zero-output decode did not join its supplied producer"
+    assert out.numel() == 0 and global_scale.item() == 2
+    return {
+        "mode": "encoded-zero",
+        "dtype": dtype,
+        "output_shape": list(out.shape),
+        "producer_pending_before": was_pending,
+        "producer_complete_after": True,
+        "device": torch.cuda.get_device_name(),
+        "scope": "public empty device-decode correctness; pending=false would not prove an exercised wait",
+    }
+
+
+def exercise(mode, seed, dtype, ctx, ordering="checked"):
     assert ctx.device.type == "cuda"
     if dtype not in DTYPES:
         raise ValueError("encoded gate output must be F16/BF16/F32")
@@ -146,6 +191,7 @@ def exercise(mode, seed, dtype, ctx):
         "encoded-input-error",
         "encoded-decode-error",
         "encoded-refusals",
+        "encoded-zero",
     }
     if mode not in modes:
         raise ValueError(f"unknown encoded load mode: {mode}")
@@ -153,6 +199,8 @@ def exercise(mode, seed, dtype, ctx):
     varena.install_allocator()
     torch.cuda.set_device(0)
     torch.set_num_threads(1)
+    if mode == "encoded-zero":
+        return zero_output(dtype)
     scheme = (
         "comfy.asym_w4a8_int8"
         if mode == "encoded-decode-error"
@@ -259,17 +307,43 @@ def exercise(mode, seed, dtype, ctx):
             assert alias.device.type == "cuda" and not bool(alias.count_nonzero())
             with torch.inference_mode(False):
                 output = torch.zeros((ROWS,), dtype=torch.float32, device="cuda")
+                phase_counts = torch.zeros(3, dtype=torch.int32, device="cuda")
             steps = 30_000 if mode == "encoded-cancel-race" else 3
             expected = reference.cuda().float().sum(dim=1).cpu() * steps
             calls = [0]
+            indices = []
+            phase_calls = {"prefix": 0, "suffix": 0}
+            with_phases = ordering != "checked"
+
+            def prefix():
+                phase_calls["prefix"] += 1
+                phase_counts[0].add_(1)
+
+            def suffix():
+                phase_calls["suffix"] += 1
+                phase_counts[2].add_(1)
 
             def body(index):
-                del index
+                if not indices:
+                    indices.append(index)
                 calls[0] += 1
+                if with_phases:
+                    phase_counts[1].add_(1)
                 output.add_(alias.float().sum(dim=1))
 
-            plan = PreparedRepeat.capture(body, state=(output,), steps=steps, load=slot)
+            plan = PreparedRepeat.capture(
+                body,
+                state=(output, phase_counts) if with_phases else (output,),
+                steps=steps,
+                load=slot,
+                load_ordering=ordering,
+                prefix=prefix if with_phases else None,
+                suffix=suffix if with_phases else None,
+            )
             assert calls[0] == 2 and not bool(output.count_nonzero())
+            indices[0].fill_(
+                73
+            )  # A rejected input must not even reset the public loop index.
             if mode == "encoded-cancel-before":
                 slot.cancel()
             if mode == "encoded-input-error":
@@ -324,10 +398,23 @@ def exercise(mode, seed, dtype, ctx):
                 else:
                     raise AssertionError("invalid owned encoded input did not fail")
                 facts = execution.facts()
-                assert (
-                    facts["host_graph_launches"] == 0 and facts["native_load"]["failed"]
-                )
+                assert facts["native_load"]["failed"]
+                if (
+                    facts["load_ordering"] == "events"
+                    and mode == "encoded-decode-error"
+                ):
+                    assert facts["host_graph_launches"] == 1
+                    assert (
+                        facts["body_entry_checked"]
+                        and not facts["body_entered"]
+                        and facts["input_invalid"]
+                    ), facts
+                else:
+                    assert facts["host_graph_launches"] == 0
                 assert not bool(output.count_nonzero())
+                assert (
+                    not bool(phase_counts.count_nonzero()) and indices[0].item() == 73
+                )
                 if mode == "encoded-decode-error":
                     assert facts["native_load"]["read_bytes"] == source_bytes
                     assert facts["native_load"]["decode_completed_ns"] == 0
@@ -358,6 +445,10 @@ def exercise(mode, seed, dtype, ctx):
                         returned.cpu(), expected, rtol=1e-6, atol=1e-5
                     )
                     assert facts["host_graph_launches"] == 1
+                    if with_phases:
+                        assert phase_counts.tolist() == [1, steps, 1]
+                        assert phase_calls == {"prefix": 2, "suffix": 2}
+                    assert indices[0].item() == steps
                     load = facts["native_load"]
                     assert load["read_bytes"] == source_bytes
                     assert (
@@ -365,16 +456,39 @@ def exercise(mode, seed, dtype, ctx):
                         and load["decoded_bytes"] == final_bytes
                     )
                     assert 0 < load["scratch_bytes"] <= SCRATCH
-                    assert (
-                        0
-                        < load["read_completed_ns"]
-                        <= load["decode_completed_ns"]
-                        <= load["launch_started_ns"]
-                    )
+                    if facts["load_ordering"] == "events":
+                        assert (
+                            0
+                            < load["decode_issued_ns"]
+                            <= load["launch_submitted_ns"]
+                            < load["read_completed_ns"]
+                        ), load
+                        assert (
+                            facts["body_entry_checked"]
+                            and facts["body_entered"]
+                            and not facts["input_invalid"]
+                        ), facts
+                    else:
+                        assert (
+                            0
+                            < load["read_completed_ns"]
+                            <= load["decode_completed_ns"]
+                            <= load["launch_started_ns"]
+                        ), load
                     result["output_sha256"] = hashlib.sha256(
                         returned.cpu().view(torch.uint8).numpy().tobytes()
                     ).hexdigest()
             assert calls[0] == 2 and facts["native_load"]["completion_proven"]
+            assert facts["load_ordering_requested"] == ordering
+            if ordering != "auto":
+                assert (
+                    facts["load_ordering"]
+                    == facts["native_load"]["ordering"]
+                    == ordering
+                )
+            observed_index = indices[0].item()
+            observed_phases = phase_counts.tolist()
+            indices.clear()
             assert torch.equal(
                 torch.ones(16, device="cuda").add_(1).cpu(), torch.full((16,), 2.0)
             )
@@ -397,6 +511,7 @@ def exercise(mode, seed, dtype, ctx):
                 pass
             return {
                 "mode": mode,
+                "ordering": ordering,
                 "seed": seed,
                 "dtype": dtype,
                 "scheme": scheme,
@@ -410,6 +525,9 @@ def exercise(mode, seed, dtype, ctx):
                 "result": result,
                 "cleanup": cleanup,
                 "python_body_calls": calls[0],
+                "phase_counts": observed_phases,
+                "index": observed_index,
+                "python_phase_calls": phase_calls,
             }
         finally:
             if plan is not None:

@@ -144,6 +144,8 @@ struct Shared {
     read_completed_ns: AtomicU64,
     read_bytes: AtomicU64,
     decode_completed_ns: AtomicU64,
+    decode_issued_ns: AtomicU64,
+    decode_checked_ns: AtomicU64,
     decoded_bytes: usize,
     scratch_bytes: usize,
     decode_scheme: Option<String>,
@@ -260,6 +262,8 @@ impl Shared {
                                 // streams. Work retains decoder, packed bytes and final Fill.
                                 let (stream, error) = unsafe { decode.enqueue_after(streams) }
                                     .map_err(decode_failure)?;
+                                self.decode_issued_ns
+                                    .store(self.elapsed(), Ordering::Release);
                                 work.continuation
                                     .as_ref()
                                     .expect("event continuation")
@@ -388,9 +392,11 @@ impl Shared {
                     .store(self.elapsed(), Ordering::Release);
                 if let Some(decode) = &work.prepared_decode {
                     let checked = decode.lock().unwrap_or_else(|e| e.into_inner()).finish();
-                    self.decode_completed_ns
+                    self.decode_checked_ns
                         .store(self.elapsed(), Ordering::Release);
                     checked.map_err(decode_failure)?;
+                    self.decode_completed_ns
+                        .store(self.elapsed(), Ordering::Release);
                 }
                 status.result().map_err(execution_failure)?;
                 if progress.canceled != 0 {
@@ -907,6 +913,8 @@ impl PreparedRead {
                 read_completed_ns: AtomicU64::new(0),
                 read_bytes: AtomicU64::new(0),
                 decode_completed_ns: AtomicU64::new(0),
+                decode_issued_ns: AtomicU64::new(0),
+                decode_checked_ns: AtomicU64::new(0),
                 decoded_bytes,
                 scratch_bytes,
                 decode_scheme,
@@ -978,6 +986,19 @@ impl PreparedRead {
             "execution_committed",
             shared.launch_submitted_ns.load(Ordering::Acquire) != 0,
         )?;
+        row.set_item(
+            "failure_boundary",
+            match &result {
+                Some(Err(Failure::Storage(error))) if error.kind == tensorfs::Kind::Decode => {
+                    Some("input_value")
+                }
+                Some(Err(_)) if shared.launch_submitted_ns.load(Ordering::Acquire) != 0 => {
+                    Some("after_enqueue")
+                }
+                Some(Err(_)) => Some("before_enqueue"),
+                _ => None,
+            },
+        )?;
         row.set_item("cancel_requested", shared.cancel.canceled())?;
         let bytes = shared.read_bytes.load(Ordering::Acquire);
         row.set_item("bytes", bytes)?;
@@ -1001,6 +1022,8 @@ impl PreparedRead {
             ("read_issued_ns", &shared.read_issued_ns),
             ("read_completed_ns", &shared.read_completed_ns),
             ("decode_completed_ns", &shared.decode_completed_ns),
+            ("decode_issued_ns", &shared.decode_issued_ns),
+            ("decode_checked_ns", &shared.decode_checked_ns),
             ("launch_started_ns", &shared.launch_started_ns),
             ("launch_submitted_ns", &shared.launch_submitted_ns),
             ("compute_completed_ns", &shared.compute_completed_ns),
@@ -1074,6 +1097,8 @@ impl PreparedRead {
                 read_completed_ns: AtomicU64::new(0),
                 read_bytes: AtomicU64::new(0),
                 decode_completed_ns: AtomicU64::new(0),
+                decode_issued_ns: AtomicU64::new(0),
+                decode_checked_ns: AtomicU64::new(0),
                 decoded_bytes: 0,
                 scratch_bytes: 0,
                 decode_scheme: None,

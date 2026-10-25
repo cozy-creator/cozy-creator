@@ -79,7 +79,7 @@ def private_input(checkpoint, directory):
     return copied, chunks[-1]
 
 
-def prepare(arena, checkpoint, parts, nbytes, steps):
+def prepare(arena, checkpoint, parts, nbytes, steps, ordering="checked"):
     slot = varena.LoadSlot(arena, checkpoint, parts, bytes=nbytes, threads=1)
     alias = slot.tensor
     weight = alias.view(torch.float32)
@@ -90,7 +90,9 @@ def prepare(arena, checkpoint, parts, nbytes, steps):
         calls[0] += 1
         output.add_(weight.sum())
 
-    plan = PreparedRepeat.capture(body, state=(output,), steps=steps, load=slot)
+    plan = PreparedRepeat.capture(
+        body, state=(output,), steps=steps, load=slot, load_ordering=ordering
+    )
     assert plan.facts()["continuation_abi"] == 1
     assert calls[0] == 2, "the Python body must run only for warmup and capture"
     assert float(weight.sum()) == 0.0, "capture must precede the source load"
@@ -122,7 +124,7 @@ def close_checked(bundle, arena, nbytes):
     return stats
 
 
-def exercise(mode, seed, outer_context, tel):
+def exercise(mode, seed, outer_context, tel, ordering="checked"):
     if mode not in MODES:
         raise ValueError(f"unknown native load gate mode: {mode}")
     varena.install_allocator()
@@ -137,6 +139,7 @@ def exercise(mode, seed, outer_context, tel):
     arena = varena.Arena(0)
     evidence = {
         "mode": mode,
+        "ordering": ordering,
         "seed": seed,
         "runtime": importlib.metadata.version("cozy-runtime"),
         "tensorfs": importlib.metadata.version("tensorfs"),
@@ -151,7 +154,7 @@ def exercise(mode, seed, outer_context, tel):
         copied = damaged = None
         if mode == "input-error":
             copied, damaged = private_input(checkpoint, directory)
-        bundle = prepare(arena, copied or checkpoint, parts, nbytes, steps)
+        bundle = prepare(arena, copied or checkpoint, parts, nbytes, steps, ordering)
         evidence["source_sha256"] = digest
         if mode == "cancel-before":
             bundle["slot"].cancel()
@@ -197,6 +200,7 @@ def exercise(mode, seed, outer_context, tel):
                     execution,
                     lambda f: (
                         f["native_load"]["issued_bytes"] > 0
+                        and f["native_load"]["issued_bytes"] < nbytes
                         and not f["native_load"]["read_done"]
                     ),
                 )
@@ -266,6 +270,9 @@ def exercise(mode, seed, outer_context, tel):
             facts = execution.facts()
             evidence["native"] = facts
             load = facts["native_load"]
+            assert facts["load_ordering_requested"] == ordering
+            if ordering != "auto":
+                assert load["ordering"] == facts["load_ordering"] == ordering
             assert load["done"] and load["completion_proven"], facts
             assert bundle["calls"][0] == 2, (
                 "Python drove native continuation or loop steps"
@@ -300,12 +307,25 @@ def exercise(mode, seed, outer_context, tel):
                     assert load["read_bytes"] == nbytes and load["issued_bytes"] > 0, (
                         load
                     )
-                    assert (
-                        0
-                        < load["read_completed_ns"]
-                        <= load["launch_started_ns"]
-                        <= load["compute_completed_ns"]
-                    ), load
+                    if facts["load_ordering"] == "events":
+                        assert (
+                            0
+                            < load["launch_started_ns"]
+                            <= load["launch_submitted_ns"]
+                            < load["read_completed_ns"]
+                        ), load
+                        assert (
+                            facts["body_entry_checked"]
+                            and facts["body_entered"]
+                            and not facts["input_invalid"]
+                        ), facts
+                    else:
+                        assert (
+                            0
+                            < load["read_completed_ns"]
+                            <= load["launch_started_ns"]
+                            <= load["compute_completed_ns"]
+                        ), load
                     expected = (nbytes // 4) * 0.125 * steps
                     assert float(execution.wait()[0][0]) == expected
                     evidence["result"] = expected

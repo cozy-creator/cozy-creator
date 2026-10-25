@@ -650,6 +650,17 @@ fn execute_into(
     parts: &[Part<'_>],
     destination: Option<Dst>,
 ) -> Result<Option<DeviceBuffer>> {
+    if launch.params[5] == 0 {
+        // Preserve the legacy empty path: no metadata upload, factor cast or catalog
+        // module is required. An external output still joins its supplied producers.
+        if destination.is_none() {
+            return Ok(Some(DeviceBuffer::new(device, 0)?));
+        }
+        let stream = cuda::Stream::new(device)?;
+        let _context = CtxGuard::enter(stream.context())?;
+        join_producers(parts, destination)?;
+        return Ok(None);
+    }
     let mut prepared = prepare_execute(device, launch, parts, destination)?;
     let _context = CtxGuard::enter(
         prepared
@@ -659,8 +670,16 @@ fn execute_into(
             .expect("prepared stream")
             .context(),
     )?;
-    // Legacy synchronous API accepts caller-thread default streams. Preserve that
-    // contract; event mode only accepts explicit native streams in enqueue_after.
+    join_producers(parts, destination)?;
+    // SAFETY: the producer streams just proved completion and all spans stay owned.
+    unsafe { prepared.enqueue_after(&[]) }?;
+    prepared.finish()?;
+    Ok(prepared.hold.output.take())
+}
+
+fn join_producers(parts: &[Part<'_>], destination: Option<Dst>) -> Result<()> {
+    // Legacy synchronous API accepts caller-thread default streams. Event enqueue
+    // accepts only explicit native streams; both paths preserve actual producer order.
     let mut streams = std::collections::BTreeSet::new();
     for part in parts {
         if let Src::Device { stream, .. } = part.src {
@@ -676,10 +695,7 @@ fn execute_into(
             (cuda::driver()?.stream_synchronize)(stream as _)
         })?;
     }
-    // SAFETY: the producer streams just proved completion and all spans stay owned.
-    unsafe { prepared.enqueue_after(&[]) }?;
-    prepared.finish()?;
-    Ok(prepared.hold.output.take())
+    Ok(())
 }
 
 /// One prepared instance of the shared decoder, retaining metadata, scratch and modules.
