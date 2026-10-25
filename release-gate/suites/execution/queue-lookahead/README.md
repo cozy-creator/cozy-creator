@@ -40,6 +40,11 @@ hints it also requires retirement after the active call. It does not claim prepa
 overlap from total duration or completion alone.
 The initial setup/first-handler window is separate (at most15minutes); the180-second queue
 observation deadline begins only after A enters. The enclosing rental guard remains authoritative.
+Cancellation modes wait for B's explicit `sent` event with its public `run=` ID, then refresh A
+through ordinary `run show` and check its GPU-return/terminal events before canceling. There is
+no fixed delay used as evidence that preparation started. If A's active window ends first, the
+controller saves `unexercised.json` and fails that case. Final machine timestamps must still show
+queued-hint cancellation before A completed.
 
 The driver saves worker TensorD diagnostics through `cozy machine logs MACHINE tensord
 --lines 0 --json` as `tensord.ndjson` and validates the request IDs and timestamps. Attach

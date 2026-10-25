@@ -12,15 +12,15 @@ from itertools import pairwise
 from pathlib import Path
 
 
-def worker_events(machine, output):
+def worker_events(machine, output, *, label="tensord", timeout=60):
     result = subprocess.run(
         ["cozy", "machine", "logs", machine, "tensord", "--lines", "0", "--json"],
         check=True,
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=timeout,
     )
-    (output / "tensord.ndjson").write_text(result.stdout)
+    (output / f"{label}.ndjson").write_text(result.stdout)
     events = []
     for line in result.stdout.splitlines():
         text = json.loads(line).get("text", "")
@@ -52,6 +52,7 @@ def worker_events(machine, output):
 class Run:
     def __init__(self, target, machine, output, tag, seed, **values):
         self.tag, self.record, self.entered = tag, None, None
+        self.returned = False
         self.output = output
         self.events = queue.Queue()
         self.stderr = (output / f"{tag}.stderr").open("w")
@@ -108,6 +109,8 @@ class Run:
                 return
             if isinstance(mark, dict) and mark.get("queue_gate") == "entered":
                 self.entered = mark
+            if isinstance(mark, dict) and mark.get("phase") == "gpu_returned":
+                self.returned = True
 
     def terminal(self):
         return self.record is not None and self.record.get("status") in {
@@ -190,6 +193,7 @@ def main():
     setup_started = time.monotonic()
     deadline = setup_started + 900
     observing = "package setup and first handler entry"
+    cancel_window = None
 
     def wait(condition):
         while not condition():
@@ -225,8 +229,89 @@ def main():
         runs.append(b)
         wait(lambda: b.record is not None)
         if args.mode in {"cancel", "abandon", "cancel-active"}:
-            observed = time.monotonic()
-            wait(lambda: time.monotonic() - observed >= 0.3)
+            while True:
+                for run in runs:
+                    while not run.events.empty():
+                        run.consume()
+                if a.terminal() or a.returned or time.monotonic() >= deadline:
+                    reason = (
+                        "A ended before B's sent hint was observed"
+                        if a.terminal() or a.returned
+                        else "B's sent hint was not observed before the deadline"
+                    )
+                    (args.out / "unexercised.json").write_text(
+                        json.dumps(
+                            {
+                                "mode": args.mode,
+                                "passed": False,
+                                "exercised": False,
+                                "reason": reason,
+                                "runs": [run.record for run in runs],
+                            },
+                            indent=2,
+                        )
+                        + "\n"
+                    )
+                    raise AssertionError(f"unexercised queue cancellation: {reason}")
+                observed = worker_events(
+                    args.on,
+                    args.out,
+                    label="before-cancel",
+                    timeout=max(1, min(60, deadline - time.monotonic())),
+                )
+                sent = [
+                    event
+                    for event in observed
+                    if event["event"] == "sent" and event.get("run") == b.record["id"]
+                ]
+                if sent:
+                    # A fresh normal-CLI snapshot prevents delayed worker logs from
+                    # turning a completed handler into an alleged cancellation race.
+                    snapshot = subprocess.run(
+                        [
+                            "cozy",
+                            "run",
+                            "show",
+                            str(a.record["number"]),
+                            "--once",
+                            "--json",
+                        ],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=max(1, min(60, deadline - time.monotonic())),
+                    )
+                    (args.out / "A.before-cancel.json").write_text(snapshot.stdout)
+                    current = json.loads(snapshot.stdout)
+                    while not a.events.empty():
+                        a.consume()
+                    if (
+                        current.get("status") != "in_progress"
+                        or current.get("machine_state") != "running"
+                        or a.terminal()
+                        or a.returned
+                    ):
+                        (args.out / "unexercised.json").write_text(
+                            json.dumps(
+                                {
+                                    "mode": args.mode,
+                                    "passed": False,
+                                    "exercised": False,
+                                    "reason": "A ended before the observed hint could be canceled",
+                                    "sent": sent,
+                                    "current": current,
+                                },
+                                indent=2,
+                            )
+                            + "\n"
+                        )
+                        raise AssertionError(
+                            "unexercised queue cancellation: A ended before cancel"
+                        )
+                    cancel_window = {"sent": sent, "active_snapshot": current}
+                    break
+                for run in runs:
+                    run.consume()
             (a if args.mode == "cancel-active" else b).cancel()
         c = Run(target / "gpu", args.on, args.out, "C", args.seed + 2)
         runs.append(c)
@@ -297,6 +382,10 @@ def main():
             assert marks(b, "canceled"), (
                 "queued cancellation missed its actual preparation"
             )
+            assert any(
+                event["at_ns"] < a.record["result"]["completed_ns"]
+                for event in marks(b, "canceled")
+            ), "unexercised queue cancellation: the hint was canceled after A completed"
         if args.mode == "handoff" and marks(c, "sent"):
             assert marks(c, "reused"), (
                 "C discarded an offered preparation during handoff"
@@ -310,6 +399,7 @@ def main():
             "mode": args.mode,
             "runs": [run.record for run in runs],
             "setup_seconds": setup_seconds,
+            "cancel_window": cancel_window,
             "handler_order_passed": True,
             "lookahead_events": relevant,
             "executor_request_ids": request_ids,
