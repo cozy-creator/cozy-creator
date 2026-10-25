@@ -23,7 +23,7 @@ pub(super) enum Failure {
     Storage(tensorfs::Failure),
     Native(varena::Error),
     Canceled,
-    Execution(Status),
+    Execution(Box<Status>),
 }
 
 impl Failure {
@@ -55,7 +55,7 @@ fn execution_failure(status: Status) -> Failure {
     if status.kind == continuation::CANCELED {
         Failure::Canceled
     } else {
-        Failure::Execution(status)
+        Failure::Execution(Box::new(status))
     }
 }
 
@@ -188,7 +188,7 @@ impl Shared {
                     .store(self.elapsed(), Ordering::Release);
                 let (status, progress) = execution.observe(true);
                 if !execution.checked(status, progress) {
-                    return Err(Failure::Execution(Status::unproven(&format!(
+                    return Err(execution_failure(Status::unproven(&format!(
                         "native continuation did not prove completion: {}",
                         status.detail()
                     ))));
@@ -313,7 +313,9 @@ pub(super) fn prepare_work(
         let end = offset
             .checked_add(length)
             .filter(|end| *end <= region.len())
-            .ok_or({ Failure::Native(varena::Error::Invalid("refill target exceeds region")) })?;
+            .ok_or(Failure::Native(varena::Error::Invalid(
+                "refill target exceeds region",
+            )))?;
         let spans = by_name.get(&name).map_or(&[][..], Vec::as_slice);
         if spans.is_empty() && length != 0 {
             return Err(Failure::Native(varena::Error::Invalid(
@@ -330,7 +332,9 @@ pub(super) fn prepare_work(
             });
             at = at
                 .checked_add(span.len)
-                .ok_or({ Failure::Native(varena::Error::Invalid("refill span overflow")) })?;
+                .ok_or(Failure::Native(varena::Error::Invalid(
+                    "refill span overflow",
+                )))?;
         }
         if at != end as u64 {
             return Err(Failure::Native(varena::Error::Invalid(
@@ -565,6 +569,13 @@ impl PreparedRead {
             }
             let result = state.result.clone();
             drop(state);
+            // The original terminal source error remains observable even after the
+            // checked execution arm has been closed by Runtime.
+            if let Some(Err(error)) = result.as_ref() {
+                if !matches!(error, Failure::Canceled) {
+                    return Err(error.clone());
+                }
+            }
             let (status, progress) = shared
                 .continuation
                 .as_ref()
@@ -575,11 +586,6 @@ impl PreparedRead {
             }
             let canceled =
                 matches!(&result, Some(Err(Failure::Canceled))) || progress.canceled != 0;
-            if let Some(Err(error)) = result.as_ref() {
-                if !matches!(error, Failure::Canceled) {
-                    return Err(error.clone());
-                }
-            }
             // Provider cancel can settle its armed epoch while a copy is still draining.
             // Only the whole worker's result is the composed completion certificate.
             Ok((progress.completed_steps, canceled, result.is_some()))
@@ -598,12 +604,14 @@ impl PreparedRead {
                 .clone()
         });
         row.set_item("issued_bytes", shared.cancel.issued_bytes())?;
+        row.set_item("cancel_requested", shared.cancel.canceled())?;
         let bytes = shared.read_bytes.load(Ordering::Acquire);
         row.set_item("bytes", bytes)?;
         row.set_item("read_bytes", bytes)?;
         row.set_item(
             "canceled",
-            shared.cancel.canceled() || matches!(result, Some(Err(Failure::Canceled))),
+            matches!(result, Some(Err(Failure::Canceled)))
+                || result.is_none() && shared.cancel.canceled(),
         )?;
         for (name, clock) in [
             ("read_completed_ns", &shared.read_completed_ns),
@@ -631,7 +639,10 @@ impl PreparedRead {
             shared.completion_proven.load(Ordering::Acquire),
         )?;
         row.set_item("done", result.is_some())?;
-        row.set_item("failed", matches!(result, Some(Err(_))))?;
+        row.set_item(
+            "failed",
+            matches!(result, Some(Err(error)) if !matches!(error, Failure::Canceled)),
+        )?;
         Ok(row)
     }
 }

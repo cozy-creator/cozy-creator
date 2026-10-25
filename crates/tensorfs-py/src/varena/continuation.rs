@@ -104,7 +104,7 @@ impl Continuation {
             }
             ffi::PyCapsule_GetPointer(value.as_ptr(), c"cozy.execution.continuation.v1".as_ptr())
         };
-        if ptr.is_null() || (ptr as usize) % std::mem::align_of::<Abi>() != 0 {
+        if ptr.is_null() || !(ptr as usize).is_multiple_of(std::mem::align_of::<Abi>()) {
             return Err(invalid());
         }
         // SAFETY: the named private capsule promises a live C header. Read the fixed prefix
