@@ -105,3 +105,30 @@ it does not switch to a blocking stream to manufacture a failure. See the
 [NVIDIA capture restrictions](https://docs.nvidia.com/cuda/cuda-programming-guide/04-special-topics/cuda-graphs.html)
 and [pinned Torch stream flags](https://github.com/pytorch/pytorch/blob/5c4886908584029761b579af026dcfb627c84070/c10/cuda/CUDAStream.cpp#L21).
 Source checks do not establish the cause or a passing GPU result.
+
+### PreparedRepeat capture with the real watcher
+
+`mode=conv-prepared-watched` is the production-path regression for observed run17743, where
+the manual watched fixture changed capture status from1 to2 before its convolution. It uses
+the same actual FP16 convolution with Torch-owned weights, a real injected
+`Telemetry.step_callback`, and `PreparedRepeat.capture`. Its Python body pauses0.3seconds
+**only during CUDA capture**, checking raw driver capture status before and after the pause.
+Warmup does not pause; GPU replay makes no Python calls.
+
+```sh
+cozy run /absolute/canonical/worktree/release-gate/suites/execution/prepared-resident-owners/gpu \
+  mode=conv-prepared-watched seed=1774301 --on MACHINE --gpus=1 --json
+```
+
+Run the exact fixture against the unfixed Runtime first and retain the red receipt, then use
+a fresh seed on the fixed candidate. The passing criterion is actual successful capture,
+a resumed sample count from the real watcher after capture, exactly one `ctx.plan` submission
+and native host graph launch, two GPU iterations, numerical agreement with eager, and normal
+final-step watcher shutdown. Watch counters are inspected only **outside capture**, so the
+fixture does not contend recursively with the production pause lock. The resume observation
+has a1second deadline; elapsed time alone is not success.
+
+No callback is replaced, no exception is injected, and no mock allocator or model is used.
+Failure notes retain the raw capture observations. The original manual `conv-watched` mode
+remains unchanged as a diagnostic and is not expected to be protected by PreparedRepeat's
+production capture scope. Source checks are separate from the required real red/green runs.

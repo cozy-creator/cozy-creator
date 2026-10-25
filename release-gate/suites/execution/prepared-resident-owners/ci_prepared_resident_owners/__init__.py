@@ -12,7 +12,12 @@ app = App()
 class Probe(msgspec.Struct, forbid_unknown_fields=True):
     seed: int = 1796
     mode: Literal[
-        "owners", "attention", "conv-torch", "conv-varena", "conv-watched"
+        "owners",
+        "attention",
+        "conv-torch",
+        "conv-varena",
+        "conv-watched",
+        "conv-prepared-watched",
     ] = "owners"
 
 
@@ -23,7 +28,11 @@ class Report(msgspec.Struct):
 
 @app.entrypoint(accelerator=True)
 def gpu(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
-    if payload.mode in ("conv-torch", "conv-varena", "conv-watched"):
+    if payload.mode == "conv-prepared-watched":
+        from .prepared_convolution import prepared_convolution_proof
+
+        result = prepared_convolution_proof(payload.seed, ctx, tel)
+    elif payload.mode in ("conv-torch", "conv-varena", "conv-watched"):
         from .convolution import convolution_proof
 
         result = convolution_proof(
