@@ -34,6 +34,12 @@ class Part:
 def parts(checkpoint: Checkpoint, component: str, key: str) -> dict[str, Part]:
     """Stored ranges only; does not fetch or load array bytes."""
 
+def quantization_implementation() -> str:
+    """Writer resume's producer/source-reader digest, including pinned numerical dependencies.
+
+    A build without store support reports the raw numerical implementation only.
+    """
+
 def quantize(
     scheme: str,
     values: bytes,

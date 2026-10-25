@@ -148,7 +148,20 @@ fn produce(
     Ok((encoded, result.stats))
 }
 
+#[pyfunction]
+fn quantization_implementation() -> String {
+    #[cfg(feature = "store")]
+    {
+        tensorfs::quantization_implementation()
+    }
+    #[cfg(not(feature = "store"))]
+    {
+        encode::implementation()
+    }
+}
+
 pub fn install(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(quantization_implementation, m)?)?;
     m.add_function(wrap_pyfunction!(quantize, m)?)?;
     m.add_function(wrap_pyfunction!(quantize_measured, m)?)
 }

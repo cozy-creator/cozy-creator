@@ -766,6 +766,13 @@ publication; an already-started filesystem operation may finish. Complete earlie
 in the existing resume journal; an interrupted current tensor is recomputed. No partial tensor
 is a completed entry. Temporary encoded parts live in that Writer's existing work directory.
 
+`component="name"` optionally executes just that component of the **same full selection**.
+Each call supplies the identical selection and calibration checkpoint; the execution filter
+is excluded from journal identity. This permits component-at-a-time callers to share one
+Writer without fitting future components early. An unknown component refuses before any
+write. Result counters and the working/output grants apply only to the executed component;
+unfiltered calls execute the full selection as before.
+
 The buffer bound includes simultaneous source, F32 conversion, encoder outputs and numerical
 scratch. The existing downloader and Writer additionally retain their own bounded I/O buffers;
 it is not a process RSS cap. One row that cannot fit refuses. NVFP4 reads the whole tensor in
@@ -790,3 +797,63 @@ is introduced. Buffer admission includes decoder I32/F32 temporaries. Read count
 weight+scale bytes per pass. Resume identity includes the reader/shared decoder implementation;
 previous native conversions under another implementation refuse reuse instead of mixing bytes.
 Runtime admission and producer cutover need the separate real rowwise conversion gate.
+
+#### Completed SVDQ calibration and additional producers
+
+The explicit `fp8-rowwise-rne/1` and `w4a8-convrot256-fixed/1` strategies produce
+parameter-free `fp8.rowwise` and `w4a8.convrot` with group size 16 and H256 rotation.
+They run in the same bounded Writer loop; the W4A8 codebook is written once per tensor.
+The existing format encoders with different fitting rules keep their own identities.
+
+`svdq-nvfp4-r32-faer/1` fits a complete weight using a finished immutable calibration
+checkpoint. Runtime owns collection. TensorFS owns smoothing, the eight alpha candidates,
+randomized rank-32 fitting (16 oversampling columns, four subspace iterations), BF16
+factors, activation scoring and final NVFP4 residual encoding. The stored scheme remains
+`svdq.nvfp4`; existing artifacts retain their decoder semantics.
+
+```python
+selected = [{
+    "component": "net", "key": "proj.weight",
+    "source_dtype": "BF16", "shape": [128, 256], "dtype": "BF16",
+    "encoding": {"scheme": "svdq.nvfp4", "params": {
+        "block_size": 16, "global_scale": "multiply",
+        "nibble_order": "low_first", "scale_layout": "row_major",
+    }},
+    "strategy": "svdq-nvfp4-r32-faer/1",
+    "fit": {"seed": 12345, "component": "net",
+            "xmax": "proj.weight.xmax", "rows": "proj.weight.rows"},
+}]
+stats = writer.quantize(source, selected, calibration=calibration,
+                        max_buffer_bytes=64 << 20, max_new_bytes=1 << 20,
+                        control=tensorfs.ConversionControl())
+```
+
+`xmax` must be plain F32 `[K]`; captured `rows` must be plain BF16/F16/F32 `[S,K]`
+with at least one sample. Weight dimensions and arithmetic are checked before fitting;
+nonfinite data, unsupported encoding/geometry and inadequate workspace refuse. There is
+no callback, model object or mutable Python array at this boundary. The native call owns
+both checkpoint references until it returns.
+
+The fitting budget includes the complete decoded weight and calibration, current/best
+factors, all numerical scratch, encoded companions and bounded read/staging temporaries.
+It does not infer a grant from host RAM. Refusals state required bytes. This initial fitter
+retains its full decoded input; it is not a streaming large-matrix fitter. Per-tensor `fit`
+details and aggregate `required_buffer_bytes` report the admitted working requirement.
+Reader/Writer I/O and OS page cache remain outside this conversion-buffer metric.
+
+`measured` and `relative_frobenius` describe the whole logical weight before its final
+logical-dtype cast. `fit.residual` describes only the NVFP4 residual and supplies its
+existing max-error tripwire. `fit` also records strategy, selected alpha, calibration
+error, plain-NVFP4 error and calibration bytes read. Source and calibration reads are
+separate result counters; progress reports their sum. Neither is physical disk traffic.
+Reused measurements remain unknown rather than fabricated as zero.
+
+Resume binds the calibration checkpoint and complete fit descriptor in addition to the
+weight source, strategy and implementation. `raw.quantization_implementation()` returns
+the same full producer/source-reader digest as Writer resume for Runtime memo provenance
+(a build without store support reports only its raw numerical implementation). A seed names this Rust producer's
+sketch; it does not reproduce Torch's CPU/CUDA RNG stream or singular-vector signs.
+Cancellation is checked between input windows, numerical passes, candidates and library
+factorizations, then before publication. A single QR/SVD call is not interruptible.
+CPU conversion, calibrated GPU consumption and model quality require separate release-gate
+evidence; source/build success alone establishes none of those outcomes.

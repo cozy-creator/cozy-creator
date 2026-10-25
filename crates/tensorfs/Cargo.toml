@@ -17,6 +17,12 @@ default = ["store"]
 store = ["dep:hmac", "dep:rustix", "dep:rustls", "dep:webpki-roots", "dep:tokio", "dep:tokio-rustls", "dep:hyper", "dep:hyper-util", "dep:tower-service", "dep:async-trait", "dep:http-body-util", "dep:bytes", "dep:futures", "dep:tracing-subscriber"]
 
 [dependencies]
+# SVDQ producer revision pins its factorization and random-sketch implementation.
+# No Rayon/global thread pool: the existing conversion worker owns sequential work.
+faer = { version = "=0.24.4", path = "../../vendor/faer", default-features = false, features = ["std", "linalg"] }
+rand = { version = "=0.9.5", default-features = false, features = ["std"] }
+rand_chacha = { version = "=0.9.0", default-features = false, features = ["std"] }
+rand_distr = { version = "=0.5.1", default-features = false, features = ["std"] }
 base64.workspace = true
 platform.workspace = true
 libloading.workspace = true

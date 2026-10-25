@@ -6,7 +6,7 @@
 
 use super::affine::pack as pack_words;
 use super::elem::{e2m1, e4m3};
-use super::{encoding, Encoder, Input, OwnedPart};
+use super::{Encoder, Input, OwnedPart, encoding};
 use crate::format::decode::affine::{Codes, Fill, Order, Packing};
 use crate::format::decode::elem::floats;
 use crate::format::decode::grid::Grid;
@@ -241,24 +241,12 @@ pub(super) fn min_sse(input: &Input) -> Result<super::Quantized> {
     if !maximum.is_finite() || maximum < 0.0 {
         return Err(fail("tensor_amax must be finite and nonnegative"));
     }
-    let global = if maximum == 0.0 {
-        1.0
-    } else {
-        (maximum / (448.0 * 6.0)) as f32
-    };
-    if !global.is_finite() || global <= 0.0 {
-        return Err(fail(
-            "tensor_amax yields an unrepresentable positive F32 global scale",
-        ));
-    }
-    let magnitudes: [f32; 127] =
-        std::array::from_fn(|i| crate::format::decode::elem::e4m3(i as u8));
+    let global = min_sse_global(maximum)?;
     let mut weight = Vec::with_capacity(bytes / 8);
     let mut scale = Vec::with_capacity(bytes / 64);
     let mut stats = super::QuantizationStats::default();
     for raw in source.bytes.as_chunks::<64>().0 {
         let mut block = [0.0f32; 16];
-        let mut amax = 0.0f32;
         for (value, raw) in block.iter_mut().zip(raw.as_chunks::<4>().0) {
             *value = f32::from_le_bytes(*raw);
             if !value.is_finite() || f64::from(value.abs()) > maximum {
@@ -266,46 +254,11 @@ pub(super) fn min_sse(input: &Input) -> Result<super::Quantized> {
                     "a value is not finite or exceeds whole-tensor tensor_amax",
                 ));
             }
-            amax = amax.max(value.abs());
         }
-        // The division and the coverage recheck intentionally round in F32.
-        let need = amax / (6.0f32 * global);
-        let mut anchor = magnitudes.partition_point(|s| *s < need).min(126);
-        for _ in 0..3 {
-            let effective = magnitudes[anchor] * global;
-            if anchor == 126 || amax <= effective * 6.0f32 {
-                break;
-            }
-            anchor += 1;
-        }
-        let mut best: Option<(f64, u8, [u8; 16])> = None;
-        for candidate in [anchor.saturating_sub(1), anchor, (anchor + 1).min(126)] {
-            let effective = magnitudes[candidate] * global;
-            let codes = block.map(|value| {
-                e2m1(if effective > 0.0 {
-                    value / effective
-                } else {
-                    0.0
-                })
-            });
-            let errors: [f64; 16] = std::array::from_fn(|i| {
-                let reconstructed = crate::format::decode::elem::e2m1(codes[i]) * effective;
-                let difference = f64::from(reconstructed - block[i]);
-                difference * difference
-            });
-            // NumPy's contiguous 16-element sum: eight lanes, then a balanced tree.
-            // Preserve this order because it can decide which scale wins a close tie.
-            let lanes: [f64; 8] = std::array::from_fn(|i| errors[i] + errors[i + 8]);
-            let sse = ((lanes[0] + lanes[1]) + (lanes[2] + lanes[3]))
-                + ((lanes[4] + lanes[5]) + (lanes[6] + lanes[7]));
-            if best.as_ref().is_none_or(|(error, _, _)| sse < *error) {
-                best = Some((sse, candidate as u8, codes));
-            }
-        }
-        let (_, chosen, codes) = best.expect("three candidates");
-        let effective = magnitudes[chosen as usize] * global;
+        let (chosen, codes, saturated) = min_sse_block(&block, global);
+        let effective = crate::format::decode::elem::e4m3(chosen) * global;
+        stats.saturated += saturated;
         for (value, code) in block.into_iter().zip(codes) {
-            stats.saturated += u64::from(value.abs() > effective * 6.0f32);
             let reconstructed = crate::format::decode::elem::e2m1(code) * effective;
             stats.add(value, f64::from(reconstructed));
         }
@@ -341,6 +294,73 @@ pub(super) fn min_sse(input: &Input) -> Result<super::Quantized> {
             },
         ],
     })
+}
+
+/// Shared checked global scale for the production min-SSE encoder.
+pub(super) fn min_sse_global(maximum: f64) -> Result<f32> {
+    if !maximum.is_finite() || maximum < 0.0 {
+        return Err(fail("tensor_amax must be finite and nonnegative"));
+    }
+    let global = if maximum == 0.0 {
+        1.0
+    } else {
+        (maximum / (448.0 * 6.0)) as f32
+    };
+    if !global.is_finite() || global <= 0.0 {
+        return Err(fail(
+            "tensor_amax yields an unrepresentable positive F32 global scale",
+        ));
+    }
+    Ok(global)
+}
+
+/// Exact production block law, shared with the fitted SVDQ residual. Caller
+/// supplies a finite block and positive checked whole-tensor global scale.
+pub(super) fn min_sse_block(block: &[f32; 16], global: f32) -> (u8, [u8; 16], u64) {
+    let magnitudes: [f32; 127] =
+        std::array::from_fn(|i| crate::format::decode::elem::e4m3(i as u8));
+    let amax = block.iter().fold(0.0f32, |a, x| a.max(x.abs()));
+    // The division and the coverage recheck intentionally round in F32.
+    let need = amax / (6.0f32 * global);
+    let mut anchor = magnitudes.partition_point(|s| *s < need).min(126);
+    for _ in 0..3 {
+        let effective = magnitudes[anchor] * global;
+        if anchor == 126 || amax <= effective * 6.0f32 {
+            break;
+        }
+        anchor += 1;
+    }
+    let mut best: Option<(f64, u8, [u8; 16])> = None;
+    for candidate in [anchor.saturating_sub(1), anchor, (anchor + 1).min(126)] {
+        let effective = magnitudes[candidate] * global;
+        let codes = block.map(|value| {
+            e2m1(if effective > 0.0 {
+                value / effective
+            } else {
+                0.0
+            })
+        });
+        let errors: [f64; 16] = std::array::from_fn(|i| {
+            let reconstructed = crate::format::decode::elem::e2m1(codes[i]) * effective;
+            let difference = f64::from(reconstructed - block[i]);
+            difference * difference
+        });
+        // NumPy's contiguous 16-element sum: eight lanes, then a balanced tree.
+        // Preserve this order because it can decide which scale wins a close tie.
+        let lanes: [f64; 8] = std::array::from_fn(|i| errors[i] + errors[i + 8]);
+        let sse = ((lanes[0] + lanes[1]) + (lanes[2] + lanes[3]))
+            + ((lanes[4] + lanes[5]) + (lanes[6] + lanes[7]));
+        if best.as_ref().is_none_or(|(error, _, _)| sse < *error) {
+            best = Some((sse, candidate as u8, codes));
+        }
+    }
+    let (_, chosen, codes) = best.expect("three candidates");
+    let effective = magnitudes[chosen as usize] * global;
+    let saturated = block
+        .iter()
+        .filter(|value| value.abs() > effective * 6.0f32)
+        .count() as u64;
+    (chosen, codes, saturated)
 }
 
 /// A calibrated producer's `codes` (`U8`, an E2M1 code per element, the logical shape), its
