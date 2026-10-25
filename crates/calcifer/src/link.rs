@@ -54,9 +54,14 @@ pub enum LinkError {
     /// The machine does not admit the key (yet).
     #[error("the machine does not admit this key: {0}")]
     Unauthorized(String),
-    /// Unreachable, starting, updating, or not admitting the key yet: try again.
+    /// No connection to it could be made: refused, reset or timed out while connecting, or TLS
+    /// that failed. Try again.
     #[error("{0}")]
     Unreachable(String),
+    /// Connected, but its answer broke off or was not one (a stream that ended, a 5xx): a busy
+    /// machine, not an unreachable one. Ask again.
+    #[error("{0}")]
+    Unanswered(String),
 }
 
 impl From<Error> for LinkError {
@@ -73,9 +78,10 @@ impl From<Error> for LinkError {
                 message: error.message,
             },
             Error::Refused { error, .. } => {
-                LinkError::Unreachable(format!("{}: {}", error.code, error.message))
+                LinkError::Unanswered(format!("{}: {}", error.code, error.message))
             }
-            Error::Transport(message) | Error::Answer(message) => LinkError::Unreachable(message),
+            Error::Unreachable(message) => LinkError::Unreachable(message),
+            Error::Transport(message) | Error::Answer(message) => LinkError::Unanswered(message),
         }
     }
 }
@@ -147,7 +153,7 @@ impl Link {
                 ..
             })) => Ok((state, events)),
             Some(Err(e)) => Err(e),
-            _ => Err(LinkError::Unreachable(
+            _ => Err(LinkError::Unanswered(
                 "the machine's stream did not open with the run's state".into(),
             )),
         }
@@ -214,7 +220,7 @@ impl Link {
         let held = self.machine.held_many(&names).await?;
         if held.len() != names.len() || held.iter().zip(&names).any(|(h, n)| h.digest != *n) {
             let other = "the machine answered for other objects than asked";
-            return Err(LinkError::Unreachable(other.into()));
+            return Err(LinkError::Unanswered(other.into()));
         }
         Ok(held.into_iter().map(|h| h.ranges).collect())
     }
@@ -290,10 +296,10 @@ impl Link {
             match sent {
                 Err(Ranged::Stop(e)) => return Err(e),
                 Err(Ranged::Again(message)) if now == before => {
-                    return Err(LinkError::Unreachable(message));
+                    return Err(LinkError::Unanswered(message));
                 }
                 _ if now == before => {
-                    return Err(LinkError::Unreachable(format!(
+                    return Err(LinkError::Unanswered(format!(
                         "the machine holds {now} of the {length} bytes of {digest} and took no more"
                     )));
                 }
@@ -339,7 +345,9 @@ async fn put(
             Ok(())
         }
         Err(e) => match LinkError::from(e) {
-            LinkError::Unreachable(message) => Err(Ranged::Again(message)),
+            LinkError::Unreachable(message) | LinkError::Unanswered(message) => {
+                Err(Ranged::Again(message))
+            }
             e => Err(Ranged::Stop(e)),
         },
     }

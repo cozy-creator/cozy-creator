@@ -1,8 +1,9 @@
 //! A typed client of one machine's API. TLS admits exactly the machine's pinned leaf. Control
-//! calls and SSE share one HTTP/2 connection, which a PING every 20 s keeps proven alive; bulk
-//! bytes go on [`Bulk`] HTTP/1.1 connections of their own, so parts and ranges move side by side
-//! on separate TCP connections. Nothing here times out on a clock: a dead control connection
-//! fails its PING, and bulk callers judge their lanes by measured progress.
+//! calls and SSE share one HTTP/2 connection; bulk bytes go on [`Bulk`] HTTP/1.1 connections of
+//! their own, so parts and ranges move side by side on separate TCP connections. Nothing here
+//! judges the machine by its silence: a busy one answers late, never wrongly. Every connection
+//! carries TCP keepalive, which the peer's kernel answers however busy its process is, so only a
+//! host or path that is gone ends one; bulk callers judge their lanes by measured progress.
 use std::{
     sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -36,7 +37,10 @@ use crate::{
 pub const SERVER_NAME: &str = "cozy-worker";
 /// A cap is checked when a request opens; an open stream outlives it.
 const CAP_SECONDS: i64 = 300;
-const PING: Duration = Duration::from_secs(20);
+/// TCP keepalive: a probe after this long without a packet, and again this often; the
+/// connection ends once `PROBES` in a row go unanswered by the peer's kernel.
+const PROBE: Duration = Duration::from_secs(20);
+const PROBES: u32 = 3;
 
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {
@@ -46,7 +50,11 @@ pub enum Error {
         status: u16,
         error: Box<crate::error::Error>,
     },
-    /// Not reached, or the connection broke.
+    /// No connection could be made: refused, reset or timed out while connecting, a name that
+    /// does not resolve, or TLS that failed.
+    #[error("{0}")]
+    Unreachable(String),
+    /// A connection was made and broke, or the request failed on it.
     #[error("{0}")]
     Transport(String),
     /// It answered what this API does not say: another service on its port, a proxy's error page.
@@ -132,13 +140,8 @@ pub struct Output {
 impl Machine {
     pub fn new(address: &str, pin: [u8; 32], auth: Auth) -> Result<Self, Error> {
         let origin = Url::parse(&format!("https://{address}/"))
-            .map_err(|e| Error::Transport(format!("the machine's address {address}: {e}")))?;
-        let control = builder(pin, &[b"h2"])
-            .http2_keep_alive_interval(PING)
-            .http2_keep_alive_timeout(PING)
-            .http2_keep_alive_while_idle(true)
-            .build()
-            .map_err(transport)?;
+            .map_err(|e| Error::Unreachable(format!("the machine's address {address}: {e}")))?;
+        let control = builder(pin, &[b"h2"]).build().map_err(transport)?;
         Ok(Self {
             origin,
             pin,
@@ -159,7 +162,6 @@ impl Machine {
     pub fn bulk(&self) -> Result<Bulk, Error> {
         let client = builder(self.pin, &[])
             .http1_only()
-            .tcp_keepalive(PING)
             .build()
             .map_err(transport)?;
         Ok(Bulk {
@@ -449,6 +451,9 @@ fn builder(pin: [u8; 32], alpn: &[&[u8]]) -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .tls_backend_preconfigured(tls)
         .tcp_nodelay(true)
+        .tcp_keepalive(PROBE)
+        .tcp_keepalive_interval(PROBE)
+        .tcp_keepalive_retries(PROBES)
         .no_proxy()
 }
 
@@ -536,7 +541,7 @@ fn sse(
     }))
 }
 
-/// A transport failure with its causes.
+/// A transport failure with its causes: `Unreachable` when no connection was made.
 fn transport(error: reqwest::Error) -> Error {
     let mut message = error.to_string();
     let mut source = std::error::Error::source(&error);
@@ -544,13 +549,16 @@ fn transport(error: reqwest::Error) -> Error {
         message = format!("{message}: {cause}");
         source = cause.source();
     }
-    Error::Transport(message)
+    match error.is_connect() {
+        true => Error::Unreachable(message),
+        false => Error::Transport(message),
+    }
 }
 
 /// The TLS leaf (DER) the machine at `address` presents, whatever it is. Nothing is sent: the
 /// handshake is refused once the leaf is seen.
 pub async fn presented_leaf(address: &str) -> Result<Vec<u8>, Error> {
-    let unreachable = |e: std::io::Error| Error::Transport(format!("{address}: {e}"));
+    let unreachable = |e: std::io::Error| Error::Unreachable(format!("{address}: {e}"));
     let pinned = Arc::new(Pinned::new([0; 32]));
     let tcp = tokio::net::TcpStream::connect(address)
         .await
@@ -563,7 +571,7 @@ pub async fn presented_leaf(address: &str) -> Result<Vec<u8>, Error> {
     match (seen, refused) {
         (Some(leaf), _) => Ok(leaf),
         (None, Err(e)) => Err(unreachable(e)),
-        (None, Ok(_)) => Err(Error::Transport(format!("{address} presented no TLS leaf"))),
+        (None, Ok(_)) => Err(Error::Unreachable(format!("{address} presented no TLS leaf"))),
     }
 }
 
