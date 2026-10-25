@@ -44,6 +44,7 @@ pub use comfy::{quantize_with, Kitchen};
 pub use fp8_blockwise::quantize_fp8_blockwise;
 pub use int8::CONVROT_STRATEGY;
 pub use nvfp4::{GlobalScale, NibbleOrder};
+pub use nvfp4::MIN_SSE_STRATEGY;
 
 /// Every scheme's encoders, one row each.
 pub static ENCODERS: &[&Encoder] = &[
@@ -175,6 +176,7 @@ pub fn quantize(input: &Input) -> Result<Vec<OwnedPart>> {
 pub fn quantize_strategy(input: &Input, strategy: &str) -> Result<Vec<OwnedPart>> {
     match (input.encoding.scheme.as_str(), strategy) {
         ("int8.convrot", CONVROT_STRATEGY) => run(input, int8::CONVROT.quantize, "closed-form"),
+        ("nvfp4", MIN_SSE_STRATEGY) => nvfp4::min_sse(input),
         _ => Err(Error::Encode(format!(
             "no quantizer strategy {strategy:?} for {}", input.encoding.scheme
         ))),

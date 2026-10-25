@@ -1,4 +1,4 @@
-"""Physical format inspection for storage integrations."""
+"""Physical format inspection, native tensor encoding and resident decoding."""
 
 from ._ext import raw as _raw
 

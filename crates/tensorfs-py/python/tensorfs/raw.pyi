@@ -1,4 +1,4 @@
-"""Physical format inspection; ordinary reads use Component.tensors."""
+"""Physical format operations; ordinary reads use Component.tensors."""
 
 from collections.abc import Mapping, Sequence
 
@@ -32,12 +32,17 @@ def quantize(
     shape: Sequence[int],
     strategy: str,
     params: Mapping[str, object] | None = None,
+    tensor_amax: float | None = None,
 ) -> Encoded:
     """Encode immutable little-endian F32 values with an explicit producer revision.
 
-    Currently admits int8.convrot / int8-convrot256/1 with rotation_size=256.
+    Admits int8.convrot / int8-convrot256/1 with rotation_size=256 and
+    nvfp4 / nvfp4-min-sse/1 in low-first, row-major, multiply layout.
+    NVFP4 requires the finite nonnegative whole-tensor tensor_amax on every chunk;
+    ConvRot refuses that argument. Global-scale underflow/overflow is refused.
     Complete rows may be chunked without changing output bytes. The native arithmetic
-    releases the GIL and uses one row of floating scratch, plus the owned output.
+    releases the GIL and uses one row (ConvRot) or block (NVFP4) of floating scratch,
+    plus the owned output.
     This encodes supplied tensor bytes; it does not run a model or write a checkpoint.
     """
 

@@ -10,7 +10,7 @@ use crate::store::{from_py, OrRaise};
 use crate::tensors::PyEncoded;
 
 #[pyfunction]
-#[pyo3(signature = (scheme, values, *, dtype, shape, strategy, params = None))]
+#[pyo3(signature = (scheme, values, *, dtype, shape, strategy, params = None, tensor_amax = None))]
 #[allow(clippy::too_many_arguments)]
 fn quantize(
     py: Python<'_>,
@@ -20,6 +20,7 @@ fn quantize(
     shape: Vec<u64>,
     strategy: String,
     params: Option<&Bound<'_, PyMapping>>,
+    tensor_amax: Option<f64>,
 ) -> PyResult<PyEncoded> {
     let mut parameters = BTreeMap::new();
     if let Some(params) = params {
@@ -34,9 +35,10 @@ fn quantize(
     // Immutable Python bytes remain owned by this call while the GIL is released.
     // A mutable exporter would require copying or an exclusive access contract.
     let bytes = values.as_bytes();
+    let maximum = tensor_amax.map(f64::to_le_bytes);
     let parts = py
         .detach(|| {
-            let arrays = BTreeMap::from([(
+            let mut arrays = BTreeMap::from([(
                 "values",
                 PartBytes {
                     dtype: &Dtype::F32,
@@ -44,6 +46,16 @@ fn quantize(
                     bytes,
                 },
             )]);
+            if let Some(bytes) = &maximum {
+                arrays.insert(
+                    "tensor_amax",
+                    PartBytes {
+                        dtype: &Dtype::F64,
+                        shape: &[],
+                        bytes,
+                    },
+                );
+            }
             let input = encode::Input {
                 dtype: &dtype,
                 shape: &shape,

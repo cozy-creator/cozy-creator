@@ -389,7 +389,7 @@ still in use; the output is not a valid result.
 ### Quantize supplied tensor rows
 
 `raw.quantize` runs a versioned native tensor encoder without importing a framework or model.
-The initial strategy is `int8-convrot256/1`, the production H256/16 rotation followed by
+The `int8-convrot256/1` strategy is the production H256/16 rotation followed by
 per-row F32 scales and ties-to-even I8 rounding. Its storage scheme is `int8.convrot`;
 the producer revision is separate from the encoding parameters used by readers.
 
@@ -404,11 +404,28 @@ encoded = raw.quantize(
 ```
 
 The input is immutable `bytes` containing finite little-endian F32 values, regardless of the
-logical output `dtype` (F32, F16 or BF16). The shape must be a nonempty matrix whose columns
+logical output `dtype` (F32, F16 or BF16). For ConvRot, the shape is a nonempty matrix whose columns
 are divisible by 256. The result is the same `Encoded`/`Array` representation returned by
 stored reads; pass its parts to the existing `ComponentWriter.put_encoded` to save them.
 
-The arithmetic releases the GIL, uses one row of floating scratch and allocates the encoded
+The `nvfp4-min-sse/1` strategy preserves Runtime's three-candidate block-scale search,
+including clipping and smaller-scale tie breaking. It requires the `nvfp4` scheme with
+`block_size=16`, `global_scale="multiply"`, `nibble_order="low_first"` and
+`scale_layout="row_major"`. Supply `tensor_amax=` as the finite, nonnegative maximum absolute
+F32 value of the **complete tensor**, including when passing one row chunk. Each chunk is
+checked against that bound. The statistic is separate from stored encoding params; TensorFS
+never silently substitutes a chunk-local maximum. ConvRot refuses `tensor_amax` because its
+row scales need no shared statistic.
+
+An all-zero tensor uses NVFP4 global scale 1. A positive maximum whose global scale
+underflows to zero or overflows F32 refuses before returning parts. This fixes a production
+producer edge case: the old Runtime implementation can emit global scale zero for a tiny
+nonzero tensor after a zero-denominator calculation. Such inputs are explicit refusals here,
+not a claim of byte parity. The existing Rust RTN encoder remains a separate legacy operation;
+`nvfp4-min-sse/1` does not silently select it.
+
+The arithmetic releases the GIL, uses one row of floating scratch for ConvRot or one 16-value
+block for NVFP4, and allocates the encoded
 output; the binding then copies each part into an aligned `Array`. Callers can supply bounded
 complete-row chunks without changing payload or scale
 bytes. This operation does not read a checkpoint, resolve a model recipe, collect calibration,

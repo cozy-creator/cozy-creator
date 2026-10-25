@@ -60,6 +60,11 @@ fn convrot(input: &Input) -> Result<Vec<OwnedPart>> {
         .arrays
         .get("values")
         .ok_or_else(|| fail("no values"))?;
+    if input.arrays.len() != 1 {
+        return Err(fail(
+            "int8-convrot256/1 accepts only values, no shared tensor_amax",
+        ));
+    }
     if *source.dtype != Dtype::F32 || source.shape != input.shape || source.bytes.len() != bytes {
         return Err(fail(
             "values must be exactly F32 bytes in the logical shape",

@@ -144,6 +144,7 @@ def run(payload: Request, ctx: Context) -> Report:
 
     good = cases["zeros"]
     refused = [
+        (good, {"tensor_amax": 0.0}),
         (good, {"strategy": "int8-convrot256/999"}),
         (good, {"params": {**params, "rotation_size": 64}}),
         (good, {"params": {**params, "unexpected": 1}}),

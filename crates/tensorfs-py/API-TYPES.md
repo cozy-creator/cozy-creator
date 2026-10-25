@@ -476,11 +476,13 @@ def quantize(
     shape: Sequence[int],
     strategy: str,
     params: Mapping[str, object] | None = None,
+    tensor_amax: float | None = None,
 ) -> Encoded:
-    """Encode immutable F32 bytes; initially int8.convrot / int8-convrot256/1.
+    """Encode F32 bytes using int8-convrot256/1 or nvfp4-min-sse/1.
 
+    NVFP4 requires the finite nonnegative whole-tensor tensor_amax for every chunk.
     Complete row chunks produce identical bytes. Native arithmetic releases the GIL
-    and uses one row of floating scratch plus owned output. No checkpoint I/O.
+    and uses one row/block of floating scratch plus owned output. No checkpoint I/O.
     """
 
 def decode_into(
