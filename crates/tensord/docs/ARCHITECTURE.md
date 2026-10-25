@@ -84,7 +84,6 @@ code is still not sandboxed.
 | `api/machine_status.rs` | Status: identity and receipt to anyone, the whole machine to a machine cap as it changes | `frame`, `watch` | D2 |
 | `api/machine_update.rs` | Runs of `kind: update`: a software cohort from versions or held wheel objects; its log is the update's state history | `submit`, `events`, `owns` | D2 |
 | `api/capability.rs` | `Cozy-Cap` grants (the Go agent's token) for run outputs and maintenance | `Grant`, `verify`, `mint` | G |
-| `api/install.rs` | Run the uv installer helper on a live local package | `InstallerConfig`, `PreparedGeneration` | D1 |
 | `machine_api.rs` | `MachineBackend` implementation: submit, events, collect, list, inventory | `NativeBackend` | D1 |
 | `products.rs` | Run output log: `Outputs.publish` custody and `product` events (SET/APPEND, composite parts) | `publish`, `retain`, `document` | G |
 | `triage.rs` | One bounded triage bundle per failed attempt, named by its outcome | `TriageRef`, `Facts` | G |
@@ -96,7 +95,8 @@ code is still not sandboxed.
 | `runs.rs` | Run sources and preparation inside a run: accepted at once, install/download as its progress, its bearer kept as the owner's newest (`hub::Bearer`). A warm run with no entrypoint installs and fetches its choices; one with no code makes provider sources and uploads to its weights destination | `Runs`, `Spec`, `Source` | D1 |
 | `objects.rs` | Uploaded objects: byte ranges in any order, resumable, verified once whole into the store, per signer | `Objects`, `Upload` | D1 |
 | `local_source.rs` | A run's local source: each remote manifest owns its source tree and editable environment; explicit local paths read the directory in place | `LocalSources`, `Manifest` | D1 |
-| `machine/` | Launch grant, lifetime identity, readiness receipt, idle lifecycle (a rental's release, this computer's exit), supervision, SSH, runtime update, the direct player endpoint (`player.rs`), the embedded Python client and installer helper (`client.rs`) | `Grant`, `Readiness`, `Lifecycle` | D2 |
+| `published/environment.rs` | One package-environment build for releases and local code: uv's steps, the machine's pair and its floor rule, the description, the record | `Project`, `Built` | D1 |
+| `machine/` | Launch grant, lifetime identity, readiness receipt, idle lifecycle (a rental's release, this computer's exit), supervision, SSH, runtime update, the direct player endpoint (`player.rs`), the machine's uv: where it is, its one environment, cache and Pythons (`uv.rs`) | `Grant`, `Readiness`, `Lifecycle` | D2 |
 | `catalog.rs` | Immutable package environment generations and their holds | `Catalog`, `Generation`, `HeldGeneration` | D1 |
 | `service.rs` | Sole dispatch policy (CPU parallelism, one GPU slot, startup GPU fences) | `Service` | B2 |
 | `calls.rs` | Child calls (the seam broker): each call a run, canceled with its parent; each attempt's weights grant | `Calls`, `Caller` | G |
@@ -107,7 +107,7 @@ code is still not sandboxed.
 | `deposits.rs` | Sealed host layouts executors deposit, granted to the next executor of the same weights | `Deposits` | xs-046 B4 |
 | `device_executor.rs` | Control seam to the Runtime device executor (its wire types are `protocol::executor`), per-request output encoding | `DeviceExecutor`, `ExecutorConfig`, `Services` | E |
 | `launch_identity.rs` | Runtime trampoline command, the executor environment seal, the one credential-name rule | `Seal`, `trampoline`, `credential_name` | E |
-| `process.rs` | Exact process births, kill (scope and group), the progress meter and watch (leader plus process-group members), reaping (`reap_group`) | `Exact`, `Pace`, `Watching`, `Reaped` | E, I |
+| `process.rs` | Exact process births, kill (scope and group), reaping (`reap_group`); no progress-based termination | `Exact`, `Reaped` | E, I |
 | `scope.rs` | Each executor's own scope (cgroup-v2, else an inherited token): kill, count, end; sweep of unclaimed and earlier runs' scopes | `Scope` | E |
 | `reclaim.rs` | Self-managing caches: TTL and storage pressure for spools, logs, collected results, generations | `Disk`, `Swept`, `sweep` | E |
 | `child_launcher.rs` | Pool-owned spawn thread (PDEATHSIG follows the creating thread) | `ChildLauncher` | E |
@@ -115,12 +115,6 @@ code is still not sandboxed.
 | `protocol.rs` | Length-prefixed frames of the executor seam | `read_body`, `write_body` | E |
 | `boundary_json.rs` | Strict JSON parse (no duplicate keys) for boundary records | — | D1 |
 
-
-## Python package `tensord_client`
-
-| Module | Role |
-|---|---|
-| `packages.py`, `captured_packages.py`, `installer.py`, `package_records.py` | uv generation install (`python -m tensord_client.installer`); descriptions come from the generation's own Runtime (`cozy-runtime machine-describe`) |
 
 ## Contracts
 

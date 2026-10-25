@@ -1,6 +1,6 @@
 //! The pool runs every call on a retained executor of its plan: deviceless (degree 0), on one
 //! GPU, or on a group of K (rank 0 forms followers). Runtime owns allocations and model
-//! residency in each executor. TensorD schedules calls with GPU permits, cooperatively offloads
+//! residency in each executor. TensorD schedules calls with GPU permits, offloads
 //! idle executors, and observes exact process exit. Engine owns
 //! acceptance and run custody.
 use platform::process::{Birth, Exact};
@@ -888,7 +888,7 @@ impl Pool {
             return false;
         };
         if let ZygoteState::Ready(parent) = std::mem::take(&mut *zygote.state.lock().unwrap()) {
-            if let Err(error) = parent.shutdown() {
+            if let Err(error) = parent.terminate() {
                 tracing::warn!("ending an idle import-only executor: {error}");
             }
         }
@@ -1066,7 +1066,7 @@ impl Pool {
             return false;
         };
         let (plan, start) = (session.plan.clone(), session.start);
-        if let Err(error) = session.executor.shutdown() {
+        if let Err(error) = session.executor.terminate() {
             tracing::warn!("ending idle deviceless executor of {plan}: {error}");
         }
         self.ended(&plan, start);
@@ -1079,7 +1079,7 @@ impl Pool {
         };
         let (plan, start, degree) = (session.plan.clone(), session.start, session.degree);
         self.notes.note(serde_json::json!({"event": "end_idle", "plan": plan, "gpus": start..start + degree as usize}));
-        if let Err(error) = session.executor.shutdown() {
+        if let Err(error) = session.executor.terminate() {
             tracing::warn!("memory: ending idle executor {key}: {error}");
         }
         self.ended(&plan, start);
@@ -1241,7 +1241,7 @@ impl Pool {
         };
         for zygote in parents {
             if let ZygoteState::Ready(parent) = std::mem::take(&mut *zygote.state.lock().unwrap()) {
-                if let Err(error) = parent.shutdown() {
+                if let Err(error) = parent.terminate() {
                     tracing::warn!("ending a removed package's import-only executor: {error}");
                 }
             }
@@ -1382,12 +1382,13 @@ impl Pool {
         }
     }
     /// Keep an executor idle for its next call, noting what a loaded one holds for Status.
-    /// Once the pool stopped it ends instead.
+    /// Once the pool stopped, or a cancel killed it, it ends instead.
     fn keep_idle(&self, engine: &Arc<Engine>, session: Session) -> io::Result<Disposition> {
         let key = session_key(&session.plan, session.start);
+        let killed = !session.executor.idle();
         if session.degree == 0 {
             let mut idle = self.deviceless.lock().unwrap();
-            if !self.stopped.load(Ordering::Acquire) {
+            if !killed && !self.stopped.load(Ordering::Acquire) {
                 idle.push(session);
                 drop(idle);
                 self.exits.iter().for_each(Exits::changed);
@@ -1396,18 +1397,18 @@ impl Pool {
             drop(idle);
             let births = executor_births(&session.executor.birth, &session.followers);
             let (plan, start) = (session.plan.clone(), session.start);
-            session.executor.shutdown()?;
+            session.executor.terminate()?;
             self.retire_returned(&plan, start, &births);
             return Ok(Disposition::ProvenEnded(births));
         }
         let mut session = session;
         loop {
             let mut sessions = self.sessions.lock().unwrap();
-            if self.stopped.load(Ordering::Acquire) {
+            if killed || self.stopped.load(Ordering::Acquire) {
                 drop(sessions);
                 let (plan, start) = (session.plan.clone(), session.start);
                 let births = executor_births(&session.executor.birth, &session.followers);
-                session.executor.shutdown()?;
+                session.executor.terminate()?;
                 self.retire_returned(&plan, start, &births);
                 return Ok(Disposition::ProvenEnded(births));
             }
@@ -1415,7 +1416,7 @@ impl Pool {
                 drop(sessions);
                 let births = executor_births(&replaced.executor.birth, &replaced.followers);
                 let (plan, start) = (replaced.plan.clone(), replaced.start);
-                if let Err(error) = replaced.executor.shutdown() {
+                if let Err(error) = replaced.executor.terminate() {
                     tracing::warn!("ending replaced executor {key}: {error}");
                 }
                 await_executor_exit(engine, &births);
@@ -1434,21 +1435,20 @@ impl Pool {
         }
     }
 
-    /// A canceled invocation may leave package globals, a CUDA context, or other work in this
-    /// session. Ordered Shutdown waits that work before releasing the exact owning process;
-    /// the invocation's reusable/quiescent reply alone is not a session-wide completion fence.
+    /// A canceled invocation leaves no reusable GPU session. Kill its exact owning process
+    /// and retain the accounting until exit is observed, just as for an explicit user cancel.
     fn retire_canceled(&self, engine: &Arc<Engine>, id: &str, session: Session) -> Disposition {
         let lane = session.start..session.start + session.degree as usize;
         let births = executor_births(&session.executor.birth, &session.followers);
         let (plan, start, began) = (session.plan.clone(), session.start, Instant::now());
         let before = self.free(&lane);
-        let shutdown = session.executor.shutdown();
+        let ended = session.executor.terminate();
         await_executor_exit(engine, &births);
         self.retire_returned(&plan, start, &births);
         self.notes.note(serde_json::json!({"event": "canceled_executor_exit", "request": id,
             "plan": plan, "free_before": before, "free_after": self.free(&lane),
             "exit_ms": began.elapsed().as_secs_f64() * 1e3,
-            "shutdown_error": shutdown.err().map(|error| error.to_string())}));
+            "terminate_error": ended.err().map(|error| error.to_string())}));
         Disposition::ProvenEnded(births)
     }
     fn retire_returned(&self, plan: &str, start: usize, births: &[Birth]) {
@@ -2144,12 +2144,12 @@ impl Pool {
         let deviceless = std::mem::take(&mut *self.deviceless.lock().unwrap());
         for session in sessions.into_values().chain(deviceless) {
             let (plan, start) = (session.plan.clone(), session.start);
-            session.executor.shutdown()?;
+            session.executor.terminate()?;
             self.ended(&plan, start);
         }
         for zygote in std::mem::take(&mut *self.zygotes.lock().unwrap()).into_values() {
             if let ZygoteState::Ready(parent) = std::mem::take(&mut *zygote.state.lock().unwrap()) {
-                parent.shutdown()?;
+                parent.terminate()?;
             }
         }
         let boots = std::mem::take(&mut *self.kernel_boots.lock().unwrap());
@@ -2162,12 +2162,14 @@ impl Pool {
     /// Compile a generation's kernels for every card of the envelope in the background
     /// (machine start, after an install, so beside the model download): the Runtime's
     /// `machine_kernels` under the generation's own seal, so each key is its executors' and
-    /// a kernel already in the store is not built again. Once per generation and machine
+    /// a kernel already in the store is not built again. Once per environment and machine
     /// run. It opens no device; its builds are niced and share the host. An executor that
     /// needs a kernel still compiling waits for it.
     pub fn kernel_boot(self: &Arc<Self>, held: HeldGeneration) {
         if binds_models(&held.record.interface) {
-            self.boot_kernels(held.record.identity, held.record.python, None);
+            // Once per environment: a local package's generations share theirs.
+            let environment = tensorfs::sha256::hex_digest(held.record.python.as_os_str().as_encoded_bytes());
+            self.boot_kernels(environment[..32].to_string(), held.record.python, None);
         }
     }
 
@@ -2203,12 +2205,8 @@ impl Pool {
                 else {
                     return;
                 };
-                // Ended by its exit; killed only on a measured wedge of its process group.
-                let ended = launched.and_then(|(mut child, boot, log)| {
-                    let liveness = crate::process::Liveness::default();
-                    let reaped = crate::process::reap(&boot, Some(&mut child), liveness)?;
-                    Ok((reaped, log))
-                });
+                // Ended by its exit.
+                let ended = launched.and_then(|(mut child, boot, log)| Ok((crate::process::reap(&boot, Some(&mut child))?, log)));
                 if let Some(pool) = pool.upgrade() {
                     if let Some(boot) = pool.kernel_boots.lock().unwrap().get_mut(&generation) {
                         *boot = None;
@@ -2295,7 +2293,6 @@ impl Pool {
                     .filter(|row| row.is_object() && row["state"] != "compiling")
                     .collect();
                 line["status"] = reaped.status.to_string().into();
-                line["killed"] = reaped.killed.into();
                 line["stragglers"] = reaped.stragglers.into();
                 line["kernels"] = kernels.into();
             }
@@ -2398,7 +2395,7 @@ impl Pool {
                 &mut device_executor::Baseline,
             )?;
             if !reply.ok {
-                executor.shutdown()?;
+                executor.terminate()?;
                 return Ok(ZygoteState::Failed(format!(
                     "import-only start refused: {}: {}",
                     reply.code, reply.detail
@@ -2504,8 +2501,9 @@ impl Pool {
         // Retain the exact cancellation object registered for this invocation. Removing its
         // map entry cannot revoke a Halt clone another thread already took.
         let cancellation = Mutex::new(None::<Cancellation>);
-        // A cancel ends the call's children with it.
+        // A cancel ends the call's executor and children with it.
         let stops = |cancel: Cancellation| {
+            cancel.serve(id);
             *cancellation.lock().unwrap() = Some(cancel.clone());
             let (request, calls) = (id.to_string(), calls.map(Arc::downgrade));
             Arc::new(move || {
@@ -2697,7 +2695,6 @@ impl Pool {
         };
         executor.retain_until_exit(directory);
         executor.retain_until_exit(WakeOnExit(Arc::downgrade(engine)));
-        executor.activity = gpu_work(self.lane(start, plan.degree)?);
         executor.keep_memo(self.memo.clone());
         if plan.degree > 0 {
             let exact = Exact::open(&executor.birth)?.ok_or_else(|| io::Error::other("executor exited before its start"))?;
@@ -2989,7 +2986,6 @@ impl Pool {
             .collect();
         let operation = crate::call_memo::operation(&held.record, &record.invocation.module, protocol::interface::invocable(&entry))
             .unwrap_or_default();
-        session.executor.waits = caller.as_ref().map(|caller| caller.waits(engine));
         let invoked = Instant::now();
         let first = !session.invoked;
         session.invoked = true;
@@ -3016,7 +3012,6 @@ impl Pool {
             })),
             &mut callbacks,
         );
-        session.executor.waits = None;
         let reply = reply?;
         dispatched.record(&reply, &self.config.inventory);
         session.level = Level::Gpu;
@@ -3302,14 +3297,13 @@ fn ending(error: io::Error, executor: DeviceExecutor) -> io::Error {
     }
 }
 
-/// A kill's measurement joins the reason, and so does the exit of an executor that ended on
-/// its own mid-command: its signal or exit code is then the only cause there is.
+/// The exit of an executor that ended on its own mid-command joins the reason: its signal or
+/// exit code is then the only cause there is.
 fn with_end(error: io::Error, ended: &device_executor::Ended) -> io::Error {
-    let why = match (&ended.killed, channel_lost(&error)) {
-        (Some(killed), _) => killed.clone(),
-        (None, true) => format!("the executor ended on its own ({})", ended.status),
-        (None, false) => return error,
-    };
+    if !channel_lost(&error) {
+        return error;
+    }
+    let why = format!("the executor ended on its own ({})", ended.status);
     match refused(&error) {
         Some(refusal) => io::Error::other(Refused {
             code: refusal.code.clone(),
@@ -3340,21 +3334,6 @@ fn unsettled(reply: &Frame, lost: &str) -> Refused {
         poisoned => format!("{message}; the executor did not settle quiescent (poisoned: {poisoned})"),
     };
     Refused { code, detail }
-}
-
-/// Whether `gpus` moved device memory since the last reading; None without GPUs or while NVML
-/// cannot tell.
-fn gpu_work(gpus: &[Device]) -> Option<crate::process::Activity> {
-    let opened = gpus.iter().map(|gpu| platform::gpu::Device::open(&gpu.entry).ok());
-    let devices: Vec<_> = opened.collect::<Option<_>>().filter(|devices: &Vec<_>| !devices.is_empty())?;
-    let seen = Mutex::new(vec![0; devices.len()]);
-    Some(Arc::new(move || {
-        let mut moved = false;
-        for (device, seen) in devices.iter().zip(seen.lock().unwrap().iter_mut()) {
-            moved |= device.moved_since(seen).ok()?;
-        }
-        Some(moved)
-    }))
 }
 
 /// Every error ends the run once its executor is gone: FAILED with the reason, or CANCELED
@@ -3391,8 +3370,7 @@ pub(crate) fn settle(engine: &Arc<Engine>, id: &str, error: &io::Error) -> io::R
         keep_lifecycle_triage(engine, id, pid, &ended.to_string(), &ended.stderr_tail);
     }
     let outcome = if record.cancel_actor.is_some() {
-        // Canceled: the reason its executor ended (it ignored the cancel and was killed, say)
-        // is the run's last log line.
+        // A canceled call may already have returned its executor for CPU output work.
         let detail = if record.state == State::Running && record.process.is_none() {
             format!("canceled during CPU output handling after executor return: {error}")
         } else { format!("canceled; its executor ended: {error}") };
@@ -3403,8 +3381,6 @@ pub(crate) fn settle(engine: &Arc<Engine>, id: &str, error: &io::Error) -> io::R
         Outcome::Failed(
             Failure::executor("failed", "runtime", &refusal.code, &refusal.detail),
         )
-    } else if let Some(wedged) = error.get_ref().and_then(|inner| inner.downcast_ref::<crate::process::Wedged>()) {
-        Outcome::Failed(Failure::machine("no_progress", wedged.to_string()))
     } else if record.state == State::Starting {
         Outcome::Failed(
             Failure::abandoned(&format!("device executor did not start: {error}")),
@@ -3554,7 +3530,7 @@ fn materialize_tree(
 /// The failed attempt's triage bundle, kept before the run settles: the executor's own terminal
 /// and traceback, and its stderr tail.
 /// A lifecycle failure's bundle, when the executor wrote no terminal of its own: the reason
-/// (with any kill measurement) and the end of its stderr. A canceled run keeps none.
+/// and the end of its stderr. A canceled run keeps none.
 fn keep_lifecycle_triage(engine: &Engine, id: &str, pid: u32, reason: &str, stderr_tail: &str) {
     let Ok(record) = engine.get(id) else {
         return;

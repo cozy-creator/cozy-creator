@@ -510,6 +510,9 @@ pub struct RunState {
     pub attempt: u32,
     /// Why a queued run waits, for people.
     pub waiting: String,
+    /// The runs it waits for, by id (an update waits for those in flight).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub waiting_for: Vec<String>,
     /// When it began executing (`running`), Unix ms: its time counts from here, never its queue's.
     /// 0 before it does, or from an older machine.
     pub started_at_ms: u64,
@@ -689,6 +692,9 @@ pub struct StatusFrame {
     pub idle_deadline_unix_ms: i64,
     /// The caller's live runs.
     pub runs: Vec<RunState>,
+    /// An update in progress here; none without one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update: Option<RunState>,
     /// booting, ready, releasing
     pub phase: String,
     /// os/arch
@@ -722,6 +728,35 @@ pub struct StatusFrame {
     pub kernels: Vec<KernelVerdict>,
     /// The TensorD service's process (not its stable parent, a pod's PID 1).
     pub tensord_pid: u32,
+    /// While the machine starts: the step it is on, answered before anything else, so a
+    /// watcher tells a slow start from none. Absent once it serves.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub booting: Option<Booting>,
+    /// Killed processes stuck in the kernel: nothing waits on them, and what each holds stays
+    /// held until it exits.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub stuck: Vec<StuckProcess>,
+}
+
+/// A killed process in uninterruptible sleep (`D`: a driver after an Xid, a hung network
+/// filesystem): it exits once that wait ends.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(default)]
+pub struct StuckProcess {
+    pub pid: u32,
+    pub command: String,
+    /// The kernel function it sleeps in; empty when the kernel hides it.
+    pub wchan: String,
+    /// When the machine found it stuck.
+    pub since_unix_ms: i64,
+}
+
+/// A starting machine's step and a counter that advances as it moves.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(default)]
+pub struct Booting {
+    pub step: String,
+    pub progress: u64,
 }
 
 /// The machine's build toolchain: CUDA's compiler and a host C/C++ compiler.

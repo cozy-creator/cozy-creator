@@ -437,12 +437,8 @@ pub enum Event {
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     Progress,
-    ExecutionActivity,
     /// A `progress` event carrying a retained `log` observation (`Telemetry.log`).
     Log,
-    /// A `progress` event telling the executor's work count (`work`): what its Runtime did for
-    /// its calls (blocks entered, graphs replayed, LM steps, construction legs).
-    Work,
     #[default]
     #[serde(other)]
     Unknown,
@@ -622,8 +618,6 @@ pub struct Frame {
     pub overall_fraction: Option<f64>,
     pub step_ms: Option<f64>,
     pub advance: u64,
-    /// `work`: the executor's work count, which moves while it works for its calls.
-    pub work: u64,
     /// `progress`: the child call whose stage a job relays.
     pub call_request: Option<String>,
     /// A retained observation (`kind` log): `name` is its message, `value` its level and `fields`

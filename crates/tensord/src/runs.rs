@@ -99,7 +99,7 @@ pub struct Runs {
     pub objects: Arc<Objects>,
     /// The one resolver of a run's code and models.
     pub publisher: Arc<Publisher>,
-    pub local: Option<Arc<LocalSources>>,
+    pub local: Arc<LocalSources>,
     /// On a rental: its own Hub, where a run that names none reads anonymously.
     pub own_hub: Option<hub::Source>,
     /// Unfinished runs' preparation: their children prepare with it, and their weights are
@@ -248,7 +248,6 @@ pub(crate) fn upload(
         endpoint = endpoint.anonymous();
     }
     let runtime = tensorfs::fetch::runtime().map_err(|error| failed(error.to_string()))?;
-    let _asking = tensorfs::fetch::asking::begin();
     runtime.block_on(upload_commit(&endpoint, destination, &tree, store, control)).map_err(|error| failed(error.to_string()))
 }
 
@@ -305,10 +304,7 @@ impl Runs {
         // A local source is refused here, not accepted to fail: the run takes custody of its
         // objects now, and a refused id is free for the client to write them and send again.
         if let Source::Local(digest) = &spec.source {
-            let local = self.local.as_ref().ok_or_else(|| {
-                refused("capability_unavailable", "this machine installs no local packages")
-            })?;
-            references.extend(local.written(actor, digest)?);
+            references.extend(self.local.written(actor, digest)?);
         }
         // A written file a warm run makes into a model (`object://sha256:<hex>/<file>`).
         for choice in &spec.models {
@@ -364,33 +360,6 @@ impl Runs {
         let thread = std::thread::Builder::new().name(format!("prepare-{run}"));
         thread.spawn(move || {
             let stoppable = this.service.engine.stoppable(&run);
-            // Nothing moving past its learned patience fails it `no_progress`, at once: a fetch
-            // stuck in a read may never return to fail it, and its rental must start idling.
-            let (done, finished) = std::sync::mpsc::channel::<()>();
-            // One stall report per preparation, whichever side measured it.
-            let reported = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let stalled = {
-                let (service, reported) = (this.service.clone(), reported.clone());
-                move || if !reported.swap(true, std::sync::atomic::Ordering::AcqRel) { service.stalled() }
-            };
-            let judge_stalled = stalled.clone();
-            let (service, judged, stop) = (this.service.clone(), run.clone(), stoppable.stop.clone());
-            let (start, thread) = ((stop.progress(), std::time::Instant::now()), std::thread::current().id());
-            let judge = std::thread::Builder::new().name(format!("judge-{run}")).spawn(move || {
-                let waits = || service.engine.get(&judged).is_ok_and(|record| record.waiting.is_some());
-                let liveness = crate::process::Liveness::default();
-                if let Some(verdict) = crate::process::judge_preparation(&stop, &finished, waits, liveness, start, thread) {
-                    let failure = Failure::machine("no_progress", verdict);
-                    judge_stalled();
-                    if let Err(error) = service.engine.end_preparation(&judged, Outcome::Failed(failure)) {
-                        tracing::warn!("run {judged}: its stalled preparation did not end: {error}");
-                    }
-                    stop.cancel();
-                }
-            });
-            if let Err(error) = judge {
-                tracing::warn!("run {run}: its preparation is not judged: {error}");
-            }
             // A panic (a thread the container's task cap refused) ends the run FAILED: no
             // preparation outlives the thread that would end it.
             let prepared = std::panic::AssertUnwindSafe(|| this.prepare(&actor, &run, spec, &stoppable));
@@ -399,14 +368,10 @@ impl Runs {
                     .or_else(|| panic.downcast_ref::<&str>().map(|text| text.to_string()));
                 Err(refused("preparation_failed", text.unwrap_or_else(|| "the preparation panicked".into())))
             });
-            drop(done);
             let ended = match outcome {
                 Ok(None) => Ok(()),
                 Ok(Some(result)) => this.service.engine.end_preparation(&run, Outcome::Completed(result)).map(drop),
                 Err(Refused { code, message }) => {
-                    if code == "no_progress" {
-                        stalled();
-                    }
                     let origin = if code.starts_with("invalid") || code.ends_with("_absent") { 6 } else { 3 };
                     let failure = Failure { status: 3, cause: 7, origin, code: code.into(), message };
                     this.service.engine.end_preparation(&run, Outcome::Failed(failure)).map(drop)
@@ -501,7 +466,7 @@ impl Runs {
                 // A local alias: the model this machine's store holds under that name.
                 let local = crate::storage::local(publisher.store(), &choice.repository)
                     .map_err(|e| refused("checkpoint_absent", e.to_string()))?
-                    .filter(|local| crate::storage::present(publisher.store(), &local.header))
+                    .filter(|local| publisher.store().holds(&local.header))
                     .ok_or_else(|| refused("checkpoint_absent", format!("this machine holds no local/{name}")))?;
                 let row = json!({"parameter": choice.parameter,
                     "repository": choice.repository, "checkpoint": local.header.id()});
@@ -582,13 +547,12 @@ impl Runs {
     /// The run's code and models made ready: Ok(None) once it is dispatchable, Ok(Some) for a
     /// warm run's result.
     fn prepare(&self, actor: &str, id: &str, spec: Spec, stoppable: &Stoppable) -> Result<Option<ResultRecord>, Refused> {
-        let (engine, stop) = (self.service.engine.clone(), stoppable.stop.clone());
+        let engine = self.service.engine.clone();
         let run = id.to_string();
         // Byte counts arrive per chunk: a new stage and a finished count show at once, bytes at
         // most 4 times a second.
         let last = std::sync::Mutex::new((String::new(), std::time::Instant::now()));
         let observe = Arc::new(move |stage: &str, done: u64, total: u64| {
-            stop.at(stage, done, total);
             let mut last = last.lock().unwrap();
             if last.0 == stage && last.1.elapsed() < std::time::Duration::from_millis(250) && (total == 0 || done < total) {
                 return;
@@ -634,17 +598,15 @@ impl Runs {
                     })?,
             ),
             Source::Local(digest) => {
-                let local = self.local.as_ref().ok_or_else(|| {
-                    refused("capability_unavailable", "this machine installs no local packages")
-                })?;
-                let stage = |stage: &str, read: u64| observe(stage, read, 0);
-                let installed = local.install(&self.service, actor, digest, Some(&stoppable.stop), id, &stage)?;
+                let local = &self.local;
+                let observer = Box::new({
+                    let observe = observe.clone();
+                    move |stage: &str, done: u64, total: u64| observe(stage, done, total)
+                });
+                // A call's imports start as soon as its code is installed, as a release's do.
+                let installed = local.install(&self.service, actor, digest, Some(&stoppable.stop), id, observer, !spec.warm)?;
                 self.supersede(actor, &installed)?;
                 local.collect(actor, &installed.package);
-                // A call's imports start as soon as its code is installed, as a release's do.
-                if let (false, Some(gpu)) = (spec.warm, self.service.gpu()) {
-                    gpu.prespawn(self.service.catalog.resolve(&installed.generation)?);
-                }
                 Some(installed)
             }
         };
@@ -1030,10 +992,8 @@ impl Runs {
             Source::Local(_) | Source::Models => false,
         };
         let (removed, reclaimed, retained) = self.uninstall(actor, named)?;
-        if let Some(local) = &self.local {
-            for gone in removed.iter().filter(|i| i.package.starts_with("local/")) {
-                local.collect(actor, &gone.package);
-            }
+        for gone in removed.iter().filter(|i| i.package.starts_with("local/")) {
+            self.local.collect(actor, &gone.package);
         }
         let rows: Vec<Value> = removed
             .iter()

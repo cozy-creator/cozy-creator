@@ -295,6 +295,9 @@ pub struct Execution {
     pub canceled_before_acceptance: bool,
     pub completed_units: u64,
     pub progress: Option<String>,
+    /// When its progress last moved (Unix ms): a run in progress shows how long it has not.
+    #[serde(default)]
+    pub progress_at_ms: u64,
     /// The cursor at which the attempt started running: its `running` event.
     #[serde(default)]
     pub running_revision: u64,
@@ -374,6 +377,8 @@ pub struct ProgressSnapshot {
     /// The weights it waits on while they arrive, shown in `detail` over its own detail, kept here.
     pub weights: Option<(Weights, String)>,
     pub revision: u64,
+    /// When it last moved (Unix ms).
+    pub at_ms: u64,
 }
 
 /// Weights a run waits on while they arrive (`access::meter`): their repositories, and the
@@ -410,6 +415,7 @@ impl ProgressSnapshot {
         }
         record.waiting = self.waiting.clone();
         record.revision = record.revision.max(self.revision);
+        record.progress_at_ms = self.at_ms;
         true
     }
 }
@@ -1164,10 +1170,11 @@ impl Journal {
         Ok(())
     }
 
-    /// A run a restart would end: one started, or one waiting with no spec to prepare again from.
-    pub(crate) fn unsettled(&self) -> io::Result<bool> {
-        self.connection.query_row("SELECT EXISTS(SELECT 1 FROM executions WHERE state IN ('starting','running') OR (state='queued'
-            AND json_extract(record,'$.waiting_reason') IS NOT NULL AND id NOT IN (SELECT execution FROM run_specs)))", [], |row| row.get(0)).map_err(db_error)
+    /// The runs started here and not ended, by their callers' ids: what a restart would end.
+    pub(crate) fn started(&self) -> io::Result<Vec<String>> {
+        let mut statement = self.connection.prepare("SELECT COALESCE(request_id, CAST(id AS TEXT)) FROM executions WHERE state IN ('starting','running') ORDER BY id").map_err(db_error)?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0)).map_err(db_error)?;
+        rows.collect::<Result<_, _>>().map_err(db_error)
     }
 
     /// The preparing runs a restart interrupted, each with its signer and kept spec.
@@ -1285,6 +1292,7 @@ fn insert(
         canceled_before_acceptance: false,
         completed_units: 0,
         progress: None,
+        progress_at_ms: 0,
         running_revision: 0,
         started_at_ms: 0,
         executed_ms: 0,

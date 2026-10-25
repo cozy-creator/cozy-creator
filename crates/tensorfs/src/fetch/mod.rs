@@ -7,7 +7,6 @@
 //! uploads, an import's sources) is asked again by one rule (`ask`).
 
 pub(crate) mod ask;
-pub mod asking;
 pub mod conform;
 mod download;
 mod endpoint;

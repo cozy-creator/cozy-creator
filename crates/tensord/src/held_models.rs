@@ -117,7 +117,7 @@ fn seen(store: &Store) -> std::io::Result<Seen> {
                 continue;
             };
             let Ok((_, header)) = tree.header() else { continue };
-            if storage::present(store, header) {
+            if store.holds(header) {
                 let lane = lane.unwrap_or(&tree.lane);
                 seen.push((repo.name.clone(), release.into(), lane.into(), header.clone()));
             }
@@ -133,7 +133,7 @@ fn list(store: &Store, seen: &Seen) -> std::io::Result<Listing> {
     let mut models: Vec<v1::Model> = vec![];
     for (repository, release, lane, header) in seen {
         let closure = store.closure(header).map_err(storage::io_error)?;
-        let held: Vec<ObjectRef> = closure.into_iter().filter(|o| storage::present(store, o)).collect();
+        let held: Vec<ObjectRef> = closure.into_iter().filter(|o| store.holds(o)).collect();
         let entry = closures.entry(repository).or_default();
         for object in held {
             if !entry.contains(&object) {

@@ -108,6 +108,8 @@ enum Stop {
     Unreachable(String),
     Refused(Reason),
     Released(String),
+    /// The machine answered that it has no record of the run.
+    Lost,
 }
 
 impl From<LinkError> for Stop {
@@ -117,6 +119,7 @@ impl From<LinkError> for Stop {
                 Stop::Refused(Reason { code, message, ..Default::default() })
             }
             LinkError::Released(message) => Stop::Released(message),
+            LinkError::NoRun => Stop::Lost,
             LinkError::NotFound => Stop::Unreachable("the machine does not know the run".into()),
             LinkError::Unreachable(message) | LinkError::Unauthorized(message) => {
                 Stop::Unreachable(message)
@@ -176,6 +179,20 @@ impl Calcifer {
     /// Stops every driver where it stands, as if the process ended. Machines keep their runs.
     pub fn close(&self) {
         lock(&self.tasks).abort_all();
+    }
+
+    /// What a run waits for when the machine names the runs (`waiting_for`, by id): those runs by
+    /// this controller's numbers ("waiting for run 38 to end"); None when it names none.
+    pub(crate) fn waiting_for(&self, ids: &[String]) -> Option<String> {
+        let name = |id: &String| match self.store.run(id) {
+            Ok(Some(row)) => format!("run {}", row.number),
+            _ => format!("run {id}"),
+        };
+        match ids {
+            [] => None,
+            [one] => Some(format!("waiting for {} to end", name(one))),
+            many => Some(format!("waiting for {} to end", many.iter().map(name).collect::<Vec<_>>().join(", "))),
+        }
     }
 
     pub fn store(&self) -> &Store {
@@ -663,6 +680,15 @@ impl Calcifer {
                         warn!(run = %id, "{e}");
                     }
                 }
+                // Its machine's own word that it holds no such run: it cannot resume, so it ends
+                // now, and is never sent again.
+                Err(Stop::Lost) => match self.store.lost(id.as_str(), &name) {
+                    Ok(events) => self.publish(id, events),
+                    Err(e) => {
+                        warn!(run = %id, "{e}");
+                        pause.wait(wake, None).await;
+                    }
+                },
             }
         }
     }
@@ -744,7 +770,7 @@ impl Calcifer {
                 }
                 // It may be there: attach first, and send again only to a machine that never got it.
                 match link.attach(id, run.cursor).await {
-                    Err(LinkError::NotFound) if run.state == State::Sent => {
+                    Err(LinkError::NoRun | LinkError::NotFound) if run.state == State::Sent => {
                         self.write_inputs(link, run, machine).await?;
                         let _turn = sending.lock().await;
                         self.known_warm(run, machine, link).await?;
@@ -877,12 +903,14 @@ impl Calcifer {
                         Progress {
                             stage: p.stage,
                             fraction: (p.fraction >= 0.0).then_some(p.fraction),
+                            stage_fraction: p.stage_fraction.filter(|f| *f >= 0.0),
                             completed: p.completed,
                             total: p.total,
                             bytes_done: p.bytes_done,
                             bytes_total: p.bytes_total,
                             step_ms: p.step_ms,
                             step_avg_ms: p.step_avg_ms,
+                            at_ms: frame.at_ms,
                         },
                     );
                     if entered {
@@ -890,7 +918,10 @@ impl Calcifer {
                     }
                     continue;
                 }
-                Frame::State(state) => {
+                Frame::State(mut state) => {
+                    if let Some(waiting) = self.waiting_for(&state.waiting_for) {
+                        state.waiting = waiting;
+                    }
                     // A reason that only repeats the machine's state (`preparing`) says nothing more.
                     match state.waiting.as_str() {
                         waiting if waiting.is_empty() || waiting == state.state => {

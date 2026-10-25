@@ -85,10 +85,11 @@ larger of 512 MiB or 10% of capacity, the existing GPU scheduler holds new roots
 An existing family's calls remain permitted so a parent is never stranded awaiting its child.
 
 TensorD offloads idle executors in LRU order through `Map(Ram)`, checking fresh driver readings
-after acknowledgement. If headroom remains low, it gracefully ends still-idle executors to
+after acknowledgement. If headroom remains low, it ends still-idle executors to
 release contexts and package globals too. If it is still low, TensorD journals cancellation of
 the affected running roots, using the same family-aware path as explicit user cancellation.
-No canceled package call is restarted automatically and no active tensor is invalidated.
+Cancellation kills each affected executor and its scope; process exit releases its locally
+owned GPU allocations. No canceled package call is restarted automatically.
 
 The pressure hold clears only when observed foreign use returns to within 64 MiB of its original
 baseline and free headroom is restored. Cozy's own offload cannot clear it. Missing per-PID byte
@@ -98,18 +99,17 @@ where NVML cannot report process bytes; automatic Windows pressure response is n
 Another application's allocation request is invisible until the driver reports actual use.
 
 `cozy run cancel RUN_ID` is the explicit alternative on those machines. Every canceled GPU
-invocation now retires its exact executor through ordered `Shutdown` before terminal settlement.
-Shutdown waits other work in that session; an Invoke's `quiescent` flag alone is not a process-wide
-barrier. Exact leader/follower exit releases context and library memory, whereas `empty_cache`
+invocation ends its exact executor and scope immediately, then observes their exit before
+releasing its accounting. Exact leader/follower exit releases context and library memory, whereas `empty_cache`
 releases only unused Torch allocator blocks. Other sessions and successful warm executors remain
 untouched by that explicit cancellation.
 
 The existing memory log records observation availability, first trigger/clear, attributed
 foreign/own bytes, actual sampling gaps, cancellation, offload start/ack duration, exact exit duration and driver free
 bytes before/after. A free-byte difference is an observation, not a claim that all of it came from
-Cozy. The observer sleeps 500 ms between passes; an opaque GPU kernel or ordered session
-shutdown has no hard completion-latency guarantee. Existing cooperative cancellation and exact
-exit supervision govern it, without a new timeout or VRAM-ownership authority.
+Cozy. The observer sleeps 500 ms between passes. Signaling a kill does not guarantee an immediate
+driver teardown or observed exit; exact exit supervision retains unproven resources. There is
+no new timeout or VRAM-ownership authority.
 
 Real release-gate proof is required for a foreign graphics/compute allocation crossing the
 threshold, idle-first offload, cancellation, no restart while foreign demand persists, safe
@@ -135,22 +135,18 @@ file once as it copies it, before reporting success.
 
 ## Cancellation and lifetime
 
-Nothing is killed because time passed. The wedge rule is Runtime's `liveness`: a meter still for
-longer than eight times the longest pause it has shown, and at least six samples (30 s).
+Nothing judges a call's progress: a command runs until its reply, however long and however
+silent. A call ends with its reply, a cancel, or the machine's restart.
 
-- Every `command` runs under a watch. Non-invoke commands use CPU plus bytes moved
-  (`process::burn`); time the machine spends answering an executor request is excused, and so
-  is a caller's while any of its child runs is unfinished (`DeviceExecutor.waits`: a child
-  is watched by its own executor). A wedged executor and its process group are killed; the
-  call returns the measurement.
-- `cancel(request_id)` atomically writes the stock `executor.cancel` marker, keyed by request, so a
-  stale marker cannot cancel a later request. The executor stops at its next safe point. From
-  then on the invocation's frames are the meter; if they stop, it is killed. An invocation without
-  a cancel is never judged. Observer teardown never cancels.
-- `terminate()` closes the channel, lets the executor stop at its next exchange, kills only a
-  measured wedge, then reaps it and every member left in its process group (a group's followers),
-  and frees `retain_until_exit` resources. `shutdown()` asks first.
-  `Drop` does the same before returning, so a slot or reservation is released only after the exit. If exit cannot be observed, resources are leaked, not released.
+- `Cancellation::cancel(request)` kills the executor (its exact process and scope) at once, if it
+  still serves that request (`serve`). Each invocation's cancellation handle is disabled before
+  pool return, waiting for any delivery already in flight; late clones cannot kill a later
+  request during the old one's CPU output processing. Its locally owned GPU weights leave with
+  the process; the next executor reloads them. One a cancel killed never goes back to the pool.
+- `terminate()` closes the channel, kills the executor, reaps it and every member left in its
+  process group (a group's followers), and frees `retain_until_exit` resources. Nothing waits on
+  an executor to stop by itself. `Drop` does the same before returning, so a slot or reservation
+  is released only after the exit. If exit cannot be observed, resources are leaked, not released.
 - Containment (`scope.rs`): with `cgroup_namespace`, each executor gets its own scope. Where the
   host delegates a writable unified hierarchy it is a cgroup-v2 below the machine's: the
   trampoline joins it before importing anything, Hello must show the executor inside it, and a
@@ -159,7 +155,9 @@ longer than eight times the longest pause it has shown, and at least six samples
   `COZY_EXECUTOR_SCOPE=<namespace>-<id>` goes in the leader's environment (a fork's, in the
   environment it is forked with) and every descendant inherits it. A kill and the end of the scope
   use a `/proc` census: processes carrying the token, plus anything still parented below one.
-  Each is killed through its pidfd and its exit awaited, until a census finds none alive. Either
+  Each is killed through its pidfd. Killed members stuck in kernel D state are reported by the
+  machine while scope cleanup continues after their eventual exit; they are not treated as
+  exited or used to justify releasing an unproven GPU process lifetime. Either
   backend reaches descendants that called `setsid` or double-forked. After the executor exits,
   whatever is still in the scope is killed and counted (`Ended.stragglers`). The machine's
   supervisor is the subreaper (`PR_SET_CHILD_SUBREAPER`): escaped processes are adopted and reaped
@@ -167,8 +165,7 @@ longer than eight times the longest pause it has shown, and at least six samples
   scope of this service (an earlier run's, or one dropped without an end) is killed at startup
   and at each token scope's end. Untokened processes, such as an operator's SSH jobs, are never
   touched.
-- No copy drain before a kill: a kill only follows a measured wedge, so the executor is not
-  cooperating and could not drain. Nothing it was copying is shared: GPU pages are its own;
+- No copy drain before a kill: nothing it was copying is shared: GPU pages are its own;
   host-tier layouts are sealed read-only memfds the machine filled; outputs are taken into
   custody only from a quiescent reply. Sources it read stay retained until its exit is observed.
 

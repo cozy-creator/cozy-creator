@@ -840,6 +840,22 @@
           }
         }
       },
+      "Booting": {
+        "type": "object",
+        "description": "A starting machine's step and a counter that advances as it moves.",
+        "properties": {
+          "progress": {
+            "type": "integer",
+            "format": "int64",
+            "default": 0,
+            "minimum": 0
+          },
+          "step": {
+            "type": "string",
+            "default": ""
+          }
+        }
+      },
       "Call": {
         "type": "object",
         "description": "One settled call the run made: a child run, or an effect such as its weights publication.",
@@ -2159,6 +2175,14 @@
             "type": "string",
             "description": "Why a queued run waits, for people.",
             "default": ""
+          },
+          "waiting_for": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The runs it waits for, by id (an update waits for those in flight).",
+            "default": []
           }
         }
       },
@@ -2209,6 +2233,18 @@
           "boot_id": {
             "type": "string",
             "default": ""
+          },
+          "booting": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Booting",
+                "description": "While the machine starts: the step it is on, answered before anything else, so a\nwatcher tells a slow start from none. Absent once it serves."
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "capabilities": {
             "type": "array",
@@ -2330,6 +2366,14 @@
             "format": "int64",
             "default": 0
           },
+          "stuck": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StuckProcess"
+            },
+            "description": "Killed processes stuck in the kernel: nothing waits on them, and what each holds stays\nheld until it exits.",
+            "default": []
+          },
           "tensord_pid": {
             "type": "integer",
             "format": "int32",
@@ -2352,6 +2396,18 @@
               "nvcc": "",
               "state": ""
             }
+          },
+          "update": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RunState",
+                "description": "An update in progress here; none without one."
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "version": {
             "type": "string",
@@ -2380,6 +2436,33 @@
           },
           "worker_id": {
             "type": "string",
+            "default": ""
+          }
+        }
+      },
+      "StuckProcess": {
+        "type": "object",
+        "description": "A killed process in uninterruptible sleep (`D`: a driver after an Xid, a hung network\nfilesystem): it exits once that wait ends.",
+        "properties": {
+          "command": {
+            "type": "string",
+            "default": ""
+          },
+          "pid": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0,
+            "minimum": 0
+          },
+          "since_unix_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When the machine found it stuck.",
+            "default": 0
+          },
+          "wchan": {
+            "type": "string",
+            "description": "The kernel function it sleeps in; empty when the kernel hides it.",
             "default": ""
           }
         }

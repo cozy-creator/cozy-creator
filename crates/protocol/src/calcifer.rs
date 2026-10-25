@@ -250,6 +250,9 @@ pub struct Progress {
     pub stage: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fraction: Option<f64>,
+    /// How far this stage is, when it says (`tel.progress`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage_fraction: Option<f64>,
     #[serde(default)]
     pub completed: u64,
     #[serde(default)]
@@ -263,6 +266,9 @@ pub struct Progress {
     /// The stage's steady step time: the mean of its steps after the first; 0 before one.
     #[serde(default)]
     pub step_avg_ms: f64,
+    /// When the machine last saw it move (Unix ms; 0: unknown): how long a run has not.
+    #[serde(default)]
+    pub at_ms: i64,
 }
 
 /// One event of a run's stream.
@@ -552,9 +558,6 @@ pub struct Rental {
     /// Why it runs off the requester's continent: nothing nearer fit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement_note: Option<String>,
-    /// For an admin: the prepaid provider account it runs on is spent or runs low.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_warning: Option<String>,
     /// Since when the Hub cannot reach it, though its provider reports it running.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unreachable_since_ms: Option<i64>,
@@ -577,6 +580,9 @@ pub struct MachineStatus {
     pub platform: String,
     /// `booting`, `ready` or `releasing`.
     pub phase: String,
+    /// An update in progress there: what it waits for, else its state.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub update: String,
     #[serde(default)]
     pub runtime: String,
     #[serde(default)]
@@ -611,6 +617,9 @@ pub struct MachineStatus {
     pub toolchain: Option<crate::machine::Toolchain>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub kernels: Vec<crate::machine::KernelVerdict>,
+    /// Killed processes stuck in the kernel there.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stuck: Vec<crate::machine::StuckProcess>,
 }
 
 /// A run a machine holds for this controller, beside this controller's record of it.

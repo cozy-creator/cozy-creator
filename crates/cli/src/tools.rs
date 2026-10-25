@@ -2,7 +2,7 @@
 //! and the ones cozy fetches itself on first need (pinned builds held to their sha256) into
 //! `~/.cozy/tools`: the lookups features call (`ffmpeg`, `uv`).
 use std::{
-    io::{self, Write as _},
+    io::Write as _,
     path::{Path, PathBuf},
 };
 
@@ -251,7 +251,7 @@ async fn fetch(ctx: &Context, name: &str, archives: &[Archive], dir: &Path) -> R
                 ),
             ));
         }
-        extract(archive, download, staging.path()).map_err(|e| failed(e.to_string()))?;
+        tools::extract(archive, &mut download, staging.path()).map_err(|e| failed(e.to_string()))?;
     }
     let staged = staging.keep();
     match std::fs::rename(&staged, dir) {
@@ -266,58 +266,4 @@ async fn fetch(ctx: &Context, name: &str, archives: &[Archive], dir: &Path) -> R
             Err(failed(format!("{}: {e}", dir.display())))
         }
     }
-}
-
-/// `archive`'s members into `dir`, runnable.
-fn extract(archive: &Archive, mut file: std::fs::File, dir: &Path) -> io::Result<()> {
-    use std::io::Seek as _;
-    file.rewind()?;
-    for (member, name) in archive.members {
-        let out = dir.join(name);
-        let mut target = std::fs::File::create(&out)?;
-        if archive.url.ends_with(".zip") {
-            let mut zip = zip::ZipArchive::new(&mut file).map_err(io::Error::other)?;
-            let mut entry = zip.by_name(member).map_err(io::Error::other)?;
-            io::copy(&mut entry, &mut target)?;
-        } else {
-            untar(&mut file, member, &mut target)?;
-        }
-        file.rewind()?;
-        runnable(&out)?;
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn untar(file: &mut std::fs::File, member: &str, out: &mut std::fs::File) -> io::Result<()> {
-    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(file));
-    for entry in archive.entries()? {
-        let mut entry = entry?;
-        if entry.path()?.as_os_str() == member {
-            io::copy(&mut entry, out)?;
-            return Ok(());
-        }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        format!("the archive holds no {member}"),
-    ))
-}
-
-/// Windows archives are zips.
-#[cfg(not(unix))]
-fn untar(_: &mut std::fs::File, member: &str, _: &mut std::fs::File) -> io::Result<()> {
-    Err(io::Error::other(format!(
-        "{member}: a tar archive on Windows"
-    )))
-}
-
-fn runnable(path: &Path) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))?;
-    }
-    let _ = path;
-    Ok(())
 }

@@ -21,7 +21,7 @@ use crate::{
 
 const MAX_REDIRECTS: usize = 8;
 
-pub fn wheel(distribution: &str, version: &str, uv: &Path, python: &str, dir: &Path, machine: &Machine, stop: &Stop) -> io::Result<PathBuf> {
+pub fn wheel(distribution: &str, version: &str, uv: &super::uv::Uv, python: &str, dir: &Path, machine: &Machine, stop: &Stop) -> io::Result<PathBuf> {
     let project = distribution.replace('_', "-");
     if version.is_empty() || !version.bytes().all(|c| c.is_ascii_alphanumeric() || b"._-+!".contains(&c)) {
         return Err(io::Error::other("a published wheel requires a concrete version"));

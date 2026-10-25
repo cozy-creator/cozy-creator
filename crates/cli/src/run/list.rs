@@ -154,10 +154,21 @@ fn row(run: &Run, runs: &[Run]) -> Vec<String> {
     };
     let progress = match (run.status, &run.progress) {
         _ if queued(run) => String::new(),
-        (Status::InProgress, Some(p)) => match follow::fraction(p) {
-            Some(f) => format!("{} {:.0}%", p.stage, f * 100.0),
-            None => p.stage.clone(),
-        },
+        (Status::InProgress, Some(p)) => {
+            let shown = match follow::fraction(p) {
+                Some(f) => format!("{} {:.0}%", p.stage, f * 100.0),
+                None => p.stage.clone(),
+            };
+            let shown = match follow::still(p) {
+                Some(still) => format!("{shown} · no progress for {}", output::span(still)),
+                None => shown,
+            };
+            // What it waits on says first (an update waiting for the runs in flight).
+            match &run.waiting {
+                Some(waiting) => format!("{waiting} · {shown}"),
+                None => shown,
+            }
+        }
         (Status::InProgress, None) => run.waiting.clone().or_else(|| run.machine_state.clone()).unwrap_or_default(),
         (Status::Failed | Status::Canceled, _) => run.reason.as_ref().map(|r| r.message.clone()).unwrap_or_default(),
         _ => String::new(),

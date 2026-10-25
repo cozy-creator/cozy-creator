@@ -222,6 +222,23 @@ pub fn unpack(
     ))
 }
 
+/// `archive`'s members, out of its downloaded bytes, into `dir`, runnable: the CLI's and the
+/// machine's one way to install a pinned tool.
+#[cfg(feature = "fetch")]
+pub fn extract(archive: &Archive, bytes: &mut (impl std::io::Read + std::io::Seek), dir: &Path) -> std::io::Result<()> {
+    for (member, name) in archive.members {
+        bytes.rewind()?;
+        let out = dir.join(name);
+        unpack(&mut *bytes, member, &mut std::fs::File::create(&out)?)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o755))?;
+        }
+    }
+    Ok(())
+}
+
 /// The uv cozy fetches where this computer or machine brings none: one version everywhere.
 pub const UV_VERSION: &str = "0.12.24";
 

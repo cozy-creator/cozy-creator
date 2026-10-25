@@ -22,7 +22,7 @@ cleanup() {
     cozy --json machine end "$M" --force -y > "$OUT/end-trap.json" 2>&1
     for _ in $(seq 30); do cozy --json machine list | J --arg m "$M" '.machines | any(.name == $m)' || break; sleep 10; done
   fi
-  for r in 0.1.0 0.2.0; do cozy --json package yank "fidika/$pkg@$r" > /dev/null 2>&1; done
+  cozy --json package delete "fidika/$pkg" -y > /dev/null 2>&1
   cozy --json model delete "$model" -y > /dev/null 2>&1
 }
 trap cleanup EXIT
@@ -63,6 +63,8 @@ cozy --json package yank "fidika/$pkg@0.2.0" > "$OUT/yank.json" || check "packag
 [[ $(resolves yanked) == *@0.1.0* ]] || check "package yank: an unversioned run still takes 0.2.0"
 cozy --json package yank "fidika/$pkg@0.2.0" --undo > "$OUT/unyank.json" || check "package yank --undo failed"
 [[ $(resolves unyanked) == *@0.2.0* ]] || check "package yank --undo: an unversioned run does not take 0.2.0 again"
+cozy --json package delete "fidika/$pkg" -y > "$OUT/pkg-delete.json" || check "package delete failed"
+! cozy --json package info "fidika/$pkg" > /dev/null 2>&1 || check "package delete: fidika/$pkg still answers"
 
 step "throwaway model"
 uv run -q --no-project python -I - "$OUT/tiny.safetensors" <<'PY'

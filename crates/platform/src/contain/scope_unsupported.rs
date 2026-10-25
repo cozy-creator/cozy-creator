@@ -41,3 +41,8 @@ impl Scope {
         Err(Error::unsupported(Seam::Containment))
     }
 }
+
+/// Only Linux tells a member stuck in the kernel apart.
+pub fn stuck() -> Vec<super::Stuck> {
+    Vec::new()
+}

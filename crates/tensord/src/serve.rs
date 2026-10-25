@@ -185,6 +185,13 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
         lifetime,
         readiness,
     )?;
+    // The machine answers before it does anything slow: its listener first, then its step as it
+    // starts, so whoever watches it (a rental's Hub, Calcifer) hears a slow start, never silence.
+    let api = crate::machine::net::kept_listener(&layout.state.join("api-port"), grant.listen_host, grant.worker_port)?;
+    let boot = crate::api::Boot::new();
+    api.set_nonblocking(true)?;
+    let booting = runtime.spawn(crate::api::booting(api.try_clone()?, &identity, boot.clone())?);
+    boot.at("store");
     let lifecycle = crate::machine::lifecycle::Lifecycle::open(
         layout.state.join("idle.json"),
         rental,
@@ -199,7 +206,9 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     let (_owned, store) = own(&engine, &layout.store, Some(&paths))?;
     // The machine's one downloader, held for its life: it reads the datacenter volume before the
     // Hub and fills it. A variable naming no mount point (the volume was not delivered) is none.
+    boot.at("cache");
     let machine = Machine::new(store.clone(), layout.cache.as_deref())?;
+    boot.at("journal");
     let service = crate::service::Service::open(&engine, &generations, 1)?;
     // The jobs this root held (a preparation the restart ended counts as ended now): Status
     // reports the true deadline from the first frame.
@@ -207,30 +216,23 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     lifecycle.observe(crate::machine::lifecycle::Jobs { working, ended_ms }, lifecycle.epoch());
     // An update's activation holds queued runs; one that ends without its restart lets them start.
     // An admission or a follower letting go may start the idle clock.
-    let (activating, executions) = (lifecycle.clone(), service.engine.clone());
-    service.hold_while(move || activating.activating());
+    let (holding, executions) = (lifecycle.clone(), service.engine.clone());
+    service.hold_while(move || holding.holding());
     lifecycle.on_change(move || executions.notify_activity());
-    let mut sdk = crate::published::PackageSdk::selected(&paths.sdk(), &layout.root, crate::machine::client::uv(&layout.root));
-    // A local machine installs releases through its owner's uv cache, as its local packages do;
-    // a cache of its own from before is no longer read (environments keep their linked files).
-    if !rental {
-        sdk.owner_uv = crate::published::OwnerUv::of(protocol::config::environment());
-        if sdk.owner_uv.is_some() {
-            let _ = std::fs::remove_dir_all(engine.join("published/uv-cache"));
-        }
-    }
-    let updates = {
-        let (service, admitted) = (service.clone(), lifecycle.clone());
-        // Only started runs drain: queued ones are journaled and run after the restart.
-        let idle = move || service.settled().unwrap_or(false) && admitted.admitted() == 0;
-        crate::machine::update::Updates::open(
-            paths.clone(),
-            sdk.python.clone(),
-            Box::new(idle),
-            Some(lifecycle.clone()),
-            Some(machine.clone()),
-        )?
+    let sdk = crate::published::PackageSdk::selected(&paths.sdk(), crate::machine::uv::Uv::of(&layout.root, &engine, rental));
+    boot.at("updates");
+    let running = {
+        let engine = service.engine.clone();
+        Box::new(move || engine.with_journal(|journal| journal.started()).unwrap_or_default())
     };
+    let updates = crate::machine::update::Updates::open(
+        paths.clone(),
+        sdk.uv.clone(),
+        sdk.python.clone(),
+        running,
+        Some(lifecycle.clone()),
+        Some(machine.clone()),
+    )?;
     identity.updates = Some(updates.clone());
     let readiness = identity.readiness.clone();
     std::thread::Builder::new()
@@ -241,11 +243,14 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
             if let Err(error) = updates.commit() {
                 tracing::warn!("Runtime update commit: {error}");
             }
+            // An update queued behind the one this restart ended starts now.
+            updates.next(|code| std::process::exit(code));
             ready.report();
         })?;
     // A machine serves every package on its pool: its GPUs (the envelope, sorted by index; a
     // degree-K plan uses the first K) and deviceless executors, with the executor environment
     // the pod proofs used.
+    boot.at("gpus");
     let mut gpus = receipt::gpus(visible_devices.as_deref())?;
     // A driver below CUDA 13.0's floor serves no GPU; the machine stays for CPU work.
     if let Some(why) = gpus.first().and_then(|gpu| platform::gpu::below_floor(&gpu.driver_version)) {
@@ -254,6 +259,7 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     }
     identity.gpus = gpus.clone();
     identity.gpu_memory_limit = gpu_memory_limit;
+    boot.at("pool");
     {
         let devices: Vec<String> = gpus.iter().map(|g| g.device_index.to_string()).collect();
         let home = engine.join("executor-home");
@@ -300,16 +306,6 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     if let Some(hub) = grant.hub.clone().filter(|_| rental) {
         identity.hubs = vec![(hub.origin.clone(), hub.worker_id.clone())];
         let hub = Arc::new(crate::machine::hub::Hub::new(hub)?);
-        let (reporter, handle) = (hub.clone(), runtime.handle().clone());
-        service.on_stall(move || {
-            let hub = reporter.clone();
-            handle.spawn(async move {
-                match hub.report_stalled().await {
-                    Ok(()) => tracing::info!("told the Hub a preparation here made no progress"),
-                    Err(error) => tracing::warn!("the stalled preparation's report: {error}"),
-                }
-            });
-        });
         let service = service.clone();
         let provider = grant.provider.clone();
         std::thread::Builder::new()
@@ -330,11 +326,12 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
                 std::process::exit(0);
             })?;
     }
-    let api = crate::machine::net::kept_listener(&layout.state.join("api-port"), grant.listen_host, grant.worker_port)?;
+    boot.at("api");
     identity.webrtc = crate::machine::player::listen(&layout.state, grant.webrtc_port, !rental)?;
     identity.player = grant.webrtc_reach.clone();
-    // The client this binary embeds; the installer helper over it is made at the first install.
-    let wheel = crate::machine::client::wheel(&engine)?;
+    // The boot answer ends before the API takes its listener: one server answers at a time.
+    booting.abort();
+    let _ = runtime.block_on(booting);
     start_api(
         &engine,
         &generations,
@@ -343,9 +340,6 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
         &store,
         &machine,
         &service,
-        Some(crate::machine::client::helper_python(&engine)),
-        Some(wheel),
-        "3.12".into(),
         sdk,
         // A run naming no Hub reads this rental's own Hub's public content.
         grant.hub.clone().filter(|_| rental),
@@ -388,58 +382,24 @@ fn start_api(
     store: &Arc<Store>,
     machine: &Arc<Machine>,
     service: &Arc<crate::service::Service>,
-    helper: Option<PathBuf>,
-    wheel: Option<PathBuf>,
-    python: String,
-    mut sdk: crate::published::PackageSdk,
+    sdk: crate::published::PackageSdk,
     own_hub: Option<crate::machine::grant::HubGrant>,
     logs: Option<PathBuf>,
 ) -> io::Result<()> {
     use crate::{api, machine_api::NativeBackend};
-    sdk.client_wheel = wheel.clone();
-    let (pair, uv, seed_cache, runtime_build): (Vec<PathBuf>, _, _, _) = (
-        sdk.requirements.iter().map(PathBuf::from).collect(),
-        sdk.uv.clone(),
-        sdk.seed_cache.clone(),
-        sdk.runtime_build.clone(),
-    );
     let store = store.clone();
     let mut backend = NativeBackend::new(service.clone(), identity.authority.clone(), store.clone());
     backend.logs = logs;
-    let publisher =
-        crate::published::Publisher::new(&root.join("published"), sdk, machine.clone())?;
+    let publisher = crate::published::Publisher::new(sdk, machine.clone(), identity.updates.clone());
     service.configure_publisher(publisher.clone());
     backend.publisher = Some(publisher.clone());
-    // Local packages install only with the helper; package environments get the client either way.
-    backend.installer = match (helper, wheel) {
-        (Some(helper_python), Some(client_wheel)) => Some(api::install::InstallerConfig {
-            // The machine's own helper is made on first use; a given one is the caller's.
-            helper_engine: (helper_python == crate::machine::client::helper_python(root)).then(|| root.to_path_buf()),
-            helper_python,
-            client_wheel,
-            python,
-            generations: generations.to_path_buf(),
-            sdk: pair,
-            runtime_build,
-            uv: uv.clone(),
-            seed_cache,
-        }),
-        (Some(_), None) => {
-            return Err(io::Error::other(
-                "--installer-python requires --client-wheel",
-            ))
-        }
-        _ => None,
-    };
     let objects = Arc::new(crate::objects::Objects::new(&root.join("writes"), service.engine.clone())?);
     service.engine.hold_memos(&objects);
     backend.runs = Some(Arc::new(crate::runs::Runs {
         service: service.clone(),
         objects: objects.clone(),
+        local: Arc::new(crate::local_source::LocalSources::new(objects, publisher.clone(), generations)),
         publisher,
-        local: backend.installer.clone().map(|installer| {
-            Arc::new(crate::local_source::LocalSources::new(objects, installer))
-        }),
         own_hub: own_hub
             .map(|hub| crate::hub::Source::new(&hub.origin, hub.ca_der, None))
             .transpose()

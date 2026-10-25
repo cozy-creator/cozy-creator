@@ -68,7 +68,9 @@ warning each). A model-only upload's lane labels the commit it makes.
   weights; progress and outcome come with the run. The payload is `{runtime, tensorfs}`: a
   published version, or a wheel file name whose bytes an input binds to an uploaded object. A
   client that loses the stream across the restart follows the events again after its cursor.
-  A pair the machine already runs succeeds unchanged at once. Cancel ends an update before it
+  A pair the machine already runs succeeds unchanged at once. An update submitted while another
+  runs is queued (`queued`), never refused: it starts when that one ends, after its restart too.
+  Wheels stage at any time. Cancel ends an update before it
   activates (`canceled`, candidate removed, admission reopened); once activating it is refused
   `cancel_unavailable`. Published wheels land through the store as package files do: a download
   that stops moving fails on its measured stillness.

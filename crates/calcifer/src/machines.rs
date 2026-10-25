@@ -581,7 +581,14 @@ impl Machines {
             if seen.stopped {
                 machine.state = MachineState::Stopped;
             }
-            machine.status = seen.frame.as_ref().map(|frame| status(frame, &self.hubs));
+            machine.status = seen.frame.as_ref().map(|frame| {
+                let mut status = status(frame, &self.hubs);
+                // An update says what it waits for by this controller's run numbers.
+                status.update = (frame.update.as_ref())
+                    .map(|u| self.calcifer.waiting_for(&u.waiting_for).unwrap_or_else(|| Some(&u.waiting).filter(|w| !w.is_empty()).unwrap_or(&u.state).clone()))
+                    .unwrap_or_default();
+                status
+            });
             held = seen.frame.as_ref().map(|f| f.runs.clone()).unwrap_or_default();
             machine.unreachable.clone_from(&seen.unreachable);
             machine.unreachable_since_ms = seen.since;
@@ -1429,6 +1436,7 @@ fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
         dev: frame.dev,
         platform: frame.platform.clone(),
         phase: frame.phase.clone(),
+        update: String::new(),
         runtime: frame.runtime.clone(),
         tensorfs: frame.tensorfs.clone(),
         started_at_ms: frame.started_at_unix_ms,
@@ -1449,6 +1457,7 @@ fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
         driver_floor: frame.driver_floor.clone(),
         toolchain: Some(frame.toolchain.clone()).filter(|t| !t.state.is_empty()),
         kernels: frame.kernels.clone(),
+        stuck: frame.stuck.clone(),
         disk_total_bytes: frame.disk.as_ref().map_or(0, |d| d.total_bytes),
         disk_free_bytes: frame.disk.as_ref().map_or(0, |d| d.free_bytes),
         runs: vec![],
@@ -1602,7 +1611,7 @@ fn refusal(name: &str, e: LinkError) -> Error {
             "machine_released",
             format!("{name}: {message}"),
         ),
-        LinkError::NotFound => Error::new(
+        LinkError::NoRun | LinkError::NotFound => Error::new(
             Kind::NotFound,
             "not_found",
             format!("{name} has no such thing"),

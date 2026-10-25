@@ -32,7 +32,7 @@ pub fn stage(root: &Path, memo: Option<&Path>, manifests: &Path) -> Result<Stage
     let root = &std::path::absolute(root).map_err(|e| unreadable(root, e))?;
     let mut files = vec![];
     let mut members = BTreeMap::new();
-    let found = tree::walk(root).map_err(|e| Error::new(Kind::Usage, "tree_unreadable", e.to_string()))?;
+    let found = tree::walk(root, true).map_err(|e| Error::new(Kind::Usage, "tree_unreadable", e.to_string()))?;
     for (name, path) in found {
         let length = fs::metadata(&path).map_err(|e| unreadable(&path, e))?.len();
         let digest = super::digests::of(memo, &path)?;

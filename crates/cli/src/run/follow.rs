@@ -395,8 +395,9 @@ fn item_name(item: &OutputItem) -> String {
 /// The live view: one line redrawn in place on a terminal; sparse appended lines elsewhere.
 struct View {
     bar: Option<ProgressBar>,
-    /// Off a terminal, what was last written: the status or stage, and the tenth reached.
-    shown: (String, i64),
+    /// Off a terminal, what was last written: the status or stage, the tenth reached, and the
+    /// minutes it had made no progress.
+    shown: (String, i64, i64),
     machine: Option<String>,
     /// The run's own word for where it is (`queued`, the machine's state), and why it waits now
     /// (Calcifer's reason, as `cozy run list` shows it): the status line says the reason first.
@@ -427,7 +428,7 @@ impl View {
         });
         let mut view = Self {
             bar,
-            shown: (String::new(), -1),
+            shown: (String::new(), -1, 0),
             machine: None,
             state: String::new(),
             waiting: None,
@@ -546,7 +547,7 @@ impl View {
                 bar.set_message(shown(text));
             }
             None if self.shown.0 != text => {
-                self.shown = (text.to_owned(), -1);
+                self.shown = (text.to_owned(), -1, 0);
                 anstream::eprintln!("  {}", shown(text));
             }
             None => {}
@@ -562,9 +563,10 @@ impl View {
         self.show_progress();
     }
 
-    /// The last progress again, as time passes: a step running long says so.
+    /// The last progress again, as time passes: a step running long, or a run with no progress,
+    /// says so.
     fn tick(&mut self) {
-        if self.bar.is_some() && self.last.is_some() {
+        if self.last.is_some() {
             self.show_progress();
         }
     }
@@ -603,8 +605,9 @@ impl View {
             }
             None => {
                 let tenth = fraction.map_or(-1, |f| (f * 10.0) as i64);
-                if self.shown.0 != progress.stage || tenth > self.shown.1 {
-                    self.shown = (progress.stage.clone(), tenth);
+                let minutes = still(&progress).map_or(0, |still| still / 60);
+                if self.shown.0 != progress.stage || tenth > self.shown.1 || minutes > self.shown.2 {
+                    self.shown = (progress.stage.clone(), tenth, minutes);
                     anstream::eprintln!("  {}", shown(&text));
                 }
             }
@@ -618,22 +621,27 @@ impl View {
     }
 }
 
-/// How far a run is: its own fraction, else its steps', else its bytes'.
+/// How far a run is: its own fraction, else its stage's, else its steps', else its bytes'.
 pub(crate) fn fraction(progress: &Progress) -> Option<f64> {
     let of = |done: u64, total: u64| (total > 0).then(|| done as f64 / total as f64);
     (progress.fraction.filter(|f| *f >= 0.0))
+        .or(progress.stage_fraction)
         .or_else(|| of(progress.completed, progress.total))
         .or_else(|| of(progress.bytes_done, progress.bytes_total))
 }
 
-/// Where a run is: its stage, its steps of their total and their times, and its bytes of theirs.
-/// A stage's first step carries its setup: its time is said as the first's, never as the pace.
+/// Where a run is: its stage, its steps of their total and their times, and its bytes of theirs;
+/// a stage that counts neither, the fraction it says. A stage's first step carries its setup: its
+/// time is said as the first's, never as the pace.
 pub(crate) fn said(progress: &Progress) -> String {
     let mut text = progress.stage.clone();
     if progress.total > 0 {
         let _ = write!(text, " {}/{}", progress.completed, progress.total);
     }
     let (done, total) = (progress.bytes_done, progress.bytes_total);
+    if let Some(f) = progress.stage_fraction.filter(|_| progress.total == 0 && total == 0) {
+        let _ = write!(text, " {:.0}%", f.clamp(0.0, 1.0) * 100.0);
+    }
     if done > 0 || total > 0 {
         let _ = write!(text, " {}", output::bytes(done));
         if total > 0 {
@@ -647,7 +655,18 @@ pub(crate) fn said(progress: &Progress) -> String {
         (true, _, true) => write!(text, " · {} last, {} avg", took(last), took(steady)),
         (true, ..) => write!(text, " · {} last", took(last)),
     };
+    if let Some(still) = still(progress) {
+        let _ = write!(text, " · no progress for {}", output::span(still));
+    }
     text
+}
+
+/// How long, in seconds, the run has made no progress, once a minute or more (the machine's time
+/// of its last move): shown for its user to decide, never acted on (design stalls.md).
+pub(crate) fn still(progress: &Progress) -> Option<i64> {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+    let still = (now - progress.at_ms) / 1000;
+    (progress.at_ms > 0 && still >= 60).then_some(still)
 }
 
 /// A step's time: tenths of a second under a minute, else minutes and seconds.

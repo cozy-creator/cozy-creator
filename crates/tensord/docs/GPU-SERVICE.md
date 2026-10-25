@@ -1,10 +1,11 @@
 # GPU service
 
-`gpu_service.rs` (`GpuPool`) coordinates published, cached GPU callables through retained
-Runtime executors. TensorD supplies model data, shared CPU buffers and each GPU's varena ledger
-(`memory::GpuLedger`, design memory-varena §5.6). Varena in each executor decides that
-executor's GPU bytes and makes room through the ledger's asks. TensorD admits starts, reaps
-exited executors' rows, and ends the ones the ledger names stalled.
+`gpu_service.rs` (`Pool`) coordinates published, cached GPU callables through retained
+Runtime executors. TensorD supplies model references and schedules GPU call permits. Each
+executor owns its GPU allocations, process-local Varena residency and ordinary Torch cache.
+TensorD records measurements, offloads whole idle executors and observes exact process exits;
+it has no Varena manager, GPU allocation custody or second memory-admission queue. Nothing
+ends an executor for a stall.
 Acceptance, journal, progress and output custody stay in `Engine`; scheduling stays in `service.rs`.
 
 ## Configuration
@@ -12,12 +13,10 @@ Acceptance, journal, progress and output custody stay in `Engine`; scheduling st
 The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `config.toml`:
 - `devices`: the GPU envelope, `"0"` or `"0,1,..."`. A plan of degree K > 1 runs on the first K;
   a one-GPU plan on any of them. An executor is sealed to its lane (`CUDA_VISIBLE_DEVICES`).
-- `models: [ModelGrant { package, slot, repository, release, lane, manifest, components }]`: the only
-  authority over cached model bytes.
-- `packages: [{ package, release, distribution, generation }]`: published-package mapping.
-- `authorized_device_limit_bytes`: a GPU's ledger capacity where neither NVML nor the inventory
-  says it.
-- `memory`: `{ floor_bytes }`: raise the free floor TensorD keeps on each GPU.
+- `inventory`: observed GPU identities and capacities used for measurements and lane selection.
+- `gpu_memory_limit`: a requested aggregate machine cap. GPU execution currently refuses this
+  setting because executor-local limits cannot enforce a total across a call family and its
+  non-allocator bytes.
 - `environment`: names `launch_identity::credential_name` judges credentials never reach an executor.
 - `host`: `{mode}`, `dedicated` on a rental, else `shared`.
 
@@ -35,7 +34,7 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
 - Degree 0 (deviceless): `accelerator=False`, or a machine without GPUs. Such a call runs on a
   pooled deviceless executor within CPU room; idle ones are ended by host pressure, least recently
   used first, before any GPU executor. Degree 1: a call that constructs nothing, on one GPU, an
-  ordinary tenant of its GPU's ledger.
+  process with its own GPU allocations.
 - Allocations (`gpu_allocation.rs`), as Slurm's: a deviceless root (a request with no parent)
   holds a contiguous lane, `--gpus` wide or as wide as the widest group its environment's models
   run on here. It is registered when the root dispatches and bound when its first GPU step is
@@ -64,16 +63,15 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
 
 - One call slot per GPU: a call takes every slot of its lane. GPU dispatch is fenced only by a
   startup fence or an active GPU record this machine run does not supervise. CPU dispatch continues.
-- Placement (`GpuPool::place`), inside the root's lane (else on unallocated, unclaimed GPUs): a
-  group takes a free contiguous lane of K GPUs. A one-GPU call takes, in order, a free GPU with
-  its plan's idle executor; a free GPU where what its executors hold elsewhere (else a new
-  context) fits in that GPU's ledger once others' cold and idle bytes are asked for (a replica
-  when the plan runs elsewhere too); or, when the plan runs nowhere or inside its root's lane,
-  any free one. A waiting standalone call claims the GPUs it waits for. A prefetch loads only
+- Placement (`Pool::place`), inside the root's lane (else on unallocated, unclaimed GPUs): a
+  group takes a free contiguous lane of K GPUs. It prefers a permitted lane already hosting
+  its plan, then any other permitted lane. Measured peaks are hints for offloading idle
+  executors before loading, never a reason to refuse a nested call. A waiting standalone call
+  claims the GPUs it waits for. A prefetch loads only
   inside its root's bound lane, after queued requests of that root and older ones, and ends at
   its release. A new executor's GPU is logged as `{"event": "place"}` in the memory log;
   `loads.jsonl` and `invokes.jsonl` name each line's `gpus`.
-- Memory events (admissions, asks, reaps, returns, stalls, placements) are lines of the store's
+- Memory observations, offloads, pressure holds, returns and placements are lines of the store's
   `logs/memory.log` (rotated once past 4 MiB), machine log `memory`
   (`cozy machine logs <name> memory`; `local` names this computer's). Each call's own memory is
   the run's `memory` measurements (`cozy run show`): torch's peaks and the executor's `stats`
@@ -88,48 +86,37 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
 - Groups (degree K > 1): one executor sealed to the K GPUs with the NCCL seal (`NCCL_NVLS_ENABLE=0`,
   `NCCL_P2P_LEVEL=NVL`); `Start`/`Load` carry `sequence_parallel_degree: K`. Rank 0 spawns, dials back
   and forms its followers inside `Start` (Runtime `RankGroup`); the machine never talks to a follower.
-  Every command's watch meters rank 0 plus its process-group members, so formation ends only on
-  measured lack of progress. Each GPU of the group is admitted by its own ledger (device order).
-  `Start` carries each GPU's ledger memfd and eventfd in lane order; rank 0 hands follower r
-  its pair, and each rank claims its own row. Followers' pids from `Start` are their GPUs' tenants: a stalled one
-  is ended by pid.
+  Each rank owns its local memory. Followers' pids from `Start` are recorded for their GPUs'
+  measurements, host accounting and exact process lifetimes; no GPU ledger handles are shared.
   Teardown waits for every group member's exit. Startup fences GPU dispatch until a previous
   machine's leaders and their followers are gone. A refusal or poisoned group call fails the run
   with the executor's own code (a group's first fault names its GPU). A group forks from the generation's import-only parent like a
   single GPU does: the child takes the lane and NCCL seal with its environment; followers are spawned
   by rank 0.
-- TensorD handles no byte count: it asks each GPU's ledger `fits(package, shape)` (design
-  memory-varena §5.6), from the peaks varena measured per `<construction>|<shape>` (the shape:
-  PrepareRequest's features, hashed) beside every row's unevictable bytes and every running
-  request's remaining peak; never beside a dead or reaping row, and a shape never measured only
-  alone. A replica goes to a GPU where the plan's widest measured shape fits with a new process.
-  Before a cold session spawns, and again once its request's shape is known, while it does not
-  fit and nothing runs on a GPU of its lane, exited executors' bytes are waited for while they
-  come back, then idle executors end, least recently used first, outside every warm set first.
-  A request is never refused: varena in its executor makes what room it can. The request is
-  named to varena under its key (the ledger's dispatch table) until it ends, so its peak is
-  recorded. It is spawned by the pool's `ChildLauncher`, which journals the birth, then sent
-  Start (with its ledgers), Load and Activate once. Each request sends PrepareRequest and Invoke.
+- Before loading or reusing a GPU session, other idle constructions on its lane offload through
+  `Map(Ram)`, outside warm sets first and then LRU, until driver free bytes cover its measured
+  peak. Without a known peak all eligible candidates offload. Running sessions are absent from
+  this idle pool. The executor then makes room locally or returns its allocation failure.
+  `ChildLauncher` journals the birth before Start, Load and Activate; each request sends
+  PrepareRequest and Invoke. Final Invoke figures are recorded before dispatch measurements
+  end, and persisted peaks retain their high-water values.
 - Warming: a warm member's executor is loaded, then `Map{construction, level}` has it load its
   models at `gpu` or `ram`; varena fills them, and its priority is in use > warm > idle.
-- Each GPU's ledger: its capacity is NVML's total; TensorD holds a row of its own whose context
-  is the display floor (shared mode: 512 MiB or 1/16 of the card) plus every byte NVML shows that
-  no row explains (other programs, executors still exiting). A watch thread reads NVML once a
-  second, and wakes on the ledger's eventfd: a dead row whose process is gone is reaped, and
-  returned once NVML charges the pid no more (in a container, at a reading after the exit; what it
-  still shows stays in TensorD's row). Once a wedge floor it ends the rows asked for bytes whose
-  progress did not move. When bytes free (an executor's `freed`, a returned row) the engine's
-  dispatch is woken (`notify_activity`): the queue asks `fits` again and never polls. A restarted
-  TensorD makes fresh ledgers: its old executors die with it (`PDEATHSIG`), and what they hold
-  until then is unexplained bytes.
+- External pressure uses driver-attributed process usage on the existing reclaim loop: offload
+  idle executors first, then end idle processes, then cancel affected active roots if headroom
+  remains low. Cancellation kills their executors and scopes; weights are reloaded on later
+  requests. Missing attribution is unknown. The pressure hold and exact exit requirements are
+  described in [Device executor](DEVICE-EXECUTOR.md#external-gpu-pressure).
 - An executor's failed terminal (its own refusal before entry, or a failed invoke) first keeps a
   triage bundle (`triage.rs`: terminal, traceback, executor pid and stderr tail; canonical JSON
   under `execution/triage/`, fsynced) and binds it in the journal; the outcome body names it as
   `triage_bundle`, and `ReadMachineExecutionTriage` returns its bytes.
 - Start happens only after `authorize_managed`.
-- Invoke must be quiescent. Then `postprocess` and `managed_result` run. A custody failure is
-  `failed`.
-- On error the session is terminated (exit observed, wedge killed) before the run is settled:
+- Invoke must be quiescent. A reusable executor's old cancellation handle is disabled and its
+  process detached from that invocation before pool return. Owned CPU output encoding and
+  durable custody then continue while the GPU serves another request. The old run can be
+  canceled during this work without killing the newer request. A custody failure is `failed`.
+- On error the session is terminated (killed, exit observed) before the run is settled:
   CANCELED if a cancel was journaled, otherwise FAILED with the reason, including a pre-start exit
   with its stderr tail; nothing is requeued to fail again. A retained session can lose its channel (EPIPE,
   ECONNRESET, EOF) at PrepareRequest, which enters no handler: a killed executor closes its
@@ -164,7 +151,8 @@ thread.
 
 - Groups always take the first K envelope GPUs. Warm members and import-only parents live on the
   first GPU; executors never share GPU weights (the host cache is shared). No adapters.
-- One Python post helper per request.
+- One retained codec helper per executor when the selected SDK's encoding is required; owned
+  output work keeps its generation, log and spool alive after GPU executor return.
 - Each executor gets its own scope: a cgroup-v2 where the host delegates one (laptop systemd
   scopes, rootful hosts), else a token (containers with a read-only or v1 hierarchy, RunPod).
 - Seal: `OMP_NUM_THREADS` 4 (torch's allocator is set in Runtime code); `<root>/home`, `<root>/kernels` (per UID) and

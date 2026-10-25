@@ -1,5 +1,5 @@
-//! `cozy package lock|publish|yank`: authoring, on this computer, with uv. Package code never runs
-//! here: the interface comes from Runtime's static describer.
+//! `cozy package lock|publish|yank|delete`: authoring, on this computer, with uv. Package code
+//! never runs here: the interface comes from Runtime's static describer.
 //!
 //! The project names no account: `{ index = "tensorhub" }` sources resolve to the account's index
 //! on the command's Hub, written into a private copy. The authored files never change; `lock`
@@ -1052,6 +1052,51 @@ pub async fn yank(ctx: &Context, package: &PackageRef, undo: bool) -> Result<Exi
             )
             .field("yanked at", &result.yanked_at)
             .note("Machines that hold it keep it; only an exact pin installs it.")
+            .print(ctx),
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+#[derive(Serialize)]
+struct Deleted {
+    package: String,
+}
+
+/// Never prompts: `--yes` is the confirmation, and without it nothing is sent.
+pub async fn delete(ctx: &Context, package: &PackageRef) -> Result<ExitCode, Error> {
+    if package.release.is_some() {
+        return Err(Error::new(
+            Kind::Usage,
+            "package_release_not_taken",
+            format!("{package} names a release; delete takes the whole package, [org/]name"),
+        )
+        .remedy(format!("cozy package yank {package}")));
+    }
+    let hub = ctx.hub()?;
+    if !ctx.yes {
+        return Err(Error::new(
+            Kind::Usage,
+            "package_delete_unconfirmed",
+            format!(
+                "deleting {package} and every release from {} cannot be undone",
+                hub.origin
+            ),
+        )
+        .remedy("run it again with --yes"));
+    }
+    let deleted = ctx
+        .hub_signed_in(&hub)?
+        .delete_package(&package.org, &package.name)
+        .await
+        .map_err(hub_error)?
+        .into_inner();
+    let result = Deleted {
+        package: deleted.package,
+    };
+    match ctx.json {
+        true => output::json(&result),
+        false => output::Record::of(&result)
+            .note("Machines that installed it keep their copies.")
             .print(ctx),
     }
     Ok(ExitCode::SUCCESS)

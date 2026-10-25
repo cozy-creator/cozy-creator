@@ -3,8 +3,9 @@
 //! published version (fetched from PyPI, digest checked); when an input binds that field to an
 //! object PUT to the machine, that wheel's file name; or `{"url": "https://…/<wheel>", "sha256": …}`,
 //! a wheel the machine fetches itself, held to that digest. The update stages and verifies the
-//! pair, waits for measured idleness, restarts the service on it in place and commits once the new
-//! service proves readiness, or rolls back. Its log is the update's state history, so a client
+//! pair, holds new runs behind it and waits for the runs in flight to end (naming them; a halted one
+//! is its user's to cancel), restarts the service on it in place and commits once the new service
+//! proves readiness, or rolls back. Its log is the update's state history, so a client
 //! that lost the stream across the restart follows its events again after its cursor and reads the
 //! outcome.
 use super::{auth::VerifiedActor, backend::MachineBackend, v1, MachineIdentity};
@@ -153,10 +154,8 @@ pub(super) async fn submit<B: MachineBackend>(
         if let Some(update) = updates.update(&id) {
             return Ok((false, state(&id, &update)));
         }
-        if !identity.readiness.proved() {
-            return Err(Error::unavailable("machine_booting", "the machine is starting; update it once it is ready"));
-        }
-        stage(&updates, &*backend, actor, &id, request.spec, &identity.gpus)?;
+        // A machine still starting queues it, as an update in progress does: never refused.
+        stage(&updates, &*backend, actor, &id, request.spec, &identity.gpus, identity.readiness.proved())?;
         let update = updates.update(&id).ok_or_else(|| Error::internal("update_unrecorded", "the update was not recorded"))?;
         Ok((true, state(&id, &update)))
     })
@@ -211,6 +210,7 @@ fn stage(
     id: &str,
     spec: v1::RunSpec,
     gpus: &[crate::machine::receipt::Gpu],
+    ready: bool,
 ) -> Result<(), Error> {
     let payload = spec.payload.as_ref().map_or("{}", |payload| payload.get());
     let cohort: Cohort = serde_json::from_str(payload).map_err(|e| {
@@ -285,7 +285,7 @@ fn stage(
         toolchain,
     };
     updates
-        .request(request, |code| std::process::exit(code))
+        .request(request, ready, |code| std::process::exit(code))
         .map(|_| ())
         .map_err(|(code, message)| refusal(code, message))
 }
@@ -321,13 +321,13 @@ fn event(sequence: u64, at_ms: i64, event: v1::Event) -> v1::RunEvent {
     v1::RunEvent { sequence, at_ms, event }
 }
 
-fn state(id: &str, update: &Update) -> v1::RunState {
+pub(super) fn state(id: &str, update: &Update) -> v1::RunState {
     v1::RunState {
         id: id.into(),
         number: 0,
         started_at_ms: 0,
         state: match update.state.as_str() {
-            "waiting" => "queued",
+            "waiting" | "queued" => "queued",
             "succeeded" => "succeeded",
             "canceled" => "canceled",
             "rolled_back" | "failed" => "failed",
@@ -336,15 +336,11 @@ fn state(id: &str, update: &Update) -> v1::RunState {
         .into(),
         sequence: update.history.len() as u64,
         attempt: 1,
-        waiting: if observation_error(update).is_some() {
-            update.error.clone()
-        } else if update.state == "waiting_activation" && update.waiting_for > 0 {
-            format!("waiting for its {} runs to end", update.waiting_for)
-        } else if update.state == "waiting_activation" {
-            "waiting for the machine to be idle".into()
-        } else {
-            String::new()
+        waiting: match observation_error(update) {
+            Some(_) => update.error.clone(),
+            None => update.waits(),
         },
+        waiting_for: update.waiting_on.clone(),
     }
 }
 
@@ -379,6 +375,13 @@ fn step_event(update: &Update, step: &crate::machine::update::Step) -> v1::Event
         "rolled_back" => outcome("failed", "update_rolled_back"),
         "failed" if update.code.is_empty() => outcome("failed", "update_failed"),
         "failed" => outcome("failed", &update.code),
+        // Its caller names the runs it waits for by its own numbers; activating, it waits no more.
+        "waiting_activation" | "activating" => v1::Event::State(v1::RunState {
+            state: "running".into(),
+            waiting: Update { state: step.state.clone(), waiting_on: step.waiting_for.clone(), ..Default::default() }.waits(),
+            waiting_for: step.waiting_for.clone(),
+            ..Default::default()
+        }),
         stage => v1::Event::Progress(v1::Progress {
             stage: stage.into(),
             fraction: -1.0,

@@ -46,6 +46,8 @@ struct State {
     jobs: Jobs,
     /// The admission epoch `jobs` was read after: a later admission may have queued a job.
     sampled: u64,
+    /// An update waits for the runs in flight: new ones are accepted and queue behind it.
+    holding: bool,
     /// An update is activating: no new work is admitted until it exits or fails.
     activating: bool,
 }
@@ -93,12 +95,22 @@ impl Drop for Updating {
     }
 }
 
-/// Closes admission while an update waits for admitted work to drain and replaces the
-/// service. Dropping it (a failed activation) reopens admission.
+/// Holds new runs (accepted, queued) while an update waits for the runs in flight, then closes
+/// admission while it replaces the service. Dropping it (a failed activation) lets them start.
 pub struct Activation(Arc<Lifecycle>);
+impl Activation {
+    /// Closes admission under the lock `admit` takes: a call is either admitted (and counted)
+    /// before this or refused after it, never accepted while the service exits.
+    pub fn close(&self) {
+        self.0.state.lock().unwrap().activating = true;
+        self.0.changed();
+    }
+}
 impl Drop for Activation {
     fn drop(&mut self) {
-        self.0.state.lock().unwrap().activating = false;
+        let mut state = self.0.state.lock().unwrap();
+        (state.holding, state.activating) = (false, false);
+        drop(state);
         self.0.changed();
     }
 }
@@ -136,7 +148,7 @@ impl Lifecycle {
             rental,
             grace,
             path,
-            state: Mutex::new(State { ledger, jobs: Jobs::default(), sampled: 0, activating: false }),
+            state: Mutex::new(State { ledger, jobs: Jobs::default(), sampled: 0, holding: false, activating: false }),
             admissions: AtomicUsize::new(0),
             epoch: AtomicU64::new(0),
             following: AtomicUsize::new(0),
@@ -247,25 +259,25 @@ impl Lifecycle {
         }
     }
 
-    /// Closes admission under the lock `admit` takes: a call is either admitted (and counted)
-    /// before activation or refused after it, never accepted while the service exits.
-    pub fn activate(self: &Arc<Self>) -> Result<Activation, Error> {
+    /// An update begins to activate: new runs are held (accepted, queued) until it restarts the
+    /// service or fails (`Activation`).
+    pub fn hold(self: &Arc<Self>) -> Result<Activation, Error> {
         let mut state = self.state.lock().unwrap();
-        if state.activating || state.ledger.released {
+        if state.holding || state.ledger.released {
             return Err(Error::unavailable(
                 "machine_updating",
                 "the machine is already activating or released",
             ));
         }
-        state.activating = true;
+        state.holding = true;
         drop(state);
         self.changed();
         Ok(Activation(self.clone()))
     }
 
-    /// An update is activating: admission is closed until it exits or fails.
-    pub fn activating(&self) -> bool {
-        self.state.lock().unwrap().activating
+    /// An update holds new runs: none starts until it restarts the service or fails.
+    pub fn holding(&self) -> bool {
+        self.state.lock().unwrap().holding
     }
     pub fn on_change(&self, changed: impl Fn() + Send + Sync + 'static) {
         let _ = self.changed.set(Box::new(changed));

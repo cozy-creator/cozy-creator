@@ -19,7 +19,7 @@
 
 mod checkpoint;
 mod folder;
-pub(crate) use folder::files as folder_files;
+pub(crate) use folder::{copy_checked, files as folder_files};
 mod gc;
 mod records;
 pub(crate) mod retention;
@@ -181,6 +181,8 @@ pub struct Store {
     grace: Duration,
     /// This handle admitted objects that no `syncfs` covers yet (ephemeral only).
     unsynced: Arc<AtomicBool>,
+    /// A cache: writes run its upkeep (expiry, eviction). An origin's (an endpoint's) never do.
+    cache: bool,
 }
 
 impl Store {
@@ -235,7 +237,15 @@ impl Store {
             grace: GRACE,
             root,
             unsynced: Arc::default(),
+            cache: true,
         })
+    }
+
+    /// This store as an origin, a directory endpoint's: nothing it holds is cache, so its writes
+    /// never expire or evict anything (`maintain`).
+    pub fn origin(mut self) -> Store {
+        self.cache = false;
+        self
     }
 
     pub fn with_durability(mut self, durability: Durability) -> Store {
@@ -331,23 +341,29 @@ impl Store {
         self.put(bytes, None)
     }
 
-    /// True when `object` is here, and then it is young for GC: call it before referencing an
-    /// object this process did not just put.
+    /// Whether `object` is here whole, without touching it: a look (a listing), not a use.
+    pub fn holds(&self, object: &ObjectRef) -> bool {
+        self.path(object).is_ok_and(|path| fs::metadata(path).is_ok_and(|m| m.len() == object.length))
+    }
+
+    /// True when `object` is here whole, and then it is young for GC: call it before referencing
+    /// an object this process did not just put. The one presence check (offline reads, the
+    /// Fetcher, admission): a blob of another length is damaged, so it is removed and reads as
+    /// absent, and the next admission of the object replaces it.
     pub fn reuse(&self, object: &ObjectRef) -> Result<bool> {
         let Some(file) = self.young(&object.sha256)? else {
             return Ok(false);
         };
-        let length = file
-            .metadata()
-            .map_err(fail("stat", self.path(object)?))?
-            .len();
-        if length != object.length {
-            return Err(Error::Mismatch {
-                expected: object.clone(),
-                got: format!("{length} bytes on disk"),
-            });
+        let path = self.path(object)?;
+        let length = file.metadata().map_err(fail("stat", &path))?.len();
+        if length == object.length {
+            return Ok(true);
         }
-        Ok(true)
+        tracing::warn!("tensorfs: {} is {length} bytes, not {}: removed, to be replaced", path.display(), object.length);
+        match fs::remove_file(&path) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(fail("remove", &path)(error)),
+            _ => Ok(false),
+        }
     }
 
     /// Opens `object` to read. Its bytes were verified when admitted.
@@ -455,9 +471,10 @@ impl Store {
         }
     }
 
-    /// Names a finished temp `blob`, unless a copy is there already, which is kept young.
-    fn install(&self, temp: &Path, blob: &Path, sha256: &str) -> Result<()> {
-        if self.young(sha256)?.is_some() {
+    /// Names a finished temp `blob` of `object`, unless a whole copy is there already, which is
+    /// kept young; a damaged one is replaced.
+    fn install(&self, temp: &Path, blob: &Path, object: &ObjectRef) -> Result<()> {
+        if self.reuse(object)? {
             let _ = fs::remove_file(temp);
             return Ok(());
         }
@@ -563,7 +580,7 @@ impl Admission {
         }
         drop(file);
         let blob = self.store.blob(&got.sha256)?;
-        self.store.install(&self.temp, &blob, &got.sha256)?;
+        self.store.install(&self.temp, &blob, &got)?;
         Ok(got)
     }
 
