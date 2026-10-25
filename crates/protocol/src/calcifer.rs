@@ -617,6 +617,9 @@ pub struct MachineStatus {
     pub toolchain: Option<crate::machine::Toolchain>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub kernels: Vec<crate::machine::KernelVerdict>,
+    /// Killed processes stuck in the kernel there.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stuck: Vec<crate::machine::StuckProcess>,
 }
 
 /// A run a machine holds for this controller, beside this controller's record of it.

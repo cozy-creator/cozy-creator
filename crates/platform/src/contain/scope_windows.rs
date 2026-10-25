@@ -134,3 +134,8 @@ fn open_waitable(pid: u32) -> Option<OwnedHandle> {
     // SAFETY: a new handle that is now ours.
     (!process.is_null()).then(|| unsafe { OwnedHandle::from_raw_handle(process) })
 }
+
+/// Only Linux tells a member stuck in the kernel apart.
+pub fn stuck() -> Vec<super::Stuck> {
+    Vec::new()
+}

@@ -2366,6 +2366,14 @@
             "format": "int64",
             "default": 0
           },
+          "stuck": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StuckProcess"
+            },
+            "description": "Killed processes stuck in the kernel: nothing waits on them, and what each holds stays\nheld until it exits.",
+            "default": []
+          },
           "tensord_pid": {
             "type": "integer",
             "format": "int32",
@@ -2428,6 +2436,33 @@
           },
           "worker_id": {
             "type": "string",
+            "default": ""
+          }
+        }
+      },
+      "StuckProcess": {
+        "type": "object",
+        "description": "A killed process in uninterruptible sleep (`D`: a driver after an Xid, a hung network\nfilesystem): it exits once that wait ends.",
+        "properties": {
+          "command": {
+            "type": "string",
+            "default": ""
+          },
+          "pid": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0,
+            "minimum": 0
+          },
+          "since_unix_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When the machine found it stuck.",
+            "default": 0
+          },
+          "wchan": {
+            "type": "string",
+            "description": "The kernel function it sleeps in; empty when the kernel hides it.",
             "default": ""
           }
         }
