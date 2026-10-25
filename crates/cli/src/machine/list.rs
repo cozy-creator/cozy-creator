@@ -70,6 +70,9 @@ pub async fn list(ctx: &Context) -> Result<ExitCode, Error> {
         table = table.row(row);
     }
     table.print();
+    if let Some(note) = super::local_note() {
+        println!("{note}");
+    }
     for note in live().filter_map(offline) {
         println!("{note}");
     }

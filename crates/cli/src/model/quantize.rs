@@ -161,6 +161,7 @@ fn declared(interface: &Interface) -> String {
 }
 
 pub(crate) async fn quantize(ctx: &Context, args: Quantize) -> Result<ExitCode, Error> {
+    let on = args.placement.on()?;
     let named = package(ctx, &args.package)?;
     let model = ModelRef::parse(&args.model)?;
     let hub = ctx.hub()?;
@@ -171,7 +172,7 @@ pub(crate) async fn quantize(ctx: &Context, args: Quantize) -> Result<ExitCode, 
             Callee::Release { package, card: &card }
         }
         Named::Local(path) => {
-            prepared = crate::run::local::prepare(ctx, path, args.placement.on(), false).await?;
+            prepared = crate::run::local::prepare(ctx, path, on, false).await?;
             Callee::Local(&prepared)
         }
     };

@@ -1,14 +1,19 @@
 # e2e/cli/commands.sh: the rest of cozy's PR-tier commands and flags (e2e/coverage.toml), parts cli/run.sh calls
-# after its runs or in its own shards: signed out, CPU, the local machine up. Each call's answer is checked,
-# not its exit code alone. Signed-in and renting commands are the release suite's (e2e/release/run.sh).
+# after its runs or in its own shards: signed out, CPU, the local machine up (where this OS has one). Each call's
+# answer is checked, not its exit code alone. Signed-in and renting commands are the release suite's (e2e/release/run.sh).
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 J() { jq -e "$@" > /dev/null; }  # J <filter> <file>: the answer holds what the filter asks
 
-basics() {
+# What needs no machine: Calcifer, Hubs, signing out, the Hub's packages and models.
+catalog() {
 step status
 cozy --json status > "$OUT/status.json" || check "cozy status failed"
 J '.calcifer.running == true and (.calcifer.version | length > 0)' "$OUT/status.json" || check "status: Calcifer is not running"
-J '.machines | any(.name == "local")' "$OUT/status.json" || check "status: the local machine is not listed"
+if [ -n "$LOCAL" ]; then
+  J '.machines | any(.name == "local")' "$OUT/status.json" || check "status: the local machine is not listed"
+else
+  J '.machines | all(.name != "local")' "$OUT/status.json" || check "status: lists a local machine this OS cannot run"
+fi
 
 step hubs
 cozy --json hub > "$OUT/hub.json" && J '.hubs | any(.name == "tensorhub" and .current)' "$OUT/hub.json" || check "hub: tensorhub is not current"
@@ -30,14 +35,9 @@ cozy --json package search birefnet --limit 1 > "$OUT/search.json" && J '(.packa
   || check "package search --limit 1: not exactly birefnet"
 cozy --json package info birefnet > "$OUT/package-info.json" && J '(.latest_release | length > 0) and (.releases | length > 0)' "$OUT/package-info.json" \
   || check "package info birefnet: no releases"
-# Install, list and remove: this suite's own package from its directory (local/e2e-weightless), so the step holds
-# whatever the Hub has published (a published name is installed by the release suite's throwaway, and by every run).
-cozy --json package install "$here/weightless" --on local > "$OUT/install.ndjson" \
-  || check "package install ./weightless --on local failed: $(grep -oE '"message": *"[^"]*"' "$OUT/install.ndjson" | tail -1)"
-cozy --json package list --on local > "$OUT/packages.json" && grep -q 'e2e-weightless' "$OUT/packages.json" || check "package list --on local: no local/e2e-weightless"
-cozy --json package remove local/e2e-weightless --on local > "$OUT/remove.ndjson" || check "package remove local/e2e-weightless --on local failed"
-cozy --json package list --on local > "$OUT/packages-after.json" && ! grep -q 'e2e-weightless' "$OUT/packages-after.json" \
-  || check "package remove: local/e2e-weightless is still installed"
+cozy --json run birefnet/remove_background --describe > "$OUT/describe-published.json" 2> "$OUT/describe-published.err" \
+  && grep -Eq '(^|[[:space:]"])image("|:)' "$OUT/describe-published.json" || check "run birefnet/remove_background --describe: no image input"
+cozy run birefnet > "$OUT/functions.txt" 2>&1 && grep -q remove_background "$OUT/functions.txt" || check "run birefnet: remove_background is not listed"
 
 step models
 cozy --json model search birefnet --limit 1 > "$OUT/models-search.json" && J '(.models | length) == 1' "$OUT/models-search.json" \
@@ -52,21 +52,105 @@ else
 fi
 cozy --json model info birefnet > "$OUT/model-info.json" && J '.releases[0].lanes | length > 0' "$OUT/model-info.json" || check "model info birefnet: no lanes"
 lane=$(jq -r '.releases[0].lanes[0].lane' "$OUT/model-info.json") || true
+
+step "renting, signed out"
+cozy machine rent > "$OUT/rent-catalog.txt" 2>&1 && grep -q 'rtx-4090' "$OUT/rent-catalog.txt" || check "machine rent: no catalog: $(head -c 300 "$OUT/rent-catalog.txt")"
+code=0; cozy --json run birefnet/remove_background --asset "image=$(picture dog1.jpg)" --on new > "$OUT/rent-signed-out.json" 2>&1 || code=$?
+[ "$code" != 0 ] && grep -q 'cozy login' "$OUT/rent-signed-out.json" || check "run --on new signed out: exit $code, not refused for sign-in: $(head -c 300 "$OUT/rent-signed-out.json")"
+}
+
+# This computer's machine: packages and models on it.
+basics() {
+step "packages on local"
+# Install, list and remove: this suite's own package from its directory (local/e2e-weightless), so the step holds
+# whatever the Hub has published (a published name is installed by the release suite's throwaway, and by every run).
+cozy --json package install "$here/weightless" --on local > "$OUT/install.ndjson" \
+  || check "package install ./weightless --on local failed: $(grep -oE '"message": *"[^"]*"' "$OUT/install.ndjson" | tail -1)"
+cozy --json package list --on local > "$OUT/packages.json" && grep -q 'e2e-weightless' "$OUT/packages.json" || check "package list --on local: no local/e2e-weightless"
+cozy --json package remove local/e2e-weightless --on local > "$OUT/remove.ndjson" || check "package remove local/e2e-weightless --on local failed"
+cozy --json package list --on local > "$OUT/packages-after.json" && ! grep -q 'e2e-weightless' "$OUT/packages-after.json" \
+  || check "package remove: local/e2e-weightless is still installed"
+
+step "models on local"
 cozy --json model download birefnet --lane "$lane" --on local > "$OUT/download.ndjson" || check "model download --lane $lane failed"
 cozy --json model download birefnet local/e2e-birefnet > "$OUT/download-alias.ndjson" || check "model download birefnet local/e2e-birefnet failed"
 # A local .safetensors file, made into a model the machine keeps by name: the file is written to the machine
 # and made from its object (object://sha256:…/<name>).
-uv run -q --no-project python -I - "$OUT/tiny.safetensors" <<'PY'
-import json, struct, sys
-header = json.dumps({"w": {"dtype": "F16", "shape": [4, 4], "data_offsets": [0, 32]}}).encode()
-header += b" " * (-len(header) % 8)
-open(sys.argv[1], "wb").write(struct.pack("<Q", len(header)) + header + bytes(32))
-PY
+tiny "$OUT/tiny.safetensors"
 cozy --json model download "$OUT/tiny.safetensors" local/e2e-tiny > "$OUT/download-file.ndjson" || check "model download ./tiny.safetensors local/e2e-tiny failed: $(grep -oE '"message": *"[^"]*"' "$OUT/download-file.ndjson" | tail -1)"
 cozy --json model list --on local > "$OUT/models.json" || check "model list --on local failed"
 grep -q e2e-tiny "$OUT/models.json" || check "model list: the local file's local/e2e-tiny is not listed"
 J --arg lane "$lane" 'any(.models[]; .model == "_/birefnet" and .lane == $lane)' "$OUT/models.json" || check "model list: no _/birefnet in lane $lane after --lane $lane"
 grep -q e2e-birefnet "$OUT/models.json" || check "model list: the local/e2e-birefnet alias is not listed"
+}
+
+# tiny <file>: a 4×4 F16 .safetensors file.
+tiny() {
+uv run -q --no-project python -I - "$1" <<'PY'
+import json, struct, sys
+header = json.dumps({"w": {"dtype": "F16", "shape": [4, 4], "data_offsets": [0, 32]}}).encode()
+header += b" " * (-len(header) % 8)
+open(sys.argv[1], "wb").write(struct.pack("<Q", len(header)) + header + bytes(32))
+PY
+}
+
+# Where this OS runs no models itself (macOS, Windows): every verb that would use this computer's machine refuses
+# `local_unavailable` (exit 1) with the rental to use instead, before anything is staged or started; nothing ever
+# starts a machine here or makes its root; `machine list` and `status` say so in one line; doctor is healthy.
+refusals() {
+step "local runs refused"
+dog=$(picture dog2.jpg) key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+printf 'image: %s\n' "$dog" > "$OUT/refused.yaml"
+tiny "$OUT/refused.safetensors"
+refused() {  # refused <name> <cozy args...>
+  local name=$1 code=0; shift
+  cozy --json "$@" > "$OUT/refused-$name.json" 2> "$OUT/refused-$name.err" || code=$?
+  [ "$code" = 1 ] && J '.error.code == "local_unavailable" and (.error.remedy | contains("--on new"))' "$OUT/refused-$name.json" \
+    || check "cozy $*: exit $code, not refused local_unavailable: $(head -c 300 "$OUT/refused-$name.json") $(head -c 200 "$OUT/refused-$name.err")"
+}
+refused run run birefnet/remove_background --asset "image=$dog"
+refused run-on-local run birefnet/remove_background --input "$OUT/refused.yaml" --on local
+refused run-warm run birefnet/remove_background --warm installed
+(cd "$here" && refused run-code run ./weightless/reverse text=refused)
+(cd "$here" && refused run-describe run ./weightless/reverse --describe)
+refused install package install birefnet
+refused install-code package install "$here/weightless"
+refused remove package remove birefnet
+refused download model download birefnet
+refused upload model upload "$OUT/refused.safetensors" fidika/e2e-refused --lane f16
+refused quantize model quantize anima --lane int8 --package anima
+refused update machine update local --runtime 0.30.0 -y
+refused show machine show local
+refused logs machine logs local --lines 5
+refused authorize machine authorize "$key"
+refused doctor doctor --on local
+cozy run birefnet/remove_background --asset "image=$dog" > "$OUT/refused.txt" 2>&1 && check "a local run without --on was not refused"
+grep -q "local runs aren't available on" "$OUT/refused.txt" && grep -q -- '--on new' "$OUT/refused.txt" \
+  || check "the refusal does not say local runs aren't available and --on new: $(head -c 300 "$OUT/refused.txt")"
+
+step "no local machine"
+cozy --json machine list > "$OUT/machines.json" && J '.machines | all(.name != "local")' "$OUT/machines.json" || check "machine list: a local machine is listed"
+cozy machine list > "$OUT/machines.txt" 2>&1 && grep -q "local runs aren't available on" "$OUT/machines.txt" || check "machine list does not say local runs aren't available"
+cozy status > "$OUT/status.txt" 2>&1 && grep -q "local runs aren't available on" "$OUT/status.txt" || check "status does not say local runs aren't available"
+cozy --json doctor > "$OUT/doctor-gated.json" && J '.healthy and (.checks | any(.check == "machine" and (.state | contains("aren'"'"'t available"))))' "$OUT/doctor-gated.json" \
+  || check "doctor: not healthy, or no line that local runs aren't available: $(jq -c .checks "$OUT/doctor-gated.json")"
+cozy machine logs local calcifer --lines 5 > "$OUT/log-calcifer.txt" && [ -s "$OUT/log-calcifer.txt" ] || check "machine logs local calcifer: no Calcifer log"
+cozy --json package list > "$OUT/packages.json" || check "package list failed"
+cozy --json model list > "$OUT/models.json" || check "model list failed"
+[ ! -e "$HOME/.cozy/machine/var/lib/cozy/tensord" ] || check "a machine root was made on this computer: $(ls "$HOME/.cozy/machine/var/lib/cozy")"
+! pgrep -f "cozy.* machine serve" > /dev/null 2>&1 || check "a machine runs on this computer: $(pgrep -af 'machine serve')"
+}
+
+# macOS: the Homebrew tap's cozy (cozy-promote.yaml pushes each promoted release's formula) installs and runs, then goes.
+homebrew() {
+[ "$RUNNER_OS" = macOS ] || return 0
+step homebrew
+HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install cozy-creator/tap/cozy > "$OUT/brew.log" 2>&1 \
+  || { check "brew install cozy-creator/tap/cozy failed: $(tail -c 300 "$OUT/brew.log")"; return; }
+"$(brew --prefix)/bin/cozy" --version > "$OUT/brew-version.txt" 2>&1 && grep -q '^cozy [0-9]' "$OUT/brew-version.txt" \
+  || check "Homebrew's cozy does not run: $(head -c 300 "$OUT/brew-version.txt")"
+echo "homebrew: $(cat "$OUT/brew-version.txt")"
+brew uninstall cozy > /dev/null 2>&1 || check "brew uninstall cozy failed"
 }
 
 yaml_requests() {
@@ -237,6 +321,7 @@ echo "completion: ${shells[*]}"
 # frozen: run 40084450876 found 0.11.14's update waiting on Calcifer for good while an authorized machine served.)
 update_to_newest() {
 cp "$COZY" "$OUT/cozy-under-test"
+unset COZY_DOWNLOAD_URL  # GitHub's newest release, not --release's files
 newest=$(curl -fsSL ${GH_TOKEN:+-H "Authorization: Bearer $GH_TOKEN"} "https://api.github.com/repos/cozy-creator/cozy-creator/releases?per_page=30" \
   | jq -r '[.[] | select(.prerelease | not) | .tag_name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))][0] // empty') || true
 # The signing workflow's rename was a hard cut (Paul 10-24): this cozy refuses a release signed by release.yml, so until

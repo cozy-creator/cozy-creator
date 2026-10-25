@@ -7,16 +7,17 @@
 #   cli-release                             cozy's signed-in commands (e2e/release/run.sh): a release only, with the CI key
 #   varena                                  the memory manager's own suite (release-gate/suites/varena)
 #   pkg:<name>                              a package's cells; pkg:* every package
-#   os:macos, os:windows                    the cli suite on that OS too (Linux always). A PR takes them only from a
-#                                           platform path (crates/platform, installers, OS-specific code); a release takes all
+#   os:macos, os:windows                    the cli suite on that OS too (Linux always). A PR takes them from what those
+#                                           OSes run (the CLI, Calcifer, platform, installers); a release takes all
 #   build:<artifact>                        the change is in cozy, tensorfs, runtime or package: the candidate set
 #                                           (TensorD, TensorFS, Runtime) is built, the change at its commit and the rest at master
 #   everything                              every suite and package, on Linux
 #   release                                 everything on every OS (the release's `--tokens release`)
 #
-# `mps` is chosen only explicitly (a dispatch's or the release gate's `select`) until it can pass:
-# cozy reports no Apple GPU before cr-021 (`gpus: []` on Apple silicon) and every package's uv.lock
-# is Linux-only. It joins `everything`, `platform` and the BiRefNet/SDXL extras when both land.
+# `mps` is chosen only explicitly (a dispatch's or the release gate's `select`) until it can pass: macOS runs no
+# models itself yet (platform::Os::local_inference, cl-665), cozy reports no Apple GPU before cr-021 (`gpus: []` on
+# Apple silicon) and every package's uv.lock is Linux-only. It joins `everything`, `platform` and the BiRefNet/SDXL
+# extras when all land.
 
 everything = ["cli", "imports", "gpu", "gpu-datacenter", "varena", "pkg:*"]
 release = ["everything", "os:macos", "os:windows", "cli-release"]
@@ -38,8 +39,8 @@ rules = [
 # it (Cargo.toml dependency tables, transitively): changing `platform` selects what `tensord` does.
 [cozy-creator.crates]
 cozy = ["cli", "build:cozy"]
-cli = ["cli", "gpu", "pkg:sdxl", "build:cozy"]
-calcifer = ["cli", "gpu", "pkg:sdxl", "build:cozy"]
+cli = ["cli", "os:macos", "os:windows", "gpu", "pkg:sdxl", "build:cozy"]
+calcifer = ["cli", "os:macos", "os:windows", "gpu", "pkg:sdxl", "build:cozy"]
 hub-client = ["cli", "gpu", "pkg:sdxl", "build:cozy"]
 protocol = ["cli", "gpu", "pkg:sdxl", "build:cozy"]
 platform = ["cli", "os:macos", "os:windows", "build:cozy"]

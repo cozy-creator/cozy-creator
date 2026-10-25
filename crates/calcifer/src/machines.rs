@@ -179,10 +179,14 @@ impl Machines {
         if refresh {
             self.list_hubs().await;
         }
-        self.local_row()?;
+        let here = platform::Os::CURRENT.local_inference();
+        if here {
+            self.local_row()?;
+        }
         let rows = self.store().machines().map_err(internal)?;
         let mut machines = Vec::new();
-        for row in rows.iter().filter(|r| r.state != MachineState::Ended) {
+        let listed = |r: &&MachineRow| r.state != MachineState::Ended && (here || r.kind != MachineKind::Local);
+        for row in rows.iter().filter(listed) {
             machines.push(self.picture(row)?);
         }
         let (hubs, unanswered, signed_out, others) = self.hubs.listing(&rows);
@@ -324,6 +328,7 @@ impl Machines {
     /// `local` always exists: recorded as Calcifer starts (after its first answer, which writes
     /// nothing before it), or as something names it first.
     fn local_row(self: &Arc<Self>) -> Result<MachineRow, Error> {
+        protocol::calcifer::local_usable("local")?;
         if let Some(row) = self.store().machine("local").map_err(internal)? {
             return Ok(row);
         }
@@ -344,10 +349,12 @@ impl Machines {
     async fn local_tasks(self: Arc<Self>) {
         // Off the runtime's workers: a write may wait out a commit stuck on a busy disk.
         let me = self.clone();
-        if let Ok(Err(e)) = tokio::task::spawn_blocking(move || me.record_local()).await {
+        let here = platform::Os::CURRENT.local_inference();
+        if here && let Ok(Err(e)) = tokio::task::spawn_blocking(move || me.record_local()).await {
             warn!("recording this computer's machine: {}", e.message);
         }
-        if self.local.authorized()
+        if here
+            && self.local.authorized()
             && let Err(e) = self.local_up().await
         {
             warn!("starting this computer's machine for its authorized controllers: {}", e.message);
@@ -382,6 +389,7 @@ impl Machines {
     }
 
     pub(crate) async fn local_up(self: &Arc<Self>) -> Result<(), Error> {
+        protocol::calcifer::local_usable("local")?;
         if self.local_runs() {
             return Ok(());
         }

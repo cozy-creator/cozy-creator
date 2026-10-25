@@ -10,10 +10,11 @@ Real runs of `cozy` on GitHub's runners, chosen by what a change touches (CI v2:
 - `run.sh`: how every suite (and the release gate) runs `cozy run`: `--out`, the record's `output[].path`, and a run
   followed by the CLI's own events to its end or a typed error; nothing is cut for time.
 - `cli/run.sh`: install, up, the local machine, the candidates, a weightless request through them, BiRefNet on the CPU, a second
-  executor, down, uninstall.
+  executor, down, uninstall. macOS and Windows run no models themselves yet (`platform::Os::local_inference`): there it checks
+  what needs no machine and that every local verb refuses `local_unavailable`.
 - `imports/run.sh`: every published first-party package release installs (`cozy package install`) and imports on the candidates;
   a Runtime that moves what a published package imports fails here.
-- `mps/run.sh`: BiRefNet and SDXL on a Mac's GPU (explicit `select` only, until it can pass).
+- `mps/run.sh`: BiRefNet and SDXL on a Mac's GPU (explicit `select` only, until macOS runs models itself).
 - `.github/workflows/e2e.yaml` runs the selected suites on PRs here and for cozy-runtime, packages and the release gate. On Linux
   each candidate is one `candidate` job (`candidates/build.sh`), reused from an earlier cozy-creator run that built the same
   sources, and `cli` and `imports` run in shards (`--shard`) on their own runners; `e2e` checks coverage over every shard.

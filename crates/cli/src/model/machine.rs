@@ -6,7 +6,7 @@ use std::io::Read as _;
 use std::path::Path;
 use std::process::ExitCode;
 
-use protocol::calcifer::{Kind as RunKind, Run, StagedInput, Status, SubmitRun};
+use protocol::calcifer::{Kind as RunKind, On, Run, StagedInput, Status, SubmitRun};
 use protocol::error::{Error, Kind};
 use protocol::ids::Digest;
 use protocol::machine::{InputFile, ModelChoice, RunKind as SpecKind, RunSpec};
@@ -17,7 +17,6 @@ use super::refs::{ModelRef, Repo};
 use super::{Download, List, Upload};
 use crate::Context;
 use crate::output::{self, Record, Table};
-use crate::run::Placement;
 
 fn usage(code: &str, message: impl Into<String>) -> Error {
     Error::new(Kind::Usage, code, message)
@@ -118,7 +117,7 @@ fn escape(name: &str) -> String {
 /// none) and follows it; `lane` labels the commit an upload makes.
 async fn warm(
     ctx: &Context,
-    placement: &Placement,
+    on: On,
     target: String,
     input: ModelInput,
     destination: String,
@@ -134,7 +133,7 @@ async fn warm(
     };
     let submit = SubmitRun {
         agreed: None,
-        on: placement.on(),
+        on,
         hub: ctx.hub()?.origin.into(),
         kind: RunKind::Warm,
         target,
@@ -177,6 +176,7 @@ fn made(ctx: &Context, run: &Run) {
 }
 
 pub(crate) async fn download(ctx: &Context, args: Download) -> Result<ExitCode, Error> {
+    let on = args.placement.on()?;
     let destination = match args.alias.as_deref().map(Repo::parse).transpose()? {
         Some(repo) if repo.org == "local" => repo.to_string(),
         Some(_) => return Err(usage("model_alias_invalid", "the name a machine keeps a model under is local/<name>")),
@@ -192,7 +192,7 @@ pub(crate) async fn download(ctx: &Context, args: Download) -> Result<ExitCode, 
         }
         made.0.lane = lane;
     }
-    warm(ctx, &args.placement, args.model.clone(), made.into(), destination, String::new()).await
+    warm(ctx, on, args.model.clone(), made.into(), destination, String::new()).await
 }
 
 pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Error> {
@@ -200,6 +200,7 @@ pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Erro
     if let Some(reference) = args.source.strip_prefix("run:") {
         return super::from_run::upload(ctx, reference, &destination, &args.lane).await;
     }
+    let on = args.placement.on()?;
     // The machine publishes under this computer's sign-in; refuse before anything is made.
     ctx.hub_session(&ctx.hub()?)?;
     let path = Path::new(&args.source);
@@ -209,7 +210,7 @@ pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Erro
         source(&args.source, &args.profiles)?.into()
     };
     let target = format!("{} → {destination} ({})", args.source, args.lane);
-    warm(ctx, &args.placement, target, made, destination, args.lane).await
+    warm(ctx, on, target, made, destination, args.lane).await
 }
 
 /// One checkpoint a machine holds, and its repository's bytes there.

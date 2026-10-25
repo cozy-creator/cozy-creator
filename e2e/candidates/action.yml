@@ -8,7 +8,8 @@ description: >
   runner's OS. No candidate leg tests a released binary: a released Runtime before CPU mode cannot run a model on these
   runners, and a released cozy carries the bugs master fixed. `tensord`, `tensorfs` and `runtime` take a release
   candidate instead of a build: its exact version, a prerelease's too, which `cozy machine update` fetches and
-  verifies. The change's repo is at .src (with artifacts, the packages' only).
+  verifies. The change's repo is at .src (with artifacts, the packages' only). Where the OS runs no models itself
+  (macOS, Windows: platform::Os::local_inference) the set is cozy alone: there is no machine to take the wheels.
 inputs:
   repo:
     description: The repo whose change this is
@@ -36,6 +37,9 @@ inputs:
     default: ''
   runtime:
     description: The Runtime to take instead of building it, an exact release version
+    default: ''
+  release:
+    description: A cozy-publish.yaml run (a dry run's too) whose own installer installs its cozy, the candidate, in place of a build
     default: ''
 runs:
   using: composite
@@ -78,12 +82,24 @@ runs:
       with:
         workspaces: ${{ inputs.repo == 'cozy-creator' && '.src' || '.stack' }} -> target
         save-if: ${{ github.ref == 'refs/heads/master' }}
+    # The run's files in one directory, as its release would hold them (e2e/lib.sh --release).
+    - if: inputs.release != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        RUN: ${{ inputs.release }}
+      run: |
+        gh run download "$RUN" -R cozy-creator/cozy-creator -p 'artifacts-*' -D "$RUNNER_TEMP/release-artifacts"
+        mkdir -p "$RUNNER_TEMP/release"
+        find "$RUNNER_TEMP/release-artifacts" -type f -exec mv {} "$RUNNER_TEMP/release/" \;
+        ls "$RUNNER_TEMP/release"
     - shell: bash
       env:
         REPO: ${{ inputs.repo }}
         BUILD: ${{ inputs.build }}
         FROM: ${{ inputs.from }}
         TENSORD: ${{ inputs.tensord }}
+        RELEASE: ${{ inputs.release }}
         TENSORFS: ${{ inputs.tensorfs }}
         RUNTIME: ${{ inputs.runtime }}
         BUILD_SH: ${{ github.action_path }}/build.sh
@@ -95,17 +111,24 @@ runs:
         set -euo pipefail
         out=$RUNNER_TEMP/candidates exe=''
         [ "$RUNNER_OS" != Windows ] || exe=.exe
+        machine=1
+        [ "$RUNNER_OS" = Linux ] || machine=''
         if [ "$FROM" != artifacts ]; then
           creator=.stack runtime=.rt
           [ "$REPO" != cozy-creator ] || creator=.src
           [ "$REPO" != cozy-runtime ] || runtime=.src
-          [ -n "$TENSORD" ] || bash "$BUILD_SH" cozy "$creator" "$out" > /dev/null
-          [ -n "$TENSORFS" ] || bash "$BUILD_SH" tensorfs "$creator" "$out" > /dev/null
-          [ -n "$RUNTIME" ] || bash "$BUILD_SH" runtime "$runtime" "$out" > /dev/null
+          [ -n "$TENSORD$RELEASE" ] || bash "$BUILD_SH" cozy "$creator" "$out" > /dev/null
+          [ -n "$TENSORFS" ] || [ -z "$machine" ] || bash "$BUILD_SH" tensorfs "$creator" "$out" > /dev/null
+          [ -n "$RUNTIME" ] || [ -z "$machine" ] || bash "$BUILD_SH" runtime "$runtime" "$out" > /dev/null
         fi
-        # A taken candidate stays its version; a built one is its file (an artifact keeps no file mode).
-        [ -n "$TENSORD" ] || { TENSORD=$out/cozy$exe; chmod +x "$TENSORD"; echo "TensorD: $("$TENSORD" --version)"; }
-        args=(--tensord "$TENSORD" --tensorfs "${TENSORFS:-$(ls "$out"/tensorfs-*.whl)}" --runtime "${RUNTIME:-$(ls "$out"/cozy_runtime-*.whl)}")
+        # A taken candidate stays its version; a built one is its file (an artifact keeps no file mode); a release
+        # run's is what its installer installs.
+        if [ -n "$RELEASE" ]; then args=(--release "$RUNNER_TEMP/release")
+        else
+          [ -n "$TENSORD" ] || { TENSORD=$out/cozy$exe; chmod +x "$TENSORD"; echo "TensorD: $("$TENSORD" --version)"; }
+          args=(--tensord "$TENSORD")
+        fi
+        [ -z "$machine" ] || args+=(--tensorfs "${TENSORFS:-$(ls "$out"/tensorfs-*.whl)}" --runtime "${RUNTIME:-$(ls "$out"/cozy_runtime-*.whl)}")
         [[ " $BUILD " != *" package "* ]] || args+=(--packages .src)
         echo "CANDIDATES=${args[*]}" >> "$GITHUB_ENV"
         echo "candidates: ${args[*]}"

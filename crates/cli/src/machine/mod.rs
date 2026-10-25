@@ -196,6 +196,12 @@ async fn add(
     Ok(ExitCode::SUCCESS)
 }
 
+/// The line `machine list` and `status` show where this OS runs no models itself (no `local`).
+pub(crate) fn local_note() -> Option<String> {
+    let off = protocol::calcifer::local_usable("local").err()?;
+    Some(format!("{}: {}", off.message, off.remedy.unwrap_or_default()))
+}
+
 /// Money as people read it: `$3.19`.
 fn usd(micros: i64) -> String {
     format!("${:.2}", micros as f64 / 1e6)

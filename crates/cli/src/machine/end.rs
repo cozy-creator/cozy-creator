@@ -213,6 +213,7 @@ pub async fn update(
     tensord: Option<String>,
     gpu_memory_limit: Option<u64>,
 ) -> Result<ExitCode, Error> {
+    protocol::calcifer::local_usable(name)?;
     let mut payload = serde_json::Map::new();
     let (mut staged, mut inputs, mut named, mut want) = (vec![], vec![], vec![], vec![]);
     let mut asked = vec![];

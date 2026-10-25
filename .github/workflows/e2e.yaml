@@ -1,7 +1,8 @@
 name: e2e
 # CI v2 (tracker/design/ci-v2.md): cozy as a person runs it, on GitHub's runners, for the suites the change
 # selects (ci/affected, ci/suites.toml). `cli`: install, up, the local machine, a weightless request and real
-# BiRefNet on the CPU, a second executor, down, uninstall (Linux; macOS and Windows when selected). `imports`:
+# BiRefNet on the CPU, a second executor, down, uninstall (Linux); on macOS and Windows, when selected, what needs no
+# machine and every local verb refused (they run no models themselves yet). `imports`:
 # every published first-party package release installs and imports on the candidate set. `mps`: real
 # inference on the macOS runner's Apple GPU. The GPU suites run in the release gate, not here. `e2e` always
 # reports.
@@ -68,6 +69,18 @@ on:
         description: The imports suite loads the published releases instead of the packages checkout (a release's question)
         type: boolean
         default: false
+      publish_run:
+        description: A cozy-publish.yaml run (a dry run's too) whose own installer installs its cozy on every runner, the candidate in place of a build
+        type: string
+        default: ''
+      sku:
+        description: What cli-release rents (empty, the catalog's cheapest GPU)
+        type: string
+        default: ''
+      quote:
+        description: cli-release stops at the rental's quote and rents nothing (its $0 pre-flight)
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       repo:
@@ -106,6 +119,15 @@ on:
       published:
         type: boolean
         default: false
+      publish_run:
+        type: string
+        default: ''
+      sku:
+        type: string
+        default: ''
+      quote:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -127,6 +149,8 @@ jobs:
     outputs:
       selection: ${{ steps.select.outputs.selection }}
       linux: ${{ steps.select.outputs.linux }}
+      runners: ${{ steps.select.outputs.runners }}
+      release_runners: ${{ steps.select.outputs.release_runners }}
       repo: ${{ steps.what.outputs.repo }}
       ref: ${{ steps.what.outputs.ref }}
       creator: ${{ steps.what.outputs.creator }}
@@ -159,6 +183,7 @@ jobs:
           fetch-depth: 0
       - id: select
         env:
+          PUBLISH_RUN: ${{ inputs.publish_run }}
           TOKENS: ${{ inputs.select }}
           REPO: ${{ steps.what.outputs.repo }}
           REF: ${{ steps.what.outputs.ref }}
@@ -169,6 +194,11 @@ jobs:
           echo "selection=$s" >> "$GITHUB_OUTPUT"
           # A Linux suite takes the candidate jobs' set.
           echo "linux=$(echo "$s" | jq 'any(.suites[]; . == "cli" or . == "imports" or . == "cli-release")')" >> "$GITHUB_OUTPUT"
+          # The cli suite's other runners: macOS arm64 and x64, Windows x64; a release run's installer on Windows arm64 too.
+          arm=$([ -z "$PUBLISH_RUN" ] || echo '"windows-11-arm"')
+          echo "runners=$(echo "$s" | jq -c "[.os[] | {macos: [\"macos-15\", \"macos-15-intel\"], windows: [\"windows-2025\"${arm:+, $arm}]}[.] // [] | .[]]")" >> "$GITHUB_OUTPUT"
+          # cli-release's, each renting one machine: Linux, and one macOS and one Windows runner when selected.
+          echo "release_runners=$(echo "$s" | jq -c '[.os[] | {linux: "ubuntu-24.04", macos: "macos-15", windows: "windows-2025"}[.] // empty]')" >> "$GITHUB_OUTPUT"
           { echo "### e2e selection: $REPO ${REF:0:12}"; echo '```'; echo "$s" | jq .; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           echo "$s" | jq .
 
@@ -182,7 +212,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - { what: cozy, repo: cozy-creator, take: "${{ inputs.tensord }}" }
+          - { what: cozy, repo: cozy-creator, take: "${{ inputs.tensord || inputs.publish_run }}" }
           - { what: tensorfs, repo: cozy-creator, take: "${{ inputs.tensorfs }}" }
           - { what: runtime, repo: cozy-runtime, take: "${{ inputs.runtime }}" }
     runs-on: ubuntu-24.04
@@ -268,6 +298,7 @@ jobs:
           tensord: ${{ inputs.tensord }}
           tensorfs: ${{ inputs.tensorfs }}
           runtime: ${{ inputs.runtime }}
+          release: ${{ inputs.publish_run }}
       - name: cli suite
         env:
           PINS: ${{ inputs.pins }}
@@ -281,20 +312,17 @@ jobs:
           path: ${{ runner.temp }}/e2e
           retention-days: 14
 
-  # macOS and Windows, when selected: the whole suite on one runner, its candidates built there.
+  # macOS (arm64, x64) and Windows, when selected: the whole suite on each runner, its cozy built there. These OSes run
+  # no models themselves (platform::Os::local_inference): what needs no machine, and every local verb refused.
   cli-os:
+    name: cli ${{ matrix.runner }}
     needs: affected
-    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && (contains(fromJSON(needs.affected.outputs.selection).os, 'macos') || contains(fromJSON(needs.affected.outputs.selection).os, 'windows'))
+    if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && needs.affected.outputs.runners != '[]'
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(needs.affected.outputs.selection).os }}
-        exclude:
-          - os: linux
-    runs-on: ${{ matrix.os == 'macos' && 'macos-15' || 'windows-2025' }}
-    # macOS (TensorD exit 78, cr-021; Mac deferred) and Windows (TensorFS has no read source on Windows yet) report
-    # but do not block until those gaps close; Linux blocks.
-    continue-on-error: true
+        runner: ${{ fromJSON(needs.affected.outputs.runners) }}
+    runs-on: ${{ matrix.runner }}
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time.
     timeout-minutes: 90
@@ -319,6 +347,7 @@ jobs:
           tensord: ${{ inputs.tensord }}
           tensorfs: ${{ inputs.tensorfs }}
           runtime: ${{ inputs.runtime }}
+          release: ${{ inputs.publish_run }}
       - name: cli suite
         env:
           PINS: ${{ inputs.pins }}
@@ -327,16 +356,21 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-cli-${{ matrix.os }}
+          name: e2e-cli-${{ matrix.runner }}
           path: ${{ runner.temp }}/e2e
           retention-days: 14
 
   # cozy's signed-in commands, with the CI key: only where the release-gate environment admits the ref (master,
   # release branches), so a release (`--tokens release`) or a dispatch selects it, never a pull request.
   cli-release:
+    name: cli-release ${{ matrix.runner }}
     needs: [affected, candidate]
     if: contains(fromJSON(needs.affected.outputs.selection).suites, 'cli-release')
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: ${{ fromJSON(needs.affected.outputs.release_runners) }}
+    runs-on: ${{ matrix.runner }}
     environment: release-gate
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time.
@@ -357,22 +391,28 @@ jobs:
           repo: ${{ needs.affected.outputs.repo }}
           ref: ${{ needs.affected.outputs.ref }}
           build: ${{ env.BUILD }}
-          from: artifacts
+          # Linux takes the candidate jobs' set; macOS and Windows build their cozy here.
+          from: ${{ matrix.runner == 'ubuntu-24.04' && 'artifacts' || '' }}
+          stack_ref: ${{ inputs.stack_ref || 'master' }}
+          runtime_ref: ${{ inputs.runtime_ref || 'master' }}
           tensord: ${{ inputs.tensord }}
           tensorfs: ${{ inputs.tensorfs }}
           runtime: ${{ inputs.runtime }}
+          release: ${{ inputs.publish_run }}
       - name: cli-release suite
         env:
           KEY: ${{ secrets.COZY_CI_DEVICE_KEY }}
+          SKU: ${{ inputs.sku }}
+          QUOTE: ${{ inputs.quote && '1' || '' }}
         run: |
           [ -n "$KEY" ] || { echo "::error::the release-gate environment has no COZY_CI_DEVICE_KEY (release-gate/README.md)"; exit 1; }
           umask 077; printf '%s' "$KEY" > "$RUNNER_TEMP/key.json"
-          code=0; bash .creator/e2e/release/run.sh --out "$RUNNER_TEMP/e2e" --key "$RUNNER_TEMP/key.json" $CANDIDATES || code=$?
+          code=0; bash .creator/e2e/release/run.sh --out "$RUNNER_TEMP/e2e" --key "$RUNNER_TEMP/key.json" ${SKU:+--sku "$SKU"} ${QUOTE:+--quote} $CANDIDATES || code=$?
           rm -f "$RUNNER_TEMP/key.json"; exit $code
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-cli-release
+          name: e2e-cli-release-${{ matrix.runner }}
           path: ${{ runner.temp }}/e2e
           retention-days: 14
 
@@ -409,6 +449,7 @@ jobs:
           tensord: ${{ inputs.tensord }}
           tensorfs: ${{ inputs.tensorfs }}
           runtime: ${{ inputs.runtime }}
+          release: ${{ inputs.publish_run }}
       - name: imports suite
         env:
           PINS: ${{ inputs.pins }}
@@ -450,6 +491,7 @@ jobs:
           tensord: ${{ inputs.tensord }}
           tensorfs: ${{ inputs.tensorfs }}
           runtime: ${{ inputs.runtime }}
+          release: ${{ inputs.publish_run }}
       - name: mps suite
         run: bash .creator/e2e/mps/run.sh --out "$RUNNER_TEMP/e2e" $CANDIDATES
       - if: always()
@@ -468,25 +510,25 @@ jobs:
     steps:
       # Coverage (e2e/coverage.py) over every cli shard's calls: each command and flag has a test, and each PR-tier one ran.
       # A taken TensorD is a release, not the CLI this checkout builds: no coverage.
-      - if: (needs.cli.result == 'success' || needs.cli.result == 'failure') && inputs.tensord == ''
+      - if: (needs.cli.result == 'success' || needs.cli.result == 'failure') && inputs.tensord == '' && inputs.publish_run == ''
         uses: actions/checkout@v5
         with:
           repository: cozy-creator/cozy-creator
           ref: ${{ needs.affected.outputs.creator }}
           path: .creator
-      - if: (needs.cli.result == 'success' || needs.cli.result == 'failure') && inputs.tensord == ''
+      - if: (needs.cli.result == 'success' || needs.cli.result == 'failure') && inputs.tensord == '' && inputs.publish_run == ''
         uses: actions/download-artifact@v4
         with:
           pattern: e2e-cli-linux-*
           path: ${{ runner.temp }}/cli
-      - if: (needs.cli.result == 'success' || needs.cli.result == 'failure') && inputs.tensord == ''
+      - if: (needs.cli.result == 'success' || needs.cli.result == 'failure') && inputs.tensord == '' && inputs.publish_run == ''
         uses: actions/download-artifact@v4
         with:
           pattern: candidate-cozy-*
           merge-multiple: true
           path: ${{ runner.temp }}/candidates
       - name: coverage
-        if: (needs.cli.result == 'success' || needs.cli.result == 'failure') && inputs.tensord == ''
+        if: (needs.cli.result == 'success' || needs.cli.result == 'failure') && inputs.tensord == '' && inputs.publish_run == ''
         run: |
           chmod +x "$RUNNER_TEMP/candidates/cozy"
           python3 -I .creator/e2e/coverage.py check "$RUNNER_TEMP/candidates/cozy" .creator/e2e/coverage.toml --tiers pr \

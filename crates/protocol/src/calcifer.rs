@@ -904,6 +904,19 @@ impl Kind {
     }
 }
 
+/// Refuses `machine` when it is this computer's (`local`) on an OS whose local inference is off
+/// ([`platform::Os::local_inference`]): every verb that would use it, and Calcifer, refuse alike.
+pub fn local_usable(machine: &str) -> Result<(), crate::error::Error> {
+    let os = platform::Os::CURRENT;
+    if !machine.eq_ignore_ascii_case("local") || os.local_inference() {
+        return Ok(());
+    }
+    let message = format!("local runs aren't available on {os} yet");
+    Err(crate::error::Error::new(crate::error::Kind::Unavailable, "local_unavailable", message)
+        .remedy("add `--on new` to rent a Linux GPU, or `--on <machine>` for one you have")
+        .next("cozy machine rent"))
+}
+
 impl From<String> for On {
     fn from(text: String) -> Self {
         match text.as_str() {

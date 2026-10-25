@@ -99,7 +99,8 @@ impl Machines {
     }
 
     pub(crate) fn title(&self) -> String {
-        "machines".to_owned() + &self.watch.silence().map(|s| format!(" · {s}")).unwrap_or_default()
+        let note = super::local_note().map(|n| format!(" · {n}")).unwrap_or_default();
+        format!("machines{note}") + &self.watch.silence().map(|s| format!(" · {s}")).unwrap_or_default()
     }
 
     pub(crate) fn headers(&self) -> Vec<&'static str> {
