@@ -73,6 +73,8 @@ def run(payload: Request, ctx: Context) -> Report:
                 [0.0, -0.125, 0.333251953125, 1.00390625, 2.0, 0.0001220703125, 32.0],
                 dtype=scale_type,
             )
+            # Rowwise scales use an element-count contract, not an exact rank.
+            scale_shape = {"F32": (rows,), "F16": (rows, 1), "BF16": (1, rows)}[dtype]
             values = torch.empty(rows, cols, dtype=torch.float32)
             RowwiseDequant(scheme).decode(
                 torch, {"weight": weight, "scale": scales}, values
@@ -82,7 +84,7 @@ def run(payload: Request, ctx: Context) -> Report:
                 scheme,
                 {
                     "weight": (weight_dtype, (rows, cols), codes),
-                    "scale": (scale_dtype, (rows,), scales),
+                    "scale": (scale_dtype, scale_shape, scales),
                 },
                 decoded,
                 dtype="F32",
@@ -101,7 +103,7 @@ def run(payload: Request, ctx: Context) -> Report:
                     "weight": (weight_dtype, (rows, cols), codes.numpy().tobytes()),
                     "scale": (
                         scale_dtype,
-                        (rows,),
+                        scale_shape,
                         scales.view(torch.uint8).numpy().tobytes(),
                     ),
                 },
@@ -225,11 +227,31 @@ def run(payload: Request, ctx: Context) -> Report:
                         "digests": digests,
                     }
                 )
+                print(
+                    json.dumps(
+                        {
+                            "stage": "rowwise_conversion_verified",
+                            "target": target,
+                            "chunk_rows": chunk,
+                            "cases": len(cases),
+                            "read_bytes": expected_read,
+                            "new_bytes": encoded_bytes,
+                            "source_header": source.id,
+                            "output_header": checkpoint.id,
+                            "payload_digest": hashlib.sha256(
+                                json.dumps(digests, sort_keys=True).encode()
+                            ).hexdigest(),
+                            "sse_energy_rtol": 2e-13,
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
                 checkpoint.close()
         refusals = []
         for name, options in [
             ("params", {"params": {"extra": 1}}),
-            ("scale_shape", {"scale_shape": (rows, 1)}),
+            ("scale_count", {"scale_shape": (rows + 1,)}),
             ("weight_dtype", {"weight_dtype": "I8"}),
             ("scale_dtype", {"scale_dtype": "I32"}),
             ("extra_role", {"extra": True}),
@@ -246,7 +268,8 @@ def run(payload: Request, ctx: Context) -> Report:
                     options.get("scale_dtype", "F32"),
                     options.get("scale_shape", (rows,)),
                     torch.full(
-                        (rows,), float("nan") if options.get("nonfinite") else 1.0
+                        options.get("scale_shape", (rows,)),
+                        float("nan") if options.get("nonfinite") else 1.0,
                     ),
                 ),
             }
@@ -301,6 +324,13 @@ def run(payload: Request, ctx: Context) -> Report:
                         "code": error.code,
                         "read_bytes": control.progress()[0],
                     }
+                )
+                print(
+                    json.dumps(
+                        {"stage": "rowwise_refusal_verified", **refusals[-1]},
+                        sort_keys=True,
+                    ),
+                    flush=True,
                 )
             else:
                 raise AssertionError(f"invalid rowwise source {name} was accepted")
