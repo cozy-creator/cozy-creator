@@ -445,6 +445,94 @@ def replay_allocator(memory, directory):
     }
 
 
+def gil_cancellation(memory, directory, seed):
+    del directory
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from tensorfs import _ext, varena
+
+    # Let CPython destroy the actual native guard under the GIL, without close()/GC/sleep.
+    for replay in (False, True):
+        guard = _ext._VarenaAllocatorCapture(0, replay=replay)
+        del guard
+        with varena.capture(0) if replay else varena.replay(0):
+            pass
+    loop, oracle = resident_loop(seed)
+    region = memory.native.reserve(2 * MIB)
+    rounds = []
+    try:
+        for index in range(3):
+            use = region.prepare()
+            use.tensor.fill_(index + 1)
+            use.commit()
+            del use
+            running = loop.submit()
+            first = progress(running)
+            reclaim_entered, getter_entered = threading.Event(), threading.Event()
+
+            def reclaim(entered=reclaim_entered):
+                entered.set()
+                return memory.native.reclaim(2 * MIB)
+
+            def getter(entered=getter_entered):
+                entered.set()
+                return memory.native.stats()
+
+            began = time.perf_counter_ns()
+            with ThreadPoolExecutor(max_workers=2) as workers:
+                freeing = workers.submit(reclaim)
+                assert reclaim_entered.wait(5)
+                time.sleep(0.02)
+                assert not freeing.done(), "fixture did not enter a live context join"
+                reading = workers.submit(getter)
+                assert getter_entered.wait(5)
+                time.sleep(0.02)
+                queued_getter = not reading.done()
+                requested = time.perf_counter_ns()
+                running.cancel()
+                (output,) = running.wait()
+                ended = running.poll()
+                released = freeing.result(timeout=10)
+                observed = reading.result(timeout=10)
+            torch.testing.assert_close(output, oracle, rtol=0, atol=0)
+            assert queued_getter, (
+                "getter was not waiting behind the native context join"
+            )
+            assert ended.done and ended.canceled and ended.completed_steps < 1500
+            assert released >= 2 * MIB and observed["pinned_bytes"] == 0
+            rounds.append(
+                {
+                    "first_steps": first.completed_steps,
+                    "canceled_steps": ended.completed_steps,
+                    "cancel_join_ms": (time.perf_counter_ns() - requested) / 1e6,
+                    "whole_contention_ms": (time.perf_counter_ns() - began) / 1e6,
+                    "reclaimed_bytes": released,
+                    "getter_waited": queued_getter,
+                }
+            )
+        # Last escaped storage alias must make physical pages reclaimable immediately.
+        use = region.prepare()
+        use.tensor.fill_(19)
+        use.commit()
+        alias = use.tensor[1:]
+        del use
+        began = time.perf_counter_ns()
+        del alias
+        released = memory.native.reclaim(2 * MIB)
+        assert released >= 2 * MIB, memory.native.stats()
+        return {
+            "rounds": rounds,
+            "finite_horizon_steps": 3000,
+            "guard_drop_releases_immediately": True,
+            "alias_drop_reclaimed_bytes": released,
+            "alias_drop_to_reclaim_ms": (time.perf_counter_ns() - began) / 1e6,
+        }
+    finally:
+        loop.close()
+        memory.trim()
+
+
 def exercise(seed, mode):
     torch.set_num_threads(1)
     accel.initialize(torch, "cuda")
@@ -464,6 +552,8 @@ def exercise(seed, mode):
             result = ordinary_replay(memory, Path(directory))
         elif mode == "prefetch-allocator":
             result = replay_allocator(memory, Path(directory))
+        elif mode == "prefetch-gil":
+            result = gil_cancellation(memory, Path(directory), seed)
         else:
             result = automatic(memory, Path(directory), seed, mode == "prefetch-cancel")
     return {

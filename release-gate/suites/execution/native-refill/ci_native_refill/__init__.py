@@ -40,6 +40,7 @@ def gpu(payload: Probe, tel: Telemetry) -> Report:
         "prefetch-capture",
         "prefetch-replay",
         "prefetch-allocator",
+        "prefetch-gil",
     }:
         raise ValueError("unknown native refill gate mode")
     if not Path(payload.candidate_python).is_file():
