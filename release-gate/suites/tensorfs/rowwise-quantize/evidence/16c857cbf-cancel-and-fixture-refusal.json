@@ -1,0 +1,73 @@
+{
+  "purpose": "Rowwise native checkpoint conversion: partial qualification, not full matrix parity",
+  "cohort": {
+    "runtime_source": "07d5e705472715f4844c9f0eb7d8fd41d05bb5b2",
+    "runtime_wheel_sha256": "b43d3cfcb107f263abdf16f2d905d9891ce64571797db04c22313db77b76262e",
+    "tensorfs_source": "16c857cbf6376e828f1d18846c82c3857a7305b1",
+    "tensorfs_wheel_sha256": "cd5cd14aeb4a6c74c76e22770becc11fbd846821ced8ef05b7808a3c4ce1a692",
+    "native_sha256": "56b635971d6f01ece97f1afd92c2b615244fd0686598ff06c770eb2ac0b5732d",
+    "tensord_source": "fd4ff48fa21e7ee7c0ffe436b2ce6c6b0f98084f",
+    "machine": "mamiina",
+    "mode": "CPU cells; host RTX3060 is not GPU numerical proof"
+  },
+  "cases": [
+    {
+      "case": "rowwise-basic",
+      "number": 17609,
+      "id": "run-c4ca8318cff12ad152c5d9d3",
+      "status": "failed",
+      "execution_ms": 3797,
+      "reason": {
+        "code": "unhandled_exception",
+        "message": "TypeError: memoryview: a bytes-like object is required, not 'Tensor'",
+        "origin": "author",
+        "detail": "Traceback (most recent call last):\n  File \"/var/lib/cozy/tensord/generations/71c3104b845e8b0386be64affd7c3169/env/lib/python3.12/site-packages/cozy_runtime/author/_invoke.py\", line 523, in run_prepared\n    return invoke(prepared, inv, record), SUCCEEDED, record\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/generations/71c3104b845e8b0386be64affd7c3169/env/lib/python3.12/site-packages/cozy_runtime/author/_invoke.py\", line 452, in invoke\n    result = _call(surface, kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/generations/71c3104b845e8b0386be64affd7c3169/env/lib/python3.12/site-packages/cozy_runtime/author/_invoke.py\", line 1093, in _call\n    return surface.fn(**kwargs)\n           ^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/editable/2b8a69fe7c6ec0ea/ci-rowwise-quantize/source-604ed3033ea71d32ee02161f6c80543cfab345ee5c988a944192cd6ff2f6aea5/tree/ci_rowwise_quantize/__init__.py\", line 94, in run\n    component.put_encoded(\n  File \"/var/lib/cozy/tensord/generations/71c3104b845e8b0386be64affd7c3169/env/lib/python3.12/site-packages/tensorfs/api.py\", line 137, in put_encoded\n    self._native.put_encoded(key, dtype, shape, scheme, parts, dict(params))\nTypeError: memoryview: a bytes-like object is required, not 'Tensor'"
+      }
+    },
+    {
+      "case": "rowwise-cancel",
+      "number": 17610,
+      "id": "run-8c2ca83a612ad9b9b8b80ce5",
+      "status": "completed",
+      "execution_ms": 746,
+      "reason": null,
+      "evidence": {
+        "cancel_progress": [
+          12596,
+          1,
+          260
+        ],
+        "mode": "cancel",
+        "native_sha256": "56b635971d6f01ece97f1afd92c2b615244fd0686598ff06c770eb2ac0b5732d",
+        "resumed": {
+          "encoded_keys": 1,
+          "identity": "2abf5354b27a79ac630c50508455fa9e43bdba9fc2cd44f8951904f52c5ec700",
+          "new_bytes_written": 16842752,
+          "reused_keys": 1,
+          "saturated_elements": 0,
+          "source_bytes_read": 16842752,
+          "tensors": [
+            {
+              "component": "net",
+              "key": "large",
+              "measured": {
+                "amax": 128.0,
+                "energy": 91628765184.0,
+                "max_abs_error": 0.559055358171463,
+                "saturated": 0,
+                "sse": 1420379.3542079777
+              },
+              "new_bytes_written": 16842752,
+              "relative_frobenius": 0.003937188959015778,
+              "source_bytes_read": 16842752
+            }
+          ],
+          "worst_relative_frobenius": null
+        },
+        "seed": 1792908490
+      }
+    }
+  ],
+  "finding": "17609 fixture passes Torch tensors to Writer.put_encoded, which requires buffer bytes; failure precedes native rowwise quantization. Fixture1459fb805 serializes those parts; rerun required.",
+  "verified_boundary": "17610 actual int8.rowwise source read/cancellation/same-Writer retry and output integrity passed. It does not qualify all source dtypes/FP8 shapes or Runtime rowwise admission."
+}

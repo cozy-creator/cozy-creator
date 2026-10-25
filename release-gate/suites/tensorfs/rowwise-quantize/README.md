@@ -26,3 +26,10 @@ and rejects6 malformed/nonfinite sources before publication (metadata errors bef
 `mode=cancel` observes actual bounded code/scale reads of a16MiB encoded source after a completed
 first tensor, cancels, retries the same Writer at another buffer limit, and checks stored-byte
 accounting/unchanged completed entry/integrity. It refuses a missed real cancellation window.
+
+Partial installed qualification: CPU cancellation/retry **17610 passed** on mamiina with
+TensorFS16c857cbf/cd5c, Runtime07d5e7054/b43 and TensorDfd4ff48fa. Basic **17609 failed before
+native quantization** because the fixture handed Torch tensors to Writer.put_encoded's buffer
+API. Fixture1459fb805 serializes those owned parts as immutable bytes, including BF16 scales;
+no native code changed. [Exact partial receipt](evidence/16c857cbf-cancel-and-fixture-refusal.json).
+Full source-matrix parity and Runtime rowwise routing remain pending the corrected basic run.
