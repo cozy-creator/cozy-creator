@@ -131,22 +131,22 @@ cozy --json package delete "fidika/$pkg" -y > "$OUT/pkg-delete.json" || check "p
 
 step "throwaway model"
 uv run -q --no-project python -I - "$OUT/tiny.safetensors" <<'PY'
-import json, struct, sys
+import json, os, struct, sys
 header = json.dumps({"w": {"dtype": "F16", "shape": [4, 4], "data_offsets": [0, 32]}}).encode()
 header += b" " * (-len(header) % 8)
-open(sys.argv[1], "wb").write(struct.pack("<Q", len(header)) + header + bytes(32))
+open(sys.argv[1], "wb").write(struct.pack("<Q", len(header)) + header + os.urandom(32))
 PY
 watched upload model upload "$OUT/tiny.safetensors" "$model" --lane f16 --on "$ON" || check "model upload failed"
 commit=$(jq -r '.. | objects | .commit? // empty' "$OUT/upload.ndjson" 2> /dev/null | tail -1) || true
 uv run -q --no-project python -I - "$OUT/tiny-b.safetensors" <<'PY'
-import json, struct, sys
+import json, os, struct, sys
 header = json.dumps({"w": {"dtype": "F32", "shape": [4, 4], "data_offsets": [0, 64]}}).encode()
 header += b" " * (-len(header) % 8)
-open(sys.argv[1], "wb").write(struct.pack("<Q", len(header)) + header + bytes(64))
+open(sys.argv[1], "wb").write(struct.pack("<Q", len(header)) + header + os.urandom(64))
 PY
 watched upload-b model upload "$OUT/tiny-b.safetensors" "$model" --lane f32 --on "$ON" || check "model upload --lane f32 failed"
 commit_b=$(jq -r '.. | objects | .commit? // empty' "$OUT/upload-b.ndjson" 2> /dev/null | tail -1) || true
-# While its commit is private: a run capability reaches it and nothing else (cl-670).
+# While its commit is private (its random bytes are in no public release): a run capability reaches it and nothing else (cl-670).
 # Its own process: `cozy` there is the installed binary, not this suite's logging function.
 PATH="$(dirname "$COZY"):$PATH" "$here/../capabilities/run.sh" --out "$OUT/capabilities" --commit "$model@$commit" > "$OUT/capabilities.txt" \
   || check "run capabilities: $(grep FAIL "$OUT/capabilities.txt" | head -3 | tr '\n' ' ')"
