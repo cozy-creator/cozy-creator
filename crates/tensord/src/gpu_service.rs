@@ -1351,10 +1351,9 @@ impl Pool {
                 (Some(plan), Level::Downloaded) if !self.downloaded(plan) => "its weights are downloading",
                 (_, Level::Downloaded) => "",
                 (_, Level::Imported) => self.import(&member.held),
-                (Some(plan), Level::Host | Level::Gpu) => match self.import(&member.held) {
-                    "" => self.load_member(engine, &member, plan, preparation),
-                    held_back => held_back,
-                },
+                // new_session uses the import-only parent where supported, otherwise spawn.
+                // A missing fork parent must not refuse GPU warming on Windows.
+                (Some(plan), Level::Host | Level::Gpu) => self.load_member(engine, &member, plan, preparation),
             };
             *member.held_back.lock().unwrap() = held_back;
         }
