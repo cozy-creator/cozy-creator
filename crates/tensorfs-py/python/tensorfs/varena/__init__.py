@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from typing import Any
 
 from .. import _ext
 
@@ -130,7 +129,7 @@ class Region:
 
     def prepare_read(
         self,
-        checkpoint: Any,
+        checkpoint: _ext.Checkpoint,
         parts: Sequence[tuple[str, int, int]],
         *,
         threads: int = 2,
@@ -170,7 +169,7 @@ class PreparedRead:
     An unstarted cancellation settles without a later start. Partial fills are never published.
     """
 
-    def __init__(self, native: Any) -> None:
+    def __init__(self, native: _ext._VarenaPreparedRead) -> None:
         self._native = native
 
     def start(self) -> None:
