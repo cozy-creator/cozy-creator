@@ -217,10 +217,14 @@ impl Device {
         memory(device.memory_info()).map(|(_, free)| free)
     }
 
-    /// Its bytes in use now, every process's and the driver's own (total less free).
+    /// Its bytes in use now, every process's, as `nvidia-smi` shows them (not the driver's reserve;
+    /// an integrated GPU's: total less free).
     pub fn used(&self) -> Result<u64> {
         let device = self.nvml.device_by_index(self.index).map_err(failed("open device"))?;
-        memory(device.memory_info()).map(|(total, free)| total.saturating_sub(free))
+        match device.memory_info() {
+            Ok(info) => Ok(info.used),
+            answer => memory(answer).map(|(total, free)| total.saturating_sub(free)),
+        }
     }
 
     /// Whether its compute mode admits one context at a time (exclusive-process) or none
