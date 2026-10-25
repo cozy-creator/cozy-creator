@@ -34,7 +34,9 @@ way a suite runs `cozy` and reads a run), optional `before.sh` (the fresh pod, b
    15 minutes is canceled; one whose cancel does not take stops the gate (e2e/run.sh).
 4. Ends the rental and checks that it is gone.
 5. Runs `analyze.py`. A cell passes when it completed, served the last PASS's kernels (with no fallback), produced
-   a sane output, and kept execution / step 1 / steady s/step / peak reserved VRAM within the last PASS's spread.
+   a sane output, and kept execution / step 1 / steady s/step / VRAM within the last PASS's spread. VRAM is the
+   driver's: TensorD reads each GPU's bytes in use (NVML) every 100 ms over a call into the record's `memory.driver`,
+   and `runs.py` reads what the cell added at its fullest (caps judge everything in use). A GPU cell without it fails.
 
 ## Baselines
 
@@ -45,7 +47,8 @@ A SKU and suites with no baseline need `--establish` once.
 ## Running it
 
 - **By hand:** `release-gate/gate.sh rtx-4090 --suite runtime --runtime <url#sha256=…> --publish`, through the
-  default `~/.cozy`, signed in as you.
+  default `~/.cozy`, signed in as you. `--on local` runs the cells on this computer's machine as it is (a dev proof:
+  no rental, no `before.sh`).
 - **From Actions:** `gh workflow run release-gate.yml -R cozy-creator/cozy-creator -f suites=runtime,packages -f pins=…`.
   The suites' `skus` pick the rentals; `skus` overrides them, `only` narrows the cells.
   Testing is manual (Paul 10-24): only the release agent dispatches it, with the suites it chose; no workflow calls it.
@@ -83,8 +86,8 @@ The runner signs in as the owner's account with its own device key: secret `COZY
 - **varena** (`suites/varena`): the memory manager through its paces on SDXL, Klein and 5 s H3 on Ampere, Ada,
   Blackwell and a CPU rental (Hopper/B200 on request): cold load, co-residency, unload and reload, 8/6/3 GiB caps with
   SDXL and Klein alternating at 6, a real 8 GB card, and host RAM under the rental's cgroup with page/spill to disk.
-  `check.py` holds each load and refill to a share of the machine's measured ceiling (`ceiling.py`), checks caps,
-  alternation and host RAM; `analyze.py`, time and peak VRAM. Selected by `varena` (varena, TensorFS, TensorD, the
+  `check.py` holds each load and refill to a share of the machine's measured ceiling (`ceiling.py`), checks caps
+  (the driver's bytes in use under each), alternation and host RAM; `analyze.py`, time and VRAM. Selected by `varena` (varena, TensorFS, TensorD, the
   Runtime); a SKU new to it needs `-f suites=varena -f skus=<sku> -f establish=true` once.
 - **tensorfs** (`suites/tensorfs`, one `cpu` rental, ~$0.3, ~40 min, `-f suites=tensorfs`): pick it for a TensorFS or
   download/upload path change. It shows TensorFS moves weights as fast as before and dedups:

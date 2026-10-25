@@ -1,5 +1,5 @@
 """A run's record as `cozy run show <n> --once --json` prints it (e2e/run.sh keeps it as <name>.json), read once into the
-summary analyze.py and every check use. Its memory figures are record.py's."""
+summary analyze.py and every check use. Its VRAM is the driver's (`vram`); varena's own figures are record.py's."""
 import json
 import os
 from dataclasses import dataclass
@@ -75,6 +75,17 @@ class Run:
                 for v in o:
                     yield from walk(v)
         return sorted(set(walk(list(self.measurements))))
+
+    @property
+    def vram(self):
+        """The driver's bytes in use on its fullest GPU (TensorD's NVML reads, `memory.driver`, over the run and each
+        call): `peak`, all of them, and `added`, less those in use when it began, in MiB; None where none was read."""
+        rows = [r for m in self.measurements for r in (m.get('memory') or {}).get('driver') or []]
+        if not rows:
+            return None
+        mib = lambda b: round(b / 2**20)
+        return {'peak': mib(max(r['peak_bytes'] for r in rows)),
+                'added': mib(max(r['peak_bytes'] - r['before_bytes'] for r in rows))}
 
     def files(self, *ext):
         return [p for p in self.outputs if p.endswith(ext)]

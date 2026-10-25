@@ -1,8 +1,7 @@
-"""A run's memory record read the same for 0.30 and 0.32 (the published baselines are 0.30.x). Each function takes one
-`measurements.memory` and tolerates absent or other-shaped members.
+"""Varena's own figures in a run's memory record, read the same for 0.30 and 0.32, for the varena suite (its VRAM is the
+driver's: runs.Run.vram). Each function takes one `measurements.memory` and tolerates absent or other-shaped members.
   0.32: `stats.varena[]`, one row per GPU: {gpu, ceiling, stats: varena's Stats, torch_peak}; Stats has `moved` (kept,
-        leased, store, derived as {bytes, ns}), `peak` (held), `working` (needed at once), `evicted`, `leftover`,
-        `outlived`, `host`.
+        leased, store, derived as {bytes, ns}), `evicted`, `leftover`, `outlived`, `host`.
   0.30: `stats.copies`, `rows`, `paged_in`, `evictions`, `leftover`, and `peak_reserved_bytes` (torch's pool, weights
         included)."""
 
@@ -20,19 +19,6 @@ def rows(memory):
     """0.32's per-GPU varena Stats (none on 0.30)."""
     v = _stats(memory).get('varena')
     return [r['stats'] for r in v if isinstance(r, dict) and isinstance(r.get('stats'), dict)] if isinstance(v, list) else []
-
-
-def held(memory):
-    """The device bytes the run held at its fullest: varena's peak (pages and torch), else 0.30's reserved peak."""
-    return max((_num(s.get('peak')) for s in rows(memory)), default=0) or _num((memory or {}).get('peak_reserved_bytes'))
-
-
-def working(memory):
-    """The most it needed at once: varena's `working`; 0.30's reserved peak (it paged per step, so it is that); 0 for a
-    0.32 record from before `working` (its reserved figure is torch's alone, or the held peak: neither compares)."""
-    if rows(memory):
-        return max((_num(s.get('working')) for s in rows(memory)), default=0)
-    return _num((memory or {}).get('peak_reserved_bytes'))
 
 
 #: The ceiling a copy kind is held against.
@@ -65,12 +51,6 @@ def paged(memory):
     old = _num(st.get('paged_in')) + sum(_num(r.get('streamed')) for r in st.get('rows') or [] if isinstance(r, dict))
     old += sum(_num(e.get('nbytes')) for e in st.get('evictions') or [] if isinstance(e, dict))
     return new + old
-
-
-def step_held(memory):
-    """The most one step held: varena's peak, else 0.30's resident weights plus torch's allocation per row."""
-    old = max((_num(r.get('resident')) + _num(r.get('allocated')) for r in _stats(memory).get('rows') or [] if isinstance(r, dict)), default=0)
-    return max((_num(s.get('peak')) for s in rows(memory)), default=0) or old
 
 
 def leftover(memory):

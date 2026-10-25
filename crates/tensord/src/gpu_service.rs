@@ -2577,6 +2577,7 @@ impl Pool {
         let (start, degree) = (session.start, plan.degree);
         let construction = plan.construction.clone();
         let gpus = self.lane(start, degree)?;
+        let driver = platform::gpu::Peak::watch(gpus.iter().map(|d| d.entry.clone()).collect());
         // A call begins: the host is looked at before it grows.
         self.nudge_host();
         let retained = session.loaded;
@@ -2859,7 +2860,7 @@ impl Pool {
         session.level = Level::Gpu;
         self.record_invoke(&construction, &lane, first, invoked.elapsed(), &reply);
         self.note_decisions(id, session.executor.birth.pid, &lane, &reply);
-        record_measurements(engine, id, &plan, &reply);
+        record_measurements(engine, id, &plan, &reply, &driver.map(platform::gpu::Peak::end).unwrap_or_default());
         if reply.attention_applied {
             if let Err(error) = engine.apply_attention(id) {
                 tracing::warn!("run {id}: applied attention pin not recorded: {error}");
@@ -3443,9 +3444,9 @@ fn refused(error: &io::Error) -> Option<&Refused> {
 /// tracks, its ranks' execution records, its kernel observations (the attention and GEMM
 /// kernels that served, Sol's dense and sparse calls), its residency (graph counters) and the
 /// models it ran, as resolved.
-pub(crate) fn record_measurements(engine: &Engine, id: &str, plan: &Plan, reply: &Frame) {
+pub(crate) fn record_measurements(engine: &Engine, id: &str, plan: &Plan, reply: &Frame, driver: &[platform::gpu::Used]) {
     let software = engine.get(id).ok().and_then(|run| run.executor.map(|executor| executor.software(run.attempt)));
-    let measurements = measured(plan, reply, software, call_memory(reply));
+    let measurements = measured(plan, reply, software, call_memory(reply, driver));
     let recorded = serde_json::to_vec(&measurements)
         .map_err(io::Error::other)
         .and_then(|bytes| engine.with_journal(|journal| journal.record_measurements(id, &bytes)));
@@ -3455,17 +3456,19 @@ pub(crate) fn record_measurements(engine: &Engine, id: &str, plan: &Plan, reply:
 }
 
 
-/// The call's memory as its executor measured it: torch's high-water marks over the call, and
-/// varena's record of the request kept whole as `stats` (what `run show` and the gate read).
-/// None when it measured nothing.
-fn call_memory(reply: &Frame) -> Option<serde_json::Value> {
-    if reply.memory.is_none() && reply.metrics.is_none() {
+/// The call's memory: torch's high-water marks over the call and varena's record of the request
+/// kept whole as `stats`, as its executor measured them, and `driver`, each GPU's bytes in use as
+/// NVML read them from the call's start to its reply (the release gate's peak VRAM). None when
+/// nothing was measured.
+fn call_memory(reply: &Frame, driver: &[platform::gpu::Used]) -> Option<serde_json::Value> {
+    if reply.memory.is_none() && reply.metrics.is_none() && driver.is_empty() {
         return None;
     }
     let metrics = reply.metrics.clone().unwrap_or_default();
     let known = |v: Option<i64>| v.and_then(|v| u64::try_from(v).ok()).map(serde_json::Value::from);
     let fields = [("peak_allocated_bytes", known(metrics.peak_vram_bytes)),
-        ("peak_reserved_bytes", known(metrics.peak_reserved_bytes)), ("stats", reply.memory.clone().map(serde_json::Value::Object))];
+        ("peak_reserved_bytes", known(metrics.peak_reserved_bytes)), ("stats", reply.memory.clone().map(serde_json::Value::Object)),
+        ("driver", (!driver.is_empty()).then(|| serde_json::json!(driver)))];
     Some(fields.into_iter().filter_map(|(key, value)| Some((key.to_string(), value?))).collect())
 }
 
