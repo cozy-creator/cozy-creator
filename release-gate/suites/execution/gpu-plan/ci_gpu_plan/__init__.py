@@ -24,18 +24,26 @@ class Report(msgspec.Struct):
 @app.entrypoint
 def repeat(payload: Probe, tel: Telemetry) -> Report:
     if not Path(payload.candidate_python).is_file():
-        raise ValueError("candidate_python must name the isolated candidate environment")
+        raise ValueError(
+            "candidate_python must name the isolated candidate environment"
+        )
     probe = {
         "repeat": "proof.py",
         "consumer": "consumer.py",
         "retirement": "retirement.py",
         "pressure": "pressure.py",
+        "external_pressure": "external_managed.py",
         "lifecycle": "lifecycle.py",
         "lifecycle_cancel": "lifecycle.py",
         "lifecycle_running_cancel": "lifecycle.py",
     }.get(payload.mode)
     if probe is None:
         raise ValueError("unknown GPU-plan gate mode")
+    controlled = payload.mode in (
+        "lifecycle_cancel",
+        "lifecycle_running_cancel",
+        "external_pressure",
+    )
     process = subprocess.Popen(
         [
             payload.candidate_python,
@@ -45,9 +53,7 @@ def repeat(payload: Probe, tel: Telemetry) -> Report:
             payload.mode,
         ],
         stdout=subprocess.PIPE,
-        stdin=subprocess.PIPE
-        if payload.mode in ("lifecycle_cancel", "lifecycle_running_cancel")
-        else None,
+        stdin=subprocess.PIPE if controlled else None,
         stderr=subprocess.STDOUT,
         text=True,
     )
@@ -56,7 +62,7 @@ def repeat(payload: Probe, tel: Telemetry) -> Report:
     try:
         for line in process.stdout:
             tel.log(line.rstrip())
-            if payload.mode in ("lifecycle_cancel", "lifecycle_running_cancel"):
+            if controlled:
                 tel.progress(0.0, stage="pending-submit")
             try:
                 row = json.loads(line)
@@ -65,10 +71,7 @@ def repeat(payload: Probe, tel: Telemetry) -> Report:
             if isinstance(row, dict) and "result" in row:
                 result = row["result"]
     finally:
-        if (
-            payload.mode in ("lifecycle_cancel", "lifecycle_running_cancel")
-            and process.poll() is None
-        ):
+        if controlled and process.poll() is None:
             assert process.stdin is not None
             try:
                 process.stdin.write("cancel\n")
