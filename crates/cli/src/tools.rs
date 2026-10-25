@@ -12,6 +12,7 @@ use platform::tools::{self, Archive, Class, Found, Install, Side, TOOLS, Tool};
 use protocol::error::{Error, Kind};
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
+use sha2::{Digest as _, Sha256};
 use tensorfs::err::{Code, Refusal};
 
 use crate::{Context, output};

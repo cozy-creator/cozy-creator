@@ -38,8 +38,9 @@ PYTHON -I -m cozy_runtime.internal.trampoline --expect-parent <pid> --oom-adj 10
 
 TensorD's `Load` command asks Runtime to construct the model in this executor. TensorD supplies
 the selected stored metadata/assets and the weight sets' bytes (`read_grant`); Runtime parses
-and plans reads with its own TensorFS library, and varena in the executor decides every GPU byte
-it holds, making room in other executors through the GPU's ledger (design memory-varena).
+and plans reads with its own TensorFS library into Torch-owned tensors. Runtime manages local
+weight residency; TensorD offloads whole idle executors through `Map(Ram)` when another construction
+needs room. TensorD creates no CUDA context, GPU allocation or lease listener.
 
 ## Wire
 
@@ -56,8 +57,11 @@ it holds, making room in other executors through the GPU's ledger (design memory
   TensorD sends it to each executor a Load or Invoke gave that signer's token for that endpoint,
   whenever it holds a newer one. Load and Invoke name `actor`. A Runtime without the handler
   answers `reply: bearer`, which TensorD ignores.
-- `start` names `memory_protocol` (the lease protocol, or 0: the executor runs its own memory)
-  and, with leases, `leases`: the namespace each GPU's lease listener is named in.
+- GPU execution requires Hello's concrete `memory_backend="torch"` capability before Start;
+  package versions are not the capability. Start carries no GPU-page namespace or lease protocol.
+  A configured total `gpu_memory_limit` is currently refused as `gpu_memory_limit_unsupported`:
+  independent per-process fractions cannot enforce the total across a call family. Uncapped
+  stock-Torch execution is the implemented mode until aggregate grants are qualified.
 - While waiting for a reply, `event=progress` frames go to `Services::progress`. `event=request`
   frames (optionally with an `SCM_RIGHTS` fd) go to `Services::request`. The reply must name the
   command, otherwise it is an error. Unknown events and fields are ignored.
@@ -71,9 +75,49 @@ it holds, making room in other executors through the GPU's ledger (design memory
 The oldest Runtime is 0.27.0, which takes every command and field here; `Hello.memory` is not
 read. Hello's version fields are provenance only. There is no SDK or TensorFS version gate.
 
+## External GPU pressure
+
+The existing machine reclaim thread samples driver-attributed compute **and graphics** process
+memory every 500 ms, apart from time spent in the existing disk sweep, offload or exit. It establishes a foreign
+usage baseline before Cozy occupies the card and refreshes it downward while Cozy runs. When
+foreign use grows at least 128 MiB over that baseline and driver free memory falls below the
+larger of 512 MiB or 10% of capacity, the existing GPU scheduler holds new roots and warming.
+An existing family's calls remain permitted so a parent is never stranded awaiting its child.
+
+TensorD offloads idle executors in LRU order through `Map(Ram)`, checking fresh driver readings
+after acknowledgement. If headroom remains low, it ends still-idle executors to
+release contexts and package globals too. If it is still low, TensorD journals cancellation of
+the affected running roots, using the same family-aware path as explicit user cancellation.
+Cancellation kills each affected executor and its scope; process exit releases its locally
+owned GPU allocations. No canceled package call is restarted automatically.
+
+The pressure hold clears only when observed foreign use returns to within 64 MiB of its original
+baseline and free headroom is restored. Cozy's own offload cannot clear it. Missing per-PID byte
+accounting, failed graphics enumeration, and PID namespaces that cannot be reconciled remain
+unknown: they neither trigger nor clear an automatic hold. This includes WDDM configurations
+where NVML cannot report process bytes; automatic Windows pressure response is not claimed.
+Another application's allocation request is invisible until the driver reports actual use.
+
+`cozy run cancel RUN_ID` is the explicit alternative on those machines. Every canceled GPU
+invocation ends its exact executor and scope immediately, then observes their exit before
+releasing its accounting. Exact leader/follower exit releases context and library memory, whereas `empty_cache`
+releases only unused Torch allocator blocks. Other sessions and successful warm executors remain
+untouched by that explicit cancellation.
+
+The existing memory log records observation availability, first trigger/clear, attributed
+foreign/own bytes, actual sampling gaps, cancellation, offload start/ack duration, exact exit duration and driver free
+bytes before/after. A free-byte difference is an observation, not a claim that all of it came from
+Cozy. The observer sleeps 500 ms between passes. Signaling a kill does not guarantee an immediate
+driver teardown or observed exit; exact exit supervision retains unproven resources. There is
+no new timeout or VRAM-ownership authority.
+
+Real release-gate proof is required for a foreign graphics/compute allocation crossing the
+threshold, idle-first offload, cancellation, no restart while foreign demand persists, safe
+parent/child completion, explicit cancellation with unknown accounting, and later clean reuse.
+
 ## Observations
 
-`LoadFacts`, `Metrics` and an invoke's `memory` (varena's per-request stats, kept whole) are
+`LoadFacts`, `Metrics` and an invoke's `memory` (Runtime's allocation/residency observations) are
 typed optional records. An absent value is unknown, and signed byte fields keep the SDK's `-1`
 sentinel. Observations never authorize kills.
 
@@ -95,9 +139,10 @@ Nothing judges a call's progress: a command runs until its reply, however long a
 silent. A call ends with its reply, a cancel, or the machine's restart.
 
 - `Cancellation::cancel(request)` kills the executor (its exact process and scope) at once, if it
-  still serves that request (`serve`), so a late cancel cannot end a later request. Its GPU
-  weights stay in the machine's custody: the next executor maps them without a copy. One a cancel
-  killed never goes back to the pool.
+  still serves that request (`serve`). Each invocation's cancellation handle is disabled before
+  pool return, waiting for any delivery already in flight; late clones cannot kill a later
+  request during the old one's CPU output processing. Its locally owned GPU weights leave with
+  the process; the next executor reloads them. One a cancel killed never goes back to the pool.
 - `terminate()` closes the channel, kills the executor, reaps it and every member left in its
   process group (a group's followers), and frees `retain_until_exit` resources. Nothing waits on
   an executor to stop by itself. `Drop` does the same before returning, so a slot or reservation
@@ -110,7 +155,9 @@ silent. A call ends with its reply, a cancel, or the machine's restart.
   `COZY_EXECUTOR_SCOPE=<namespace>-<id>` goes in the leader's environment (a fork's, in the
   environment it is forked with) and every descendant inherits it. A kill and the end of the scope
   use a `/proc` census: processes carrying the token, plus anything still parented below one.
-  Each is killed through its pidfd and its exit awaited, until a census finds none alive. Either
+  Each is killed through its pidfd. Killed members stuck in kernel D state are reported by the
+  machine while scope cleanup continues after their eventual exit; they are not treated as
+  exited or used to justify releasing an unproven GPU process lifetime. Either
   backend reaches descendants that called `setsid` or double-forked. After the executor exits,
   whatever is still in the scope is killed and counted (`Ended.stragglers`). The machine's
   supervisor is the subreaper (`PR_SET_CHILD_SUBREAPER`): escaped processes are adopted and reaped

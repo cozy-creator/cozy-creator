@@ -280,10 +280,15 @@ fn same_attestation(before: &[u8], after: &[u8]) -> io::Result<()> {
             ("gpus", gpus.join(",")),
         ]))
     }
-    if facts(before)? != facts(after)? {
-        return Err(invalid(
-            "this boot attested a different boot, leaf, owner or GPU set before restarting",
-        ));
+    let before = facts(before).map_err(|_| invalid("retained readiness facts are unreadable"))?;
+    let after = facts(after).map_err(|_| invalid("current readiness facts are unreadable"))?;
+    let different: Vec<_> = before.iter().filter_map(|(key, value)|
+        (after.get(key) != Some(value)).then_some(*key)).collect();
+    if !different.is_empty() {
+        // Names only: the leaf, owner key and token hashes are never included in diagnostics.
+        return Err(invalid(&format!(
+            "this boot attested different facts before restarting: {}", different.join(", ")
+        )));
     }
     Ok(())
 }

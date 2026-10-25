@@ -46,8 +46,6 @@ class Start(_Wire):
     import_only: bool
     call_interfaces: list[CallInterface]
     constructions: list[Construction]
-    leases: int | None
-    memory_protocol: int
     memo: MemoSettings | None
 
 class Adapter(_Wire):
@@ -119,6 +117,9 @@ class PrepareRequest(_Wire):
     attention_kernel: str
     bits: int
     input_metadata: dict[str, InputMetadata]
+
+class Cancel(_Wire):
+    request_id: str
 
 class Invoke(_Wire):
     tensorfs: TensorFSOptions | None
