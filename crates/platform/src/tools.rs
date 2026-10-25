@@ -92,14 +92,6 @@ pub const TOOLS: &[Tool] = &[
         probe: |tools, path| ffmpeg(tools, path).map(|(ffmpeg, _)| ffmpeg),
     },
     Tool {
-        name: "xdg-open",
-        side: Side::Computer,
-        class: Class::Optional,
-        cost: "the browser isn't opened; the URL is printed instead",
-        install: Install::System("xdg-utils"),
-        probe: looked_for!("xdg-open"),
-    },
-    Tool {
         name: "systemctl",
         side: Side::Computer,
         class: Class::Optional,
@@ -149,10 +141,10 @@ pub const TOOLS: &[Tool] = &[
     },
 ];
 
-/// Whether this OS uses `tool`: macOS and Windows open URLs and start Calcifer at login with their
-/// own built-ins, so xdg-open and systemctl are Linux's alone.
+/// Whether this OS uses `tool`: macOS and Windows start Calcifer at login with their own built-ins,
+/// so systemctl is Linux's alone.
 pub fn used_here(tool: &Tool) -> bool {
-    cfg!(target_os = "linux") || !matches!(tool.name, "xdg-open" | "systemctl")
+    cfg!(target_os = "linux") || tool.name != "systemctl"
 }
 
 /// The table's entry for `name`.

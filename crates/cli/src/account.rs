@@ -14,6 +14,7 @@ use serde_json::json;
 use crate::{
     Context,
     context::{hub_answer, hub_error},
+    machine::usd,
     output,
 };
 
@@ -263,7 +264,8 @@ fn report_logout(
 #[derive(clap::Args, Debug)]
 pub struct Whoami {}
 
-/// Who this computer signs in as at the command's Hub, as that Hub says.
+/// Who this computer signs in as at the command's Hub, as that Hub says: the account, its credit
+/// (`unmetered` where the Hub does not meter it) and the Hub's page to buy more.
 pub async fn whoami(ctx: &Context, _args: Whoami) -> Result<ExitCode, Error> {
     let hub = ctx.hub()?;
     let session = match ctx.signed_in(&hub) {
@@ -277,21 +279,39 @@ pub async fn whoami(ctx: &Context, _args: Whoami) -> Result<ExitCode, Error> {
         },
         None => (false, None),
     };
+    // A named account's credit: `Some(None)` where the Hub does not meter it.
+    let balance = match &account {
+        Some(_) => Some(
+            hub_answer(ctx.hub_signed_in(&hub)?.get_credit().await)?
+                .credit
+                .map(|c| c.available_usd_micros),
+        ),
+        None => None,
+    };
+    let buy = balance.is_some().then(|| format!("{}/account", hub.origin));
     let key = session.as_ref().filter(|_| accepted).map(|s| s.key());
     if ctx.json {
         output::json(&json!({
-            "hub": hub, "logged_in": accepted, "email": key.map(|k| &k.email),
-            "account": account, "device_key": key.map(|k| &k.id),
+            "logged_in": accepted, "account": account, "email": key.map(|k| &k.email),
+            "billing": balance.map(|b| if b.is_some() { "metered" } else { "unmetered" }),
+            "balance_usd_micros": balance.flatten(), "device_key": key.map(|k| &k.id),
+            "buy_credits": buy,
         }));
         return Ok(ExitCode::SUCCESS);
     }
-    let mut record = output::Record::new().field("hub", &hub);
+    let mut record = output::Record::new();
     match key {
         Some(key) => {
             record = record
-                .field("email", &key.email)
                 .field("account", account.as_deref().unwrap_or("none yet"))
-                .field("device key", &key.id);
+                .field("email", &key.email);
+            if let Some(balance) = balance {
+                record = record.field("balance", balance.map_or("unmetered".into(), usd));
+            }
+            record = record.field("device key", &key.id);
+            if let Some(buy) = &buy {
+                record = record.note(format!("Buy credits at {buy}"));
+            }
         }
         None if session.is_some() => {
             record = record.field("login", "this computer's key is no longer accepted");

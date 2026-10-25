@@ -16,15 +16,6 @@
 [completion]
 test = "pr: completion, each shell's script loads and completes cozy's verbs"
 
-[credits]
-test = "release: credits, the account's billing"
-["credits history"]
-test = "release: credits history, the recent moves (--json: every page)"
-["credits buy"]
-test = "release: credits buy, a checkout is created and never paid"
-"--no-browser" = "release: credits buy"
-"--no-wait" = "release: credits buy"
-
 [doctor]
 test = "pr: doctor, healthy, then a stuck Calcifer it restarts"
 "--on" = "pr: doctor --on local"
@@ -48,7 +39,7 @@ test = "manual: a person types the emailed code (release-gate/enroll-ci-key.sh)"
 test = "pr: signed out, logout says so (signed in, it revokes the CI key: none)"
 "--everywhere" = "none: revokes every other key of the account (Paul's own); needs a separate test account"
 [whoami]
-test = "pr: signed out, whoami says so (release: signed in as fidika)"
+test = "pr: signed out, whoami says so (release: signed in as fidika, its balance and the buy page)"
 
 [status]
 test = "pr: status, Calcifer and the local machine"

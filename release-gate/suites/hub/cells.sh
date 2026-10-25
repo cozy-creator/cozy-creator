@@ -2,7 +2,7 @@
 # it, on the rented machine $M and a throwaway <account>/ci-hub-<R> package and model that the suite retires at the
 # end (the package's releases yanked, the model deleted):
 #   paths            contract.py: each path no cozy verb reaches, called anonymously, answers as its contract says
-#   account          whoami, credits, credits history, the rental catalog, the rental $M itself
+#   account          whoami (the account, its balance, the buy page), the rental catalog, the rental $M itself
 #   providers        an admin rental of the cheapest CPU SKU on each provider (RunPod, vast), ended and checked
 #                    gone, so both acquisition paths are covered (renters never pick one: th-254)
 #   package          lock and publish 0.1.0 and 0.1.1; the unversioned run takes 0.1.1; yank 0.1.1 → the simple index marks it
@@ -69,8 +69,8 @@ WHO=; for _ in 1 2 3; do  # a dropped connection is asked again
   sleep 5
 done
 [ -n "$WHO" ] && expect "hub whoami" PASS "signed in as $WHO" || expect "hub whoami" FAIL "$(tail -c 200 "$HB/whoami.err")"
-hub_do credits ok credits
-hub_do credits-history ok credits history
+BAL=$("$CLI" --json whoami 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["billing"], d["buy_credits"])' 2>/dev/null)
+[ -n "$BAL" ] && expect "hub balance" PASS "whoami: $BAL" || expect "hub balance" FAIL "whoami names no balance or buy page"
 hub_do catalog ok machine rent
 # The rental itself is gate.sh's (rent, then end and check it is gone).
 P=$("$CLI" --json machine show "$M" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["rental"]["sku"])' 2>/dev/null)
