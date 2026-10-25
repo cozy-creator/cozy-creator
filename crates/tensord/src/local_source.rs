@@ -439,11 +439,6 @@ impl LocalSources {
             }
         }
         if kept == 0 {
-            // The pre-generation layout's tree, once no old environment points at it.
-            if !held_tree(&home).is_empty() {
-                let _ = fs::remove_dir_all(home.join("tree"));
-                let _ = fs::remove_file(home.join("tree.json"));
-            }
             let _ = fs::remove_dir(&home); // Only an empty home; never erase unknown entries.
         }
     }

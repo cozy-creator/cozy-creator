@@ -19,9 +19,7 @@ use protocol::{
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 
 /// The store's version (`PRAGMA user_version`), and the schema a new store is made with. A store
-/// at an older version is from before cozy 0.9.4, which this cozy does not read. Two lines of
-/// development each called their addition 6 (`runs.agreed`, `outputs.checkpoint`), so a store at
-/// 5, 6 or 7 gains whichever of the two it lacks.
+/// at another version is not read.
 pub const VERSION: i64 = 7;
 const SCHEMA: &str = "
     CREATE TABLE machines (
@@ -120,9 +118,7 @@ const SCHEMA: &str = "
 pub enum StoreError {
     #[error("Calcifer's store: {0}")]
     Sqlite(#[from] rusqlite::Error),
-    #[error(
-        "Calcifer's store is at version {0}: this cozy reads versions 5 and 6, the stores of cozy 0.9.4 on"
-    )]
+    #[error("Calcifer's store is at version {0}: this cozy reads version {current}", current = VERSION)]
     Version(i64),
     #[error("idempotency key {0:?} already names another submission")]
     Conflict(String),
@@ -322,24 +318,7 @@ impl Store {
                 tx.pragma_update(None, "user_version", VERSION)?;
                 tx.commit()?;
             }
-            version @ 5..=VERSION => {
-                let tx = writer.transaction()?;
-                let mut changed = version != VERSION;
-                for (table, column, kind) in [("runs", "agreed", "TEXT"), ("outputs", "checkpoint", "TEXT"), ("runs", "started_at", "INTEGER")] {
-                    let names: Vec<String> = tx
-                        .prepare(&format!("PRAGMA table_info({table})"))?
-                        .query_map([], |r| r.get(1))?
-                        .collect::<rusqlite::Result<_>>()?;
-                    if !names.iter().any(|name| name == column) {
-                        tx.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"))?;
-                        changed = true;
-                    }
-                }
-                if changed {
-                    tx.pragma_update(None, "user_version", VERSION)?;
-                    tx.commit()?;
-                }
-            }
+            VERSION => {}
             other => return Err(StoreError::Version(other)),
         }
         let reader = Connection::open(path)?;

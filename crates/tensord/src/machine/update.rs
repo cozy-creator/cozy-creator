@@ -70,7 +70,7 @@ pub struct Status {
     /// Every state it passed through: the update's run log.
     #[serde(default)]
     pub history: Vec<Step>,
-    /// What the update did besides its software (an older store deleted or restored).
+    /// What the update noted besides its software.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
 }
@@ -265,15 +265,6 @@ pub fn rollback_pending(paths: &Paths, cause: &str) -> io::Result<Recovered> {
     };
     let mut status = latest(paths, pending.status)?;
     status.error = cause.into();
-    // The software rolled back to finds its store; one that cannot come back pulls again.
-    match super::older_store::restore(paths) {
-        Ok(true) => status.notes.push("restored the older-format TensorFS store for the software rolled back to".into()),
-        Ok(false) => {}
-        Err(error) => {
-            tracing::warn!("cannot restore the older-format TensorFS store: {error}");
-            status.notes.push(format!("the older-format TensorFS store was not restored: {error}"));
-        }
-    }
     status.enter("rolled_back");
     // Persist the decision before changing the link. A crash during rollback then resumes
     // rollback, even when the candidate had already published its starting marker.
@@ -357,18 +348,13 @@ fn remove_pending(paths: &Paths) -> io::Result<()> {
     platform::durable::sync_dir(&paths.update("")).map_err(io::Error::from)
 }
 
-/// Whether an activation is in flight: a rollback may still return to the software before it.
-pub(crate) fn in_flight(paths: &Paths) -> io::Result<bool> {
-    Ok(fs::symlink_metadata(paths.update("pending.json")).is_ok())
-}
-
-/// A small durable record beside the update's (`older-store`, `service-error`).
-pub(crate) fn write_marker(paths: &Paths, name: &str, text: &str) -> io::Result<()> {
+/// A small durable record beside the update's (`service-error`).
+fn write_marker(paths: &Paths, name: &str, text: &str) -> io::Result<()> {
     fs::create_dir_all(paths.update(""))?;
     super::identity::write_atomic(&paths.update(name), text.as_bytes(), 0o600)
 }
 
-pub(crate) fn read_marker(paths: &Paths, name: &str) -> io::Result<Option<String>> {
+fn read_marker(paths: &Paths, name: &str) -> io::Result<Option<String>> {
     match fs::read_to_string(paths.update(name)) {
         Ok(text) => Ok(Some(text)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -376,7 +362,7 @@ pub(crate) fn read_marker(paths: &Paths, name: &str) -> io::Result<Option<String
     }
 }
 
-pub(crate) fn remove_marker(paths: &Paths, name: &str) -> io::Result<()> {
+fn remove_marker(paths: &Paths, name: &str) -> io::Result<()> {
     match fs::remove_file(paths.update(name)) {
         Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
         _ => Ok(()),
@@ -549,11 +535,6 @@ impl Updates {
         status.to = this_binary(identified(&self.paths.sdk())?);
         status.error.clear();
         if let Some(note) = lease_note(&self.paths.sdk()) {
-            tracing::warn!("{note}");
-            status.notes.push(note);
-        }
-        // Nothing rolls back to an older store now: it goes.
-        if let Some(note) = super::older_store::reclaim(&self.paths)? {
             tracing::warn!("{note}");
             status.notes.push(note);
         }

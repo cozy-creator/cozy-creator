@@ -15,8 +15,7 @@ use std::{
 pub use tensorfs::store::Store;
 use tensorfs::format::{ObjectRef, Repo, Tree};
 
-/// Opens (or creates) the machine store at `root`; one in an older format is refused (its
-/// models pull again into a new one).
+/// Opens (or creates) the machine store at `root`; one in an older format is refused.
 pub fn open(root: &Path) -> io::Result<Arc<Store>> {
     Store::open(root).map(Arc::new).map_err(io_error)
 }
