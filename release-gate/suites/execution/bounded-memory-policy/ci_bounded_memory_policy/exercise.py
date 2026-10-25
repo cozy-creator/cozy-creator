@@ -115,6 +115,10 @@ def prefetch(memory, modules, models, inputs, seed):
             memory._discard(block, forget=True)
         with torch.no_grad():
             modules["b"](inputs)
+        # Region drop defers physical teardown. Remove retired outgoing handles first,
+        # so the next real reclaim necessarily reaches B's preferred tail.
+        memory.native.reclaim_unpreferred(int(memory.native.stats()["resident_bytes"]))
+        assert all(block.region.preferred for block in models["b"].groups())
         first, next_block = models["b"].blocks["0"], models["b"].blocks["1"]
         with models["b"].passing():
             memory._enter(first)
