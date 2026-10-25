@@ -1457,19 +1457,41 @@ impl Pool {
             }),
             &mut callbacks,
         );
-        // Synchronize a cloned, already-dispatched cancel before reusing the process.
+        let mut usable = reply.as_ref().is_ok_and(|reply|
+            reply.poisoned.is_empty() && (member.payload.is_none() || reply.quiescent));
+        let ready = member.payload.is_some() && usable
+            && reply.as_ref().is_ok_and(|reply| reply.ok && reply.prepared == Some(true));
+        let mut offload_failed = false;
+        if member.payload.is_some() && usable && !ready {
+            // A factory may retain a captured definition before declining or raising.
+            // Dropping its step holds does not retire those graph pins. Host bookkeeping
+            // is valid only after the existing RAM Map retires graphs and discards weights.
+            let offloaded = session.executor.command(&Command::Map(Map {
+                construction: plan.construction.clone(),
+                level: protocol::executor::Level::Ram,
+                ..Default::default()
+            }), &mut callbacks);
+            usable = offloaded.as_ref().is_ok_and(|reply| reply.ok && reply.poisoned.is_empty());
+            offload_failed = !usable;
+            if usable {
+                session.level = Level::Host;
+            } else {
+                let detail = match &offloaded {
+                    Ok(reply) => format!("{} {} {}", reply.code, reply.detail, reply.poisoned),
+                    Err(error) => error.to_string(),
+                };
+                tracing::warn!("warm set: offloading unsuccessful preparation {}: {detail}", plan.construction);
+            }
+        } else if reply.as_ref().is_ok_and(|reply| reply.ok) {
+            session.level = level;
+        }
+        if member.payload.is_some() {
+            *member.prepared.lock().unwrap() = Some(ready && usable);
+        }
+        // The same exact cancellation remains armed through the checked offload. Join any
+        // cloned delivery before publishing the session idle for a later request.
         cancel.disable();
         drop(halt);
-        let usable = reply.as_ref().is_ok_and(|reply|
-            reply.poisoned.is_empty() && (member.payload.is_none() || reply.quiescent));
-        if reply.as_ref().is_ok_and(|reply| reply.ok) {
-            session.level = level;
-            if member.payload.is_some() {
-                let ready = usable && reply.as_ref().is_ok_and(|reply| reply.prepared == Some(true));
-                *member.prepared.lock().unwrap() = Some(ready);
-                if !ready { session.level = Level::Host; }
-            }
-        }
         if usable {
             let births = executor_births(&session.executor.birth, &session.followers);
             if let Err(error) = self.keep_idle(engine, session) {
@@ -1481,12 +1503,15 @@ impl Pool {
             // A command with no proven completion never returns its GPU permit while its
             // exact executor might still execute. retire_canceled joins every rank's exit.
             self.retire_canceled(engine, preparation.map_or("warm", Stoppable::id), session);
-            if reply.is_ok() { return Ok("its preparation did not prove GPU completion; the executor ended"); }
         }
         let reply = reply?;
         if !reply.ok {
             tracing::warn!("warm set: mapping {}: {} {}", plan.construction, reply.code, reply.detail);
             return Ok("its warm preparation failed (the machine's log says why)");
+        }
+        if !usable {
+            return Ok(if offload_failed { "its unsuccessful preparation could not offload; the executor ended" }
+                else { "its preparation did not prove GPU completion; the executor ended" });
         }
         if member.payload.is_some() && reply.prepared != Some(true) {
             return Ok("its program was held back; explicitly warm again to retry");

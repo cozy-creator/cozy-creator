@@ -109,6 +109,10 @@ class Probe(msgspec.Struct, forbid_unknown_fields=True):
     steps: Annotated[int, msgspec.Meta(ge=1, le=128)] = 8
     batch_rows: Annotated[int, msgspec.Meta(ge=1, le=4)] = 1
     require_prepared: bool = True
+    inspect_only: bool = False
+    decline_after_capture: bool = False
+    raise_after_capture: bool = False
+    hold_after_capture_ms: Annotated[int, msgspec.Meta(ge=0, le=30000)] = 0
     min_free_bytes: Annotated[int, msgspec.Meta(ge=0)] = 0
     pressure_bytes: Annotated[int, msgspec.Meta(ge=0, le=536870912)] = 0
     hold_ms: Annotated[int, msgspec.Meta(ge=0, le=30000)] = 0
@@ -121,6 +125,9 @@ class Facts(msgspec.Struct, frozen=True):
     pressure_bytes: int
     hold_ms: int
     adjustments: tuple[AdjustmentRow, ...]
+    decline_after_capture: bool
+    raise_after_capture: bool
+    hold_after_capture_ms: int
 
 
 def resolve(payload: Probe) -> Facts:
@@ -133,6 +140,9 @@ def resolve(payload: Probe) -> Facts:
         payload.pressure_bytes,
         payload.hold_ms,
         tuple(rows.rows),
+        payload.decline_after_capture,
+        payload.raise_after_capture,
+        payload.hold_after_capture_ms,
     )
 
 
@@ -240,7 +250,22 @@ def prepare(
     pipe.steps = facts.resolved_steps
     pipe.batch_rows = facts.resolved_rows
     pipe.captures += 1
-    return True
+    native = pipe.plan.facts()
+    bindings = len(pipe.plan._owned_bindings)
+    assert native["closed"] is False and bindings > 0
+    tel.log(
+        "prepared-warm factory captured",
+        pid=os.getpid(),
+        captures=pipe.captures,
+        retained_bindings=bindings,
+    )
+    until = time.monotonic() + facts.hold_after_capture_ms / 1000
+    while time.monotonic() < until:
+        ctx.raise_if_cancelled()
+        time.sleep(0.05)
+    if facts.raise_after_capture:
+        raise RuntimeError("intentional gate failure after native capture")
+    return not facts.decline_after_capture
 
 
 class Report(msgspec.Struct):
@@ -277,6 +302,12 @@ def gpu(
         "capacity": pipe.capacity,
         "batch_rows": facts.resolved_rows,
     }
+    row["native"] = pipe.plan.facts() if pipe.plan is not None else None
+    row["retained_bindings"] = (
+        len(pipe.plan._owned_bindings) if pipe.plan is not None else 0
+    )
+    if payload.inspect_only:
+        return Report(True, json.dumps(row, sort_keys=True))
     if not valid:
         assert not payload.require_prepared, (
             "ordinary inference must never bootstrap capture"
