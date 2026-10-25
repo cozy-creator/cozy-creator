@@ -706,6 +706,14 @@ impl Publisher {
                 warnings: vec![],
             });
         }
+        // Cached installations may have lost their import-only parent. Restart the same
+        // parent before model resolution, as a fresh install already does.
+        if request.imports {
+            if let Some(gpu) = service.gpu() {
+                let held = service.catalog.resolve(&installation.generation).map_err(io_failure)?;
+                gpu.prespawn(held);
+            }
+        }
         let gpu = service.pool().ok_or((
             "capability_unavailable",
             "this machine runs no functions".to_string(),

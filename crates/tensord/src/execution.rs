@@ -918,6 +918,16 @@ impl Engine {
         Ok(())
     }
 
+    /// A quiescent invocation no longer owns its pooled executor. Its CPU output work remains
+    /// owned by the same managed worker; restart reconciliation must not wait on a later borrower.
+    pub(crate) fn returned_managed(&self, id: &str, birth: &Birth) -> io::Result<()> {
+        let progress = self.progress.lock().unwrap();
+        self.journal.lock().unwrap().returned_process(id, birth, progress.get(id))?;
+        drop(progress);
+        self.notify_activity();
+        Ok(())
+    }
+
     pub(crate) fn authorize_managed(
         &self,
         id: &str,
@@ -1032,7 +1042,12 @@ impl Engine {
                 // A journaled cancel ends it CANCELED, however it stopped.
                 journal.finish(&record.id, Outcome::Canceled)?;
             } else {
-                journal.finish(&record.id, Outcome::Failed(crate::journal::Failure::machine("machine_stopped", "owner lost before durable result custody; exact executor birth has ended; started work will not be replayed")))?;
+                let failure = if record.process.is_none() {
+                    crate::journal::Failure::machine("output_owner_lost", "owner lost after executor return and before durable output custody; CPU output work is not replayed; the historical executor is not owned by this invocation")
+                } else {
+                    crate::journal::Failure::machine("machine_stopped", "owner lost before durable result custody; exact executor birth has ended; started work will not be replayed")
+                };
+                journal.finish(&record.id, Outcome::Failed(failure))?;
             }
             changed = true;
         }

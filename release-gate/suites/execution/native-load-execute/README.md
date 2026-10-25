@@ -1,5 +1,37 @@
 # Native load → execute: real release gate
 
+## Resident prefix, repeat and suffix
+
+The `phase-*` modes exercise the optional resident composition in the native Runtime.
+They use three real stored tensor components, exact output counters, and one request-owned
+submission. The loaded case feeds the existing checked LoadSlot before any phase runs.
+All owners stay resident; these cases do not implement inter-phase streaming.
+
+| Modes | Required result |
+|---|---|
+| `phase-repeat`, `phase-prefix`, `phase-suffix`, `phase-both` | Exact math and once-only prefix/suffix counters around 30 native iterations, one launch, no Python replay calls. |
+| `phase-reuse` | Two joined submissions of the same plan with changed input and reset state. |
+| `phase-loaded` | Actual stored reads precede all phases; escaped aliases retain physical pins until their scope ends. |
+| `phase-input-error` | Truncating only a private store copy gives a checked read failure, zero launches and unchanged phase state. |
+| `phase-cancel-prefix`, `phase-cancel-final` | Real GEMMs create cancellation windows; the suffix remains untouched when cancellation wins its boundary. |
+| `phase-cancel-tail` | Observe all iterations complete while work is still active, then cancel; distinguish skipped suffix from an already-admitted suffix and verify either result. |
+| `phase-refuse-prefix`, `phase-refuse-suffix` | A real pinned-host copy receives the precise native phase refusal, with restored state. |
+
+```sh
+cozy run /absolute/canonical/worktree/release-gate/suites/execution/native-load-execute/gpu \
+  mode=phase-both seed=1793004001 --on MACHINE --gpus=1 --json
+```
+
+Use a fresh seed per attempt and the explicitly selected Runtime artifact that supports
+resident phases. A missed cancellation window fails the gate; no fake pause, error, driver
+or callback is injected. These twelve modes are source-reviewed fixtures with **GPU proof
+pending**. Earlier raw/encoded and full-image receipts do not qualify this new composition.
+
+[New native diagnostic module regression](../prepared-resident-owners/evidence/db7-native-inspection-local.md)
+passed raw 64 MiB loading followed by 30 GPU iterations from one launch in run 17895,
+with checked completion and zero resident/pinned cleanup. This db7 cohort is separate
+from the earlier raw/encoded matrix and the full-SDXL proof.
+
 This fixture qualifies a declared raw input slot feeding an already captured, fixed CUDA body.
 It does not claim arbitrary model capture or graphs that survive eviction. TensorFS supplies
 actual stored bytes; Varena owns the dedicated allocation; native code must finish the read,
@@ -69,3 +101,45 @@ TensorFS6431a5387 and TensorD9998cf5f4. The fixture uses the executor's actual
 prepare/run_prepared boundary; source8176adc6a. [Exact cohort and receipts](evidence/de3dfc42c-rtx3060.json).
 This repeats raw loading, cancellation, failed-source refusal, checked request completion and
 alias/pin cleanup. It does not qualify encoded LoadSlot composition or event-only transfer handoff.
+
+## Checked encoded load composition
+
+TensorFS0.15.7 adds an encoded factory while preserving the raw constructor and continuation ABI.
+The existing worker reads stored parts, checks copy completion, runs the existing native decoder,
+checks decode completion, commits the final Fill, and only then launches the dependent graph.
+These new cells are source-ready; previous raw receipts do not qualify them.
+
+```sh
+cozy run /absolute/canonical/worktree/release-gate/suites/execution/native-load-execute/gpu \
+  mode=encoded-nvfp4 dtype=BF16 seed=157001 --on OWNED_MACHINE --gpus=1 --json
+```
+
+Run `encoded-nvfp4` and `encoded-convrot` with each of `F32`, `F16` and `BF16`, with fresh seeds.
+Each uses a real checkpoint, zero-initialized typed final storage, a three-step captured row
+reduction and a parked Python thread. The independent reference evaluates stored value equations
+with the format's explicit F32 rounding boundaries before the output dtype conversion; it never
+calls the production decoder. Final tensor values and dependent results must agree, with one
+native launch and only warmup/capture Python body calls. Facts must show stored read bytes,
+completed decoded bytes, bounded requested scratch, and read→decode→launch timestamps.
+
+Separate modes `encoded-cancel-before`, `encoded-cancel-race`, `encoded-input-error`,
+`encoded-decode-error` and `encoded-refusals` use actual cancellation, an independently copied
+and truncated weight chunk, and a supported grouped encoding with a NaN relative scale that
+triggers the real decoder error word. Failed reads/decodes must launch no dependent graph;
+semantic failures must leave healthy CUDA work and checked owner cleanup. Constructor checks
+cover plain/missing tensors, unsupported dtype, a valid storage format without a resident source
+plan, and an actual zero scratch grant. Escaped aliases must retain the final physical pin.
+
+The scratch bound counts aligned packed parts plus requested decoder-private buffer sizes;
+it excludes final storage, shared read staging, CUDA modules/driver and allocation rounding.
+It is not a hard VRAM ceiling. Cancellation does not preempt an already running decoder kernel;
+the checked chain still joins it before cleanup. No event-only handoff, performance result or
+full-model qualification is claimed by this gate. Repeat the seven raw modes on the new artifact,
+plus the existing resident NVFP4 and ConvRot primitive/readback gates for shared decoder coverage.
+
+Installed candidate qualification now **passed all21 cells**, runs17796,17798,17800–17817 and17819,
+on Runtimef0d25c8e7/TensorFS9e95ee586 with actual TensorD4178. This includes all6 encoded dtype
+combinations, actual read/decode failures with0 launches, encoded cancellation, all7 raw lifetime
+regressions, ready-pin/factor-read gates and96 resident-decoder cases.
+[Exact acceptance and limits](evidence/9e95-f0d-local-21.md). Encoded cancellation raced before I/O;
+active-decode cancellation, broader lifecycle/platform and release acceptance remain separate.

@@ -1,0 +1,153 @@
+{
+  "schema": 1,
+  "date": "2026-10-25",
+  "qualification": "full_sdxl30_completed_image_native29_inference_only",
+  "run": {
+    "number": 17776,
+    "public_id": "run-e827b7df87b7a27788ca78b2",
+    "machine": "kikoru",
+    "status": "completed",
+    "target": "local/sdxl/generate",
+    "cli_return_code": 0,
+    "seed": 1792924793,
+    "inputs": [
+      "prompt=a lighthouse on a basalt cliff at dusk, oil painting",
+      "steps=30",
+      "guidance=7.0",
+      "aspect_ratio=1:1",
+      "hidiffusion=false"
+    ]
+  },
+  "source": {
+    "package_commit": "e38239f9eb88460fe9be087771fced9a986f48cf",
+    "package_files_sha256": {
+      "sdxl/sdxl/_prepared.py": "83d9ca699eb97e6f95fafc785d2607c5db6865eb7187415acf78632b3a191a06",
+      "sdxl/sdxl/__init__.py": "a30033bd656d514ec048328da4d0a565c03ad8b1298c98ab0bd6c00343865e35"
+    },
+    "runtime": "c1ac7cded3f5d82ebbbffe5308055b452eaa4699",
+    "tensorfs": "e521cc7797f93c0c97e20ef82ecbf7842cba4ff9",
+    "tensord": "4178a2a1195b9afe1426ec4567d738d28d31f826"
+  },
+  "software": {
+    "attempt_ordinal": 1,
+    "runtime": "0.32.3+c1ac7cde",
+    "tensord": "0.11.17+dev.g4178a2a1",
+    "tensord_commit": "4178a2a1195b9afe1426ec4567d738d28d31f826",
+    "tensorfs": "0.15.6"
+  },
+  "image": {
+    "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/capture-green-20261025/sdxl-image/17776-image.webp",
+    "length": 1300234,
+    "sha256": "eadd8abb344446c9a79f95297068753dc0356f7d5b97f43ae465f7c7159c3ef0",
+    "decoded": {
+      "format": "WEBP",
+      "mode": "RGB",
+      "size": [
+        1024,
+        1024
+      ],
+      "extrema": [
+        [
+          5,
+          255
+        ],
+        [
+          2,
+          226
+        ],
+        [
+          2,
+          205
+        ]
+      ]
+    },
+    "visual_review": "Lighthouse and sea cliffs at dusk; nonblank coherent image inspected by root and queue_resume. Not a baseline numerical parity result."
+  },
+  "native_execution": {
+    "direct_denoise_native_steps_metric": null,
+    "inferred_completed_native_steps": 29,
+    "evidence": {
+      "denoise_step_callback_count": 1,
+      "unet_ordinary_eager_calls": 1,
+      "recorded_normal_graph_replays": 0,
+      "prepared_body_source_enforces_completed_steps": "repeat_euler raises incomplete_denoise unless completed_steps equals total-1; normal loop breaks only when prepared result is not None",
+      "no_eager_fallback_log": true
+    },
+    "boundary": "29 native steps are inferred from observed one-eager-step counters plus exact successful package path. Ordinary receipt omitted the emitted metric; no direct native launch/step counter is present for this full image."
+  },
+  "timings": {
+    "recorded_execution_ms": 31405,
+    "created_to_settled_ms": 70317,
+    "accepted_to_started_ms": 31555,
+    "started_to_settled_ms": 36980,
+    "construction_prepare_ms": 3846.0,
+    "stages_ms": {
+      "decode": 720.934,
+      "denoise": 22596.734,
+      "encode": 757.181,
+      "encode_webp": 1.401,
+      "tokenize": 5.166
+    },
+    "ordinary_eager_step0_ms": 1766.951,
+    "gpu_returned_to_output_finished_ms": 814.477706,
+    "scope": "These are different partly nested wall/phase boundaries, not additive GPU-kernel timings. Denoise includes first eager step and preparation/capture/native interval; execution is the recorded run boundary; submission-to-settlement includes setup/waits. One correctness run, not a benchmark."
+  },
+  "memory": {
+    "logical_store_read_bytes": 6877729750,
+    "logical_store_read_ns": 495371990,
+    "overlapping": false,
+    "peak_allocated_bytes": 9349250560,
+    "peak_reserved_bytes": 10953424896,
+    "driver_peak_bytes": 12150046720,
+    "boundary": "Logical loader/read counters do not establish physical disk bytes, PCIe traffic, or exposed GPU starvation."
+  },
+  "handoff_events": [
+    {
+      "at_ns": 1792919908674348143,
+      "phase": "gpu_returned",
+      "pid": 652
+    },
+    {
+      "ok": null,
+      "phase": "output_encoding",
+      "state": "begin"
+    },
+    {
+      "ok": true,
+      "phase": "output_encoding",
+      "state": "end"
+    },
+    {
+      "at_ns": 1792919909488825849,
+      "phase": "output_finished"
+    }
+  ],
+  "limits": [
+    "No direct denoise_native_steps metric retained in ordinary measurement/event stream.",
+    "No baseline pixel/latent parity or ComfyUI performance comparison.",
+    "Combined Runtime4429 adapters and watcher-creation followup are excluded.",
+    "No Windows,8GiB,LoRA,external-pressure or multi-GPU qualification inferred from this12GiB RTX3060 run."
+  ],
+  "receipts": [
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/capture-green-20261025/sdxl-image.json",
+      "sha256": "468b360ec46319cdcd5e589c3f11226acaf731988531a8bdd1e48db025863009"
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/capture-green-20261025/sdxl-detail.json",
+      "sha256": "c6309734dd335985d0251dfbbdd540efb83fd43ab3c7fc27e70eb9a8bb034f98"
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/capture-green-20261025/sdxl-image-proof.json",
+      "sha256": "debeebcb120a1ad24dad62ccad65c2846cc9946292149de90e550ddf40351bd8"
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/capture-green-20261025/sdxl-image.rc",
+      "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/capture-green-20261025/cohort.json",
+      "sha256": "4465f51a35c51c6523346b3bb674818ef3b3f042506bb641cf48f62d47824d72"
+    }
+  ]
+}

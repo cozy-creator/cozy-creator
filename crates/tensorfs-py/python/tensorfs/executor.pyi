@@ -46,8 +46,6 @@ class Start(_Wire):
     import_only: bool
     call_interfaces: list[CallInterface]
     constructions: list[Construction]
-    leases: int | None
-    memory_protocol: int
     memo: MemoSettings | None
 
 class Adapter(_Wire):
@@ -120,6 +118,9 @@ class PrepareRequest(_Wire):
     bits: int
     input_metadata: dict[str, InputMetadata]
 
+class Cancel(_Wire):
+    request_id: str
+
 class Invoke(_Wire):
     tensorfs: TensorFSOptions | None
     max_output_bytes: int
@@ -154,7 +155,7 @@ class Fork(_Wire):
     root: Path
     environment: dict[str, str]
 
-class Bearer(_Wire):
+class Capability(_Wire):
     actor: str
     tensorfs: TensorFSOptions
 
@@ -194,7 +195,7 @@ class Answer(_Wire):
     stored: bool
     reason: str
 
-Command: TypeAlias = Hello | Shutdown | Start | Load | Activate | PrepareRequest | Invoke | Map | Unload | Probe | Fork | Bearer
+Command: TypeAlias = Hello | Shutdown | Start | Load | Activate | PrepareRequest | Invoke | Map | Unload | Probe | Fork | Capability | Cancel
 
 def decode_command(data: bytes) -> Command: ...
 def decode_answer(data: bytes) -> Answer: ...

@@ -1,0 +1,561 @@
+{
+  "qualified": [
+    {
+      "mode": "handoff",
+      "passed": true,
+      "original_controller_status": "failed correlation of Hub run ID with executor request ID; original logs preserved",
+      "mapping_method": "cozy run show NUMBER --once --json -> measurements.memory.stats.varena[].stats.request",
+      "runs": {
+        "A": {
+          "number": 17567,
+          "hub_id": "run-0b0b3e347d485acbae9f7d08",
+          "executor_request_id": "22",
+          "result": {
+            "completed_ns": 1792906922253196367,
+            "digest": "6ed81582851d1c1d88f9f6a5cda79fbd",
+            "entered_ns": 1792906913492781712,
+            "pid": 2013,
+            "tag": "A",
+            "value": 30001.0
+          },
+          "mapping_evidence": {
+            "command": [
+              "cozy",
+              "run",
+              "show",
+              "17567",
+              "--once",
+              "--json"
+            ],
+            "raw_sha256": "774a1d21edff1107b918c6eb24c12cc9d6091eeffc6bf83150e18b7201da43eb",
+            "memory_request_ids": [
+              "22"
+            ]
+          }
+        },
+        "B": {
+          "number": 17568,
+          "hub_id": "run-0ac7f6d9c3facf25f9ac53b0",
+          "executor_request_id": "23",
+          "result": {
+            "completed_ns": 1792906923176613464,
+            "digest": "df78b8fab5b5240aa3760dd57238b311",
+            "entered_ns": 1792906923029621640,
+            "pid": 2013,
+            "tag": "B",
+            "value": 30001.0
+          },
+          "mapping_evidence": {
+            "command": [
+              "cozy",
+              "run",
+              "show",
+              "17568",
+              "--once",
+              "--json"
+            ],
+            "raw_sha256": "224a8fd0e5753d4077beb474f26e6ecde50e5327e6194e1b9be46252a55c0090",
+            "memory_request_ids": [
+              "23"
+            ]
+          }
+        },
+        "C": {
+          "number": 17569,
+          "hub_id": "run-1484729fd285bfdb45a0e506",
+          "executor_request_id": "24",
+          "result": {
+            "completed_ns": 1792906923645053722,
+            "digest": "a0343733b73b6260c70a66e6f32d497a",
+            "entered_ns": 1792906923508519327,
+            "pid": 2013,
+            "tag": "C",
+            "value": 30001.0
+          },
+          "mapping_evidence": {
+            "command": [
+              "cozy",
+              "run",
+              "show",
+              "17569",
+              "--once",
+              "--json"
+            ],
+            "raw_sha256": "2ce393112e58d1e7c4536885429a9c6ecdceb9a1d7439065c9aee994ae4cb9e1",
+            "memory_request_ids": [
+              "24"
+            ]
+          }
+        }
+      },
+      "lookahead_events": [
+        {
+          "event": "sent",
+          "request": "23",
+          "at_ns": 1792906915046046000,
+          "text": "2026-10-25T05:41:55.046046Z  INFO tensord::device_executor: request lookahead sent current=22 request=23"
+        },
+        {
+          "event": "ready",
+          "request": "23",
+          "at_ns": 1792906915047067000,
+          "text": "2026-10-25T05:41:55.047067Z  INFO tensord::device_executor: request lookahead ready request=23 ok=true"
+        },
+        {
+          "event": "reused",
+          "request": "23",
+          "at_ns": 1792906923022772000,
+          "text": "2026-10-25T05:42:03.022772Z  INFO tensord::device_executor: request lookahead reused request=23"
+        },
+        {
+          "event": "sent",
+          "request": "24",
+          "at_ns": 1792906923025981000,
+          "text": "2026-10-25T05:42:03.025981Z  INFO tensord::device_executor: request lookahead sent current=23 request=24"
+        },
+        {
+          "event": "ready",
+          "request": "24",
+          "at_ns": 1792906923029437000,
+          "text": "2026-10-25T05:42:03.029437Z  INFO tensord::device_executor: request lookahead ready request=24 ok=true"
+        },
+        {
+          "event": "reused",
+          "request": "24",
+          "at_ns": 1792906923503091000,
+          "text": "2026-10-25T05:42:03.503091Z  INFO tensord::device_executor: request lookahead reused request=24"
+        }
+      ],
+      "raw_controller_log_sha256": "54addbc38f50cfe3f6903c59dd6d6cba39324d83530192035ed7aea8de81063e",
+      "raw_worker_logs_sha256": "8f1ef0f6ab670c681b78a149ef402448e3210a670425047dd9cdad7c310494ef"
+    },
+    {
+      "mode": "overlap",
+      "passed": true,
+      "original_controller_status": "failed correlation of Hub run ID with executor request ID; original logs preserved",
+      "mapping_method": "cozy run show NUMBER --once --json -> measurements.memory.stats.varena[].stats.request",
+      "runs": {
+        "A": {
+          "number": 17570,
+          "hub_id": "run-1d7d02b46b7249cdc4fe9954",
+          "executor_request_id": "25",
+          "result": {
+            "completed_ns": 1792906930708946773,
+            "digest": "36eb2926e4419f9c089da678d24ff653",
+            "entered_ns": 1792906925679828878,
+            "pid": 2013,
+            "tag": "A",
+            "value": 30001.0
+          },
+          "mapping_evidence": {
+            "command": [
+              "cozy",
+              "run",
+              "show",
+              "17570",
+              "--once",
+              "--json"
+            ],
+            "raw_sha256": "2818f04d0051ee201bc68304b49f046150222294c990771d6641c4770762daf4",
+            "memory_request_ids": [
+              "25"
+            ]
+          }
+        },
+        "B": {
+          "number": 17571,
+          "hub_id": "run-40d5bdf3ec28e107f8e7cef7",
+          "executor_request_id": "26",
+          "result": {
+            "completed_ns": 1792906931157022047,
+            "digest": "419ba279f69eac24b9583d9e538289a6",
+            "entered_ns": 1792906931008313119,
+            "pid": 2013,
+            "tag": "B",
+            "value": 30001.0
+          },
+          "mapping_evidence": {
+            "command": [
+              "cozy",
+              "run",
+              "show",
+              "17571",
+              "--once",
+              "--json"
+            ],
+            "raw_sha256": "eddbaa4ad7737d356da966a0624b507a09f0a169963074557180005d520ca76c",
+            "memory_request_ids": [
+              "26"
+            ]
+          }
+        },
+        "C": {
+          "number": 17572,
+          "hub_id": "run-17aec00db34086dbef332cc2",
+          "executor_request_id": "27",
+          "result": {
+            "completed_ns": 1792906931669944886,
+            "digest": "97dd5d53e9c39a93618acde8be9dcf92",
+            "entered_ns": 1792906931532956727,
+            "pid": 2013,
+            "tag": "C",
+            "value": 30001.0
+          },
+          "mapping_evidence": {
+            "command": [
+              "cozy",
+              "run",
+              "show",
+              "17572",
+              "--once",
+              "--json"
+            ],
+            "raw_sha256": "c21f77333bf6a54f9ada6942e4f43278cdec8fe6967f1140a6151758dbab748c",
+            "memory_request_ids": [
+              "27"
+            ]
+          }
+        }
+      },
+      "lookahead_events": [
+        {
+          "event": "sent",
+          "request": "26",
+          "at_ns": 1792906926108806000,
+          "text": "2026-10-25T05:42:06.108806Z  INFO tensord::device_executor: request lookahead sent current=25 request=26"
+        },
+        {
+          "event": "ready",
+          "request": "26",
+          "at_ns": 1792906927624737000,
+          "text": "2026-10-25T05:42:07.624737Z  INFO tensord::device_executor: request lookahead ready request=26 ok=true"
+        },
+        {
+          "event": "reused",
+          "request": "26",
+          "at_ns": 1792906931002365000,
+          "text": "2026-10-25T05:42:11.002365Z  INFO tensord::device_executor: request lookahead reused request=26"
+        },
+        {
+          "event": "sent",
+          "request": "27",
+          "at_ns": 1792906931005512000,
+          "text": "2026-10-25T05:42:11.005512Z  INFO tensord::device_executor: request lookahead sent current=26 request=27"
+        },
+        {
+          "event": "ready",
+          "request": "27",
+          "at_ns": 1792906931008127000,
+          "text": "2026-10-25T05:42:11.008127Z  INFO tensord::device_executor: request lookahead ready request=27 ok=true"
+        },
+        {
+          "event": "reused",
+          "request": "27",
+          "at_ns": 1792906931528073000,
+          "text": "2026-10-25T05:42:11.528073Z  INFO tensord::device_executor: request lookahead reused request=27"
+        }
+      ],
+      "raw_controller_log_sha256": "54addbc38f50cfe3f6903c59dd6d6cba39324d83530192035ed7aea8de81063e",
+      "raw_worker_logs_sha256": "9f4496dbc239acfe4ddba133474343f8183e08d3caf18714dae2fe58b50599af"
+    },
+    {
+      "mode": "incompatible",
+      "passed": true,
+      "original_controller_status": "failed correlation of Hub run ID with executor request ID; original logs preserved",
+      "mapping_method": "cozy run show NUMBER --once --json -> measurements.memory.stats.varena[].stats.request",
+      "runs": {
+        "A": {
+          "number": 17585,
+          "hub_id": "run-52a19274443b24c4ce82bcf8",
+          "executor_request_id": "40",
+          "result": {
+            "completed_ns": 1792906980589072049,
+            "digest": "e78666259736319a0f26c8109137f21b",
+            "entered_ns": 1792906975549997036,
+            "pid": 2134,
+            "tag": "A",
+            "value": 30001.0
+          },
+          "mapping_evidence": {
+            "command": [
+              "cozy",
+              "run",
+              "show",
+              "17585",
+              "--once",
+              "--json"
+            ],
+            "raw_sha256": "b216293ec1e61041681a97abad40046352f3e0dc4a8c550ec93feb04335d2c0e",
+            "memory_request_ids": [
+              "40"
+            ]
+          }
+        },
+        "B": {
+          "number": 17586,
+          "hub_id": "run-5b26bc83318f40d37ffee460",
+          "executor_request_id": "41",
+          "result": {
+            "completed_ns": 1792906984102191559,
+            "digest": "3a32a8d0db94bea027900c8552850a10",
+            "entered_ns": 1792906982985884371,
+            "pid": 2169,
+            "tag": "B",
+            "value": 30001.0
+          },
+          "mapping_evidence": {
+            "command": [
+              "cozy",
+              "run",
+              "show",
+              "17586",
+              "--once",
+              "--json"
+            ],
+            "raw_sha256": "303639e1c71a8c58d9867153b2d134e2677bae76ebb93d3a4f241ad6f0a069a2",
+            "memory_request_ids": [
+              "41"
+            ]
+          }
+        },
+        "C": {
+          "number": 17587,
+          "hub_id": "run-168814fc0b1f89e2f7251cfd",
+          "executor_request_id": "42",
+          "result": {
+            "completed_ns": 1792906985056171682,
+            "digest": "f7211ccacd1cb0ae1ee53b0caa758a9d",
+            "entered_ns": 1792906984914127888,
+            "pid": 2134,
+            "tag": "C",
+            "value": 30001.0
+          },
+          "mapping_evidence": {
+            "command": [
+              "cozy",
+              "run",
+              "show",
+              "17587",
+              "--once",
+              "--json"
+            ],
+            "raw_sha256": "2c752d1422aa9ece538c6601e09a6235a0fb9f6fb82309621f2aae6e417c5cdc",
+            "memory_request_ids": [
+              "42"
+            ]
+          }
+        }
+      },
+      "lookahead_events": [],
+      "raw_controller_log_sha256": "2e5524af0d0219aa51af843c0b280f857b0f37bddae3d7ddd5ccbd832ea915f8",
+      "raw_worker_logs_sha256": "3b90459d180d010744274f691d74df51b4a533becf4d2c57716340be130b28f5"
+    }
+  ],
+  "partial_only": [
+    "cancel",
+    "abandon",
+    "refuse",
+    "cancel-active"
+  ],
+  "partial_reason": "Canceled or pre-entry-refused request lacks an executor request ID in public saved run-show measurements; no inference by timestamps or sequential IDs was used. Their existing terminal/PID outcome checks are evidence, not full correlation proof.",
+  "cohort": {
+    "runtime": {
+      "sha256": "ae349ceab666f7ae39c7f204531062be165661cf224587fd7885d9d4b04d840b",
+      "source": "de3dfc42c3467bb9df50b660ad613e64a43a12c6"
+    },
+    "tensord": {
+      "sha256": "f9359e2f00c7f0939a43a79fdb319f6ce504546add808c59a7f44af1e81bddfe",
+      "source": "9998cf5f4ea58f72bbf70efd22e483f235517895"
+    },
+    "tensorfs": {
+      "sha256": "0171ff047875837509bdc596fa6d1503b35fd205d2fa2d7ca38c7a227a8794ff",
+      "source": "6431a5387dab3125deb77c38f9c48410538ec8a8",
+      "build": 40165303748
+    }
+  },
+  "fixture_commit": "5a157c7f2881d94d213621c5c3727b13cc7a7c6b",
+  "controller_sha256": "fb8dc6be962ed9d4c523cfd7672a2e180b66ee2de4575f01817d8427a675bc12",
+  "partial_outcomes": {
+    "cancel": {
+      "A": {
+        "number": 17573,
+        "hub_id": "run-7a2699de5b4fad2780362f84",
+        "status": "completed",
+        "mapped_executor_ids": [
+          "28"
+        ],
+        "result": {
+          "completed_ns": 1792906938549466056,
+          "digest": "d9b335b83b6e3f0a6bdff22c71e5ff14",
+          "entered_ns": 1792906933527698400,
+          "pid": 2013,
+          "tag": "A",
+          "value": 30001.0
+        },
+        "raw_show_sha256": "cda06f0050a9024a3c3aac463842e1ada62ad3fbeef1f8db4ef49bee379143ae"
+      },
+      "B": {
+        "number": 17574,
+        "hub_id": "run-f2413ec0ca0f68fb64f2e5c0",
+        "status": "canceled",
+        "mapped_executor_ids": [],
+        "result": null,
+        "raw_show_sha256": "b184c9ac339bca5163fd38eecaddf60309ef2ae692ca56af1afac6a7aadd486a"
+      },
+      "C": {
+        "number": 17575,
+        "hub_id": "run-eb926de9384a2f81f8c447a3",
+        "status": "completed",
+        "mapped_executor_ids": [
+          "30"
+        ],
+        "result": {
+          "completed_ns": 1792906942110511306,
+          "digest": "d38526eb78bf5e82534b1f53fb68bf66",
+          "entered_ns": 1792906941039200177,
+          "pid": 2063,
+          "tag": "C",
+          "value": 30001.0
+        },
+        "raw_show_sha256": "3805eb51d4706c76aa93baae6dc9f140b4e5eba5eaa19f2d108f0d09d1eeb1a8"
+      }
+    },
+    "abandon": {
+      "A": {
+        "number": 17576,
+        "hub_id": "run-038032fe97ce64d6ec5739fa",
+        "status": "completed",
+        "mapped_executor_ids": [
+          "31"
+        ],
+        "result": {
+          "completed_ns": 1792906950965900773,
+          "digest": "98edcc7e9748cdd6e2f932282f420e9f",
+          "entered_ns": 1792906945948244516,
+          "pid": 2063,
+          "tag": "A",
+          "value": 30001.0
+        },
+        "raw_show_sha256": "cc6a8ceb04478c4d3fad5e4451b9f32ff2bf1ba75d16c3f29288d56fd0a4123d"
+      },
+      "B": {
+        "number": 17577,
+        "hub_id": "run-c3ebb751d15fb01a247bc73f",
+        "status": "canceled",
+        "mapped_executor_ids": [],
+        "result": null,
+        "raw_show_sha256": "a3df8f1d616fc8d4789e4ef029a1a2d85125887363b4963c4f1a72a0f08ba846"
+      },
+      "C": {
+        "number": 17578,
+        "hub_id": "run-84868a82ebdc5038f51f93f5",
+        "status": "completed",
+        "mapped_executor_ids": [
+          "33"
+        ],
+        "result": {
+          "completed_ns": 1792906954542624537,
+          "digest": "a236ac95699ce664bdc581e06e33f8a2",
+          "entered_ns": 1792906953472870299,
+          "pid": 2093,
+          "tag": "C",
+          "value": 30001.0
+        },
+        "raw_show_sha256": "76b6e11d98302e46ae76131c37cb1b558ab711a763e3642ebcdb2bc1dd4df959"
+      }
+    },
+    "refuse": {
+      "A": {
+        "number": 17579,
+        "hub_id": "run-d3caae8a28043d8fbfd0359d",
+        "status": "completed",
+        "mapped_executor_ids": [
+          "34"
+        ],
+        "result": {
+          "completed_ns": 1792906963078130293,
+          "digest": "5c43ea55bb49bda11d441f4e5f0559d7",
+          "entered_ns": 1792906958043312030,
+          "pid": 2093,
+          "tag": "A",
+          "value": 30001.0
+        },
+        "raw_show_sha256": "0c97b75f41a057573e3f1198eba2d6c75a4bd7ae1ce93c2d8ab5f70a114e6190"
+      },
+      "B": {
+        "number": 17580,
+        "hub_id": "run-caced8bb1eac26f98bd14cee",
+        "status": "failed",
+        "mapped_executor_ids": [],
+        "result": null,
+        "raw_show_sha256": "f25ddcd8682bfb2a8c0d2345602ba05e13d64ed26a47ea4e08c688e375deabe6"
+      },
+      "C": {
+        "number": 17581,
+        "hub_id": "run-6a30db002ce69ef993205bfa",
+        "status": "completed",
+        "mapped_executor_ids": [
+          "36"
+        ],
+        "result": {
+          "completed_ns": 1792906963716371576,
+          "digest": "791597bcc3641fd0ac0b66c0eed8a869",
+          "entered_ns": 1792906963568097689,
+          "pid": 2093,
+          "tag": "C",
+          "value": 30001.0
+        },
+        "raw_show_sha256": "eae36d61a14aec4e7ce052fcf91e676bf1dda5e6edf416bbf3f4648cc7f83b03"
+      }
+    },
+    "cancel-active": {
+      "A": {
+        "number": 17582,
+        "hub_id": "run-f92e27b8fdab46752fb9406e",
+        "status": "canceled",
+        "mapped_executor_ids": [],
+        "result": null,
+        "raw_show_sha256": "667ce349983d50601e80450efcab2b7f4b18787bb160a920e9f284d9f35ae199"
+      },
+      "B": {
+        "number": 17583,
+        "hub_id": "run-196dc06c667f45b0ee5310f0",
+        "status": "completed",
+        "mapped_executor_ids": [
+          "38"
+        ],
+        "result": {
+          "completed_ns": 1792906972475799998,
+          "digest": "58bf384a3b4749e31c9fb562d585c4f7",
+          "entered_ns": 1792906971398684801,
+          "pid": 2134,
+          "tag": "B",
+          "value": 30001.0
+        },
+        "raw_show_sha256": "8212e49a04a695e65f6b000589a0cea556fef97f2c68653ef383795603c84998"
+      },
+      "C": {
+        "number": 17584,
+        "hub_id": "run-58e6664ed2439833243f5c50",
+        "status": "completed",
+        "mapped_executor_ids": [
+          "39"
+        ],
+        "result": {
+          "completed_ns": 1792906973300247153,
+          "digest": "3a3e448c7157542fe70cc79dd301cdb8",
+          "entered_ns": 1792906973159802986,
+          "pid": 2134,
+          "tag": "C",
+          "value": 30001.0
+        },
+        "raw_show_sha256": "0748edeb6e71750f17b99f2ffe39da425bb7248520d280d666865b4b89341308"
+      }
+    }
+  },
+  "limits": [
+    "No canceled/refused request ID inferred from time order or adjacent numeric IDs.",
+    "Original controller failures remain preserved; only exact mapped claims are posthoc-qualified.",
+    "This is CPU preparation lookahead, not GPU weight prefetch or comparative throughput."
+  ]
+}

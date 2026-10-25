@@ -1,0 +1,198 @@
+{
+  "run": 17296,
+  "status": "completed",
+  "scope": "installed SDK through default Cozy CLI; candidate_python omitted and wrapper uses sys.executable",
+  "machine": "riful",
+  "hardware": "RTX 3070 8GB, sm86, driver610.43.02",
+  "runtime_source": "75bce89371bbe678aa5fe7058c3492215e9d00c1",
+  "runtime_wheel_sha256": "6865e959e904e5e48becaea8e9e991dd762ea98d48f21d5d501b39d7766b8e70",
+  "creator_source": "76656368e",
+  "tensorfs_native_source_equivalent": "bd12eb21be205344057b97101d32bf2ef574b3b1",
+  "tensorfs_wheel_sha256": "9a9698c96ee6f069a66c5c8eb01e0aaa4a6ccbb2832646dfebe43157f73fffaf",
+  "installation_receipt_sha256": "f86bfaabf6b4f37f0f87ce6cbc8fb993a0a90fe52d72b99915c1c0bc2bc6dfc2",
+  "proof_source": "49d7785c21cc797c02604269a29a57c4e84b5ab2",
+  "outer_software": {
+    "attempt_ordinal": 1,
+    "runtime": "0.32.1",
+    "tensord": "0.11.17+dev.g76656368",
+    "tensord_commit": "76656368e6e7674c4dc8cda5461e3457fee39a82",
+    "tensorfs": "0.15.2+dev.g76656368"
+  },
+  "result": {
+    "mode": "prefetch-cancel",
+    "passed": true,
+    "result": {
+      "after_cancel": {
+        "canceled": true,
+        "done": true,
+        "issued_bytes": 16777216,
+        "started": true
+      },
+      "after_close": {
+        "evictions": 5,
+        "fills": 4,
+        "hits": 0,
+        "pinned_bytes": 0,
+        "poisoned": false,
+        "preferred_bytes": 0,
+        "ready_bytes": 0,
+        "reclaimable_bytes": 0,
+        "reclaimed_bytes": 549453824,
+        "regions": 1,
+        "reserved_bytes": 268435456,
+        "resident_bytes": 0
+      },
+      "canceled_request": {
+        "allocated": 300163584,
+        "allocator_scope": "process",
+        "final_bindings": {
+          "fallback_blocks": 0,
+          "fills": 0,
+          "final_resident_bytes": 0,
+          "hits": 0,
+          "native_prefetch": true,
+          "raw_resident_bytes": 4194304,
+          "resident_scope": "process"
+        },
+        "host": null,
+        "moved": {
+          "store": {
+            "bytes": 4194304,
+            "ns": 20033916
+          }
+        },
+        "overlapping": false,
+        "peak": 306446848,
+        "peak_window": "Torch high-water plus sampled native backing, carried across resets",
+        "prefetch": {
+          "canceled": 1,
+          "completed": 0,
+          "failed": 0,
+          "scope": "one next exact raw block; no native transform callbacks",
+          "skipped_capacity": 0,
+          "started": 1,
+          "wait_ns": 495390
+        },
+        "request": "prefetch-cancel",
+        "reserved": 358612992,
+        "sets": {
+          "/sha256:c2c8f05976e417c785b6e9808f7cb47c4595174d2fc529e81e03f6453a007864/net": 276824064
+        },
+        "trace": [
+          {
+            "block": 0,
+            "bytes": 4194304,
+            "origin": "store",
+            "sequence": 0,
+            "set": "/sha256:c2c8f05976e417c785b6e9808f7cb47c4595174d2fc529e81e03f6453a007864/net",
+            "speculative": false
+          }
+        ],
+        "trace_scope": "fills",
+        "weight_residency": {
+          "evictions": 0,
+          "fills": 1,
+          "hits": 0,
+          "pinned_bytes": 0,
+          "poisoned": false,
+          "preferred_bytes": 4194304,
+          "ready_bytes": 4194304,
+          "reclaimable_bytes": 272629760,
+          "reclaimed_bytes": 0,
+          "regions": 2,
+          "reserved_bytes": 272629760,
+          "resident_bytes": 272629760
+        }
+      },
+      "identity_changed": true,
+      "issued_before_cancel": {
+        "canceled": false,
+        "done": false,
+        "issued_bytes": 12582912,
+        "started": true
+      },
+      "new_fill": {
+        "allocated": 35922432,
+        "allocator_scope": "process",
+        "final_bindings": {
+          "fallback_blocks": 0,
+          "fills": 0,
+          "final_resident_bytes": 0,
+          "hits": 0,
+          "native_prefetch": true,
+          "raw_resident_bytes": 8388608,
+          "resident_scope": "process"
+        },
+        "host": null,
+        "moved": {
+          "store": {
+            "bytes": 276824064,
+            "ns": 29157735
+          }
+        },
+        "overlapping": false,
+        "peak": 310641152,
+        "peak_window": "Torch high-water plus sampled native backing, carried across resets",
+        "prefetch": {
+          "canceled": 0,
+          "completed": 0,
+          "failed": 0,
+          "scope": "one next exact raw block; no native transform callbacks",
+          "skipped_capacity": 0,
+          "started": 0,
+          "wait_ns": 0
+        },
+        "request": "prefetch-new-fill",
+        "reserved": 94371840,
+        "sets": {
+          "/sha256:c2c8f05976e417c785b6e9808f7cb47c4595174d2fc529e81e03f6453a007864/net": 276824064
+        },
+        "trace": [
+          {
+            "block": 0,
+            "bytes": 4194304,
+            "origin": "store",
+            "sequence": 0,
+            "set": "/sha256:c2c8f05976e417c785b6e9808f7cb47c4595174d2fc529e81e03f6453a007864/net",
+            "speculative": false
+          },
+          {
+            "block": 1,
+            "bytes": 268435456,
+            "origin": "store",
+            "sequence": 1,
+            "set": "/sha256:c2c8f05976e417c785b6e9808f7cb47c4595174d2fc529e81e03f6453a007864/net",
+            "speculative": false
+          },
+          {
+            "block": 2,
+            "bytes": 4194304,
+            "origin": "store",
+            "sequence": 2,
+            "set": "/sha256:c2c8f05976e417c785b6e9808f7cb47c4595174d2fc529e81e03f6453a007864/net",
+            "speculative": false
+          }
+        ],
+        "trace_scope": "fills",
+        "weight_residency": {
+          "evictions": 3,
+          "fills": 4,
+          "hits": 0,
+          "pinned_bytes": 0,
+          "poisoned": false,
+          "preferred_bytes": 4194304,
+          "ready_bytes": 8388608,
+          "reclaimable_bytes": 8388608,
+          "reclaimed_bytes": 541065216,
+          "regions": 4,
+          "reserved_bytes": 545259520,
+          "resident_bytes": 8388608
+        }
+      }
+    },
+    "runtime_version": "0.32.1",
+    "seed": 103,
+    "tensorfs_version": "0.15.2+dev.g76656368"
+  },
+  "passed": true
+}

@@ -40,7 +40,8 @@ mod session;
 #[cfg(feature = "store")]
 pub use session::{
     bearer, Checkpoint, CheckpointFile, Client, Component, ComponentWriter, Config, Convert,
-    ConvertProgress, Download, Endpoint, Fetched, Format, HeaderMap, Open, Progress, Read,
+    ConversionControl, ConvertProgress, Download, Endpoint, Fetched, Format, HeaderMap, Open, Progress,
+    Quantization, QuantizationResult, QuantizedTensor, QuantizeTensor, Read,
     ReadInto, Ref, Request, Selection, TokenProvider, Writer, WriterOptions,
 };
 

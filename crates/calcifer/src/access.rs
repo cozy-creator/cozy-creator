@@ -9,7 +9,7 @@
 //! releases at its Hub's origin; a run that publishes needs the sign-in.
 use std::{
     collections::BTreeSet,
-    sync::Weak,
+    sync::{Arc, Weak},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -25,7 +25,7 @@ use protocol::{
 use crate::{
     machines::{Machines, lock},
     rentals::{Hubs, hub_refusal, reason},
-    store::RunRow,
+    store::{RunRow, State},
 };
 
 /// What a send carries besides the spec the run was submitted with.
@@ -174,6 +174,53 @@ impl Machines {
         let options = held.options.clone();
         self.holds(origin, machine, held);
         Ok(options)
+    }
+
+    /// Reattaching restores capability renewal without making the run's observer wait for
+    /// its Hub. The normal access path owns minting and refresh registration after success.
+    pub(crate) fn resume_capability(self: &Arc<Self>, run: &RunRow) {
+        if run.spec.tensorfs.is_some() || run.cancel_requested || run.hub.is_none() {
+            return;
+        }
+        let Some(machine) = run.machine.clone() else {
+            return;
+        };
+        let id = run.id.clone();
+        let machines = self.clone();
+        self.spawn(async move {
+            let mut failing = Duration::ZERO;
+            loop {
+                let Some(run) = machines.store().run(id.as_str()).ok().flatten()
+                    .filter(|run| run.state != State::Settled && !run.cancel_requested)
+                else { return };
+                let error = match machines.access(&run, &run.spec).await {
+                    Ok(access) => {
+                        let Some(options) = access.tensorfs.filter(|options| !options.token.is_empty())
+                        else { return };
+                        if machines.store().run(id.as_str()).ok().flatten()
+                            .is_none_or(|run| run.state == State::Settled || run.cancel_requested)
+                        {
+                            return;
+                        }
+                        match machines.linked(&machine) {
+                            Ok((_, link)) => match link.capability(&options).await {
+                                Ok(()) => return,
+                                Err(error) => error.to_string(),
+                            },
+                            Err(error) => error.to_string(),
+                        }
+                    }
+                    Err(Denied::Unreachable(error)) => error,
+                    Err(Denied::Refused(reason)) => {
+                        tracing::warn!(%machine, code = %reason.code, "restoring the machine's run capability: {}", reason.message);
+                        return;
+                    }
+                };
+                failing = (failing * 2).clamp(Duration::from_secs(1), Duration::from_secs(60));
+                tracing::warn!(%machine, %error, retry_s = failing.as_secs(), "restoring the machine's run capability");
+                tokio::time::sleep(failing).await;
+            }
+        });
     }
 
     /// What this computer's unsettled runs on `machine` at `origin` need, but `except`'s.

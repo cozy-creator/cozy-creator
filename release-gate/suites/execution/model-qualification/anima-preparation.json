@@ -1,0 +1,135 @@
+{
+  "status": "prepared; no Anima GPU call or machine installation submitted",
+  "source_commit": "da31a14a05e85707d5a3499dfca117dbfa35e1e7",
+  "anima_tree": "c992749097f25d7ecb6a72138010b9965c6825fa",
+  "source_directory": "/home/fidika/cozy/.worktrees/packages/varena-sdxl-qualification/anima",
+  "model": {
+    "model": "_/anima",
+    "family": null,
+    "created_at": "2026-09-27T20:11:17.488698Z",
+    "releases": [
+      {
+        "version": "1.0.0",
+        "created_at": "2026-10-24T22:15:35.064618Z",
+        "lanes": [
+          {
+            "lane": "bf16",
+            "commit": "sha256:80df0790c865c8b9f6974d312a4065f34ba4625e3b857b9d3d1d6accc2e16e5f",
+            "bytes": 5642859713,
+            "kinds": [
+              "BF16"
+            ],
+            "provenance": null
+          },
+          {
+            "lane": "fp8",
+            "commit": "sha256:10403cbbdd7e9f5453977cdad392db21d1fdea5a97ee28cbb3f46ad790559028",
+            "bytes": 3691835152,
+            "kinds": [
+              "BF16",
+              "fp8.rowwise"
+            ],
+            "provenance": null
+          },
+          {
+            "lane": "int8",
+            "commit": "sha256:4728a29d4e059a9f4c1cc4b8401613372b2bf003e3e8e1843b625d40d30fff81",
+            "bytes": 3445246394,
+            "kinds": [
+              "BF16",
+              "int8.convrot"
+            ],
+            "provenance": null
+          }
+        ]
+      }
+    ],
+    "commits": [
+      {
+        "commit": "sha256:fb4f7b6121c362b88fc3529e879e99e28b1de478ff5de7b354060a1b00931a6a",
+        "lane": "mxfp8",
+        "bytes": 3747785245,
+        "releases": [],
+        "created_at": "2026-10-24T22:15:35.064618Z"
+      },
+      {
+        "commit": "sha256:80df0790c865c8b9f6974d312a4065f34ba4625e3b857b9d3d1d6accc2e16e5f",
+        "lane": "bf16",
+        "bytes": 5642859713,
+        "releases": [
+          "1.0.0"
+        ],
+        "created_at": "2026-10-24T22:15:35.064618Z"
+      },
+      {
+        "commit": "sha256:4728a29d4e059a9f4c1cc4b8401613372b2bf003e3e8e1843b625d40d30fff81",
+        "lane": "int8",
+        "bytes": 3445246394,
+        "releases": [
+          "1.0.0"
+        ],
+        "created_at": "2026-10-24T22:15:35.064618Z"
+      },
+      {
+        "commit": "sha256:3554a5f55e75bd3055eb3fd43ee6349f9577f6b0d52aad10df1fb7349aea3fee",
+        "lane": "bf16",
+        "bytes": 5642856959,
+        "releases": [],
+        "created_at": "2026-10-24T22:15:35.064618Z"
+      },
+      {
+        "commit": "sha256:10403cbbdd7e9f5453977cdad392db21d1fdea5a97ee28cbb3f46ad790559028",
+        "lane": "fp8",
+        "bytes": 3691835152,
+        "releases": [
+          "1.0.0"
+        ],
+        "created_at": "2026-10-24T22:15:35.064618Z"
+      }
+    ]
+  },
+  "published_package": {
+    "version": "0.11.3",
+    "requirements": [
+      "cozy-runtime[media]<0.32,>=0.30",
+      "diffusers>=0.40.0",
+      "hf-xet>=1.6.0",
+      "msgspec>=0.19",
+      "numpy>=2.0",
+      "pyyaml>=6.0.3",
+      "regex>=2026.7.19",
+      "safetensors>=0.8.0",
+      "shellingham>=1.5.4",
+      "tensorfs<0.15,>=0.13",
+      "tokenizers>=0.23.1",
+      "torch>=2.14",
+      "torchvision>=0.29",
+      "transformers>=5.16.1"
+    ],
+    "compatible_with_selected_sdk": false
+  },
+  "source_sdk_requirements": [
+    "cozy-runtime[media]>=0.31",
+    "tensorfs>=0.13"
+  ],
+  "selected_runtime_source": "75bce89371bbe678aa5fe7058c3492215e9d00c1",
+  "selected_creator_tensorfs_source": "76656368e6e7674c4dc8cda5461e3457fee39a82",
+  "request": {
+    "steps": 30,
+    "width": 1024,
+    "height": 1024,
+    "guidance": 4.5,
+    "cfg_interval": [
+      0.15,
+      0.7
+    ],
+    "first_block_cache": 0.0
+  },
+  "first_lane_on_sm86": "int8",
+  "route_eligibility": {
+    "int8.convrot": "encoded_gemm requires cuda.sm80+, so sm86 is source-eligible; actual route must be measured",
+    "fp8.rowwise": "encoded_gemm requires cuda.sm89+; sm86 can use decoded_float fallback, so stored size is not resident-size proof"
+  },
+  "anima_fused_plan": "Source permits Torch2.13.0/2.14.0; Torch2.14.1 reports eager fallback. No allowlist widening performed.",
+  "memory_boundary": "Stored model bytes exclude activations, graph pools, context, staging and allocator overhead. 8GiB int8 is a feasible qualification candidate, not yet proven; larger-card escalation remains parent-owned."
+}

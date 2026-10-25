@@ -8,6 +8,7 @@ use crate::format::{Component, Header, Tensor};
 use crate::{Failure, Result};
 
 pub use crate::io::decode::{Output as DecodeOutput, Part as DecodePart};
+pub use crate::io::decode::device_scratch_bytes as decode_device_scratch_bytes;
 pub use crate::session::PartData;
 
 /// Check encoded-part descriptors through the shared format registry without reading data.

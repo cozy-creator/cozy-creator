@@ -11,6 +11,7 @@ app = App()
 class Probe(msgspec.Struct, forbid_unknown_fields=True):
     mode: str = "loaded"
     seed: int = 103
+    dtype: str = "F32"
 
 
 class Report(msgspec.Struct):
@@ -20,7 +21,16 @@ class Report(msgspec.Struct):
 
 @app.entrypoint(accelerator=True)
 def gpu(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
-    from .exercise import exercise
+    if payload.mode.startswith("phase-"):
+        from .phases import exercise
 
-    result = exercise(payload.mode, payload.seed, ctx, tel)
+        result = exercise(payload.mode, payload.seed, ctx)
+    elif payload.mode.startswith("encoded-"):
+        from .encoded import exercise
+
+        result = exercise(payload.mode, payload.seed, payload.dtype, ctx)
+    else:
+        from .exercise import exercise
+
+        result = exercise(payload.mode, payload.seed, ctx, tel)
     return Report(True, json.dumps(result, sort_keys=True))

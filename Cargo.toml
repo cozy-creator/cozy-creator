@@ -32,7 +32,7 @@ platform = { path = "crates/platform" }
 protocol = { path = "crates/protocol" }
 tensord = { path = "crates/tensord" }
 tensorfs = { path = "crates/tensorfs", default-features = false }
-varena = { path = "crates/varena", default-features = false }
+varena = { path = "crates/varena" }
 
 anstream = "1.0.0"
 anstyle = "1.0.14"

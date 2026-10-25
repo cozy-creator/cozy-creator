@@ -1,0 +1,189 @@
+{
+  "schema_version": 1,
+  "date_utc": "2026-10-25",
+  "scope": "Actual authored Recipe -> ordinary CLI model quantize -> adopted/uploaded checkpoint -> encoded CUDA Linear consumer, both lanes. Component correctness only, not native Blackwell instruction or full-model/performance qualification.",
+  "cohort": {
+    "creator": "8499b11b24a0c4222ab6daae58d9a75816591641",
+    "runtime": "7d1e7854ca638c5d153c6601f2d2c2b169d0b133",
+    "tensorfs": "9e95ee586b589572c169bb0295be019234fbbf85",
+    "artifacts": {
+      "tensord": {
+        "filename": "cozy-linux-x86_64",
+        "sha256": "1d098d8e47624b4c190e29b48b822eaf067a376ea5ee98964d8e49dc643400e9"
+      },
+      "runtime": {
+        "filename": "cozy_runtime-0.32.3-cp312-abi3-manylinux_2_28_x86_64.whl",
+        "sha256": "54f604a9020cf66be757e666aa3eb7008d01619e9ec27c239cc63279ec7c6720"
+      },
+      "tensorfs": {
+        "filename": "tensorfs-0.15.8-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "sha256": "8c5b6f9a7471db87c5193b7396cfff48c2eabe8cef3817741832bf642cfe683b"
+      }
+    },
+    "install_run": 17852,
+    "installed": {
+      "cozy": "0.11.17+dev.g8499b11b",
+      "runtime": "0.32.3",
+      "runtime_sha256": "54f604a9020cf66be757e666aa3eb7008d01619e9ec27c239cc63279ec7c6720",
+      "tensorfs": "0.15.8",
+      "tensorfs_sha256": "8c5b6f9a7471db87c5193b7396cfff48c2eabe8cef3817741832bf642cfe683b"
+    },
+    "machine": "local"
+  },
+  "fixture": {
+    "manifest_head": "041474a17600ded807212954c0e2e12930648bb9",
+    "verified_at_head": "e6712605420a3c43a8cf2eaf5709aa70f5118b95",
+    "sha256": {
+      "release-gate/suites/tensorfs/recipe-quantize/package.toml": "a7e5fdaf11d8b7a7c0f970fa364909e844f8bed33a350561fce1fc9e29807bb3",
+      "release-gate/suites/tensorfs/recipe-quantize/run.py": "13ff7be149c491e03ebd168f4ca3978df1f652da04bdee7250f9012bfa37a107",
+      "release-gate/suites/tensorfs/recipe-quantize/pyproject.toml": "15058020eb7d56a07bb08c979033496dc38ad798d237a49abdbd324447e6798e",
+      "release-gate/suites/tensorfs/recipe-quantize/ci_recipe_quantize/__init__.py": "b216ac0212afc9f5b119ccda4519cd56d4d94e55f99dec0d6761ad0261fedeec"
+    },
+    "controller": {
+      "argv": [
+        "python3",
+        "/home/fidika/cozy/.worktrees/cozy-creator/varena-consolidation/release-gate/suites/tensorfs/recipe-quantize/run.py",
+        "--machine",
+        "local",
+        "--model",
+        "fidika/codex-recipe-retry-7d1-20261025",
+        "--seed",
+        "1792928050",
+        "--out",
+        "/home/fidika/cozy_v2/outputs/stock-torch-20261024/integrated-7d1-final-local-20261025/recipe-retry"
+      ]
+    }
+  },
+  "runs": {
+    "source": {
+      "number": 17866,
+      "status": "completed",
+      "created_at_ms": 1792928234743,
+      "accepted_at_ms": 1792928235593,
+      "started_at_ms": 1792928386415,
+      "settled_at_ms": 1792928398037,
+      "execution_ms": 10727
+    },
+    "upload": {
+      "number": 17867,
+      "status": "completed",
+      "created_at_ms": 1792928399186,
+      "accepted_at_ms": 1792928400013,
+      "settled_at_ms": 1792928407386
+    },
+    "quantize-int8": {
+      "number": 17868,
+      "status": "completed",
+      "created_at_ms": 1792928409431,
+      "accepted_at_ms": 1792928410955,
+      "started_at_ms": 1792928415550,
+      "settled_at_ms": 1792928426917,
+      "execution_ms": 10842
+    },
+    "infer-int8": {
+      "number": 17869,
+      "status": "completed",
+      "created_at_ms": 1792928427819,
+      "accepted_at_ms": 1792928430414,
+      "started_at_ms": 1792928434395,
+      "settled_at_ms": 1792928477785,
+      "execution_ms": 43202
+    },
+    "quantize-nvfp4": {
+      "number": 17870,
+      "status": "completed",
+      "created_at_ms": 1792928479922,
+      "accepted_at_ms": 1792928483429,
+      "started_at_ms": 1792928485311,
+      "settled_at_ms": 1792928494957,
+      "execution_ms": 9538
+    },
+    "infer-nvfp4": {
+      "number": 17871,
+      "status": "completed",
+      "created_at_ms": 1792928496446,
+      "accepted_at_ms": 1792928496905,
+      "started_at_ms": 1792928500079,
+      "settled_at_ms": 1792928560796,
+      "execution_ms": 41600
+    }
+  },
+  "controller_proof": {
+    "source_run": 17866,
+    "upload_run": 17867,
+    "source_commit": "fidika/codex-recipe-retry-7d1-20261025@sha256:05a3d84887449ed841bfe733aeade44a8204ef46480a23cd790b6ab6aef75a6e",
+    "seed": 1792928050,
+    "lanes": [
+      {
+        "lane": "int8",
+        "commit": "fidika/codex-recipe-retry-7d1-20261025@sha256:38faead8346fd3fcd3011594c795a65fed499da4cc6adde9bf2147b96f2ef750",
+        "quantize_run": 17868,
+        "inference_run": 17869,
+        "measurement": "quantization measurement encoded_keys=1 new_bytes_written_this_run=4160 normalization_worst_relative_frobenius=0.0 output=int8 reused_keys=0 saturated_elements_this_run=0 source_bytes_read_this_run=8192 worst_relative_frobenius=0.0069813311788486845",
+        "inference": {
+          "checkpoint": "sha256:e980a9007f677c7cbcee2f897fd2101db179b04d0dc8fd79a6c13c22ed951662",
+          "consumed_encoding": "int8.convrot",
+          "decoded_weight_relative_error": 0.006981334183365107,
+          "encoding": "int8.convrot",
+          "inference_max_abs_error": 0.0022471994161605835,
+          "inference_relative_error": 0.007108100689947605,
+          "output_sha256": "830aad34ed198ff0a88f2459351e85eee9c66d5a9830ffc469918ae1e42b9986",
+          "output_shape": [
+            4,
+            16
+          ],
+          "provider": "cozy.int8-convrot256.native-leaf/1",
+          "seed": 1792928050,
+          "weight_payload_sha256": "fddb6fca552d3b0189ad87eea489718c51ea9b1a8ad6ae874d62477120ce3c1f"
+        }
+      },
+      {
+        "lane": "nvfp4",
+        "commit": "fidika/codex-recipe-retry-7d1-20261025@sha256:dc09a8fb1df84b4171c94bb6140f20aad2ab7e0725d84c4b0b9d11c7ec6b3eac",
+        "quantize_run": 17870,
+        "inference_run": 17871,
+        "measurement": "quantization measurement encoded_keys=1 new_bytes_written_this_run=2308 normalization_worst_relative_frobenius=0.0 output=nvfp4 reused_keys=0 saturated_elements_this_run=171 source_bytes_read_this_run=16384 worst_relative_frobenius=0.08656162342423995",
+        "inference": {
+          "checkpoint": "sha256:3ceef9a06ed0fd4bbe15d43eb6fbf0f7ec339f6f19927a5d16688fa1cccd9707",
+          "consumed_encoding": "nvfp4",
+          "decoded_weight_relative_error": 0.0865616723895073,
+          "encoding": "nvfp4",
+          "inference_max_abs_error": 0.0008583739399909973,
+          "inference_relative_error": 0.0025284409057348967,
+          "output_sha256": "881d0d01594b461aa2c68ac830b8809f71686e30a669e3113a1991849d996116",
+          "output_shape": [
+            4,
+            16
+          ],
+          "provider": "cozy.nvfp4.native-leaf/1",
+          "seed": 1792928050,
+          "weight_payload_sha256": "d4e9f3856cb7adc9596dd7fe23762a1cb5cb4836fdec152eed3c958792798a14"
+        }
+      }
+    ]
+  },
+  "counter_semantics": "Stored source bytes read this conversion, including the whole-tensor NVFP4 amax pass, and new encoded part bytes. Unchanged inherited32-byte bias is excluded from new part bytes. Not physical disk or PCIe traffic.",
+  "resolved_failures": [
+    "Previous lowercase-only CLI source guard refused canonical BF16 before NVFP4 job creation; current8499 ordinary NVFP4 recipe completed.",
+    "Earlier17844 attempt failed before handler on uv cache lock; this later normally submitted retry passed, without a fixture or native-code workaround."
+  ],
+  "limits": [
+    "Provider labels are recorded exactly; no claim of native Blackwell/SM100 NVFP4 instructions on this local consumer GPU.",
+    "No comparative latency, load overlap, full image-model or cross-platform claim.",
+    "Root full-model cohort and normal restoration remained active/pending at extraction."
+  ],
+  "raw_receipts_sha256": {
+    "integrated-7d1-final-local-20261025/input-manifest.json": "0289590a565de65eab543e6a9cbc46303c6f16baa5bfa12061e803051feb2907",
+    "integrated-7d1-final-local-20261025/baseline.json": "6c870efea3136cb40e4b9fcb6935fed0b07f774da898876ba5e33895011fcfbf",
+    "integrated-7d1-final-local-20261025/install.json": "91dd754175a5bba919fd6621253102c1d5f19d9117f559f8f54850db040f5cb7",
+    "integrated-7d1-final-local-20261025/install-observed.json": "0542a48f9ff8c92b0b724bf83402c1e4bd17a7bd12c63609fdf1ef775b22f005",
+    "integrated-7d1-final-local-20261025/recipe-retry-result.json": "c450163945cca56410c0bafa74b99e644d4b16cfea7c93714cd407d982093c69",
+    "integrated-7d1-final-local-20261025/recipe-retry/source.json": "2a5c65a9a9440fcd29c8affcefb0d554f082a4e1aad177fa7782335e955d7121",
+    "integrated-7d1-final-local-20261025/recipe-retry/upload.json": "1bae49dc88458fd51424f467673dcdebe87171d5cdaadef7a41892def6537b8e",
+    "integrated-7d1-final-local-20261025/recipe-retry/quantize-int8.json": "d35a2262b5e26c0721a28037a0445380a55c8e61c8b426cb1edc8038a9db7c98",
+    "integrated-7d1-final-local-20261025/recipe-retry/infer-int8.json": "3b1aa48dfec94bf35efaee43e307470486321bf396fc030061fa56548150de7a",
+    "integrated-7d1-final-local-20261025/recipe-retry/quantize-nvfp4.json": "b57c54a39d045441147588293112be1148a0b9301c5fe59d2302b123dd1eb8e0",
+    "integrated-7d1-final-local-20261025/recipe-retry/infer-nvfp4.json": "7c9fca7b49024a643b72156a00ee45411d388fa4f412b6a8be59f89756ffa19c",
+    "integrated-7d1-final-local-20261025/recipe-retry/proof.json": "32ff639ec43df4d1fa82e457aaf12b624734c0f7e3903014032c7cd5566f712b"
+  }
+}

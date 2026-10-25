@@ -366,12 +366,18 @@ raw.decode_into(
 )
 ```
 
-Host inputs and a host destination use the existing CPU decoder. The initial resident
-CUDA path supports `int4.convrot`, `comfy.asym_w4a8_int8` and `comfy.w6a8_int8`,
+Host inputs and a host destination use the existing CPU decoder. The resident
+CUDA path supports `int4.convrot`, `w4a8.convrot`, `comfy.asym_w4a8_int8`,
+`comfy.w6a8_int8`, `fp8.tensorwise` and `nvfp4`,
 with F32, BF16 or F16 output. All parts and the destination must be on the same CUDA
 device. Mixed host/device placement and other resident CUDA schemes raise
 `UnsupportedError`; there is no CPU fallback or implicit weight upload. Device metadata
 conversion and decode scratch may still require temporary allocations.
+
+For NVFP4, packed weights, block scales, global scales and an optional per-column
+`pre_quant_scale` are read from the supplied device buffers. The ordinary format rules
+still determine nibble order, scale layout and whether global scales multiply or divide;
+resident decoding does not invent another quantization convention.
 
 The call is synchronous: success means the output is ready. Do not mutate inputs or
 access the destination concurrently with the call. Nonempty input/output spans must not overlap;
@@ -385,6 +391,62 @@ proved, the binding retains the actual input/output owners rather than freeing s
 still in use; the output is not a valid result.
 
 ## Python: write, convert and publish
+
+### Quantize supplied tensor rows
+
+`raw.quantize` runs a versioned native tensor encoder without importing a framework or model.
+The `int8-convrot256/1` strategy is the production H256/16 rotation followed by
+per-row F32 scales and ties-to-even I8 rounding. Its storage scheme is `int8.convrot`;
+the producer revision is separate from the encoding parameters used by readers.
+
+```python
+from tensorfs import raw
+
+encoded = raw.quantize(
+    "int8.convrot", f32_little_endian_bytes,
+    dtype="BF16", shape=[rows, columns], strategy="int8-convrot256/1",
+    params={"rotation": "kron_regular_h4", "rotation_size": 256},
+)
+```
+
+The input is immutable `bytes` containing finite little-endian F32 values, regardless of the
+logical output `dtype` (F32, F16 or BF16). For ConvRot, the shape is a nonempty matrix whose columns
+are divisible by 256. The result is the same `Encoded`/`Array` representation returned by
+stored reads; pass its parts to the existing `ComponentWriter.put_encoded` to save them.
+
+`raw.quantize_measured` takes the same arguments and returns `(encoded, measured)`, using the
+same native producer once. The statistics dictionary contains `amax`, `max_abs_error`, `sse`,
+`energy` and integer `saturated`. It compares the supplied F32 values with the stored representation
+before logical F16/BF16 rounding. Sums accumulate in F64; chunked sums may differ by floating
+reduction order. `amax` is the maximum of the supplied chunk, not the optional whole-tensor
+`tensor_amax` bound. These are numerical acceptance facts, not storage or transfer measurements.
+The original `raw.quantize` return type and validation remain unchanged.
+
+The `nvfp4-min-sse/1` strategy preserves Runtime's three-candidate block-scale search,
+including clipping and smaller-scale tie breaking. It requires the `nvfp4` scheme with
+`block_size=16`, `global_scale="multiply"`, `nibble_order="low_first"` and
+`scale_layout="row_major"`. Supply `tensor_amax=` as the finite, nonnegative maximum absolute
+F32 value of the **complete tensor**, including when passing one row chunk. Each chunk is
+checked against that bound. The statistic is separate from stored encoding params; TensorFS
+never silently substitutes a chunk-local maximum. ConvRot refuses `tensor_amax` because its
+row scales need no shared statistic.
+
+An all-zero tensor uses NVFP4 global scale 1. A positive maximum whose global scale
+underflows to zero or overflows F32 refuses before returning parts. This fixes a production
+producer edge case: the old Runtime implementation can emit global scale zero for a tiny
+nonzero tensor after a zero-denominator calculation. Such inputs are explicit refusals here,
+not a claim of byte parity. The existing Rust RTN encoder remains a separate legacy operation;
+`nvfp4-min-sse/1` does not silently select it.
+
+The arithmetic releases the GIL, uses one row of floating scratch for ConvRot or one 16-value
+block for NVFP4, and allocates the encoded
+output; the binding then copies each part into an aligned `Array`. Callers can supply bounded
+complete-row chunks without changing payload or scale
+bytes. This operation does not read a checkpoint, resolve a model recipe, collect calibration,
+write output or compute quality statistics. Unknown strategies and incompatible inputs refuse;
+the existing error family for encoder refusals is `DecodeError`. Cancellation between bounded
+calls remains the caller's responsibility. A complete native checkpoint conversion runner is
+separate work.
 
 ### Save a checkpoint file
 
@@ -634,8 +696,8 @@ All of these Python calls are synchronous.
 
 The returned data types are `Checkpoint`, `Pipeline`, `Component`, `Tensors`,
 `TensorMetadata`, `Encoding`, `Array`, `Encoded` and `VerificationReport`. Writing uses `Writer` and `ComponentWriter`;
-repository references use `Endpoint`. They are covered above. The companion `tensorfs.varena` placement API is separate and is unnecessary for
-ordinary TensorFS or Diffusers/ComfyUI use.
+repository references use `Endpoint`. They are covered above. Frameworks own tensor allocation and
+residency; use `Tensors.read_into` to fill their writable buffers or DLPack arrays.
 
 ## Errors and value types
 
@@ -664,3 +726,67 @@ Loading metadata and encoding parameters accept booleans, integers in the signed
 unsigned-64 range, strings, lists and string-keyed maps. They do not accept floats, `None`
 or bytes. Pipeline/component configuration is ordinary JSON, including finite floats and
 null values.
+
+### Native checkpoint quantization
+
+`Writer.quantize` converts an exact, fully resolved selection using the existing Writer.
+It neither selects model layers nor commits the checkpoint. The package/Runtime still owns
+recipe selection, calibration that executes a model, output grants and final publication.
+The initial route accepts plain F16/BF16/F32 rank-2 weights and the explicit producers
+`int8-convrot256/1` and `nvfp4-min-sse/1` with their exact existing format parameters.
+
+```python
+control = tensorfs.ConversionControl()
+selected = [{
+    "component": "unet", "key": "proj.weight",
+    "source_dtype": "BF16", "shape": [1024, 1024], "dtype": "BF16",
+    "encoding": {"scheme": "int8.convrot", "params": {
+        "rotation": "kron_regular_h4", "rotation_size": 256,
+    }},
+    "strategy": "int8-convrot256/1",
+}]
+writer = tensorfs.Writer("output.cozytensors", base=source, resume="resolved-job-key")
+stats = writer.quantize(source, selected, max_buffer_bytes=8 << 20,
+                        max_new_bytes=2 << 20, control=control)
+output = writer.commit()
+```
+
+Supply the **full same selection** on resume; the existing journal binds it to the source
+header, inherited base, numerical revisions/implementation digest and quality bound before trusting completed keys. The buffer
+size may change; changing the source, selection or numerical recipe refuses. Inherited
+unselected tensors/config/assets retain the ordinary base behavior. Output budget counts all
+new encoded payload/companion bytes before store deduplication, matching an output grant;
+physical disk growth is a separate quantity. A repeated completed selection reads/writes zero.
+
+The native loop releases the GIL. Another thread can call `control.cancel()` or inspect
+`control.progress()` (source bytes, completed tensors, bytes supplied to Writer); observations never drive or acknowledge
+work. Keep the caller/request alive until the native call returns. Commit/abandon/other writes
+refuse while conversion owns the Writer. Cancellation stops between bounded windows and before
+publication; an already-started filesystem operation may finish. Complete earlier tensors stay
+in the existing resume journal; an interrupted current tensor is recomputed. No partial tensor
+is a completed entry. Temporary encoded parts live in that Writer's existing work directory.
+
+The buffer bound includes simultaneous source, F32 conversion, encoder outputs and numerical
+scratch. The existing downloader and Writer additionally retain their own bounded I/O buffers;
+it is not a process RSS cap. One row that cannot fit refuses. NVFP4 reads the whole tensor in
+bounded windows to establish a finite maximum, then makes the bounded encoding pass. Both reads
+are counted. No expanded whole-tensor code array or unbounded companion buffer is retained.
+
+`stats` reports identity, encoded/reused keys, source bytes, logical new bytes, saturation,
+worst relative Frobenius and per-tensor acceptance facts. Reused entries have no recomputed
+quality measurement, so aggregate worst is `None` if any were reused. Bytes match the primitive
+producer; SSE/energy use compensated F64 accumulation and may vary at reduction-rounding precision with chunk
+size or the NumPy reference. Max error, finiteness, saturation and the production round-trip
+tripwires are preserved; optional `max_relative_frobenius` refuses before publishing that tensor.
+This is an implementation candidate: real default-CLI conversion/parity/resume proof is required
+before Runtime producer cutover. Encoded-source conversions and calibrated recipes are separate.
+
+TensorFS0.15.5 extends native checkpoint quantization input to parameter-free rank-2
+`fp8.rowwise` (F8_E4M3/F8_E5M2 codes) and `int8.rowwise` (I8 codes), with F32/F16/BF16 row
+scales. The immutable checkpoint's stored roles/geometry are checked by the existing format
+registry. Bounded code and scale windows reconstruct directly into F32 using that decoder,
+without narrowing through logicalBF16/F16 metadata. No new decoder or resident-device capability
+is introduced. Buffer admission includes decoder I32/F32 temporaries. Read counters count stored
+weight+scale bytes per pass. Resume identity includes the reader/shared decoder implementation;
+previous native conversions under another implementation refuse reuse instead of mixing bytes.
+Runtime admission and producer cutover need the separate real rowwise conversion gate.

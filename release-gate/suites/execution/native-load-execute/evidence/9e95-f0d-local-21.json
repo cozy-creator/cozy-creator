@@ -1,0 +1,1506 @@
+{
+  "cell_count": 21,
+  "cells": [
+    {
+      "facts": {
+        "allocation": {
+          "activation_admission_limit": 234881024,
+          "allocation_calls": 1,
+          "budget_refusals": 0,
+          "oom_retries": 0,
+          "reclaimed_bytes": 33554432,
+          "torch_reserved_bytes": 201326592
+        },
+        "final_allocator": {
+          "activation_admission_limit": 0,
+          "allocation_calls": 7,
+          "budget_refusals": 2,
+          "oom_retries": 1,
+          "reclaimed_bytes": 121634816,
+          "torch_reserved_bytes": 2097152
+        },
+        "graph_capture_replay": true,
+        "initial_weight_bytes": 67108864,
+        "native_extension_sha256": "9d5117e8d48c47fd6efce82d0710bf3c1c5cf436da6ccefce09cc9a853dcc5d4",
+        "ready_pin": {
+          "cold_and_loading_misses_unchanged": true,
+          "escaped_alias_prevented_reclaim": true,
+          "final": {
+            "evictions": 2,
+            "fills": 2,
+            "hits": 0,
+            "pinned_bytes": 0,
+            "poisoned": false,
+            "preferred_bytes": 0,
+            "ready_bytes": 0,
+            "reclaimable_bytes": 0,
+            "reclaimed_bytes": 4194304,
+            "regions": 1,
+            "reserved_bytes": 2097152,
+            "resident_bytes": 0
+          },
+          "refilled_same_pointer": true,
+          "side_stream_result": 720896
+        },
+        "refilled_same_pointer": 2,
+        "typed_invalid_device": true
+      },
+      "label": "ready-native-pins",
+      "passed": true,
+      "receipt": {
+        "path": "outputs/stock-torch-20261024/ready-alias-local-20261025/ready-native-pins.json",
+        "sha256": "89908f87d62e0d8f70c490b4bfffcaf8c1a1effaff3e3f7e79341a32cbe88944"
+      },
+      "run": {
+        "created_at_ms": 1792923388929,
+        "execution_ms": 16408,
+        "id": "run-dea75d2a58aa856c7085b747",
+        "machine": "local",
+        "number": 17796,
+        "settled_at_ms": 1792923408661,
+        "started_at_ms": 1792923392173,
+        "status": "completed",
+        "target": "local/ci-stock-memory/native"
+      }
+    },
+    {
+      "facts": {
+        "changed_fill_kept_old_alias": true,
+        "cleanup": {
+          "pinned_bytes": 0,
+          "poisoned": false,
+          "regions": 0,
+          "reserved_bytes": 0,
+          "resident_bytes": 0
+        },
+        "dtype_conversion": "BF16",
+        "escaped_alias_and_stream_completion": true,
+        "ready_profiled_wall_ms": 84.95303499512374,
+        "ready_reads": {
+          "_assign": 0,
+          "_ensure": 0,
+          "_read": 60
+        },
+        "refill_calls": {
+          "_assign": 1,
+          "_ensure": 1,
+          "_read": 1
+        },
+        "stored_factors": 2364,
+        "tied_active_parameter": true,
+        "zero_ready_read_bytes": true
+      },
+      "label": "off-forward-factor-reads",
+      "passed": true,
+      "receipt": {
+        "path": "outputs/stock-torch-20261024/ready-alias-local-20261025/off-forward-factor-reads.json",
+        "sha256": "32e0d0cf47b89f3741d33ad20fc5fc988860c651a90dbfc08a92167f518e29f4"
+      },
+      "run": {
+        "created_at_ms": 1792923412184,
+        "execution_ms": 16749,
+        "id": "run-b9b9c7633c04e8a9f4552622",
+        "machine": "local",
+        "number": 17798,
+        "settled_at_ms": 1792923430939,
+        "started_at_ms": 1792923414129,
+        "status": "completed",
+        "target": "local/ci-native-refill/factor_reads"
+      }
+    },
+    {
+      "facts": {
+        "cleanup": {
+          "pinned_bytes": 0,
+          "poisoned": false,
+          "regions": 1,
+          "reserved_bytes": 2097152,
+          "resident_bytes": 0
+        },
+        "dtype": "F32",
+        "final_bytes": 131072,
+        "native": {
+          "host_graph_launches": 1,
+          "native_load": {
+            "bytes": 18436,
+            "cancel_requested": false,
+            "canceled": false,
+            "clock": "elapsed_ns_since_load_submit",
+            "completion_proven": true,
+            "compute_completed_ns": 5736009,
+            "compute_done": true,
+            "compute_wait_entered": true,
+            "compute_wait_entered_ns": 4614553,
+            "decode_completed_ns": 4516363,
+            "decode_scheme": "nvfp4",
+            "decoded_bytes": 131072,
+            "done": true,
+            "failed": false,
+            "issued_bytes": 18436,
+            "launch_started_ns": 4521208,
+            "read_bytes": 18436,
+            "read_completed_ns": 1022073,
+            "read_done": true,
+            "scratch_bytes": 28008
+          },
+          "steps_per_launch": 3
+        },
+        "python_body_calls": 2,
+        "result": {
+          "output_sha256": "519bc7bc90334aac1ca5e13e230954e0b833b2d94f467991884812458bee5872",
+          "progress": {
+            "canceled": false,
+            "completed_steps": 3,
+            "done": true
+          }
+        },
+        "scheme": "nvfp4",
+        "scratch_budget": 16777216,
+        "seed": 1792923382,
+        "source_bytes": 18436
+      },
+      "label": "encoded-nvfp4-F32",
+      "passed": true,
+      "receipt": {
+        "path": "outputs/stock-torch-20261024/ready-alias-local-20261025/encoded-nvfp4-F32.json",
+        "sha256": "41df4e6c38b28645a15662097df8d5cbca07297a51a7560d23195f1a1389827c"
+      },
+      "run": {
+        "created_at_ms": 1792923433519,
+        "execution_ms": 67358,
+        "id": "run-d5c068d2a4b3dd31c316883e",
+        "machine": "local",
+        "number": 17800,
+        "settled_at_ms": 1792923504375,
+        "started_at_ms": 1792923435555,
+        "status": "completed",
+        "target": "local/ci-native-load-execute/gpu"
+      }
+    },
+    {
+      "facts": {
+        "cleanup": {
+          "pinned_bytes": 0,
+          "poisoned": false,
+          "regions": 1,
+          "reserved_bytes": 2097152,
+          "resident_bytes": 0
+        },
+        "dtype": "F16",
+        "final_bytes": 65536,
+        "native": {
+          "host_graph_launches": 1,
+          "native_load": {
+            "bytes": 18436,
+            "cancel_requested": false,
+            "canceled": false,
+            "clock": "elapsed_ns_since_load_submit",
+            "completion_proven": true,
+            "compute_completed_ns": 5363034,
+            "compute_done": true,
+            "compute_wait_entered": true,
+            "compute_wait_entered_ns": 4227282,
+            "decode_completed_ns": 4109994,
+            "decode_scheme": "nvfp4",
+            "decoded_bytes": 65536,
+            "done": true,
+            "failed": false,
+            "issued_bytes": 18436,
+            "launch_started_ns": 4115190,
+            "read_bytes": 18436,
+            "read_completed_ns": 732227,
+            "read_done": true,
+            "scratch_bytes": 28008
+          },
+          "steps_per_launch": 3
+        },
+        "python_body_calls": 2,
+        "result": {
+          "output_sha256": "de52fbcefab25bd8f5f502cb3f2be134d84d9a31e92f21cbba532cde367c511d",
+          "progress": {
+            "canceled": false,
+            "completed_steps": 3,
+            "done": true
+          }
+        },
+        "scheme": "nvfp4",
+        "scratch_budget": 16777216,
+        "seed": 1792923383,
+        "source_bytes": 18436
+      },
+      "label": "encoded-nvfp4-F16",
+      "passed": true,
+      "receipt": {
+        "path": "outputs/stock-torch-20261024/ready-alias-local-20261025/encoded-nvfp4-F16.json",
+        "sha256": "403f42b5798c31b8ebf6d2111f9d0abc1cd3389d8aeba2b3517d027654f20904"
+      },
+      "run": {
+        "created_at_ms": 1792923504768,
+        "execution_ms": 5373,
+        "id": "run-3b5891b0c90933626146e632",
+        "machine": "local",
+        "number": 17801,
+        "settled_at_ms": 1792923512420,
+        "started_at_ms": 1792923506968,
+        "status": "completed",
+        "target": "local/ci-native-load-execute/gpu"
+      }
+    },
+    {
+      "facts": {
+        "cleanup": {
+          "pinned_bytes": 0,
+          "poisoned": false,
+          "regions": 1,
+          "reserved_bytes": 2097152,
+          "resident_bytes": 0
+        },
+        "dtype": "BF16",
+        "final_bytes": 65536,
+        "native": {
+          "host_graph_launches": 1,
+          "native_load": {
+            "bytes": 18436,
+            "cancel_requested": false,
+            "canceled": false,
+            "clock": "elapsed_ns_since_load_submit",
+            "completion_proven": true,
+            "compute_completed_ns": 5165787,
+            "compute_done": true,
+            "compute_wait_entered": true,
+            "compute_wait_entered_ns": 4058971,
+            "decode_completed_ns": 3953352,
+            "decode_scheme": "nvfp4",
+            "decoded_bytes": 65536,
+            "done": true,
+            "failed": false,
+            "issued_bytes": 18436,
+            "launch_started_ns": 3957236,
+            "read_bytes": 18436,
+            "read_completed_ns": 653561,
+            "read_done": true,
+            "scratch_bytes": 28008
+          },
+          "steps_per_launch": 3
+        },
+        "python_body_calls": 2,
+        "result": {
+          "output_sha256": "4064998bc0b490101bde23cac5d07fd24dda3aaacc1be25141e1c0c8de426d3f",
+          "progress": {
+            "canceled": false,
+            "completed_steps": 3,
+            "done": true
+          }
+        },
+        "scheme": "nvfp4",
+        "scratch_budget": 16777216,
+        "seed": 1792923384,
+        "source_bytes": 18436
+      },
+      "label": "encoded-nvfp4-BF16",
+      "passed": true,
+      "receipt": {
+        "path": "outputs/stock-torch-20261024/ready-alias-local-20261025/encoded-nvfp4-BF16.json",
+        "sha256": "c9372f170b4912f6c0fbdfa4ff52a5bd85d03dda0bd531bfecf8182439bc3790"
+      },
+      "run": {
+        "created_at_ms": 1792923512637,
+        "execution_ms": 4071,
+        "id": "run-916208108452c649a8aede33",
+        "machine": "local",
+        "number": 17802,
+        "settled_at_ms": 1792923518395,
+        "started_at_ms": 1792923514047,
+        "status": "completed",
+        "target": "local/ci-native-load-execute/gpu"
+      }
+    },
+    {
+      "facts": {
+        "cleanup": {
+          "pinned_bytes": 0,
+          "poisoned": false,
+          "regions": 1,
+          "reserved_bytes": 2097152,
+          "resident_bytes": 0
+        },
+        "dtype": "F32",
+        "final_bytes": 131072,
+        "native": {
+          "host_graph_launches": 1,
+          "native_load": {
+            "bytes": 33280,
+            "cancel_requested": false,
+            "canceled": false,
+            "clock": "elapsed_ns_since_load_submit",
+            "completion_proven": true,
+            "compute_completed_ns": 7450005,
+            "compute_done": true,
+            "compute_wait_entered": true,
+            "compute_wait_entered_ns": 6335907,
+            "decode_completed_ns": 6185014,
+            "decode_scheme": "int8.convrot",
+            "decoded_bytes": 131072,
+            "done": true,
+            "failed": false,
+            "issued_bytes": 33280,
+            "launch_started_ns": 6190635,
+            "read_bytes": 33280,
+            "read_completed_ns": 1321751,
+            "read_done": true,
+            "scratch_bytes": 295708
+          },
+          "steps_per_launch": 3
+        },
+        "python_body_calls": 2,
+        "result": {
+          "output_sha256": "659ccd27b937b59529137b97717ba708746b1b41f4f25db47579c737eaeac1c5",
+          "progress": {
+            "canceled": false,
+            "completed_steps": 3,
+            "done": true
+          }
+        },
+        "scheme": "int8.convrot",
+        "scratch_budget": 16777216,
+        "seed": 1792923385,
+        "source_bytes": 33280
+      },
+      "label": "encoded-convrot-F32",
+      "passed": true,
+      "receipt": {
+        "path": "outputs/stock-torch-20261024/ready-alias-local-20261025/encoded-convrot-F32.json",
+        "sha256": "614eae3b16aab1fe807ce8b68869699e6ce800bc0e1bb83f3ca84f64ab9c3a46"
+      },
+      "run": {
+        "created_at_ms": 1792923518630,
+        "execution_ms": 3720,
+        "id": "run-91846146a828ac6a959e5830",
+        "machine": "local",
+        "number": 17803,
+        "settled_at_ms": 1792923522922,
+        "started_at_ms": 1792923518963,
+        "status": "completed",
+        "target": "local/ci-native-load-execute/gpu"
+      }
+    },
+    {
+      "facts": {
+        "cleanup": {
+          "pinned_bytes": 0,
+          "poisoned": false,
+          "regions": 1,
+          "reserved_bytes": 2097152,
+          "resident_bytes": 0
+        },
+        "dtype": "F16",
+        "final_bytes": 65536,
+        "native": {
+          "host_graph_launches": 1,
+          "native_load": {
+            "bytes": 33280,
+            "cancel_requested": false,
+            "canceled": false,
+            "clock": "elapsed_ns_since_load_submit",
+            "completion_proven": true,
+            "compute_completed_ns": 7280412,
+            "compute_done": true,
+            "compute_wait_entered": true,
+            "compute_wait_entered_ns": 6102049,
+            "decode_completed_ns": 6051050,
+            "decode_scheme": "int8.convrot",
+            "decoded_bytes": 65536,
+            "done": true,
+            "failed": false,
+            "issued_bytes": 33280,
+            "launch_started_ns": 6053168,
+            "read_bytes": 33280,
+            "read_completed_ns": 1005502,
+            "read_done": true,
+            "scratch_bytes": 295708
+          },
+          "steps_per_launch": 3
+        },
+        "python_body_calls": 2,
+        "result": {
+          "output_sha256": "8635b6085d1aae40e2ffc44ee46d4ba322d82181dde0dd8f31587a30b22df3c6",
+          "progress": {
+            "canceled": false,
+            "completed_steps": 3,
+            "done": true
+          }
+        },
+        "scheme": "int8.convrot",
+        "scratch_budget": 16777216,
+        "seed": 1792923386,
+        "source_bytes": 33280
+      },
+      "label": "encoded-convrot-F16",
+      "passed": true,
+      "receipt": {
+        "path": "outputs/stock-torch-20261024/ready-alias-local-20261025/encoded-convrot-F16.json",
+        "sha256": "8074696e4137381269364c9276347e3fcb3a3d241466bc9590a9a74c10215e6b"
+      },
+      "run": {
+        "created_at_ms": 1792923523103,
+        "execution_ms": 3504,
+        "id": "run-12e88b070cfc5a992c00401a",
+        "machine": "local",
+        "number": 17804,
+        "settled_at_ms": 1792923526933,
+        "started_at_ms": 1792923523358,
+        "status": "completed",
+        "target": "local/ci-native-load-execute/gpu"
+      }
+    },
+    {
+      "facts": {
+        "cleanup": {
+          "pinned_bytes": 0,
+          "poisoned": false,
+          "regions": 1,
+          "reserved_bytes": 2097152,
+          "resident_bytes": 0
+        },
+        "dtype": "BF16",
+        "final_bytes": 65536,
+        "native": {
+          "host_graph_launches": 1,
+          "native_load": {
+            "bytes": 33280,
+            "cancel_requested": false,
+            "canceled": false,
+            "clock": "elapsed_ns_since_load_submit",
+            "completion_proven": true,
+            "compute_completed_ns": 6098752,
+            "compute_done": true,
+            "compute_wait_entered": true,
+            "compute_wait_entered_ns": 4949006,
+            "decode_completed_ns": 4819234,
+            "decode_scheme": "int8.convrot",
+            "decoded_bytes": 65536,
+            "done": true,
+            "failed": false,
+            "issued_bytes": 33280,
+            "launch_started_ns": 4824301,
+            "read_bytes": 33280,
+            "read_completed_ns": 602244,
+            "read_done": true,
+            "scratch_bytes": 295708
+          },
+          "steps_per_launch": 3
+        },
+        "python_body_calls": 2,
+        "result": {
+          "output_sha256": "df35419d381214ab5d32225ee8dd43113c6e156f2982db56543992794a480039",
+          "progress": {
+            "canceled": false,
+            "completed_steps": 3,
+            "done": true
+          }
+        },
+        "scheme": "int8.convrot",
+        "scratch_budget": 16777216,
+        "seed": 1792923387,
+        "source_bytes": 33280
+      },
+      "label": "encoded-convrot-BF16",
+      "passed": true,
+      "receipt": {
+        "path": "outputs/stock-torch-20261024/ready-alias-local-20261025/encoded-convrot-BF16.json",
+        "sha256": "36727ad3f0abb14700fe0787c19279f1cb874b8504caddeb19d0c9c1f48a4289"
+      },
+      "run": {
+        "created_at_ms": 1792923527157,
+        "execution_ms": 3579,
+        "id": "run-ea9d206180aa3ae25f57f6b5",
+        "machine": "local",
+        "number": 17805,
+        "settled_at_ms": 1792923531038,
+        "started_at_ms": 1792923527378,
+        "status": "completed",
+        "target": "local/ci-native-load-execute/gpu"
+      }
+    },
+    {
+      "facts": {
+        "cleanup": {
+          "pinned_bytes": 0,
+          "poisoned": false,
+          "regions": 1,
+          "reserved_bytes": 2097152,
+          "resident_bytes": 0
+        },
+        "dtype": "F32",
+        "final_bytes": 131072,
+        "native": {
+          "host_graph_launches": 0,
+          "native_load": {
+            "bytes": 0,
+            "cancel_requested": true,
+            "canceled": true,
+            "clock": "elapsed_ns_since_load_submit",
+            "completion_proven": true,
+            "compute_completed_ns": 241944,
+            "compute_done": true,
+            "compute_wait_entered": false,
+            "compute_wait_entered_ns": 0,
+            "decode_completed_ns": 0,
+            "decode_scheme": "nvfp4",
+            "decoded_bytes": 0,
+            "done": true,
+            "failed": false,
+            "issued_bytes": 0,
+            "launch_started_ns": 0,
+            "read_bytes": 0,
+            "read_completed_ns": 0,
+            "read_done": false,
+            "scratch_bytes": 28008
+          },
+          "steps_per_launch": 3
+        },
+        "python_body_calls": 2,
+        "result": {
+          "progress": {
+            "canceled": true,
+            "completed_steps": 0,
+            "done": true
+          }
+        },
+        "scheme": "nvfp4",
+        "scratch_budget": 16777216,
+        "seed": 1792923388,
+        "source_bytes": 18436
+      },
+      "label": "encoded-cancel-before",
+      "passed": true,
+      "receipt": {
+        "path": "outputs/stock-torch-20261024/ready-alias-local-20261025/encoded-cancel-before.json",
+        "sha256": "2d30a165a2d8f484d7ab8f03478f13783d2d3b5229169f814674806ec2ab52df"
+      },
+      "run": {
+        "created_at_ms": 1792923531274,
+        "execution_ms": 619,
+        "id": "run-4147433f90250a590fa36e8f",
+        "machine": "local",
+        "number": 17806,
+        "settled_at_ms": 1792923532368,
+        "started_at_ms": 1792923531690,
+        "status": "completed",
+        "target": "local/ci-native-load-execute/gpu"
+      }
+    },
+    {
+      "facts": {
+        "cleanup": {
+          "pinned_bytes": 0,
+          "poisoned": false,
+          "regions": 1,
+          "reserved_bytes": 2097152,
+          "resident_bytes": 0
+        },
+        "dtype": "F32",
+        "final_bytes": 131072,
+        "native": {
+          "host_graph_launches": 0,
+          "native_load": {
+            "bytes": 0,
+            "cancel_requested": true,
+            "canceled": true,
+            "clock": "elapsed_ns_since_load_submit",
+            "completion_proven": true,
+            "compute_completed_ns": 168996,
+            "compute_done": true,
+            "compute_wait_entered": false,
+            "compute_wait_entered_ns": 0,
+            "decode_completed_ns": 0,
+            "decode_scheme": "nvfp4",
+            "decoded_bytes": 0,
+            "done": true,
+            "failed": false,
+            "issued_bytes": 0,
+            "launch_started_ns": 0,
+            "read_bytes": 0,
+            "read_completed_ns": 0,
+            "read_done": false,
+            "scratch_bytes": 28008
+          },
+          "steps_per_launch": 30000
+        },
+        "python_body_calls": 2,
+        "result": {
+          "progress": {
+            "canceled": true,
+            "completed_steps": 0,
+            "done": true
+          }
+        },
+        "scheme": "nvfp4",
+        "scratch_budget": 16777216,
+        "seed": 1792923389,
+        "source_bytes": 18436
+      },
+      "label": "encoded-cancel-race",
+      "passed": true,
+      "receipt": {
+        "path": "outputs/stock-torch-20261024/ready-alias-local-20261025/encoded-cancel-race.json",
+        "sha256": "f234f032ee670c8c46d150e8d6bd998fa0de81a92aaf95e2cbb8f140bd92692d"
+      },
+      "run": {
+        "created_at_ms": 1792923532559,
+        "execution_ms": 881,
+        "id": "run-8c3aee0f051c76449c775bc7",
+        "machine": "local",
+        "number": 17807,
+        "settled_at_ms": 1792923533756,
+        "started_at_ms": 1792923532810,
+        "status": "completed",
+        "target": "local/ci-native-load-execute/gpu"
+      }
+    },
+    {
+      "facts": {
+        "cleanup": {
+          "pinned_bytes": 0,
+          "poisoned": false,
+          "regions": 0,
+          "reserved_bytes": 0,
+          "resident_bytes": 0
+        },
+        "dtype": "F32",
+        "final_bytes": 131072,
+        "native": {
+          "host_graph_launches": 0,
+          "native_load": {
+            "bytes": 0,
+            "cancel_requested": false,
+            "canceled": false,
+            "clock": "elapsed_ns_since_load_submit",
+            "completion_proven": true,
+            "compute_completed_ns": 296219,
+            "compute_done": true,
+            "compute_wait_entered": false,
+            "compute_wait_entered_ns": 0,
+            "decode_completed_ns": 0,
+            "decode_scheme": "nvfp4",
+            "decoded_bytes": 0,
+            "done": true,
+            "failed": true,
+            "issued_bytes": 0,
+            "launch_started_ns": 0,
+            "read_bytes": 0,
+            "read_completed_ns": 0,
+            "read_done": false,
+            "scratch_bytes": 28008
+          },
+          "steps_per_launch": 3
+        },
+        "python_body_calls": 2,
+        "result": {
+          "code": "integrity",
+          "detail": "integrity: expected 06799ca6bce286b27ec5b1592d8a358e9e3768a702a641044c7ba4fcaa4a4540 (188928 bytes), got 0 bytes at /home/fidika/.cozy/machine/root/var/lib/cozy/tensord/gpu/jit/0c0da6ba7ca547e5a5cd572c2b5ec9bd/6d7119b10bd708f4af2f39c3ee6c6bd8/cozy-encoded-load-a0zj2jjr/private-input/chunks/06799ca6bce286b27ec5b1592d8a358e9e3768a702a641044c7ba4fcaa4a4540",
+          "type": "IntegrityError"
+        },
+        "scheme": "nvfp4",
+        "scratch_budget": 16777216,
+        "seed": 1792923390,
+        "source_bytes": 18436
+      },
+      "label": "encoded-input-error",
+      "passed": true,
+      "receipt": {
+        "path": "outputs/stock-torch-20261024/ready-alias-local-20261025/encoded-input-error.json",
+        "sha256": "bd0184ae0badea3ae33b4bf2c0f8dffe1a4423e45749699487e555dec34ae107"
+      },
+      "run": {
+        "created_at_ms": 1792923533933,
+        "execution_ms": 626,
+        "id": "run-bf8fa9308d420192bb87d9c5",
+        "machine": "local",
+        "number": 17808,
+        "settled_at_ms": 1792923534916,
+        "started_at_ms": 1792923534231,
+        "status": "completed",
+        "target": "local/ci-native-load-execute/gpu"
+      }
+    },
+    {
+      "facts": {
+        "cleanup": {
+          "pinned_bytes": 0,
+          "poisoned": false,
+          "regions": 0,
+          "reserved_bytes": 0,
+          "resident_bytes": 0
+        },
+        "dtype": "F32",
+        "final_bytes": 131072,
+        "native": {
+          "host_graph_launches": 0,
+          "native_load": {
+            "bytes": 25088,
+            "cancel_requested": false,
+            "canceled": false,
+            "clock": "elapsed_ns_since_load_submit",
+            "completion_proven": true,
+            "compute_completed_ns": 4562408,
+            "compute_done": true,
+            "compute_wait_entered": false,
+            "compute_wait_entered_ns": 0,
+            "decode_completed_ns": 0,
+            "decode_scheme": "comfy.asym_w4a8_int8",
+            "decoded_bytes": 0,
+            "done": true,
+            "failed": true,
+            "issued_bytes": 25088,
+            "launch_started_ns": 0,
+            "read_bytes": 25088,
+            "read_completed_ns": 577971,
+            "read_done": true,
+            "scratch_bytes": 287512
+          },
+          "steps_per_launch": 3
+        },
+        "python_body_calls": 2,
+        "result": {
+          "code": "decode",
+          "detail": "decode: CUDA decode encountered an invalid index or a NaN requantized value",
+          "type": "DecodeError"
+        },
+        "scheme": "comfy.asym_w4a8_int8",
+        "scratch_budget": 16777216,
+        "seed": 1792923391,
+        "source_bytes": 25088
+      },
+      "label": "encoded-decode-error",
+      "passed": true,
+      "receipt": {
+        "path": "outputs/stock-torch-20261024/ready-alias-local-20261025/encoded-decode-error.json",
+        "sha256": "bb1266d368cb0dff63c46f562c54f22605336e8dfff3cbf53fed7eeb70edd9d1"
+      },
+      "run": {
+        "created_at_ms": 1792923535125,
+        "execution_ms": 532,
+        "id": "run-b8635f6bf172c10564143f9c",
+        "machine": "local",
+        "number": 17809,
+        "settled_at_ms": 1792923535921,
+        "started_at_ms": 1792923535330,
+        "status": "completed",
+        "target": "local/ci-native-load-execute/gpu"
+      }
+    },
+    {
+      "facts": {
+        "refusals": [
+          {
+            "case": "plain-input",
+            "detail": "invalid residency operation: encoded load requires an encoded checkpoint tensor",
+            "type": "RuntimeError"
+          },
+          {
+            "case": "missing-key",
+            "detail": "invalid residency operation: encoded load tensor is absent",
+            "type": "RuntimeError"
+          },
+          {
+            "case": "output-dtype",
+            "detail": "invalid residency operation: encoded load output must be F16, BF16 or F32",
+            "type": "RuntimeError"
+          },
+          {
+            "case": "unsupported-source",
+            "detail": "unsupported: this scheme has no resident device-input plan",
+            "type": "UnsupportedError"
+          },
+          {
+            "case": "scratch-capacity",
+            "detail": "CUDA capacity exhausted allocating 28008 bytes",
+            "type": "OutOfMemoryError"
+          }
+        ],
+        "seed": 1792923392
+      },
+      "label": "encoded-refusals",
+      "passed": true,
+      "receipt": {
+        "path": "outputs/stock-torch-20261024/ready-alias-local-20261025/encoded-refusals.json",
+        "sha256": "0808545da8557533db9356108e2ea814b174d00c88e73938ccd277c2c67bd949"
+      },
+      "run": {
+        "created_at_ms": 1792923536101,
+        "execution_ms": 257,
+        "id": "run-d8524dff8d9d797f5cde46e9",
+        "machine": "local",
+        "number": 17810,
+        "settled_at_ms": 1792923536620,
+        "started_at_ms": 1792923536291,
+        "status": "completed",
+        "target": "local/ci-native-load-execute/gpu"
+      }
+    },
+    {
+      "facts": {
+        "after_park": {
+          "compute_wait_entered": true,
+          "done": true,
+          "host_graph_launches": 1,
+          "issued_bytes": 67108864
+        },
+        "cleanup": {
+          "pinned_bytes": 0,
+          "poisoned": false,
+          "regions": 1,
+          "reserved_bytes": 67108864,
+          "resident_bytes": 0
+        },
+        "native": {
+          "host_graph_launches": 1,
+          "native_load": {
+            "bytes": 67108864,
+            "cancel_requested": false,
+            "canceled": false,
+            "clock": "elapsed_ns_since_load_submit",
+            "completion_proven": true,
+            "compute_completed_ns": 23197550,
+            "compute_done": true,
+            "compute_wait_entered": true,
+            "compute_wait_entered_ns": 13439637,
+            "decode_completed_ns": 0,
+            "decode_scheme": null,
+            "decoded_bytes": 0,
+            "done": true,
+            "failed": false,
+            "issued_bytes": 67108864,
+            "launch_started_ns": 13293944,
+            "read_bytes": 67108864,
+            "read_completed_ns": 13287859,
+            "read_done": true,
+            "scratch_bytes": 0
+          },
+          "steps_per_launch": 30
+        },
+        "parked_seconds": 3.0001718229905237,
+        "progress": {
+          "canceled": false,
+          "completed_steps": 30,
+          "done": true
+        },
+        "python_body_calls": 2,
+        "requested_steps": 30,
+        "result": 62914560.0,
+        "seed": 1792923393,
+        "source_bytes": 67108864,
+        "source_sha256": "63b064d8bcc3cbaf281c00f5e7954cce07447fc5dc96fcccf9a5aaf735ccda67"
+      },
+      "label": "loaded",
+      "passed": true,
+      "receipt": {
+        "path": "outputs/stock-torch-20261024/ready-alias-local-20261025/loaded.json",
+        "sha256": "b01d873e6c7fa200000d5e3af4d8170fe2f184dff9768278369d393bebd4b93d"
+      },
+      "run": {
+        "created_at_ms": 1792923536802,
+        "execution_ms": 4715,
+        "id": "run-de60e6d97cf2de87d7763259",
+        "machine": "local",
+        "number": 17811,
+        "settled_at_ms": 1792923541806,
+        "started_at_ms": 1792923537020,
+        "status": "completed",
+        "target": "local/ci-native-load-execute/gpu"
+      }
+    },
+    {
+      "facts": {
+        "after_park": {
+          "compute_wait_entered": false,
+          "done": true,
+          "host_graph_launches": 0,
+          "issued_bytes": 0
+        },
+        "cleanup": {
+          "pinned_bytes": 0,
+          "poisoned": false,
+          "regions": 1,
+          "reserved_bytes": 67108864,
+          "resident_bytes": 0
+        },
+        "native": {
+          "host_graph_launches": 0,
+          "native_load": {
+            "bytes": 0,
+            "cancel_requested": true,
+            "canceled": true,
+            "clock": "elapsed_ns_since_load_submit",
+            "completion_proven": true,
+            "compute_completed_ns": 184204,
+            "compute_done": true,
+            "compute_wait_entered": false,
+            "compute_wait_entered_ns": 0,
+            "decode_completed_ns": 0,
+            "decode_scheme": null,
+            "decoded_bytes": 0,
+            "done": true,
+            "failed": false,
+            "issued_bytes": 0,
+            "launch_started_ns": 0,
+            "read_bytes": 0,
+            "read_completed_ns": 0,
+            "read_done": false,
+            "scratch_bytes": 0
+          },
+          "steps_per_launch": 30
+        },
+        "parked_seconds": 3.0000776590022724,
+        "progress": {
+          "canceled": true,
+          "completed_steps": 0,
+          "done": true
+        },
+        "python_body_calls": 2,
+        "requested_steps": 30,
+        "seed": 1792923394,
+        "source_bytes": 67108864,
+        "source_sha256": "63b064d8bcc3cbaf281c00f5e7954cce07447fc5dc96fcccf9a5aaf735ccda67"
+      },
+      "label": "cancel-before",
+      "passed": true,
+      "receipt": {
+        "path": "outputs/stock-torch-20261024/ready-alias-local-20261025/cancel-before.json",
+        "sha256": "d2e933fae6b887f827fbeef9e1853566d36ce0bb3b8c999c124924540fb7efcc"
+      },
+      "run": {
+        "created_at_ms": 1792923542011,
+        "execution_ms": 4910,
+        "id": "run-20616d808b98481871add105",
+        "machine": "local",
+        "number": 17812,
+        "settled_at_ms": 1792923547339,
+        "started_at_ms": 1792923542377,
+        "status": "completed",
+        "target": "local/ci-native-load-execute/gpu"
+      }
+    },
+    {
+      "facts": {
+        "cleanup": {
+          "pinned_bytes": 0,
+          "poisoned": false,
+          "regions": 1,
+          "reserved_bytes": 67108864,
+          "resident_bytes": 0
+        },
+        "native": {
+          "host_graph_launches": 0,
+          "native_load": {
+            "bytes": 0,
+            "cancel_requested": true,
+            "canceled": true,
+            "clock": "elapsed_ns_since_load_submit",
+            "completion_proven": true,
+            "compute_completed_ns": 303449,
+            "compute_done": true,
+            "compute_wait_entered": false,
+            "compute_wait_entered_ns": 0,
+            "decode_completed_ns": 0,
+            "decode_scheme": null,
+            "decoded_bytes": 0,
+            "done": true,
+            "failed": false,
+            "issued_bytes": 0,
+            "launch_started_ns": 0,
+            "read_bytes": 0,
+            "read_completed_ns": 0,
+            "read_done": false,
+            "scratch_bytes": 0
+          },
+          "steps_per_launch": 30000
+        },
+        "progress": {
+          "canceled": true,
+          "completed_steps": 0,
+          "done": true
+        },
+        "python_body_calls": 2,
+        "requested_steps": 30000,
+        "seed": 1792923395,
+        "source_bytes": 67108864,
+        "source_sha256": "63b064d8bcc3cbaf281c00f5e7954cce07447fc5dc96fcccf9a5aaf735ccda67"
+      },
+      "label": "cancel-race",
+      "passed": true,
+      "receipt": {
+        "path": "outputs/stock-torch-20261024/ready-alias-local-20261025/cancel-race.json",
+        "sha256": "a5c98c3c8116321142c368825cc3d0798780dd42fb17c857bdd7e0d0f2fd8cce"
+      },
+      "run": {
+        "created_at_ms": 1792923547539,
+        "execution_ms": 1832,
+        "id": "run-b0cad391fc848848629e43f7",
+        "machine": "local",
+        "number": 17813,
+        "settled_at_ms": 1792923549708,
+        "started_at_ms": 1792923547769,
+        "status": "completed",
+        "target": "local/ci-native-load-execute/gpu"
+      }
+    },
+    {
+      "facts": {
+        "before_cancel": {
+          "compute_wait_entered": true,
+          "done": false,
+          "host_graph_launches": 1,
+          "issued_bytes": 67108864
+        },
+        "cancel_and_join_ms": 11.548432987183332,
+        "cleanup": {
+          "pinned_bytes": 0,
+          "poisoned": false,
+          "regions": 1,
+          "reserved_bytes": 67108864,
+          "resident_bytes": 0
+        },
+        "native": {
+          "host_graph_launches": 1,
+          "native_load": {
+            "bytes": 67108864,
+            "cancel_requested": true,
+            "canceled": true,
+            "clock": "elapsed_ns_since_load_submit",
+            "completion_proven": true,
+            "compute_completed_ns": 41437028,
+            "compute_done": true,
+            "compute_wait_entered": true,
+            "compute_wait_entered_ns": 18515620,
+            "decode_completed_ns": 0,
+            "decode_scheme": null,
+            "decoded_bytes": 0,
+            "done": true,
+            "failed": false,
+            "issued_bytes": 67108864,
+            "launch_started_ns": 18384698,
+            "read_bytes": 67108864,
+            "read_completed_ns": 18376082,
+            "read_done": true,
+            "scratch_bytes": 0
+          },
+          "steps_per_launch": 30000
+        },
+        "progress": {
+          "canceled": true,
+          "completed_steps": 74,
+          "done": true
+        },
+        "python_body_calls": 2,
+        "requested_steps": 30000,
+        "seed": 1792923396,
+        "source_bytes": 67108864,
+        "source_sha256": "63b064d8bcc3cbaf281c00f5e7954cce07447fc5dc96fcccf9a5aaf735ccda67"
+      },
+      "label": "cancel-active",
+      "passed": true,
+      "receipt": {
+        "path": "outputs/stock-torch-20261024/ready-alias-local-20261025/cancel-active.json",
+        "sha256": "231616d25b67ae82f032979bd590f56fc4a41ac286bda1efec6024a12129d947"
+      },
+      "run": {
+        "created_at_ms": 1792923549960,
+        "execution_ms": 1961,
+        "id": "run-09a9b86b6afcd2e307c26909",
+        "machine": "local",
+        "number": 17814,
+        "settled_at_ms": 1792923552344,
+        "started_at_ms": 1792923550284,
+        "status": "completed",
+        "target": "local/ci-native-load-execute/gpu"
+      }
+    },
+    {
+      "facts": {
+        "before_damage": {
+          "compute_wait_entered": false,
+          "done": false,
+          "host_graph_launches": 0,
+          "issued_bytes": 4194304
+        },
+        "cleanup": {
+          "pinned_bytes": 0,
+          "poisoned": false,
+          "regions": 0,
+          "reserved_bytes": 0,
+          "resident_bytes": 0
+        },
+        "invocation": {
+          "code": "device_fault",
+          "origin": "runtime",
+          "terminal": "failed"
+        },
+        "native": {
+          "host_graph_launches": 0,
+          "native_load": {
+            "bytes": 0,
+            "cancel_requested": false,
+            "canceled": false,
+            "clock": "elapsed_ns_since_load_submit",
+            "completion_proven": true,
+            "compute_completed_ns": 2503026,
+            "compute_done": true,
+            "compute_wait_entered": false,
+            "compute_wait_entered_ns": 0,
+            "decode_completed_ns": 0,
+            "decode_scheme": null,
+            "decoded_bytes": 0,
+            "done": true,
+            "failed": true,
+            "issued_bytes": 4194304,
+            "launch_started_ns": 0,
+            "read_bytes": 0,
+            "read_completed_ns": 0,
+            "read_done": false,
+            "scratch_bytes": 0
+          },
+          "steps_per_launch": 30
+        },
+        "python_body_calls": 2,
+        "requested_steps": 30,
+        "seed": 1792923397,
+        "source_bytes": 268435456,
+        "source_error": {
+          "code": "io",
+          "detail": "io: the file ends at 5242880"
+        },
+        "source_sha256": "913205b7bc68b482c7df211a1ae98022899ae8aa349a712fb004b53c2482396d"
+      },
+      "label": "input-error",
+      "passed": true,
+      "receipt": {
+        "path": "outputs/stock-torch-20261024/ready-alias-local-20261025/input-error.json",
+        "sha256": "6a968c18b7a1bb13541556e7cd5c24e75112c5a2dd53c2ce94289d05f845c000"
+      },
+      "run": {
+        "created_at_ms": 1792923552615,
+        "execution_ms": 6455,
+        "id": "run-a2ed0a5da1a996a34c9e2703",
+        "machine": "local",
+        "number": 17815,
+        "settled_at_ms": 1792923559680,
+        "started_at_ms": 1792923553123,
+        "status": "completed",
+        "target": "local/ci-native-load-execute/gpu"
+      }
+    },
+    {
+      "facts": {
+        "cleanup": {
+          "pinned_bytes": 0,
+          "poisoned": false,
+          "regions": 0,
+          "reserved_bytes": 0,
+          "resident_bytes": 0
+        },
+        "invocation": {
+          "code": "ok",
+          "origin": "runtime",
+          "terminal": "succeeded"
+        },
+        "native": {
+          "host_graph_launches": 1,
+          "native_load": {
+            "bytes": 67108864,
+            "cancel_requested": false,
+            "canceled": false,
+            "clock": "elapsed_ns_since_load_submit",
+            "completion_proven": true,
+            "compute_completed_ns": 609656967,
+            "compute_done": true,
+            "compute_wait_entered": true,
+            "compute_wait_entered_ns": 14901894,
+            "decode_completed_ns": 0,
+            "decode_scheme": null,
+            "decoded_bytes": 0,
+            "done": true,
+            "failed": false,
+            "issued_bytes": 67108864,
+            "launch_started_ns": 14743488,
+            "read_bytes": 67108864,
+            "read_completed_ns": 14736542,
+            "read_done": true,
+            "scratch_bytes": 0
+          },
+          "steps_per_launch": 2000
+        },
+        "progress": {
+          "canceled": false,
+          "completed_steps": 2000,
+          "done": true
+        },
+        "python_body_calls": 2,
+        "requested_steps": 2000,
+        "result": 4194304000.0,
+        "seed": 1792923398,
+        "source_bytes": 67108864,
+        "source_sha256": "63b064d8bcc3cbaf281c00f5e7954cce07447fc5dc96fcccf9a5aaf735ccda67"
+      },
+      "label": "scope-return",
+      "passed": true,
+      "receipt": {
+        "path": "outputs/stock-torch-20261024/ready-alias-local-20261025/scope-return.json",
+        "sha256": "7b44adbc71145b0b86e9d38ba6ce05914545804d2388c891703f0ab89408f803"
+      },
+      "run": {
+        "created_at_ms": 1792923559936,
+        "execution_ms": 2251,
+        "id": "run-16c3671a6416f38e8434735e",
+        "machine": "local",
+        "number": 17816,
+        "settled_at_ms": 1792923562660,
+        "started_at_ms": 1792923560260,
+        "status": "completed",
+        "target": "local/ci-native-load-execute/gpu"
+      }
+    },
+    {
+      "facts": {
+        "before_cancel": {
+          "compute_wait_entered": true,
+          "done": false,
+          "host_graph_launches": 1,
+          "issued_bytes": 67108864
+        },
+        "cleanup": {
+          "pinned_bytes": 0,
+          "poisoned": false,
+          "regions": 0,
+          "reserved_bytes": 0,
+          "resident_bytes": 0
+        },
+        "invocation": {
+          "code": "unhandled_exception",
+          "origin": "author",
+          "terminal": "failed"
+        },
+        "native": {
+          "host_graph_launches": 1,
+          "native_load": {
+            "bytes": 67108864,
+            "cancel_requested": true,
+            "canceled": true,
+            "clock": "elapsed_ns_since_load_submit",
+            "completion_proven": true,
+            "compute_completed_ns": 15193721,
+            "compute_done": true,
+            "compute_wait_entered": true,
+            "compute_wait_entered_ns": 14072592,
+            "decode_completed_ns": 0,
+            "decode_scheme": null,
+            "decoded_bytes": 0,
+            "done": true,
+            "failed": false,
+            "issued_bytes": 67108864,
+            "launch_started_ns": 13989144,
+            "read_bytes": 67108864,
+            "read_completed_ns": 13983564,
+            "read_done": true,
+            "scratch_bytes": 0
+          },
+          "steps_per_launch": 30000
+        },
+        "progress": {
+          "canceled": true,
+          "completed_steps": 1,
+          "done": true
+        },
+        "python_body_calls": 2,
+        "requested_steps": 30000,
+        "seed": 1792923399,
+        "source_bytes": 67108864,
+        "source_sha256": "63b064d8bcc3cbaf281c00f5e7954cce07447fc5dc96fcccf9a5aaf735ccda67"
+      },
+      "label": "scope-unwind",
+      "passed": true,
+      "receipt": {
+        "path": "outputs/stock-torch-20261024/ready-alias-local-20261025/scope-unwind.json",
+        "sha256": "96f006e42c206ce55076f15a0080961778a8ce15df47d46280e50b8f1fcfcc42"
+      },
+      "run": {
+        "created_at_ms": 1792923562981,
+        "execution_ms": 2506,
+        "id": "run-c158b9463fc0f772fc3c722f",
+        "machine": "local",
+        "number": 17817,
+        "settled_at_ms": 1792923565947,
+        "started_at_ms": 1792923563387,
+        "status": "completed",
+        "target": "local/ci-native-load-execute/gpu"
+      }
+    },
+    {
+      "facts": {
+        "case_count": 96,
+        "case_matrix": "3outputdtypes \u00d72nibbleorders \u00d72globals \u00d72layouts \u00d72pre-factors \u00d72shapes=96",
+        "cases_sha256": "0b31222dd07748e6e82b791244896bd84a5d4ac31303e6116a0aa038e8e041d8",
+        "healthy_after_refusals": true,
+        "native_sha256": "9d5117e8d48c47fd6efce82d0710bf3c1c5cf436da6ccefce09cc9a853dcc5d4",
+        "producer_stream": "nondefault"
+      },
+      "label": "resident-decoder",
+      "passed": true,
+      "receipt": {
+        "path": "outputs/stock-torch-20261024/ready-alias-local-20261025/resident-decoder.json",
+        "sha256": "db15b40d027ce7814dc01896aa296a017c9ddda56f1b8341922aaab554b36f85"
+      },
+      "run": {
+        "created_at_ms": 1792923568835,
+        "execution_ms": 15767,
+        "id": "run-727da4d8316ec6e319626a27",
+        "machine": "local",
+        "number": 17819,
+        "settled_at_ms": 1792923587757,
+        "started_at_ms": 1792923571916,
+        "status": "completed",
+        "target": "local/ci-resident-nvfp4/run"
+      }
+    }
+  ],
+  "cohort": {
+    "gpus": [
+      {
+        "driver": "595.99.02",
+        "family": "sm89",
+        "index": 0,
+        "memory_bytes": 8585740288,
+        "memory_class": "discrete",
+        "name": "NVIDIA GeForce RTX 4070 Laptop GPU"
+      }
+    ],
+    "normal_install": {
+      "id": "run-7ccc1ac0f873e99446514778",
+      "number": 17794,
+      "result": {
+        "from": {
+          "cozy": "0.11.17+dev.g4178a2a1",
+          "runtime": "0.32.1+dev.gd859416bc2e7",
+          "runtime_sha256": "b623f98c3d7561700863140025888f4b842fab5e5647bf6f84d0b5777bb2e6ce",
+          "tensorfs": "0.15.6",
+          "tensorfs_sha256": "ca15dd65e7aa3249f3749dd60a452260ab54854ccb44d4449b7189234951941b"
+        },
+        "to": {
+          "cozy": "0.11.17+dev.g4178a2a1",
+          "runtime": "0.32.3",
+          "runtime_sha256": "24c95e67424f515e4d4a6141ac743b3294df9fded24669ccdc00d3490647a3f9",
+          "tensorfs": "0.15.8",
+          "tensorfs_sha256": "8c5b6f9a7471db87c5193b7396cfff48c2eabe8cef3817741832bf642cfe683b"
+        }
+      },
+      "status": "completed"
+    },
+    "runtime": {
+      "source": "f0d25c8e7e3f588fff1e5ae0e96a51bc8be1e2c3",
+      "wheel_sha256": "24c95e67424f515e4d4a6141ac743b3294df9fded24669ccdc00d3490647a3f9"
+    },
+    "tensord": {
+      "note": "Actual4178. Newer edda startupchanges are NOT part of this proof.",
+      "observed_commit": "4178a2a1195b9afe1426ec4567d738d28d31f826"
+    },
+    "tensorfs": {
+      "native_sha256": "9d5117e8d48c47fd6efce82d0710bf3c1c5cf436da6ccefce09cc9a853dcc5d4",
+      "source": "9e95ee586b589572c169bb0295be019234fbbf85",
+      "version": "0.15.8",
+      "wheel_sha256": "8c5b6f9a7471db87c5193b7396cfff48c2eabe8cef3817741832bf642cfe683b"
+    }
+  },
+  "date": "2026-10-25",
+  "failed": [],
+  "fixtures": [
+    {
+      "commit": "9e95ee586b589572c169bb0295be019234fbbf85",
+      "path": "release-gate/suites/varena/stock-memory/ci_stock_memory/native.py",
+      "sha256": "4e9f2603519061e0aa2af63a738cef63346507801a3ed36dee49394200b32c5e"
+    },
+    {
+      "commit": "5f35f6f42dc5bc39a1972c19aaeabbed496ca393",
+      "path": "release-gate/suites/execution/native-refill/ci_native_refill/factor_reads.py",
+      "sha256": "fc97051a1e2c2d307c89bc154d6387d9c815cde981429e253f07c16af7d69281"
+    },
+    {
+      "commit": "1b2405ac4",
+      "path": "release-gate/suites/execution/native-load-execute/ci_native_load_execute/encoded.py",
+      "sha256": "224a144c704de056d138219921158a7f331a9e2614d01b72efd09a2dc65de9fa"
+    },
+    {
+      "commit": "5f35f6f42dc5bc39a1972c19aaeabbed496ca393",
+      "path": "release-gate/suites/execution/native-load-execute/ci_native_load_execute/exercise.py",
+      "sha256": "e03a6d57298cb1814e29ffe5ff64681e2ffd079ea42274536b7e0c90ddea1377"
+    },
+    {
+      "commit": "5f35f6f42dc5bc39a1972c19aaeabbed496ca393",
+      "path": "release-gate/suites/tensorfs/resident-nvfp4/ci_resident_nvfp4/__init__.py",
+      "sha256": "3ab72492e9fbfe33d8d8726e5f76e90c85e84b4fb9adf85aaba79adaeecfadac"
+    }
+  ],
+  "limits": [
+    "Encoded cancel race17807 was won before any I/O/launch; no mid-decode cancellation or sticky device-fault proof is claimed.",
+    "Raw active cancellation17814 and scope-unwind17817 cover after-launch cancellation; partial raw read17815 covers issued-copy drain with zero dependent launches.",
+    "Actual source/decode failures are semantic/I/O failures, not mocked CUDA errors or poisoned-context recovery tests.",
+    "Ready factor84.953ms is the profiled60-read plus30GPU-matmul section, not per-read time, inference latency or matched speedup.",
+    "Stored source-byte counts and requested scratch are not physical disk/PCIe traffic or totalVRAM caps.",
+    "CUDA stream ordering and host stage clocks prove checkedcomposition, not GPU-only/event-only handoff.",
+    "NoWindows/MPS/multirank, pressure/outputhandoff, SVDQcalibration or ordinaryNVFP4modelrecipe proof is implied.",
+    "No merge/release authorization; remaining lifecycle/platform acceptance remains open."
+  ],
+  "post_cells": {
+    "queued": 0,
+    "running": 0,
+    "state": "ready"
+  },
+  "prior_sdk_restoration": {
+    "qualification": "Restored exact prior captured d859/.15.6 pair. Root identified that pair as incompatible; ready/idle is not compatibility proof. Root-owned known-healthy followup is separate.",
+    "queued": 0,
+    "run": 17820,
+    "running": 0,
+    "state": "ready",
+    "status": "completed",
+    "to": {
+      "cozy": "0.11.17+dev.g4178a2a1",
+      "runtime": "0.32.1+dev.gd859416bc2e7",
+      "runtime_sha256": "b623f98c3d7561700863140025888f4b842fab5e5647bf6f84d0b5777bb2e6ce",
+      "tensorfs": "0.15.6",
+      "tensorfs_sha256": "ca15dd65e7aa3249f3749dd60a452260ab54854ccb44d4449b7189234951941b"
+    }
+  },
+  "qualification": "All21 actual GPU component/lifetime/correctness cells passed on one installed candidate cohort. No benchmark, whole-model speedup or release qualification.",
+  "schema": 1,
+  "seed_base": 1792923380,
+  "supporting_receipts": [
+    {
+      "path": "outputs/stock-torch-20261024/ready-alias-local-20261025/input-cohort.json",
+      "sha256": "1d90ec994c0f395c8e2021ec600e633eec588e5c20685e8fc47ab0150359c407"
+    },
+    {
+      "path": "outputs/stock-torch-20261024/ready-alias-local-20261025/install.json",
+      "sha256": "f84c692b4bc1591731973bd17e908478bb5c87b199483fe90ab36409651f456d"
+    },
+    {
+      "path": "outputs/stock-torch-20261024/ready-alias-local-20261025/installed.json",
+      "sha256": "869837315ca40ab95deebc3e71affb3eea5c210d5de9d47583261e17b2b4e2e8"
+    },
+    {
+      "path": "outputs/stock-torch-20261024/ready-alias-local-20261025/summary.json",
+      "sha256": "ae27ad1d404b6d92994d294287bbd5fb1247daf4b92809d76bb793f46538234d"
+    },
+    {
+      "path": "outputs/stock-torch-20261024/ready-alias-local-20261025/after.json",
+      "sha256": "77ab7276cb51e058f8ca3fb13fa879e6f3de35990d28d5f7b2b596affdd40dfe"
+    },
+    {
+      "path": "outputs/stock-torch-20261024/ready-alias-local-20261025/restore.json",
+      "sha256": "0f4bcaa977e0ae11c186cf7be8007f9a821aca71b1117d52f515819a5339be8f"
+    },
+    {
+      "path": "outputs/stock-torch-20261024/ready-alias-local-20261025/restored.json",
+      "sha256": "7a364bc1cddec231f9afd16fd8a2d08dc6b7c2227329485adabe112cece286ba"
+    }
+  ]
+}

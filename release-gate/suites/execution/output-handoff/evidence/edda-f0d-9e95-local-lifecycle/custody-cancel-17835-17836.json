@@ -1,0 +1,111 @@
+{
+  "schema": 1,
+  "qualification": "real_cancel_during_custody_preserves_same_PID_successor",
+  "runs": {
+    "warm": 17834,
+    "canceled_output": {
+      "id": "run-344aad41278ade8d4197fe7f",
+      "number": 17835,
+      "kind": "call",
+      "target": "local/ci-output-handoff/run",
+      "hub": "https://tensorhub.com",
+      "machine": "local",
+      "status": "canceled",
+      "cancel_requested": true,
+      "machine_state": "running",
+      "reason": {
+        "code": "canceled",
+        "message": "explicitly canceled",
+        "origin": "request"
+      },
+      "output": [],
+      "created_at_ms": 1792923813815,
+      "accepted_at_ms": 1792923813856,
+      "started_at_ms": 1792923814138,
+      "settled_at_ms": 1792923831853,
+      "execution_ms": 17674
+    },
+    "successor": {
+      "id": "run-5be534b774ed1512371145e3",
+      "number": 17836,
+      "kind": "call",
+      "target": "local/ci-output-handoff/run",
+      "hub": "https://tensorhub.com",
+      "machine": "local",
+      "status": "completed",
+      "cancel_requested": false,
+      "machine_state": "running",
+      "output": [],
+      "created_at_ms": 1792923814283,
+      "accepted_at_ms": 1792923814321,
+      "started_at_ms": 1792923822436,
+      "settled_at_ms": 1792923855355,
+      "progress": {
+        "stage": "gpu-work",
+        "completed": 0,
+        "total": 0,
+        "bytes_done": 0,
+        "bytes_total": 0,
+        "step_ms": 0.0,
+        "step_avg_ms": 0.0,
+        "at_ms": 1792923822503
+      },
+      "result": {
+        "file_sha256": "",
+        "files": [],
+        "gpu_finished_ns": 1792923855100041501,
+        "gpu_started_ns": 1792923822503535559,
+        "images": [],
+        "pid": 2970899,
+        "pixels_sha256": "",
+        "tag": "next"
+      },
+      "execution_ms": 32862
+    }
+  },
+  "evidence": {
+    "pid": 2970899,
+    "file_mib": 480,
+    "first_GPU_started": {
+      "handoff": "gpu_started",
+      "tag": "encode",
+      "pid": 2970899,
+      "at_ns": 1792923814158376378
+    },
+    "first_GPU_finished_ns": 1792923821319134460,
+    "custody_begin_encoding_end_ns": 1792923822030000000,
+    "cancel_accepted_ns": 1792923823699427512,
+    "custody_end_output_finished_ns": 1792923831813274469,
+    "successor_GPU_start_ns": 1792923822503535559,
+    "successor_GPU_end_ns": 1792923855100041501,
+    "canceled_output_published": false,
+    "canceled_result_published": false,
+    "custody_GPU_overlap_ns": 9309738910
+  },
+  "cohort_reference": "../baseline.json target: edda/f0d/9e95; normal install17821",
+  "limits": [
+    "Real480MiB bounded file/copy/hash/fsync path with no injected barrier; not an output-throughput benchmark.",
+    "Machine timestamp interval is custody, not controller download or command-response time.",
+    "SamePID successor completed actual correctGEMM; accepted latecancel did not kill reusedexecutor.",
+    "No detached-output service-restart qualification.",
+    "Root healthyrestoration pending at extraction."
+  ],
+  "receipts": [
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/lifecycle-after-ready-alias-20261025/output-cancel-custody/receipt.json",
+      "sha256": "48d205f42fb74de4e9f0bce03fae04093e6e5c0813d7271a82735ec0e27e7f95"
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/lifecycle-after-ready-alias-20261025/output-cancel-custody/encode.ndjson",
+      "sha256": "5fc33bbe52c7b48e1d8006d5067b7efb5b01e5c2365950a5e20f004634c06ab7"
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/lifecycle-after-ready-alias-20261025/output-cancel-custody/next.ndjson",
+      "sha256": "bb500ad47f3cbf9adb2b86e9b36416bc95aa9270f60b83e75541b5f2e277813a"
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/lifecycle-after-ready-alias-20261025/output-cancel-custody/warm.ndjson",
+      "sha256": "79101f4f31bc3a0e381aa98b0045c638307304150f3fdf22b546b71a98b1702c"
+    }
+  ]
+}
