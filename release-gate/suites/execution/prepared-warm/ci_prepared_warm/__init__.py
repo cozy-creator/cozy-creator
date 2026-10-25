@@ -57,6 +57,7 @@ class Pipeline:
         self.handler_calls = 0
         self.captures = 0
         self.phase_calls = [0, 0, 0]
+        self.capacity = None
 
 
 def build(config: Any) -> Pipeline:
@@ -107,12 +108,14 @@ class Probe(msgspec.Struct, forbid_unknown_fields=True):
     steps: Annotated[int, msgspec.Meta(ge=1, le=128)] = 8
     require_prepared: bool = True
     min_free_bytes: Annotated[int, msgspec.Meta(ge=0)] = 0
+    pressure_bytes: Annotated[int, msgspec.Meta(ge=0, le=536870912)] = 0
     hold_ms: Annotated[int, msgspec.Meta(ge=0, le=30000)] = 0
 
 
 class Facts(msgspec.Struct, frozen=True):
     resolved_steps: int
     min_free_bytes: int
+    pressure_bytes: int
     hold_ms: int
     adjustments: tuple[AdjustmentRow, ...]
 
@@ -120,7 +123,13 @@ class Facts(msgspec.Struct, frozen=True):
 def resolve(payload: Probe) -> Facts:
     rows = AdjustmentRows()
     steps = held(rows, "steps", payload.steps, 1, 64)
-    return Facts(steps, payload.min_free_bytes, payload.hold_ms, tuple(rows.rows))
+    return Facts(
+        steps,
+        payload.min_free_bytes,
+        payload.pressure_bytes,
+        payload.hold_ms,
+        tuple(rows.rows),
+    )
 
 
 def prepare(
@@ -152,6 +161,43 @@ def prepare(
     if pipe.plan is not None:
         pipe.plan.close()
         pipe.plan = None
+    if facts.pressure_bytes:
+        before = torch.cuda.mem_get_info()[0]
+        allocated = torch.cuda.memory_allocated()
+        reserved = torch.cuda.memory_reserved()
+        ballast = torch.empty(
+            facts.pressure_bytes, dtype=torch.uint8, device=str(ctx.device)
+        )
+        try:
+            after = torch.cuda.mem_get_info()[0]
+            assert after < before, (
+                "ballast reused cached storage; real driver pressure was not observed"
+            )
+            required = (before + after) // 2
+            assert after < required < before
+            pipe.capacity = {
+                "ballast_bytes": ballast.numel(),
+                "free_before": before,
+                "free_while_live": after,
+                "required_free_bytes": required,
+                "allocated_before": allocated,
+                "allocated_while_live": torch.cuda.memory_allocated(),
+                "reserved_before": reserved,
+                "reserved_while_live": torch.cuda.memory_reserved(),
+                "allocated_delta": torch.cuda.memory_allocated() - allocated,
+                "reserved_delta": torch.cuda.memory_reserved() - reserved,
+            }
+            assert torch.cuda.mem_get_info()[0] < required
+            return False
+        finally:
+            del ballast
+            # This explicit release-gate cell releases its own now-idle allocation.
+            # Production warm preparation/recovery policy is unchanged.
+            torch.cuda.empty_cache()
+            if pipe.capacity is not None:
+                pipe.capacity["free_after_release"] = torch.cuda.mem_get_info()[0]
+                pipe.capacity["allocated_after_release"] = torch.cuda.memory_allocated()
+                pipe.capacity["reserved_after_release"] = torch.cuda.memory_reserved()
     # A real capacity/eligibility decision, using the actual card's current free bytes.
     if torch.cuda.mem_get_info()[0] < facts.min_free_bytes:
         return False
@@ -219,6 +265,7 @@ def gpu(
         "handler_calls": pipe.handler_calls,
         "captures": pipe.captures,
         "prepared": valid,
+        "capacity": pipe.capacity,
     }
     if not valid:
         assert not payload.require_prepared, (

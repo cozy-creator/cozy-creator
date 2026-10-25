@@ -17,8 +17,10 @@ The controller uses only default-home `cozy` commands, creates/uploads a tiny pr
 then explicitly warms one shape. Two changed inputs must reuse one process/definition with zero
 new captures or factory calls, no Python phase callbacks, one native graph launch per request,
 and actual output parity against the loaded model. A changed step count gets one new definition.
-An impossible free-byte requirement checks an actual capacity refusal; three ordinary inspection
-calls exercise the keeper without another factory attempt. A new explicit warm retries once.
+A real live 256 MiB Torch allocation lowers driver-free bytes below a threshold measured between
+the before/after values; the factory refuses while ballast is held, then releases its allocation.
+Three ordinary inspection calls exercise the keeper without another factory attempt. A new explicit warm retries once
+against that same threshold after the observed free bytes recover.
 Warm results must distinguish `prepared=false, level=host` from program readiness.
 
 Additional required real cells, run by the root controller in its machine guard:

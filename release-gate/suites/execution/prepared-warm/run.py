@@ -28,7 +28,7 @@ def main():
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
     package = Path(__file__).resolve().parent
-    args.out.mkdir(parents=True, exist_ok=True)
+    args.out.mkdir(parents=True, exist_ok=False)
 
     def call(name, words):
         with (
@@ -98,10 +98,10 @@ def main():
     third = infer("third", 37, 17)
     assert third["captures"] == 2 and third["factory_calls"] == 2
 
-    # The actual observed free bytes cannot meet this declared preparation requirement.
+    # A real live Torch allocation lowers observed driver-free bytes below a measured threshold.
     held_back = call(
         "held-back",
-        [*common, "steps=23", "min_free_bytes=1152921504606846976", "--warm", "gpu"],
+        [*common, "steps=23", "pressure_bytes=268435456", "--warm", "gpu"],
     )
     row = held_back["result"]["set"][0]
     assert row["prepared"] is False and row["level"] == "host" and row["held_back"]
@@ -112,7 +112,28 @@ def main():
         not row["prepared"] and row["factory_calls"] == 3 and row["captures"] == 2
         for row in declined
     )
-    retry = call("retry", [*common, "seed=43", "steps=23", "--warm", "gpu"])
+    capacity = declined[0]["capacity"]
+    assert (
+        capacity["ballast_bytes"] == 268435456
+        and capacity["allocated_delta"] >= 268435456
+    )
+    assert (
+        capacity["free_while_live"]
+        < capacity["required_free_bytes"]
+        < capacity["free_before"]
+    )
+    assert capacity["free_after_release"] >= capacity["required_free_bytes"]
+    retry = call(
+        "retry",
+        [
+            *common,
+            "seed=43",
+            "steps=23",
+            f"min_free_bytes={capacity['required_free_bytes']}",
+            "--warm",
+            "gpu",
+        ],
+    )
     assert retry["result"]["set"][0]["prepared"] is True
     fourth = infer("fourth", 47, 23)
     assert fourth["factory_calls"] == 4 and fourth["captures"] == 3
@@ -126,6 +147,7 @@ def main():
         "changed": changed["number"],
         "third": third,
         "held_back": held_back["number"],
+        "capacity": capacity,
         "declined": declined,
         "retry": retry["number"],
         "fourth": fourth,
