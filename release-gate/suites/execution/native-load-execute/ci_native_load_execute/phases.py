@@ -120,7 +120,7 @@ def _exercise(mode, seed, ctx, arena):
                 "phase-cancel-tail",
             }:
                 # Actual GEMMs make a cooperative-cancellation window. No sleep kernel,
-                # mock driver, injected status or host callback enters the captured graph.
+                # mock driver, injected status or host callback enters the graph.
                 writer = tensorfs.Writer(directory / "long-phase.cozytensors")
                 writer.component("work").put("weight", torch.eye(512))
                 long_source = writer.commit()
@@ -236,8 +236,8 @@ def _exercise(mode, seed, ctx, arena):
                             latent.zero_()
                             result.fill_(-17)
                             counters.zero_()
-                        # One ctx.plan submission per invocation; the first reuse probe uses
-                        # the public explicit-submit API, joined below and closed in finally.
+                        # One ctx.plan per invocation; the first reuse uses public
+                        # explicit submission, joined below and closed in finally.
                         execution = (
                             plan.submit()
                             if iteration < count - 1 or mode == "phase-input-error"
@@ -251,7 +251,8 @@ def _exercise(mode, seed, ctx, arena):
                                 observed = execution.poll()
                                 if observed.done:
                                     raise AssertionError(
-                                        "post-loop cancellation window was not exercised"
+                                        "post-loop cancellation window "
+                                        "was not exercised"
                                     )
                                 if observed.completed_steps == steps:
                                     break
@@ -370,11 +371,11 @@ def _exercise(mode, seed, ctx, arena):
                     plan.close()
                 if slot is not None:
                     slot.close()
-            # Healthy work after checked close; do not infer health after an unproven fault.
+            # Healthy work after checked close, never after an unproven fault.
             torch.testing.assert_close(inputs + 1, inputs.clone() + 1, rtol=0, atol=0)
             torch.cuda.synchronize()
             if arena is not None:
-                # The actual slot alias remains live until all views/closure owners leave.
+                # The slot alias stays live until all views/closure owners leave.
                 held = arena.stats()
                 if mode == "phase-loaded":
                     assert held["pinned_bytes"] > 0, held
@@ -390,6 +391,9 @@ def _exercise(mode, seed, ctx, arena):
         tensorfs=tensorfs.__version__,
         torch=str(torch.__version__),
         device=torch.cuda.get_device_name(device),
-        scope="Resident composition correctness; no low-VRAM streaming or model benchmark claim",
+        scope=(
+            "Resident composition correctness; "
+            "no low-VRAM streaming or model benchmark claim"
+        ),
     )
     return evidence
