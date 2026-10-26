@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime>=0.33,<0.34", "msgspec>=0.19", "diffusers==0.41.0", "torch==2.14.1", "numpy", "safetensors"]
+# dependencies = ["cozy-runtime>=0.33,<0.34", "msgspec>=0.19", "diffusers==0.41.0", "torch==2.14.1", "torchvision==0.29.1", "transformers==5.17.0", "pillow==12.3.0", "tokenizers==0.23.2", "numpy", "safetensors"]
 # ///
 """Untimed real Qwen2.1 tensor/schedule identity through the ordinary Weights grant."""
 import json
@@ -61,6 +61,7 @@ class QwenIdentityRequest(msgspec.Struct):
     folder: str = ""
     export: bool = False
     expected_runtime_source: str = "774624133be6d74262f845b9358874872de100d9"
+    dependencies_only: bool = False
 
 
 class QwenIdentityResult(msgspec.Struct):
@@ -80,6 +81,20 @@ def main(payload: QwenIdentityRequest, weights: Weights, ctx: Context) -> QwenId
     began = time.perf_counter()
     assert len(expected_runtime_source) == 40 and all(c in "0123456789abcdef" for c in expected_runtime_source), expected_runtime_source
     assert COMMIT == expected_runtime_source, (COMMIT, expected_runtime_source)
+    if payload.dependencies_only:
+        from importlib.metadata import version
+        schedule = FlowMatchEulerDiscreteScheduler()
+        mu = calculate_shift(4096, 256, 4096, 0.5, 1.15)
+        schedule.set_timesteps(30, device="cpu", sigmas=np.linspace(1.0, 1 / 30, 30), mu=mu)
+        assert len(schedule.sigmas) == 31 and not torch.cuda.is_initialized()
+        return QwenIdentityResult(identity=json.dumps({
+            "dependencies_only": True, "runtime_commit": COMMIT,
+            "torch": str(torch.__version__), "torch_git": torch.version.git_version,
+            "versions": {name: version(name) for name in
+                         ("diffusers", "transformers", "torchvision", "pillow", "tokenizers", "numpy", "safetensors")},
+            "scheduler_sigmas": schedule.sigmas.tolist(), "cuda_initialized": False,
+            "scope": "Actual identity-body imports and CPU schedule; no TensorFS source read, GPU inference or tensor-identity claim.",
+        }))
     source = ctx.tensorfs_source(weights)
     assert source.id == EXPECTED, source.id
     dtypes = {'F32':torch.float32,'BF16':torch.bfloat16,'F16':torch.float16,
