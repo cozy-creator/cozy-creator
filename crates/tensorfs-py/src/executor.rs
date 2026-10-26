@@ -3,10 +3,10 @@
 //! built and written by serde here. The Runtime keeps no copy of them: an unknown field is
 //! ignored, a missing one takes its default, a needed one fails by its path.
 use protocol::executor::{
-    Activate, Adapter, Answer, Binding, ByteGrant, CallInterface, CallProgress, Capability, CheckpointItem,
+    Activate, Adapter, Answer, Binding, ByteGrant, CallInterface, CallProgress, Cancel, Capability, CheckpointItem,
     ChildCall, ChildCancel, ChildEvents, ChildForget, ChildPoll, Command, Construction, Fork,
     GpuRelease, InputFile, InputMetadata, Invoke, Load, Map, MemoSettings, ModelLoad, ModelPrefetch,
-    PrepareRequest, Probe, Publish, PublishPart, Start, StageMemoLookup, StageMemoStore, Unload,
+    PreparedUse, PrepareRequest, Probe, Publish, PublishPart, Start, StageMemoLookup, StageMemoStore, Unload,
 };
 use protocol::machine::TensorFSOptions;
 use pyo3::{create_exception, exceptions::PyValueError, prelude::*, IntoPyObjectExt};
@@ -41,6 +41,7 @@ fn decode_command(py: Python<'_>, data: &[u8]) -> PyResult<Py<PyAny>> {
         Command::Load(c) => (*c).into_py_any(py),
         Command::Activate(c) => c.into_py_any(py),
         Command::PrepareRequest(c) => c.into_py_any(py),
+        Command::Cancel(c) => c.into_py_any(py),
         Command::Invoke(c) => (*c).into_py_any(py),
         Command::Map(c) => c.into_py_any(py),
         Command::Unload(c) => c.into_py_any(py),
@@ -65,6 +66,7 @@ pub fn install(parent: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Load>()?;
     m.add_class::<Activate>()?;
     m.add_class::<PrepareRequest>()?;
+    m.add_class::<Cancel>()?;
     m.add_class::<Invoke>()?;
     m.add_class::<Map>()?;
     m.add_class::<Unload>()?;
@@ -73,6 +75,7 @@ pub fn install(parent: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Capability>()?;
     m.add_class::<Adapter>()?;
     m.add_class::<Binding>()?;
+    m.add_class::<PreparedUse>()?;
     m.add_class::<ModelLoad>()?;
     m.add_class::<MemoSettings>()?;
     m.add_class::<Construction>()?;

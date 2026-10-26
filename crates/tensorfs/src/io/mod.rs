@@ -13,7 +13,6 @@ pub mod metrics;
 pub mod pins;
 mod plan;
 mod probe;
-#[cfg(unix)]
 pub mod source;
 #[cfg(feature = "store")]
 pub(crate) mod view;
@@ -23,6 +22,12 @@ pub use plan::Target;
 pub use probe::{ceiling, disk, keep_ceilings_in, Ceiling};
 #[cfg(feature = "store")]
 pub use view::{Span, StoredPart};
+
+/// Allocate this device's bounded staging rings and copy streams before overlapping work.
+/// This performs real preparation even when the eventual read has no bytes yet.
+pub fn prepare_device(device: i32) -> cuda::Result<()> {
+    device::prepare(device)
+}
 
 /// `len` bytes of object `obj` from `off`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -211,6 +216,23 @@ pub fn pack(lens: impl IntoIterator<Item = usize>, align: usize) -> Option<(Vec<
 #[derive(Clone)]
 pub struct Landed(pub std::sync::Arc<dyn Fn(usize) + Send + Sync>);
 
+/// Native cooperative control for one owned device read. Progress counts issued bytes,
+/// not completed bytes; checked read completion remains the only publication certificate.
+#[derive(Default)]
+pub struct ReadControl {
+    cancel: std::sync::atomic::AtomicBool,
+    issued: std::sync::atomic::AtomicU64,
+}
+
+impl ReadControl {
+    pub fn cancel(&self) { self.cancel.store(true, std::sync::atomic::Ordering::Release); }
+    pub fn canceled(&self) -> bool { self.cancel.load(std::sync::atomic::Ordering::Acquire) }
+    pub fn issued_bytes(&self) -> u64 { self.issued.load(std::sync::atomic::Ordering::Acquire) }
+    pub(crate) fn issue(&self, bytes: usize) {
+        self.issued.fetch_add(bytes as u64, std::sync::atomic::Ordering::Release);
+    }
+}
+
 impl std::fmt::Debug for Landed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Landed")
@@ -301,17 +323,25 @@ pub fn drain(device: i32) -> cuda::Result<()> {
 /// Host destinations use joined CPU copies from owned staging, never asynchronous GPU writes.
 pub unsafe fn read(copies: &[Copy], opts: &ReadOpts) -> Result<ReadStats, Error> {
     // SAFETY: the caller's contract is `read`'s own (above).
-    unsafe { read_impl(copies, opts, false, None) }
+    unsafe { read_impl(copies, opts, false, None, None) }
 }
 
 /// Temporary host sources are copied only into the same bounded engine-owned B7 slots.
 /// GPU work never borrows those host source addresses beyond this call, including on error.
 /// Device destination ownership still follows `read`'s checked error-completion contract.
 /// `issued` hears of each device copy as its work is all issued (host destinations: never).
-#[cfg(any(feature = "store", unix))]
 pub(crate) unsafe fn read_staged(copies: &[Copy], opts: &ReadOpts, issued: Option<Issued>) -> Result<ReadStats, Error> {
     // SAFETY: the caller's contract is `read`'s own, with host sources staged.
-    unsafe { read_impl(copies, opts, true, issued) }
+    unsafe { read_impl(copies, opts, true, issued, None) }
+}
+
+/// The same staging engine with cooperative cancellation between bounded copy pieces.
+/// Cancellation still joins already submitted work before returning an ordinary error.
+pub(crate) unsafe fn read_staged_cancelable(
+    copies: &[Copy], opts: &ReadOpts, cancel: &ReadControl, issued: Option<Issued>,
+) -> Result<ReadStats, Error> {
+    // SAFETY: identical destination/source ownership contract to read_staged.
+    unsafe { read_impl(copies, opts, true, issued, Some(cancel)) }
 }
 
 unsafe fn read_impl(
@@ -319,6 +349,7 @@ unsafe fn read_impl(
     opts: &ReadOpts,
     staged_host: bool,
     issued: Option<Issued>,
+    cancel: Option<&ReadControl>,
 ) -> Result<ReadStats, Error> {
     let start = Instant::now();
     for (copy, c) in copies.iter().enumerate() {
@@ -367,7 +398,7 @@ unsafe fn read_impl(
         stats
     };
     // SAFETY: device copies keep `read`'s contract.
-    let device = unsafe { device::fill(&devices, opts, staged_host, issued) }?;
+    let device = unsafe { device::fill(&devices, opts, staged_host, issued, cancel) }?;
     stats.direct += device.direct;
     stats.cached += device.cached;
     stats.bounced += device.bounced;

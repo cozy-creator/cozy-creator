@@ -1,0 +1,165 @@
+{
+  "purpose": "CPU numerical producer parity through the default Cozy CLI, not a performance benchmark",
+  "run": {
+    "id": "run-8cc3a9b6288997edc49a28a3",
+    "number": 17471,
+    "kind": "call",
+    "target": "local/ci-nvfp4-encode/run",
+    "hub": "https://tensorhub.com",
+    "machine": "quatre",
+    "status": "completed",
+    "cancel_requested": false,
+    "machine_state": "running",
+    "output": [],
+    "created_at_ms": 1792903792534,
+    "accepted_at_ms": 1792903793078,
+    "started_at_ms": 1792903794127,
+    "settled_at_ms": 1792903794241,
+    "execution_ms": 170
+  },
+  "result": {
+    "cases": 24,
+    "detail": {
+      "cases": [
+        {
+          "name": "zeros",
+          "part_sha256": {
+            "scale": "b0f66adc83641586656866813fd9dd0b8ebb63796075661ba45d1aa8089e1d44",
+            "scale_2": "e00e5eb9444182f352323374ef4e08ebcb784725fdd4fd612d7730540b3e0c8c",
+            "weight": "17b0761f87b081d5cf10757ccc89f12be355c70e2e29df288b65b30710dcbcd1"
+          },
+          "shape": [
+            3,
+            32
+          ],
+          "tensor_amax": 0.0
+        },
+        {
+          "name": "negative_zero",
+          "part_sha256": {
+            "scale": "96a296d224f285c67bee93c30f8a309157f0daa35dc5b87e410b78630a09cfc7",
+            "scale_2": "e00e5eb9444182f352323374ef4e08ebcb784725fdd4fd612d7730540b3e0c8c",
+            "weight": "374708fff7719dd5979ec875d56cd2286f6d3cf7ec317a3b25632aab28ec37bb"
+          },
+          "shape": [
+            2,
+            16
+          ],
+          "tensor_amax": 0.0
+        },
+        {
+          "name": "ties",
+          "part_sha256": {
+            "scale": "7ae528436181f5af9a349b605df10362369587f5ad8ed9745329432b339ebee4",
+            "scale_2": "4abeb7e04407af6d4256f29b91c71479bd701e60ee7468c778f55b1df0247dc7",
+            "weight": "4346a236e0a3287e1e84a233d3a12acf2077226a041b1f32608f667b2d12efa3"
+          },
+          "shape": [
+            5,
+            64
+          ],
+          "tensor_amax": 6.0
+        },
+        {
+          "name": "last_chunk_maximum",
+          "part_sha256": {
+            "scale": "3546c5ace701e4701a604eadbdc544b4cbad01ab94edb856da07d73804817374",
+            "scale_2": "7148daca18d25eeeb63832dec6d92a7262a319dfc07aeece217622df03cd9a70",
+            "weight": "a86e79fb86220192cf933232a4caf6b62d42f36929b6fc01d5c92b9ddc0b5e61"
+          },
+          "shape": [
+            17,
+            64
+          ],
+          "tensor_amax": 1000000.0
+        },
+        {
+          "name": "subnormals_with_shared_maximum",
+          "part_sha256": {
+            "scale": "ad7763e359ea6833b59f56a2158ca464baf5305af4c424b4d0e5577c7a503f11",
+            "scale_2": "1e623612fec261cd1a23e52a19e6d1c27a272cc36afadbd4b99a8af7458c1149",
+            "weight": "1fd5db979e1333fcbfe2f46205c8cf2541c87c5b0a54d7e2931c7fb912481dd8"
+          },
+          "shape": [
+            3,
+            32
+          ],
+          "tensor_amax": 1.0
+        },
+        {
+          "name": "tiny_normal",
+          "part_sha256": {
+            "scale": "6ced674a0161d3f958b42fdcb3eb1ae13220a19efe539176c11eb108024d8a84",
+            "scale_2": "cf2763f9207d563edc1c603de9c4b5904183c6f4cb24544027f8b7f3d954d3bc",
+            "weight": "ef906ab1815e612333adcf13cd8e977dba1e856d8b598a44d825f9151628a85a"
+          },
+          "shape": [
+            5,
+            32
+          ],
+          "tensor_amax": 9.901338723629235e-36
+        },
+        {
+          "name": "mixed_exponents",
+          "part_sha256": {
+            "scale": "0f263747dc461402e1ff808f70bea131b261206d613dfec13d814f4f9ad4ff1e",
+            "scale_2": "63cc6773e92b83f6314458aab4403cd9ec0ffca4647c8e61e02d46c573ec04e3",
+            "weight": "8e7be4c8c13488cd3afa5c265e5beaa17fb05f5eeac287f52014055875d62153"
+          },
+          "shape": [
+            17,
+            64
+          ],
+          "tensor_amax": 1.3902707430888797e+27
+        },
+        {
+          "name": "maximum_f32",
+          "part_sha256": {
+            "scale": "ea28e0e40ab9ab227d8692eb88c0eebe682c24b8e5833b98cb914f0fb4f8c22b",
+            "scale_2": "72931b3f0c2931877e9e58d195a1770a274160eafa1390ea5fe60ce6ab33a169",
+            "weight": "6cf0c4d1c886b6b397939177e57a1ac2f67b5138fa39d55a15dfa0223733ac9f"
+          },
+          "shape": [
+            3,
+            32
+          ],
+          "tensor_amax": 3.4028234663852886e+38
+        }
+      ],
+      "chunk_rows": [
+        1,
+        2,
+        7
+      ],
+      "logical_dtypes": [
+        "F32",
+        "F16",
+        "BF16"
+      ],
+      "native_sha256": "126fd414ce115af226b8a9d6128f091b371c0d8550310065fc9354959836a5fb",
+      "numpy": "2.5.4",
+      "reference_sha256": "438401ecde3ef92b5ea03e35f21487ebcf0997c18ad796531e50768f25073459",
+      "reference_zero_global_scale_refused": true,
+      "refusals": 12,
+      "strategy": "nvfp4-min-sse/1",
+      "tensorfs": "0.15.3",
+      "writer_verified": true
+    },
+    "passed": true,
+    "refusals": 12
+  },
+  "cohort": {
+    "creator_source": "7e98dce7f622fc5364ed5948a17e2d7dfd28c7e6",
+    "tensorfs_wheel_sha256": "f80ef0d903d76299012bbaff9284992b002b541f7210b81b27a3a0c611966963",
+    "tensorfs_native_sha256": "126fd414ce115af226b8a9d6128f091b371c0d8550310065fc9354959836a5fb",
+    "runtime_source": "67e2e0c10066573dc58c9052ef8f73492cdc064a",
+    "tensord_source": "ca38491478eb0772403a0645d463d53593d16150",
+    "machine": "quatre",
+    "host_gpu": "RTX3060 (CPU gate; no GPU algorithm exercised)"
+  },
+  "limits": [
+    "Native raw.quantize primitives and supplied-byte Writer/readback only.",
+    "New measured encoders and Writer.quantize checkpoint operation are not covered.",
+    "Runtime producer cutover and model quality are not established."
+  ]
+}

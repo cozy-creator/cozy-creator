@@ -1,0 +1,2071 @@
+{
+  "generated_utc": "2026-10-25T02:57:16.781659+00:00",
+  "scope": "Same Margarette RTX3090 24GiB, Qwen Image2.1 int8,30steps,1024x1024. Before TensorFS766/Runtime75, after TensorFS302/Runtimec498, TensorD766 unchanged. Four distinct seeds per variant.",
+  "before_report": "/home/fidika/cozy_v2/outputs/varena-remote-20261024/phase-ab-24gb/before-qwen-retry/report.json",
+  "after_report": "/home/fidika/cozy_v2/outputs/varena-remote-20261024/phase-ab-24gb/after-qwen-fresh/report.json",
+  "before_source": {
+    "target": "/home/fidika/cozy/.worktrees/packages/varena-qwen-qualification/qwen-image-2/generate",
+    "kind": "source",
+    "commit": "6a2b80935deae63b1a892aa09272a2ce14132d0a",
+    "package_tree": "b679157fa34328a150d1b45bfc91945a9b57871b"
+  },
+  "after_source": {
+    "target": "/home/fidika/cozy/.worktrees/packages/varena-qwen-qualification/qwen-image-2/generate",
+    "kind": "source",
+    "commit": "6a2b80935deae63b1a892aa09272a2ce14132d0a",
+    "package_tree": "b679157fa34328a150d1b45bfc91945a9b57871b"
+  },
+  "same_gpu": true,
+  "same_model_manifests": true,
+  "before": [
+    {
+      "run_number": 17360,
+      "label": "cold",
+      "seed": 2026102511,
+      "execution_ms": 170863,
+      "cli_wall_ms": 174265.01621,
+      "created_to_settled_ms": 173049,
+      "device_first_step_ms": 981.392,
+      "device_steady_step_ms": {
+        "count": 29,
+        "mean": 429.13724137931035,
+        "median": 429.101,
+        "min": 426.939,
+        "max": 432.232
+      },
+      "first_step_premium_ms": 552.2547586206897,
+      "device_step_series_ms": [
+        981.392,
+        426.939,
+        427.571,
+        430.995,
+        426.994,
+        428.929,
+        428.968,
+        428.521,
+        427.293,
+        429.366,
+        429.654,
+        427.131,
+        428.111,
+        430.202,
+        427.944,
+        428.791,
+        430.419,
+        427.155,
+        429.101,
+        429.696,
+        428.706,
+        430.475,
+        432.17,
+        429.459,
+        432.232,
+        431.027,
+        429.223,
+        429.228,
+        430.066,
+        428.614
+      ],
+      "gpu_uuids": [
+        "GPU-1b013a8d-6e9e-e34e-2c5d-9dfa6a0f4a90"
+      ],
+      "pid": [
+        494
+      ],
+      "models": [
+        {
+          "lane": "int8",
+          "manifest": "sha256:78705de45f7421fde51a0196913b11f1f7e3c95d468881d762d18af50da6fec3",
+          "precision": "int8",
+          "release": "0.1.0",
+          "repository": "_/qwen-image-2.1",
+          "slot": "model"
+        }
+      ],
+      "software": {
+        "attempt_ordinal": 1,
+        "runtime": "0.32.1",
+        "tensord": "0.11.17+dev.g76656368",
+        "tensord_commit": "76656368e6e7674c4dc8cda5461e3457fee39a82",
+        "tensorfs": "0.15.2+dev.g76656368"
+      },
+      "logical_completed_read_bytes": 17134146768,
+      "sync_read_host_ns": 18442098757,
+      "prefetch": {
+        "canceled": 0,
+        "completed": 66,
+        "failed": 0,
+        "scope": "one next exact raw block; no native transform callbacks",
+        "skipped_capacity": 0,
+        "started": 66,
+        "wait_ns": 1183354391
+      },
+      "phases": [],
+      "torch_reserved_minus_allocated_bytes": 13274183168,
+      "native_residency": {
+        "evictions": 39,
+        "fills": 71,
+        "hits": 994,
+        "pinned_bytes": 0,
+        "poisoned": false,
+        "preferred_bytes": 7426015232,
+        "ready_bytes": 8778678272,
+        "reclaimable_bytes": 8778678272,
+        "reclaimed_bytes": 8489271296,
+        "regions": 71,
+        "reserved_bytes": 17267949568,
+        "resident_bytes": 8778678272
+      },
+      "components": {
+        "text_encoder": {
+          "logical_completed_read_bytes": 8526490368,
+          "fills": 37,
+          "speculative_fills": 35,
+          "blocks": {
+            "0": 1,
+            "28": 1,
+            "29": 1,
+            "30": 1,
+            "31": 1,
+            "32": 1,
+            "33": 1,
+            "34": 1,
+            "35": 1,
+            "36": 1,
+            "37": 1,
+            "38": 1,
+            "39": 1,
+            "40": 1,
+            "41": 1,
+            "42": 1,
+            "43": 1,
+            "44": 1,
+            "45": 1,
+            "46": 1,
+            "47": 1,
+            "48": 1,
+            "49": 1,
+            "50": 1,
+            "51": 1,
+            "52": 1,
+            "53": 1,
+            "54": 1,
+            "55": 1,
+            "56": 1,
+            "57": 1,
+            "58": 1,
+            "59": 1,
+            "60": 1,
+            "61": 1,
+            "62": 1,
+            "63": 1
+          },
+          "component_stored_bytes": 9349423584,
+          "read_amplification": 0.9119803259948223
+        },
+        "transformer": {
+          "logical_completed_read_bytes": 7256694784,
+          "fills": 33,
+          "speculative_fills": 31,
+          "blocks": {
+            "0": 1,
+            "1": 1,
+            "2": 1,
+            "3": 1,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 1,
+            "8": 1,
+            "9": 1,
+            "10": 1,
+            "11": 1,
+            "12": 1,
+            "13": 1,
+            "14": 1,
+            "15": 1,
+            "16": 1,
+            "17": 1,
+            "18": 1,
+            "19": 1,
+            "20": 1,
+            "21": 1,
+            "22": 1,
+            "23": 1,
+            "24": 1,
+            "25": 1,
+            "26": 1,
+            "27": 1,
+            "28": 1,
+            "29": 1,
+            "30": 1,
+            "31": 1,
+            "32": 1
+          },
+          "component_stored_bytes": 7256694784,
+          "read_amplification": 1.0
+        },
+        "vae": {
+          "logical_completed_read_bytes": 1350961616,
+          "fills": 1,
+          "speculative_fills": 0,
+          "blocks": {
+            "0": 1
+          },
+          "component_stored_bytes": 1350961616,
+          "read_amplification": 1.0
+        }
+      },
+      "graphs": {
+        "text_encoder": {
+          "captures": 0,
+          "capture_attempts": 0,
+          "replays": 0,
+          "active_graphs": 0
+        },
+        "transformer": {
+          "captures": 0,
+          "capture_attempts": 0,
+          "replays": 0,
+          "active_graphs": 0
+        },
+        "vae": {
+          "captures": 0,
+          "capture_attempts": 0,
+          "replays": 0,
+          "active_graphs": 0
+        }
+      },
+      "cut_summary": {
+        "oom_floor": 0,
+        "max_predicted_need_bytes": 4831838208,
+        "retries": 0,
+        "retried_sites": []
+      },
+      "images": [
+        {
+          "path": "/home/fidika/cozy_v2/outputs/varena-remote-20261024/phase-ab-24gb/before-qwen-retry/cold/assets/17360-image.png",
+          "bytes": 1874345,
+          "sha256": "sha256:c26f40aedbb4be5aa90a969f056e3e878d96de98f8b92a418318b3477cf5095b",
+          "format": "PNG",
+          "size": [
+            1024,
+            1024
+          ],
+          "rgb_sha256": "9be18221ba2a4d0013ade5ef67091eeea505b9d5f5250c23a1147ff2b935cb0f",
+          "rgb_extrema": [
+            [
+              0,
+              255
+            ],
+            [
+              0,
+              255
+            ],
+            [
+              0,
+              243
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "run_number": 17364,
+      "label": "warm-1",
+      "seed": 2026102512,
+      "execution_ms": 47157,
+      "cli_wall_ms": null,
+      "created_to_settled_ms": 48064,
+      "device_first_step_ms": 1574.979,
+      "device_steady_step_ms": {
+        "count": 29,
+        "mean": 1519.1939310344828,
+        "median": 1529.43,
+        "min": 1278.993,
+        "max": 1947.723
+      },
+      "first_step_premium_ms": 55.78506896551721,
+      "device_step_series_ms": [
+        1574.979,
+        1329.536,
+        1374.248,
+        1393.11,
+        1302.924,
+        1278.993,
+        1730.173,
+        1602.707,
+        1414.331,
+        1573.622,
+        1333.178,
+        1404.769,
+        1572.588,
+        1463.138,
+        1685.474,
+        1747.468,
+        1548.049,
+        1464.984,
+        1529.43,
+        1459.128,
+        1547.189,
+        1545.463,
+        1586.364,
+        1509.322,
+        1532.961,
+        1597.72,
+        1947.723,
+        1558.837,
+        1521.393,
+        1501.802
+      ],
+      "gpu_uuids": [
+        "GPU-1b013a8d-6e9e-e34e-2c5d-9dfa6a0f4a90"
+      ],
+      "pid": [
+        494
+      ],
+      "models": [
+        {
+          "lane": "int8",
+          "manifest": "sha256:78705de45f7421fde51a0196913b11f1f7e3c95d468881d762d18af50da6fec3",
+          "precision": "int8",
+          "release": "0.1.0",
+          "repository": "_/qwen-image-2.1",
+          "slot": "model"
+        }
+      ],
+      "software": {
+        "attempt_ordinal": 1,
+        "runtime": "0.32.1",
+        "tensord": "0.11.17+dev.g76656368",
+        "tensord_commit": "76656368e6e7674c4dc8cda5461e3457fee39a82",
+        "tensorfs": "0.15.2+dev.g76656368"
+      },
+      "logical_completed_read_bytes": 211175713232,
+      "sync_read_host_ns": 19609470753,
+      "prefetch": {
+        "canceled": 0,
+        "completed": 483,
+        "failed": 0,
+        "scope": "one next exact raw block; no native transform callbacks",
+        "skipped_capacity": 447,
+        "started": 483,
+        "wait_ns": 13227924755
+      },
+      "phases": [],
+      "torch_reserved_minus_allocated_bytes": 13274183168,
+      "native_residency": {
+        "evictions": 1013,
+        "fills": 1033,
+        "hits": 1477,
+        "pinned_bytes": 0,
+        "poisoned": false,
+        "preferred_bytes": 5085593600,
+        "ready_bytes": 6438256640,
+        "reclaimable_bytes": 6438256640,
+        "reclaimed_bytes": 223847907328,
+        "regions": 71,
+        "reserved_bytes": 17267949568,
+        "resident_bytes": 6438256640
+      },
+      "components": {
+        "transformer": {
+          "logical_completed_read_bytes": 209824751616,
+          "fills": 961,
+          "speculative_fills": 483,
+          "blocks": {
+            "0": 1,
+            "1": 30,
+            "2": 30,
+            "3": 30,
+            "4": 30,
+            "5": 30,
+            "6": 30,
+            "7": 30,
+            "8": 30,
+            "9": 30,
+            "10": 30,
+            "11": 30,
+            "12": 30,
+            "13": 30,
+            "14": 30,
+            "15": 30,
+            "16": 30,
+            "17": 30,
+            "18": 30,
+            "19": 30,
+            "20": 30,
+            "21": 30,
+            "22": 30,
+            "23": 30,
+            "24": 30,
+            "25": 30,
+            "26": 30,
+            "27": 30,
+            "28": 30,
+            "29": 30,
+            "30": 30,
+            "31": 30,
+            "32": 30
+          },
+          "component_stored_bytes": 7256694784,
+          "read_amplification": 28.914644733113803
+        },
+        "vae": {
+          "logical_completed_read_bytes": 1350961616,
+          "fills": 1,
+          "speculative_fills": 0,
+          "blocks": {
+            "0": 1
+          },
+          "component_stored_bytes": 1350961616,
+          "read_amplification": 1.0
+        },
+        "text_encoder": {
+          "logical_completed_read_bytes": 0,
+          "fills": 0,
+          "speculative_fills": 0,
+          "blocks": {},
+          "component_stored_bytes": 9349423584,
+          "read_amplification": 0.0
+        }
+      },
+      "graphs": {
+        "text_encoder": {
+          "captures": 0,
+          "capture_attempts": 0,
+          "replays": 0,
+          "active_graphs": 0
+        },
+        "transformer": {
+          "captures": 0,
+          "capture_attempts": 0,
+          "replays": 0,
+          "active_graphs": 0
+        },
+        "vae": {
+          "captures": 0,
+          "capture_attempts": 0,
+          "replays": 0,
+          "active_graphs": 0
+        }
+      },
+      "cut_summary": {
+        "oom_floor": 0,
+        "max_predicted_need_bytes": 4831838208,
+        "retries": 0,
+        "retried_sites": []
+      },
+      "images": [
+        {
+          "path": "/home/fidika/cozy_v2/outputs/varena-remote-20261024/phase-ab-24gb/before-qwen-retry/warm-1/assets/17364-image.png",
+          "bytes": 1812886,
+          "sha256": "sha256:9d9aa8279a1d5a3807f4f25f3d3b2db2a2be98e4e0ffbf894a72492abe76526f",
+          "format": "PNG",
+          "size": [
+            1024,
+            1024
+          ],
+          "rgb_sha256": "f36d06930359189c50583a6fc4152422ae3d438e04161baf6d6f4439a5afb8c8",
+          "rgb_extrema": [
+            [
+              0,
+              255
+            ],
+            [
+              0,
+              252
+            ],
+            [
+              0,
+              251
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "run_number": 17370,
+      "label": "warm-2",
+      "seed": 2026102513,
+      "execution_ms": 49287,
+      "cli_wall_ms": 51430.106305,
+      "created_to_settled_ms": 50363,
+      "device_first_step_ms": 1518.643,
+      "device_steady_step_ms": {
+        "count": 29,
+        "mean": 1594.1933103448275,
+        "median": 1543.073,
+        "min": 1498.365,
+        "max": 1842.612
+      },
+      "first_step_premium_ms": -75.5503103448275,
+      "device_step_series_ms": [
+        1518.643,
+        1579.386,
+        1705.964,
+        1814.706,
+        1715.633,
+        1518.563,
+        1527.822,
+        1563.125,
+        1498.365,
+        1510.696,
+        1526.52,
+        1506.835,
+        1559.015,
+        1824.792,
+        1805.505,
+        1506.628,
+        1522.23,
+        1509.199,
+        1527.327,
+        1513.198,
+        1614.632,
+        1561.073,
+        1505.007,
+        1507.328,
+        1623.803,
+        1592.536,
+        1519.682,
+        1543.073,
+        1686.351,
+        1842.612
+      ],
+      "gpu_uuids": [
+        "GPU-1b013a8d-6e9e-e34e-2c5d-9dfa6a0f4a90"
+      ],
+      "pid": [
+        494
+      ],
+      "models": [
+        {
+          "lane": "int8",
+          "manifest": "sha256:78705de45f7421fde51a0196913b11f1f7e3c95d468881d762d18af50da6fec3",
+          "precision": "int8",
+          "release": "0.1.0",
+          "repository": "_/qwen-image-2.1",
+          "slot": "model"
+        }
+      ],
+      "software": {
+        "attempt_ordinal": 1,
+        "runtime": "0.32.1",
+        "tensord": "0.11.17+dev.g76656368",
+        "tensord_commit": "76656368e6e7674c4dc8cda5461e3457fee39a82",
+        "tensorfs": "0.15.2+dev.g76656368"
+      },
+      "logical_completed_read_bytes": 211175713232,
+      "sync_read_host_ns": 18694285534,
+      "prefetch": {
+        "canceled": 0,
+        "completed": 483,
+        "failed": 0,
+        "scope": "one next exact raw block; no native transform callbacks",
+        "skipped_capacity": 447,
+        "started": 483,
+        "wait_ns": 16805767907
+      },
+      "phases": [],
+      "torch_reserved_minus_allocated_bytes": 13274183168,
+      "native_residency": {
+        "evictions": 1975,
+        "fills": 1995,
+        "hits": 1960,
+        "pinned_bytes": 0,
+        "poisoned": false,
+        "preferred_bytes": 5085593600,
+        "ready_bytes": 6438256640,
+        "reclaimable_bytes": 6438256640,
+        "reclaimed_bytes": 436866121728,
+        "regions": 71,
+        "reserved_bytes": 17267949568,
+        "resident_bytes": 6438256640
+      },
+      "components": {
+        "transformer": {
+          "logical_completed_read_bytes": 209824751616,
+          "fills": 961,
+          "speculative_fills": 483,
+          "blocks": {
+            "0": 1,
+            "1": 30,
+            "2": 30,
+            "3": 30,
+            "4": 30,
+            "5": 30,
+            "6": 30,
+            "7": 30,
+            "8": 30,
+            "9": 30,
+            "10": 30,
+            "11": 30,
+            "12": 30,
+            "13": 30,
+            "14": 30,
+            "15": 30,
+            "16": 30,
+            "17": 30,
+            "18": 30,
+            "19": 30,
+            "20": 30,
+            "21": 30,
+            "22": 30,
+            "23": 30,
+            "24": 30,
+            "25": 30,
+            "26": 30,
+            "27": 30,
+            "28": 30,
+            "29": 30,
+            "30": 30,
+            "31": 30,
+            "32": 30
+          },
+          "component_stored_bytes": 7256694784,
+          "read_amplification": 28.914644733113803
+        },
+        "vae": {
+          "logical_completed_read_bytes": 1350961616,
+          "fills": 1,
+          "speculative_fills": 0,
+          "blocks": {
+            "0": 1
+          },
+          "component_stored_bytes": 1350961616,
+          "read_amplification": 1.0
+        },
+        "text_encoder": {
+          "logical_completed_read_bytes": 0,
+          "fills": 0,
+          "speculative_fills": 0,
+          "blocks": {},
+          "component_stored_bytes": 9349423584,
+          "read_amplification": 0.0
+        }
+      },
+      "graphs": {
+        "text_encoder": {
+          "captures": 0,
+          "capture_attempts": 0,
+          "replays": 0,
+          "active_graphs": 0
+        },
+        "transformer": {
+          "captures": 0,
+          "capture_attempts": 0,
+          "replays": 0,
+          "active_graphs": 0
+        },
+        "vae": {
+          "captures": 0,
+          "capture_attempts": 0,
+          "replays": 0,
+          "active_graphs": 0
+        }
+      },
+      "cut_summary": {
+        "oom_floor": 0,
+        "max_predicted_need_bytes": 4831838208,
+        "retries": 0,
+        "retried_sites": []
+      },
+      "images": [
+        {
+          "path": "/home/fidika/cozy_v2/outputs/varena-remote-20261024/phase-ab-24gb/before-qwen-retry/warm-2/assets/17370-image.png",
+          "bytes": 2199789,
+          "sha256": "sha256:df2565392263d1fe439a9af9ee4418023b5e0ba4415332be003861e910c0f3f7",
+          "format": "PNG",
+          "size": [
+            1024,
+            1024
+          ],
+          "rgb_sha256": "e764e6d9f7eace57282a0d237cadbc19dcc8907a31c9eb10af387948d8c47824",
+          "rgb_extrema": [
+            [
+              0,
+              255
+            ],
+            [
+              0,
+              255
+            ],
+            [
+              0,
+              255
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "run_number": 17373,
+      "label": "warm-3",
+      "seed": 2026102514,
+      "execution_ms": 48800,
+      "cli_wall_ms": 50474.494452,
+      "created_to_settled_ms": 49202,
+      "device_first_step_ms": 1512.633,
+      "device_steady_step_ms": {
+        "count": 29,
+        "mean": 1579.0055517241378,
+        "median": 1545.13,
+        "min": 1498.418,
+        "max": 1865.815
+      },
+      "first_step_premium_ms": -66.3725517241378,
+      "device_step_series_ms": [
+        1512.633,
+        1562.804,
+        1505.956,
+        1591.838,
+        1547.299,
+        1541.373,
+        1650.922,
+        1498.418,
+        1800.916,
+        1824.513,
+        1519.981,
+        1530.516,
+        1510.495,
+        1509.28,
+        1507.018,
+        1545.13,
+        1603.113,
+        1865.815,
+        1647.676,
+        1502.828,
+        1519.601,
+        1562.598,
+        1564.063,
+        1500.949,
+        1579.791,
+        1703.096,
+        1537.257,
+        1498.533,
+        1511.862,
+        1547.52
+      ],
+      "gpu_uuids": [
+        "GPU-1b013a8d-6e9e-e34e-2c5d-9dfa6a0f4a90"
+      ],
+      "pid": [
+        494
+      ],
+      "models": [
+        {
+          "lane": "int8",
+          "manifest": "sha256:78705de45f7421fde51a0196913b11f1f7e3c95d468881d762d18af50da6fec3",
+          "precision": "int8",
+          "release": "0.1.0",
+          "repository": "_/qwen-image-2.1",
+          "slot": "model"
+        }
+      ],
+      "software": {
+        "attempt_ordinal": 1,
+        "runtime": "0.32.1",
+        "tensord": "0.11.17+dev.g76656368",
+        "tensord_commit": "76656368e6e7674c4dc8cda5461e3457fee39a82",
+        "tensorfs": "0.15.2+dev.g76656368"
+      },
+      "logical_completed_read_bytes": 211175713232,
+      "sync_read_host_ns": 18453439061,
+      "prefetch": {
+        "canceled": 0,
+        "completed": 483,
+        "failed": 0,
+        "scope": "one next exact raw block; no native transform callbacks",
+        "skipped_capacity": 447,
+        "started": 483,
+        "wait_ns": 16761545489
+      },
+      "phases": [],
+      "torch_reserved_minus_allocated_bytes": 13274183168,
+      "native_residency": {
+        "evictions": 2937,
+        "fills": 2957,
+        "hits": 2443,
+        "pinned_bytes": 0,
+        "poisoned": false,
+        "preferred_bytes": 5085593600,
+        "ready_bytes": 6438256640,
+        "reclaimable_bytes": 6438256640,
+        "reclaimed_bytes": 649884336128,
+        "regions": 71,
+        "reserved_bytes": 17267949568,
+        "resident_bytes": 6438256640
+      },
+      "components": {
+        "transformer": {
+          "logical_completed_read_bytes": 209824751616,
+          "fills": 961,
+          "speculative_fills": 483,
+          "blocks": {
+            "0": 1,
+            "1": 30,
+            "2": 30,
+            "3": 30,
+            "4": 30,
+            "5": 30,
+            "6": 30,
+            "7": 30,
+            "8": 30,
+            "9": 30,
+            "10": 30,
+            "11": 30,
+            "12": 30,
+            "13": 30,
+            "14": 30,
+            "15": 30,
+            "16": 30,
+            "17": 30,
+            "18": 30,
+            "19": 30,
+            "20": 30,
+            "21": 30,
+            "22": 30,
+            "23": 30,
+            "24": 30,
+            "25": 30,
+            "26": 30,
+            "27": 30,
+            "28": 30,
+            "29": 30,
+            "30": 30,
+            "31": 30,
+            "32": 30
+          },
+          "component_stored_bytes": 7256694784,
+          "read_amplification": 28.914644733113803
+        },
+        "vae": {
+          "logical_completed_read_bytes": 1350961616,
+          "fills": 1,
+          "speculative_fills": 0,
+          "blocks": {
+            "0": 1
+          },
+          "component_stored_bytes": 1350961616,
+          "read_amplification": 1.0
+        },
+        "text_encoder": {
+          "logical_completed_read_bytes": 0,
+          "fills": 0,
+          "speculative_fills": 0,
+          "blocks": {},
+          "component_stored_bytes": 9349423584,
+          "read_amplification": 0.0
+        }
+      },
+      "graphs": {
+        "text_encoder": {
+          "captures": 0,
+          "capture_attempts": 0,
+          "replays": 0,
+          "active_graphs": 0
+        },
+        "transformer": {
+          "captures": 0,
+          "capture_attempts": 0,
+          "replays": 0,
+          "active_graphs": 0
+        },
+        "vae": {
+          "captures": 0,
+          "capture_attempts": 0,
+          "replays": 0,
+          "active_graphs": 0
+        }
+      },
+      "cut_summary": {
+        "oom_floor": 0,
+        "max_predicted_need_bytes": 4831838208,
+        "retries": 0,
+        "retried_sites": []
+      },
+      "images": [
+        {
+          "path": "/home/fidika/cozy_v2/outputs/varena-remote-20261024/phase-ab-24gb/before-qwen-retry/warm-3/assets/17373-image.png",
+          "bytes": 2185243,
+          "sha256": "sha256:2778904003696ae02f0935df0cbc66a7eb88ebdffbba15659985ca111ffd8c11",
+          "format": "PNG",
+          "size": [
+            1024,
+            1024
+          ],
+          "rgb_sha256": "9dc60678ea0d57dd38b36a16e66e100ebcb252ef560e791102d78c3b1e2b7ef5",
+          "rgb_extrema": [
+            [
+              0,
+              255
+            ],
+            [
+              0,
+              255
+            ],
+            [
+              0,
+              248
+            ]
+          ]
+        }
+      ]
+    }
+  ],
+  "after": [
+    {
+      "run_number": 17379,
+      "label": "cold",
+      "seed": 2026102515,
+      "execution_ms": 29469,
+      "cli_wall_ms": 57427.671655,
+      "created_to_settled_ms": 55534,
+      "device_first_step_ms": 2021.564,
+      "device_steady_step_ms": {
+        "count": 29,
+        "mean": 433.0781724137931,
+        "median": 433.184,
+        "min": 428.984,
+        "max": 437.053
+      },
+      "first_step_premium_ms": 1588.485827586207,
+      "device_step_series_ms": [
+        2021.564,
+        428.984,
+        431.176,
+        437.053,
+        432.642,
+        433.008,
+        432.986,
+        433.664,
+        432.453,
+        433.242,
+        433.094,
+        433.551,
+        433.081,
+        433.261,
+        432.692,
+        433.962,
+        432.813,
+        432.561,
+        433.444,
+        433.184,
+        433.646,
+        433.219,
+        432.424,
+        433.465,
+        434.113,
+        433.36,
+        432.96,
+        433.19,
+        432.796,
+        433.243
+      ],
+      "gpu_uuids": [
+        "GPU-1b013a8d-6e9e-e34e-2c5d-9dfa6a0f4a90"
+      ],
+      "pid": [
+        100881
+      ],
+      "models": [
+        {
+          "lane": "int8",
+          "manifest": "sha256:78705de45f7421fde51a0196913b11f1f7e3c95d468881d762d18af50da6fec3",
+          "precision": "int8",
+          "release": "0.1.0",
+          "repository": "_/qwen-image-2.1",
+          "slot": "model"
+        }
+      ],
+      "software": {
+        "attempt_ordinal": 1,
+        "runtime": "0.32.1",
+        "tensord": "0.11.17+dev.g76656368",
+        "tensord_commit": "76656368e6e7674c4dc8cda5461e3457fee39a82",
+        "tensorfs": "0.15.2"
+      },
+      "logical_completed_read_bytes": 17134146768,
+      "sync_read_host_ns": 2795382614,
+      "prefetch": {
+        "canceled": 0,
+        "completed": 35,
+        "failed": 0,
+        "scope": "one next exact raw block; no native transform callbacks",
+        "skipped_capacity": 31,
+        "started": 35,
+        "wait_ns": 1117126675
+      },
+      "phases": [
+        {
+          "missing_bytes": 7870611456,
+          "models": [
+            "local/qwen-image-2@0.1.0/sha256:78705de45f7421fde51a0196913b11f1f7e3c95d468881d762d18af50da6fec3/text_encoder"
+          ],
+          "native_reclaimed_bytes": 0,
+          "torch_returned_bytes": 0,
+          "torch_unused_bytes": 39709184
+        },
+        {
+          "missing_bytes": 7046430720,
+          "models": [
+            "local/qwen-image-2@0.1.0/sha256:78705de45f7421fde51a0196913b11f1f7e3c95d468881d762d18af50da6fec3/transformer"
+          ],
+          "native_reclaimed_bytes": 0,
+          "torch_returned_bytes": 0,
+          "torch_unused_bytes": 73771008
+        },
+        {
+          "missing_bytes": 0,
+          "models": [
+            "local/qwen-image-2@0.1.0/sha256:78705de45f7421fde51a0196913b11f1f7e3c95d468881d762d18af50da6fec3/vae"
+          ],
+          "native_reclaimed_bytes": 0,
+          "torch_returned_bytes": 0,
+          "torch_unused_bytes": 788779520
+        }
+      ],
+      "torch_reserved_minus_allocated_bytes": 13274183168,
+      "native_residency": {
+        "evictions": 36,
+        "fills": 71,
+        "hits": 963,
+        "pinned_bytes": 0,
+        "poisoned": false,
+        "preferred_bytes": 1352663040,
+        "ready_bytes": 8866758656,
+        "reclaimable_bytes": 8866758656,
+        "reclaimed_bytes": 8401190912,
+        "regions": 71,
+        "reserved_bytes": 17267949568,
+        "resident_bytes": 8866758656
+      },
+      "components": {
+        "text_encoder": {
+          "logical_completed_read_bytes": 8526490368,
+          "fills": 37,
+          "speculative_fills": 35,
+          "blocks": {
+            "0": 1,
+            "28": 1,
+            "29": 1,
+            "30": 1,
+            "31": 1,
+            "32": 1,
+            "33": 1,
+            "34": 1,
+            "35": 1,
+            "36": 1,
+            "37": 1,
+            "38": 1,
+            "39": 1,
+            "40": 1,
+            "41": 1,
+            "42": 1,
+            "43": 1,
+            "44": 1,
+            "45": 1,
+            "46": 1,
+            "47": 1,
+            "48": 1,
+            "49": 1,
+            "50": 1,
+            "51": 1,
+            "52": 1,
+            "53": 1,
+            "54": 1,
+            "55": 1,
+            "56": 1,
+            "57": 1,
+            "58": 1,
+            "59": 1,
+            "60": 1,
+            "61": 1,
+            "62": 1,
+            "63": 1
+          },
+          "component_stored_bytes": 9349423584,
+          "read_amplification": 0.9119803259948223
+        },
+        "transformer": {
+          "logical_completed_read_bytes": 7256694784,
+          "fills": 33,
+          "speculative_fills": 0,
+          "blocks": {
+            "0": 1,
+            "1": 1,
+            "2": 1,
+            "3": 1,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 1,
+            "8": 1,
+            "9": 1,
+            "10": 1,
+            "11": 1,
+            "12": 1,
+            "13": 1,
+            "14": 1,
+            "15": 1,
+            "16": 1,
+            "17": 1,
+            "18": 1,
+            "19": 1,
+            "20": 1,
+            "21": 1,
+            "22": 1,
+            "23": 1,
+            "24": 1,
+            "25": 1,
+            "26": 1,
+            "27": 1,
+            "28": 1,
+            "29": 1,
+            "30": 1,
+            "31": 1,
+            "32": 1
+          },
+          "component_stored_bytes": 7256694784,
+          "read_amplification": 1.0
+        },
+        "vae": {
+          "logical_completed_read_bytes": 1350961616,
+          "fills": 1,
+          "speculative_fills": 0,
+          "blocks": {
+            "0": 1
+          },
+          "component_stored_bytes": 1350961616,
+          "read_amplification": 1.0
+        }
+      },
+      "graphs": {
+        "text_encoder": {
+          "captures": 0,
+          "capture_attempts": 0,
+          "replays": 0,
+          "active_graphs": 0
+        },
+        "transformer": {
+          "captures": 0,
+          "capture_attempts": 0,
+          "replays": 0,
+          "active_graphs": 0
+        },
+        "vae": {
+          "captures": 0,
+          "capture_attempts": 0,
+          "replays": 0,
+          "active_graphs": 0
+        }
+      },
+      "cut_summary": {
+        "oom_floor": 0,
+        "max_predicted_need_bytes": 4831838208,
+        "retries": 0,
+        "retried_sites": []
+      },
+      "images": [
+        {
+          "path": "/home/fidika/cozy_v2/outputs/varena-remote-20261024/phase-ab-24gb/after-qwen-fresh/cold/assets/17379-image.png",
+          "bytes": 1779556,
+          "sha256": "sha256:1cd5efef4af17e5d2cd3d1b8ddbeff0a50f80467429110016573d302fe88e002",
+          "format": "PNG",
+          "size": [
+            1024,
+            1024
+          ],
+          "rgb_sha256": "2a9155c864b095158197ea3cc330ceec0a2d11e55d42a35b28aeb7ca67b3b5a4",
+          "rgb_extrema": [
+            [
+              0,
+              255
+            ],
+            [
+              0,
+              255
+            ],
+            [
+              0,
+              255
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "run_number": 17382,
+      "label": "warm-1",
+      "seed": 2026102516,
+      "execution_ms": 14110,
+      "cli_wall_ms": 17244.348998,
+      "created_to_settled_ms": 15620,
+      "device_first_step_ms": 446.076,
+      "device_steady_step_ms": {
+        "count": 29,
+        "mean": 433.0141034482759,
+        "median": 432.856,
+        "min": 430.516,
+        "max": 439.932
+      },
+      "first_step_premium_ms": 13.061896551724146,
+      "device_step_series_ms": [
+        446.076,
+        434.819,
+        433.001,
+        432.223,
+        432.969,
+        432.918,
+        432.896,
+        431.803,
+        430.516,
+        432.507,
+        432.556,
+        431.797,
+        432.171,
+        431.055,
+        431.751,
+        432.754,
+        439.932,
+        432.999,
+        433.343,
+        432.729,
+        432.797,
+        433.682,
+        432.841,
+        431.559,
+        435.869,
+        433.18,
+        433.437,
+        433.312,
+        432.856,
+        433.137
+      ],
+      "gpu_uuids": [
+        "GPU-1b013a8d-6e9e-e34e-2c5d-9dfa6a0f4a90"
+      ],
+      "pid": [
+        100881
+      ],
+      "models": [
+        {
+          "lane": "int8",
+          "manifest": "sha256:78705de45f7421fde51a0196913b11f1f7e3c95d468881d762d18af50da6fec3",
+          "precision": "int8",
+          "release": "0.1.0",
+          "repository": "_/qwen-image-2.1",
+          "slot": "model"
+        }
+      ],
+      "software": {
+        "attempt_ordinal": 1,
+        "runtime": "0.32.1",
+        "tensord": "0.11.17+dev.g76656368",
+        "tensord_commit": "76656368e6e7674c4dc8cda5461e3457fee39a82",
+        "tensorfs": "0.15.2"
+      },
+      "logical_completed_read_bytes": 0,
+      "sync_read_host_ns": 0,
+      "prefetch": {
+        "canceled": 0,
+        "completed": 0,
+        "failed": 0,
+        "scope": "one next exact raw block; no native transform callbacks",
+        "skipped_capacity": 0,
+        "started": 0,
+        "wait_ns": 0
+      },
+      "phases": [
+        {
+          "missing_bytes": 0,
+          "models": [
+            "local/qwen-image-2@0.1.0/sha256:78705de45f7421fde51a0196913b11f1f7e3c95d468881d762d18af50da6fec3/transformer"
+          ],
+          "native_reclaimed_bytes": 0,
+          "torch_returned_bytes": 0,
+          "torch_unused_bytes": 13272590336
+        },
+        {
+          "missing_bytes": 0,
+          "models": [
+            "local/qwen-image-2@0.1.0/sha256:78705de45f7421fde51a0196913b11f1f7e3c95d468881d762d18af50da6fec3/vae"
+          ],
+          "native_reclaimed_bytes": 0,
+          "torch_returned_bytes": 0,
+          "torch_unused_bytes": 13271028224
+        }
+      ],
+      "torch_reserved_minus_allocated_bytes": 13274183168,
+      "native_residency": {
+        "evictions": 47,
+        "fills": 71,
+        "hits": 1925,
+        "pinned_bytes": 0,
+        "poisoned": false,
+        "preferred_bytes": 1352663040,
+        "ready_bytes": 6417285120,
+        "reclaimable_bytes": 6417285120,
+        "reclaimed_bytes": 10850664448,
+        "regions": 71,
+        "reserved_bytes": 17267949568,
+        "resident_bytes": 6417285120
+      },
+      "components": {
+        "text_encoder": {
+          "logical_completed_read_bytes": 0,
+          "fills": 0,
+          "speculative_fills": 0,
+          "blocks": {},
+          "component_stored_bytes": 9349423584,
+          "read_amplification": 0.0
+        },
+        "transformer": {
+          "logical_completed_read_bytes": 0,
+          "fills": 0,
+          "speculative_fills": 0,
+          "blocks": {},
+          "component_stored_bytes": 7256694784,
+          "read_amplification": 0.0
+        },
+        "vae": {
+          "logical_completed_read_bytes": 0,
+          "fills": 0,
+          "speculative_fills": 0,
+          "blocks": {},
+          "component_stored_bytes": 1350961616,
+          "read_amplification": 0.0
+        }
+      },
+      "graphs": {
+        "text_encoder": {
+          "captures": 0,
+          "capture_attempts": 0,
+          "replays": 0,
+          "active_graphs": 0
+        },
+        "transformer": {
+          "captures": 0,
+          "capture_attempts": 0,
+          "replays": 0,
+          "active_graphs": 0
+        },
+        "vae": {
+          "captures": 0,
+          "capture_attempts": 0,
+          "replays": 0,
+          "active_graphs": 0
+        }
+      },
+      "cut_summary": {
+        "oom_floor": 0,
+        "max_predicted_need_bytes": 4831838208,
+        "retries": 0,
+        "retried_sites": []
+      },
+      "images": [
+        {
+          "path": "/home/fidika/cozy_v2/outputs/varena-remote-20261024/phase-ab-24gb/after-qwen-fresh/warm-1/assets/17382-image.png",
+          "bytes": 2069743,
+          "sha256": "sha256:759ac40d35a0436afabe9476bbecbef265cab498f12abe85a3a374d40c42a64e",
+          "format": "PNG",
+          "size": [
+            1024,
+            1024
+          ],
+          "rgb_sha256": "5d7fded5e8719b4b07a445d5c5d2e548fddfd1d2f58a5c5cf98bee996470f3bd",
+          "rgb_extrema": [
+            [
+              0,
+              255
+            ],
+            [
+              0,
+              255
+            ],
+            [
+              0,
+              255
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "run_number": 17383,
+      "label": "warm-2",
+      "seed": 2026102517,
+      "execution_ms": 14781,
+      "cli_wall_ms": 17101.855141,
+      "created_to_settled_ms": 15509,
+      "device_first_step_ms": 1114.459,
+      "device_steady_step_ms": {
+        "count": 29,
+        "mean": 434.5703103448276,
+        "median": 433.204,
+        "min": 432.478,
+        "max": 469.455
+      },
+      "first_step_premium_ms": 679.8886896551725,
+      "device_step_series_ms": [
+        1114.459,
+        432.906,
+        432.787,
+        434.226,
+        432.911,
+        432.867,
+        433.996,
+        469.455,
+        436.374,
+        433.299,
+        433.444,
+        433.302,
+        432.866,
+        432.965,
+        433.23,
+        433.165,
+        433.061,
+        433.921,
+        433.873,
+        432.737,
+        433.064,
+        433.41,
+        432.478,
+        433.24,
+        433.108,
+        433.27,
+        433.364,
+        433.201,
+        433.204,
+        432.815
+      ],
+      "gpu_uuids": [
+        "GPU-1b013a8d-6e9e-e34e-2c5d-9dfa6a0f4a90"
+      ],
+      "pid": [
+        100881
+      ],
+      "models": [
+        {
+          "lane": "int8",
+          "manifest": "sha256:78705de45f7421fde51a0196913b11f1f7e3c95d468881d762d18af50da6fec3",
+          "precision": "int8",
+          "release": "0.1.0",
+          "repository": "_/qwen-image-2.1",
+          "slot": "model"
+        }
+      ],
+      "software": {
+        "attempt_ordinal": 1,
+        "runtime": "0.32.1",
+        "tensord": "0.11.17+dev.g76656368",
+        "tensord_commit": "76656368e6e7674c4dc8cda5461e3457fee39a82",
+        "tensorfs": "0.15.2"
+      },
+      "logical_completed_read_bytes": 6165272064,
+      "sync_read_host_ns": 95601999,
+      "prefetch": {
+        "canceled": 0,
+        "completed": 26,
+        "failed": 0,
+        "scope": "one next exact raw block; no native transform callbacks",
+        "skipped_capacity": 0,
+        "started": 26,
+        "wait_ns": 770380104
+      },
+      "phases": [
+        {
+          "missing_bytes": 5945425920,
+          "models": [
+            "local/qwen-image-2@0.1.0/sha256:78705de45f7421fde51a0196913b11f1f7e3c95d468881d762d18af50da6fec3/transformer"
+          ],
+          "native_reclaimed_bytes": 0,
+          "torch_returned_bytes": 0,
+          "torch_unused_bytes": 13272590336
+        },
+        {
+          "missing_bytes": 0,
+          "models": [
+            "local/qwen-image-2@0.1.0/sha256:78705de45f7421fde51a0196913b11f1f7e3c95d468881d762d18af50da6fec3/vae"
+          ],
+          "native_reclaimed_bytes": 0,
+          "torch_returned_bytes": 0,
+          "torch_unused_bytes": 13271028224
+        }
+      ],
+      "torch_reserved_minus_allocated_bytes": 13274183168,
+      "native_residency": {
+        "evictions": 75,
+        "fills": 99,
+        "hits": 2885,
+        "pinned_bytes": 0,
+        "poisoned": false,
+        "preferred_bytes": 1352663040,
+        "ready_bytes": 6417285120,
+        "reclaimable_bytes": 6417285120,
+        "reclaimed_bytes": 17068720128,
+        "regions": 71,
+        "reserved_bytes": 17267949568,
+        "resident_bytes": 6417285120
+      },
+      "components": {
+        "transformer": {
+          "logical_completed_read_bytes": 6165272064,
+          "fills": 28,
+          "speculative_fills": 26,
+          "blocks": {
+            "0": 1,
+            "1": 1,
+            "2": 1,
+            "3": 1,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 1,
+            "8": 1,
+            "9": 1,
+            "10": 1,
+            "11": 1,
+            "12": 1,
+            "13": 1,
+            "14": 1,
+            "15": 1,
+            "16": 1,
+            "17": 1,
+            "18": 1,
+            "19": 1,
+            "20": 1,
+            "21": 1,
+            "22": 1,
+            "23": 1,
+            "24": 1,
+            "25": 1,
+            "26": 1,
+            "27": 1
+          },
+          "component_stored_bytes": 7256694784,
+          "read_amplification": 0.8495978193258955
+        },
+        "text_encoder": {
+          "logical_completed_read_bytes": 0,
+          "fills": 0,
+          "speculative_fills": 0,
+          "blocks": {},
+          "component_stored_bytes": 9349423584,
+          "read_amplification": 0.0
+        },
+        "vae": {
+          "logical_completed_read_bytes": 0,
+          "fills": 0,
+          "speculative_fills": 0,
+          "blocks": {},
+          "component_stored_bytes": 1350961616,
+          "read_amplification": 0.0
+        }
+      },
+      "graphs": {
+        "text_encoder": {
+          "captures": 0,
+          "capture_attempts": 0,
+          "replays": 0,
+          "active_graphs": 0
+        },
+        "transformer": {
+          "captures": 0,
+          "capture_attempts": 0,
+          "replays": 0,
+          "active_graphs": 0
+        },
+        "vae": {
+          "captures": 0,
+          "capture_attempts": 0,
+          "replays": 0,
+          "active_graphs": 0
+        }
+      },
+      "cut_summary": {
+        "oom_floor": 0,
+        "max_predicted_need_bytes": 4831838208,
+        "retries": 0,
+        "retried_sites": []
+      },
+      "images": [
+        {
+          "path": "/home/fidika/cozy_v2/outputs/varena-remote-20261024/phase-ab-24gb/after-qwen-fresh/warm-2/assets/17383-image.png",
+          "bytes": 1824061,
+          "sha256": "sha256:7a0977cfafa5465b1dfb1c7cf6b801a08562f0b68ac3e9e1a60294fb742bf7c7",
+          "format": "PNG",
+          "size": [
+            1024,
+            1024
+          ],
+          "rgb_sha256": "202b824461be16554d564196798e8ce6e8a6c247fa03e10511676ac6d7024094",
+          "rgb_extrema": [
+            [
+              0,
+              255
+            ],
+            [
+              0,
+              255
+            ],
+            [
+              0,
+              255
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "run_number": 17384,
+      "label": "warm-3",
+      "seed": 2026102518,
+      "execution_ms": 15122,
+      "cli_wall_ms": 18234.441387,
+      "created_to_settled_ms": 16019,
+      "device_first_step_ms": 1391.167,
+      "device_steady_step_ms": {
+        "count": 29,
+        "mean": 432.91410344827585,
+        "median": 433.003,
+        "min": 430.252,
+        "max": 440.496
+      },
+      "first_step_premium_ms": 958.252896551724,
+      "device_step_series_ms": [
+        1391.167,
+        430.719,
+        440.496,
+        433.681,
+        433.534,
+        431.828,
+        431.6,
+        430.252,
+        432.689,
+        432.807,
+        432.94,
+        432.237,
+        433.041,
+        432.078,
+        430.609,
+        432.883,
+        432.334,
+        433.003,
+        433.028,
+        433.005,
+        433.133,
+        433.51,
+        433.657,
+        432.621,
+        433.206,
+        433.2,
+        433.014,
+        433.311,
+        432.977,
+        433.116
+      ],
+      "gpu_uuids": [
+        "GPU-1b013a8d-6e9e-e34e-2c5d-9dfa6a0f4a90"
+      ],
+      "pid": [
+        100881
+      ],
+      "models": [
+        {
+          "lane": "int8",
+          "manifest": "sha256:78705de45f7421fde51a0196913b11f1f7e3c95d468881d762d18af50da6fec3",
+          "precision": "int8",
+          "release": "0.1.0",
+          "repository": "_/qwen-image-2.1",
+          "slot": "model"
+        }
+      ],
+      "software": {
+        "attempt_ordinal": 1,
+        "runtime": "0.32.1",
+        "tensord": "0.11.17+dev.g76656368",
+        "tensord_commit": "76656368e6e7674c4dc8cda5461e3457fee39a82",
+        "tensorfs": "0.15.2"
+      },
+      "logical_completed_read_bytes": 6165272064,
+      "sync_read_host_ns": 106666512,
+      "prefetch": {
+        "canceled": 0,
+        "completed": 26,
+        "failed": 0,
+        "scope": "one next exact raw block; no native transform callbacks",
+        "skipped_capacity": 0,
+        "started": 26,
+        "wait_ns": 963721279
+      },
+      "phases": [
+        {
+          "missing_bytes": 5945425920,
+          "models": [
+            "local/qwen-image-2@0.1.0/sha256:78705de45f7421fde51a0196913b11f1f7e3c95d468881d762d18af50da6fec3/transformer"
+          ],
+          "native_reclaimed_bytes": 0,
+          "torch_returned_bytes": 0,
+          "torch_unused_bytes": 13272590336
+        },
+        {
+          "missing_bytes": 0,
+          "models": [
+            "local/qwen-image-2@0.1.0/sha256:78705de45f7421fde51a0196913b11f1f7e3c95d468881d762d18af50da6fec3/vae"
+          ],
+          "native_reclaimed_bytes": 0,
+          "torch_returned_bytes": 0,
+          "torch_unused_bytes": 13271028224
+        }
+      ],
+      "torch_reserved_minus_allocated_bytes": 13274183168,
+      "native_residency": {
+        "evictions": 103,
+        "fills": 127,
+        "hits": 3845,
+        "pinned_bytes": 0,
+        "poisoned": false,
+        "preferred_bytes": 1352663040,
+        "ready_bytes": 6417285120,
+        "reclaimable_bytes": 6417285120,
+        "reclaimed_bytes": 23286775808,
+        "regions": 71,
+        "reserved_bytes": 17267949568,
+        "resident_bytes": 6417285120
+      },
+      "components": {
+        "transformer": {
+          "logical_completed_read_bytes": 6165272064,
+          "fills": 28,
+          "speculative_fills": 26,
+          "blocks": {
+            "0": 1,
+            "1": 1,
+            "2": 1,
+            "3": 1,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 1,
+            "8": 1,
+            "9": 1,
+            "10": 1,
+            "11": 1,
+            "12": 1,
+            "13": 1,
+            "14": 1,
+            "15": 1,
+            "16": 1,
+            "17": 1,
+            "18": 1,
+            "19": 1,
+            "20": 1,
+            "21": 1,
+            "22": 1,
+            "23": 1,
+            "24": 1,
+            "25": 1,
+            "26": 1,
+            "27": 1
+          },
+          "component_stored_bytes": 7256694784,
+          "read_amplification": 0.8495978193258955
+        },
+        "text_encoder": {
+          "logical_completed_read_bytes": 0,
+          "fills": 0,
+          "speculative_fills": 0,
+          "blocks": {},
+          "component_stored_bytes": 9349423584,
+          "read_amplification": 0.0
+        },
+        "vae": {
+          "logical_completed_read_bytes": 0,
+          "fills": 0,
+          "speculative_fills": 0,
+          "blocks": {},
+          "component_stored_bytes": 1350961616,
+          "read_amplification": 0.0
+        }
+      },
+      "graphs": {
+        "text_encoder": {
+          "captures": 0,
+          "capture_attempts": 0,
+          "replays": 0,
+          "active_graphs": 0
+        },
+        "transformer": {
+          "captures": 0,
+          "capture_attempts": 0,
+          "replays": 0,
+          "active_graphs": 0
+        },
+        "vae": {
+          "captures": 0,
+          "capture_attempts": 0,
+          "replays": 0,
+          "active_graphs": 0
+        }
+      },
+      "cut_summary": {
+        "oom_floor": 0,
+        "max_predicted_need_bytes": 4831838208,
+        "retries": 0,
+        "retried_sites": []
+      },
+      "images": [
+        {
+          "path": "/home/fidika/cozy_v2/outputs/varena-remote-20261024/phase-ab-24gb/after-qwen-fresh/warm-3/assets/17384-image.png",
+          "bytes": 1771244,
+          "sha256": "sha256:69ec91b02f209e37d68f0a6697dbcf2a5fc220cc13c3f1ab4c80203ddb0dacf1",
+          "format": "PNG",
+          "size": [
+            1024,
+            1024
+          ],
+          "rgb_sha256": "6dcbaf7cab128d7927f1cc9753b306d6837fb99280ae78e2760e9436bdd51a32",
+          "rgb_extrema": [
+            [
+              0,
+              255
+            ],
+            [
+              0,
+              255
+            ],
+            [
+              0,
+              255
+            ]
+          ]
+        }
+      ]
+    }
+  ],
+  "warm_before": {
+    "execution_ms_mean": 48414.666666666664,
+    "execution_ms_median": 48800,
+    "logical_read_bytes_mean": 211175713232,
+    "device_steady_step_ms_mean": 1564.1309310344827,
+    "cli_wall_ms_mean_of_available": 50952.300378500004,
+    "cli_wall_samples": 2,
+    "prefetch_capacity_skips": 1341,
+    "prefetch_completed": 1449
+  },
+  "warm_after": {
+    "execution_ms_mean": 14671,
+    "execution_ms_median": 14781,
+    "logical_read_bytes_mean": 4110181376,
+    "device_steady_step_ms_mean": 433.4995057471264,
+    "cli_wall_ms_mean_of_available": 17526.881842,
+    "cli_wall_samples": 3,
+    "prefetch_capacity_skips": 0,
+    "prefetch_completed": 52
+  },
+  "warm_execution_speedup": 3.300024992615818,
+  "warm_execution_reduction_pct": 69.69719919583596,
+  "warm_logical_reads_reduction_pct": 98.05366757706436,
+  "limitations": [
+    "Logical completed reads are source payload bytes, not physical PCIe or disk traffic; canceled speculation can be omitted.",
+    "store.ns excludes asynchronous prefetch duration; prefetch.wait_ns is CPU settlement time, not exposed GPU starvation.",
+    "First calls differ in source/disk/install cache state and are not pure cold-weight loading measurements.",
+    "Before17364 CLI wall is unavailable after interrupted controller; null is preserved, not inferred from worker/controller clocks. CLI averages have unequal sample counts and are not the headline comparison.",
+    "Worker clock is offset from controller. Qualification uses worker execution/step/GPU clocks, fresh intervals and distinct requests.",
+    "Seeds differ between variants, so image integrity/dimensions are verified but exact pixel parity is not claimed.",
+    "All model graph counters are0; speedup is not evidence of CUDA graph acceleration.",
+    "Warm1 zero reads is not stable-state zero traffic: warm2/3 each reload6.165GB once per request. No within30-step churn occurs.",
+    "Three warm samples per variant are descriptive; source/installed proof is not release/deployment proof."
+  ],
+  "remaining_optimizations": [
+    "Avoid repeat partial transformer reloads across VAE where actual activation/workspace needs permit. Current traces do not distinguish all eviction causes, so6.165GB warm2/3 reads are not proven minimal.",
+    "Eliminate speculative preparation refusals attributable to stale outgoing unpreferred cache without speculative eviction.",
+    "Measure actual H2D bytes and exposed weight-ready stalls before claiming hidden transfer latency."
+  ],
+  "correctness_appendices": {
+    "qwen_fresh_prompt_17385": {
+      "run_number": 17385,
+      "purpose": "Additional fresh-prompt correctness validation; excluded from warm A/B means.",
+      "seed": 2026102519,
+      "steps": 30,
+      "execution_ms": 17909,
+      "device_first_step_ms": 1966.011,
+      "device_steady_step_ms_mean": 433.71472413793106,
+      "components": {
+        "text_encoder": {
+          "logical_completed_read_bytes": 8526490368,
+          "fills": 37,
+          "blocks": {
+            "0": 1,
+            "28": 1,
+            "29": 1,
+            "30": 1,
+            "31": 1,
+            "32": 1,
+            "33": 1,
+            "34": 1,
+            "35": 1,
+            "36": 1,
+            "37": 1,
+            "38": 1,
+            "39": 1,
+            "40": 1,
+            "41": 1,
+            "42": 1,
+            "43": 1,
+            "44": 1,
+            "45": 1,
+            "46": 1,
+            "47": 1,
+            "48": 1,
+            "49": 1,
+            "50": 1,
+            "51": 1,
+            "52": 1,
+            "53": 1,
+            "54": 1,
+            "55": 1,
+            "56": 1,
+            "57": 1,
+            "58": 1,
+            "59": 1,
+            "60": 1,
+            "61": 1,
+            "62": 1,
+            "63": 1
+          }
+        },
+        "transformer": {
+          "logical_completed_read_bytes": 7256694784,
+          "fills": 33,
+          "blocks": {
+            "0": 1,
+            "1": 1,
+            "2": 1,
+            "3": 1,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 1,
+            "8": 1,
+            "9": 1,
+            "10": 1,
+            "11": 1,
+            "12": 1,
+            "13": 1,
+            "14": 1,
+            "15": 1,
+            "16": 1,
+            "17": 1,
+            "18": 1,
+            "19": 1,
+            "20": 1,
+            "21": 1,
+            "22": 1,
+            "23": 1,
+            "24": 1,
+            "25": 1,
+            "26": 1,
+            "27": 1,
+            "28": 1,
+            "29": 1,
+            "30": 1,
+            "31": 1,
+            "32": 1
+          }
+        },
+        "vae": {
+          "logical_completed_read_bytes": 1350961616,
+          "fills": 1,
+          "blocks": {
+            "0": 1
+          }
+        }
+      },
+      "logical_completed_read_bytes": 17134146768,
+      "phases": [
+        {
+          "missing_bytes": 7870611456,
+          "models": [
+            "local/qwen-image-2@0.1.0/sha256:78705de45f7421fde51a0196913b11f1f7e3c95d468881d762d18af50da6fec3/text_encoder"
+          ],
+          "native_reclaimed_bytes": 0,
+          "torch_returned_bytes": 13251903488,
+          "torch_unused_bytes": 13274180096
+        },
+        {
+          "missing_bytes": 7046430720,
+          "models": [
+            "local/qwen-image-2@0.1.0/sha256:78705de45f7421fde51a0196913b11f1f7e3c95d468881d762d18af50da6fec3/transformer"
+          ],
+          "native_reclaimed_bytes": 0,
+          "torch_returned_bytes": 0,
+          "torch_unused_bytes": 62629888
+        },
+        {
+          "missing_bytes": 0,
+          "models": [
+            "local/qwen-image-2@0.1.0/sha256:78705de45f7421fde51a0196913b11f1f7e3c95d468881d762d18af50da6fec3/vae"
+          ],
+          "native_reclaimed_bytes": 0,
+          "torch_returned_bytes": 0,
+          "torch_unused_bytes": 788779520
+        }
+      ],
+      "prefetch": {
+        "canceled": 0,
+        "completed": 35,
+        "failed": 0,
+        "scope": "one next exact raw block; no native transform callbacks",
+        "skipped_capacity": 31,
+        "started": 35,
+        "wait_ns": 947418827
+      },
+      "images": [
+        {
+          "path": "/home/fidika/cozy_v2/outputs/varena-remote-20261024/phase-ab-24gb/after-qwen-new-prompt/assets/17385-image.png",
+          "file_sha256": "259f58baaffaf1ebac92ce20922f4b5b03f50509c42e05a454f023727d66c846",
+          "rgb_sha256": "d51b182e0ac4fb9e626f4a897e6f0d2d8bd30821db252ae419cee5a193f306e3",
+          "size": [
+            1024,
+            1024
+          ],
+          "mode": "RGBA",
+          "rgb_extrema": [
+            [
+              0,
+              255
+            ],
+            [
+              0,
+              255
+            ],
+            [
+              0,
+              255
+            ]
+          ]
+        }
+      ],
+      "software": {
+        "attempt_ordinal": 1,
+        "runtime": "0.32.1",
+        "tensord": "0.11.17+dev.g76656368",
+        "tensord_commit": "76656368e6e7674c4dc8cda5461e3457fee39a82",
+        "tensorfs": "0.15.2"
+      },
+      "phase_sequence_verified": [
+        [
+          "text_encoder"
+        ],
+        [
+          "transformer"
+        ],
+        [
+          "vae"
+        ]
+      ]
+    }
+  }
+}

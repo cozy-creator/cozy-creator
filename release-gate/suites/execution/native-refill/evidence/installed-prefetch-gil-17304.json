@@ -1,0 +1,65 @@
+{
+  "run": 17304,
+  "status": "completed",
+  "scope": "installed SDK through default Cozy CLI; candidate_python omitted and wrapper uses sys.executable",
+  "machine": "riful",
+  "hardware": "RTX 3070 8GB, sm86, driver610.43.02",
+  "runtime_source": "75bce89371bbe678aa5fe7058c3492215e9d00c1",
+  "runtime_wheel_sha256": "6865e959e904e5e48becaea8e9e991dd762ea98d48f21d5d501b39d7766b8e70",
+  "creator_source": "76656368e",
+  "tensorfs_native_source_equivalent": "bd12eb21be205344057b97101d32bf2ef574b3b1",
+  "tensorfs_wheel_sha256": "9a9698c96ee6f069a66c5c8eb01e0aaa4a6ccbb2832646dfebe43157f73fffaf",
+  "installation_receipt_sha256": "f86bfaabf6b4f37f0f87ce6cbc8fb993a0a90fe52d72b99915c1c0bc2bc6dfc2",
+  "proof_source": "49d7785c21cc797c02604269a29a57c4e84b5ab2",
+  "outer_software": {
+    "attempt_ordinal": 1,
+    "runtime": "0.32.1",
+    "tensord": "0.11.17+dev.g76656368",
+    "tensord_commit": "76656368e6e7674c4dc8cda5461e3457fee39a82",
+    "tensorfs": "0.15.2+dev.g76656368"
+  },
+  "result": {
+    "mode": "prefetch-gil",
+    "passed": true,
+    "result": {
+      "abandoned_fill_retry_passed": true,
+      "alias_drop_reclaimed_bytes": 2097152,
+      "alias_drop_to_reclaim_ms": 0.085207,
+      "finite_horizon_steps": 3000,
+      "guard_drop_releases_immediately": true,
+      "rounds": [
+        {
+          "cancel_join_ms": 26.798119,
+          "canceled": true,
+          "canceled_steps": 354,
+          "first_steps": 9,
+          "getter_waited": true,
+          "reclaimed_bytes": 2097152,
+          "whole_contention_ms": 67.432439
+        },
+        {
+          "cancel_join_ms": 1.48135,
+          "canceled": true,
+          "canceled_steps": 353,
+          "first_steps": 9,
+          "getter_waited": true,
+          "reclaimed_bytes": 2097152,
+          "whole_contention_ms": 42.028577
+        },
+        {
+          "cancel_join_ms": 1.368695,
+          "canceled": true,
+          "canceled_steps": 320,
+          "first_steps": 8,
+          "getter_waited": true,
+          "reclaimed_bytes": 2097152,
+          "whole_contention_ms": 41.792441
+        }
+      ]
+    },
+    "runtime_version": "0.32.1",
+    "seed": 103,
+    "tensorfs_version": "0.15.2+dev.g76656368"
+  },
+  "passed": true
+}

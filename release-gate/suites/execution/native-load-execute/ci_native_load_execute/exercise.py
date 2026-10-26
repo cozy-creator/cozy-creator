@@ -32,6 +32,7 @@ MODES = {
     "input-error",
     "scope-return",
     "scope-unwind",
+    "index-stale",
 }
 
 
@@ -79,18 +80,52 @@ def private_input(checkpoint, directory):
     return copied, chunks[-1]
 
 
-def prepare(arena, checkpoint, parts, nbytes, steps):
+def prepare_capture_control():
+    with torch.inference_mode(False):
+        marker = torch.zeros(1, device="cuda")
+    stream = torch.cuda.Stream()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.stream(stream):
+        marker.add_(1)
+        marker.zero_()
+    stream.synchronize()
+    return marker, stream, graph
+
+
+def capture_after_checked_load(control):
+    marker, stream, graph = control
+    with torch.cuda.stream(stream):
+        with varena.capture(0):
+            graph.capture_begin(capture_error_mode="global")
+            try:
+                marker.add_(1)
+            finally:
+                graph.capture_end()
+        with varena.replay(0):
+            graph.replay()
+    stream.synchronize()
+    assert marker.item() == 1
+    graph.reset()
+    return True
+
+
+def prepare(arena, checkpoint, parts, nbytes, steps, ordering="checked"):
     slot = varena.LoadSlot(arena, checkpoint, parts, bytes=nbytes, threads=1)
     alias = slot.tensor
     weight = alias.view(torch.float32)
     output = torch.zeros(1, device="cuda", dtype=torch.float32)
     calls = [0]
+    indices = []
 
     def body(index):
+        if not indices:
+            indices.append(index)
         calls[0] += 1
         output.add_(weight.sum())
 
-    plan = PreparedRepeat.capture(body, state=(output,), steps=steps, load=slot)
+    plan = PreparedRepeat.capture(
+        body, state=(output,), steps=steps, load=slot, load_ordering=ordering
+    )
     assert plan.facts()["continuation_abi"] == 1
     assert calls[0] == 2, "the Python body must run only for warmup and capture"
     assert float(weight.sum()) == 0.0, "capture must precede the source load"
@@ -103,6 +138,7 @@ def prepare(arena, checkpoint, parts, nbytes, steps):
         "output": output,
         "calls": calls,
         "plan": plan,
+        "index": indices[0],
     }
 
 
@@ -122,7 +158,7 @@ def close_checked(bundle, arena, nbytes):
     return stats
 
 
-def exercise(mode, seed, outer_context, tel):
+def exercise(mode, seed, outer_context, tel, ordering="checked"):
     if mode not in MODES:
         raise ValueError(f"unknown native load gate mode: {mode}")
     varena.install_allocator()
@@ -137,6 +173,7 @@ def exercise(mode, seed, outer_context, tel):
     arena = varena.Arena(0)
     evidence = {
         "mode": mode,
+        "ordering": ordering,
         "seed": seed,
         "runtime": importlib.metadata.version("cozy-runtime"),
         "tensorfs": importlib.metadata.version("tensorfs"),
@@ -151,7 +188,8 @@ def exercise(mode, seed, outer_context, tel):
         copied = damaged = None
         if mode == "input-error":
             copied, damaged = private_input(checkpoint, directory)
-        bundle = prepare(arena, copied or checkpoint, parts, nbytes, steps)
+        bundle = prepare(arena, copied or checkpoint, parts, nbytes, steps, ordering)
+        capture_control = prepare_capture_control()
         evidence["source_sha256"] = digest
         if mode == "cancel-before":
             bundle["slot"].cancel()
@@ -197,6 +235,7 @@ def exercise(mode, seed, outer_context, tel):
                     execution,
                     lambda f: (
                         f["native_load"]["issued_bytes"] > 0
+                        and f["native_load"]["issued_bytes"] < nbytes
                         and not f["native_load"]["read_done"]
                     ),
                 )
@@ -229,6 +268,28 @@ def exercise(mode, seed, outer_context, tel):
             return Returned(True)
 
         try:
+            if mode == "index-stale":
+                assert bundle["plan"].valid()
+                bundle["index"].fill_(73)
+                assert bundle["plan"].valid(), (
+                    "input values must not invalidate geometry"
+                )
+                bundle["index"].resize_(2)
+                assert not bundle["plan"].valid()
+                try:
+                    bundle["plan"].submit()
+                except RuntimeError as error:
+                    assert "storage or geometry changed" in str(error), error
+                    evidence["refusal"] = str(error)
+                else:
+                    raise AssertionError(
+                        "native index resize was accepted before submission"
+                    )
+                evidence["native"] = bundle["plan"].facts()
+                assert evidence["native"]["host_graph_launches"] == 0
+                evidence["index_shape_refused_before_submit"] = True
+                evidence["cleanup"] = close_checked(bundle, arena, nbytes)
+                return evidence
             if mode in {"scope-return", "scope-unwind", "input-error"}:
                 # The executor's actual prepare/invoke lifecycle, including checked teardown.
                 # Expected errors are contained in this real invocation, not mocked away.
@@ -266,7 +327,13 @@ def exercise(mode, seed, outer_context, tel):
             facts = execution.facts()
             evidence["native"] = facts
             load = facts["native_load"]
+            assert facts["load_ordering_requested"] == ordering
+            if ordering != "auto":
+                assert load["ordering"] == facts["load_ordering"] == ordering
             assert load["done"] and load["completion_proven"], facts
+            evidence["immediate_capture_after_checked_load"] = (
+                capture_after_checked_load(capture_control)
+            )
             assert bundle["calls"][0] == 2, (
                 "Python drove native continuation or loop steps"
             )
@@ -300,12 +367,25 @@ def exercise(mode, seed, outer_context, tel):
                     assert load["read_bytes"] == nbytes and load["issued_bytes"] > 0, (
                         load
                     )
-                    assert (
-                        0
-                        < load["read_completed_ns"]
-                        <= load["launch_started_ns"]
-                        <= load["compute_completed_ns"]
-                    ), load
+                    if facts["load_ordering"] == "events":
+                        assert (
+                            0
+                            < load["launch_started_ns"]
+                            <= load["launch_submitted_ns"]
+                            < load["read_completed_ns"]
+                        ), load
+                        assert (
+                            facts["body_entry_checked"]
+                            and facts["body_entered"]
+                            and not facts["input_invalid"]
+                        ), facts
+                    else:
+                        assert (
+                            0
+                            < load["read_completed_ns"]
+                            <= load["launch_started_ns"]
+                            <= load["compute_completed_ns"]
+                        ), load
                     expected = (nbytes // 4) * 0.125 * steps
                     assert float(execution.wait()[0][0]) == expected
                     evidence["result"] = expected

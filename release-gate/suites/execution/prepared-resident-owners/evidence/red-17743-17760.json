@@ -1,0 +1,250 @@
+{
+  "schema": 1,
+  "date": "2026-10-25",
+  "qualification": "real_red_reproduction_only_green_pending",
+  "summary": "Both real watcher fixtures invalidate capture across a host-only pause before captured convolution. The PreparedRepeat case fails before native submission.",
+  "selected_sources": {
+    "cozy": "4178a2a1195b9afe1426ec4567d738d28d31f826",
+    "runtime": "559080567c0199bbf4dca513ea7eb674450f134a",
+    "tensorfs": "e521cc7797f93c0c97e20ef82ecbf7842cba4ff9"
+  },
+  "selected_artifacts": [
+    {
+      "path": "/home/fidika/cozy/.worktrees/cozy-creator/varena-consolidation/.task/portable-4178a2a11/cozy/cozy-linux-x86_64",
+      "sha256": "6b0c6dbbe5d4740fa611dc4c0a28d1cc00b9362bf8397192bfdeae5bdfd119a0"
+    },
+    {
+      "path": "/home/fidika/cozy/.worktrees/cozy-runtime/varena-consolidation/.task/portable-559080567/cozy_runtime-0.32.3-cp312-abi3-manylinux_2_28_x86_64.whl",
+      "sha256": "6150de986ced21cc03d04c9ff4d1a6b62b7c99f35a247038c6c8911372007d40"
+    },
+    {
+      "path": "/home/fidika/cozy/.worktrees/cozy-creator/varena-consolidation/.task/portable-e521cc779/tensorfs/tensorfs-0.15.6-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "sha256": "ca15dd65e7aa3249f3749dd60a452260ab54854ccb44d4449b7189234951941b"
+    }
+  ],
+  "normal_install": {
+    "number": 17738,
+    "id": "run-cf76beee5e0a964a719f2245",
+    "status": "completed",
+    "to": {
+      "cozy": "0.11.17+dev.g4178a2a1",
+      "runtime": "0.32.3",
+      "runtime_sha256": "6150de986ced21cc03d04c9ff4d1a6b62b7c99f35a247038c6c8911372007d40",
+      "tensorfs": "0.15.6",
+      "tensorfs_sha256": "ca15dd65e7aa3249f3749dd60a452260ab54854ccb44d4449b7189234951941b"
+    }
+  },
+  "runs": [
+    {
+      "number": 17743,
+      "public_id": "run-4e652d46b369b7a1407bef93",
+      "target": "local/ci-prepared-resident-owners/gpu",
+      "machine": "local",
+      "status": "failed",
+      "terminal_code": "device_fault",
+      "seed": 1792918311,
+      "executor_request_id": "450",
+      "executor_pid": 2345373,
+      "device": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "torch": "2.14.1+cu130",
+      "cudnn": 92400,
+      "mode": "conv-watched",
+      "capture_status": [
+        {
+          "stage": "before-watcher-pause",
+          "code": 0,
+          "status": 1
+        },
+        {
+          "stage": "after-watcher-pause",
+          "code": 0,
+          "status": 2
+        }
+      ],
+      "captured_convolution_reached": false,
+      "host_pause_seconds": 0.3,
+      "source": {
+        "creator_fixture_commit": "a9d525bd215889a3ed772a1057ccfdb0a2dcbfce",
+        "path": "release-gate/suites/execution/prepared-resident-owners/ci_prepared_resident_owners/convolution.py",
+        "sha256": "5ba77fc5c5063b41c1b045601d58474fa0f347d4299f8809a21fc635196f26b9"
+      },
+      "raw_receipt": {
+        "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/local-canonical-20261025/conv-watched.json",
+        "sha256": "dbbbb99b997d19efbde4a097f09628d07eb9b8160c54999837c13a4588e495a9",
+        "objects": 47
+      },
+      "timestamps_ms": {
+        "created_at_ms": 1792918348430,
+        "started_at_ms": 1792918395680,
+        "settled_at_ms": 1792918432274
+      },
+      "watcher": {
+        "workers": [
+          133613588825792
+        ],
+        "pause_seconds": 0.3,
+        "samples_before": 0,
+        "samples_after": 0,
+        "workers_after": []
+      },
+      "memory": [
+        {
+          "stage": "before-warmup",
+          "free": 7726301184,
+          "total": 8186822656,
+          "allocated": 29777408,
+          "reserved": 44040192
+        },
+        {
+          "stage": "after-warmup-before-capture",
+          "free": 7703232512,
+          "total": 8186822656,
+          "allocated": 29777408,
+          "reserved": 67108864
+        }
+      ],
+      "tensors": [
+        {
+          "shape": [
+            2,
+            4,
+            128,
+            128
+          ],
+          "stride": [
+            65536,
+            16384,
+            128,
+            1
+          ],
+          "dtype": "torch.float16"
+        },
+        {
+          "shape": [
+            320,
+            4,
+            3,
+            3
+          ],
+          "stride": [
+            36,
+            9,
+            3,
+            1
+          ],
+          "dtype": "torch.float16"
+        },
+        {
+          "shape": [
+            320
+          ],
+          "stride": [
+            1
+          ],
+          "dtype": "torch.float16"
+        }
+      ],
+      "convolution": {
+        "stride": [
+          1,
+          1
+        ],
+        "padding": [
+          1,
+          1
+        ],
+        "dilation": [
+          1,
+          1
+        ],
+        "transposed": false,
+        "output_padding": [
+          0,
+          0
+        ],
+        "groups": 1
+      },
+      "first_failure": {
+        "stage": "watcher-pause",
+        "type": "AssertionError",
+        "error": "('after-watcher-pause', 0, 2)"
+      }
+    },
+    {
+      "number": 17760,
+      "public_id": "run-5775a22b008fe01861d115c1",
+      "target": "local/ci-prepared-resident-owners/gpu",
+      "machine": "local",
+      "status": "failed",
+      "terminal_code": "device_fault",
+      "seed": 1792919101,
+      "executor_request_id": "465",
+      "executor_pid": 2398933,
+      "device": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "torch": "2.14.1+cu130",
+      "cudnn": 92400,
+      "mode": "conv-prepared-watched",
+      "capture_status": [
+        {
+          "stage": "before-pause",
+          "code": 0,
+          "status": 1
+        },
+        {
+          "stage": "after-pause",
+          "code": 0,
+          "status": 2
+        }
+      ],
+      "captured_convolution_reached": false,
+      "host_pause_seconds": 0.3,
+      "source": {
+        "creator_fixture_commit": "729e462f23decf84fb9a8ba15e334d5e83026687",
+        "path": "release-gate/suites/execution/prepared-resident-owners/ci_prepared_resident_owners/prepared_convolution.py",
+        "sha256": "7251eb50799f6a6bbffb7d8a696f44c62e6e02b8549bdfdd158a93f63a9056e4"
+      },
+      "raw_receipt": {
+        "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/local-canonical-20261025/prepared-watched-before.json",
+        "sha256": "dd69ee1a4d9e545c22854b06a294150024683a71a9e44b382bcda9c25f67acc1",
+        "objects": 48
+      },
+      "timestamps_ms": {
+        "created_at_ms": 1792918926809,
+        "started_at_ms": 1792918932084,
+        "settled_at_ms": 1792919070698
+      },
+      "body_calls": 2,
+      "capture_pauses": 1,
+      "watcher_threads": [
+        140491627153088
+      ],
+      "samples_before_prepare": 0,
+      "native_submission_reached": false
+    }
+  ],
+  "green": null,
+  "limits": [
+    "No fixed-candidate or full-SDXL success claim.",
+    "Manual watched capture is diagnostic; the production pause fix targets PreparedRepeat.",
+    "One active request watcher; separate watchers on overlapping same-executor parent/child attempts remain unqualified.",
+    "A raw status transition identifies the invalidation window; no GPU API trace was captured."
+  ],
+  "supporting_receipts": [
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/local-canonical-20261025/cohort.json",
+      "sha256": "cb20a42a6f7e0b0117a54464ed7c6130cb002b36f1c70456a508ca1b6a112a37"
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/local-canonical-20261025/install.json",
+      "sha256": "c5d4232cb9b6f478d73d44b96d8a8c6b122888dfe984227aaa1e7ce289209d36"
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/local-canonical-20261025/observed-after-update.json",
+      "sha256": "3860b540b70793683bd1d56a6be41e783d4e9a5d8509e066d8fcef7cdcafd83e"
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/local-canonical-20261025/before-observer-fix.json",
+      "sha256": "4ba6d18d1f76091f2fc8b64d8d604ba20ed125db9e39cafecf1cde26772cb5c9"
+    }
+  ]
+}

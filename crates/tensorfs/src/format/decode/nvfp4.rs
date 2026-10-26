@@ -4,7 +4,7 @@
 use super::affine::{Fill, Order, Packing, BYTES};
 use super::grid::Grid;
 use super::mxfp8::{blocks, SCALE_LAYOUT};
-use super::plan::{Codes, Core, Elems, Post};
+use super::plan::{Codes, Core, Post};
 use super::{elem, logical, one, Allowed, Ctx, Dtypes, Param, Part, Plan, Scheme, Shape, View};
 use crate::format::Result;
 
@@ -19,7 +19,9 @@ pub const NVFP4: Scheme = Scheme {
         Part::req("scale", &["F8_E4M3"], scale),
         Part::req("scale_2", F32, |c| per_matrix(c, "scale_2")),
         Part::opt("input_scale", F32, |c| per_matrix(c, "input_scale")),
-        Part::opt("pre_quant_scale", &["F32", "BF16", "F16"], |c| Grid::Col.shape(c)),
+        Part::opt("pre_quant_scale", &["F32", "BF16", "F16"], |c| {
+            Grid::Col.shape(c)
+        }),
     ],
     decode,
 };
@@ -69,17 +71,14 @@ pub(super) fn decode<'a>(c: &Ctx<'a>) -> Result<Plan<'a>> {
         order,
         ..BYTES
     };
-    let global = (
-        Elems::part(c.part("scale_2")),
-        c.text("global_scale") == "divide",
-    );
+    let global = (c.elements("scale_2"), c.text("global_scale") == "divide");
     let codes = Codes {
         table: Some((0..16).map(elem::e2m1).collect()),
         global: Some(global),
-        ..Codes::new(c.part("weight").bytes, packing, c.part("scale"), blocks(c))
+        ..Codes::new(c.source("weight"), packing, c.elements("scale"), blocks(c))
     };
     let post = match c.has("pre_quant_scale") {
-        true => Post::Cols(Elems::part(c.part("pre_quant_scale"))),
+        true => Post::Cols(c.elements("pre_quant_scale")),
         false => Post::None,
     };
     Ok(Plan {

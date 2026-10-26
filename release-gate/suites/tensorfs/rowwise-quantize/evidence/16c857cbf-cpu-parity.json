@@ -1,0 +1,226 @@
+{
+  "acceptance": {
+    "inherited_leaf": "byte exact",
+    "max_abs_error_and_saturated": "exact",
+    "output_integrity": "verified for every conversion group",
+    "parts": "exact vs existing production ConvRot/NVFP4 encoder",
+    "scale_shapes": [
+      [
+        7
+      ],
+      [
+        7,
+        1
+      ],
+      [
+        1,
+        7
+      ]
+    ],
+    "source_f32_bits": "exact vs existing Torch RowwiseDequant",
+    "source_part_bytes": "exact; includes both NVFP4 passes",
+    "sse_energy_atol": 0,
+    "sse_energy_rtol": 2e-13
+  },
+  "cohort": {
+    "runtime": {
+      "scope": "DIAGNOSTIC ONLY; tagged operator/capture probes; not release",
+      "sha256": "15ec246fa050cdbed7febad58e4493c4f9dc5cfc82ca73729e7286cf08b24155",
+      "source": "14aeb70616d44a3baf482f7ee91bad36f1321ea6"
+    },
+    "tensord": {
+      "sha256": "bce5ec6953040857c8600d7fc86aef53cc5ed81ddf2581d311d759a5688b0322",
+      "source": "fd4ff48fa21e7ee7c0ffe436b2ce6c6b0f98084f"
+    },
+    "tensorfs": {
+      "sha256": "cd5cd14aeb4a6c74c76e22770becc11fbd846821ced8ef05b7808a3c4ce1a692",
+      "source": "16c857cbf6376e828f1d18846c82c3857a7305b1"
+    }
+  },
+  "conversions": 162,
+  "details": {
+    "native_sha256": "56b635971d6f01ece97f1afd92c2b615244fd0686598ff06c770eb2ac0b5732d",
+    "numpy": "2.5.4",
+    "refusals": [
+      {
+        "case": "params",
+        "code": "unsupported",
+        "read_bytes": 0
+      },
+      {
+        "case": "scale_count",
+        "code": "decode",
+        "read_bytes": 0
+      },
+      {
+        "case": "weight_dtype",
+        "code": "decode",
+        "read_bytes": 0
+      },
+      {
+        "case": "scale_dtype",
+        "code": "decode",
+        "read_bytes": 0
+      },
+      {
+        "case": "extra_role",
+        "code": "decode",
+        "read_bytes": 0
+      },
+      {
+        "case": "nonfinite",
+        "code": "decode",
+        "read_bytes": 1040
+      }
+    ],
+    "seed": 1792916801,
+    "source_cases": 27,
+    "source_header": "sha256:beffb8ea8dd5ca4052ab4c9232c1492f990a08208fe96d788696048210bee407",
+    "tensorfs": "0.15.5",
+    "torch": "2.14.1+cu130"
+  },
+  "earlier_attempts": [
+    {
+      "boundary": "fixture passed Torch tensors to Writer.put_encoded; before native conversion",
+      "run": 17609,
+      "status": "failed"
+    },
+    {
+      "boundary": "fixture wrongly refused valid (rows,1) scale shape; no whole-cell pass claimed",
+      "run": 17682,
+      "status": "failed"
+    }
+  ],
+  "fixture": {
+    "commit": "1d32ba5670f2390b282d2f4af3e498c59a2d03b2",
+    "path": "release-gate/suites/tensorfs/rowwise-quantize/ci_rowwise_quantize/__init__.py",
+    "sha256": "c117b7882df79b091e028ad187f726f4c0d56d19a6553601d8fb0ba781c06e02"
+  },
+  "groups": [
+    {
+      "chunk_rows": 1,
+      "identity": "ae6ae7f2504709ec112da0e24dca41208d5aace2d8efab7c71dd843c9db375df",
+      "new_bytes": 49140,
+      "payload_digest": "52791a96980287bb71bed7e815468cd07fb93a2c799b5a7d2e6f830343aaf9b5",
+      "read_bytes": 48888,
+      "target": "int8.convrot"
+    },
+    {
+      "chunk_rows": 2,
+      "identity": "ae6ae7f2504709ec112da0e24dca41208d5aace2d8efab7c71dd843c9db375df",
+      "new_bytes": 49140,
+      "payload_digest": "52791a96980287bb71bed7e815468cd07fb93a2c799b5a7d2e6f830343aaf9b5",
+      "read_bytes": 48888,
+      "target": "int8.convrot"
+    },
+    {
+      "chunk_rows": 7,
+      "identity": "ae6ae7f2504709ec112da0e24dca41208d5aace2d8efab7c71dd843c9db375df",
+      "new_bytes": 49140,
+      "payload_digest": "52791a96980287bb71bed7e815468cd07fb93a2c799b5a7d2e6f830343aaf9b5",
+      "read_bytes": 48888,
+      "target": "int8.convrot"
+    },
+    {
+      "chunk_rows": 1,
+      "identity": "14622febe3ac5352410ccca668657ae04e4e703bb4b843d74eb8430edbdcd15f",
+      "new_bytes": 27324,
+      "payload_digest": "207497862e53522da3b49e76a03ff25fcdf6ff63cd221ed28f28d22d2c265557",
+      "read_bytes": 97776,
+      "target": "nvfp4"
+    },
+    {
+      "chunk_rows": 2,
+      "identity": "14622febe3ac5352410ccca668657ae04e4e703bb4b843d74eb8430edbdcd15f",
+      "new_bytes": 27324,
+      "payload_digest": "207497862e53522da3b49e76a03ff25fcdf6ff63cd221ed28f28d22d2c265557",
+      "read_bytes": 97776,
+      "target": "nvfp4"
+    },
+    {
+      "chunk_rows": 7,
+      "identity": "14622febe3ac5352410ccca668657ae04e4e703bb4b843d74eb8430edbdcd15f",
+      "new_bytes": 27324,
+      "payload_digest": "207497862e53522da3b49e76a03ff25fcdf6ff63cd221ed28f28d22d2c265557",
+      "read_bytes": 97776,
+      "target": "nvfp4"
+    }
+  ],
+  "passed": true,
+  "payload_digests": {
+    "int8.convrot": {
+      "matrix0.weight": "ac31c70ba58bf32d13b835480f08d6b392e3f53b27d325cced628bc977bcbca1",
+      "matrix1.weight": "ac31c70ba58bf32d13b835480f08d6b392e3f53b27d325cced628bc977bcbca1",
+      "matrix10.weight": "262f307944d69c0ce36ba28a8802a2679adde1189dd099c165ae8a4066eea10f",
+      "matrix11.weight": "262f307944d69c0ce36ba28a8802a2679adde1189dd099c165ae8a4066eea10f",
+      "matrix12.weight": "262f307944d69c0ce36ba28a8802a2679adde1189dd099c165ae8a4066eea10f",
+      "matrix13.weight": "262f307944d69c0ce36ba28a8802a2679adde1189dd099c165ae8a4066eea10f",
+      "matrix14.weight": "262f307944d69c0ce36ba28a8802a2679adde1189dd099c165ae8a4066eea10f",
+      "matrix15.weight": "f062fa182457a9247bfb86db694c825d1b4de3f9795482f49a3b621d81d53242",
+      "matrix16.weight": "f062fa182457a9247bfb86db694c825d1b4de3f9795482f49a3b621d81d53242",
+      "matrix17.weight": "f062fa182457a9247bfb86db694c825d1b4de3f9795482f49a3b621d81d53242",
+      "matrix18.weight": "8a9e6a36c00cbf25ab0c296731fb0a5e9d01fc5cb5f965ab23c6e1b1b50f6884",
+      "matrix19.weight": "8a9e6a36c00cbf25ab0c296731fb0a5e9d01fc5cb5f965ab23c6e1b1b50f6884",
+      "matrix2.weight": "ac31c70ba58bf32d13b835480f08d6b392e3f53b27d325cced628bc977bcbca1",
+      "matrix20.weight": "8a9e6a36c00cbf25ab0c296731fb0a5e9d01fc5cb5f965ab23c6e1b1b50f6884",
+      "matrix21.weight": "8a9e6a36c00cbf25ab0c296731fb0a5e9d01fc5cb5f965ab23c6e1b1b50f6884",
+      "matrix22.weight": "8a9e6a36c00cbf25ab0c296731fb0a5e9d01fc5cb5f965ab23c6e1b1b50f6884",
+      "matrix23.weight": "8a9e6a36c00cbf25ab0c296731fb0a5e9d01fc5cb5f965ab23c6e1b1b50f6884",
+      "matrix24.weight": "e8876f6b53a7fa7bd2bc7b761656f8ce32ac7c616413d4ec328d17f9089c9840",
+      "matrix25.weight": "e8876f6b53a7fa7bd2bc7b761656f8ce32ac7c616413d4ec328d17f9089c9840",
+      "matrix26.weight": "e8876f6b53a7fa7bd2bc7b761656f8ce32ac7c616413d4ec328d17f9089c9840",
+      "matrix3.weight": "ac31c70ba58bf32d13b835480f08d6b392e3f53b27d325cced628bc977bcbca1",
+      "matrix4.weight": "ac31c70ba58bf32d13b835480f08d6b392e3f53b27d325cced628bc977bcbca1",
+      "matrix5.weight": "ac31c70ba58bf32d13b835480f08d6b392e3f53b27d325cced628bc977bcbca1",
+      "matrix6.weight": "4cbbec9e99a1e80ed6fc251436fd45aec6d697f6ea50f782364138555619c78a",
+      "matrix7.weight": "4cbbec9e99a1e80ed6fc251436fd45aec6d697f6ea50f782364138555619c78a",
+      "matrix8.weight": "4cbbec9e99a1e80ed6fc251436fd45aec6d697f6ea50f782364138555619c78a",
+      "matrix9.weight": "262f307944d69c0ce36ba28a8802a2679adde1189dd099c165ae8a4066eea10f"
+    },
+    "nvfp4": {
+      "matrix0.weight": "d8e97b2da4191f2dd3869e0478392cc366e6cd40a877548838a418140ad43999",
+      "matrix1.weight": "d8e97b2da4191f2dd3869e0478392cc366e6cd40a877548838a418140ad43999",
+      "matrix10.weight": "3a45dda76317db60bafbcef0711bdb6909f355c664844a770e9cfca576611438",
+      "matrix11.weight": "3a45dda76317db60bafbcef0711bdb6909f355c664844a770e9cfca576611438",
+      "matrix12.weight": "3a45dda76317db60bafbcef0711bdb6909f355c664844a770e9cfca576611438",
+      "matrix13.weight": "3a45dda76317db60bafbcef0711bdb6909f355c664844a770e9cfca576611438",
+      "matrix14.weight": "3a45dda76317db60bafbcef0711bdb6909f355c664844a770e9cfca576611438",
+      "matrix15.weight": "ddc4e46a6bfa5bf01e8df5a0ec471eedd2aa3add19090f7e76a8cfc71d829afe",
+      "matrix16.weight": "ddc4e46a6bfa5bf01e8df5a0ec471eedd2aa3add19090f7e76a8cfc71d829afe",
+      "matrix17.weight": "ddc4e46a6bfa5bf01e8df5a0ec471eedd2aa3add19090f7e76a8cfc71d829afe",
+      "matrix18.weight": "3d02570d1db27b7b33e333c91f55ae23e325d65a7de5e418d4dc81008db5d2d4",
+      "matrix19.weight": "3d02570d1db27b7b33e333c91f55ae23e325d65a7de5e418d4dc81008db5d2d4",
+      "matrix2.weight": "d8e97b2da4191f2dd3869e0478392cc366e6cd40a877548838a418140ad43999",
+      "matrix20.weight": "3d02570d1db27b7b33e333c91f55ae23e325d65a7de5e418d4dc81008db5d2d4",
+      "matrix21.weight": "3d02570d1db27b7b33e333c91f55ae23e325d65a7de5e418d4dc81008db5d2d4",
+      "matrix22.weight": "3d02570d1db27b7b33e333c91f55ae23e325d65a7de5e418d4dc81008db5d2d4",
+      "matrix23.weight": "3d02570d1db27b7b33e333c91f55ae23e325d65a7de5e418d4dc81008db5d2d4",
+      "matrix24.weight": "27e8f0126a367b1c850b50693a2bcfd1e5b5860ba2ec9477f64f644d057df24d",
+      "matrix25.weight": "27e8f0126a367b1c850b50693a2bcfd1e5b5860ba2ec9477f64f644d057df24d",
+      "matrix26.weight": "27e8f0126a367b1c850b50693a2bcfd1e5b5860ba2ec9477f64f644d057df24d",
+      "matrix3.weight": "d8e97b2da4191f2dd3869e0478392cc366e6cd40a877548838a418140ad43999",
+      "matrix4.weight": "d8e97b2da4191f2dd3869e0478392cc366e6cd40a877548838a418140ad43999",
+      "matrix5.weight": "d8e97b2da4191f2dd3869e0478392cc366e6cd40a877548838a418140ad43999",
+      "matrix6.weight": "af9bf49532d445006507696c2bc9cec29f2867a885edc504fcba705e2f09b1d4",
+      "matrix7.weight": "af9bf49532d445006507696c2bc9cec29f2867a885edc504fcba705e2f09b1d4",
+      "matrix8.weight": "af9bf49532d445006507696c2bc9cec29f2867a885edc504fcba705e2f09b1d4",
+      "matrix9.weight": "3a45dda76317db60bafbcef0711bdb6909f355c664844a770e9cfca576611438"
+    }
+  },
+  "receipt": {
+    "path": "outputs/stock-torch-20261024/capture-diagnostic-030-20261025/rowwise-basic-canonical-shape.json",
+    "sha256": "b9774bb615c76a270eec3dedde78134bc62c0ce811d8e4cb524aeeb83dc77fdc"
+  },
+  "related_cancel_proof": "16c857cbf-cancel-and-fixture-refusal.json",
+  "run": {
+    "created_at_ms": 1792916690293,
+    "execution_ms": 7376,
+    "id": "run-90a13fb84e77444f9d64480a",
+    "machine": "riki",
+    "number": 17698,
+    "settled_at_ms": 1792916699899,
+    "status": "completed",
+    "target": "local/ci-rowwise-quantize/run"
+  },
+  "scope": "Real default-home Cozy CLI CPU source-decode/quantization gate; not GPU decoding, Runtime routing, inference, performance or release proof."
+}

@@ -1,0 +1,34 @@
+{
+  "creator_source": "302ab2055a58aeb16bf9bfe6cb85888d558a4e82",
+  "evidence": {
+    "ndjson": "/home/fidika/cozy_v2/outputs/varena-remote-20261024/phase-ab-8gb/phase-window-c58f16df5/phase.ndjson",
+    "ndjson_sha256": "86449d178639ea4cde403b512eed39cae20d73bf71a92dc0208f27d63947de8f",
+    "run_json": "/home/fidika/cozy_v2/outputs/varena-remote-20261024/phase-ab-8gb/phase-window-c58f16df5/phase.json",
+    "run_json_sha256": "dd545b5e59bd910ab04225869976e654cd1cfe5b57a5e32c9eeb000c5aa46b2c"
+  },
+  "failure": {
+    "diagnosis": "First cuBLAS use split the original cached64MiB segment; a second contiguous64MiB request then failed within128MiB managed cap despite free physicalVRAM. Prime real linear workspace before ballast; budget and assertions unchanged.",
+    "followup": 17381,
+    "observed": [
+      "  File \"/var/lib/cozy/tensord/editable/ac06b7f03a664b9d/ci-native-refill/source-c97aa895a307b991a584e677d5709aa2aded77cdf0c467cc7db6967123c016cc/tree/ci_native_refill/probe.py\", line 162, in ~3b07e4b9",
+      "    ballast = torch.empty(64 * MIB, dtype=torch.uint8, device=\"cuda\")",
+      "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 64.00 MiB. GPU 0 has a total capacity of 7.63 GiB of which 7.10 GiB is free. Process 251419 has 228.00 MiB memory in use. Includi~5cfda730"
+    ],
+    "where": "second 64MiB Torch ballast allocation, after first-phase4MiBwindow andzero-cache-return assertions passed"
+  },
+  "outer_software": {
+    "attempt_ordinal": 1,
+    "runtime": "0.32.1",
+    "tensord": "0.11.17+dev.g76656368",
+    "tensord_commit": "76656368e6e7674c4dc8cda5461e3457fee39a82",
+    "tensorfs": "0.15.2"
+  },
+  "passed": false,
+  "proof_source": "0b4425ef9655629aeff502ed79d8031148accc62",
+  "run": 17376,
+  "runtime_source": "c58f16df578fc20782e851cfcdd87f09595d7ab5",
+  "runtime_wheel_sha256": "721d8f58ab8954b66b9b329c260f15dbfcd99fd79c57fa77aa00c0c7ffcb90a3",
+  "scope": "installed RTX3070 8GB SDK through default Cozy CLI, real child CUDA phase gate",
+  "status": "failed",
+  "tensorfs_wheel_sha256": "e19d2ec9d46030a87113060b79ca219a9d30e5afeb9817df7842b1ceadc0f220"
+}

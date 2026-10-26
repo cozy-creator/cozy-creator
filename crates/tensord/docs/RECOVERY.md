@@ -24,7 +24,11 @@ After a service restart, reconciliation observes exact process births. A live or
 executor leaves its obligation nonterminal; it is not adopted. A starting attempt whose process
 has ended is dispatched again at once because no authored work was authorized; if it cannot
 start, it fails. A running attempt whose
-process has ended fails (canceled, when a cancel was journaled). Completed outcomes, collected
+process has ended fails (canceled, when a cancel was journaled). A quiescent invocation that
+returned its executor for CPU output work has no live process obligation. If its CPU owner is
+lost before durable output custody, it fails with `output_owner_lost` (or is canceled); the old
+executor can be alive and reused, and is neither awaited nor stopped for that invocation.
+The interrupted CPU output work is not replayed. Completed outcomes, collected
 outputs and held memos remain durable: the same run submitted again finds its finished memoized
 calls answered, which is distinct from replaying an interrupted inference. See [durable execution](DURABLE-EXECUTION.md).
 

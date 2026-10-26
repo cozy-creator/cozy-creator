@@ -1,0 +1,172 @@
+{
+  "reviewed_utc": "2026-10-25T12:08:32.456339+00:00",
+  "run": 17882,
+  "status": "completed",
+  "software": {
+    "attempt_ordinal": 1,
+    "runtime": "0.32.3+3826fcf3",
+    "tensord": "0.11.17+dev.g8499b11b",
+    "tensord_commit": "8499b11b24a0c4222ab6daae58d9a75816591641",
+    "tensorfs": "0.15.8"
+  },
+  "installed_runtime_wheel_sha256": "1db9ce7ecf19917d7f8818707c446a0e9228ffb7a168e5f823b943e55ba20abd",
+  "production_runtime_source": "7d1e7854ca638c5d153c6601f2d2c2b169d0b133",
+  "native_comparison": {
+    "wheels": [
+      "/home/fidika/cozy/.worktrees/cozy-runtime/sdxl-capture-diagnosis/.task/portable-3826fcf3b/cozy_runtime-0.32.3-cp312-abi3-manylinux_2_28_x86_64.whl",
+      "/home/fidika/cozy/.worktrees/cozy-runtime/varena-consolidation/.task/portable-7d1e7854c/cozy_runtime-0.32.3-cp312-abi3-manylinux_2_28_x86_64.whl"
+    ],
+    "matching_native_files": {
+      "cozy_runtime/_kernels/_execution.abi3.so": "6b5dedb3f5c89c0d2585e91e1b8803f121434479376a063c223b64d3c8f083c6",
+      "cozy_runtime/_kernels/_fa3.abi3.so": "b8ce4b1dd09c2ba885da66297059bd9730bf0ff5f5ef240d58b2a37a959bd7e0",
+      "cozy_runtime/_kernels/_gemm.abi3.so": "22891d4c72e56126b7689052da87d9667d4072ffbb76e9999aa43fd0595ecd61",
+      "cozy_runtime/_kernels/_norm.abi3.so": "c85269fd58696e0d31ed0f7235001d3db9768b95f73d71481afd481ce5a52156"
+    }
+  },
+  "package_commit": "a3755916454acff2e941644776f74c1e371766ca",
+  "model": [
+    {
+      "lane": "bf16",
+      "manifest": "sha256:cbacec84cee812314251badfa5810bedcc31f143e4a874cc1323ae14bd480667",
+      "precision": "fp16",
+      "release": "1.0.0",
+      "repository": "_/sdxl",
+      "slot": "model"
+    }
+  ],
+  "seed": 1792934916,
+  "requested_steps": 30,
+  "host_callback_count": 1,
+  "native_completed_steps": 29,
+  "retained_native_metric": [
+    {
+      "at_unix_ms": 1792929991020,
+      "attempt_key": "4",
+      "fields": {
+        "unit": ""
+      },
+      "kind": "metric",
+      "name": "request_path.denoise_native_steps",
+      "seq": 6,
+      "value": 29.0
+    }
+  ],
+  "required_metric_gaps": [],
+  "metric_gaps": [
+    "complete device-step timing series unavailable"
+  ],
+  "image": {
+    "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/sdxl-graph-3090-20261025/sdxl-image/17882-image.webp",
+    "bytes": 1305448,
+    "sha256": "sha256:131baba7c723b3e115e4501b678729affefc2d0520ad1cf92695b27e092ef7c0",
+    "format": "WEBP",
+    "size": [
+      1024,
+      1024
+    ],
+    "rgb_sha256": "4f6655a9a2d2de9cde19d2fa46257fa179bfcde3487e297b36f6d24e4b40ee5b",
+    "rgb_extrema": [
+      [
+        0,
+        255
+      ],
+      [
+        10,
+        255
+      ],
+      [
+        0,
+        251
+      ]
+    ]
+  },
+  "diagnostic_branch_executed": false,
+  "timing": {
+    "recorded_request_created_to_settled_ms": 37999,
+    "execution_ms_as_reported": 23263,
+    "denoise_stage_ms": 10303.637,
+    "cli_wall_ms": null,
+    "note": "Onecorrectness run; no matchedperformance comparison, isolatedweightstall or pernativeiterationtiming."
+  },
+  "rental": {
+    "name": "mikhail",
+    "rental_id": "pr-903b766d30a4cf07c6c4",
+    "state": "ended",
+    "running": 0,
+    "queued": 0,
+    "spend_basis": "unmetered",
+    "reported_spend_usd_micros": 16356,
+    "settlement_claim": false
+  },
+  "raw_receipts": {
+    "sdxl-image.json": "9cc2934fad9146151ea8eaafcba396125383d10abb731848dba097f45b32813f",
+    "sdxl-detail.json": "0c37908e8ab90c2388a8040900788be461eda82d7d9682085c4225de7558c10b",
+    "strict-native-proof.json": "88f4d5a67547e078f41cbcbca32d799f5da275b87a1dfd23034ab91d928651bf",
+    "ended-confirmed.json": "e591560348ad9230e3461926e6e499b3a5d0b67287179fc174d3f39a29b1496e",
+    "prepared-watched.json": "c6490aa96e4470605e0ae5ea592c4da5f4480ca3fd20bdee24d2935e4dd68030",
+    "install.json": "0b5eee7188a33613669b923cff01099e815d28ddfae5dd42a0a1e9bc163113de"
+  },
+  "bounds": [
+    "SupportsfullSDXLnativeintervalon3090SM86at24GiB, not8GiBcapacityorSM89inspectionfix.",
+    "Typedunsupportednode17873 andcapacity17876remainpreserved. Noactualcauseestablishedbythissuccessfulnonreproduction.",
+    "Diagnostic3826 changesonlyrefusalhandling; all4nativefilesexact7d1. Doesnotqualifynewdb7native diagnostics.",
+    "Onlyonefullimage; nohiddenwarmbenchmark. Native29metricconfirmssuccessfulcompletedinterval, notperiterationGPUtimings."
+  ],
+  "cohort_inputs": {
+    "purpose": "One24GBfullSDXL30 graphdiagnosis after8GBcapacityconfounder; no benchmark. Current7d1sourceplusrefusalonlyDOT, unchangednative.",
+    "runtime": {
+      "path": "/home/fidika/cozy/.worktrees/cozy-runtime/sdxl-capture-diagnosis/.task/portable-3826fcf3b/cozy_runtime-0.32.3-cp312-abi3-manylinux_2_28_x86_64.whl",
+      "sha256": "1db9ce7ecf19917d7f8818707c446a0e9228ffb7a168e5f823b943e55ba20abd",
+      "source": "3826fcf3b27dc62f6708e6129144b32989603699",
+      "scope": "DiagnosticonlyrefusalDOTsummary,noadmissionchanges"
+    },
+    "tensord": {
+      "path": "/home/fidika/cozy/.worktrees/cozy-creator/varena-consolidation/.task/portable-8499b11b2/cozy/cozy-linux-x86_64",
+      "sha256": "1d098d8e47624b4c190e29b48b822eaf067a376ea5ee98964d8e49dc643400e9",
+      "source": "8499b11b24a0c4222ab6daae58d9a75816591641"
+    },
+    "tensorfs": {
+      "path": "/home/fidika/cozy/.worktrees/cozy-creator/varena-consolidation/.task/portable-9e95ee586/tensorfs/tensorfs-0.15.8-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "sha256": "8c5b6f9a7471db87c5193b7396cfff48c2eabe8cef3817741832bf642cfe683b",
+      "source": "9e95ee586b589572c169bb0295be019234fbbf85"
+    },
+    "cells": [
+      {
+        "label": "prepared-watched",
+        "target": "/home/fidika/cozy/.worktrees/cozy-creator/varena-consolidation/release-gate/suites/execution/prepared-resident-owners/gpu",
+        "inputs": [
+          "mode=conv-prepared-watched"
+        ],
+        "gpus": 1
+      }
+    ],
+    "image": {
+      "target": "/home/fidika/cozy/.worktrees/packages/varena-consolidation/sdxl/generate",
+      "source": "a3755916454acff2e941644776f74c1e371766ca",
+      "inputs": [
+        "prompt=A brass observatory perched on a snowy mountain at blue hour, watercolor",
+        "steps=30",
+        "guidance=7.0",
+        "aspect_ratio=1:1",
+        "hidiffusion=false"
+      ]
+    }
+  },
+  "validation": {
+    "validator_source_sha256": "4d27eb4a17ddf2d6473b57ec7f7ddb55e5a99a975b4dd8beba45456b2cc363af",
+    "creator_fixture_head": "041474a17600ded807212954c0e2e12930648bb9",
+    "reprocessed_actual_raw": true,
+    "required_metric_gaps": [],
+    "native_completed_steps": 29,
+    "observed_step_callback_count": 1,
+    "all_four_native_module_bytes_match_7d1": true,
+    "independent_review_sha256": "7ed93a89ba600d9580c1d701b58aca7ca76e1a9667ecc012b9cf942c12b257e1",
+    "scope": "Actual validator re-run on retained ordinary CLI record; no new GPU execution"
+  },
+  "additional_receipts_sha256": {
+    "cohort.json": "c3d98474841d91d486b2f68eac469a749c268756a05393f784d7f4f2613b5a9e",
+    "input-cohort.json": "9fe0ed56a80d031a38dc38df6526517965e93f874aadf7259800099b362bc331",
+    "installed.json": "37ff629183c2a63ab0a3a288e1e363dcd39baeb7cf586182b8ea796121c2b1f5",
+    "image": "131baba7c723b3e115e4501b678729affefc2d0520ad1cf92695b27e092ef7c0"
+  }
+}

@@ -1,0 +1,351 @@
+"""A stored linear model with one genuine warm-only native prefix/repeat/suffix program."""
+
+from __future__ import annotations
+
+import json
+import os
+import time
+from collections import OrderedDict
+from typing import Annotated, Any
+
+import msgspec
+import torch
+from cozy_runtime.author import (
+    AdjustmentRow,
+    AdjustmentRows,
+    Adjustments,
+    App,
+    Context,
+    Loader,
+    Model,
+    ModelArtifact,
+    Preflight,
+    Telemetry,
+    WeightsOutput,
+    held,
+    uses_components,
+)
+from cozy_runtime.compute import PreparedRepeat
+from cozy_runtime.weights_store import Derivation
+
+app = App()
+
+
+class Pipeline:
+    def __init__(self, config: Any) -> None:
+        self.components = {
+            "net": torch.nn.Sequential(
+                OrderedDict(
+                    [
+                        (
+                            "proj",
+                            torch.nn.Linear(
+                                config.as_int("in_features"),
+                                config.as_int("out_features"),
+                                dtype=torch.bfloat16,
+                            ),
+                        )
+                    ]
+                )
+            )
+        }
+        self.plan = None
+        self.operand = None
+        self.output = None
+        self.steps = 0
+        self.batch_rows = 0
+        self.factory_calls = 0
+        self.handler_calls = 0
+        self.captures = 0
+        self.phase_calls = [0, 0, 0]
+        self.capacity = None
+
+
+def build(config: Any) -> Pipeline:
+    return Pipeline(config)
+
+
+class LinearModel(Model[Pipeline]):
+    pipe: Pipeline
+
+    def load(self, loader: Loader) -> None:
+        self.pipe = loader.construct(Pipeline, factory=build)
+
+    @uses_components("net")
+    def reference(self, operand: torch.Tensor) -> torch.Tensor:
+        return self.pipe.components["net"](operand).float()
+
+
+class Make(msgspec.Struct, forbid_unknown_fields=True):
+    seed: int = 103
+
+
+@app.entrypoint(accelerator=False, weights=(WeightsOutput("model", 1 << 20),))
+def source(payload: Make, ctx: Context) -> ModelArtifact:
+    weight = (
+        (((torch.arange(16 * 256) + payload.seed) % 31 - 15).float() / 256)
+        .reshape(16, 256)
+        .bfloat16()
+    )
+    bias = ((torch.arange(16) - 8).float() / 1024).bfloat16()
+    with ctx.output(
+        "model",
+        Derivation(base=None, order=(("net", "proj.weight"), ("net", "proj.bias"))),
+    ) as output:
+        output.config("net", {"in_features": 256, "out_features": 16})
+        for name, value in (("proj.weight", weight), ("proj.bias", bias)):
+            output.put(
+                "net",
+                name,
+                "BF16",
+                value.shape,
+                value.view(torch.uint8).numpy().tobytes(),
+            )
+        return ctx.adopt_model(output)
+
+
+class Probe(msgspec.Struct, forbid_unknown_fields=True):
+    seed: int = 103
+    steps: Annotated[int, msgspec.Meta(ge=1, le=128)] = 8
+    batch_rows: Annotated[int, msgspec.Meta(ge=1, le=4)] = 1
+    require_prepared: bool = True
+    inspect_only: bool = False
+    decline_after_capture: bool = False
+    raise_after_capture: bool = False
+    hold_after_capture_ms: Annotated[int, msgspec.Meta(ge=0, le=30000)] = 0
+    min_free_bytes: Annotated[int, msgspec.Meta(ge=0)] = 0
+    pressure_bytes: Annotated[int, msgspec.Meta(ge=0, le=536870912)] = 0
+    hold_ms: Annotated[int, msgspec.Meta(ge=0, le=30000)] = 0
+
+
+class Facts(msgspec.Struct, frozen=True):
+    resolved_steps: int
+    resolved_rows: int
+    min_free_bytes: int
+    pressure_bytes: int
+    hold_ms: int
+    adjustments: tuple[AdjustmentRow, ...]
+    decline_after_capture: bool
+    raise_after_capture: bool
+    hold_after_capture_ms: int
+
+
+def resolve(payload: Probe) -> Facts:
+    rows = AdjustmentRows()
+    steps = held(rows, "steps", payload.steps, 1, 64)
+    return Facts(
+        steps,
+        payload.batch_rows,
+        payload.min_free_bytes,
+        payload.pressure_bytes,
+        payload.hold_ms,
+        tuple(rows.rows),
+        payload.decline_after_capture,
+        payload.raise_after_capture,
+        payload.hold_after_capture_ms,
+    )
+
+
+def prepare(
+    ctx: Context,
+    facts: Preflight[Facts],
+    model: LinearModel,
+    tel: Telemetry,
+    adj: Adjustments,
+) -> bool:
+    pipe = model.pipe
+    pipe.factory_calls += 1
+    adj.extend(facts.adjustments)
+    tel.log(
+        "prepared-warm factory entered",
+        pid=os.getpid(),
+        factory_calls=pipe.factory_calls,
+    )
+    ctx.plan("net")
+    until = time.monotonic() + facts.hold_ms / 1000
+    while time.monotonic() < until:
+        ctx.raise_if_cancelled()
+        time.sleep(0.05)
+    if (
+        pipe.plan is not None
+        and pipe.steps == facts.resolved_steps
+        and pipe.batch_rows == facts.resolved_rows
+        and pipe.plan.valid()
+    ):
+        return True
+    if pipe.plan is not None:
+        pipe.plan.close()
+        pipe.plan = None
+    if facts.pressure_bytes:
+        before = torch.cuda.mem_get_info()[0]
+        allocated = torch.cuda.memory_allocated()
+        reserved = torch.cuda.memory_reserved()
+        ballast = torch.empty(
+            facts.pressure_bytes, dtype=torch.uint8, device=str(ctx.device)
+        )
+        try:
+            after = torch.cuda.mem_get_info()[0]
+            assert after < before, (
+                "ballast reused cached storage; real driver pressure was not observed"
+            )
+            required = (before + after) // 2
+            assert after < required < before
+            pipe.capacity = {
+                "ballast_bytes": ballast.numel(),
+                "free_before": before,
+                "free_while_live": after,
+                "required_free_bytes": required,
+                "allocated_before": allocated,
+                "allocated_while_live": torch.cuda.memory_allocated(),
+                "reserved_before": reserved,
+                "reserved_while_live": torch.cuda.memory_reserved(),
+                "allocated_delta": torch.cuda.memory_allocated() - allocated,
+                "reserved_delta": torch.cuda.memory_reserved() - reserved,
+            }
+            assert torch.cuda.mem_get_info()[0] < required
+            return False
+        finally:
+            del ballast
+            # This explicit release-gate cell releases its own now-idle allocation.
+            # Production warm preparation/recovery policy is unchanged.
+            torch.cuda.empty_cache()
+            if pipe.capacity is not None:
+                pipe.capacity["free_after_release"] = torch.cuda.mem_get_info()[0]
+                pipe.capacity["allocated_after_release"] = torch.cuda.memory_allocated()
+                pipe.capacity["reserved_after_release"] = torch.cuda.memory_reserved()
+    # A real capacity/eligibility decision, using the actual card's current free bytes.
+    if torch.cuda.mem_get_info()[0] < facts.min_free_bytes:
+        return False
+    with torch.inference_mode(False), torch.no_grad():
+        pipe.operand = torch.zeros(
+            (facts.resolved_rows, 256), dtype=torch.bfloat16, device=str(ctx.device)
+        )
+        pipe.output = torch.zeros(
+            (facts.resolved_rows, 16), dtype=torch.float32, device=str(ctx.device)
+        )
+        net = pipe.components["net"]
+
+        def prefix() -> None:
+            pipe.phase_calls[0] += 1
+            pipe.output.zero_()
+
+        def repeat(index: Any) -> None:
+            del index
+            pipe.phase_calls[1] += 1
+            pipe.output.add_(net(pipe.operand).float())
+
+        def suffix() -> None:
+            pipe.phase_calls[2] += 1
+            pipe.output.mul_(0.5)
+
+        pipe.plan = PreparedRepeat.capture(
+            repeat,
+            prefix=prefix,
+            suffix=suffix,
+            state=(pipe.operand, pipe.output),
+            steps=facts.resolved_steps,
+            owners=(net,),
+            resident_only=False,
+        )
+    pipe.steps = facts.resolved_steps
+    pipe.batch_rows = facts.resolved_rows
+    pipe.captures += 1
+    native = pipe.plan.facts()
+    bindings = len(pipe.plan._owned_bindings)
+    assert native["closed"] is False and bindings > 0
+    tel.log(
+        "prepared-warm factory captured",
+        pid=os.getpid(),
+        captures=pipe.captures,
+        retained_bindings=bindings,
+    )
+    until = time.monotonic() + facts.hold_after_capture_ms / 1000
+    while time.monotonic() < until:
+        ctx.raise_if_cancelled()
+        time.sleep(0.05)
+    if facts.raise_after_capture:
+        raise RuntimeError("intentional gate failure after native capture")
+    return not facts.decline_after_capture
+
+
+class Report(msgspec.Struct):
+    passed: bool
+    detail: str
+
+
+@app.entrypoint(accelerator=True, preflight=resolve, prepare=prepare)
+def gpu(
+    payload: Probe,
+    facts: Preflight[Facts],
+    model: LinearModel,
+    ctx: Context,
+    tel: Telemetry,
+    adj: Adjustments,
+) -> Report:
+    pipe = model.pipe
+    pipe.handler_calls += 1
+    adj.extend(facts.adjustments)
+    valid = (
+        pipe.plan is not None
+        and pipe.steps == facts.resolved_steps
+        and pipe.batch_rows == facts.resolved_rows
+        and pipe.plan.valid()
+    )
+    row = {
+        "pid": os.getpid(),
+        "request_id": ctx.request_id,
+        "seed": payload.seed,
+        "factory_calls": pipe.factory_calls,
+        "handler_calls": pipe.handler_calls,
+        "captures": pipe.captures,
+        "prepared": valid,
+        "capacity": pipe.capacity,
+        "batch_rows": facts.resolved_rows,
+    }
+    row["native"] = pipe.plan.facts() if pipe.plan is not None else None
+    row["retained_bindings"] = (
+        len(pipe.plan._owned_bindings) if pipe.plan is not None else 0
+    )
+    if payload.inspect_only:
+        return Report(True, json.dumps(row, sort_keys=True))
+    if not valid:
+        assert not payload.require_prepared, (
+            "ordinary inference must never bootstrap capture"
+        )
+        return Report(True, json.dumps(row, sort_keys=True))
+    with torch.inference_mode(False), torch.no_grad():
+        value = (
+            (
+                (
+                    (torch.arange(facts.resolved_rows * 256) + payload.seed) % 17 - 8
+                ).float()
+                / 16
+            )
+            .reshape(facts.resolved_rows, 256)
+            .bfloat16()
+        )
+        pipe.operand.copy_(value)
+        reference = model.reference(pipe.operand) * (facts.resolved_steps * 0.5)
+        before = pipe.plan.facts()["host_graph_launches"]
+        callbacks = tuple(pipe.phase_calls)
+        execution = ctx.plan(pipe.plan)
+        _, output = execution.wait()
+        assert tuple(pipe.phase_calls) == callbacks, (
+            "Python phase callback ran after capture"
+        )
+        after = pipe.plan.facts()["host_graph_launches"]
+        assert after - before == 1
+        torch.testing.assert_close(output, reference, rtol=1e-4, atol=1e-5)
+        row.update(
+            {
+                "definition": id(pipe.plan),
+                "phase_calls": callbacks,
+                "host_graph_launches": after,
+                "launches_this_request": after - before,
+                "input_shape": list(pipe.operand.shape),
+                "output_shape": list(output.shape),
+                "value": output.cpu().tolist(),
+                "steps": facts.resolved_steps,
+            }
+        )
+    return Report(True, json.dumps(row, sort_keys=True))

@@ -2,10 +2,10 @@ import io
 from collections.abc import Callable, Mapping, Sequence
 from os import PathLike
 from types import TracebackType
-from typing import Literal, Protocol
-from typing_extensions import Buffer
+from typing import Literal, Protocol, TypedDict
+from typing_extensions import Buffer, NotRequired
 
-from ._ext import Checkpoint, ClassRef, Component, TokenProvider, _CheckpointFile
+from ._ext import Checkpoint, ClassRef, Component, ConversionControl, TokenProvider, _CheckpointFile
 
 StrPath = str | PathLike[str]
 Token = str | TokenProvider | Callable[[str, str, Mapping[str, str], str | None], Mapping[str, str]]
@@ -66,6 +66,28 @@ class ComponentWriter:
     def order(self, keys: Sequence[str]) -> None: ...
     def has(self, key: str) -> bool: ...
 
+class NormalizeBf16Tensor(TypedDict):
+    component: str
+    key: str
+    source_dtype: str
+    shape: Sequence[int]
+
+class QuantizeFit(TypedDict):
+    seed: int
+    component: str
+    xmax: str
+    rows: str
+
+class QuantizeTensor(TypedDict):
+    component: str
+    key: str
+    source_dtype: str
+    shape: Sequence[int]
+    dtype: str
+    encoding: Mapping[str, object]
+    strategy: str
+    fit: NotRequired[QuantizeFit]
+
 class Writer:
     metadata: dict[str, object]
     local_checkpoint: Checkpoint | None
@@ -85,3 +107,11 @@ class Writer:
     def commit(self) -> Checkpoint: ...
     def abandon(self) -> None: ...
     def has(self, component: str, key: str) -> bool: ...
+    def normalize_bf16(self, source: Checkpoint, tensors: Sequence[NormalizeBf16Tensor], *,
+                      max_buffer_bytes: int, max_new_bytes: int,
+                      control: ConversionControl) -> dict[str, object]: ...
+    def quantize(self, source: Checkpoint, tensors: Sequence[QuantizeTensor], *,
+                 max_buffer_bytes: int, max_new_bytes: int, control: ConversionControl,
+                 max_relative_frobenius: float | None = None,
+                 calibration: Checkpoint | None = None,
+                 component: str | None = None) -> dict[str, object]: ...

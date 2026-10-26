@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::{AcqRel, Relaxed}};
 use std::sync::{Arc, Mutex};
 
 pub use super::{ItemSource, ObjectRange};
-use super::{Copy, Dst, Issued, ReadOpts, ReadStats, Src};
+use super::{Copy, Dst, Issued, ReadControl, ReadOpts, ReadStats, Src};
 use crate::failure::{Failure, Kind};
 use crate::format::ObjectRef;
 
@@ -191,6 +191,60 @@ impl Source {
         tally: &IoTally,
         issued: Option<Issued>,
     ) -> Result<ReadStats> {
+        // SAFETY: identical source/destination contract; ordinary reads are not canceled.
+        unsafe { self.read_controlled(placements, threads, mode, tally, issued, None) }
+    }
+
+    /// The same bounded device read with cooperative cancellation between staged pieces.
+    /// Already submitted copies are joined before an ordinary cancellation is returned.
+    ///
+    /// # Safety
+    /// The destination and owner requirements are exactly `read_placements`'s. On an error,
+    /// retain device destinations until `io::drain` proves completion; never infer it from
+    /// cancellation alone. This entry point accepts device destinations only.
+    pub unsafe fn read_placements_cancelable(
+        &self,
+        placements: &[Placement],
+        threads: usize,
+        mode: Mode,
+        tally: &IoTally,
+        cancel: &ReadControl,
+    ) -> Result<ReadStats> {
+        // SAFETY: identical checked read contract, with no issue observer.
+        unsafe { self.read_placements_cancelable_observed(placements, threads, mode, tally, cancel, None) }
+    }
+
+    /// The same checked cancelable read, with an optional issue-time observer.
+    /// `issued` is notification only, not a completion or successful-read certificate.
+    /// The callback must not block or re-enter the engine.
+    ///
+    /// # Safety
+    /// Exactly the source/destination contract of [`Source::read_placements_cancelable`].
+    pub unsafe fn read_placements_cancelable_observed(
+        &self,
+        placements: &[Placement],
+        threads: usize,
+        mode: Mode,
+        tally: &IoTally,
+        cancel: &ReadControl,
+        issued: Option<Issued>,
+    ) -> Result<ReadStats> {
+        if placements.iter().any(|p| !matches!(p.dst, Dst::Device { .. })) {
+            return Err(invalid("cancelable placement reads require device destinations"));
+        }
+        // SAFETY: the caller retains the same sources and destinations through checked completion.
+        unsafe { self.read_controlled(placements, threads, mode, tally, issued, Some(cancel)) }
+    }
+
+    unsafe fn read_controlled(
+        &self,
+        placements: &[Placement],
+        threads: usize,
+        mode: Mode,
+        tally: &IoTally,
+        issued: Option<Issued>,
+        cancel: Option<&ReadControl>,
+    ) -> Result<ReadStats> {
         #[cfg(feature = "store")]
         {
             let wanted = placements
@@ -312,7 +366,12 @@ impl Source {
             ..ReadOpts::default()
         };
         // SAFETY: item ranges and destination bounds checked above; caller supplies exclusivity.
-        let mut stats = unsafe { super::read_staged(&copies, &opts, issued.map(|_| &run_issued as Issued)) }?;
+        let mut stats = match cancel {
+            // SAFETY: the same checked items and destinations stay owned for both engine calls.
+            Some(cancel) => unsafe { super::read_staged_cancelable(&copies, &opts, cancel, issued.map(|_| &run_issued as Issued)) }?,
+            // SAFETY: as above; ordinary reads keep their existing issue observer.
+            None => unsafe { super::read_staged(&copies, &opts, issued.map(|_| &run_issued as Issued)) }?,
+        };
         stats.bytes = placements
             .iter()
             .flat_map(|p| p.items)

@@ -1,0 +1,649 @@
+{
+  "creator_head": "07012ed555180dfe7ba8dce827cca61c05f7bd93",
+  "native_source": "76cfdcd34adf68765c44bcf1dffc197095ace6a8",
+  "build_run": 40235457593,
+  "target": {
+    "tensord": {
+      "path": "/home/fidika/cozy/.worktrees/cozy-creator/varena-consolidation/.task/portable-51a131c78/cozy/cozy-linux-x86_64",
+      "sha256": "9f0e3578fc2788d1c2220107a479aa4f9c8eb908e83fc099ea6b79a42b081650"
+    },
+    "runtime": {
+      "path": "/home/fidika/cozy/.worktrees/cozy-runtime/varena-consolidation/.task/portable-237ddc496/cozy_runtime-0.32.3-cp312-abi3-manylinux_2_28_x86_64.whl",
+      "sha256": "22f9b718ec1c5596c76ebff381377c6376ae8eb97c6173276ab19d5146ad74a8"
+    },
+    "tensorfs": {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261025/native-svdq-migration/native-76c-proof/artifacts/tensorfs-0.15.8-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "sha256": "e9679c401bc196749f52bbc76e3746626b1420ba66dbee89bfa6d4ab07f5af04"
+    }
+  },
+  "restore": {
+    "runtime": {
+      "path": "/home/fidika/.cozy/machine/root/var/lib/cozy/tensord/sdk/candidate-3906533d6d364a268829ff47239e8a68/cozy_runtime-0.32.3-cp312-abi3-manylinux_2_28_x86_64.whl",
+      "sha256": "8588ce22f35872fddd76695217ea949e50eaf506ef0b75a8fbbb0b0eab7b7eb8"
+    },
+    "tensorfs": {
+      "path": "/home/fidika/.cozy/machine/root/var/lib/cozy/tensord/sdk/candidate-3906533d6d364a268829ff47239e8a68/tensorfs-0.15.6-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "sha256": "ca15dd65e7aa3249f3749dd60a452260ab54854ccb44d4449b7189234951941b"
+    },
+    "tensord": {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261025/native-svdq-migration/native-76c-proof/installed-cli-before",
+      "sha256": "6b0c6dbbe5d4740fa611dc4c0a28d1cc00b9362bf8397192bfdeae5bdfd119a0"
+    }
+  },
+  "restore_run": 18054,
+  "restored_idle_at_utc": "2026-10-25T21:35:11.918543Z",
+  "runs": {
+    "empty_dlpack": 18051,
+    "svdq_basic": 18052,
+    "svdq_cancel": 18053
+  },
+  "proof": "native-76c-proof/observed-proof.json",
+  "runtime_patch": "runtime-gate/refresh-733cd26bc/runtime-cutover-733cd26bc-20261025.patch",
+  "runtime_patch_sha256": "df23cd1d80fe7978f085d8f515ced66367db6603386583c37e31e879d21bf350",
+  "scope": "Real default-home CLI CPU numerical/Writer proof; no patched Runtime or GPU consumer proof",
+  "machine": {
+    "name": "local",
+    "gpu": "RTX 4070 Laptop 8GB SM89",
+    "execution": "accelerator=False CPU entrypoints"
+  },
+  "red": {
+    "run": 18047,
+    "source": "45c1ec287be1c57a5fd49e5240b2e362cb2458eb",
+    "error": "expected a contiguous DLPack array",
+    "receipt_sha256": "43a5c6c8623a5b3a224d09ee8602999d66e1df5d9f29f676000d30c80ca8facc"
+  },
+  "empty_dlpack": {
+    "arrays": [
+      {
+        "bytes": 0,
+        "c_contiguous": true,
+        "key": "0",
+        "shape": [
+          0,
+          256
+        ],
+        "strides": [
+          0,
+          0
+        ]
+      },
+      {
+        "bytes": 0,
+        "c_contiguous": true,
+        "key": "1",
+        "shape": [
+          3,
+          0
+        ],
+        "strides": [
+          0,
+          0
+        ]
+      },
+      {
+        "bytes": 0,
+        "c_contiguous": true,
+        "key": "2",
+        "shape": [
+          1,
+          0,
+          256
+        ],
+        "strides": [
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "bytes": 0,
+        "c_contiguous": true,
+        "key": "3",
+        "shape": [
+          0
+        ],
+        "strides": [
+          0
+        ]
+      },
+      {
+        "bytes": 1024,
+        "c_contiguous": true,
+        "key": "4",
+        "shape": [
+          1,
+          256
+        ],
+        "strides": [
+          1024,
+          4
+        ]
+      }
+    ],
+    "nonempty_strided_refused": true,
+    "tensorfs": "0.15.8"
+  },
+  "basic": {
+    "run": 18052,
+    "execution_ms": 3415,
+    "gate_wall_seconds": 3.273925201006932,
+    "historical_reference": {
+      "alpha": 0.8,
+      "calibration_error": 0.08354278653860092,
+      "plain_nvfp4_error": 0.13347862660884857,
+      "whole_weight_relative": 0.06475202512537659
+    },
+    "implementation": "b3ab8a67020b1d20aebb67ed7d62a66825efe8e0806c08d6ccd1164c6387d45e",
+    "memory_scope": "Linux process high-water RSS including imports and independent references; not fitter-only peak",
+    "process_peak_rss_before_bytes": 340807680,
+    "process_peak_rss_bytes": 390012928,
+    "refusals": {
+      "empty_calibration": "invalid: SVDQ calibration rows must be nonempty and match the weight columns",
+      "inf_rows": "decode: cannot encode: svdq-nvfp4-r32-faer/1: nonfinite calibration rows",
+      "missing_calibration": "invalid: SVDQ fitting requires an immutable calibration checkpoint",
+      "nan_weight": "decode: cannot encode: svdq-nvfp4-r32-faer/1: nonfinite weight",
+      "nan_xmax": "decode: cannot encode: svdq-nvfp4-r32-faer/1: nonfinite channel maxima",
+      "negative_xmax": "decode: cannot encode: svdq-nvfp4-r32-faer/1: channel maxima must be nonnegative",
+      "output": "full: quantization needs 44040 encoded bytes, allowance is 1",
+      "pre_cancel": "network: the conversion was stopped before publication",
+      "quality": "decode: quantization_tripwire: weights.f32 residual max error 0.02319120615720749, bound 0.05510672926902771, whole-weight relative Frobenius 0.06466389829189309",
+      "role_shape": "invalid: SVDQ xmax and captured rows must be distinct tensors",
+      "shape": "invalid: quantization source identity, dtype or shape differs from resolved selection",
+      "strategy": "invalid: fit references require the explicit SVDQ fitting strategy",
+      "unknown_component": "invalid: quantization component filter is absent from the resolved selection",
+      "workspace": "full: SVDQ fitting requires 1047111 buffer bytes, allowance is 1",
+      "wrong_calibration_width": "invalid: SVDQ calibration rows must be nonempty and match the weight columns"
+    },
+    "scope": "stored-checkpoint CPU numerical proof; no GPU consumer or speed claim",
+    "tensorfs": "0.15.8",
+    "passes": [
+      {
+        "workspace_grant": 67108864,
+        "fit_write_seconds": 0.6358601480023935,
+        "result": {
+          "calibration_bytes_read": 595968,
+          "encoded_keys": 6,
+          "identity": "e8d647f76137b074f9e1aaa68c9d05c6760a3c408198885a03fa601993e6e200",
+          "new_bytes_written": 264240,
+          "required_buffer_bytes": 1047111,
+          "reused_keys": 0,
+          "saturated_elements": 6503,
+          "source_bytes_read": 655360,
+          "tensors": [
+            {
+              "component": "weights",
+              "fit": {
+                "alpha": 0.800000011920929,
+                "calibration_bytes_read": 99328,
+                "calibration_error": 0.08255654015756934,
+                "plain_nvfp4_error": 0.13347860705102357,
+                "required_buffer_bytes": 1047111,
+                "residual": {
+                  "amax": 0.22042691707611084,
+                  "energy": 63.09368863415861,
+                  "max_abs_error": 0.02319120615720749,
+                  "saturated": 1336,
+                  "sse": 0.4886937057781365
+                },
+                "strategy": "svdq-nvfp4-r32-faer/1"
+              },
+              "key": "f32",
+              "measured": {
+                "amax": 0.2752116620540619,
+                "energy": 128.22863998757492,
+                "max_abs_error": 0.02477341890335083,
+                "saturated": 1336,
+                "sse": 0.5361777667728757
+              },
+              "new_bytes_written": 44040,
+              "relative_frobenius": 0.06466389829189309,
+              "source_bytes_read": 131072
+            },
+            {
+              "component": "weights",
+              "fit": {
+                "alpha": 0.800000011920929,
+                "calibration_bytes_read": 99328,
+                "calibration_error": 0.08355611437181,
+                "plain_nvfp4_error": 0.13384229510017173,
+                "required_buffer_bytes": 1047111,
+                "residual": {
+                  "amax": 0.2484973818063736,
+                  "energy": 63.14646874178047,
+                  "max_abs_error": 0.023140348494052887,
+                  "saturated": 1319,
+                  "sse": 0.4812998187401136
+                },
+                "strategy": "svdq-nvfp4-r32-faer/1"
+              },
+              "key": "f16",
+              "measured": {
+                "amax": 0.275146484375,
+                "energy": 128.22884386186618,
+                "max_abs_error": 0.025038689374923706,
+                "saturated": 1319,
+                "sse": 0.5295449095878119
+              },
+              "new_bytes_written": 44040,
+              "relative_frobenius": 0.06426263592970251,
+              "source_bytes_read": 65536
+            },
+            {
+              "component": "weights",
+              "fit": {
+                "alpha": 0.6000000238418579,
+                "calibration_bytes_read": 99328,
+                "calibration_error": 0.08442679114933999,
+                "plain_nvfp4_error": 0.13411102163825697,
+                "required_buffer_bytes": 1047111,
+                "residual": {
+                  "amax": 0.2167826145887375,
+                  "energy": 62.4239549937346,
+                  "max_abs_error": 0.024277962744235992,
+                  "saturated": 1336,
+                  "sse": 0.4768197829859085
+                },
+                "strategy": "svdq-nvfp4-r32-faer/1"
+              },
+              "key": "bf16",
+              "measured": {
+                "amax": 0.275390625,
+                "energy": 128.22732092832354,
+                "max_abs_error": 0.022751644253730774,
+                "saturated": 1336,
+                "sse": 0.5205876603143444
+              },
+              "new_bytes_written": 44040,
+              "relative_frobenius": 0.06371719526076056,
+              "source_bytes_read": 65536
+            },
+            {
+              "component": "weights",
+              "fit": {
+                "alpha": 0.0,
+                "calibration_bytes_read": 99328,
+                "calibration_error": 0.0,
+                "plain_nvfp4_error": 0.0,
+                "required_buffer_bytes": 1047111,
+                "residual": {
+                  "amax": 0.0,
+                  "energy": 0.0,
+                  "max_abs_error": 0.0,
+                  "saturated": 0,
+                  "sse": 0.0
+                },
+                "strategy": "svdq-nvfp4-r32-faer/1"
+              },
+              "key": "zero",
+              "measured": {
+                "amax": 0.0,
+                "energy": 0.0,
+                "max_abs_error": 0.0,
+                "saturated": 0,
+                "sse": 0.0
+              },
+              "new_bytes_written": 44040,
+              "relative_frobenius": 0.0,
+              "source_bytes_read": 131072
+            },
+            {
+              "component": "weights",
+              "fit": {
+                "alpha": 0.699999988079071,
+                "calibration_bytes_read": 99328,
+                "calibration_error": 0.0015403234234783474,
+                "plain_nvfp4_error": 0.14838603796379538,
+                "required_buffer_bytes": 1047111,
+                "residual": {
+                  "amax": 0.0026009976863861084,
+                  "energy": 0.003393015860337206,
+                  "max_abs_error": 0.0003551563713699579,
+                  "saturated": 1244,
+                  "sse": 2.5453089434262877e-05
+                },
+                "strategy": "svdq-nvfp4-r32-faer/1"
+              },
+              "key": "rankdef",
+              "measured": {
+                "amax": 0.7127560973167419,
+                "energy": 609.9252178141485,
+                "max_abs_error": 0.000258713960647583,
+                "saturated": 1244,
+                "sse": 2.512894639256107e-05
+              },
+              "new_bytes_written": 44040,
+              "relative_frobenius": 0.0002029779420382063,
+              "source_bytes_read": 131072
+            },
+            {
+              "component": "weights",
+              "fit": {
+                "alpha": 0.800000011920929,
+                "calibration_bytes_read": 99328,
+                "calibration_error": 0.0446174749954115,
+                "plain_nvfp4_error": 0.12143948463052502,
+                "required_buffer_bytes": 1047111,
+                "residual": {
+                  "amax": 0.2543373703956604,
+                  "energy": 64.91292549296192,
+                  "max_abs_error": 0.02654241770505905,
+                  "saturated": 1268,
+                  "sse": 0.5021122997936976
+                },
+                "strategy": "svdq-nvfp4-r32-faer/1"
+              },
+              "key": "outlier",
+              "measured": {
+                "amax": 16.0,
+                "energy": 2626.1788071736187,
+                "max_abs_error": 0.02394789271056652,
+                "saturated": 1268,
+                "sse": 0.546075161312532
+              },
+              "new_bytes_written": 44040,
+              "relative_frobenius": 0.014419960316194995,
+              "source_bytes_read": 131072
+            }
+          ],
+          "worst_relative_frobenius": 0.06466389829189309
+        }
+      },
+      {
+        "workspace_grant": 134217728,
+        "fit_write_seconds": 0.6485068770125508,
+        "result": {
+          "calibration_bytes_read": 595968,
+          "encoded_keys": 6,
+          "identity": "e8d647f76137b074f9e1aaa68c9d05c6760a3c408198885a03fa601993e6e200",
+          "new_bytes_written": 264240,
+          "required_buffer_bytes": 1047111,
+          "reused_keys": 0,
+          "saturated_elements": 6503,
+          "source_bytes_read": 655360,
+          "tensors": [
+            {
+              "component": "weights",
+              "fit": {
+                "alpha": 0.800000011920929,
+                "calibration_bytes_read": 99328,
+                "calibration_error": 0.08255654015756934,
+                "plain_nvfp4_error": 0.13347860705102357,
+                "required_buffer_bytes": 1047111,
+                "residual": {
+                  "amax": 0.22042691707611084,
+                  "energy": 63.09368863415861,
+                  "max_abs_error": 0.02319120615720749,
+                  "saturated": 1336,
+                  "sse": 0.4886937057781365
+                },
+                "strategy": "svdq-nvfp4-r32-faer/1"
+              },
+              "key": "f32",
+              "measured": {
+                "amax": 0.2752116620540619,
+                "energy": 128.22863998757492,
+                "max_abs_error": 0.02477341890335083,
+                "saturated": 1336,
+                "sse": 0.5361777667728757
+              },
+              "new_bytes_written": 44040,
+              "relative_frobenius": 0.06466389829189309,
+              "source_bytes_read": 131072
+            },
+            {
+              "component": "weights",
+              "fit": {
+                "alpha": 0.800000011920929,
+                "calibration_bytes_read": 99328,
+                "calibration_error": 0.08355611437181,
+                "plain_nvfp4_error": 0.13384229510017173,
+                "required_buffer_bytes": 1047111,
+                "residual": {
+                  "amax": 0.2484973818063736,
+                  "energy": 63.14646874178047,
+                  "max_abs_error": 0.023140348494052887,
+                  "saturated": 1319,
+                  "sse": 0.4812998187401136
+                },
+                "strategy": "svdq-nvfp4-r32-faer/1"
+              },
+              "key": "f16",
+              "measured": {
+                "amax": 0.275146484375,
+                "energy": 128.22884386186618,
+                "max_abs_error": 0.025038689374923706,
+                "saturated": 1319,
+                "sse": 0.5295449095878119
+              },
+              "new_bytes_written": 44040,
+              "relative_frobenius": 0.06426263592970251,
+              "source_bytes_read": 65536
+            },
+            {
+              "component": "weights",
+              "fit": {
+                "alpha": 0.6000000238418579,
+                "calibration_bytes_read": 99328,
+                "calibration_error": 0.08442679114933999,
+                "plain_nvfp4_error": 0.13411102163825697,
+                "required_buffer_bytes": 1047111,
+                "residual": {
+                  "amax": 0.2167826145887375,
+                  "energy": 62.4239549937346,
+                  "max_abs_error": 0.024277962744235992,
+                  "saturated": 1336,
+                  "sse": 0.4768197829859085
+                },
+                "strategy": "svdq-nvfp4-r32-faer/1"
+              },
+              "key": "bf16",
+              "measured": {
+                "amax": 0.275390625,
+                "energy": 128.22732092832354,
+                "max_abs_error": 0.022751644253730774,
+                "saturated": 1336,
+                "sse": 0.5205876603143444
+              },
+              "new_bytes_written": 44040,
+              "relative_frobenius": 0.06371719526076056,
+              "source_bytes_read": 65536
+            },
+            {
+              "component": "weights",
+              "fit": {
+                "alpha": 0.0,
+                "calibration_bytes_read": 99328,
+                "calibration_error": 0.0,
+                "plain_nvfp4_error": 0.0,
+                "required_buffer_bytes": 1047111,
+                "residual": {
+                  "amax": 0.0,
+                  "energy": 0.0,
+                  "max_abs_error": 0.0,
+                  "saturated": 0,
+                  "sse": 0.0
+                },
+                "strategy": "svdq-nvfp4-r32-faer/1"
+              },
+              "key": "zero",
+              "measured": {
+                "amax": 0.0,
+                "energy": 0.0,
+                "max_abs_error": 0.0,
+                "saturated": 0,
+                "sse": 0.0
+              },
+              "new_bytes_written": 44040,
+              "relative_frobenius": 0.0,
+              "source_bytes_read": 131072
+            },
+            {
+              "component": "weights",
+              "fit": {
+                "alpha": 0.699999988079071,
+                "calibration_bytes_read": 99328,
+                "calibration_error": 0.0015403234234783474,
+                "plain_nvfp4_error": 0.14838603796379538,
+                "required_buffer_bytes": 1047111,
+                "residual": {
+                  "amax": 0.0026009976863861084,
+                  "energy": 0.003393015860337206,
+                  "max_abs_error": 0.0003551563713699579,
+                  "saturated": 1244,
+                  "sse": 2.5453089434262877e-05
+                },
+                "strategy": "svdq-nvfp4-r32-faer/1"
+              },
+              "key": "rankdef",
+              "measured": {
+                "amax": 0.7127560973167419,
+                "energy": 609.9252178141485,
+                "max_abs_error": 0.000258713960647583,
+                "saturated": 1244,
+                "sse": 2.512894639256107e-05
+              },
+              "new_bytes_written": 44040,
+              "relative_frobenius": 0.0002029779420382063,
+              "source_bytes_read": 131072
+            },
+            {
+              "component": "weights",
+              "fit": {
+                "alpha": 0.800000011920929,
+                "calibration_bytes_read": 99328,
+                "calibration_error": 0.0446174749954115,
+                "plain_nvfp4_error": 0.12143948463052502,
+                "required_buffer_bytes": 1047111,
+                "residual": {
+                  "amax": 0.2543373703956604,
+                  "energy": 64.91292549296192,
+                  "max_abs_error": 0.02654241770505905,
+                  "saturated": 1268,
+                  "sse": 0.5021122997936976
+                },
+                "strategy": "svdq-nvfp4-r32-faer/1"
+              },
+              "key": "outlier",
+              "measured": {
+                "amax": 16.0,
+                "energy": 2626.1788071736187,
+                "max_abs_error": 0.02394789271056652,
+                "saturated": 1268,
+                "sse": 0.546075161312532
+              },
+              "new_bytes_written": 44040,
+              "relative_frobenius": 0.014419960316194995,
+              "source_bytes_read": 131072
+            }
+          ],
+          "worst_relative_frobenius": 0.06466389829189309
+        }
+      }
+    ]
+  },
+  "cancellation": {
+    "run": 18053,
+    "execution_ms": 4341,
+    "cancel_progress": [
+      4592640,
+      1,
+      30728
+    ],
+    "cancel_seconds": 0.004173858993453905,
+    "facts": {
+      "fit": {
+        "alpha": 0.6000000238418579,
+        "calibration_bytes_read": 266240,
+        "calibration_error": 0.12248230412371323,
+        "plain_nvfp4_error": 0.13508779799087375,
+        "required_buffer_bytes": 11678791,
+        "residual": {
+          "amax": 0.4524703025817871,
+          "energy": 9429.900150579475,
+          "max_abs_error": 0.05047336220741272,
+          "saturated": 41936,
+          "sse": 72.3211394370418
+        },
+        "strategy": "svdq-nvfp4-r32-faer/1"
+      },
+      "logical_energy": 10502.275912823887,
+      "multiply_vs_divide_bf16_differences": 0,
+      "relative_frobenius": 0.0835329756315454,
+      "residual_energy": 9429.900150579477,
+      "residual_packing_sha256": "243f579c28c1b57548e83707415b700da3c579d2fa40309e182bb4d700543007",
+      "stored_parts": {
+        "input_scale": "486e44b24c4ba58f5cd328faa392b3e78ce6b1c46ab8858044488ab839d78dc3",
+        "lowrank_down": "4b2f7efc1f4dc790c47bf94ab42053e940bdd19827d5fcb84514d4d2210e5857",
+        "lowrank_up": "dd5d38c7a34a2061d3bc725ce6442118d7f95e20aa37d36bbbb70dc0a50df4d1",
+        "pre_quant_scale": "f8878a82234c06347d10e0b90d32c9e37ee591db5682967890cc85319904dd80",
+        "scale": "12cc58309635681d5f7d6ae59dac14b76efee7050a8f1de786d68df0fce82cc8",
+        "scale_2": "87d2b1d14d19a46a87bf3033b90584ecf18f710c1be0377dbf16353151147551",
+        "weight": "243f579c28c1b57548e83707415b700da3c579d2fa40309e182bb4d700543007"
+      },
+      "stored_pre_calibration_error": 0.1224823003065332
+    },
+    "gate_wall_seconds": 4.210481029003859,
+    "identity_refusals": [
+      "invalid: invalid document: writer quantization source or resolved recipe changed",
+      "invalid: invalid document: writer quantization source or resolved recipe changed"
+    ],
+    "memory_scope": "Linux process high-water RSS including imports and independent references; not fitter-only peak",
+    "process_peak_rss_before_bytes": 390012928,
+    "process_peak_rss_bytes": 478683136,
+    "result": {
+      "calibration_bytes_read": 266240,
+      "encoded_keys": 1,
+      "identity": "6a9a740bbf918d9bc54e03bd6adbfd59a2e06ced5fa9ba0ee1eb1954bdf0b5be",
+      "new_bytes_written": 725000,
+      "required_buffer_bytes": 11678791,
+      "reused_keys": 1,
+      "saturated_elements": 41936,
+      "source_bytes_read": 4194304,
+      "tensors": [
+        {
+          "component": "weights",
+          "fit": {
+            "alpha": 0.6000000238418579,
+            "calibration_bytes_read": 266240,
+            "calibration_error": 0.12248230412371323,
+            "plain_nvfp4_error": 0.13508779799087375,
+            "required_buffer_bytes": 11678791,
+            "residual": {
+              "amax": 0.4524703025817871,
+              "energy": 9429.900150579475,
+              "max_abs_error": 0.05047336220741272,
+              "saturated": 41936,
+              "sse": 72.3211394370418
+            },
+            "strategy": "svdq-nvfp4-r32-faer/1"
+          },
+          "key": "large",
+          "measured": {
+            "amax": 0.5220693945884705,
+            "energy": 10502.275912823889,
+            "max_abs_error": 0.05413097143173218,
+            "saturated": 41936,
+            "sse": 73.28233995648858
+          },
+          "new_bytes_written": 725000,
+          "relative_frobenius": 0.0835329756315454,
+          "source_bytes_read": 4194304
+        }
+      ],
+      "worst_relative_frobenius": null
+    },
+    "resume_fit_seconds": 2.734260497003561,
+    "scope": "real interrupted/resumed Writer; cancellation waits for any current faer call"
+  },
+  "receipts": {
+    "inputs.json": "bf252591200954408d5e2a36d5c78837b059e37bf8516fb46bd1a0e8261fcfc5",
+    "before.json": "494f32bebc768186070c917cfa42bf9c566b5d6e3c03f62f4fc5ce9f44eb30b0",
+    "install.json": "3f41f594356c528fcc0a95832fa475d035392426c229949cd63201737ee19b34",
+    "empty-dlpack.json": "dc766b1b1bf7f48d7570256fe611035e2735c17fcf2aa4a4633d0f6230151cde",
+    "svdq-basic.json": "7a650d7a4097242f0210886dd7048997373b16b001dc83204dc0b1cf815f3524",
+    "svdq-cancel.json": "7095c895ebe3b1c37dfac34810b6a0efb3a605b53e675dc87cd319416ca6a147",
+    "restore-verified-baseline.json": "6159709807b1c243e27e273a3f312ff9b9a0bd8119a52ceb133b02e31ca95574",
+    "restore-verified-baseline-observed.json": "4b1840254332121581ab4faf73dc7462021df73e4ff241042b01900adcf9aa5a",
+    "restore-verified-baseline-sdk.json": "08d1722da6630aae0a905e8ab78ba48afc47e45b6d4e015340e2f2e18e5d36f8"
+  }
+}
