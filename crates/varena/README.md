@@ -27,7 +27,13 @@ scalar or page. Allocation has at most one finite reclaim pass and one retry aft
 
 Runtime selects a preferred prefix with `set_preferred` and sets `set_streaming_limit` to its
 largest block/window in CUDA-rounded bytes. Before a new allocation, the window counts only idle
-nonpreferred pages plus that new group. Already pinned common inputs and graph dependencies are
+nonpreferred pages touched in the current phase plus that new group. `reset_preferences` starts
+a phase using the existing pin-recency clock. Ready cache last pinned before that boundary stays
+as standby and is excluded from both the window's byte count and its eviction candidates. It
+remains reclaimable by explicit/headroom requests and actual allocation pressure; it is not
+promoted to preferred or pinned. A later pin makes it part of the current phase. Without a phase
+boundary, or after clock saturation, the original global window applies. Cold/retired backing
+is never exempted as useful standby. Already pinned common inputs and graph dependencies are
 active working memory, excluded from the idle cache limit, and remain subject to actual CUDA
 capacity. Dropping those pins can temporarily grow the idle cache; the next allocation trims it.
 Preparing streamed groups evicts only idle nonpreferred groups. Activation

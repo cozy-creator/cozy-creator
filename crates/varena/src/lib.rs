@@ -166,6 +166,7 @@ struct State {
     next_id: u64,
     clock: u64,
     streaming_limit: usize,
+    phase_boundary: Option<u64>,
     preferred_end: Option<u64>,
     poison: Option<String>,
     fills: u64,
@@ -173,6 +174,30 @@ struct State {
     evictions: u64,
     reclaimed_bytes: u64,
     reclaimed_by_reason: ReclaimedBytes,
+}
+
+impl State {
+    fn standby(&self, entry: &Entry) -> bool {
+        self.phase_boundary.is_some_and(|boundary| {
+            self.clock != u64::MAX
+                && entry.last_use <= boundary
+                && entry.uses.state() == Contents::Ready
+        })
+    }
+
+    fn streaming_bytes(&self) -> usize {
+        self.entries
+            .values()
+            .filter(|entry| {
+                !entry.preferred()
+                    && entry.handle.is_some()
+                    && entry.uses.pins() == 0
+                    && entry.uses.state() != Contents::Loading
+                    && !self.standby(entry)
+            })
+            .map(|entry| entry.bytes)
+            .sum()
+    }
 }
 
 /// A manager owned by one executor. It may serve multiple threads of that process.
@@ -349,6 +374,7 @@ impl Arena {
                 next_id: 1,
                 clock: 0,
                 streaming_limit: usize::MAX,
+                phase_boundary: None,
                 preferred_end: None,
                 poison: None,
                 fills: 0,
@@ -438,7 +464,9 @@ impl Arena {
         }))
     }
 
-    /// Bound the idle nonpreferred cache plus the next group, checked before allocation.
+    /// Bound the current phase's idle nonpreferred cache plus the next group before allocation.
+    /// Ready cache last pinned before reset_preferences is standby: only capacity pressure
+    /// or explicit reclamation evicts it. Without a phase reset the bound remains global.
     /// Active/graph pins are working memory and excluded; real CUDA capacity still bounds them.
     /// A single larger group is permitted. Older idle groups go first; preferred groups survive.
     pub fn set_streaming_limit(&self, bytes: usize) -> Result<()> {
@@ -462,12 +490,15 @@ impl Arena {
         self.reclaim_with_preference(bytes, true, ReclaimReason::Requested)
     }
 
-    /// An explicit phase transition changes cache preference, never physical/VA ownership.
+    /// Start a phase: earlier ready cache becomes standby, still reclaimable under pressure.
+    /// This changes metadata only, never physical/VA ownership. A saturated clock falls back
+    /// to the global streaming bound because later touches cannot establish a new phase.
     pub fn reset_preferences(&self) -> Result<()> {
         let captures = capture_counts()?;
         ensure_recovery_allowed(&captures, self.device)?;
         let mut state = self.lock()?;
         state.preferred_end = None;
+        state.phase_boundary = (state.clock != u64::MAX).then_some(state.clock);
         for entry in state.entries.values_mut() {
             entry.preferred = false;
         }
@@ -516,6 +547,7 @@ impl Arena {
                     && entry.uses.state() != Contents::Loading
                     && entry.handle.is_some()
                     && (preferred || !entry.preferred())
+                    && (!matches!(reason, ReclaimReason::StreamingLimit) || !state.standby(entry))
             })
             .map(|(id, entry)| (*id, entry.preferred(), entry.last_use))
             .collect();
@@ -733,17 +765,7 @@ impl Region {
         let has_handle = entry.handle.is_some();
         if !has_handle {
             if !entry.preferred() && state.streaming_limit != usize::MAX {
-                let resident: usize = state
-                    .entries
-                    .values()
-                    .filter(|entry| {
-                        !entry.preferred()
-                            && entry.handle.is_some()
-                            && entry.uses.pins() == 0
-                            && entry.uses.state() != Contents::Loading
-                    })
-                    .map(|entry| entry.bytes)
-                    .sum();
+                let resident = state.streaming_bytes();
                 let limit = state.streaming_limit.max(self.rounded);
                 let excess = resident.saturating_add(self.rounded).saturating_sub(limit);
                 if excess != 0 && !reclaim {
@@ -758,17 +780,7 @@ impl Region {
                     Some(self.id),
                     ReclaimReason::StreamingLimit,
                 )?;
-                let remaining: usize = state
-                    .entries
-                    .values()
-                    .filter(|entry| {
-                        !entry.preferred()
-                            && entry.handle.is_some()
-                            && entry.uses.pins() == 0
-                            && entry.uses.state() != Contents::Loading
-                    })
-                    .map(|entry| entry.bytes)
-                    .sum();
+                let remaining = state.streaming_bytes();
                 if remaining.saturating_add(self.rounded) > limit {
                     return Err(Error::OutOfMemory {
                         requested_bytes: self.rounded,
