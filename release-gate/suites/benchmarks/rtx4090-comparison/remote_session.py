@@ -87,6 +87,8 @@ def main():
     # Measured calls acquire the shared lock briefly and wait outside timing for the
     # frozen normal caller to return after the primary's own installation window.
     caller_before = digest(CLI)
+    if borrowed is not None:
+        assert caller_before == config["caller_sha256"], "caller differs inside the inherited SDK window; no order started"
     save(args.out, "caller-before.json", {"path": str(CLI), "sha256": caller_before,
                                        "local_sdk_mutated": False})
     owned = None
