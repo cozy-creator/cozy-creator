@@ -202,7 +202,7 @@ def eager_reference(cohort, out, machine, key, samples):
     assert detail['software']['tensord_commit'] == cohort['creator_source']
     assert any(m['manifest'] == model['checkpoint'] for m in detail['models'])
     result = {'request': request, 'source': reference, 'detail': detail,
-              'scope': 'Untimed same-device eager numerical control. Distinct package source excludes output memo reuse. Subsequent reset retires its executor before candidate timing.'}
+              'scope': 'Same-device eager numerical control with recorded wall timing, excluded from performance samples. Distinct package source excludes output memo reuse. Subsequent reset retires its executor before candidate timing.'}
     save(out, 'eager-reference-proof.json', result)
     return result
 
