@@ -1,7 +1,7 @@
 # Rust API declarations
 
 The public declarations of the `tensorfs` crate, without bodies. For usage, see the
-[Rust guide](API.md).
+[Rust guide](rust-api.md).
 
 ## Client, selection and returned objects
 
@@ -324,7 +324,7 @@ Format metadata and actual storage are separate: a packed format may use a U8 ca
 but its descriptor and exact byte length still describe the encoding. The output's
 actual dtype/shape must equal the logical descriptor. All-host or same-device CUDA
 spans are accepted; no implicit copy or final cast is performed. CUDA resident-input
-support initially covers the three Comfy schemes named in the [usage guide](API.md#advanced-decode-existing-host-or-gpu-buffers).
+support initially covers the three Comfy schemes named in the [usage guide](rust-api.md#advanced-decode-existing-host-or-gpu-buffers).
 
 `check_decode` performs metadata validation without reading bytes or initializing CUDA.
 `decode_into` additionally checks spans, placement, alignment and aliasing before writes.

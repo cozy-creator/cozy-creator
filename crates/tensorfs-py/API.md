@@ -3,7 +3,7 @@
 Open a model and read its tensors. TensorFS fetches missing data into its shared store
 automatically; normal loading does not create a snapshot folder. This guide covers the
 Python API, with optional filesystem and repository tools kept separate. The
-[Rust API](../tensorfs/API.md) and [file-format specification](../tensorfs/spec/cozytensors.md)
+[Rust API](../tensorfs/docs/rust-api.md) and [file-format specification](../tensorfs/spec/cozytensors.md)
 are separate documents.
 
 - [Import and open a model](#python-import-and-open-a-model)
@@ -12,7 +12,7 @@ are separate documents.
 - [Configuration and advanced operations](#python-configuration-and-advanced-operations)
 - [Errors and value types](#errors-and-value-types)
 
-[API-TYPES.md](API-TYPES.md) lists every declaration.
+The [type reference](API-TYPES.md) lists every declaration.
 
 ## Python: import and open a model
 

@@ -2,7 +2,7 @@
 
 Create a client, perform an operation, then use the checkpoint, component or byte data
 it returns. This guide covers the application-facing Rust API by task. The
-[Python API](../tensorfs-py/API.md) and [file-format specification](spec/cozytensors.md)
+[Python API](../../tensorfs-py/API.md) and [file-format specification](../spec/cozytensors.md)
 are separate documents.
 
 - [Create a client and read a model](#rust-create-a-client-and-read-a-model)
@@ -11,7 +11,7 @@ are separate documents.
 - [Decode existing host or GPU buffers](#advanced-decode-existing-host-or-gpu-buffers)
 - [Errors and value types](#errors-and-value-types)
 
-[API-TYPES.md](API-TYPES.md) lists every declaration.
+The [type reference](rust-api-types.md) lists every declaration.
 
 ## Rust: create a client and read a model
 
@@ -241,7 +241,7 @@ on a conflict. `Endpoint::new("local", ...)` addresses local repository referenc
 `format::ClassRef` is a class as `{library, version, name}` (`ClassRef::default()` is the unknown
 class); `format::Pipeline` contains `class` and JSON `config`; `format::Tensor` contains the key,
 logical dtype/shape and plain location or encoding/parts. `Encoding` holds scheme and
-parameters. Format metadata structures are described in the [format spec](spec/cozytensors.md).
+parameters. Format metadata structures are described in the [format spec](../spec/cozytensors.md).
 The lower-level I/O/codec interfaces used by in-tree integrations are separate from this
 application-facing session API.
 
@@ -286,7 +286,7 @@ until `io::drain` for the device and every producer stream report checked comple
 an error alone does not establish quiescence. Descriptor and overlap refusals precede
 writes; after a runtime or value error the output contents are unspecified.
 
-The [exact declarations](API-TYPES.md#advanced-resident-buffer-decoding) list the types.
+The [exact declarations](rust-api-types.md#advanced-resident-buffer-decoding) list the types.
 
 ## Errors and value types
 
