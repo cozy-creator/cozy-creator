@@ -235,3 +235,11 @@ remain supported. Facts report selected `ordering`, `execution_committed`, `deco
 `decode_checked_ns`. Host completion timestamps record observation, not device stage order;
 event mode may observe decoder completion after compute. `decoded_bytes` remains zero when
 encoded values fail validation. Only checked composed completion authorizes ordinary release.
+
+Private decoder streams, metadata and packed GPU buffers are destroyed while the native producer
+exclusion is still held; successful completion releases that exclusion only afterward. Closing an
+unused encoded slot during actual capture defers its owning Work to the existing cleanup worker.
+If capture is still active, the worker backs off briefly and requeues that same owner so unrelated
+releases can proceed. It never frees private CUDA resources inside capture. Other exclusion or
+completion failures retain the owners and poison the arena. Thus unused-slot GPU cleanup may be
+delayed until capture ends; it does not block the capturing Python thread.

@@ -80,6 +80,35 @@ def private_input(checkpoint, directory):
     return copied, chunks[-1]
 
 
+def prepare_capture_control():
+    with torch.inference_mode(False):
+        marker = torch.zeros(1, device="cuda")
+    stream = torch.cuda.Stream()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.stream(stream):
+        marker.add_(1)
+        marker.zero_()
+    stream.synchronize()
+    return marker, stream, graph
+
+
+def capture_after_checked_load(control):
+    marker, stream, graph = control
+    with torch.cuda.stream(stream):
+        with varena.capture(0):
+            graph.capture_begin(capture_error_mode="global")
+            try:
+                marker.add_(1)
+            finally:
+                graph.capture_end()
+        with varena.replay(0):
+            graph.replay()
+    stream.synchronize()
+    assert marker.item() == 1
+    graph.reset()
+    return True
+
+
 def prepare(arena, checkpoint, parts, nbytes, steps, ordering="checked"):
     slot = varena.LoadSlot(arena, checkpoint, parts, bytes=nbytes, threads=1)
     alias = slot.tensor
@@ -160,6 +189,7 @@ def exercise(mode, seed, outer_context, tel, ordering="checked"):
         if mode == "input-error":
             copied, damaged = private_input(checkpoint, directory)
         bundle = prepare(arena, copied or checkpoint, parts, nbytes, steps, ordering)
+        capture_control = prepare_capture_control()
         evidence["source_sha256"] = digest
         if mode == "cancel-before":
             bundle["slot"].cancel()
@@ -301,6 +331,9 @@ def exercise(mode, seed, outer_context, tel, ordering="checked"):
             if ordering != "auto":
                 assert load["ordering"] == facts["load_ordering"] == ordering
             assert load["done"] and load["completion_proven"], facts
+            evidence["immediate_capture_after_checked_load"] = (
+                capture_after_checked_load(capture_control)
+            )
             assert bundle["calls"][0] == 2, (
                 "Python drove native continuation or loop steps"
             )

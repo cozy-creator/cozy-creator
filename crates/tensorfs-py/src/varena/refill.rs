@@ -177,6 +177,9 @@ impl Shared {
     fn run(self: Arc<Self>, mut work: Work) {
         let device = self.region.device();
         let outcome = catch_unwind(AssertUnwindSafe(|| {
+            if self.cancel.canceled() {
+                return Err(Failure::Canceled);
+            }
             let issued_result = Mutex::new(None);
             if work.event_ordered {
                 // Keep an independent physical owner even if a late publication call fails.
@@ -520,6 +523,13 @@ impl Shared {
             // Checked drain succeeded. Abort the unpublished fill before reporting failure.
             drop(work.fill.take());
         }
+        if let Err(error) = work.release_private_gpu() {
+            let detail = format!("native refill GPU cleanup lost its capture exclusion: {error}");
+            self.region.poison(detail.clone());
+            std::mem::forget(work);
+            self.finish(Err(Failure::Native(varena::Error::Poisoned(detail))));
+            return;
+        }
         drop(work.pin.take());
         drop(work.producer.take());
         crate::cleanup::defer(work);
@@ -827,6 +837,20 @@ impl PreparedRead {
 }
 
 impl Work {
+    /// Private stream/buffer destructors call CUDA. Keep them inside producer exclusion,
+    /// including when a slot never submitted and initialization already released its lease.
+    fn release_private_gpu(&mut self) -> Result<(), varena::Error> {
+        if self.prepared_decode.is_none() && self.decode.is_none() {
+            return Ok(());
+        }
+        if self.producer.is_none() {
+            self.producer = Some(varena::enter_producer(self.region.device())?);
+        }
+        drop(self.prepared_decode.take());
+        drop(self.decode.take());
+        Ok(())
+    }
+
     pub(super) fn capture_pin(&self) -> Result<varena::Pin, Failure> {
         self.fill
             .as_ref()
@@ -837,7 +861,7 @@ impl Work {
             .map_err(Failure::Native)
     }
     pub(super) fn abandon(mut self) {
-        if self.continuation.is_some() {
+        if self.continuation.is_some() || self.decode.is_some() || self.prepared_decode.is_some() {
             crate::cleanup::defer(Abandoned(Some(self)));
         } else {
             drop(self.fill.take());
@@ -853,6 +877,23 @@ impl Drop for Abandoned {
             if let Some(execution) = &work.continuation {
                 if let Err(status) = execution.abort() {
                     work.region.poison(status.detail());
+                    std::mem::forget(work);
+                    return;
+                }
+            }
+            match work.release_private_gpu() {
+                Ok(()) => {}
+                Err(varena::Error::CaptureActive) => {
+                    // Capture must not wait for this destructor. Return to the same queue
+                    // so other releases can proceed; no state/arena/Python lock is held.
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    crate::cleanup::defer(Abandoned(Some(work)));
+                    return;
+                }
+                Err(error) => {
+                    work.region.poison(format!(
+                        "abandoned GPU cleanup cannot acquire exclusion: {error}"
+                    ));
                     std::mem::forget(work);
                     return;
                 }
@@ -1124,13 +1165,11 @@ impl PreparedRead {
                 return Ok(());
             }
             if shared.cancel.canceled() && shared.continuation.is_none() {
-                let mut work = state.work.take();
+                let work = state.work.take();
                 drop(state);
-                if let Some(work) = &mut work {
-                    drop(work.fill.take());
-                    drop(work.producer.take());
+                if let Some(work) = work {
+                    work.abandon();
                 }
-                crate::cleanup::defer(work);
                 shared.finish(Err(Failure::Canceled));
                 return Ok(());
             }
@@ -1166,12 +1205,10 @@ impl PreparedRead {
                 // No worker can own or issue this fill while the state lock is held.
                 // Release its pin before publishing canceled completion; source teardown
                 // remains on the native cleanup queue, never under the GIL.
-                let mut work = state.work.take();
-                if let Some(work) = &mut work {
-                    drop(work.fill.take());
-                    drop(work.producer.take());
+                let work = state.work.take();
+                if let Some(work) = work {
+                    work.abandon();
                 }
-                crate::cleanup::defer(work);
                 state.result = Some(Err(Failure::Canceled));
             }
         });

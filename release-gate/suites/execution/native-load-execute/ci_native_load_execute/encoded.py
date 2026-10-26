@@ -18,7 +18,13 @@ from cozy_runtime.author._invoke import run_prepared
 from cozy_runtime.compute import PreparedRepeat
 from tensorfs import raw, varena
 
-from .exercise import Empty, Returned, private_input
+from .exercise import (
+    Empty,
+    Returned,
+    capture_after_checked_load,
+    prepare_capture_control,
+    private_input,
+)
 
 ROWS, COLS = 128, 256
 SCRATCH = 16 << 20
@@ -192,6 +198,7 @@ def exercise(mode, seed, dtype, ctx, ordering="checked"):
         "encoded-decode-error",
         "encoded-refusals",
         "encoded-zero",
+        "encoded-abandon-capture",
     }
     if mode not in modes:
         raise ValueError(f"unknown encoded load mode: {mode}")
@@ -302,6 +309,50 @@ def exercise(mode, seed, dtype, ctx, ordering="checked"):
                 max_scratch_bytes=SCRATCH,
                 threads=1,
             )
+            capture_control = prepare_capture_control()
+            if mode == "encoded-abandon-capture":
+                marker, stream, graph = capture_control
+                with torch.cuda.stream(stream):
+                    with varena.capture(0):
+                        graph.capture_begin(capture_error_mode="global")
+                        try:
+                            slot.cancel()  # Never submitted; packed GPU storage is still owned.
+                            slot.close()
+                            time.sleep(
+                                0.02
+                            )  # The real cleanup worker encounters this live capture.
+                            during = arena.stats()
+                            assert (
+                                during["pinned_bytes"] >= final_bytes
+                                and not during["poisoned"]
+                            ), during
+                            marker.add_(1)
+                        finally:
+                            graph.capture_end()
+                    with varena.replay(0):
+                        graph.replay()
+                stream.synchronize()
+                assert marker.item() == 1
+                graph.reset()
+                deadline = time.monotonic() + 10
+                while arena.stats()["pinned_bytes"]:
+                    assert time.monotonic() < deadline, (
+                        "abandoned GPU cleanup did not retry after capture"
+                    )
+                    time.sleep(0.001)
+                arena.reclaim(1 << 30)
+                after = arena.stats()
+                assert (
+                    after["pinned_bytes"] == after["resident_bytes"] == 0
+                    and not after["poisoned"]
+                ), after
+                return {
+                    "mode": mode,
+                    "during_capture": during,
+                    "after_capture": after,
+                    "real_capture_and_replay": True,
+                    "cleanup_retried_after_capture": True,
+                }
             alias = slot.tensor
             assert alias.shape == (ROWS, COLS) and alias.dtype == DTYPES[dtype]
             assert alias.device.type == "cuda" and not bool(alias.count_nonzero())
@@ -479,6 +530,7 @@ def exercise(mode, seed, dtype, ctx, ordering="checked"):
                         returned.cpu().view(torch.uint8).numpy().tobytes()
                     ).hexdigest()
             assert calls[0] == 2 and facts["native_load"]["completion_proven"]
+            immediate_capture = capture_after_checked_load(capture_control)
             assert facts["load_ordering_requested"] == ordering
             if ordering != "auto":
                 assert (
@@ -528,6 +580,7 @@ def exercise(mode, seed, dtype, ctx, ordering="checked"):
                 "phase_counts": observed_phases,
                 "index": observed_index,
                 "python_phase_calls": phase_calls,
+                "immediate_capture_after_checked_load": immediate_capture,
             }
         finally:
             if plan is not None:
