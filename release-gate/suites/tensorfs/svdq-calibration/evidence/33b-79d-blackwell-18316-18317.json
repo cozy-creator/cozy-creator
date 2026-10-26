@@ -1,0 +1,379 @@
+{
+  "passed": true,
+  "scope": "Native-produced frozen SVDQ checkpoint consumed through verified packed FP4 kernels on one B200 SM100; eight held-out forwards in two ordinary CLI invocations. No full-model, graph replay, release or newer cohort qualification.",
+  "gate_commit": "d3ee4b791206beff1a6938ce4c5f5090a691e0fa",
+  "creator_source": "7aebfc6bc6025f01fa97c68633a86ab3a5737079",
+  "runtime_source": "79d15f0c36ae39eb2edbd5ca40bd2221ce3ca94c",
+  "tensorfs_source": "33b598e784c2ad6db1d716b7fdae4b7db57bf2f0",
+  "artifacts": {
+    "tensord": {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/prepared-warm-factory-20261025/creator-7aebfc6bc/cozy/cozy-linux-x86_64",
+      "sha256": "218a773780adfc8e3b9e398f363ea5ca77b142599a130c06e67409e900610566",
+      "bytes": 46921344
+    },
+    "runtime": {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261025/native-svdq-migration/runtime-provenance-artifact-79d15f0c3/cozy_runtime-0.33.0-cp312-abi3-manylinux_2_28_x86_64.whl",
+      "sha256": "970db4db3dff9a6da3615faf25fe22074fa7d77fc0dd3131620422549fc22a09",
+      "bytes": 21502009,
+      "record_hashes_verified": 227,
+      "zip_crc_verified": true
+    },
+    "tensorfs": {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261025/native-svdq-migration/combined-consumer-proof-222b/artifacts/tensorfs-0.16.0-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "sha256": "31b38d243ea2159e645c292d052d08f2ff2bc77abbb934ab261189d42dad8dcf",
+      "bytes": 13518496,
+      "record_hashes_verified": 17,
+      "zip_crc_verified": true
+    }
+  },
+  "model": "fidika/native-svdq-faer-20261025-256006@sha256:fe6f3d8937e99a742e91484a194b8bca89be65df1beb2375053a6995885db310",
+  "checkpoint": "sha256:f19b9accee8d7db1ac29277aa7633ca4ca5b7d347df7dfb64b2757f42f76e535",
+  "seed": 256006,
+  "cohort_sha256": "624ae9e39b8316d6620a043cf515a75402755f59bda7fa2051bd92d817d45679",
+  "rental": {
+    "id": "pr-0ad09ebcc663699e8bfd",
+    "name": "usagi",
+    "alias": "rent-c2d59f40",
+    "worker_id": "ra-398bef3d3820a107e872",
+    "image_digest": "sha256:42e035314f0bc77706b1854ca336dc2e1caab47d9cfb04fa535c3dd055a0636e",
+    "device": {
+      "index": 0,
+      "name": "NVIDIA B200",
+      "memory_bytes": 192265846784,
+      "driver": "580.126.20",
+      "family": "sm100",
+      "memory_class": "discrete"
+    },
+    "gpu_uuid": "GPU-fbe76895-b46f-78f7-5cde-64e905b5de37",
+    "toolchain": {
+      "state": "ready",
+      "nvcc": "Cuda compilation tools, release 13.0, V13.0.88",
+      "host_compiler": "c++ (Debian 12.2.0-14+deb12u1) 12.2.0",
+      "missing": [],
+      "install": "",
+      "detail": ""
+    },
+    "rented_at_ms": 1792977858359,
+    "ended_at_ms": 1792978111643,
+    "ended_verified": true,
+    "absent_verified": true
+  },
+  "cost": {
+    "observed_rented_seconds": 253.284,
+    "quoted_gpu_usd_per_hour": 10.759,
+    "quoted_gpu_wall_time_usd": 0.7569673766666666,
+    "quoted_storage_usd_per_hour": 0.145,
+    "quoted_storage_wall_time_usd": 0.010201716666666666,
+    "traffic_allowance_usd": 0.1,
+    "hub_reported_spend_usd": 0.402842,
+    "hub_spend_basis": "unmetered",
+    "provider_settlement_verified": false,
+    "authorized_total_usd": 5,
+    "authorized_max_seconds": 3600,
+    "conservative_wall_time_plus_storage_and_traffic_usd": 0.8671690933333333
+  },
+  "runs": [
+    {
+      "number": 18316,
+      "id": "run-87e51300f6dd1209a1fa834e",
+      "execution_ms": 10024,
+      "cli_seconds": 107.48668643800193,
+      "gemm_selected": [
+        {
+          "at_unix_ms": 1792978099594,
+          "attempt_key": "2",
+          "fields": {
+            "component": "model/net",
+            "format": "svdq-nvfp4",
+            "leaf": "cozy.svdq-nvfp4.native-leaf/1",
+            "sites": 1
+          },
+          "kind": "confession",
+          "name": "gemm.selected",
+          "seq": 1,
+          "value": "cozy-svdq-nvfp4"
+        }
+      ],
+      "blocking": [
+        {
+          "at_unix_ms": 1792978099594,
+          "attempt_key": "2",
+          "fields": {
+            "ms": 6329.7,
+            "times": 1
+          },
+          "kind": "confession",
+          "name": "request_path.blocking",
+          "seq": 2,
+          "value": "kernel build wait: cozy-svdq-nvfp4"
+        },
+        {
+          "at_unix_ms": 1792978099594,
+          "attempt_key": "2",
+          "fields": {
+            "ms": 265.4,
+            "times": 1
+          },
+          "kind": "confession",
+          "name": "request_path.blocking",
+          "seq": 4,
+          "value": "kernel self-check: cozy-svdq-nvfp4"
+        }
+      ],
+      "kernel_evidence": {
+        "build_key": "b2acf6aebc983559fe77d0c28cad46b8f3a5605816c4b8e5b408bf2e58532a54",
+        "consumer_source_sha256": "8a5de3588285aed77acb24a48589191e64ad709a7e2f7587ffbc55be6d7b07df",
+        "cuda": "13.0",
+        "launch_fallback": false,
+        "probe_detail": "rel L2 1.68e-03 at rank 32 bf16 down-projection (budget 0.005, 18 cases)",
+        "probe_passed": true,
+        "runtime_commit": "79d15f0c36ae39eb2edbd5ca40bd2221ce3ca94c",
+        "selected_after": "cozy-svdq-nvfp4",
+        "selected_before": "cozy-svdq-nvfp4",
+        "synchronized": true,
+        "torch": "2.14.1+cu130"
+      },
+      "cases": [
+        {
+          "consumption": "native-encoded-gemm",
+          "heldout_batch": 0,
+          "heldout_max_abs_error": 0.04156888804806916,
+          "heldout_relative_to_original": 0.08362171628464435,
+          "heldout_relative_to_stored": 0.061952486576289906,
+          "module_encoding": "svdq.nvfp4",
+          "output_sha256": "01b7868a49093dcf724ab813dba6ff9e859d5361f6e4bb28005cab74e80bf1e0",
+          "provider": "cozy.svdq-nvfp4.native-leaf/1",
+          "repetition": 0
+        },
+        {
+          "consumption": "native-encoded-gemm",
+          "heldout_batch": 1,
+          "heldout_max_abs_error": 0.037959346703494434,
+          "heldout_relative_to_original": 0.0829104546660842,
+          "heldout_relative_to_stored": 0.06022608602874274,
+          "module_encoding": "svdq.nvfp4",
+          "output_sha256": "d3f4ec5aae5a49ff7700eeb8eb1a53201eb82fba59696ce6bd2ff847ff8b3f1c",
+          "provider": "cozy.svdq-nvfp4.native-leaf/1",
+          "repetition": 0
+        },
+        {
+          "consumption": "native-encoded-gemm",
+          "heldout_batch": 0,
+          "heldout_max_abs_error": 0.04156888804806916,
+          "heldout_relative_to_original": 0.08362171628464435,
+          "heldout_relative_to_stored": 0.061952486576289906,
+          "module_encoding": "svdq.nvfp4",
+          "output_sha256": "01b7868a49093dcf724ab813dba6ff9e859d5361f6e4bb28005cab74e80bf1e0",
+          "provider": "cozy.svdq-nvfp4.native-leaf/1",
+          "repetition": 1
+        },
+        {
+          "consumption": "native-encoded-gemm",
+          "heldout_batch": 1,
+          "heldout_max_abs_error": 0.037959346703494434,
+          "heldout_relative_to_original": 0.0829104546660842,
+          "heldout_relative_to_stored": 0.06022608602874274,
+          "module_encoding": "svdq.nvfp4",
+          "output_sha256": "d3f4ec5aae5a49ff7700eeb8eb1a53201eb82fba59696ce6bd2ff847ff8b3f1c",
+          "provider": "cozy.svdq-nvfp4.native-leaf/1",
+          "repetition": 1
+        }
+      ],
+      "memory": {
+        "peak_allocated_bytes": 73368064,
+        "peak_reserved_bytes": 75497472,
+        "driver": [
+          {
+            "before_bytes": 3801088,
+            "gpu": 0,
+            "peak_bytes": 983236608
+          }
+        ],
+        "peak_scope": "Torch high-water plus sampled native backing, carried across resets"
+      },
+      "store_moved": {
+        "bytes": 44296,
+        "ns": 16728635
+      },
+      "final_bindings": {
+        "fallback_blocks": 0,
+        "fills": 1,
+        "final_resident_bytes": 2097152,
+        "hits": 3,
+        "native_prefetch": true,
+        "raw_resident_bytes": 2097152,
+        "resident_scope": "process"
+      },
+      "model_call_device_ms": 2.102,
+      "graph_captures": 0,
+      "graph_replays": 0
+    },
+    {
+      "number": 18317,
+      "id": "run-69e104e35a3cdd1216991517",
+      "execution_ms": 107,
+      "cli_seconds": 0.7164440219930839,
+      "gemm_selected": [
+        {
+          "at_unix_ms": 1792978100354,
+          "attempt_key": "3",
+          "fields": {
+            "component": "model/net",
+            "format": "svdq-nvfp4",
+            "leaf": "cozy.svdq-nvfp4.native-leaf/1",
+            "sites": 1
+          },
+          "kind": "confession",
+          "name": "gemm.selected",
+          "seq": 1,
+          "value": "cozy-svdq-nvfp4"
+        }
+      ],
+      "blocking": [],
+      "kernel_evidence": {
+        "build_key": "b2acf6aebc983559fe77d0c28cad46b8f3a5605816c4b8e5b408bf2e58532a54",
+        "consumer_source_sha256": "8a5de3588285aed77acb24a48589191e64ad709a7e2f7587ffbc55be6d7b07df",
+        "cuda": "13.0",
+        "launch_fallback": false,
+        "probe_detail": "rel L2 1.68e-03 at rank 32 bf16 down-projection (budget 0.005, 18 cases)",
+        "probe_passed": true,
+        "runtime_commit": "79d15f0c36ae39eb2edbd5ca40bd2221ce3ca94c",
+        "selected_after": "cozy-svdq-nvfp4",
+        "selected_before": "cozy-svdq-nvfp4",
+        "synchronized": true,
+        "torch": "2.14.1+cu130"
+      },
+      "cases": [
+        {
+          "consumption": "native-encoded-gemm",
+          "heldout_batch": 0,
+          "heldout_max_abs_error": 0.04156888804806916,
+          "heldout_relative_to_original": 0.08362171628464435,
+          "heldout_relative_to_stored": 0.061952486576289906,
+          "module_encoding": "svdq.nvfp4",
+          "output_sha256": "01b7868a49093dcf724ab813dba6ff9e859d5361f6e4bb28005cab74e80bf1e0",
+          "provider": "cozy.svdq-nvfp4.native-leaf/1",
+          "repetition": 0
+        },
+        {
+          "consumption": "native-encoded-gemm",
+          "heldout_batch": 1,
+          "heldout_max_abs_error": 0.037959346703494434,
+          "heldout_relative_to_original": 0.0829104546660842,
+          "heldout_relative_to_stored": 0.06022608602874274,
+          "module_encoding": "svdq.nvfp4",
+          "output_sha256": "d3f4ec5aae5a49ff7700eeb8eb1a53201eb82fba59696ce6bd2ff847ff8b3f1c",
+          "provider": "cozy.svdq-nvfp4.native-leaf/1",
+          "repetition": 0
+        },
+        {
+          "consumption": "native-encoded-gemm",
+          "heldout_batch": 0,
+          "heldout_max_abs_error": 0.04156888804806916,
+          "heldout_relative_to_original": 0.08362171628464435,
+          "heldout_relative_to_stored": 0.061952486576289906,
+          "module_encoding": "svdq.nvfp4",
+          "output_sha256": "01b7868a49093dcf724ab813dba6ff9e859d5361f6e4bb28005cab74e80bf1e0",
+          "provider": "cozy.svdq-nvfp4.native-leaf/1",
+          "repetition": 1
+        },
+        {
+          "consumption": "native-encoded-gemm",
+          "heldout_batch": 1,
+          "heldout_max_abs_error": 0.037959346703494434,
+          "heldout_relative_to_original": 0.0829104546660842,
+          "heldout_relative_to_stored": 0.06022608602874274,
+          "module_encoding": "svdq.nvfp4",
+          "output_sha256": "d3f4ec5aae5a49ff7700eeb8eb1a53201eb82fba59696ce6bd2ff847ff8b3f1c",
+          "provider": "cozy.svdq-nvfp4.native-leaf/1",
+          "repetition": 1
+        }
+      ],
+      "memory": {
+        "peak_allocated_bytes": 73368064,
+        "peak_reserved_bytes": 75497472,
+        "driver": [
+          {
+            "before_bytes": 983236608,
+            "gpu": 0,
+            "peak_bytes": 983236608
+          }
+        ],
+        "peak_scope": "Torch high-water plus sampled native backing, carried across resets"
+      },
+      "store_moved": {
+        "bytes": 0,
+        "ns": 0
+      },
+      "final_bindings": {
+        "fallback_blocks": 0,
+        "fills": 0,
+        "final_resident_bytes": 2097152,
+        "hits": 4,
+        "native_prefetch": true,
+        "raw_resident_bytes": 2097152,
+        "resident_scope": "process"
+      },
+      "model_call_device_ms": 1.869,
+      "graph_captures": 0,
+      "graph_replays": 0
+    }
+  ],
+  "lifecycle_runs": {
+    "install_local": 18313,
+    "install_remote": 18314,
+    "automatic_package_preparation": 18315,
+    "restore_local": 18318
+  },
+  "restoration": {
+    "observed": {
+      "tensord": {
+        "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261025/native-svdq-migration/blackwell-consumer-79d15/window/restore/cozy-linux-x86_64",
+        "sha256": "6b0c6dbbe5d4740fa611dc4c0a28d1cc00b9362bf8397192bfdeae5bdfd119a0"
+      },
+      "runtime": {
+        "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261025/native-svdq-migration/blackwell-consumer-79d15/window/restore/cozy_runtime-0.32.3-cp312-abi3-manylinux_2_28_x86_64.whl",
+        "sha256": "8588ce22f35872fddd76695217ea949e50eaf506ef0b75a8fbbb0b0eab7b7eb8"
+      },
+      "tensorfs": {
+        "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261025/native-svdq-migration/blackwell-consumer-79d15/window/restore/tensorfs-0.15.6-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "sha256": "ca15dd65e7aa3249f3749dd60a452260ab54854ccb44d4449b7189234951941b"
+      }
+    },
+    "verified": true,
+    "verified_ready_idle_utc": "2026-10-26T01:28:57.826843+00:00",
+    "controller_exit_code": 0,
+    "shared_lock_released": true
+  },
+  "runtime_fixes": [],
+  "failures": [],
+  "limitations": [
+    "First invocation used existing blocking kernel readiness: 6329.7 ms build wait and 265.4 ms self-check. This is correctness proof, not a no-cold-work acceptance.",
+    "No CUDA graph replay occurred; uncaptured model calls still selected the packed SVDQ kernels.",
+    "Hub spend is explicitly unmetered; provider settlement was not observed.",
+    "The exact earlier SVDQ artifact triplet is qualified here, not the later BF16 or primary memory-policy cohort."
+  ],
+  "receipt_sha256": {
+    "cohort.json": "624ae9e39b8316d6620a043cf515a75402755f59bda7fa2051bd92d817d45679",
+    "config.json": "ed9c7e4be5bda2657fcf7ee9dee101a11a1bbbfb8511c13d03bf8607ef3d9fb0",
+    "artifacts.json": "dc523cfcafd3e94831bbb8248441fc8691a92a9f93e59da2568fa73b8ea91306",
+    "invocation.json": "1f871fdf6a88317fbedf7c0ba86025d55409b7509eaa35c1338a6aa9694ae8ca",
+    "consumer-source-review.json": "cc058881c37f86615d27789d01c3f3aac43d005b975ce9bb058d568c831d8391",
+    "window/quote.json": "b3ef907c30f4239f76b10c505f5eb5a5f8623863cdb9483e42510223b4216cb5",
+    "window/owned.json": "0b68a666196beea8d12e7488b48b4df246e8187912020d64f1155a19eef7b0e2",
+    "window/actual-baseline.json": "c12b6547352e6881ba544000c4c4b94601ce7ba97ae72682f78890d37b1d1462",
+    "window/watchdog-owner.json": "9cdfaed19bfa2d1a1d3b27d00af5caf090e3454a97ef5e3f82597e413f136760",
+    "window/install-remote.json": "af7211c768478ee716b5fb3df2a4dc41676b62fb670010431f58414d40f5f22b",
+    "window/automatic-preparation-18315.json": "2dfb9a02021762f054e5d8f556dd9cde5fe24726650a4f4f71feb91ab49a4a24",
+    "window/qualification/proof.json": "a3a247f1b63bc568d1007fd8f632538db78d09e9c1842b8b83437e2c6d85992c",
+    "window/qualification/predict-1.json": "42e281b5152b611f79139de37261c1f4650c2b4db3470f16aaa383fbe1bfd316",
+    "window/qualification/predict-1-show.json": "797380d1e59dc31c5f1ae2321556f966f7c1a667cbdb9e0f2bf5cab76840624f",
+    "window/qualification/predict-2.json": "963085334065ab5c67c2290d0e18d8e702da675088691b86b36572eb6ac75797",
+    "window/qualification/predict-2-show.json": "39822788719e7176e9fbc9ab563d236626cd819c422fd1f0732f9e154ae748af",
+    "window/ended-confirmed.json": "aa1ad4c9226ed36bfd512c181d8473174937c61c98fda2f3cd562585a78230f7",
+    "window/local-restored.json": "06f7d817445232a4b1e96002e09a9f9959de0008bd9bfeb5a90dade077909f0e",
+    "window/local/restore-verified-baseline.json": "d706e955bdc00f5dd901dda2a08a5039b3cfed17baeba2c32a5084b7771a77eb",
+    "window/local/restore-verified-baseline-sdk.json": "d8ec50222af6a386d08761376e47672931c74ac44fa8949884fb7faef919b861",
+    "window/local/restore-verified-baseline-observed.json": "9ca23567a9b2a504f0ce8179c4a753daace0989aad8a32b4c75577441a869754"
+  }
+}

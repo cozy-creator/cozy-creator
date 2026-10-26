@@ -160,3 +160,5 @@ any recorded SVDQ launch fallback. Provider identity alone cannot pass this gate
 The two held-out batches retain the existing 0.10 stored-weight and 0.20 original
 BF16 relative-L2 limits. Repeat this consumer invocation against the same immutable
 model commit; fitting and checkpoint publication need not run again.
+
+B200/SM100 qualification passed in ordinary CLI18316/18317 on the frozen7a CLI /33b TensorFS /79d Runtime cohort. Both calls retained `gemm.selected=cozy-svdq-nvfp4`, the successful18-case probe and no launch fallback; all eight held-out forwards passed and repeated hashes matched. Exact artifacts, measurements and cleanup are in [the Blackwell evidence](evidence/33b-79d-blackwell-18316-18317.json). Restore18318 and owned-rental ended/absent checks passed. This gate exercises uncaptured model calls; CUDA graph replay and newer cohorts remain separate.
