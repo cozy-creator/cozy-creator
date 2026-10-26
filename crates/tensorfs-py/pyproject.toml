@@ -32,7 +32,7 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/cozy-creator/cozy-creator/tree/master/crates/tensorfs-py"
+Homepage = "https://github.com/cozy-creator/cozy-creator/tree/master/crates/tensorfs"
 Documentation = "https://github.com/cozy-creator/cozy-creator/blob/master/crates/tensorfs-py/API.md"
 Repository = "https://github.com/cozy-creator/cozy-creator"
 Issues = "https://github.com/cozy-creator/cozy-creator/issues"
