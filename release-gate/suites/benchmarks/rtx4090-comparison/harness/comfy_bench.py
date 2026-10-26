@@ -57,6 +57,7 @@ PY = B / "comfy-env/bin/python"
 KEEP_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "TERM", "TMPDIR", "USER", "CUDA_VISIBLE_DEVICES", "NVIDIA_VISIBLE_DEVICES",
             "NVIDIA_DRIVER_CAPABILITIES", "LD_LIBRARY_PATH")
 DRIVER = None  # @DRIVER@
+STEP_OBSERVER = None  # @STEP_OBSERVER@
 
 
 OWNER_PID = os.getpid()
@@ -152,6 +153,10 @@ def main(payload: BenchRequest, ctx: Context, tel: Telemetry, out: Outputs) -> B
         rec["server_reused"] = SESSION is not None
         assert not require_warm or SESSION is not None, "warm server was retired; retain this failed sample"
         if SESSION is None:
+            assert isinstance(STEP_OBSERVER, str) and STEP_OBSERVER
+            observer = COMFY / "custom_nodes/cozy_benchmark_steps"
+            observer.mkdir(parents=True, exist_ok=True)
+            (observer / "__init__.py").write_text(STEP_OBSERVER)
             (COMFY / "input").mkdir(parents=True, exist_ok=True)
             for name, data in IMAGES.items():
                 (COMFY / "input" / name).write_bytes(base64.b64decode(data))
@@ -207,9 +212,9 @@ def main(payload: BenchRequest, ctx: Context, tel: Telemetry, out: Outputs) -> B
         drv.wait(timeout=10)
         rec["driver_rc"] = drv.returncode
         result = json.loads((res / f"{label}.json").read_text())
+        rec["request"] = result  # Retain history, timing and files even if qualification fails.
         assert drv.returncode == 0 and result["status"] == "execution_success", result
-        assert result["observed_steps"] == job["steps"]
-        rec["request"] = result
+        assert result["qualified"] and result["confirmed_steps"] == job["steps"], result
         rec["qualified"] = True
         healthy = True
     except Exception as error:
@@ -227,8 +232,16 @@ def main(payload: BenchRequest, ctx: Context, tel: Telemetry, out: Outputs) -> B
     # only binary outputs, matched downstream by media type (image/*, application/json), never by name.
     images = []
     trace = None
-    if healthy:
+    if rec.get("request", {}).get("images"):
         images = [out.save_file(res / image["file"], media_type="image/png") for image in rec["request"]["images"]]
         if rec["request"].get("profile"):
             trace = out.save_file(res / rec["request"]["profile"]["copied_file"], media_type="application/json")
-    return BenchResult(session=json.dumps(rec), images=images, trace=trace)
+    archive = None
+    if not healthy:
+        evidence = res / "unqualified-receipts.tar.gz"
+        with tarfile.open(evidence, "w:gz") as tar:
+            for source in res.iterdir():
+                if source != evidence:
+                    tar.add(source, arcname=source.name)
+        archive = out.save_file(evidence, media_type="application/gzip")
+    return BenchResult(session=json.dumps(rec), images=images, trace=trace, archive=archive)

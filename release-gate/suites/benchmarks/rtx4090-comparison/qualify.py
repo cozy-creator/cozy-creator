@@ -303,7 +303,7 @@ def measure_group(cohort, out, machine, key, engine, samples, setup, cozy_args):
                     f'require_warm={str(sample["mode"] != "cold").lower()}',
                     *args, '--out', out / 'images' / label], cohort=cohort, timed=True)
                 receipt = result_json(run, 'session')
-                assert receipt['qualified'] and receipt['request']['observed_steps'] == model['steps'], receipt
+                assert receipt['qualified'] and receipt['request']['confirmed_steps'] == model['steps'], receipt
                 assert receipt['request']['job']['seed'] == sample['seed']
                 birth = receipt['server_pid'], receipt['server_start_ticks'], receipt['wrapper_pid']
                 if sample['mode'] != 'cold':
@@ -429,7 +429,7 @@ def profile_model(cohort, out, machine, key):
             *args, '--out', out / 'profiles/comfy-bootstrap'])
         full_run(out, 'comfy-profile-bootstrap', bootstrap)
         bootstrap_receipt = result_json(bootstrap, 'session')
-        assert bootstrap_receipt['qualified'] and bootstrap_receipt['request']['observed_steps'] == model['steps']
+        assert bootstrap_receipt['qualified'] and bootstrap_receipt['request']['confirmed_steps'] == model['steps']
         assert bootstrap_receipt['request']['job']['seed'] == base_seed + 2
         assert bootstrap_receipt['request']['job']['prompt'] == request['prompt']
         assert bootstrap_receipt['request'].get('profile') is None
@@ -441,7 +441,7 @@ def profile_model(cohort, out, machine, key):
         full_run(out, 'comfy-profile', run)
         receipt = result_json(run, 'session')
         assert receipt['qualified'] and receipt['request']['profile']
-        assert receipt['request']['observed_steps'] == model['steps']
+        assert receipt['request']['confirmed_steps'] == model['steps']
         assert receipt['request']['job']['seed'] == base_seed + 3
         assert receipt['request']['job']['prompt'] == request['prompt']
         assert receipt['server_reused']

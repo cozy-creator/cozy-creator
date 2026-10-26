@@ -169,6 +169,14 @@ async def run_one(session, g, job, out):
             break
         assert Path(f"/proc/{int(sys.argv[4])}").exists(), "server ended before history publication"
         await asyncio.sleep(0.05)
+    # Preserve real server history and delivered events before any qualification check.
+    (out / f"{label}.history.json").write_text(json.dumps(history, indent=2))
+    (out / f"{label}.events.json").write_text(json.dumps(events, indent=2))
+    node = "5" if job["cell"] == "sdxl" else "7"
+    callback_path = COMFY.parent / "step-receipts" / f"{pid}-{node}.json"
+    callbacks = json.loads(callback_path.read_text()) if callback_path.exists() else None
+    if callbacks is not None:
+        (out / f"{label}.callbacks.json").write_text(json.dumps(callbacks, indent=2))
     files, texts = [], []
     for node_out in history.get("outputs", {}).values():
         texts += [t for t in node_out.get("text", []) if isinstance(t, str)]
@@ -181,19 +189,26 @@ async def run_one(session, g, job, out):
                         shutil.copy2(src, dst)
                         files.append(dst.name)
     delivery_s = time.monotonic() - mono
+    partial = {"label":label, "prompt_id":pid, "status":events[-1]["type"] if events else "none",
+               "total_s":total, "submit_unix_s":t0, "request_through_local_copy_s":delivery_s,
+               "history":history, "events":events, "files":files, "server_callback_receipt":callbacks}
+    (out / f"{label}.partial.json").write_text(json.dumps(partial, indent=2))
     observed = [e["data"] for e in events if e["type"] == "progress" and str(e["data"].get("node")) == ("5" if job["cell"] == "sdxl" else "7")]
     values = list(dict.fromkeys(e.get("value") for e in observed))
-    assert values == list(range(1, 31)), ("incomplete actual SDXL steps", values)
-    assert all(e.get("max") == 30 for e in observed), observed
-    assert events[-1]["type"] == "execution_success", events[-1]
-    assert ("5" if job["cell"] == "sdxl" else "7") not in [str(n) for e in events if e["type"] == "execution_cached" for n in e["data"].get("nodes", [])]
+    websocket_complete = values == list(range(1, job["steps"] + 1))
+    callback_complete = bool(callbacks and callbacks.get("succeeded")
+        and callbacks.get("prompt_id") == pid and callbacks.get("node") == node
+        and callbacks.get("pid") == int(sys.argv[4]) and callbacks.get("seed") == job["seed"]
+        and callbacks.get("sigma_points") == job["steps"] + 1
+        and [row[0] for row in callbacks.get("callbacks", [])] == list(range(job["steps"]))
+        and all(row[1] == job["steps"] for row in callbacks.get("callbacks", [])))
     from PIL import Image
     images = []
     for filename in files:
         path = out / filename
         with Image.open(path) as picture:
             picture.load()
-            assert picture.size == (1024, 1024), picture.size
+            assert picture.size == (job["width"], job["height"]), picture.size
             rgb = picture.convert("RGB")
             assert any(lo != hi for lo, hi in rgb.getextrema()), "flat output"
             images.append({"file": filename, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
@@ -211,9 +226,22 @@ async def run_one(session, g, job, out):
     progress = [(e["t"], e["data"].get("value")) for e in events if e["type"] == "progress" and str(e["data"].get("node")) == ("5" if job["cell"] == "sdxl" else "7")]
     steps = [round(b[0] - a[0], 4) for a, b in zip(progress, progress[1:])]
     res = {"label": label, "prompt_id": pid, "status": events[-1]["type"] if events else "none", "total_s": total,
-           "submit_unix_s": t0, "profile": profile_receipt, "request_through_local_copy_s": delivery_s, "observed_steps": len(values), "images": images, "segments": segments, "steps": steps, "files": files,
+           "submit_unix_s": t0, "profile": profile_receipt, "request_through_local_copy_s": delivery_s,
+           "observed_steps": len(values), "websocket_step_values": values,
+           "websocket_progress_complete": websocket_complete,
+           "server_callback_receipt": callbacks, "server_callbacks_complete": callback_complete,
+           "confirmed_steps": job["steps"] if callback_complete else None,
+           "images": images, "segments": segments, "steps": steps, "files": files,
            "cached_nodes": [n for e in events if e["type"] == "execution_cached" for n in e["data"].get("nodes", [])],
            "error": [e["data"] for e in events if e["type"] == "execution_error"], "events": events}
+    res["history_status"] = history.get("status", {})
+    res["qualified"] = bool(callback_complete and history.get("status", {}).get("completed")
+        and history.get("status", {}).get("status_str") == "success"
+        and res["status"] == "execution_success" and not res["error"]
+        and node not in [str(n) for n in res["cached_nodes"]]
+        and all(e.get("max") == job["steps"] for e in observed))
+    res["observer_note"] = None if websocket_complete else "Websocket progress was throttled/incomplete; actual server callbacks are authoritative."
+    (out / f"{label}.observed.json").write_text(json.dumps(res, indent=2))
     return res
 
 async def main():
@@ -252,7 +280,9 @@ async def main():
             try:
                 res = await run_one(session, g, job, out)
             except Exception as e:  # noqa: BLE001
-                res = {"label": job["label"], "status": "driver_error", "error": repr(e), "total_s": 0, "submit_unix_s": time.time()}
+                partial = out / f"{job['label']}.partial.json"
+                res = json.loads(partial.read_text()) if partial.exists() else {"label":job["label"], "submit_unix_s":time.time()}
+                res.update(status="driver_error", error=repr(e), qualified=False)
             res["job"] = job
             (out / f"{job['label']}.json").write_text(json.dumps(res, indent=1, ensure_ascii=False))
             if res["status"] != "execution_success":

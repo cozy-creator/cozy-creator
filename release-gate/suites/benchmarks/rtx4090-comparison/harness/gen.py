@@ -42,7 +42,8 @@ def comfy(card: str, session: str, labels: list[str]) -> Path:
     return fill("comfy_bench.py", {"CELL = None  # @CELL@": f"CELL = {session!r}",
                                    "JOBS = None  # @JOBS@": f"JOBS = json.loads({json.dumps(jobs, ensure_ascii=False)!r})",
                                    "IMAGES = None  # @IMAGES@": f"IMAGES = {images!r}",
-                                   "DRIVER = None  # @DRIVER@": f"DRIVER = {driver()!r}"},
+                                   "DRIVER = None  # @DRIVER@": f"DRIVER = {driver()!r}",
+                                   "STEP_OBSERVER = None  # @STEP_OBSERVER@": f"STEP_OBSERVER = {(H / 'comfy_steps_node.py').read_text()!r}"},
                 D / "gen" / card / f"comfy_{session}.py")
 
 
