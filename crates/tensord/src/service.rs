@@ -412,9 +412,9 @@ impl Service {
                 match calls.as_ref().map_or(crate::access::Ready::Yes, |calls| calls.source_ready(&record.id)) {
                     crate::access::Ready::Yes => (),
                     crate::access::Ready::Waiting => {
-                        // Existing root-lane release keeps any active GPU call protected by
-                        // its permit, but frees a between-step lane while this input fetches.
-                        pool.release(&self.engine, record.root_seq());
+                        // Preserve an active parent's registered family lane; an awaited
+                        // child must be able to reenter it once its required source arrives.
+                        pool.release_for_fetch(&self.engine, record.root_seq());
                         self.engine.waiting(&record.id, Some("waiting for required model inputs".into()))?;
                         continue;
                     }

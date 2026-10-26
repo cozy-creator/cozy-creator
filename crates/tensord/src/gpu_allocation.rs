@@ -217,7 +217,15 @@ impl Allocations {
     }
     /// End `root`'s lane now; a call in flight keeps its GPUs until it returns. The lane ended.
     pub(crate) fn release(&self, root: u64) -> Option<Range<usize>> {
+        self.release_when(root, false)
+    }
+    /// A child waiting on sources must not clear the lane of its still-running GPU parent.
+    pub(crate) fn release_between_steps(&self, root: u64) -> Option<Range<usize>> {
+        self.release_when(root, true)
+    }
+    fn release_when(&self, root: u64, idle_only: bool) -> Option<Range<usize>> {
         let mut table = self.table.lock().unwrap();
+        if idle_only && !table.between_steps(root) { return None; }
         let entry = table.roots.get_mut(&root)?;
         entry.released = true;
         let lane = entry.lane.take()?;

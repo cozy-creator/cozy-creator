@@ -2079,6 +2079,13 @@ impl Pool {
             self.note_gpus(engine, root, "release", lane, None);
         }
     }
+    /// Yield only an idle between-step lane for source I/O. An active GPU parent keeps
+    /// its registered lane so its awaited family child can enter after the source arrives.
+    pub(crate) fn release_for_fetch(&self, engine: &Engine, root: u64) {
+        if let Some(lane) = self.allocations.release_between_steps(root) {
+            self.note_gpus(engine, root, "release", lane, None);
+        }
+    }
     /// `root`'s lane, bound now when free; None while it waits. Each transition is logged on
     /// the root run as a `gpu` entry: a grant, a wait naming its current blocker, and a lane
     /// that ended for it as its younger holder's release behind it.
