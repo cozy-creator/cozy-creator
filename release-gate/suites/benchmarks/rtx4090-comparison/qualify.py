@@ -180,16 +180,18 @@ def sampler(cohort, out, label, machine):
 def prepare_model(cohort, out, machine, key, samples):
     model, scripts = cohort['models'][key], cohort['scripts']
     args = ['--on', machine, '--gpus=1']
+    warm = ['--on', machine]  # a --warm/download keeps the function ready, not a run; --gpus is rejected there (warm_gpus)
     target = Path(cohort['packages']) / model['package'] / 'generate'
     script = scripts['comfy_' + key]
     request = image_request(samples[0]); request.pop('seed')
     save(out, 'warm-request.json', request)
+    # cozy_args drives only the --warm/download/off invocations (here and in measure_group), so it carries no --gpus.
     cozy_args = ['run', target, '--input', out / 'warm-request.json',
-                 f'model.model={model["reference"]}', '--lane', model['lane'], *args]
+                 f'model.model={model["reference"]}', '--lane', model['lane'], *warm]
     setup = {}
     run, _, timing = terminal(out, 'cozy-download', [*cozy_args, '--warm', 'downloaded'])
     setup['cozy_download'] = {'run': run['number'], **timing}
-    run, _, timing = terminal(out, 'comfy-wrapper-download', ['run', script, *args, '--warm', 'downloaded'])
+    run, _, timing = terminal(out, 'comfy-wrapper-download', ['run', script, *warm, '--warm', 'downloaded'])
     setup['comfy_wrapper'] = {'run': run['number'], **timing}
     identity_args = [f'model.weights={model["reference"]}', '--lane', model['lane'],
                      f'expected_runtime_source={cohort["runtime_source"]}']
@@ -216,6 +218,7 @@ def prepare_model(cohort, out, machine, key, samples):
 def measure_group(cohort, out, machine, key, engine, samples, setup, cozy_args):
     model, scripts = cohort['models'][key], cohort['scripts']
     args = ['--on', machine, '--gpus=1']
+    on = ['--on', machine]  # --warm invocations: --gpus is rejected there (warm_gpus)
     target = Path(cohort['packages']) / model['package'] / 'generate'
     script = scripts['comfy_' + key]
     records, pixels = [], set()
@@ -256,20 +259,21 @@ def measure_group(cohort, out, machine, key, engine, samples, setup, cozy_args):
             records.append(record)
             save(out, engine + '-samples.json', records)
             if sample['mode'] == 'cold':
-                warm = [*cozy_args, '--warm', 'gpu'] if engine == 'cozy' else ['run', script, *args, '--warm', 'gpu']
+                warm = [*cozy_args, '--warm', 'gpu'] if engine == 'cozy' else ['run', script, *on, '--warm', 'gpu']
                 run, _, timing = terminal(out, engine + '-explicit-warm', warm)
                 setup[engine + '_explicit_warm'] = {'run': run['number'], **timing}
                 save(out, 'setup.json', setup)
     finally:
         if engine == 'comfy':
             call(out, 'comfy-stop', ['run', script, 'operation=stop', 'label=timed-stop', *args], check=False)
-        call(out, engine + '-unwarm', [*cozy_args, '--warm', 'off'] if engine == 'cozy' else ['run', script, *args, '--warm', 'off'], check=False)
+        call(out, engine + '-unwarm', [*cozy_args, '--warm', 'off'] if engine == 'cozy' else ['run', script, *on, '--warm', 'off'], check=False)
     return records
 
 
 def profile_model(cohort, out, machine, key):
     model, scripts = cohort['models'][key], cohort['scripts']
     args = ['--on', machine, '--gpus=1']
+    warm = ['--on', machine]  # --warm invocations: --gpus is rejected there (warm_gpus)
     sample = next(s for s in reversed(cohort['samples']) if s['cell'] == key)
     base_seed = cohort['profile_seed'] + (100 if key == 'qwen21' else 0)
     assert not set(range(base_seed, base_seed + 4)) & {s['seed'] for s in cohort['samples']}
@@ -301,14 +305,15 @@ def profile_model(cohort, out, machine, key):
             assert len(traces) == 1, traces
             trace = traces[0]
             assert Path(trace['path']).stat().st_size > 0
-            assert 'sha256:' + digest(trace['path']) == trace['sha256']
+            assert digest(trace['path']) == trace['sha256']
         return full, observed
 
     reset_owned(cohort, out, 'cozy-profile-reset', machine)
     sampler(cohort, out, 'cozy-profile-telemetry', machine)
     common = ['run', target, f'model.model={model["reference"]}', '--lane', model['lane'], *args]
+    common_warm = ['run', target, f'model.model={model["reference"]}', '--lane', model['lane'], *warm]
     run, _, warm_timing = terminal(out, 'cozy-profile-warm',
-        [*common, '--input', out / 'profile-bootstrap-request.json', 'profile=false', '--warm', 'gpu'])
+        [*common_warm, '--input', out / 'profile-bootstrap-request.json', 'profile=false', '--warm', 'gpu'])
     bootstrap, bootstrap_events, bootstrap_timing = terminal(out, 'cozy-profile-bootstrap',
         [*common, '--input', out / 'profile-bootstrap-request.json', 'profile=false', '--out', out / 'profiles/cozy-bootstrap'])
     bootstrap_full, bootstrap_proof = cozy_observed('cozy-profile-bootstrap', bootstrap,
@@ -352,7 +357,7 @@ def profile_model(cohort, out, machine, key):
         assert bootstrap_receipt['request']['job']['prompt'] == request['prompt']
         assert bootstrap_receipt['request'].get('profile') is None
         cozy_bench.image_evidence(bootstrap, (1024, 1024))
-        terminal(out, 'comfy-profile-hold', ['run', script, *args, '--warm', 'gpu'])
+        terminal(out, 'comfy-profile-hold', ['run', script, *warm, '--warm', 'gpu'])
         run, _, timing = terminal(out, 'comfy-profile', ['run', script, 'label=profile-diagnostic',
             f'seed={base_seed+3}', f'prompt={request["prompt"]}', 'require_warm=true', 'profile=true',
             *args, '--out', out / 'profiles/comfy'])
