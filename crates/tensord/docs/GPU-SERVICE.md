@@ -14,9 +14,10 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
 - `devices`: the GPU envelope, `"0"` or `"0,1,..."`. A plan of degree K > 1 runs on the first K;
   a one-GPU plan on any of them. An executor is sealed to its lane (`CUDA_VISIBLE_DEVICES`).
 - `inventory`: observed GPU identities and capacities used for measurements and lane selection.
-- `gpu_memory_limit`: a requested aggregate machine cap. GPU execution currently refuses this
-  setting because executor-local limits cannot enforce a total across a call family and its
-  non-allocator bytes.
+- `gpu_memory_limit`: a developer/testing cap (not a consumer option) that makes each GPU behave
+  like a smaller card. GPU runs succeed under it; TensorD resolves models against the capped free
+  VRAM (`hardware`), so the Hub picks a smaller-card variant. The executor's own hard VRAM bound
+  (varena activation budget) is a separate layer; see DEVICE-EXECUTOR.md.
 - `environment`: names `launch_identity::credential_name` judges credentials never reach an executor.
 - `host`: `{mode}`, `dedicated` on a rental, else `shared`.
 

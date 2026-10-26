@@ -95,8 +95,9 @@ pub struct GpuConfig {
     /// (`precision`).
     #[serde(default)]
     pub inventory: Vec<crate::machine::receipt::Gpu>,
-    /// The total machine GPU cap. Stock-allocator execution refuses it until aggregate grants
-    /// include every executor and non-allocator bytes; it is never multiplied per executor.
+    /// Developer/testing cap (not a consumer option): make each GPU behave like a smaller card of
+    /// this many bytes, to exercise constrained-VRAM paths. TensorD resolves models against it
+    /// (`hardware`); the executor's own hard VRAM bound is a separate layer (see DEVICE-EXECUTOR.md).
     #[serde(default)]
     pub gpu_memory_limit: Option<u64>,
     /// Explicitly configured locations; the executor seal is imposed on top of them.
@@ -976,19 +977,6 @@ impl Pool {
             self.end_session(&key)
         })
     }
-    /// No per-process fraction can enforce the machine's total cap across a call family.
-    fn gpu_cap(&self, degree: u32) -> io::Result<()> {
-        if degree > 0 {
-            if let Some(limit) = self.config.gpu_memory_limit {
-                return Err(io::Error::other(Refused {
-                    code: "gpu_memory_limit_unsupported".into(),
-                    detail: format!("the configured total GPU limit of {limit} bytes requires aggregate executor grants; stock-PyTorch execution cannot enforce it yet"),
-                }));
-            }
-        }
-        Ok(())
-    }
-
     fn measured_peak(&self, lane: &std::ops::Range<usize>, construction: &str) -> Option<u64> {
         self.devices.get(lane.clone()).into_iter().flatten().filter_map(|d| d.memory.as_ref())
             .filter_map(|gpu| gpu.figures.request_peak(construction, "")).max()
@@ -1193,11 +1181,16 @@ impl Pool {
         crate::precision::Gpus::of(&ccs)
     }
     /// The first `degree` GPUs as the Hub resolves a model for them: each one's capability, and
-    /// the free bytes on the one with the fewest (none read: no fit check). No GPU: the CPU.
+    /// the free bytes on the one with the fewest (none read: no fit check). No GPU: the CPU. A dev
+    /// `gpu_memory_limit` caps each GPU's free, so the Hub resolves as it would for a smaller card.
     pub fn hardware(&self, degree: u32) -> tensorfs::fetch::Hardware {
         let devices: Vec<&Device> = self.devices.iter().take(degree as usize).collect();
         let gpus = devices.iter().filter_map(|d| self.inventory(&d.entry)).map(|g| g.compute_cap.clone()).filter(|cc| !cc.is_empty()).collect();
-        let free_vram = devices.iter().filter_map(|d| d.memory.as_ref()?.free()).min();
+        let limit = self.config.gpu_memory_limit.filter(|&l| l > 0);
+        let free_vram = devices.iter()
+            .filter_map(|d| d.memory.as_ref()?.free())
+            .map(|free| limit.map_or(free, |limit| free.min(limit)))
+            .min();
         tensorfs::fetch::Hardware { gpus, free_vram, plain: false }
     }
     fn inventory(&self, entry: &str) -> Option<&crate::machine::receipt::Gpu> {
@@ -2776,10 +2769,6 @@ impl Pool {
             })
         };
         let (key, degree) = (session_key(&plan.construction, start), plan.degree);
-        if let Err(error) = self.gpu_cap(degree) {
-            engine.finish(id, Outcome::Failed(Failure::machine("gpu_memory_limit_unsupported", error.to_string())))?;
-            return Ok(None);
-        }
         let retained = match degree {
             0 => {
                 let mut idle = self.deviceless.lock().unwrap();
@@ -2899,7 +2888,6 @@ impl Pool {
         start: usize,
         on_birth: impl Fn(&Birth, &Cancellation) -> io::Result<()>,
     ) -> io::Result<Session> {
-        self.gpu_cap(plan.degree)?;
         if plan.degree > 0 { self.make_room(engine, &plan.construction, start..start + plan.degree as usize); }
         let launched = Instant::now();
         let (root, socket, directory) = self.executor_endpoint()?;

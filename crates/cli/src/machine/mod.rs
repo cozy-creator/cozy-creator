@@ -79,9 +79,10 @@ enum Verb {
         /// `cozy update` returns to a release.
         #[arg(long, value_name = "VERSION|PATH")]
         tensord: Option<String>,
-        /// Use at most this much of each GPU's memory (`8GiB`), as a smaller card would; `off`
-        /// lifts it. The machine keeps it in its config, across updates and restarts.
-        #[arg(long, value_name = "SIZE|off", value_parser = gpu_memory_limit)]
+        /// (dev) Make each GPU behave like a smaller card by capping its usable VRAM to SIZE
+        /// (`8GiB`) to exercise constrained-VRAM paths; `off` lifts it. Not a consumer option:
+        /// end users never set VRAM. The machine keeps it in its config, across restarts.
+        #[arg(long, value_name = "SIZE|off", value_parser = gpu_memory_limit, hide = true)]
         gpu_memory_limit: Option<u64>,
     },
     /// Add another computer's machine by its address and TLS fingerprint.
