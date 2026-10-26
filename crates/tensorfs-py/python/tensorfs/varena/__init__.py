@@ -117,6 +117,19 @@ class Arena:
             yield
 
 
+class PhaseController:
+    """Internal per-submission phase decoration using native continuation ownership."""
+
+    def __init__(self, arena: Arena) -> None:
+        self._native = _ext._VarenaPhaseController(arena._native)
+
+    def wrap(self, capsule, key: str, regions: Sequence[Region]):
+        return self._native.wrap(capsule, key, [region._native for region in regions])
+
+    def facts(self) -> dict[str, object]:
+        return self._native.facts()
+
+
 class Region:
     def __init__(self, native: _ext._VarenaRegion) -> None:
         self._native = native

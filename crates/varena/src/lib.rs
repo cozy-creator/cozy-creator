@@ -484,6 +484,31 @@ impl Arena {
         Ok(self.lock()?.streaming_limit)
     }
 
+    /// Enter an authored component phase without allocating, evicting or changing its
+    /// admitted window. Only incoming bytes actually Ready now receive preference.
+    pub fn enter_phase(&self, incoming: &[Arc<Region>]) -> Result<()> {
+        let captures = capture_counts()?;
+        ensure_recovery_allowed(&captures, self.device)?;
+        if incoming.iter().any(|region| !std::ptr::eq(self, Arc::as_ptr(&region.arena))) {
+            return Err(Error::Invalid("phase regions must belong to the same arena"));
+        }
+        let mut state = self.lock()?;
+        state.preferred_end = None;
+        state.phase_boundary = (state.clock != u64::MAX).then_some(state.clock);
+        for entry in state.entries.values_mut() {
+            entry.preferred = false;
+        }
+        for region in incoming {
+            let entry = state.entries.get_mut(&region.id).ok_or(Error::Invalid("phase region is retired"))?;
+            entry.preferred = entry.handle.is_some() && entry.uses.state() == Contents::Ready;
+        }
+        Ok(())
+    }
+
+    pub fn owns_region(&self, region: &Region) -> bool {
+        std::ptr::eq(self, Arc::as_ptr(&region.arena))
+    }
+
     /// Hold this guard over capture. Dependencies must already be prepared and separately pinned.
     pub fn enter_capture(self: &Arc<Self>) -> Result<CaptureGuard> {
         let global = enter_capture(self.device)?;
