@@ -120,3 +120,25 @@ their own real gates. The exact prior CLI/SDK bytes were restored and observed r
 16:41:16 UTC. Raw receipts and source/fixture hashes:
 `outputs/stock-torch-20261025/codex-resume-20261026/checked-region-cells/` and
 `outputs/stock-torch-20261025/native-streaming-resume-20261026/completion-caller/GPU-REVIEW.json`.
+
+
+The same distinct mixed cohort also passed 12 native-loading lifecycle criteria in
+runs **18650–18661**, all in executor PID **1464799**. Seven requests completed and five
+intentionally failed at their expected boundary:
+
+- Post-capture host source failures in checked/event toy loading and the small SDXL helper
+  failed only their request. Native and Runtime completion were proven, graph launches
+  remained zero, and cleanup reported zero physical pins/model users with an unpoisoned arena.
+- Stale source/layout mutations refused with zero launches and reads, preserving caller state.
+- Healthy successor requests completed in the same executor after each failure; the small
+  SDXL successor ran seven steps with exact eager parity and 1,639,688 declared/read bytes.
+- A separate SDXL preflight case produced the expected pre-submit fallback signal with zero
+  reads. It does not prove an eager recovery inference from the damaged source.
+
+All three injected source failures report the O_DIRECT path; these are not a qualification
+of failures on non-preferred buffered reads. There was no active request-cancellation or
+empty-input case in this run set. Sibling-pin ordering, the new own-VA multi-stage candidate,
+full-sized model pressure and comparative performance remain separate gates.
+Actual prior CLI/SDK hashes were restored and observed ready/idle at 17:10:59 UTC.
+Raw evidence: `outputs/stock-torch-20261025/codex-resume-20261026/checked-region-completion-cells/`;
+independent review: `outputs/stock-torch-20261025/native-streaming-resume-20261026/completion-caller/GPU-COMPLETION-REGRESSION-REVIEW.json`.
