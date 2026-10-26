@@ -20,6 +20,7 @@ use serde_json::{Map, Number, Value};
 use sha2::{Digest as _, Sha256};
 
 use super::{
+    clip::{self, Clips, Cut, Range},
     describe,
     interface::{AssetsSlot, Callable, Constraints, Field, Struct, Type, Wire},
 };
@@ -31,8 +32,8 @@ const DEFAULT_MAX_BYTES: u64 = 64 << 20;
 const LORA_MODE: &str = "lora_mode";
 
 /// What a run was given on the command line.
-#[derive(Debug, Default)]
-pub struct Terms {
+#[derive(Debug)]
+pub struct Terms<'a> {
     /// The terms after the target: `key=value`, `key:=json`, `model.<slot>=<ref>`, positionals.
     pub inputs: Vec<String>,
     /// `--input FILE`: the whole payload as JSON or YAML; inline terms override it.
@@ -52,6 +53,8 @@ pub struct Terms {
     pub digests: Option<PathBuf>,
     /// Where input trees' manifests are written for the run to send; None: the temp directory.
     pub manifests: Option<PathBuf>,
+    /// Where segments of videos are cut and kept.
+    pub clips: Clips<'a>,
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -65,6 +68,8 @@ pub struct Bound {
     pub ignored: Vec<String>,
     /// The files of input trees, sent with the run; their manifests (in `files`) name them.
     pub tree_files: Vec<StagedInput>,
+    /// Segments of videos sent in place of their sources.
+    pub cuts: Vec<Cut>,
 }
 
 /// A local file bound to a payload field, whose value is its digest.
@@ -132,8 +137,8 @@ fn canonical(value: &Value) -> String {
 
 /// A warm run's model choices: `model.<slot>=`, `--lora` and a conversion's input model. It
 /// carries no payload, so any other term is refused.
-pub fn warm_choices(
-    target: &str, release: Option<&str>, callable: &Callable, terms: &Terms, program: bool,
+pub async fn warm_choices(
+    target: &str, release: Option<&str>, callable: &Callable, terms: &Terms<'_>, program: bool,
 ) -> Result<(Vec<Choice>, Option<protocol::machine::Json>), Error> {
     let mut binder = Binder {
         target: "",
@@ -142,6 +147,7 @@ pub fn warm_choices(
         document: Map::new(),
         choices: BTreeMap::new(),
         files: Vec::new(),
+        cuts: Vec::new(),
     };
     let mut inputs = terms.inputs.clone();
     let destination = binder.conversion(&mut inputs)?;
@@ -161,7 +167,7 @@ pub fn warm_choices(
             if !binder.files.is_empty() || !terms.assets.is_empty() || !terms.fidelities.is_empty() {
                 return Err(usage("warm_inputs", "GPU program warming takes scalar inputs, not media files"));
             }
-            let bound = bind(target, release, callable, terms)?;
+            let bound = bind(target, release, callable, terms).await?;
             if !bound.files.is_empty() || !bound.tree_files.is_empty() || bound.destination.is_some() {
                 return Err(usage("warm_inputs", "GPU program warming takes scalar inputs, not files, trees or output destinations"));
             }
@@ -178,11 +184,11 @@ pub fn warm_choices(
 
 /// Binds `terms` for `callable`; `target` names it in messages (`org/pkg/fn`) and `release` the
 /// one its interface is (none for local code).
-pub fn bind(
+pub async fn bind(
     target: &str,
     release: Option<&str>,
     callable: &Callable,
-    terms: &Terms,
+    terms: &Terms<'_>,
 ) -> Result<Bound, Error> {
     let mut binder = Binder {
         target,
@@ -191,6 +197,7 @@ pub fn bind(
         document: Map::new(),
         choices: BTreeMap::new(),
         files: Vec::new(),
+        cuts: Vec::new(),
     };
     let mut inputs = terms.inputs.clone();
     let destination = binder.conversion(&mut inputs)?;
@@ -200,7 +207,7 @@ pub fn bind(
     let positional = binder.read_terms(&inputs)?;
     binder.primary(positional)?;
     binder.loras()?;
-    let mut files = binder.attach()?;
+    let mut files = binder.attach().await?;
     binder.fidelities()?;
     let tree_files = binder.trees(&mut files)?;
     binder.seed();
@@ -212,17 +219,19 @@ pub fn bind(
         destination,
         ignored,
         tree_files,
+        cuts: binder.cuts,
     })
 }
 
 struct Binder<'a> {
     target: &'a str,
     callable: &'a Callable,
-    terms: &'a Terms,
+    terms: &'a Terms<'a>,
     document: Map<String, Value>,
     choices: BTreeMap<String, Choice>,
     /// Positional local files, bound to media inputs by kind.
     files: Vec<PathBuf>,
+    cuts: Vec<Cut>,
 }
 
 impl Binder<'_> {
@@ -607,8 +616,9 @@ impl Binder<'_> {
     }
 
     /// Binds every file: those named in the payload, `--asset` and positional files. Each value
-    /// becomes the file's digest, and the file its InputFile.
-    fn attach(&mut self) -> Result<Vec<InputFile>, Error> {
+    /// becomes the file's digest, and the file its InputFile. A video whose object names a
+    /// segment of it (`start`/`end`) is sent as that segment's clip.
+    async fn attach(&mut self) -> Result<Vec<InputFile>, Error> {
         let mut specs: Vec<Spec> = Vec::new();
         for field in &self.callable.request.fields {
             if let Some(value) = self.document.get(&field.name) {
@@ -628,6 +638,8 @@ impl Binder<'_> {
         self.bind_positional(&positional, &mut specs)?;
         self.preflight(&specs)?;
 
+        let ranged = self.ranged();
+        let mut segmented = BTreeSet::new();
         let mut seen = BTreeSet::new();
         let mut files = Vec::new();
         for spec in specs {
@@ -695,6 +707,14 @@ impl Binder<'_> {
             })?;
             let path = self.resolve(&spec.source);
             let sniffed = sniff(&path)?;
+            let parent = parts[..parts.len() - 1].join(".");
+            let (path, sniffed) = match ranged.contains(&parent) {
+                false => (path, sniffed),
+                true => {
+                    let media_type = sniffed.media_type;
+                    self.segment(&parent, &field, &path, &media_type, &mut segmented).await?
+                }
+            };
             let (kind_max, kinds) = accepts;
             let max = kinds
                 .iter()
@@ -749,9 +769,69 @@ impl Binder<'_> {
                 order,
             });
         }
+        if let Some(stray) = ranged.difference(&segmented).next() {
+            return Err(invalid(
+                "input_segment_invalid",
+                format!("{}: start/end cut a local video file beside them, and none is there", object_name(stray)),
+            ));
+        }
+        for parent in &segmented {
+            if let Some(object) = object_at(&mut self.document, parent) {
+                clip::KEYS.iter().for_each(|key| _ = object.remove(*key));
+            }
+        }
         self.count_kinds(&files)?;
         files.sort_by(|a, b| a.field.cmp(&b.field));
         Ok(files)
+    }
+
+    /// The objects naming a segment of a video beside them: `start`/`end` their struct does not
+    /// declare, where it declares files.
+    fn ranged(&self) -> BTreeSet<String> {
+        let mut found = BTreeSet::new();
+        let files = self.callable.assets.is_some()
+            || self.callable.request.fields.iter().any(|f| f.ty.media().is_some());
+        let undeclared = |k: &&str| self.document.contains_key(*k) && self.callable.field(k).is_none();
+        if files && clip::KEYS.iter().any(undeclared) {
+            found.insert(String::new());
+        }
+        for field in &self.callable.request.fields {
+            if let Some(value) = self.document.get(&field.name) {
+                ranged(&field.ty, value, &field.name, &mut found);
+            }
+        }
+        found
+    }
+
+    /// The clip sent for the video at `field`, whose object at `parent` names its segment.
+    async fn segment(
+        &mut self,
+        parent: &str,
+        field: &str,
+        source: &Path,
+        media_type: &str,
+        segmented: &mut BTreeSet<String>,
+    ) -> Result<(PathBuf, Sniffed), Error> {
+        let at = object_name(parent);
+        if !media_type.starts_with("video/") {
+            return Err(invalid(
+                "input_segment_invalid",
+                format!("{at}: start/end cut a video, and {field} is {media_type}"),
+            ));
+        }
+        if !segmented.insert(parent.to_owned()) {
+            return Err(invalid(
+                "input_segment_invalid",
+                format!("{at}: start/end cut one video, and it holds several"),
+            ));
+        }
+        let object = object_at(&mut self.document, parent).expect("a ranged object is there");
+        let range = Range::read(object, &at)?;
+        let cut = self.terms.clips.cut(field, source, range).await?;
+        let sniffed = sniff(&cut.clip)?;
+        let clip = cut.clip.clone();
+        self.cuts.push(cut);
+        Ok((clip, sniffed))
     }
 
     /// Each local directory at a Tree input becomes a TensorFS manifest naming its files: the field
@@ -1254,6 +1334,58 @@ fn embedded_files(ty: &Type, value: &Value, path: &str, out: &mut Vec<Spec>) -> 
         _ => {}
     }
     Ok(())
+}
+
+/// Below a field of type `ty`: the objects whose struct declares files and that hold an undeclared
+/// `start` or `end`.
+fn ranged(ty: &Type, value: &Value, path: &str, out: &mut BTreeSet<String>) {
+    match (ty, value) {
+        (Type::Union { branches, .. }, value) => {
+            branches.iter().for_each(|b| ranged(b, value, path, out));
+        }
+        (Type::List(item), Value::Array(values)) => {
+            for (i, value) in values.iter().enumerate() {
+                ranged(item, value, &format!("{path}.{i}"), out);
+            }
+        }
+        (Type::Struct(s), Value::Object(object)) => {
+            let declared = |k: &str| s.fields.iter().any(|f| f.name == k);
+            let files = s.fields.iter().any(|f| f.ty.media().is_some());
+            if files && clip::KEYS.iter().any(|k| object.contains_key(*k) && !declared(k)) {
+                out.insert(path.to_owned());
+            }
+            for field in &s.fields {
+                if let Some(value) = object.get(&field.name) {
+                    ranged(&field.ty, value, &format!("{path}.{}", field.name), out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The object at `path` (`references.0`); the empty path is the request.
+fn object_at<'v>(document: &'v mut Map<String, Value>, path: &str) -> Option<&'v mut Map<String, Value>> {
+    let mut parts = path.split('.').filter(|p| !p.is_empty());
+    let Some(first) = parts.next() else {
+        return Some(document);
+    };
+    let mut node = document.get_mut(first)?;
+    for part in parts {
+        node = match node {
+            Value::Array(list) => list.get_mut(part.parse::<usize>().ok()?)?,
+            Value::Object(object) => object.get_mut(part)?,
+            _ => return None,
+        };
+    }
+    node.as_object_mut()
+}
+
+fn object_name(path: &str) -> String {
+    match path {
+        "" => "the request".into(),
+        path => path.into(),
+    }
 }
 
 /// Local directories at Tree positions: each field's path and the directory as written.

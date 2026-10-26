@@ -46,6 +46,19 @@ Inline `key=value` inputs are the quick form: `cozy run sdxl/generate prompt='a 
 Files go in with `--asset` (or by path inside the YAML, relative to it). A run is followed to its end;
 Ctrl-C stops following, never the run, and `cozy run show <N>` picks it up again.
 
+A video can carry `start` and `end` beside it (seconds, `m:ss.s` or `h:mm:ss.s`; either may be left out).
+cozy cuts that segment once, frame-accurately, keeps it in `~/.cozy/cache/clips`, and sends the cut, not
+the whole file; a machine that already holds it is not sent it again:
+
+```yaml
+references:
+  - name: Video 1
+    kind: video
+    video: videos/match.m4v
+    start: "3:19"
+    end: "3:32.7"
+```
+
 ```sh
 cozy machine rent            # what is for rent; then cozy machine rent <sku>
 cozy model search sdxl
