@@ -6,6 +6,8 @@ mod refill;
 mod continuation;
 #[cfg(feature = "store")]
 mod load;
+#[cfg(feature = "store")]
+mod stage_continuation;
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     ffi,
@@ -570,6 +572,10 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<load::LoadSlot>()?;
     #[cfg(feature = "store")]
     module.add_class::<load::LoadJob>()?;
+    #[cfg(feature = "store")]
+    module.add_class::<load::StageSource>()?;
+    #[cfg(feature = "store")]
+    module.add_class::<stage_continuation::StageJob>()?;
     module.add_function(wrap_pyfunction!(_varena_install_allocator, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_set_activation_limit, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_allocator_stats, module)?)?;
