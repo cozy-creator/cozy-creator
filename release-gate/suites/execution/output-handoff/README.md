@@ -116,7 +116,8 @@ remain part of request latency. Setup performed before the command must be discl
 A completed `run show --once` only checks observer startup and receipt handling; it is not a
 fresh transfer benchmark. Pair the recorder with a real file-output or media request.
 
-Calcifer records `phase=output_export`, `output_prepare_file`, `output_range`, `output_check`,
+Calcifer records machine-event arrival (`output_received`, `outcome_received`) and its
+store/publication interval (`output_recorded`, `outcome_recorded`), then `phase=output_export`, `output_prepare_file`, `output_range`, `output_check`,
 and `output_land` in its existing process log. Those phases separate request/headers, first body
 bytes, body waiting, file writes, hashing, fsync, rename, store commit and notification. Range
 records include run/output/revision and byte interval; file verification records use the staged
