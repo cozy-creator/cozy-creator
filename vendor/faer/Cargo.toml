@@ -10,6 +10,8 @@
 # See Cargo.toml.orig for the original contents.
 
 [package]
+# Cargo generates this reserved filename when packaging the normalized manifest.
+exclude = ["Cargo.toml.orig"]
 edition = "2021"
 rust-version = "1.84.0"
 name = "faer"
