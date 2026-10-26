@@ -62,9 +62,11 @@ elif [ "$what" = tensorfs ]; then
 else
   # Its own version, <version>+dev.g<sha8> as the dev cozy's, so the imports suite tells it from PyPI's.
   (cd "$src"
-    uv run -q --no-project python scripts/stamp-build-provenance.py "$sha"
-    uv version -q --frozen "$(uv version --short)+dev.g${sha:0:8}"
-    uv build -q --wheel --out-dir "$out"
+    # Artifact construction needs only its build backend. Do not resolve a serving
+    # find-links/source override when the matched TensorFS candidate is built beside it.
+    uv --no-config run -q --no-project python scripts/stamp-build-provenance.py "$sha"
+    uv --no-config version -q --frozen "$(uv --no-config version --short)+dev.g${sha:0:8}"
+    uv --no-config build -q --wheel --out-dir "$out"
     git checkout -- pyproject.toml)
 fi
 case $what in

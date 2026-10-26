@@ -181,6 +181,8 @@ class Writer:
                 self._native.set_metadata(key, value)
             try:
                 ck = self._native.commit()
+            except _ext.ConflictError:
+                raise  # A native conversion still owns the Writer; retry after its join.
             except _ext.Error as error:
                 self.local_checkpoint = getattr(error, "checkpoint", None)
                 self._failed = error
@@ -193,3 +195,19 @@ class Writer:
 
     def has(self, component, key) -> bool:
         return self._native.has(component, key)
+
+    def normalize_bf16(self, source, tensors, *, max_buffer_bytes: int, max_new_bytes: int, control):
+        """Write plain BF16 through the native reader, RNE cast, quality checks and journal.
+
+        Supply the same full selection on every attempt, including completed tensors.
+        The native call owns the Writer until it returns; this does not commit it.
+        """
+        return self._native.normalize_bf16(source, tensors, max_buffer_bytes=max_buffer_bytes, max_new_bytes=max_new_bytes, control=control)
+
+    def quantize(self, source, tensors, *, max_buffer_bytes: int, max_new_bytes: int, control, max_relative_frobenius: float | None = None, calibration=None, component: str | None = None):
+        """Encode a complete resolved selection natively, without committing this Writer.
+
+        `control` can cancel/observe from another thread; observations never drive the loop.
+        Source, calibration snapshot and full recipe must remain identical on resume.
+        """
+        return self._native.quantize(source, tensors, max_buffer_bytes=max_buffer_bytes, max_new_bytes=max_new_bytes, control=control, max_relative_frobenius=max_relative_frobenius, calibration=calibration, component=component)

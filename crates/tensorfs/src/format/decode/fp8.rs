@@ -46,5 +46,13 @@ pub const SCALE: Dtypes = &["F32", "BF16", "F16"];
 
 /// `weight × s(i, j)`: the element table looked up by the weight's bytes.
 fn scaled<'a>(c: &Ctx<'a>, grid: Grid) -> Plan<'a> {
-    Codes::elements(c.part("weight"), c.part("scale"), grid).into()
+    // Keep one arithmetic plan for host bytes and resident engine-bound inputs.
+    let mut codes = Codes::new(
+        c.source("weight"),
+        super::affine::BYTES,
+        c.elements("scale"),
+        grid,
+    );
+    codes.table = super::elem::table(c.part("weight").dtype);
+    codes.into()
 }

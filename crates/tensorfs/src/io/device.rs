@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use super::cuda::{self, CUcontext, CUevent, CUstream, CtxGuard};
-use super::{host, Copy, Dst, Error, Issued, ReadOpts, ReadStats, Src};
+use super::{host, Copy, Dst, Error, Issued, ReadControl, ReadOpts, ReadStats, Src};
 
 const PIECE: usize = 2 << 20;
 const READERS: usize = 8;
@@ -32,14 +32,15 @@ fn failed(copy: usize, error: cuda::Error) -> Error {
     }
 }
 
-struct Event {
+pub(super) struct Event {
     ctx: CUcontext,
     raw: CUevent,
     timing: bool,
+    release_failed: bool,
 }
 
 impl Event {
-    fn new(ctx: CUcontext, timing: bool) -> cuda::Result<Event> {
+    pub(super) fn new(ctx: CUcontext, timing: bool) -> cuda::Result<Event> {
         let _ctx = CtxGuard::enter(ctx)?;
         let mut raw = std::ptr::null_mut();
         // SAFETY: `raw` is a writable out-pointer and the event's context is current.
@@ -53,9 +54,14 @@ impl Event {
                 },
             )
         })?;
-        Ok(Event { ctx, raw, timing })
+        Ok(Event {
+            ctx,
+            raw,
+            timing,
+            release_failed: false,
+        })
     }
-    fn record(&self, stream: CUstream) -> cuda::Result<()> {
+    pub(super) fn record(&self, stream: CUstream) -> cuda::Result<()> {
         let _ctx = CtxGuard::enter(self.ctx)?;
         // SAFETY: a live event and stream of this context, which is current.
         cuda::check("cuEventRecord", unsafe {
@@ -69,6 +75,32 @@ impl Event {
             (cuda::driver()?.event_synchronize)(self.raw)
         })
     }
+    pub(super) fn wait_on(&self, stream: CUstream) -> cuda::Result<()> {
+        let _ctx = CtxGuard::enter(self.ctx)?;
+        // SAFETY: both handles are retained in this context; record precedes every wait.
+        cuda::check("cuStreamWaitEvent", unsafe {
+            (cuda::driver()?.stream_wait_event)(stream, self.raw, 0)
+        })
+    }
+    pub(super) fn release_checked(&mut self) -> cuda::Result<()> {
+        if self.release_failed {
+            return Err(cuda::Error::CudaUnavailable(
+                "event release was already unproven".into(),
+            ));
+        }
+        if self.raw.is_null() {
+            return Ok(());
+        }
+        self.release_failed = true;
+        let _ctx = CtxGuard::enter(self.ctx)?;
+        // SAFETY: the sole owner destroys this event once; failure forbids any retry.
+        cuda::check("cuEventDestroy(checked)", unsafe {
+            (cuda::driver()?.event_destroy)(self.raw)
+        })?;
+        self.raw = std::ptr::null_mut();
+        self.release_failed = false;
+        Ok(())
+    }
     fn since(&self, start: &Event) -> cuda::Result<u64> {
         let mut ms = 0.0f32;
         // SAFETY: `ms` is writable and both events are live.
@@ -81,6 +113,9 @@ impl Event {
 
 impl Drop for Event {
     fn drop(&mut self) {
+        if self.release_failed || self.raw.is_null() {
+            return;
+        }
         if let (Ok(d), Ok(_ctx)) = (cuda::driver(), CtxGuard::enter(self.ctx)) {
             // SAFETY: the event is live in this context, which is current; destroyed once, here.
             unsafe { (d.event_destroy)(self.raw) };
@@ -204,6 +239,7 @@ pub struct DeviceBuffer {
     ptr: u64,
     len: usize,
     engine: Arc<Engine>,
+    release_failed: bool,
 }
 
 impl DeviceBuffer {
@@ -217,7 +253,12 @@ impl DeviceBuffer {
                 (cuda::driver()?.mem_alloc)(&mut ptr, len)
             })?;
         }
-        Ok(DeviceBuffer { ptr, len, engine })
+        Ok(DeviceBuffer {
+            ptr,
+            len,
+            engine,
+            release_failed: false,
+        })
     }
     pub fn ptr(&self) -> u64 {
         self.ptr
@@ -234,11 +275,37 @@ impl DeviceBuffer {
     pub fn context(&self) -> CUcontext {
         self.engine.ctx
     }
+    /// Free a completed native-owned allocation, checking the driver result.
+    ///
+    /// # Safety
+    /// Every producer and consumer is checked complete; no alias may access the pointer.
+    /// The caller excludes actual CUDA capture. On error retain this owner until process
+    /// retirement; an ambiguous free must not be retried, including by Drop.
+    pub unsafe fn release_completed(&mut self) -> cuda::Result<()> {
+        if self.release_failed {
+            return Err(cuda::Error::CudaUnavailable(
+                "allocation release was already unproven".into(),
+            ));
+        }
+        if self.ptr == 0 {
+            return Ok(());
+        }
+        self.release_failed = true;
+        let _ctx = CtxGuard::enter(self.engine.ctx)?;
+        // SAFETY: the caller certified all users complete and this object owns the pointer.
+        cuda::check("cuMemFree(checked)", unsafe {
+            (cuda::driver()?.mem_free)(self.ptr)
+        })?;
+        self.ptr = 0;
+        self.len = 0;
+        self.release_failed = false;
+        Ok(())
+    }
 }
 
 impl Drop for DeviceBuffer {
     fn drop(&mut self) {
-        if self.ptr != 0 {
+        if self.ptr != 0 && !self.release_failed {
             if let (Ok(d), Ok(_ctx)) = (cuda::driver(), CtxGuard::enter(self.engine.ctx)) {
                 // SAFETY: this buffer allocated `ptr` in the engine's context, which is current; freed once, here.
                 unsafe { (d.mem_free)(self.ptr) };
@@ -301,6 +368,14 @@ impl Drop for RunHold<'_> {
 fn registry() -> &'static Mutex<BTreeMap<i32, Arc<Engine>>> {
     static ENGINES: OnceLock<Mutex<BTreeMap<i32, Arc<Engine>>>> = OnceLock::new();
     ENGINES.get_or_init(Mutex::default)
+}
+
+pub(super) fn prepare(device: i32) -> cuda::Result<()> {
+    Engine::get(device).map(drop)
+}
+
+fn interrupted(copy: usize) -> Error {
+    Error { copy, source: io::Error::new(io::ErrorKind::Interrupted, "native read canceled") }
 }
 
 /// Noninitializing: no driver/context is created when this device has no engine.
@@ -511,9 +586,14 @@ impl Engine {
         opts: &ReadOpts,
         staged_host: bool,
         issued: Option<Issued>,
+        cancel: Option<&ReadControl>,
     ) -> Result<ReadStats, Error> {
         let _serial = self.serial.lock().unwrap_or_else(|e| e.into_inner());
         let first = copies[0].0;
+        let canceled = || cancel.is_some_and(ReadControl::canceled);
+        if canceled() {
+            return Err(interrupted(first));
+        }
         if !self
             .held
             .lock()
@@ -614,6 +694,9 @@ impl Engine {
             jobs.iter().for_each(|job| _ = left[job.local].fetch_add(1, Relaxed));
             let raw: Vec<usize> = self.streams[..streams].iter().map(|s| s.raw()).collect();
             let done = |job: &Job| {
+                if let Some(control) = cancel {
+                    control.issue(job.len);
+                }
                 if let Some(issued) = issued {
                     if left[job.local].fetch_sub(1, AcqRel) == 1 {
                         issued(job.copy, &raw);
@@ -624,6 +707,11 @@ impl Engine {
             // thread issues them, round-robin over the streams, before any reader starts.
             let (direct, jobs): (Vec<Job>, Vec<Job>) = jobs.into_iter().partition(|job| job.direct);
             for (at, job) in direct.iter().enumerate() {
+                if canceled() {
+                    error.lock().unwrap().get_or_insert_with(|| interrupted(first));
+                    stopped.store(true, Relaxed);
+                    break;
+                }
                 if let Err(failure) = self.issue(job, lane(at, streams)) {
                     error.lock().unwrap().get_or_insert(failure);
                     stopped.store(true, Relaxed);
@@ -648,7 +736,7 @@ impl Engine {
                     free.split_off(at)
                 };
                 let mut turn = 0;
-                while !stopped.load(Relaxed) {
+                while !stopped.load(Relaxed) && !canceled() {
                     let at = next.fetch_add(1, Relaxed);
                     let Some(job) = jobs.get(at) else { break };
                     turn += 1;
@@ -674,6 +762,9 @@ impl Engine {
                     scope.spawn(work);
                 }
             });
+            if canceled() {
+                error.lock().unwrap().get_or_insert_with(|| interrupted(first));
+            }
             let mut busy_ns = 0;
             let mut all_complete = true;
             for (lane, stream) in self.streams[..streams].iter().enumerate() {
@@ -723,13 +814,17 @@ impl Engine {
             unreachable!("a direct copy has a device destination")
         };
         let result = match job.c.src {
+            // SAFETY: the checked destination covers job.len bytes and remains owned until drain.
             Src::Zero => unsafe { (d.memset_d8_async)(dst, 0, job.len, stream) },
+            // SAFETY: direct host sources are registered and retained through checked completion.
             Src::Host(ptr) => unsafe { (d.memcpy_htod_async)(dst, ptr.cast(), job.len, stream) },
+            // SAFETY: both checked device spans belong to this context and outlive the copy.
             Src::Device { device, ptr, .. } if device == self.device => unsafe {
                 (d.memcpy_dtod_async)(dst, ptr, job.len, stream)
             },
             Src::Device { device, ptr, .. } => {
                 let source = Engine::get(device).map_err(|e| failed(job.copy, e))?;
+                // SAFETY: both contexts and checked peer spans stay owned until completion.
                 unsafe { (d.memcpy_peer_async)(dst, self.ctx, ptr, source.ctx, job.len, stream) }
             }
             Src::File(..) => unreachable!("a file source is staged"),
@@ -845,6 +940,7 @@ pub(super) unsafe fn fill(
     opts: &ReadOpts,
     staged_host: bool,
     issued: Option<Issued>,
+    cancel: Option<&ReadControl>,
 ) -> Result<ReadStats, Error> {
     let mut groups: BTreeMap<(i32, &str), Vec<(usize, Copy)>> = BTreeMap::new();
     for &(index, copy) in copies {
@@ -879,7 +975,7 @@ pub(super) unsafe fn fill(
     for ((device, kind), copies) in groups {
         let engine = Engine::get(device).map_err(|e| failed(copies[0].0, e))?;
         let start = Instant::now();
-        let stats = engine.run(&copies, opts, staged_host, issued)?;
+        let stats = engine.run(&copies, opts, staged_host, issued, cancel)?;
         #[cfg(unix)]
         {
             let ns = start.elapsed().as_nanos() as u64;

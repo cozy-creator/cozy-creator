@@ -287,6 +287,7 @@ pub struct Execution {
     /// observation the engine overlays, never journaled.
     #[serde(skip)]
     pub waiting: Option<String>,
+    /// Live process ownership only; cleared after a proven return. `executor` retains history.
     pub process: Option<Birth>,
     pub cancel_actor: Option<String>,
     /// Explicit cancellation reserved this actor/ID before any Run spec was accepted.
@@ -1860,6 +1861,40 @@ impl Journal {
         })
     }
 
+    /// Reserve a log cursor before the transition's snapshot cursor. A log cannot hide a
+    /// terminal/status snapshot at the same cursor; both are written in the same transaction.
+    fn phase_revision(record: &mut Execution) -> io::Result<()> {
+        record.revision_ceiling = record.revision.max(record.revision_ceiling)
+            .checked_add(1).ok_or_else(|| db_error("execution observation cursor exhausted"))?;
+        Ok(())
+    }
+    fn phase_log(tx: &rusqlite::Transaction<'_>, record: &Execution, mut phase: serde_json::Value) -> io::Result<()> {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+        phase["at_ns"] = (now.as_nanos().min(u64::MAX as u128) as u64).into();
+        let line = serde_json::to_vec(&serde_json::json!({"level": "info", "text": phase.to_string()}))?;
+        let sequence = record.revision.checked_sub(1).ok_or_else(|| db_error("phase cursor absent"))?;
+        tx.execute("INSERT INTO run_logs(execution,sequence,at_ms,record) VALUES(?1,?2,?3,?4)",
+            params![record.id, sequence as i64, timestamp(), line]).map_err(db_error)?;
+        Ok(())
+    }
+
+    /// The owner has proved completion and revoked this invocation's cancellation delivery.
+    /// Keep historical executor facts, but no live process obligation can follow its next use.
+    pub(crate) fn returned_process(&mut self, id: &str, birth: &Birth, progress: Option<&ProgressSnapshot>) -> io::Result<Execution> {
+        self.update_with(id, progress, |record| {
+            if !matches!(record.state, State::Starting | State::Running) || record.process.as_ref() != Some(birth) {
+                return Err(db_error("returned executor does not own this active invocation"));
+            }
+            record.process = None;
+            if let Some(pending) = &mut record.pending_completion { pending.processes.clear(); }
+            Self::phase_revision(record)?;
+            Ok(true)
+        }, |tx, record| {
+            let phase = if record.invocation.degree > 0 { "gpu_returned" } else { "executor_returned" };
+            Self::phase_log(tx, record, serde_json::json!({"phase": phase, "pid": birth.pid}))
+        })
+    }
+
     pub fn running(&mut self, id: &str, executor: Option<ExecutorFacts>) -> io::Result<Execution> {
         self.update(id, |record| {
             if record.state != State::Starting || record.process.is_none() {
@@ -1908,16 +1943,22 @@ impl Journal {
                 "cancellation requires an actor",
             ));
         }
-        self.update_observed(id, progress, |record| {
+        let output = std::cell::Cell::new(false);
+        self.update_with(id, progress, |record| {
             if record.state.terminal() || record.cancel_actor.is_some() {
                 return Ok(false);
             }
+            output.set(record.state == State::Running && record.process.is_none());
+            if output.get() { Self::phase_revision(record)?; }
             record.cancel_actor = Some(actor.into());
             if record.state == State::Queued {
                 record.state = State::Canceled;
                 record.finished_at_ms = timestamp().max(0) as u64;
             }
             Ok(true)
+        }, |tx, record| {
+            if output.get() { Self::phase_log(tx, record, serde_json::json!({"phase": "output_cancelled"})) }
+            else { Ok(()) }
         })
     }
 
@@ -1969,9 +2010,11 @@ impl Journal {
         progress: Option<&ProgressSnapshot>,
         held: Option<HeldMemo>,
     ) -> io::Result<Execution> {
-        let hold = |tx: &rusqlite::Transaction<'_>, record: &Execution| match held {
-            Some(held) if record.state == State::Completed => hold_memo(tx, &held),
-            _ => Ok(()),
+        let output = std::cell::Cell::new(false);
+        let hold = |tx: &rusqlite::Transaction<'_>, record: &Execution| {
+            if let Some(held) = held.filter(|_| record.state == State::Completed) { hold_memo(tx, &held)?; }
+            if output.get() { Self::phase_log(tx, record, serde_json::json!({"phase": "output_finished"}))?; }
+            Ok(())
         };
         self.update_with(id, progress, |record| {
             if record.state.terminal() {
@@ -1980,6 +2023,11 @@ impl Journal {
             if record.state == State::Queued {
                 return Err(db_error("unstarted attempt cannot finish"));
             }
+            output.set(record.state == State::Running && record.process.is_none());
+            if output.get() { Self::phase_revision(record)?; }
+            // This is the final serialized decision, after custody: an accepted cancellation
+            // cannot be replaced by success from the earlier, now detached invocation.
+            let outcome = if output.get() && record.cancel_actor.is_some() { Outcome::Canceled } else { outcome };
             match outcome {
                 Outcome::Completed(result) => {
                     record.state = State::Completed;

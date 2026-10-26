@@ -1,0 +1,164 @@
+{
+  "schema": 1,
+  "date": "2026-10-25",
+  "qualification": "real_prepared_watched_capture_pass",
+  "run": {
+    "number": 17775,
+    "public_id": "run-f85197fd0928f758f897f47b",
+    "machine": "kikoru",
+    "status": "completed",
+    "target": "local/ci-prepared-resident-owners/gpu",
+    "cli_return_code": 0,
+    "result_passed": true,
+    "facts": {
+      "body_calls": 2,
+      "capture_pauses": 1,
+      "capture_status": [
+        {
+          "code": 0,
+          "stage": "before-pause",
+          "status": 1
+        },
+        {
+          "code": 0,
+          "stage": "after-pause",
+          "status": 1
+        }
+      ],
+      "completed_steps": 2,
+      "cudnn": 92400,
+      "device": "NVIDIA GeForce RTX 3060",
+      "max_abs": 0.0,
+      "mode": "conv-prepared-watched",
+      "native": {
+        "body_nodes": 4,
+        "closed": false,
+        "continuation_abi": 1,
+        "control_kernels_preloaded": true,
+        "device": 0,
+        "execution_mode": "cuda_conditional_while",
+        "host_graph_launches": 1,
+        "steps_per_launch": 2,
+        "validated_nodes": 6
+      },
+      "pid": 286,
+      "request_id": "2",
+      "runtime": "0.32.3",
+      "samples_after_prepare": 59,
+      "samples_after_resume": 60,
+      "samples_before_prepare": 0,
+      "seed": 1792919793,
+      "tensorfs": "0.15.6",
+      "torch": "2.14.1+cu130",
+      "watcher_threads": [
+        138356490811072
+      ]
+    }
+  },
+  "cohort": {
+    "runtime": {
+      "path": "/home/fidika/cozy/.worktrees/cozy-runtime/varena-consolidation/.task/portable-capture-observer/cozy_runtime-0.32.3-cp312-abi3-manylinux_2_28_x86_64.whl",
+      "sha256": "8588ce22f35872fddd76695217ea949e50eaf506ef0b75a8fbbb0b0eab7b7eb8",
+      "source": "c1ac7cded3f5d82ebbbffe5308055b452eaa4699",
+      "scope": "Only watcher capture exclusion over measured559 baseline; combined4429 adapters excluded"
+    },
+    "tensorfs": {
+      "path": "/home/fidika/cozy/.worktrees/cozy-creator/varena-consolidation/.task/portable-e521cc779/tensorfs/tensorfs-0.15.6-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "sha256": "ca15dd65e7aa3249f3749dd60a452260ab54854ccb44d4449b7189234951941b",
+      "source": "e521cc779"
+    },
+    "tensord": {
+      "path": "/home/fidika/cozy/.worktrees/cozy-creator/varena-consolidation/.task/portable-4178a2a11/cozy/cozy-linux-x86_64",
+      "sha256": "6b0c6dbbe5d4740fa611dc4c0a28d1cc00b9362bf8397192bfdeae5bdfd119a0",
+      "source": "4178a2a11"
+    }
+  },
+  "fixture": {
+    "creator_commit": "729e462f23decf84fb9a8ba15e334d5e83026687",
+    "path": "/home/fidika/cozy/.worktrees/cozy-creator/varena-consolidation/release-gate/suites/execution/prepared-resident-owners/ci_prepared_resident_owners/prepared_convolution.py",
+    "sha256": "7251eb50799f6a6bbffb7d8a696f44c62e6e02b8549bdfdd158a93f63a9056e4",
+    "matches_red_17760": true
+  },
+  "normal_install": {
+    "number": 17773,
+    "public_id": "run-97296d66542760915ddf0e64",
+    "status": "completed",
+    "to": {
+      "cozy": "0.11.17+dev.g4178a2a1",
+      "runtime": "0.32.3",
+      "runtime_sha256": "8588ce22f35872fddd76695217ea949e50eaf506ef0b75a8fbbb0b0eab7b7eb8",
+      "tensorfs": "0.15.6",
+      "tensorfs_sha256": "ca15dd65e7aa3249f3749dd60a452260ab54854ccb44d4449b7189234951941b"
+    },
+    "observed_tensord_commit": "4178a2a1195b9afe1426ec4567d738d28d31f826",
+    "gpus": [
+      {
+        "index": 0,
+        "name": "NVIDIA GeForce RTX 3060",
+        "memory_bytes": 12884901888,
+        "driver": "580.95.05",
+        "family": "sm86",
+        "memory_class": "discrete"
+      }
+    ]
+  },
+  "red_bundle": {
+    "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/capture-watch-proof/red-17743-17760.json",
+    "sha256": "75dff02bc00800f79cbef236789f47a248566ba55526ac65f52c21e6e3eee23d",
+    "runs": [
+      17743,
+      17760
+    ]
+  },
+  "comparison": {
+    "red_capture_status": [
+      1,
+      2
+    ],
+    "green_capture_status": [
+      1,
+      1
+    ],
+    "red_device": "NVIDIA GeForce RTX 4070 Laptop GPU",
+    "green_device": "NVIDIA GeForce RTX 3060",
+    "same_fixture_source": true,
+    "same_torch_version": true,
+    "same_tensorfs_artifact": true,
+    "runtime_change": "559 baseline to c1 capture observer fix; combined4429 changes excluded",
+    "same_machine_or_seed": false
+  },
+  "timings": {
+    "run_execution_ms": 13263,
+    "created_to_settled_ms": 16516,
+    "started_to_settled_ms": 14335,
+    "scope": "Fixture includes setup, eager/warmup/capture, deliberate0.3s pause, watcher sampling and result handling; not GPU convolution or model throughput latency."
+  },
+  "limits": [
+    "Red ran on RTX4070 Laptop, green on RTX3060 with a different seed; this is cross-device correctness evidence, not a matched same-card causal or performance comparison.",
+    "This fixture passes all assertions including final public callback setting the watcher done event and plan.close returning. It does not return an independent native process-exit certificate.",
+    "Full30-step SDXL proof remains separate and pending.",
+    "Concurrent same-attempt callback-creation followup is unapplied and excluded from this result."
+  ],
+  "receipts": [
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/capture-green-20261025/prepared-watched.json",
+      "sha256": "4dcd4d8ec3555481de046611278cc8243007550c31b2a7edfcd145713b29e0ac"
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/capture-green-20261025/prepared-watched.rc",
+      "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/capture-green-20261025/cohort.json",
+      "sha256": "4465f51a35c51c6523346b3bb674818ef3b3f042506bb641cf48f62d47824d72"
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/capture-green-20261025/install.json",
+      "sha256": "9612a4605da24bfefa13c3acf462f04ed6da1ad875078cc1199e75c8117f1d8a"
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/capture-green-20261025/installed.json",
+      "sha256": "a94abdac0fb0bd998440a578b3857dc7ef46a33602ea199c51ee2178a4b12a19"
+    }
+  ]
+}

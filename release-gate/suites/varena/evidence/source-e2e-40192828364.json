@@ -1,0 +1,440 @@
+{
+  "reviewed_utc": "2026-10-25T12:41:37.033097+00:00",
+  "run_id": 40192828364,
+  "url": "https://github.com/cozy-creator/cozy-creator/actions/runs/40192828364",
+  "conclusion": "success",
+  "workflow_head": "51b1705e9dd96f91dfccc004913e57179339b202",
+  "source_refs": {
+    "creator_ref": "51b1705e9dd96f91dfccc004913e57179339b202",
+    "stack_ref": "51b1705e9dd96f91dfccc004913e57179339b202",
+    "repo": "packages",
+    "ref": "a3755916454acff2e941644776f74c1e371766ca",
+    "runtime_ref": "db7a54bb57a95b59d85276bfa74a03d4ff5022e9"
+  },
+  "selected_jobs_passed": 16,
+  "unselected_jobs_skipped": [
+    "mps",
+    "cli-release ${{ matrix.runner }}"
+  ],
+  "jobs": [
+    {
+      "id": 121167300502,
+      "name": "affected",
+      "conclusion": "success",
+      "started_at": "2026-10-25T12:22:40Z",
+      "completed_at": "2026-10-25T12:22:46Z",
+      "runner_labels": [
+        "ubuntu-24.04"
+      ]
+    },
+    {
+      "id": 121167328916,
+      "name": "candidate cozy",
+      "conclusion": "success",
+      "started_at": "2026-10-25T12:22:48Z",
+      "completed_at": "2026-10-25T12:25:28Z",
+      "runner_labels": [
+        "ubuntu-24.04"
+      ]
+    },
+    {
+      "id": 121167328931,
+      "name": "cli macos-15-intel",
+      "conclusion": "success",
+      "started_at": "2026-10-25T12:22:49Z",
+      "completed_at": "2026-10-25T12:38:05Z",
+      "runner_labels": [
+        "macos-15-intel"
+      ]
+    },
+    {
+      "id": 121167328932,
+      "name": "cli windows-2025",
+      "conclusion": "success",
+      "started_at": "2026-10-25T12:22:47Z",
+      "completed_at": "2026-10-25T12:33:53Z",
+      "runner_labels": [
+        "windows-2025"
+      ]
+    },
+    {
+      "id": 121167328952,
+      "name": "candidate tensorfs",
+      "conclusion": "success",
+      "started_at": "2026-10-25T12:22:48Z",
+      "completed_at": "2026-10-25T12:24:28Z",
+      "runner_labels": [
+        "ubuntu-24.04"
+      ]
+    },
+    {
+      "id": 121167328978,
+      "name": "cli macos-15",
+      "conclusion": "success",
+      "started_at": "2026-10-25T12:22:48Z",
+      "completed_at": "2026-10-25T12:30:41Z",
+      "runner_labels": [
+        "macos-15"
+      ]
+    },
+    {
+      "id": 121167329076,
+      "name": "candidate runtime",
+      "conclusion": "success",
+      "started_at": "2026-10-25T12:22:48Z",
+      "completed_at": "2026-10-25T12:23:02Z",
+      "runner_labels": [
+        "ubuntu-24.04"
+      ]
+    },
+    {
+      "id": 121167330231,
+      "name": "mps",
+      "conclusion": "skipped",
+      "started_at": "2026-10-25T12:22:46Z",
+      "completed_at": "2026-10-25T12:22:46Z",
+      "runner_labels": [
+        "macos-15"
+      ]
+    },
+    {
+      "id": 121167923335,
+      "name": "imports 3/4",
+      "conclusion": "success",
+      "started_at": "2026-10-25T12:25:30Z",
+      "completed_at": "2026-10-25T12:26:59Z",
+      "runner_labels": [
+        "ubuntu-24.04"
+      ]
+    },
+    {
+      "id": 121167923354,
+      "name": "cli follow",
+      "conclusion": "success",
+      "started_at": "2026-10-25T12:25:30Z",
+      "completed_at": "2026-10-25T12:26:32Z",
+      "runner_labels": [
+        "ubuntu-24.04"
+      ]
+    },
+    {
+      "id": 121167923360,
+      "name": "imports 1/4",
+      "conclusion": "success",
+      "started_at": "2026-10-25T12:25:30Z",
+      "completed_at": "2026-10-25T12:27:18Z",
+      "runner_labels": [
+        "ubuntu-24.04"
+      ]
+    },
+    {
+      "id": 121167923382,
+      "name": "imports 4/4",
+      "conclusion": "success",
+      "started_at": "2026-10-25T12:25:30Z",
+      "completed_at": "2026-10-25T12:27:13Z",
+      "runner_labels": [
+        "ubuntu-24.04"
+      ]
+    },
+    {
+      "id": 121167923393,
+      "name": "imports 2/4",
+      "conclusion": "success",
+      "started_at": "2026-10-25T12:25:30Z",
+      "completed_at": "2026-10-25T12:26:46Z",
+      "runner_labels": [
+        "ubuntu-24.04"
+      ]
+    },
+    {
+      "id": 121167923436,
+      "name": "cli runs",
+      "conclusion": "success",
+      "started_at": "2026-10-25T12:25:30Z",
+      "completed_at": "2026-10-25T12:29:12Z",
+      "runner_labels": [
+        "ubuntu-24.04"
+      ]
+    },
+    {
+      "id": 121167923447,
+      "name": "cli commands",
+      "conclusion": "success",
+      "started_at": "2026-10-25T12:25:30Z",
+      "completed_at": "2026-10-25T12:27:05Z",
+      "runner_labels": [
+        "ubuntu-24.04"
+      ]
+    },
+    {
+      "id": 121167923475,
+      "name": "cli executors",
+      "conclusion": "success",
+      "started_at": "2026-10-25T12:25:30Z",
+      "completed_at": "2026-10-25T12:32:52Z",
+      "runner_labels": [
+        "ubuntu-24.04"
+      ]
+    },
+    {
+      "id": 121167924770,
+      "name": "cli-release ${{ matrix.runner }}",
+      "conclusion": "skipped",
+      "started_at": "2026-10-25T12:25:28Z",
+      "completed_at": "2026-10-25T12:25:28Z",
+      "runner_labels": []
+    },
+    {
+      "id": 121170736183,
+      "name": "e2e",
+      "conclusion": "success",
+      "started_at": "2026-10-25T12:38:07Z",
+      "completed_at": "2026-10-25T12:38:13Z",
+      "runner_labels": [
+        "ubuntu-24.04"
+      ]
+    }
+  ],
+  "hosted_run_wall_seconds": 936.0,
+  "sum_selected_job_seconds": 3538.0,
+  "billing_note": "Observed workflow and job durations only; not billed minutes, dollars or an inference benchmark. No GPU rental was selected.",
+  "candidate_artifacts": {
+    "cozy": {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/combined-source-e2e-40192828364/artifacts/cozy/cozy",
+      "sha256": "7a8bdfc7b6e6918fbaa52a996cc3d566e980e8785edbfd1db94f1c50bae22dff",
+      "size": 48045192
+    },
+    "tensorfs": {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/combined-source-e2e-40192828364/artifacts/tensorfs/tensorfs-0.15.8-cp311-abi3-manylinux_2_38_x86_64.whl",
+      "sha256": "4755c26fd1049e2ba33f4ce8250a652976da6b90a441eedb283ad57cf8cd74e6",
+      "size": 11144732,
+      "metadata": [
+        "Name: tensorfs",
+        "Version: 0.15.8"
+      ],
+      "record_verified_entries": 17,
+      "extension_files": [
+        "tensorfs/_ext.abi3.so"
+      ],
+      "bundled_cli_files": [
+        "tensorfs-0.15.8.data/scripts/tfs"
+      ]
+    },
+    "runtime": {
+      "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/combined-source-e2e-40192828364/artifacts/runtime/cozy_runtime-0.32.3+dev.gdb7a54bb-py3-none-any.whl",
+      "sha256": "adb0cc0c5773a969ef1bd655d44ce4dfeacff12c0913c5d66e28c35e8c943d3f",
+      "size": 2190587,
+      "metadata": [
+        "Name: cozy-runtime",
+        "Version: 0.32.3+dev.gdb7a54bb"
+      ],
+      "record_verified_entries": 221
+    }
+  },
+  "linux_installed_cohorts": [
+    {
+      "shard": "runs",
+      "runtime_sha256": "adb0cc0c5773a969ef1bd655d44ce4dfeacff12c0913c5d66e28c35e8c943d3f",
+      "tensorfs_sha256": "4755c26fd1049e2ba33f4ce8250a652976da6b90a441eedb283ad57cf8cd74e6",
+      "receipt": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/combined-source-e2e-40192828364/artifacts/e2e-cli-linux-runs/update.json",
+      "note": ""
+    },
+    {
+      "shard": "executors",
+      "runtime_sha256": "adb0cc0c5773a969ef1bd655d44ce4dfeacff12c0913c5d66e28c35e8c943d3f",
+      "tensorfs_sha256": "4755c26fd1049e2ba33f4ce8250a652976da6b90a441eedb283ad57cf8cd74e6",
+      "receipt": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/combined-source-e2e-40192828364/cli-executors.log",
+      "note": "The final update.json records the later intended old-signer refusal. The initial candidate SDK update is retained in the full job log."
+    },
+    {
+      "shard": "commands",
+      "runtime_sha256": "adb0cc0c5773a969ef1bd655d44ce4dfeacff12c0913c5d66e28c35e8c943d3f",
+      "tensorfs_sha256": "4755c26fd1049e2ba33f4ce8250a652976da6b90a441eedb283ad57cf8cd74e6",
+      "receipt": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/combined-source-e2e-40192828364/artifacts/e2e-cli-linux-commands/update.json",
+      "note": ""
+    },
+    {
+      "shard": "follow",
+      "runtime_sha256": "adb0cc0c5773a969ef1bd655d44ce4dfeacff12c0913c5d66e28c35e8c943d3f",
+      "tensorfs_sha256": "4755c26fd1049e2ba33f4ce8250a652976da6b90a441eedb283ad57cf8cd74e6",
+      "receipt": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/combined-source-e2e-40192828364/artifacts/e2e-cli-linux-follow/update.json",
+      "note": ""
+    }
+  ],
+  "cpu_model_proofs": [
+    {
+      "shard": "runs",
+      "run_number_local_to_CIrunner": 7,
+      "status": "completed",
+      "software": {
+        "attempt_ordinal": 1,
+        "runtime": "0.32.3+dev.gdb7a54bb",
+        "tensord": "0.11.17+dev.g51b1705e",
+        "tensord_commit": "51b1705e9dd96f91dfccc004913e57179339b202",
+        "tensorfs": "0.15.8"
+      },
+      "output_digests": [
+        "sha256:7f0c19a68adf89c16d33c06718df1df674fc68c7a87e78343d13f2908a2173c5"
+      ],
+      "execution_ms": 165194,
+      "receipt_sha256": "9bab21eca84177530bd985690269901b5db42de7e5ae7c92f2bb5d6b46e3e5c7",
+      "scope": "Real CPU BiRefNet output and lifecycle; correctness only, not matched performance."
+    },
+    {
+      "shard": "executors",
+      "run_number_local_to_CIrunner": 4,
+      "status": "completed",
+      "software": {
+        "attempt_ordinal": 1,
+        "runtime": "0.32.3+dev.gdb7a54bb",
+        "tensord": "0.11.17+dev.g51b1705e",
+        "tensord_commit": "51b1705e9dd96f91dfccc004913e57179339b202",
+        "tensorfs": "0.15.8"
+      },
+      "output_digests": [
+        "sha256:362e4381125b4acc19b6f0969936da4b94ac307f6b46ab8dbcb49982946e319c"
+      ],
+      "execution_ms": 163864,
+      "receipt_sha256": "4b587ae708ad60f3f6907ba40b4f08cf25e58b6d7552f1d726ca3a3a0c3b2c01",
+      "scope": "Real CPU BiRefNet output and lifecycle; correctness only, not matched performance."
+    }
+  ],
+  "package_imports": {
+    "imported": 16,
+    "skipped": 1,
+    "failed": 0,
+    "skipped_package": "minimax-h3",
+    "reason": "Hub-index dependencies require sign-in; this runner was anonymous.",
+    "details": "imports-proof.json",
+    "packages": [
+      {
+        "package": "anima",
+        "shard": 1,
+        "outcome": "imported",
+        "sha256": "009c8413ff40f1feacc4e5c313b17f6382fdcd73405185f2ed419707692b025b"
+      },
+      {
+        "package": "birefnet",
+        "shard": 2,
+        "outcome": "imported",
+        "sha256": "cf995ae6706f356aba363cb26a93d2b1ed76847bcb39be01b1a356de16316203"
+      },
+      {
+        "package": "fibo-2",
+        "shard": 3,
+        "outcome": "imported",
+        "sha256": "8a0647787b3e84bc3cce48ff9a4f7231ee5af9449a1c4e016bfba41c1a72e9e7"
+      },
+      {
+        "package": "flux-2",
+        "shard": 4,
+        "outcome": "imported",
+        "sha256": "ad8a567bafd7a02429f8af8af6939bc758deff502e3458bd1fd34d4c6931548e"
+      },
+      {
+        "package": "flux-3-klein",
+        "shard": 1,
+        "outcome": "imported",
+        "sha256": "05d5fac5414219617baaf3bba7534372a752e7c1052cf3ec11c80e120a8db2a3"
+      },
+      {
+        "package": "hidream-o1",
+        "shard": 2,
+        "outcome": "imported",
+        "sha256": "e545d97c2d2430fbefee0ec7f943833eeee9e34094f5ba6606a0548c28c8e5b9"
+      },
+      {
+        "package": "hunyuan-image-3",
+        "shard": 3,
+        "outcome": "imported",
+        "sha256": "17b3dc845e62850fb8ee6579fb84f20544ad3fe958e09f7c0cd657bf27a83cbb"
+      },
+      {
+        "package": "ideogram-4",
+        "shard": 4,
+        "outcome": "imported",
+        "sha256": "aeaab2ea5d11a3ef5a57bcca1438b43327201c73b9bed2cfb18c8186b46c8a98"
+      },
+      {
+        "package": "minimax-h3",
+        "shard": 2,
+        "outcome": "skipped"
+      },
+      {
+        "package": "minimax-h3-tools",
+        "shard": 1,
+        "outcome": "imported",
+        "sha256": "d2602f29d82a80c9d6855203df666e4a8d4397ee36939021318659c48d1472e2"
+      },
+      {
+        "package": "moss-image",
+        "shard": 3,
+        "outcome": "imported",
+        "sha256": "e62f6233f4e8be297ddb77d1ca98c3af7595912c02245be5dec9ebca55dea749"
+      },
+      {
+        "package": "qwen-image",
+        "shard": 1,
+        "outcome": "imported",
+        "sha256": "f123d63681d1408d98e2e6bd2dbd767a13ce469d0d3307fa1a5458f31a487030"
+      },
+      {
+        "package": "qwen-image-2",
+        "shard": 4,
+        "outcome": "imported",
+        "sha256": "635d49761f19143f1fd3916cc85375c1bbc0bf6178530d7811f2992aa3ab4cca"
+      },
+      {
+        "package": "qwen3.5",
+        "shard": 2,
+        "outcome": "imported",
+        "sha256": "3d7e0b9b541bc2dff66ebc122ca6970a0e13b437a44a749561897e719afa7544"
+      },
+      {
+        "package": "qwen3.6",
+        "shard": 3,
+        "outcome": "imported",
+        "sha256": "238ce2346472f70cbb8ba9d0dda181737cd47342465340404998f164a61301fe"
+      },
+      {
+        "package": "sdxl",
+        "shard": 4,
+        "outcome": "imported",
+        "sha256": "9e3965a2249535f40e2380d9457a6d1e262c5773614d80a4f13990e8f3684b1b"
+      },
+      {
+        "package": "seedvr2",
+        "shard": 1,
+        "outcome": "imported",
+        "sha256": "51dd9702b3b74274cea046e554c38ad634e884d2cef5cc3aecb6b634bfefd6dd"
+      }
+    ]
+  },
+  "coverage": {
+    "job": "e2e",
+    "conclusion": "success",
+    "raw_log": "e2e-coverage.log"
+  },
+  "artifact_count": 14,
+  "retained_artifacts": "Fourteen downloaded artifact sets: three candidate binaries/wheels, four Linux CLI shards, four import shards and three platform CLI jobs. Full logs remain in the durable output directory.",
+  "proof_boundaries": [
+    "Source integration, CLI, CPU and import qualification only; this pure Runtime wheel contains no CUDA execution module.",
+    "The CPU TensorFS manylinux_2_38 wheel is distinct from the portable platform matrix and GPU-qualified wheel. This is not a portable dependency resolver proof.",
+    "macOS and Windows exercised current remote-capable CLI behavior and local_unavailable refusals, not local MPS or Windows CUDA inference.",
+    "minimax-h3 was explicitly skipped because its Hub-index dependencies require authentication; the other 16 packages actually imported.",
+    "The update-to-latest check demonstrated the intended old-signer refusal with the binary unchanged. It did not prove a successful production upgrade. Managed update queue/halt lifecycle passed separately.",
+    "No tag, release, merge, publication or GPU job follows from this CI result."
+  ],
+  "receipt_sha256": {
+    "run-final.json": "d163341f24eaae3882a3a183660143df628c5d34bcfd6577b30697be2236aff1",
+    "jobs-final.json": "46898cf3ddaa48389f2fefeb9e7364349915771c7c1c332e195ce2ea19874d1a",
+    "github-artifacts.json": "031e3ff7e03d4e285cf46b9066c2041b8a6eaaf05cde18c7202f18095ec3c069",
+    "all-job-logs.zip": "db49e4240bca68bf130362f882a6f241d93d324836487fb479c9f5f7d6827173",
+    "candidate-artifacts-verified.json": "9ecd73a06028f9efab76e192b2ab77b280fd92fe2e62e5e6dcf6a2c81de83587",
+    "imports-proof.json": "b9d0fc6ca531565fbb0752c73d3cf11059133cade03059b6033db3b284588946",
+    "e2e-coverage.log": "fc77f7123549df95bdc166380c4f33cdee20ad33b673e204562744742dc4e93f"
+  },
+  "scope": "Source integration, ordinary Linux CLI and CPU model execution, current remote-capable macOS/Windows CLI, and package imports. Not GPU, portable release artifacts, a repaired dependency lock, or publication.",
+  "independent_proof_sha256": "cf3a96501c173e116623f466eeec4adfe359fdf649324833d2978b81e93c7d37"
+}

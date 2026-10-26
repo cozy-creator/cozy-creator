@@ -82,7 +82,7 @@ impl Call<'_> {
 
     /// A WARM run that sets the function's place in the machine's warm set: Calcifer merges
     /// this one item into the set the machine last reported, and level 0 takes it out.
-    pub fn warm(&self, level: Warm, models: &[Choice]) -> Result<v1::RunSpec, Error> {
+    pub fn warm(&self, level: Warm, models: &[Choice], payload: Option<v1::Json>) -> Result<v1::RunSpec, Error> {
         let level = match level {
             Warm::Installed => v1::WarmLevel::Installed,
             Warm::Downloaded => v1::WarmLevel::Downloaded,
@@ -114,6 +114,7 @@ impl Call<'_> {
             models: choices(models)?,
             level,
             lane: self.lane.clone(),
+            payload,
             ..Default::default()
         };
         Ok(v1::RunSpec {

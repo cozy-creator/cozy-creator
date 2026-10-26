@@ -1,0 +1,115 @@
+{
+  "purpose": "Real Runtime CoreDequant NVFP4 metadata parity and retained final-buffer correctness; no performance claim",
+  "run": {
+    "number": 17554,
+    "id": "run-1d2ba23bd1aa7eba122fef1a",
+    "status": "completed",
+    "machine": "ponyo",
+    "execution_ms": 6340,
+    "started_at_ms": 1792906863316,
+    "settled_at_ms": 1792906869906
+  },
+  "cohort": {
+    "runtime": {
+      "sha256": "ae349ceab666f7ae39c7f204531062be165661cf224587fd7885d9d4b04d840b",
+      "source": "de3dfc42c3467bb9df50b660ad613e64a43a12c6"
+    },
+    "tensord": {
+      "sha256": "f9359e2f00c7f0939a43a79fdb319f6ce504546add808c59a7f44af1e81bddfe",
+      "source": "9998cf5f4ea58f72bbf70efd22e483f235517895"
+    },
+    "tensorfs": {
+      "sha256": "0171ff047875837509bdc596fa6d1503b35fd205d2fa2d7ca38c7a227a8794ff",
+      "source": "6431a5387dab3125deb77c38f9c48410538ec8a8",
+      "build": 40165303748
+    }
+  },
+  "device": {
+    "index": 0,
+    "name": "NVIDIA GeForce RTX 3060",
+    "memory_bytes": 12884901888,
+    "driver": "610.43.02",
+    "family": "sm86",
+    "memory_class": "discrete"
+  },
+  "fixture": {
+    "commit": "4905c3ee2a43300539c47d6fe42e3e304f1c25f9",
+    "exercise_sha256": "0a790c4f3152e65420c859d469d05bb8c792e6be4878b504490a000a60ccd70c",
+    "encoded_consent": "accept; existing decoded_float providers explicitly selected"
+  },
+  "provider": {
+    "configurations": 48,
+    "placements": [
+      "cpu",
+      "cuda"
+    ],
+    "dtypes": [
+      "BF16",
+      "F16",
+      "F32"
+    ],
+    "scale_layouts": [
+      "cublas_128x4",
+      "row_major"
+    ],
+    "nibble_orders": [
+      "high_first",
+      "low_first"
+    ],
+    "global_scales": [
+      "multiply",
+      "divide"
+    ],
+    "pre_quant_scale": [
+      false,
+      true
+    ],
+    "parity": "bitwise against existing eager format core",
+    "decoder_sha256": "850d976dc78aab617ffd51bdc8b33a89552670464c1c41e0c610c923e7c5ed97",
+    "revision": "2/sha256:631071f24705ae6b518d31b68aef2b67092e5f127a8f064e85ba27544d26edb9"
+  },
+  "retained": {
+    "matmuls": 31,
+    "initial_and_warm_total_logical_reads": 37384,
+    "initial_and_warm_final_fills": 1,
+    "warm_final_hits": 30,
+    "additional_warm_reads": 0,
+    "additional_warm_final_fills": 0,
+    "alias_preserved": true,
+    "refill_logical_reads": 37384,
+    "refill_final_fills": 1,
+    "refill_final_hits": 0,
+    "refill_residency": {
+      "evictions": 2,
+      "fills": 4,
+      "hits": 30,
+      "pinned_bytes": 0,
+      "poisoned": false,
+      "preferred_bytes": 0,
+      "ready_bytes": 4194304,
+      "reclaimable_bytes": 4194304,
+      "reclaimed_bytes": 4194304,
+      "regions": 2,
+      "reserved_bytes": 4194304,
+      "resident_bytes": 4194304
+    }
+  },
+  "runtime_observed": "de3dfc42c3467bb9df50b660ad613e64a43a12c6",
+  "tensorfs_observed": "0.15.4",
+  "torch": "2.14.1+cu130",
+  "seed": 1792906794,
+  "raw_receipt_sha256": "b630939e810ba0180047c98ad119eb5694ed197ec130b26bea6180854c1e000c",
+  "prior_failure": {
+    "number": 17520,
+    "status": "failed",
+    "reason": "AssertionError: {'ok': False, 'code': 'encoding_unsupported', 'component': 'net', 'key': 'weight', 'detail': 'net/weight is stored nvfp4 and the package does not consent to encoded leaves', 'encoding': 'nvfp4', 'custody': 'canonical', 'device': 'cuda.sm86'}",
+    "raw_receipt_sha256": "51f97d027cb9c45b0a61562976ff9cda4e97343847069778bf41b3384d356d45",
+    "boundary": "Provider comparisons reached Backend fit; no retained-buffer success claimed. Fixture consent/hold correction only."
+  },
+  "limits": [
+    "Explicit decoded_float selection; no automatic shape-dependent packed-to-float promotion.",
+    "No Blackwell W4A4 route, Windows GPU, full-model throughput or transfer-overlap claim.",
+    "Counters are logical source reads and final fills/hits, not measured PCIe traffic or profiler kernel counts.",
+    "Nested fixture memory requests report overlapping=true; this gate does not qualify phase-priority policy."
+  ]
+}

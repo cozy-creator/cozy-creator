@@ -1,0 +1,455 @@
+{
+  "date_utc": "2026-10-25",
+  "scope": "Four actual current-cohort GPU checks, including full30-stepSDXLnativeinterval on8GiB; correctness, not performance or a diagnosed17873cause.",
+  "source": {
+    "creator": "51a131c7812464bfe6c7c886b4c9d77157b0f53f",
+    "runtime": "dfef434a13c8b7d082828d5138f14e5fdc2b80d4",
+    "tensorfs": "51a131c7812464bfe6c7c886b4c9d77157b0f53f",
+    "packages": "a25eed93d9c3e5bddde095e1978120fea6e713c9",
+    "fixture_ci_head": "0ed0bb4c21a0f7b8ede22040b5da86d0ad17d12f"
+  },
+  "artifacts": {
+    "cozy_sha256": "9f0e3578fc2788d1c2220107a479aa4f9c8eb908e83fc099ea6b79a42b081650",
+    "runtime_sha256": "fa10c26fbe1bd1c845073818b652641cd39681fa4c1c1229c32822c2560fcbb3",
+    "tensorfs_sha256": "e8dc43e2818bfcd1e8cfdec69d5d4fb9e28ec8549e06c15776341f675ada94ac"
+  },
+  "install": {
+    "run": 17921,
+    "to": {
+      "cozy": "0.11.17+dev.g51a131c7",
+      "runtime": "0.32.3",
+      "runtime_sha256": "fa10c26fbe1bd1c845073818b652641cd39681fa4c1c1229c32822c2560fcbb3",
+      "tensorfs": "0.15.8",
+      "tensorfs_sha256": "e8dc43e2818bfcd1e8cfdec69d5d4fb9e28ec8549e06c15776341f675ada94ac"
+    }
+  },
+  "hardware": [
+    {
+      "index": 0,
+      "name": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "memory_bytes": 8585740288,
+      "driver": "595.99.02",
+      "family": "sm89",
+      "memory_class": "discrete"
+    }
+  ],
+  "small_controls": [
+    {
+      "name": "owners",
+      "run": 17923,
+      "detail": {
+        "cold_no_read": "prepared_graph_ineligible: capture requires the component's weights to be resident",
+        "device": "NVIDIA GeForce RTX 4070 Laptop GPU",
+        "hook_refusal": "prepared_graph_ineligible: a package forward hook on Linear",
+        "host_graph_launches": 1,
+        "kernel_registry_epoch_invalidated": true,
+        "overlap_after_capture": false,
+        "overlap_before_capture": false,
+        "per_step_lora_refusal": "prepared_graph_ineligible: prepared repeats require a fixed baked LoRA representation",
+        "phase_changes": [
+          {
+            "missing_bytes": 2097152,
+            "models": [
+              "resident-owner-proof/sha256:2d080aaed81afd78d25701d78fe45b5d10c639a60edf507e563a329ef47482aa/net"
+            ],
+            "native_reclaimed_bytes": 0,
+            "torch_returned_bytes": 0,
+            "torch_unused_bytes": 14547968,
+            "window_bytes": 2097152
+          },
+          {
+            "missing_bytes": 2097152,
+            "models": [
+              "resident-owner-proof/sha256:2d080aaed81afd78d25701d78fe45b5d10c639a60edf507e563a329ef47482aa/next"
+            ],
+            "native_reclaimed_bytes": 0,
+            "torch_returned_bytes": 0,
+            "torch_unused_bytes": 31193088,
+            "window_bytes": 2097152
+          }
+        ],
+        "real_oom_restored_and_healthy": true,
+        "resident_read_bytes": 0,
+        "runtime": "0.32.3",
+        "state_restored": "prepared_graph_ineligible: recording changed the model's state: counter",
+        "tensorfs": "0.15.8"
+      },
+      "raw_sha256": "d7b3daba7a1402b48ef78a080ebd986bf3fe674e371ab8cb1aaff28cd228790d"
+    },
+    {
+      "name": "conv-prepared-watched",
+      "run": 17924,
+      "detail": {
+        "body_calls": 2,
+        "capture_pauses": 1,
+        "capture_status": [
+          {
+            "code": 0,
+            "stage": "before-pause",
+            "status": 1
+          },
+          {
+            "code": 0,
+            "stage": "after-pause",
+            "status": 1
+          }
+        ],
+        "completed_steps": 2,
+        "cudnn": 92400,
+        "device": "NVIDIA GeForce RTX 4070 Laptop GPU",
+        "max_abs": 0.0,
+        "mode": "conv-prepared-watched",
+        "native": {
+          "body_nodes": 4,
+          "closed": false,
+          "continuation_abi": 1,
+          "control_kernels_preloaded": true,
+          "device": 0,
+          "execution_mode": "cuda_conditional_while",
+          "host_graph_launches": 1,
+          "steps_per_launch": 2,
+          "validated_nodes": 6
+        },
+        "pid": 3790604,
+        "request_id": "574",
+        "runtime": "0.32.3",
+        "samples_after_prepare": 1,
+        "samples_after_resume": 2,
+        "samples_before_prepare": 0,
+        "seed": 1792956018,
+        "tensorfs": "0.15.8",
+        "torch": "2.14.1+cu130",
+        "watcher_threads": [
+          134479251240640
+        ]
+      },
+      "raw_sha256": "b03774a64f826327912c311cdd36e4e0511aefe501912edd409bbfdd74a684f5"
+    },
+    {
+      "name": "raw-loaded",
+      "run": 17926,
+      "detail": {
+        "after_park": {
+          "body_nodes": 3,
+          "closed": false,
+          "continuation_abi": 1,
+          "control_kernels_preloaded": true,
+          "device": 0,
+          "execution_mode": "cuda_conditional_while",
+          "host_graph_launches": 1,
+          "native_load": {
+            "bytes": 67108864,
+            "cancel_requested": false,
+            "canceled": false,
+            "clock": "elapsed_ns_since_load_submit",
+            "completion_proven": true,
+            "compute_completed_ns": 855649417,
+            "compute_done": true,
+            "compute_wait_entered": true,
+            "compute_wait_entered_ns": 845561838,
+            "decode_completed_ns": 0,
+            "decode_scheme": null,
+            "decoded_bytes": 0,
+            "done": true,
+            "failed": false,
+            "issued_bytes": 67108864,
+            "launch_started_ns": 845357542,
+            "read_bytes": 67108864,
+            "read_completed_ns": 845346187,
+            "read_done": true,
+            "scratch_bytes": 0
+          },
+          "steps_per_launch": 30,
+          "validated_nodes": 5
+        },
+        "cleanup": {
+          "evictions": 1,
+          "fills": 1,
+          "hits": 0,
+          "pinned_bytes": 0,
+          "poisoned": false,
+          "preferred_bytes": 0,
+          "ready_bytes": 0,
+          "reclaimable_bytes": 0,
+          "reclaimed_bytes": 67108864,
+          "regions": 1,
+          "reserved_bytes": 67108864,
+          "resident_bytes": 0
+        },
+        "device": "NVIDIA GeForce RTX 4070 Laptop GPU",
+        "mode": "loaded",
+        "native": {
+          "body_nodes": 3,
+          "closed": false,
+          "continuation_abi": 1,
+          "control_kernels_preloaded": true,
+          "device": 0,
+          "execution_mode": "cuda_conditional_while",
+          "host_graph_launches": 1,
+          "native_load": {
+            "bytes": 67108864,
+            "cancel_requested": false,
+            "canceled": false,
+            "clock": "elapsed_ns_since_load_submit",
+            "completion_proven": true,
+            "compute_completed_ns": 855649417,
+            "compute_done": true,
+            "compute_wait_entered": true,
+            "compute_wait_entered_ns": 845561838,
+            "decode_completed_ns": 0,
+            "decode_scheme": null,
+            "decoded_bytes": 0,
+            "done": true,
+            "failed": false,
+            "issued_bytes": 67108864,
+            "launch_started_ns": 845357542,
+            "read_bytes": 67108864,
+            "read_completed_ns": 845346187,
+            "read_done": true,
+            "scratch_bytes": 0
+          },
+          "steps_per_launch": 30,
+          "validated_nodes": 5
+        },
+        "parked_seconds": 3.000140000018291,
+        "passed": true,
+        "progress": {
+          "canceled": false,
+          "completed_steps": 30,
+          "done": true
+        },
+        "python_body_calls": 2,
+        "requested_steps": 30,
+        "result": 62914560.0,
+        "runtime": "0.32.3",
+        "seed": 1792956019,
+        "source_bytes": 67108864,
+        "source_sha256": "63b064d8bcc3cbaf281c00f5e7954cce07447fc5dc96fcccf9a5aaf735ccda67",
+        "tensorfs": "0.15.8",
+        "torch": "2.14.1+cu130"
+      },
+      "raw_sha256": "b342cfdfff9d67d0cdb98f469ab0a928e83924081da4eedad63fcc87a06cbcd7"
+    }
+  ],
+  "full_sdxl": {
+    "run_number": 17927,
+    "seed": 1792956037,
+    "steps": 30,
+    "observed_step_callback_count": 1,
+    "native_completed_steps": 29,
+    "native_step_observations": [
+      {
+        "at_unix_ms": 1792956775742,
+        "attempt_key": "577",
+        "fields": {
+          "unit": ""
+        },
+        "kind": "metric",
+        "name": "request_path.denoise_native_steps",
+        "seq": 6,
+        "value": 29.0
+      }
+    ],
+    "required_metric_gaps": [],
+    "metric_gaps": [
+      "complete device-step timing series unavailable"
+    ],
+    "device_step_timing_complete": false,
+    "cli_wall_ms": 207746.039004,
+    "request_created_to_settled_ms": 206431,
+    "execution_ms_as_reported": 99788,
+    "stages_as_reported": {
+      "decode": {
+        "count": 1,
+        "ended_unix_ms": 1792956778976,
+        "first_ms": 3192.63,
+        "last_ms": 3192.63,
+        "max_ms": 3192.63,
+        "mean_ms": 3192.63,
+        "min_ms": 3192.63,
+        "started_unix_ms": 1792956775783,
+        "total_ms": 3192.63
+      },
+      "denoise": {
+        "count": 1,
+        "ended_unix_ms": 1792956775780,
+        "first_ms": 66114.354,
+        "last_ms": 66114.354,
+        "max_ms": 66114.354,
+        "mean_ms": 66114.354,
+        "min_ms": 66114.354,
+        "started_unix_ms": 1792956709666,
+        "total_ms": 66114.354
+      },
+      "encode": {
+        "count": 1,
+        "ended_unix_ms": 1792956708138,
+        "first_ms": 6667.934,
+        "last_ms": 6667.934,
+        "max_ms": 6667.934,
+        "mean_ms": 6667.934,
+        "min_ms": 6667.934,
+        "started_unix_ms": 1792956701470,
+        "total_ms": 6667.934
+      },
+      "encode_webp": {
+        "count": 1,
+        "ended_unix_ms": 1792956779169,
+        "first_ms": 6.491,
+        "last_ms": 6.491,
+        "max_ms": 6.491,
+        "mean_ms": 6.491,
+        "min_ms": 6.491,
+        "started_unix_ms": 1792956779163,
+        "total_ms": 6.491
+      },
+      "host \u00b7 cozy_runtime.internal.residency.Memory._read_into": {
+        "count": 1,
+        "ended_unix_ms": 1792956735573,
+        "first_ms": 6800.0,
+        "last_ms": 6800.0,
+        "max_ms": 6800.0,
+        "mean_ms": 6800.0,
+        "min_ms": 6800.0,
+        "started_unix_ms": 1792956728773,
+        "total_ms": 6800.0
+      },
+      "host \u00b7 cozy_runtime.internal.residency.Memory._settle_prefetch": {
+        "count": 1,
+        "ended_unix_ms": 1792956735573,
+        "first_ms": 12600.0,
+        "last_ms": 12600.0,
+        "max_ms": 12600.0,
+        "mean_ms": 12600.0,
+        "min_ms": 12600.0,
+        "started_unix_ms": 1792956722973,
+        "total_ms": 12600.0
+      },
+      "tokenize": {
+        "count": 1,
+        "ended_unix_ms": 1792956701469,
+        "first_ms": 31.467,
+        "last_ms": 31.467,
+        "max_ms": 31.467,
+        "mean_ms": 31.467,
+        "min_ms": 31.467,
+        "started_unix_ms": 1792956701438,
+        "total_ms": 31.467
+      }
+    },
+    "software": {
+      "attempt_ordinal": 1,
+      "runtime": "0.32.3+dfef434a",
+      "tensord": "0.11.17+dev.g51a131c7",
+      "tensord_commit": "51a131c7812464bfe6c7c886b4c9d77157b0f53f",
+      "tensorfs": "0.15.8"
+    },
+    "models": [
+      {
+        "lane": "bf16",
+        "manifest": "sha256:cbacec84cee812314251badfa5810bedcc31f143e4a874cc1323ae14bd480667",
+        "precision": "fp16",
+        "release": "1.0.0",
+        "repository": "_/sdxl",
+        "slot": "model"
+      }
+    ],
+    "images": [
+      {
+        "path": "/home/fidika/cozy_v2/outputs/stock-torch-20261024/local-coherent-dfef-20261025/full-sdxl-assets/17927-image.webp",
+        "bytes": 1317500,
+        "sha256": "sha256:cd7c02b1c6dfb0fc565b3822adb30f84ebe8aeefa10b48b2b414785036bb59f1",
+        "format": "WEBP",
+        "size": [
+          1024,
+          1024
+        ],
+        "rgb_sha256": "8ad8a28e359ad47615626d792349d91bfdf1046e8238da2c99631d568d7a708a",
+        "rgb_extrema": [
+          [
+            0,
+            255
+          ],
+          [
+            0,
+            255
+          ],
+          [
+            0,
+            255
+          ]
+        ]
+      }
+    ],
+    "memory_scope_note": "Tracked process/native measurements; not a hard driver or machine VRAM cap."
+  },
+  "restoration": {
+    "run": 17928,
+    "to": {
+      "cozy": "0.11.17+dev.g4178a2a1",
+      "runtime": "0.32.3",
+      "runtime_sha256": "8588ce22f35872fddd76695217ea949e50eaf506ef0b75a8fbbb0b0eab7b7eb8",
+      "tensorfs": "0.15.6",
+      "tensorfs_sha256": "ca15dd65e7aa3249f3749dd60a452260ab54854ccb44d4449b7189234951941b"
+    },
+    "actual_preexisting_baseline": {
+      "runtime": "8588ce22f35872fddd76695217ea949e50eaf506ef0b75a8fbbb0b0eab7b7eb8",
+      "tensorfs": "ca15dd65e7aa3249f3749dd60a452260ab54854ccb44d4449b7189234951941b"
+    },
+    "observed_state": "ready",
+    "running": 0,
+    "queued": 0,
+    "scope": "Normal restore verified before another owner started laterwork; no currentmachinehealth assertion."
+  },
+  "limits": [
+    "Sharedhostload approximately42 and first-use/preparation costs; no matchedbenchmark or optimalmovement claim.",
+    "8GiB nativepass does not isolate why historical17873 graph inspection refused.",
+    "Per-native-iteration timings and exposed weight-ready GPUstalls unavailable.",
+    "Resident prefix/suffix8c newengine is not in this dfef artifact and is not qualified by these runs.",
+    "No Windows CUDA,multirank,productionrelease or provider settlement claim."
+  ],
+  "raw_receipts_sha256": {
+    "inputs.json": "dd7df0717c5fc8a2ad7786f22db1b391b81cd768dbec4841eccb3dbb2f1d064f",
+    "summary.json": "065a89fd76ec2e48395d2b774c20551c40e19b27115fd51d5aec9c49cb978714",
+    "actual-baseline-sdk.json": "0bdc09e0e15ba33a718d529f180f17ee3fd93edd03cae46f677a9e87f9a5ea16",
+    "install.json": "6c518072c4edb717bda7b43d881a58b2d9ba68cf90af69d83b6b8ee249a9687f",
+    "install-sdk.json": "db0bd95bd9d0742456e29cfd4efc67df6a53bdb5aeb62551ea26fc379db166d6",
+    "full-sdxl.json": "89e4b10a71fbd23e60a5f3e1be14c536aad574d945ba31eab91150fc29bca35c",
+    "full-sdxl-show.json": "65c0fba707169ce7e8bfa3d2663b56a8fe9cef30eee341979ab18a56077582eb",
+    "full-sdxl-proof.json": "c2e064ef71d0f1aa6136d708c04f0ce7960e0678f77397729cedaac76756b3d3",
+    "full-sdxl-cli-timing.json": "f64dec3af4d9a05c1957d48fe6af3a7f9f64611bec911a23cdc1554eb7e7f336",
+    "restore-verified-baseline.json": "dd483006f20d24bf7e8aca1b6166f57b139e7aafe6b46592f40ece7f1bfd2a26",
+    "restore-verified-baseline-sdk.json": "de5cb0bd0497d3de417038e97b7c15272853824fe68fc246e2d2c3a8fa78f5c6",
+    "restore-verified-baseline-observed.json": "2228f285c8750fe1d82b53e14e8613384a871ff4a23c1ff08738d4d780ed7d87"
+  },
+  "frozen_fixture_sha256": {
+    "release-gate/suites/execution/prepared-resident-owners/package.toml": "0175a75413085b6b0ba2ceea49e7224ca143c2f1ac1c254949587bc4b8763714",
+    "release-gate/suites/execution/prepared-resident-owners/pyproject.toml": "52640c9b90dec3074f2f0666108ed51abc74b18991fe09ea9b94e60fb0c05be4",
+    "release-gate/suites/execution/prepared-resident-owners/ci_prepared_resident_owners/convolution.py": "5ba77fc5c5063b41c1b045601d58474fa0f347d4299f8809a21fc635196f26b9",
+    "release-gate/suites/execution/prepared-resident-owners/ci_prepared_resident_owners/prepared_convolution.py": "7251eb50799f6a6bbffb7d8a696f44c62e6e02b8549bdfdd158a93f63a9056e4",
+    "release-gate/suites/execution/prepared-resident-owners/ci_prepared_resident_owners/exercise.py": "c6e650d7489c59e25827ef17031755a4fe6cfcb69b9fb0de4ed917f3f03d1684",
+    "release-gate/suites/execution/prepared-resident-owners/ci_prepared_resident_owners/attention.py": "3f3731863b8d0fe2e410ccecd58c8e76cf870ea97a04a6b8f711ad37374f9e74",
+    "release-gate/suites/execution/prepared-resident-owners/ci_prepared_resident_owners/inspection.py": "924d564f9479dd942232fc1b1426524f27cec6dbc6c5382bb8fb615cfadb4460",
+    "release-gate/suites/execution/prepared-resident-owners/ci_prepared_resident_owners/__init__.py": "7559ceefda7e07a23560ae88b952d0227faebad54c9ba5f15af4accc23f5212b",
+    "release-gate/suites/execution/native-load-execute/package.toml": "28f5c54fa4de178cbe30cd881105406498529cde1f39aba0d1089472ddbb40d2",
+    "release-gate/suites/execution/native-load-execute/pyproject.toml": "e54855319ab4b3ce82e2a824fafdb77be3f31d98f8a6701b68877ef9f7cb93d7",
+    "release-gate/suites/execution/native-load-execute/ci_native_load_execute/encoded.py": "224a144c704de056d138219921158a7f331a9e2614d01b72efd09a2dc65de9fa",
+    "release-gate/suites/execution/native-load-execute/ci_native_load_execute/exercise.py": "e03a6d57298cb1814e29ffe5ff64681e2ffd079ea42274536b7e0c90ddea1377",
+    "release-gate/suites/execution/native-load-execute/ci_native_load_execute/__init__.py": "dd922700a72e72a2ac8e9a3f5fb239d9c4a68f11829690b55d57bb8ddf86b07a",
+    "/home/fidika/cozy/.worktrees/packages/varena-consolidation/sdxl/package.toml": "ddb9b7cba77ce3819f89f9be3f60242ef1d62e8b053b4a69d0932e3a38bb9c19",
+    "/home/fidika/cozy/.worktrees/packages/varena-consolidation/sdxl/uv.lock": "1e244991228e50b90b89eaf5800a79c5e6f6ff96f787f6e88a75f72598767171",
+    "/home/fidika/cozy/.worktrees/packages/varena-consolidation/sdxl/pyproject.toml": "10827c922b51d89df4d541c8ad5ee9868d7542f92128f03d3c3c141c5fa560b4",
+    "/home/fidika/cozy/.worktrees/packages/varena-consolidation/sdxl/sdxl/_prepared.py": "334ab581dd19c924c995f03ee2d4b46fa7f2435020cd808be5d8be4090a4bad6",
+    "/home/fidika/cozy/.worktrees/packages/varena-consolidation/sdxl/sdxl/clip_merges.txt": "9fd691f7c8039210e0fced15865466c65820d09b63988b0174bfe25de299051a",
+    "/home/fidika/cozy/.worktrees/packages/varena-consolidation/sdxl/sdxl/clip_vocab.json": "e089ad92ba36837a0d31433e555c8f45fe601ab5c221d4f607ded32d9f7a4349",
+    "/home/fidika/cozy/.worktrees/packages/varena-consolidation/sdxl/sdxl/__init__.py": "a30033bd656d514ec048328da4d0a565c03ad8b1298c98ab0bd6c00343865e35",
+    "/home/fidika/cozy/.worktrees/packages/varena-consolidation/sdxl/metadata/package-interface.json": "9a0eafa2034a9fb91d049de9f445f86b6dc8d2291f274b3ce9502cfef8bf6ef6",
+    "release-gate/suites/execution/model-qualification/run.py": "4d27eb4a17ddf2d6473b57ec7f7ddb55e5a99a975b4dd8beba45456b2cc363af"
+  },
+  "input_source_manifest": {
+    "creator_artifact_source": "51a131c7812464bfe6c7c886b4c9d77157b0f53f",
+    "creator_fixture_source": "0ed0bb4c21a0f7b8ede22040b5da86d0ad17d12f",
+    "runtime_source": "dfef434a13c8b7d082828d5138f14e5fdc2b80d4",
+    "packages_commit": "a25eed93d9c3e5bddde095e1978120fea6e713c9"
+  }
+}

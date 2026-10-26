@@ -138,6 +138,9 @@ fn member(mut item: v1::WarmItem) -> Result<Option<crate::runs::SetItem>, Error>
         v1::WarmLevel::Host => Level::Host,
         v1::WarmLevel::Gpu => Level::Gpu,
     };
+    if item.payload.is_some() && level != Level::Gpu {
+        return Err(Error::validation("invalid_warm_set", "a prepared program requires GPU warming"));
+    }
     let sent = serde_json::to_vec(&item).expect("a warm item serializes");
     let source = match item.source {
         Some(v1::WarmSource::Release(release)) => release_source(release),
@@ -153,6 +156,7 @@ fn member(mut item: v1::WarmItem) -> Result<Option<crate::runs::SetItem>, Error>
         source,
         entrypoint: item.entrypoint,
         models: choices(item.models)?,
+        payload: item.payload,
         lane: item.lane,
         level,
         sent,
