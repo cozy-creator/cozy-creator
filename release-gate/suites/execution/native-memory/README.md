@@ -30,6 +30,11 @@ to evict weights to force the optimization. Author-policy cells explicitly compa
 disabled speculation on the same artifact; disabled warm replay may still read weights under its
 smaller idle-cache allowance. This alone does not measure copy/compute overlap.
 
+Raw, stored-role and source-failure cells deliberately disable speculative reads and start
+each accepted attempt with evicted fixture weights. This preserves their exact demand-byte
+and one-weight idle-cache criteria when running a newer native phase policy. Their idle cache
+window is not a physical VRAM cap. Separate default-prefetch cells preserve fitting warm weights.
+
 The final combined cohort must also run the dedicated actual four-component native-phase
 fixture (grouped text encoders → repeated UNet → resident VAE), including checked cancellation
 and source-error successors. Its source/artifact manifest and receipts are maintained with the

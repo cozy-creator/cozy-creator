@@ -194,7 +194,14 @@ def gpu(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
             program = PreparedSequence(
                 (prefix_plan, *block_plans, sample_plan, suffix_plan),
                 repeat=(1, 5, passes),
+                # This gate intentionally proves cold demand streaming at one weight window.
+                # Speculation and warm ready-phase retention have separate cells.
+                prefetch=False,
             )
+            memory.native.reclaim(int(memory.native.stats()["resident_bytes"]))
+            assert all(not region.resident for region in regions)
+            memory.window_bytes = window
+            memory.native.set_streaming_limit(window)
             before_calls = dict(calls)
             if payload.mode == "source-error":
                 # Descriptor preflight has opened every private chunk. Truncate only

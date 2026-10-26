@@ -22,5 +22,11 @@
     "prefetch": "19006,19007,19021,19023,19025,19026",
     "prefetch_author_policy": "19149,19150,19151"
   },
-  "consolidated_package_execution": "pending realCLI proof; no automatic inheritedqualification"
+  "consolidated_package_execution": "pending realCLI proof; no automatic inheritedqualification",
+  "consolidation_changes": {
+    "registration": "one package with explicit static public App endpoints",
+    "author_prefetch": "three new cells adapted from actual19149-19151 fixture",
+    "cold_streaming": "model_stages/stored_roles/source_failure explicitly author prefetch=False and evict fixture source Regions before each accepted attempt; retains exact reads and one idle weight-window assertions; native phase cannot turn these deliberate cold probes into ready-cache reuse",
+    "scope": "idle cache allowance is not total physical capacity; separate default prefetch and actual model phase/pressure gates remain required"
+  }
 }
