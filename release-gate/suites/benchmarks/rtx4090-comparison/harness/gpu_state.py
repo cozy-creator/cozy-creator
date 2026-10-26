@@ -1,16 +1,28 @@
 # /// script
 # requires-python = ">=3.12"
-# [tool.cozy]
-# accelerator = false
+# dependencies = ["cozy-runtime>=0.33,<0.34", "msgspec>=0.19"]
 # ///
 """On the rental, holding no GPU itself: what the card holds now (nvidia-smi totals and compute apps, with each
 app's command line) and the host's memory. The GPU-free check before an engine's arm, and what an idle TensorD
-holds. Returns its record as the value."""
+holds. Returns its record as a JSON string on run['result']['state']."""
 import json
 import subprocess
 import time
 from pathlib import Path
-from cozy_runtime.author import Context, Telemetry
+
+import msgspec
+
+from cozy_runtime.author import App, Context, Telemetry
+
+app = App()
+
+
+class GpuStateRequest(msgspec.Struct):
+    pass
+
+
+class GpuStateResult(msgspec.Struct):
+    state: str
 
 
 def smi(query: str) -> list[list[str]]:
@@ -26,7 +38,8 @@ def cmdline(pid: str) -> str:
         return "?"
 
 
-def main(ctx: Context, tel: Telemetry) -> str:
+@app.entrypoint(accelerator=False)
+def main(payload: GpuStateRequest, ctx: Context, tel: Telemetry) -> GpuStateResult:
     gpu = smi("gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu,clocks.sm,power.draw")
     apps = [{"pid": p, "name": n, "used_mib": u, "cmdline": cmdline(p)}
             for p, n, u in smi("compute-apps=pid,process_name,used_memory")]
@@ -37,4 +50,4 @@ def main(ctx: Context, tel: Telemetry) -> str:
               "gpu": gpu, "used_mib": used, "apps": apps, "meminfo_kib": meminfo,
               "free": 0 <= used < 1024}
     tel.log(f"GPU used {used} MiB, {len(apps)} compute apps: {[(a['pid'], a['used_mib'], a['cmdline'][:80]) for a in apps]}")
-    return json.dumps(record)
+    return GpuStateResult(state=json.dumps(record))

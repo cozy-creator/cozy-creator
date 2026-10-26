@@ -19,7 +19,7 @@ class ProfileInstallRequest(msgspec.Struct):
 
 
 class ProfileInstallResult(msgspec.Struct):
-    receipt: FileAsset
+    receipt: str
 
 
 B = Path('/var/tmp/bench4090-20261026')
@@ -37,7 +37,7 @@ def main(payload: ProfileInstallRequest, ctx: Context, out: Outputs) -> ProfileI
     else:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(PROFILE_SOURCE)
-    receipt = B / 'profile-install.json'
-    receipt.write_text(json.dumps({'path': str(target), 'sha256': hashlib.sha256(target.read_bytes()).hexdigest(),
-                                  'execution_sha256': EXECUTION_SHA256, 'scope': 'diagnostic only; server restart required'}, indent=2))
-    return ProfileInstallResult(receipt=out.save_file(receipt, media_type='application/json'))
+    record = {'path': str(target), 'sha256': hashlib.sha256(target.read_bytes()).hexdigest(),
+              'execution_sha256': EXECUTION_SHA256, 'scope': 'diagnostic only; server restart required'}
+    (B / 'profile-install.json').write_text(json.dumps(record, indent=2))
+    return ProfileInstallResult(receipt=json.dumps(record))

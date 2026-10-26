@@ -23,7 +23,9 @@ class QwenSetupRequest(msgspec.Struct):
 
 
 class QwenSetupResult(msgspec.Struct):
-    files: list[FileAsset]
+    setup: str
+    match: str
+    logs: list[FileAsset]
 
 
 B = Path('/var/tmp/bench4090-20261026')
@@ -69,6 +71,7 @@ def main(payload: QwenSetupRequest, ctx: Context, tel: Telemetry, out: Outputs) 
         if process.returncode:
             break
     record['ok'] = len(record['steps']) == 3 and all(step['returncode'] == 0 for step in record['steps'])
+    match_doc = ''
     if record['ok']:
         match_path = B / 'matched-qwen.json'
         match = json.loads(match_path.read_text())
@@ -76,6 +79,9 @@ def main(payload: QwenSetupRequest, ctx: Context, tel: Telemetry, out: Outputs) 
         match['gpu_identity'] = subprocess.check_output(['nvidia-smi', '--query-gpu=uuid,pci.bus_id,name,driver_version', '--format=csv,noheader'], text=True).strip()
         match['steps'] = 30
         match_path.write_text(json.dumps(match, indent=2))
+        match_doc = json.dumps(match)
     path = B / 'qwen-setup.json'; path.write_text(json.dumps(record, indent=2))
-    paths = [path, *(B / f'qwen-setup-{i}.log' for i in range(len(record['steps']))), B / 'qwen-common-files.json', B / 'qwen-comfy-identity.json', B / 'matched-qwen.json']
-    return QwenSetupResult(files=[out.save_file(p, media_type='application/json' if p.suffix == '.json' else 'text/plain') for p in paths if p.exists()])
+    # Receipts (setup record, match) ride run['result']; the step logs and identity files are binary outputs.
+    logs = [path, *(B / f'qwen-setup-{i}.log' for i in range(len(record['steps']))), B / 'qwen-common-files.json', B / 'qwen-comfy-identity.json', B / 'matched-qwen.json']
+    saved = [out.save_file(p, media_type='application/json' if p.suffix == '.json' else 'text/plain') for p in logs if p.exists()]
+    return QwenSetupResult(setup=json.dumps(record), match=match_doc, logs=saved)

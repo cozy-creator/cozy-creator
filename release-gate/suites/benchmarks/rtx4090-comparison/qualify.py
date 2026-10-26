@@ -148,10 +148,11 @@ def full_run(out, label, run):
     return full
 
 
-def asset_json(run, predicate):
-    rows = [row for row in run.get('output', []) if predicate(row)]
-    assert len(rows) == 1, rows
-    return json.loads(Path(rows[0]['path']).read_text())
+def result_json(run, field):
+    """A JSON receipt carried as a string field on the entrypoint's result struct (run['result']).
+    Receipts ride the result, not an output asset, because 0.33.2 output rows carry no source
+    filename (name=field, path=results/<id>/<index>-<digest>); binaries are matched by media type."""
+    return json.loads(run['result'][field])
 
 
 def terminal(out, label, arguments, **options):
@@ -200,12 +201,12 @@ def prepare_model(cohort, out, machine, key, samples):
     run, _, timing = terminal(out, 'matching', ['run', match_script, *args])
     setup['matching'] = {'run': run['number'], **timing}
     if key == 'qwen21':
-        prepared = asset_json(run, lambda r: r.get('name', '').endswith('qwen-setup.json') or Path(r['path']).name == 'qwen-setup.json')
+        prepared = result_json(run, 'setup')
         assert prepared['ok'], prepared
         setup['common_file_setup'] = prepared
-        match = asset_json(run, lambda r: r.get('name', '').endswith('matched-qwen.json') or Path(r['path']).name == 'matched-qwen.json')
+        match = result_json(run, 'match')
     else:
-        match = asset_json(run, lambda r: r.get('media_type') == 'application/json')
+        match = result_json(run, 'match')
     assert match['matched'] and match['tensorfs_checkpoint'] == model['checkpoint'], match
     save(out, 'matched.json', match)
     save(out, 'setup.json', setup)
@@ -227,7 +228,7 @@ def measure_group(cohort, out, machine, key, engine, samples, setup, cozy_args):
                     f'seed={sample["seed"]}', f'prompt={sample["prompt"]}',
                     f'require_warm={str(sample["mode"] != "cold").lower()}',
                     *args, '--out', out / 'images' / label], cohort=cohort, timed=True)
-                receipt = asset_json(run, lambda r: r.get('name', '').endswith('session.json') or Path(r['path']).name == 'session.json')
+                receipt = result_json(run, 'session')
                 assert receipt['qualified'] and receipt['request']['observed_steps'] == model['steps'], receipt
                 assert receipt['request']['job']['seed'] == sample['seed']
                 birth = receipt['server_pid'], receipt['server_start_ticks'], receipt['wrapper_pid']
@@ -345,7 +346,7 @@ def profile_model(cohort, out, machine, key):
             'label=profile-bootstrap', f'seed={base_seed+2}', f'prompt={request["prompt"]}',
             *args, '--out', out / 'profiles/comfy-bootstrap'])
         full_run(out, 'comfy-profile-bootstrap', bootstrap)
-        bootstrap_receipt = asset_json(bootstrap, lambda r: r.get('name', '').endswith('session.json') or Path(r['path']).name == 'session.json')
+        bootstrap_receipt = result_json(bootstrap, 'session')
         assert bootstrap_receipt['qualified'] and bootstrap_receipt['request']['observed_steps'] == model['steps']
         assert bootstrap_receipt['request']['job']['seed'] == base_seed + 2
         assert bootstrap_receipt['request']['job']['prompt'] == request['prompt']
@@ -356,7 +357,7 @@ def profile_model(cohort, out, machine, key):
             f'seed={base_seed+3}', f'prompt={request["prompt"]}', 'require_warm=true', 'profile=true',
             *args, '--out', out / 'profiles/comfy'])
         full_run(out, 'comfy-profile', run)
-        receipt = asset_json(run, lambda r: r.get('name', '').endswith('session.json') or Path(r['path']).name == 'session.json')
+        receipt = result_json(run, 'session')
         assert receipt['qualified'] and receipt['request']['profile']
         assert receipt['request']['observed_steps'] == model['steps']
         assert receipt['request']['job']['seed'] == base_seed + 3
@@ -365,9 +366,10 @@ def profile_model(cohort, out, machine, key):
         for field in ('server_pid', 'server_start_ticks', 'wrapper_pid'):
             assert receipt[field] == bootstrap_receipt[field], ('diagnostic Comfy birth changed', field)
         cozy_bench.image_evidence(run, (1024, 1024))
-        trace_sha = receipt['request']['profile']['sha256']
-        traces = [row for row in run['output'] if row.get('sha256') == 'sha256:' + trace_sha]
-        assert len(traces) == 1 and digest(traces[0]['path']) == trace_sha
+        # The trace is the run's only application/json output now that the session receipt rides run['result'].
+        traces = [row for row in run['output'] if row.get('media_type') == 'application/json']
+        assert len(traces) == 1, traces
+        assert digest(traces[0]['path']) == receipt['request']['profile']['sha256']
         diagnostics.append({'engine': 'comfy', 'run': run['number'], 'timing_not_benchmark': timing,
                             'receipt': receipt, 'outputs': run['output'],
                             'bootstrap': {'run': bootstrap['number'], 'timing_not_benchmark': bootstrap_timing,
@@ -390,7 +392,7 @@ def qualify(cohort, out, machine):
     completed_models = []
     try:
         run, _, timing = terminal(out, 'comfy-setup', ['run', scripts['comfy_setup'], '--on', machine, '--gpus=1'])
-        receipt = asset_json(run, lambda r: r.get('name', '').endswith('setup.json') or Path(r['path']).name == 'setup.json')
+        receipt = result_json(run, 'setup')
         setup['comfy'] = {'run': run['number'], **timing, 'receipt': receipt}
         assert receipt['ok'], receipt
         telemetry_started = True
@@ -411,7 +413,7 @@ def qualify(cohort, out, machine):
                     reset_owned(cohort, destination, 'before-' + engine, machine)
                     sampler(cohort, destination, 'telemetry-' + engine, machine)
                     state, _, _ = terminal(destination, 'gpu-before-' + engine, ['run', scripts['gpu_state'], '--on', machine])
-                    assert json.loads(state['result'])['free'], state
+                    assert json.loads(state['result']['state'])['free'], state
                     own = [s for s in samples if s['engine'] == engine]
                     records.extend(measure_group(cohort, destination, machine, key, engine, own, model_setup, cozy_args))
                     save(out, 'samples.json', records)
@@ -437,10 +439,9 @@ def qualify(cohort, out, machine):
         if telemetry_started:
             try:
                 run, _, timing = terminal(out, 'telemetry-stop', ['run', scripts['sampler_stop'], f'session={cohort["session"]}', '--on', machine, '--out', out / 'telemetry'])
-                names = {row.get('name', Path(row['path']).name) for row in run.get('output', [])}
-                assert any(name.endswith('gpu.csv') for name in names) and any(name.endswith('processes.csv') for name in names), names
-                receipts = [json.loads(Path(row['path']).read_text()) for row in run['output'] if Path(row['path']).suffix == '.json']
-                assert any(r.get('verified_birth_gone') is True for r in receipts), 'sampler stop did not verify process exit'
+                stop = result_json(run, 'stop')
+                assert stop.get('gpu_csv') and stop.get('processes_csv'), stop
+                assert stop.get('verified_birth_gone') is True, 'sampler stop did not verify process exit'
                 setup['telemetry_stop'] = {'run': run['number'], 'complete': True, **timing}
             except Exception as error:
                 failures.append({'telemetry_cleanup_error': repr(error)})

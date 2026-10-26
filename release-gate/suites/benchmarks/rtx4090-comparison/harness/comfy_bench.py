@@ -40,7 +40,11 @@ class BenchRequest(msgspec.Struct):
 
 
 class BenchResult(msgspec.Struct):
-    files: list[FileAsset]
+    session: str = ""
+    stopped: str = ""
+    images: list[FileAsset] = msgspec.field(default_factory=list)
+    trace: FileAsset | None = None
+    archive: FileAsset | None = None
 
 
 CELL = None  # @CELL@
@@ -120,8 +124,8 @@ def main(payload: BenchRequest, ctx: Context, tel: Telemetry, out: Outputs) -> B
         archive = B / "results" / f"{CELL}-receipts.tar.gz"
         with tarfile.open(archive, "w:gz") as tar:
             tar.add(B / "results" / CELL, arcname=CELL)
-        return BenchResult(files=[out.save_file(path, media_type="application/json"),
-                                  out.save_file(archive, media_type="application/gzip")])
+        return BenchResult(stopped=json.dumps(record),
+                           archive=out.save_file(archive, media_type="application/gzip"))
     assert len(JOBS) >= 1 and seed >= 0
     job = {**JOBS[0], "label": label, "seed": seed, "profile": profile}
     if prompt:
@@ -219,12 +223,12 @@ def main(payload: BenchRequest, ctx: Context, tel: Telemetry, out: Outputs) -> B
     rec["seconds"] = time.time() - rec["started_unix_s"]
     rec["traffic_scope"] = "Shared external GPU/process sampler applies equally to both engines; this wrapper adds no per-request polling. Physical H2D/exposed gaps come from separate traces."
     (res / "session.json").write_text(json.dumps(rec, indent=2))
-    saved = [out.save_file(res / "session.json", media_type="application/json")]
+    # The session receipt rides run['result']['session']; the image(s) and optional trace are the
+    # only binary outputs, matched downstream by media type (image/*, application/json), never by name.
+    images = []
+    trace = None
     if healthy:
-        for image in rec["request"]["images"]:
-            saved.append(out.save_file(res / image["file"], media_type="image/png"))
+        images = [out.save_file(res / image["file"], media_type="image/png") for image in rec["request"]["images"]]
         if rec["request"].get("profile"):
-            saved.append(out.save_file(res / rec["request"]["profile"]["copied_file"], media_type="application/json"))
-    # Detailed logs/timelines are delivered by the explicit untimed stop operation.
-    # Timed calls return the image directly plus only their compact session receipt.
-    return BenchResult(files=saved)
+            trace = out.save_file(res / rec["request"]["profile"]["copied_file"], media_type="application/json")
+    return BenchResult(session=json.dumps(rec), images=images, trace=trace)

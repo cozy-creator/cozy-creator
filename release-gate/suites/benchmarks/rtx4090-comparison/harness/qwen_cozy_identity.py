@@ -1,14 +1,15 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["diffusers==0.41.0", "torch==2.14.1", "numpy", "safetensors"]
-# [tool.cozy]
-# accelerator = false
+# dependencies = ["cozy-runtime>=0.33,<0.34", "msgspec>=0.19", "diffusers==0.41.0", "torch==2.14.1", "numpy", "safetensors"]
 # ///
 """Untimed real Qwen2.1 tensor/schedule identity through the ordinary Weights grant."""
 import json
 import time
 from pathlib import Path
-from cozy_runtime.author import Context, FileAsset, Outputs, Weights
+
+import msgspec
+
+from cozy_runtime.author import App, Context, Weights
 
 """Canonical real-tensor receipt helpers for one Qwen2.1 comparison; no quantization."""
 import hashlib
@@ -53,10 +54,22 @@ def convrot_identity(weight, scale, params, logical_dtype='BF16'):
 
 EXPECTED = "sha256:78705de45f7421fde51a0196913b11f1f7e3c95d468881d762d18af50da6fec3"
 
+app = App()
 
-def main(weights: Weights, ctx: Context, *, out: Outputs,
-         folder: str = "/var/tmp/bench4090-20261026", export: bool = False,
-         expected_runtime_source: str = "774624133be6d74262f845b9358874872de100d9") -> FileAsset:
+
+class QwenIdentityRequest(msgspec.Struct):
+    folder: str = "/var/tmp/bench4090-20261026"
+    export: bool = False
+    expected_runtime_source: str = "774624133be6d74262f845b9358874872de100d9"
+
+
+class QwenIdentityResult(msgspec.Struct):
+    identity: str
+
+
+@app.entrypoint(accelerator=False)
+def main(payload: QwenIdentityRequest, weights: Weights, ctx: Context) -> QwenIdentityResult:
+    folder, export, expected_runtime_source = payload.folder, payload.export, payload.expected_runtime_source
     import numpy as np
     import torch
     import tensorfs
@@ -113,4 +126,4 @@ def main(weights: Weights, ctx: Context, *, out: Outputs,
               'stored_tensor_bytes_observed':total,'seconds':time.perf_counter()-began,'exported':exported,
               'scope':'Real complete stored tensor reads and exact library scheduler on CPU; no inference. Reads warm OS pages.'}
     path=root/'qwen-cozy-identity.json';path.write_text(json.dumps(result,sort_keys=True))
-    return out.save_file(path,media_type='application/json')
+    return QwenIdentityResult(identity=json.dumps(result))

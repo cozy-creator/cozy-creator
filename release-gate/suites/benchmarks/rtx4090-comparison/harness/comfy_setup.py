@@ -28,7 +28,8 @@ class SetupRequest(msgspec.Struct):
 
 
 class SetupResult(msgspec.Struct):
-    files: list[FileAsset]
+    setup: str
+    logs: list[FileAsset]
 
 
 B = Path("/var/tmp/bench4090-20261026")
@@ -166,8 +167,7 @@ def main(payload: SetupRequest, ctx: Context, tel: Telemetry, out: Outputs) -> S
     rec["seconds"] = round(time.time() - rec["started_unix_s"], 1)
     rec["df_after"] = text("df -h / 2>/dev/null")
     (B / "setup.json").write_text(json.dumps(rec, indent=1))
-    saved = [out.save_file(B / "setup.json", media_type="application/json")]
-    for f in [B / "setup.log", B / "comfy-env-freeze.txt", B / "comfy-identity.json"]:
-        if f.exists():
-            saved.append(out.save_file(f, media_type="text/plain"))
-    return SetupResult(files=saved)
+    # Receipt rides run['result']['setup']; only the aux logs are binary outputs.
+    logs = [out.save_file(f, media_type="text/plain")
+            for f in [B / "setup.log", B / "comfy-env-freeze.txt", B / "comfy-identity.json"] if f.exists()]
+    return SetupResult(setup=json.dumps(rec), logs=logs)

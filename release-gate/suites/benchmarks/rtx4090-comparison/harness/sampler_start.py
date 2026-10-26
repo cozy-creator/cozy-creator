@@ -1,7 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# [tool.cozy]
-# accelerator = false
+# dependencies = ["cozy-runtime>=0.33,<0.34", "msgspec>=0.19"]
 # ///
 """One rental's shared GPU/process sampler; no PCIe integration or H2D estimates.
 
@@ -22,6 +21,22 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
+
+import msgspec
+
+from cozy_runtime.author import App, Context
+
+app = App()
+
+
+class SamplerStartRequest(msgspec.Struct):
+    session: str
+    deadline_unix_s: float
+
+
+class SamplerStartResult(msgspec.Struct):
+    state: str
+
 
 ROOT = Path("/var/tmp/cozy-4090-benchmark")
 INTERVAL = 0.5
@@ -214,8 +229,10 @@ def daemon(folder: Path, owner: dict[str, object], deadline: float) -> None:
         })
 
 
-def main(ctx, *, session: str, deadline_unix_s: float) -> str:
+@app.entrypoint(accelerator=False)
+def main(payload: SamplerStartRequest, ctx: Context) -> SamplerStartResult:
     """Start once, or return the verified live collector; never extend the session deadline."""
+    session, deadline_unix_s = payload.session, payload.deadline_unix_s
     if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
         raise RuntimeError("safe sampler cleanup requires Linux pidfd support")
     if not math.isfinite(deadline_unix_s) or not 0 < deadline_unix_s - time.time() <= 3600:
@@ -235,7 +252,7 @@ def main(ctx, *, session: str, deadline_unix_s: float) -> str:
         if owner_path.exists():
             owner = json.loads(owner_path.read_text())
             if alive(owner):
-                return json.dumps({"state": "already_running", **owner}, sort_keys=True)
+                return SamplerStartResult(state=json.dumps({"state": "already_running", **owner}, sort_keys=True))
         collector_id = uuid.uuid4().hex
         parent = os.fork()
         if parent == 0:
@@ -273,4 +290,4 @@ def main(ctx, *, session: str, deadline_unix_s: float) -> str:
             save(folder / "stop.json", {"collector_id": collector_id})
             detail = ended.read_text() if ended.exists() else "no readiness acknowledgement; stop requested"
             raise RuntimeError(detail)
-        return json.dumps({"state": "started", "directory": str(folder), **json.loads(owner_path.read_text())}, sort_keys=True)
+        return SamplerStartResult(state=json.dumps({"state": "started", "directory": str(folder), **json.loads(owner_path.read_text())}, sort_keys=True))

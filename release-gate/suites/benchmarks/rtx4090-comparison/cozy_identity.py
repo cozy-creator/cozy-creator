@@ -1,21 +1,30 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["diffusers==0.40.0", "torch==2.14.1", "numpy"]
-# [tool.cozy]
-# accelerator = false
+# dependencies = ["cozy-runtime>=0.33,<0.34", "msgspec>=0.19", "diffusers==0.40.0", "torch==2.14.1", "numpy"]
 # ///
 """Untimed real checkpoint identity/read preflight through the ordinary Weights grant."""
 import hashlib
 import json
 from pathlib import Path
 
-from cozy_runtime.author import Context, FileAsset, Outputs, Weights
+import msgspec
+
+from cozy_runtime.author import App, Context, Weights
+
+app = App()
 
 
-def main(
-    weights: Weights, ctx: Context, *, out: Outputs,
-    expected_runtime_source: str = "774624133be6d74262f845b9358874872de100d9",
-) -> FileAsset:
+class CozyIdentityRequest(msgspec.Struct):
+    expected_runtime_source: str = "774624133be6d74262f845b9358874872de100d9"
+
+
+class CozyIdentityResult(msgspec.Struct):
+    identity: str
+
+
+@app.entrypoint(accelerator=False)
+def main(payload: CozyIdentityRequest, weights: Weights, ctx: Context) -> CozyIdentityResult:
+    expected_runtime_source = payload.expected_runtime_source
     import torch
     from diffusers import EulerDiscreteScheduler
     from cozy_runtime._build_provenance import COMMIT
@@ -47,4 +56,4 @@ def main(
     path = Path("/var/tmp/bench4090-20261026/cozy-identity.json")
     path.parent.mkdir(exist_ok=True)
     path.write_text(json.dumps(receipt, sort_keys=True))
-    return out.save_file(path, media_type="application/json")
+    return CozyIdentityResult(identity=json.dumps(receipt))

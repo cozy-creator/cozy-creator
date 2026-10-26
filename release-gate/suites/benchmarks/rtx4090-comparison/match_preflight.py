@@ -1,7 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# [tool.cozy]
-# accelerator = false
+# dependencies = ["cozy-runtime>=0.33,<0.34", "msgspec>=0.19"]
 # ///
 """Compare real CPU checkpoint receipts and choose the existing Comfy sigma input.
 
@@ -15,7 +14,20 @@ import math
 import sys
 from pathlib import Path
 import subprocess
-from cozy_runtime.author import Context, FileAsset, Outputs
+
+import msgspec
+
+from cozy_runtime.author import App, Context
+
+app = App()
+
+
+class MatchRequest(msgspec.Struct):
+    pass
+
+
+class MatchResult(msgspec.Struct):
+    match: str
 
 EXPECTED_CHECKPOINT = "sha256:cbacec84cee812314251badfa5810bedcc31f143e4a874cc1323ae14bd480667"
 EXPECTED_REPO_COMMIT = "sha256:df8494606a805c233a46b931174b9388208eb4ea0c83deb23fa833375d2956f5"
@@ -73,7 +85,8 @@ def compare(cozy: dict, comfy: dict) -> dict:
 
 
 
-def main(ctx: Context, *, out: Outputs) -> FileAsset:
+@app.entrypoint(accelerator=False)
+def main(payload: MatchRequest, ctx: Context) -> MatchResult:
     base = Path("/var/tmp/bench4090-20261026")
     inputs = [base / "cozy-identity.json", base / "comfy-identity.json"]
     result = compare(*(json.loads(path.read_text()) for path in inputs))
@@ -84,4 +97,4 @@ def main(ctx: Context, *, out: Outputs) -> FileAsset:
     result["receipt_sha256"] = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in inputs}
     path = base / "matched-sdxl.json"
     path.write_text(json.dumps(result, indent=2) + "\n")
-    return out.save_file(path, media_type="application/json")
+    return MatchResult(match=json.dumps(result))
