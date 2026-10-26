@@ -484,5 +484,35 @@
     },
     "expect": "completed",
     "same_pid": true
+  },
+  {
+    "name": "prefetch-policy-on",
+    "entrypoint": "prefetch",
+    "args": {
+      "mode": "overlap",
+      "prefetch": true
+    },
+    "expect": "completed",
+    "same_pid": false
+  },
+  {
+    "name": "prefetch-policy-off",
+    "entrypoint": "prefetch",
+    "args": {
+      "mode": "overlap",
+      "prefetch": false
+    },
+    "expect": "completed",
+    "same_pid": false
+  },
+  {
+    "name": "prefetch-policy-off-reuse",
+    "entrypoint": "prefetch",
+    "args": {
+      "mode": "reuse",
+      "prefetch": false
+    },
+    "expect": "completed",
+    "same_pid": false
   }
 ]

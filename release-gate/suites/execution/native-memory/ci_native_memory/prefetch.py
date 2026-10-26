@@ -16,6 +16,7 @@ from cozy_runtime.author import Context, Telemetry
 class Probe(msgspec.Struct, forbid_unknown_fields=True):
     mode: str = "overlap"
     ordering: str = "events"
+    prefetch: bool = True
     seed: int = 2619311
 
 
@@ -182,6 +183,7 @@ def gpu(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
             program = PreparedSequence(
                 (prefix_plan, *block_plans, sample_plan, suffix_plan),
                 repeat=(1, 5, passes),
+                prefetch=payload.prefetch,
             )
             before_calls = dict(calls)
             snapshots = []
@@ -218,7 +220,9 @@ def gpu(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
                 assert [region.ptr for region in regions] == pointers
                 facts = execution.facts()
                 admission = facts["stage_prefetch_admission"]
-                if payload.mode == "capacity":
+                if not payload.prefetch:
+                    assert admission == [{"state": "disabled_by_author"}], admission
+                elif payload.mode == "capacity":
                     assert admission and all(
                         row["state"] == "capacity_skip" for row in admission
                     ), admission
@@ -233,8 +237,11 @@ def gpu(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
                 inputs = facts["stage_inputs"]
                 assert [row["stage"] for row in inputs] == [1, 2, 3], inputs
                 speculative = sum(row.get("prefetch_read_bytes", 0) for row in inputs)
-                if payload.mode == "capacity":
+                if payload.mode == "capacity" or not payload.prefetch:
                     assert speculative == 0
+                    assert all(row.get("prefetch_started", 0) == 0 for row in inputs), (
+                        inputs
+                    )
                 elif submission and all(row["read_bytes"] == 0 for row in inputs):
                     # The first submission retained all fitting weights. Reuse must not
                     # manufacture traffic solely to exercise the prefetch optimization.
@@ -309,6 +316,7 @@ def gpu(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
                         "pid": os.getpid(),
                         "mode": payload.mode,
                         "ordering": payload.ordering,
+                        "prefetch_policy": payload.prefetch,
                         "seed": payload.seed,
                         "calls": calls,
                         "window_bytes": window,
