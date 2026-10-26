@@ -238,7 +238,7 @@ struct State {
 
 struct Shared {
     region: Arc<varena::Region>,
-    cancel: ReadControl,
+    cancel: Arc<ReadControl>,
     state: Mutex<State>,
     changed: Condvar,
     pid: u32,
@@ -1292,6 +1292,20 @@ impl Drop for Abandoned {
 impl PreparedRead {
     /// Run the existing producer on an already-owned native sequence worker. No Python,
     /// new scheduler or additional refill thread participates in this path.
+    pub(super) fn completed_read_bytes(&self) -> (u64, Vec<u64>, bool) {
+        let shared = self.shared.as_ref().expect("live native read");
+        let done = shared.read_completed_ns.load(Ordering::Acquire) != 0;
+        (
+            shared.read_bytes.load(Ordering::Acquire),
+            shared
+                .input_bytes
+                .iter()
+                .map(|bytes| if done { *bytes } else { 0 })
+                .collect(),
+            done,
+        )
+    }
+
     pub(super) fn run_inline(&self) -> (Result<ReadStats, Failure>, bool) {
         let shared = self.shared.as_ref().expect("live native read").clone();
         let work = {
@@ -1320,9 +1334,23 @@ impl PreparedRead {
         self.shared.as_ref().expect("live prepared read").cancel();
     }
     pub(super) fn composed(
+        work: Work,
+        execution: Arc<Continuation>,
+        event_ordered: bool,
+    ) -> Result<Self, Failure> {
+        Self::composed_with_control(
+            work,
+            execution,
+            event_ordered,
+            Arc::new(ReadControl::default()),
+        )
+    }
+
+    pub(super) fn composed_with_control(
         mut work: Work,
         execution: Arc<Continuation>,
         event_ordered: bool,
+        cancel: Arc<ReadControl>,
     ) -> Result<Self, Failure> {
         work.continuation = Some(execution.clone());
         work.event_ordered = event_ordered;
@@ -1356,7 +1384,7 @@ impl PreparedRead {
         Ok(Self {
             shared: Some(Arc::new(Shared {
                 region: work.region.clone(),
-                cancel: ReadControl::default(),
+                cancel,
                 state: Mutex::new(State {
                     work: Some(work),
                     started: false,
@@ -1558,7 +1586,7 @@ impl PreparedRead {
         Ok(Self {
             shared: Some(Arc::new(Shared {
                 region,
-                cancel: ReadControl::default(),
+                cancel: Arc::new(ReadControl::default()),
                 state: Mutex::new(State {
                     work: prepared,
                     started: false,
@@ -1674,7 +1702,11 @@ impl Drop for PreparedRead {
             if shared.pid != std::process::id() {
                 std::mem::forget(shared);
             } else {
-                shared.cancel();
+                // A completed pass must not cancel a rearmed continuation using the same
+                // immutable source. Unproven/in-flight work still receives cancellation.
+                if !shared.completion_proven.load(Ordering::Acquire) {
+                    shared.cancel();
+                }
                 // A running worker owns another Arc and performs its own checked cleanup.
                 // If this is the last owner, no worker/waiter can hold State's mutex.
                 if let Some(shared) = Arc::into_inner(shared) {

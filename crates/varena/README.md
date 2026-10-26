@@ -165,3 +165,26 @@ TensorFS wheel SHA256:
 `4caecc57c619c872290c78d955c22e8571a5738f01d27443dae4bb252d81628a`.
 Receipts: `outputs/stock-torch-20261025/codex-resume-20261026/own-va-stage-cells/RESULTS.json`;
 independent review: `outputs/stock-torch-20261025/native-streaming-resume-20261026/own-va-stage/GPU-REVIEW.json`.
+
+### Finite repeated source stages: real GPU proof
+
+Ordinary CLI runs 18808–18811 passed on the same RTX 4070 Laptop GPU with
+Creator `4d671f510b19818383f65e10f1c6d021107e9228` and Runtime
+`e0b5b78e4e66d80fa029a375139a130c5aabb59c`. A native sequence advanced three
+actual placed 4 MiB weight blocks and a sampler through 30 passes, between a
+one-time prefix and suffix. Its managed weight window remained 4 MiB against
+12 MiB of source weights. Each submission performed 122 graph launches and
+read exactly 360 MiB; all three source observers accounted for all 30 passes.
+The shared GPU timestep reached 30, output exactly matched an independent
+eager streamed linear reference, and final physical pins were zero.
+
+Both checked and event ordering passed changed-input second submissions using
+the same definition, preserving the previously returned output. Python body
+counts stayed at their two capture invocations. This proves repeated native
+streaming and same-request definition reuse, not cross-request caching, a
+complete diffusion model, pressure/cancellation coverage, or benchmark speed.
+
+TensorFS wheel SHA256:
+`79b58b39c70fbe5f3ffa4d7eebb2539349c228d2985204eb1aa691831ba19224`.
+Receipts: `outputs/stock-torch-20261025/codex-resume-20261026/own-va-repeat-cells/RESULTS.json`;
+independent review: `outputs/stock-torch-20261025/native-streaming-resume-20261026/own-va-repeat/GPU-REVIEW.json`.

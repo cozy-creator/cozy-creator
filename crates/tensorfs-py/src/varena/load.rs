@@ -385,6 +385,11 @@ pub(super) struct StageSource {
 }
 #[pymethods]
 impl StageSource {
+    #[classattr]
+    fn supports_reusable_input() -> bool {
+        true
+    }
+
     #[pyo3(signature = (capsule, *, event_ordered = false))]
     fn continuation(
         &self,
