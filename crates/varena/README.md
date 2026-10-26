@@ -142,3 +142,26 @@ full-sized model pressure and comparative performance remain separate gates.
 Actual prior CLI/SDK hashes were restored and observed ready/idle at 17:10:59 UTC.
 Raw evidence: `outputs/stock-torch-20261025/codex-resume-20261026/checked-region-completion-cells/`;
 independent review: `outputs/stock-torch-20261025/native-streaming-resume-20261026/completion-caller/GPU-COMPLETION-REGRESSION-REVIEW.json`.
+
+### Existing-address source stages: real GPU proof
+
+Ordinary CLI runs 18775 and 18777–18781 passed on an RTX 4070 Laptop GPU using
+Creator `bdb5c0509325e1b93d5c678d5bf48021a679005f` and Runtime
+`befc4431795103340bc84eeacf9940c58a5633ec`. Three real Backend/Placement regions
+reserved 12 MiB at their model addresses while a 4 MiB managed weight window
+forced native sequential refills. Checked and event-ordered submissions each
+read exactly 4 MiB per stage, returned the exact expected output, retained
+the original addresses, and finished with zero pinned bytes and 4 MiB resident.
+Python bodies ran only twice during capture, never during native advancement.
+
+An already-resident stage ran in each ordering mode with zero source bytes.
+An escaped input view was refused by the actual physical-pin ownership check;
+boundary metadata mutation was refused and restored before submission. These
+six cells prove the one-pass mechanism, not repeated model inference,
+cancellation/pressure behavior, release status, or a performance improvement.
+Production adapters still require model identity and generation guards.
+
+TensorFS wheel SHA256:
+`4caecc57c619c872290c78d955c22e8571a5738f01d27443dae4bb252d81628a`.
+Receipts: `outputs/stock-torch-20261025/codex-resume-20261026/own-va-stage-cells/RESULTS.json`;
+independent review: `outputs/stock-torch-20261025/native-streaming-resume-20261026/own-va-stage/GPU-REVIEW.json`.
