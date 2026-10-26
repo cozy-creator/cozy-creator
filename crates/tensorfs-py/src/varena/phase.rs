@@ -132,7 +132,9 @@ impl Phase {
         if let Some(result) = *self.failure.lock().unwrap_or_else(|e| e.into_inner()) {
             return result;
         }
-        self.inner.observe(wait)
+        let (status, progress) = self.inner.observe(wait);
+        self.inner.checked(status, progress);
+        (status, progress)
     }
     fn cancel(&self) -> Status {
         self.canceled.store(true, Ordering::Release);
@@ -172,7 +174,7 @@ struct Retire(
 impl Drop for Retire {
     fn drop(&mut self) {
         if let Some(owners) = self.0.take() {
-            if owners.0.abort().is_err() {
+            if !owners.0.releasable() && owners.0.abort().is_err() {
                 std::mem::forget(owners);
             }
         }
