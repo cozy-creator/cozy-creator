@@ -1,8 +1,8 @@
-# Matched RTX 4090 Cozy / ComfyUI comparison
+# Matched Cozy / ComfyUI comparison and profiling
 
-Owned benchmark preparation for SDXL 1024×1024, 30 steps, batch one, followed by
-Qwen Image 2.1 at a supported geometry and at least 20 steps. The initial window
-allows one RTX 4090, at most 60 minutes and $5 including known storage and traffic.
+The updated assignment prioritizes MiniMax H3 and Qwen Image 2.1 on RTX 5090 or
+H100; SDXL 1024×1024, 30 steps remains a reference. The initial window allows one
+GPU, at most 60 minutes and $5 including known storage and traffic.
 This harness extends the retained Comfy HTTP/websocket driver and ordinary Cozy
 CLI release gates. It changes no production inference implementation.
 
@@ -22,8 +22,12 @@ remain separate when weights/settings or the current Hub contract cannot match.
 
 The frozen initial integration base is Creator bdc699a95 / Runtime 774624133 /
 packages 8c80f71c. It does not qualify the primary's later native-loading/streaming
-implementation. Its exact file hashes were verified before preparation. No GPU
-benchmark has been run for this branch yet.
+implementation. Its exact file hashes were verified before preparation. Runtime774
+cannot be used for H3 because it lacks an import required by H3 tools. The revised
+first-window plan uses Qwen Image 2.1 INT8 at 1024×1024/30 steps on RTX5090, with
+one cold and ten warm requests per engine, plus separate warm CPU/CUDA profiles.
+H3 needs the corrected Runtime artifact and common AdaLN/PDD operands before a
+matched run. No GPU benchmark has been run for this branch yet.
 
 Session receipts and the final report live under
 `/home/fidika/cozy_v2/outputs/stock-torch-20261025/4090-comparison/`.
