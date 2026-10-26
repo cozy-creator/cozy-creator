@@ -183,11 +183,10 @@ def prepare_model(cohort, out, machine, key, samples):
     warm = ['--on', machine]  # a --warm/download keeps the function ready, not a run; --gpus is rejected there (warm_gpus)
     target = Path(cohort['packages']) / model['package'] / 'generate'
     script = scripts['comfy_' + key]
-    request = image_request(samples[0]); request.pop('seed')
-    save(out, 'warm-request.json', request)
-    # cozy_args drives only the --warm/download/off invocations (here and in measure_group), so it carries no --gpus.
-    cozy_args = ['run', target, '--input', out / 'warm-request.json',
-                 f'model.model={model["reference"]}', '--lane', model['lane'], *warm]
+    # cozy_args drives only the --warm/download/off invocations (here and in measure_group). --warm
+    # keeps a function ready and takes NO request inputs (warm_inputs) — only model.<slot>= and --lane
+    # (which picks the quantization to warm) and --lora. No --input/payload, no --gpus (warm_gpus).
+    cozy_args = ['run', target, f'model.model={model["reference"]}', '--lane', model['lane'], *warm]
     setup = {}
     run, _, timing = terminal(out, 'cozy-download', [*cozy_args, '--warm', 'downloaded'])
     setup['cozy_download'] = {'run': run['number'], **timing}
@@ -312,8 +311,8 @@ def profile_model(cohort, out, machine, key):
     sampler(cohort, out, 'cozy-profile-telemetry', machine)
     common = ['run', target, f'model.model={model["reference"]}', '--lane', model['lane'], *args]
     common_warm = ['run', target, f'model.model={model["reference"]}', '--lane', model['lane'], *warm]
-    run, _, warm_timing = terminal(out, 'cozy-profile-warm',
-        [*common_warm, '--input', out / 'profile-bootstrap-request.json', 'profile=false', '--warm', 'gpu'])
+    # --warm takes only model/lane choices, never request inputs: no --input, no profile=false here.
+    run, _, warm_timing = terminal(out, 'cozy-profile-warm', [*common_warm, '--warm', 'gpu'])
     bootstrap, bootstrap_events, bootstrap_timing = terminal(out, 'cozy-profile-bootstrap',
         [*common, '--input', out / 'profile-bootstrap-request.json', 'profile=false', '--out', out / 'profiles/cozy-bootstrap'])
     bootstrap_full, bootstrap_proof = cozy_observed('cozy-profile-bootstrap', bootstrap,
