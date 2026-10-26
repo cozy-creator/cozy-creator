@@ -542,14 +542,17 @@ impl Stream {
         }
         self.release_failed = true;
         let driver = driver()?;
-        let _ctx = CtxGuard::enter(self.ctx)?;
-        if !self.raw.is_null() {
-            // SAFETY: all stream work is complete and this is its sole owned handle.
-            check("cuStreamDestroy(checked)", unsafe {
-                (driver.stream_destroy)(self.raw)
-            })?;
-            self.raw = std::ptr::null_mut();
+        {
+            let _ctx = CtxGuard::enter(self.ctx)?;
+            if !self.raw.is_null() {
+                // SAFETY: all stream work is complete and this is its sole owned handle.
+                check("cuStreamDestroy(checked)", unsafe {
+                    (driver.stream_destroy)(self.raw)
+                })?;
+                self.raw = std::ptr::null_mut();
+            }
         }
+        // Restore the caller's context before releasing a possibly final primary reference.
         // SAFETY: balances precisely this stream's retained primary-context reference.
         check("cuDevicePrimaryCtxRelease(checked)", unsafe {
             (driver.primary_ctx_release)(self.device)
