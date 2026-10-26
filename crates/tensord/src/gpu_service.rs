@@ -45,6 +45,37 @@ pub struct ModelGrant {
     pub components: Vec<String>,
 }
 
+/// Extract only the source-declared use fields. Unrelated prompt/seed data never changes
+/// construction identity. A payload-free weight warm/prefetch retains its existing route.
+pub(crate) fn prepared_uses(
+    installed: &crate::journal::Installation,
+    entrypoint: &str,
+    payload: Option<&serde_json::Value>,
+) -> io::Result<BTreeMap<String, protocol::executor::PreparedUse>> {
+    let invalid = |detail: &str| io::Error::new(io::ErrorKind::InvalidInput, detail.to_string());
+    let mut uses = BTreeMap::new();
+    let Some(payload) = payload else { return Ok(uses) };
+    let interface: serde_json::Value = serde_json::from_slice(&installed.interface).map_err(io::Error::other)?;
+    let Some(entry) = protocol::interface::entrypoint(&interface, entrypoint) else { return Ok(uses) };
+    for model in protocol::interface::models(entry) {
+        let Some(field) = model.get("prepared_use") else { continue };
+        let field = field.as_str().filter(|name| !name.is_empty() && !name.contains('.'))
+            .ok_or_else(|| invalid("prepared_use must name a top-level field"))?;
+        if entry.get("internal").and_then(serde_json::Value::as_bool) != Some(true)
+            || model.get("weights").and_then(serde_json::Value::as_bool) == Some(true) {
+            return Err(invalid("prepared_use belongs to an internal constructed model"));
+        }
+        let path = model.get("path").and_then(serde_json::Value::as_str)
+            .ok_or_else(|| invalid("prepared-use model path is absent"))?;
+        let value = payload.get(field).ok_or_else(|| invalid("prepared-use field is absent"))?;
+        let mut use_: protocol::executor::PreparedUse = serde_json::from_value(value.clone())
+            .map_err(io::Error::other)?;
+        use_.validate().map_err(invalid)?;
+        uses.insert(path.to_string(), use_);
+    }
+    Ok(uses)
+}
+
 /// How the machine shares its host and GPUs.
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct HostOptions {
@@ -1764,6 +1795,7 @@ impl Pool {
         installed: &crate::journal::Installation,
         entrypoint: &str,
         choices: &[crate::api::domain::ModelChoice],
+        payload: Option<&serde_json::Value>,
         grants: &[ModelGrant],
         degree: u32,
     ) -> io::Result<Plan> {
@@ -1775,6 +1807,7 @@ impl Pool {
         let application = protocol::interface::application(&interface)
             .ok_or_else(|| invalid("declared application absent"))?;
         let models = protocol::interface::models(entry).to_vec();
+        let uses = prepared_uses(installed, entrypoint, payload)?;
         let prefix = format!("{entrypoint}.models.");
         let slot_of = |model: &serde_json::Value| -> io::Result<(String, String)> {
             let path = model
@@ -1887,6 +1920,7 @@ impl Pool {
                 model_binding_path: path.clone(),
                 model_parameter_name: parameter.clone(),
                 model_parameter_names: vec![parameter.clone()],
+                prepared_use: uses.get(path).cloned(),
                 component: components[0].clone(),
                 components: components.clone(),
                 snapshots: components

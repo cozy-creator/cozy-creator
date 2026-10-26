@@ -299,6 +299,38 @@ impl Default for Adapter {
     }
 }
 
+/// A package's fixed use on an internal GPU call. Runtime alone chooses a representation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
+#[serde(deny_unknown_fields)]
+pub struct PreparedUse {
+    pub target: String,
+    pub tensors: Vec<String>,
+    pub activation_rows: u32,
+    pub repetitions: u32,
+    pub compute_dtype: String,
+    pub max_resident_bytes: u64,
+    pub workspace_bytes: u64,
+}
+
+impl PreparedUse {
+    pub fn validate(&mut self) -> Result<(), &'static str> {
+        if !matches!(self.target.as_str(), "stored" | "decoded_float")
+            || !matches!(self.compute_dtype.as_str(), "BF16" | "F16" | "F32")
+            || self.max_resident_bytes > i64::MAX as u64
+            || self.workspace_bytes > i64::MAX as u64
+            || self.tensors.len() > 4096
+            || self.tensors.iter().any(|key| key.is_empty() || key.len() > 1024 || !key.contains('.')) {
+            return Err("invalid fixed prepared use");
+        }
+        self.tensors.sort();
+        if self.tensors.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err("prepared tensor keys must be unique");
+        }
+        Ok(())
+    }
+}
+
 /// One model's construction: its class, where its weights are, and how to fill them. A
 /// weightless binding names only its release and an empty `model_class`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -326,6 +358,8 @@ pub struct Binding {
     pub package: String,
     pub model: String,
     pub adapters: Vec<Adapter>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prepared_use: Option<PreparedUse>,
     /// A group's placeable components and the GPU that keeps each, an index within the group
     /// (0: GPU 0, the serial scope's; g: GPU g keeps it resident for the group), decided by
     /// TensorD at Load.
@@ -354,6 +388,7 @@ impl Default for Binding {
             package: String::new(),
             model: String::new(),
             adapters: Vec::new(),
+            prepared_use: None,
             homes: BTreeMap::new(),
         }
     }
@@ -1171,7 +1206,7 @@ mod python {
         )*};
     }
     methods!(
-        Adapter, Binding, ModelLoad, MemoSettings, Construction, CallInterface, InputMetadata, InputFile,
+        Adapter, PreparedUse, Binding, ModelLoad, MemoSettings, Construction, CallInterface, InputMetadata, InputFile,
         ByteGrant, CallProgress, Answer, PublishPart
     );
 

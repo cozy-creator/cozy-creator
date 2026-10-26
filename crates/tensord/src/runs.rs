@@ -635,6 +635,7 @@ impl Runs {
             &spec,
             &spec.entrypoint,
             &own,
+            Some(spec.input.clone()),
             &spec.lane,
             Some(Box::new({
                 let observe = observe.clone();
@@ -893,6 +894,8 @@ impl Runs {
                 spec,
                 entrypoint,
                 choices,
+                item.payload.as_ref().map(|p| serde_json::from_str(p.get())).transpose()
+                    .map_err(|e| refused("prepared_use_invalid", e.to_string()))?,
                 &item.lane,
                 Some(Box::new(move |stage: &str, done: u64, total: u64| report(stage, done, total))),
                 Some(&stoppable.stop),
@@ -923,6 +926,7 @@ impl Runs {
                         spec,
                         &callee,
                         &own,
+                        None,
                         &item.lane,
                         Some(Box::new(move |stage: &str, done: u64, total: u64| report(stage, done, total))),
                         Some(&stoppable.stop),
@@ -1077,6 +1081,7 @@ impl Runs {
         spec: &Spec,
         entrypoint: &str,
         choices: &[domain::ModelChoice],
+        payload: Option<Value>,
         lane: &str,
         observe: Option<crate::published::Observer>,
         stop: Option<&Stop>,
@@ -1092,6 +1097,7 @@ impl Runs {
             catalog_revision: spec.catalog_revision.clone(),
             providers: spec.providers.clone(),
             entrypoint: entrypoint.into(),
+            payload,
             choices: choices.to_vec(),
             gpus: spec.gpus,
             lane: lane.into(),
@@ -1249,7 +1255,7 @@ impl Runs {
                         None => None,
                     };
                     let (hub, models) = (spec.hub.clone(), spec.models.clone());
-                    runs.resolve(&actor, "", held, None, hub, &spec, &spec.entrypoint, &models, &spec.lane, None, None)
+                    runs.resolve(&actor, "", held, None, hub, &spec, &spec.entrypoint, &models, None, &spec.lane, None, None)
                 })();
             match prepared {
                 Ok((installation, Some(plan), _)) if plan.degree > 0 && !plan.slots.is_empty() => {
