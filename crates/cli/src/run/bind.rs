@@ -20,6 +20,7 @@ use serde_json::{Map, Number, Value};
 use sha2::{Digest as _, Sha256};
 
 use super::{
+    clip::{self, Clips, Cut},
     describe,
     interface::{AssetsSlot, Callable, Constraints, Field, Interface, Slot, Struct, Type, Wire},
 };
@@ -31,8 +32,8 @@ const DEFAULT_MAX_BYTES: u64 = 64 << 20;
 const LORA_MODE: &str = "lora_mode";
 
 /// What a run was given on the command line.
-#[derive(Debug, Default)]
-pub struct Terms {
+#[derive(Debug)]
+pub struct Terms<'a> {
     /// The terms after the target: `key=value`, `key:=json`, `model.<slot>=<ref>`, positionals.
     pub inputs: Vec<String>,
     /// `--input FILE`: the whole payload as JSON or YAML; inline terms override it.
@@ -52,6 +53,8 @@ pub struct Terms {
     pub digests: Option<PathBuf>,
     /// Where input trees' manifests are written for the run to send; None: the temp directory.
     pub manifests: Option<PathBuf>,
+    /// Where segments of videos are cut and kept.
+    pub clips: Clips<'a>,
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -65,6 +68,8 @@ pub struct Bound {
     pub ignored: Vec<String>,
     /// The files of input trees, sent with the run; their manifests (in `files`) name them.
     pub tree_files: Vec<StagedInput>,
+    /// Segments of videos sent in place of their sources.
+    pub cuts: Vec<Cut>,
 }
 
 /// A local file bound to a payload field, whose value is its digest.
@@ -133,9 +138,9 @@ fn canonical(value: &Value) -> String {
 
 /// A warm run's model choices: `model.<slot>=`, `--lora` and a conversion's input model. It
 /// carries no payload, so any other term is refused.
-pub fn warm_choices(
-    target: &str, release: Option<&str>, interface: &Interface, callable: &Callable, terms: &Terms,
-    program: bool,
+pub async fn warm_choices(
+    target: &str, release: Option<&str>, interface: &Interface, callable: &Callable,
+    terms: &Terms<'_>, program: bool,
 ) -> Result<(Vec<Choice>, Option<protocol::machine::Json>), Error> {
     let mut binder = Binder {
         target: "",
@@ -146,6 +151,7 @@ pub fn warm_choices(
         choices: BTreeMap::new(),
         files: Vec::new(),
         dropped: Vec::new(),
+        cuts: Vec::new(),
     };
     let mut inputs = terms.inputs.clone();
     let destination = binder.conversion(&mut inputs)?;
@@ -165,7 +171,7 @@ pub fn warm_choices(
             if !binder.files.is_empty() || !terms.assets.is_empty() || !terms.fidelities.is_empty() {
                 return Err(usage("warm_inputs", "GPU program warming takes scalar inputs, not media files"));
             }
-            let bound = bind(target, release, interface, callable, terms)?;
+            let bound = bind(target, release, interface, callable, terms).await?;
             if !bound.files.is_empty() || !bound.tree_files.is_empty() || bound.destination.is_some() {
                 return Err(usage("warm_inputs", "GPU program warming takes scalar inputs, not files, trees or output destinations"));
             }
@@ -182,12 +188,12 @@ pub fn warm_choices(
 
 /// Binds `terms` for `callable`; `target` names it in messages (`org/pkg/fn`) and `release` the
 /// one its interface is (none for local code).
-pub fn bind(
+pub async fn bind(
     target: &str,
     release: Option<&str>,
     interface: &Interface,
     callable: &Callable,
-    terms: &Terms,
+    terms: &Terms<'_>,
 ) -> Result<Bound, Error> {
     let mut binder = Binder {
         target,
@@ -198,6 +204,7 @@ pub fn bind(
         choices: BTreeMap::new(),
         files: Vec::new(),
         dropped: Vec::new(),
+        cuts: Vec::new(),
     };
     let mut inputs = terms.inputs.clone();
     let destination = binder.conversion(&mut inputs)?;
@@ -207,7 +214,7 @@ pub fn bind(
     let positional = binder.read_terms(&inputs)?;
     binder.primary(positional)?;
     binder.loras()?;
-    let mut files = binder.attach()?;
+    let mut files = binder.attach().await?;
     binder.fidelities()?;
     let tree_files = binder.trees(&mut files)?;
     binder.seed();
@@ -221,6 +228,7 @@ pub fn bind(
         destination,
         ignored,
         tree_files,
+        cuts: binder.cuts,
     })
 }
 
@@ -229,13 +237,14 @@ struct Binder<'a> {
     callable: &'a Callable,
     /// The model slots of the calls it makes (`Interface::call_slots`).
     calls: Vec<&'a Slot>,
-    terms: &'a Terms,
+    terms: &'a Terms<'a>,
     document: Map<String, Value>,
     choices: BTreeMap<String, Choice>,
     /// Positional local files, bound to media inputs by kind.
     files: Vec<PathBuf>,
     /// Unknown keys of `--input`'s `models` and `lora` entries, warned of with the payload's.
     dropped: Vec<String>,
+    cuts: Vec<Cut>,
 }
 
 impl Binder<'_> {
@@ -745,8 +754,9 @@ impl Binder<'_> {
     }
 
     /// Binds every file: those named in the payload, `--asset` and positional files. Each value
-    /// becomes the file's digest, and the file its InputFile.
-    fn attach(&mut self) -> Result<Vec<InputFile>, Error> {
+    /// becomes the file's digest, and the file its InputFile. A video path naming a segment of
+    /// it (`clip.mp4#t=5,12`) is sent as that segment's clip.
+    async fn attach(&mut self) -> Result<Vec<InputFile>, Error> {
         let mut specs: Vec<Spec> = Vec::new();
         for field in &self.callable.request.fields {
             if let Some(value) = self.document.get(&field.name) {
@@ -831,8 +841,24 @@ impl Binder<'_> {
                 )
                 .remedy(describe::usage_line(self.target, self.callable))
             })?;
-            let path = self.resolve(&spec.source);
+            let (source, range) = clip::fragment(&spec.source, &field)?;
+            let path = self.resolve(&source);
             let sniffed = sniff(&path)?;
+            let (path, sniffed) = match range {
+                None => (path, sniffed),
+                Some(range) => {
+                    if !sniffed.media_type.starts_with("video/") {
+                        return Err(invalid(
+                            "input_segment_invalid",
+                            format!("{field}: #t= cuts a video, and {} is {}", path.display(), sniffed.media_type),
+                        ));
+                    }
+                    let cut = self.terms.clips.cut(&field, &path, range).await?;
+                    let clipped = (cut.clip.clone(), sniff(&cut.clip)?);
+                    self.cuts.push(cut);
+                    clipped
+                }
+            };
             let (kind_max, kinds) = accepts;
             let max = kinds
                 .iter()

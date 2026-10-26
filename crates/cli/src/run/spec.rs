@@ -146,14 +146,17 @@ impl Call<'_> {
             });
             files.chain(b.tree_files.iter().cloned()).collect()
         });
-        let warnings = bound
+        let ignored = bound
             .and_then(|b| b.warning(&target))
             .map(|message| Warning {
                 code: "request_fields_ignored".into(),
                 message,
-            })
-            .into_iter()
-            .collect();
+            });
+        let cuts = bound.into_iter().flat_map(|b| &b.cuts).map(|cut| Warning {
+            code: "input_cut".into(),
+            message: cut.to_string(),
+        });
+        let warnings = ignored.into_iter().chain(cuts).collect();
         SubmitRun {
             agreed: None,
             on,

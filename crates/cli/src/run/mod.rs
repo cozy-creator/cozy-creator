@@ -18,6 +18,7 @@ use target::Target;
 
 mod bind;
 mod catalog;
+mod clip;
 mod describe;
 mod digests;
 mod follow;
@@ -42,6 +43,9 @@ const EXAMPLES: &str = "Examples:
   cozy run birefnet/remove_background --asset image=./character.png
   cozy run sdxl/generate prompt='a fox in fresh snow'  (inline, for quick runs)
   cozy run sdxl/generate --describe                    (the fields it takes)
+
+A video path may name a segment, path#t=<start>,<end> (whole seconds, m:ss or h:mm:ss; either may be left
+out): it is cut once into ~/.cozy/cache/clips and sent instead of the whole file.
 
 A run is followed to its end: Ctrl-C stops following, never the run; `cozy run show N` follows it again.";
 
@@ -430,12 +434,13 @@ async fn call_code(
             let target = format!("{}/{}", code.package, callable.name);
             let (models, payload) = bind::warm_choices(
                 &target, code.release, code.interface, callable, &terms, level == Warm::Gpu,
-            )?;
+            )
+            .await?;
             (call.warm(level, &models, payload)?, None, None)
         }
         None => {
             let target = format!("{}/{}", code.package, callable.name);
-            let bound = bind::bind(&target, code.release, code.interface, callable, &terms)?;
+            let bound = bind::bind(&target, code.release, code.interface, callable, &terms).await?;
             if let Some(warning) = bound.warning(&target) {
                 output::warn(&warning);
             }
@@ -450,7 +455,7 @@ async fn call_code(
 }
 
 /// The terms a run was given, under a key minted for this request (its seed derives from it).
-fn terms(ctx: &Context, args: &RunArgs) -> Result<Terms, Error> {
+fn terms<'a>(ctx: &'a Context, args: &RunArgs) -> Result<Terms<'a>, Error> {
     let cwd = std::env::current_dir()
         .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
     Ok(Terms {
@@ -464,6 +469,10 @@ fn terms(ctx: &Context, args: &RunArgs) -> Result<Terms, Error> {
         user_home: ctx.user_home.clone(),
         digests: Some(ctx.home.root().join("cache").join("digests")),
         manifests: Some(ctx.home.root().join("cache").join("trees")),
+        clips: clip::Clips {
+            ctx,
+            dir: ctx.home.root().join("cache").join("clips"),
+        },
     })
 }
 
