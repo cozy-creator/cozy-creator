@@ -173,9 +173,19 @@ impl Machine {
 
     /// Wants `objects` at `priority` until the returned handle is aborted or they land.
     pub(crate) fn want(&self, remote: &Remote, objects: Vec<ObjectRef>, priority: u64) -> Result<tokio::task::JoinHandle<Result<Landed>>> {
+        self.want_observed(remote, objects, priority, |_| {})
+    }
+
+    /// The same downloader, with one completion notification to the existing dispatch loop.
+    pub(crate) fn want_observed(
+        &self, remote: &Remote, objects: Vec<ObjectRef>, priority: u64,
+        settled: impl FnOnce(&Result<Landed>) + Send + 'static,
+    ) -> Result<tokio::task::JoinHandle<Result<Landed>>> {
         let (fetcher, origin) = (self.of(remote)?, remote.origin.clone());
         Ok(self.runtime.spawn(async move {
-            fetcher.objects(&origin, &objects, &Want { priority, ..Want::default() }).await
+            let result = fetcher.objects(&origin, &objects, &Want { priority, ..Want::default() }).await;
+            settled(&result);
+            result
         }))
     }
 }
