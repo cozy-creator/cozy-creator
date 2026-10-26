@@ -1,0 +1,24 @@
+{
+  "scope": "qualified functional criteria consolidated; exacthistoricalreceipts stay external",
+  "original_source_sha256": {
+    "stages": "104dc03284bf758535b987f07dcb8c9c4759d28a0700f8b5d4c79ed8f4dd2810",
+    "repeat": "6b994594092daa123a03afac3a146b6c92214435ff62c7f0599fc5297f578dd7",
+    "model_stages": "3f9c50af0e9a20347c270014d5d13c139fe43477823985b7298a865b2c0ddb3b",
+    "stored_roles": "b650512792b7aed4aaa2ba7da9613f923c55c63e4670466653f52433967a762e",
+    "source_failure": "f24b677b0ca6f083eb644540117f6dccfb6140cf9b81ffe0f4e3a52239f145eb",
+    "cold_capture": "05e347172a5d3a3ec4821da72bd2c22dfeffd89c72a5f3e307547a606d2ff916",
+    "shared_pool": "541de5c966161d2c00fa060036838136346996c9236d1b88560ed02bb746d62d",
+    "prefetch": "52c2d81894da61e741ffda7721a9da320bcb2aed541c92b43ebe0aee9e616258"
+  },
+  "historical_runs": {
+    "stages": "18756-18765",
+    "repeat": "18799,18802-18804",
+    "model_stages": "18914-18922",
+    "stored_roles": "18972-18980,18994,18996,18997",
+    "source_failure": "18957-18964",
+    "cold_capture": "19030",
+    "shared_pool": "19138-19143",
+    "prefetch": "19006,19007,19021,19023,19025,19026"
+  },
+  "consolidated_package_execution": "pending realCLI proof; no automatic inheritedqualification"
+}
