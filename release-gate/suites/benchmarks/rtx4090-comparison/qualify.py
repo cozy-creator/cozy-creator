@@ -177,6 +177,52 @@ def sampler(cohort, out, label, machine):
         f'session={cohort["session"]}', f'deadline_unix_s={cohort["deadline_epoch"]}', '--on', machine])[0]
 
 
+def eager_reference(cohort, out, machine, key, samples):
+    """Real same-SDK eager output, excluded from the benchmark sample population."""
+    reference = cohort.get('eager_reference', {}).get(key)
+    if reference is None:
+        return None
+    model = cohort['models'][key]
+    target = Path(reference['packages']) / model['package'] / 'generate'
+    candidate = Path(cohort['packages']) / model['package'] / 'generate'
+    assert target != candidate, 'reference and candidate must have distinct source installations'
+    sample = next(s for s in samples if s['engine'] == 'cozy' and s['mode'] == 'cold')
+    request = image_request(sample)
+    save(out, 'eager-reference-request.json', request)
+    run, events, timing = terminal(out, 'eager-reference', [
+        'run', target, '--input', out / 'eager-reference-request.json',
+        f'model.model={model["reference"]}', '--lane', model['lane'],
+        '--on', machine, '--gpus=1', '--out', out / 'eager-reference-image'])
+    full = full_run(out, 'eager-reference', run)
+    detail = cozy_bench.summarize(full, request, (1024, 1024), events,
+                                  timing['cli_wall_ms'], 'denoise' if key == 'sdxl' else 'generating image')
+    assert detail['observed_step_callback_count'] == model['steps']
+    assert detail['native_completed_steps'] == 0 and detail['mode'] == 'eager_steps'
+    assert detail['software']['runtime'].endswith(cohort['runtime_source'][:8])
+    assert detail['software']['tensord_commit'] == cohort['creator_source']
+    assert any(m['manifest'] == model['checkpoint'] for m in detail['models'])
+    result = {'request': request, 'source': reference, 'detail': detail,
+              'scope': 'Untimed same-device eager numerical control. Distinct package source excludes output memo reuse. Subsequent reset retires its executor before candidate timing.'}
+    save(out, 'eager-reference-proof.json', result)
+    return result
+
+
+def require_eager_parity(out, label, reference, record):
+    expected = reference['detail']
+    assert record['seed'] == expected['seed']
+    assert record['software']['runtime'] == expected['software']['runtime']
+    assert record['software']['tensord_commit'] == expected['software']['tensord_commit']
+    left, right = expected['images'][0], record['images'][0]
+    checks = {key: left[key] == right[key] for key in ('size', 'rgb_sha256', 'rgba_sha256')}
+    proof = {'passed': all(checks.values()), 'checks': checks,
+             'reference_run': expected['run_number'], 'candidate_run': record['run_number'],
+             'reference_image': left, 'candidate_image': right,
+             'reference_routes': expected['routes'], 'candidate_routes': record['routes'],
+             'policy': 'Exact decoded RGB and alpha parity; no tolerance relaxation. PNG metadata/file bytes may differ.'}
+    save(out, label + '-eager-parity.json', proof)
+    assert proof['passed'], 'native candidate differs from the same-SDK eager reference; diagnose before comparing speed'
+
+
 def prepare_model(cohort, out, machine, key, samples):
     model, scripts = cohort['models'][key], cohort['scripts']
     args = ['--on', machine, '--gpus=1']
@@ -209,6 +255,9 @@ def prepare_model(cohort, out, machine, key, samples):
     else:
         match = result_json(run, 'match')
     assert match['matched'] and match['tensorfs_checkpoint'] == model['checkpoint'], match
+    reference = eager_reference(cohort, out, machine, key, samples)
+    if reference is not None:
+        setup['eager_reference'] = reference
     save(out, 'matched.json', match)
     save(out, 'setup.json', setup)
     return setup, cozy_args
@@ -252,6 +301,12 @@ def measure_group(cohort, out, machine, key, engine, samples, setup, cozy_args):
                 assert full['measurements']['software']['runtime'].endswith(cohort['runtime_source'][:8])
                 assert any(m['manifest'] == model['checkpoint'] for m in detail['models'])
                 record = {'engine': engine, 'sample': sample, **detail, **timing}
+                save(out, label + '-execution-proof.json', record)
+                if model.get('require_native_interval'):
+                    assert detail['native_completed_steps'] == model['steps'] - 1, 'candidate did not execute the required native interval'
+                    assert detail['observed_step_callback_count'] == 1
+                if sample['mode'] == 'cold' and setup.get('eager_reference') is not None:
+                    require_eager_parity(out, label, setup['eager_reference'], record)
             image_hash = record['images'][0]['rgb_sha256']
             assert image_hash not in pixels, 'fresh seeds produced an identical image; preserve and refuse this comparison'
             pixels.add(image_hash)

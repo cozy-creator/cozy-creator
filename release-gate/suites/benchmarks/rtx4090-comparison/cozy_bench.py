@@ -119,6 +119,8 @@ def summarize(run, request, size, events, cli_wall_ms, step_stage):
     attribution = measured["attribution"]
     stages = attribution["stages"]
     steps = attribution.get("steps", {}).get(step_stage)
+    native_preparation = attribution.get("steps", {}).get("native preparation step 0")
+    observed_step_track = step_stage
     pipeline = metric("request_path.pipeline_native_steps")
     interval = metric("request_path.denoise_native_steps")
     pipeline_reused = None
@@ -137,6 +139,14 @@ def summarize(run, request, size, events, cli_wall_ms, step_stage):
         callbacks, native_steps, native_rows = 0, int(pipeline["value"]), [pipeline]
         device = None
     else:
+        if interval is not None and step_stage == "generating image":
+            # Qwen attempts extract step 0 before capture. A refused capture reruns
+            # the ordinary eager pipeline, so its attempt has a distinct real step
+            # track rather than adding a misleading 31st denoise callback.
+            assert steps is None or steps["count"] == 0, "native Qwen mixed with eager fallback callbacks"
+            assert native_preparation is not None and native_preparation["count"] == 1
+            steps = native_preparation
+            observed_step_track = "native preparation step 0"
         assert steps is not None, "missing current denoise callback track"
         assert steps["ended_unix_ms"] >= steps["started_unix_ms"] >= began_ms - 1000
         callbacks = steps["count"]
@@ -146,7 +156,7 @@ def summarize(run, request, size, events, cli_wall_ms, step_stage):
         if interval is not None:
             value = interval["value"]
             assert 0 <= value <= request["steps"] and value == int(value)
-            assert step_stage == "denoise" and callbacks == 1
+            assert step_stage in ("denoise", "generating image") and callbacks == 1
             native_steps, native_rows = int(value), [interval]
         assert callbacks + native_steps == request["steps"]
         mode = "eager_step0_native_interval" if native_steps else "eager_steps"
@@ -176,6 +186,9 @@ def summarize(run, request, size, events, cli_wall_ms, step_stage):
         "pipeline_reused": pipeline_reused, "pipeline_host_launches": pipeline_launches,
         "step_timing_scope": "Resident pipeline stage includes encode, denoise and decode; native intervals have no complete per-step series. Never divide it into fabricated GPU-step times.",
         "step_stage": "native_pipeline" if pipeline is not None else step_stage,
+        "observed_step_track": observed_step_track,
+        "native_preparation_as_reported": native_preparation,
+        "native_preparation_discarded": native_preparation is not None and interval is None,
         "device_steps_as_reported": device,
         "device_first_step_ms": samples[0] if samples else None,
         "device_steady_step_ms": {"count": len(steady), "mean": statistics.mean(steady),
