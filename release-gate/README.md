@@ -58,6 +58,32 @@ A SKU and suites with no baseline need `--establish` once.
 - **From Actions:** `gh workflow run release-gate.yml -R cozy-creator/cozy-creator -f suites=runtime,packages -f pins=…`.
   The suites' `skus` pick the rentals; `skus` overrides them, `only` narrows the cells.
   Testing is manual (Paul 10-24): only the release agent dispatches it, with the suites it chose; no workflow calls it.
+  `cells` forwards the existing `--cells` hook from a `.sh` or `.tsv` file under this checkout's
+  `release-gate/`; it is checked before a rental starts. The hook shares the same candidate, rental,
+  `only` filter, cleanup and verdict as the selected suites. Optional `gpus` sets an exact positive
+  count on every selected rental; empty keeps the existing suite selection.
+
+For the Runtime 0.34 / TensorFS 0.17 core, the release owner can select one RTX 4090 and the
+existing model, native loading/cancellation and bounded-pressure cells:
+
+```sh
+gh workflow run release-gate.yml -R cozy-creator/cozy-creator \
+  -f suites=runtime -f skus=rtx-4090 -f gpus=1 \
+  -f only=sdxl,qwen,sdxl-p2,native-loaded,native-input-error,native-cancel-active,native-phases,memory-bounded,memory-retry,memory-capture \
+  -f cells=release-gate/suites/execution/core-cells.sh \
+  -f cozy=v0.13.0 -f runtime_wheel="$RUNTIME_WHEEL_URL_AND_SHA256" \
+  -f tensorfs_wheel="$TENSORFS_WHEEL_URL_AND_SHA256" -f packages_ref="$PACKAGES_SHA" \
+  -f publish=false
+```
+
+This command spends on a fresh rental; it is not a preflight. Use the candidate assets' actual
+`URL#sha256=…` values. `publish=false` preserves the existing full-suite baseline; it does not
+prevent renting. No H3 cell is selected. Bounded-pressure cells prove real allocation/reclamation
+under their cap, not foreign-application process retirement. Broader model, platform and
+multi-GPU qualification remains separate. The workflow's existing 300-minute timeout is not
+a dollar cap; the owner must review the current GPU, disk and traffic quote before dispatch.
+Before promotion, check that all ten selected names appear in `cells.tsv` with real completed
+receipts: an aggregate PASS alone does not prove a cell was run rather than skipped.
 
 ## Promotion
 

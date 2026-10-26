@@ -7,7 +7,7 @@ name = "ci-bounded-memory-policy"
 version = "0.1.0"
 description = "Real CUDA qualification for prepared resident component ownership"
 requires-python = ">=3.12"
-dependencies = ["cozy-runtime>=0.32.2,<0.33", "tensorfs>=0.15.2,<0.16", "msgspec>=0.19", "torch>=2.14,<2.15"]
+dependencies = ["cozy-runtime>=0.34,<0.35", "tensorfs>=0.17,<0.18", "msgspec>=0.19", "torch>=2.14,<2.15"]
 
 [project.entry-points."cozy.application"]
 default = "ci_bounded_memory_policy:app"
