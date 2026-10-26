@@ -1,0 +1,17 @@
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "ci-bounded-split-measurement"
+version = "0.1.0"
+description = "Real CUDA bounded split sizing and allocator descent"
+requires-python = ">=3.12"
+dependencies = ["cozy-runtime>=0.33,<0.34", "tensorfs>=0.16,<0.17", "msgspec>=0.19", "torch>=2.14,<2.15"]
+
+[project.entry-points."cozy.application"]
+default = "ci_bounded_split_measurement:app"
+
+[tool.uv.build-backend]
+module-name = "ci_bounded_split_measurement"
+module-root = ""

@@ -1,0 +1,2 @@
+[application]
+object = "ci_bounded_split_measurement:app"
