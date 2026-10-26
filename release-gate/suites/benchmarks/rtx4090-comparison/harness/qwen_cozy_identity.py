@@ -58,7 +58,7 @@ app = App()
 
 
 class QwenIdentityRequest(msgspec.Struct):
-    folder: str = "/var/tmp/bench4090-20261026"
+    folder: str = ""
     export: bool = False
     expected_runtime_source: str = "774624133be6d74262f845b9358874872de100d9"
 
@@ -69,7 +69,8 @@ class QwenIdentityResult(msgspec.Struct):
 
 @app.entrypoint(accelerator=False)
 def main(payload: QwenIdentityRequest, weights: Weights, ctx: Context) -> QwenIdentityResult:
-    folder, export, expected_runtime_source = payload.folder, payload.export, payload.expected_runtime_source
+    folder = payload.folder or "/var/tmp/bench4090-20261026"
+    export, expected_runtime_source = payload.export, payload.expected_runtime_source
     import numpy as np
     import torch
     import tensorfs
