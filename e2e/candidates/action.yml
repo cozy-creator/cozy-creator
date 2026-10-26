@@ -41,6 +41,9 @@ inputs:
   release:
     description: A cozy-publish.yaml run (a dry run's too) whose own installer installs its cozy, the candidate, in place of a build
     default: ''
+  local_machine:
+    description: Build the full SDK for an explicitly selected local platform qualification suite
+    default: 'false'
 runs:
   using: composite
   steps:
@@ -110,6 +113,7 @@ runs:
         TENSORFS: ${{ inputs.tensorfs }}
         RUNTIME: ${{ inputs.runtime }}
         BUILD_SH: ${{ github.action_path }}/build.sh
+        LOCAL_MACHINE: ${{ inputs.local_machine }}
         GH_TOKEN: ${{ github.token }}
         CARGO_INCREMENTAL: "0"
       run: |
@@ -117,7 +121,7 @@ runs:
         out=$RUNNER_TEMP/candidates exe=''
         [ "$RUNNER_OS" != Windows ] || exe=.exe
         machine=1
-        [ "$RUNNER_OS" = Linux ] || machine=''
+        [ "$RUNNER_OS" = Linux ] || [ "$LOCAL_MACHINE" = true ] || machine=''
         if [ "$FROM" != artifacts ]; then
           creator=.stack runtime=.rt
           [ "$REPO" != cozy-creator ] || creator=.src

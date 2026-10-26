@@ -6,7 +6,7 @@ build-backend = "uv_build"
 name = "ci-mps-residency"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["cozy-runtime>=0.32.2,<0.33", "tensorfs>=0.15.3,<0.16", "msgspec>=0.19", "torch>=2.14,<2.15"]
+dependencies = ["cozy-runtime>=0.33,<0.34", "tensorfs>=0.16,<0.17", "msgspec>=0.19", "torch>=2.14,<2.15"]
 
 [project.entry-points."cozy.application"]
 default = "ci_mps_residency:app"

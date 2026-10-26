@@ -74,6 +74,10 @@ on:
         description: TensorFS platform artifact run for that MPS library cohort; no release is created
         type: string
         default: ''
+      mps_library_only:
+        description: Build and exercise current TensorFS and Torch MPS storage/lifetime before candidate CLI admission
+        type: boolean
+        default: false
       pins:
         description: Package releases the imports suite takes instead of the latest unyanked (name@release,...)
         type: string
@@ -134,6 +138,10 @@ on:
         description: TensorFS platform artifact run for that MPS library cohort; no release is created
         type: string
         default: ''
+      mps_library_only:
+        description: Build and exercise current TensorFS and Torch MPS storage/lifetime before candidate CLI admission
+        type: boolean
+        default: false
       pins:
         type: string
         default: ''
@@ -489,12 +497,16 @@ jobs:
     runs-on: macos-15
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time.
-    timeout-minutes: 90
+    timeout-minutes: 60
     defaults:
       run:
         shell: bash
     env:
       BUILD: ${{ join(fromJSON(needs.affected.outputs.selection).build, ' ') }}
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_RELEASE_LTO: 'off'
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '16'
+      CARGO_INCREMENTAL: '0'
     steps:
       - uses: actions/checkout@v5
         with:
@@ -513,8 +525,12 @@ jobs:
           tensorfs: ${{ inputs.tensorfs }}
           runtime: ${{ inputs.runtime }}
           release: ${{ inputs.publish_run }}
-      - name: mps suite
+          local_machine: 'true'
+      - name: Current TensorFS and Torch MPS storage/lifetime
         if: inputs.mps_cli_ref == '' && inputs.mps_tensorfs_run == ''
+        run: bash .creator/e2e/mps/library.sh --out "$RUNNER_TEMP/e2e" $CANDIDATES
+      - name: mps suite
+        if: inputs.mps_cli_ref == '' && inputs.mps_tensorfs_run == '' && !inputs.mps_library_only
         run: bash .creator/e2e/mps/run.sh --out "$RUNNER_TEMP/e2e" $CANDIDATES
       # Library proof only: the historical CLI is explicitly selected and never becomes a shipping default.
       - name: Verify the selected MPS library cohort
@@ -624,6 +640,13 @@ jobs:
         with:
           name: e2e-mps
           path: ${{ runner.temp }}/e2e
+          retention-days: 14
+      - if: always() && inputs.mps_cli_ref == '' && inputs.mps_tensorfs_run == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: mps-current-inputs
+          path: ${{ runner.temp }}/candidates/
+          if-no-files-found: error
           retention-days: 14
 
   e2e:

@@ -23,11 +23,16 @@ class Report(msgspec.Struct):
 
 @app.entrypoint(accelerator=True)
 def gpu(payload: Request, ctx: Context) -> Report:
+    return exercise(payload.seed, ctx.device)
+
+
+def exercise(seed: int, device: object) -> Report:
+    """The same real library gate, callable before the platform's CLI admission opens."""
     import tensorfs
     import torch
     from cozy_runtime.internal import accel, residency
 
-    assert ctx.device.type == "mps" and torch.backends.mps.is_available()
+    assert str(device) == "mps" and torch.backends.mps.is_available()
     memory = residency.Memory.open("mps")
     assert memory.native is None, "MPS must use Torch allocation, not Varena"
     rows, cols = 1024, 16385  # F32 bytes cross the64MiB staging boundary by4096bytes.
@@ -68,7 +73,7 @@ def gpu(payload: Request, ctx: Context) -> Report:
         expected = torch.ones((1, rows))
         expected[0, -1] = 3
         try:
-            with memory.request(f"mps-load-{payload.seed}") as request, torch.no_grad():
+            with memory.request(f"mps-load-{seed}") as request, torch.no_grad():
                 with models["wide"].passing("load"):
                     actual = modules["wide"](wide_input)
                     alias = modules["wide"].weight.detach()
@@ -112,7 +117,7 @@ def gpu(payload: Request, ctx: Context) -> Report:
             after = torch.mps.current_allocated_memory()
             assert held - after >= rows * cols * 4, (held, after)
             with (
-                memory.request(f"mps-refill-{payload.seed}") as request,
+                memory.request(f"mps-refill-{seed}") as request,
                 torch.no_grad(),
             ):
                 with models["wide"].passing("refill"):
@@ -121,8 +126,8 @@ def gpu(payload: Request, ctx: Context) -> Report:
                     )
                 assert request.moved == rows * cols * 4, request.stats()
             result = {
-                "seed": payload.seed,
-                "device": str(ctx.device),
+                "seed": seed,
+                "device": str(device),
                 "runtime": importlib.metadata.version("cozy-runtime"),
                 "tensorfs": tensorfs.__version__,
                 "torch": torch.__version__,
