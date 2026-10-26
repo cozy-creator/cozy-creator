@@ -361,13 +361,32 @@ impl Shared {
             let issued = (work.continuation.is_some()
                 && (work.decode.is_none() || work.event_ordered))
                 .then_some(&issued as io::Issued<'_>);
+            // Non-preferred weights are the streaming window. Populate the OS page cache
+            // on their misses so later passes do not repeatedly bypass it with O_DIRECT.
+            // A mixed placement read uses buffered I/O as one existing engine operation.
+            let mode = if work
+                .inputs
+                .iter()
+                .filter(|input| input.fill.is_some())
+                .try_fold(false, |streamed, input| {
+                    input
+                        .region
+                        .is_preferred()
+                        .map(|preferred| streamed || !preferred)
+                })
+                .map_err(Failure::Native)?
+            {
+                Mode::Buffered
+            } else {
+                Mode::Cache
+            };
             // SAFETY: Work owns the checkpoint/source/items and the Fill's physical pin.
             // The engine validates all spans, initializes padding and joins submitted work.
             let stats = unsafe {
                 work.source.read_placements_cancelable_observed(
                     &placements,
                     work.threads,
-                    Mode::Cache,
+                    mode,
                     &IoTally::default(),
                     &self.cancel,
                     issued,
@@ -599,7 +618,19 @@ impl Shared {
             return;
         }
         for input in &mut work.inputs {
-            drop(input.pin.take());
+            if let Some(pin) = input.pin.take() {
+                if result.is_ok() {
+                    // SAFETY: successful read/decode completion and, when composed, the
+                    // checked continuation wait above joined every producer and consumer.
+                    // Work submits nothing after this point. Exported capture/storage
+                    // aliases own independent Pins and keep their conservative fence.
+                    drop(unsafe { pin.into_completed_region() });
+                } else {
+                    // Keep the generic fence for failure paths even after a checked drain.
+                    // A failed Fill or foreign alias is never certified by a sibling Pin.
+                    drop(pin);
+                }
+            }
         }
         drop(work.producer.take());
         crate::cleanup::defer(work);
@@ -1068,7 +1099,14 @@ impl Work {
             if let Some(fill) = input.fill.take() {
                 // SAFETY: caller checked the whole source and, for events, its consumer.
                 // The independent input pin remains live if publication reports an error.
-                input.pin = Some(unsafe { fill.commit_completed() }.map_err(Failure::Native)?);
+                let published = unsafe { fill.commit_completed() }.map_err(Failure::Native)?;
+                if let Some(previous) = input.pin.replace(published) {
+                    // SAFETY: this independent source pin has no outstanding reader here:
+                    // checked ordering has not launched the consumer; event ordering joins
+                    // the consumer before publication. Both joined source/decode streams.
+                    // Capture aliases own separate Pins and are not released by this call.
+                    drop(unsafe { previous.into_completed_region() });
+                }
             }
         }
         Ok(())
