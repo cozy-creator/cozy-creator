@@ -188,3 +188,25 @@ TensorFS wheel SHA256:
 `79b58b39c70fbe5f3ffa4d7eebb2539349c228d2985204eb1aa691831ba19224`.
 Receipts: `outputs/stock-torch-20261025/codex-resume-20261026/own-va-repeat-cells/RESULTS.json`;
 independent review: `outputs/stock-torch-20261025/native-streaming-resume-20261026/own-va-repeat/GPU-REVIEW.json`.
+
+### Warm model-stage capture: real GPU proof
+
+Ordinary CLI runs 18914–18922 passed on the RTX 4070 Laptop GPU with Creator
+`e7feb3f4543c76d175bd2bcd635f46d5ecb9c50b` and Runtime `9f81699db`.
+The public model-stage adapter captured real placed raw blocks, including a
+fully warm capture, and then streamed 30 passes through a 4 MiB managed window
+against 12 MiB of source weights. Checked/event execution and changed-input
+reuse matched the eager output with zero final pins. Changed fill, Region and
+source identities refused before launch. Escaped aliases refused, and the next
+valid request succeeded in the same executor (PID 1965675).
+
+These nine gates qualify the warm/cold raw descriptor path. They do not qualify
+the separate native INT8 producer/consumer or complete SDXL adapter. The first
+SDXL gate separately reached its exact 30-step output check, then failed a
+fixture assumption that an idle-cache limit was a total residency cap; that
+entire gate remains unpassed pending its explicit bound/next-demand diagnostic.
+
+TensorFS wheel SHA256:
+`cf79ae0ae5dad4320a7520cfb2f6ec5a606889483ce07acf604436781e3ad40a`.
+Receipts: `outputs/stock-torch-20261025/codex-resume-20261026/combined-model-stage-cells/native-model-stages-20261026/RESULTS.json`;
+independent review: `outputs/stock-torch-20261025/native-streaming-resume-20261026/own-va-ready/GPU-REVIEW.json`.
