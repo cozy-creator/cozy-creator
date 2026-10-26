@@ -4,7 +4,7 @@
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 
 use pyo3::{
     prelude::*,
@@ -61,8 +61,26 @@ struct Stage {
     canceled: AtomicBool,
     retained_unsafe: AtomicBool,
     reads: Mutex<ReadLedger>,
+    next: Mutex<Option<(Weak<Stage>, usize)>>,
+    prefetch: Mutex<Prefetch>,
+    prefetch_changed: Condvar,
+    prefetch_control: Arc<tensorfs::io::ReadControl>,
+    prefetch_totals: Mutex<ReadTotals>,
+    prefetch_started: AtomicU64,
+    prefetch_skipped: AtomicU64,
+    prefetch_used: AtomicU64,
+    prefetch_last_clock: Mutex<(u64, u64)>,
     result: Mutex<Option<(Status, Progress)>>,
     changed: Condvar,
+}
+
+#[derive(Default)]
+struct Prefetch {
+    preparing: bool,
+    closed: bool,
+    pass: u64,
+    read: Option<Arc<PreparedRead>>,
+    error: Option<Failure>,
 }
 
 #[derive(Clone, Default)]
@@ -113,6 +131,169 @@ fn failure(error: &Failure) -> Status {
 }
 
 impl Stage {
+    fn start_prefetch(&self, budget: usize) {
+        if self.canceled.load(Ordering::Acquire)
+            || self.finished.load(Ordering::Acquire)
+            || self.prefetch_control.canceled()
+        {
+            return;
+        }
+        let gate = self.gate.load(Ordering::Acquire);
+        let prior_clean = self
+            .result
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some_and(|(status, progress)| {
+                status.kind == continuation::OK && progress.done != 0 && progress.canceled == 0
+            });
+        if gate != 0 && !(gate == 1 && self.reusable && prior_clean) {
+            return;
+        }
+        let pass = self
+            .passes_started
+            .load(Ordering::Acquire)
+            .saturating_add(1);
+        {
+            let mut state = self.prefetch.lock().unwrap_or_else(|e| e.into_inner());
+            if state.closed
+                || state.preparing
+                || state.read.is_some()
+                || state.error.is_some()
+                || state.pass >= pass
+            {
+                return;
+            }
+            state.pass = pass;
+            state.preparing = true;
+        }
+        // This path runs only on the predecessor's native worker. Cancellation stays atomic
+        // while no-reclaim preparation creates the bounded next input; no lock spans CUDA/I/O.
+        let prepared = catch_unwind(AssertUnwindSafe(|| {
+            if self.canceled.load(Ordering::Acquire) {
+                return Ok(None);
+            }
+            let Some(work) = self.source.prepare_speculative(budget)? else {
+                return Ok(None);
+            };
+            let read = Arc::new(PreparedRead::read_only(
+                work,
+                self.prefetch_control.clone(),
+            )?);
+            if self.canceled.load(Ordering::Acquire) {
+                read.request_cancel();
+            }
+            match read.start_native() {
+                Ok(()) => Ok(Some(read)),
+                Err(Failure::Ineligible(_)) => {
+                    let (_, complete) = read.join_native();
+                    if complete {
+                        Ok(None)
+                    } else {
+                        Err(Failure::Native(varena::Error::Poisoned(
+                            "failed speculative worker cleanup is unproven".into(),
+                        )))
+                    }
+                }
+                Err(error) => Err(error),
+            }
+        }))
+        .unwrap_or_else(|_| {
+            Err(Failure::Native(varena::Error::Poisoned(
+                "native speculative input preparation panicked".into(),
+            )))
+        });
+        let mut state = self.prefetch.lock().unwrap_or_else(|e| e.into_inner());
+        state.preparing = false;
+        match prepared {
+            Ok(Some(read)) => {
+                self.prefetch_started.fetch_add(1, Ordering::Relaxed);
+                state.read = Some(read);
+            }
+            Ok(None) => {
+                self.prefetch_skipped.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(error) => state.error = Some(error),
+        }
+        self.prefetch_changed.notify_all();
+    }
+
+    fn prefetch_quiescent(&self) -> bool {
+        let state = self.prefetch.lock().unwrap_or_else(|e| e.into_inner());
+        // Even a finished speculative reader must be joined and its bytes attributed before
+        // a canceled unstarted one-shot cap may certify completion to an older importer.
+        !state.preparing && state.error.is_none() && state.read.is_none()
+    }
+
+    fn drain_prefetch(&self, demand: bool, close: bool) -> Result<u64, Status> {
+        let (read, error) = {
+            let mut state = self.prefetch.lock().unwrap_or_else(|e| e.into_inner());
+            if close {
+                state.closed = true;
+            }
+            while state.preparing {
+                state = self
+                    .prefetch_changed
+                    .wait(state)
+                    .unwrap_or_else(|e| e.into_inner());
+            }
+            (state.read.take(), state.error.take())
+        };
+        if let Some(error) = error {
+            let status = failure(&error);
+            if demand
+                || matches!(
+                    status.kind,
+                    continuation::CUDA | continuation::INTERNAL | continuation::UNPROVEN
+                )
+            {
+                return Err(status);
+            }
+        }
+        let Some(read) = read else {
+            return Ok(0);
+        };
+        if close {
+            read.request_cancel();
+        }
+        let (result, completed) = read.join_native();
+        if !completed {
+            // Retain the actual read owner on ambiguous producer completion.
+            std::mem::forget(read);
+            return Err(Status::unproven(
+                "speculative source completion is unproven",
+            ));
+        }
+        let (bytes, inputs, done) = read.completed_read_bytes();
+        *self
+            .prefetch_last_clock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = read.read_clock();
+        {
+            let mut totals = self
+                .prefetch_totals
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            totals.bytes = totals.bytes.saturating_add(bytes);
+            totals.input_bytes.resize(inputs.len(), 0);
+            for (sum, value) in totals.input_bytes.iter_mut().zip(inputs) {
+                *sum = sum.saturating_add(value);
+            }
+            totals.completed_reads += u64::from(done);
+        }
+        if let Err(error) = result {
+            let status = failure(&error);
+            if demand
+                || matches!(
+                    status.kind,
+                    continuation::CUDA | continuation::INTERNAL | continuation::UNPROVEN
+                )
+            {
+                return Err(status);
+            }
+        }
+        Ok(bytes)
+    }
+
     fn publish(&self, status: Status, mut progress: Progress, complete: bool) -> Status {
         progress.epoch = self.epoch.load(Ordering::Acquire);
         progress.done = u32::from(complete);
@@ -163,10 +344,24 @@ impl Stage {
             ));
         }
         self.passes_started.fetch_add(1, Ordering::Relaxed);
-        let work = match self.source.prepare() {
+        let prefetched = match self.drain_prefetch(true, false) {
+            Ok(bytes) => bytes,
+            Err(error) => return self.abort_before_read(error),
+        };
+        let mut work = match self.source.prepare() {
             Ok(work) => work,
             Err(error) => return self.abort_before_read(failure(&error)),
         };
+        if prefetched != 0 && work.missing_bytes() == 0 {
+            self.prefetch_used.fetch_add(1, Ordering::Relaxed);
+        }
+        if let Some((next, budget)) = self.next.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            work.set_lookahead(Arc::new(move || {
+                if let Some(next) = next.upgrade() {
+                    next.start_prefetch(budget);
+                }
+            }));
+        }
         let read = match PreparedRead::composed_with_control(
             work,
             self.graph.clone(),
@@ -216,6 +411,7 @@ impl Stage {
             .compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire);
         let status = self.graph.cancel();
         self.read_control.cancel();
+        self.prefetch_control.cancel();
         status
     }
 
@@ -316,6 +512,9 @@ impl Stage {
         {
             return Status::unproven("source input finish raced another transition");
         }
+        if let Err(status) = self.drain_prefetch(false, true) {
+            return status;
+        }
         if let Err(status) = self.graph.finish() {
             return Status::unproven(&status.detail());
         }
@@ -342,6 +541,22 @@ impl Stage {
                 }
                 2 => {
                     drop(result);
+                    if wait {
+                        if let Err(status) = self.drain_prefetch(false, true) {
+                            self.publish(status, Progress::default(), false);
+                            return (status, Progress::default());
+                        }
+                    } else if !self.prefetch_quiescent() {
+                        return (
+                            ok(),
+                            Progress {
+                                phase: 1,
+                                canceled: 1,
+                                epoch: self.epoch.load(Ordering::Acquire),
+                                ..Progress::default()
+                            },
+                        );
+                    }
                     // The inner graph's atomic cancel gate prevents launch. Its poll only
                     // retires the armed epoch; no source or CUDA consumer was submitted.
                     let (status, mut progress) = self.graph.observe(wait);
@@ -518,6 +733,51 @@ pub(super) struct StageJob {
 }
 #[pymethods]
 impl StageJob {
+    #[classattr]
+    fn supports_native_lookahead() -> bool {
+        true
+    }
+
+    #[getter]
+    fn reservation_bytes(&self) -> usize {
+        self.owner.source.reservation_bytes()
+    }
+
+    #[pyo3(signature = (next_job, *, max_prefetch_bytes))]
+    fn link_next(
+        &self,
+        next_job: PyRef<'_, StageJob>,
+        max_prefetch_bytes: usize,
+    ) -> PyResult<bool> {
+        let current = &self.owner;
+        let next = &next_job.owner;
+        if current.pid != std::process::id() || next.pid != current.pid {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "lookahead belongs to another process",
+            ));
+        }
+        if Arc::ptr_eq(current, next)
+            || current.source.device() != next.source.device()
+            || current.gate.load(Ordering::Acquire) != 0
+            || next.gate.load(Ordering::Acquire) != 0
+        {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "lookahead needs distinct unstarted source jobs on one device",
+            ));
+        }
+        if max_prefetch_bytes == 0 || next.source.reservation_bytes() > max_prefetch_bytes {
+            return Ok(false);
+        }
+        let mut link = current.next.lock().unwrap_or_else(|e| e.into_inner());
+        if link.is_some() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "source job already has lookahead",
+            ));
+        }
+        *link = Some((Arc::downgrade(next), max_prefetch_bytes));
+        Ok(true)
+    }
+
     fn facts<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         if self.owner.pid != std::process::id() {
             return Err(pyo3::exceptions::PyValueError::new_err(
@@ -535,11 +795,47 @@ impl StageJob {
             Some(read) => read.facts(py)?,
             None => PyDict::new(py),
         };
+        let mut prefetch_clock = *self
+            .owner
+            .prefetch_last_clock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut prefetched = self
+            .owner
+            .prefetch_totals
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(read) = self
+            .owner
+            .prefetch
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .read
+            .clone()
+        {
+            prefetch_clock = read.read_clock();
+            let (bytes, inputs, done) = read.completed_read_bytes();
+            prefetched.completed_reads += u64::from(done);
+            prefetched.bytes = prefetched.bytes.saturating_add(bytes);
+            prefetched.input_bytes.resize(inputs.len(), 0);
+            for (sum, value) in prefetched.input_bytes.iter_mut().zip(inputs) {
+                *sum = sum.saturating_add(value);
+            }
+        }
         let mut input_bytes = totals.input_bytes;
         input_bytes.resize(input_bytes.len().max(inputs.len()), 0);
         for (sum, value) in input_bytes.iter_mut().zip(inputs) {
             *sum = sum.saturating_add(value);
         }
+        input_bytes.resize(input_bytes.len().max(prefetched.input_bytes.len()), 0);
+        for (sum, value) in input_bytes.iter_mut().zip(&prefetched.input_bytes) {
+            *sum = sum.saturating_add(*value);
+        }
+        input_bytes.resize(self.owner.source.input_count(), 0);
+        prefetched
+            .input_bytes
+            .resize(self.owner.source.input_count(), 0);
         let result = *self.owner.result.lock().unwrap_or_else(|e| e.into_inner());
         let completed_pass = result.is_some_and(|(_, progress)| progress.done != 0);
         let finished = self.owner.finished.load(Ordering::Acquire);
@@ -568,11 +864,53 @@ impl StageJob {
             },
         )?;
         row.set_item("completion_proven", complete)?;
-        row.set_item("read_done", totals.completed_reads != 0 || read_done)?;
-        row.set_item("bytes", totals.bytes.saturating_add(bytes))?;
-        row.set_item("read_bytes", totals.bytes.saturating_add(bytes))?;
+        row.set_item(
+            "read_done",
+            totals.completed_reads != 0 || read_done || prefetched.completed_reads != 0,
+        )?;
+        row.set_item(
+            "bytes",
+            totals
+                .bytes
+                .saturating_add(bytes)
+                .saturating_add(prefetched.bytes),
+        )?;
+        row.set_item(
+            "read_bytes",
+            totals
+                .bytes
+                .saturating_add(bytes)
+                .saturating_add(prefetched.bytes),
+        )?;
         row.set_item("input_read_bytes", input_bytes)?;
-        row.set_item("issued_bytes", self.owner.read_control.issued_bytes())?;
+        row.set_item(
+            "issued_bytes",
+            self.owner
+                .read_control
+                .issued_bytes()
+                .saturating_add(self.owner.prefetch_control.issued_bytes()),
+        )?;
+        row.set_item("prefetch_read_bytes", prefetched.bytes)?;
+        row.set_item("prefetch_last_read_issued_clock_ns", prefetch_clock.0)?;
+        row.set_item("prefetch_last_read_completed_clock_ns", prefetch_clock.1)?;
+        row.set_item("read_bytes_scope", "logical source bytes from completed reads; demand plus speculative, not measured PCIe traffic")?;
+        row.set_item("prefetch_input_read_bytes", prefetched.input_bytes)?;
+        row.set_item(
+            "prefetch_issued_bytes",
+            self.owner.prefetch_control.issued_bytes(),
+        )?;
+        row.set_item(
+            "prefetch_started",
+            self.owner.prefetch_started.load(Ordering::Acquire),
+        )?;
+        row.set_item(
+            "prefetch_skipped",
+            self.owner.prefetch_skipped.load(Ordering::Acquire),
+        )?;
+        row.set_item(
+            "prefetch_used",
+            self.owner.prefetch_used.load(Ordering::Acquire),
+        )?;
         row.set_item(
             "canceled",
             result.is_some_and(|(_, progress)| progress.canceled != 0),
@@ -635,6 +973,15 @@ pub(super) fn export(
         canceled: AtomicBool::new(false),
         retained_unsafe: AtomicBool::new(false),
         reads: Mutex::new(ReadLedger::default()),
+        next: Mutex::new(None),
+        prefetch: Mutex::new(Prefetch::default()),
+        prefetch_changed: Condvar::new(),
+        prefetch_control: Arc::new(tensorfs::io::ReadControl::default()),
+        prefetch_totals: Mutex::new(ReadTotals::default()),
+        prefetch_started: AtomicU64::new(0),
+        prefetch_skipped: AtomicU64::new(0),
+        prefetch_used: AtomicU64::new(0),
+        prefetch_last_clock: Mutex::new((0, 0)),
         result: Mutex::new(None),
         changed: Condvar::new(),
     });

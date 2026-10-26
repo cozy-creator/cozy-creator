@@ -1,11 +1,11 @@
 //! Process-local weight residency bindings. CUDA ownership remains in the Rust core.
 mod allocator;
 #[cfg(feature = "store")]
-mod refill;
-#[cfg(feature = "store")]
 mod continuation;
 #[cfg(feature = "store")]
 mod load;
+#[cfg(feature = "store")]
+mod refill;
 #[cfg(feature = "store")]
 mod stage_continuation;
 use pyo3::{
@@ -112,6 +112,12 @@ impl PyArena {
         py.detach(|| self.arena.set_streaming_limit(bytes))
             .map_err(|e| raise(py, e))
     }
+
+    #[getter]
+    fn streaming_limit_bytes(&self, py: Python<'_>) -> PyResult<usize> {
+        py.detach(|| self.arena.streaming_limit())
+            .map_err(|e| raise(py, e))
+    }
     fn reclaim(&self, py: Python<'_>, bytes: usize) -> PyResult<usize> {
         py.detach(|| self.arena.reclaim(bytes))
             .map(|r| r.reclaimed_bytes)
@@ -129,6 +135,7 @@ impl PyArena {
     fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let stats = py.detach(|| self.arena.stats()).map_err(|e| raise(py, e))?;
         let output = PyDict::new(py);
+        output.set_item("streaming_limit_bytes", self.streaming_limit_bytes(py)?)?;
         for (name, value) in [
             ("reserved_bytes", stats.reserved_bytes as u64),
             ("resident_bytes", stats.resident_bytes as u64),

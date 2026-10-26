@@ -479,6 +479,11 @@ impl Arena {
         Ok(())
     }
 
+    /// Actual current policy, for a scoped caller to preserve and conditionally restore.
+    pub fn streaming_limit(&self) -> Result<usize> {
+        Ok(self.lock()?.streaming_limit)
+    }
+
     /// Hold this guard over capture. Dependencies must already be prepared and separately pinned.
     pub fn enter_capture(self: &Arc<Self>) -> Result<CaptureGuard> {
         let global = enter_capture(self.device)?;
