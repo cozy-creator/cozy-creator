@@ -2641,6 +2641,8 @@ impl Pool {
                     sequence_parallel_degree: 1,
                     import_only: true,
                     memo: executor.memo_settings(),
+                    // import-only touches no device; the real Start that follows carries the cap.
+                    gpu_memory_limit: None,
                 }),
                 &mut device_executor::Baseline,
             )?;
@@ -3043,6 +3045,9 @@ impl Pool {
                     call_interfaces: crate::calls::call_interfaces(held, &interface_path),
                     constructions: constructions(&plan),
                     memo: session.executor.memo_settings(),
+                    // (dev) make each owned GPU behave like a smaller card; the executor caps its
+                    // allocator before weights load. None (unset) lifts it.
+                    gpu_memory_limit: self.config.gpu_memory_limit.filter(|&l| l > 0),
                 }),
                 &mut callbacks,
             )?)?;

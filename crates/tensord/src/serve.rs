@@ -257,7 +257,6 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
         let config = serde_json::json!({
             "devices": devices.join(","),
             "inventory": gpus,
-            "authorized_device_limit_bytes": null,
             "gpu_memory_limit": gpu_memory_limit,
             "environment": {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": home, "COZY_HOME": home},
             // A rented pod is the machine's alone (its grant says so); anywhere else it is a guest.

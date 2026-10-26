@@ -118,6 +118,12 @@ pub struct Start {
     /// Its stage memo tiers, when the machine memoizes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memo: Option<MemoSettings>,
+    /// (dev) The per-GPU VRAM cap in bytes for the devices this executor owns, so each behaves
+    /// like a smaller card to exercise constrained-VRAM paths; `None` lifts it. The executor
+    /// applies it at its allocator boundary (`set_per_process_memory_fraction`), before weights
+    /// reserve CUDA memory. Not a consumer option.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_memory_limit: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
