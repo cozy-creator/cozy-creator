@@ -1,0 +1,14 @@
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13"]
+build-backend = "uv_build"
+[project]
+name = "ci-qwen-retained-lifetime"
+version = "0.1.0"
+description = "Real Qwen native retained definitions, pressure retirement and cancellation"
+requires-python = ">=3.12"
+dependencies = ["cozy-runtime>=0.33,<0.34", "tensorfs>=0.16,<0.17", "msgspec>=0.19", "torch==2.14.1", "diffusers==0.41.0", "transformers==5.17.0", "numpy==2.5.3"]
+[project.entry-points."cozy.application"]
+default = "ci_qwen_retained_lifetime:app"
+[tool.uv.build-backend]
+module-name = "ci_qwen_retained_lifetime"
+module-root = ""

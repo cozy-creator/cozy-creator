@@ -1,0 +1,2 @@
+[application]
+object = "ci_qwen_retained_lifetime:app"
