@@ -51,6 +51,8 @@ def main():
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--stack-lock-fd", type=int,
+                        help="Borrow the parent's inherited shared stack lock through rental cleanup")
     args = parser.parse_args()
     config = json.loads(args.config.read_text())
     for path, sha in config["source_sha256"].items():
@@ -59,6 +61,10 @@ def main():
     assert digest(config["cohort"]) == config["cohort_sha256"]
     qualification = load("svdq_remote_qualification", config["qualifier"])
     qualification.source_check(cohort)
+    borrowed = None
+    if args.stack_lock_fd is not None:
+        borrowed = qualification.validate_stack_lock(args.stack_lock_fd)
+        qualification.STACK_LOCK_FD = args.stack_lock_fd
     supported = {"rtx-4090": ("NVIDIA GeForce RTX 4090", "sm89"),
                  "rtx-5090": ("NVIDIA GeForce RTX 5090", "sm120"),
                  "h100-pcie": ("NVIDIA H100 PCIe", "sm90"),
@@ -75,6 +81,8 @@ def main():
         return
     args.out.mkdir(parents=True, exist_ok=False)
     save(args.out, "config.json", config)
+    if borrowed is not None:
+        save(args.out, "borrowed-stack-lock.json", borrowed)
     # Remote-only: use the ordinary installed CLI; never install/restore the local SDK.
     # Measured calls acquire the shared lock briefly and wait outside timing for the
     # frozen normal caller to return after the primary's own installation window.
@@ -97,11 +105,12 @@ def main():
         ):
             began = time.monotonic_ns()
             result = subprocess.run(
-                [str(CLI), "--tensorhub", config["hub"], *map(str, argv), "--json"],
+                [str(CLI), *map(str, argv), "--json"],
                 stdin=subprocess.DEVNULL,
                 stdout=stdout,
                 stderr=stderr,
                 check=False,
+                close_fds=True,
                 timeout=(90 if deadline is None else
                          min(35, max(1, deadline + config["cleanup_reserve_seconds"] - time.time()))
                          if label.startswith(("end", "ready", "owned", "machines", "quote", "catalog"))
@@ -139,7 +148,8 @@ def main():
             })
             terms = machine["rental"]
             if (
-                terms["sku"] != config["sku"]
+                machine.get("hub") != config["hub"]
+                or terms["sku"] != config["sku"]
                 or terms["gpus"] != 1
                 or terms["usd_micros_per_hour"] > config["max_hourly_usd_micros"]
                 or terms["disk_gb"] != quote["container_disk_gb"]
@@ -213,6 +223,11 @@ def main():
     signal.signal(signal.SIGTERM, stop_owner)
     signal.signal(signal.SIGINT, stop_owner)
     try:
+        # Current cozy routes through its normal config/environment/default Hub.
+        # whoami's account URL comes from that exact Origin; no retired selector
+        # flag or alternate home is used to force a different service.
+        account = call("caller-route", ["whoami"])[-1]
+        assert account["logged_in"] and account["buy_credits"] == config["hub"].rstrip("/") + "/account"
         prior = call("machines-before-rent", ["machine", "list"])[-1]
         prior_ids = {m["rental_id"] for m in prior["machines"] if m.get("rental_id")}
         quoted = call(
@@ -259,7 +274,7 @@ def main():
         with (args.out / "watchdog.log").open("w") as watch_log:
             watcher = subprocess.Popen([sys.executable, config["watchdog"], "--out", str(args.out),
                                        "--deadline", str(deadline)], stdout=watch_log,
-                                      stderr=subprocess.STDOUT, start_new_session=True)
+                                      stderr=subprocess.STDOUT, start_new_session=True, close_fds=True)
         save(args.out, "watchdog-owner.json", {"pid": watcher.pid, "deadline_epoch": deadline,
                                              "armed_before_order": True})
         arm_deadline = time.monotonic() + 10
@@ -277,8 +292,6 @@ def main():
             rental = subprocess.Popen(
                 [
                     str(CLI),
-                    "--tensorhub",
-                    config["hub"],
                     "machine",
                     "rent",
                     config["sku"],
@@ -290,6 +303,7 @@ def main():
                 stdout=stdout,
                 stderr=subprocess.PIPE,
                 text=True,
+                close_fds=True,
             )
 
             def follow_boot():

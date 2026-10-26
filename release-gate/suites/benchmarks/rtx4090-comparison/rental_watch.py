@@ -23,8 +23,8 @@ def save(name, value):
 def call(label, arguments, timeout=35):
     with (args.out / (label + '.json')).open('w') as out, (args.out / (label + '.err')).open('w') as err:
         timeout = min(timeout, max(1, context['hard_deadline_epoch'] - time.time()))
-        result = subprocess.run([str(CLI), '--json', '--tensorhub', context['hub'], *arguments],
-                                stdin=subprocess.DEVNULL, stdout=out, stderr=err, timeout=timeout)
+        result = subprocess.run([str(CLI), '--json', *arguments],
+                                stdin=subprocess.DEVNULL, stdout=out, stderr=err, timeout=timeout, close_fds=True)
     text = (args.out / (label + '.json')).read_text()
     return result.returncode, json.loads(text) if text.strip() else {}
 

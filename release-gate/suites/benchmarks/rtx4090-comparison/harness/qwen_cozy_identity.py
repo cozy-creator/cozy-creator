@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime>=0.33,<0.34", "msgspec>=0.19", "diffusers==0.41.0", "torch==2.14.1", "torchvision==0.29.1", "transformers==5.17.0", "pillow==12.3.0", "tokenizers==0.23.2", "numpy", "safetensors"]
+# dependencies = ["cozy-runtime>=0.33,<0.34", "msgspec>=0.19", "diffusers==0.41.0", "torch==2.14.1", "torchvision==0.29.1", "transformers==5.17.0", "pillow==12.3.0", "tokenizers==0.23.2", "numpy==2.5.3", "safetensors==0.8.0"]
 # ///
 """Untimed real Qwen2.1 tensor/schedule identity through the ordinary Weights grant."""
 import json

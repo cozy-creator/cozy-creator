@@ -6,6 +6,7 @@ import contextlib
 import datetime
 import fcntl
 import json
+import os
 import statistics
 import subprocess
 import time
@@ -14,8 +15,8 @@ from pathlib import Path
 import cozy_bench
 
 CLI = Path.home() / '.cozy/bin/cozy'
-HUB = 'https://tensorhub.com'
 DEADLINE = None
+STACK_LOCK_FD = None
 
 
 def digest(path):
@@ -24,6 +25,19 @@ def digest(path):
 
 def save(out, name, value):
     (out / name).write_text(json.dumps(value, indent=2) + '\n')
+
+
+def validate_stack_lock(fd):
+    """Borrow only the real inherited lock description; never unlock the owner."""
+    assert fd >= 3, 'stack lock must be an inherited nonstandard descriptor'
+    path = Path.home() / 'cozy_v2/agent-tools/.local-stack.lock'
+    held, named = os.fstat(fd), path.stat()
+    assert (held.st_dev, held.st_ino) == (named.st_dev, named.st_ino), 'inherited fd is not the shared stack lock'
+    # This succeeds on the parent's already-locked open description. A separate
+    # open of the same inode would conflict with the parent's exclusive lock.
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    os.set_inheritable(fd, False)
+    return {'fd': fd, 'device': held.st_dev, 'inode': held.st_ino, 'borrowed': True}
 
 
 def documents(text):
@@ -46,7 +60,7 @@ def source_check(cohort):
 
 
 def _call(out, label, arguments, *, cohort=None, timed=False, check=True):
-    argv = [str(CLI), '--json', '--tensorhub', HUB, *map(str, arguments)]
+    argv = [str(CLI), '--json', *map(str, arguments)]
     before = digest(CLI)
     if timed:
         assert before == cohort['caller_sha256'], 'primary changed the caller CLI; stop this comparison without mutating local'
@@ -56,6 +70,7 @@ def _call(out, label, arguments, *, cohort=None, timed=False, check=True):
     with (out / (label + '.json')).open('w') as stdout, (out / (label + '.err')).open('w') as stderr:
         try:
             result = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr,
+                                    close_fds=True,
                                     timeout=max(1, DEADLINE - time.time()) if DEADLINE is not None else 90)
         except subprocess.TimeoutExpired:
             elapsed = (time.monotonic_ns() - started) / 1e6
@@ -91,6 +106,14 @@ def _call(out, label, arguments, *, cohort=None, timed=False, check=True):
 @contextlib.contextmanager
 def measured_caller(cohort, out, label):
     """Brief read-only caller window; primary setup/inference is never interrupted."""
+    if STACK_LOCK_FD is not None:
+        borrowed = validate_stack_lock(STACK_LOCK_FD)
+        assert digest(CLI) == cohort['caller_sha256'], 'caller differs inside the owner-held SDK window'
+        save(out, label + '-caller-window.json', {**borrowed,
+             'wait_seconds_excluded_from_timing': 0, 'caller_sha256': cohort['caller_sha256'],
+             'local_sdk_mutated': False, 'unlock_policy': 'parent retains the lock through teardown/restoration'})
+        yield
+        return
     path = Path.home() / 'cozy_v2/agent-tools/.local-stack.lock'
     began = time.monotonic()
     with path.open('a') as lock:
@@ -442,8 +465,8 @@ def profile_model(cohort, out, machine, key):
 
 
 def qualify(cohort, out, machine):
-    global DEADLINE, HUB
-    DEADLINE, HUB = cohort["deadline_epoch"], cohort["hub"]
+    global DEADLINE
+    DEADLINE = cohort["deadline_epoch"]
     source_check(cohort)
     records, setup, diagnostics, failures, skipped = [], {}, [], [], []
     scripts = cohort['scripts']
