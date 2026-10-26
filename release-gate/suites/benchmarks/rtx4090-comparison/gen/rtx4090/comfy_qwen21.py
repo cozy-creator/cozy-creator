@@ -128,7 +128,8 @@ def main(payload: BenchRequest, ctx: Context, tel: Telemetry, out: Outputs) -> B
         return BenchResult(stopped=json.dumps(record),
                            archive=out.save_file(archive, media_type="application/gzip"))
     assert len(JOBS) >= 1 and seed >= 0
-    job = {**JOBS[0], "label": label, "seed": seed, "profile": profile}
+    selected = next((row for row in JOBS if row["label"] == label), JOBS[0])
+    job = {**selected, "label": label, "seed": seed, "profile": profile}
     if prompt:
         job["prompt"] = prompt
     (res / "jobs.json").write_text(json.dumps([job], indent=2))
