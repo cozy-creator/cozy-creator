@@ -57,6 +57,15 @@ class Adapter(_Wire):
     source_component: str
     family: str
 
+class PreparedUse(_Wire):
+    target: str
+    tensors: list[str]
+    activation_rows: int
+    repetitions: int
+    compute_dtype: str
+    max_resident_bytes: int
+    workspace_bytes: int
+
 class Binding(_Wire):
     application: str
     package_interface: str
@@ -77,6 +86,7 @@ class Binding(_Wire):
     package: str
     model: str
     adapters: list[Adapter]
+    prepared_use: PreparedUse | None
     homes: dict[str, int]
 
 class ModelLoad(_Wire):
