@@ -203,7 +203,7 @@ def exercise(seed, ctx):
                 "runtime_source": _build_provenance.COMMIT,
                 "device": str(device),
                 "source": json.loads(
-                    Path(__file__).parents[1].joinpath("SOURCE.json").read_text()
+                    Path(__file__).with_name("SOURCE.json").read_text()
                 ),
                 "original_vs_factored_eager": rows,
                 "unknown_row_refusals": refused,

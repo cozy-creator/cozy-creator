@@ -1,0 +1,13 @@
+{
+  "candidate": "75796df820e7bb38984f173cdc7cf0ce99bf080e",
+  "baseline": "f5e0dcd8b7f370eae00ff5dd74d10f33dd4f829f",
+  "files": {
+    "__init__.py": "3d32fa69e16131aecce5b7422db4119f25d8a64c52b17001e1cecd88266ac925",
+    "_prepared.py": "bdbdb8ec3967fc2c427829b76648722ca912e97b149c73296b7e4829d25a2260",
+    "adaln_pruned.py": "20441e0ee21f5cd15620c1bab95595fa1b31ed6575ebadbde4f534492f604109",
+    "turbo.py": "92bd32a87eb14db013ab750bec55739517cdec166aec68b3ffae9a9da8e21a73",
+    "baseline.py": "e7d8fd152938f1f9cc5870b36014332f80b53766e2b58a3be89dbcb4b56546ac"
+  },
+  "scope": "Exactproductionmodulecopies forordinaryCLIrealCUDAcomponentparity, noproducttests/mocks.",
+  "capture_prerequisite": "Runtime1827 typedopenerguard; source0167c619cedaf3c6cd5e595e7217b74fbbc895cf orconsumer withsameimplementation, GPUqualificationpending."
+}
