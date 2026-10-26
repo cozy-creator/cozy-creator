@@ -92,6 +92,10 @@ class Arena:
     def set_streaming_limit(self, bytes: int) -> None:
         self._native.set_streaming_limit(bytes)
 
+    @property
+    def streaming_limit_bytes(self) -> int:
+        return self._native.streaming_limit_bytes
+
     def reclaim(self, bytes: int) -> int:
         return self._native.reclaim(bytes)
 

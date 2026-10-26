@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Instant;
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -17,6 +17,16 @@ use tensorfs::io::{self, Dst, ReadControl, ReadStats};
 use super::continuation::{self, Continuation, Status};
 use super::{PyRegion, raise};
 use crate::store::PyCheckpoint;
+
+static OBSERVATION_CLOCK: OnceLock<Instant> = OnceLock::new();
+fn monotonic_ns() -> u64 {
+    (OBSERVATION_CLOCK
+        .get_or_init(Instant::now)
+        .elapsed()
+        .as_nanos()
+        .min(u64::MAX as u128) as u64)
+        .saturating_add(1)
+}
 
 #[derive(Clone)]
 pub(super) enum Failure {
@@ -153,6 +163,7 @@ pub(super) struct Work {
     decode: Option<Decode>,
     event_ordered: bool,
     prepared_decode: Option<Mutex<tensorfs::raw::DeviceDecode>>,
+    lookahead: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 /// A captured stage owns addresses/source identity, not graph-lifetime physical pins.
@@ -169,7 +180,48 @@ impl StageSource {
         self.inputs[0].0.device()
     }
 
+    pub(super) fn reservation_bytes(&self) -> usize {
+        self.inputs.iter().fold(0usize, |total, (region, _)| {
+            total.saturating_add(region.allocated_bytes())
+        })
+    }
+
+    pub(super) fn input_count(&self) -> usize {
+        self.inputs.len()
+    }
+
     pub(super) fn prepare(&self) -> Result<Work, Failure> {
+        self.prepare_with_reclaim(true)
+    }
+
+    /// No allocation until the caller has explicitly admitted this bounded future stage.
+    /// Existing arena no-reclaim admission enforces its current streaming window as well.
+    pub(super) fn prepare_speculative(&self, budget: usize) -> Result<Option<Work>, Failure> {
+        if self.reservation_bytes() > budget {
+            return Ok(None);
+        }
+        if self
+            .inputs
+            .iter()
+            .try_fold(true, |ready, (region, _)| {
+                region.is_resident().map(|resident| ready && resident)
+            })
+            .map_err(Failure::Native)?
+        {
+            return Ok(None); // Demand atomically pins ready inputs; do not add a no-op worker.
+        }
+        match self.prepare_with_reclaim(false) {
+            Ok(work) => Ok(Some(work)),
+            Err(Failure::Native(
+                varena::Error::OutOfMemory { .. }
+                | varena::Error::Busy
+                | varena::Error::CaptureActive,
+            )) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn prepare_with_reclaim(&self, reclaim: bool) -> Result<Work, Failure> {
         // Keep ordinary/source-identity ownership: no new region or private bank exists.
         let mut inputs: Vec<_> = self
             .inputs
@@ -187,7 +239,13 @@ impl StageSource {
         let producer = varena::enter_producer(self.device()).map_err(Failure::Native)?;
         for input in &mut inputs {
             if input.pin.is_none() {
-                match input.region.prepare().map_err(Failure::Native)? {
+                match (if reclaim {
+                    input.region.prepare()
+                } else {
+                    input.region.prepare_without_reclaim()
+                })
+                .map_err(Failure::Native)?
+                {
                     varena::Preparation::Resident(pin) => input.pin = Some(pin),
                     varena::Preparation::Fill(fill) => input.fill = Some(fill),
                 }
@@ -206,6 +264,7 @@ impl StageSource {
             decode: None,
             event_ordered: false,
             prepared_decode: None,
+            lookahead: None,
         })
     }
 }
@@ -243,7 +302,7 @@ struct Shared {
     changed: Condvar,
     pid: u32,
     continuation: Option<Arc<Continuation>>,
-    began: Instant,
+    began_ns: u64,
     read_issued_ns: AtomicU64,
     read_completed_ns: AtomicU64,
     read_bytes: AtomicU64,
@@ -258,13 +317,16 @@ struct Shared {
     launch_submitted_ns: AtomicU64,
     compute_completed_ns: AtomicU64,
     compute_wait_entered_ns: AtomicU64,
+    lookahead_triggered_clock_ns: AtomicU64,
     completion_proven: AtomicBool,
     event_ordered: bool,
 }
 
 impl Shared {
     fn elapsed(&self) -> u64 {
-        (self.began.elapsed().as_nanos().min(u64::MAX as u128) as u64).saturating_add(1)
+        monotonic_ns()
+            .saturating_sub(self.began_ns)
+            .saturating_add(1)
     }
 
     fn cancel(&self) {
@@ -413,9 +475,7 @@ impl Shared {
                     *issued_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
                 }
             };
-            let issued = (work.continuation.is_some()
-                && !placements.is_empty()
-                && (work.decode.is_none() || work.event_ordered))
+            let issued = (!placements.is_empty() && (work.decode.is_none() || work.event_ordered))
                 .then_some(&issued as io::Issued<'_>);
             // Non-preferred weights are the streaming window. Populate the OS page cache
             // on their misses so later passes do not repeatedly bypass it with O_DIRECT.
@@ -537,6 +597,14 @@ impl Shared {
                     self.launch_submitted_ns
                         .store(self.elapsed(), Ordering::Release);
                     self.launch_started_ns.store(launching, Ordering::Release);
+                }
+                // The current demand copy is checked and its graph is already running.
+                // A bounded adjacent source may now read on the existing refill worker;
+                // it never launches the next graph or calls Python.
+                if let Some(lookahead) = work.lookahead.take() {
+                    self.lookahead_triggered_clock_ns
+                        .store(monotonic_ns(), Ordering::Release);
+                    lookahead();
                 }
                 self.compute_wait_entered_ns
                     .store(self.elapsed(), Ordering::Release);
@@ -915,6 +983,7 @@ pub(super) fn prepare_work(
         decode: None,
         event_ordered: false,
         prepared_decode: None,
+        lookahead: None,
     };
     if initialize {
         // The existing read engine owns its explicit copy streams (Dst stream 0 is not PTDS).
@@ -1038,6 +1107,7 @@ pub(super) fn prepare_regions(
         decode: None,
         event_ordered: false,
         prepared_decode: None,
+        lookahead: None,
     };
     let copies: Vec<_> = work
         .inputs
@@ -1138,6 +1208,19 @@ impl PreparedRead {
 }
 
 impl Work {
+    pub(super) fn missing_bytes(&self) -> u64 {
+        self.inputs
+            .iter()
+            .filter(|input| input.fill.is_some())
+            .flat_map(|input| &input.items)
+            .map(|item| item.len)
+            .sum()
+    }
+
+    pub(super) fn set_lookahead(&mut self, call: Arc<dyn Fn() + Send + Sync>) {
+        self.lookahead = Some(call);
+    }
+
     pub(super) fn detach_capture(mut self) -> Result<StageSource, Failure> {
         if self.continuation.is_some() || self.decode.is_some() || self.prepared_decode.is_some() {
             self.abandon();
@@ -1327,6 +1410,73 @@ impl PreparedRead {
         (result, shared.completion_proven.load(Ordering::Acquire))
     }
 
+    pub(super) fn start_native(&self) -> Result<(), Failure> {
+        let shared = self.shared.as_ref().expect("live native read").clone();
+        let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.started {
+            return Err(Failure::Native(varena::Error::Invalid(
+                "native refill already started",
+            )));
+        }
+        state.started = true;
+        let task = shared.clone();
+        let spawned = std::thread::Builder::new()
+            .name("tensorfs-refill".into())
+            .spawn(move || {
+                let work = task
+                    .state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .work
+                    .take()
+                    .expect("started refill owns work");
+                task.run(work);
+            });
+        if spawned.is_err() {
+            // No worker exists. Check cleanup synchronously without issuing speculative I/O.
+            shared.cancel.cancel();
+            let work = state.work.take().expect("failed start owns work");
+            drop(state);
+            shared.run(work);
+            return Err(Failure::Ineligible(
+                "native prefetch worker could not start".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn read_clock(&self) -> (u64, u64) {
+        let shared = self.shared.as_ref().expect("live native read");
+        let absolute = |relative: u64| {
+            if relative == 0 {
+                0
+            } else {
+                shared.began_ns.saturating_add(relative - 1)
+            }
+        };
+        (
+            absolute(shared.read_issued_ns.load(Ordering::Acquire)),
+            absolute(shared.read_completed_ns.load(Ordering::Acquire)),
+        )
+    }
+
+    pub(super) fn join_native(&self) -> (Result<ReadStats, Failure>, bool) {
+        let shared = self.shared.as_ref().expect("live native read");
+        let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        while state.started && state.result.is_none() {
+            state = shared
+                .changed
+                .wait(state)
+                .unwrap_or_else(|e| e.into_inner());
+        }
+        let result = state.result.clone().unwrap_or_else(|| {
+            Err(Failure::Native(varena::Error::Invalid(
+                "prefetch was never started",
+            )))
+        });
+        (result, shared.completion_proven.load(Ordering::Acquire))
+    }
+
     pub(super) fn control(&self) -> Control {
         Control(Arc::downgrade(
             self.shared.as_ref().expect("live prepared read"),
@@ -1349,12 +1499,25 @@ impl PreparedRead {
     }
 
     pub(super) fn composed_with_control(
-        mut work: Work,
+        work: Work,
         execution: Arc<Continuation>,
         event_ordered: bool,
         cancel: Arc<ReadControl>,
     ) -> Result<Self, Failure> {
-        work.continuation = Some(execution.clone());
+        Self::from_work(work, Some(execution), event_ordered, cancel)
+    }
+
+    pub(super) fn read_only(work: Work, cancel: Arc<ReadControl>) -> Result<Self, Failure> {
+        Self::from_work(work, None, false, cancel)
+    }
+
+    fn from_work(
+        mut work: Work,
+        execution: Option<Arc<Continuation>>,
+        event_ordered: bool,
+        cancel: Arc<ReadControl>,
+    ) -> Result<Self, Failure> {
+        work.continuation = execution.clone();
         work.event_ordered = event_ordered;
         let producer = match varena::enter_producer(work.region.device()) {
             Ok(producer) => producer,
@@ -1394,8 +1557,8 @@ impl PreparedRead {
                 }),
                 changed: Condvar::new(),
                 pid: std::process::id(),
-                continuation: Some(execution),
-                began: Instant::now(),
+                continuation: execution,
+                began_ns: monotonic_ns(),
                 read_issued_ns: AtomicU64::new(0),
                 read_completed_ns: AtomicU64::new(0),
                 read_bytes: AtomicU64::new(0),
@@ -1410,6 +1573,7 @@ impl PreparedRead {
                 launch_submitted_ns: AtomicU64::new(0),
                 compute_completed_ns: AtomicU64::new(0),
                 compute_wait_entered_ns: AtomicU64::new(0),
+                lookahead_triggered_clock_ns: AtomicU64::new(0),
                 completion_proven: AtomicBool::new(false),
                 event_ordered,
             })),
@@ -1453,6 +1617,15 @@ impl PreparedRead {
     pub(super) fn facts<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let shared = self.shared()?;
         let row = PyDict::new(py);
+        row.set_item("clock_origin_ns", shared.began_ns)?;
+        row.set_item(
+            "clock_origin_scope",
+            "process-local TensorFS monotonic host observation clock; not GPU event time",
+        )?;
+        row.set_item(
+            "lookahead_triggered_clock_ns",
+            shared.lookahead_triggered_clock_ns.load(Ordering::Acquire),
+        )?;
         let result = py.detach(|| {
             shared
                 .state
@@ -1597,7 +1770,7 @@ impl PreparedRead {
                 changed: Condvar::new(),
                 pid: std::process::id(),
                 continuation: None,
-                began: Instant::now(),
+                began_ns: monotonic_ns(),
                 read_issued_ns: AtomicU64::new(0),
                 read_completed_ns: AtomicU64::new(0),
                 read_bytes: AtomicU64::new(0),
@@ -1612,6 +1785,7 @@ impl PreparedRead {
                 launch_submitted_ns: AtomicU64::new(0),
                 compute_completed_ns: AtomicU64::new(0),
                 compute_wait_entered_ns: AtomicU64::new(0),
+                lookahead_triggered_clock_ns: AtomicU64::new(0),
                 completion_proven: AtomicBool::new(false),
                 event_ordered: false,
             })),
