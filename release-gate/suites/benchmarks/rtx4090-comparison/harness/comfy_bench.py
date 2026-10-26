@@ -1,7 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# [tool.cozy]
-# accelerator = true
+# dependencies = ["cozy-runtime>=0.33,<0.34", "msgspec>=0.19"]
 # ///
 """On the rental's GPU: start ComfyUI with its default flags, run one cell's JOBS one by one, stop it and return
 results.tar.gz.
@@ -24,7 +23,25 @@ import threading
 import time
 from pathlib import Path
 
-from cozy_runtime.author import Context, FileAsset, Outputs, Telemetry
+import msgspec
+
+from cozy_runtime.author import App, Context, FileAsset, Outputs, Telemetry
+
+app = App()
+
+
+class BenchRequest(msgspec.Struct):
+    operation: str = "run"
+    label: str = "sample"
+    seed: int = 1
+    prompt: str = ""
+    require_warm: bool = False
+    profile: bool = False
+
+
+class BenchResult(msgspec.Struct):
+    files: list[FileAsset]
+
 
 CELL = None  # @CELL@
 JOBS = None  # @JOBS@
@@ -72,14 +89,20 @@ def stop_server():
             "start_ticks": state["start_ticks"], "stopped": True}
 
 
-def main(ctx: Context, tel: Telemetry, *, out: Outputs, operation: str = "run", label: str = "sample",
-         seed: int = 1, prompt: str = "", require_warm: bool = False, profile: bool = False) -> list[FileAsset]:
+@app.entrypoint(accelerator=True)
+def main(payload: BenchRequest, ctx: Context, tel: Telemetry, out: Outputs) -> BenchResult:
     """One ordinary CLI call and one image. Source identity stays fixed across seeds.
 
     operation=stop ends only the server held by this exact executor. A parent-death
     signal and process groups cover abnormal executor exit and cancellation. The
     owner still ends its bounded rental in finally; no second Cozy daemon is used.
     """
+    operation = payload.operation
+    label = payload.label
+    seed = payload.seed
+    prompt = payload.prompt
+    require_warm = payload.require_warm
+    profile = payload.profile
     global SESSION, OWNER_PID
     # The application may have been imported by the Runtime's pre-fork zygote.
     # Child parent-death checks must bind the actual calling executor, not that importer.
@@ -97,8 +120,8 @@ def main(ctx: Context, tel: Telemetry, *, out: Outputs, operation: str = "run", 
         archive = B / "results" / f"{CELL}-receipts.tar.gz"
         with tarfile.open(archive, "w:gz") as tar:
             tar.add(B / "results" / CELL, arcname=CELL)
-        return [out.save_file(path, media_type="application/json"),
-                out.save_file(archive, media_type="application/gzip")]
+        return BenchResult(files=[out.save_file(path, media_type="application/json"),
+                                  out.save_file(archive, media_type="application/gzip")])
     assert len(JOBS) >= 1 and seed >= 0
     job = {**JOBS[0], "label": label, "seed": seed, "profile": profile}
     if prompt:
@@ -204,4 +227,4 @@ def main(ctx: Context, tel: Telemetry, *, out: Outputs, operation: str = "run", 
             saved.append(out.save_file(res / rec["request"]["profile"]["copied_file"], media_type="application/json"))
     # Detailed logs/timelines are delivered by the explicit untimed stop operation.
     # Timed calls return the image directly plus only their compact session receipt.
-    return saved
+    return BenchResult(files=saved)

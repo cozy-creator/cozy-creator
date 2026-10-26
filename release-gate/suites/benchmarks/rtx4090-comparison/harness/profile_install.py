@@ -1,20 +1,34 @@
 # /// script
 # requires-python = ">=3.12"
-# [tool.cozy]
-# accelerator = false
+# dependencies = ["cozy-runtime>=0.33,<0.34", "msgspec>=0.19"]
 # ///
 """Install only the frozen diagnostic hook after unprofiled Comfy measurements."""
 import hashlib
 import json
 from pathlib import Path
-from cozy_runtime.author import Context, FileAsset, Outputs
+
+import msgspec
+
+from cozy_runtime.author import App, Context, FileAsset, Outputs
+
+app = App()
+
+
+class ProfileInstallRequest(msgspec.Struct):
+    pass
+
+
+class ProfileInstallResult(msgspec.Struct):
+    receipt: FileAsset
+
 
 B = Path('/var/tmp/bench4090-20261026')
 PROFILE_SOURCE = None  # @PROFILE_SOURCE@
 EXECUTION_SHA256 = '40c5306bc8d032aea90b93a7e1ef4ca137e0cf372187132d32b99ae070ba3d87'
 
 
-def main(ctx: Context, *, out: Outputs) -> FileAsset:
+@app.entrypoint(accelerator=False)
+def main(payload: ProfileInstallRequest, ctx: Context, out: Outputs) -> ProfileInstallResult:
     assert isinstance(PROFILE_SOURCE, str) and PROFILE_SOURCE
     assert hashlib.sha256((B / 'ComfyUI/execution.py').read_bytes()).hexdigest() == EXECUTION_SHA256
     target = B / 'ComfyUI/custom_nodes/cozy_benchmark_profile/__init__.py'
@@ -26,4 +40,4 @@ def main(ctx: Context, *, out: Outputs) -> FileAsset:
     receipt = B / 'profile-install.json'
     receipt.write_text(json.dumps({'path': str(target), 'sha256': hashlib.sha256(target.read_bytes()).hexdigest(),
                                   'execution_sha256': EXECUTION_SHA256, 'scope': 'diagnostic only; server restart required'}, indent=2))
-    return out.save_file(receipt, media_type='application/json')
+    return ProfileInstallResult(receipt=out.save_file(receipt, media_type='application/json'))

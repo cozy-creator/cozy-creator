@@ -1,7 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# [tool.cozy]
-# accelerator = false
+# dependencies = ["cozy-runtime>=0.33,<0.34", "msgspec>=0.19"]
 # ///
 """On the rental: ComfyUI at a pinned commit in its own venv, and the pinned Comfy-Org 8-bit files for every
 ComfyUI cell. Downloads are timed apart from the install. Nothing comes from the laptop: GitHub, PyPI, the
@@ -17,7 +16,20 @@ import sys
 import time
 from pathlib import Path
 
-from cozy_runtime.author import Context, FileAsset, Outputs, Telemetry
+import msgspec
+
+from cozy_runtime.author import App, Context, FileAsset, Outputs, Telemetry
+
+app = App()
+
+
+class SetupRequest(msgspec.Struct):
+    pass
+
+
+class SetupResult(msgspec.Struct):
+    files: list[FileAsset]
+
 
 B = Path("/var/tmp/bench4090-20261026")
 COMFY = B / "ComfyUI"
@@ -84,7 +96,8 @@ def find_uv():
     return str(B / "uvtool/bin/uv")
 
 
-def main(ctx: Context, tel: Telemetry, *, out: Outputs) -> list[FileAsset]:
+@app.entrypoint(accelerator=False)
+def main(payload: SetupRequest, ctx: Context, tel: Telemetry, out: Outputs) -> SetupResult:
     B.mkdir(parents=True, exist_ok=True)
     log = B / "setup.log"
     rec = {"started_unix_s": time.time(), "steps": {}, "comfy_commit_wanted": COMFY_COMMIT, "torch_wanted": TORCH}
@@ -157,4 +170,4 @@ def main(ctx: Context, tel: Telemetry, *, out: Outputs) -> list[FileAsset]:
     for f in [B / "setup.log", B / "comfy-env-freeze.txt", B / "comfy-identity.json"]:
         if f.exists():
             saved.append(out.save_file(f, media_type="text/plain"))
-    return saved
+    return SetupResult(files=saved)

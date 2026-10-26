@@ -1,7 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# [tool.cozy]
-# accelerator = true
+# dependencies = ["cozy-runtime>=0.33,<0.34", "msgspec>=0.19"]
 # ///
 """On the rental's GPU: start ComfyUI with its default flags, run one cell's JOBS one by one, stop it and return
 results.tar.gz.
@@ -24,7 +23,25 @@ import threading
 import time
 from pathlib import Path
 
-from cozy_runtime.author import Context, FileAsset, Outputs, Telemetry
+import msgspec
+
+from cozy_runtime.author import App, Context, FileAsset, Outputs, Telemetry
+
+app = App()
+
+
+class BenchRequest(msgspec.Struct):
+    operation: str = "run"
+    label: str = "sample"
+    seed: int = 1
+    prompt: str = ""
+    require_warm: bool = False
+    profile: bool = False
+
+
+class BenchResult(msgspec.Struct):
+    files: list[FileAsset]
+
 
 CELL = 'qwen21'
 JOBS = json.loads('[{"label": "qwen21-comfy-cold-00", "cell": "qwen21", "engine": "comfy", "mode": "cold", "sample": 0, "seed": 202610261000, "prompt": "A photograph of an astronaut riding a horse, natural daylight, detailed landscape.", "negative_prompt": "", "size": 1024, "width": 1024, "height": 1024, "steps": 30, "guidance": 1.0, "batch": 1, "hidiffusion": false, "prompt_upsampling": false, "lora": null, "reference_images": [], "expected_gpu_name": "RTX 4090"}, {"label": "qwen21-comfy-same-prompt-warm-01", "cell": "qwen21", "engine": "comfy", "mode": "same-prompt-warm", "sample": 1, "seed": 202610261001, "prompt": "A photograph of an astronaut riding a horse, natural daylight, detailed landscape.", "negative_prompt": "", "size": 1024, "width": 1024, "height": 1024, "steps": 30, "guidance": 1.0, "batch": 1, "hidiffusion": false, "prompt_upsampling": false, "lora": null, "reference_images": [], "expected_gpu_name": "RTX 4090"}, {"label": "qwen21-comfy-same-prompt-warm-02", "cell": "qwen21", "engine": "comfy", "mode": "same-prompt-warm", "sample": 2, "seed": 202610261002, "prompt": "A photograph of an astronaut riding a horse, natural daylight, detailed landscape.", "negative_prompt": "", "size": 1024, "width": 1024, "height": 1024, "steps": 30, "guidance": 1.0, "batch": 1, "hidiffusion": false, "prompt_upsampling": false, "lora": null, "reference_images": [], "expected_gpu_name": "RTX 4090"}, {"label": "qwen21-comfy-same-prompt-warm-03", "cell": "qwen21", "engine": "comfy", "mode": "same-prompt-warm", "sample": 3, "seed": 202610261003, "prompt": "A photograph of an astronaut riding a horse, natural daylight, detailed landscape.", "negative_prompt": "", "size": 1024, "width": 1024, "height": 1024, "steps": 30, "guidance": 1.0, "batch": 1, "hidiffusion": false, "prompt_upsampling": false, "lora": null, "reference_images": [], "expected_gpu_name": "RTX 4090"}, {"label": "qwen21-comfy-same-prompt-warm-04", "cell": "qwen21", "engine": "comfy", "mode": "same-prompt-warm", "sample": 4, "seed": 202610261004, "prompt": "A photograph of an astronaut riding a horse, natural daylight, detailed landscape.", "negative_prompt": "", "size": 1024, "width": 1024, "height": 1024, "steps": 30, "guidance": 1.0, "batch": 1, "hidiffusion": false, "prompt_upsampling": false, "lora": null, "reference_images": [], "expected_gpu_name": "RTX 4090"}, {"label": "qwen21-comfy-same-prompt-warm-05", "cell": "qwen21", "engine": "comfy", "mode": "same-prompt-warm", "sample": 5, "seed": 202610261005, "prompt": "A photograph of an astronaut riding a horse, natural daylight, detailed landscape.", "negative_prompt": "", "size": 1024, "width": 1024, "height": 1024, "steps": 30, "guidance": 1.0, "batch": 1, "hidiffusion": false, "prompt_upsampling": false, "lora": null, "reference_images": [], "expected_gpu_name": "RTX 4090"}, {"label": "qwen21-comfy-changed-prompt-warm-06", "cell": "qwen21", "engine": "comfy", "mode": "changed-prompt-warm", "sample": 6, "seed": 202610261006, "prompt": "A photograph of a small red sailboat on a calm blue lake beneath distant mountains.", "negative_prompt": "", "size": 1024, "width": 1024, "height": 1024, "steps": 30, "guidance": 1.0, "batch": 1, "hidiffusion": false, "prompt_upsampling": false, "lora": null, "reference_images": [], "expected_gpu_name": "RTX 4090"}, {"label": "qwen21-comfy-changed-prompt-warm-07", "cell": "qwen21", "engine": "comfy", "mode": "changed-prompt-warm", "sample": 7, "seed": 202610261007, "prompt": "A photograph of a golden retriever sitting beside a bicycle in a quiet city park.", "negative_prompt": "", "size": 1024, "width": 1024, "height": 1024, "steps": 30, "guidance": 1.0, "batch": 1, "hidiffusion": false, "prompt_upsampling": false, "lora": null, "reference_images": [], "expected_gpu_name": "RTX 4090"}, {"label": "qwen21-comfy-changed-prompt-warm-08", "cell": "qwen21", "engine": "comfy", "mode": "changed-prompt-warm", "sample": 8, "seed": 202610261008, "prompt": "A photograph of a stone lighthouse on a rocky coast under an overcast sky.", "negative_prompt": "", "size": 1024, "width": 1024, "height": 1024, "steps": 30, "guidance": 1.0, "batch": 1, "hidiffusion": false, "prompt_upsampling": false, "lora": null, "reference_images": [], "expected_gpu_name": "RTX 4090"}, {"label": "qwen21-comfy-changed-prompt-warm-09", "cell": "qwen21", "engine": "comfy", "mode": "changed-prompt-warm", "sample": 9, "seed": 202610261009, "prompt": "A photograph of a wooden cabin surrounded by pine trees after fresh snowfall.", "negative_prompt": "", "size": 1024, "width": 1024, "height": 1024, "steps": 30, "guidance": 1.0, "batch": 1, "hidiffusion": false, "prompt_upsampling": false, "lora": null, "reference_images": [], "expected_gpu_name": "RTX 4090"}, {"label": "qwen21-comfy-changed-prompt-warm-10", "cell": "qwen21", "engine": "comfy", "mode": "changed-prompt-warm", "sample": 10, "seed": 202610261010, "prompt": "A photograph of a ceramic teapot and two cups on a sunlit kitchen table.", "negative_prompt": "", "size": 1024, "width": 1024, "height": 1024, "steps": 30, "guidance": 1.0, "batch": 1, "hidiffusion": false, "prompt_upsampling": false, "lora": null, "reference_images": [], "expected_gpu_name": "RTX 4090"}]')
@@ -72,14 +89,20 @@ def stop_server():
             "start_ticks": state["start_ticks"], "stopped": True}
 
 
-def main(ctx: Context, tel: Telemetry, *, out: Outputs, operation: str = "run", label: str = "sample",
-         seed: int = 1, prompt: str = "", require_warm: bool = False, profile: bool = False) -> list[FileAsset]:
+@app.entrypoint(accelerator=True)
+def main(payload: BenchRequest, ctx: Context, tel: Telemetry, out: Outputs) -> BenchResult:
     """One ordinary CLI call and one image. Source identity stays fixed across seeds.
 
     operation=stop ends only the server held by this exact executor. A parent-death
     signal and process groups cover abnormal executor exit and cancellation. The
     owner still ends its bounded rental in finally; no second Cozy daemon is used.
     """
+    operation = payload.operation
+    label = payload.label
+    seed = payload.seed
+    prompt = payload.prompt
+    require_warm = payload.require_warm
+    profile = payload.profile
     global SESSION, OWNER_PID
     # The application may have been imported by the Runtime's pre-fork zygote.
     # Child parent-death checks must bind the actual calling executor, not that importer.
@@ -97,8 +120,8 @@ def main(ctx: Context, tel: Telemetry, *, out: Outputs, operation: str = "run", 
         archive = B / "results" / f"{CELL}-receipts.tar.gz"
         with tarfile.open(archive, "w:gz") as tar:
             tar.add(B / "results" / CELL, arcname=CELL)
-        return [out.save_file(path, media_type="application/json"),
-                out.save_file(archive, media_type="application/gzip")]
+        return BenchResult(files=[out.save_file(path, media_type="application/json"),
+                                  out.save_file(archive, media_type="application/gzip")])
     assert len(JOBS) >= 1 and seed >= 0
     job = {**JOBS[0], "label": label, "seed": seed, "profile": profile}
     if prompt:
@@ -204,4 +227,4 @@ def main(ctx: Context, tel: Telemetry, *, out: Outputs, operation: str = "run", 
             saved.append(out.save_file(res / rec["request"]["profile"]["copied_file"], media_type="application/json"))
     # Detailed logs/timelines are delivered by the explicit untimed stop operation.
     # Timed calls return the image directly plus only their compact session receipt.
-    return saved
+    return BenchResult(files=saved)
