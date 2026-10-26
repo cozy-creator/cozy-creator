@@ -169,11 +169,6 @@ impl Link {
         Ok(Box::pin(self.machine.watch().await?.map_err(LinkError::from)))
     }
 
-    /// Gives the machine its newest run capability at the Hub `capability.endpoint` names.
-    pub async fn capability(&self, capability: &v1::TensorFSOptions) -> Result<(), LinkError> {
-        Ok(self.machine.capability(capability).await?)
-    }
-
     /// Starts a rental's idle clock over; answers the picture with its new deadline.
     pub async fn keepalive(&self) -> Result<v1::StatusFrame, LinkError> {
         Ok(self.machine.keepalive().await?)

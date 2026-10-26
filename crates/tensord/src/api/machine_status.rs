@@ -106,6 +106,7 @@ pub(super) fn identity_frame(identity: &MachineIdentity) -> v1::StatusFrame {
         commit: protocol::COMMIT.into(),
         dev: identity.updates.as_ref().is_some_and(|u| u.dev()),
         capabilities: capabilities(identity),
+        workload_key: crate::hub::workload_key().thumbprint().into(),
         receipt: identity.readiness.envelope().unwrap_or_default(),
         ..Default::default()
     }

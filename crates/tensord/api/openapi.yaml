@@ -15,20 +15,6 @@ info:
 security: [{cozy_cap: []}]
 
 paths:
-  /v1/capability:
-    put:
-      summary: >-
-        The signer's newest run capability at the Hub `endpoint` names (cl-670): every later read and upload
-        there for the signer's runs presents it, until one that expires later comes. Kept in memory only.
-      operationId: capability
-      requestBody:
-        content: {application/json: {schema: {$ref: '#/components/schemas/TensorFSOptions'}}}
-        required: true
-      responses:
-        '204': {description: Kept}
-        '400':
-          description: '`invalid_capability`: no token, or not a Hub origin'
-          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
   /v1/health:
     get:
       summary: >-
@@ -539,6 +525,13 @@ components:
           type: string
           format: byte
           description: An origin's private CA (DER, base64), when it has one.
+        capability:
+          type: string
+          description: >-
+            The run capability its computer's device key signed for this machine's workload key (cl-675): what the
+            signer's runs here read and write at this Hub. TensorD redeems it at the Hub (AuthKit's jwt-bearer grant)
+            and again before each token expires while those runs live; no executor sees it. A capability bound to
+            another key is refused 409 `workload_key_changed`.
         origin: {type: string}
     InputFile:
       type: object
@@ -872,7 +865,7 @@ components:
       type: object
       description: >-
         The machine's picture. Without a machine-scope cap, `GET /v1/status` answers identity, version,
-        capabilities and the sealed readiness `receipt` only. With one it answers all of it, and as SSE
+        capabilities, the workload key and the sealed readiness `receipt` only. With one it answers all of it, and as SSE
         (`Accept: text/event-stream`) sends the whole frame again whenever it changes. An open stream is not
         activity.
       properties:
@@ -958,6 +951,11 @@ components:
         webrtc:
           description: The direct player endpoint, when the machine listens.
           oneOf: [{$ref: '#/components/schemas/WebRtc'}, {type: 'null'}]
+        workload_key:
+          type: string
+          description: >-
+            The RFC 7638 thumbprint of this TensorD's workload key, made at its start and held in memory only: what
+            its runs' capabilities bind (cl-675).
         worker_id: {type: string}
     StuckProcess:
       type: object

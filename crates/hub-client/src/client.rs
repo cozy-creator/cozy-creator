@@ -88,6 +88,11 @@ impl Client {
         &self.origin
     }
 
+    /// The HTTP client it calls the Hub over, with the Hub's roots.
+    pub(crate) fn http(&self) -> &reqwest::Client {
+        &self.http
+    }
+
     pub fn credential(&self) -> &Credential {
         &self.credential
     }
@@ -159,11 +164,6 @@ impl Client {
         self.send(self.at(Method::DELETE, "/v1/auth/v1/me/sign-in-keys/{id}", &[id]))
             .await
             .map(drop)
-    }
-
-    pub async fn create_capability(&self, ask: &CapabilityRequest) -> Result<Capability, Error> {
-        self.json(self.at(Method::POST, "/v1/capabilities", &[]).json(ask))
-            .await
     }
 
     pub async fn get_credit(&self) -> Result<CreditResponse, Error> {

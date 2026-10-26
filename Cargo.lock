@@ -252,6 +252,12 @@ checksum = "4c7f02d4ea65f2c1853089ffd8d2787bdbc63de2f0d29dedbcf8ccdfa0ccd4cf"
 
 [[package]]
 name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
+name = "base64"
 version = "0.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
@@ -341,7 +347,7 @@ name = "calcifer"
 version = "0.12.1"
 dependencies = [
  "axum",
- "base64",
+ "base64 0.23.1",
  "ed25519-dalek",
  "futures-util",
  "getrandom 0.3.4",
@@ -488,7 +494,7 @@ version = "0.12.1"
 dependencies = [
  "anstream",
  "anstyle",
- "base64",
+ "base64 0.23.1",
  "clap",
  "clap_complete",
  "comfy-table",
@@ -1128,7 +1134,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1660,8 +1666,9 @@ name = "hub-client"
 version = "0.12.1"
 dependencies = [
  "aws-lc-rs",
- "base64",
+ "base64 0.23.1",
  "ed25519-dalek",
+ "jsonwebtoken",
  "percent-encoding",
  "platform",
  "protocol",
@@ -1717,7 +1724,7 @@ version = "0.1.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ddc03d96684f9226b8a787cdb71488417b53ab5ea8fdb1dac946cb9431cc8bff"
 dependencies = [
- "base64",
+ "base64 0.23.1",
  "bytes",
  "futures-channel",
  "futures-util",
@@ -2087,6 +2094,22 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "jsonwebtoken"
+version = "11.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e75fe14a82d81e5f5af639997db37d8b96045938a7ac6ab18cdbe1c7467e05e1"
+dependencies = [
+ "aws-lc-rs",
+ "base64 0.22.1",
+ "getrandom 0.2.17",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "signature",
+ "zeroize",
 ]
 
 [[package]]
@@ -2560,7 +2583,7 @@ version = "4.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d354a98a3d1251555de99e8fdd8afda05573c31b82f59063a7b0a29b5527f120"
 dependencies = [
- "base64",
+ "base64 0.23.1",
  "serde_core",
 ]
 
@@ -2698,7 +2721,7 @@ dependencies = [
 name = "protocol"
 version = "0.12.1"
 dependencies = [
- "base64",
+ "base64 0.23.1",
  "bytes",
  "ed25519-dalek",
  "eventsource-stream",
@@ -2866,7 +2889,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3074,7 +3097,7 @@ version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "16a1cfa75cc186dd73d5818e510e042e40927bccc9c236b061cea97e1eb08029"
 dependencies = [
- "base64",
+ "base64 0.23.1",
  "bytes",
  "futures-core",
  "futures-util",
@@ -3183,7 +3206,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3240,7 +3263,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3606,7 +3629,7 @@ version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7944b186fea86436f865540901f0afbd7fa48568ff5f2f4e8b9e27ae758771fc"
 dependencies = [
- "base64",
+ "base64 0.23.1",
  "hex",
  "jiff",
  "serde",
@@ -3656,7 +3679,7 @@ version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "24f58ba2ce9de6e912d5e4043eeb8baa1aeee7ddf9ea19c950a20ee6e0973979"
 dependencies = [
- "base64",
+ "base64 0.23.1",
  "hex",
  "jiff",
  "pem",
@@ -3671,7 +3694,7 @@ version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8d81887abe3161d7f0d04f224236e14390f782ce6f3b5e2717819ef2d7b452cb"
 dependencies = [
- "base64",
+ "base64 0.23.1",
  "const-oid",
  "futures-io",
  "hex",
@@ -3979,7 +4002,7 @@ dependencies = [
  "async-trait",
  "aws-lc-rs",
  "axum",
- "base64",
+ "base64 0.23.1",
  "bytes",
  "clap",
  "ed25519-dalek",
@@ -4027,7 +4050,7 @@ name = "tensorfs"
 version = "0.16.0"
 dependencies = [
  "async-trait",
- "base64",
+ "base64 0.23.1",
  "bytes",
  "faer",
  "futures",
@@ -4062,7 +4085,7 @@ name = "tensorfs-py"
 version = "0.16.0"
 dependencies = [
  "async-trait",
- "base64",
+ "base64 0.23.1",
  "libc",
  "platform",
  "protocol",

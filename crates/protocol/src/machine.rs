@@ -27,8 +27,6 @@ pub mod path {
     pub const OBJECT: &str = "/v1/objects/{digest}";
     /// `POST` a [`super::HeldRequest`]: what the machine holds of many objects, in one request.
     pub const OBJECTS_HELD: &str = "/v1/objects/held";
-    /// `PUT` a [`super::TensorFSOptions`]: the signer's newest run capability at a Hub.
-    pub const CAPABILITY: &str = "/v1/capability";
 }
 
 /// The header naming the byte ranges of an object the machine holds: `0-1048575,2097152-4194303`
@@ -425,13 +423,27 @@ pub struct Adapter {
 }
 
 /// A Hub a run reads. Public content is read anonymously.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HubAccess {
     pub origin: String,
     /// An origin's private CA (DER, base64), when it has one.
     #[serde(with = "base64_bytes", skip_serializing_if = "Vec::is_empty")]
     pub ca_der: Vec<u8>,
+    /// The run capability its computer signed for this machine's workload key (cl-675): what
+    /// the signer's runs here read and write at this Hub, redeemed by the machine alone (AuthKit's
+    /// jwt-bearer grant). Empty for runs that read only public releases.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub capability: String,
+}
+
+impl std::fmt::Debug for HubAccess {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HubAccess")
+            .field("origin", &self.origin)
+            .field("capability", &(!self.capability.is_empty()).then_some("<redacted>"))
+            .finish_non_exhaustive()
+    }
 }
 
 /// One entry of a run's log, as `GET /v1/runs/{id}/events` sends it: SSE `event: <variant>`,
@@ -675,6 +687,9 @@ pub struct StatusFrame {
     /// Its binary arrived by a dev update (`cozy machine update --tensord <path>`), not a release.
     pub dev: bool,
     pub capabilities: Vec<String>,
+    /// The RFC 7638 thumbprint of this TensorD's workload key, made at its start and held in memory
+    /// only: what its runs' capabilities bind (cl-675).
+    pub workload_key: String,
     /// The sealed readiness envelope (base64); empty until sealed.
     #[serde(with = "base64_bytes")]
     pub receipt: Vec<u8>,

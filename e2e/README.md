@@ -18,9 +18,10 @@ Real runs of `cozy` on GitHub's runners, chosen by what a change touches (CI v2:
 - `imports/run.sh`: every published first-party package release installs (`cozy package install`) and imports on the candidates;
   a Runtime that moves what a published package imports fails here.
 - `mps/run.sh`: BiRefNet and SDXL on a Mac's GPU (explicit `select` only, until macOS runs models itself).
-- `capabilities/run.sh`: a run capability reads its private commit and nothing else, and is refused for another repository,
-  a release, a delete, rentals and minting, forged and once expired. It speaks the Hub's API, runs nothing; the release suite
-  runs it on its throwaway upload.
+- `capabilities/run.sh`: a run capability (AuthKit's workload grant) reads its private commit and nothing else: signed and
+  redeemed as Calcifer and TensorD do, renewed, a copied token refused without its DPoP key, refused for another repository,
+  a release, a delete, rentals, another account's repository, an altered or expired capability and, with `--rental`, once the
+  rental ends. It speaks the Hub's API, runs nothing; the release suite runs it on its throwaway upload.
 - `.github/workflows/e2e.yaml` runs the selected suites on PRs here and for cozy-runtime, packages and the release gate. On Linux
   each candidate is one `candidate` job (`candidates/build.sh`), reused from an earlier cozy-creator run that built the same
   sources, and `cli` and `imports` run in shards (`--shard`) on their own runners; `e2e` checks coverage over every shard.
