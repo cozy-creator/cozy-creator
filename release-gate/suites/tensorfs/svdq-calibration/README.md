@@ -150,3 +150,13 @@ before its handler on a uv cache lock timeout and is not counted as passing reci
 This is real component qualification, not full H3/image-model inference, a benchmark,
 cancellation qualification or a release claim. Normal SDK restoration is owned and recorded
 by the parent controller separately from the successful component receipts.
+# Native Blackwell consumer
+
+`predict require_native=true repetitions=2 expected_checkpoint=sha256:...` requires
+SM100, the packed SVDQ leaf, and the existing `cozy-svdq-nvfp4` readiness/self-check
+path. Every ordinary model forward records the build key and successful probe,
+checks serving selection before and after execution, synchronizes CUDA, and refuses
+any recorded SVDQ launch fallback. Provider identity alone cannot pass this gate.
+The two held-out batches retain the existing 0.10 stored-weight and 0.20 original
+BF16 relative-L2 limits. Repeat this consumer invocation against the same immutable
+model commit; fitting and checkpoint publication need not run again.

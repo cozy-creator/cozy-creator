@@ -92,15 +92,27 @@ class LinearModel(Model[Pipeline], encoded_leaves="accept"):
         self.pipe = loader.construct(Pipeline, factory=build)
 
     @uses_components("net")
-    def predict(self, value: torch.Tensor) -> tuple[torch.Tensor, str, str]:
+    def predict(
+        self, value: torch.Tensor, require_native: bool = False
+    ) -> tuple[torch.Tensor, str, str, dict[str, Any]]:
         net = self.pipe.components["net"]
         layer = net.proj
+        evidence: dict[str, Any] = {}
+        if require_native:
+            from .consumer import ready
+
+            evidence = ready(layer)
         with torch.inference_mode():
             result = net(value.to(device=layer.bias.device, dtype=torch.bfloat16))
+        if require_native:
+            from .consumer import consumed
+
+            consumed(layer, result, evidence)
         return (
             result.float().cpu(),
             str(getattr(layer, "provider", "ordinary-linear")),
             str(getattr(layer, "encoding", "plain")),
+            evidence,
         )
 
     @uses_components("net")
@@ -123,6 +135,8 @@ class Request(msgspec.Struct, forbid_unknown_fields=True):
 class Prediction(msgspec.Struct, forbid_unknown_fields=True):
     seed: int = 156
     require_native: bool = False
+    repetitions: int = 1
+    expected_checkpoint: str = ""
 
 
 class Converted(msgspec.Struct):
@@ -362,6 +376,9 @@ def predict(
 
     assert ctx.device.type == "cuda"
     checkpoint = ctx.tensorfs_source(weights)
+    assert 1 <= payload.repetitions <= 4
+    if payload.expected_checkpoint:
+        assert checkpoint.id == payload.expected_checkpoint, checkpoint.id
     held = checkpoint.components["net"].tensors
     encoded = held.read("proj.weight")
     assert isinstance(encoded, tensorfs.Encoded)
@@ -373,8 +390,10 @@ def predict(
     bias = tensor(inherited_bias.tobytes(), torch.bfloat16, (ROWS,))
     assert torch.equal(bias, original_bias)
     rows = []
-    for value in operands(payload.seed, held_out=True):
-        actual, provider, scheme = model.predict(value)
+    batches = operands(payload.seed, held_out=True)
+    for call in range(len(batches) * payload.repetitions):
+        value = batches[call % len(batches)]
+        actual, provider, scheme, evidence = model.predict(value, payload.require_native)
         native = provider == NATIVE
         if payload.require_native:
             assert native and scheme == "svdq.nvfp4", (provider, scheme)
@@ -402,6 +421,9 @@ def predict(
         rows.append(
             {
                 "provider": provider,
+                "repetition": call // len(batches),
+                "heldout_batch": call % len(batches),
+                "kernel_evidence": evidence,
                 "module_encoding": scheme,
                 "consumption": "native-encoded-gemm"
                 if native
@@ -420,6 +442,7 @@ def predict(
                 "seed": payload.seed,
                 "checkpoint": checkpoint.id,
                 "device": torch.cuda.get_device_name(),
+                "compute_capability": torch.cuda.get_device_capability(),
                 "cases": rows,
             },
             sort_keys=True,
