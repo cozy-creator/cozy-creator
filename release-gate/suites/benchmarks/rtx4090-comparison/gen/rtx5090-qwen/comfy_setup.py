@@ -45,13 +45,25 @@ WANT = []
 FILES = [f for f in FILES if WANT is None or Path(f[2]).name in WANT]
 
 
+def tail_of(log, start, limit=4000):
+    """The bytes this command wrote (stdout+stderr), from `start` to EOF, last `limit` chars.
+    Put in a step's receipt on failure so a pod failure is diagnosable without a second rental."""
+    with open(log, "rb") as reader:
+        reader.seek(start)
+        return reader.read()[-limit:].decode("utf-8", "replace")
+
+
 def run(cmd, log, **kw):
     t = time.time()
     with open(log, "ab") as f:
         f.write(f"\n$ {cmd}\n".encode())
         f.flush()
+        start = f.tell()
         rc = subprocess.run(cmd, shell=True, stdout=f, stderr=subprocess.STDOUT, **kw).returncode
-    return {"rc": rc, "s": round(time.time() - t, 1)}
+    step = {"rc": rc, "s": round(time.time() - t, 1)}
+    if rc != 0:
+        step["tail"] = tail_of(log, start)
+    return step
 
 
 def run_watched(cmd, log, ctx, tel, label, watch, **kw):
@@ -60,6 +72,7 @@ def run_watched(cmd, log, ctx, tel, label, watch, **kw):
     with open(log, "ab") as f:
         f.write(f"\n$ {cmd}\n".encode())
         f.flush()
+        start = f.tell()
         p = subprocess.Popen(cmd, shell=True, stdout=f, stderr=subprocess.STDOUT, start_new_session=True, **kw)
         last, observed = -1, 0.0
         try:
@@ -81,7 +94,10 @@ def run_watched(cmd, log, ctx, tel, label, watch, **kw):
                 except subprocess.TimeoutExpired:
                     os.killpg(p.pid, signal.SIGKILL)
                     p.wait()
-    return {"rc": p.returncode, "s": round(time.time() - t, 1)}
+    step = {"rc": p.returncode, "s": round(time.time() - t, 1)}
+    if p.returncode != 0:
+        step["tail"] = tail_of(log, start)
+    return step
 
 
 def text(cmd):
@@ -124,7 +140,8 @@ def main(payload: SetupRequest, ctx: Context, tel: Telemetry, out: Outputs) -> S
         (B / "requirements.lock").write_text(REQUIREMENTS)
         rec["requirements_sha256"] = hashlib.sha256(REQUIREMENTS.encode()).hexdigest()
         rec["steps"]["install"] = run_watched(
-            f"{uv} pip sync --python {B}/comfy-env/bin/python --require-hashes {B}/requirements.lock",
+            f"{uv} pip sync --python {B}/comfy-env/bin/python --require-hashes "
+            f"--index-strategy unsafe-best-match {B}/requirements.lock",
             log, ctx, tel, "install", B / "comfy-env", env=env)
         assert rec["steps"]["install"]["rc"] == 0, "Comfy locked environment install failed"
         run(f"VIRTUAL_ENV={B}/comfy-env {uv} pip freeze > {B}/comfy-env-freeze.txt", log, env=env)
