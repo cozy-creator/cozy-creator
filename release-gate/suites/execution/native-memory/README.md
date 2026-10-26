@@ -11,7 +11,7 @@ python3 release-gate/suites/execution/native-memory/run.py --execute --on local 
   --out /absolute/fresh/proof-directory --seed 3295001
 ```
 
-The default dry run lists all53 cells. `--groups` selects comma-separated public endpoints:
+The default dry run lists all 56 cells. `--groups` selects comma-separated public endpoints:
 `stages`, `repeat`, `model_stages`, `stored_roles`, `source_failure`, `cold_capture`,
 `shared_pool`, `prefetch`. Each requires its real native capabilities; missing functionality
 fails visibly rather than silently switching to an eager/mock implementation.
@@ -26,7 +26,16 @@ Private source corruption affects only newly copied fixture-owned files. Stored 
 verify the actual native kernel before and after reference/capture/execution. Shared scratch
 checks explicit persistent data edges and refuses escaped tensor views/storage or independent
 stage launch. Prefetch tests preserve useful warm cache; zero reads are success, not a reason
-to evict weights to force the optimization.
+to evict weights to force the optimization. Author-policy cells explicitly compare enabled and
+disabled speculation on the same artifact; disabled warm replay may still read weights under its
+smaller idle-cache allowance. This alone does not measure copy/compute overlap.
+
+The final combined cohort must also run the dedicated actual four-component native-phase
+fixture (grouped text encoders → repeated UNet → resident VAE), including checked cancellation
+and source-error successors. Its source/artifact manifest and receipts are maintained with the
+model gates rather than copying a second SDXL implementation into this mechanism package.
+The cohort manifest must record those exact paths and hashes; these 56 cells alone do not
+qualify phase-policy integration.
 
 `SOURCE-EVIDENCE.json` records the historical functional receipts from which these current
 cells were consolidated. That evidence does not automatically qualify this new packaged entrypoint
