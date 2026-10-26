@@ -218,7 +218,14 @@ def gpu(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
             program = PreparedSequence(
                 (prefix_plan, *block_plans, sample_plan, suffix_plan),
                 repeat=(1, 5, passes),
+                # This gate intentionally proves cold demand streaming at one weight window.
+                # Speculation and warm ready-phase retention have separate cells.
+                prefetch=False,
             )
+            memory.native.reclaim(int(memory.native.stats()["resident_bytes"]))
+            assert all(not region.resident for region in regions)
+            memory.window_bytes = window
+            memory.native.set_streaming_limit(window)
             if payload.mode in {"stale", "region", "source"}:
                 import copy
 
@@ -272,6 +279,9 @@ def gpu(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
                     data.add_(7)
                     expected = eager_reference()
                     torch.cuda.synchronize(memory.device)
+                    # Reuse here proves stable VA after actual eviction, not a warm-cache hit.
+                    memory.native.reclaim(int(memory.native.stats()["resident_bytes"]))
+                    assert all(not region.resident for region in regions)
                 execution = ctx.plan(program)
                 (actual,) = execution.wait()
                 assert torch.equal(actual, expected), float(
