@@ -14,14 +14,11 @@ from . import (
 )
 
 app = App()
-for name, module in (
-    ("stages", stages),
-    ("repeat", repeat),
-    ("model_stages", model_stages),
-    ("stored_roles", stored_roles),
-    ("source_failure", source_failure),
-    ("cold_capture", cold_capture),
-    ("shared_pool", shared_pool),
-    ("prefetch", prefetch),
-):
-    app.entrypoint(module.gpu, name=name, accelerator=True)
+app.entrypoint(stages.gpu, name="stages", accelerator=True)
+app.entrypoint(repeat.gpu, name="repeat", accelerator=True)
+app.entrypoint(model_stages.gpu, name="model_stages", accelerator=True)
+app.entrypoint(stored_roles.gpu, name="stored_roles", accelerator=True)
+app.entrypoint(source_failure.gpu, name="source_failure", accelerator=True)
+app.entrypoint(cold_capture.gpu, name="cold_capture", accelerator=True)
+app.entrypoint(shared_pool.gpu, name="shared_pool", accelerator=True)
+app.entrypoint(prefetch.gpu, name="prefetch", accelerator=True)
