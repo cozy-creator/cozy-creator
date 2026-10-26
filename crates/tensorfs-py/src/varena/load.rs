@@ -40,6 +40,11 @@ impl LoadSlot {
         true
     }
 
+    #[classattr]
+    fn supports_ready_stage() -> bool {
+        true
+    }
+
     #[new]
     #[pyo3(signature = (arena, checkpoint, parts, bytes, threads = 2))]
     fn new(
@@ -122,13 +127,14 @@ impl LoadSlot {
         })
     }
     #[staticmethod]
-    #[pyo3(signature = (checkpoint, groups, threads = 2))]
+    #[pyo3(signature = (checkpoint, groups, threads = 2, *, keep_ready = false))]
     #[allow(clippy::type_complexity)]
     fn from_regions(
         py: Python<'_>,
         checkpoint: PyRef<'_, PyCheckpoint>,
         groups: Vec<(Py<PyRegion>, Vec<(String, usize, usize)>)>,
         threads: usize,
+        keep_ready: bool,
     ) -> PyResult<Option<Self>> {
         let groups: Vec<_> = groups
             .into_iter()
@@ -140,7 +146,7 @@ impl LoadSlot {
             .ok_or_else(|| PyValueError::new_err("load needs input regions"))?;
         let checkpoint = checkpoint.core(py)?;
         let work = py
-            .detach(|| refill::prepare_regions(checkpoint, groups, threads))
+            .detach(|| refill::prepare_regions(checkpoint, groups, threads, keep_ready))
             .map_err(|error| error.region_refusal().raise(py))?;
         Ok(work.map(|work| Self {
             region: Deferred::new(region),

@@ -954,11 +954,13 @@ pub(super) fn prepare_work(
 
 /// Prepare one component's existing raw block regions without changing their identities.
 /// Ready inputs remain pinned before any cold input may allocate or reclaim backing.
-/// All-ready returns None: the caller must reacquire/revalidate ordinary resident bindings.
+/// Unless keep_ready is requested for stage capture, all-ready returns None and the caller
+/// must reacquire/revalidate ordinary resident bindings.
 pub(super) fn prepare_regions(
     checkpoint: tensorfs::Checkpoint,
     groups: Vec<(Arc<varena::Region>, Vec<(String, usize, usize)>)>,
     threads: usize,
+    keep_ready: bool,
 ) -> Result<Option<Work>, Failure> {
     let invalid = |detail| Failure::Native(varena::Error::Invalid(detail));
     let Some((first, _)) = groups.first() else {
@@ -986,7 +988,7 @@ pub(super) fn prepare_regions(
     for input in &mut inputs {
         input.pin = input.region.try_pin().map_err(Failure::Native)?;
     }
-    if inputs.iter().all(|input| input.pin.is_some()) {
+    if !keep_ready && inputs.iter().all(|input| input.pin.is_some()) {
         return Ok(None);
     }
     let producer = varena::enter_producer(device).map_err(Failure::Native)?;
@@ -998,7 +1000,7 @@ pub(super) fn prepare_regions(
             }
         }
     }
-    if inputs.iter().all(|input| input.fill.is_none()) {
+    if !keep_ready && inputs.iter().all(|input| input.fill.is_none()) {
         return Ok(None);
     }
     io::prepare_device(device).map_err(cuda_failure)?;

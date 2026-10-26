@@ -283,6 +283,9 @@ class LoadSlot:
         getattr(getattr(_ext, "_VarenaLoadSlot", None), "supports_event_input", False)
     )
     supports_region_input = hasattr(getattr(_ext, "_VarenaLoadSlot", None), "from_regions")
+    supports_ready_stage = bool(
+        getattr(getattr(_ext, "_VarenaLoadSlot", None), "supports_ready_stage", False)
+    )
 
     def __init__(
         self,
@@ -350,6 +353,7 @@ class LoadSlot:
         groups: Sequence[tuple[Region, Sequence[tuple[str, int, int]]]],
         *,
         threads: int = 2,
+        keep_ready: bool = False,
     ) -> LoadSlot | None:
         """Capture against existing immutable raw block regions, then load misses once.
 
@@ -357,6 +361,8 @@ class LoadSlot:
         inputs are initialized for capture and later read; their regions remain independently
         cached after completion. None means all inputs were ready at this observation; the
         caller must reacquire and revalidate its ordinary resident binding before capture.
+        keep_ready=True instead retains the ready inputs as a capture slot, so an own-address
+        native stage can detach its temporary views and refill after later eviction.
         Each region must already belong exclusively to the declared immutable source recipe.
         Authored computation must treat every input as read-only: successful completion
         caches its bytes under that source identity. Runtime rejects mutable-state overlap
@@ -365,8 +371,11 @@ class LoadSlot:
         native = getattr(_ext, "_VarenaLoadSlot", None)
         if native is None or not hasattr(native, "from_regions"):
             raise RuntimeError("this TensorFS build has no region loading capability")
+        if keep_ready and not cls.supports_ready_stage:
+            raise RuntimeError("this TensorFS build cannot detach ready stage inputs")
+        options = {"keep_ready": True} if keep_ready else {}
         owned = native.from_regions(
-            checkpoint, [(region._native, list(parts)) for region, parts in groups], threads
+            checkpoint, [(region._native, list(parts)) for region, parts in groups], threads, **options
         )
         if owned is None:
             return None
