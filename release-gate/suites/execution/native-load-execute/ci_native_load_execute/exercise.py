@@ -32,6 +32,7 @@ MODES = {
     "input-error",
     "scope-return",
     "scope-unwind",
+    "index-stale",
 }
 
 
@@ -85,8 +86,11 @@ def prepare(arena, checkpoint, parts, nbytes, steps, ordering="checked"):
     weight = alias.view(torch.float32)
     output = torch.zeros(1, device="cuda", dtype=torch.float32)
     calls = [0]
+    indices = []
 
     def body(index):
+        if not indices:
+            indices.append(index)
         calls[0] += 1
         output.add_(weight.sum())
 
@@ -105,6 +109,7 @@ def prepare(arena, checkpoint, parts, nbytes, steps, ordering="checked"):
         "output": output,
         "calls": calls,
         "plan": plan,
+        "index": indices[0],
     }
 
 
@@ -233,6 +238,28 @@ def exercise(mode, seed, outer_context, tel, ordering="checked"):
             return Returned(True)
 
         try:
+            if mode == "index-stale":
+                assert bundle["plan"].valid()
+                bundle["index"].fill_(73)
+                assert bundle["plan"].valid(), (
+                    "input values must not invalidate geometry"
+                )
+                bundle["index"].resize_(2)
+                assert not bundle["plan"].valid()
+                try:
+                    bundle["plan"].submit()
+                except RuntimeError as error:
+                    assert "storage or geometry changed" in str(error), error
+                    evidence["refusal"] = str(error)
+                else:
+                    raise AssertionError(
+                        "native index resize was accepted before submission"
+                    )
+                evidence["native"] = bundle["plan"].facts()
+                assert evidence["native"]["host_graph_launches"] == 0
+                evidence["index_shape_refused_before_submit"] = True
+                evidence["cleanup"] = close_checked(bundle, arena, nbytes)
+                return evidence
             if mode in {"scope-return", "scope-unwind", "input-error"}:
                 # The executor's actual prepare/invoke lifecycle, including checked teardown.
                 # Expected errors are contained in this real invocation, not mocked away.
