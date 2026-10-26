@@ -5,8 +5,9 @@ use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 
 use super::continuation::Continuation;
 use super::{
-    Deferred, PyArena, capsule,
+    capsule,
     refill::{self, Control, PreparedRead, Work},
+    Deferred, PyArena, PyRegion,
 };
 use crate::store::PyCheckpoint;
 
@@ -22,6 +23,7 @@ struct State {
 pub(super) struct LoadSlot {
     region: Deferred<Arc<varena::Region>>,
     state: Mutex<State>,
+    inputs: usize,
     pid: u32,
 }
 impl LoadSlot {
@@ -69,6 +71,7 @@ impl LoadSlot {
         Ok(Self {
             region: Deferred::new(region),
             pid: std::process::id(),
+            inputs: 1,
             state: Mutex::new(State {
                 work: Some(work),
                 sealed: false,
@@ -109,6 +112,7 @@ impl LoadSlot {
         Ok(Self {
             region: Deferred::new(region),
             pid: std::process::id(),
+            inputs: 1,
             state: Mutex::new(State {
                 work: Some(work),
                 sealed: false,
@@ -117,6 +121,70 @@ impl LoadSlot {
                 control: None,
             }),
         })
+    }
+    #[staticmethod]
+    #[pyo3(signature = (checkpoint, groups, threads = 2))]
+    #[allow(clippy::type_complexity)]
+    fn from_regions(
+        py: Python<'_>,
+        checkpoint: PyRef<'_, PyCheckpoint>,
+        groups: Vec<(Py<PyRegion>, Vec<(String, usize, usize)>)>,
+        threads: usize,
+    ) -> PyResult<Option<Self>> {
+        let groups: Vec<_> = groups
+            .into_iter()
+            .map(|(region, parts)| (region.borrow(py).region.clone(), parts))
+            .collect();
+        let region = groups
+            .first()
+            .map(|(region, _)| region.clone())
+            .ok_or_else(|| PyValueError::new_err("load needs input regions"))?;
+        let checkpoint = checkpoint.core(py)?;
+        let work = py
+            .detach(|| refill::prepare_regions(checkpoint, groups, threads))
+            .map_err(|error| error.region_refusal().raise(py))?;
+        Ok(work.map(|work| Self {
+            region: Deferred::new(region),
+            inputs: work.input_count(),
+            pid: std::process::id(),
+            state: Mutex::new(State {
+                work: Some(work),
+                sealed: false,
+                canceled: false,
+                submitted: false,
+                control: None,
+            }),
+        }))
+    }
+    #[getter]
+    fn input_count(&self) -> usize {
+        self.inputs
+    }
+    fn capture_inputs(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
+        self.valid()?;
+        let pins = py
+            .detach(|| {
+                let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                if state.sealed {
+                    return Err(refill::Failure::Native(varena::Error::Invalid(
+                        "load slot capture is sealed",
+                    )));
+                }
+                let work =
+                    state
+                        .work
+                        .as_ref()
+                        .ok_or(refill::Failure::Native(varena::Error::Invalid(
+                            "load slot is closed",
+                        )))?;
+                (0..self.inputs)
+                    .map(|index| work.capture_input(index))
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .map_err(|error| error.raise(py))?;
+        pins.into_iter()
+            .map(|pin| capsule(py, pin).map(Bound::unbind))
+            .collect()
     }
     #[getter]
     fn device(&self) -> i32 {
@@ -139,6 +207,11 @@ impl LoadSlot {
         copy: Option<bool>,
     ) -> PyResult<Bound<'py, PyAny>> {
         self.valid()?;
+        if self.inputs != 1 {
+            return Err(PyValueError::new_err(
+                "use capture_inputs for multiple load regions",
+            ));
+        }
         // Initialization joined the engine's explicit streams before exposing this capture-only view.
         let _ = (stream, max_version);
         if copy == Some(true) || dl_device.is_some_and(|d| d != (2, self.region.device())) {
