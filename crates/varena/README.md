@@ -236,3 +236,28 @@ TensorFS wheel SHA256:
 Receipts: `outputs/stock-torch-20261025/codex-resume-20261026/native-prefetch-cells/RESULTS.json`
 and `native-prefetch-v2-resumed-cells/RESULTS.json`; independent review is in
 the owning `xs103-native-source-lookahead/.task/GPU-REVIEW.json`.
+
+### Native component-phase preference entry: real GPU proof
+
+Ordinary CLI runs 19184–19187 passed on the RTX 4070 Laptop GPU with Creator
+`a4a257c12a76fa62dcfdc60f1a865625c30562e5` and Runtime `3bb440712`.
+Each successful four-component native SDXL submission made exactly three
+preference transitions: grouped text encoders, the UNet repeated range, and
+resident wide VAE. Thirty UNet passes did not reset the watermark per block or
+iteration. Changed-input reuse created a fresh per-attempt phase controller.
+Checked completion invalidated Python's prior phase cache, and the next ordinary
+text-encoder phase recomputed its state.
+
+Cancellation after native progress stopped before VAE entry (two transitions).
+A private truncated source failed its request after checked cleanup (one
+transition), and a healthy following request succeeded in the same PID 2369864.
+These four criteria include one expected failed request. The policy protects
+only incoming bytes actually Ready at entry, demotes earlier ready cache to
+standby, and neither allocates, evicts nor changes the streaming window. Newly
+filled missing weights retain the existing streaming/cache behavior; no dynamic
+missing-prefix promotion or performance improvement is claimed.
+
+TensorFS wheel SHA256:
+`01758fae75767a216fdf5157a1f78ef445b210d61434e438ada16218a9eec8f6`.
+Receipts: `outputs/stock-torch-20261025/codex-resume-20261026/native-phase-cells/RESULTS.json`;
+independent review: `outputs/stock-torch-20261025/native-streaming-resume-20261026/native-phase-entry/GPU-REVIEW.json`.

@@ -201,6 +201,11 @@ impl Continuation {
     pub fn supports_reusable_input(&self) -> bool {
         self.rearm.is_some() && self.finish.is_some()
     }
+    /// A completed one-shot or explicitly finished reusable owner needs no further cancel.
+    pub fn releasable(&self) -> bool {
+        self.quiescent.load(Ordering::Acquire)
+            && (!self.supports_reusable_input() || self.finished.load(Ordering::Acquire))
+    }
     pub fn rearm(&self) -> Result<(), Status> {
         if self.finished.load(Ordering::Acquire) {
             return Err(Status::new(INVALID, 0, "graph input already finished"));

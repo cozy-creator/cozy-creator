@@ -8,6 +8,8 @@ mod load;
 mod refill;
 #[cfg(feature = "store")]
 mod stage_continuation;
+#[cfg(feature = "store")]
+mod phase;
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     ffi,
@@ -583,6 +585,8 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<load::StageSource>()?;
     #[cfg(feature = "store")]
     module.add_class::<stage_continuation::StageJob>()?;
+    #[cfg(feature = "store")]
+    module.add_class::<phase::PhaseController>()?;
     module.add_function(wrap_pyfunction!(_varena_install_allocator, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_set_activation_limit, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_allocator_stats, module)?)?;
