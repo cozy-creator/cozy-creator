@@ -71,8 +71,6 @@ pub struct Machines {
     pub(crate) renting: Mutex<HashSet<RunId>>,
     /// Told when a rental appears or is ready: `any` runs may fit it.
     pub(crate) placing: Notify,
-    /// The machines holding a run capability at each Hub, which get each one minted after.
-    pub(crate) capabilities: Mutex<HashMap<config::Origin, HashMap<String, crate::access::Held>>>,
     /// This computer's machine, started when something uses it.
     local: crate::local::Local,
     tasks: Mutex<JoinSet<()>>,
@@ -122,7 +120,6 @@ impl Machines {
             booting: Mutex::default(),
             renting: Mutex::default(),
             placing: Notify::new(),
-            capabilities: Mutex::default(),
             local,
             tasks: Mutex::default(),
             calcifer,
@@ -754,6 +751,20 @@ impl Machines {
             seen.unreachable = Some(reason);
         }
         self.calcifer.machine_changed();
+    }
+
+    /// The workload key `name`'s TensorD last said it holds: what its runs' capabilities bind.
+    pub(crate) fn seen_workload_key(&self, name: &str) -> Option<String> {
+        let seen = lock(&self.seen);
+        let frame = seen.get(name)?.frame.as_ref()?;
+        (!frame.workload_key.is_empty()).then(|| frame.workload_key.clone())
+    }
+
+    /// Forgets the workload key `name` was seen with: its next send reads it again.
+    pub(crate) fn forget_workload_key(&self, name: &str) {
+        if let Some(frame) = lock(&self.seen).get_mut(name).and_then(|seen| seen.frame.as_mut()) {
+            frame.workload_key.clear();
+        }
     }
 
     /// Why the machine is offline: its Hub's last word is that its provider stopped it or that

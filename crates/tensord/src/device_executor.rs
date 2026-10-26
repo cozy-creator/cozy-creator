@@ -1122,8 +1122,6 @@ impl DeviceExecutor {
                         queued.reply = Some(frame);
                     }
                 }
-                // A Runtime without the `capability` handler refuses it as a command.
-                None if frame.reply == "capability" => (),
                 None => return Err(io::Error::other("out-of-order stock executor reply")),
             }
         }

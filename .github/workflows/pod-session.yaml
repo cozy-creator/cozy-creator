@@ -1,8 +1,8 @@
 name: pod-session
 # One rental driven from a runner, so no laptop has to stay up for it: release-gate/sessions/<script>.sh rents one
 # machine on tensorhub.com, does its work there and ends the rental (sessions/lib.sh; README.md: Sessions).
-# The runner signs in as the owner (environment release-gate, COZY_CI_DEVICE_KEY, an admin) and its Calcifer renews the
-# pod's credential for the whole job. A guard ends the pod at `cap` USD, all in. Without `rent`, the $0 pre-flight only:
+# The runner signs in as the owner (environment release-gate, COZY_CI_DEVICE_KEY, an admin); the pod renews its own run
+# capability while its runs live (cl-675). A guard ends the pod at `cap` USD, all in. Without `rent`, the $0 pre-flight only:
 # install, sign-in, the script's own checks, the quote and the guard.
 #   gh workflow run pod-session.yaml -R cozy-creator/cozy-creator -f script=model-ingest -f packages_refs=pk=<sha> \
 #     -f sku=a40 -f disk=500 -f cap=6 -f params='{"package": "qwen3.6", "sources": "…", "lanes": "int8", "version": "0.1.0"}'
@@ -64,6 +64,7 @@ jobs:
           sparse-checkout: |
             release-gate/sessions
             release-gate/ref
+            e2e/capabilities
           path: creator
       - uses: actions/checkout@v5
         if: inputs.packages_refs != ''

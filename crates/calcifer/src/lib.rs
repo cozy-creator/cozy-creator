@@ -783,7 +783,7 @@ impl Calcifer {
                 if !self.store.mark_sent(id, machine)? {
                     return Ok(());
                 }
-                (self.answered(&run.id, machine, link.submit(id, spec)).await?, None)
+                (self.send_run(run, machine, link, spec).await?, None)
             }
             State::Sent | State::Accepted => {
                 if run.cancel_requested {
@@ -797,15 +797,10 @@ impl Calcifer {
                         let _turn = sending.lock().await;
                         self.known_warm(run, machine, link).await?;
                         let spec = self.sent_spec(run).await?;
-                        (self.answered(&run.id, machine, link.submit(id, spec)).await?, None)
+                        (self.send_run(run, machine, link, spec).await?, None)
                     }
                     attached => {
                         let (state, events) = attached?;
-                        if !matches!(state.state.as_str(), "succeeded" | "failed" | "canceled")
-                            && let Some(machines) = self.machines()
-                        {
-                            machines.resume_capability(run);
-                        }
                         (state, Some(events))
                     }
                 }
@@ -835,6 +830,20 @@ impl Calcifer {
             None => link.events(id, 0).await?,
         };
         self.follow(&run.id, stream, link, wake, canceled).await
+    }
+
+    /// Sends `run` as `spec`. A machine whose TensorD started again since its workload key was seen
+    /// refuses the capability signed for the old one: its key is read again and the run sent again.
+    async fn send_run(&self, run: &RunRow, machine: &str, link: &Link, spec: v1::RunSpec) -> Result<v1::RunState, Stop> {
+        match self.answered(&run.id, machine, link.submit(run.id.as_str(), spec)).await {
+            Err(LinkError::Refused { code, message }) if code == "workload_key_changed" => {
+                if let Some(machines) = self.machines() {
+                    machines.forget_workload_key(machine);
+                }
+                Err(Stop::Unanswered(message))
+            }
+            submitted => Ok(submitted?),
+        }
     }
 
     /// Records the run's frames until its outcome. Log lines, calls and products are durable,
@@ -1114,9 +1123,6 @@ impl Calcifer {
     /// `spec` with the Hub access and model-source tokens minted for this send, else the run's
     /// Hub origin unless the spec names one.
     fn finish_spec(&self, run: &RunRow, spec: &mut v1::RunSpec, access: access::Access) {
-        if spec.tensorfs.is_none() {
-            spec.tensorfs = access.tensorfs;
-        }
         if access.providers.is_some() {
             spec.providers = access.providers;
         }

@@ -18,6 +18,7 @@ pub mod execution;
 mod gpu_allocation;
 pub mod gpu_service;
 pub mod held_models;
+pub mod gateway;
 pub mod hub;
 pub mod calls;
 pub mod journal;

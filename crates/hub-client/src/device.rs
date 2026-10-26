@@ -15,6 +15,8 @@ use protocol::{config::Origin, error::Error as Refusal};
 
 const ENROLL_DOMAIN: &str = "authkit.device-key-enrollment/1";
 const LOGIN_DOMAIN: &str = "authkit.device-key-login/1";
+/// A capability's JWS `typ` (AuthKit's `devicekey.CapabilityType`).
+const CAPABILITY_TYPE: &str = "authkit-capability+jwt";
 /// A Bearer this close to its expiry is minted again rather than sent.
 const MARGIN: u64 = 30;
 
@@ -69,6 +71,21 @@ impl DeviceKey {
     /// The public key, unpadded base64url: what a rental's `creator_public_key` names.
     pub fn public_key(&self) -> String {
         b64(self.key.verifying_key().as_bytes())
+    }
+
+    /// `claims` as a capability this key signs for its user (AuthKit's `devicekey.SignCapability`),
+    /// with a fresh `jti`: what a workload may do for them, redeemed with the jwt-bearer grant.
+    pub fn capability(&self, claims: &serde_json::Value) -> String {
+        let mut claims = claims.clone();
+        claims["jti"] = crate::workload::jti().into();
+        let pair = aws_lc_rs::signature::Ed25519KeyPair::from_seed_unchecked(&self.key.to_bytes())
+            .expect("an Ed25519 seed");
+        let pkcs8 = pair.to_pkcs8().expect("an Ed25519 key's PKCS#8");
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::EdDSA);
+        header.typ = Some(CAPABILITY_TYPE.into());
+        header.kid = Some(self.id.clone());
+        jsonwebtoken::encode(&header, &claims, &jsonwebtoken::EncodingKey::from_ed_der(pkcs8.as_ref()))
+            .expect("EdDSA signs")
     }
 
     fn sign_challenge(key: &SigningKey, domain: &str, challenge: &str) -> Result<String, Error> {

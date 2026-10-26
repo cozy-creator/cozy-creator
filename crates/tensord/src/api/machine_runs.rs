@@ -174,7 +174,8 @@ fn spec_of(mut spec: v1::RunSpec) -> Result<(crate::runs::Spec, Option<v1::HubAc
     };
     // Kept while it prepares, for a restart to prepare it again; provider tokens stay in memory.
     let tokens = spec.providers.as_ref().is_some_and(|p| !p.huggingface.is_empty() || !p.civitai.is_empty())
-        || spec.tensorfs.as_ref().is_some_and(|options| !options.token.is_empty());
+        || spec.tensorfs.as_ref().is_some_and(|options| !options.token.is_empty())
+        || spec.hub.as_ref().is_some_and(|hub| !hub.capability.is_empty());
     let journaled = if tokens { vec![] } else { serde_json::to_vec(&spec).unwrap_or_default() };
     let input: Value = match &spec.payload {
         None => serde_json::json!({}),
@@ -492,10 +493,12 @@ impl Log {
 }
 
 /// Accepts a run, or answers the one a re-sent spec already names (false). The run reads its
-/// Hub's public content anonymously, and private content under its signer's newest capability, which
-/// a re-sent spec's renews too.
+/// Hub's public content anonymously, and private content under its signer's run capability there,
+/// which a re-sent spec's may replace and which is renewed while the run lives.
 fn accept(runs: &Arc<crate::runs::Runs>, actor: &str, id: &str, spec: crate::runs::Spec, hub: Option<v1::HubAccess>) -> Result<bool, Error> {
     let spec = reach(actor, spec, hub)?;
+    // Renewed from before it prepares: its first reads wait for the token.
+    let _serving = spec.hub.as_ref().and_then(|hub| hub.capability.as_ref()).map(|capability| capability.serves(id, &runs.service.engine));
     if runs.existing(actor, id, &spec.digest)?.is_some() {
         return Ok(false);
     }
@@ -503,14 +506,17 @@ fn accept(runs: &Arc<crate::runs::Runs>, actor: &str, id: &str, spec: crate::run
     Ok(true)
 }
 
-/// `spec` reading `hub`, under `actor`'s newest capability there when its TensorFS options carry one
-/// for that origin (a token goes only to the origin it was given for).
+/// `spec` reading `hub`, under `actor`'s run capability there when the request carried one.
 fn reach(actor: &str, mut spec: crate::runs::Spec, hub: Option<v1::HubAccess>) -> Result<crate::runs::Spec, Error> {
     if let Some(hub) = hub {
-        let origin = crate::hub::origin_key(&hub.origin);
-        let capability = (spec.tensorfs.as_ref())
-            .filter(|options| origin.is_some() && crate::hub::origin_key(&options.endpoint) == origin)
-            .and_then(|options| crate::hub::Capability::offer(actor, &hub.origin, &options.token, options.expires_unix_ms));
+        // Refused before its capability is offered: an offered one is served at once.
+        if !crate::hub::valid_origin(&hub.origin) {
+            return Err(refused("hub_access_invalid", format!("{} is not an HTTPS origin", hub.origin)));
+        }
+        let capability = crate::hub::Capability::offer(actor, &hub).map_err(|(code, message)| match code {
+            "workload_key_changed" => Error::conflict(code, message),
+            _ => Error::validation(code, message),
+        })?;
         let ca = Some(hub.ca_der).filter(|der| !der.is_empty());
         let source = crate::hub::Source::new(&hub.origin, ca, capability).map_err(|e| refused("hub_access_invalid", &e.0))?;
         spec.hub = Some(source);

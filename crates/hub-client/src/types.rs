@@ -19,6 +19,8 @@ fn null_is_empty<'de, D: Deserializer<'de>, T: Default + Deserialize<'de>>(
 #[serde(default)]
 pub struct Account {
     pub name: String,
+    /// The AuthKit user it is.
+    pub user_id: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -39,6 +41,8 @@ pub struct CreditStatus {
 #[serde(default)]
 pub struct ProtectedResource {
     pub resource: String,
+    /// The issuers whose tokens it takes.
+    pub authorization_servers: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -76,20 +80,13 @@ pub(crate) struct SignedDeviceKey {
     pub id: String,
 }
 
-#[derive(Debug, Serialize)]
-pub struct CapabilityRequest {
-    pub machine: String,
-    /// Commits (`sha256:<hex>`) whose closures it reads.
-    pub reads: Vec<String>,
-    /// Model repositories (`org/name`) it uploads to and records commits in.
-    pub writes: Vec<String>,
-}
-
+/// A machine's DPoP-bound token for its capability (AuthKit's jwt-bearer grant).
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
-pub struct Capability {
-    pub token: String,
-    pub expires_unix_ms: i64,
+pub struct WorkloadToken {
+    pub access_token: String,
+    pub token_type: String,
+    pub expires_in: i64,
 }
 
 #[derive(Debug, Deserialize)]
