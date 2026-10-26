@@ -272,9 +272,16 @@ class LoadSlot:
     zero-initialized ``tensor`` only to prepare/capture the known body that will consume the
     stored parts. ``PreparedRepeat.capture(load=slot)`` seals that capture. Submission is
     one-shot; no Python callback runs between the native read and the retained continuation.
-    Ordinary region prefetch keeps its existing behavior. ``encoded`` adds one checked
-    native decode before the same continuation; it does not launch from an enqueue event.
+    Ordinary region prefetch keeps its existing behavior. ``encoded`` adds native decode
+    before the same continuation. With matching capabilities, Runtime may select event
+    ordering: producer events permit compute without a host completion wait, and a device
+    input guard skips the complete authored program for invalid decoded values. Checked
+    completion still precedes publication; late device/ownership failures discard outputs.
     """
+
+    supports_event_input = bool(
+        getattr(getattr(_ext, "_VarenaLoadSlot", None), "supports_event_input", False)
+    )
 
     def __init__(
         self,
@@ -312,9 +319,11 @@ class LoadSlot:
         dtype is F16, BF16 or F32. The required scratch bound includes aligned packed
         parts and the decoder's private GPU allocation sizes; it excludes final output,
         shared read staging and CUDA driver/module/allocation-granularity overhead.
-        Metadata, catalog and budget checks precede source I/O. All read/decode failures
-        precede dependent execution. The initialized typed tensor is capture-only until
-        submission completes, using the same owning alias and sealing as raw slots.
+        Metadata, catalog and budget checks precede source I/O. Checked ordering validates
+        decoded input before submitting compute. Event ordering guards the complete program
+        on the device instead; a late device/ownership failure does not imply zero execution.
+        The initialized typed tensor is capture-only until submission completes, using the
+        same owning alias and sealing as raw slots.
         """
         native = getattr(_ext, "_VarenaLoadSlot", None)
         if native is None or not hasattr(native, "encoded"):
@@ -347,8 +356,15 @@ class LoadSlot:
         """Called after successful known-body capture; no new capture views are exported."""
         self._native.seal()
 
-    def submit_native(self, continuation: object) -> _ext._VarenaLoadJob:
+    def submit_native(
+        self, continuation: object, *, event_ordered: bool = False
+    ) -> _ext._VarenaLoadJob:
         """Import the private Runtime capability and start its owning native read worker."""
+        if event_ordered:
+            if not self.supports_event_input:
+                raise RuntimeError("this TensorFS build has no event-ordered native load")
+            return self._native.submit_native(continuation, event_ordered=True)
+        # Old native extensions accept only the original positional continuation.
         return self._native.submit_native(continuation)
 
     def cancel(self) -> None:
