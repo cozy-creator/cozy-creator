@@ -111,7 +111,8 @@ func main() {
 	expect("delete", status("delete", "DELETE", del, "DPoP "+at, key.proof("DELETE", del, at)), 403, "capability.operation_forbidden")
 	rentals := origin + "/v1/rentals"
 	expect("rentals", status("rentals", "GET", rentals, "DPoP "+at, key.proof("GET", rentals, at)), 403, "capability.operation_forbidden")
-	expect("minted-route-gone", status("minted-route-gone", "POST", *hub+"/v1/capabilities", "Bearer "+bearer, ""), 404, "")
+	// Straight to the Hub: hubcheck reports any route its document lacks, and this one is gone on purpose.
+	expect("minted-route-gone", status("minted-route-gone", "POST", origin+"/v1/capabilities", "Bearer "+bearer, ""), 404, "")
 
 	foreign := capability([]map[string]any{read, {"type": "tensorhub_write", "model": account.Name + "-e2e-not-yours/x"}}, time.Hour, nil)
 	expectRefused("foreign-repository", redeem(key, token, foreign), "refused")
@@ -124,9 +125,10 @@ func main() {
 	widened := parts[0] + "." + segment(claims) + "." + parts[2]
 	expectRefused("altered-after-signing", redeem(key, token, widened), "capability_invalid")
 	expectRefused("another-key", redeem(newWorkload(), token, granted), "key_mismatch")
-	short := capability([]map[string]any{read}, 2*time.Second, nil)
+	// Ten seconds: a 2 s life expired on its way from a macOS runner (xs-106, e2e 40361178997).
+	short := capability([]map[string]any{read}, 10*time.Second, nil)
 	expect("short-lived", redeem(key, token, short).status, 200, "")
-	time.Sleep(3 * time.Second)
+	time.Sleep(11 * time.Second)
 	expectRefused("expired", redeem(key, token, short), "capability_expired")
 
 	expectRefused("unknown-rental", redeem(key, token, capability([]map[string]any{read}, time.Hour, map[string]any{"rental": "rent-e2e-none"})), "refused")
