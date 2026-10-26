@@ -1,4 +1,6 @@
 name: e2e
+# Temporary integration peer: merge-group has no dispatch inputs. Remove the frozen Runtime
+# fallback once Runtime PR1807 and packages PR646 have landed; explicit runtime_ref still wins.
 # CI v2 (tracker/design/ci-v2.md): cozy as a person runs it, on GitHub's runners, for the suites the change
 # selects (ci/affected, ci/suites.toml). `cli`: install, up, the local machine, a weightless request and real
 # BiRefNet on the CPU, a second executor, down, uninstall (Linux); on macOS and Windows, when selected, what needs no
@@ -64,6 +66,14 @@ on:
         description: The Runtime to take instead of building it, an exact release version (a prerelease's too, such as 0.32.0)
         type: string
         default: ''
+      mps_cli_ref:
+        description: Exact historical Mac CLI source for explicit library qualification only; empty keeps current product behavior
+        type: string
+        default: ''
+      mps_tensorfs_run:
+        description: TensorFS platform artifact run for that MPS library cohort; no release is created
+        type: string
+        default: ''
       pins:
         description: Package releases the imports suite takes instead of the latest unyanked (name@release,...)
         type: string
@@ -114,6 +124,14 @@ on:
         type: string
         default: ''
       runtime:
+        type: string
+        default: ''
+      mps_cli_ref:
+        description: Exact historical Mac CLI source for explicit library qualification only; empty keeps current product behavior
+        type: string
+        default: ''
+      mps_tensorfs_run:
+        description: TensorFS platform artifact run for that MPS library cohort; no release is created
         type: string
         default: ''
       pins:
@@ -236,7 +254,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           repository: cozy-creator/${{ matrix.repo }}
-          ref: ${{ needs.affected.outputs.repo == matrix.repo && needs.affected.outputs.ref || matrix.repo == 'cozy-runtime' && (inputs.runtime_ref || 'master') || (inputs.stack_ref || 'master') }}
+          ref: ${{ needs.affected.outputs.repo == matrix.repo && needs.affected.outputs.ref || matrix.repo == 'cozy-runtime' && (inputs.runtime_ref || 'dfef434a13c8b7d082828d5138f14e5fdc2b80d4') || (inputs.stack_ref || 'master') }}
           path: .build
           # The first-parent line build.sh walks back for a run that built the same sources.
           fetch-depth: ${{ matrix.what == 'runtime' && 1 || 30 }}
@@ -345,7 +363,7 @@ jobs:
           ref: ${{ needs.affected.outputs.ref }}
           build: ${{ env.BUILD }}
           stack_ref: ${{ inputs.stack_ref || 'master' }}
-          runtime_ref: ${{ inputs.runtime_ref || 'master' }}
+          runtime_ref: ${{ inputs.runtime_ref || 'dfef434a13c8b7d082828d5138f14e5fdc2b80d4' }}
           tensord: ${{ inputs.tensord }}
           tensorfs: ${{ inputs.tensorfs }}
           runtime: ${{ inputs.runtime }}
@@ -396,7 +414,7 @@ jobs:
           # Linux takes the candidate jobs' set; macOS and Windows build their cozy here.
           from: ${{ matrix.runner == 'ubuntu-24.04' && 'artifacts' || '' }}
           stack_ref: ${{ inputs.stack_ref || 'master' }}
-          runtime_ref: ${{ inputs.runtime_ref || 'master' }}
+          runtime_ref: ${{ inputs.runtime_ref || 'dfef434a13c8b7d082828d5138f14e5fdc2b80d4' }}
           tensord: ${{ inputs.tensord }}
           tensorfs: ${{ inputs.tensorfs }}
           runtime: ${{ inputs.runtime }}
@@ -483,19 +501,124 @@ jobs:
           repository: cozy-creator/cozy-creator
           ref: ${{ needs.affected.outputs.creator }}
           path: .creator
-      - uses: ./.creator/e2e/candidates
+      - if: inputs.mps_cli_ref == '' && inputs.mps_tensorfs_run == ''
+        uses: ./.creator/e2e/candidates
         with:
           repo: ${{ needs.affected.outputs.repo }}
           ref: ${{ needs.affected.outputs.ref }}
           build: ${{ env.BUILD }}
           stack_ref: ${{ inputs.stack_ref || 'master' }}
-          runtime_ref: ${{ inputs.runtime_ref || 'master' }}
+          runtime_ref: ${{ inputs.runtime_ref || 'dfef434a13c8b7d082828d5138f14e5fdc2b80d4' }}
           tensord: ${{ inputs.tensord }}
           tensorfs: ${{ inputs.tensorfs }}
           runtime: ${{ inputs.runtime }}
           release: ${{ inputs.publish_run }}
       - name: mps suite
+        if: inputs.mps_cli_ref == '' && inputs.mps_tensorfs_run == ''
         run: bash .creator/e2e/mps/run.sh --out "$RUNNER_TEMP/e2e" $CANDIDATES
+      # Library proof only: the historical CLI is explicitly selected and never becomes a shipping default.
+      - name: Verify the selected MPS library cohort
+        if: inputs.mps_cli_ref != '' || inputs.mps_tensorfs_run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLI_REF: ${{ inputs.mps_cli_ref }}
+          TFS_RUN: ${{ inputs.mps_tensorfs_run }}
+          RT_REF: ${{ inputs.runtime_ref }}
+        run: |
+          test "$CLI_REF" = 7b5f6d86ce5c23c9add24b816039489b637f64b3
+          test "$RT_REF" = 7d1e7854ca638c5d153c6601f2d2c2b169d0b133
+          test "$TFS_RUN" = 40188308767
+          mkdir -p "$RUNNER_TEMP/mps-library-inputs"
+          gh api "repos/cozy-creator/cozy-creator/actions/runs/$TFS_RUN" > "$RUNNER_TEMP/mps-library-inputs/tensorfs-build.json"
+          jq -e '.head_sha == "365bb9c9b831b8f39fecaeccf4bd4af07d275a30" and .path == ".github/workflows/tensorfs-publish.yaml"' "$RUNNER_TEMP/mps-library-inputs/tensorfs-build.json"
+          gh api "repos/cozy-creator/cozy-creator/actions/runs/$TFS_RUN/jobs" --jq '.jobs[] | select(.name == "wheel macos-arm64") | .conclusion' | grep -qx success
+      - if: inputs.mps_cli_ref != ''
+        uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/cozy-creator
+          ref: ${{ inputs.mps_cli_ref }}
+          path: .mps-cli
+      - if: inputs.mps_cli_ref != ''
+        uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/cozy-runtime
+          ref: ${{ inputs.runtime_ref }}
+          path: .mps-runtime
+      - if: inputs.mps_cli_ref != ''
+        uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/packages
+          ref: a3755916454acff2e941644776f74c1e371766ca
+          path: .mps-packages
+      - if: inputs.mps_cli_ref != ''
+        uses: astral-sh/setup-uv@v7
+      - if: inputs.mps_cli_ref != ''
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .mps-cli -> target
+          save-if: 'false'
+      - if: inputs.mps_cli_ref != ''
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: cozy-creator/cozy-creator
+          run-id: ${{ inputs.mps_tensorfs_run }}
+          name: wheel-macos-arm64
+          path: ${{ runner.temp }}/mps-library-inputs/tensorfs
+      - name: Build the historical CLI and current pure Runtime; verify the real Mac TensorFS file
+        if: inputs.mps_cli_ref != ''
+        env:
+          CARGO_BUILD_JOBS: '2'
+          CARGO_PROFILE_RELEASE_LTO: 'off'
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '16'
+          CARGO_INCREMENTAL: '0'
+        run: |
+          test "$(git -C .mps-cli rev-parse HEAD)" = 7b5f6d86ce5c23c9add24b816039489b637f64b3
+          test "$(git -C .mps-runtime rev-parse HEAD)" = 7d1e7854ca638c5d153c6601f2d2c2b169d0b133
+          test "$(git -C .mps-packages rev-parse HEAD)" = a3755916454acff2e941644776f74c1e371766ca
+          out=$RUNNER_TEMP/mps-library-inputs
+          tfs=$out/tensorfs/tensorfs-0.15.8-cp311-abi3-macosx_11_0_arm64.whl
+          printf '%s  %s\n' 1e46c7188adb17662278589eee839126e1c5d63986228456b0b65e82c85218df "$tfs" | shasum -a 256 --check
+          bash .creator/e2e/candidates/build.sh cozy .mps-cli "$out" > /dev/null
+          bash .creator/e2e/candidates/build.sh runtime .mps-runtime "$out" > /dev/null
+          uv run --no-project --python 3.12 --with "$tfs" python - <<'PYCODE'
+          import tensorfs
+          from tensorfs import raw, varena
+          assert tensorfs.__version__ == tensorfs._ext.__version__ == "0.15.8"
+          assert callable(tensorfs.Writer.quantize) and tensorfs.ConversionControl().progress() == (0, 0, 0)
+          assert callable(varena.Region.pin) and callable(varena.LoadSlot.encoded)
+          encoded, stats = raw.quantize_measured("int8.convrot", bytes(256 * 4), dtype="F32", shape=(1, 256), strategy="int8-convrot256/1", params={"rotation": "kron_regular_h4", "rotation_size": 256})
+          assert encoded.parts["weight"].nbytes == 256 and stats == {"amax": 0.0, "max_abs_error": 0.0, "sse": 0.0, "energy": 0.0, "saturated": 0}
+          PYCODE
+      - name: Real MPS library qualification through the historical ordinary CLI
+        if: inputs.mps_cli_ref != ''
+        run: |
+          out=$RUNNER_TEMP/mps-library-inputs
+          bash .mps-cli/e2e/mps/run.sh --out "$RUNNER_TEMP/e2e" \
+            --tensord "$out/cozy" \
+            --tensorfs "$out/tensorfs/tensorfs-0.15.8-cp311-abi3-macosx_11_0_arm64.whl" \
+            --runtime "$out/cozy_runtime-0.32.3+dev.g7d1e7854-py3-none-any.whl" --packages .mps-packages
+          python3 - "$RUNNER_TEMP/e2e" <<'PYCODE'
+          import json, sys
+          from pathlib import Path
+          out = Path(sys.argv[1])
+          artifacts = json.loads((out / "candidate-artifacts.json").read_text())["artifacts"]
+          records = [json.loads(line) for line in (out / "update.json").read_text().splitlines() if line.startswith('{"')]
+          updates = [record["run"]["result"]["to"] for record in records if record.get("type") == "run.completed"]
+          assert len(updates) == 1
+          assert updates[0]["cozy"] == "0.11.17+dev.g7b5f6d86"
+          for name in ("runtime", "tensorfs"):
+              assert updates[0][name + "_sha256"] == artifacts[name]["sha256"]
+          proof = {"scope": "Current libraries through historical Mac-capable CLI; not current CLI local shipping qualification", "cli_source": "7b5f6d86ce5c23c9add24b816039489b637f64b3", "runtime_source": "7d1e7854ca638c5d153c6601f2d2c2b169d0b133", "tensorfs_source": "365bb9c9b831b8f39fecaeccf4bd4af07d275a30", "tensorfs_run": 40188308767, "packages_source": "a3755916454acff2e941644776f74c1e371766ca", "artifacts": artifacts, "installed": updates[0]}
+          (out / "library-cohort.json").write_text(json.dumps(proof, indent=2) + "\n")
+          PYCODE
+      - if: always() && inputs.mps_cli_ref != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: mps-library-inputs
+          path: ${{ runner.temp }}/mps-library-inputs/
+          if-no-files-found: error
+          retention-days: 14
       - if: always()
         uses: actions/upload-artifact@v4
         with:

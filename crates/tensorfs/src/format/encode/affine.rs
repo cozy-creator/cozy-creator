@@ -4,6 +4,11 @@
 use crate::format::decode::affine::{Codes, Fill, Order, Packing};
 use crate::format::{Error, Result};
 
+/// Two four-bit codes, even column low. Shared by the rowwise W4A8 producers.
+pub(super) fn nibble_pair(low: u8, high: u8) -> u8 {
+    (low & 15) | ((high & 15) << 4)
+}
+
 /// The packed bytes of the `[R, C]` codes `q` (row-major); unused bits are zero.
 pub fn pack(p: &Packing, q: &[i32], rows: usize, cols: usize) -> Result<Vec<u8>> {
     let fail = |d: String| Error::Encode(d);

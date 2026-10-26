@@ -130,8 +130,7 @@ pub struct Driver {
     pub primary_ctx_release: F<CUdevice>,
     pub mem_get_info: unsafe extern "C" fn(*mut usize, *mut usize) -> CUresult,
     pub stream_create: unsafe extern "C" fn(*mut CUstream, c_uint) -> CUresult,
-    pub stream_create_with_priority:
-        unsafe extern "C" fn(*mut CUstream, c_uint, c_int) -> CUresult,
+    pub stream_create_with_priority: unsafe extern "C" fn(*mut CUstream, c_uint, c_int) -> CUresult,
     pub ctx_get_stream_priority_range: unsafe extern "C" fn(*mut c_int, *mut c_int) -> CUresult,
     pub stream_destroy: F<CUstream>,
     pub stream_synchronize: F<CUstream>,
@@ -403,7 +402,9 @@ pub fn device_count() -> Result<c_int> {
     let d = driver()?;
     let mut count: c_int = 0;
     // SAFETY: out-param.
-    check("cuDeviceGetCount", unsafe { (d.device_get_count)(&mut count) })?;
+    check("cuDeviceGetCount", unsafe {
+        (d.device_get_count)(&mut count)
+    })?;
     Ok(count)
 }
 
@@ -461,6 +462,7 @@ pub struct Stream {
     device: CUdevice,
     ctx: CUcontext,
     raw: CUstream,
+    release_failed: bool,
 }
 
 // SAFETY: a stream handle is used only with its own primary context entered; CUDA stream calls are thread-safe.
@@ -486,7 +488,12 @@ impl Stream {
             }
             return Err(error);
         }
-        Ok(Stream { device, ctx, raw })
+        Ok(Stream {
+            device,
+            ctx,
+            raw,
+            release_failed: false,
+        })
     }
 
     pub fn raw(&self) -> usize {
@@ -501,6 +508,11 @@ impl Stream {
     /// producer/allocation owner whose release requires that work to have stopped. Best-effort
     /// destruction is not a substitute for this checked ownership boundary.
     pub fn drain(&self) -> Result<()> {
+        if self.release_failed || self.raw.is_null() {
+            return Err(Error::CudaUnavailable(
+                "stream is released or its release is unproven".into(),
+            ));
+        }
         let driver = driver()?;
         let _context = CtxGuard::enter(self.ctx)?;
         // A host wait: a trace span, so a subscriber can time each.
@@ -513,10 +525,49 @@ impl Stream {
     pub(crate) fn context(&self) -> CUcontext {
         self.ctx
     }
+    /// Destroy a stream whose GPU work is already checked complete.
+    ///
+    /// # Safety
+    /// No further enqueue or consumer may use this handle; actual capture is excluded.
+    /// On error retain the actual owner until retirement. Neither this method nor Drop
+    /// retries an ambiguous destroy/context release.
+    pub unsafe fn release_completed(&mut self) -> Result<()> {
+        if self.release_failed {
+            return Err(Error::CudaUnavailable(
+                "stream release was already unproven".into(),
+            ));
+        }
+        if self.ctx.is_null() {
+            return Ok(());
+        }
+        self.release_failed = true;
+        let driver = driver()?;
+        {
+            let _ctx = CtxGuard::enter(self.ctx)?;
+            if !self.raw.is_null() {
+                // SAFETY: all stream work is complete and this is its sole owned handle.
+                check("cuStreamDestroy(checked)", unsafe {
+                    (driver.stream_destroy)(self.raw)
+                })?;
+                self.raw = std::ptr::null_mut();
+            }
+        }
+        // Restore the caller's context before releasing a possibly final primary reference.
+        // SAFETY: balances precisely this stream's retained primary-context reference.
+        check("cuDevicePrimaryCtxRelease(checked)", unsafe {
+            (driver.primary_ctx_release)(self.device)
+        })?;
+        self.ctx = std::ptr::null_mut();
+        self.release_failed = false;
+        Ok(())
+    }
 }
 
 impl Drop for Stream {
     fn drop(&mut self) {
+        if self.release_failed || self.ctx.is_null() {
+            return;
+        }
         if let Ok(driver) = driver() {
             if let Ok(_ctx) = CtxGuard::enter(self.ctx) {
                 let _wait = tracing::trace_span!("tensorfs cuStreamSynchronize (drop)").entered();

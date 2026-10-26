@@ -48,6 +48,7 @@ pub struct SetItem {
     pub source: Source,
     pub entrypoint: String,
     pub models: Vec<domain::ModelChoice>,
+    pub payload: Option<protocol::machine::Json>,
     /// As `Spec::lane`, for this member's main model.
     pub lane: String,
     pub level: Level,
@@ -634,6 +635,7 @@ impl Runs {
             &spec,
             &spec.entrypoint,
             &own,
+            Some(spec.input.clone()),
             &spec.lane,
             Some(Box::new({
                 let observe = observe.clone();
@@ -805,7 +807,7 @@ impl Runs {
     /// the rental's own Hub, else anonymously from its installation's Hub: a public release
     /// resumes, a private one waits for its owner's next run.
     fn member(&self, held: HeldGeneration, installation: &Installation, plan: Option<Plan>, level: Level,
-        hub: Option<hub::Source>) -> Arc<Member> {
+        hub: Option<hub::Source>, payload: Option<protocol::machine::Json>) -> Arc<Member> {
         let hub = hub.or_else(|| {
             let own = self.own_hub.clone().filter(|own| {
                 installation.hub.is_empty() || hub::origin_key(&own.origin).as_deref() == Some(installation.hub.as_str())
@@ -813,7 +815,7 @@ impl Runs {
             own.or_else(|| hub::Source::new(&installation.hub, None, None).ok())
         });
         let fetch = plan.is_some().then(|| crate::access::Fetch::new(self.publisher.machine().clone(), hub, u64::MAX));
-        Member::new(held, plan, level, fetch)
+        Member::new(held, plan, level, fetch, payload)
     }
 
     /// Each caller's warm set as the journal keeps it, built again (`member`) and brought up in
@@ -849,7 +851,8 @@ impl Runs {
             id => self.service.engine.preparation(actor, id).ok()?,
         };
         let plan = bound.and_then(|bound| gpu.plan(&bound).ok()).filter(|plan| gpu.holds(plan));
-        Some(self.member(held, &installed, plan, Level::named(&kept.level)?, None))
+        let item: protocol::machine::WarmItem = serde_json::from_slice(&STANDARD.decode(&kept.item).ok()?).ok()?;
+        Some(self.member(held, &installed, plan, Level::named(&kept.level)?, None, item.payload))
     }
 
     /// A warm run's set: every member installed and its weights downloaded as a warm run of it
@@ -891,6 +894,8 @@ impl Runs {
                 spec,
                 entrypoint,
                 choices,
+                item.payload.as_ref().map(|p| serde_json::from_str(p.get())).transpose()
+                    .map_err(|e| refused("prepared_use_invalid", e.to_string()))?,
                 &item.lane,
                 Some(Box::new(move |stage: &str, done: u64, total: u64| report(stage, done, total))),
                 Some(&stoppable.stop),
@@ -900,6 +905,9 @@ impl Runs {
                     "invalid_entrypoint",
                     format!("{} declares no entrypoint {:?}", installation.package, item.entrypoint),
                 ));
+            }
+            if item.payload.is_some() && plan.is_none() {
+                return Err(refused("prepare_unbound", "program warming requires this entrypoint's GPU model"));
             }
             // A function that loads no model itself (an orchestrator) runs on the ones it calls.
             // The interface names no call graph, and internal functions exist only to be called:
@@ -918,6 +926,7 @@ impl Runs {
                         spec,
                         &callee,
                         &own,
+                        None,
                         &item.lane,
                         Some(Box::new(move |stage: &str, done: u64, total: u64| report(stage, done, total))),
                         Some(&stoppable.stop),
@@ -936,27 +945,30 @@ impl Runs {
                 })
                 .map_err(io::Error::other)?);
                 let held = self.service.catalog.resolve(&installation.generation)?;
-                members.push(self.member(held, &installation, plan, item.level, hub.clone()));
+                members.push(self.member(held, &installation, plan, item.level, hub.clone(), item.payload.clone()));
             }
         }
         self.service
             .engine
             .with_journal(|journal| journal.replace_warm_set(actor, &kept))?;
         observe("warming", 0, 0);
-        let holds = match self.service.gpu() {
+        let (holds, programs) = match self.service.gpu() {
             Some(gpu) => {
                 gpu.set_members(actor, members);
-                gpu.keep(&self.service.engine, actor);
-                gpu.members(actor)
+                gpu.keep_preparing(&self.service.engine, actor, stoppable);
+                (gpu.members(actor), gpu.prepared_members(actor))
             }
-            None => members.iter().map(|member| without_gpus(member.level)).collect(),
+            None => (members.iter().map(|member| without_gpus(member.level)).collect(), vec![None; members.len()]),
         };
         // An item's level is its lowest member's, and why that one is held back.
         let mut holds = holds.into_iter();
+        let mut programs = programs.into_iter();
         let rows: Vec<Value> = rows
             .into_iter()
             .map(|(mut row, count)| {
                 let lowest = holds.by_ref().take(count).min_by_key(|(level, _)| *level);
+                let prepared: Vec<bool> = programs.by_ref().take(count).flatten().collect();
+                if !prepared.is_empty() { row["prepared"] = prepared.iter().all(|ready| *ready).into(); }
                 if let Some((level, held_back)) = lowest {
                     row["level"] = level.name().into();
                     if !held_back.is_empty() {
@@ -1069,6 +1081,7 @@ impl Runs {
         spec: &Spec,
         entrypoint: &str,
         choices: &[domain::ModelChoice],
+        payload: Option<Value>,
         lane: &str,
         observe: Option<crate::published::Observer>,
         stop: Option<&Stop>,
@@ -1084,6 +1097,7 @@ impl Runs {
             catalog_revision: spec.catalog_revision.clone(),
             providers: spec.providers.clone(),
             entrypoint: entrypoint.into(),
+            payload,
             choices: choices.to_vec(),
             gpus: spec.gpus,
             lane: lane.into(),
@@ -1241,7 +1255,7 @@ impl Runs {
                         None => None,
                     };
                     let (hub, models) = (spec.hub.clone(), spec.models.clone());
-                    runs.resolve(&actor, "", held, None, hub, &spec, &spec.entrypoint, &models, &spec.lane, None, None)
+                    runs.resolve(&actor, "", held, None, hub, &spec, &spec.entrypoint, &models, None, &spec.lane, None, None)
                 })();
             match prepared {
                 Ok((installation, Some(plan), _)) if plan.degree > 0 && !plan.slots.is_empty() => {

@@ -801,6 +801,11 @@ impl Calcifer {
                     }
                     attached => {
                         let (state, events) = attached?;
+                        if !matches!(state.state.as_str(), "succeeded" | "failed" | "canceled")
+                            && let Some(machines) = self.machines()
+                        {
+                            machines.resume_capability(run);
+                        }
                         (state, Some(events))
                     }
                 }

@@ -1,0 +1,171 @@
+{
+  "cause": "CLI original() compared only lower-case legacy bf16/fp16/f32 while Hub source kinds are canonical BF16. Pinned source remains its distinct bf16 commit. Guard repair must preserve rejection of unknown/encoded/mixed kinds.",
+  "cohort": {
+    "runtime": {
+      "scope": "DIAGNOSTIC ONLY rawdrivercapturestatus +retainederrornotes",
+      "sha256": "8e69939ffc6eaa285fd3e0ad750ff7a11362006b4d683ed3a7a6b3446e1fc835",
+      "source": "3bd5f3cbbdacdb1c1a9257a6f3c35f159a9e29c9"
+    },
+    "tensord": {
+      "sha256": "bce5ec6953040857c8600d7fc86aef53cc5ed81ddf2581d311d759a5688b0322",
+      "source": "fd4ff48fa21e7ee7c0ffe436b2ce6c6b0f98084f"
+    },
+    "tensorfs": {
+      "sha256": "cd5cd14aeb4a6c74c76e22770becc11fbd846821ced8ef05b7808a3c4ce1a692",
+      "source": "16c857cbf6376e828f1d18846c82c3857a7305b1"
+    }
+  },
+  "fixture_commit": "21bef40cbbf8d386ec92d65c88dac78e04383c95",
+  "limitations": [
+    "Runtime wheel is diagnostic, not a release candidate",
+    "Tiny linear component proof is not full model throughput or image inference",
+    "No successful NVFP4 recipe or consumer claimed here"
+  ],
+  "measurement_logs": [
+    "quantization measurement encoded_keys=1 new_bytes_written_this_run=4160 normalization_worst_relative_frobenius=0.0 output=int8 reused_keys=0 saturated_elements_this_run=0 source_bytes_read_this_run=8192 worst_relative_frobenius=0.007458533615631252"
+  ],
+  "nvfp4_refusal": {
+    "error": {
+      "code": "model_quantize_source_quantized",
+      "kind": "usage",
+      "message": "fidika/native-recipe-proof-20261025-0828@sha256:14e8920fe23dcc0952266ab2a3a2f2437812fe0ea9f2bea4076734feb6aad496 holds no original weights (BF16): a nvfp4 lane from them stacks two rounds of 4-bit error",
+      "remedy": "upload the original weights (cozy model upload <path> fidika/native-recipe-proof-20261025-0828 --lane bf16) and quantize those"
+    }
+  },
+  "receipts": {
+    "infer-int8": {
+      "path": "outputs/stock-torch-20261024/raw-capture-20261025/recipe/infer-int8.json",
+      "sha256": "1d7818493959034491d1069711df4568c5e2287ceace4737f69a6c3c34889dde"
+    },
+    "quantize-int8": {
+      "path": "outputs/stock-torch-20261024/raw-capture-20261025/recipe/quantize-int8.json",
+      "sha256": "19c2e627fe20bf7254b2c1630838b895ba26962ea2d90d8d2adeacf1a5c94f7f"
+    },
+    "quantize-nvfp4": {
+      "path": "outputs/stock-torch-20261024/raw-capture-20261025/recipe/quantize-nvfp4.json",
+      "sha256": "1e473807ac912f4250c1c104d24475f7d0f041ed26ff1b81da6b97d0988f4732"
+    },
+    "source": {
+      "path": "outputs/stock-torch-20261024/raw-capture-20261025/recipe/source.json",
+      "sha256": "eeeb995c77d5871442dc33f4eedcd0d575e333ab41214f41c2340a18fa22b5d4"
+    },
+    "upload": {
+      "path": "outputs/stock-torch-20261024/raw-capture-20261025/recipe/upload.json",
+      "sha256": "acc959116590cfacf5df01993a19d857609932d08eeb8c2a18546e81aae138a3"
+    }
+  },
+  "runs": {
+    "infer-int8": {
+      "id": "run-a972695963961a36b4201cc0",
+      "machine": "hatsuka",
+      "number": 17720,
+      "output": [],
+      "result": {
+        "detail": {
+          "checkpoint": "sha256:76c6b919705c60f2a9f919619292047ad7f442b10ca292c8dd6a84df730fdd88",
+          "consumed_encoding": "int8.convrot",
+          "decoded_weight_relative_error": 0.0074585373513400555,
+          "encoding": "int8.convrot",
+          "inference_max_abs_error": 0.003207072615623474,
+          "inference_relative_error": 0.008016961626708508,
+          "output_sha256": "ad023a0a990cef88bc288579f4258052925310591f4fb1efda70cee99039fe5f",
+          "output_shape": [
+            4,
+            16
+          ],
+          "provider": "cozy.int8-convrot256.native-leaf/1",
+          "seed": 1792919894,
+          "weight_payload_sha256": "09af090d43c5bc9ebfcaa5ca14737fc4083faa2810cd09c3bc6849a53c6cea72"
+        },
+        "passed": true
+      },
+      "status": "completed",
+      "target": "local/ci-recipe-quantize/predict"
+    },
+    "quantize-int8": {
+      "id": "run-4a20dd2d0f67116553f301fd",
+      "machine": "hatsuka",
+      "number": 17719,
+      "output": [
+        {
+          "checkpoint": {
+            "lane": "int8",
+            "repo_id": "fidika/native-recipe-proof-20261025-0828",
+            "revision": "sha256:88315739ab48d251b1967a0717ebbe44813f30c7631907d7ddcbcf4c7beec1de"
+          },
+          "id": "17719/int8",
+          "index": 0,
+          "length": 0,
+          "media_type": "",
+          "name": "int8",
+          "rev": 1,
+          "status": "completed"
+        }
+      ],
+      "result": {
+        "checkpoint": "sha256:76c6b919705c60f2a9f919619292047ad7f442b10ca292c8dd6a84df730fdd88",
+        "output_slot": "int8",
+        "producer_request_id": "4",
+        "transaction": "sha256:b8b43aa82e97d55067b74e6ca8e6585ee2e243e74f96c5e27f5a48dce9b453bd"
+      },
+      "status": "completed",
+      "target": "local/ci-recipe-quantize/quantize"
+    },
+    "source": {
+      "id": "run-94755528d7d4d1ab9cb8dd1e",
+      "machine": "hatsuka",
+      "number": 17717,
+      "output": [
+        {
+          "checkpoint": {
+            "lane": "model",
+            "repo_id": "local/derived-867b3135263cdcc8b3c8efd328b6e9928bce8981b332404e98878f929e8deb7e",
+            "revision": "sha256:6179583161233063ab995d259731c4c0fc30e06dd42f611fea91f04e4175a288"
+          },
+          "id": "17717/model",
+          "index": 0,
+          "length": 0,
+          "media_type": "",
+          "name": "model",
+          "rev": 1,
+          "status": "completed"
+        }
+      ],
+      "result": {
+        "checkpoint": "sha256:9a4a6e5bdc45a5accc5e3306aeaf3b6d851cf8bc7cdbe4bb524dea6df6656d4c",
+        "output_slot": "model",
+        "producer_request_id": "2",
+        "transaction": "sha256:867b3135263cdcc8b3c8efd328b6e9928bce8981b332404e98878f929e8deb7e"
+      },
+      "status": "completed",
+      "target": "local/ci-recipe-quantize/source"
+    },
+    "upload": {
+      "id": "run-a058e1cfade48916e74a1b55",
+      "machine": "hatsuka",
+      "number": 17718,
+      "output": [],
+      "result": {
+        "models": [
+          {
+            "checkpoint": "sha256:9a4a6e5bdc45a5accc5e3306aeaf3b6d851cf8bc7cdbe4bb524dea6df6656d4c",
+            "lane": "model",
+            "parameter": "model",
+            "published": {
+              "checkpoint": "sha256:9a4a6e5bdc45a5accc5e3306aeaf3b6d851cf8bc7cdbe4bb524dea6df6656d4c",
+              "commit": "sha256:14e8920fe23dcc0952266ab2a3a2f2437812fe0ea9f2bea4076734feb6aad496",
+              "converged": false,
+              "destination": "fidika/native-recipe-proof-20261025-0828",
+              "lane": "bf16"
+            },
+            "repository": "local/derived-867b3135263cdcc8b3c8efd328b6e9928bce8981b332404e98878f929e8deb7e",
+            "tree": "sha256:6179583161233063ab995d259731c4c0fc30e06dd42f611fea91f04e4175a288"
+          }
+        ]
+      },
+      "status": "completed",
+      "target": "upload 17717#model to fidika/native-recipe-proof-20261025-0828"
+    }
+  },
+  "scope": "Real ordinary CLI authored source, private upload, native INT8 recipe and encoded GPU consumer passed. NVFP4 was refused by controller CLI before a run; canonical-dtype repair is not yet executed proof."
+}

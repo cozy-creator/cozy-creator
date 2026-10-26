@@ -424,11 +424,13 @@ async fn call_code(
             let why = "--gpus applies to a run, not to --warm";
             return Err(Error::new(Kind::Usage, "warm_gpus", why));
         }
-        Some(level) => (
-            call.warm(level, &bind::warm_choices(callable, &terms)?)?,
-            None,
-            None,
-        ),
+        Some(level) => {
+            let target = format!("{}/{}", code.package, callable.name);
+            let (models, payload) = bind::warm_choices(
+                &target, code.release, callable, &terms, level == Warm::Gpu,
+            )?;
+            (call.warm(level, &models, payload)?, None, None)
+        }
         None => {
             let target = format!("{}/{}", code.package, callable.name);
             let bound = bind::bind(&target, code.release, callable, &terms)?;

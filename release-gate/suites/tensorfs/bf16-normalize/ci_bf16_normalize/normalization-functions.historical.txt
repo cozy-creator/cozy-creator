@@ -1,0 +1,95 @@
+def write_bf16(
+    source: Checkpoint,
+    output: Output,
+    ctx: Context,
+    tel: Telemetry,
+    *,
+    plan: Bf16Plan,
+    excluded: set[tuple[str, str]] | None = None,
+) -> Bf16Stats:
+    """Stream the selected float cut through one bounded RNE conversion, stats recorded: each
+    tensor's round trip is held to `BF16_ROUND_TRIP_BOUND` of its amax and logged."""
+    omitted = excluded or set()
+    selected = [t for t in plan.tensors if (t.component, t.key) not in omitted]
+    read = written = reused = 0
+    worst: float | None = 0.0
+    for done, tensor in enumerate(selected, 1):
+        ctx.raise_if_cancelled()
+        if output.has(tensor.component, tensor.key):
+            reused += 1
+            worst = None
+            tel.progress(done / len(selected), stage="bf16")
+            continue
+        amax = max_error = sse = energy = 0.0
+        with tempfile.TemporaryFile() as spill:
+            for values in _read_chunks(
+                source, tensor.component, tensor.key, tensor.source_dtype, tensor.shape
+            ):
+                raw = st.from_f32(values, "BF16")
+                error = np.abs(values - st.to_f32(raw, "BF16", list(values.shape)))
+                if values.size:
+                    amax = _numeric.worst(amax, float(np.max(np.abs(values))))
+                    max_error = _numeric.worst(max_error, float(np.max(error)))
+                sse += float(np.sum(error.astype(np.float64) ** 2))
+                energy += float(np.sum(values.astype(np.float64) ** 2))
+                read += values.size * _WIDTH[tensor.source_dtype]
+                spill.write(raw)
+            bound = amax * BF16_ROUND_TRIP_BOUND
+            if not _numeric.within(max_error, bound):
+                raise UnsupportedInput(
+                    f"{tensor.component}.{tensor.key}: bf16 round-trip error {max_error:.4g} "
+                    f"exceeds the representational bound {bound:.4g}",
+                    code="quantization_tripwire",
+                )
+            relative = math.sqrt(sse / energy) if energy else 0.0
+            worst = _numeric.worst(worst, relative) if worst is not None else None
+            written += spill.tell()
+            spill.seek(0)
+            output.put(tensor.component, tensor.key, "BF16", tensor.shape, spill)
+        tel.log(
+            "normalized tensor",
+            level="info",
+            component=tensor.component,
+            key=tensor.key,
+            source_dtype=tensor.source_dtype,
+            relative_frobenius=relative,
+            done=done,
+            total=len(selected),
+        )
+        tel.progress(done / len(selected), stage="bf16")
+    return Bf16Stats(len(selected), reused, read, written, worst)
+
+def _read_chunks(
+    source: Checkpoint, component: str, key: str, logical_dtype: str, shape: tuple[int, ...]
+) -> Iterator[np.ndarray]:
+    """Whole rows of float32 values, about `_SOURCE_READ_CHUNK` source bytes at a time: a per-row
+    encoded weight's decoded values (`model_values`), a plain tensor's converted."""
+    if source.components[component].tensors[key].encoding is not None:
+        yield from _decoded_chunks(source, component, key, shape)
+        return
+    itemsize = _WIDTH[logical_dtype]
+    rows, tail = (shape[0], shape[1:]) if shape else (1, ())
+    row_bytes = math.prod(tail) * itemsize
+    step = max(1, _SOURCE_READ_CHUNK // max(row_bytes, 1))
+    for first in range(0, rows, step):
+        count = min(step, rows - first)
+        raw = bytearray(count * row_bytes)
+        read_into(source, component, key, "", first * row_bytes, raw)
+        values = st.to_f32(raw, TENSORFS_NAMES[logical_dtype], [count, *tail] if shape else [])
+        if not bool(np.isfinite(values).all()):
+            raise UnsupportedInput(f"source {component}.{key} contains non-finite weights")
+        yield values
+
+def _decoded_chunks(
+    source: Checkpoint, component: str, key: str, shape: tuple[int, ...]
+) -> Iterator[np.ndarray]:
+    rows, columns = shape
+    step = max(1, _SOURCE_READ_CHUNK // max(columns * 4, 1))
+    for first in range(0, rows, step):
+        values = np.empty((min(step, rows - first), columns), dtype=np.float32)
+        read_values_into(
+            None, source, component, key, first * columns, memoryview(values.reshape(-1))
+        )
+        if not bool(np.isfinite(values).all()):
+            raise UnsupportedInput(f"source {component}.{key} contains non-finite weights")
+        yield values

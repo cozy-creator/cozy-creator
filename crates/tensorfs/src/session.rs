@@ -8,13 +8,15 @@ mod convert;
 mod endpoint;
 mod file;
 mod provider;
+mod quantize;
 mod remote;
 mod selection;
 mod writer;
 
 pub use crate::fetch::Landed as Fetched;
 pub use checkpoint::{Checkpoint, Component, Read, ReadInto};
-pub use convert::{Convert, ConvertProgress};
+pub use convert::{ConversionControl, Convert, ConvertProgress};
+pub use quantize::{FitDetails, Normalization, NormalizationResult, NormalizeBf16Tensor, Quantization, QuantizationResult, QuantizedTensor, QuantizeFit, QuantizeTensor, quantization_implementation};
 pub use endpoint::Endpoint;
 pub use file::CheckpointFile;
 pub use provider::{bearer, HeaderMap, Request, TokenProvider};

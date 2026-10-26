@@ -132,7 +132,9 @@ fn canonical(value: &Value) -> String {
 
 /// A warm run's model choices: `model.<slot>=`, `--lora` and a conversion's input model. It
 /// carries no payload, so any other term is refused.
-pub fn warm_choices(callable: &Callable, terms: &Terms) -> Result<Vec<Choice>, Error> {
+pub fn warm_choices(
+    target: &str, release: Option<&str>, callable: &Callable, terms: &Terms, program: bool,
+) -> Result<(Vec<Choice>, Option<protocol::machine::Json>), Error> {
     let mut binder = Binder {
         target: "",
         callable,
@@ -142,7 +144,10 @@ pub fn warm_choices(callable: &Callable, terms: &Terms) -> Result<Vec<Choice>, E
         files: Vec::new(),
     };
     let mut inputs = terms.inputs.clone();
-    binder.conversion(&mut inputs)?;
+    let destination = binder.conversion(&mut inputs)?;
+    if destination.is_some() {
+        return Err(usage("warm_inputs", "warming takes no output destination"));
+    }
     let positional = binder.read_terms(&inputs)?;
     binder.loras()?;
     if !positional.is_empty()
@@ -152,12 +157,23 @@ pub fn warm_choices(callable: &Callable, terms: &Terms) -> Result<Vec<Choice>, E
         || !terms.fidelities.is_empty()
         || terms.input_file.is_some()
     {
+        if program {
+            if !binder.files.is_empty() || !terms.assets.is_empty() || !terms.fidelities.is_empty() {
+                return Err(usage("warm_inputs", "GPU program warming takes scalar inputs, not media files"));
+            }
+            let bound = bind(target, release, callable, terms)?;
+            if !bound.files.is_empty() || !bound.tree_files.is_empty() || bound.destination.is_some() {
+                return Err(usage("warm_inputs", "GPU program warming takes scalar inputs, not files, trees or output destinations"));
+            }
+            let payload = bound.canonical_payload();
+            return Ok((bound.models, Some(payload)));
+        }
         return Err(usage(
             "warm_inputs",
             "--warm keeps a function ready and takes no inputs, only model.<slot>= and --lora choices",
         ));
     }
-    Ok(binder.choices.into_values().collect())
+    Ok((binder.choices.into_values().collect(), None))
 }
 
 /// Binds `terms` for `callable`; `target` names it in messages (`org/pkg/fn`) and `release` the

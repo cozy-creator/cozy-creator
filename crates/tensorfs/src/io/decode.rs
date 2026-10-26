@@ -43,6 +43,114 @@ fn invalid<T>(detail: impl Into<String>) -> Result<T> {
     crate::failure::fail(Kind::Invalid, detail)
 }
 
+/// Check the existing resident plan/catalog before source I/O, and bound the bytes
+/// requested by its private CUDA allocations. Excludes the output, supplied parts,
+/// shared read staging, driver/module memory and allocation-granularity overhead.
+pub fn device_scratch_bytes(
+    device: i32,
+    encoding: &Encoding,
+    dtype: &Dtype,
+    shape: &[u64],
+    parts: &[decode::PartMetadata<'_>],
+) -> Result<usize> {
+    check(encoding, dtype, shape, parts)?;
+    if !decode::supports_sources(encoding) {
+        return crate::failure::fail(
+            Kind::Unsupported,
+            "this scheme has no resident device-input plan",
+        );
+    }
+    let family = (cuda::attribute(device, 75)? * 10 + cuda::attribute(device, 76)?) as u32;
+    decode::planned_sources(dtype, shape, encoding, parts, |plan, geometry| {
+        let count = geometry
+            .rows
+            .checked_mul(geometry.cols)
+            .ok_or_else(|| crate::format::Error::Decode("decode size overflow".into()))?;
+        Ok(device_plan(plan, geometry, dtype, 0, count as u64)
+            .and_then(|launch| scratch_bytes(&launch, family)))
+    })?
+}
+
+fn scratch_bytes(launch: &Launch<'_>, family: u32) -> Result<usize> {
+    let binary = |stage: &str| -> Result<()> {
+        if launch.stage_binary(family, stage).is_none() {
+            return crate::failure::fail(
+                Kind::Unsupported,
+                format!(
+                    "no prebuilt CUDA sm{family} {stage}/{} kernel in this build",
+                    launch.dtype
+                ),
+            );
+        }
+        Ok(())
+    };
+    let overflow = || Failure {
+        kind: Kind::Invalid,
+        detail: "decode scratch size overflow".into(),
+    };
+    let mut bytes = 0usize;
+    let mut add = |count: usize, width: usize| -> Result<()> {
+        bytes = count
+            .checked_mul(width)
+            .and_then(|n| bytes.checked_add(n))
+            .ok_or_else(overflow)?;
+        Ok(())
+    };
+    binary(launch.kind)?;
+    if launch.words.binding().is_none() {
+        add(launch.words.host()?.len(), 1)?;
+    }
+    add(launch.slots.len(), 4)?;
+    add(launch.index.len(), 4)?;
+    add(1, 4)?; // Device error word.
+    add(launch.params.len(), 8)?;
+    for factor in [
+        &launch.scale,
+        &launch.term,
+        &launch.table,
+        &launch.global,
+        &launch.post,
+    ] {
+        match factor {
+            Factors::Host(values) => add(values.len(), 4)?,
+            Factors::Slot {
+                dtype: Dtype::F32, ..
+            } => {}
+            Factors::Slot { dtype, count, .. } => {
+                let table = decode::elem::table(dtype);
+                if !matches!(dtype, Dtype::BF16 | Dtype::F16) && table.is_none() {
+                    return crate::failure::fail(
+                        Kind::Unsupported,
+                        format!("resident factor dtype {dtype} is unsupported"),
+                    );
+                }
+                binary("cast_metadata")?;
+                add(*count, 4)?;
+                add(table.map_or(1, |v| v.len()), 4)?;
+                add(2, 8)?; // Cast count and mode.
+            }
+        }
+    }
+    if matches!(launch.kind, "rotated" | "grouped_rotated") {
+        binary("regular_h4")?;
+        binary(if launch.kind == "grouped_rotated" {
+            "requantize"
+        } else {
+            "unpack"
+        })?;
+        add(
+            usize::try_from(launch.params[0]).map_err(|_| overflow())?,
+            8,
+        )?; // Two I32 buffers.
+        let mut stride = 1u64;
+        while stride < launch.params[28] {
+            add(launch.params.len(), 8)?; // Each queued rotation has immutable parameters.
+            stride = stride.checked_mul(4).ok_or_else(overflow)?;
+        }
+    }
+    Ok(bytes)
+}
+
 fn span(ptr: u64, len: usize) -> Result<std::ops::Range<u64>> {
     if len > isize::MAX as usize || (ptr == 0 && len != 0) {
         return invalid("decode buffer has an invalid address or length");
@@ -63,7 +171,7 @@ fn alignment(dtype: &Dtype) -> usize {
 }
 
 /// Decode existing parts into an existing destination. Host parts/output use the reference
-/// CPU decoder; all-Device U7 parts/output use the SAME typed plan and prebuilt kernels as
+/// CPU decoder; supported all-Device parts/output use the SAME typed plan and prebuilt kernels as
 /// checkpoint reads. Mixed placement, files and implicit transfers are unsupported.
 ///
 /// Metadata, placement, address, alignment and overlap refusals precede output writes. After
@@ -82,6 +190,65 @@ pub unsafe fn into(
     parts: &[Part<'_>],
     out: Output<'_>,
 ) -> Result<()> {
+    let (metadata, device) = validate_into(encoding, dtype, shape, parts, &out)?;
+    match device {
+        None => {
+            let host: BTreeMap<_, _> = parts
+                .iter()
+                .map(|p| {
+                    let Src::Host(ptr) = p.src else {
+                        unreachable!("placement checked")
+                    };
+                    // SAFETY: caller owns each checked Host span. Empty null spans are permitted.
+                    let bytes = if p.len == 0 {
+                        &[]
+                    } else {
+                        // SAFETY: caller owns each checked host span (contract above); empty spans are never read.
+                        unsafe { std::slice::from_raw_parts(ptr, p.len) }
+                    };
+                    (
+                        p.role,
+                        PartBytes {
+                            dtype: p.dtype,
+                            shape: p.shape,
+                            bytes,
+                        },
+                    )
+                })
+                .collect();
+            let decoded = decode::decode(dtype, shape, encoding, &host)?;
+            let Dst::Host { ptr, .. } = out.dst else {
+                unreachable!("placement checked")
+            };
+            if !decoded.is_empty() {
+                // SAFETY: the output span was checked to hold `decoded.len()` bytes and is the caller's exclusive destination.
+                unsafe { std::ptr::copy_nonoverlapping(decoded.as_ptr(), ptr, decoded.len()) };
+            }
+            Ok(())
+        }
+        Some(device) => {
+            decode::planned_sources(dtype, shape, encoding, &metadata, |plan, geometry| {
+                let count = geometry
+                    .rows
+                    .checked_mul(geometry.cols)
+                    .ok_or_else(|| crate::format::Error::Decode("decode size overflow".into()))?;
+                Ok(
+                    device_plan(plan, geometry, dtype, 0, count as u64).and_then(|launch| {
+                        execute_into(device, &launch, parts, Some(out.dst)).map(|_| ())
+                    }),
+                )
+            })?
+        }
+    }
+}
+
+fn validate_into<'a>(
+    encoding: &Encoding,
+    dtype: &Dtype,
+    shape: &[u64],
+    parts: &[Part<'a>],
+    out: &Output<'_>,
+) -> Result<(Vec<decode::PartMetadata<'a>>, Option<i32>)> {
     let metadata: Vec<_> = parts
         .iter()
         .map(|p| decode::PartMetadata {
@@ -145,55 +312,34 @@ pub unsafe fn into(
             return invalid("decode output overlaps an input part");
         }
     }
-    match device {
-        None => {
-            let host: BTreeMap<_, _> = parts
-                .iter()
-                .map(|p| {
-                    let Src::Host(ptr) = p.src else {
-                        unreachable!("placement checked")
-                    };
-                    // SAFETY: caller owns each checked Host span. Empty null spans are permitted.
-                    let bytes = if p.len == 0 {
-                        &[]
-                    } else {
-                        // SAFETY: caller owns each checked host span (contract above); empty spans are never read.
-                        unsafe { std::slice::from_raw_parts(ptr, p.len) }
-                    };
-                    (
-                        p.role,
-                        PartBytes {
-                            dtype: p.dtype,
-                            shape: p.shape,
-                            bytes,
-                        },
-                    )
-                })
-                .collect();
-            let decoded = decode::decode(dtype, shape, encoding, &host)?;
-            let Dst::Host { ptr, .. } = out.dst else {
-                unreachable!("placement checked")
-            };
-            if !decoded.is_empty() {
-                // SAFETY: the output span was checked to hold `decoded.len()` bytes and is the caller's exclusive destination.
-                unsafe { std::ptr::copy_nonoverlapping(decoded.as_ptr(), ptr, decoded.len()) };
-            }
-            Ok(())
-        }
-        Some(device) => {
-            decode::planned_sources(dtype, shape, encoding, &metadata, |plan, geometry| {
-                let count = geometry
-                    .rows
-                    .checked_mul(geometry.cols)
-                    .ok_or_else(|| crate::format::Error::Decode("decode size overflow".into()))?;
-                Ok(
-                    device_plan(plan, geometry, dtype, 0, count as u64).and_then(|launch| {
-                        execute_into(device, &launch, parts, Some(out.dst)).map(|_| ())
-                    }),
-                )
-            })?
-        }
-    }
+    Ok((metadata, device))
+}
+
+/// Prepare the existing device decoder without reading input values or submitting its kernels.
+///
+/// # Safety
+/// Parts and output satisfy `into`'s span contract and remain retained through the decoder
+/// AND every dependent consumer. Enqueue supplies native producer streams or a prior proof
+/// of completion; this object never owns the caller's input/output allocations.
+pub unsafe fn prepare_into(
+    encoding: &Encoding,
+    dtype: &Dtype,
+    shape: &[u64],
+    parts: &[Part<'_>],
+    out: Output<'_>,
+) -> Result<DeviceDecode> {
+    let (metadata, device) = validate_into(encoding, dtype, shape, parts, &out)?;
+    let Some(device) = device else {
+        return invalid("prepared decode requires existing device buffers");
+    };
+    decode::planned_sources(dtype, shape, encoding, &metadata, |plan, geometry| {
+        let count = geometry
+            .rows
+            .checked_mul(geometry.cols)
+            .ok_or_else(|| crate::format::Error::Decode("decode size overflow".into()))?;
+        Ok(device_plan(plan, geometry, dtype, 0, count as u64)
+            .and_then(|launch| prepare_execute(device, &launch, parts, Some(out.dst))))
+    })?
 }
 
 /// Decode a logical element window through the prebuilt CUDA catalog. Host-only plans are
@@ -365,42 +511,51 @@ fn argument_pointers(values: &mut [u64; 13]) -> [*mut c_void; 13] {
     std::array::from_fn(|i| (&mut values[i] as *mut u64).cast())
 }
 
-fn launch_kernel(
-    stream: &cuda::Stream,
-    binary: &'static Binary,
-    n: u64,
-    values: [u64; 11],
-) -> Result<()> {
-    let module = module(stream.context() as usize, binary)?;
-    let blocks = u32::try_from(n.div_ceil(256)).map_err(|_| Failure {
-        kind: Kind::Invalid,
-        detail: "CUDA decode grid exceeds u32".into(),
-    })?;
-    if blocks == 0 {
-        return Ok(());
+struct KernelLaunch {
+    module: Arc<Module>,
+    blocks: u32,
+    threads: u32,
+    shared: u32,
+    values: [u64; 13],
+}
+impl KernelLaunch {
+    fn prepare(context: usize, binary: &'static Binary, n: u64, values: [u64; 11]) -> Result<Self> {
+        Ok(Self {
+            module: module(context, binary)?,
+            blocks: u32::try_from(n.div_ceil(256)).map_err(|_| Failure {
+                kind: Kind::Invalid,
+                detail: "CUDA decode grid exceeds u32".into(),
+            })?,
+            threads: binary.warps * 32,
+            shared: binary.shared,
+            values: launch_values(values),
+        })
     }
-    let mut values = launch_values(values);
-    // These are thirteen LIVE host addresses, not null entries. The final two
-    // addresses point at zero device-pointer values for the unused scratch inputs.
-    let mut args = argument_pointers(&mut values);
-    let driver = cuda::driver()?;
-    // SAFETY: `args` points at live host values matching the kernel's parameters for the launch.
-    cuda::check("cuLaunchKernel", unsafe {
-        (driver.launch_kernel)(
-            module.function as _,
-            blocks,
-            1,
-            1,
-            binary.warps * 32,
-            1,
-            1,
-            binary.shared,
-            stream.raw() as _,
-            args.as_mut_ptr(),
-            std::ptr::null_mut(),
-        )
-    })?;
-    Ok(())
+    fn enqueue(&self, stream: &cuda::Stream) -> Result<()> {
+        if self.blocks == 0 {
+            return Ok(());
+        }
+        let mut values = self.values;
+        let mut args = argument_pointers(&mut values);
+        // SAFETY: the prepared arguments retain all owned buffers; the caller retains
+        // external spans. CUDA copies these live scalar arguments during this call.
+        cuda::check("cuLaunchKernel", unsafe {
+            (cuda::driver()?.launch_kernel)(
+                self.module.function as _,
+                self.blocks,
+                1,
+                1,
+                self.threads,
+                1,
+                1,
+                self.shared,
+                stream.raw() as _,
+                args.as_mut_ptr(),
+                std::ptr::null_mut(),
+            )
+        })?;
+        Ok(())
+    }
 }
 
 fn owned_input(hold: &mut DecodeHold, device: i32, data: &[u8]) -> Result<u64> {
@@ -422,6 +577,7 @@ fn source_pointer(parts: &[Part<'_>], index: usize) -> Result<u64> {
 
 fn factor_input(
     hold: &mut DecodeHold,
+    stages: &mut Vec<KernelLaunch>,
     device: i32,
     launch: &Launch<'_>,
     family: u32,
@@ -470,12 +626,12 @@ fn factor_input(
                 launch.dtype
             ),
         })?;
-    launch_kernel(
-        hold.stream.as_ref().expect("decode stream live"),
+    stages.push(KernelLaunch::prepare(
+        hold.stream.as_ref().expect("decode stream live").context() as usize,
         binary,
         count as u64,
         [out, src, 0, 0, 0, table, 0, 0, 0, 0, params],
-    )?;
+    )?);
     Ok(out)
 }
 
@@ -494,6 +650,181 @@ fn execute_into(
     parts: &[Part<'_>],
     destination: Option<Dst>,
 ) -> Result<Option<DeviceBuffer>> {
+    if launch.params[5] == 0 {
+        // Preserve the legacy empty path: no metadata upload, factor cast or catalog
+        // module is required. An external output still joins its supplied producers.
+        if destination.is_none() {
+            return Ok(Some(DeviceBuffer::new(device, 0)?));
+        }
+        let stream = cuda::Stream::new(device)?;
+        let _context = CtxGuard::enter(stream.context())?;
+        join_producers(parts, destination)?;
+        return Ok(None);
+    }
+    let mut prepared = prepare_execute(device, launch, parts, destination)?;
+    let _context = CtxGuard::enter(
+        prepared
+            .hold
+            .stream
+            .as_ref()
+            .expect("prepared stream")
+            .context(),
+    )?;
+    join_producers(parts, destination)?;
+    // SAFETY: the producer streams just proved completion and all spans stay owned.
+    unsafe { prepared.enqueue_after(&[]) }?;
+    prepared.finish()?;
+    Ok(prepared.hold.output.take())
+}
+
+fn join_producers(parts: &[Part<'_>], destination: Option<Dst>) -> Result<()> {
+    // Legacy synchronous API accepts caller-thread default streams. Event enqueue
+    // accepts only explicit native streams; both paths preserve actual producer order.
+    let mut streams = std::collections::BTreeSet::new();
+    for part in parts {
+        if let Src::Device { stream, .. } = part.src {
+            streams.insert(stream);
+        }
+    }
+    if let Some(Dst::Device { stream, .. }) = destination {
+        streams.insert(stream);
+    }
+    for stream in streams {
+        // SAFETY: the caller supplied these live producer streams on this OS thread.
+        cuda::check("cuStreamSynchronize(decode producer)", unsafe {
+            (cuda::driver()?.stream_synchronize)(stream as _)
+        })?;
+    }
+    Ok(())
+}
+
+/// One prepared instance of the shared decoder, retaining metadata, scratch and modules.
+/// External source/output owners remain the unsafe caller's responsibility.
+pub struct DeviceDecode {
+    hold: DecodeHold,
+    stages: Vec<KernelLaunch>,
+    dependencies: Vec<super::device::Event>,
+    error: u64,
+    device: i32,
+    submitted: bool,
+    invalid: bool,
+    released: bool,
+    release_failed: bool,
+}
+// SAFETY: the sole owner serializes enqueue/finish; every CUDA operation enters the
+// stream's retained primary context. No borrowed Rust source or descriptor is stored.
+unsafe impl Send for DeviceDecode {}
+impl DeviceDecode {
+    /// Enqueue only: no allocation, filesystem access or host completion wait.
+    ///
+    /// # Safety
+    /// `streams` names every producer of the retained external spans; each is an explicit
+    /// native stream in this device's primary context. Empty means already checked complete.
+    /// Retain this instance AND external owners through dependent consumer completion.
+    pub unsafe fn enqueue_after(&mut self, streams: &[usize]) -> Result<(usize, u64)> {
+        if self.submitted
+            || self.released
+            || streams.len() > self.dependencies.len()
+            || streams.iter().any(|s| *s <= 2)
+        {
+            return invalid("prepared decode needs one submission and explicit native streams");
+        }
+        self.submitted = true;
+        self.hold.complete = false;
+        let stream = self.hold.stream.as_ref().expect("prepared stream");
+        let _context = CtxGuard::enter(stream.context())?;
+        for (event, producer) in self.dependencies.iter().zip(streams) {
+            event.record(*producer as _)?;
+            event.wait_on(stream.raw() as _)?;
+        }
+        // SAFETY: error is this instance's owned i32 device buffer; clear precedes every stage.
+        cuda::check("cuMemsetD8Async(decode error)", unsafe {
+            (cuda::driver()?.memset_d8_async)(self.error, 0, 4, stream.raw() as _)
+        })?;
+        for stage in &self.stages {
+            stage.enqueue(stream)?;
+        }
+        Ok((stream.raw(), self.error))
+    }
+    pub fn submitted(&self) -> bool {
+        self.submitted
+    }
+    /// Release only this decoder's private owners after checked composed completion.
+    ///
+    /// # Safety
+    /// Every dependent consumer is checked complete and actual capture is excluded.
+    /// On failure retain this instance until process retirement; partially released
+    /// handles are inert and an ambiguous driver release must never be retried.
+    pub unsafe fn release_completed(&mut self) -> Result<()> {
+        if self.release_failed {
+            return crate::failure::fail(Kind::Io, "decoder release was already unproven");
+        }
+        if self.released {
+            return Ok(());
+        }
+        if !self.hold.complete {
+            return crate::failure::fail(Kind::Io, "decoder completion is unproven before release");
+        }
+        self.released = true;
+        self.release_failed = true;
+        for event in &mut self.dependencies {
+            event.release_checked()?;
+        }
+        for buffer in self
+            .hold
+            .inputs
+            .iter_mut()
+            .chain(&mut self.hold.scratch)
+            .chain(self.hold.output.iter_mut())
+        {
+            // SAFETY: decoder and consumer completion are proven and this owns each allocation.
+            unsafe { buffer.release_completed() }?;
+        }
+        if let Some(stream) = &mut self.hold.stream {
+            // SAFETY: finish checked this private stream and all consumers are complete.
+            unsafe { stream.release_completed() }?;
+        }
+        self.release_failed = false;
+        Ok(())
+    }
+    /// Check decoder completion and values. This does not certify a dependent consumer.
+    pub fn finish(&mut self) -> Result<()> {
+        if !self.submitted {
+            return invalid("enqueue prepared decode before finish");
+        }
+        if !self.hold.complete {
+            let stream = self.hold.stream.as_ref().expect("prepared stream");
+            stream.drain()?;
+            let mut value = [0u8; 4];
+            let copy = Copy {
+                src: Src::Device {
+                    device: self.device,
+                    ptr: self.error,
+                    stream: stream.raw(),
+                },
+                dst: Dst::host(&mut value),
+            };
+            // SAFETY: this object owns the completed error word and the stack destination is live.
+            unsafe { super::read(&[copy], &ReadOpts::default()) }.map_err(io_error)?;
+            self.invalid = i32::from_le_bytes(value) != 0;
+            self.hold.complete = true;
+        }
+        if self.invalid {
+            return crate::failure::fail(
+                Kind::Decode,
+                "CUDA decode encountered an invalid index or a NaN requantized value",
+            );
+        }
+        Ok(())
+    }
+}
+
+fn prepare_execute(
+    device: i32,
+    launch: &Launch<'_>,
+    parts: &[Part<'_>],
+    destination: Option<Dst>,
+) -> Result<DeviceDecode> {
     let width = if launch.dtype == Dtype::F32 { 4 } else { 2 };
     let size = launch.params[5]
         .checked_mul(width)
@@ -507,9 +838,6 @@ fn execute_into(
     } else {
         None
     };
-    if size == 0 && destination.is_none() {
-        return Ok(output);
-    }
     let mut hold = DecodeHold {
         output,
         inputs: Vec::new(),
@@ -517,30 +845,8 @@ fn execute_into(
         stream: Some(cuda::Stream::new(device)?),
         complete: false,
     };
-    let _context = CtxGuard::enter(hold.stream.as_ref().expect("decode stream live").context())?;
-    // Decode is synchronous. Synchronize each supplied producer/output stream on the calling
-    // OS thread (important for PTDS), before kernels access borrowed allocations.
-    let mut streams = std::collections::BTreeSet::new();
-    for part in parts {
-        if let Src::Device { stream, .. } = part.src {
-            streams.insert(stream);
-        }
-    }
-    if let Some(Dst::Device { stream, .. }) = destination {
-        streams.insert(stream);
-    }
-    for stream in streams {
-        // SAFETY: a producer stream the caller named; synchronizing has no memory preconditions.
-        cuda::check("cuStreamSynchronize(decode producer)", unsafe {
-            (cuda::driver()?.stream_synchronize)(stream as _)
-        })?;
-    }
-    // Zero logical output can still have a nonempty optional codebook. Success also
-    // proves those supplied producers are complete before the caller releases owners.
-    if size == 0 {
-        hold.complete = true;
-        return Ok(hold.output.take());
-    }
+    let context = hold.stream.as_ref().expect("decode stream").context();
+    let _context = CtxGuard::enter(context)?;
     let family = (cuda::attribute(device, 75)? * 10 + cuda::attribute(device, 76)?) as u32;
     let binary = |stage: &str| {
         launch.stage_binary(family, stage).ok_or_else(|| Failure {
@@ -551,46 +857,76 @@ fn execute_into(
             ),
         })
     };
-    binary(launch.kind)?;
-    if matches!(launch.kind, "rotated" | "grouped_rotated") {
-        binary("regular_h4")?;
-        binary(if launch.kind == "grouped_rotated" {
-            "requantize"
-        } else {
-            "unpack"
-        })?;
-    }
     let words = match launch.words.binding() {
         Some((index, _)) => source_pointer(parts, index)?,
         None => owned_input(&mut hold, device, launch.words.host()?)?,
     };
+    let mut stages = Vec::new();
     let slots = owned_input(&mut hold, device, bytes(&launch.slots))?;
-    let scale = factor_input(&mut hold, device, launch, family, &launch.scale, parts)?;
-    let term = factor_input(&mut hold, device, launch, family, &launch.term, parts)?;
-    let table = factor_input(&mut hold, device, launch, family, &launch.table, parts)?;
-    let global = factor_input(&mut hold, device, launch, family, &launch.global, parts)?;
-    let post = factor_input(&mut hold, device, launch, family, &launch.post, parts)?;
+    let scale = factor_input(
+        &mut hold,
+        &mut stages,
+        device,
+        launch,
+        family,
+        &launch.scale,
+        parts,
+    )?;
+    let term = factor_input(
+        &mut hold,
+        &mut stages,
+        device,
+        launch,
+        family,
+        &launch.term,
+        parts,
+    )?;
+    let table = factor_input(
+        &mut hold,
+        &mut stages,
+        device,
+        launch,
+        family,
+        &launch.table,
+        parts,
+    )?;
+    let global = factor_input(
+        &mut hold,
+        &mut stages,
+        device,
+        launch,
+        family,
+        &launch.global,
+        parts,
+    )?;
+    let post = factor_input(
+        &mut hold,
+        &mut stages,
+        device,
+        launch,
+        family,
+        &launch.post,
+        parts,
+    )?;
     let index = owned_input(&mut hold, device, bytes(&launch.index))?;
     let error = owned_input(&mut hold, device, bytes(&[0i32]))?;
     let params = owned_input(&mut hold, device, bytes(&launch.params))?;
     let output = match destination {
         Some(Dst::Device { ptr, .. }) => ptr,
-        None => hold.output.as_ref().expect("decode output live").ptr(),
+        None => hold.output.as_ref().expect("decode output").ptr(),
         _ => unreachable!("checked device destination"),
     };
-    let stream = hold.stream.as_ref().expect("decode stream live");
-    let call = |stage: &str, out: u64, input: u64, n: u64| -> Result<()> {
-        launch_kernel(
-            stream,
+    let call = |stage: &str, out: u64, input: u64, n: u64, parameters: u64| {
+        KernelLaunch::prepare(
+            context as usize,
             binary(stage)?,
             n,
             [
-                out, input, slots, scale, term, table, global, post, index, error, params,
+                out, input, slots, scale, term, table, global, post, index, error, parameters,
             ],
         )
     };
-    let scratch = &mut hold.scratch;
-    let result = (|| {
+    if size != 0 {
         if matches!(launch.kind, "rotated" | "grouped_rotated") {
             let total = launch.params[0];
             let len = total
@@ -600,81 +936,64 @@ fn execute_into(
                     kind: Kind::Invalid,
                     detail: "rotation scratch overflow".into(),
                 })?;
-            let start = scratch.len();
-            scratch.push(DeviceBuffer::new(device, len)?);
-            scratch.push(DeviceBuffer::new(device, len)?);
-            call(
+            let start = hold.scratch.len();
+            hold.scratch.push(DeviceBuffer::new(device, len)?);
+            hold.scratch.push(DeviceBuffer::new(device, len)?);
+            stages.push(call(
                 if launch.kind == "grouped_rotated" {
                     "requantize"
                 } else {
                     "unpack"
                 },
-                scratch[start].ptr(),
+                hold.scratch[start].ptr(),
                 words,
                 total,
-            )?;
+                params,
+            )?);
             let mut current = 0;
-            let mut stride = 1;
+            let mut stride = 1u64;
             while stride < launch.params[28] {
                 let mut next = launch.params;
                 next[31] = stride;
-                let parameter_buffer = hold
-                    .inputs
-                    .iter()
-                    .find(|b| b.ptr() == params)
-                    .expect("parameter allocation live");
-                write(parameter_buffer, bytes(&next), stream.raw())?;
-                call(
+                let parameters = owned_input(&mut hold, device, bytes(&next))?;
+                stages.push(call(
                     "regular_h4",
-                    scratch[start + 1 - current].ptr(),
-                    scratch[start + current].ptr(),
+                    hold.scratch[start + 1 - current].ptr(),
+                    hold.scratch[start + current].ptr(),
                     total,
-                )?;
+                    parameters,
+                )?);
                 current = 1 - current;
-                stride *= 4;
+                stride = stride.checked_mul(4).ok_or_else(|| Failure {
+                    kind: Kind::Invalid,
+                    detail: "rotation stride overflow".into(),
+                })?;
             }
-            call(
+            stages.push(call(
                 launch.kind,
                 output,
-                scratch[start + current].ptr(),
+                hold.scratch[start + current].ptr(),
                 launch.params[5],
-            )?;
+                params,
+            )?);
         } else {
-            call(launch.kind, output, words, launch.params[5])?;
+            stages.push(call(launch.kind, output, words, launch.params[5], params)?);
         }
-        let mut value = [0u8; 4];
-        let copy = Copy {
-            src: Src::Device {
-                device,
-                ptr: error,
-                stream: stream.raw(),
-            },
-            dst: Dst::host(&mut value),
-        };
-        // SAFETY: `value` is a live, exclusive host destination for the call; the device source is this decode's own buffer.
-        unsafe { super::read(&[copy], &ReadOpts::default()) }.map_err(io_error)?;
-        if i32::from_le_bytes(value) != 0 {
-            return crate::failure::fail(
-                Kind::Decode,
-                "CUDA decode encountered an invalid index or a NaN requantized value",
-            );
-        }
-        Ok(())
-    })();
-    let drained = stream.drain().and_then(|()| {
-        if result.is_err() {
-            super::drain(device)
-        } else {
-            Ok(())
-        }
-    });
-    if let Err(error) = drained {
-        return match result {
-            Err(error) => Err(error),
-            Ok(()) => Err(error.into()),
-        };
     }
+    let dependencies = (0..4)
+        .map(|_| super::device::Event::new(context, false))
+        .collect::<cuda::Result<_>>()?;
+    // Preparation's own metadata uploads are checked; no decoder input was read yet.
     hold.complete = true;
-    result?;
-    Ok(hold.output.take())
+    Ok(DeviceDecode {
+        hold,
+        stages,
+        dependencies,
+        error,
+        device,
+        submitted: false,
+        invalid: false,
+        released: false,
+        release_failed: false,
+    })
 }

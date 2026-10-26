@@ -28,6 +28,8 @@ struct Table {
 }
 #[derive(Default)]
 struct Gpu {
+    /// Known external memory demand holds new families until that demand recedes.
+    external_pressure: bool,
     /// The root whose lane this GPU is.
     root: Option<u64>,
     /// Calls running there, all of one family.
@@ -64,13 +66,13 @@ pub(crate) struct Permit {
 impl Table {
     fn free(&self, device: usize, root: u64, claims: &Claims) -> bool {
         let gpu = &self.gpus[device];
-        gpu.root.is_none() && gpu.calling == 0
+        !gpu.external_pressure && gpu.root.is_none() && gpu.calling == 0
             && claims.get(device).copied().flatten().is_none_or(|claimer| claimer == root)
     }
     /// `root` gets `device` at the latest at its holder's next step boundary: no other request
     /// waits for it first, and it is free or (for a root's first step) a younger root holds it.
     fn obtainable(&self, device: usize, root: u64, first: bool, claims: &Claims) -> bool {
-        self.gpus[device].root.is_none_or(|holder| first && holder > root)
+        !self.gpus[device].external_pressure && self.gpus[device].root.is_none_or(|holder| first && holder > root)
             && claims.get(device).copied().flatten().is_none_or(|claimer| claimer == root)
     }
     /// The oldest request besides `root` that claims, holds or still calls on a GPU of `lane`;
@@ -104,6 +106,10 @@ impl Allocations {
     pub(crate) fn new(width: usize) -> Arc<Self> {
         let gpus = (0..width).map(|_| Gpu::default()).collect();
         Arc::new(Self { table: Mutex::new(Table { gpus, roots: BTreeMap::new() }), freed: Condvar::new() })
+    }
+    pub(crate) fn pressure(&self, device: usize, blocked: bool) {
+        self.table.lock().unwrap().gpus[device].external_pressure = blocked;
+        self.freed.notify_all();
     }
     /// `root` holds an allocation `width` GPUs wide, unbound until its first step, for as long
     /// as the hold lives.
@@ -226,6 +232,10 @@ impl Allocations {
     /// it continues a step in flight.
     pub(crate) fn call(self: &Arc<Self>, root: Option<u64>, family: Option<&str>, devices: Range<usize>, claims: &Claims) -> Option<Permit> {
         let mut table = self.table.lock().unwrap();
+        // External pressure holds new roots and warming, but never strands a running parent
+        // awaiting its child. Cancellation of that family is a separate durable authority.
+        if table.gpus.get(devices.clone())?.iter().any(|gpu| gpu.external_pressure)
+            && !table.continuing(family) { return None }
         let registered = root.is_some_and(|root| table.roots.contains_key(&root));
         let usable = !devices.is_empty() && devices.end <= table.gpus.len() && devices.clone().all(|d| {
             let gpu = &table.gpus[d];

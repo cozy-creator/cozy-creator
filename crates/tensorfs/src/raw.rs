@@ -7,7 +7,8 @@ use std::sync::Arc;
 use crate::format::{Component, Header, Tensor};
 use crate::{Failure, Result};
 
-pub use crate::io::decode::{Output as DecodeOutput, Part as DecodePart};
+pub use crate::io::decode::{DeviceDecode, Output as DecodeOutput, Part as DecodePart};
+pub use crate::io::decode::device_scratch_bytes as decode_device_scratch_bytes;
 pub use crate::session::PartData;
 
 /// Check encoded-part descriptors through the shared format registry without reading data.
@@ -38,6 +39,24 @@ pub unsafe fn decode_into(
 ) -> Result<()> {
     // SAFETY: the caller supplies and retains all buffers under the contract above.
     unsafe { crate::io::decode::into(encoding, dtype, shape, parts, out) }
+}
+
+/// Prepare the shared resident decoder for a later native event-ordered enqueue.
+///
+/// # Safety
+/// Satisfy `crate::io::decode::prepare_into`'s external-owner and stream contract.
+/// Preparation does not initialize output; retain this instance and every external
+/// input/output owner through both decoder and dependent consumer completion.
+#[allow(unsafe_code)]
+pub unsafe fn prepare_device_decode(
+    encoding: &crate::format::Encoding,
+    dtype: &crate::format::Dtype,
+    shape: &[u64],
+    parts: &[DecodePart<'_>],
+    out: DecodeOutput<'_>,
+) -> Result<DeviceDecode> {
+    // SAFETY: the caller retains all external spans under the contract above.
+    unsafe { crate::io::decode::prepare_into(encoding, dtype, shape, parts, out) }
 }
 
 /// Download exactly these objects after checking that they belong to the checkpoint.
