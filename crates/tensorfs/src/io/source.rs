@@ -111,6 +111,15 @@ impl Source {
         Ok(())
     }
 
+    /// Verify every object is locally present, opening and caching its descriptor exactly as
+    /// a read would. On a local-only source a missing object errors here, before any GPU work,
+    /// so a caller can refuse and fall back to a fetch-capable read. The opened files are
+    /// retained, so a following read through this source reuses these verified descriptors.
+    #[cfg(feature = "store")]
+    pub fn verify_local(&self, objects: &[ObjectRef]) -> Result<()> {
+        self.load(objects)
+    }
+
     fn file(&self, object: &ObjectRef) -> Result<Arc<File>> {
         if let Some(file) = self.files.lock().unwrap().get(&object.sha256).cloned() {
             return Ok(file);

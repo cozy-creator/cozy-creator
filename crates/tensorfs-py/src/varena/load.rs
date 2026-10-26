@@ -142,7 +142,7 @@ impl LoadSlot {
         let checkpoint = checkpoint.core(py)?;
         let work = py
             .detach(|| refill::prepare_regions(checkpoint, groups, threads))
-            .map_err(|error| error.raise(py))?;
+            .map_err(|error| error.region_refusal().raise(py))?;
         Ok(work.map(|work| Self {
             region: Deferred::new(region),
             inputs: work.input_count(),

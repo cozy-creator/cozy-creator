@@ -24,6 +24,12 @@ pub(super) enum Failure {
     Native(varena::Error),
     Canceled,
     Execution(Box<Status>),
+    /// A stored chunk a region load needs is not on local disk. Non-fatal: the frontend
+    /// falls back to an eager, fetch-capable read that downloads it.
+    NotLocal(String),
+    /// A pre-submission region-load refusal (busy, capture-active, ineligible descriptor).
+    /// Non-fatal: the frontend falls back to an eager resident load.
+    Ineligible(String),
 }
 
 impl Failure {
@@ -33,6 +39,24 @@ impl Failure {
             Self::Native(error) => error.to_string(),
             Self::Canceled => "native refill canceled".into(),
             Self::Execution(status) => status.detail(),
+            Self::NotLocal(detail) | Self::Ineligible(detail) => detail.clone(),
+        }
+    }
+    /// Pre-submission region-load refusals are not fatal: the frontend can still load the
+    /// component eagerly. `Busy`/`CaptureActive`/an ineligible descriptor become a marked
+    /// refusal so Python falls back; OOM, device faults and poisoning stay fatal.
+    pub(super) fn region_refusal(self) -> Self {
+        match self {
+            Self::Native(varena::Error::Busy) => Self::Ineligible(
+                "native load region is busy (concurrent producer or live capture alias)".into(),
+            ),
+            Self::Native(varena::Error::CaptureActive) => {
+                Self::Ineligible("native load cannot prepare during CUDA graph capture".into())
+            }
+            Self::Native(varena::Error::Invalid(detail)) => {
+                Self::Ineligible(format!("native load input is ineligible: {detail}"))
+            }
+            other => other,
         }
     }
     pub(super) fn raise(&self, py: Python<'_>) -> PyErr {
@@ -40,6 +64,18 @@ impl Failure {
             Self::Storage(error) => crate::errors::raise(py, error.clone()),
             Self::Native(error) => raise(py, error.clone()),
             Self::Canceled => PyRuntimeError::new_err("native refill canceled"),
+            // A non-fatal refusal, marked so Runtime's `_native_error` maps it to the matching
+            // CapabilityError and SDXL falls back to eager instead of failing the request.
+            Self::NotLocal(detail) => {
+                let err = PyRuntimeError::new_err(detail.clone());
+                let _ = err.value(py).setattr("load_unavailable", true);
+                err
+            }
+            Self::Ineligible(detail) => {
+                let err = PyRuntimeError::new_err(detail.clone());
+                let _ = err.value(py).setattr("eligibility_refusal", true);
+                err
+            }
             Self::Execution(status) => match status.kind {
                 continuation::CANCELED => PyRuntimeError::new_err("native execution canceled"),
                 continuation::INVALID => PyValueError::new_err(status.detail()),
@@ -868,6 +904,27 @@ pub(super) fn prepare_regions(
     }
     io::prepare_device(device).map_err(cuda_failure)?;
     let source = Arc::new(checkpoint.local_source(true));
+    // Every stored chunk these inputs read must already be on local disk. Verify it through
+    // the same local-only load path the worker uses: a missing chunk errors here, before
+    // submission, and the opened descriptors are cached for the worker to reuse. Refuse as
+    // not-local so the request falls back to the eager, fetch-capable reader (which downloads)
+    // instead of failing a submitted read that SDXL will not retry. Remote I/O stays out of
+    // the admitted native interval.
+    let objects: Vec<_> = inputs
+        .iter()
+        .flat_map(|input| &input.items)
+        .filter_map(|item| match &item.source {
+            io::ItemSource::Object(range) => Some((range.obj.sha256.clone(), range.obj.clone())),
+            io::ItemSource::Inline(_) => None,
+        })
+        .collect::<BTreeMap<_, _>>()
+        .into_values()
+        .collect();
+    if let Err(error) = source.verify_local(&objects) {
+        return Err(Failure::NotLocal(format!(
+            "native component inputs are not all local: {error}"
+        )));
+    }
     let mut work = Work {
         region: inputs[0].region.clone(),
         inputs,
