@@ -204,7 +204,7 @@ impl Driver {
     }
 
     pub(crate) fn unmap(&self, ptr: u64, bytes: usize) -> Result<()> {
-        // SAFETY: owned whole mapping, no pins, and successful context completion before call.
+        // SAFETY: owned whole mapping, no pins, and checked completion of all uses before call.
         status("cuMemUnmap", unsafe { (self.unmap)(ptr, bytes) })
     }
 

@@ -9,7 +9,7 @@ Arena::reserve -> Region (stable VA, no physical pages)
 Region::prepare -> Resident(Pin) | Fill (exclusive initialization)
 Fill::commit -> Pin (ready bytes)
 foreign storage owns Pin until its final alias disappears
-Arena::reclaim -> context join -> unmap -> release; Region keeps its VA
+Arena::reclaim -> checked use completion (or context join) -> unmap -> release; Region keeps its VA
 ```
 
 The Python/native bridge must retain a `Pin` in every exported storage deleter. A view or graph
@@ -51,9 +51,12 @@ interval. They count released backing, not disk reads, transfer traffic or GPU s
 allocator category includes both local allocation ceilings and actual driver OOM, while an
 explicit call can be deliberate offload. Ordinary Region destruction is not a cache eviction.
 
-Until complete stream ownership exists, actual reclamation conservatively joins the CUDA primary
-context. This protects untracked side-stream work after a storage deleter has run; no throughput
-claim is made for this synchronization. Capture dependencies and graph roots retain their pins.
+Ordinary foreign-storage release conservatively joins the CUDA primary context before reuse or
+reclamation. This protects untracked side-stream work after a storage deleter has run.
+A native integration may consume its own Pin through unsafe `into_completed_region` only after
+checking every producer and consumer's completion and preventing later use through that Pin.
+It cannot clear the fence history of a sibling or reclaim a surviving foreign alias.
+Capture dependencies and graph roots retain their pins by default.
 Hold process-wide `varena::enter_capture(device)` around capture to reject residency misses and
 reclamation in every Arena on that device, even when capture starts before any Arena exists.
 `Arena::enter_capture` wraps the same device guard and also retains that Arena.
@@ -90,3 +93,52 @@ for that gate. This source change alone is not a GPU qualification or release.
 CUDA references: [Driver virtual-memory API](https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/group__CUDA__VA.html),
 [allocation properties](https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/structCUmemAllocationProp__v1.html),
 [access descriptor](https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/structCUmemAccessDesc__v1.html).
+
+
+## Checked native-release proof (2026-10-26)
+
+Default-home CLI runs 18630–18632 on RTX 4070 Laptop / 8 GiB passed with TensorFS source
+`d6e6cf209edc2c6741c36b490dc58dc1a8ac8b97` (wheel SHA256
+`6929c5b983811250f3279ac2e04174498d1b2ca55ee4f649911734c939de76a5`), Runtime
+`80793e9ce` (wheel `6836678e51bcfc02480236538c4c7410c909b84057a6db3373e04623f6764aa4`),
+and Creator CLI `6862dee81` (`dbe800873e4e0fcfad1fe3f6182c664afb4e6054af19d2f96040a1f9aaad009a`).
+This is a distinct mixed cohort, not all repositories at one source revision.
+
+| Run | Case | Result |
+|---|---|---|
+| 18630 | Completed native refill | Reclaimed 16 MiB in 0.641 ms while the unrelated CUDA event remained incomplete. |
+| 18631 | Ordinary storage release | Reclaimed 16 MiB after the conservative fence; 716.340 ms and unrelated event complete. |
+| 18632 | Surviving storage alias | Reclaimed zero bytes, retained the 16 MiB pin, and left unrelated CUDA work running. |
+
+Each cell then refilled the same VA, checked exact tensor contents, and finished with zero pinned
+bytes and healthy ownership. The frozen fixture's calibrated sleep and allocations precede the
+reclaim observation. These artificial controls establish fencing behavior; the times are not model
+latency comparisons or a ComfyUI speedup. The buffered read used zero direct bytes, but the Writer
+had warmed the file: cold page-cache population and transfer throughput remain unproven.
+Sibling-release ordering, abandoned fills, multi-stage execution and full-model pressure still need
+their own real gates. The exact prior CLI/SDK bytes were restored and observed ready/idle at
+16:41:16 UTC. Raw receipts and source/fixture hashes:
+`outputs/stock-torch-20261025/codex-resume-20261026/checked-region-cells/` and
+`outputs/stock-torch-20261025/native-streaming-resume-20261026/completion-caller/GPU-REVIEW.json`.
+
+
+The same distinct mixed cohort also passed 12 native-loading lifecycle criteria in
+runs **18650–18661**, all in executor PID **1464799**. Seven requests completed and five
+intentionally failed at their expected boundary:
+
+- Post-capture host source failures in checked/event toy loading and the small SDXL helper
+  failed only their request. Native and Runtime completion were proven, graph launches
+  remained zero, and cleanup reported zero physical pins/model users with an unpoisoned arena.
+- Stale source/layout mutations refused with zero launches and reads, preserving caller state.
+- Healthy successor requests completed in the same executor after each failure; the small
+  SDXL successor ran seven steps with exact eager parity and 1,639,688 declared/read bytes.
+- A separate SDXL preflight case produced the expected pre-submit fallback signal with zero
+  reads. It does not prove an eager recovery inference from the damaged source.
+
+All three injected source failures report the O_DIRECT path; these are not a qualification
+of failures on non-preferred buffered reads. There was no active request-cancellation or
+empty-input case in this run set. Sibling-pin ordering, the new own-VA multi-stage candidate,
+full-sized model pressure and comparative performance remain separate gates.
+Actual prior CLI/SDK hashes were restored and observed ready/idle at 17:10:59 UTC.
+Raw evidence: `outputs/stock-torch-20261025/codex-resume-20261026/checked-region-completion-cells/`;
+independent review: `outputs/stock-torch-20261025/native-streaming-resume-20261026/completion-caller/GPU-COMPLETION-REGRESSION-REVIEW.json`.

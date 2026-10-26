@@ -2,14 +2,15 @@
 //!
 //! Every foreign storage must retain its [`Pin`] until the final alias is destroyed. Raw addresses
 //! are not ownership. Kernels may finish after the final storage disappears, so reclamation joins
-//! the primary CUDA context before unmapping. Capture/replay roots retain pins for their lifetime.
+//! the primary CUDA context before unmapping unless every pin was released by a native integration
+//! after checked completion. Capture/replay roots retain pins for their lifetime by default.
 //! No imported memory, IPC, background work, file I/O, or Python callbacks occur here.
 #![deny(unsafe_code)]
 
 mod cuda;
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU8, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -100,6 +101,9 @@ enum Contents {
 struct Uses {
     pins: AtomicUsize,
     contents: AtomicU8,
+    // Ordinary foreign storage may disappear before its submitted CUDA work completes.
+    // Only a native caller with a checked last-consumer fence can release without this bit.
+    unjoined: AtomicBool,
 }
 
 impl Uses {
@@ -107,6 +111,7 @@ impl Uses {
         Self {
             pins: AtomicUsize::new(0),
             contents: AtomicU8::new(Contents::Cold as u8),
+            unjoined: AtomicBool::new(false),
         }
     }
     fn state(&self) -> Contents {
@@ -554,12 +559,35 @@ impl Arena {
         candidates.sort_by_key(|(id, preferred, age)| {
             (*preferred, if *preferred { u64::MAX - id } else { *age })
         });
+        // Fence only the byte-bounded prefix this call can actually reclaim. An older
+        // unrelated cache entry must not add a global wait to a completed stage's release.
+        let mut remaining = bytes;
+        candidates.retain(|(id, _, _)| {
+            if remaining == 0 {
+                return false;
+            }
+            remaining = remaining.saturating_sub(state.entries[id].bytes);
+            true
+        });
         if candidates.is_empty() {
             return Ok(report);
         }
-        // Storage destruction does not prove all side streams completed. Join before any unmap.
-        if let Err(error) = self.driver.synchronize() {
-            return Err(poison(state, error));
+        // Generic foreign storage still requires the conservative context fence. A native
+        // stage may instead release every use after its own checked last-consumer event.
+        // The arena lock excludes new pins; each candidate already has zero physical pins.
+        if candidates
+            .iter()
+            .any(|(id, _, _)| state.entries[id].uses.unjoined.load(Ordering::Acquire))
+        {
+            if let Err(error) = self.driver.synchronize() {
+                return Err(poison(state, error));
+            }
+            for (id, _, _) in &candidates {
+                state.entries[id]
+                    .uses
+                    .unjoined
+                    .store(false, Ordering::Release);
+            }
         }
         for (id, _, _) in candidates {
             if report.reclaimed_bytes >= bytes {
@@ -822,9 +850,13 @@ impl Region {
                     requested_bytes: self.rounded,
                 });
             }
-            // An abandoned external fill may still have queued writes. Join before overwriting.
-            if let Err(error) = self.arena.driver.synchronize() {
-                return Err(poison(&mut state, error));
+            // An abandoned external fill may still have queued writes. Only a checked
+            // native last-use release can remove this join; ordinary storage remains guarded.
+            if self.uses.unjoined.load(Ordering::Acquire) {
+                if let Err(error) = self.arena.driver.synchronize() {
+                    return Err(poison(&mut state, error));
+                }
+                self.uses.unjoined.store(false, Ordering::Release);
             }
         }
         let pin = self.pin_locked(&mut state)?;
@@ -1027,6 +1059,25 @@ impl Pin {
     pub fn into_unpinned_region(mut self) -> Arc<Region> {
         let region = self.region.take().expect("live pin");
         if region.arena.pid == std::process::id() {
+            region.uses.unjoined.store(true, Ordering::Release);
+            decrement(&region.uses.pins);
+        }
+        region
+    }
+
+    /// End this physical use after native checked completion, retaining the reservation.
+    ///
+    /// # Safety
+    /// Every producer and consumer using this pin must have completed in this device's
+    /// primary context. The caller must own and successfully join the last-consumer event
+    /// (including side streams) before calling, and prevent further submissions through
+    /// this pin. Every escaped pointer/view must retain a separate live Pin; no alias may
+    /// rely on the consumed Pin. A failed or uncertain event wait cannot use this method.
+    /// Other ordinary pin releases still force a context fence before reuse or unmapping.
+    #[allow(unsafe_code)]
+    pub unsafe fn into_completed_region(mut self) -> Arc<Region> {
+        let region = self.region.take().expect("live pin");
+        if region.arena.pid == std::process::id() {
             decrement(&region.uses.pins);
         }
         region
@@ -1038,6 +1089,7 @@ impl Drop for Pin {
         if let Some(region) = &self.region
             && region.arena.pid == std::process::id()
         {
+            region.uses.unjoined.store(true, Ordering::Release);
             decrement(&region.uses.pins);
         }
     }
