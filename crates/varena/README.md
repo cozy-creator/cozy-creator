@@ -210,3 +210,29 @@ TensorFS wheel SHA256:
 `cf79ae0ae5dad4320a7520cfb2f6ec5a606889483ce07acf604436781e3ad40a`.
 Receipts: `outputs/stock-torch-20261025/codex-resume-20261026/combined-model-stage-cells/native-model-stages-20261026/RESULTS.json`;
 independent review: `outputs/stock-torch-20261025/native-streaming-resume-20261026/own-va-ready/GPU-REVIEW.json`.
+
+### Adjacent native source lookahead: real GPU proof
+
+Ordinary CLI runs 19006/19007 and 19021/19023/19025/19026 passed event/checked
+execution, changed-input reuse, actual capacity refusal, cancellation after
+speculation started, and a healthy same-executor successor. The cohort was
+Creator `5a103bca8ca99290e435489447913bb61769df8c` and Runtime `466238c0a`.
+The three actual 4 MiB placed blocks used native per-attempt links and the
+existing no-reclaim refill worker. A completed speculative read contributed
+4 MiB to the exact source ledger; a fully warm second submission correctly
+read zero bytes rather than discarding useful cached weights to force I/O.
+
+The tight-budget case refused speculation and completed through ordinary
+demand loading. Cancellation after a speculative worker started drained all
+accepted sources with zero final pins; the next request passed in the same
+PID. The attempt restored its owned idle-window policy after checked whole
+completion. These checks establish host ordering and lifecycle, not CUDA-event
+copy/compute overlap, hidden transfer latency, or a model speedup. A previous
+reuse assertion requiring nonzero warm reads (run 19008) was a fixture error
+and is preserved as a failed run, not counted as qualification.
+
+TensorFS wheel SHA256:
+`865aecd116f9221fd1203dfb02dfd53e7ff8dd7fa661f8ea2203d9ae12f027c5`.
+Receipts: `outputs/stock-torch-20261025/codex-resume-20261026/native-prefetch-cells/RESULTS.json`
+and `native-prefetch-v2-resumed-cells/RESULTS.json`; independent review is in
+the owning `xs103-native-source-lookahead/.task/GPU-REVIEW.json`.
