@@ -3,8 +3,8 @@
 //! native preparation/read/compute; no Python callback or additional scheduler is used.
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 
 use pyo3::{
     prelude::*,
@@ -34,6 +34,8 @@ struct Api {
     cancel: Op,
     wait: Observe,
     start_after: Option<StartAfter>,
+    rearm: Option<Op>,
+    finish: Option<Op>,
 }
 // SAFETY: the provider owns the opaque context and all operations use the checked ABI.
 unsafe impl Send for Api {}
@@ -49,14 +51,45 @@ struct Stage {
     graph: Arc<Continuation>,
     module: Arc<Py<PyAny>>,
     pid: u32,
-    epoch: u64,
+    epoch: AtomicU64,
     event_ordered: bool,
-    gate: AtomicU8, // 0 armed, 1 start committed, 2 canceled before start
+    reusable: bool,
+    finished: AtomicBool,
+    passes_started: AtomicU64,
+    read_control: Arc<tensorfs::io::ReadControl>,
+    gate: AtomicU8, // 0 armed, 1 committed/done, 2 canceled, 3 rearming, 4 finishing, 5 finished
     canceled: AtomicBool,
     retained_unsafe: AtomicBool,
-    read: OnceLock<Arc<PreparedRead>>,
+    reads: Mutex<ReadLedger>,
     result: Mutex<Option<(Status, Progress)>>,
     changed: Condvar,
+}
+
+#[derive(Clone, Default)]
+struct ReadTotals {
+    bytes: u64,
+    input_bytes: Vec<u64>,
+    completed_reads: u64,
+}
+#[derive(Default)]
+struct ReadLedger {
+    current: Option<Arc<PreparedRead>>,
+    totals: ReadTotals,
+}
+impl ReadLedger {
+    fn retire_completed(&mut self) {
+        if let Some(read) = self.current.take() {
+            let (bytes, inputs, done) = read.completed_read_bytes();
+            self.totals.bytes = self.totals.bytes.saturating_add(bytes);
+            self.totals.input_bytes.resize(inputs.len(), 0);
+            for (sum, value) in self.totals.input_bytes.iter_mut().zip(inputs) {
+                *sum = sum.saturating_add(value);
+            }
+            self.totals.completed_reads += u64::from(done);
+            // Completed read Drop must not cancel the next rearmed graph pass.
+            drop(read);
+        }
+    }
 }
 
 fn ok() -> Status {
@@ -81,7 +114,7 @@ fn failure(error: &Failure) -> Status {
 
 impl Stage {
     fn publish(&self, status: Status, mut progress: Progress, complete: bool) -> Status {
-        progress.epoch = self.epoch;
+        progress.epoch = self.epoch.load(Ordering::Acquire);
         progress.done = u32::from(complete);
         progress.phase = if complete { 2 } else { 3 };
         let mut result = self.result.lock().unwrap_or_else(|e| e.into_inner());
@@ -129,16 +162,22 @@ impl Stage {
                 "source stage canceled",
             ));
         }
+        self.passes_started.fetch_add(1, Ordering::Relaxed);
         let work = match self.source.prepare() {
             Ok(work) => work,
             Err(error) => return self.abort_before_read(failure(&error)),
         };
-        let read = match PreparedRead::composed(work, self.graph.clone(), self.event_ordered) {
+        let read = match PreparedRead::composed_with_control(
+            work,
+            self.graph.clone(),
+            self.event_ordered,
+            self.read_control.clone(),
+        ) {
             Ok(read) => read,
             Err(error) => return self.abort_before_read(failure(&error)),
         };
         let read = Arc::new(read);
-        let _ = self.read.set(read.clone());
+        self.reads.lock().unwrap_or_else(|e| e.into_inner()).current = Some(read.clone());
         if self.canceled.load(Ordering::Acquire) {
             read.request_cancel();
         }
@@ -176,10 +215,113 @@ impl Stage {
             .gate
             .compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire);
         let status = self.graph.cancel();
-        if let Some(read) = self.read.get() {
-            read.request_cancel();
-        }
+        self.read_control.cancel();
         status
+    }
+
+    fn rearm(&self) -> Status {
+        if !self.reusable || self.finished.load(Ordering::Acquire) {
+            return Status::new(continuation::INVALID, 0, "source input cannot rearm");
+        }
+        if self.canceled.load(Ordering::Acquire) {
+            return Status::new(
+                continuation::CANCELED,
+                0,
+                "source input cancellation is sticky",
+            );
+        }
+        let prior = *self.result.lock().unwrap_or_else(|e| e.into_inner());
+        if !prior.is_some_and(|(status, progress)| {
+            status.kind == continuation::OK && progress.done != 0 && progress.canceled == 0
+        }) {
+            return Status::new(
+                continuation::INVALID,
+                0,
+                "source input needs clean completed pass",
+            );
+        }
+        if self
+            .gate
+            .compare_exchange(1, 3, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Status::new(
+                continuation::INVALID,
+                0,
+                "source input is active or already rearmed",
+            );
+        }
+        if let Err(status) = self.graph.rearm() {
+            self.gate.store(1, Ordering::Release);
+            return status;
+        }
+        let (status, progress) = self.graph.observe(false);
+        let canceled = matches!(status.kind, continuation::OK | continuation::CANCELED)
+            && progress.done != 0
+            && progress.canceled != 0
+            && self.canceled.load(Ordering::Acquire);
+        if !canceled
+            && (status.kind != continuation::OK || progress.phase != 0 || progress.done != 0)
+        {
+            return Status::unproven("rearmed graph did not report an armed epoch");
+        }
+        self.reads
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retire_completed();
+        *self.result.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.epoch.store(progress.epoch, Ordering::Release);
+        if canceled {
+            self.graph.checked(status, progress);
+            self.gate.store(2, Ordering::Release);
+            return self.publish(
+                Status::new(continuation::CANCELED, 0, "source canceled during rearm"),
+                progress,
+                true,
+            );
+        }
+        self.gate.store(0, Ordering::Release);
+        // A cancel racing the rearm must still prevent all later source work.
+        if self.canceled.load(Ordering::Acquire) {
+            let _ = self
+                .gate
+                .compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire);
+        }
+        ok()
+    }
+
+    fn finish(&self) -> Status {
+        if self.finished.load(Ordering::Acquire) {
+            return ok();
+        }
+        let result = *self.result.lock().unwrap_or_else(|e| e.into_inner());
+        if !result.is_some_and(|(status, progress)| {
+            progress.done != 0
+                && matches!(
+                    status.kind,
+                    continuation::OK
+                        | continuation::CANCELED
+                        | continuation::INVALID
+                        | continuation::CAPACITY
+                )
+        }) {
+            return Status::unproven("source input cannot finish without checked completion");
+        }
+        let gate = self.gate.load(Ordering::Acquire);
+        if !matches!(gate, 1 | 2)
+            || self
+                .gate
+                .compare_exchange(gate, 4, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
+            return Status::unproven("source input finish raced another transition");
+        }
+        if let Err(status) = self.graph.finish() {
+            return Status::unproven(&status.detail());
+        }
+        self.finished.store(true, Ordering::Release);
+        self.gate.store(5, Ordering::Release);
+        ok()
     }
 
     fn observe(&self, wait: bool) -> (Status, Progress) {
@@ -193,7 +335,7 @@ impl Stage {
                     return (
                         ok(),
                         Progress {
-                            epoch: self.epoch,
+                            epoch: self.epoch.load(Ordering::Acquire),
                             ..Progress::default()
                         },
                     );
@@ -222,7 +364,7 @@ impl Stage {
                     return (
                         status,
                         Progress {
-                            epoch: self.epoch,
+                            epoch: self.epoch.load(Ordering::Acquire),
                             ..progress
                         },
                     );
@@ -233,7 +375,7 @@ impl Stage {
                         Progress {
                             phase: 1,
                             canceled: u32::from(self.canceled.load(Ordering::Acquire)),
-                            epoch: self.epoch,
+                            epoch: self.epoch.load(Ordering::Acquire),
                             ..Progress::default()
                         },
                     );
@@ -342,6 +484,13 @@ unsafe extern "C" fn start(context: *mut c_void) -> Status {
 unsafe extern "C" fn cancel(context: *mut c_void) -> Status {
     boundary(context, Stage::cancel)
 }
+unsafe extern "C" fn rearm(context: *mut c_void) -> Status {
+    boundary(context, Stage::rearm)
+}
+unsafe extern "C" fn finish(context: *mut c_void) -> Status {
+    boundary(context, Stage::finish)
+}
+
 fn observe(context: *mut c_void, out: *mut Progress, wait: bool) -> Status {
     if out.is_null() {
         return Status::new(continuation::INVALID, 0, "null source progress");
@@ -375,26 +524,73 @@ impl StageJob {
                 "stage observer used after fork",
             ));
         }
-        if let Some(read) = self.owner.read.get() {
-            return read.facts(py);
+        let (current, totals) = {
+            let ledger = self.owner.reads.lock().unwrap_or_else(|e| e.into_inner());
+            (ledger.current.clone(), ledger.totals.clone())
+        };
+        let (bytes, inputs, read_done) = current
+            .as_ref()
+            .map_or((0, Vec::new(), false), |read| read.completed_read_bytes());
+        let row = match current {
+            Some(read) => read.facts(py)?,
+            None => PyDict::new(py),
+        };
+        let mut input_bytes = totals.input_bytes;
+        input_bytes.resize(input_bytes.len().max(inputs.len()), 0);
+        for (sum, value) in input_bytes.iter_mut().zip(inputs) {
+            *sum = sum.saturating_add(value);
         }
         let result = *self.owner.result.lock().unwrap_or_else(|e| e.into_inner());
-        let row = PyDict::new(py);
-        row.set_item("started", self.owner.gate.load(Ordering::Acquire) == 1)?;
-        row.set_item("done", result.is_some())?;
-        row.set_item("read_done", false)?;
-        row.set_item("read_bytes", 0)?;
-        row.set_item("input_read_bytes", Vec::<u64>::new())?;
+        let completed_pass = result.is_some_and(|(_, progress)| progress.done != 0);
+        let finished = self.owner.finished.load(Ordering::Acquire);
+        let unsafe_completion = self.owner.retained_unsafe.load(Ordering::Acquire);
+        let complete = completed_pass && (!self.owner.reusable || finished) && !unsafe_completion;
         row.set_item(
-            "completion_proven",
-            result.is_some_and(|(_, progress)| progress.done != 0),
+            "started",
+            self.owner.passes_started.load(Ordering::Acquire) != 0,
         )?;
-        row.set_item("canceled", self.owner.canceled.load(Ordering::Acquire))?;
+        row.set_item(
+            "passes_started",
+            self.owner.passes_started.load(Ordering::Acquire),
+        )?;
+        row.set_item(
+            "completed_reads",
+            totals.completed_reads + u64::from(read_done),
+        )?;
+        row.set_item("pass_epoch", self.owner.epoch.load(Ordering::Acquire))?;
+        row.set_item("pass_done", completed_pass)?;
+        row.set_item(
+            "done",
+            if self.owner.reusable {
+                finished || unsafe_completion
+            } else {
+                result.is_some()
+            },
+        )?;
+        row.set_item("completion_proven", complete)?;
+        row.set_item("read_done", totals.completed_reads != 0 || read_done)?;
+        row.set_item("bytes", totals.bytes.saturating_add(bytes))?;
+        row.set_item("read_bytes", totals.bytes.saturating_add(bytes))?;
+        row.set_item("input_read_bytes", input_bytes)?;
+        row.set_item("issued_bytes", self.owner.read_control.issued_bytes())?;
+        row.set_item(
+            "canceled",
+            result.is_some_and(|(_, progress)| progress.canceled != 0),
+        )?;
+        row.set_item(
+            "cancel_requested",
+            self.owner.canceled.load(Ordering::Acquire),
+        )?;
         row.set_item(
             "failed",
-            result.is_some_and(|(status, _)| {
-                !matches!(status.kind, continuation::OK | continuation::CANCELED)
-            }),
+            unsafe_completion
+                || result.is_some_and(|(status, _)| {
+                    !matches!(status.kind, continuation::OK | continuation::CANCELED)
+                }),
+        )?;
+        row.set_item(
+            "clock",
+            "elapsed_ns_since_current_pass_read; byte counters cover submission",
         )?;
         Ok(row)
     }
@@ -423,24 +619,29 @@ pub(super) fn export(
             "source stage needs a fresh armed graph",
         ));
     }
+    let reusable = graph.supports_reusable_input();
     let owner = Arc::new(Stage {
         source,
         graph,
         module,
         pid: std::process::id(),
-        epoch: progress.epoch,
+        epoch: AtomicU64::new(progress.epoch),
         event_ordered,
+        reusable,
+        finished: AtomicBool::new(false),
+        passes_started: AtomicU64::new(0),
+        read_control: Arc::new(tensorfs::io::ReadControl::default()),
         gate: AtomicU8::new(0),
         canceled: AtomicBool::new(false),
         retained_unsafe: AtomicBool::new(false),
-        read: OnceLock::new(),
+        reads: Mutex::new(ReadLedger::default()),
         result: Mutex::new(None),
         changed: Condvar::new(),
     });
     let api = Api {
         version: 1,
         size: std::mem::size_of::<Api>() as u32,
-        flags: 7,
+        flags: if reusable { 7 | 16 } else { 7 },
         device: owner.source.device(),
         reserved: 0,
         pid: u64::from(owner.pid),
@@ -452,6 +653,8 @@ pub(super) fn export(
         cancel,
         wait,
         start_after: None,
+        rearm: reusable.then_some(rearm),
+        finish: reusable.then_some(finish),
     };
     let observer = Py::new(
         py,
@@ -469,6 +672,6 @@ pub(super) fn export(
     Ok((capsule, observer))
 }
 
-const _: () = assert!(std::mem::size_of::<Api>() == 96);
+const _: () = assert!(std::mem::size_of::<Api>() == 112);
 const _: () = assert!(std::mem::size_of::<Status>() == 256);
 const _: () = assert!(std::mem::size_of::<Progress>() == 24);

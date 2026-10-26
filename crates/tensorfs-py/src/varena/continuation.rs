@@ -100,11 +100,21 @@ struct EventAbi {
     start_after: Option<StartAfter>,
 }
 
+#[repr(C)]
+struct ReusableAbi {
+    event: EventAbi,
+    rearm: Option<Op>,
+    finish: Option<Op>,
+}
+
 pub(super) struct Continuation {
     abi: Abi,
     owner: Option<Py<PyAny>>,
     quiescent: AtomicBool,
     start_after: Option<StartAfter>,
+    rearm: Option<Op>,
+    finish: Option<Op>,
+    finished: AtomicBool,
 }
 // SAFETY: v1 requires native-only thread-safe operations and a retained same-process context.
 unsafe impl Send for Continuation {}
@@ -157,6 +167,19 @@ impl Continuation {
         } else {
             None
         };
+        let (rearm, finish) = if abi.flags & 16 != 0 {
+            if size < std::mem::size_of::<ReusableAbi>() as u32 {
+                return Err(invalid());
+            }
+            // SAFETY: flag16 plus full112-byte size covers the optional native tail.
+            let tail = unsafe { &*ptr.cast::<ReusableAbi>() };
+            (
+                Some(tail.rearm.ok_or_else(invalid)?),
+                Some(tail.finish.ok_or_else(invalid)?),
+            )
+        } else {
+            (None, None)
+        };
         let owner = value.clone().unbind();
         // SAFETY: validated v1 retain is a native-only operation on this provider's live context.
         let retained = unsafe { abi.retain.expect("validated retain")(abi.context) };
@@ -170,7 +193,36 @@ impl Continuation {
             owner: Some(owner),
             quiescent: AtomicBool::new(false),
             start_after,
+            rearm,
+            finish,
+            finished: AtomicBool::new(false),
         })
+    }
+    pub fn supports_reusable_input(&self) -> bool {
+        self.rearm.is_some() && self.finish.is_some()
+    }
+    pub fn rearm(&self) -> Result<(), Status> {
+        if self.finished.load(Ordering::Acquire) {
+            return Err(Status::new(INVALID, 0, "graph input already finished"));
+        }
+        let rearm = self
+            .rearm
+            .ok_or_else(|| Status::new(INVALID, 0, "graph lacks reusable input"))?;
+        self.quiescent.store(false, Ordering::Release);
+        // SAFETY: the exclusive retained graph capability checks its completed epoch.
+        unsafe { rearm(self.abi.context) }.result()
+    }
+    pub fn finish(&self) -> Result<(), Status> {
+        if self.finished.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if let Some(finish) = self.finish {
+            // SAFETY: retained provider checks final completion before releasing reservation.
+            unsafe { finish(self.abi.context) }.result()?;
+        }
+        self.finished.store(true, Ordering::Release);
+        self.quiescent.store(true, Ordering::Release);
+        Ok(())
     }
     pub fn abandon(self: Arc<Self>) {
         self.cancel();
@@ -223,7 +275,7 @@ impl Continuation {
         self.cancel();
         let (status, progress) = self.observe(true);
         if self.checked(status, progress) {
-            Ok(())
+            self.finish()
         } else {
             Err(Status::unproven(&format!(
                 "native execution completion is unproven: {}",
