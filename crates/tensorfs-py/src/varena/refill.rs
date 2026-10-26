@@ -3,8 +3,8 @@
 //! DLPack destination or calls a Python transformer/cleanup callback from its worker.
 
 use std::collections::BTreeMap;
-use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
@@ -15,7 +15,7 @@ use tensorfs::io::source::{IoTally, Item, Mode, Placement, Source};
 use tensorfs::io::{self, Dst, ReadControl, ReadStats};
 
 use super::continuation::{self, Continuation, Status};
-use super::{PyRegion, raise};
+use super::{raise, PyRegion};
 use crate::store::PyCheckpoint;
 
 #[derive(Clone)]
@@ -98,14 +98,19 @@ fn cuda_failure(error: io::cuda::Error) -> Failure {
     }
 }
 
+struct Input {
+    region: Arc<varena::Region>,
+    items: Vec<Item>,
+    fill: Option<varena::Fill>,
+    pin: Option<varena::Pin>,
+}
+
 pub(super) struct Work {
     region: Arc<varena::Region>,
-    pin: Option<varena::Pin>,
+    inputs: Vec<Input>,
     continuation: Option<Arc<Continuation>>,
     _checkpoint: tensorfs::Checkpoint,
     source: Arc<Source>,
-    items: Vec<Item>,
-    fill: Option<varena::Fill>,
     producer: Option<varena::ProducerGuard>,
     threads: usize,
     completed: bool,
@@ -151,6 +156,7 @@ struct Shared {
     read_issued_ns: AtomicU64,
     read_completed_ns: AtomicU64,
     read_bytes: AtomicU64,
+    input_bytes: Vec<u64>,
     decode_completed_ns: AtomicU64,
     decode_issued_ns: AtomicU64,
     decode_checked_ns: AtomicU64,
@@ -189,15 +195,21 @@ impl Shared {
                 return Err(Failure::Canceled);
             }
             let issued_result = Mutex::new(None);
+            // Own every actual input across source, decoder and graph completion. Ready
+            // inputs were pinned atomically during preparation; a missing input stays private.
+            for input in &mut work.inputs {
+                if input.pin.is_none() {
+                    input.pin = Some(
+                        input
+                            .fill
+                            .as_ref()
+                            .expect("missing input fill")
+                            .pin()
+                            .map_err(Failure::Native)?,
+                    );
+                }
+            }
             if work.event_ordered {
-                // Keep an independent physical owner even if a late publication call fails.
-                work.pin = Some(
-                    work.fill
-                        .as_ref()
-                        .expect("fill")
-                        .pin()
-                        .map_err(Failure::Native)?,
-                );
                 if let Some(decode) = &work.decode {
                     let parts: Vec<_> = decode
                         .parts
@@ -214,7 +226,7 @@ impl Shared {
                             len: part.length as usize,
                         })
                         .collect();
-                    let fill = work.fill.as_ref().expect("fill");
+                    let fill = work.inputs[0].fill.as_ref().expect("fill");
                     // SAFETY: Work owns all packed spans and the exclusive final Fill. This
                     // prepares metadata only; the later callback supplies actual producer streams.
                     work.prepared_decode = Some(Mutex::new(
@@ -240,26 +252,38 @@ impl Shared {
                     ));
                 }
             }
-            let fill = work.fill.as_ref().expect("worker owns uncommitted fill");
-            let (ptr, len) = work
-                .decode
-                .as_ref()
-                .map_or((fill.ptr(), fill.len()), |decode| {
-                    (decode.storage.ptr(), decode.storage.len())
-                });
-            let placement = Placement {
-                items: &work.items,
-                origin: 0,
-                dst: Dst::Device {
-                    device,
-                    ptr,
-                    len,
-                    stream: 0,
-                },
-            };
-            // Source's counter covers every copy and padding span in this one placement.
+            let placements: Vec<_> = work
+                .inputs
+                .iter()
+                .filter_map(|input| {
+                    let fill = input.fill.as_ref()?;
+                    let (ptr, len) = work
+                        .decode
+                        .as_ref()
+                        .map_or((fill.ptr(), fill.len()), |decode| {
+                            (decode.storage.ptr(), decode.storage.len())
+                        });
+                    Some(Placement {
+                        items: &input.items,
+                        origin: 0,
+                        dst: Dst::Device {
+                            device,
+                            ptr,
+                            len,
+                            stream: 0,
+                        },
+                    })
+                })
+                .collect();
+            // Every region is nonempty, so padding supplies at least one copy even when
+            // no stored item has bytes. Source reports each placement exactly once.
+            let remaining = AtomicUsize::new(placements.len());
+            // Source's counters cover every coalesced copy and padding span per placement.
             // Checked mode keeps the historical observation-only callback.
             let issued = |_: usize, streams: &[usize]| {
+                if remaining.fetch_sub(1, Ordering::AcqRel) != 1 {
+                    return;
+                }
                 self.read_issued_ns.store(self.elapsed(), Ordering::Release);
                 if work.event_ordered {
                     let result = if self.cancel.canceled() {
@@ -305,7 +329,7 @@ impl Shared {
             // The engine validates all spans, initializes padding and joins submitted work.
             let stats = unsafe {
                 work.source.read_placements_cancelable_observed(
-                    &[placement],
+                    &placements,
                     work.threads,
                     Mode::Cache,
                     &IoTally::default(),
@@ -330,6 +354,7 @@ impl Shared {
                 return Err(Failure::Canceled);
             }
             if let Some(decode) = work.decode.as_ref().filter(|_| !work.event_ordered) {
+                let fill = work.inputs[0].fill.as_ref().expect("encoded input fill");
                 // Read completion does not certify decoder stream/scratch completion.
                 // Any decoder error or panic must take the existing checked-drain path.
                 work.completed = false;
@@ -378,9 +403,9 @@ impl Shared {
                 }
             }
             if !work.event_ordered {
-                let fill = work.fill.take().expect("successful read owns its fill");
-                // SAFETY: checked mode initialized all bytes and joined every writer.
-                work.pin = Some(unsafe { fill.commit_completed() }.map_err(Failure::Native)?);
+                // Individual valid cache entries may publish before a later commit fails.
+                // No invalid input is published; failure still yields no request output.
+                work.publish_inputs()?;
             }
             if let Some(execution) = work.continuation.clone() {
                 if !work.event_ordered {
@@ -416,13 +441,9 @@ impl Shared {
             }
             if work.event_ordered {
                 work.release_private_gpu()?;
-                let fill = work
-                    .fill
-                    .take()
-                    .expect("event mode retains unpublished fill");
-                // SAFETY: source and dependent execution are both checked complete. The
-                // Fill was physically pinned throughout; only now may ordinary readers see it.
-                work.pin = Some(unsafe { fill.commit_completed() }.map_err(Failure::Native)?);
+                // Source and dependent execution are checked complete. Only now may
+                // ordinary readers observe new ready inputs, each under its existing region.
+                work.publish_inputs()?;
             }
             Ok(stats)
         }));
@@ -530,7 +551,9 @@ impl Shared {
                 }
             }
             // Checked drain succeeded. Abort the unpublished fill before reporting failure.
-            drop(work.fill.take());
+            for input in &mut work.inputs {
+                drop(input.fill.take());
+            }
         }
         if let Err(error) = work.release_private_gpu() {
             let detail = format!("native refill GPU cleanup is unproven: {}", error.detail());
@@ -539,7 +562,9 @@ impl Shared {
             self.finish(Err(Failure::Native(varena::Error::Poisoned(detail))));
             return;
         }
-        drop(work.pin.take());
+        for input in &mut work.inputs {
+            drop(input.pin.take());
+        }
         drop(work.producer.take());
         crate::cleanup::defer(work);
         self.completion_proven.store(true, Ordering::Release);
@@ -605,6 +630,9 @@ fn prepare_items(
             "refill targets overlap",
         )));
     }
+    // Keep validation above for named empty parts, but omit no-op copies: the
+    // device engine issues no callback for them. Region padding still does.
+    items.retain(|item| item.len != 0);
     Ok(items)
 }
 
@@ -697,7 +725,7 @@ pub(super) fn prepare_encoded(
     let scratch_producer = varena::enter_producer(region.device()).map_err(Failure::Native)?;
     let storage = io::DeviceBuffer::new(region.device(), packed).map_err(cuda_failure)?;
     drop(scratch_producer);
-    work.items = items;
+    work.inputs[0].items = items;
     work.decode = Some(Decode {
         encoding,
         dtype,
@@ -737,12 +765,15 @@ pub(super) fn prepare_work(
     let source = Arc::new(checkpoint.local_source(true));
     let mut work = Work {
         region: region.clone(),
-        pin: None,
+        inputs: vec![Input {
+            region: region.clone(),
+            items,
+            fill: Some(fill),
+            pin: None,
+        }],
         continuation: None,
         _checkpoint: checkpoint,
         source,
-        items,
-        fill: Some(fill),
         producer: Some(producer),
         threads: threads.clamp(1, 8),
         completed: false,
@@ -759,7 +790,7 @@ pub(super) fn prepare_work(
                     src: io::Src::Zero,
                     dst: Dst::Device {
                         device: region.device(),
-                        ptr: work.fill.as_ref().expect("fill").ptr(),
+                        ptr: work.inputs[0].fill.as_ref().expect("fill").ptr(),
                         len: region.len(),
                         stream: 0,
                     },
@@ -783,6 +814,109 @@ pub(super) fn prepare_work(
         // producer lease only after capture, when the sealed slot is submitted.
         drop(work.producer.take());
     }
+    Ok(Some(work))
+}
+
+/// Prepare one component's existing raw block regions without changing their identities.
+/// Ready inputs remain pinned before any cold input may allocate or reclaim backing.
+/// All-ready returns None: the caller must reacquire/revalidate ordinary resident bindings.
+pub(super) fn prepare_regions(
+    checkpoint: tensorfs::Checkpoint,
+    groups: Vec<(Arc<varena::Region>, Vec<(String, usize, usize)>)>,
+    threads: usize,
+) -> Result<Option<Work>, Failure> {
+    let invalid = |detail| Failure::Native(varena::Error::Invalid(detail));
+    let Some((first, _)) = groups.first() else {
+        return Err(invalid("load needs input regions"));
+    };
+    let device = first.device();
+    let mut seen = std::collections::BTreeSet::new();
+    // Validate every descriptor before allocation. Same-device reservations cannot overlap;
+    // repeating a region would otherwise turn its second preparation into a busy writer.
+    let mut inputs = groups
+        .into_iter()
+        .map(|(region, parts)| {
+            if region.device() != device || !seen.insert(region.ptr()) {
+                return Err(invalid("load regions must be distinct and on one device"));
+            }
+            let items = prepare_items(&checkpoint, parts, region.len())?;
+            Ok(Input {
+                region,
+                items,
+                fill: None,
+                pin: None,
+            })
+        })
+        .collect::<Result<Vec<_>, Failure>>()?;
+    for input in &mut inputs {
+        input.pin = input.region.try_pin().map_err(Failure::Native)?;
+    }
+    if inputs.iter().all(|input| input.pin.is_some()) {
+        return Ok(None);
+    }
+    let producer = varena::enter_producer(device).map_err(Failure::Native)?;
+    for input in &mut inputs {
+        if input.pin.is_none() {
+            match input.region.prepare().map_err(Failure::Native)? {
+                varena::Preparation::Resident(pin) => input.pin = Some(pin),
+                varena::Preparation::Fill(fill) => input.fill = Some(fill),
+            }
+        }
+    }
+    if inputs.iter().all(|input| input.fill.is_none()) {
+        return Ok(None);
+    }
+    io::prepare_device(device).map_err(cuda_failure)?;
+    let source = Arc::new(checkpoint.local_source(true));
+    let mut work = Work {
+        region: inputs[0].region.clone(),
+        inputs,
+        continuation: None,
+        _checkpoint: checkpoint,
+        source,
+        producer: Some(producer),
+        threads: threads.clamp(1, 8),
+        completed: false,
+        decode: None,
+        event_ordered: false,
+        prepared_decode: None,
+    };
+    let copies: Vec<_> = work
+        .inputs
+        .iter()
+        .filter_map(|input| {
+            input.fill.as_ref().map(|fill| io::Copy {
+                src: io::Src::Zero,
+                dst: Dst::Device {
+                    device,
+                    ptr: fill.ptr(),
+                    len: fill.len(),
+                    stream: 0,
+                },
+            })
+        })
+        .collect();
+    // SAFETY: each nonoverlapping Fill is exclusive; ready inputs are not destinations.
+    // Initialization completes before any capture-only alias can be exported.
+    let initialized = unsafe {
+        io::read(
+            &copies,
+            &io::ReadOpts {
+                threads: 1,
+                ..Default::default()
+            },
+        )
+    };
+    if let Err(error) = initialized {
+        if let Err(drain) = io::drain(device) {
+            let detail = format!("capture input initialization is unproven: {drain}");
+            work.region.poison(detail.clone());
+            std::mem::forget(work);
+            return Err(Failure::Native(varena::Error::Poisoned(detail)));
+        }
+        return Err(io_failure(tensorfs::io::source::Error::Read(error)));
+    }
+    drop(work.producer.take()); // Actual submission reacquires producer exclusion after capture.
     Ok(Some(work))
 }
 
@@ -872,20 +1006,48 @@ impl Work {
         Ok(())
     }
 
+    fn publish_inputs(&mut self) -> Result<(), Failure> {
+        for input in &mut self.inputs {
+            if let Some(fill) = input.fill.take() {
+                // SAFETY: caller checked the whole source and, for events, its consumer.
+                // The independent input pin remains live if publication reports an error.
+                input.pin = Some(unsafe { fill.commit_completed() }.map_err(Failure::Native)?);
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn input_count(&self) -> usize {
+        self.inputs.len()
+    }
+
     pub(super) fn capture_pin(&self) -> Result<varena::Pin, Failure> {
-        self.fill
-            .as_ref()
+        self.capture_input(0)
+    }
+
+    pub(super) fn capture_input(&self, index: usize) -> Result<varena::Pin, Failure> {
+        let input = self
+            .inputs
+            .get(index)
             .ok_or(Failure::Native(varena::Error::Invalid(
-                "load slot has no fill",
-            )))?
-            .pin()
-            .map_err(Failure::Native)
+                "load input index is out of range",
+            )))?;
+        match (&input.fill, &input.pin) {
+            (Some(fill), _) => fill.pin().map_err(Failure::Native),
+            (None, Some(pin)) => pin.try_clone().map_err(Failure::Native),
+            _ => Err(Failure::Native(varena::Error::Invalid(
+                "load input has no owned storage",
+            ))),
+        }
     }
     pub(super) fn abandon(mut self) {
         if self.continuation.is_some() || self.decode.is_some() || self.prepared_decode.is_some() {
             crate::cleanup::defer(Abandoned(Some(self)));
         } else {
-            drop(self.fill.take());
+            for input in &mut self.inputs {
+                drop(input.fill.take());
+                drop(input.pin.take());
+            }
             drop(self.producer.take());
             crate::cleanup::defer(self);
         }
@@ -920,8 +1082,12 @@ impl Drop for Abandoned {
                     return;
                 }
             }
-            drop(work.fill.take());
-            drop(work.pin.take());
+            for input in &mut work.inputs {
+                drop(input.fill.take());
+            }
+            for input in &mut work.inputs {
+                drop(input.pin.take());
+            }
             drop(work.producer.take());
         }
     }
@@ -959,6 +1125,17 @@ impl PreparedRead {
                     Some(decode.encoding.scheme.clone()),
                 )
             });
+        let input_bytes = work
+            .inputs
+            .iter()
+            .map(|input| {
+                if input.fill.is_some() {
+                    input.items.iter().map(|item| item.len).sum()
+                } else {
+                    0
+                }
+            })
+            .collect();
         Ok(Self {
             shared: Some(Arc::new(Shared {
                 region: work.region.clone(),
@@ -975,6 +1152,7 @@ impl PreparedRead {
                 read_issued_ns: AtomicU64::new(0),
                 read_completed_ns: AtomicU64::new(0),
                 read_bytes: AtomicU64::new(0),
+                input_bytes,
                 decode_completed_ns: AtomicU64::new(0),
                 decode_issued_ns: AtomicU64::new(0),
                 decode_checked_ns: AtomicU64::new(0),
@@ -1067,6 +1245,20 @@ impl PreparedRead {
         row.set_item("bytes", bytes)?;
         row.set_item("read_bytes", bytes)?;
         row.set_item(
+            "input_read_bytes",
+            shared
+                .input_bytes
+                .iter()
+                .map(|bytes| {
+                    if shared.read_completed_ns.load(Ordering::Acquire) == 0 {
+                        0
+                    } else {
+                        *bytes
+                    }
+                })
+                .collect::<Vec<_>>(),
+        )?;
+        row.set_item(
             "decoded_bytes",
             if shared.decode_completed_ns.load(Ordering::Acquire) == 0 {
                 0
@@ -1143,6 +1335,9 @@ impl PreparedRead {
             .detach(|| prepare_work(&region, checkpoint, parts, threads, reclaim, false))
             .map_err(|e| e.raise(py))?;
         let cached = prepared.is_none();
+        let input_bytes = vec![prepared.as_ref().map_or(0, |work| {
+            work.inputs[0].items.iter().map(|item| item.len).sum()
+        })];
         Ok(Self {
             shared: Some(Arc::new(Shared {
                 region,
@@ -1159,6 +1354,7 @@ impl PreparedRead {
                 read_issued_ns: AtomicU64::new(0),
                 read_completed_ns: AtomicU64::new(0),
                 read_bytes: AtomicU64::new(0),
+                input_bytes,
                 decode_completed_ns: AtomicU64::new(0),
                 decode_issued_ns: AtomicU64::new(0),
                 decode_checked_ns: AtomicU64::new(0),

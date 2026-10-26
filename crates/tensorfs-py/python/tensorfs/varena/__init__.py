@@ -282,6 +282,7 @@ class LoadSlot:
     supports_event_input = bool(
         getattr(getattr(_ext, "_VarenaLoadSlot", None), "supports_event_input", False)
     )
+    supports_region_input = hasattr(getattr(_ext, "_VarenaLoadSlot", None), "from_regions")
 
     def __init__(
         self,
@@ -300,6 +301,8 @@ class LoadSlot:
         )
         self._tensor: Tensor | None = None
         self._decoded: tuple[str, tuple[int, ...]] | None = None
+        self._tensors: tuple[Tensor, ...] | None = None
+        self._existing_regions = False
         self.device = arena.device
 
     @classmethod
@@ -334,9 +337,64 @@ class LoadSlot:
             max_scratch_bytes=max_scratch_bytes, threads=threads,
         )
         result._tensor = None
+        result._tensors = None
+        result._existing_regions = False
         result._decoded = (dtype, tuple(checkpoint.components[component].tensors[key].shape))
         result.device = arena.device
         return result
+
+    @classmethod
+    def from_regions(
+        cls,
+        checkpoint: _ext.Checkpoint,
+        groups: Sequence[tuple[Region, Sequence[tuple[str, int, int]]]],
+        *,
+        threads: int = 2,
+    ) -> LoadSlot | None:
+        """Capture against existing immutable raw block regions, then load misses once.
+
+        Native preparation pins every ready input before admitting cold fills. Only missing
+        inputs are initialized for capture and later read; their regions remain independently
+        cached after completion. None means all inputs were ready at this observation; the
+        caller must reacquire and revalidate its ordinary resident binding before capture.
+        Each region must already belong exclusively to the declared immutable source recipe.
+        Authored computation must treat every input as read-only: successful completion
+        caches its bytes under that source identity. Runtime rejects mutable-state overlap
+        and visible ATen writes; custom/native kernels must honor the same read-only contract.
+        """
+        native = getattr(_ext, "_VarenaLoadSlot", None)
+        if native is None or not hasattr(native, "from_regions"):
+            raise RuntimeError("this TensorFS build has no region loading capability")
+        owned = native.from_regions(
+            checkpoint, [(region._native, list(parts)) for region, parts in groups], threads
+        )
+        if owned is None:
+            return None
+        result = cls.__new__(cls)
+        result._native = owned
+        result._tensor = None
+        result._decoded = None
+        result._tensors = None
+        result._existing_regions = True
+        result.device = owned.device
+        return result
+
+    @property
+    def immutable_inputs(self) -> tuple[Tensor, ...]:
+        """Existing-region source bytes that authored computation must never write."""
+        return self.tensors if self._existing_regions else ()
+
+    @property
+    def tensors(self) -> tuple[Tensor, ...]:
+        """Capture-only input views, in the declared region order."""
+        if self._tensors is None:
+            import torch
+
+            self._tensors = (
+                (self.tensor,) if self._decoded is not None
+                else tuple(torch.from_dlpack(pin) for pin in self._native.capture_inputs())
+            )
+        return self._tensors
 
     @property
     def tensor(self) -> Tensor:
@@ -375,6 +433,7 @@ class LoadSlot:
         """Retire an unused slot or request cancellation; existing tensor aliases stay owned."""
         self._native.close()
         self._tensor = None
+        self._tensors = None
 
 
 def supports_load_execution() -> bool:
