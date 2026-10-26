@@ -30,9 +30,10 @@ trap 'cleanup; finish' EXIT
 
 # 1. The session's TensorD on the pod.
 step update machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "update"
-key=$(cozy machine show "$NAME" --json | jq -r '.status.workload_key // empty')
-say "pod TensorD $(cozy machine show "$NAME" --json | jq -r .status.version); workload key ${key:0:12}…"
-[ -n "$key" ] || fail "the pod's TensorD has no workload key"
+# Its workload key is in its own status frame, which only Calcifer reads; the private read below needs it.
+v=$(cozy machine show "$NAME" --json | jq -r .status.version)
+say "pod TensorD $v"
+[ "$v" = "$(cozy --version | awk '{print $2}')" ] || fail "the pod runs TensorD $v, not the session's"
 
 # 2. A private commit from the runner, read on the pod.
 tiny "$OUT/a.safetensors"
