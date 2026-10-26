@@ -2694,7 +2694,7 @@ impl Pool {
             let load = match plan.slots.first() {
                 // A call that constructs nothing: its weightless construction.
                 None => Command::Load(Box::new(Load {
-                    tensorfs: calls.and_then(|calls| calls.tensorfs(id, session.executor.line())),
+                    tensorfs: calls.and_then(|calls| calls.tensorfs(id)),
                     actor: actor.clone(),
                     construction: construction.clone(),
                     devices: lane.clone(),
@@ -2724,7 +2724,7 @@ impl Pool {
                         _ => plan.slots.iter().map(load).collect(),
                     };
                     Command::Load(Box::new(Load {
-                        tensorfs: calls.and_then(|calls| calls.tensorfs(id, session.executor.line())),
+                        tensorfs: calls.and_then(|calls| calls.tensorfs(id)),
                         actor,
                         construction: construction.clone(),
                         devices: lane.clone(),
@@ -2871,7 +2871,7 @@ impl Pool {
         session.invoked = true;
         let reply = session.executor.command(
             &Command::Invoke(Box::new(Invoke {
-                tensorfs: calls.and_then(|calls| calls.tensorfs(id, session.executor.line())),
+                tensorfs: calls.and_then(|calls| calls.tensorfs(id)),
                 // A weights output TensorD uploads itself, as a commit in its lane (`publish`).
                 destination: String::new(),
                 actor: record.submission.as_ref().map(|submission| submission.actor.clone()).unwrap_or_default(),

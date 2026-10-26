@@ -26,7 +26,7 @@ use url::Url;
 
 use super::{
     Event, HELD, HeldAnswer, HeldBytes, HeldObject, HeldRequest, LogLines, OutputTarget, Ranges,
-    RunEvent, RunRequest, RunState, StatusFrame, TensorFSOptions, parse_held, path,
+    RunEvent, RunRequest, RunState, StatusFrame, parse_held, path,
 };
 use crate::{
     capability,
@@ -301,13 +301,6 @@ impl Machine {
             .json(&ask);
         let answer: HeldAnswer = json(send(request).await?).await?;
         Ok(answer.held)
-    }
-
-    /// Gives the machine this signer's newest run capability at the Hub `capability.endpoint` names.
-    pub async fn capability(&self, capability: &TensorFSOptions) -> Result<(), Error> {
-        send(self.request(Method::PUT, path::CAPABILITY, &[]).json(capability))
-            .await
-            .map(drop)
     }
 
     fn request(&self, method: Method, template: &str, args: &[&str]) -> RequestBuilder {

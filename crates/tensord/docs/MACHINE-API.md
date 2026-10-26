@@ -10,7 +10,7 @@ control and SSE over HTTP/2, bulk bytes over HTTP/1.1. The routes, bodies and ev
 onto them is `~/cozy_v2/tracker/design/machine-http-api.md` §2. In short:
 
 - `GET /v1/status` (identity and readiness receipt without a cap; the whole picture, as SSE on
-  change, with one), `POST /v1/keepalive`, `PUT /v1/capability` (the signer's newest run capability at a Hub);
+  change, with one), `POST /v1/keepalive`;
 - `POST /v1/runs` (idempotent on id per signer), `GET /v1/runs/{id}/events` (SSE after
   `Last-Event-ID`; closing it never cancels), `POST /v1/runs/{id}/cancel`;
 - `GET /v1/runs/{id}/outputs/{output}` (ranged, `ETag` = revision, readable while it grows),
@@ -101,21 +101,27 @@ other calls are not activity: a Calcifer that holds a stream must not bill forev
 
 ## What a machine and a package can reach
 
-A machine (a rented pod or this computer's own) never holds the account's sign-in (cl-670). At
-the run's Hub it holds, per signer, one **run capability**: a grant the Hub signs at
-`POST /v1/capabilities` for the computer that sent the runs, which keeps its sign-in.
+A machine (a rented pod or this computer's own) never holds the account's sign-in. At the run's
+Hub it holds, per signer, one **run capability** (cl-675, AuthKit's workload grant): a JWT the
+computer that sent the runs signs offline with its device key at each send (`HubAccess.capability`)
+for the machine's **workload key**, a P-256 key TensorD makes at its start and holds in memory only
+(its thumbprint is `StatusFrame.workload_key`; a capability bound to another key is refused 409
+`workload_key_changed`, and Calcifer signs again).
 
-- **Reads**: the closures of the commits this computer's live runs on that machine name by hash,
-  where the account may read them (its own, or released). Public releases need no capability.
-- **Writes**: the repositories those runs publish into (their `weights_destination`): blob
-  uploads and `POST /v1/models/{org}/{name}/commits` there, nothing else.
+- **Reads**: the closures of the commits this computer's unsettled runs on that machine name by
+  hash, where the account may read them (its own, or released). Public releases need none.
+- **Writes**: the repositories those runs publish into (their `weights_destination`): blob uploads
+  and `POST /v1/models/{org}/{name}/commits` there, nothing else.
 - **Refused**: everything else: other commits and repositories, publishing a release, deleting,
-  packages, rentals, billing, minting capabilities. The Hub answers 403
-  `capability.operation_forbidden`.
-- **Lifetime**: 15 minutes. Calcifer mints the machine a newer one at each send that needs more
-  and five minutes before expiry while those runs are queued or running (`PUT /v1/capability`),
-  and stops when they end, so it lapses at most 15 minutes after the last.
+  packages, rentals, billing. The Hub answers 403 `capability.operation_forbidden`.
+- **Renewal**: TensorD redeems it at the Hub's token endpoint (RFC 7523 jwt-bearer, client
+  `tensord`, with a DPoP proof of the key) for a 15-minute token bound to the key, and again two
+  thirds into each while a run it serves is not over, with no further word from the computer. The
+  Hub decides every redemption: it refuses once the rental the capability names has ended, and a
+  revoked device key ends it too. A capability lasts a day at most.
 
-A package's code runs in an executor, which TensorD gives the same capability for its endpoint
-(on a Load or Invoke, and each newer one): code can read it, and reaches what the machine's runs
-already reach, no more. A rental's provider holds what the machine holds.
+A package's code runs in an executor, which never holds the key or a Hub token: TensorD gives it a
+loopback endpoint (GET and HEAD only, with a secret per signer) that forwards its reads to the Hub
+with the token and a fresh proof, the Hub's redirects to storage passing straight through. Code
+reaches what the machine's runs already reach, no more, and only while TensorD runs. A rental's
+provider holds what the machine holds.

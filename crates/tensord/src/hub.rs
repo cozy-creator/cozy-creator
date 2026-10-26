@@ -1,15 +1,14 @@
 //! Hub access (th-245). A run reads its Hub's package catalog anonymously, and its models through
-//! TensorFS's distribution `Endpoint` (`origin`) under its signer's newest run capability when its
-//! request carried one (cl-670), or anonymously without one. A machine never holds an account's
-//! sign-in.
+//! TensorFS's distribution `Endpoint` (`origin`) under its signer's run capability when its request
+//! carried one (cl-675: a workload token bound to this machine's key), or anonymously without one. A
+//! machine never holds an account's sign-in.
 use base64::Engine as _;
-use hub_client::Credential;
-use std::collections::BTreeMap;
+use hub_client::{workload::WorkloadKey, Credential};
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use crate::device_executor::{self, Command, Line};
-use protocol::machine::TensorFSOptions;
+use tokio::sync::watch;
 use tensorfs::{
     err::{refuse, Code},
     fetch::token::{HeaderMap, Request, TokenProvider},
@@ -120,6 +119,12 @@ pub fn http(ca_der: Option<&[u8]>) -> Result<reqwest::Client, Refusal> {
     pooled(&CLIENTS, ca_der)
 }
 
+/// `http` for the executors' gateway (`gateway`), which runs on its own runtime.
+pub fn gateway_http(ca_der: Option<&[u8]>) -> Result<reqwest::Client, Refusal> {
+    static CLIENTS: Mutex<Vec<(Option<Vec<u8>>, reqwest::Client)>> = Mutex::new(Vec::new());
+    pooled(&CLIENTS, ca_der)
+}
+
 type Pool = Mutex<Vec<(Option<Vec<u8>>, reqwest::Client)>>;
 
 fn pooled(pool: &Pool, ca_der: Option<&[u8]>) -> Result<reqwest::Client, Refusal> {
@@ -156,64 +161,315 @@ fn pooled(pool: &Pool, ca_der: Option<&[u8]>) -> Result<reqwest::Client, Refusal
     Ok(client)
 }
 
-/// One signer's newest run capability at one Hub: what its computer minted for the runs it has here
-/// (their private commits, their weights destinations). Every read and upload for those runs
-/// presents the one held when it is sent, and each executor given it for a request hears of each
-/// newer one (`Command::Capability`). In memory only, for the life of the process.
+/// This machine's workload key (cl-675): made at its start, held in memory only, never given to an
+/// executor. Every run capability it redeems binds it, and every token it holds proves it.
+pub fn workload_key() -> &'static WorkloadKey {
+    static KEY: OnceLock<WorkloadKey> = OnceLock::new();
+    KEY.get_or_init(WorkloadKey::generate)
+}
+
+/// One signer's run capability at one Hub (cl-675): the newest its computer signed for this
+/// machine, redeemed for a token bound to the workload key (AuthKit's jwt-bearer grant), and again
+/// before each token expires while a run it serves is not over; the Hub decides each time. Every
+/// read and upload for the signer's runs there presents the token with a fresh DPoP proof, its
+/// executors' through the gateway (`gateway`), which they reach with `secret`. In memory only.
 pub struct Capability {
     actor: String,
-    held: Mutex<(String, i64)>,
-    /// The executors given it, each with the endpoint its requests named.
-    lines: Mutex<Vec<(Line, String)>>,
+    origin: String,
+    ca_der: Option<Vec<u8>>,
+    /// What the signer's executors present at the gateway for it.
+    secret: String,
+    held: Mutex<Held>,
+    /// Its Hub's token endpoint, once found.
+    endpoint: Mutex<Option<String>>,
+    /// Wakes its renewal: a capability that grants more, a run that needs it.
+    changed: Condvar,
+    token: watch::Sender<Token>,
+    runs: Mutex<Served>,
+}
+
+#[derive(Default)]
+struct Held {
+    /// The newest capability, when it was signed and what it grants (its operations and rental).
+    signed: String,
+    issued: i64,
+    grants: String,
+    /// What the token held was redeemed for.
+    redeemed: String,
+    /// When to redeem again (unix ms).
+    renew_at: i64,
+}
+
+/// The runs a capability serves: renewed while one of them is not over.
+#[derive(Default)]
+struct Served {
+    runs: BTreeSet<String>,
+    /// Runs being accepted, which the engine knows of only once they are: live meanwhile.
+    accepting: BTreeSet<String>,
+    /// A renewal runs for them.
+    renewing: bool,
+}
+
+/// A run being accepted under a capability: live to its renewal until it is dropped, once the
+/// engine holds the run (or refused it).
+pub struct Accepting(Arc<Capability>, String);
+
+impl Drop for Accepting {
+    fn drop(&mut self) {
+        self.0.runs.lock().unwrap().accepting.remove(&self.1);
+    }
+}
+
+/// The token a capability was last redeemed for, and why there is none.
+#[derive(Clone, Default)]
+struct Token {
+    access: String,
+    expires_unix_ms: i64,
+    /// A renewal runs: an expired or absent token is waited for.
+    renewing: bool,
+    /// The Hub's last refusal of the capability.
+    refused: Option<String>,
+}
+
+/// What a capability says of itself, unverified: the Hub checks its signature.
+struct Claims {
+    issued: i64,
+    key: String,
+    grants: String,
+}
+
+fn claims(capability: &str) -> Option<Claims> {
+    let payload = capability.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload).ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    Some(Claims {
+        issued: claims["iat"].as_i64()?,
+        key: claims["cnf"]["jkt"].as_str()?.to_owned(),
+        grants: serde_json::json!([claims["authorization_details"], claims["rental"]]).to_string(),
+    })
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
 }
 
 impl Capability {
-    /// `actor`'s at `origin`, offered `token` (until `expires_unix_ms`; 0: unknown), which it
-    /// keeps unless the one it holds expires later. None without a token or a Hub origin.
-    pub fn offer(actor: &str, origin: &str, token: &str, expires_unix_ms: i64) -> Option<Arc<Capability>> {
-        static HELD: Mutex<BTreeMap<(String, String), Arc<Capability>>> = Mutex::new(BTreeMap::new());
-        let key = (actor.to_string(), origin_key(origin).filter(|_| !token.is_empty())?);
-        let capability = HELD.lock().unwrap().entry(key).or_insert_with(|| Arc::new(Capability {
-            actor: actor.into(), held: Mutex::default(), lines: Mutex::default(),
-        })).clone();
+    /// `actor`'s at `hub`, given `hub.capability` unless the one held was signed later; one that
+    /// grants more is redeemed before its runs read. None for a request that carries none. A
+    /// capability signed for another workload key (this machine's TensorD started again since) is
+    /// refused: its computer signs one for this key.
+    pub fn offer(actor: &str, hub: &protocol::machine::HubAccess) -> Result<Option<Arc<Capability>>, (&'static str, String)> {
+        let Some(origin) = origin_key(&hub.origin).filter(|_| !hub.capability.is_empty()) else {
+            return Ok(None);
+        };
+        let offered = claims(&hub.capability).ok_or(("invalid_capability", "the run capability is not a signed capability".into()))?;
+        if offered.key != workload_key().thumbprint() {
+            return Err(("workload_key_changed", "the run capability binds another workload key: this machine's TensorD started again since".into()));
+        }
+        let capability = HELD.lock().unwrap().entry((actor.to_string(), origin)).or_insert_with(|| {
+            let mut secret = [0u8; 32];
+            aws_lc_rs::rand::SecureRandom::fill(&aws_lc_rs::rand::SystemRandom::new(), &mut secret).expect("random bytes");
+            Arc::new(Capability {
+                actor: actor.into(),
+                origin: hub.origin.trim_end_matches('/').into(),
+                ca_der: Some(hub.ca_der.clone()).filter(|der| !der.is_empty()),
+                secret: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(secret),
+                held: Mutex::default(),
+                endpoint: Mutex::default(),
+                changed: Condvar::new(),
+                token: watch::Sender::new(Token::default()),
+                runs: Mutex::default(),
+            })
+        }).clone();
         let mut held = capability.held.lock().unwrap();
-        let newer = (expires_unix_ms == 0 || expires_unix_ms >= held.1) && held.0 != token;
-        if newer {
-            *held = (token.to_string(), expires_unix_ms);
+        // Its computer signs one at each send, one send at a time: of two signed in one second, the later
+        // to arrive is the newer.
+        if offered.issued >= held.issued && hub.capability != held.signed {
+            // One that grants otherwise, or follows a refused one, is redeemed before anything reads
+            // again: the token held is for the old grant, and reads wait for the new one.
+            if offered.grants != held.redeemed || capability.token.borrow().refused.is_some() {
+                held.renew_at = 0;
+                capability.token.send_modify(|token| *token = Token { renewing: true, ..Token::default() });
+            }
+            (held.signed, held.issued, held.grants) = (hub.capability.clone(), offered.issued, offered.grants);
+            capability.changed.notify_all();
         }
         drop(held);
-        if newer {
-            capability.forward();
+        Ok(Some(capability))
+    }
+
+    /// The one the gateway's `secret` names.
+    pub fn by_secret(secret: &str) -> Option<Arc<Capability>> {
+        let held = HELD.lock().unwrap();
+        held.values().find(|capability| !secret.is_empty() && capability.secret == secret).cloned()
+    }
+
+    pub fn actor(&self) -> &str {
+        &self.actor
+    }
+
+    pub fn origin(&self) -> &str {
+        &self.origin
+    }
+
+    pub fn secret(&self) -> &str {
+        &self.secret
+    }
+
+    pub fn ca_der(&self) -> Option<&[u8]> {
+        self.ca_der.as_deref()
+    }
+
+    /// It serves run `run` of `engine` too, from before the run is accepted (its preparation reads
+    /// at once): it is renewed until every run it serves is over.
+    pub fn serves(self: &Arc<Self>, run: &str, engine: &Arc<crate::execution::Engine>) -> Accepting {
+        let mut runs = self.runs.lock().unwrap();
+        runs.runs.insert(run.to_string());
+        runs.accepting.insert(run.to_string());
+        let accepting = Accepting(self.clone(), run.to_string());
+        if runs.renewing {
+            return accepting;
         }
-        Some(capability)
-    }
-
-    /// The token held now, and when it expires.
-    pub fn held(&self) -> (String, i64) {
-        self.held.lock().unwrap().clone()
-    }
-
-    /// The token held now for a request `line`'s executor serves at `endpoint`, which hears of
-    /// each newer one from now on.
-    pub fn given(&self, line: Line, endpoint: &str) -> (String, i64) {
-        let mut lines = self.lines.lock().unwrap();
-        if !lines.iter().any(|(given, at)| given.same(&line) && at == endpoint) {
-            lines.push((line, endpoint.to_string()));
+        runs.renewing = true;
+        // A renewal asks the Hub again: its reads wait for that answer.
+        self.token.send_modify(|token| (token.renewing, token.refused) = (true, None));
+        let (capability, engine) = (self.clone(), Arc::downgrade(engine));
+        let spawned = std::thread::Builder::new().name("capability-renewal".into()).spawn(move || capability.renew(engine));
+        if let Err(error) = spawned {
+            runs.renewing = false;
+            self.token.send_modify(|token| token.renewing = false);
+            tracing::warn!(origin = %self.origin, "renewing the run capability: {error}");
         }
-        self.held()
+        accepting
     }
 
-    /// Each executor given it hears of the token held now; a gone one is forgotten.
-    fn forward(&self) {
-        let (token, expires_unix_ms) = self.held();
-        self.lines.lock().unwrap().retain(|(line, endpoint)| {
-            line.send(&Command::Capability(device_executor::Capability {
-                actor: self.actor.clone(),
-                tensorfs: TensorFSOptions { endpoint: endpoint.clone(), token: token.clone(), expires_unix_ms, ..Default::default() },
-            }))
-        });
+    /// Redeems the capability when a token is due, while a run it serves is not over: a refusal
+    /// stands until a newer capability comes; a Hub that does not answer is asked again, backing
+    /// off to a minute. Its own lifetime is the token's: it renews two thirds into it.
+    fn renew(self: Arc<Self>, engine: std::sync::Weak<crate::execution::Engine>) {
+        let mut failing = Duration::ZERO;
+        loop {
+            {
+                let mut served = self.runs.lock().unwrap();
+                let engine = engine.upgrade();
+                let Served { runs, accepting, .. } = &mut *served;
+                // A run by its caller's id, as its signer named it.
+                runs.retain(|id| {
+                    accepting.contains(id)
+                        || engine.as_ref().is_some_and(|engine| engine.get_public(&self.actor, id).is_ok_and(|run| !run.state.terminal()))
+                });
+                if served.runs.is_empty() {
+                    served.renewing = false;
+                    self.token.send_modify(|token| token.renewing = false);
+                    return;
+                }
+            }
+            let held = self.held.lock().unwrap();
+            let wait = Duration::from_millis(held.renew_at.saturating_sub(now_ms()).max(0) as u64).max(failing);
+            if !wait.is_zero() {
+                let _ = self.changed.wait_timeout(held, wait).unwrap();
+                continue;
+            }
+            let (signed, grants) = (held.signed.clone(), held.grants.clone());
+            drop(held);
+            match self.redeem(&signed) {
+                Ok(token) => {
+                    failing = Duration::ZERO;
+                    let mut held = self.held.lock().unwrap();
+                    // A newer capability came meanwhile: its own redemption is due.
+                    if held.signed != signed {
+                        continue;
+                    }
+                    let life = token.expires_unix_ms - now_ms();
+                    held.renew_at = now_ms() + life * 2 / 3;
+                    held.redeemed = grants;
+                    drop(held);
+                    tracing::info!(origin = %self.origin, expires_in_s = life / 1000, "redeemed the run capability");
+                    self.token.send_modify(|held| (held.access, held.expires_unix_ms, held.refused) = (token.access, token.expires_unix_ms, None));
+                }
+                // A refusal of one a newer capability replaced meanwhile is not that one's.
+                Err(_) if self.held.lock().unwrap().signed != signed => continue,
+                // It stands until a newer capability comes, whose run starts another renewal.
+                Err(error) if !error.retry() => {
+                    tracing::warn!(origin = %self.origin, "the Hub refused the run capability: {error}");
+                    self.runs.lock().unwrap().renewing = false;
+                    self.token.send_modify(|token| (token.refused, token.renewing) = (Some(error.to_string()), false));
+                    return;
+                }
+                Err(error) => {
+                    failing = (failing * 2).clamp(Duration::from_secs(1), Duration::from_secs(60));
+                    tracing::warn!(origin = %self.origin, retry_s = failing.as_secs(), "redeeming the run capability: {error}");
+                }
+            }
+        }
+    }
+
+    /// `signed` redeemed at this Hub's token endpoint for a token bound to the workload key.
+    fn redeem(&self, signed: &str) -> Result<Token, hub_client::Error> {
+        let http = http(self.ca_der.as_deref()).map_err(|e| hub_client::Error::Call(e.0))?;
+        let hub = hub_client::Client::connect(&self.origin, http, Credential::Anonymous);
+        let known = self.endpoint.lock().unwrap().clone();
+        let endpoint = match known {
+            Some(endpoint) => endpoint,
+            None => {
+                let endpoint = asked(&self.origin, || hub.token_endpoint())?;
+                self.endpoint.lock().unwrap().insert(endpoint).clone()
+            }
+        };
+        let token = asked(&self.origin, || hub.redeem(workload_key(), &endpoint, signed))?;
+        Ok(Token {
+            access: token.access_token,
+            expires_unix_ms: now_ms() + token.expires_in * 1000,
+            ..Default::default()
+        })
+    }
+
+    /// The token to present now: a live one, waited for while a renewal runs; none once the Hub
+    /// refused the capability or no run renews it, when the read goes anonymously (public releases).
+    async fn current(&self) -> Option<String> {
+        let mut token = self.token.subscribe();
+        loop {
+            {
+                let held = token.borrow_and_update();
+                if !held.access.is_empty() && held.expires_unix_ms > now_ms() + 5_000 {
+                    return Some(held.access.clone());
+                }
+                if held.refused.is_some() || !held.renewing {
+                    return None;
+                }
+            }
+            token.changed().await.ok()?;
+        }
+    }
+
+    /// Why a read under it was refused: the Hub's refusal, or a token no run renews.
+    fn why(&self) -> String {
+        let held = self.token.borrow();
+        match (&held.refused, held.expires_unix_ms) {
+            (Some(refused), _) => format!("the Hub refused the run's capability: {refused}"),
+            (None, 0) => "the run's capability was never redeemed".into(),
+            (None, at) => format!("the run's capability token expired at {}, and no run of its signer here renews it", utc(at)),
+        }
+    }
+
+    /// The headers that present the token for `method url`: `DPoP <token>` and a fresh proof; none
+    /// without a live token.
+    pub async fn authorize(&self, method: &str, url: &str) -> Vec<(String, String)> {
+        let Some(token) = self.current().await else { return vec![] };
+        let proof = workload_key().proof(method, url, Some(&token));
+        vec![("authorization".into(), format!("DPoP {token}")), ("dpop".into(), proof)]
+    }
+
+    /// Whether a request refused with `status` after presenting `sent` (its authorization) may be
+    /// asked again: a token renewed since it was sent.
+    pub fn renewed_since(&self, status: u16, sent: &str) -> bool {
+        let access = &self.token.borrow().access;
+        status == 401 && !sent.is_empty() && !access.is_empty() && sent != format!("DPoP {access}")
     }
 }
+
+/// Each signer's capability at each Hub, for the life of the process.
+static HELD: Mutex<BTreeMap<(String, String), Arc<Capability>>> = Mutex::new(BTreeMap::new());
 
 /// `unix_ms` as UTC, to the second.
 fn utc(unix_ms: i64) -> String {
@@ -225,27 +481,20 @@ fn utc(unix_ms: i64) -> String {
 
 #[async_trait::async_trait]
 impl TokenProvider for Capability {
-    async fn headers(&self, _: &Request<'_>) -> tensorfs::err::Result<Vec<(String, String)>> {
-        Ok(vec![("authorization".into(), format!("Bearer {}", self.held().0))])
+    async fn headers(&self, request: &Request<'_>) -> tensorfs::err::Result<Vec<(String, String)>> {
+        Ok(self.authorize(request.method, request.url).await)
     }
 
-    /// A refused capability that a newer one replaced since is asked once more with that; the
-    /// newest refused fails the read, naming when it expires.
+    /// A 401 for a token renewed since is asked once more; the newest refused fails the read.
     fn retry(&self, sent: &Request<'_>, status: u16, _: &HeaderMap) -> tensorfs::err::Result<bool> {
         if status != 401 {
             return Ok(false);
         }
-        let (token, expires) = self.held();
-        let presented = format!("Bearer {token}");
-        if !sent.headers.iter().any(|(name, value)| name.eq_ignore_ascii_case("authorization") && *value == presented) {
+        let presented = sent.headers.iter().find(|(name, _)| name.eq_ignore_ascii_case("authorization")).map(|(_, value)| value.as_str()).unwrap_or_default();
+        if self.renewed_since(status, presented) {
             return Ok(true);
         }
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
-        refuse(Code::CREDENTIAL_REQUIRED, match expires {
-            0 => "the Hub refused the run's capability".to_string(),
-            at if at <= now => format!("the run's capability expired at {}", utc(at)),
-            at => format!("the Hub refused the run's capability, which expires at {}", utc(at)),
-        })
+        refuse(Code::CREDENTIAL_REQUIRED, self.why())
     }
 }
 

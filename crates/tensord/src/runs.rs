@@ -5,7 +5,6 @@
 //! them); a restart before it completes ends the run FAILED (`journal::PREPARING`).
 use crate::{
     api::domain,
-    device_executor::Line,
     call_memo::{self, Memo},
     execution::Stoppable,
     catalog::HeldGeneration,
@@ -1273,16 +1272,22 @@ impl Runs {
         self.contexts.lock().unwrap().get_mut(id).and_then(|context| context.ahead.take())
     }
 
-    /// The run's TensorFS options for the Runtime `line` reaches, with its signer's newest capability
-    /// at its Hub, of which that executor hears each newer one.
-    pub(crate) fn tensorfs(&self, id: &str, line: Line) -> Option<protocol::machine::TensorFSOptions> {
+    /// The run's TensorFS options for its executors: its Hub through the gateway when it reads
+    /// there under its signer's run capability, so they hold no token of the Hub's (cl-675).
+    pub(crate) fn tensorfs(&self, id: &str) -> Option<protocol::machine::TensorFSOptions> {
         let contexts = self.contexts.lock().unwrap();
         let context = contexts.get(id)?;
-        let mut options = context.tensorfs.clone()?;
-        if let Some(capability) = context.hub.as_ref().and_then(|hub| hub.capability_at(&options.endpoint)) {
-            (options.token, options.expires_unix_ms) = capability.given(line, &options.endpoint);
+        let options = context.tensorfs.clone()?;
+        let Some(capability) = context.hub.as_ref().and_then(|hub| hub.capability_at(&options.endpoint)) else {
+            return Some(options);
+        };
+        match crate::gateway::url() {
+            Ok(endpoint) => Some(protocol::machine::TensorFSOptions { endpoint, token: capability.secret().into(), ..Default::default() }),
+            Err(error) => {
+                tracing::warn!("the Hub gateway: {error}");
+                Some(options)
+            }
         }
-        Some(options)
     }
 
     /// A run's weights output, the commit `tree` its Runtime wrote here, as a new commit of its

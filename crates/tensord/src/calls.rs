@@ -173,8 +173,8 @@ impl Calls {
         self.parents.lock().unwrap().get(id).is_some_and(|parent| parent.unfinished(engine))
     }
 
-    pub(crate) fn tensorfs(&self, id: &str, line: crate::device_executor::Line) -> Option<protocol::machine::TensorFSOptions> {
-        self.runs.upgrade().and_then(|runs| runs.tensorfs(id, line))
+    pub(crate) fn tensorfs(&self, id: &str) -> Option<protocol::machine::TensorFSOptions> {
+        self.runs.upgrade().and_then(|runs| runs.tensorfs(id))
     }
 
     /// [`crate::runs::Runs::publish`].

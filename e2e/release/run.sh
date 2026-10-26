@@ -146,7 +146,7 @@ open(sys.argv[1], "wb").write(struct.pack("<Q", len(header)) + header + os.urand
 PY
 watched upload-b model upload "$OUT/tiny-b.safetensors" "$model" --lane f32 --on "$ON" || check "model upload --lane f32 failed"
 commit_b=$(jq -r '.. | objects | .commit? // empty' "$OUT/upload-b.ndjson" 2> /dev/null | tail -1) || true
-# While its commit is private (its random bytes are in no public release): a run capability reaches it and nothing else (cl-670).
+# While its commit is private (its random bytes are in no public release): a run capability reaches it and nothing else (cl-675).
 # Its own process: `cozy` there is the installed binary, not this suite's logging function.
 PATH="$(dirname "$COZY"):$PATH" "$here/../capabilities/run.sh" --out "$OUT/capabilities" --commit "$model@$commit" > "$OUT/capabilities.txt" \
   || check "run capabilities: $(grep FAIL "$OUT/capabilities.txt" | head -3 | tr '\n' ' ')"

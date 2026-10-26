@@ -944,8 +944,6 @@ impl DeviceExecutor {
                 Some(Event::Request) => self.answer(&frame, services)?,
                 Some(Event::Unknown) => (),
                 None if frame.reply == command.name() => return Ok(frame),
-                // A Runtime without the `capability` handler refuses it as a command.
-                None if frame.reply == "capability" => (),
                 None => return Err(io::Error::other("out-of-order stock executor reply")),
             }
         }

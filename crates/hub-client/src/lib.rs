@@ -1,11 +1,13 @@
 //! Tensorhub's client: the routes cozy calls, written against the Hub's `api/openapi.yaml` (tensorhub's
 //! contract; `scripts/hub-routes.sh` holds every route here to it), with the credentials every cozy
-//! process speaks as: a user's device-key login and Bearer, a pod's worker capability. Bulk bytes
+//! process speaks as: a user's device-key login and Bearer, a pod's worker capability, a machine's
+//! workload grant (`workload`). Bulk bytes
 //! (presigned GET/PUT) are not here: TensorFS moves them.
 #![forbid(unsafe_code)]
 mod client;
 mod device;
 pub mod types;
+pub mod workload;
 
 use protocol::error::{Error as Refusal, Kind};
 use serde_json::Value;
