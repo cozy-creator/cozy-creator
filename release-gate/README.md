@@ -15,10 +15,10 @@ same SKU and suites; any FAIL blocks the promotion. Design: tracker `design/ci-v
 
 | Suite | Proves | Rentals (`skus`) | Cost · time | Pick it for |
 |---|---|---|---|---|
-| `runtime` | every first-party package's default call (H3 15 s with a described reference, SeedVR2, SDXL, Klein, Qwen, Anima, BiRefNet, the Qwen3.5 describer, Fibo, HiDream, MOSS, Qwen-Image and its one-release swap), then SDXL in a second executor: kernels, times, VRAM, quality, LM coverage | rtx-4090, rtx-5090 | ~$6 · ~75 min, in parallel | a Runtime, TensorFS, varena or TensorD change; any rewrite |
+| `runtime` | every first-party package's default call (H3 15 s with a described reference, SeedVR2, SDXL, Klein, Qwen, Anima, BiRefNet, the Qwen3.5 describer, Fibo, HiDream, MOSS, Qwen-Image and its one-release swap), then SDXL in a second executor and an SDXL int8 quantize (a weights output): kernels, times, VRAM, quality, LM coverage | rtx-4090, rtx-5090 | ~$6 · ~75 min, in parallel | a Runtime, TensorFS, varena or TensorD change; any rewrite |
 | `packages` | the packages `--pins` (or `--only`) names, plus the SDXL smoke | rtx-4090, rtx-5090 | ~$1–3 · 15–30 min | a package bump |
 | `varena` | the memory manager: cold load, co-residency, reload, 8/6/3 GiB caps, a real 8 GB card, host RAM (below) | its `skus` | | a varena or memory change |
-| `tensord` | the machine agent through `cozy`: a package generation installed, updated and rolled back, the Runtime back and forward; a run queued, canceled queued and running, its outputs landed whole; models stacked until the describer must fit (idle executors end); a new executor after a restart; a restart mid-run never re-executes; two runs at once on two GPUs; output landing against this computer's download speed; cl-650 (`before.sh`: a real 0.11.15 TensorD updated, a Runtime floor refused then met) | rtx-5060-ti ×2 | ~$0.60 · ~60 min | a TensorD or cozy change |
+| `tensord` | the machine agent through `cozy`: a package generation installed, updated and rolled back, the Runtime back and forward; a run queued, canceled queued and running, its outputs landed whole; models stacked until the describer must fit (idle executors end); a new executor after a restart; a restart mid-run never re-executes; two runs at once on two GPUs; output landing against this computer's download speed | rtx-5060-ti ×2 | ~$0.60 · ~60 min | a TensorD or cozy change |
 | `tensorfs` | downloads as fast as the last pass (Hub and datacenter cache), nothing from the Hub again, resume after a cut; uploads of new weights, dedup of a re-upload, resume after a cut; a straggler re-asked, not waited out (below) | cpu | ~$0.3 · ~40 min | a TensorFS, download or upload change |
 | `hub` | the API contract (`api/openapi.yaml`): anonymous paths, then account, an admin rental on each provider (RunPod, vast), package publish/yank/pin/un-yank and model upload/publish/yank/delete through `cozy` (below); the migration rehearsal before a deploy | cpu | ~$0.2 · ~30 min | any Hub release |
 | `cli` | (building) | | | a CLI change |
@@ -26,15 +26,14 @@ same SKU and suites; any FAIL blocks the promotion. Design: tracker `design/ci-v
 A rewrite picks every suite. Suites stack on one rental per SKU (`--suite runtime,packages` runs each cell once,
 against `gate-<SKU>-runtime-packages.json`). A suite is `suites/<name>/`: `cells.sh` (sourced in gate.sh: `cell`,
 `pkg`, `product`, `expect`, `log`, `$CLI`, `$M`, `$R`, `$REF`, the scenario, and e2e/run.sh's `run_*`, the one
-way a suite runs `cozy` and reads a run), optional `before.sh` (the fresh pod, before the candidate goes on), optional
-`check.py` (`check(gate) -> (fails, notes)`, listed in analyze.py; `gate['runs']` holds each completed cell as
-`runs.py`'s summary of its record), and `skus` (`<sku> [disk GB] [gpus]` per line, the workflow's rentals). The verdict's `SUITES` line names what ran.
+way a suite runs `cozy` and reads a run), optional `check.py` (`check(gate) -> (fails, notes)`, listed in analyze.py;
+`gate['runs']` holds each completed cell as `runs.py`'s summary of its record), and `skus` (`<sku> [disk GB] [gpus]` per line, the workflow's rentals). The verdict's `SUITES` line names what ran.
 
 ## What a gate does
 
 1. Rents one fresh machine of the SKU.
 2. Puts the candidate on it: `--runtime`, `--tensorfs`, `--tensord` (a cozy binary; each a file or `URL#sha256=`), `--pins`
-   (exact package releases, `sdxl@2.13.0,…`: a package candidate is published and yanked, and installs only by its pin),
+   (exact package releases, `sdxl@0.1.1,…`: a package candidate is published and yanked, and installs only by its pin),
    or `--packages` (a packages checkout whose directories run). Unpinned cells run the root package users get.
    The candidate's cozy puts it on; its `machine update` fails unless the machine then runs it.
 3. Runs the chosen suites' cells, each once, with new prompts and seeds. A run whose record and events stop changing for
@@ -55,7 +54,7 @@ A SKU and suites with no baseline need `--establish` once.
 
 - **By hand:** `release-gate/gate.sh rtx-4090 --suite runtime --runtime <url#sha256=…> --publish`, through the
   default `~/.cozy`, signed in as you. `--on local` runs the cells on this computer's machine as it is (a dev proof:
-  no rental, no `before.sh`).
+  no rental, no `--before`).
 - **From Actions:** `gh workflow run release-gate.yml -R cozy-creator/cozy-creator -f suites=runtime,packages -f pins=…`.
   The suites' `skus` pick the rentals; `skus` overrides them, `only` narrows the cells.
   Testing is manual (Paul 10-24): only the release agent dispatches it, with the suites it chose; no workflow calls it.
@@ -90,10 +89,6 @@ Without `rent=true` it stops after the $0 pre-flight. `model-ingest` puts a firs
 
 - **Cells:** `--cells FILE` adds rows of `name<TAB>target<TAB>args`. The args are expanded in gate.sh, which defines
   `$SCENE`, `$CHAR`, `$R`, `$K`, `$M` and `$CLI`. A FILE ending in `.sh` is sourced after the last product cell.
-- **cl-650** (`suites/tensord/before.sh`, on the fresh pod before the candidate goes on): cozy #1925
-  updates a real 0.11.15 TensorD and verifies the version, and a release whose cozy-runtime floor the pair misses
-  refuses `runtime_floor_unmet` until `cozy machine update --runtime <v> --tensorfs <v>`. Each check is a gate.sh
-  `expect` row in `expect.tsv`, which `analyze.py` fails on.
 - **One release, two checkpoints** (`swap.py`): Qwen-Image text → edit → text and its two Lightning LoRAs in turn, each group on one executor with no restart (run 15744: TFS 0.15.0's `{release}/{component}` set names collided). No first-party SDXL LoRA exists to swap.
 - **LM coverage** (`lm.py`, every gate): Fibo's and Klein's prompt upsamplers and H3's reference describer ran their
   greedy token loops (H3's cell gives a character reference, which BiRefNet cleans and Qwen3.5 describes).
@@ -116,10 +111,10 @@ Without `rent=true` it stops after the $0 pre-flight. `model-ingest` puts a firs
     `straggler.py`, which drips its first objects as a slow storage GET does. A straggler must be re-asked, not
     waited out (at most 1.5x clean + 20 s).
 - **hub** (`suites/hub`, one `cpu` rental, ~$0.2, ~30 min, `-f suites=hub`): pick it for any Hub release. It shows the
-  API contract (tensorhub `api/openapi.yaml` at `$HUB_REF`, read with `gh`) holds as cozy uses it:
-  - `contract.py`: each path no verb reaches, called anonymously, answers as its contract says (200 with a body its
-    schema admits, or 401 when bearer-only). This is the one place in release-gate that speaks HTTP to the Hub by
-    hand: it is the contract test.
+  API contract (tensorhub `api/openapi.yaml`, as the Hub serves it at `/openapi.yaml`) holds as cozy uses it:
+  - `contract.py`: each path no verb reaches, called anonymously through `e2e/hubcheck`, answers as its contract says
+    (200, or 401 when bearer-only), and hubcheck finds every request and response as the document has it. This is
+    the one place in release-gate that speaks HTTP to the Hub by hand: it is the contract test.
   - Through `cozy`, on a throwaway `<account>/ci-hub-<R>`: whoami (balance, buy page), the rental catalog, the
     rental itself and a rental of `cpu` on each provider with a dev-build cozy (`machine rent --provider runpod|vast`, ended and
     checked gone: renters never pick one, th-254); a package locked, published twice, run, yanked (the simple index marks it `data-yanked`),

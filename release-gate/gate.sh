@@ -4,12 +4,12 @@
 # .github/workflows/release-gate.yaml on a runner signed in with `cozy login --key`.
 #   gate.sh <SKU> --suite name,... [--gpus N] [--out DIR] [--establish] [--publish] [--runtime F|URL] [--tensorfs F|URL]
 #           [--tensord BIN|URL] [--packages DIR] [--pins name@release,...] [--only cell,cell] [--before FILE]...
-#           [--cells FILE]... [--first pkg,...] [--cli BIN] [--install-cli BIN] [--disk GB] [--on MACHINE]
-# --on runs on that machine as it is (a dev proof on `local`): no rental, no before.sh, nothing ended.
-# --install-cli is an old cozy (0.11.15) whose machine fetches URL#sha256 candidates itself, for suites/tensord/skew.sh.
+#           [--cells FILE]... [--first pkg,...] [--cli BIN] [--disk GB] [--on MACHINE] [--image sha256:HEX]
+# --image boots that worker image (a staged candidate's digest; a Hub admin's choice) in place of the Hub's current one.
+# --on runs on that machine as it is (a dev proof on `local`): no rental, no --before, nothing ended.
 # --suite runs those suites (suites/<name>/: README.md says what each proves and costs); there is no default, the
-# release agent chooses. A suite's before.sh runs on the fresh pod before the candidate goes on, its cells.sh after it
-# and its check.py in analyze.py; the baseline is gate-<SKU>-<suites>.json.
+# release agent chooses. A suite's cells.sh runs once the candidate is on, and its check.py in analyze.py; the baseline
+# is gate-<SKU>-<suites>.json.
 # A candidate URL is https://…#sha256=<hex>: fetched here, held by its digest, and sent as a file
 # (`cozy machine update --runtime/--tensorfs/--tensord <path>`).
 # One FRESH rental. The candidate goes on with the candidate's own cozy's `machine update`, which fails unless the
@@ -28,7 +28,7 @@ if [ "${1:-}" != --copy ]; then
 fi
 HERE=$2; shift 2
 REPO=cozy-creator/cozy-creator TAG=release-gate-baselines
-SKU=$1; shift; CAND=() ONLY= EXTRA=() BEFORE=() CLI=cozy DISK=400 OUT= PKGS= ESTABLISH= PUBLISH= PINS= SUITES= K= CLIP= GPUS= FIRST= ICLI= ON=
+SKU=$1; shift; CAND=() ONLY= EXTRA=() BEFORE=() CLI=cozy DISK=400 OUT= PKGS= ESTABLISH= PUBLISH= PINS= SUITES= K= CLIP= GPUS= FIRST= ON= IMAGE=
 BIN= RW= TW= TD=
 while [ $# -gt 0 ]; do
   case $1 in
@@ -41,10 +41,10 @@ while [ $# -gt 0 ]; do
     --suite) SUITES=$2;;
     --gpus) GPUS=$2;;
     --first) FIRST=$2;;
-    --install-cli) ICLI=$2;;
     --cli) CLI=$2;;
     --disk) DISK=$2;;
     --on) ON=$2;;
+    --image) IMAGE=$2;;
     --packages) PKGS=$(cd "$2" && pwd);;
     --pins) PINS=",$2,";;
     --runtime|--runtime-wheel) RW=$2;;
@@ -81,8 +81,7 @@ if [ -n "$TDF" ]; then
   chmod +x "$TDF"; BIN=$("$TDF" --version | awk '{print $2}')
   [ -n "$BIN" ] || { log "$TD is not a cozy binary"; exit 1; }
 fi
-# The candidate's own cozy puts the candidate on: it reaches the boot image's older TensorD, which a CLI between
-# them may not (cozy 0.11.16 on 0.11.12: update_field_unknown).
+# The candidate's own cozy puts the candidate on.
 UP=${TDF:-$CLI}
 [ -z "$RWF" ] || CAND+=(--runtime "$RWF"); [ -z "$TWF" ] || CAND+=(--tensorfs "$TWF"); [ -z "$TDF" ] || CAND+=(--tensord "$TDF")
 BK=$SKU${SUITES:+-${SUITES//,/-}}  # the baseline's name
@@ -142,7 +141,7 @@ output() { run_output "$OUT" "$1" "$2"; }
 . "$HERE/products.sh"
 log "gate on $SKU (suites ${SUITES//,/ }): scenario $NAME, seeds from $R, candidate: ${CAND[*]:-released}${PKGS:+ packages $PKGS}${PINS:+ pins ${PINS//,/ }}, cli: $CLI"
 [ -z "$ON" ] || { M=$ON; BEFORE=(); }
-[ -n "$ON" ] || "$CLI" machine rent "$SKU" ${GPUS:+--gpus "$GPUS"} --disk-gb "$DISK" -y --json >rent.json 2>rent.err
+[ -n "$ON" ] || "$CLI" machine rent "$SKU" ${GPUS:+--gpus "$GPUS"} ${IMAGE:+--image-digest "$IMAGE"} --disk-gb "$DISK" -y --json >rent.json 2>rent.err
 [ -n "$M" ] || M=$(python3 -c 'import json,sys
 t = open(sys.argv[1]).read(); dec = json.JSONDecoder(); i = 0
 while i < len(t):
@@ -166,10 +165,9 @@ reported() {
     [ -z "$v" ] && [ "$st" != ending ] && [ "$st" != ended ] || return 0; sleep 5
   done
 }
-# Sourced on the fresh pod, before the candidate goes on: each suite's before.sh, then `--before FILE`s.
-for s in ${SUITES//,/ }; do [ -n "$ON" ] || [ ! -f "$HERE/suites/$s/before.sh" ] || . "$HERE/suites/$s/before.sh"; done
+# Sourced on the fresh pod, before the candidate goes on: the `--before FILE`s.
 for f in "${BEFORE[@]}"; do . "$f"; done
-# A machine already on the candidate cozy (a suite's before.sh moved it) keeps it: no second upload or restart.
+# A machine already on the candidate cozy (a --before FILE moved it) keeps it: no second upload or restart.
 if [ -n "$BIN" ] && [ "$("$CLI" --json machine show "$M" | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"]["version"])' 2>/dev/null)" = "$BIN" ]; then
   for ((i = 0; i < ${#CAND[@]}; i += 2)); do [ "${CAND[i]}" = --tensord ] && CAND=("${CAND[@]:0:i}" "${CAND[@]:i+2}") && break; done
 fi
@@ -190,7 +188,7 @@ reported
 [ -n "$v" ] && [ -n "$rt" ] && [ -n "$tfs" ] || notinstalled "$M reports no cozy, Runtime and TensorFS (cozy ${v:-?}, Runtime ${rt:-?}, TensorFS ${tfs:-?})"
 expect candidate-installed PASS "$M runs cozy $v, Runtime $rt, TensorFS $tfs"
 # The set the verdict is for (verify.sh, promote.sh): each candidate's version, as the machine reports it, and digest.
-# Components with no candidate are not named: a suite's before.sh may move them on its SKU only.
+# Components with no candidate are not named: a --before FILE may move them on its SKU only.
 LABEL=cozy$v-rt$rt-tfs$tfs${PKGS:+-packages$(git -C "$PKGS" rev-parse --short HEAD)}${PINS:+-pins$(cksum <<< "$PINS" | cut -d' ' -f1)}
 echo "$LABEL" > label; log "gate $LABEL"
 digest() { [ -z "$1" ] || sha256sum "$1" | cut -d' ' -f1; }

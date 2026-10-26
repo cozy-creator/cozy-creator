@@ -2,6 +2,9 @@
 # pairs of cells compared for identical output: a refactor's proof is the same request giving the same bytes (xs-101).
 # While cells run, `machine show` and the current run's `run show --once` are timed every 15 s (probe.tsv): a busy
 # machine keeps answering and is never "unreachable" (cl-671).
+# A pod's first call of each tree serves what has not compiled yet (its LoRA per step until the bake kernel is ready,
+# a fused block eager until it is built), so give each tree a warm-up cell before the cells it compares; each cell's
+# summary shows its `kernel.ready` and plan reports.
 # params:
 #   cells      [{"name", "tree" (a packages_refs name), "target" ("<package>/<function>"), "args" ([inputs and flags])}];
 #              two failed cells stop the session
@@ -40,13 +43,14 @@ echo -e "utc\tshow_ms\tshow_rc\tstate\trun\trunshow_ms\trunshow_rc\tstatus\tunre
     sleep 15
   done ) & BG=$!
 
-# summary <name>: execution, then each GPU call's longest step track, peak driver VRAM, lanes, kernels, fused installs.
+# summary <name>: execution, then each GPU call's denoise (else longest) step track, peak driver VRAM, lanes, kernels, fused installs.
 summary() { jq -r '"exec \((.execution_ms // 0) / 1000 | floor)s" + ([.calls[]? | select(.measurements.execution? != null) | .measurements as $m
-  | ($m.attribution.steps // {} | to_entries | max_by(.value.count // 0)) as $s | ($s.value.series // [] | map(.[1])) as $x
+  | ($m.attribution.steps // {} | to_entries | (map(select(.key == "denoise")) + [max_by(.value.count // 0)])[0]) as $s | ($s.value.series // [] | map(.[1])) as $x
   | "; \(.function) memoized=\(.memoized): \($s.key // "-") step1 \(($x[0] // 0) / 100 | floor / 10)s steady \((if ($x | length) > 1 then ($x[1:] | add / length) else 0 end) / 100 | floor / 10)s x\($x | length), "
   + "peak VRAM \(([$m.memory.driver[]?.peak_bytes] | max // 0) / 107374182.4 | floor / 10) GiB, lanes \([$m.models[]? | "\(.slot)=\(.lane)"] | join(" ")), "
   + "attention \([$m.observations[]? | select(.name == "attention.selected") | "\(.fields.component | split("/") | last)=\(.value)"] | unique | join(" ")), "
   + "gemm \([$m.observations[]? | select(.name == "gemm.selected") | .value] | unique | join(",")), "
+  + "ready \([$m.observations[]? | select(.name == "kernel.ready") | .value] | unique | join(",")), "
   + "plan \([$m.execution.plan_reports[]? | to_entries[] | "\(.key)=\(.value.applied)\(if (.value.code // "") != "" then "(\(.value.code))" else "" end)"] | join(" "))"] | join(""))' "$OUT/$1.json" 2>/dev/null; }
 fails=0
 for k in "${names[@]}"; do
@@ -65,8 +69,8 @@ rm -f "$OUT/current"
 
 digests() { jq -r '[.result | .. | .digest? // empty] | join(",")' "$OUT/$1.json" 2>/dev/null; }
 file() { jq -r '.output[]?.path' "$OUT/$1.json" 2>/dev/null | grep -E '\.(mp4|webm|png|webp|jpg|wav|flac)$' | head -1; }
-frames() { local f; f=$(file "$1"); [ -s "$f" ] || { echo none; return; }; ffmpeg -v error -i "$f" -map 0 -f framemd5 - | grep -v '^#' | md5sum | cut -c1-16; }
-psnr() { ffmpeg -i "$(file "$1")" -i "$(file "$2")" -lavfi '[0:v][1:v]psnr' -f null - 2>&1 | grep -oE 'average:[0-9.inf]+' | tail -1; }
+frames() { local f; f=$(file "$1"); [ -s "$f" ] || { echo none; return; }; ffmpeg -nostdin -v error -i "$f" -map 0 -f framemd5 - | grep -v '^#' | md5sum | cut -c1-16; }
+psnr() { ffmpeg -nostdin -i "$(file "$1")" -i "$(file "$2")" -lavfi '[0:v][1:v]psnr' -f null - 2>&1 | grep -oE 'average:[0-9.inf]+' | tail -1; }
 differ=0
 while read -r a b; do
   da=$(digests "$a") db=$(digests "$b")

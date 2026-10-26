@@ -82,7 +82,7 @@ pub async fn latest(ctx: &Context, hub: &Origin, package: &str) -> Result<String
         .and_then(|raw| serde_json::from_slice(&raw).ok());
     let client = ctx.hub_client(hub)?;
     let answer = client
-        .package_if_changed(org, name, kept.as_ref().map(|kept| kept.etag.as_str()))
+        .get_package_if_changed(org, name, kept.as_ref().map(|kept| kept.etag.as_str()))
         .await
         .map_err(|e| absent(hub_error(e), package))?;
     let (card, etag) = match (answer, kept) {

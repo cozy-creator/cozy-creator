@@ -478,19 +478,6 @@ impl Journal {
             CREATE INDEX IF NOT EXISTS executions_updated ON executions(updated_ms);",
             )
             .map_err(db_error)?;
-        // A journal from before TensorD's 0.12 cohort lacks columns its runs are read by: refused
-        // with what to do, as an older store is (`storage::open`), never migrated.
-        let columns = |table: &str| -> io::Result<Vec<String>> {
-            let mut statement = connection.prepare(&format!("SELECT name FROM pragma_table_info('{table}')")).map_err(db_error)?;
-            let rows = statement.query_map([], |row| row.get(0)).map_err(db_error)?;
-            rows.collect::<Result<_, _>>().map_err(db_error)
-        };
-        let held_memos = columns("held_memos")?;
-        if !columns("executions")?.iter().any(|c| c == "actor") || !(held_memos.is_empty() || held_memos.iter().any(|c| c == "used_ms")) {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, format!(
-                "{} is a journal from before TensorD's 0.12 cohort, which this one cannot read: move it aside to start fresh (its runs are gone either way)",
-                root.display())));
-        }
         connection.execute_batch("BEGIN; CREATE TABLE IF NOT EXISTS machine_metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS update_run_ids(actor TEXT NOT NULL,id TEXT NOT NULL,PRIMARY KEY(actor,id));
             CREATE TABLE IF NOT EXISTS installations(actor TEXT NOT NULL,alias TEXT NOT NULL,record TEXT NOT NULL,PRIMARY KEY(actor,alias));

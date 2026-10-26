@@ -7,7 +7,6 @@ use ed25519_dalek::VerifyingKey;
 use hub_client::{types, Credential};
 use std::{
     io,
-    num::NonZeroU64,
     sync::atomic::{AtomicI64, Ordering},
     time::Duration,
 };
@@ -50,12 +49,12 @@ impl Hub {
     }
 
     /// One call within the budget.
-    async fn call<T, E: Into<hub_client::Error>>(
+    async fn call<T>(
         &self,
-        call: impl std::future::Future<Output = Result<T, E>>,
+        call: impl std::future::Future<Output = Result<T, hub_client::Error>>,
     ) -> Result<T, hub_client::Error> {
         match tokio::time::timeout(CALL_BUDGET, call).await {
-            Ok(answer) => answer.map_err(Into::into),
+            Ok(answer) => answer,
             Err(_) => Err(hub_client::Error::Call(
                 "Tensorhub did not answer within its call budget".into(),
             )),
@@ -82,10 +81,8 @@ impl Hub {
 
     /// The rental's current authorized keys and their lease.
     pub async fn authorized_keys(&self) -> Result<(Vec<VerifyingKey>, Duration), Refusal> {
-        let answer = self
-            .call(self.client.get_worker_authorized_keys(&self.grant.worker_id))
-            .await;
-        let document = self.heard(answer.map(|a| a.into_inner()))?;
+        let answer = self.call(self.client.get_worker_authorized_keys()).await;
+        let document = self.heard(answer)?;
         let invalid = || Refusal::Transport("rental authority metadata is invalid".into());
         if document.worker_id != self.grant.worker_id
             || !(1..=3600).contains(&document.lease_seconds)
@@ -104,40 +101,28 @@ impl Hub {
         Ok((keys, Duration::from_secs(document.lease_seconds as u64)))
     }
 
-    /// Tells the Hub where this booting machine listens. Ok(false): a Hub that takes no
-    /// reports and waits for the provider instead.
+    /// Tells the Hub where this booting machine listens.
     pub async fn report_endpoint(
         &self,
         endpoint: &super::endpoint::Endpoint,
-    ) -> Result<bool, Refusal> {
+    ) -> Result<(), Refusal> {
         let report = types::WorkerEndpointReport {
             public_host: endpoint.public_host.clone(),
             ports: endpoint
                 .ports
                 .iter()
-                .filter_map(|(private, public)| {
-                    Some((private.clone(), NonZeroU64::new((*public).into())?))
-                })
+                .filter(|(_, public)| **public > 0)
+                .map(|(private, public)| (private.clone(), *public))
                 .collect(),
         };
-        let answer = self
-            .call(self.client.report_worker_endpoint(&self.grant.worker_id, &report))
-            .await;
-        match answer.map(drop) {
-            Err(hub_client::Error::Hub { status: 404, .. }) => self.heard(Ok(false)),
-            answer => self.heard(answer.map(|()| true)),
-        }
+        let answer = self.call(self.client.report_worker_endpoint(&report)).await;
+        self.heard(answer)
     }
 
     /// Ends this rental's allocation; acceptance is the Hub's 204.
     pub async fn release(&self) -> Result<(), Refusal> {
-        let request = types::WorkerReleaseRequest {
-            worker_id: self.grant.worker_id.clone(),
-        };
-        let answer = self
-            .call(self.client.release_worker_rental(&self.grant.worker_id, &request))
-            .await;
-        self.heard(answer.map(drop))
+        let answer = self.call(self.client.release_worker_rental(&self.grant.worker_id)).await;
+        self.heard(answer)
     }
 }
 

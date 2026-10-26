@@ -19,11 +19,6 @@ pub fn main(args: impl IntoIterator<Item = std::ffi::OsString>) -> ExitCode {
         /// Windows: the readiness pipe a stable parent handed the service it started.
         #[arg(long, hide = true)]
         service_ready: Option<u64>,
-        /// What a machine `cozy machine enable` started (0.11.16 and older) was given: its update
-        /// execs this binary in its place with its own arguments. It means this computer's machine.
-        /// Upgrade safety only: remove once no machine runs 0.11.16 or older (tracker cl-646).
-        #[arg(long = "persistent", hide = true)]
-        _persistent: bool,
     }
     let serve = <Serve as clap::Parser>::parse_from(args);
     machine(serve.flags.lifetime(), serve.service_ready)
@@ -113,20 +108,15 @@ fn machine_runtime() -> io::Result<&'static tokio::runtime::Runtime> {
 }
 
 /// The state root's one owner: its lock held while the process lives, and the TensorFS store it
-/// serves (which may live outside `root`), claimed for this machine alone. A machine's (`paths`)
-/// store in an older format is set aside for the update that met it (`older_store`).
-fn own(root: &std::path::Path, store: &std::path::Path, paths: Option<&crate::machine::update::Paths>)
-    -> io::Result<((std::fs::File, std::fs::File), Arc<Store>)> {
+/// serves (which may live outside `root`), claimed for this machine alone.
+fn own(root: &std::path::Path, store: &std::path::Path) -> io::Result<((std::fs::File, std::fs::File), Arc<Store>)> {
     std::fs::create_dir_all(root)?;
     let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
         .open(root.join("owner.lock"))?;
     lock.try_lock()
         .map_err(|_| io::Error::new(io::ErrorKind::AlreadyExists, "state already has a machine owner"))?;
     platform::durable::set_mode(root, 0o700)?;
-    let store = match paths {
-        Some(paths) => crate::machine::older_store::open(store, paths)?,
-        None => crate::storage::open(store)?,
-    };
+    let store = crate::storage::open(store)?;
     // The store is this machine's alone, whatever path another machine names it by.
     let claim = crate::storage::claim(store.root())?;
     Ok(((lock, claim), store))
@@ -203,7 +193,7 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     identity.store = Some(layout.store.clone());
     let generations = engine.join("generations");
     let paths = crate::machine::update::Paths::new(&engine, &layout.root);
-    let (_owned, store) = own(&engine, &layout.store, Some(&paths))?;
+    let (_owned, store) = own(&engine, &layout.store)?;
     // The machine's one downloader, held for its life: it reads the datacenter volume before the
     // Hub and fills it. A variable naming no mount point (the volume was not delivered) is none.
     boot.at("cache");
@@ -459,8 +449,7 @@ fn report_endpoint(grant: crate::machine::grant::HubGrant, endpoint: crate::mach
     runtime.block_on(async {
         for attempt in 0..5u32 {
             match hub.report_endpoint(&endpoint).await {
-                Ok(true) => return tracing::info!("reported endpoint {}", endpoint.public_host),
-                Ok(false) => return tracing::info!("the Hub takes no endpoint reports"),
+                Ok(()) => return tracing::info!("reported endpoint {}", endpoint.public_host),
                 Err(Refusal::Denied) => return tracing::warn!("the Hub refused the endpoint report"),
                 Err(Refusal::Transport(error)) => {
                     tracing::warn!("endpoint report: {error}");

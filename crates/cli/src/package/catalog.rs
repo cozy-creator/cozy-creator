@@ -33,10 +33,9 @@ pub async fn search(ctx: &Context, query: &str, limit: u32) -> Result<ExitCode, 
     let query = query.trim();
     let answer = ctx
         .hub_client(&hub)?
-        .search_packages(Some(limit.into()), (!query.is_empty()).then_some(query))
+        .search_packages((!query.is_empty()).then_some(query), limit)
         .await
-        .map_err(hub_error)?
-        .into_inner();
+        .map_err(hub_error)?;
     let packages: Vec<Found> = answer
         .packages
         .into_iter()
@@ -100,10 +99,9 @@ pub async fn info(ctx: &Context, package: &PackageRef) -> Result<ExitCode, Error
     let hub = ctx.hub();
     let card = ctx
         .hub_client(&hub)?
-        .get_package(&package.org, &package.name, None)
+        .get_package(&package.org, &package.name)
         .await
-        .map_err(|e| missing(hub_error(e), package, hub.as_str()))?
-        .into_inner();
+        .map_err(|e| missing(hub_error(e), package, hub.as_str()))?;
     let releases: Vec<Release> = card
         .releases
         .into_iter()
@@ -181,7 +179,7 @@ async fn warnings(
         .get_package_finalization(&package.org, &package.name, release)
         .await;
     match status.map_err(hub_error) {
-        Ok(status) => Ok(status.into_inner().warnings),
+        Ok(status) => Ok(status.warnings),
         Err(e) if matches!(e.kind, Kind::Forbidden | Kind::Credential | Kind::NotFound) => {
             Ok(vec![])
         }

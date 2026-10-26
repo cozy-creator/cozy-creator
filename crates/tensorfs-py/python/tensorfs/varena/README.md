@@ -162,7 +162,7 @@ retain/release/start/poll/cancel/wait functions. The ABI is declared by Runtime'
 `native/execution/include/cozy_execution_v1.h`; TensorFS mirrors its C records, never Rust
 objects. The capsule and provider stay owned through its final native release.
 
-The existing refill worker reads the declared raw stored parts into that same address,
+In checked mode, the existing refill worker reads the declared raw stored parts into that same address,
 checks every copy stream, commits Fill to a retained Pin, starts the native continuation,
 and waits for checked compute completion. No Python callback or binder runs between reading
 and execution. `Dst.stream=0` selects the read engine's explicit owned streams, not CUDA's
@@ -200,7 +200,7 @@ overhead; it is not a hard process-VRAM ceiling. Scratch allocation uses the exi
 guard and remains owned alongside the final Fill. Neither preparation nor an enqueue event
 publishes weights as ready.
 
-After a checked source read, the same worker calls the existing `raw::decode_into`, including
+In checked mode, after a checked source read, the same worker calls the existing `raw::decode_into`, including
 its device error-word and completion checks, then checks cancellation before committing the
 final Fill and starting the unchanged continuation. Any failed read/decode launches zero
 dependent graphs. A semantic decode failure drains before normal cleanup; uncertain completion
@@ -213,3 +213,38 @@ Returned native facts add `decode_scheme`, `decoded_bytes`, `scratch_bytes`, and
 `decode_completed_ns`. Successful encoded work must satisfy
 `read_completed_ns <= decode_completed_ns <= launch_started_ns`. Read bytes count stored parts,
 not expanded output bytes. Raw slots retain zero decode counters and their existing behavior.
+
+### Optional event ordering
+
+Runtime's `load_ordering="events"` uses the size-checked optional continuation capability.
+The placement's existing final-issue callback orders raw copies, the shared prepared decoder,
+and dependent compute through native stream events. It performs no source reads, allocations,
+byte-engine recursion or host completion wait inside the callback. Decoder preparation and
+bounded staging remain native work; the callback does not run a Python transform.
+
+The worker checks source and compute completion before publishing the Fill or returning output.
+The physical pin, checkpoint, packed buffers and decoder scratch remain owned throughout; staging
+is reusable only after its producer copy is checked complete. An encoded device error flag skips
+the entire authored program, including index reset and prefix. A submitted graph therefore does
+not prove body execution. Before enqueue commitment, a source/preflight/cancel error still means
+zero submissions. Cancellation after that commitment is cooperative execution cancellation.
+
+Late device or ownership failure discards output and retires uncertain owners; it cannot prove
+that no body ran. This is an explicit contract distinction from checked mode, whose assertions
+remain supported. Facts report selected `ordering`, `execution_committed`, `decode_issued_ns` and
+`decode_checked_ns`. Host completion timestamps record observation, not device stage order;
+event mode may observe decoder completion after compute. `decoded_bytes` remains zero when
+encoded values fail validation. Only checked composed completion authorizes ordinary release.
+
+Private decoder streams, metadata and packed GPU buffers are destroyed while the native producer
+exclusion is still held; successful completion releases that exclusion only afterward. Closing an
+unused encoded slot during actual capture defers its owning Work to the existing cleanup worker.
+If capture is still active, the worker backs off briefly and requeues that same owner so unrelated
+releases can proceed. It never frees private CUDA resources inside capture. Other exclusion or
+completion failures retain the owners and poison the arena. Thus unused-slot GPU cleanup may be
+delayed until capture ends; it does not block the capturing Python thread.
+
+Composed slots check private event, allocation and stream destruction before publishing an
+event-mode Fill. Successful handles become inert. A failed release retains the actual partially
+released Work, poisons the arena and cannot be retried by Drop; no successful output is reported.
+These checks reuse the decoder and buffer owners rather than a separate cleanup registry.

@@ -1,8 +1,8 @@
 //! Private same-process ABI imported from Runtime's cozy_execution_v1.h.
 //! The provider owns its context and graph; this consumer never sees Rust or C++ objects.
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use pyo3::{ffi, prelude::*};
 
@@ -39,11 +39,7 @@ impl Status {
         String::from_utf8_lossy(&self.detail[..(self.detail_len as usize).min(244)]).into_owned()
     }
     pub fn result(self) -> Result<(), Self> {
-        if self.kind == OK {
-            Ok(())
-        } else {
-            Err(self)
-        }
+        if self.kind == OK { Ok(()) } else { Err(self) }
     }
 }
 
@@ -59,6 +55,7 @@ pub(super) struct Progress {
 
 type Op = unsafe extern "C" fn(*mut c_void) -> Status;
 type Observe = unsafe extern "C" fn(*mut c_void, *mut Progress) -> Status;
+type StartAfter = unsafe extern "C" fn(*mut c_void, *const usize, u32, u64) -> Status;
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Abi {
@@ -81,10 +78,17 @@ const _: [(); 24] = [(); std::mem::size_of::<Progress>()];
 #[cfg(target_pointer_width = "64")]
 const _: [(); 88] = [(); std::mem::size_of::<Abi>()];
 
+#[repr(C)]
+struct EventAbi {
+    base: Abi,
+    start_after: Option<StartAfter>,
+}
+
 pub(super) struct Continuation {
     abi: Abi,
     owner: Option<Py<PyAny>>,
     quiescent: AtomicBool,
+    start_after: Option<StartAfter>,
 }
 // SAFETY: v1 requires native-only thread-safe operations and a retained same-process context.
 unsafe impl Send for Continuation {}
@@ -128,6 +132,15 @@ impl Continuation {
         {
             return Err(invalid());
         }
+        let start_after = if abi.flags & 8 != 0 {
+            if size < std::mem::size_of::<EventAbi>() as u32 {
+                return Err(invalid());
+            }
+            // SAFETY: the capability and checked full size cover this optional C tail.
+            Some(unsafe { (*ptr.cast::<EventAbi>()).start_after }.ok_or_else(invalid)?)
+        } else {
+            None
+        };
         let owner = value.clone().unbind();
         // SAFETY: validated v1 retain is a native-only operation on this provider's live context.
         let retained = unsafe { abi.retain.expect("validated retain")(abi.context) };
@@ -140,6 +153,7 @@ impl Continuation {
             abi,
             owner: Some(owner),
             quiescent: AtomicBool::new(false),
+            start_after,
         })
     }
     pub fn abandon(self: Arc<Self>) {
@@ -149,6 +163,25 @@ impl Continuation {
     pub fn start(&self) -> Result<(), Status> {
         // SAFETY: same-process retained capability. The provider atomically arbitrates cancel/start.
         unsafe { self.abi.start.expect("validated start")(self.abi.context) }.result()
+    }
+    pub fn supports_event_input(&self) -> bool {
+        self.start_after.is_some()
+    }
+    pub fn start_after(&self, streams: &[usize], error: u64) -> Result<(), Status> {
+        let start = self
+            .start_after
+            .ok_or_else(|| Status::unproven("event input capability missing"))?;
+        // SAFETY: the owned producer streams and error word stay live through composed
+        // completion; the provider copies the temporary handle array during this call.
+        unsafe {
+            start(
+                self.abi.context,
+                streams.as_ptr(),
+                streams.len() as u32,
+                error,
+            )
+        }
+        .result()
     }
     /// v1 cancel is atomic and nonblocking: safe even from a Python-side destructor.
     pub fn cancel(&self) -> Status {

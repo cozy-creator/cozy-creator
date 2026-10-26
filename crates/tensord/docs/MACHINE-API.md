@@ -5,8 +5,9 @@ and a run's own child runs. A laptop's machine and a rental's are the same.
 
 **HTTP + JSON** on the machine's one pinned-TLS listener (`api/server.rs`, `api/http.rs`):
 control and SSE over HTTP/2, bulk bytes over HTTP/1.1. The routes, bodies and events are
-`crates/protocol/openapi/machine.json`, generated from `protocol::machine`; how each former
-gRPC call maps onto them is `~/cozy_v2/tracker/design/machine-http-api.md` §2. In short:
+`crates/tensord/api/openapi.yaml`, written by hand and changed in the same PR as the server
+(`scripts/machine-routes.sh` holds the router and the client to it); how each former gRPC call maps
+onto them is `~/cozy_v2/tracker/design/machine-http-api.md` §2. In short:
 
 - `GET /v1/status` (identity and readiness receipt without a cap; the whole picture, as SSE on
   change, with one), `POST /v1/keepalive`, `PUT /v1/capability` (the signer's newest run capability at a Hub);
@@ -114,8 +115,6 @@ the run's Hub it holds, per signer, one **run capability**: a grant the Hub sign
 - **Lifetime**: 15 minutes. Calcifer mints the machine a newer one at each send that needs more
   and five minutes before expiry while those runs are queued or running (`PUT /v1/capability`),
   and stops when they end, so it lapses at most 15 minutes after the last.
-- **An older Hub** (before tensorhub v0.36.1) mints none: a run that needs one fails at its send,
-  `hub_capabilities_unsupported`, and nothing reaches the machine. Runs on public releases are unaffected.
 
 A package's code runs in an executor, which TensorD gives the same capability for its endpoint
 (on a Load or Invoke, and each newer one): code can read it, and reaches what the machine's runs

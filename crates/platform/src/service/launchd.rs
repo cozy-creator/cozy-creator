@@ -4,7 +4,7 @@
 use super::{ServiceSpec, run};
 use crate::{Error, Result, durable, paths::Home};
 use std::{
-    fs, io,
+    fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
@@ -78,15 +78,6 @@ pub(super) fn stop(_: &Path, name: &str) -> Result<()> {
         .status()
         .is_ok_and(|status| status.success());
     if loaded { stopped } else { Ok(()) }
-}
-
-pub(super) fn uninstall(dir: &Path, name: &str) -> Result<bool> {
-    let path = plist(dir, name);
-    match fs::remove_file(&path) {
-        Ok(()) => Ok(true),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(Error::io("remove", path)(error)),
-    }
 }
 
 /// A session of its own is enough: launchd ends a stopped job's process group, not others.

@@ -367,26 +367,14 @@ impl Hubs {
     ) -> Result<Held, Denied> {
         let client = self.client(origin).map_err(refused)?;
         let ask = types::CapabilityRequest {
-            machine: Some(machine.to_owned()),
+            machine: machine.to_owned(),
             reads: needs.reads.iter().cloned().collect(),
             writes: needs.writes.iter().cloned().collect(),
-            expires_s: None,
         };
-        let minted = client.create_capability(&ask).await;
-        let minted = minted.map_err(|error| match error.into() {
-            hub_client::Error::Hub { status: 404, code, .. } if code == "route.not_found" => {
-                Denied::Refused(Reason {
-                    code: "hub_capabilities_unsupported".into(),
-                    message: format!(
-                        "{origin} mints no run capabilities, which a run that reads a private commit or \
-                         publishes needs: tensorhub v0.36.1 or later does"
-                    ),
-                    ..Default::default()
-                })
-            }
-            error => hub_denied(origin, error),
-        })?;
-        let minted = minted.into_inner();
+        let minted = client
+            .create_capability(&ask)
+            .await
+            .map_err(|error| hub_denied(origin, error))?;
         // Minted again two thirds into its life (ten minutes of fifteen).
         let now = now_s();
         let expires = u64::try_from(minted.expires_unix_ms / 1000).unwrap_or_default();
@@ -412,22 +400,15 @@ impl Hubs {
             return Ok(facts.clone());
         }
         let hub = |error| hub_denied(origin, error);
-        let account = client
-            .get_current_account()
-            .await
-            .map_err(|e| hub(e.into()))?;
-        let environment = client.get_execution_environment().await;
-        let environment = environment
-            .map_err(|e| hub(e.into()))?
-            .into_inner()
-            .environment;
+        let account = client.get_current_account().await.map_err(hub)?;
+        let environment = client.get_execution_environment().await.map_err(hub)?.environment;
         let names = [
             &environment.tensorhub_origin,
             &environment.tensorhub_public_origin,
         ];
         let facts = Facts {
             key,
-            account: account.into_inner().name,
+            account: account.name,
             names: names.iter().filter_map(|o| Origin::parse(o).ok()).collect(),
             reads: environment.tensorhub_origin,
             ca_der: environment

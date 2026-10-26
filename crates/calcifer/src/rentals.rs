@@ -177,7 +177,7 @@ impl Machines {
     /// Nothing is recorded or kept.
     pub async fn quote(&self, hub: &str, sku: &str, shape: Shape) -> Result<Quote, Error> {
         let origin = config::Origin::parse(hub)?;
-        let (request, ..) = request(sku, shape)?;
+        let (request, ..) = request(sku, shape);
         Ok(quote_of(&self.quoted(&origin, &request).await?))
     }
 
@@ -259,10 +259,12 @@ impl Machines {
             return Ok((asked, false));
         }
         // An ask the Hub would refuse unasked, or one this computer cannot sign, records nothing.
-        types::CreateRentalIdempotencyKey::try_from(key)
-            .map_err(|e| Error::new(Kind::Usage, "idempotency_key_invalid", e.to_string()))?;
+        if !(1..=200).contains(&key.len()) {
+            let message = format!("the key {key:?} is not 1 to 200 characters");
+            return Err(Error::new(Kind::Usage, "idempotency_key_invalid", message));
+        }
         let agreed = shape.agreed;
-        let (request, alias, signer) = request(sku, shape)?;
+        let (request, alias, signer) = request(sku, shape);
         let quote = self.quoted(&origin, &request).await?;
         // Dearer than the renter agreed to a moment ago: nothing is rented.
         let now = quote_of(&quote).agreed();
@@ -308,10 +310,7 @@ impl Machines {
         request: &types::RentalRequest,
     ) -> Result<types::RentalQuote, Error> {
         let client = self.hubs.client(origin)?;
-        match client.quote_rental(request).await {
-            Ok(quote) => Ok(quote.into_inner()),
-            Err(e) => Err(hub_refusal(origin, e.into())),
-        }
+        client.quote_rental(request).await.map_err(|e| hub_refusal(origin, e))
     }
 
     /// Makes a recorded rent ask. The Hub's acceptance records the rental as a booting machine
@@ -426,12 +425,7 @@ impl Machines {
     async fn ask_once(&self, ask: &Ask) -> Result<types::Rental, Error> {
         let client = self.hubs.client(&ask.hub)?;
         let request = RentBody::of(ask)?.request;
-        let key = types::CreateRentalIdempotencyKey::try_from(ask.key.as_str())
-            .map_err(|e| Error::new(Kind::Usage, "idempotency_key_invalid", e.to_string()))?;
-        match client.create_rental(&key, &request).await {
-            Ok(rental) => Ok(rental.into_inner()),
-            Err(e) => Err(hub_refusal(&ask.hub, e.into())),
-        }
+        client.create_rental(&ask.key, &request).await.map_err(|e| hub_refusal(&ask.hub, e))
     }
 
     /// Rents a machine for an unplaced run (`--on new[:<sku>]`) under a key the run names, so a
@@ -547,14 +541,11 @@ impl Machines {
             release: Some(release.release.clone()).filter(|r| !r.is_empty()),
             function: spec.entrypoint.clone(),
             lane: Some(spec.lane.clone()).filter(|lane| !lane.is_empty()),
-            gpus: std::num::NonZeroU64::new(spec.gpus.into()),
+            gpus: Some(spec.gpus).filter(|gpus| *gpus > 0),
             sku: sku.map(str::to_owned),
         };
         let client = self.hubs.client(hub)?;
-        let placement = match client.place_rental(&request).await {
-            Ok(placement) => placement.into_inner(),
-            Err(e) => return Err(hub_refusal(hub, e.into())),
-        };
+        let placement = client.place_rental(&request).await.map_err(|e| hub_refusal(hub, e))?;
         let Some(top) = placement.machines.first() else {
             let why: Vec<String> = placement
                 .excluded
@@ -801,13 +792,10 @@ impl Machines {
                 return;
             }
         };
-        let listed = client
-            .list_rentals(None, Some(types::ListRentalsState::Live))
-            .await;
-        let rentals = match listed {
-            Ok(listing) => listing.into_inner().rentals,
+        let rentals = match client.list_rentals("live").await {
+            Ok(listing) => listing.rentals,
             Err(e) => {
-                let error = hub_refusal(origin, e.into());
+                let error = hub_refusal(origin, e);
                 let mut listings = lock(&self.hubs.listings);
                 let listing = listings.entry(origin.to_owned()).or_default();
                 listing.signed_out = error.kind == Kind::Credential;
@@ -926,7 +914,7 @@ impl Machines {
             };
             if !released {
                 let release = client.release_rental(&id).await;
-                match release.map_err(|e| hub_refusal(&ask.hub, e.into())) {
+                match release.map_err(|e| hub_refusal(&ask.hub, e)) {
                     Ok(_) => released = true,
                     Err(e) if e.kind == Kind::NotFound => {
                         return settle(Err(format!(
@@ -944,7 +932,6 @@ impl Machines {
             if released {
                 match client.get_rental(&id).await {
                     Ok(rental) => {
-                        let rental = rental.into_inner();
                         let gone_now = gone(&rental.state).then(|| cause(&rental));
                         self.hubs.seen(&ask.hub, rental);
                         if let Some(cause) = gone_now {
@@ -954,7 +941,7 @@ impl Machines {
                             return settle(Ok(()));
                         }
                     }
-                    Err(e) => match hub_refusal(&ask.hub, e.into()) {
+                    Err(e) => match hub_refusal(&ask.hub, e) {
                         e if e.kind == Kind::Credential => return settle(Err(said(&e))),
                         e => warn!(rental = id, "reading its end: {e}"),
                     },
@@ -970,11 +957,7 @@ impl Hubs {
     /// One rental as its Hub says it now.
     async fn read(&self, origin: &str, id: &str) -> Result<types::Rental, Error> {
         let client = self.client(origin)?;
-        let rental = client
-            .get_rental(id)
-            .await
-            .map_err(|e| hub_refusal(origin, e.into()))?
-            .into_inner();
+        let rental = client.get_rental(id).await.map_err(|e| hub_refusal(origin, e))?;
         self.seen(origin, rental.clone());
         Ok(rental)
     }
@@ -1220,7 +1203,7 @@ pub struct Shape {
 }
 
 /// The Hub's request for renting `sku` in `shape`, under a fresh alias and signing key.
-fn request(sku: &str, shape: Shape) -> Result<(types::RentalRequest, String, SigningKey), Error> {
+fn request(sku: &str, shape: Shape) -> (types::RentalRequest, String, SigningKey) {
     let mut random = [0; 68];
     getrandom::fill(&mut random).expect("the OS provides randomness");
     let alias = format!("rent-{}", hex::encode(&random[..4]));
@@ -1229,21 +1212,15 @@ fn request(sku: &str, shape: Shape) -> Result<(types::RentalRequest, String, Sig
         accelerator_count: shape.gpus.map(i64::from),
         container_disk_gb: shape.disk_gb.map(i64::from),
         creator_public_key: URL_SAFE_NO_PAD.encode(signer.verifying_key().to_bytes()),
-        development: None,
-        excluded_provider_machines: vec![],
         fallbacks: shape.fallbacks,
-        image: (shape.image.map(|image| image.try_into()).transpose()).map_err(
-            |e: types::error::ConversionError| Error::new(Kind::Usage, "image_invalid", e.to_string()),
-        )?,
+        image: shape.image,
         // The Hub holds a media plane's token hash; machines serve bytes over Read instead.
         media_token_sha256: hex::encode(Sha256::digest(&random[4..36])),
         name: alias.clone(),
-        planned_source_bytes: None,
         provider: shape.provider,
-        serving_models: vec![],
         sku: sku.to_owned(),
     };
-    Ok((request, alias, signer))
+    (request, alias, signer)
 }
 
 /// Whether `now` asks more than `agreed`, an hour or a GB.

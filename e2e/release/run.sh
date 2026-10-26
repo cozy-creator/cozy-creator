@@ -64,12 +64,12 @@ watched() {
 if [ -z "$INSTALLED" ]; then step install; install_cozy; user_services; step candidates; candidates; fi
 
 step sign-in
-if [ -n "$KEY" ]; then cozy --json login --key "$KEY" > "$OUT/login.json" || fail "cozy login --key failed"; fi
+if [ -n "$KEY" ]; then sign_in "$KEY" > "$OUT/login.json" || fail "cozy login --key failed: $(head -c 300 "$OUT/login.json")"; fi
 cozy --json whoami > "$OUT/whoami.json"
 J '.logged_in == true and .account == "fidika"' "$OUT/whoami.json" || fail "whoami: not signed in as fidika ($(head -c 300 "$OUT/whoami.json"))"
 
 step balance
-J '(.billing | length > 0) and (.buy_credits | startswith("https://"))' "$OUT/whoami.json" || check "whoami: no balance or buy page ($(head -c 300 "$OUT/whoami.json"))"
+J --arg hub "${COZY_HUB_URL:-https://tensorhub.com}" '(.billing | length > 0) and (.buy_credits | startswith($hub))' "$OUT/whoami.json" || check "whoami: no balance or buy page ($(head -c 300 "$OUT/whoami.json"))"
 curl -fsS -o /dev/null "$(jq -r .buy_credits "$OUT/whoami.json")" || check "whoami: the buy page $(jq -r .buy_credits "$OUT/whoami.json") does not answer"
 
 step "the rental's quote"
@@ -131,24 +131,28 @@ cozy --json package delete "fidika/$pkg" -y > "$OUT/pkg-delete.json" || check "p
 
 step "throwaway model"
 uv run -q --no-project python -I - "$OUT/tiny.safetensors" <<'PY'
-import json, struct, sys
+import json, os, struct, sys
 header = json.dumps({"w": {"dtype": "F16", "shape": [4, 4], "data_offsets": [0, 32]}}).encode()
 header += b" " * (-len(header) % 8)
-open(sys.argv[1], "wb").write(struct.pack("<Q", len(header)) + header + bytes(32))
+open(sys.argv[1], "wb").write(struct.pack("<Q", len(header)) + header + os.urandom(32))
 PY
 watched upload model upload "$OUT/tiny.safetensors" "$model" --lane f16 --on "$ON" || check "model upload failed"
 commit=$(jq -r '.. | objects | .commit? // empty' "$OUT/upload.ndjson" 2> /dev/null | tail -1) || true
 uv run -q --no-project python -I - "$OUT/tiny-b.safetensors" <<'PY'
-import json, struct, sys
+import json, os, struct, sys
 header = json.dumps({"w": {"dtype": "F32", "shape": [4, 4], "data_offsets": [0, 64]}}).encode()
 header += b" " * (-len(header) % 8)
-open(sys.argv[1], "wb").write(struct.pack("<Q", len(header)) + header + bytes(64))
+open(sys.argv[1], "wb").write(struct.pack("<Q", len(header)) + header + os.urandom(64))
 PY
 watched upload-b model upload "$OUT/tiny-b.safetensors" "$model" --lane f32 --on "$ON" || check "model upload --lane f32 failed"
 commit_b=$(jq -r '.. | objects | .commit? // empty' "$OUT/upload-b.ndjson" 2> /dev/null | tail -1) || true
-# While its commit is private: a run capability reaches it and nothing else (cl-670).
-"$here/../capabilities/run.sh" --out "$OUT/capabilities" --commit "$model@$commit" > "$OUT/capabilities.txt" \
+# While its commit is private (its random bytes are in no public release): a run capability reaches it and nothing else (cl-670).
+# Its own process: `cozy` there is the installed binary, not this suite's logging function.
+PATH="$(dirname "$COZY"):$PATH" "$here/../capabilities/run.sh" --out "$OUT/capabilities" --commit "$model@$commit" > "$OUT/capabilities.txt" \
   || check "run capabilities: $(grep FAIL "$OUT/capabilities.txt" | head -3 | tr '\n' ' ')"
+# The rental reads the private commit through its run capability; on Linux it never held it (the upload was local's).
+watched download-private model download "$model@$commit" --on "$M" \
+  || check "model download $model@$commit --on $M: the rental did not read the private commit: $(run_get "$OUT" download-private '.reason.message' | head -c 300)"
 cozy --json model family "$model" e2e-family > /dev/null && cozy --json model info "$model" | J '.family == "e2e-family"' || check "model family: not set"
 cozy --json model family --clear "$model" > /dev/null && cozy --json model info "$model" | J '.family == null' || check "model family --clear: not cleared"
 cozy --json model publish "$model" 0.1.0 "$commit" "$commit_b" > "$OUT/model-publish.json" || check "model publish failed"

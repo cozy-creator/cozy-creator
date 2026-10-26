@@ -32,12 +32,12 @@ MODES = {
 }
 
 
-def exercise(mode, seed, ctx):
+def exercise(mode, seed, ctx, ordering="checked"):
     assert ctx.device.type == "cuda"
     accel.initialize(torch, "cuda")
     loaded = mode in {"phase-loaded", "phase-input-error"}
     arena = varena.Arena(torch.cuda.current_device()) if loaded else None
-    result = _exercise(mode, seed, ctx, arena)
+    result = _exercise(mode, seed, ctx, arena, ordering)
     if arena is not None:
         gc.collect()
         arena.reclaim(8448)
@@ -48,7 +48,7 @@ def exercise(mode, seed, ctx):
     return result
 
 
-def _exercise(mode, seed, ctx, arena):
+def _exercise(mode, seed, ctx, arena, ordering):
     if mode not in MODES:
         raise ValueError(mode)
     assert ctx.device.type == "cuda"
@@ -59,7 +59,7 @@ def _exercise(mode, seed, ctx, arena):
     has_suffix = mode not in {"phase-repeat", "phase-prefix"}
     steps = 1 if mode == "phase-cancel-final" else 30
     calls = {"prefix": 0, "body": 0, "suffix": 0}
-    evidence = {"mode": mode, "seed": seed, "steps": steps}
+    evidence = {"mode": mode, "seed": seed, "steps": steps, "ordering": ordering}
 
     with tempfile.TemporaryDirectory(prefix="cozy-real-phases-") as directory:
         directory = Path(directory)
@@ -177,6 +177,7 @@ def _exercise(mode, seed, ctx, arena):
                         state=state,
                         steps=steps,
                         load=slot,
+                        load_ordering=ordering,
                         prefix=prefix if has_prefix else None,
                         suffix=suffix if has_suffix else None,
                     )

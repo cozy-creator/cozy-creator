@@ -27,6 +27,14 @@ pub(super) enum Failure {
 }
 
 impl Failure {
+    fn detail(&self) -> String {
+        match self {
+            Self::Storage(error) => error.to_string(),
+            Self::Native(error) => error.to_string(),
+            Self::Canceled => "native refill canceled".into(),
+            Self::Execution(status) => status.detail(),
+        }
+    }
     pub(super) fn raise(&self, py: Python<'_>) -> PyErr {
         match self {
             Self::Storage(error) => crate::errors::raise(py, error.clone()),
@@ -102,6 +110,8 @@ pub(super) struct Work {
     threads: usize,
     completed: bool,
     decode: Option<Decode>,
+    event_ordered: bool,
+    prepared_decode: Option<Mutex<tensorfs::raw::DeviceDecode>>,
 }
 
 struct Decode {
@@ -142,6 +152,8 @@ struct Shared {
     read_completed_ns: AtomicU64,
     read_bytes: AtomicU64,
     decode_completed_ns: AtomicU64,
+    decode_issued_ns: AtomicU64,
+    decode_checked_ns: AtomicU64,
     decoded_bytes: usize,
     scratch_bytes: usize,
     decode_scheme: Option<String>,
@@ -150,6 +162,7 @@ struct Shared {
     compute_completed_ns: AtomicU64,
     compute_wait_entered_ns: AtomicU64,
     completion_proven: AtomicBool,
+    event_ordered: bool,
 }
 
 impl Shared {
@@ -172,6 +185,61 @@ impl Shared {
     fn run(self: Arc<Self>, mut work: Work) {
         let device = self.region.device();
         let outcome = catch_unwind(AssertUnwindSafe(|| {
+            if self.cancel.canceled() {
+                return Err(Failure::Canceled);
+            }
+            let issued_result = Mutex::new(None);
+            if work.event_ordered {
+                // Keep an independent physical owner even if a late publication call fails.
+                work.pin = Some(
+                    work.fill
+                        .as_ref()
+                        .expect("fill")
+                        .pin()
+                        .map_err(Failure::Native)?,
+                );
+                if let Some(decode) = &work.decode {
+                    let parts: Vec<_> = decode
+                        .parts
+                        .iter()
+                        .map(|(part, offset)| tensorfs::raw::DecodePart {
+                            role: &part.role,
+                            dtype: &part.dtype,
+                            shape: &part.shape,
+                            src: io::Src::Device {
+                                device,
+                                ptr: decode.storage.ptr() + *offset as u64,
+                                stream: 0,
+                            },
+                            len: part.length as usize,
+                        })
+                        .collect();
+                    let fill = work.fill.as_ref().expect("fill");
+                    // SAFETY: Work owns all packed spans and the exclusive final Fill. This
+                    // prepares metadata only; the later callback supplies actual producer streams.
+                    work.prepared_decode = Some(Mutex::new(
+                        unsafe {
+                            tensorfs::raw::prepare_device_decode(
+                                &decode.encoding,
+                                &decode.dtype,
+                                &decode.shape,
+                                &parts,
+                                tensorfs::raw::DecodeOutput {
+                                    dtype: &decode.dtype,
+                                    shape: &decode.shape,
+                                    dst: Dst::Device {
+                                        device,
+                                        ptr: fill.ptr(),
+                                        len: fill.len(),
+                                        stream: 0,
+                                    },
+                                },
+                            )
+                        }
+                        .map_err(decode_failure)?,
+                    ));
+                }
+            }
             let fill = work.fill.as_ref().expect("worker owns uncommitted fill");
             let (ptr, len) = work
                 .decode
@@ -189,12 +257,49 @@ impl Shared {
                     stream: 0,
                 },
             };
-            // The single raw placement's final issue callback records host enqueue time.
-            // It does not launch work, touch CUDA, or change the checked completion boundary.
-            let issued = |_: usize, _: &[usize]| {
+            // Source's counter covers every copy and padding span in this one placement.
+            // Checked mode keeps the historical observation-only callback.
+            let issued = |_: usize, streams: &[usize]| {
                 self.read_issued_ns.store(self.elapsed(), Ordering::Release);
+                if work.event_ordered {
+                    let result = if self.cancel.canceled() {
+                        Err(Failure::Canceled)
+                    } else {
+                        let launching = self.elapsed();
+                        let result = (|| {
+                            if let Some(decode) = &work.prepared_decode {
+                                let mut decode = decode.lock().unwrap_or_else(|e| e.into_inner());
+                                // SAFETY: source's last-issue callback names all actual copy
+                                // streams. Work retains decoder, packed bytes and final Fill.
+                                let (stream, error) = unsafe { decode.enqueue_after(streams) }
+                                    .map_err(decode_failure)?;
+                                self.decode_issued_ns
+                                    .store(self.elapsed(), Ordering::Release);
+                                work.continuation
+                                    .as_ref()
+                                    .expect("event continuation")
+                                    .start_after(&[stream], error)
+                                    .map_err(execution_failure)
+                            } else {
+                                work.continuation
+                                    .as_ref()
+                                    .expect("event continuation")
+                                    .start_after(streams, 0)
+                                    .map_err(execution_failure)
+                            }
+                        })();
+                        if result.is_ok() {
+                            self.launch_submitted_ns
+                                .store(self.elapsed(), Ordering::Release);
+                            self.launch_started_ns.store(launching, Ordering::Release);
+                        }
+                        result
+                    };
+                    *issued_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
+                }
             };
-            let issued = (work.continuation.is_some() && work.decode.is_none())
+            let issued = (work.continuation.is_some()
+                && (work.decode.is_none() || work.event_ordered))
                 .then_some(&issued as io::Issued<'_>);
             // SAFETY: Work owns the checkpoint/source/items and the Fill's physical pin.
             // The engine validates all spans, initializes padding and joins submitted work.
@@ -213,10 +318,18 @@ impl Shared {
             self.read_bytes.store(stats.bytes, Ordering::Release);
             self.read_completed_ns
                 .store(self.elapsed(), Ordering::Release);
+            if work.event_ordered {
+                issued_result
+                    .into_inner()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .ok_or_else(|| {
+                        Failure::Native(varena::Error::Poisoned("event input never issued".into()))
+                    })??;
+            }
             if self.cancel.canceled() {
                 return Err(Failure::Canceled);
             }
-            if let Some(decode) = &work.decode {
+            if let Some(decode) = work.decode.as_ref().filter(|_| !work.event_ordered) {
                 // Read completion does not certify decoder stream/scratch completion.
                 // Any decoder error or panic must take the existing checked-drain path.
                 work.completed = false;
@@ -264,16 +377,19 @@ impl Shared {
                     return Err(Failure::Canceled);
                 }
             }
-            let fill = work.fill.take().expect("successful read owns its fill");
-            // SAFETY: the existing engine initialized all logical bytes, including padding,
-            // and checked every producer stream. No Python or additional writer exists.
-            let pin = unsafe { fill.commit_completed() }.map_err(Failure::Native)?;
+            if !work.event_ordered {
+                let fill = work.fill.take().expect("successful read owns its fill");
+                // SAFETY: checked mode initialized all bytes and joined every writer.
+                work.pin = Some(unsafe { fill.commit_completed() }.map_err(Failure::Native)?);
+            }
             if let Some(execution) = work.continuation.clone() {
-                work.pin = Some(pin);
-                let launching = self.elapsed();
-                execution.start().map_err(execution_failure)?;
-                self.launch_submitted_ns.store(self.elapsed(), Ordering::Release);
-                self.launch_started_ns.store(launching, Ordering::Release);
+                if !work.event_ordered {
+                    let launching = self.elapsed();
+                    execution.start().map_err(execution_failure)?;
+                    self.launch_submitted_ns
+                        .store(self.elapsed(), Ordering::Release);
+                    self.launch_started_ns.store(launching, Ordering::Release);
+                }
                 self.compute_wait_entered_ns
                     .store(self.elapsed(), Ordering::Release);
                 let (status, progress) = execution.observe(true);
@@ -285,12 +401,28 @@ impl Shared {
                 }
                 self.compute_completed_ns
                     .store(self.elapsed(), Ordering::Release);
+                if let Some(decode) = &work.prepared_decode {
+                    let checked = decode.lock().unwrap_or_else(|e| e.into_inner()).finish();
+                    self.decode_checked_ns
+                        .store(self.elapsed(), Ordering::Release);
+                    checked.map_err(decode_failure)?;
+                    self.decode_completed_ns
+                        .store(self.elapsed(), Ordering::Release);
+                }
                 status.result().map_err(execution_failure)?;
                 if progress.canceled != 0 {
                     return Err(Failure::Canceled);
                 }
-            } else {
-                drop(pin); // Ordinary completed prefetch remains cached without an idle pin.
+            }
+            if work.event_ordered {
+                work.release_private_gpu()?;
+                let fill = work
+                    .fill
+                    .take()
+                    .expect("event mode retains unpublished fill");
+                // SAFETY: source and dependent execution are both checked complete. The
+                // Fill was physically pinned throughout; only now may ordinary readers see it.
+                work.pin = Some(unsafe { fill.commit_completed() }.map_err(Failure::Native)?);
             }
             Ok(stats)
         }));
@@ -329,6 +461,31 @@ impl Shared {
                 }
                 self.compute_completed_ns
                     .store(self.elapsed(), Ordering::Release);
+            }
+            if let Some(decode) = &work.prepared_decode {
+                let mut decode = decode.lock().unwrap_or_else(|e| e.into_inner());
+                if decode.submitted() {
+                    if let Err(error) = decode.finish() {
+                        if error.kind != tensorfs::Kind::Decode {
+                            let detail = format!("native decoder cleanup is unproven: {error}");
+                            drop(decode);
+                            self.region.poison(detail.clone());
+                            std::mem::forget(work);
+                            self.finish(Err(Failure::Native(varena::Error::Poisoned(detail))));
+                            return;
+                        }
+                    }
+                }
+            }
+            if work.event_ordered && self.launch_submitted_ns.load(Ordering::Acquire) != 0 {
+                if let Err(Failure::Native(error)) = &result {
+                    let detail =
+                        format!("event-ordered input ownership failed after enqueue: {error}");
+                    self.region.poison(detail.clone());
+                    std::mem::forget(work);
+                    self.finish(Err(Failure::Native(varena::Error::Poisoned(detail))));
+                    return;
+                }
             }
             let sticky = match &result {
                 Err(Failure::Native(varena::Error::Poisoned(detail))) => Some(detail.clone()),
@@ -374,6 +531,13 @@ impl Shared {
             }
             // Checked drain succeeded. Abort the unpublished fill before reporting failure.
             drop(work.fill.take());
+        }
+        if let Err(error) = work.release_private_gpu() {
+            let detail = format!("native refill GPU cleanup is unproven: {}", error.detail());
+            self.region.poison(detail.clone());
+            std::mem::forget(work);
+            self.finish(Err(Failure::Native(varena::Error::Poisoned(detail))));
+            return;
         }
         drop(work.pin.take());
         drop(work.producer.take());
@@ -583,6 +747,8 @@ pub(super) fn prepare_work(
         threads: threads.clamp(1, 8),
         completed: false,
         decode: None,
+        event_ordered: false,
+        prepared_decode: None,
     };
     if initialize {
         // The existing read engine owns its explicit copy streams (Dst stream 0 is not PTDS).
@@ -680,6 +846,32 @@ impl PreparedRead {
 }
 
 impl Work {
+    /// Private stream/buffer destructors call CUDA. Keep them inside producer exclusion,
+    /// including when a slot never submitted and initialization already released its lease.
+    fn release_private_gpu(&mut self) -> Result<(), Failure> {
+        if self.prepared_decode.is_none() && self.decode.is_none() {
+            return Ok(());
+        }
+        if self.producer.is_none() {
+            self.producer =
+                Some(varena::enter_producer(self.region.device()).map_err(Failure::Native)?);
+        }
+        if let Some(prepared) = &mut self.prepared_decode {
+            let prepared = prepared.get_mut().unwrap_or_else(|e| e.into_inner());
+            // SAFETY: normal completion or checked abort proved every GPU reader done;
+            // the producer guard above excludes actual capture through these releases.
+            unsafe { prepared.release_completed() }.map_err(decode_failure)?;
+        }
+        if let Some(decode) = &mut self.decode {
+            // SAFETY: the packed input's decoder and dependent consumer are checked complete,
+            // or this slot never submitted any reads; producer exclusion is still held.
+            unsafe { decode.storage.release_completed() }.map_err(cuda_failure)?;
+        }
+        drop(self.prepared_decode.take());
+        drop(self.decode.take());
+        Ok(())
+    }
+
     pub(super) fn capture_pin(&self) -> Result<varena::Pin, Failure> {
         self.fill
             .as_ref()
@@ -690,7 +882,7 @@ impl Work {
             .map_err(Failure::Native)
     }
     pub(super) fn abandon(mut self) {
-        if self.continuation.is_some() {
+        if self.continuation.is_some() || self.decode.is_some() || self.prepared_decode.is_some() {
             crate::cleanup::defer(Abandoned(Some(self)));
         } else {
             drop(self.fill.take());
@@ -706,6 +898,24 @@ impl Drop for Abandoned {
             if let Some(execution) = &work.continuation {
                 if let Err(status) = execution.abort() {
                     work.region.poison(status.detail());
+                    std::mem::forget(work);
+                    return;
+                }
+            }
+            match work.release_private_gpu() {
+                Ok(()) => {}
+                Err(Failure::Native(varena::Error::CaptureActive)) => {
+                    // Capture must not wait for this destructor. Return to the same queue
+                    // so other releases can proceed; no state/arena/Python lock is held.
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    crate::cleanup::defer(Abandoned(Some(work)));
+                    return;
+                }
+                Err(error) => {
+                    work.region.poison(format!(
+                        "abandoned GPU cleanup is unproven: {}",
+                        error.detail()
+                    ));
                     std::mem::forget(work);
                     return;
                 }
@@ -726,8 +936,13 @@ impl PreparedRead {
     pub(super) fn request_cancel(&self) {
         self.shared.as_ref().expect("live prepared read").cancel();
     }
-    pub(super) fn composed(mut work: Work, execution: Arc<Continuation>) -> Result<Self, Failure> {
+    pub(super) fn composed(
+        mut work: Work,
+        execution: Arc<Continuation>,
+        event_ordered: bool,
+    ) -> Result<Self, Failure> {
         work.continuation = Some(execution.clone());
+        work.event_ordered = event_ordered;
         let producer = match varena::enter_producer(work.region.device()) {
             Ok(producer) => producer,
             Err(error) => {
@@ -761,6 +976,8 @@ impl PreparedRead {
                 read_completed_ns: AtomicU64::new(0),
                 read_bytes: AtomicU64::new(0),
                 decode_completed_ns: AtomicU64::new(0),
+                decode_issued_ns: AtomicU64::new(0),
+                decode_checked_ns: AtomicU64::new(0),
                 decoded_bytes,
                 scratch_bytes,
                 decode_scheme,
@@ -769,6 +986,7 @@ impl PreparedRead {
                 compute_completed_ns: AtomicU64::new(0),
                 compute_wait_entered_ns: AtomicU64::new(0),
                 completion_proven: AtomicBool::new(false),
+                event_ordered,
             })),
         })
     }
@@ -819,6 +1037,31 @@ impl PreparedRead {
                 .clone()
         });
         row.set_item("issued_bytes", shared.cancel.issued_bytes())?;
+        row.set_item(
+            "ordering",
+            if shared.event_ordered {
+                "events"
+            } else {
+                "checked"
+            },
+        )?;
+        row.set_item(
+            "execution_committed",
+            shared.launch_submitted_ns.load(Ordering::Acquire) != 0,
+        )?;
+        row.set_item(
+            "failure_boundary",
+            match &result {
+                Some(Err(Failure::Storage(error))) if error.kind == tensorfs::Kind::Decode => {
+                    Some("input_value")
+                }
+                Some(Err(_)) if shared.launch_submitted_ns.load(Ordering::Acquire) != 0 => {
+                    Some("after_enqueue")
+                }
+                Some(Err(_)) => Some("before_enqueue"),
+                _ => None,
+            },
+        )?;
         row.set_item("cancel_requested", shared.cancel.canceled())?;
         let bytes = shared.read_bytes.load(Ordering::Acquire);
         row.set_item("bytes", bytes)?;
@@ -842,6 +1085,8 @@ impl PreparedRead {
             ("read_issued_ns", &shared.read_issued_ns),
             ("read_completed_ns", &shared.read_completed_ns),
             ("decode_completed_ns", &shared.decode_completed_ns),
+            ("decode_issued_ns", &shared.decode_issued_ns),
+            ("decode_checked_ns", &shared.decode_checked_ns),
             ("launch_started_ns", &shared.launch_started_ns),
             ("launch_submitted_ns", &shared.launch_submitted_ns),
             ("compute_completed_ns", &shared.compute_completed_ns),
@@ -915,6 +1160,8 @@ impl PreparedRead {
                 read_completed_ns: AtomicU64::new(0),
                 read_bytes: AtomicU64::new(0),
                 decode_completed_ns: AtomicU64::new(0),
+                decode_issued_ns: AtomicU64::new(0),
+                decode_checked_ns: AtomicU64::new(0),
                 decoded_bytes: 0,
                 scratch_bytes: 0,
                 decode_scheme: None,
@@ -923,6 +1170,7 @@ impl PreparedRead {
                 compute_completed_ns: AtomicU64::new(0),
                 compute_wait_entered_ns: AtomicU64::new(0),
                 completion_proven: AtomicBool::new(false),
+                event_ordered: false,
             })),
         })
     }
@@ -939,13 +1187,11 @@ impl PreparedRead {
                 return Ok(());
             }
             if shared.cancel.canceled() && shared.continuation.is_none() {
-                let mut work = state.work.take();
+                let work = state.work.take();
                 drop(state);
-                if let Some(work) = &mut work {
-                    drop(work.fill.take());
-                    drop(work.producer.take());
+                if let Some(work) = work {
+                    work.abandon();
                 }
-                crate::cleanup::defer(work);
                 shared.finish(Err(Failure::Canceled));
                 return Ok(());
             }
@@ -981,12 +1227,10 @@ impl PreparedRead {
                 // No worker can own or issue this fill while the state lock is held.
                 // Release its pin before publishing canceled completion; source teardown
                 // remains on the native cleanup queue, never under the GIL.
-                let mut work = state.work.take();
-                if let Some(work) = &mut work {
-                    drop(work.fill.take());
-                    drop(work.producer.take());
+                let work = state.work.take();
+                if let Some(work) = work {
+                    work.abandon();
                 }
-                crate::cleanup::defer(work);
                 state.result = Some(Err(Failure::Canceled));
             }
         });

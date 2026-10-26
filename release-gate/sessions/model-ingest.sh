@@ -7,6 +7,7 @@
 # packages_refs: one checkout (any name). params:
 #   package    the packages directory whose recipes write the lanes and whose function the calls run
 #   sources    space-separated name=source pairs; each source becomes the root model name's bf16 commit
+#   bf16       space-separated name=commit pairs: that model's bf16 commit already on the Hub, used instead of uploading
 #   lanes      comma-separated lanes the package's recipes write; the first one gates the release
 #   version    the release: higher than every earlier one
 #   traffic_gb GB the provider bills: the image, the sources and the uploads (430)
@@ -15,7 +16,7 @@
 #   expect     text every gate answer contains (42; empty: none)
 #   asset      the field that takes release-gate/ref/seed.jpg (images; empty: none)
 . "$(dirname "$0")/lib.sh"
-PACKAGE=$(param package) SOURCES=$(param sources) LANES=$(param lanes) VERSION=$(param version)
+PACKAGE=$(param package) SOURCES=$(param sources) LANES=$(param lanes) VERSION=$(param version) GIVEN=$(param bf16)
 TRAFFIC_GB=$(param traffic_gb 430) FUNCTION=$(param function ask) SLOT=$(param slot model)
 REQUEST=$(param request '{"prompt": "First, what is 17 + 25? Give just the number. Then describe this picture in two sentences.", "max_tokens": 160, "temperature": 0.7, "top_p": 0.8, "presence_penalty": 1.5, "seed": 0}')
 EXPECT=$(param expect 42) ASSET=$(param asset images) IMG=$REF/seed.jpg
@@ -47,15 +48,21 @@ for p in "${pairs[@]}"; do
   cozy model info "${p%%=*}" > "$OUT/before-${p%%=*}.txt" 2>&1
   grep -q model.not_found "$OUT/before-${p%%=*}.txt" || say "${p%%=*} exists on prod: $(head -2 "$OUT/before-${p%%=*}.txt" | paste -sd' ')"
 done
+declare -A BF16 LANE
+for p in $GIVEN; do
+  m=${p%%=*} c=${p#*=}
+  [ "$(lane_of "$m" "$c")" = bf16 ] || fail "bf16: $m has no bf16 commit $c"
+  BF16[$m]=$c; say "$m bf16 $c (given: not uploaded)"
+done
 printf 'commit   _/x@sha256:%064d\nrun 5 · x\nrun      17999\n' 7 > "$OUT/probe.txt"
 [ "$(made probe)" = "sha256:$(printf '%064d' 7)" ] && [ "$(runno probe)" = 17999 ] || fail "parsers"
 quote "$TRAFFIC_GB" 7200
 rent
 
-# 1. Each source as its bf16 commit.
-declare -A BF16 LANE
+# 1. Each source as its bf16 commit, unless given.
 for p in "${pairs[@]}"; do
   m=${p%%=*}
+  [ -z "${BF16[$m]:-}" ] || continue
   step "upload-$m" model upload "${p#*=}" "$m" --lane bf16 --on "$NAME" || fail "upload $m"
   c=$(made "upload-$m"); [ "$(lane_of "$m" "$c")" = bf16 ] || fail "upload $m: no bf16 commit ($c)"
   BF16[$m]=$c; say "$m bf16 $c"

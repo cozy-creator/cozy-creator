@@ -4,7 +4,7 @@ use super::{ServiceSpec, run};
 use crate::{Error, Result, durable, paths::Home};
 use std::{
     ffi::OsString,
-    fs, io,
+    fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
@@ -59,22 +59,6 @@ pub(super) fn stop(dir: &Path, name: &str) -> Result<()> {
         return Ok(());
     }
     run(MANAGER, systemctl().args(["stop", &unit(name)]))
-}
-
-pub(super) fn uninstall(dir: &Path, name: &str) -> Result<bool> {
-    let path = dir.join(unit(name));
-    if !path.exists() {
-        return Ok(false);
-    }
-    // An unlinked unit (a removal cut short after its disable) refuses `disable`: the file goes
-    // either way, and a link left to it would name nothing.
-    let _ = run(MANAGER, systemctl().args(["disable", &unit(name)]));
-    if let Err(error) = fs::remove_file(&path)
-        && error.kind() != io::ErrorKind::NotFound
-    {
-        return Err(Error::io("remove", path)(error));
-    }
-    run(MANAGER, systemctl().arg("daemon-reload")).map(|()| true)
 }
 
 /// `spec` in a transient scope of its own (`systemd-run --scope` execs it in place), out of the
