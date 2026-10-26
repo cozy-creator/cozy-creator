@@ -13,6 +13,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
+    time::Instant,
 };
 
 use axum::{
@@ -21,6 +22,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::Response,
 };
+use futures_util::StreamExt as _;
 use protocol::{
     calcifer::{Event, MachineState},
     error::Kind,
@@ -31,14 +33,13 @@ use protocol::{
     },
     tree,
 };
-use futures_util::StreamExt as _;
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use tokio::{
     io::{AsyncReadExt as _, AsyncSeekExt as _, AsyncWriteExt as _},
     sync::{Notify, broadcast::error::RecvError, watch},
 };
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::{
     Calcifer, Error, Link, Pause,
@@ -309,6 +310,9 @@ impl Calcifer {
         if superseded()? {
             return Err(Failure::Superseded);
         }
+        let began = Instant::now();
+        info!(run = %run.id, output = %item.name, index = item.index, rev = item.rev,
+            bytes = item.length, phase = "output_export", state = "begin");
         let name = file_name(run.number, &item.name, item.index, &item.media_type);
         let dest = run.out_dir.join(name);
         let target = v1::OutputTarget {
@@ -369,6 +373,9 @@ impl Calcifer {
             }
         };
         lock(&self.exports.moving).remove(&key);
+        info!(run = %run.id, output = %item.name, index = item.index, rev = item.rev,
+            bytes = moved.load(Ordering::Relaxed), phase = "output_export", state = "end",
+            ok = done.is_ok(), elapsed_ms = began.elapsed().as_secs_f64() * 1000.0);
         done
     }
 
@@ -400,11 +407,14 @@ impl Calcifer {
         staged: &Path,
         dest: &Path,
     ) -> Result<(), Failure> {
+        let began = Instant::now();
         let old = suffixed(dest, ".old");
         let unplaced =
             |e: std::io::Error| Failure::Again(format!("cannot place {}: {e}", dest.display()));
-        {
+        let timings = {
             let _placing = lock(&self.exports.placing);
+            let lock_ms = began.elapsed().as_secs_f64() * 1000.0;
+            let rename_began = Instant::now();
             if let Err(e) = std::fs::rename(staged, dest) {
                 // A directory is not replaced by a rename: the old one moves aside first.
                 if !(dest.is_dir() || staged.is_dir() && dest.symlink_metadata().is_ok()) {
@@ -417,12 +427,30 @@ impl Calcifer {
                     return Err(unplaced(e));
                 }
             }
+            let rename_ms = rename_began.elapsed().as_secs_f64() * 1000.0;
+            let sync_began = Instant::now();
             if let Some(directory) = dest.parent() {
                 let _ = platform::durable::sync_dir(directory);
             }
+            let directory_sync_ms = sync_began.elapsed().as_secs_f64() * 1000.0;
             let (id, name, index, rev) = (run.id.as_str(), &item.name, item.index, item.rev);
-            self.publish(&run.id, self.store.exported(id, name, index, rev, dest)?);
-        }
+            let store_began = Instant::now();
+            let events = self.store.exported(id, name, index, rev, dest)?;
+            let store_ms = store_began.elapsed().as_secs_f64() * 1000.0;
+            let publish_began = Instant::now();
+            self.publish(&run.id, events);
+            (
+                lock_ms,
+                rename_ms,
+                directory_sync_ms,
+                store_ms,
+                publish_began.elapsed().as_secs_f64() * 1000.0,
+            )
+        };
+        let (lock_ms, rename_ms, directory_sync_ms, store_ms, publish_ms) = timings;
+        info!(run = %run.id, output = %item.name, index = item.index, rev = item.rev,
+            phase = "output_land", lock_ms, rename_ms, directory_sync_ms, store_ms, publish_ms,
+            elapsed_ms = began.elapsed().as_secs_f64() * 1000.0);
         remove(&old);
         Ok(())
     }
@@ -566,7 +594,9 @@ pub fn package_outputs(outputs: &Path, target: &str) -> PathBuf {
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
     };
     match target.split('/').collect::<Vec<_>>().as_slice() {
-        [org, name, function] if *org == protocol::names::ROOT && named(name) && !function.is_empty() => {
+        [org, name, function]
+            if *org == protocol::names::ROOT && named(name) && !function.is_empty() =>
+        {
             outputs.join(name)
         }
         [org, name, function] if named(org) && named(name) && !function.is_empty() => {
@@ -651,6 +681,7 @@ async fn fetch_file(
     let follows = item.exported_rev.is_some_and(|held| held + 1 == item.rev);
     let mut from = appended.filter(|_| follows).unwrap_or(0);
     loop {
+        let prepare_began = Instant::now();
         let prepared = blocking({
             let (part, dest, length) = (part.clone(), dest.to_owned(), item.length);
             move || prepare(&part, &dest, from, length)
@@ -666,6 +697,9 @@ async fn fetch_file(
             from = 0;
             continue;
         }
+        info!(run = %target.run, output = %target.output, index = target.index, rev = item.rev,
+            phase = "output_prepare_file", bytes = item.length, appended_from = from,
+            elapsed_ms = prepare_began.elapsed().as_secs_f64() * 1000.0);
         moved.store(from, Ordering::Relaxed);
         fetch(link, target, item.rev, from, item.length, &part, moved).await?;
         match check(&part, item.length, &item.digest).await {
@@ -705,8 +739,8 @@ async fn fetch_tree(
     let listed = std::fs::read(&manifest).map_err(unwritable)?;
     let _ = std::fs::remove_file(&manifest);
     let mut read: HashMap<String, PathBuf> = HashMap::new();
-    let members = tree::parse(&listed)
-        .map_err(|e| Failure::Lost(format!("the tree's manifest: {e}")))?;
+    let members =
+        tree::parse(&listed).map_err(|e| Failure::Lost(format!("the tree's manifest: {e}")))?;
     for (path, tree::Member { length, sha256 }) in members {
         let digest = format!("sha256:{sha256}");
         let file = stage.join(&path);
@@ -758,7 +792,11 @@ fn prepare(part: &Path, dest: &Path, from: u64, length: u64) -> std::io::Result<
 /// Whether `path` holds exactly `length` bytes with `digest`; they are synced to disk if so.
 async fn check(path: &Path, length: u64, digest: &str) -> Result<(), String> {
     let (path, digest) = (path.to_owned(), digest.to_owned());
+    let reported_path = path.clone();
+    let queued = Instant::now();
     let checked = blocking(move || {
+        let blocking_queue_ms = queued.elapsed().as_secs_f64() * 1000.0;
+        let hash_began = Instant::now();
         let mut file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -773,15 +811,22 @@ async fn check(path: &Path, length: u64, digest: &str) -> Result<(), String> {
             held += read as u64;
         }
         let got = Digest::from_bytes(hasher.finalize().into()).to_string();
+        let hash_ms = hash_began.elapsed().as_secs_f64() * 1000.0;
         if held != length || got != digest {
             return Ok(Err(format!(
                 "read {held} bytes with digest {got}, not {length} with {digest}"
             )));
         }
+        let sync_began = Instant::now();
         file.sync_all()?;
+        info!(path = %path.display(), phase = "output_check", bytes = held,
+            blocking_queue_ms, hash_ms, sync_ms = sync_began.elapsed().as_secs_f64() * 1000.0);
         Ok(Ok(()))
     });
-    checked.await.unwrap_or_else(|e| Err(e.to_string()))
+    let result = checked.await.unwrap_or_else(|e| Err(e.to_string()));
+    info!(path = %reported_path.display(), phase = "output_check_result", ok = result.is_ok(),
+        elapsed_ms = queued.elapsed().as_secs_f64() * 1000.0);
+    result
 }
 
 /// Reads bytes `[from, length)` of `target` at revision `rev` into `part` at their offsets: ranges
@@ -813,6 +858,36 @@ async fn fetch(
     }
 }
 
+/// Logs even when a range fails or a slow/replaced transfer drops its future.
+struct RangeTiming<'a> {
+    target: &'a v1::OutputTarget,
+    rev: u64,
+    first: u64,
+    end: u64,
+    at: &'a AtomicU64,
+    began: Instant,
+    phase: &'static str,
+    headers_ms: Option<f64>,
+    file_ready_ms: Option<f64>,
+    first_body_ms: Option<f64>,
+    body_wait_ms: f64,
+    file_write_ms: f64,
+    chunks: u64,
+}
+
+impl Drop for RangeTiming<'_> {
+    fn drop(&mut self) {
+        info!(run = %self.target.run, output = %self.target.output, index = self.target.index,
+            rev = self.rev, member = %self.target.member, phase = "output_range",
+            stopped_at = self.phase, first = self.first, end = self.end,
+            bytes_in_place = self.at.load(Ordering::Relaxed).saturating_sub(self.first),
+            headers_ms = self.headers_ms, file_ready_ms = self.file_ready_ms,
+            first_body_ms = self.first_body_ms, body_wait_ms = self.body_wait_ms,
+            file_write_ms = self.file_write_ms, chunks = self.chunks,
+            elapsed_ms = self.began.elapsed().as_secs_f64() * 1000.0);
+    }
+}
+
 /// Reads `[first, end)` of an output `length` bytes long into `part`, moving `at` past each byte
 /// in place.
 async fn read_range(
@@ -824,10 +899,25 @@ async fn read_range(
     at: Arc<AtomicU64>,
     moved: &AtomicU64,
 ) -> Result<(), Ranged<Failure>> {
-    let mut output = lane
-        .get(&target, (first, end), rev)
-        .await
-        .map_err(refused)?;
+    let mut timing = RangeTiming {
+        target: &target,
+        rev,
+        first,
+        end,
+        at: &at,
+        began: Instant::now(),
+        phase: "headers",
+        headers_ms: None,
+        file_ready_ms: None,
+        first_body_ms: None,
+        body_wait_ms: 0.0,
+        file_write_ms: 0.0,
+        chunks: 0,
+    };
+    let response = lane.get(&target, (first, end), rev).await;
+    timing.headers_ms = Some(timing.began.elapsed().as_secs_f64() * 1000.0);
+    let mut output = response.map_err(refused)?;
+    timing.phase = "validate_headers";
     if output.length != length {
         let held = format!(
             "the machine holds {} bytes of revision {rev}, not {length}",
@@ -847,6 +937,7 @@ async fn read_range(
             part.display()
         )))
     };
+    timing.phase = "open_file";
     let mut file = tokio::fs::OpenOptions::new()
         .write(true)
         .open(&part)
@@ -855,21 +946,35 @@ async fn read_range(
     file.seek(SeekFrom::Start(first))
         .await
         .map_err(unwritable)?;
+    timing.file_ready_ms = Some(timing.began.elapsed().as_secs_f64() * 1000.0);
     let mut done = first;
     while done < end {
-        let data = match output.body.next().await {
+        timing.phase = "read_body";
+        let body_began = Instant::now();
+        let next = output.body.next().await;
+        timing.body_wait_ms += body_began.elapsed().as_secs_f64() * 1000.0;
+        let data = match next {
             Some(Ok(data)) => data,
             Some(Err(e)) => return Err(Ranged::Again(e.to_string())),
             None => return Err(Ranged::Again("the machine ended the range early".into())),
         };
+        timing
+            .first_body_ms
+            .get_or_insert_with(|| timing.began.elapsed().as_secs_f64() * 1000.0);
         let data = &data[..data.len().min((end - done) as usize)];
+        timing.phase = "write_file";
+        let write_began = Instant::now();
         file.write_all(data).await.map_err(unwritable)?;
+        timing.phase = "flush_file";
         file.flush().await.map_err(unwritable)?;
+        timing.file_write_ms += write_began.elapsed().as_secs_f64() * 1000.0;
+        timing.chunks += 1;
         done += data.len() as u64;
         at.store(done, Ordering::Relaxed);
         // Only bytes in place count, each once: a range asked again starts where these stopped.
         moved.fetch_add(data.len() as u64, Ordering::Relaxed);
     }
+    timing.phase = "complete";
     Ok(())
 }
 
