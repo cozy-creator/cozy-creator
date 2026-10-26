@@ -5,9 +5,8 @@ use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 
 use super::continuation::Continuation;
 use super::{
-    capsule,
+    Deferred, PyArena, PyRegion, capsule,
     refill::{self, Control, PreparedRead, Work},
-    Deferred, PyArena, PyRegion,
 };
 use crate::store::PyCheckpoint;
 
@@ -249,6 +248,30 @@ impl LoadSlot {
         state.sealed = true;
         Ok(())
     }
+    fn detach_source(&self, py: Python<'_>) -> PyResult<StageSource> {
+        self.valid()?;
+        let work = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if !state.sealed || state.submitted || state.canceled {
+                return Err(PyValueError::new_err(
+                    "detach a sealed, unused capture slot",
+                ));
+            }
+            state.canceled = true;
+            state
+                .work
+                .take()
+                .ok_or_else(|| PyValueError::new_err("capture slot is closed"))?
+        };
+        let source = py
+            .detach(|| work.detach_capture())
+            .map_err(|error| error.raise(py))?;
+        Ok(StageSource {
+            source: Deferred::new(Arc::new(source)),
+            pid: std::process::id(),
+        })
+    }
+
     #[pyo3(signature = (capsule, *, event_ordered = false))]
     fn submit_native(
         &self,
@@ -350,5 +373,64 @@ impl LoadJob {
     }
     fn facts<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         self.read.facts(py)
+    }
+}
+
+/// Internal raw stage descriptor. It owns actual Region reservations and immutable source
+/// spans; every submission reacquires physical pins before its native continuation.
+#[pyclass(name = "_VarenaStageSource", module = "tensorfs._ext", frozen)]
+pub(super) struct StageSource {
+    source: Deferred<Arc<refill::StageSource>>,
+    pid: u32,
+}
+#[pymethods]
+impl StageSource {
+    #[pyo3(signature = (capsule, *, event_ordered = false))]
+    fn continuation(
+        &self,
+        py: Python<'_>,
+        capsule: &Bound<'_, PyAny>,
+        event_ordered: bool,
+    ) -> PyResult<(Py<PyAny>, Py<super::stage_continuation::StageJob>)> {
+        if self.pid != std::process::id() {
+            return Err(PyValueError::new_err(
+                "stage source cannot be used after fork",
+            ));
+        }
+        super::stage_continuation::export(py, self.source.clone(), capsule, event_ordered)
+    }
+
+    #[pyo3(signature = (capsule, *, event_ordered = false))]
+    fn submit_native(
+        &self,
+        py: Python<'_>,
+        capsule: &Bound<'_, PyAny>,
+        event_ordered: bool,
+    ) -> PyResult<LoadJob> {
+        if self.pid != std::process::id() {
+            return Err(PyValueError::new_err(
+                "stage source cannot be used after fork",
+            ));
+        }
+        let execution = Arc::new(Continuation::import(capsule, self.source.device())?);
+        if event_ordered && !execution.supports_event_input() {
+            execution.abandon();
+            return Err(PyValueError::new_err(
+                "event-ordered stage requires matching continuation",
+            ));
+        }
+        let source = self.source.clone();
+        let work = match py.detach(|| source.prepare()) {
+            Ok(work) => work,
+            Err(error) => {
+                execution.abandon();
+                return Err(error.raise(py));
+            }
+        };
+        let read = py
+            .detach(|| PreparedRead::composed(work, execution, event_ordered))
+            .map_err(|error| error.raise(py))?;
+        read.start(py)?;
+        Ok(LoadJob { read })
     }
 }

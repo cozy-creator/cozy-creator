@@ -3,7 +3,7 @@
 //! DLPack destination or calls a Python transformer/cleanup callback from its worker.
 
 use std::collections::BTreeMap;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
@@ -15,7 +15,7 @@ use tensorfs::io::source::{IoTally, Item, Mode, Placement, Source};
 use tensorfs::io::{self, Dst, ReadControl, ReadStats};
 
 use super::continuation::{self, Continuation, Status};
-use super::{raise, PyRegion};
+use super::{PyRegion, raise};
 use crate::store::PyCheckpoint;
 
 #[derive(Clone)]
@@ -33,7 +33,7 @@ pub(super) enum Failure {
 }
 
 impl Failure {
-    fn detail(&self) -> String {
+    pub(super) fn detail(&self) -> String {
         match self {
             Self::Storage(error) => error.to_string(),
             Self::Native(error) => error.to_string(),
@@ -153,6 +153,61 @@ pub(super) struct Work {
     decode: Option<Decode>,
     event_ordered: bool,
     prepared_decode: Option<Mutex<tensorfs::raw::DeviceDecode>>,
+}
+
+/// A captured stage owns addresses/source identity, not graph-lifetime physical pins.
+/// Created only by consuming a sealed, never-submitted raw capture Work.
+pub(super) struct StageSource {
+    inputs: Vec<(Arc<varena::Region>, Vec<Item>)>,
+    checkpoint: tensorfs::Checkpoint,
+    source: Arc<Source>,
+    threads: usize,
+}
+
+impl StageSource {
+    pub(super) fn device(&self) -> i32 {
+        self.inputs[0].0.device()
+    }
+
+    pub(super) fn prepare(&self) -> Result<Work, Failure> {
+        // Keep ordinary/source-identity ownership: no new region or private bank exists.
+        let mut inputs: Vec<_> = self
+            .inputs
+            .iter()
+            .map(|(region, items)| Input {
+                region: region.clone(),
+                items: items.clone(),
+                fill: None,
+                pin: None,
+            })
+            .collect();
+        for input in &mut inputs {
+            input.pin = input.region.try_pin().map_err(Failure::Native)?;
+        }
+        let producer = varena::enter_producer(self.device()).map_err(Failure::Native)?;
+        for input in &mut inputs {
+            if input.pin.is_none() {
+                match input.region.prepare().map_err(Failure::Native)? {
+                    varena::Preparation::Resident(pin) => input.pin = Some(pin),
+                    varena::Preparation::Fill(fill) => input.fill = Some(fill),
+                }
+            }
+        }
+        io::prepare_device(self.device()).map_err(cuda_failure)?;
+        Ok(Work {
+            region: inputs[0].region.clone(),
+            inputs,
+            continuation: None,
+            _checkpoint: self.checkpoint.clone(),
+            source: self.source.clone(),
+            producer: Some(producer),
+            threads: self.threads,
+            completed: false,
+            decode: None,
+            event_ordered: false,
+            prepared_decode: None,
+        })
+    }
 }
 
 struct Decode {
@@ -359,6 +414,7 @@ impl Shared {
                 }
             };
             let issued = (work.continuation.is_some()
+                && !placements.is_empty()
                 && (work.decode.is_none() || work.event_ordered))
                 .then_some(&issued as io::Issued<'_>);
             // Non-preferred weights are the streaming window. Populate the OS page cache
@@ -397,7 +453,19 @@ impl Shared {
             self.read_bytes.store(stats.bytes, Ordering::Release);
             self.read_completed_ns
                 .store(self.elapsed(), Ordering::Release);
-            if work.event_ordered {
+            if work.event_ordered && placements.is_empty() {
+                // Every input was atomically pinned Ready. No copy/decoder event is needed,
+                // but the continuation still owns the caller-ready dependency and epoch.
+                let launching = self.elapsed();
+                work.continuation
+                    .as_ref()
+                    .expect("event continuation")
+                    .start()
+                    .map_err(execution_failure)?;
+                self.launch_started_ns.store(launching, Ordering::Release);
+                self.launch_submitted_ns
+                    .store(self.elapsed(), Ordering::Release);
+            } else if work.event_ordered {
                 issued_result
                     .into_inner()
                     .unwrap_or_else(|e| e.into_inner())
@@ -1068,6 +1136,39 @@ impl PreparedRead {
 }
 
 impl Work {
+    pub(super) fn detach_capture(mut self) -> Result<StageSource, Failure> {
+        if self.continuation.is_some() || self.decode.is_some() || self.prepared_decode.is_some() {
+            self.abandon();
+            return Err(Failure::Ineligible(
+                "only an unused raw capture may detach".into(),
+            ));
+        }
+        // Initialization was checked before exporting capture aliases. Captured Torch work
+        // is not assumed complete here: ordinary releases preserve the context fence.
+        for input in &mut self.inputs {
+            drop(input.fill.take());
+            drop(input.pin.take());
+        }
+        drop(self.producer.take());
+        for input in &self.inputs {
+            if input.region.has_live_pins().map_err(Failure::Native)? {
+                return Err(Failure::Ineligible(
+                    "capture input storage escaped; streamed stage must remain resident".into(),
+                ));
+            }
+        }
+        Ok(StageSource {
+            inputs: self
+                .inputs
+                .into_iter()
+                .map(|input| (input.region, input.items))
+                .collect(),
+            checkpoint: self._checkpoint,
+            source: self.source,
+            threads: self.threads,
+        })
+    }
+
     /// Private stream/buffer destructors call CUDA. Keep them inside producer exclusion,
     /// including when a slot never submitted and initialization already released its lease.
     fn release_private_gpu(&mut self) -> Result<(), Failure> {
@@ -1189,6 +1290,27 @@ impl Drop for Abandoned {
 }
 
 impl PreparedRead {
+    /// Run the existing producer on an already-owned native sequence worker. No Python,
+    /// new scheduler or additional refill thread participates in this path.
+    pub(super) fn run_inline(&self) -> (Result<ReadStats, Failure>, bool) {
+        let shared = self.shared.as_ref().expect("live native read").clone();
+        let work = {
+            let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            assert!(!state.started, "native read is one-shot");
+            state.started = true;
+            state.work.take().expect("inline composed read owns work")
+        };
+        shared.clone().run(work);
+        let result = shared
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .result
+            .clone()
+            .expect("inline run publishes completion");
+        (result, shared.completion_proven.load(Ordering::Acquire))
+    }
+
     pub(super) fn control(&self) -> Control {
         Control(Arc::downgrade(
             self.shared.as_ref().expect("live prepared read"),

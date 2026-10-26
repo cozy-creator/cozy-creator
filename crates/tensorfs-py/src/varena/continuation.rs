@@ -23,6 +23,22 @@ pub(super) struct Status {
     detail: [u8; 244],
 }
 impl Status {
+    pub(super) fn new(kind: u32, code: i32, message: &str) -> Self {
+        let mut status = Self {
+            kind,
+            code,
+            detail_len: 0,
+            detail: [0; 244],
+        };
+        let mut length = message.len().min(status.detail.len());
+        while !message.is_char_boundary(length) {
+            length -= 1;
+        }
+        status.detail[..length].copy_from_slice(&message.as_bytes()[..length]);
+        status.detail_len = length as u32;
+        status
+    }
+
     pub fn unproven(detail: &str) -> Self {
         let mut status = Self {
             kind: UNPROVEN,
