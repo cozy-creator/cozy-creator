@@ -243,3 +243,8 @@ If capture is still active, the worker backs off briefly and requeues that same 
 releases can proceed. It never frees private CUDA resources inside capture. Other exclusion or
 completion failures retain the owners and poison the arena. Thus unused-slot GPU cleanup may be
 delayed until capture ends; it does not block the capturing Python thread.
+
+Composed slots check private event, allocation and stream destruction before publishing an
+event-mode Fill. Successful handles become inert. A failed release retains the actual partially
+released Work, poisons the arena and cannot be retried by Drop; no successful output is reported.
+These checks reuse the decoder and buffer owners rather than a separate cleanup registry.

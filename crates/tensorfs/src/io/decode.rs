@@ -708,6 +708,8 @@ pub struct DeviceDecode {
     device: i32,
     submitted: bool,
     invalid: bool,
+    released: bool,
+    release_failed: bool,
 }
 // SAFETY: the sole owner serializes enqueue/finish; every CUDA operation enters the
 // stream's retained primary context. No borrowed Rust source or descriptor is stored.
@@ -721,6 +723,7 @@ impl DeviceDecode {
     /// Retain this instance AND external owners through dependent consumer completion.
     pub unsafe fn enqueue_after(&mut self, streams: &[usize]) -> Result<(usize, u64)> {
         if self.submitted
+            || self.released
             || streams.len() > self.dependencies.len()
             || streams.iter().any(|s| *s <= 2)
         {
@@ -745,6 +748,44 @@ impl DeviceDecode {
     }
     pub fn submitted(&self) -> bool {
         self.submitted
+    }
+    /// Release only this decoder's private owners after checked composed completion.
+    ///
+    /// # Safety
+    /// Every dependent consumer is checked complete and actual capture is excluded.
+    /// On failure retain this instance until process retirement; partially released
+    /// handles are inert and an ambiguous driver release must never be retried.
+    pub unsafe fn release_completed(&mut self) -> Result<()> {
+        if self.release_failed {
+            return crate::failure::fail(Kind::Io, "decoder release was already unproven");
+        }
+        if self.released {
+            return Ok(());
+        }
+        if !self.hold.complete {
+            return crate::failure::fail(Kind::Io, "decoder completion is unproven before release");
+        }
+        self.released = true;
+        self.release_failed = true;
+        for event in &mut self.dependencies {
+            event.release_checked()?;
+        }
+        for buffer in self
+            .hold
+            .inputs
+            .iter_mut()
+            .chain(&mut self.hold.scratch)
+            .chain(self.hold.output.iter_mut())
+        {
+            // SAFETY: decoder and consumer completion are proven and this owns each allocation.
+            unsafe { buffer.release_completed() }?;
+        }
+        if let Some(stream) = &mut self.hold.stream {
+            // SAFETY: finish checked this private stream and all consumers are complete.
+            unsafe { stream.release_completed() }?;
+        }
+        self.release_failed = false;
+        Ok(())
     }
     /// Check decoder completion and values. This does not certify a dependent consumer.
     pub fn finish(&mut self) -> Result<()> {
@@ -952,5 +993,7 @@ fn prepare_execute(
         device,
         submitted: false,
         invalid: false,
+        released: false,
+        release_failed: false,
     })
 }

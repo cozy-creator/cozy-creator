@@ -27,6 +27,14 @@ pub(super) enum Failure {
 }
 
 impl Failure {
+    fn detail(&self) -> String {
+        match self {
+            Self::Storage(error) => error.to_string(),
+            Self::Native(error) => error.to_string(),
+            Self::Canceled => "native refill canceled".into(),
+            Self::Execution(status) => status.detail(),
+        }
+    }
     pub(super) fn raise(&self, py: Python<'_>) -> PyErr {
         match self {
             Self::Storage(error) => crate::errors::raise(py, error.clone()),
@@ -407,6 +415,7 @@ impl Shared {
                 }
             }
             if work.event_ordered {
+                work.release_private_gpu()?;
                 let fill = work
                     .fill
                     .take()
@@ -524,7 +533,7 @@ impl Shared {
             drop(work.fill.take());
         }
         if let Err(error) = work.release_private_gpu() {
-            let detail = format!("native refill GPU cleanup lost its capture exclusion: {error}");
+            let detail = format!("native refill GPU cleanup is unproven: {}", error.detail());
             self.region.poison(detail.clone());
             std::mem::forget(work);
             self.finish(Err(Failure::Native(varena::Error::Poisoned(detail))));
@@ -839,12 +848,24 @@ impl PreparedRead {
 impl Work {
     /// Private stream/buffer destructors call CUDA. Keep them inside producer exclusion,
     /// including when a slot never submitted and initialization already released its lease.
-    fn release_private_gpu(&mut self) -> Result<(), varena::Error> {
+    fn release_private_gpu(&mut self) -> Result<(), Failure> {
         if self.prepared_decode.is_none() && self.decode.is_none() {
             return Ok(());
         }
         if self.producer.is_none() {
-            self.producer = Some(varena::enter_producer(self.region.device())?);
+            self.producer =
+                Some(varena::enter_producer(self.region.device()).map_err(Failure::Native)?);
+        }
+        if let Some(prepared) = &mut self.prepared_decode {
+            let prepared = prepared.get_mut().unwrap_or_else(|e| e.into_inner());
+            // SAFETY: normal completion or checked abort proved every GPU reader done;
+            // the producer guard above excludes actual capture through these releases.
+            unsafe { prepared.release_completed() }.map_err(decode_failure)?;
+        }
+        if let Some(decode) = &mut self.decode {
+            // SAFETY: the packed input's decoder and dependent consumer are checked complete,
+            // or this slot never submitted any reads; producer exclusion is still held.
+            unsafe { decode.storage.release_completed() }.map_err(cuda_failure)?;
         }
         drop(self.prepared_decode.take());
         drop(self.decode.take());
@@ -883,7 +904,7 @@ impl Drop for Abandoned {
             }
             match work.release_private_gpu() {
                 Ok(()) => {}
-                Err(varena::Error::CaptureActive) => {
+                Err(Failure::Native(varena::Error::CaptureActive)) => {
                     // Capture must not wait for this destructor. Return to the same queue
                     // so other releases can proceed; no state/arena/Python lock is held.
                     std::thread::sleep(std::time::Duration::from_millis(1));
@@ -892,7 +913,8 @@ impl Drop for Abandoned {
                 }
                 Err(error) => {
                     work.region.poison(format!(
-                        "abandoned GPU cleanup cannot acquire exclusion: {error}"
+                        "abandoned GPU cleanup is unproven: {}",
+                        error.detail()
                     ));
                     std::mem::forget(work);
                     return;
