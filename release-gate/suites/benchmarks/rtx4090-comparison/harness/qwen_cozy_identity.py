@@ -127,12 +127,20 @@ def main(payload: QwenIdentityRequest, weights: Weights, ctx: Context) -> QwenId
                          config.get('max_image_seq_len',4096), config.get('base_shift',0.5), config.get('max_shift',1.15))
     schedule.set_timesteps(30, device='cpu', sigmas=np.linspace(1.0,1/30,30), mu=mu)
     assert len(schedule.sigmas) == 31
-    assert source.verify().ok
     root = Path(folder); root.mkdir(parents=True,exist_ok=True)
+    before = source.verify()
+    before_report = {'ok':before.ok, 'missing':before.missing, 'corrupt':before.corrupt}
+    (root/'verification-before.json').write_text(json.dumps(before_report,indent=2))
+    assert not before.corrupt, before_report
     exported = None
     if export:
-        # Existing bounded native exporter preserves every encoded part. No new quantizer.
+        # Tensor reads need not fetch processor assets. The existing native exporter
+        # fetches the full checkpoint before preserving every encoded part.
         exported = tensorfs.materialize(source,local_dir=root/'qwen-cozy-export',format='safetensors',decode=False)
+    verified = source.verify()
+    verification = {'ok':verified.ok, 'missing':verified.missing, 'corrupt':verified.corrupt}
+    (root/'verification-after.json').write_text(json.dumps(verification,indent=2))
+    assert verified.ok, verification
     assert not torch.cuda.is_initialized(), 'CPU identity unexpectedly initialized CUDA'
     result = {'tensorfs_checkpoint':source.id,'components':rows,'scheduler_config':config,
               'mu':mu,'latent_sequence_length':sequence,'sigmas':schedule.sigmas.tolist(),
@@ -140,6 +148,7 @@ def main(payload: QwenIdentityRequest, weights: Weights, ctx: Context) -> QwenId
               'torch':str(torch.__version__),'torch_git':torch.version.git_version,
               'runtime_commit':COMMIT,'tensorfs':tensorfs.__version__,
               'stored_tensor_bytes_observed':total,'seconds':time.perf_counter()-began,'exported':exported,
+              'verification':verification,
               'scope':'Real complete stored tensor reads and exact library scheduler on CPU; no inference. Reads warm OS pages.'}
     path=root/'qwen-cozy-identity.json';path.write_text(json.dumps(result,sort_keys=True))
     return QwenIdentityResult(identity=json.dumps(result))
