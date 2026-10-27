@@ -32,8 +32,8 @@ sudo useradd -m cozywatch && sudo install -d -o cozywatch -m 700 /home/cozywatch
   sudo install -D -m 755 "$(command -v cozy)" /opt/cozywatch/cozy || fail "no second controller"
 watcher() { sudo -u cozywatch -H /opt/cozywatch/cozy "$@" < /dev/null 2>> "$OUT/watcher.err"; }
 [ "$(watcher --json whoami | jq -r .account)" = "$(cozy --json whoami | jq -r .account)" ] || fail "the second controller is not signed in: $(tail -3 "$OUT/watcher.err")"
-TS=$(date -u +%m%d%H%M) ACCOUNT=$(cozy --json whoami | jq -r .account) M=''
-cleanup() { [ -z "$M" ] || cozy model delete "$M" -y >> "$OUT/delete.txt" 2>&1; }
+TS=$(date -u +%m%d%H%M) ACCOUNT=$(cozy --json whoami | jq -r .account) M='' M2=''
+cleanup() { for m in $M $M2; do cozy model delete "$m" -y >> "$OUT/delete.txt" 2>&1; done; }
 trap 'cleanup; finish' EXIT
 RENT_ARGS=--ssh
 SKU_B=$(param sku_b "$SKU")
@@ -147,17 +147,22 @@ grep -q machine_unauthorized "$OUT/b-intruder.txt" && grep -q 'cozy machine auth
   fail "b: the unauthorized add was not refused cleanly: $(tail -3 "$OUT/b-intruder.txt")"
 say "b: PASS (the runner's key refused in $(($(date +%s) - s)) s)"
 
-# p. Two signers on A: a private model of the account, read by the renter under its capability, refused to A's
-# signed-out shell with the remedy.
-python3 -I -c 'import json,struct,sys,os; h=json.dumps({"w":{"dtype":"F32","shape":[4,4],"data_offsets":[0,64]}}).encode(); h+=b" "*(-len(h)%8); open(sys.argv[1],"wb").write(struct.pack("<Q",len(h))+h+os.urandom(64))' "$OUT/tiny.safetensors"
-M=$ACCOUNT/mm-private-$TS
+# p. Two signers on A: two private models of the account. The runner reads one there under its own capability; A's
+# signed-out shell asks for the other, which A does not hold, while the runner's capability is live there: refused,
+# naming the remedy. (A model a machine holds is any of its controllers' to use: the shell then reads the first.)
+tiny() { python3 -I -c 'import json,struct,sys,os; h=json.dumps({"w":{"dtype":"F32","shape":[4,4],"data_offsets":[0,64]}}).encode(); h+=b" "*(-len(h)%8); open(sys.argv[1],"wb").write(struct.pack("<Q",len(h))+h+os.urandom(64))' "$1"; }
+commit() { echo "$1@$(awk '$1=="commit"{c=$2} END{sub(/.*@/, "", c); print c}' "$OUT/$2.txt")"; }
+tiny "$OUT/tiny.safetensors"; tiny "$OUT/tiny2.safetensors"
+M=$ACCOUNT/mm-private-$TS M2=$ACCOUNT/mm-private2-$TS
 step p-upload model upload "$OUT/tiny.safetensors" "$M" --lane f32 || fail "p: upload of a private model"
-MC=$M@$(awk '$1=="commit"{c=$2} END{sub(/.*@/, "", c); print c}' "$OUT/p-upload.txt")
+step p-upload2 model upload "$OUT/tiny2.safetensors" "$M2" --lane f32 || fail "p: upload of a second private model"
+MC=$(commit "$M" p-upload) MC2=$(commit "$M2" p-upload2)
 step p-renter model download "$MC" --on "$A" || fail "p: the renter did not read its private model on A: $(tail -3 "$OUT/p-renter.txt")"
-on "$A" p-shell "cozy model download $MC" && fail "p: A's signed-out shell read the account's private model"
+on "$A" p-shell "cozy model download $MC2" && fail "p: A's signed-out shell read a private model A did not hold"
 grep -q 'cozy login' "$OUT/p-shell.txt" || fail "p: the shell's refusal does not name cozy login: $(tail -4 "$OUT/p-shell.txt")"
+on "$A" p-held "cozy model download $MC" || fail "p: A's shell could not use the model A holds"
 cozy machine logs "$A" -n 0 > "$OUT/a-tensord.log" 2>&1
-say "p: renter read $MC on A; A's shell refused: $(grep -m1 -o 'this run carried no sign-in[^)]*' "$OUT/p-shell.txt"); capability lines on A: $(grep -c 'redeemed the run capability' "$OUT/a-tensord.log")"
+say "p: the runner read $MC on A; A's shell, for $MC2: $(grep -m1 -o 'this run carried no sign-in[^)]*' "$OUT/p-shell.txt"); then used $MC, which A held; capability lines on A: $(grep -c 'redeemed the run capability' "$OUT/a-tensord.log")"
 
 # c. Mixed versions, both ways.
 update "$A" "$OLD" "$OLD"
