@@ -1,8 +1,9 @@
 # h3-quality-batch: one multi-GPU rental, two H3 questions on recorded requests (prepared references, seeds).
-# A, on the recorded cohort: does the SM120 attention route make 19472's translucent figures? R0 serves the default
+# Both on the production cohort the pod boots with (`cohort`; no machine update).
+# A: does the SM120 attention route make 19472's translucent figures? R0 serves the default
 #   route, R2 pins exact SDPA; R1 (Sol sparse, SDPA dense rows) runs only when the ghost score shows R0's episode and
 #   not R2's. Every cell must compile the same prompt over the same references.
-# B, on the patched Runtime: does a Turbo call whose DiT pages were displaced bake its LoRA into every refilled block?
+# B, a warm Turbo LoRA check: does a Turbo call whose DiT pages were displaced bake its LoRA into every refilled block?
 #   T1 (first bake), T2a (warm, resident), a base call D on the same GPUs to displace pages, T2b (warm, refilled). T2b
 #   must refill from the store, read factors for every refilled LoRA block, and decode the same frames as T2a.
 # The requests and media are the owner's: they never enter OUT. On a hosted runner it refuses; from the owner's computer:
@@ -10,22 +11,22 @@
 # params:
 #   base, turbo  {"target", "request", "assets": [{"field", "path", "sha256"}], "recorded": {"path", "sha256"}}
 #   expect       {"prompt", "references": [sha256…]}: what 19472's record compiled
-#   lane (int8), gpus (4), cohort {"runtime", "tensorfs", "tensord", "image"}, patch (0.33.3), require_patch (true)
+#   lane (int8), gpus (4), cohort {"runtime" (required, on PyPI), "tensorfs", "tensord", "image" (each asserted if given)}
 #   python, ghost   the detector (h3-video-forensics' ghost.py, standalone) and an interpreter with numpy/scipy/cv2
 #   window (248-273): the episode window the rule reads; windows (14-22,55-65,248-273): strips and scores
 #   r1_min (100): the R0 event size that counts as the episode; r1_ratio (0.5): R2's share of it that counts as gone
 #   media: directory for videos and strips (outside OUT); traffic_gb (150), need_s (4800), stall_s (1500)
 . "$(dirname "$0")/lib.sh"
 [ "${GITHUB_ACTIONS:-}" != true ] || fail "private request media: run this session from the owner's computer, not a hosted runner"
-LANE=$(param lane int8) GPUS=$(param gpus 4) COHORT=$(param cohort '{}') EXPECT=$(param expect '{}') PATCH=$(param patch 0.33.3)
+LANE=$(param lane int8) GPUS=$(param gpus 4) COHORT=$(param cohort '{}') EXPECT=$(param expect '{}')
 MEDIA=$(param media) WINDOW=$(param window 248-273) WINDOWS=$(param windows 14-22,55-65,248-273) PY=$(param python) GHOST=$(param ghost)
 R1_MIN=$(param r1_min 100) R1_RATIO=$(param r1_ratio 0.5) STALL_S=$(param stall_s 1500)
 command -v ffmpeg >/dev/null && command -v sha256sum >/dev/null || fail "no ffmpeg/sha256sum"
 [ -n "$MEDIA" ] && [[ $MEDIA != "$OUT"* ]] || fail "media must be a directory outside OUT"
 mkdir -p "$MEDIA"
 [[ $GPUS =~ ^[1-8]$ && $WINDOWS =~ ^[0-9]+-[0-9]+(,[0-9]+-[0-9]+)*$ && ,$WINDOWS, == *,$WINDOW,* ]] || fail "gpus/windows/window"
-[[ $PATCH =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "patch $PATCH is not a release version"
-jq -e '.runtime and .tensorfs and .tensord and .image' <<<"$COHORT" >/dev/null || fail "cohort needs runtime, tensorfs, tensord, image"
+RT=$(jq -r '.runtime // empty' <<<"$COHORT")
+[[ $RT =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "cohort.runtime '$RT' is not a release version"
 "$PY" -I -c 'import numpy, scipy, cv2' 2>/dev/null && [ -f "$GHOST" ] || fail "ghost detector: $PY $GHOST"
 declare -A TARGET REQ RECORDED
 ASSETS_base=() ASSETS_turbo=()
@@ -44,12 +45,14 @@ for kind in base turbo; do
   sha256sum "${REQ[$kind]}" | cut -c1-64 > "$OUT/$kind-request.sha256.txt"  # the payloads stay out of OUT
 done
 [ "${#ASSETS_base[@]}" -gt 0 ] && [ "${#ASSETS_turbo[@]}" -gt 0 ] || fail "no assets"
-# The patched Runtime must exist where `machine update --runtime` fetches it: PyPI, else its GitHub prerelease.
-if curl -fsS -o /dev/null "https://pypi.org/pypi/cozy-runtime/$PATCH/json" 2>/dev/null; then say "patch: cozy-runtime $PATCH on PyPI"
-elif gh release view "v$PATCH" -R cozy-creator/cozy-runtime --json assets --jq '.assets[].name' 2>/dev/null | grep -q "cozy_runtime-$PATCH-.*manylinux.*x86_64\.whl"; then
-  say "patch: cozy-runtime $PATCH as GitHub prerelease v$PATCH"
-elif [ "$(param require_patch true)" = true ]; then fail "cozy-runtime $PATCH is not on PyPI or a GitHub prerelease yet"
-else say "WARN patch $PATCH not published: pre-flight continues (require_patch=false); a rental would stop at the update"; fi
+# Production must serve what the cells target: the Runtime on PyPI, each package release on the Hub.
+curl -fsS -o /dev/null "https://pypi.org/pypi/cozy-runtime/$RT/json" 2>/dev/null || fail "cozy-runtime $RT is not on PyPI yet"
+for kind in base turbo; do
+  pkg=${TARGET[$kind]%%/*} rel=${TARGET[$kind]##*@}
+  cozy --json package info "$pkg" 2>/dev/null | jq -e --arg r "$rel" '.releases[] | select(.release == $r and (.yanked | not))' >/dev/null ||
+    fail "$pkg@$rel is not a live release on the Hub"
+done
+say "live: cozy-runtime $RT, ${TARGET[base]}, ${TARGET[turbo]}"
 
 # facts <cell>: what its record shows the DiT call ran on and with, one line of JSON.
 facts() {
@@ -109,21 +112,23 @@ same() {  # same <a> <b>: both compiled one request on one cohort
     == ($a[0] | [.prompt, .references, .sizing, .schedule, .software, .models, .degree])' "$OUT/$2.facts.json" >/dev/null || fail "$1 and $2 did not run the same request"
 }
 score() { jq -r --arg w "$WINDOW" '.windows[$w + "_event"] // 0' "$OUT/ghost-$1.json" 2>/dev/null || echo 0; }
-cohort() {  # cohort <runtime>: the machine runs it on the recorded TensorFS, TensorD and image
-  cozy machine show "$RID" --json > "$OUT/show-$1.json" 2>&1
-  jq -e --argjson c "$COHORT" --arg rt "$1" '.status.runtime==$rt and .status.tensorfs==$c.tensorfs and .status.version==$c.tensord
-    and .rental.base_worker_image_digest==$c.image' "$OUT/show-$1.json" >/dev/null ||
-    fail "$NAME runs $(jq -c '{v: .status.version, rt: .status.runtime, tfs: .status.tensorfs, image: .rental.base_worker_image_digest}' "$OUT/show-$1.json")"
-  say "ASSERT $NAME runs Runtime $1 on $(jq -c '{tensorfs, tensord, image}' <<<"$COHORT"), $GPUS GPUs"
+cohort() {  # cohort: the machine boots the production cohort (each `cohort` field given), recorded as it runs
+  cozy machine show "$RID" --json > "$OUT/show-cohort.json" 2>&1
+  jq -e --argjson c "$COHORT" '.status.runtime==$c.runtime and (($c.tensorfs // .status.tensorfs) == .status.tensorfs)
+    and (($c.tensord // .status.version) == .status.version)
+    and (($c.image // .rental.base_worker_image_digest) == .rental.base_worker_image_digest)' "$OUT/show-cohort.json" >/dev/null ||
+    fail "$NAME runs $(jq -c '{v: .status.version, rt: .status.runtime, tfs: .status.tensorfs, image: .rental.base_worker_image_digest}' "$OUT/show-cohort.json")"
+  say "ASSERT $NAME runs $(jq -c '{v: .status.version, rt: .status.runtime, tfs: .status.tensorfs, image: .rental.base_worker_image_digest}' "$OUT/show-cohort.json") on $GPUS GPUs"
 }
 say "A: ${TARGET[base]} R0, R2 (transformer_ref=sdpa), R1 (transformer_ref=sol-attn) if R0's f$WINDOW event >= $R1_MIN and R2's < $R1_RATIO of it"
-say "B: Runtime $PATCH, ${TARGET[turbo]} T1, T2a, D (${TARGET[base]}), T2b"
+say "B: ${TARGET[turbo]} T1, T2a, D (${TARGET[base]}), T2b on the same cohort"
 quote "$(param traffic_gb 150)" "$(param need_s 4800)"
 rent
 grep -q "^GPU $((GPUS - 1)) " "$OUT/show.txt" || fail "$NAME does not list GPU $((GPUS - 1))"
 
-# A: the attention route, on the recorded cohort.
-cohort "$(jq -r .runtime <<<"$COHORT")"
+cohort
+
+# A: the attention route.
 cell R0 base; cell R2 base transformer_ref=sdpa; same R0 R2
 if [ "$(jq -r .prompt "$OUT/R0.facts.json")" = "$(jq -r '.prompt // empty' <<<"$EXPECT")" ] &&
    [ "$(jq -c .references "$OUT/R0.facts.json")" = "$(jq -c '.references // []' <<<"$EXPECT")" ]; then
@@ -139,20 +144,18 @@ if [ "$s0" -ge "$R1_MIN" ] && awk -v a="$s2" -v b="$s0" -v r="$R1_RATIO" 'BEGIN{
   say "R0 vs R1: $(psnr "$(video R0)" "$(video R1)" R0-R1); R1 vs R2: $(psnr "$(video R1)" "$(video R2)" R1-R2)"
 else say "R1 skipped: R0's f$WINDOW event $s0, R2's $s2 (needs >= $R1_MIN and R2 < $R1_RATIO of it)"; fi
 
-# B: the LoRA bake on refilled pages, on the patched Runtime.
-step update machine update "$NAME" --runtime "$PATCH" -y || fail "machine update to Runtime $PATCH"
-cohort "$PATCH"
+# B: the warm Turbo LoRA bake on refilled pages.
 cell T1 turbo; cell T2a turbo; cell D base; cell T2b turbo; same T1 T2a; same T2a T2b
 say "T1 vs recorded turbo: $(psnr "$(video T1)" "${RECORDED[turbo]}" T1-recorded)"
 strips recorded-turbo "${RECORDED[turbo]}"; say "recorded turbo ghost: $(ghost "${RECORDED[turbo]}" recorded-turbo)"
-say "T1 vs T2a: $(psnr "$(video T1)" "$(video T2a)" T1-T2a); D vs R0 (base on $PATCH vs the recorded cohort): $(psnr "$(video D)" "$(video R0)" D-R0)"
+say "T1 vs T2a: $(psnr "$(video T1)" "$(video T2a)" T1-T2a); D vs R0 (one base request twice, B's executor after the Turbo calls): $(psnr "$(video D)" "$(video R0)" D-R0)"
 # Per GPU: blocks T2b refilled from the store (block 0 holds no LoRA site) and the overlay reads beyond T2a's.
 jq -c --slurpfile a "$OUT/T2a.facts.json" '[.fills[] | . as $g | ($a[0].fills[] | select(.gpu == $g.gpu)) as $w |
   {gpu, refilled: ([$g.dit[] | select(.origin == "store" and .block != 0)] | length), derived: ([$g.dit[] | select(.origin != "store")] | length),
    reads: ($g.overlay - $w.overlay)}]' "$OUT/T2b.facts.json" > "$OUT/T2b-refill.json"
 say "T2b refills per GPU: $(cat "$OUT/T2b-refill.json")"
 refilled=$(jq '[.[].refilled] | add // 0' "$OUT/T2b-refill.json")
-[ "$refilled" -gt 0 ] || fail "D displaced no Turbo DiT page: T2b refilled nothing, the patch is not exercised"
+[ "$refilled" -gt 0 ] || fail "D displaced no Turbo DiT page: T2b refilled nothing, the refill path is not exercised"
 jq -e 'all(.[]; .reads >= 6 * .refilled)' "$OUT/T2b-refill.json" >/dev/null || fail "a refilled LoRA block was not baked (fewer than 6 factor reads per refilled block)"
 fa=$(frames_md5 "$(video T2a)") fb=$(frames_md5 "$(video T2b)")
 if [ "$fa" = "$fb" ]; then say "ASSERT T2b decodes the same frames as T2a ($fa) after refilling $refilled blocks"
