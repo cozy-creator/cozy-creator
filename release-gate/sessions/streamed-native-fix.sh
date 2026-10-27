@@ -2,7 +2,7 @@
 # common block (cozy-runtime opus/stage-capture-lends-common-20261027), so #662's streamed Qwen engages in a real call.
 # Qwen-Image-2 1 MP / 40 steps / int8 from packages master, on released Runtime 0.34.5 (eager: the stage refuses), then
 # on the fix wheel, same pod. e2 and s1 share prompt and seed (the image match). packages_refs: q=<packages master>.
-# params: runtime "<URL#sha256=…>" (the fix wheel), traffic_gb (25), need_s (2400)
+# params: runtime "<URL#sha256=…>" (the fix wheel), runtime_version (its version), traffic_gb (25), need_s (2400)
 . "$(dirname "$0")/lib.sh"
 fetch() {
   local f=$OUT/wheels/$(basename "${1%%#*}" | sed 's/%2B/+/g')
@@ -57,6 +57,7 @@ cell e1 "a quiet harbor at dawn with fishing boats, photograph" $((S + 1))
 cell e2 "a red vintage bicycle leaning on a yellow wall, afternoon sun" $((S + 2))
 step fix --json machine update "$NAME" --runtime "$WHL" -y || fail "the fix wheel did not go on"
 cozy machine show "$NAME" --json > "$OUT/machine-fix.json" 2>&1
+[ "$(reports)" = "0.13.1 $(param runtime_version) 0.17.2" ] || fail "$NAME reports $(reports), not the fix wheel $(param runtime_version)"
 say "fix: $NAME runs $(reports); $(jq -c '.status | with_entries(select(.key | test("runtime|sdk|sha|digest")))' "$OUT/machine-fix.json" 2>/dev/null | cut -c1-400)"
 cell s1 "a red vintage bicycle leaning on a yellow wall, afternoon sun" $((S + 2))
 cell s2 "a bowl of ramen with a soft egg, steam rising, overhead food photograph" $((S + 3))
