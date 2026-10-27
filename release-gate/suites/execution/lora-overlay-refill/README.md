@@ -12,7 +12,8 @@ allocation boundary (driver, Torch and weight-memory bytes, holds).
 
 It fails when:
 
-- the baked LoRA is not closer to the per-step LoRA than base is (a fill baked nothing);
+- the fresh baked LoRA reference baked fewer than every block's LoRA'd linears, or is not nearer the
+  per-step LoRA than base is (a fill baked nothing);
 - a warm call differs from its reference by more than 1e-3 (rel. L2 on the latents): a page filled
   under one overlay served the other;
 - (Runtime 0.34+, from the request's fill trace) a warm call with the card free began with fewer than

@@ -216,9 +216,13 @@ def exercise(
     failures: list[str] = []
     if reference["lora"]["serving"] != "bake":
         failures.append(f"the LoRA served {reference['lora']['serving']}, not baked")
-    if not bake_error < 0.5 * lora_effect:
+    # A correct int8 bake rounds W + BA stochastically: 0.12-0.18 (rel. L2) from the per-step LoRA
+    # on the 48 GB runs, base 0.25-0.29. The fresh baked reference refills every block, so it
+    # must bake each one's LoRA'd linears and land nearer the LoRA than base.
+    if reference["lora"]["baked"] < per_block * blocks or not bake_error < lora_effect:
         failures.append(
-            f"the baked LoRA is {bake_error:.4f} from the per-step LoRA and base {lora_effect:.4f}:"
+            f"the baked LoRA baked {reference['lora']['baked']} weights ({per_block * blocks} "
+            f"expected) and is {bake_error:.4f} from the per-step LoRA, base {lora_effect:.4f}:"
             " the bake did not apply its factors"
         )
     rows = []
