@@ -69,7 +69,7 @@ existing model, native loading/cancellation, kernel readiness (CPU) and bounded-
 ```sh
 gh workflow run release-gate.yml -R cozy-creator/cozy-creator \
   -f suites=runtime -f skus=rtx-4090 -f gpus=1 \
-  -f only=sdxl,qwen,sdxl-p2,native-loaded,native-input-error,native-cancel-active,native-phases,kernel-ready-late-success,kernel-ready-late-error,kernel-ready-dropped-slot,memory-bounded,memory-retry,memory-capture \
+  -f only=sdxl,qwen,sdxl-p2,native-loaded,native-input-error,native-cancel-active,native-phases,kernel-ready-late-success,kernel-ready-late-error,kernel-ready-dropped-slot,memory-bounded,memory-retry,memory-capture,memory-physical-retry \
   -f cells=release-gate/suites/execution/core-cells.sh \
   -f cozy=v0.13.0 -f runtime_wheel="$RUNTIME_WHEEL_URL_AND_SHA256" \
   -f tensorfs_wheel="$TENSORFS_WHEEL_URL_AND_SHA256" -f packages_ref="$PACKAGES_SHA" \

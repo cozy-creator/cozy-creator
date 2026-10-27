@@ -240,12 +240,28 @@ impl Plan {
         {
             return Err("Torch DLLs use different CUDA runtime instances".into());
         }
+        let mut runtime = std::ptr::null_mut();
+        // SAFETY: FROM_ADDRESS locates the original allocation's loaded DLL; PIN retains it.
+        if unsafe { GetModuleHandleExA(0x05, malloc as *const i8, &mut runtime) } == 0 {
+            return Err("cannot retain the original CUDA runtime".into());
+        }
+        // SAFETY: runtime is the original allocation's live DLL; the export names are terminated.
+        let (runtime_malloc, last_error) = unsafe {
+            (
+                GetProcAddress(runtime, c"cudaMalloc".as_ptr()),
+                GetProcAddress(runtime, c"cudaGetLastError".as_ptr()),
+            )
+        };
+        if runtime_malloc as usize != malloc || last_error.is_null() {
+            return Err("cannot resolve error handling in the original CUDA runtime".into());
+        }
         // SAFETY: names were resolved from CUDA runtime exports with these stable C signatures.
         Ok(unsafe {
             Functions {
                 malloc: std::mem::transmute::<usize, super::Malloc>(malloc),
                 free: std::mem::transmute::<usize, super::Free>(free),
                 device: std::mem::transmute::<usize, super::GetDevice>(self.device),
+                last_error: std::mem::transmute::<*mut c_void, super::GetLastError>(last_error),
             }
         })
     }
