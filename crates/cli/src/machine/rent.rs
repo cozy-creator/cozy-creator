@@ -26,8 +26,8 @@ pub struct Rent {
     disk_gb: Option<u32>,
     /// Log in as root over SSH with this public key (`cozy machine ssh`); alone, your
     /// `~/.ssh/id_ed25519.pub` (or id_ecdsa, id_rsa).
-    #[arg(long, requires = "sku", value_name = "PUBLIC_KEY_FILE", num_args = 0..=1, default_missing_value = "")]
-    ssh: Option<std::path::PathBuf>,
+    #[arg(long, requires = "sku", value_name = "PUBLIC_KEY_FILE", num_args = 0..=1)]
+    ssh: Option<Option<std::path::PathBuf>>,
     /// A Hub admin's worker image by digest (sha256:<hex>), for a gated image bake.
     #[arg(long, requires = "sku", hide = true, value_parser = image_digest)]
     image_digest: Option<String>,
@@ -70,7 +70,7 @@ pub async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
         return catalog(ctx, &hub).await;
     };
     let gpus = rent.gpus.unwrap_or(1);
-    let ssh_key = rent.ssh.as_deref().map(|file| ssh_key(ctx, file)).transpose()?;
+    let ssh_key = rent.ssh.as_ref().map(|file| ssh_key(ctx, file.as_deref())).transpose()?;
     admit(ctx, &hub, &sku, gpus).await?;
     // One key names this order: Calcifer keeps the ask under it, and a retry never orders twice.
     let key = mint_key();
@@ -162,11 +162,11 @@ pub async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// The OpenSSH public key `--ssh` names (empty: the user's own), as one line.
-fn ssh_key(ctx: &Context, file: &std::path::Path) -> Result<String, Error> {
-    let file = match file.as_os_str().is_empty() {
-        false => file.to_path_buf(),
-        true => ["id_ed25519.pub", "id_ecdsa.pub", "id_rsa.pub"]
+/// The OpenSSH public key `--ssh` names (none: the user's own), as one line.
+fn ssh_key(ctx: &Context, file: Option<&std::path::Path>) -> Result<String, Error> {
+    let file = match file {
+        Some(file) => file.to_path_buf(),
+        None => ["id_ed25519.pub", "id_ecdsa.pub", "id_rsa.pub"]
             .iter()
             .map(|name| ctx.user_home.join(".ssh").join(name))
             .find(|path| path.is_file())
