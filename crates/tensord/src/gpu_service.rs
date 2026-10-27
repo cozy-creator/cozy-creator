@@ -3263,6 +3263,7 @@ impl Pool {
                     message: prepared.detail.clone(),
                     traceback: prepared.traceback.clone(),
                 },
+                "",
             );
             defer_completion(engine, id, &session.executor.birth, &session.followers, Outcome::Failed(failure))?;
             return Ok(None);
@@ -3342,6 +3343,27 @@ impl Pool {
         let lost = self.lost_followers(start, degree, &session.followers);
         let lost_state = !reply.quiescent || !reply.poisoned.is_empty() || !lost.is_empty();
         if !reply.ok || lost_state {
+            let reason = unsettled(&reply, &lost);
+            // What ended its GPU state: a follower that died (its pid and GPU), else the leader's
+            // own latch. Every rank writes the leader's stderr (followers inherit its fd), so the
+            // dead rank's last words, its abort or CUDA error, are in the tail kept with it.
+            let fault = match (lost.is_empty(), reply.poisoned.is_empty()) {
+                (false, _) => lost.clone(),
+                (true, false) => reply.poisoned.clone(),
+                (true, true) if lost_state => "the executor did not settle quiescent".to_string(),
+                (true, true) => String::new(),
+            };
+            // The author's failure keeps its traceback and origin in triage; a group fault keeps
+            // the dead rank's stderr too. Kept before the kill, while the leader still holds it.
+            match reply.outcome.as_ref().filter(|o| !o.traceback.is_empty()) {
+                Some(outcome) => keep_triage(engine, id, &session.executor, outcome, &fault),
+                None if lost_state => {
+                    keep_lifecycle_triage(engine, id, session.executor.birth.pid,
+                        &reason.code, &reason.detail, &session.executor.stderr_tail(), &fault);
+                }
+                None => {}
+            }
+            log_fault(id, session.executor.birth.pid, &fault, &session.executor.stderr_tail());
             // Its GPU state is lost: its own allocations are destroyed at its exit, never kept
             // for another executor; it is killed now, since
             // a graceful end could spin on that state and keep its GPU memory from every later call.
@@ -3351,13 +3373,8 @@ impl Pool {
                     tracing::warn!("run {id}: killing its unsettled executor: {error}");
                 }
             }
-            // The author's failure keeps its traceback and origin in triage; the executor's
-            // end would record only "executor_ended".
-            if let Some(outcome) = reply.outcome.as_ref().filter(|o| !o.traceback.is_empty()) {
-                keep_triage(engine, id, &session.executor, outcome);
-            }
             // The run ends once the executor is gone; its own reason travels with it, typed.
-            return Err(io::Error::other(unsettled(&reply, &lost)));
+            return Err(io::Error::other(reason));
         }
         let outcome = reply
             .outcome
@@ -3382,7 +3399,7 @@ impl Pool {
                 defer_completion(engine, id, &session.executor.birth, &session.followers, Outcome::Canceled)?;
             }
             _ => {
-                keep_triage(engine, id, &session.executor, outcome);
+                keep_triage(engine, id, &session.executor, outcome, "");
                 defer_completion(engine, id, &session.executor.birth, &session.followers, Outcome::Failed(Failure::executor(
                     &outcome.terminal,
                     &outcome.origin,
@@ -3604,7 +3621,12 @@ impl Drop for Dispatched<'_> {
 fn ended_with(engine: &Engine, id: &str, error: io::Error, executor: DeviceExecutor) -> io::Error {
     let (pid, stderr_tail) = (executor.birth.pid, executor.stderr_tail());
     let error = ending(error, executor);
-    keep_lifecycle_triage(engine, id, pid, &error.to_string(), &stderr_tail);
+    // The executor died mid-command (a signal, a GPU fault ending it): its reason names the signal,
+    // and its stderr says why.
+    let fault = error.to_string();
+    if keep_lifecycle_triage(engine, id, pid, "executor_ended", &fault, &stderr_tail, &fault) {
+        log_fault(id, pid, &fault, &stderr_tail);
+    }
     error
 }
 
@@ -3682,7 +3704,10 @@ pub(crate) fn settle(engine: &Arc<Engine>, id: &str, error: &io::Error) -> io::R
         .and_then(|inner| inner.downcast_ref::<device_executor::EndedBeforeStart>())
     {
         let pid = record.process.as_ref().map_or(0, |birth| birth.pid);
-        keep_lifecycle_triage(engine, id, pid, &ended.to_string(), &ended.stderr_tail);
+        let fault = format!("executor exited before connecting ({})", ended.status);
+        if keep_lifecycle_triage(engine, id, pid, "executor_ended", &ended.to_string(), &ended.stderr_tail, &fault) {
+            log_fault(id, pid, &fault, &ended.stderr_tail);
+        }
     }
     let outcome = if record.cancel_actor.is_some() {
         // A canceled call may already have returned its executor for CPU output work.
@@ -3849,16 +3874,28 @@ fn materialize_tree(
     Ok(())
 }
 
+/// A dead or unsettled executor's fault in the machine's tensord log, with its last 50 stderr lines
+/// (every rank writes the leader's), so `cozy machine logs <m> tensord` explains it too.
+fn log_fault(id: &str, pid: u32, fault: &str, stderr_tail: &str) {
+    if fault.is_empty() {
+        return;
+    }
+    let tail = crate::triage::tail_lines(stderr_tail, 50, 8 << 10);
+    tracing::warn!("run {id}: {fault} (executor {pid}); its last stderr lines, every rank's:\n{}",
+        crate::triage::masked(&tail));
+}
+
 /// The failed attempt's triage bundle, kept before the run settles: the executor's own terminal
 /// and traceback, and its stderr tail.
 /// A lifecycle failure's bundle, when the executor wrote no terminal of its own: the reason
 /// and the end of its stderr. A canceled run keeps none.
-fn keep_lifecycle_triage(engine: &Engine, id: &str, pid: u32, reason: &str, stderr_tail: &str) {
+/// Whether it kept one: false for a canceled run or one that already has its bundle.
+fn keep_lifecycle_triage(engine: &Engine, id: &str, pid: u32, code: &str, reason: &str, stderr_tail: &str, fault: &str) -> bool {
     let Ok(record) = engine.get(id) else {
-        return;
+        return false;
     };
     if record.cancel_actor.is_some() || engine.triage(id).ok().flatten().is_some() {
-        return;
+        return false;
     }
     let request = record
         .submission
@@ -3871,13 +3908,15 @@ fn keep_lifecycle_triage(engine: &Engine, id: &str, pid: u32, reason: &str, stde
             attempt: record.attempt,
             terminal: "failed",
             origin: "machine",
-            code: "executor_ended",
+            code,
             message: reason,
             traceback: "",
             executor_pid: pid,
             stderr_tail,
+            fault,
         },
     );
+    true
 }
 
 pub(crate) fn keep_triage(
@@ -3885,6 +3924,7 @@ pub(crate) fn keep_triage(
     id: &str,
     executor: &DeviceExecutor,
     outcome: &device_executor::Outcome,
+    fault: &str,
 ) {
     let record = engine.get(id).ok();
     let request = record
@@ -3903,6 +3943,7 @@ pub(crate) fn keep_triage(
             traceback: &outcome.traceback,
             executor_pid: executor.birth.pid,
             stderr_tail: &executor.stderr_tail(),
+            fault,
         },
     );
 }

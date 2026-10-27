@@ -38,6 +38,28 @@ pub struct Facts<'a> {
     pub traceback: &'a str,
     pub executor_pid: u32,
     pub stderr_tail: &'a str,
+    /// What ended its GPU group mid-call (`GPU 1's process 5163 ended`), empty otherwise. Every
+    /// rank writes the leader's stderr, so the dead rank's own last words are in `stderr_tail`.
+    pub fault: &'a str,
+}
+
+/// A group fault's evidence: the dead rank, then the stderr all ranks share, its last lines.
+const FAULT_LINES: usize = 50;
+
+/// The last `lines` lines of `text` within `bytes`, its end kept.
+pub fn tail_lines(text: &str, lines: usize, bytes: usize) -> String {
+    let all: Vec<&str> = text.trim_end().lines().collect();
+    capped(&all[all.len().saturating_sub(lines)..].join("\n"), bytes).to_string()
+}
+
+fn fault_section(bundle: &serde_json::Value, bytes: usize) -> Option<String> {
+    let fault = bundle["executor"]["fault"].as_str().filter(|f| !f.is_empty())?;
+    let stderr = bundle["executor"]["stderr_tail"].as_str().map(str::trim).unwrap_or_default();
+    Some(match stderr.is_empty() {
+        true => format!("{fault}; its group's stderr is empty"),
+        false => format!("{fault}; the last {FAULT_LINES} lines of its stderr, which every rank writes:\n{}",
+            tail_lines(stderr, FAULT_LINES, bytes)),
+    })
 }
 
 /// `text` within `limit` chars: whole, or its head and its tail around a marker. A failure's
@@ -77,6 +99,10 @@ pub fn detail(bundle: &[u8]) -> Option<String> {
     const DETAIL_LINES: usize = 40;
     const DETAIL_BYTES: usize = 8 << 10;
     let bundle: serde_json::Value = serde_json::from_slice(bundle).ok()?;
+    // A group fault's leader traceback only says the group broke; the dead rank's stderr says why.
+    if let Some(section) = fault_section(&bundle, DETAIL_BYTES) {
+        return Some(masked(&section));
+    }
     let text = [&bundle["terminal"]["traceback"], &bundle["executor"]["stderr_tail"]]
         .into_iter()
         .filter_map(serde_json::Value::as_str)
@@ -91,12 +117,17 @@ pub fn detail(bundle: &[u8]) -> Option<String> {
 /// what a failed child call hands its caller.
 pub fn traceback(bundle: &[u8]) -> Option<String> {
     let bundle: serde_json::Value = serde_json::from_slice(bundle).ok()?;
+    let fault = fault_section(&bundle, MAX_STDERR as usize);
     let text = [&bundle["terminal"]["traceback"], &bundle["executor"]["stderr_tail"]]
         .into_iter()
         .filter_map(serde_json::Value::as_str)
         .map(str::trim)
-        .find(|text| !text.is_empty())?;
-    Some(masked(text))
+        .find(|text| !text.is_empty());
+    match (bundle["terminal"]["traceback"].as_str().map(str::trim).filter(|t| !t.is_empty()), fault) {
+        (Some(traceback), Some(fault)) => Some(masked(&format!("{traceback}\n\n{fault}"))),
+        (None, Some(fault)) => Some(masked(&fault)),
+        _ => text.map(masked),
+    }
 }
 
 fn capped(text: &str, limit: usize) -> &str {
@@ -119,7 +150,7 @@ pub fn write(
     executor: Option<&crate::journal::ExecutorFacts>,
 ) -> io::Result<TriageRef> {
     let subject_id = format!("trb-{}", &uuid::Uuid::new_v4().simple().to_string()[..24]);
-    let bundle = json!({
+    let mut bundle = json!({
         "format": "cozy.machine.triage/1",
         "subject_id": subject_id,
         "request_id": facts.request_id,
@@ -137,6 +168,9 @@ pub fn write(
             crate::journal::ExecutorFacts::observed(0, String::new(), String::new()).software(facts.attempt)
         }),
     });
+    if !facts.fault.is_empty() {
+        bundle["executor"]["fault"] = json!(capped(facts.fault, MAX_TEXT));
+    }
     let bytes = serde_json_canonicalizer::to_vec(&bundle).map_err(io::Error::other)?;
     let directory = root.join("triage");
     fs::create_dir_all(&directory)?;
