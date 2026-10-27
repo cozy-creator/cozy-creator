@@ -97,12 +97,14 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
   by rank 0.
 - Before loading or reusing a GPU session, other idle constructions on its lane offload through
   `Map(Ram)`, outside warm sets first and then LRU, until driver free bytes cover the call's
-  need. The need is the construction's measured working-set peak when its executor is cold; when
-  that executor is already resident on the lane (a reuse), only its activation headroom
-  (`compute`), since its weights are allocated and the driver's free reading already counts them
-  as used. Charging the whole peak on a reuse would evict small idle neighbours (`ask`,
-  `remove_background`) before every segment. Without a known peak all eligible candidates offload.
-  If offloading weights still does not cover the need, idle processes end in the same order
+  need: per GPU, the construction's measured working-set peak less what its own executor already
+  holds there (the driver's bytes for each rank's process). A cold or offloaded executor holds
+  nothing that counts; a reused resident one holds its weights and cache, which the driver's free
+  reading already counts as used, so charging its whole peak again would evict small idle
+  neighbours (`ask`, `remove_background`) before every segment. Where the driver cannot attribute
+  the process (a container whose pids are not the driver's), a reuse is charged its whole peak.
+  Without a known peak all eligible candidates offload. If offloading weights still does not cover
+  a known, exact need (not a first call, not the whole-peak estimate), idle processes end in the same order
   (`ended_for_room`), newly offloaded ones among them and warm sets last, to reclaim the CUDA
   context and package globals each holds (2-3 GB, most of an 8-12 GB card); a restart is paid
   only if that construction runs again, and only when its held bytes are the difference between

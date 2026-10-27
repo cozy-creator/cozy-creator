@@ -1,46 +1,42 @@
-# reliability: idle-executor context reclaim on a real small card (PR #2174, fix 2's `ended_for_room`).
-# One rental, driven from a runner. The session's cozy carries the candidate TensorD onto the pod. On an 8 GB card
-# SDXL and small siblings (BiRefNet, Anima) do not co-fit, so stacking them forces make_room to end an idle process
-# and reclaim its CUDA context, not merely offload its weights; a later sibling run must still complete in a fresh
-# executor. All targets are released first-party packages; the Hub picks each model's lane for the card. params:
-#   traffic_gb  GB the provider bills: the image and the models (default 14)
+# reliability: an idle executor's process ends for room when only that frees it (#2174/#2181 `ended_for_room`).
+# One rental, driven from a runner; the session's cozy carries the candidate TensorD onto the pod. On an 8 GB card an
+# idle holder (fixtures/gpu-hold: 2.5 GB of package-global GPU memory, which offloading weights cannot free) and SDXL
+# do not co-fit. SDXL runs once first so its need is measured (a process ends only for a known need); then the holder;
+# then SDXL again must end the holder's process to fit; then the holder runs again in a fresh process. params:
+#   hold_mib    MiB the holder keeps (default 2560)
+#   traffic_gb  GB the provider bills: the image, SDXL and the holder's environment (default 12)
 . "$(dirname "$0")/lib.sh"
-recpid() { cozy run show "$1" --json 2>/dev/null | jq -r 'first(.measurements.execution.gpus[]?.pid) // empty'; }
-recstatus() { cozy run show "$1" --json 2>/dev/null | jq -r '.status // empty'; }
-quote "$(param traffic_gb 14)" 2400
+FIX=$(cd "$(dirname "$0")/fixtures" && pwd)
+MIB=$(param hold_mib 2560)
+status() { cozy run show "$(runno "$1")" --once --json > "$OUT/$1.json" 2>&1; jq -r '.status // empty' "$OUT/$1.json"; }
+holder_pid() { jq -r '.result.pid // (.result | fromjson? | .pid) // empty' "$OUT/$1.json"; }
+[ -f "$FIX/gpu-hold/gpu_hold/__init__.py" ] || fail "no fixture checkout"
+quote "$(param traffic_gb 12)" 2400
 rent
 
-# The pod runs the candidate TensorD (the runner's cozy), as the capability session does.
 step update machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "update"
 v=$(cozy machine show "$NAME" --json | jq -r .status.version)
 [ "$v" = "$(cozy --version | awk '{print $2}')" ] || fail "the pod runs TensorD $v, not the session's"
 say "pod TensorD $v"
 
-# Leave BiRefNet's executor idle-resident, then run SDXL: on 8 GB the two do not co-fit, so make_room
-# offloads BiRefNet's weights and, still short, ends its process to reclaim the context.
-step bg1 run birefnet/remove_background --on "$NAME" --asset image="$REF/seed.jpg" || fail "birefnet 1"
-B1=$(runno bg1)
-step big run sdxl/generate --on "$NAME" prompt="a quiet harbor at dawn, photo" seed:=$RANDOM --out "$OUT/sdxl" || fail "sdxl"
-BIG_N=$(runno big)
-# The successor runs BiRefNet again, on SDXL's fresh output (a different image, so it is not a memo hit
-# and really executes): its ended construction must come back in a new executor.
-img=$(ls "$OUT"/sdxl/*.webp "$OUT"/sdxl/*.png 2>/dev/null | head -1)
-[ -n "$img" ] || fail "sdxl produced no image to drive the successor"
-step bg2 run birefnet/remove_background --on "$NAME" --asset image="$img" || fail "birefnet successor"
-B2=$(runno bg2)
+cd "$FIX" || fail "no fixtures"
+step warm run sdxl/generate --on "$NAME" prompt="a red barn in snow, photo" seed:=$RANDOM || fail "sdxl warm-up"
+[ "$(status warm)" = completed ] || fail "the warm-up did not complete"
+step hold1 run ./gpu-hold/hold --on "$NAME" seed:=$RANDOM mib:="$MIB" || fail "holder 1"
+[ "$(status hold1)" = completed ] || fail "holder 1 did not complete"
+base=$(cozy machine logs "$NAME" memory -n 100000 2>/dev/null | wc -l)
+step big run sdxl/generate --on "$NAME" prompt="a quiet harbor at dawn, photo" seed:=$RANDOM || fail "sdxl"
+[ "$(status big)" = completed ] || fail "sdxl did not complete beside the holder"
+step hold2 run ./gpu-hold/hold --on "$NAME" seed:=$RANDOM mib:="$MIB" || fail "holder 2"
+[ "$(status hold2)" = completed ] || fail "holder 2 did not complete"
 
 cozy machine logs "$NAME" memory -n 100000 > "$OUT/memory.log" 2>&1
-say "memory events: $(grep -oE '"event":"[a-z_]+"' "$OUT/memory.log" | sort | uniq -c | tr -s ' \n' ' ')"
-ended=$(grep -c '"event":"ended_for_room"' "$OUT/memory.log")
-offloads=$(grep -c '"event":"offload"' "$OUT/memory.log")
-running_call=$(grep -c '"for":"running_call"' "$OUT/memory.log")
-for n in "$B1" "$BIG_N" "$B2"; do [ "$(recstatus "$n")" = completed ] || fail "run $n is $(recstatus "$n"), not completed"; done
-# All runs completed; the card had to reclaim at least one idle context for the big model to fit.
-[ "$ended" -ge 1 ] || fail "no ended_for_room on an 8 GB card (sizes may co-fit): $(grep -E 'ledger|manager' "$OUT/memory.log" | head -1)"
-p1=$(recpid "$B1") p2=$(recpid "$B2")
-say "birefnet pid $p1 -> successor pid $p2; ended_for_room=$ended offload=$offloads running_call=$running_call"
-# BiRefNet's executor was ended for room, so the successor (a fresh input, really executed) must hold a
-# different pid. An empty p2 means it was a memo hit, which does not exercise a fresh executor.
-[ -n "$p1" ] && [ -n "$p2" ] || fail "a birefnet run did not execute on the GPU (p1=$p1 p2=$p2)"
-[ "$p1" != "$p2" ] || fail "the successor reused the ended executor's pid ($p1)"
-say "PASS: $ended context(s) reclaimed for room; birefnet's successor ran in a fresh executor ($p1 -> $p2); all runs completed"
+tail -n +"$((base + 1))" "$OUT/memory.log" > "$OUT/memory-window.log"
+ended=$(grep -c '"event":"ended_for_room"' "$OUT/memory-window.log")
+need=$(grep '"event":"ended_for_room"' "$OUT/memory-window.log" | head -1 | grep -oE '"need":[0-9a-z]+' | cut -d: -f2)
+h1=$(holder_pid hold1) h2=$(holder_pid hold2)
+say "ended_for_room=$ended (need ${need:-?}); holder pid $h1 -> $h2"
+[ "$ended" -ge 1 ] || fail "SDXL did not end the holder for room: $(grep -E '"event":"offload"' "$OUT/memory-window.log" | head -2 | cut -c1-300)"
+[[ ${need:-null} =~ ^[0-9]+$ ]] || fail "the holder was ended for an unknown need ($need)"
+{ [ -n "$h1" ] && [ -n "$h2" ] && [ "$h1" != "$h2" ]; } || fail "the holder did not come back in a fresh process ($h1 -> $h2)"
+say "PASS: SDXL's measured need ($need B) ended the idle holder's process ($h1) to fit; the holder then ran fresh ($h2)"

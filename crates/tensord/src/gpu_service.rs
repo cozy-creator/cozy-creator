@@ -1007,24 +1007,30 @@ impl Pool {
         Ok(())
     }
 
-    fn measured_peak(&self, lane: &std::ops::Range<usize>, construction: &str) -> Option<u64> {
-        self.devices.get(lane.clone()).into_iter().flatten().filter_map(|d| d.memory.as_ref())
-            .filter_map(|gpu| gpu.figures.request_peak(construction, "")).max()
+    /// The bytes a call of `construction` still needs free on `lane`, per GPU the largest of its
+    /// measured working-set peak less what its executor already holds there (`held`, the driver's
+    /// bytes for each rank's process, aligned with the lane). A cold call holds nothing; a reused
+    /// resident one holds its weights and cache, which the driver's free reading already counts as
+    /// used, so charging its whole peak again would evict small idle neighbours (`ask`,
+    /// `remove_background`) before every segment. Runtime reports no figure for the weights alone,
+    /// so this reads the process itself.
+    fn room_need(&self, lane: &std::ops::Range<usize>, construction: &str, held: &[u64]) -> Option<u64> {
+        let devices = self.devices.get(lane.clone())?;
+        let mut need = None;
+        for (rank, device) in devices.iter().enumerate() {
+            let Some(peak) = device.memory.as_ref().and_then(|gpu| gpu.figures.request_peak(construction, "")) else { continue };
+            let extra = peak.saturating_sub(held.get(rank).copied().unwrap_or(0));
+            need = Some(need.map_or(extra, |n: u64| n.max(extra)));
+        }
+        need
     }
 
-    /// The bytes a call of `construction` still needs free on `lane`. A cold construction needs
-    /// its whole working set (`peak`). One whose own executor is already resident there only
-    /// needs its activation headroom (`compute`): its weights are allocated, which the driver's
-    /// free reading already counts as used, so charging the whole peak again would needlessly
-    /// evict small idle neighbours (`ask`, `remove_background`) before every segment.
-    fn room_need(&self, lane: &std::ops::Range<usize>, construction: &str, resident: bool) -> Option<u64> {
-        let peak = self.measured_peak(lane, construction)?;
-        if !resident {
-            return Some(peak);
-        }
-        let compute = self.devices.get(lane.clone()).into_iter().flatten().filter_map(|d| d.memory.as_ref())
-            .filter_map(|gpu| gpu.figures.compute_peak(construction, "")).max();
-        Some(compute.unwrap_or(peak).min(peak))
+    /// What a reused executor holds on each GPU of its lane, by its ranks' processes; None where the
+    /// driver cannot attribute them (then its need is its whole peak, and nothing is ended for it).
+    fn held(&self, session: &Session) -> Option<Vec<u64>> {
+        let pids = std::iter::once(session.executor.birth.pid).chain(session.followers.iter().map(|f| f.birth().pid));
+        let lane = self.devices.get(session.start..session.start + session.degree as usize)?;
+        lane.iter().zip(pids).map(|(device, pid)| device.memory.as_ref()?.process_bytes(pid)).collect()
     }
 
     fn free(&self, lane: &std::ops::Range<usize>) -> Option<u64> {
@@ -1077,7 +1083,8 @@ impl Pool {
         candidates.into_iter().map(|(_, _, key)| key).collect()
     }
 
-    /// Make room on `lane` for a call of `construction` whose executor is `resident` there or not.
+    /// Make room on `lane` for a call of `construction`. `held` is what its own executor holds there
+    /// (empty for a cold one), or None for a reused executor the driver cannot attribute.
     /// First offload other idle constructions' weights (`Map(Ram)`), LRU and outside warm sets
     /// first, keeping their processes. If that still does not cover the need, end idle processes
     /// in the same order to reclaim the CUDA context and package globals each keeps (2-3 GB,
@@ -1085,15 +1092,22 @@ impl Pool {
     /// and only when its held bytes are the difference between this call fitting or not. Unknown
     /// peaks offload all candidates. Running sessions are absent from the idle pool and are never
     /// stopped or awaited here.
-    fn make_room(&self, engine: &Arc<Engine>, construction: &str, lane: std::ops::Range<usize>, resident: bool) {
-        let need = self.room_need(&lane, construction, resident);
+    fn make_room(&self, engine: &Arc<Engine>, construction: &str, lane: std::ops::Range<usize>, held: Option<Vec<u64>>) {
+        let need = self.room_need(&lane, construction, held.as_deref().unwrap_or(&[]));
+        // Ending a process is paid back only for a need that is known and exact: not a first call
+        // (no peak yet) and not a reuse the driver cannot attribute (its whole peak, an estimate).
+        let exact = held.is_some() && need.is_some();
         let covered = || need.zip(self.free(&lane)).is_some_and(|(need, free)| free >= need);
         for key in self.idle_on_lane(&lane, Level::Gpu) {
             if covered() { return; }
             self.offload_idle(engine, &key, construction, need);
         }
         // Weights are off the GPU now; contexts remain. End idle processes to reclaim them only
-        // while still short, newly offloaded (`Host`) ones among them, warm sets last.
+        // while still short of an exact need, newly offloaded (`Host`) ones among them, warm sets
+        // last.
+        if !exact {
+            return;
+        }
         for key in self.idle_on_lane(&lane, Level::Host) {
             if covered() { return; }
             if self.end_session(&key) {
@@ -2860,7 +2874,11 @@ impl Pool {
         };
         let session = match retained {
             Some(session) => {
-                if degree > 0 { self.make_room(engine, &plan.construction, start..start + degree as usize, session.level == Level::Gpu); }
+                if degree > 0 {
+                    // Offloaded (`Host`) it holds only its context: as good as cold for the need.
+                    let held = match session.level { Level::Gpu => self.held(&session), _ => Some(vec![]) };
+                    self.make_room(engine, &plan.construction, start..start + degree as usize, held);
+                }
                 *disposition = Disposition::Unknown(executor_births(&session.executor.birth, &session.followers));
                 engine.register_managed(
                     id,
@@ -2966,7 +2984,7 @@ impl Pool {
         on_birth: impl Fn(&Birth, &Cancellation) -> io::Result<()>,
     ) -> io::Result<Session> {
         self.gpu_cap(plan.degree)?;
-        if plan.degree > 0 { self.make_room(engine, &plan.construction, start..start + plan.degree as usize, false); }
+        if plan.degree > 0 { self.make_room(engine, &plan.construction, start..start + plan.degree as usize, Some(vec![])); }
         let launched = Instant::now();
         let (root, socket, directory) = self.executor_endpoint()?;
         let config = self.executor_config(held, root, socket, start, plan.degree)?;
