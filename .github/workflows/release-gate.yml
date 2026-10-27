@@ -42,6 +42,10 @@ on:
         description: "Exact GPUs per rental (empty: keep each suite's selection)"
         type: string
         default: ''
+      disk:
+        description: "Container disk GB per rental (empty: each suite's selection, else gate.sh's 400)"
+        type: string
+        default: ''
       only:
         description: "Comma-separated cells or packages (empty: by selection)"
         type: string
@@ -87,6 +91,7 @@ jobs:
           SUITES: ${{ inputs.suites }}
           SKUS: ${{ inputs.skus }}
           GPUS: ${{ inputs.gpus }}
+          DISK: ${{ inputs.disk }}
           CELLS: ${{ inputs.cells }}
         run: |
           # One job per SKU, running every chosen suite whose `skus` (`<sku> [disk GB] [gpus]` per line) names it;
@@ -95,6 +100,8 @@ jobs:
           [ -n "$SUITES" ] || { echo "::error::pick suites: $(ls $d | paste -sd, -) (release-gate/README.md)"; exit 1; }
           [ -z "$GPUS" ] || [[ "$GPUS" =~ ^[1-9][0-9]*$ ]] \
             || { echo "::error::gpus must be a positive integer or empty"; exit 1; }
+          [ -z "$DISK" ] || [[ "$DISK" =~ ^[1-9][0-9]*$ ]] \
+            || { echo "::error::disk must be a positive integer (GB) or empty"; exit 1; }
           if [ -n "$CELLS" ]; then
             case "$CELLS" in release-gate/*.sh | release-gate/*.tsv) ;; *) echo "::error::cells must name a release-gate .sh or .tsv file"; exit 1 ;; esac
             hook=$(realpath -e -- "creator/$CELLS") || exit 1
@@ -112,6 +119,7 @@ jobs:
               | {sku: .[0][0], disk: (map(.[1] | tonumber) | max), gpus: (map(.[2] | tonumber) | max),
                  suite: ($suites | join(",")), key: ($suites | join("-"))})')
           [ -z "$GPUS" ] || matrix=$(jq -c --argjson gpus "$GPUS" 'map(.gpus = $gpus)' <<< "$matrix")
+          [ -z "$DISK" ] || matrix=$(jq -c --argjson disk "$DISK" 'map(.disk = $disk)' <<< "$matrix")
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "gates: $(jq -r 'map(.sku + " (" + .suite + ")") | join(", ")' <<< "$matrix")"
 
