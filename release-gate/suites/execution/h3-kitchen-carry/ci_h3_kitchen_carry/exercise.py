@@ -16,6 +16,7 @@ import importlib.metadata
 import json
 import sys
 import time
+import traceback
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -352,7 +353,8 @@ def gate(transformer, payload, ctx, tel=None) -> dict[str, Any]:
                 eager(transformer, request, state, schedulers, 0, start, name, tick=ticker(f"{label}-prefix"))
                 got = native(transformer, request, state, schedulers, start, ctx)
         except Exception as error:  # noqa: BLE001 - a case's failure is its result, not the gate's end
-            results[label] = {"start": start, "error": f"{type(error).__name__}: {error}"[:900]}
+            results[label] = {"start": start, "error": f"{type(error).__name__}: {error}"[:900],
+                              "where": traceback.format_exc()[-3000:]}
             continue
         error = max(max_abs(got["video"], a_state.latents), max_abs(got["audio"], a_state.audio_latents))
         stats_equal = {
@@ -439,7 +441,8 @@ def refusal(transformer, request, fresh, name, a_state, tick) -> dict[str, Any]:
             forgotten = not (set(cache) - cached)
             eager(transformer, request, state, schedulers, 15, STEPS, name, tick=tick)
     except Exception as error:  # noqa: BLE001 - reported as this case's result
-        return {"start": 15, "error": f"{type(error).__name__}: {error}"[:900]}
+        return {"start": 15, "error": f"{type(error).__name__}: {error}"[:900],
+                "where": traceback.format_exc()[-3000:]}
     return {
         "start": 15, "refused": bool(reason), "reason": reason[:300],
         "request_state_restored": restored, "table_forgotten": forgotten,
