@@ -1074,42 +1074,50 @@ impl Pool {
     /// Idle sessions on `lane` whose weights are on the GPU, least recently used first and
     /// outside every warm set before any member: the order `make_room` offloads and ends them in.
     fn idle_on_lane(&self, lane: &std::ops::Range<usize>, level: Level) -> Vec<String> {
+        self.idle_members_on_lane(lane, level).into_iter().map(|(_, key)| key).collect()
+    }
+
+    /// `idle_on_lane`'s order, each with whether a warm set holds its construction.
+    fn idle_members_on_lane(&self, lane: &std::ops::Range<usize>, level: Level) -> Vec<(bool, String)> {
         let members: std::collections::BTreeSet<String> = self.members.lock().unwrap().values().flatten()
             .filter_map(|member| member.plan.as_ref().map(|plan| plan.construction.clone())).collect();
         let mut candidates: Vec<_> = self.sessions.lock().unwrap().iter()
             .filter(|(_, s)| s.level >= level && s.start < lane.end && lane.start < s.start + s.degree as usize)
             .map(|(key, s)| (members.contains(&s.plan), s.used, key.clone())).collect();
         candidates.sort_by_key(|(member, used, _)| (*member, *used));
-        candidates.into_iter().map(|(_, _, key)| key).collect()
+        candidates.into_iter().map(|(member, _, key)| (member, key)).collect()
     }
 
     /// Make room on `lane` for a call of `construction`. `held` is what its own executor holds there
     /// (empty for a cold one), or None for a reused executor the driver cannot attribute.
     /// First offload other idle constructions' weights (`Map(Ram)`), LRU and outside warm sets
-    /// first, keeping their processes. If that still does not cover the need, end idle processes
-    /// in the same order to reclaim the CUDA context and package globals each keeps (2-3 GB,
-    /// which is most of an 8-12 GB card): a restart is paid only if that construction runs again,
-    /// and only when its held bytes are the difference between this call fitting or not. Unknown
-    /// peaks offload all candidates. Running sessions are absent from the idle pool and are never
+    /// first, keeping their processes. If that still does not cover an exact need, end idle
+    /// processes in the same order to reclaim the CUDA context and package globals each keeps
+    /// (2-3 GB, which is most of an 8-12 GB card): a restart is paid only if that construction runs
+    /// again. A first call (no measured peak) offloads every candidate and ends every offloaded
+    /// one outside the warm sets. Running sessions are absent from the idle pool and are never
     /// stopped or awaited here.
     fn make_room(&self, engine: &Arc<Engine>, construction: &str, lane: std::ops::Range<usize>, held: Option<Vec<u64>>) {
         let need = self.room_need(&lane, construction, held.as_deref().unwrap_or(&[]));
-        // Ending a process is paid back only for a need that is known and exact: not a first call
-        // (no peak yet) and not a reuse the driver cannot attribute (its whole peak, an estimate).
-        let exact = held.is_some() && need.is_some();
         let covered = || need.zip(self.free(&lane)).is_some_and(|(need, free)| free >= need);
         for key in self.idle_on_lane(&lane, Level::Gpu) {
             if covered() { return; }
             self.offload_idle(engine, &key, construction, need);
         }
-        // Weights are off the GPU now; contexts remain. End idle processes to reclaim them only
-        // while still short of an exact need, newly offloaded (`Host`) ones among them, warm sets
-        // last.
-        if !exact {
+        // Weights are off the GPU now; contexts remain (0.5-0.8 GB a process, more for a group).
+        // - A known, exact need ends idle processes only while still short, warm sets last.
+        // - A first call (no measured peak yet) cannot know whether it fits: it ends every offloaded
+        //   idle process outside the warm sets. They reload cheaply (their weights already left; a
+        //   fork and a construction come back), while a first call that runs short fails outright:
+        //   H3 then SDXL left four contexts (2.4 GB) that a first Qwen 4MP call on a 22 GiB 4090
+        //   could not get back (release 40521343073).
+        // - A reuse the driver cannot attribute is charged its whole peak, an estimate: it ends none.
+        let first_call = need.is_none();
+        if !first_call && held.is_none() {
             return;
         }
-        for key in self.idle_on_lane(&lane, Level::Host) {
-            if covered() { return; }
+        for (member, key) in self.idle_members_on_lane(&lane, Level::Host) {
+            if covered() || (first_call && member) { return; }
             if self.end_session(&key) {
                 self.notes.note(serde_json::json!({"event": "ended_for_room", "ended": key,
                     "for": construction, "need": need, "free": self.free(&lane)}));
