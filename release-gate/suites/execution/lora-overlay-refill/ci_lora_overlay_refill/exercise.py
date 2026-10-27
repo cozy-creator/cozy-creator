@@ -8,6 +8,7 @@ must equal its reference: a page's bytes are the same filled now or kept."""
 from __future__ import annotations
 
 import time
+from functools import partial
 from typing import Any
 
 import cozy_runtime
@@ -15,7 +16,7 @@ import torch
 from cozy_runtime import _build_provenance
 from cozy_runtime.author import Context, Telemetry
 from cozy_runtime.author._model import PLACED
-from cozy_runtime.internal import lora_bake
+from cozy_runtime.internal import kernel_ready, lora_bake
 
 from . import Inputs, Lightning, Probe, QwenDiT
 
@@ -84,8 +85,14 @@ def exercise(
     bakes = placement.bakes[name]
     device = torch.device(str(model.device))
     gpu = device.index or 0
+    # A kernel that lands in the background serves from the next request on (`kernel_ready.ready`
+    # never promotes it while one runs); this cell must bake now. The load's background build is
+    # left to end, then `wait` takes what it landed, as a request that names its kernel does. A
+    # failed build bakes eagerly (`lora_bake.serving`).
     began = time.monotonic()
-    while lora_bake.serving(gpu) is None:  # a bake waits for no kernel; this cell must bake
+    while (
+        slot := kernel_ready._SLOTS.get(lora_bake.KERNEL)
+    ) is not None and slot.state == "opening":
         ctx.raise_if_cancelled()
         waited = int(time.monotonic() - began)
         if waited > 900:
@@ -93,6 +100,10 @@ def exercise(
         if waited % 30 == 0:
             tel.log("waiting for the LoRA bake kernels", seconds=str(waited))
         time.sleep(1)
+    try:
+        kernel_ready.wait(lora_bake.KERNEL, partial(lora_bake._built, gpu))
+    except Exception as error:
+        tel.log("the LoRA bake kernels failed; baking eagerly", reason=str(error)[:300])
     held = placement.models[name]
     set_name, blocks = held.name, len(held.blocks)
     # Weights a refilled block bakes: its hooked linears this lane bakes into the page (an svdq
