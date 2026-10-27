@@ -1186,6 +1186,7 @@ fn view(rental: &types::Rental, sku: Option<String>) -> Rental {
         unreachable_since_ms: rental.unreachable_since.as_deref().and_then(ms),
         base_worker_image_digest: Some(rental.base_worker_image_digest.clone())
             .filter(|d| !d.is_empty()),
+        ssh: rental.ssh_address.clone().filter(|a| !a.is_empty()),
     }
 }
 
@@ -1200,6 +1201,8 @@ pub struct Shape {
     pub agreed: Option<Agreed>,
     /// Machines the Hub may buy instead, in order, at or below the asked one's price.
     pub fallbacks: Vec<types::RentalFallback>,
+    /// An OpenSSH public key root logs in with.
+    pub ssh_key: Option<String>,
 }
 
 /// The Hub's request for renting `sku` in `shape`, under a fresh alias and signing key.
@@ -1219,6 +1222,7 @@ fn request(sku: &str, shape: Shape) -> (types::RentalRequest, String, SigningKey
         name: alias.clone(),
         provider: shape.provider,
         sku: sku.to_owned(),
+        development: shape.ssh_key.map(|ssh_public_key| types::RentalDevelopment { ssh_public_key }),
     };
     (request, alias, signer)
 }

@@ -83,7 +83,7 @@ pub struct MachineConfig {
     /// Tests only: a shorter idle window than the fixed 15 minutes after which a rental releases
     /// itself and this computer's machine exits (its executors at a third of it).
     pub idle_seconds: Option<u32>,
-    /// The image layout's root: `/` on a pod, `~/.cozy/machine` on this computer.
+    /// The image layout's root: `/` on a pod, `~/.cozy/machine` on this computer ([`Self::root`]).
     pub root: Option<PathBuf>,
     /// The datacenter cache volume's mount.
     pub cache: Option<PathBuf>,
@@ -113,12 +113,20 @@ pub struct MachineConfig {
 }
 
 impl MachineConfig {
-    /// This computer's machine root: `root`, else `~/.cozy/machine`. Its API's endpoint is
+    /// This computer's machine root: `root`, else a worker image's `/` once a machine booted
+    /// there (on a pod, a shell's `cozy` reaches the machine the image started, whatever its
+    /// environment), else `~/.cozy/machine`. Its API's endpoint is
     /// `<root>/var/lib/cozy/tensord/api-ready.json`.
     pub fn root(&self, home: &Home) -> PathBuf {
-        self.root.clone().unwrap_or_else(|| home.machine())
+        self.root.clone().unwrap_or_else(|| match std::path::Path::new(IMAGE_BOOT_ID).is_file() {
+            true => PathBuf::from("/"),
+            false => home.machine(),
+        })
     }
 }
+
+/// The boot id a machine rooted at `/` (a worker image's) keeps.
+const IMAGE_BOOT_ID: &str = "/var/lib/cozy/machine/boot-id";
 
 /// The environment name of a pod's boot keys.
 pub const AUTHORIZED_KEYS: &str = "COZY_AUTHORIZED_KEYS";

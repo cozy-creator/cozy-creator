@@ -1185,6 +1185,7 @@ pub(crate) async fn quote(
         image,
         provider,
         agreed: _,
+        ssh_key,
     } = parse::<NewMachine>(&body)?
     else {
         return Err(Refusal(Error::new(
@@ -1199,6 +1200,7 @@ pub(crate) async fn quote(
         image,
         provider,
         agreed: None,
+        ssh_key,
         ..Shape::default()
     };
     Ok(Json(api.machines.quote(&hub, &sku, shape).await.map_err(Refusal)?))
@@ -1231,6 +1233,7 @@ pub(crate) async fn create(
             image,
             provider,
             agreed,
+            ssh_key,
         } => {
             let key = headers
                 .get("idempotency-key")
@@ -1253,6 +1256,7 @@ pub(crate) async fn create(
                 image,
                 provider,
                 agreed,
+                ssh_key,
                 ..Shape::default()
             };
             let rented = (api.machines.rent(key, &hub, &sku, shape).await).map_err(Refusal)?;

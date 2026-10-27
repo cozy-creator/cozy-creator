@@ -75,9 +75,11 @@ pub async fn authorize(ctx: &Context, key: &str) -> Result<ExitCode, Error> {
         record = record.field("fingerprint", fingerprint.to_string());
     }
     record
-        .note(match changed {
-            false => "it was already authorized",
-            true => "that controller can now use this machine, which stays up for it",
+        .note(match (changed, machine_root(ctx)? == Path::new("/")) {
+            (false, _) => "it was already authorized",
+            (true, false) => "that controller can now use this machine, which stays up for it",
+            // A worker image's machine: its rental still releases itself idle.
+            (true, true) => "that controller can now use this machine until the rental ends",
         })
         .print(ctx);
     Ok(ExitCode::SUCCESS)

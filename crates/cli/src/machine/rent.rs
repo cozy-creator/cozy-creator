@@ -24,6 +24,10 @@ pub struct Rent {
     /// Disk in GB, at least (the Hub's default is 100).
     #[arg(long, requires = "sku", value_parser = clap::value_parser!(u32).range(1..))]
     disk_gb: Option<u32>,
+    /// Log in as root over SSH with this public key (`cozy machine ssh`); alone, your
+    /// `~/.ssh/id_ed25519.pub` (or id_ecdsa, id_rsa).
+    #[arg(long, requires = "sku", value_name = "PUBLIC_KEY_FILE", num_args = 0..=1, default_missing_value = "")]
+    ssh: Option<std::path::PathBuf>,
     /// A Hub admin's worker image by digest (sha256:<hex>), for a gated image bake.
     #[arg(long, requires = "sku", hide = true, value_parser = image_digest)]
     image_digest: Option<String>,
@@ -66,6 +70,7 @@ pub async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
         return catalog(ctx, &hub).await;
     };
     let gpus = rent.gpus.unwrap_or(1);
+    let ssh_key = rent.ssh.as_deref().map(|file| ssh_key(ctx, file)).transpose()?;
     admit(ctx, &hub, &sku, gpus).await?;
     // One key names this order: Calcifer keeps the ask under it, and a retry never orders twice.
     let key = mint_key();
@@ -77,6 +82,7 @@ pub async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
         image: rent.image_digest.clone(),
         provider: provider.clone(),
         agreed,
+        ssh_key: ssh_key.clone(),
     };
     let calcifer = ctx.calcifer().await?;
     // The Hub's price for exactly this order, agreed before it is placed or resumed.
@@ -137,6 +143,9 @@ pub async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
     if machine.state == MachineState::Booting {
         record = record.note("runs sent to it now wait until it is ready");
     }
+    if let Some(ssh) = machine.rental.as_ref().and_then(|r| r.ssh.as_deref()) {
+        record = record.field("ssh", ssh);
+    }
     if gpus > 1 && gpus % 2 == 1 {
         record = record.note(
             "an odd GPU count leaves one GPU out of parallel runs, which shard at even counts",
@@ -151,6 +160,35 @@ pub async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
         ],
     );
     Ok(ExitCode::SUCCESS)
+}
+
+/// The OpenSSH public key `--ssh` names (empty: the user's own), as one line.
+fn ssh_key(ctx: &Context, file: &std::path::Path) -> Result<String, Error> {
+    let file = match file.as_os_str().is_empty() {
+        false => file.to_path_buf(),
+        true => ["id_ed25519.pub", "id_ecdsa.pub", "id_rsa.pub"]
+            .iter()
+            .map(|name| ctx.user_home.join(".ssh").join(name))
+            .find(|path| path.is_file())
+            .ok_or_else(|| {
+                Error::new(Kind::Usage, "ssh_key_missing", "no SSH public key in ~/.ssh")
+                    .remedy("make one (`ssh-keygen -t ed25519`), or name its .pub file: --ssh <file>")
+            })?,
+    };
+    let text = std::fs::read_to_string(&file).map_err(|e| {
+        Error::new(Kind::Usage, "ssh_key_unreadable", format!("{}: {e}", file.display()))
+    })?;
+    let key = text.trim();
+    let one_line = !key.is_empty() && !key.contains(['\n', '\r', '\0']) && key.len() <= 8192;
+    if !one_line || key.contains("PRIVATE KEY") {
+        return Err(Error::new(
+            Kind::Usage,
+            "ssh_key_invalid",
+            format!("{} is not one OpenSSH public key line", file.display()),
+        )
+        .remedy("name the .pub file: --ssh ~/.ssh/id_ed25519.pub"));
+    }
+    Ok(key.to_owned())
 }
 
 /// What the Hub says of a rental for a person to know: why it runs off the requester's continent.

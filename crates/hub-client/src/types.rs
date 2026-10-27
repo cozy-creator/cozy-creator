@@ -451,6 +451,15 @@ pub struct RentalRequest {
     pub creator_public_key: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub container_disk_gb: Option<i64>,
+    /// SSH into the machine as root with this key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub development: Option<RentalDevelopment>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct RentalDevelopment {
+    /// One OpenSSH public key line.
+    pub ssh_public_key: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -576,6 +585,8 @@ pub struct Rental {
     pub machine_name: Option<String>,
     pub worker_id: Option<String>,
     pub worker_address: Option<String>,
+    /// `host:port` of its sshd, for a rental asked with an SSH key.
+    pub ssh_address: Option<String>,
     pub cert_pem: Option<String>,
     pub base_worker_image_digest: String,
     pub hourly_rate_usd_micros: i64,

@@ -188,15 +188,12 @@ impl Grant {
         })
     }
 
-    /// The keys this machine admits: the grant's and its home's. On a rental the Hub lease
-    /// replaces them once it is read; this computer's are read again when a signer is unknown.
+    /// The keys this machine admits: the grant's (on a rental, replaced by the Hub's lease once
+    /// it is read) and its home's, read again when a signer is unknown: a pod's own shell and the
+    /// controllers it authorizes use it as a laptop's do.
     pub fn keys(&self) -> io::Result<crate::api::auth::Keys> {
-        let (named, home) = (self.authorized.clone(), self.home.clone());
-        let admitted = move || Ok([named.clone(), home_keys(&home)?].concat());
-        match self.lifetime {
-            Lifetime::Rental => admitted().map(crate::api::auth::Keys::fixed),
-            Lifetime::Local => crate::api::auth::Keys::read(admitted),
-        }
+        let home = self.home.clone();
+        crate::api::auth::Keys::read(self.authorized.clone(), move || home_keys(&home))
     }
 }
 

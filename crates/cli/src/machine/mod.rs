@@ -59,6 +59,13 @@ enum Verb {
     },
     /// Reset a rental's 15-minute idle clock once.
     Keepalive { name: String },
+    /// Log in to a rental as root over SSH (one rented with `--ssh`), or run a command there.
+    Ssh {
+        name: String,
+        /// A command to run there instead of a shell.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
     /// Update a machine's Runtime, TensorFS and TensorD in one run and one restart: to the Hub's
     /// target, or to the versions or local builds named.
     Update {
@@ -105,6 +112,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         Verb::Rent(rent) => rent::exec(ctx, rent).await,
         Verb::End { name, force } => end::end(ctx, &name, force).await,
         Verb::Keepalive { name } => end::keepalive(ctx, &name).await,
+        Verb::Ssh { name, command } => ssh(ctx, &name, &command).await,
         Verb::Add {
             name,
             address,
@@ -194,6 +202,47 @@ async fn add(
         ],
     );
     Ok(ExitCode::SUCCESS)
+}
+
+/// `cozy machine ssh`: `ssh` as root into a rental rented with `--ssh`, trusting its host key
+/// the first time, in a known-hosts file of that rental's own.
+async fn ssh(ctx: &Context, name: &str, command: &[String]) -> Result<ExitCode, Error> {
+    let m = machine(ctx, name).await?;
+    let Some((rental, address)) = m.rental_id.as_ref().zip(m.rental.as_ref().and_then(|r| r.ssh.as_deref())) else {
+        let why = match m.rental {
+            Some(_) => format!("{} was rented without an SSH key", m.name),
+            None => format!("{} is not a rental: SSH there as its owner does", m.name),
+        };
+        return Err(Error::new(Kind::Usage, "machine_ssh_none", why)
+            .remedy("rent with `--ssh` to log in: cozy machine rent <sku> --ssh"));
+    };
+    let (host, port) = address.rsplit_once(':').ok_or_else(|| {
+        Error::new(Kind::Internal, "machine_ssh_address", format!("{address:?} is not host:port"))
+    })?;
+    let known = ctx.home.root().join("ssh");
+    std::fs::create_dir_all(&known)
+        .map_err(|e| Error::new(Kind::Internal, "machine_ssh_known_hosts", format!("{}: {e}", known.display())))?;
+    let mut ssh = std::process::Command::new("ssh");
+    ssh.args(["-p", port, "-o", "StrictHostKeyChecking=accept-new", "-o"])
+        .arg(format!("UserKnownHostsFile={}", known.join(format!("{rental}.known_hosts")).display()))
+        .arg(format!("root@{}", host.trim_start_matches('[').trim_end_matches(']')));
+    if !command.is_empty() {
+        ssh.arg("--").args(command);
+    }
+    let unstarted = |e: std::io::Error| {
+        Error::new(Kind::Unavailable, "ssh_unavailable", format!("ssh: {e}"))
+            .remedy("install an OpenSSH client")
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        Err(unstarted(ssh.exec()))
+    }
+    #[cfg(not(unix))]
+    {
+        let status = ssh.status().map_err(unstarted)?;
+        Ok(ExitCode::from(status.code().unwrap_or(1).clamp(0, 255) as u8))
+    }
 }
 
 /// The line `machine list` and `status` show where this OS runs no models itself (no `local`).
