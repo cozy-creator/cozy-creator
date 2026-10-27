@@ -257,6 +257,16 @@ class Use:
         self._native.commit()
         self.needs_fill = False
 
+    def consume_on(self, stream: int) -> None:
+        """Declare a CUDA stream (``torch.cuda.Stream.cuda_stream``) that uses this storage.
+
+        Once any stream is declared, releasing this Use or the last alias of its tensor records
+        a Varena event on every declared stream, and reclaim waits on those events instead of
+        joining the CUDA context. Declare every stream that touches this storage, including
+        through escaped aliases, before that last alias is released.
+        """
+        self._native.consume_on(stream)
+
 
 @contextmanager
 def capture(device: int) -> Iterator[None]:

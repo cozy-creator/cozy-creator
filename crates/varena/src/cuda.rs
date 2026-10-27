@@ -7,6 +7,7 @@ use std::ffi::{c_int, c_uint, c_void};
 
 type Status = c_int;
 type Context = *mut c_void;
+type Object = *mut c_void; // CUevent or CUstream
 type Handle = u64;
 type Pointer = u64;
 
@@ -50,6 +51,10 @@ type SetAccess = unsafe extern "system" fn(Pointer, usize, *const Access, usize)
 type Unmap = unsafe extern "system" fn(Pointer, usize) -> Status;
 type Release = unsafe extern "system" fn(Handle) -> Status;
 type CopyHost = unsafe extern "system" fn(Pointer, *const c_void, usize) -> Status;
+type EventCreate = unsafe extern "system" fn(*mut Object, c_uint) -> Status;
+type EventRecord = unsafe extern "system" fn(Object, Object) -> Status;
+type EventOp = unsafe extern "system" fn(Object) -> Status;
+type IsCapturing = unsafe extern "system" fn(Object, *mut c_int) -> Status;
 
 pub(crate) struct Driver {
     // Keep a primary-context retain for the process lifetime. CUDA reset/fork is unsupported.
@@ -66,6 +71,12 @@ pub(crate) struct Driver {
     unmap: Unmap,
     release: Release,
     copy_host: CopyHost,
+    event_create: EventCreate,
+    event_record: EventRecord,
+    event_query: EventOp,
+    event_synchronize: EventOp,
+    event_destroy: EventOp,
+    is_capturing: IsCapturing,
     pub(crate) granularity: usize,
 }
 
@@ -104,6 +115,12 @@ impl Driver {
             unmap: symbol!("cuMemUnmap", Unmap),
             release: symbol!("cuMemRelease", Release),
             copy_host: symbol!("cuMemcpyHtoD_v2", CopyHost),
+            event_create: symbol!("cuEventCreate", EventCreate),
+            event_record: symbol!("cuEventRecord", EventRecord),
+            event_query: symbol!("cuEventQuery", EventOp),
+            event_synchronize: symbol!("cuEventSynchronize", EventOp),
+            event_destroy: symbol!("cuEventDestroy_v2", EventOp),
+            is_capturing: symbol!("cuStreamIsCapturing", IsCapturing),
             granularity: 0,
         };
         // CUDA registers process exit handlers; unloading its library after init is unsafe.
@@ -211,6 +228,54 @@ impl Driver {
     pub(crate) fn release(&self, handle: u64) -> Result<()> {
         // SAFETY: owned allocation handle; caller has confirmed unmap before releasing.
         status("cuMemRelease", unsafe { (self.release)(handle) })
+    }
+
+    pub(crate) fn create_event(&self) -> Result<usize> {
+        let mut event = std::ptr::null_mut();
+        // SAFETY: valid output pointer; CU_EVENT_DISABLE_TIMING in the entered primary context.
+        status("cuEventCreate", unsafe {
+            (self.event_create)(&mut event, 2)
+        })?;
+        Ok(event as usize)
+    }
+
+    pub(crate) fn record(&self, event: usize, stream: usize) -> Result<()> {
+        // SAFETY: an owned live event; the caller vouches for a live stream of this context.
+        status("cuEventRecord", unsafe {
+            (self.event_record)(event as Object, stream as Object)
+        })
+    }
+
+    /// Whether all work captured by the event's latest record has completed.
+    pub(crate) fn query(&self, event: usize) -> Result<bool> {
+        // SAFETY: an owned live event; callers exclude CUDA graph capture.
+        match unsafe { (self.event_query)(event as Object) } {
+            600 => Ok(false), // CUDA_ERROR_NOT_READY
+            code => status("cuEventQuery", code).map(|()| true),
+        }
+    }
+
+    pub(crate) fn wait_event(&self, event: usize) -> Result<()> {
+        // SAFETY: an owned live event; callers exclude CUDA graph capture.
+        status("cuEventSynchronize", unsafe {
+            (self.event_synchronize)(event as Object)
+        })
+    }
+
+    pub(crate) fn destroy_event(&self, event: usize) -> Result<()> {
+        // SAFETY: the sole owner destroys this event once and never uses it again.
+        status("cuEventDestroy", unsafe {
+            (self.event_destroy)(event as Object)
+        })
+    }
+
+    pub(crate) fn is_capturing(&self, stream: usize) -> Result<bool> {
+        let mut capture = 0;
+        // SAFETY: valid output pointer; the caller vouches for a live stream of this context.
+        status("cuStreamIsCapturing", unsafe {
+            (self.is_capturing)(stream as Object, &mut capture)
+        })?;
+        Ok(capture != 0)
     }
 
     pub(crate) fn copy_from_host(&self, ptr: u64, bytes: &[u8]) -> Result<()> {

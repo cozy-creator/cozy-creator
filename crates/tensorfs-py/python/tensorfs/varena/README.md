@@ -48,8 +48,11 @@ reclaims, refusals and retries; it is not a GPU ownership authority.
 on that device. Prepare and pin every dependency before capture/replay, and retain those pins
 for graph lifetime. Raw Torch/CUDA captures outside Runtime must also enter this guard; the
 streamless cudaMalloc hook does not infer arbitrary third-party captures. Reclamation synchronizes the primary context before unmapping, including
-work on unknown side streams in that context. Private foreign CUDA contexts and IPC are not
-supported.
+work on unknown side streams in that context. A `Use` whose consumer streams are declared with
+`use.consume_on(stream.cuda_stream)` instead records a Varena event on each of them when it or
+its tensor's last alias is released; reclaim then waits only on those events. Every stream that
+touches the storage must be declared. `Arena.stats()` reports `context_joins` and `event_waits`.
+Private foreign CUDA contexts and IPC are not supported.
 
 Coverage excludes `cudaMallocAsync`, expandable segments, other CUDA libraries, static or
 unknown Torch linkage, Torch modules loaded after installation, and runtime allocator changes.
