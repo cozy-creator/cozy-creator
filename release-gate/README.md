@@ -61,7 +61,9 @@ A SKU and suites with no baseline need `--establish` once.
   `cells` forwards the existing `--cells` hook from a `.sh` or `.tsv` file under this checkout's
   `release-gate/`; it is checked before a rental starts. The hook shares the same candidate, rental,
   `only` filter, cleanup and verdict as the selected suites. Optional `gpus` sets an exact positive
-  count on every selected rental; empty keeps the existing suite selection.
+  count on every selected rental; empty keeps the existing suite selection. Optional `disk` sets every rental's
+  container disk in GB (empty: each suite's `skus` disk, else 400); size it to the cells' real need, since disk
+  is billed by the hour.
 
 For the Runtime 0.34 / TensorFS 0.17 core, the release owner can select one RTX 4090 and the
 existing model, native loading/cancellation, kernel readiness (CPU) and bounded-pressure cells:
