@@ -2,7 +2,7 @@
 # will run, calls `quote <traffic GB> <seconds it needs>` (the $0 pre-flight ends there unless RENT=true), then `rent`,
 # and works on $NAME; the EXIT trap ends the rental by its own rental id and checks it is gone.
 # From the workflow: OUT, SKU, DISK, CAP (USD, all in), RENT, PARAMS (a JSON object), PACKAGES (packages/<name>
-# checkouts), REF (release-gate/ref).
+# checkouts), REF (release-gate/ref). A session may set GPUS (the machine's GPU count) before `quote`.
 # Every failure is handled here (the trap ends the rental), not by bash -e.
 set +e -uo pipefail
 mkdir -p "$OUT"; R=$OUT/results.txt
@@ -39,14 +39,14 @@ finish() {
 }
 trap finish EXIT
 trap 'RC=1; exit 1' INT TERM HUP
-# step <name> <cozy args…>: one call followed to its end; output that stops growing for 15 min cancels it.
+# step <name> <cozy args…>: one call followed to its end; output that stops growing for STALL_S (900) s cancels it.
 step() {
   local n=$1; shift; say "step $n: cozy $*"
   cozy "$@" > "$OUT/$n.txt" 2>&1 & local p=$! last=-1 still=0 size
   while kill -0 "$p" 2>/dev/null; do
     sleep 30; size=$(stat -c %s "$OUT/$n.txt")
     if [ "$size" = "$last" ]; then still=$((still + 30)); else still=0; last=$size; fi
-    [ "$still" -lt 900 ] || { kill "$p"; say "$n: no output for 15 min"; return 124; }
+    [ "$still" -lt "${STALL_S:-900}" ] || { kill "$p"; say "$n: no output for ${STALL_S:-900} s"; return 124; }
   done
   wait "$p"; local c=$?
   tail -6 "$OUT/$n.txt" | cut -c1-300 | sed 's/^/    /' >> "$R"
@@ -63,7 +63,7 @@ quote() {
   read -r storage bw < <(jq -r --arg s "$SKU" 'if type=="array" then .[] else . end | select(.name==$s) | .widths[] | select(.accelerator_count==1) |
     [(.storage_usd_micros_per_hour / .container_disk_gb), (.bandwidth_usd_micros_per_gb // 0)] | @tsv' "$OUT/skus.json")
   [ -n "${bw:-}" ] || fail "the catalog offers no single $SKU"
-  cozy machine rent "$SKU" --disk-gb "$DISK" --json < /dev/null > "$OUT/quote.json" 2>&1
+  cozy machine rent "$SKU" --disk-gb "$DISK" ${GPUS:+--gpus "$GPUS"} --json < /dev/null > "$OUT/quote.json" 2>&1
   grep -q quote_unagreed "$OUT/quote.json" || fail "a quote without --yes did not refuse: $(tail -c 300 "$OUT/quote.json")"
   gpu=$(jq -r 'select(.quote) | .quote.usd_micros_per_hour' "$OUT/quote.json" 2>/dev/null | head -1)
   [ -n "$gpu" ] || fail "no quote: $(tail -c 300 "$OUT/quote.json")"
@@ -78,7 +78,7 @@ quote() {
 rent() {
   local o first='' RRC='' RP
   o=$(date +%s%3N)
-  cozy machine rent "$SKU" --disk-gb "$DISK" -y > "$OUT/rent.out" 2> "$OUT/rent.err" & RP=$!
+  cozy machine rent "$SKU" --disk-gb "$DISK" ${GPUS:+--gpus "$GPUS"} -y > "$OUT/rent.out" 2> "$OUT/rent.err" & RP=$!
   while [ -z "$first" ]; do
     first=$(grep -m1 -oE '^[a-z0-9][a-z0-9-]*: (booting|ready|offline)' "$OUT/rent.err" | cut -d: -f1)
     [ -n "$first" ] || kill -0 "$RP" 2>/dev/null || break
