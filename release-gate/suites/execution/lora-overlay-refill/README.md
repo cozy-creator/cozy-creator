@@ -1,6 +1,7 @@
 # LoRA overlay refill
 
-One executor serves Qwen-Image-2512's DiT (int8) and its Lightning LoRA, the LoRA armed by the DiT's
+One executor serves Qwen-Image-Edit-2511's DiT (its int8 lane; 2512's root release is bf16 only)
+and its Lightning LoRA, with no reference image, the LoRA armed by the DiT's
 own forward pre-hook from that forward's `attention_kwargs`, as H3 arms its Turbo overlay. A ballast
 leaves the DiT `room_gib` (6 GiB), so its blocks page within every call and the resident ones carry
 over into the next call. In order, from an emptied cache each: a per-step LoRA (the oracle: nothing
@@ -28,6 +29,6 @@ Why Qwen-Image covers H3: the same Runtime path end to end (`lora.Hook` per LoRA
 baking the armed factors into the int8 lane's pages on fill, residency reusing or refilling those pages,
 the overlay a separately loaded model whose scope holds its factors) and H3's arming contract (inside
 the DiT forward, after the component scope opened). It is the smallest first-party DiT with a hook LoRA
-(20B; FLUX.2 [dev] is 32B, H3 larger) and pages on one consumer card, as H3 does on 4090/5090. The
+(20B, int8 about 20 GB; FLUX.2 [dev] is 32B, H3 larger) and pages on one consumer card, as H3 does on 4090/5090. The
 residency bug is per GPU, so H3's sequence-parallel ranks add nothing. The conditioning is seeded text
 rows: the cell is about weights, not prompts.

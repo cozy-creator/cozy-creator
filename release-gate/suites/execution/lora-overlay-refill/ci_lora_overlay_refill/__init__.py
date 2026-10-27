@@ -1,5 +1,6 @@
-"""Qwen-Image-2512's DiT and its Lightning LoRA, the LoRA armed by the DiT's own forward pre-hook
-from that forward's `attention_kwargs`, as H3 arms its Turbo overlay (`adaln_pruned._arm`).
+"""Qwen-Image-Edit-2511's DiT (its int8 lane) and its Lightning LoRA, the LoRA armed by the DiT's
+own forward pre-hook from that forward's `attention_kwargs`, as H3 arms its Turbo overlay
+(`adaln_pruned._arm`). It denoises with no reference image, as a text-to-image DiT.
 
 Qwen-Image's own package arms before its DiT's component scope opens; H3 arms inside the forward,
 after the scope (and any scope hold) has bound blocks. This cell serves the real checkpoints through
@@ -200,8 +201,8 @@ class Report(msgspec.Struct):
 
 @app.entrypoint(
     defaults={
-        "model": "qwen-image-2512@0.1.0",
-        "turbo_lora": "qwen-image-2512-lightning-lora@0.1.0",
+        "model": "qwen-image-edit-2511@0.1.0",
+        "turbo_lora": "qwen-image-edit-2511-lightning-lora@0.1.0",
     },
     components={"model": ("transformer",)},
 )
@@ -211,6 +212,8 @@ def gpu(
     from .exercise import exercise
 
     result = exercise(payload, model, turbo_lora, ctx, tel)
+    tel.log("lora overlay refill result", result=json.dumps(result, sort_keys=True))
     if not result["passed"]:
-        raise RuntimeError(f"LoRA overlay refill failed: {json.dumps(result, sort_keys=True)}")
+        brief = {k: result[k] for k in ("failures", "lora_effect", "bake_error")}
+        raise RuntimeError(f"LoRA overlay refill failed: {json.dumps(brief, sort_keys=True)}")
     return Report(True, json.dumps(result, sort_keys=True))

@@ -84,8 +84,11 @@ def exercise(
     began = time.monotonic()
     while lora_bake.serving(gpu) is None:  # a bake waits for no kernel; this cell must bake
         ctx.raise_if_cancelled()
-        if time.monotonic() - began > 900:
+        waited = int(time.monotonic() - began)
+        if waited > 900:
             raise RuntimeError("the LoRA bake kernels did not build in 15 minutes")
+        if waited % 30 == 0:
+            tel.log("waiting for the LoRA bake kernels", seconds=str(waited))
         time.sleep(1)
     held = placement.models[name]
     set_name, blocks = held.name, len(held.blocks)
