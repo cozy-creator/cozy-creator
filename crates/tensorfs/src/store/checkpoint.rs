@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use platform::durable;
 
@@ -26,6 +26,8 @@ pub struct Checkpoint {
     objects: Objects,
     id: ObjectRef,
     header: Arc<Header>,
+    /// Each chunk's index and length by digest, built once for every read source of this open.
+    chunk_index: Arc<OnceLock<Arc<BTreeMap<String, (u64, usize)>>>>,
     header_file: Option<PathBuf>,
     _hold: Option<Arc<Hold>>,
 }
@@ -86,7 +88,14 @@ impl Checkpoint {
             }
             Objects::Folder { cache: None, .. } => None,
         };
-        Ok(Self { objects, id, header: Arc::new(header), header_file, _hold: hold })
+        Ok(Self {
+            objects,
+            id,
+            header: Arc::new(header),
+            chunk_index: Arc::default(),
+            header_file,
+            _hold: hold,
+        })
     }
 
     /// The header and every object it cites.
@@ -188,6 +197,27 @@ impl Checkpoint {
 
     pub fn header(&self) -> &Header {
         &self.header
+    }
+
+    /// The header, shared rather than copied.
+    pub(crate) fn shared_header(&self) -> Arc<Header> {
+        self.header.clone()
+    }
+
+    /// Each chunk's length and index by digest.
+    pub(crate) fn chunk_index(&self) -> Arc<BTreeMap<String, (u64, usize)>> {
+        self.chunk_index
+            .get_or_init(|| {
+                Arc::new(
+                    self.header
+                        .chunks
+                        .iter()
+                        .enumerate()
+                        .map(|(i, c)| (c.sha256.clone(), (c.length, i)))
+                        .collect(),
+                )
+            })
+            .clone()
     }
 
     pub fn pipeline(&self) -> Option<&Pipeline> {
