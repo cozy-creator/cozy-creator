@@ -112,6 +112,8 @@ enum Stop {
     Unreachable(String),
     /// Connected, but the machine's answer broke off or was not one: it is busy, not unreachable.
     Unanswered(String),
+    /// The machine refuses this controller's key; `cozy machine authorize` there admits it.
+    Unauthorized(String),
     /// Something besides the machine holds the run (its Hub, Calcifer's store), said as it is.
     Waiting(String),
     Refused(Reason),
@@ -130,9 +132,8 @@ impl From<LinkError> for Stop {
             LinkError::NoRun => Stop::Lost,
             LinkError::NotFound => Stop::Unanswered("the machine does not know the run".into()),
             LinkError::Unreachable(message) => Stop::Unreachable(message),
-            e @ (LinkError::Unanswered(_) | LinkError::Unauthorized(_)) => {
-                Stop::Unanswered(e.to_string())
-            }
+            LinkError::Unauthorized(message) => Stop::Unauthorized(message),
+            e @ LinkError::Unanswered(_) => Stop::Unanswered(e.to_string()),
         }
     }
 }
@@ -675,6 +676,15 @@ impl Calcifer {
                 }
                 Err(Stop::Waiting(message)) => {
                     self.waiting(id, message);
+                    pause.wait(wake, Some(&mut changed)).await;
+                }
+                // It may be authorized later: the run waits, saying what admits it.
+                Err(Stop::Unauthorized(message)) => {
+                    let key = self.machines().and_then(|m| m.controller_key().ok()).unwrap_or_default();
+                    self.waiting(
+                        id,
+                        format!("{name} does not admit this controller's key ({message}): on {name}, cozy machine authorize {key}"),
+                    );
                     pause.wait(wake, Some(&mut changed)).await;
                 }
                 // A run its machine accepted ends only with the machine's outcome.
