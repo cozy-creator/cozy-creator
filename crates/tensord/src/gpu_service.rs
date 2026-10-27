@@ -229,7 +229,10 @@ impl Plan {
                 "preparation differs from owned journal binding",
             ));
         }
-        if plan.construction.is_empty() {
+        // Derived again, so a preparation journaled under an earlier key shares executors too.
+        if let Some(application) = plan.slots.first().map(|slot| slot.binding.application.clone()) {
+            plan.construction = construction(&plan.generation, &application, &plan.slots, plan.degree)?;
+        } else if plan.construction.is_empty() {
             plan.construction = plan.id.clone();
         }
         Ok(plan)
@@ -614,6 +617,20 @@ fn session_key(plan: &str, start: usize) -> String {
         0 => plan.into(),
         _ => format!("{plan}@{start}"),
     }
+}
+
+/// Executors' key: what is constructed, not which entrypoint names it, so entrypoints whose
+/// slots build the same models share one construction and its executors.
+fn construction(generation: &str, application: &str, slots: &[PlanSlot], degree: u32) -> io::Result<String> {
+    let built: Vec<PlanSlot> = slots.iter().cloned()
+        .map(|mut slot| { slot.binding.model_binding_path.clear(); slot }).collect();
+    Ok(format!("gpu-{}", canonical_digest(serde_json::json!({"generation": generation,
+        "application": application, "slots": built, "degree": degree}))?))
+}
+
+fn canonical_digest(value: serde_json::Value) -> io::Result<String> {
+    let canonical = serde_json_canonicalizer::to_vec(&value).map_err(io::Error::other)?;
+    Ok(tensorfs::sha256::hex_digest(&canonical))
 }
 
 fn prepare_request(record: &Execution, plan: &Plan) -> PrepareRequest {
@@ -1949,17 +1966,8 @@ impl Pool {
                 placeable,
             });
         }
-        let digest = |value: serde_json::Value| -> io::Result<String> {
-            let canonical = serde_json_canonicalizer::to_vec(&value).map_err(io::Error::other)?;
-            Ok(tensorfs::sha256::hex_digest(&canonical))
-        };
-        // What is constructed, not which entrypoint names it: entrypoints whose slots build the
-        // same models share one construction and its executors.
-        let built: Vec<PlanSlot> = planned.iter().cloned()
-            .map(|mut slot| { slot.binding.model_binding_path.clear(); slot }).collect();
-        let construction = format!("gpu-{}", digest(serde_json::json!({"generation": installed.generation,
-            "application": application, "slots": built, "degree": degree}))?);
-        let id = format!("plan-{}", digest(serde_json::json!({"construction": construction,
+        let construction = construction(&installed.generation, application, &planned, degree)?;
+        let id = format!("plan-{}", canonical_digest(serde_json::json!({"construction": construction,
             "entrypoint": entrypoint, "slots": planned, "sources": sources}))?);
         Ok(Plan {
             id,
