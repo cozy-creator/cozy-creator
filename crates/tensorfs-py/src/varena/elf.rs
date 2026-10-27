@@ -1,7 +1,7 @@
 //! Linux ELF data-import rewriting. This touches relocation slots, never executable code.
 //! ELF64 layouts follow the System V ABI; dl_iterate_phdr/dlsym/mprotect follow glibc APIs.
 use super::Functions;
-use std::ffi::{CStr, CString, c_void};
+use std::ffi::{c_void, CStr, CString};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[repr(C)]
@@ -311,6 +311,8 @@ impl Plan {
             )
         };
         if runtime_malloc as usize != malloc || device.is_null() || last_error.is_null() {
+            // SAFETY: release only this failed lookup's extra loader reference, before hooks install.
+            unsafe { libc::dlclose(runtime) };
             return Err("cannot resolve error handling in the original CUDA runtime".into());
         }
         // SAFETY: verified named CUDA runtime functions have the declared stable C signatures.

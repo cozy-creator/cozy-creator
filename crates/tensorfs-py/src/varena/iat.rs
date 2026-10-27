@@ -1,6 +1,6 @@
 //! Windows PE64 import-address-table rewriting, using documented loader and page APIs.
 use super::Functions;
-use std::ffi::{CStr, c_void};
+use std::ffi::{c_void, CStr};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[link(name = "kernel32")]

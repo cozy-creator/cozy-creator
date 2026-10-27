@@ -1,7 +1,8 @@
-"""File-backed CUDA weights and genuine allocator refusals under an executor-local cap."""
+"""Real bounded memory policy and physical CUDA allocation recovery."""
 
 from __future__ import annotations
 
+import gc
 import importlib.metadata
 import json
 import os
@@ -23,6 +24,8 @@ MIB = 1 << 20
 def exercise(mode, seed):
     torch.set_num_threads(1)
     accel.initialize(torch, "cuda")
+    if mode == "physical-retry":
+        return physical_retry(seed)
     memory = residency.Memory.open("cuda:0", budget_bytes=256 * MIB)
     memory.apply_budget()
     with tempfile.TemporaryDirectory(prefix="cozy-bounded-policy-") as directory:
@@ -73,6 +76,116 @@ def exercise(mode, seed):
                 model.close()
             memory.trim()
             checkpoint.close()
+
+
+def physical_retry(seed):
+    """Actual runtime OOM, native reclaim/retry, then a checked kernel on the same thread."""
+    assert torch.cuda.device_count() == 1, "use one isolated rental GPU"
+    torch.cuda.empty_cache()
+    free_before, total = torch.cuda.mem_get_info(0)
+    assert total >= 8 * (1 << 30) and total - free_before <= 2 * (1 << 30), (
+        "physical retry requires a quiescent, dedicated rental GPU",
+        free_before,
+        total,
+    )
+    assert torch.cuda.memory_reserved(0) == 0
+    arena = varena.Arena(0)
+    private_bytes, margin, headroom = 2 * (1 << 30), 64 * MIB, 512 * MIB
+    region = arena.reserve(private_bytes)
+    output = use = None
+    try:
+        use = region.prepare()
+        assert use.needs_fill
+        use.tensor.zero_()
+        use.commit()
+        del use
+        use = None
+        gc.collect()
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+        native_before = arena.stats()
+        allocator_before = varena.allocator_stats(0)
+        assert native_before["pinned_bytes"] == 0
+        assert native_before["ready_bytes"] == native_before["resident_bytes"] >= private_bytes
+        assert allocator_before["activation_admission_limit"] == 0
+        assert allocator_before["torch_reserved_bytes"] == 0
+        assert torch.cuda.memory_allocated(0) == torch.cuda.memory_reserved(0) == 0
+        free, total = torch.cuda.mem_get_info(0)
+        granularity = 2 * MIB
+        want = (free + margin + granularity - 1) // granularity * granularity
+        assert free >= 1 << 30 and free < want < free + private_bytes - headroom
+        before = {
+            "phase": "before-physical-oom",
+            "free_bytes": free,
+            "total_bytes": total,
+            "requested_bytes": want,
+            "private_idle_bytes": native_before["resident_bytes"],
+            "minimum_post_reclaim_headroom_bytes": headroom,
+            "allocator": allocator_before,
+            "native": native_before,
+        }
+        print(json.dumps(before, sort_keys=True), flush=True)
+        # No cached Torch segment fits, and want exceeds actual physical free memory.
+        output = torch.empty(want, dtype=torch.uint8, device="cuda:0")
+        allocator_after = varena.allocator_stats(0)
+        native_after = arena.stats()
+        raw_bytes = (
+            allocator_after["torch_reserved_bytes"] - allocator_before["torch_reserved_bytes"]
+        )
+        assert raw_bytes >= want
+        assert allocator_after["allocation_calls"] == allocator_before["allocation_calls"] + 1
+        assert allocator_after["oom_retries"] == allocator_before["oom_retries"] + 1
+        assert allocator_after["budget_refusals"] == allocator_before["budget_refusals"]
+        assert (
+            allocator_after["reclaimed_bytes"] - allocator_before["reclaimed_bytes"]
+            >= private_bytes
+        )
+        assert not region.resident and native_after["resident_bytes"] == 0
+        assert native_after["poisoned"] is False
+        print(
+            json.dumps(
+                {
+                    "phase": "recovered-before-next-kernel",
+                    "requested_bytes": want,
+                    "raw_allocation_bytes": raw_bytes,
+                    "allocator": allocator_after,
+                    "native": native_after,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        # Do not clear/query CUDA error state between the recovered allocation and this kernel.
+        output[:1].fill_(7)
+        torch.cuda.synchronize()
+        assert output[0].item() == 7
+        free_after, _ = torch.cuda.mem_get_info(0)
+        assert free_after >= headroom, (free_after, headroom)
+        result = {
+            "child_pid": os.getpid(),
+            "python": sys.executable,
+            "mode": "physical-retry",
+            "runtime": importlib.metadata.version("cozy-runtime"),
+            "tensorfs": importlib.metadata.version("tensorfs"),
+            "device": torch.cuda.get_device_name(0),
+            "local_memory_cap_bytes": None,
+            "seed": seed,
+            "before": before,
+            "allocator_after": allocator_after,
+            "native_after": native_after,
+            "raw_allocation_bytes": raw_bytes,
+            "free_after_bytes": free_after,
+            "next_kernel_healthy": True,
+            "scope": "Dedicated-rental physical CUDA OOM recovery; no model throughput claim",
+        }
+    finally:
+        del output, use
+        gc.collect()
+        torch.cuda.empty_cache()
+        arena.reclaim(private_bytes)
+    result["cleanup"] = arena.stats()
+    assert result["cleanup"]["pinned_bytes"] == result["cleanup"]["resident_bytes"] == 0
+    return result
 
 
 def prefetch(memory, modules, models, inputs, seed):
