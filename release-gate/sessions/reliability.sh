@@ -1,6 +1,6 @@
 # reliability: idle-executor context reclaim on a real small card (PR #2174, fix 2's `ended_for_room`).
 # One rental, driven from a runner. The session's cozy carries the candidate TensorD onto the pod. On an 8 GB card
-# SDXL and small siblings (BiRefNet, Anima) do not co-fit, so stacking them forces make_room to end an idle process
+# SDXL and a small sibling (BiRefNet) do not co-fit, so stacking them forces make_room to end an idle process
 # and reclaim its CUDA context, not merely offload its weights; a later sibling run must still complete in a fresh
 # executor. All targets are released first-party packages; the Hub picks each model's lane for the card. params:
 #   traffic_gb  GB the provider bills: the image and the models (default 14)
@@ -16,8 +16,10 @@ v=$(cozy machine show "$NAME" --json | jq -r .status.version)
 [ "$v" = "$(cozy --version | awk '{print $2}')" ] || fail "the pod runs TensorD $v, not the session's"
 say "pod TensorD $v"
 
-# Leave BiRefNet's executor idle-resident, then run SDXL: on 8 GB the two do not co-fit, so make_room
-# offloads BiRefNet's weights and, still short, ends its process to reclaim the context.
+# A process ends only for a known need, so SDXL runs once first to measure its peak. Then BiRefNet,
+# then SDXL again: on 8 GB the two do not co-fit, so make_room offloads BiRefNet's weights and, still
+# short of SDXL's measured need, ends BiRefNet's process to reclaim its context.
+step warm run sdxl/generate --on "$NAME" prompt="a red barn in snow, photo" seed:=$RANDOM || fail "sdxl warm-up"
 step bg1 run birefnet/remove_background --on "$NAME" --asset image="$REF/seed.jpg" || fail "birefnet 1"
 B1=$(runno bg1)
 step big run sdxl/generate --on "$NAME" prompt="a quiet harbor at dawn, photo" seed:=$RANDOM --out "$OUT/sdxl" || fail "sdxl"

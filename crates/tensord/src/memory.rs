@@ -42,6 +42,12 @@ impl Gpu {
         platform::gpu::Device::open(&self.uuid).and_then(|gpu| gpu.free()).ok()
     }
 
+    /// The bytes the driver charges process `pid` on this GPU now; None where it cannot say (a
+    /// container whose pids are not the driver's, WDDM) or the process holds nothing here.
+    pub fn process_bytes(&self, pid: u32) -> Option<u64> {
+        platform::gpu::Device::open(&self.uuid).ok()?.read().ok()?.processes?.get(&pid).copied()
+    }
+
     pub fn usage(&self, tenants: &Tenants) -> Option<DeviceUse> {
         let read = platform::gpu::Device::open(&self.uuid).and_then(|gpu| gpu.read()).ok()?;
         if read.total == 0 { return None }
@@ -139,9 +145,6 @@ impl Figures {
     }
     pub fn host_peak(&self, package: &str, shape: &str) -> Option<u64> { self.figure("host", &format!("{package}|{shape}")) }
     pub fn request_peak(&self, package: &str, shape: &str) -> Option<u64> { self.figure("peak", &format!("{package}|{shape}")) }
-    /// A request's largest allocations beside its weights: what a resident construction still
-    /// needs free to run its activations (the weights are already on the device).
-    pub fn compute_peak(&self, package: &str, shape: &str) -> Option<u64> { self.figure("compute", &format!("{package}|{shape}")) }
     fn figure(&self, kind: &str, key: &str) -> Option<u64> {
         let book = self.book.lock().unwrap_or_else(|e| e.into_inner());
         let full = format!("{kind}/{key}");
