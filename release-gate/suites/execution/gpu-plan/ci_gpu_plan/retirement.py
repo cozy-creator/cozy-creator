@@ -22,6 +22,9 @@ class ScaledFill:
     def identity(self):
         return f"retirement-fill-{self.scale}"
 
+    def overlay(self, block, keys):
+        return ()
+
     def __call__(self, block, parts):
         for roles in parts.values():
             roles["value"].mul_(self.scale)

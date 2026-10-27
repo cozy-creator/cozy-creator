@@ -6,6 +6,8 @@ if [ -z "$ONLY" ] || [[ $ONLY == *",sdxl-p2,"* || $ONLY == *",sdxl,"* ]]; then
   "$CLI" machine update "$M" --gpu-memory-limit off -y >restart.log 2>&1; log "restarted $M: $(grep -E '^status' restart.log)"
 fi
 cell sdxl-p2 "$(pkg sdxl generate)" prompt="$OBJECT on a wooden table, product photo" seed:=$((R + 7))
+# A LoRA armed in the forward (H3 Turbo's contract) through paging and base/LoRA alternation (run 19471).
+source "$HERE/suites/execution/lora-overlay-refill/cells.sh"
 # A weights output: SDXL's int8 recipe re-quantizes its newest release's bf16 commit on the machine. Escaped in Runtime 0.33.0 (xs-105):
 # every weights output failed, `open()` passing TensorFS 0.16 a `revision` it no longer takes.
 if [ -z "$ONLY" ] || [[ $ONLY == *",quantize-sdxl,"* ]]; then
