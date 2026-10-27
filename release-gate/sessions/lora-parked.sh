@@ -2,7 +2,7 @@
 # rental, once per named Runtime in order: its verdict, and each warm call's DiT block fills (a switch back to an
 # overlay whose pages stayed parked refills nothing). Proof-only (rc/baked-room-proof-20261027). params:
 #   runtimes   [{"name", "runtime": "<URL#sha256=…>", "seed"}], in order; tensorfs "<URL#sha256=…>" (with the first)
-#   rounds     the cell's warm rounds (2); traffic_gb (60); need_s (2400)
+#   rounds     the cell's warm rounds (2); traffic_gb (60); need_s (2400); slots_below: rent only under this many live pods (4)
 . "$(dirname "$0")/lib.sh"
 CELL=$(cd "$(dirname "$0")/lora-overlay-refill" && pwd)
 fetch() {
@@ -29,7 +29,7 @@ printf 'run 5 · sync local/x (source changed)\nrun 6 · local/x/gpu\nrun      6
 # Never more than 4 session pods at once: a rental waits here for a slot (the wheels above can take minutes).
 slots() { cozy machine list --json 2>/dev/null | jq '[.machines[] | select(.rental_id != null and .rental_id != "" and .state != "ended")] | length'; }
 if [ "$RENT" = true ]; then
-  until n=$(slots) && [ -n "$n" ] && [ "$n" -lt 4 ]; do sleep 30; done
+  until n=$(slots) && [ -n "$n" ] && [ "$n" -lt "$(param slots_below 4)" ]; do sleep 30; done
   say "$n session pods live: renting"
 fi
 quote "$(param traffic_gb 60)" "$(param need_s 2400)"
