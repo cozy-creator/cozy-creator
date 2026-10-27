@@ -1,7 +1,7 @@
 //! Linux ELF data-import rewriting. This touches relocation slots, never executable code.
 //! ELF64 layouts follow the System V ABI; dl_iterate_phdr/dlsym/mprotect follow glibc APIs.
 use super::Functions;
-use std::ffi::{c_void, CStr, CString};
+use std::ffi::{CStr, CString, c_void};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[repr(C)]
@@ -289,11 +289,29 @@ impl Plan {
         {
             return Err("Torch DSOs use different CUDA runtime instances".into());
         }
-        // SAFETY: retained Torch DSO resolves its CUDA dependency using the stable runtime ABI.
-        let device =
-            unsafe { libc::dlsym(self.libraries[0] as *mut c_void, c"cudaGetDevice".as_ptr()) };
-        if device.is_null() {
-            return Err("CUDA runtime lacks cudaGetDevice".into());
+        let mut information = std::mem::MaybeUninit::<libc::Dl_info>::uninit();
+        // SAFETY: the original allocation function points into a retained loaded CUDA DSO.
+        if unsafe { libc::dladdr(malloc as *const c_void, information.as_mut_ptr()) } == 0 {
+            return Err("cannot locate the original CUDA runtime".into());
+        }
+        // SAFETY: successful dladdr initialized the record and its terminated loaded filename.
+        let information = unsafe { information.assume_init() };
+        // SAFETY: NOLOAD selects that existing runtime; retain it for the permanent hooks.
+        let runtime =
+            unsafe { libc::dlopen(information.dli_fname, libc::RTLD_NOW | libc::RTLD_NOLOAD) };
+        if runtime.is_null() {
+            return Err("cannot retain the original CUDA runtime".into());
+        }
+        // SAFETY: all names are terminated and runtime is the original allocation's live DSO.
+        let (runtime_malloc, device, last_error) = unsafe {
+            (
+                libc::dlsym(runtime, c"cudaMalloc".as_ptr()),
+                libc::dlsym(runtime, c"cudaGetDevice".as_ptr()),
+                libc::dlsym(runtime, c"cudaGetLastError".as_ptr()),
+            )
+        };
+        if runtime_malloc as usize != malloc || device.is_null() || last_error.is_null() {
+            return Err("cannot resolve error handling in the original CUDA runtime".into());
         }
         // SAFETY: verified named CUDA runtime functions have the declared stable C signatures.
         Ok(unsafe {
@@ -301,6 +319,7 @@ impl Plan {
                 malloc: std::mem::transmute::<usize, super::Malloc>(malloc),
                 free: std::mem::transmute::<usize, super::Free>(free),
                 device: std::mem::transmute::<*mut c_void, super::GetDevice>(device),
+                last_error: std::mem::transmute::<*mut c_void, super::GetLastError>(last_error),
             }
         })
     }

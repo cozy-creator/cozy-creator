@@ -15,11 +15,13 @@ mod patch;
 type Malloc = unsafe extern "C" fn(*mut *mut c_void, usize) -> i32;
 type Free = unsafe extern "C" fn(*mut c_void) -> i32;
 type GetDevice = unsafe extern "C" fn(*mut i32) -> i32;
+type GetLastError = unsafe extern "C" fn() -> i32;
 
 pub(super) struct Functions {
     pub malloc: Malloc,
     pub free: Free,
     pub device: GetDevice,
+    pub last_error: GetLastError,
 }
 static OWNER_PID: AtomicU32 = AtomicU32::new(0);
 static FUNCTIONS: OnceLock<Functions> = OnceLock::new();
@@ -127,6 +129,13 @@ fn allocate(output: *mut *mut c_void, bytes: usize) -> i32 {
             Ok(true) => return status,
             Ok(false) => (),
             Err(error) => return error_code(error),
+        }
+        // Torch normally consumes a failed cudaMalloc's error before recovery. The hook
+        // hides that failure on success, so consume its OOM before retrying it ourselves.
+        // SAFETY: this function belongs to the original allocation's CUDA runtime instance.
+        let pending = unsafe { (api.last_error)() };
+        if pending != 0 && pending != 2 {
+            return pending;
         }
         match varena::reclaim(device, bytes) {
             Ok(report) if report.reclaimed_bytes > 0 => {
