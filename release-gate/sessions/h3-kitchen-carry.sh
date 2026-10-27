@@ -4,7 +4,8 @@
 # The checkpoint is written and uploaded on the pod as a private model, deleted when the session ends.
 # params:
 #   tree           packages_refs name holding the candidate minimax-h3 (h3)
-#   runtime, tensorfs, tensord   the cohort the machine fetches (0.34.0, 0.17.1, 0.13.0)
+#   runtime, tensorfs, tensord   the cohort the machine fetches (0.34.0, 0.17.1, 0.13.0); runtime may be a
+#                  proof wheel `https://…/<wheel>#sha256=<hex>`, downloaded here, checked and sent
 #   layers         DiT layers at H3's widths (4: blocks 0-1 dense paths, 2-3 Kitchen sites)
 #   latent_frames  107 is the 15 s, 362-frame request; lower only if the card cannot hold it
 #   cases          R15 (a refusal after 15 eager steps, run first), then native starts (R15,S1,S2,S4)
@@ -25,6 +26,14 @@ say "fixture from packages $(git -C "$H3" rev-parse --short HEAD): $(jq -c .file
 [[ $LAYERS =~ ^[0-9]+$ && $LF =~ ^[0-9]+$ && $CASES =~ ^(S1|S2|S4|R15)(,(S1|S2|S4|R15))*$ ]] || fail "bad layers/latent_frames/cases"
 if [ "$RENT" = true ]; then
   [ "$(cozy --version | awk '{print $2}')" = "$TD" ] || fail "the controller's cozy is $(cozy --version), not $TD"
+fi
+RTV=$RT
+if [[ $RT == https://*#sha256=* ]]; then  # a proof wheel: the runner fetches it, the machine gets the file
+  url=${RT%%#*} want=${RT##*#sha256=} wheel=$OUT/$(basename "${url//%2B/+}")
+  curl -fsSL -o "$wheel" "$url" || fail "cannot fetch $url"
+  [ "$(sha256sum "$wheel" | cut -d' ' -f1)" = "$want" ] || fail "$wheel is not sha256 $want"
+  RTV=$(basename "$wheel" | cut -d- -f2) RT=$wheel
+  say "runtime proof wheel $(basename "$wheel") ($want)"
 fi
 UPLOADED=''
 drop_model() {
@@ -47,9 +56,9 @@ rent
 
 step update machine update "$NAME" --runtime "$RT" --tensorfs "$TFS" --tensord "$TD" -y || fail "machine update"
 cozy machine show "$NAME" --json > "$OUT/show-updated.json" 2>&1
-jq -e --arg r "$RT" --arg t "$TFS" --arg d "$TD" '.status.runtime==$r and .status.tensorfs==$t and .status.version==$d' \
+jq -e --arg r "$RTV" --arg t "$TFS" --arg d "$TD" '.status.runtime==$r and .status.tensorfs==$t and .status.version==$d' \
   "$OUT/show-updated.json" >/dev/null || fail "machine runs $(jq -c '.status | {version, runtime, tensorfs}' "$OUT/show-updated.json")"
-say "ASSERT $NAME runs cozy $TD, Runtime $RT, TensorFS $TFS"
+say "ASSERT $NAME runs cozy $TD, Runtime $RTV, TensorFS $TFS"
 
 step source run "$BUILD/source" "seed=$SEED" "layers=$LAYERS" --on "$NAME"; c=$?; record source
 [ "$c" = 0 ] && [ "$(jq -r .status "$OUT/source.json")" = completed ] || fail "source did not complete (exit $c)"
