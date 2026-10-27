@@ -145,7 +145,9 @@ cozy_run() {  # cozy_run <label> <model> <input file> <arm>: one request, its re
   QCWD=$cwd qstep "$n" run "$target" --input "$3" --lane "$lane" --on "$NAME" --out "$OUT/out/$n"; local code=$?
   echo "{\"label\": \"$n\", \"wall_ms\": $(( $(date +%s%3N) - t0 )), \"exit\": $code}" >> "$OUT/walls.jsonl"
   local N; N=$(runno "$n")
-  [ -z "$N" ] || cozy run show "$N" --once --json > "$OUT/rec/$n.json" 2>/dev/null
+  # The JSON record has no logs (a package's own, a native refusal's reason); the table does.
+  [ -z "$N" ] || { cozy run show "$N" --once --json > "$OUT/rec/$n.json" 2>/dev/null
+    cozy run show "$N" --once > "$OUT/rec/$n.log" 2>&1; }
   say "$n run ${N:-none} $(jq -r '.status // "none"' "$OUT/rec/$n.json" 2>/dev/null) exec $(jq -r '(.execution_ms // 0) / 1000' "$OUT/rec/$n.json" 2>/dev/null)s wall $(( $(date +%s%3N) - t0 ))ms"
   tool "mark-$n" mark "label=$n" > /dev/null || fail "mark after $n"
 }
