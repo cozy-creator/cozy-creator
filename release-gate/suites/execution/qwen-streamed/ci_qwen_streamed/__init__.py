@@ -310,6 +310,11 @@ def gpu(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
                 # Exercise the existing ordinary continuation after that refusal. Native
                 # construction and accepted execution are never monkeypatched or retried.
                 eager = values[0].clone()
+                # The oracle loop left this attempt's scheduler at its last step: continue
+                # from step 1 on a fresh one with the same timesteps.
+                schedule = FlowMatchEulerDiscreteScheduler()
+                schedule.set_timesteps(passes + 1, device=memory.device)
+                schedule.set_begin_index(1)
                 bypass = graphs.BYPASS.set(True)
                 try:
                     with placement.using("qwen-not-local-fallback", ("transformer",)), torch.no_grad():
@@ -449,10 +454,13 @@ def gpu(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
                     after["pinned_bytes"] == initial["pinned_bytes"]
                     and not after["poisoned"]
                 )
-                assert after["resident_bytes"] - initial["resident_bytes"] <= window
-                assert sum(row["read_bytes"] for row in facts["stage_inputs"]) > sum(
-                    block.storage_bytes for block in groups
-                )
+                # The streaming limit bounds idle cache; Runtime may keep one admitted next
+                # source resident beside it (Memory._stage_prefetch_window).
+                grown = after["resident_bytes"] - initial["resident_bytes"]
+                largest = max(r.allocated_bytes for k, r in zip(groups, regions) if k.path)
+                assert grown <= window + largest, (grown, window, largest)
+                read = sum(row["read_bytes"] for row in facts["stage_inputs"])
+                assert read > sum(block.storage_bytes for block in groups), read
                 assert all(row["completion_proven"] for row in facts["stage_inputs"])
                 if previous is not None:
                     assert torch.equal(previous, previous_copy)
