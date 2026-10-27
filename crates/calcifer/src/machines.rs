@@ -302,8 +302,8 @@ impl Machines {
     }
 
     /// Records this computer's machine where its TensorD serves (none before its first start),
-    /// signed with this controller's owner key (minted as it first starts), and follows it while
-    /// it serves.
+    /// signed with this controller's owner key (minted on first use: a pod's TensorD the image
+    /// started reads it from the home when it first signs), and follows it while it serves.
     fn put_local(self: &Arc<Self>, endpoint: Option<Endpoint>, serving: bool) -> Result<(), Error> {
         let row = MachineRow {
             name: "local".into(),
@@ -311,7 +311,7 @@ impl Machines {
             hub: String::new(),
             rental_id: None,
             endpoint,
-            key: self.home.owner_key(),
+            key: self.owner_key()?,
             state: MachineState::Ready,
             served: true,
             reason: None,
@@ -1185,6 +1185,7 @@ pub(crate) async fn quote(
         image,
         provider,
         agreed: _,
+        ssh_key,
     } = parse::<NewMachine>(&body)?
     else {
         return Err(Refusal(Error::new(
@@ -1199,6 +1200,7 @@ pub(crate) async fn quote(
         image,
         provider,
         agreed: None,
+        ssh_key,
         ..Shape::default()
     };
     Ok(Json(api.machines.quote(&hub, &sku, shape).await.map_err(Refusal)?))
@@ -1231,6 +1233,7 @@ pub(crate) async fn create(
             image,
             provider,
             agreed,
+            ssh_key,
         } => {
             let key = headers
                 .get("idempotency-key")
@@ -1253,6 +1256,7 @@ pub(crate) async fn create(
                 image,
                 provider,
                 agreed,
+                ssh_key,
                 ..Shape::default()
             };
             let rented = (api.machines.rent(key, &hub, &sku, shape).await).map_err(Refusal)?;

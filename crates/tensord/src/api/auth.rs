@@ -17,45 +17,54 @@ pub struct Authority {
     pub keys: Keys,
 }
 
-/// The signing keys this machine admits, shared by every clone of its Authority. A rental's
-/// set is the Hub's: the granted boot keys hold until the Hub answers, and each answer holds
-/// until the next. Only the Hub's answer changes it: a Hub this machine cannot reach is weather
-/// and changes nothing, a denial revokes at once. This computer's set is its home's files, read
-/// again when a signer is unknown. Losing authority never cancels accepted work.
+/// The signing keys this machine admits, shared by every clone of its Authority: the granted
+/// ones and its home's. A rental's granted set is the Hub's: the boot keys hold until the Hub
+/// answers, and each answer holds until the next. Only the Hub's answer changes it: a Hub this
+/// machine cannot reach is weather and changes nothing, a denial revokes at once. The home's are
+/// this computer's own controllers (its Calcifer's owner key, `cozy machine authorize`'s keys), on
+/// a laptop and on a pod alike, read again when a signer is unknown. Losing authority never
+/// cancels accepted work.
 #[derive(Clone)]
 pub struct Keys {
-    keys: Arc<RwLock<Vec<VerifyingKey>>>,
+    granted: Arc<RwLock<Vec<VerifyingKey>>>,
+    home: Arc<RwLock<Vec<VerifyingKey>>>,
     changes: Arc<tokio::sync::watch::Sender<u64>>,
     source: Option<Arc<dyn Fn() -> std::io::Result<Vec<VerifyingKey>> + Send + Sync>>,
 }
 impl Keys {
     pub fn fixed(keys: Vec<VerifyingKey>) -> Self {
         Self {
-            keys: Arc::new(RwLock::new(keys)),
+            granted: Arc::new(RwLock::new(keys)),
+            home: Arc::default(),
             changes: Arc::new(tokio::sync::watch::channel(0).0),
             source: None,
         }
     }
-    /// The set `source` reads, read again whenever a signer is unknown (`cozy machine authorize`
-    /// takes effect at the next call).
-    pub fn read(source: impl Fn() -> std::io::Result<Vec<VerifyingKey>> + Send + Sync + 'static) -> std::io::Result<Self> {
-        let keys = source()?;
-        Ok(Self { source: Some(Arc::new(source)), ..Self::fixed(keys) })
+    /// `granted`, and the home's keys `source` reads, read again whenever a signer is unknown
+    /// (`cozy machine authorize` takes effect at the next call).
+    pub fn read(
+        granted: Vec<VerifyingKey>,
+        source: impl Fn() -> std::io::Result<Vec<VerifyingKey>> + Send + Sync + 'static,
+    ) -> std::io::Result<Self> {
+        let home = source()?;
+        let keys = Self { source: Some(Arc::new(source)), ..Self::fixed(granted) };
+        *keys.home.write().unwrap() = home;
+        Ok(keys)
     }
-    /// `check` over the admitted keys; when it refuses and the set has a source, once more over
-    /// the source's current set. A concurrent check may have renewed the set meanwhile (a
-    /// controller's first calls, as its key is written): the set read decides, not the one
-    /// refused.
+    /// `check` over the admitted keys; when it refuses and the home has a source, once more with
+    /// the home's current keys. A concurrent check may have read them meanwhile (a controller's
+    /// first calls, as its key is written): the set read decides, not the one refused.
     pub fn check<T, E>(&self, check: impl Fn(&[VerifyingKey]) -> Result<T, E>) -> Result<T, E> {
-        let admitted = self.admitted();
-        let first = check(&admitted);
+        let before = self.home.read().unwrap().clone();
+        let first = check(&self.admitted());
         let (Err(_), Some(source)) = (&first, &self.source) else { return first };
         match source() {
-            Ok(keys) if keys != admitted => {
-                if keys != self.admitted() {
-                    self.replace(keys.clone());
+            Ok(home) if home != before => {
+                if home != *self.home.read().unwrap() {
+                    *self.home.write().unwrap() = home;
+                    self.changed();
                 }
-                check(&keys)
+                check(&self.admitted())
             }
             Ok(_) => first,
             Err(error) => {
@@ -64,20 +73,21 @@ impl Keys {
             }
         }
     }
-    fn replace(&self, keys: Vec<VerifyingKey>) {
-        *self.keys.write().unwrap() = keys;
+    fn changed(&self) {
         self.changes.send_modify(|generation| *generation += 1);
     }
     /// The Hub's current answer: these keys.
     pub fn renew(&self, keys: Vec<VerifyingKey>) {
-        self.replace(keys);
+        *self.granted.write().unwrap() = keys;
+        self.changed();
     }
+    /// The Hub denied this rental: its keys go; the home's stay.
     pub fn revoke(&self) {
-        self.replace(vec![]);
+        self.renew(vec![]);
     }
     /// The keys that may authorize a new control now.
     pub fn admitted(&self) -> Vec<VerifyingKey> {
-        self.keys.read().unwrap().clone()
+        [self.granted.read().unwrap().as_slice(), self.home.read().unwrap().as_slice()].concat()
     }
     /// Resolves once `key` left the set. Ends only that key's open transports; accepted work
     /// is never cancelled.

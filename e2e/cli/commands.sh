@@ -59,6 +59,9 @@ step "renting, signed out"
 cozy machine rent > "$OUT/rent-catalog.txt" 2>&1 && grep -q 'rtx-4090' "$OUT/rent-catalog.txt" || check "machine rent: no catalog: $(head -c 300 "$OUT/rent-catalog.txt")"
 code=0; cozy --json run birefnet/remove_background --asset "image=$(picture dog1.jpg)" --on new > "$OUT/rent-signed-out.json" 2>&1 || code=$?
 [ "$code" != 0 ] && grep -q 'cozy login' "$OUT/rent-signed-out.json" || check "run --on new signed out: exit $code, not refused for sign-in: $(head -c 300 "$OUT/rent-signed-out.json")"
+printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n' > "$OUT/id_private"
+code=0; cozy --json machine rent rtx-4090 --ssh "$OUT/id_private" > "$OUT/rent-ssh.json" 2> "$OUT/rent-ssh.err" || code=$?
+[ "$code" = 2 ] && J '.error.code == "ssh_key_invalid"' "$OUT/rent-ssh.json" || check "machine rent --ssh <a private key>: exit $code, not refused before any ask: $(head -c 300 "$OUT/rent-ssh.json")"
 }
 
 # This computer's machine: packages and models on it.
@@ -285,6 +288,8 @@ cozy --json machine list | J '.machines | any(.name == "e2e-self")' || check "ma
 if (cd "$here" && cozy --json run ./weightless/reverse text=added --on e2e-self > "$OUT/on-added.ndjson"); then
   grep -q dedda "$OUT/on-added.ndjson" || check "a run on e2e-self: no reply"
 else check "a run on the added machine failed"; fi
+code=0; cozy --json machine ssh e2e-self > "$OUT/ssh-added.json" 2> "$OUT/ssh-added.err" || code=$?
+[ "$code" = 2 ] && J '.error.code == "machine_ssh_none"' "$OUT/ssh-added.json" || check "machine ssh e2e-self: exit $code, not refused as no rental: $(head -c 300 "$OUT/ssh-added.json")"
 openssl genpkey -algorithm ed25519 -out "$OUT/controller.pem" 2> /dev/null || check "openssl could not make an Ed25519 key"
 key=$(openssl pkey -in "$OUT/controller.pem" -pubout -outform DER | tail -c 32 | base64 | tr '+/' '-_' | tr -d '=\n') || true
 cozy --json machine authorize "$key" > "$OUT/authorize.json" && J '.changed == true' "$OUT/authorize.json" || check "machine authorize: the key was not added"

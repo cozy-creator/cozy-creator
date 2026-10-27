@@ -564,6 +564,9 @@ pub struct Rental {
     /// The worker image it boots, by digest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_worker_image_digest: Option<String>,
+    /// `host:port` of its sshd, when it was rented with an SSH key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh: Option<String>,
 }
 
 /// A machine's `Status`, as it last sent it.
@@ -844,6 +847,9 @@ pub enum NewMachine {
         /// The quote the renter agreed to (`POST /v1/rental-quotes`): a dearer one rents nothing.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agreed: Option<Agreed>,
+        /// An OpenSSH public key root logs in with (`cozy machine ssh`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ssh_key: Option<String>,
     },
     Add {
         name: String,
