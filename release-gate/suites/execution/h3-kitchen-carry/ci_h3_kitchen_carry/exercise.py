@@ -430,6 +430,8 @@ def refusal(transformer, request, fresh, name, a_state, a_trace, tick) -> dict[s
             cache = getattr(sys.modules.get("comfy_kitchen.backends.cuda"), "_ROPE_FAB_CACHE", {})
             cached = set(cache)
             before = (dict(held.statistics), dict(held.replay_inputs), held.rope, dict(held.parallel_rotary))
+            torch.cuda.synchronize()
+            memory_before = (torch.cuda.mem_get_info()[0], torch.cuda.memory_reserved())
             reason = ""
             try:
                 plan, _, carry = prepare(transformer, state, vs, aus, skewed, SOURCE["sol_dense_steps"], start=15)
@@ -439,6 +441,8 @@ def refusal(transformer, request, fresh, name, a_state, a_trace, tick) -> dict[s
                 plan.close()
                 if carry is not None:
                     carry.close()
+            torch.cuda.synchronize()
+            memory_after = (torch.cuda.mem_get_info()[0], torch.cuda.memory_reserved())
             after = (dict(held.statistics), dict(held.replay_inputs), held.rope, dict(held.parallel_rotary))
             restored = same(before, after) and held.native is None
             forgotten = not (set(cache) - cached)
@@ -449,6 +453,9 @@ def refusal(transformer, request, fresh, name, a_state, a_trace, tick) -> dict[s
     return {
         "start": 15, "refused": bool(reason), "reason": reason[:300], "prefix_exact": prefix_exact,
         "request_state_restored": restored, "table_forgotten": forgotten,
+        # A refusal should return its warm-up memory (cozy-runtime #1859): free/reserved GiB before and after.
+        "free_gib": [round(memory_before[0] / 2**30, 2), round(memory_after[0] / 2**30, 2)],
+        "reserved_gib": [round(memory_before[1] / 2**30, 2), round(memory_after[1] / 2**30, 2)],
         "continuation_exact": bool(torch.equal(state.latents, a_state.latents)
                                    and torch.equal(state.audio_latents, a_state.audio_latents)),
         "continuation_max_abs": max(max_abs(state.latents, a_state.latents),
