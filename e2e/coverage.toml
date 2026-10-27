@@ -62,6 +62,9 @@ test = "pr: an added machine, removed"
 test = "release: rental"
 "--disk-gb" = "release: rental, its disk"
 "--gpus" = "release: rental, more GPUs than the SKU has is refused before buying"
+"--ssh" = "pr: renting, signed out, a private key file refused before any ask (release-gate session multi-machine rents and logs in with it)"
+["machine ssh"]
+test = "pr: an added machine, refused as no rental (release-gate session multi-machine runs every shell step through it)"
 ["machine keepalive"]
 test = "release: rental, keepalive moves its idle deadline"
 
