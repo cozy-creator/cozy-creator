@@ -24,8 +24,9 @@ SUITE_CHECKS = {'tensorfs': tensorfs.check, 'varena': varena.check, 'cli': cli.c
 CHECKS = [quality.check, lm.check, swap.check] + [SUITE_CHECKS[s] for s in SUITES if s in SUITE_CHECKS]
 # Allowed rise over the worst known-good number, unless the good numbers' own spread is wider.
 SLACK = {'execution_ms': 0.25, 'step1_ms': 0.5, 'steady_ms': 0.10, 'vram_mb': 0.10}
-# And at least this much (MiB): a CUDA context's size moves between drivers.
-FLOOR = {'vram_mb': 256}
+# And at least this much: a CUDA context's size moves between drivers (MiB); a sub-second CPU cell's time is its
+# host's scheduling (ms).
+FLOOR = {'vram_mb': 256, 'execution_ms': 250}
 # A step may cost at most 2x its reference plus 5 s: step 1 against step 2 (known-good fresh H3 executors 0.9-1.8x; the
 # 10-22 split regression 8-17x), every later step against the median of steps 2..n (a length change, such as a video
 # reference's rows leaving the sparse window, must not stall a step). The seconds absorb sub-second image steps.
