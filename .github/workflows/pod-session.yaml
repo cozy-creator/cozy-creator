@@ -3,7 +3,8 @@ name: pod-session
 # machines on tensorhub.com, does its work there and ends them (sessions/lib.sh; README.md: Sessions).
 # The runner signs in as the owner (environment release-gate, COZY_CI_DEVICE_KEY, an admin); the pod renews its own run
 # capability while its runs live (cl-675). A guard ends the pod at `cap` USD, all in. Without `rent`, the $0 pre-flight only:
-# install, sign-in, the script's own checks, the quote and the guard.
+# install, sign-in, the script's own checks, the quote and the guard. Dispatches never wait on or cancel each other:
+# each session rents and ends its own pod.
 #   gh workflow run pod-session.yaml -R cozy-creator/cozy-creator -f script=model-ingest -f packages_refs=pk=<sha> \
 #     -f sku=a40 -f disk=500 -f cap=6 -f params='{"package": "qwen3.6", "sources": "…", "lanes": "int8", "version": "0.1.0"}'
 on:
@@ -49,9 +50,6 @@ jobs:
     permissions:
       contents: read
       actions: read  # a dev-build cozy
-    concurrency:
-      group: pod-session-${{ inputs.script }}
-      cancel-in-progress: false
     defaults:
       run:
         shell: bash
