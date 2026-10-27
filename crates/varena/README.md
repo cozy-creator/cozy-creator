@@ -9,7 +9,8 @@ Arena::reserve -> Region (stable VA, no physical pages)
 Region::prepare -> Resident(Pin) | Fill (exclusive initialization)
 Fill::commit -> Pin (ready bytes)
 foreign storage owns Pin until its final alias disappears
-Arena::reclaim -> checked use completion (or context join) -> unmap -> release; Region keeps its VA
+Arena::reclaim -> completed uses, then own-event wait, then context join (unfenced only) -> unmap
+                  -> release; Region keeps its VA
 ```
 
 The Python/native bridge must retain a `Pin` in every exported storage deleter. A view or graph
@@ -56,6 +57,11 @@ reclamation. This protects untracked side-stream work after a storage deleter ha
 A native integration may consume its own Pin through unsafe `into_completed_region` only after
 checking every producer and consumer's completion and preventing later use through that Pin.
 It cannot clear the fence history of a sibling or reclaim a surviving foreign alias.
+`into_fenced_region(streams)` instead records one reusable per-region event on each declared
+consumer stream, without waiting; capture, unready contents or a driver failure fall back to the
+ordinary release. Reclaim frees completed idle regions first, host-waits a region's own events
+only when still short, and joins the context only for unfenced releases. The preferred suffix
+keeps strict order. `Stats.context_joins` and `Stats.event_waits` count those waits.
 Capture dependencies and graph roots retain their pins by default.
 Hold process-wide `varena::enter_capture(device)` around capture to reject residency misses and
 reclamation in every Arena on that device, even when capture starts before any Arena exists.

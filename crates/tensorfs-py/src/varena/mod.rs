@@ -62,6 +62,29 @@ fn release_region(region: Arc<varena::Region>) {
     }
 }
 
+/// Streams declared for one Use family: the Use and every DLPack export taken from it.
+#[derive(Clone, Default)]
+struct Consumers(Arc<Mutex<Vec<u64>>>);
+impl Consumers {
+    fn declare(&self, stream: u64) {
+        let mut streams = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if !streams.contains(&stream) {
+            streams.push(stream);
+        }
+    }
+    /// Records events on the declared streams, or falls back to the context-joined release.
+    /// Never attaches Python or waits.
+    fn release(&self, pin: varena::Pin) {
+        let region = {
+            let streams = self.0.lock().unwrap_or_else(|e| e.into_inner());
+            // SAFETY: consume_on's contract declares every stream used through this family,
+            // and this pin's final alias is gone, so nothing submits through it later.
+            unsafe { pin.into_fenced_region(&streams) }
+        };
+        release_region(region);
+    }
+}
+
 fn raise(py: Python<'_>, error: varena::Error) -> PyErr {
     let message = error.to_string();
     let class = match error {
@@ -153,6 +176,8 @@ impl PyArena {
             ("hits", stats.hits),
             ("evictions", stats.evictions),
             ("reclaimed_bytes", stats.reclaimed_bytes),
+            ("context_joins", stats.context_joins),
+            ("event_waits", stats.event_waits),
         ] {
             output.set_item(name, value)?;
         }
@@ -272,6 +297,7 @@ impl PyRegion {
             needs_fill,
             device: self.region.device(),
             pid: std::process::id(),
+            consumers: Consumers::default(),
         })
     }
     fn pin(&self, py: Python<'_>) -> PyResult<Option<PyUse>> {
@@ -283,6 +309,7 @@ impl PyRegion {
             needs_fill: false,
             device: self.region.device(),
             pid: std::process::id(),
+            consumers: Consumers::default(),
         }))
     }
 }
@@ -293,6 +320,7 @@ struct PyUse {
     needs_fill: bool,
     device: i32,
     pid: u32,
+    consumers: Consumers,
 }
 #[pymethods]
 impl PyUse {
@@ -332,6 +360,17 @@ impl PyUse {
         })
         .map_err(|e| raise(py, e))
     }
+    /// Declare a CUDA stream handle that uses this storage. Releases of this Use and its
+    /// exports then record Varena events there instead of requiring a context join.
+    fn consume_on(&self, stream: u64) -> PyResult<()> {
+        if self.pid != std::process::id() {
+            return Err(PyRuntimeError::new_err(
+                "CUDA storage cannot be used after fork",
+            ));
+        }
+        self.consumers.declare(stream);
+        Ok(())
+    }
     fn __dlpack_device__(&self) -> (i32, i32) {
         (2, self.device)
     }
@@ -370,7 +409,7 @@ impl PyUse {
                 }
             })
             .map_err(|e| raise(py, e))?;
-        capsule(py, pin)
+        export(py, pin, self.consumers.clone())
     }
 }
 impl Drop for PyUse {
@@ -386,7 +425,10 @@ impl Drop for PyUse {
             .take()
         {
             // Pin count/fill abort becomes visible now, before any later allocation recovery.
-            release_region(preparation.into_unpinned_region());
+            match preparation {
+                varena::Preparation::Resident(pin) => self.consumers.release(pin),
+                fill => release_region(fill.into_unpinned_region()),
+            }
         }
     }
 }
@@ -422,6 +464,7 @@ struct Held {
     pin: varena::Pin,
     length: i64,
     pid: u32,
+    consumers: Consumers,
 }
 
 unsafe extern "C" fn delete(tensor: *mut Managed) {
@@ -435,9 +478,9 @@ unsafe extern "C" fn delete(tensor: *mut Managed) {
     if held.pid != std::process::id() {
         std::mem::forget(held);
     } else {
-        let Held { pin, .. } = *held;
+        let Held { pin, consumers, .. } = *held;
         // This deleter may run with or without a Python thread state. Never attach or wait.
-        release_region(pin.into_unpinned_region());
+        consumers.release(pin);
     }
 }
 unsafe extern "C" fn capsule_delete(capsule: *mut ffi::PyObject) {
@@ -449,6 +492,9 @@ unsafe extern "C" fn capsule_delete(capsule: *mut ffi::PyObject) {
     }
 }
 fn capsule(py: Python<'_>, pin: varena::Pin) -> PyResult<Bound<'_, PyAny>> {
+    export(py, pin, Consumers::default())
+}
+fn export(py: Python<'_>, pin: varena::Pin, consumers: Consumers) -> PyResult<Bound<'_, PyAny>> {
     let length = match i64::try_from(pin.len()) {
         Ok(length) => length,
         Err(_) => {
@@ -461,6 +507,7 @@ fn capsule(py: Python<'_>, pin: varena::Pin) -> PyResult<Bound<'_, PyAny>> {
         pin,
         length,
         pid: std::process::id(),
+        consumers,
     }));
     let tensor = Box::into_raw(Box::new(Managed {
         tensor: Tensor {

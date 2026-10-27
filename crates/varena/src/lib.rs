@@ -3,7 +3,8 @@
 //! Every foreign storage must retain its [`Pin`] until the final alias is destroyed. Raw addresses
 //! are not ownership. Kernels may finish after the final storage disappears, so reclamation joins
 //! the primary CUDA context before unmapping unless every pin was released by a native integration
-//! after checked completion. Capture/replay roots retain pins for their lifetime by default.
+//! after checked completion, or with last-consumer events on its declared streams, which reclaim
+//! waits on instead. Capture/replay roots retain pins for their lifetime by default.
 //! No imported memory, IPC, background work, file I/O, or Python callbacks occur here.
 #![deny(unsafe_code)]
 
@@ -48,6 +49,10 @@ pub struct Stats {
     pub evictions: u64,
     pub reclaimed_bytes: u64,
     pub reclaimed_by_reason: ReclaimedBytes,
+    /// cuCtxSynchronize calls made before reclaiming or refilling unfenced releases.
+    pub context_joins: u64,
+    /// Last-consumer events host-waited before reclaiming or refilling fenced releases.
+    pub event_waits: u64,
     pub poisoned: bool,
 }
 
@@ -104,6 +109,31 @@ struct Uses {
     // Ordinary foreign storage may disappear before its submitted CUDA work completes.
     // Only a native caller with a checked last-consumer fence can release without this bit.
     unjoined: AtomicBool,
+    // One reusable last-consumer event per declared stream. A release records it before its
+    // pin decrement, so a zero-pin reclaim candidate's events cannot be re-recorded under it.
+    fences: Mutex<Vec<Fence>>,
+}
+
+#[derive(Clone, Copy)]
+struct Fence {
+    stream: usize,
+    event: usize,
+}
+
+/// What a fill may do for room: anything (`Any`), nothing (`None`), or evict only idle
+/// streamed regions whose consumers are already complete (`Completed`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Admission {
+    Any,
+    Completed,
+    None,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Completion {
+    Done,
+    Pending,
+    Unjoined,
 }
 
 impl Uses {
@@ -112,7 +142,11 @@ impl Uses {
             pins: AtomicUsize::new(0),
             contents: AtomicU8::new(Contents::Cold as u8),
             unjoined: AtomicBool::new(false),
+            fences: Mutex::new(Vec::new()),
         }
+    }
+    fn fences(&self) -> MutexGuard<'_, Vec<Fence>> {
+        self.fences.lock().unwrap_or_else(|e| e.into_inner())
     }
     fn state(&self) -> Contents {
         match self.contents.load(Ordering::Acquire) {
@@ -179,6 +213,8 @@ struct State {
     evictions: u64,
     reclaimed_bytes: u64,
     reclaimed_by_reason: ReclaimedBytes,
+    context_joins: u64,
+    event_waits: u64,
 }
 
 impl State {
@@ -210,6 +246,8 @@ pub struct Arena {
     driver: cuda::Driver,
     device: i32,
     pid: u32,
+    // Lock-free view of this device's capture guards, for release paths that never wait.
+    captures: Arc<AtomicUsize>,
     state: Mutex<State>,
 }
 
@@ -366,14 +404,16 @@ impl Drop for ProducerGuard {
 
 impl Arena {
     pub fn new(device: i32) -> Result<Arc<Self>> {
-        let captures = capture_counts()?;
+        let mut captures = capture_counts()?;
         ensure_recovery_allowed(&captures, device)?;
         let driver = cuda::Driver::open(device)?;
+        let capturing = Arc::clone(&captures.entry(device).or_default().captures);
         drop(captures);
         let arena = Arc::new(Self {
             driver,
             device,
             pid: std::process::id(),
+            captures: capturing,
             state: Mutex::new(State {
                 entries: BTreeMap::new(),
                 next_id: 1,
@@ -387,6 +427,8 @@ impl Arena {
                 evictions: 0,
                 reclaimed_bytes: 0,
                 reclaimed_by_reason: ReclaimedBytes::default(),
+                context_joins: 0,
+                event_waits: 0,
             }),
         });
         let mut registry = ARENAS
@@ -589,81 +631,187 @@ impl Arena {
         candidates.sort_by_key(|(id, preferred, age)| {
             (*preferred, if *preferred { u64::MAX - id } else { *age })
         });
-        // Fence only the byte-bounded prefix this call can actually reclaim. An older
-        // unrelated cache entry must not add a global wait to a completed stage's release.
-        let mut remaining = bytes;
-        candidates.retain(|(id, _, _)| {
-            if remaining == 0 {
-                return false;
-            }
-            remaining = remaining.saturating_sub(state.entries[id].bytes);
-            true
-        });
-        if candidates.is_empty() {
-            return Ok(report);
-        }
-        // Generic foreign storage still requires the conservative context fence. A native
-        // stage may instead release every use after its own checked last-consumer event.
         // The arena lock excludes new pins; each candidate already has zero physical pins.
-        if candidates
-            .iter()
-            .any(|(id, _, _)| state.entries[id].uses.unjoined.load(Ordering::Acquire))
-        {
-            if let Err(error) = self.driver.synchronize() {
-                return Err(poison(state, error));
+        // Idle cache goes completed-first, then after its own events, and joins the context
+        // only for unfenced releases. The preferred suffix keeps strict order, since each of
+        // its evictions permanently shortens the retained prefix.
+        let idle = candidates.partition_point(|(_, preferred, _)| !preferred);
+        let (mut pending, mut unjoined) = (Vec::new(), Vec::new());
+        for &(id, _, _) in &candidates[..idle] {
+            if report.reclaimed_bytes >= bytes {
+                return Ok(report);
             }
-            for (id, _, _) in &candidates {
-                state.entries[id]
-                    .uses
-                    .unjoined
-                    .store(false, Ordering::Release);
+            match self.completion(state, id)? {
+                Completion::Done => self.evict(state, id, reason, &mut report)?,
+                Completion::Pending => pending.push(id),
+                Completion::Unjoined => unjoined.push(id),
             }
         }
-        for (id, _, _) in candidates {
+        for id in pending {
+            if report.reclaimed_bytes >= bytes {
+                return Ok(report);
+            }
+            self.wait_fences(state, id)?;
+            self.evict(state, id, reason, &mut report)?;
+        }
+        if report.reclaimed_bytes < bytes && !unjoined.is_empty() {
+            self.join_context(state, &unjoined)?;
+            for id in unjoined {
+                if report.reclaimed_bytes >= bytes {
+                    return Ok(report);
+                }
+                self.evict(state, id, reason, &mut report)?;
+            }
+        }
+        let kept: Vec<_> = candidates[idle..].iter().map(|(id, _, _)| *id).collect();
+        for (index, &id) in kept.iter().enumerate() {
             if report.reclaimed_bytes >= bytes {
                 break;
             }
-            let entry = state
-                .entries
-                .get(&id)
-                .expect("candidate belongs to locked arena");
-            let (ptr, size, handle) = (
-                entry.ptr,
-                entry.bytes,
-                entry.handle.expect("mapped candidate"),
-            );
-            if let Err(error) = self.driver.unmap(ptr, size) {
-                return Err(poison(state, error));
+            match self.completion(state, id)? {
+                Completion::Done => {}
+                Completion::Pending => self.wait_fences(state, id)?,
+                // One join completes every later candidate's work as well.
+                Completion::Unjoined => self.join_context(state, &kept[index..])?,
             }
-            // If release fails, do not retry or reuse either handle or reservation.
-            if let Err(error) = self.driver.release(handle) {
-                return Err(poison(state, error));
+            self.evict(state, id, reason, &mut report)?;
+        }
+        Ok(report)
+    }
+
+    /// Evict idle, non-preferred regions whose last-consumer events have all completed, oldest
+    /// first, until `bytes` are free. Never waits on an event or joins the context.
+    fn reclaim_completed_locked(
+        &self,
+        state: &mut State,
+        bytes: usize,
+        exclude: u64,
+        reason: ReclaimReason,
+    ) -> Result<ReclaimReport> {
+        let mut report = ReclaimReport {
+            requested_bytes: bytes,
+            ..ReclaimReport::default()
+        };
+        let mut candidates: Vec<_> = state
+            .entries
+            .iter()
+            .filter(|(id, entry)| {
+                **id != exclude
+                    && entry.uses.pins() == 0
+                    && entry.uses.state() != Contents::Loading
+                    && entry.handle.is_some()
+                    && !entry.preferred()
+                    && (!matches!(reason, ReclaimReason::StreamingLimit) || !state.standby(entry))
+            })
+            .map(|(id, entry)| (*id, entry.last_use))
+            .collect();
+        candidates.sort_by_key(|(_, age)| *age);
+        for (id, _) in candidates {
+            if report.reclaimed_bytes >= bytes {
+                break;
             }
-            let entry = state.entries.get_mut(&id).expect("locked candidate");
-            let was_preferred = entry.preferred();
-            entry.handle = None;
-            entry.uses.invalidate();
-            let retired = entry.uses.state() == Contents::Retired;
-            if was_preferred && !retired {
-                // Pressure permanently shortens the retained prefix. Later scans cannot rebuild it.
-                state.preferred_end = Some(state.preferred_end.map_or(id, |end| end.min(id)));
-                for (_, later) in state.entries.range_mut(id..) {
-                    later.preferred = false;
-                }
-            }
-            report.reclaimed_bytes += size;
-            report.evicted_regions += 1;
-            state.evictions = state.evictions.saturating_add(1);
-            state.reclaimed_bytes = state.reclaimed_bytes.saturating_add(size as u64);
-            state.reclaimed_by_reason.add(reason, size);
-            if retired {
-                if let Err(error) = self.driver.free_address(ptr, size) {
-                    return Err(poison(state, error));
-                }
-                state.entries.remove(&id);
+            if self.completion(state, id)? == Completion::Done {
+                self.evict(state, id, reason, &mut report)?;
             }
         }
         Ok(report)
+    }
+
+    /// Whether every consumer of an unpinned region is known complete, without waiting.
+    fn completion(&self, state: &mut State, id: u64) -> Result<Completion> {
+        let uses = Arc::clone(&state.entries[&id].uses);
+        if uses.unjoined.load(Ordering::Acquire) {
+            return Ok(Completion::Unjoined);
+        }
+        for fence in uses.fences().iter() {
+            match self.driver.query(fence.event) {
+                Ok(true) => {}
+                Ok(false) => return Ok(Completion::Pending),
+                Err(error) => return Err(poison(state, error)),
+            }
+        }
+        Ok(Completion::Done)
+    }
+
+    /// Host-wait only this region's own last-consumer events, never unrelated work.
+    fn wait_fences(&self, state: &mut State, id: u64) -> Result<()> {
+        let uses = Arc::clone(&state.entries[&id].uses);
+        for fence in uses.fences().iter() {
+            if let Err(error) = self.driver.wait_event(fence.event) {
+                return Err(poison(state, error));
+            }
+            state.event_waits = state.event_waits.saturating_add(1);
+        }
+        Ok(())
+    }
+
+    /// The conservative fence for releases that recorded no consumer event.
+    fn join_context(&self, state: &mut State, ids: &[u64]) -> Result<()> {
+        if let Err(error) = self.driver.synchronize() {
+            return Err(poison(state, error));
+        }
+        state.context_joins = state.context_joins.saturating_add(1);
+        for id in ids {
+            state.entries[id]
+                .uses
+                .unjoined
+                .store(false, Ordering::Release);
+        }
+        Ok(())
+    }
+
+    /// Unmap and release one joined, unpinned candidate.
+    fn evict(
+        &self,
+        state: &mut State,
+        id: u64,
+        reason: ReclaimReason,
+        report: &mut ReclaimReport,
+    ) -> Result<()> {
+        let entry = state
+            .entries
+            .get(&id)
+            .expect("candidate belongs to locked arena");
+        let (ptr, size, handle) = (
+            entry.ptr,
+            entry.bytes,
+            entry.handle.expect("mapped candidate"),
+        );
+        if let Err(error) = self.driver.unmap(ptr, size) {
+            return Err(poison(state, error));
+        }
+        // If release fails, do not retry or reuse either handle or reservation.
+        if let Err(error) = self.driver.release(handle) {
+            return Err(poison(state, error));
+        }
+        let entry = state.entries.get_mut(&id).expect("locked candidate");
+        // Every event is complete here; a destroy failure only leaks the event.
+        for fence in entry.uses.fences().drain(..) {
+            let _ = self.driver.destroy_event(fence.event);
+        }
+        let was_preferred = entry.preferred();
+        entry.handle = None;
+        entry.uses.invalidate();
+        let retired = entry.uses.state() == Contents::Retired;
+        if was_preferred && !retired {
+            // Pressure permanently shortens the retained prefix. Later scans cannot rebuild it.
+            state.preferred_end = Some(state.preferred_end.map_or(id, |end| end.min(id)));
+            for (_, later) in state.entries.range_mut(id..) {
+                later.preferred = false;
+            }
+        }
+        report.reclaimed_bytes += size;
+        report.evicted_regions += 1;
+        state.evictions = state.evictions.saturating_add(1);
+        state.reclaimed_bytes = state.reclaimed_bytes.saturating_add(size as u64);
+        state.reclaimed_by_reason.add(reason, size);
+        if retired {
+            if let Err(error) = self.driver.free_address(ptr, size) {
+                return Err(poison(state, error));
+            }
+            state.entries.remove(&id);
+        }
+        Ok(())
     }
 
     pub fn stats(&self) -> Result<Stats> {
@@ -681,6 +829,8 @@ impl Arena {
             evictions: state.evictions,
             reclaimed_bytes: state.reclaimed_bytes,
             reclaimed_by_reason: state.reclaimed_by_reason,
+            context_joins: state.context_joins,
+            event_waits: state.event_waits,
             poisoned: state.poison.is_some(),
             ..Stats::default()
         };
@@ -740,6 +890,44 @@ impl Region {
         state.poison.get_or_insert_with(|| detail.into());
     }
 
+    /// Record this region's reusable last-consumer event on each stream. Never waits.
+    fn record_fences(&self, streams: &[u64]) -> Result<()> {
+        if streams.is_empty()
+            || self.uses.state() != Contents::Ready
+            || self.arena.captures.load(Ordering::Acquire) != 0
+        {
+            return Err(Error::Invalid("release has no recordable consumer event"));
+        }
+        let driver = &self.arena.driver;
+        let _context = driver.enter()?;
+        let mut fences = self.uses.fences();
+        for &stream in streams {
+            let stream = stream as usize;
+            // A record inside capture would be a graph node, not a completion fence.
+            if driver.is_capturing(stream)? {
+                return Err(Error::CaptureActive);
+            }
+            let known = fences
+                .iter()
+                .find(|fence| fence.stream == stream)
+                .map(|fence| fence.event);
+            let event = match known {
+                Some(event) => event,
+                None => driver.create_event()?,
+            };
+            if let Err(error) = driver.record(event, stream) {
+                if known.is_none() {
+                    let _ = driver.destroy_event(event);
+                }
+                return Err(error);
+            }
+            if known.is_none() {
+                fences.push(Fence { stream, event });
+            }
+        }
+        Ok(())
+    }
+
     pub fn ptr(&self) -> u64 {
         self.ptr
     }
@@ -797,16 +985,25 @@ impl Region {
     }
 
     pub fn prepare(self: &Arc<Self>) -> Result<Preparation> {
-        self.prepare_with_reclaim(true)
+        self.prepare_with_reclaim(Admission::Any)
     }
 
     /// Admit speculative bytes only if no eviction or prior-writer join is required.
     /// Capacity refusal leaves existing ready contents and the preference watermark intact.
     pub fn prepare_without_reclaim(self: &Arc<Self>) -> Result<Preparation> {
-        self.prepare_with_reclaim(false)
+        self.prepare_with_reclaim(Admission::None)
     }
 
-    fn prepare_with_reclaim(self: &Arc<Self>, reclaim: bool) -> Result<Preparation> {
+    /// Admit a streamed block's read ahead of its use: it may evict idle streamed regions whose
+    /// last-consumer events are already complete, oldest first, and never waits or joins. The
+    /// retained prefix and every pending region stay; otherwise this refuses like
+    /// `prepare_without_reclaim`.
+    pub fn prepare_evicting_completed(self: &Arc<Self>) -> Result<Preparation> {
+        self.prepare_with_reclaim(Admission::Completed)
+    }
+
+    fn prepare_with_reclaim(self: &Arc<Self>, admission: Admission) -> Result<Preparation> {
+        let reclaim = admission == Admission::Any;
         let captures = capture_counts()?;
         let mut state = self.arena.lock()?;
         let entry = state.entries.get(&self.id).expect("live region");
@@ -833,18 +1030,31 @@ impl Region {
                 let resident = state.streaming_bytes();
                 let limit = state.streaming_limit.max(self.rounded);
                 let excess = resident.saturating_add(self.rounded).saturating_sub(limit);
-                if excess != 0 && !reclaim {
-                    return Err(Error::OutOfMemory {
-                        requested_bytes: self.rounded,
-                    });
+                match admission {
+                    Admission::Any => {
+                        self.arena.reclaim_locked(
+                            &mut state,
+                            excess,
+                            false,
+                            Some(self.id),
+                            ReclaimReason::StreamingLimit,
+                        )?;
+                    }
+                    Admission::Completed => {
+                        self.arena.reclaim_completed_locked(
+                            &mut state,
+                            excess,
+                            self.id,
+                            ReclaimReason::StreamingLimit,
+                        )?;
+                    }
+                    Admission::None if excess != 0 => {
+                        return Err(Error::OutOfMemory {
+                            requested_bytes: self.rounded,
+                        });
+                    }
+                    Admission::None => {}
                 }
-                self.arena.reclaim_locked(
-                    &mut state,
-                    excess,
-                    false,
-                    Some(self.id),
-                    ReclaimReason::StreamingLimit,
-                )?;
                 let remaining = state.streaming_bytes();
                 if remaining.saturating_add(self.rounded) > limit {
                     return Err(Error::OutOfMemory {
@@ -855,18 +1065,30 @@ impl Region {
             let handle = match self.arena.driver.create(self.rounded) {
                 Ok(handle) => handle,
                 Err(Error::OutOfMemory { .. }) => {
-                    if !reclaim {
-                        return Err(Error::OutOfMemory {
-                            requested_bytes: self.rounded,
-                        });
+                    match admission {
+                        Admission::None => {
+                            return Err(Error::OutOfMemory {
+                                requested_bytes: self.rounded,
+                            });
+                        }
+                        Admission::Completed => {
+                            self.arena.reclaim_completed_locked(
+                                &mut state,
+                                self.rounded,
+                                self.id,
+                                ReclaimReason::WeightAllocation,
+                            )?;
+                        }
+                        Admission::Any => {
+                            self.arena.reclaim_locked(
+                                &mut state,
+                                self.rounded,
+                                false,
+                                Some(self.id),
+                                ReclaimReason::WeightAllocation,
+                            )?;
+                        }
                     }
-                    self.arena.reclaim_locked(
-                        &mut state,
-                        self.rounded,
-                        false,
-                        Some(self.id),
-                        ReclaimReason::WeightAllocation,
-                    )?;
                     match self.arena.driver.create(self.rounded) {
                         Ok(handle) => handle,
                         Err(error @ Error::OutOfMemory { .. }) => return Err(error),
@@ -881,19 +1103,22 @@ impl Region {
                 return Err(poison(&mut state, error));
             }
         } else {
-            if !reclaim {
-                // Even an abandoned fill with no remaining pins may have queued writers.
-                return Err(Error::OutOfMemory {
-                    requested_bytes: self.rounded,
-                });
-            }
             // An abandoned external fill may still have queued writes. Only a checked
             // native last-use release can remove this join; ordinary storage remains guarded.
-            if self.uses.unjoined.load(Ordering::Acquire) {
-                if let Err(error) = self.arena.driver.synchronize() {
-                    return Err(poison(&mut state, error));
+            match (admission, self.arena.completion(&mut state, self.id)?) {
+                (_, Completion::Done) if admission != Admission::None => {}
+                (Admission::Any, Completion::Pending) => {
+                    self.arena.wait_fences(&mut state, self.id)?
                 }
-                self.uses.unjoined.store(false, Ordering::Release);
+                (Admission::Any, Completion::Unjoined) => {
+                    self.arena.join_context(&mut state, &[self.id])?
+                }
+                // Even an abandoned fill with no remaining pins may have queued writers.
+                _ => {
+                    return Err(Error::OutOfMemory {
+                        requested_bytes: self.rounded,
+                    });
+                }
             }
         }
         let pin = self.pin_locked(&mut state)?;
@@ -1119,6 +1344,27 @@ impl Pin {
         }
         region
     }
+
+    /// End this use after recording a Varena-owned last-consumer event on each stream.
+    /// Reclaim then waits on those events, never the context. With no stream, unready
+    /// contents, active capture or any driver failure, this is `into_unpinned_region`.
+    /// Never waits, so storage deleters may call it.
+    ///
+    /// # Safety
+    /// Every consumer of this pin, including escaped aliases sharing it, submitted all of its
+    /// work to these streams (or joined it into one of them) and submits nothing after this
+    /// call. Each stream is live and belongs to this device's primary context.
+    #[allow(unsafe_code)]
+    pub unsafe fn into_fenced_region(mut self, streams: &[u64]) -> Arc<Region> {
+        let region = self.region.take().expect("live pin");
+        if region.arena.pid == std::process::id() {
+            if region.record_fences(streams).is_err() {
+                region.uses.unjoined.store(true, Ordering::Release);
+            }
+            decrement(&region.uses.pins);
+        }
+        region
+    }
 }
 
 impl Drop for Pin {
@@ -1211,6 +1457,9 @@ impl Drop for Arena {
         }
         for entry in state.entries.values() {
             // Last Arc<Arena> means no Region, Pin, Fill, or CaptureGuard can still exist.
+            for fence in entry.uses.fences().drain(..) {
+                let _ = self.driver.destroy_event(fence.event);
+            }
             if let Some(handle) = entry.handle {
                 if self.driver.unmap(entry.ptr, entry.bytes).is_err() {
                     return;

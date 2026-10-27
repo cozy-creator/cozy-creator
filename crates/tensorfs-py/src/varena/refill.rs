@@ -921,7 +921,7 @@ pub(super) fn prepare_encoded(
     let encoding = encoding.clone();
     let parts = parts.iter().cloned().zip(offsets).collect();
     let region = arena.reserve(bytes).map_err(Failure::Native)?;
-    let mut work = prepare_work(&region, checkpoint, Vec::new(), threads, true, true)?
+    let mut work = prepare_work(&region, checkpoint, Vec::new(), threads, true, false, true)?
         .ok_or_else(|| invalid("fresh encoded load slot was already resident"))?;
     // Final zero initialization has already completed. This fresh scratch has no
     // pending GPU work if allocation fails; later submission keeps it inside Work.
@@ -946,12 +946,15 @@ pub(super) fn prepare_work(
     parts: Vec<(String, usize, usize)>,
     threads: usize,
     reclaim: bool,
+    evict_completed: bool,
     initialize: bool,
 ) -> Result<Option<Work>, Failure> {
     let items = prepare_items(&checkpoint, parts, region.len())?;
     let producer = varena::enter_producer(region.device()).map_err(Failure::Native)?;
     let preparation = if reclaim {
         region.prepare()
+    } else if evict_completed {
+        region.prepare_evicting_completed()
     } else {
         region.prepare_without_reclaim()
     }
@@ -1740,7 +1743,7 @@ impl PreparedRead {
     const CAPTURE_GUARD: bool = true;
 
     #[new]
-    #[pyo3(signature = (region, checkpoint, parts, threads = 2, reclaim = true))]
+    #[pyo3(signature = (region, checkpoint, parts, threads = 2, reclaim = true, evict_completed = false))]
     fn new(
         py: Python<'_>,
         region: PyRef<'_, PyRegion>,
@@ -1748,11 +1751,22 @@ impl PreparedRead {
         parts: Vec<(String, usize, usize)>,
         threads: usize,
         reclaim: bool,
+        evict_completed: bool,
     ) -> PyResult<Self> {
         let region = region.region.clone();
         let checkpoint = checkpoint.core(py)?;
         let prepared = py
-            .detach(|| prepare_work(&region, checkpoint, parts, threads, reclaim, false))
+            .detach(|| {
+                prepare_work(
+                    &region,
+                    checkpoint,
+                    parts,
+                    threads,
+                    reclaim,
+                    evict_completed,
+                    false,
+                )
+            })
             .map_err(|e| e.raise(py))?;
         let cached = prepared.is_none();
         let input_bytes = vec![prepared.as_ref().map_or(0, |work| {

@@ -173,13 +173,16 @@ class Region:
         *,
         threads: int = 2,
         reclaim: bool = True,
+        evict_completed: bool = False,
     ) -> PreparedRead:
         """Admit a fill and warm bounded staging, without starting source I/O.
 
         Each part is (component/key#role, destination byte offset, exact stored length).
         This region must be dedicated to that immutable source recipe. Native prefetch
         uses local available sources only; it never calls a Python transformer/fetcher.
-        reclaim=False refuses admission when eviction or a prior-writer join is needed.
+        reclaim=False refuses admission when eviction or a prior-writer join is needed;
+        with evict_completed it may still evict idle streamed regions whose last-consumer
+        events are complete, oldest first, never waiting.
         """
         native = getattr(_ext, "_VarenaPreparedRead", None)
         if native is None:
@@ -187,7 +190,7 @@ class Region:
                 "this TensorFS build has no native owned refill capability"
             )
         return PreparedRead(
-            native(self._native, checkpoint, list(parts), threads, reclaim)
+            native(self._native, checkpoint, list(parts), threads, reclaim, evict_completed)
         )
 
 
@@ -256,6 +259,16 @@ class Use:
     def commit(self) -> None:
         self._native.commit()
         self.needs_fill = False
+
+    def consume_on(self, stream: int) -> None:
+        """Declare a CUDA stream (``torch.cuda.Stream.cuda_stream``) that uses this storage.
+
+        Once any stream is declared, releasing this Use or the last alias of its tensor records
+        a Varena event on every declared stream, and reclaim waits on those events instead of
+        joining the CUDA context. Declare every stream that touches this storage, including
+        through escaped aliases, before that last alias is released.
+        """
+        self._native.consume_on(stream)
 
 
 @contextmanager
