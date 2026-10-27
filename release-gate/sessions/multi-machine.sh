@@ -15,6 +15,7 @@
 #      the previous release (completes, or fails at once naming the key to authorize); the runner still runs on B. A
 #      removes b. The runner ends B; another controller of the account (a second user here) no longer shows it ready.
 # The throwaway private model is deleted after. params:
+#   sku_b       B's SKU (default: the session's, A's)
 #   old         the previous cozy release (default 0.13.3)
 #   traffic_gb  GB the provider bills, both pods (default 40)
 #   seconds     the least time the cap must buy both pods (default 2400; the session takes 10-20 min)
@@ -35,8 +36,9 @@ TS=$(date -u +%m%d%H%M) ACCOUNT=$(cozy --json whoami | jq -r .account) M=''
 cleanup() { [ -z "$M" ] || cozy model delete "$M" -y >> "$OUT/delete.txt" 2>&1; }
 trap 'cleanup; finish' EXIT
 RENT_ARGS=--ssh
-quote "$(param traffic_gb 40)" "$(param seconds 2400)" 2
-order; order
+SKU_B=$(param sku_b "$SKU")
+quote "$(param traffic_gb 40)" "$(param seconds 2400)" "$SKU" "$SKU_B"
+order "$SKU"; order "$SKU_B"
 ready 0; A=$NAME
 ready 1; B=$NAME
 for i in 0 1; do jq -e '.rental.ssh // empty' "$OUT/show$i.json" > /dev/null || fail "rental $i has no ssh address"; done
