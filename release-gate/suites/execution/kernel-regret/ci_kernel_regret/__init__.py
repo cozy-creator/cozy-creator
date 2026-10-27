@@ -119,13 +119,17 @@ def gpu(payload: Probe, ctx: Context) -> Report:
                     "attention": []}  # fmt: skip
     if ops is not None:
         report["gemm"] = []
-        for fmt in ("int8", "fp8") if ops.cutlass_fp8 else ("int8",):
-            gemm = ops.fp8_gemm if fmt == "fp8" else ops.int8_gemm
+        for f in (prebuilt.INT8, prebuilt.FP8) if ops.cutlass_fp8 else (prebuilt.INT8,):
+            gemm = ops.fp8_gemm if f.fp8 else ops.int8_gemm
             for model, (m, *sites) in GEMMS.items():
                 for site, (n, k) in zip(("qkv", "up", "down"), sites, strict=True):
                     ctx.raise_if_cancelled()
-                    measure = partial(_gemm, gemm, fmt == "fp8", m, n, k, props.L2_cache_size)
-                    report["gemm"].append({"format": fmt, **_measured(f"{model} {site}", measure)})
+                    row = {"format": f.name, "shape": f"{model} {site}"}
+                    if k % f.multiple:  # the op takes K in whole groups (int8: ConvRot's 256)
+                        report["gemm"].append({**row, "skipped": f"K {k} % {f.multiple}"})
+                        continue
+                    measure = partial(_gemm, gemm, f.fp8, m, n, k, props.L2_cache_size)
+                    report["gemm"].append({**row, **_measured(row["shape"], measure)})
     for level, names in attention.DENSE.get(arch.row(device.sm).family, {}).items():
         ready, refused = {}, {}
         for name in names:

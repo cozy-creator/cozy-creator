@@ -10,8 +10,9 @@ attention cell that opens. The cell measures; it has no pass bar.
 - Bits: each int8 tile's output is compared bit for bit with the rule's (`same_bits`). FP8
   tiles are recorded too.
 - Output: the `KERNEL-REGRET` line and the reply carry `ms` per kernel, `best`, `regret` (the
-  rule's time over the best's, minus one) and `over_3pct`. A shape that does not fit is
-  `skipped`.
+  rule's time over the best's, minus one) and `over_3pct`. A shape that does not fit, or
+  whose K the op does not take (int8: whole 256-wide ConvRot groups, so SDXL's 640-wide
+  inputs run 16-bit), is `skipped`.
 
 `choose()` (cozy-runtime `kernels/csrc/gemm/`) changes only where the regret is above 3%, with
 the numbers in a comment (magnitude study, `outputs/opus-takeover-20261027/magnitude-study`).
