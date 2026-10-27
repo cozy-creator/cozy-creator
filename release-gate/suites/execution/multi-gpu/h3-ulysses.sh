@@ -9,7 +9,9 @@ cell h3-u2-std "$(pkg minimax-h3 ref2va)" references:="$H3REF" seed:=$((R + 352)
 for n in h3-u2-turbo h3-u2-std; do
   [ -f "$n.json" ] || continue
   v=$(run_output "$OUT" "$n" mp4)
-  ranks=$(jq -r '[.measurements.execution.degree, (.measurements.execution.gpus // [] | map(.uuid) | unique | length)] | @tsv' "$n.json" 2>/dev/null)
+  # The DiT call's execution, not the parent's: the widest call's degree and its GPUs.
+  ranks=$(jq -r '[.calls[]?.measurements.execution // {} | select(.degree) | [.degree, (.gpus // [] | map(.uuid) | unique | length)]]
+    | max_by(.[0]) // [1, 0] | @tsv' "$n.json" 2>/dev/null)
   if [ -z "$v" ]; then expect "$n-video" FAIL "no mp4 ($(run_get "$OUT" "$n" .status))"; continue; fi
   hv=$(ffprobe -v error -select_streams v:0 -count_packets -show_entries stream=height,nb_read_packets -of csv=p=0 "$v")
   au=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name,duration -of csv=p=0 "$v")
