@@ -68,7 +68,8 @@ fetch() {
   local f
   case $1 in
     '') return 0;;
-    *://*#sha256=*) mkdir -p "$OUT/candidate"; f=$OUT/candidate/$(basename "${1%%#*}")
+    *://*#sha256=*) mkdir -p "$OUT/candidate"; n=$(basename "${1%%#*}")
+      f=$OUT/candidate/$(printf '%b' "${n//%/\\x}")  # the file's own name: a URL's %2B is a local version's +
       [ -f "$f" ] || curl -fsSL --retry 5 --retry-all-errors "${1%%#*}" -o "$f" || { log "cannot fetch ${1%%#*}"; return 1; }
       [ "$(sha256sum "$f" | cut -d' ' -f1)" = "${1##*#sha256=}" ] || { log "$f does not hash to ${1##*#sha256=}"; return 1; };;
     *://*) log "$1 names no #sha256="; return 1;;
