@@ -4,7 +4,8 @@
 # reads, the cache's pages and room, the container's cgroups and RSS, and frames from every video.
 # Proof-only (rc/baked-room-proof-20261027). params:
 #   runtimes   {"<name>": "<URL#sha256=…>", …}; tensorfs "<URL#sha256=…>" (goes on with the first; tensord: this cozy)
-#   calls      [{"label", "runtime", "prompt", "seed", "lora_mode"?} | {"label", "probe": true}], in order
+#   calls      [{"label", "runtime", "prompt", "seed", "lora_mode"?, "gpu_memory_limit"? ("24GiB"; default off)} |
+#               {"label", "probe": true}], in order; a new runtime or limit is a machine update
 #   traffic_gb GB the provider bills (90); need_s seconds the cap must buy (3600)
 . "$(dirname "$0")/lib.sh"
 H3=$PACKAGES/pk/minimax-h3
@@ -36,7 +37,7 @@ for i in "${!labels[@]}"; do
   if jq -e .probe <<<"$c" >/dev/null; then say "call ${labels[i]}: host probe"; continue; fi
   rt=$(jq -r .runtime <<<"$c"); [ -n "${WHL[$rt]:-}" ] || fail "${labels[i]}: no runtime $rt"
   jq -c '{prompt, seed, duration_s: 15} + (if .lora_mode then {lora_mode} else {} end)' <<<"$c" > "$OUT/inputs/${labels[i]}.json"
-  say "call ${labels[i]} (runtime $rt$(jq -r 'if .lora_mode then ", lora_mode " + .lora_mode else "" end' <<<"$c")): seed $(jq -r .seed <<<"$c")"
+  say "call ${labels[i]} (runtime $rt$(jq -r '(if .lora_mode then ", lora_mode " + .lora_mode else "" end) + (if .gpu_memory_limit then ", GPU memory " + .gpu_memory_limit else "" end)' <<<"$c")): seed $(jq -r .seed <<<"$c")"
 done
 for m in minimax-h3:1.0.0-rc.5:int8 minimax-h3-turbo-lora:1.0.1:pdd8; do
   IFS=: read -r repo rel lane <<<"$m"
@@ -97,21 +98,22 @@ for i in "${!labels[@]}"; do
     say "$k host: $(host "$k")"
     continue
   fi
-  rt=$(jq -r .runtime <<<"$c")
-  if [ "$rt" != "$cur" ]; then
+  rt=$(jq -r .runtime <<<"$c") lim=$(jq -r '.gpu_memory_limit // "off"' <<<"$c")
+  if [ "$rt/$lim" != "$cur" ]; then
     if [ -z "$cur" ]; then
-      step "update-$k" --json machine update "$NAME" --runtime "${WHL[$rt]}" --tensorfs "$TFS" --tensord "$(command -v cozy)" -y || fail "$rt did not go on"
+      step "update-$k" --json machine update "$NAME" --runtime "${WHL[$rt]}" --tensorfs "$TFS" --tensord "$(command -v cozy)" --gpu-memory-limit "$lim" -y || fail "$rt did not go on"
     else
-      step "update-$k" --json machine update "$NAME" --runtime "${WHL[$rt]}" -y || fail "$rt did not go on"
+      step "update-$k" --json machine update "$NAME" --runtime "${WHL[$rt]}" --gpu-memory-limit "$lim" -y || fail "$rt ($lim) did not go on"
     fi
     cozy machine show "$NAME" > "$OUT/machine-$k.txt" 2>&1; grep -E '^(version|runtime|tensorfs) ' "$OUT/machine-$k.txt" | tee -a "$R"
     grep -E '^runtime ' "$OUT/machine-$k.txt" | grep -qF "${VER[$rt]%%+*}" || fail "$NAME does not run ${VER[$rt]}"
+    say "$k: runtime ${VER[$rt]}, GPU memory limit $lim"
     if [ -z "$cur" ]; then
       step install package install "$H3" --on "$NAME" || fail "minimax-h3 did not install"
       step download-base model download _/minimax-h3@1.0.0-rc.5 --lane int8 --on "$NAME" || fail "base download"
       step download-turbo model download _/minimax-h3-turbo-lora@1.0.1 --on "$NAME" || fail "turbo download"
     fi
-    cur=$rt
+    cur=$rt/$lim
   fi
   step "$k" run "$H3/fl2va_turbo" --input "$OUT/inputs/$k.json" --lane int8 --gpus=1 --on "$NAME" --out "$OUT/media/$k"
   n=$(runno "$k")
