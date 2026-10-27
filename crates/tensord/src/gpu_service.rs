@@ -180,15 +180,16 @@ pub struct PlanSource {
     pub precision: String,
 }
 
-/// A prepared call: its construction (the package's generation, App, entrypoint, constructed
-/// models and degree) and the checkpoints it reads raw. Not who submitted: every submitter of
-/// the same construction is served by its executors, one per GPU lane (several deviceless), a
-/// request at a time each. What an actor may run is its own journal rows.
+/// A prepared call: its entrypoint, its construction (the package's generation, App, constructed
+/// models and degree) and the checkpoints it reads raw. Not who submitted or which entrypoint:
+/// every call of the same construction is served by its executors, one per GPU lane (several
+/// deviceless), a request at a time each. What an actor may run is its own journal rows.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Plan {
-    /// The preparation: the construction and its sources.
+    /// The preparation: the construction, entrypoint and sources.
     pub id: String,
-    /// Its executors' key: the construction alone, so calls reading other sources share them.
+    /// Its executors' key: the construction alone, so calls of other entrypoints or reading
+    /// other sources share them.
     #[serde(default)]
     pub construction: String,
     pub installation: String,
@@ -204,12 +205,12 @@ pub struct Plan {
 impl Plan {
     /// A call that constructs nothing: deviceless, or one GPU (`degree`).
     pub fn weightless(generation: &str, application: &str, entrypoint: &str, degree: u32) -> Self {
-        let semantic = serde_json::json!({"generation": generation, "application": application,
-            "entrypoint": entrypoint, "slots": [], "degree": degree});
-        let id = format!("plan-{}", tensorfs::sha256::hex_digest(&crate::boundary_json::exact(&semantic)));
+        let digest = |semantic: serde_json::Value| tensorfs::sha256::hex_digest(&crate::boundary_json::exact(&semantic));
+        let construction = format!("plan-{}", digest(serde_json::json!({"generation": generation,
+            "application": application, "slots": [], "degree": degree})));
         Self {
-            construction: id.clone(),
-            id,
+            id: format!("plan-{}", digest(serde_json::json!({"construction": construction, "entrypoint": entrypoint}))),
+            construction,
             installation: String::new(),
             generation: generation.into(),
             entrypoint: entrypoint.into(),
@@ -228,7 +229,10 @@ impl Plan {
                 "preparation differs from owned journal binding",
             ));
         }
-        if plan.construction.is_empty() {
+        // Derived again, so a preparation journaled under an earlier key shares executors too.
+        if let Some(application) = plan.slots.first().map(|slot| slot.binding.application.clone()) {
+            plan.construction = construction(&plan.generation, &application, &plan.slots, plan.degree)?;
+        } else if plan.construction.is_empty() {
             plan.construction = plan.id.clone();
         }
         Ok(plan)
@@ -613,6 +617,20 @@ fn session_key(plan: &str, start: usize) -> String {
         0 => plan.into(),
         _ => format!("{plan}@{start}"),
     }
+}
+
+/// Executors' key: what is constructed, not which entrypoint names it, so entrypoints whose
+/// slots build the same models share one construction and its executors.
+fn construction(generation: &str, application: &str, slots: &[PlanSlot], degree: u32) -> io::Result<String> {
+    let built: Vec<PlanSlot> = slots.iter().cloned()
+        .map(|mut slot| { slot.binding.model_binding_path.clear(); slot }).collect();
+    Ok(format!("gpu-{}", canonical_digest(serde_json::json!({"generation": generation,
+        "application": application, "slots": built, "degree": degree}))?))
+}
+
+fn canonical_digest(value: serde_json::Value) -> io::Result<String> {
+    let canonical = serde_json_canonicalizer::to_vec(&value).map_err(io::Error::other)?;
+    Ok(tensorfs::sha256::hex_digest(&canonical))
 }
 
 fn prepare_request(record: &Execution, plan: &Plan) -> PrepareRequest {
@@ -1948,16 +1966,9 @@ impl Pool {
                 placeable,
             });
         }
-        let digest = |value: serde_json::Value| -> io::Result<String> {
-            let canonical = serde_json_canonicalizer::to_vec(&value).map_err(io::Error::other)?;
-            Ok(tensorfs::sha256::hex_digest(&canonical))
-        };
-        let construction = format!("gpu-{}", digest(serde_json::json!({"generation": installed.generation,
-            "application": application, "entrypoint": entrypoint, "slots": planned, "degree": degree}))?);
-        let id = match sources.is_empty() {
-            true => construction.clone(),
-            false => format!("plan-{}", digest(serde_json::json!({"construction": construction, "sources": sources}))?),
-        };
+        let construction = construction(&installed.generation, application, &planned, degree)?;
+        let id = format!("plan-{}", canonical_digest(serde_json::json!({"construction": construction,
+            "entrypoint": entrypoint, "slots": planned, "sources": sources}))?);
         Ok(Plan {
             id,
             construction,
