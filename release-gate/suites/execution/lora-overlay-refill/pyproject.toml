@@ -1,0 +1,17 @@
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "ci-lora-overlay-refill"
+version = "0.1.0"
+description = "A LoRA armed in the DiT's own forward stays applied through paging and base/LoRA alternation"
+requires-python = ">=3.12"
+dependencies = ["cozy-runtime>=0.33.2,<0.36", "diffusers>=0.41,<0.42", "msgspec>=0.19", "torch>=2.14,<2.15"]
+
+[project.entry-points."cozy.application"]
+default = "ci_lora_overlay_refill:app"
+
+[tool.uv.build-backend]
+module-name = "ci_lora_overlay_refill"
+module-root = ""
