@@ -43,7 +43,8 @@ SITES = (
 )
 WIDTH, HIDDEN, BLOCKS, RANK = 3072, 12288, 60, 64
 LORA_COMPONENT = "model"
-_DTYPES = {"f32": torch.float32, "bf16": torch.bfloat16, "f16": torch.float16}
+#: The LoRA checkpoints' stored dtypes (kohya's `alpha` is i64), as Qwen-Image's package maps them.
+_DTYPES = {"f32": torch.float32, "bf16": torch.bfloat16, "f16": torch.float16, "i64": torch.int64}
 
 
 def _armed(dit: nn.Module, path: str) -> nn.Module | None:

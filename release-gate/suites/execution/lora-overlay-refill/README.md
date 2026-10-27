@@ -2,11 +2,12 @@
 
 One executor serves Qwen-Image-Edit-2511's DiT (its int8 lane; 2512's root release is bf16 only)
 and its Lightning LoRA, with no reference image, the LoRA armed by the DiT's
-own forward pre-hook from that forward's `attention_kwargs`, as H3 arms its Turbo overlay. A ballast
-leaves the DiT `room_gib` (6 GiB), so its blocks page within every call and the resident ones carry
-over into the next call. In order, from an emptied cache each: a per-step LoRA (the oracle: nothing
-baked, so no page can carry a stale overlay), a baked LoRA and a base call. Then three rounds of base
-and LoRA, warm, then one more LoRA, which must reuse the resident LoRA pages.
+own forward pre-hook from that forward's `attention_kwargs`, as H3 arms its Turbo overlay. References
+first, each from an emptied cache with the card free (a scope that binds the DiT before its forward
+arms then fills every block unarmed): a per-step LoRA (the oracle: nothing baked, so no page can carry
+a stale overlay), a baked LoRA and a base call. Then three rounds of base and LoRA, warm, under a
+ballast that leaves the DiT `room_gib` (6 GiB), so its blocks page within every call and the resident
+ones carry over into the next; then one more LoRA, which must reuse the resident LoRA pages.
 
 It fails when:
 

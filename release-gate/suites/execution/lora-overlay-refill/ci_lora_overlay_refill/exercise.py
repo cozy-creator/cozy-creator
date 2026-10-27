@@ -1,8 +1,9 @@
-"""The sequence. References first, each from an emptied cache: a per-step LoRA (no bake, so no
-page can carry a stale overlay), then a baked LoRA and a base call. Then warm calls alternate base
-and LoRA under a ballast that leaves the DiT `room_gib`: blocks page within every call and the
-resident ones carry over into the next call, whose overlay differs. Every warm call must equal its
-reference."""
+"""The sequence. References first, each from an emptied cache with the whole card free (the DiT
+fits, so a scope that binds it before its forward arms fills every block unarmed): a per-step LoRA
+(no bake, so no page can carry a stale overlay), then a baked LoRA and a base call. Then warm calls
+alternate base and LoRA under a ballast that leaves the DiT `room_gib`: blocks page within every
+call and the resident ones carry over into the next call, whose overlay differs. Every warm call
+must equal its reference: a page's bytes are the same filled now or kept."""
 
 from __future__ import annotations
 
@@ -109,7 +110,7 @@ def exercise(
         torch.cuda.synchronize(device)
         if empty:
             memory.empty()
-        ballast = memory.ballast(room)
+        ballast = None if empty else memory.ballast(room)
         trace = _request_trace()
         resident = (
             sum(1 for b in held.blocks.values() if b.region is not None and b.region.resident)
@@ -135,7 +136,7 @@ def exercise(
             "serving": bakes.serving,
             "how": bakes.how,
             "baked": placement.baked() - baked,
-            "ballast_gib": round(max(memory.capacity - room, 0) / GIB, 2),
+            "ballast_gib": 0 if empty else round(max(memory.capacity - room, 0) / GIB, 2),
         }
         if trace is not None:
             fills = [
