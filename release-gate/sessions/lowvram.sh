@@ -17,12 +17,13 @@
 #   an arm's "local": {"<model>": "<packages_refs name>"} runs that model's package from that packages checkout
 #            (installed by path, removed as local/<package>) instead of its published release
 #   skip     ["<level>/<model>", …] cells no arm runs (a known failure measured before); an arm's "skip" replaces it
+#   keep_going  true: a failed request does not end its cell (to measure the executor after a failure)
 #   seed_base the first request's seed (2026102700); a later session takes a new base, and every prompt is new
 #   traffic_gb, need_s
 . "$(dirname "$0")/lib.sh"
 L=$(cd "$(dirname "$0")" && pwd)/lowvram
 LEVELS=$(param levels '["full", 6144, 3072]') MODELS=$(param models '["sdxl", "anima", "qwen"]') WARM=$(param warm 2)
-ARMS=$(param arms '[{"name": "comfy"}, {"name": "prod"}]') SKIP=$(param skip '[]')
+ARMS=$(param arms '[{"name": "comfy"}, {"name": "prod"}]') SKIP=$(param skip '[]') KEEP=$(param keep_going false)
 G=$OUT/gen; mkdir -p "$G" "$OUT/out" "$OUT/rec"
 mapfile -t levels < <(jq -r '.[] | tostring' <<<"$LEVELS")
 mapfile -t models < <(jq -r '.[]' <<<"$MODELS")
@@ -204,7 +205,7 @@ for a in "${arms[@]}"; do
           cozy_input "$m" "$(req "$a" "$l" "$m" "$t")" "$G/$a-$l-$m-$t.json"
           cozy_run "$a-$l-$m-$t" "$m" "$G/$a-$l-$m-$t.json" "$a"
           # A failed request's executor is not the product's warm state (an OOM can leave it crawling).
-          [ "$(jq -r '.status // "none"' "$OUT/rec/$a-$l-$m-$t.json" 2>/dev/null)" = completed ] ||
+          [ "$(jq -r '.status // "none"' "$OUT/rec/$a-$l-$m-$t.json" 2>/dev/null)" = completed ] || [ "$KEEP" = true ] ||
             { say "skip the rest of $a-$l-$m after a failed $t"; break; }
         done
         qstep "remove-$a-$l-$m-end" package remove "$p" --on "$NAME" -y
