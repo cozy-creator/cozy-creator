@@ -173,13 +173,16 @@ class Region:
         *,
         threads: int = 2,
         reclaim: bool = True,
+        evict_completed: bool = False,
     ) -> PreparedRead:
         """Admit a fill and warm bounded staging, without starting source I/O.
 
         Each part is (component/key#role, destination byte offset, exact stored length).
         This region must be dedicated to that immutable source recipe. Native prefetch
         uses local available sources only; it never calls a Python transformer/fetcher.
-        reclaim=False refuses admission when eviction or a prior-writer join is needed.
+        reclaim=False refuses admission when eviction or a prior-writer join is needed;
+        with evict_completed it may still evict idle streamed regions whose last-consumer
+        events are complete, oldest first, never waiting.
         """
         native = getattr(_ext, "_VarenaPreparedRead", None)
         if native is None:
@@ -187,7 +190,7 @@ class Region:
                 "this TensorFS build has no native owned refill capability"
             )
         return PreparedRead(
-            native(self._native, checkpoint, list(parts), threads, reclaim)
+            native(self._native, checkpoint, list(parts), threads, reclaim, evict_completed)
         )
 
 

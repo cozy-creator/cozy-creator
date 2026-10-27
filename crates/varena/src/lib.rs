@@ -120,6 +120,16 @@ struct Fence {
     event: usize,
 }
 
+/// What a fill may do for room: anything (`Any`), nothing (`None`), or evict only idle
+/// streamed regions whose consumers are already complete (`Completed`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Admission {
+    Any,
+    Completed,
+    None,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Completion {
     Done,
     Pending,
@@ -669,6 +679,44 @@ impl Arena {
         Ok(report)
     }
 
+    /// Evict idle, non-preferred regions whose last-consumer events have all completed, oldest
+    /// first, until `bytes` are free. Never waits on an event or joins the context.
+    fn reclaim_completed_locked(
+        &self,
+        state: &mut State,
+        bytes: usize,
+        exclude: u64,
+        reason: ReclaimReason,
+    ) -> Result<ReclaimReport> {
+        let mut report = ReclaimReport {
+            requested_bytes: bytes,
+            ..ReclaimReport::default()
+        };
+        let mut candidates: Vec<_> = state
+            .entries
+            .iter()
+            .filter(|(id, entry)| {
+                **id != exclude
+                    && entry.uses.pins() == 0
+                    && entry.uses.state() != Contents::Loading
+                    && entry.handle.is_some()
+                    && !entry.preferred()
+                    && (!matches!(reason, ReclaimReason::StreamingLimit) || !state.standby(entry))
+            })
+            .map(|(id, entry)| (*id, entry.last_use))
+            .collect();
+        candidates.sort_by_key(|(_, age)| *age);
+        for (id, _) in candidates {
+            if report.reclaimed_bytes >= bytes {
+                break;
+            }
+            if self.completion(state, id)? == Completion::Done {
+                self.evict(state, id, reason, &mut report)?;
+            }
+        }
+        Ok(report)
+    }
+
     /// Whether every consumer of an unpinned region is known complete, without waiting.
     fn completion(&self, state: &mut State, id: u64) -> Result<Completion> {
         let uses = Arc::clone(&state.entries[&id].uses);
@@ -937,16 +985,25 @@ impl Region {
     }
 
     pub fn prepare(self: &Arc<Self>) -> Result<Preparation> {
-        self.prepare_with_reclaim(true)
+        self.prepare_with_reclaim(Admission::Any)
     }
 
     /// Admit speculative bytes only if no eviction or prior-writer join is required.
     /// Capacity refusal leaves existing ready contents and the preference watermark intact.
     pub fn prepare_without_reclaim(self: &Arc<Self>) -> Result<Preparation> {
-        self.prepare_with_reclaim(false)
+        self.prepare_with_reclaim(Admission::None)
     }
 
-    fn prepare_with_reclaim(self: &Arc<Self>, reclaim: bool) -> Result<Preparation> {
+    /// Admit a streamed block's read ahead of its use: it may evict idle streamed regions whose
+    /// last-consumer events are already complete, oldest first, and never waits or joins. The
+    /// retained prefix and every pending region stay; otherwise this refuses like
+    /// `prepare_without_reclaim`.
+    pub fn prepare_evicting_completed(self: &Arc<Self>) -> Result<Preparation> {
+        self.prepare_with_reclaim(Admission::Completed)
+    }
+
+    fn prepare_with_reclaim(self: &Arc<Self>, admission: Admission) -> Result<Preparation> {
+        let reclaim = admission == Admission::Any;
         let captures = capture_counts()?;
         let mut state = self.arena.lock()?;
         let entry = state.entries.get(&self.id).expect("live region");
@@ -973,18 +1030,31 @@ impl Region {
                 let resident = state.streaming_bytes();
                 let limit = state.streaming_limit.max(self.rounded);
                 let excess = resident.saturating_add(self.rounded).saturating_sub(limit);
-                if excess != 0 && !reclaim {
-                    return Err(Error::OutOfMemory {
-                        requested_bytes: self.rounded,
-                    });
+                match admission {
+                    Admission::Any => {
+                        self.arena.reclaim_locked(
+                            &mut state,
+                            excess,
+                            false,
+                            Some(self.id),
+                            ReclaimReason::StreamingLimit,
+                        )?;
+                    }
+                    Admission::Completed => {
+                        self.arena.reclaim_completed_locked(
+                            &mut state,
+                            excess,
+                            self.id,
+                            ReclaimReason::StreamingLimit,
+                        )?;
+                    }
+                    Admission::None if excess != 0 => {
+                        return Err(Error::OutOfMemory {
+                            requested_bytes: self.rounded,
+                        });
+                    }
+                    Admission::None => {}
                 }
-                self.arena.reclaim_locked(
-                    &mut state,
-                    excess,
-                    false,
-                    Some(self.id),
-                    ReclaimReason::StreamingLimit,
-                )?;
                 let remaining = state.streaming_bytes();
                 if remaining.saturating_add(self.rounded) > limit {
                     return Err(Error::OutOfMemory {
@@ -995,18 +1065,30 @@ impl Region {
             let handle = match self.arena.driver.create(self.rounded) {
                 Ok(handle) => handle,
                 Err(Error::OutOfMemory { .. }) => {
-                    if !reclaim {
-                        return Err(Error::OutOfMemory {
-                            requested_bytes: self.rounded,
-                        });
+                    match admission {
+                        Admission::None => {
+                            return Err(Error::OutOfMemory {
+                                requested_bytes: self.rounded,
+                            });
+                        }
+                        Admission::Completed => {
+                            self.arena.reclaim_completed_locked(
+                                &mut state,
+                                self.rounded,
+                                self.id,
+                                ReclaimReason::WeightAllocation,
+                            )?;
+                        }
+                        Admission::Any => {
+                            self.arena.reclaim_locked(
+                                &mut state,
+                                self.rounded,
+                                false,
+                                Some(self.id),
+                                ReclaimReason::WeightAllocation,
+                            )?;
+                        }
                     }
-                    self.arena.reclaim_locked(
-                        &mut state,
-                        self.rounded,
-                        false,
-                        Some(self.id),
-                        ReclaimReason::WeightAllocation,
-                    )?;
                     match self.arena.driver.create(self.rounded) {
                         Ok(handle) => handle,
                         Err(error @ Error::OutOfMemory { .. }) => return Err(error),
@@ -1021,18 +1103,22 @@ impl Region {
                 return Err(poison(&mut state, error));
             }
         } else {
-            if !reclaim {
-                // Even an abandoned fill with no remaining pins may have queued writers.
-                return Err(Error::OutOfMemory {
-                    requested_bytes: self.rounded,
-                });
-            }
             // An abandoned external fill may still have queued writes. Only a checked
             // native last-use release can remove this join; ordinary storage remains guarded.
-            match self.arena.completion(&mut state, self.id)? {
-                Completion::Done => {}
-                Completion::Pending => self.arena.wait_fences(&mut state, self.id)?,
-                Completion::Unjoined => self.arena.join_context(&mut state, &[self.id])?,
+            match (admission, self.arena.completion(&mut state, self.id)?) {
+                (_, Completion::Done) if admission != Admission::None => {}
+                (Admission::Any, Completion::Pending) => {
+                    self.arena.wait_fences(&mut state, self.id)?
+                }
+                (Admission::Any, Completion::Unjoined) => {
+                    self.arena.join_context(&mut state, &[self.id])?
+                }
+                // Even an abandoned fill with no remaining pins may have queued writers.
+                _ => {
+                    return Err(Error::OutOfMemory {
+                        requested_bytes: self.rounded,
+                    });
+                }
             }
         }
         let pin = self.pin_locked(&mut state)?;
