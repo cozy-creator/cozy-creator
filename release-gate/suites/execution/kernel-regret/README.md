@@ -5,6 +5,11 @@ Times every prebuilt GEMM tile, and every dense attention candidate of the card'
 pick of the Runtime's own rule: GEMM config -1 (`choose()`), and the first kernel of each
 attention cell that opens. The cell measures; it has no pass bar.
 
+Opt-in only, through `cells=`: no suite or `core-cells.sh` sources it. It opens every
+candidate inside its own request, so `analyze.py` reports those builds and self-checks as
+request-path blocking and the gate it rides on reads FAIL. Run it on a measurement session,
+never on a promotion gate.
+
 - Timing: alternating rounds in rotated order, median device time. Each sample runs at least
   2 ms. Weight copies cover twice the L2, so no call reads its weights warm.
 - Bits: each int8 tile's output is compared bit for bit with the rule's (`same_bits`). FP8
