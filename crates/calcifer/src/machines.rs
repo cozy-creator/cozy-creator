@@ -563,6 +563,7 @@ impl Machines {
         let mut machine = Machine::from(row);
         if row.kind == MachineKind::Local {
             machine.controller_key = self.controller_key().ok();
+            machine.reach = self.local.reach();
         }
         machine.alias = store.alias(&row.name).map_err(internal)?;
         let load = store.machine_load().map_err(internal)?;

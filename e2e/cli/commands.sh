@@ -294,9 +294,11 @@ openssl genpkey -algorithm ed25519 -out "$OUT/controller.pem" 2> /dev/null || ch
 key=$(openssl pkey -in "$OUT/controller.pem" -pubout -outform DER | tail -c 32 | base64 | tr '+/' '-_' | tr -d '=\n') || true
 cozy --json machine authorize "$key" > "$OUT/authorize.json" && J '.changed == true' "$OUT/authorize.json" || check "machine authorize: the key was not added"
 grep -qx "$key" "$HOME/.cozy/keys/authorized" || check "machine authorize: the key is not in keys/authorized"
+# Authorized, it listens on every interface and says where other computers add it.
+J '.machine.reach | test(":[0-9]+$")' "$OUT/authorize.json" || check "machine authorize: no address to add it at: $(jq -c .machine.reach "$OUT/authorize.json")"
 cozy --json machine authorize "$key" | J '.changed == false' || check "machine authorize twice: added it again"
-# The test controller goes again (no verb takes a key back), so the machine may idle out as usual.
-grep -vx "$key" "$HOME/.cozy/keys/authorized" > "$OUT/authorized" || true; cp "$OUT/authorized" "$HOME/.cozy/keys/authorized"
+cozy --json machine authorize "$key" --remove > "$OUT/unauthorize.json" && J '.changed == true' "$OUT/unauthorize.json" || check "machine authorize --remove: the key was not removed"
+! grep -qx "$key" "$HOME/.cozy/keys/authorized" || check "machine authorize --remove: the key is still in keys/authorized"
 code=0; cozy --json machine end local > "$OUT/end-local.json" 2> "$OUT/end-local.err" || code=$?
 [ "$code" = 1 ] && J '.error.code == "machine_local"' "$OUT/end-local.json" || check "machine end local: exit $code, not refused: $(head -c 300 "$OUT/end-local.json")"
 

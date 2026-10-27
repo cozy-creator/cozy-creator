@@ -33,6 +33,8 @@ pub struct Grant {
     pub lifetime: Lifetime,
     pub layout: Layout,
     pub listen_host: IpAddr,
+    /// `listen_host` was configured: it never follows authorization.
+    pub listen_configured: bool,
     pub worker_id: String,
     /// The API's port; None on this computer: any free port, kept across restarts.
     pub worker_port: Option<u16>,
@@ -106,7 +108,10 @@ impl Grant {
                 clean_absolute(path, name)?;
             }
         }
-        let listen_host: IpAddr = match get(&raw.listen_host).unwrap_or(if rental { "0.0.0.0" } else { "127.0.0.1" }) {
+        // This computer's machine listens on every interface once another computer's controller is
+        // authorized (every call still needs an admitted key), else on loopback.
+        let open = rental || authorized(home);
+        let listen_host: IpAddr = match get(&raw.listen_host).unwrap_or(if open { "0.0.0.0" } else { "127.0.0.1" }) {
             host @ ("0.0.0.0" | "127.0.0.1") => host.parse().expect("literal address"),
             _ => return Err(invalid("COZY_LISTEN_HOST must be 0.0.0.0 or 127.0.0.1")),
         };
@@ -174,6 +179,7 @@ impl Grant {
             lifetime,
             layout: Layout { cache: raw.cache.clone(), ..Layout::new(&root, store) },
             listen_host,
+            listen_configured: get(&raw.listen_host).is_some(),
             worker_id,
             worker_port,
             webrtc_port,
@@ -192,9 +198,15 @@ impl Grant {
     /// it is read) and its home's, read again when a signer is unknown: a pod's own shell and the
     /// controllers it authorizes use it as a laptop's do.
     pub fn keys(&self) -> io::Result<crate::api::auth::Keys> {
-        let home = self.home.clone();
-        crate::api::auth::Keys::read(self.authorized.clone(), move || home_keys(&home))
+        let (home, stamped) = (self.home.clone(), self.home.clone());
+        crate::api::auth::Keys::read(self.authorized.clone(), move || home_keys(&home), move || home_stamp(&stamped))
     }
+}
+
+/// When the home's key files last changed: a removed key is refused at its next call.
+fn home_stamp(home: &Home) -> [Option<std::time::SystemTime>; 2] {
+    let at = |name: &str| fs::metadata(home.keys().join(name)).and_then(|m| m.modified()).ok();
+    [at("owner.pem"), at("authorized")]
 }
 
 /// The controllers the home admits, besides those the grant names: the public half of its owner

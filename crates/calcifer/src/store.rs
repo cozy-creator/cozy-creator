@@ -1532,6 +1532,7 @@ impl From<&MachineRow> for Machine {
             recorded: true,
             unverified: false,
             controller_key: None,
+            reach: None,
         }
     }
 }

@@ -278,6 +278,14 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     if !rental {
         let (lifecycle, engine, home) = (lifecycle.clone(), service.engine.clone(), grant.home.clone());
         let (released, stopped) = (service.clone(), service.clone());
+        // A change of its controllers (`cozy machine authorize`, `--remove`) wakes its lifecycle.
+        let (mut changes, woken) = (keys.subscribe(), service.engine.clone());
+        runtime.spawn(async move {
+            while changes.changed().await.is_ok() {
+                woken.notify_activity();
+            }
+        });
+        let (open, configured, authorizes) = (api.local_addr()?.ip().is_unspecified(), grant.listen_configured, home.clone());
         std::thread::Builder::new().name("local-lifecycle".into()).spawn(move || {
             crate::machine::lifecycle::exit_when_idle(
                 lifecycle,
@@ -290,6 +298,8 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
                     let swapped = crate::machine::binary::launch().is_some_and(|launch| launch.swapped());
                     crate::machine::grant::authorized(&home) && !swapped
                 },
+                // On every interface exactly while another computer's controller is authorized.
+                move || !configured && open != crate::machine::grant::authorized(&authorizes),
             )
         })?;
     }
@@ -317,6 +327,7 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
             })?;
     }
     boot.at("api");
+    let reach = reach(&api, grant.worker_port, endpoint.as_ref());
     identity.webrtc = crate::machine::player::listen(&layout.state, grant.webrtc_port, !rental)?;
     identity.player = grant.webrtc_reach.clone();
     // The boot answer ends before the API takes its listener: one server answers at a time.
@@ -334,6 +345,7 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
         // A run naming no Hub reads this rental's own Hub's public content.
         grant.hub.clone().filter(|_| rental),
         Some(logs),
+        reach,
     )?;
     // The Hub probes the endpoint the provider put in this pod's environment at once,
     // instead of waiting for the provider to report it.
@@ -375,6 +387,7 @@ fn start_api(
     sdk: crate::published::PackageSdk,
     own_hub: Option<crate::machine::grant::HubGrant>,
     logs: Option<PathBuf>,
+    reach: Option<String>,
 ) -> io::Result<()> {
     use crate::{api, machine_api::NativeBackend};
     let store = store.clone();
@@ -405,11 +418,16 @@ fn start_api(
     #[derive(serde::Serialize)]
     struct Ready<'a> {
         address: String,
+        /// Where other computers reach it (`cozy machine add`): a pod's public address as its
+        /// provider mapped it, this computer's LAN address when it listens on every interface.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reach: Option<String>,
         worker_id: &'a str,
         boot_id: &'a str,
         cert_pem: &'a str,
     }
     let ready = serde_json::to_vec(&Ready {
+        reach,
         address: listener.local_addr()?.to_string(),
         worker_id: &identity.authority.worker_id,
         boot_id: &identity.authority.boot_id,
@@ -434,6 +452,25 @@ fn start_api(
         })?;
     Ok(())
 }
+/// Where other computers reach the API `listener`: the provider's public mapping of `port` on a
+/// pod, else this computer's LAN address (the one its default route leaves from) when it listens
+/// on every interface; none on loopback.
+fn reach(listener: &std::net::TcpListener, port: Option<u16>, provider: Option<&crate::machine::endpoint::Endpoint>) -> Option<String> {
+    let bound = listener.local_addr().ok()?;
+    if let Some(endpoint) = provider {
+        let public = endpoint.ports.get(&port.unwrap_or(bound.port()).to_string())?;
+        return Some(format!("{}:{public}", endpoint.public_host));
+    }
+    if !bound.ip().is_unspecified() {
+        return None;
+    }
+    // A UDP connect picks the route and sends nothing.
+    let probe = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    probe.connect("1.1.1.1:53").ok()?;
+    let lan = probe.local_addr().ok()?.ip();
+    (!lan.is_loopback() && !lan.is_unspecified()).then(|| format!("{lan}:{}", bound.port()))
+}
+
 /// Tells the Hub this machine's endpoint, trying again while the Hub cannot be reached. The
 /// report only saves the provider's lag: after a few misses the provider's view serves.
 fn report_endpoint(grant: crate::machine::grant::HubGrant, endpoint: crate::machine::endpoint::Endpoint) {

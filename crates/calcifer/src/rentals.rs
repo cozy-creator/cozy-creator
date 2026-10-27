@@ -1279,6 +1279,7 @@ fn other(origin: &str, rental: &types::Rental, unverified: bool) -> Machine {
         recorded: false,
         unverified,
         controller_key: None,
+        reach: None,
     }
 }
 
