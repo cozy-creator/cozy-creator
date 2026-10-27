@@ -994,19 +994,6 @@ impl Pool {
             self.end_session(&key)
         })
     }
-    /// No per-process fraction can enforce the machine's total cap across a call family.
-    fn gpu_cap(&self, degree: u32) -> io::Result<()> {
-        if degree > 0 {
-            if let Some(limit) = self.config.gpu_memory_limit {
-                return Err(io::Error::other(Refused {
-                    code: "gpu_memory_limit_unsupported".into(),
-                    detail: format!("the configured total GPU limit of {limit} bytes requires aggregate executor grants; stock-PyTorch execution cannot enforce it yet"),
-                }));
-            }
-        }
-        Ok(())
-    }
-
     fn measured_peak(&self, lane: &std::ops::Range<usize>, construction: &str) -> Option<u64> {
         self.devices.get(lane.clone()).into_iter().flatten().filter_map(|d| d.memory.as_ref())
             .filter_map(|gpu| gpu.figures.request_peak(construction, "")).max()
@@ -2714,6 +2701,7 @@ impl Pool {
                     sequence_parallel_degree: 1,
                     import_only: true,
                     memo: executor.memo_settings(),
+                    gpu_memory_limit: None,
                 }),
                 &mut device_executor::Baseline,
             )?;
@@ -2842,10 +2830,6 @@ impl Pool {
             })
         };
         let (key, degree) = (session_key(&plan.construction, start), plan.degree);
-        if let Err(error) = self.gpu_cap(degree) {
-            engine.finish(id, Outcome::Failed(Failure::machine("gpu_memory_limit_unsupported", error.to_string())))?;
-            return Ok(None);
-        }
         let retained = match degree {
             0 => {
                 let mut idle = self.deviceless.lock().unwrap();
@@ -2965,7 +2949,6 @@ impl Pool {
         start: usize,
         on_birth: impl Fn(&Birth, &Cancellation) -> io::Result<()>,
     ) -> io::Result<Session> {
-        self.gpu_cap(plan.degree)?;
         if plan.degree > 0 { self.make_room(engine, &plan.construction, start..start + plan.degree as usize, false); }
         let launched = Instant::now();
         let (root, socket, directory) = self.executor_endpoint()?;
@@ -3121,6 +3104,7 @@ impl Pool {
                     call_interfaces: crate::calls::call_interfaces(held, &interface_path),
                     constructions: constructions(&plan),
                     memo: session.executor.memo_settings(),
+                    gpu_memory_limit: self.config.gpu_memory_limit,
                 }),
                 &mut callbacks,
             )?)?;

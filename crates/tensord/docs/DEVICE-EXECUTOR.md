@@ -60,9 +60,8 @@ needs room. TensorD creates no CUDA context, GPU allocation or lease listener.
   handler answers `reply: capability`, which TensorD ignores.
 - GPU execution requires Hello's concrete `memory_backend="torch"` capability before Start;
   package versions are not the capability. Start carries no GPU-page namespace or lease protocol.
-  A configured total `gpu_memory_limit` is currently refused as `gpu_memory_limit_unsupported`:
-  independent per-process fractions cannot enforce the total across a call family. Uncapped
-  stock-Torch execution is the implemented mode until aggregate grants are qualified.
+  A configured `gpu_memory_limit` (development only) rides Start; the executor sizes its memory
+  budget from it, so each GPU behaves as a card of that size.
 - While waiting for a reply, `event=progress` frames go to `Services::progress`. `event=request`
   frames (optionally with an `SCM_RIGHTS` fd) go to `Services::request`. The reply must name the
   command, otherwise it is an error. Unknown events and fields are ignored.
