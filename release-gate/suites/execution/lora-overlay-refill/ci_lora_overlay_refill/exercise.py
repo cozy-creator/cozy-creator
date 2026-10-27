@@ -9,7 +9,9 @@ from __future__ import annotations
 import time
 from typing import Any
 
+import cozy_runtime
 import torch
+from cozy_runtime import _build_provenance
 from cozy_runtime.author import Context, Telemetry
 from cozy_runtime.author._model import PLACED
 from cozy_runtime.internal import lora_bake
@@ -196,6 +198,8 @@ def exercise(
         rows.append({k: v for k, v in row.items() if k != "out"})
     return {
         "passed": not failures,
+        "runtime": cozy_runtime.__version__,
+        "runtime_commit": _build_provenance.COMMIT,
         "failures": failures,
         "lora_effect": round(lora_effect, 6),
         "bake_error": round(bake_error, 6),

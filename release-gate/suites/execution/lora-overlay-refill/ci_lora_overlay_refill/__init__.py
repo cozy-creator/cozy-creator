@@ -214,6 +214,7 @@ def gpu(
     result = exercise(payload, model, turbo_lora, ctx, tel)
     tel.log("lora overlay refill result", result=json.dumps(result, sort_keys=True))
     if not result["passed"]:
-        brief = {k: result[k] for k in ("failures", "lora_effect", "bake_error")}
+        keys = ("failures", "lora_effect", "bake_error", "runtime", "runtime_commit")
+        brief = {k: result[k] for k in keys}
         raise RuntimeError(f"LoRA overlay refill failed: {json.dumps(brief, sort_keys=True)}")
     return Report(True, json.dumps(result, sort_keys=True))
