@@ -11,6 +11,8 @@ RC=0 RID='' NAME='' WD='' BG=''  # BG: a session's own background loop, ended wi
 fail() { say "FAIL: $*"; RC=1; exit 1; }
 # param <key> [default]: the session's setting from PARAMS (a non-string as JSON).
 param() { jq -r --arg k "$1" --arg d "${2-}" 'if has($k) then (.[$k] | if type == "string" then . else tojson end) else $d end' <<<"$PARAMS"; }
+GPUS=$(param gpus 1)  # GPUs in the rental (params.gpus)
+[[ $GPUS =~ ^[1-8]$ ]] || { echo "gpus must be 1-8"; exit 1; }
 state() { cozy machine show "$1" --json 2>/dev/null | jq -r '.state // empty'; }
 # live <rental id>: listed and not ended; a list that does not answer counts as live.
 live() {
@@ -60,17 +62,17 @@ quote() {
   ! live pr-pod-session-probe || fail "gone-check: a rental that never existed reads live"
   cozy machine rent --json > "$OUT/skus.json" 2>&1 || fail "no catalog"
   local storage bw gpu disk
-  read -r storage bw < <(jq -r --arg s "$SKU" 'if type=="array" then .[] else . end | select(.name==$s) | .widths[] | select(.accelerator_count==1) |
+  read -r storage bw < <(jq -r --arg s "$SKU" --arg g "$GPUS" 'if type=="array" then .[] else . end | select(.name==$s) | .widths[] | select(.accelerator_count==($g|tonumber)) |
     [(.storage_usd_micros_per_hour / .container_disk_gb), (.bandwidth_usd_micros_per_gb // 0)] | @tsv' "$OUT/skus.json")
-  [ -n "${bw:-}" ] || fail "the catalog offers no single $SKU"
-  cozy machine rent "$SKU" --disk-gb "$DISK" --json < /dev/null > "$OUT/quote.json" 2>&1
+  [ -n "${bw:-}" ] || fail "the catalog offers no $GPUS x $SKU"
+  cozy machine rent "$SKU" --gpus "$GPUS" --disk-gb "$DISK" --json < /dev/null > "$OUT/quote.json" 2>&1
   grep -q quote_unagreed "$OUT/quote.json" || fail "a quote without --yes did not refuse: $(tail -c 300 "$OUT/quote.json")"
   gpu=$(jq -r 'select(.quote) | .quote.usd_micros_per_hour' "$OUT/quote.json" 2>/dev/null | head -1)
   [ -n "$gpu" ] || fail "no quote: $(tail -c 300 "$OUT/quote.json")"
   disk=$(awk -v s="$storage" -v d="$DISK" 'BEGIN{printf "%d", s*d}')
   CAP_S=$(awk -v c="$CAP" -v g="$gpu" -v d="$disk" -v w="$bw" -v gb="$1" 'BEGIN{printf "%d", (c*1e6 - w*gb) / (g + d) * 3600}')
   [ "$CAP_S" -ge "$2" ] || fail "\$$CAP leaves only ${CAP_S}s at GPU $gpu + disk $disk micro-USD/h and $bw/GB x $1 GB"
-  say "quote $SKU, $DISK GB: GPU $gpu + disk $disk micro-USD/h, traffic $bw/GB x $1 GB; guard ends it ${CAP_S}s after the order (\$$CAP)"
+  say "quote $GPUS x $SKU, $DISK GB: GPU $gpu + disk $disk micro-USD/h, traffic $bw/GB x $1 GB; guard ends it ${CAP_S}s after the order (\$$CAP)"
   [ "$RENT" = true ] || { say "pre-flight only: nothing rented"; exit 0; }
 }
 
@@ -78,7 +80,7 @@ quote() {
 rent() {
   local o first='' RRC='' RP
   o=$(date +%s%3N)
-  cozy machine rent "$SKU" --disk-gb "$DISK" -y > "$OUT/rent.out" 2> "$OUT/rent.err" & RP=$!
+  cozy machine rent "$SKU" --gpus "$GPUS" --disk-gb "$DISK" -y > "$OUT/rent.out" 2> "$OUT/rent.err" & RP=$!
   while [ -z "$first" ]; do
     first=$(grep -m1 -oE '^[a-z0-9][a-z0-9-]*: (booting|ready|offline)' "$OUT/rent.err" | cut -d: -f1)
     [ -n "$first" ] || kill -0 "$RP" 2>/dev/null || break
@@ -88,7 +90,7 @@ rent() {
   [ -n "$first" ] || fail "the rent named no machine: $(tail -3 "$OUT/rent.err")"
   cozy machine show "$first" --json > "$OUT/show-boot.json" 2>&1
   RID=$(jq -r '.rental_id // empty' "$OUT/show-boot.json")
-  jq -e --arg s "$SKU" --argjson o "$o" '.rental.sku==$s and .rental.rented_at_ms>=$o-60000' "$OUT/show-boot.json" >/dev/null ||
+  jq -e --arg s "$SKU" --argjson o "$o" --argjson g "$GPUS" '.rental.sku==$s and .rental.gpus==$g and .rental.rented_at_ms>=$o-60000' "$OUT/show-boot.json" >/dev/null ||
     { RID=''; fail "$first is not this order's machine: $(head -c 300 "$OUT/show-boot.json")"; }
   echo "$RID" > "$OUT/rental"
   say "rental $RID ($first)"
