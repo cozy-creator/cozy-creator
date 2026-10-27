@@ -653,7 +653,7 @@ impl Runs {
             ahead = plan.as_ref().map(|plan| {
                 let order = self.service.engine.get(id).map_or(u64::MAX, |record| record.root_seq());
                 let fetch = crate::access::Fetch::new(self.publisher.machine().clone(), hub.clone(), order);
-                match fetch.ahead(&plan.upfront(), &plan.on_demand()) {
+                match fetch.ahead(&plan.upfront(), &plan.on_demand(), &self.service.engine) {
                     Ok(()) => crate::access::meter(self.service.engine.clone(), id.to_string(), &fetch),
                     Err(error) => tracing::warn!("run {id}: its weights' early fetch: {error}"),
                 }
@@ -1279,6 +1279,13 @@ impl Runs {
             tracing::warn!("prefetch of a child: {error}");
         }
         Ok(())
+    }
+
+    /// Observe required-input readiness without consuming the existing fetch owner.
+    pub(crate) fn source_ready(&self, id: &str) -> crate::access::Ready {
+        self.contexts.lock().unwrap().get(id)
+            .and_then(|context| context.ahead.as_ref())
+            .map_or(crate::access::Ready::Yes, |fetch| fetch.ready())
     }
 
     /// The fetches a run's preparation started, for its call to end once its executor asks.

@@ -54,6 +54,20 @@ pub struct Remote {
 
 type Key = (Option<Arc<Vec<u8>>>, bool);
 
+/// Task cancellation or panic must wake a queued owner too, rather than leaving it waiting
+/// forever for an ordinary result callback. This owns no work beyond the existing fetch.
+struct FetchCompletion<F: FnOnce(&Result<Landed>)>(Option<F>);
+impl<F: FnOnce(&Result<Landed>)> Drop for FetchCompletion<F> {
+    fn drop(&mut self) {
+        if let Some(settled) = self.0.take() {
+            settled(&Err(Refusal {
+                code: Code::IO_FAILED,
+                detail: "source fetch task ended before reporting completion".into(),
+            }));
+        }
+    }
+}
+
 /// The machine's downloader: one `Fetcher` per trust (in practice one).
 pub struct Machine {
     store: Arc<Store>,
@@ -173,9 +187,21 @@ impl Machine {
 
     /// Wants `objects` at `priority` until the returned handle is aborted or they land.
     pub(crate) fn want(&self, remote: &Remote, objects: Vec<ObjectRef>, priority: u64) -> Result<tokio::task::JoinHandle<Result<Landed>>> {
+        self.want_observed(remote, objects, priority, |_| {})
+    }
+
+    /// The same downloader, with one completion notification to the existing dispatch loop.
+    pub(crate) fn want_observed(
+        &self, remote: &Remote, objects: Vec<ObjectRef>, priority: u64,
+        settled: impl FnOnce(&Result<Landed>) + Send + 'static,
+    ) -> Result<tokio::task::JoinHandle<Result<Landed>>> {
         let (fetcher, origin) = (self.of(remote)?, remote.origin.clone());
+        let completion = FetchCompletion(Some(settled));
         Ok(self.runtime.spawn(async move {
-            fetcher.objects(&origin, &objects, &Want { priority, ..Want::default() }).await
+            let mut completion = completion;
+            let result = fetcher.objects(&origin, &objects, &Want { priority, ..Want::default() }).await;
+            if let Some(settled) = completion.0.take() { settled(&result); }
+            result
         }))
     }
 }

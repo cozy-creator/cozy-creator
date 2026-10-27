@@ -64,6 +64,20 @@ pub fn failed(refusal: Refusal) -> io::Error {
     io::Error::other(failure)
 }
 
+/// Only upfront required inputs gate GPU admission. On-demand sources keep fetching behind.
+#[derive(Clone, Debug)]
+pub(crate) enum Ready {
+    Yes,
+    Waiting,
+    Failed(String),
+}
+
+#[derive(Default)]
+struct Required {
+    pending: usize,
+    failure: Option<String>,
+}
+
 /// One call's fetches: its checkpoints, where each comes from, and what it wants held.
 pub struct Fetch {
     machine: Arc<Machine>,
@@ -80,6 +94,7 @@ pub struct Fetch {
     /// Each wanted checkpoint not all here when it was wanted: its repository, its bytes, and
     /// its objects still absent.
     arriving: Mutex<Vec<(String, u64, Vec<ObjectRef>)>>,
+    required: Mutex<Required>,
 }
 
 impl Fetch {
@@ -94,6 +109,7 @@ impl Fetch {
             held: Mutex::default(),
             replaced: Mutex::default(),
             arriving: Mutex::default(),
+            required: Mutex::default(),
         })
     }
 
@@ -118,20 +134,63 @@ impl Fetch {
     /// executor reads them, in Runtime's Start-pass order: the smallest component first; then
     /// `later`'s (its on-demand models, built when a stage first uses one) the same way, right
     /// behind them. Held until the call ends. Its run's progress waits on `selected` only.
-    pub fn ahead(&self, selected: &[(String, Vec<String>)], later: &[(String, Vec<String>)]) -> io::Result<()> {
-        let mut wanted = self.components(selected, true)?;
-        // A model the call may never read must not cost it the ones it reads first.
+    pub fn ahead(
+        self: &Arc<Self>, selected: &[(String, Vec<String>)], later: &[(String, Vec<String>)],
+        engine: &Arc<Engine>,
+    ) -> io::Result<()> {
+        let mut wanted = match self.components(selected, true) {
+            Ok(wanted) => wanted,
+            Err(error) => {
+                self.required.lock().unwrap().failure = Some(error.to_string());
+                engine.notify_activity();
+                return Err(error);
+            }
+        };
+        // A model the call may never read must not block admission or cost its first inputs.
         let mut behind = self.components(later, false).unwrap_or_else(|error| {
             tracing::warn!("its on-demand models' early fetch: {error}");
             vec![]
         });
         wanted.sort_by_key(|(bytes, ..)| *bytes);
         behind.sort_by_key(|(bytes, ..)| *bytes);
+        let required = wanted.len();
+        self.required.lock().unwrap().pending = required;
         let mut kept = self.kept.lock().unwrap();
         for (rank, (_, remote, objects)) in wanted.into_iter().chain(behind).enumerate() {
-            kept.push(self.machine.want(&remote, objects, priority::next(self.order, rank as u32)).map_err(failed)?);
+            let needed = rank < required;
+            let weak = Arc::downgrade(self);
+            let wake = Arc::downgrade(engine);
+            let started = self.machine.want_observed(&remote, objects, priority::next(self.order, rank as u32), move |result| {
+                if needed {
+                    if let Some(fetch) = weak.upgrade() {
+                        let mut state = fetch.required.lock().unwrap();
+                        state.pending = state.pending.saturating_sub(1);
+                        if let Err(error) = result {
+                            state.failure.get_or_insert_with(|| failed(error.clone()).to_string());
+                        }
+                    }
+                    if let Some(engine) = wake.upgrade() { engine.notify_activity(); }
+                }
+            });
+            match started {
+                Ok(task) => kept.push(task),
+                Err(error) if needed => {
+                    let error = failed(error);
+                    self.required.lock().unwrap().failure = Some(error.to_string());
+                    engine.notify_activity();
+                    return Err(error);
+                }
+                Err(error) => tracing::warn!("on-demand early fetch: {error}"),
+            }
         }
         Ok(())
+    }
+
+    pub(crate) fn ready(&self) -> Ready {
+        let state = self.required.lock().unwrap();
+        if let Some(error) = &state.failure { Ready::Failed(error.clone()) }
+        else if state.pending == 0 { Ready::Yes }
+        else { Ready::Waiting }
     }
 
     /// Each component of `selected` (header, components) from a Hub: its bytes, origin and
@@ -142,6 +201,12 @@ impl Fetch {
         for (header, components) in selected {
             let checkpoint = checkpoint(self.store(), header)?;
             let Some(remote) = self.source(checkpoint.id())? else {
+                if metered && storage::chunks(&checkpoint, components).iter().any(|o| !self.store().holds(o)) {
+                    return Err(io::Error::other("required local checkpoint input is missing and has no fetch source"));
+                }
+                // Retain local checkpoints too, so GC cannot remove required inputs between
+                // readiness and an executor's own source lease.
+                self.held.lock().unwrap().push(checkpoint);
                 continue;
             };
             // A checkpoint known whole is looked at no more.
