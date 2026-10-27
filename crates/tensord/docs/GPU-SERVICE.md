@@ -128,6 +128,13 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
   triage bundle (`triage.rs`: terminal, traceback, executor pid and stderr tail; canonical JSON
   under `execution/triage/`, fsynced) and binds it in the journal; the outcome body names it as
   `triage_bundle`, and `ReadMachineExecutionTriage` returns its bytes.
+- A call whose executor cannot settle (a follower that died mid-call, the leader's poisoned
+  latch, or no quiescence) always keeps a bundle, before its kill, with its `fault` (`GPU 1's
+  process 5163 ended`, else the latch) beside the stderr tail. Every rank writes the leader's
+  stderr (followers inherit its descriptor), so the dead rank's own last words, its abort or CUDA
+  error, are in that tail: the run's reason detail and log carry the fault and its last 50 stderr
+  lines, a failed child's caller gets the traceback and them, and the machine's tensord log names
+  the fault with the same lines.
 - Start happens only after `authorize_managed`.
 - Invoke must be quiescent. A reusable executor's old cancellation handle is disabled and its
   process detached from that invocation before pool return. Owned CPU output encoding and
