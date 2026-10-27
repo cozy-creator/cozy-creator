@@ -17,12 +17,16 @@ v=$(cozy machine show "$NAME" --json | jq -r .status.version)
 say "pod TensorD $v"
 
 # Leave BiRefNet's executor idle-resident, then run SDXL: on 8 GB the two do not co-fit, so make_room
-# offloads BiRefNet's weights and, still short, ends its process to reclaim the context. Then a successor.
+# offloads BiRefNet's weights and, still short, ends its process to reclaim the context.
 step bg1 run birefnet/remove_background --on "$NAME" --asset image="$REF/seed.jpg" || fail "birefnet 1"
 B1=$(runno bg1)
-step big run sdxl/generate --on "$NAME" prompt="a quiet harbor at dawn, photo" seed:=$RANDOM || fail "sdxl"
+step big run sdxl/generate --on "$NAME" prompt="a quiet harbor at dawn, photo" seed:=$RANDOM --out "$OUT/sdxl" || fail "sdxl"
 BIG_N=$(runno big)
-step bg2 run birefnet/remove_background --on "$NAME" --asset image="$REF/seed.jpg" || fail "birefnet successor"
+# The successor runs BiRefNet again, on SDXL's fresh output (a different image, so it is not a memo hit
+# and really executes): its ended construction must come back in a new executor.
+img=$(ls "$OUT"/sdxl/*.webp "$OUT"/sdxl/*.png 2>/dev/null | head -1)
+[ -n "$img" ] || fail "sdxl produced no image to drive the successor"
+step bg2 run birefnet/remove_background --on "$NAME" --asset image="$img" || fail "birefnet successor"
 B2=$(runno bg2)
 
 cozy machine logs "$NAME" memory -n 100000 > "$OUT/memory.log" 2>&1
@@ -31,9 +35,12 @@ ended=$(grep -c '"event":"ended_for_room"' "$OUT/memory.log")
 offloads=$(grep -c '"event":"offload"' "$OUT/memory.log")
 running_call=$(grep -c '"for":"running_call"' "$OUT/memory.log")
 for n in "$B1" "$BIG_N" "$B2"; do [ "$(recstatus "$n")" = completed ] || fail "run $n is $(recstatus "$n"), not completed"; done
+# All runs completed; the card had to reclaim at least one idle context for the big model to fit.
+[ "$ended" -ge 1 ] || fail "no ended_for_room on an 8 GB card (sizes may co-fit): $(grep -E 'ledger|manager' "$OUT/memory.log" | head -1)"
 p1=$(recpid "$B1") p2=$(recpid "$B2")
 say "birefnet pid $p1 -> successor pid $p2; ended_for_room=$ended offload=$offloads running_call=$running_call"
-# The card is small, so stacking must have reclaimed at least one context; the successor completed in a fresh process.
-[ "$ended" -ge 1 ] || fail "no ended_for_room on an 8 GB card (sizes may co-fit): $(grep -E 'ledger|manager' "$OUT/memory.log" | head -1)"
-{ [ -n "$p2" ] && [ "$p1" != "$p2" ]; } || fail "the successor did not run in a fresh executor ($p1 -> $p2)"
-say "PASS: $ended context(s) reclaimed for room; successor $B2 completed in a fresh executor (pid $p2)"
+# BiRefNet's executor was ended for room, so the successor (a fresh input, really executed) must hold a
+# different pid. An empty p2 means it was a memo hit, which does not exercise a fresh executor.
+[ -n "$p1" ] && [ -n "$p2" ] || fail "a birefnet run did not execute on the GPU (p1=$p1 p2=$p2)"
+[ "$p1" != "$p2" ] || fail "the successor reused the ended executor's pid ($p1)"
+say "PASS: $ended context(s) reclaimed for room; birefnet's successor ran in a fresh executor ($p1 -> $p2); all runs completed"
