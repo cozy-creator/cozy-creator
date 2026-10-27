@@ -6,7 +6,8 @@
 # on the pod measures both engines: H2D bytes (PCIe RX) and peak memory used per request.
 # params:
 #   levels   MiB left free; "full" holds nothing (["full", 6144, 3072])
-#   models   from sdxl (16-bit), anima (16-bit), qwen (Qwen-Image 2.1 1 MP, int8 ConvRot) (["sdxl", "anima", "qwen"])
+#   models   from sdxl (16-bit), anima (16-bit), qwen (Qwen-Image 2.1 1 MP, int8 ConvRot), qwen4 (the same at
+#            4 MP; Cozy only) (["sdxl", "anima", "qwen"])
 #   warm     warm requests after each cold one (2)
 #   arms     [{"name": "comfy"}, {"name": "prod"}, {"name": <cand>, "update": [machine update flags]},
 #            {"name": <capped>, "update": [...], "limit": "6GiB", "levels": [6144]}]; an arm with "limit" sets
@@ -28,7 +29,7 @@ G=$OUT/gen; mkdir -p "$G" "$OUT/out" "$OUT/rec"
 mapfile -t levels < <(jq -r '.[] | tostring' <<<"$LEVELS")
 mapfile -t models < <(jq -r '.[]' <<<"$MODELS")
 mapfile -t arms < <(jq -r '.[].name' <<<"$ARMS")
-for m in "${models[@]}"; do case $m in sdxl|anima|qwen) ;; *) fail "no model $m" ;; esac; done
+for m in "${models[@]}"; do case $m in sdxl|anima|qwen|qwen4) ;; *) fail "no model $m" ;; esac; done
 for a in "${arms[@]}"; do [[ $a =~ ^[a-z0-9]+$ ]] || fail "arm names are letters and digits: $a"; done
 COMFY=$(jq -r 'map(.name) | index("comfy") // -1' <<<"$ARMS")
 [ "$COMFY" -le 0 ] || fail "comfy runs first, on a card no Cozy executor has touched"
@@ -36,8 +37,8 @@ COZY1=${arms[0]}; [ "$COZY1" = comfy ] && COZY1=${arms[1]:-}
 jq -e 'map(has("limit")) | . == (sort)' <<<"$ARMS" >/dev/null || fail "arms with a memory limit come last"
 arm_levels() { jq -r --arg a "$1" --argjson d "$LEVELS" '.[] | select(.name==$a) | (.levels // $d)[] | tostring' <<<"$ARMS"; }
 # Cozy side: package, model and lane per model (the lane ComfyUI's files match).
-pkg() { case $1 in sdxl) echo sdxl ;; anima) echo anima ;; qwen) echo qwen-image-2 ;; esac; }
-model_ref() { case $1 in sdxl) echo "sdxl@1.0.0 bf16" ;; anima) echo "anima@1.0.0 bf16" ;; qwen) echo "qwen-image-2.1@0.1.0 int8" ;; esac; }
+pkg() { case $1 in sdxl) echo sdxl ;; anima) echo anima ;; qwen|qwen4) echo qwen-image-2 ;; esac; }
+model_ref() { case $1 in sdxl) echo "sdxl@1.0.0 bf16" ;; anima) echo "anima@1.0.0 bf16" ;; qwen|qwen4) echo "qwen-image-2.1@0.1.0 int8" ;; esac; }
 tiers() { echo cold; for i in $(seq 1 "$WARM"); do echo "w$i"; done; }
 tree() { jq -r --arg a "$1" --arg m "$2" '.[] | select(.name==$a) | (.local // {})[$m] // empty' <<<"$ARMS"; }
 for a in "${arms[@]}"; do for m in "${models[@]}"; do
@@ -94,6 +95,7 @@ cozy_input() {  # cozy_input <model> <request json> <file>: Cozy's inputs at Com
             negative_prompt: $neg, megapixels: 1.0, aspect_ratio: "1:1", prompt_upsampling: false,
             cfg_interval_start: 0.0, cfg_interval_stop: 1.0}' ;;
     qwen) jq -n --argjson r "$r" '{prompt: $r.prompt, seed: $r.seed, steps: 40, megapixels: 1.0, aspect_ratio: "1:1"}' ;;
+    qwen4) jq -n --argjson r "$r" '{prompt: $r.prompt, seed: $r.seed, steps: 40, megapixels: 4.0, aspect_ratio: "1:1"}' ;;
   esac > "$3"
 }
 ANIMA_NEG="worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia"
