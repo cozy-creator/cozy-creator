@@ -118,15 +118,17 @@ impl MachineConfig {
     /// environment), else `~/.cozy/machine`. Its API's endpoint is
     /// `<root>/var/lib/cozy/tensord/api-ready.json`.
     pub fn root(&self, home: &Home) -> PathBuf {
-        self.root.clone().unwrap_or_else(|| match std::path::Path::new(IMAGE_BOOT_ID).is_file() {
+        self.root.clone().unwrap_or_else(|| match image_machine() {
             true => PathBuf::from("/"),
             false => home.machine(),
         })
     }
 }
 
-/// The boot id a machine rooted at `/` (a worker image's) keeps.
-const IMAGE_BOOT_ID: &str = "/var/lib/cozy/machine/boot-id";
+/// Whether a worker image's machine (rooted at `/`, a pod's) booted on this computer: its boot id.
+pub fn image_machine() -> bool {
+    cfg!(target_os = "linux") && std::path::Path::new("/var/lib/cozy/machine/boot-id").is_file()
+}
 
 /// The environment name of a pod's boot keys.
 pub const AUTHORIZED_KEYS: &str = "COZY_AUTHORIZED_KEYS";

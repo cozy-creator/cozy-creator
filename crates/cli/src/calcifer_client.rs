@@ -353,11 +353,12 @@ impl Client {
         let exe = std::env::current_exe().and_then(|exe| exe.canonicalize());
         let ours = matches!((exe, installed.canonicalize()), (Ok(exe), Ok(it)) if exe == it);
         let managed = services.available() && (ours || services.current(&spec));
-        // Started detached for want of systemctl: no login starts it again.
+        // Started detached for want of systemctl: no login starts it again. A pod has no login.
         let path: Vec<_> =
             std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect();
         if !managed
             && cfg!(target_os = "linux")
+            && !protocol::config::image_machine()
             && tools::on_path("systemctl", &path).is_none()
             && let Some(warning) = tools::warn_once("systemctl")
         {
