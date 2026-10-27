@@ -17,6 +17,7 @@
 # The throwaway private model is deleted after. params:
 #   old         the previous cozy release (default 0.13.3)
 #   traffic_gb  GB the provider bills, both pods (default 40)
+#   seconds     the least time the cap must buy both pods (default 2400; the session takes 10-20 min)
 . "$(dirname "$0")/lib.sh"
 OLD=$(param old 0.13.3)
 NEW=$(cozy --version | awk '{print $2}')
@@ -34,7 +35,7 @@ TS=$(date -u +%m%d%H%M) ACCOUNT=$(cozy --json whoami | jq -r .account) M=''
 cleanup() { [ -z "$M" ] || cozy model delete "$M" -y >> "$OUT/delete.txt" 2>&1; }
 trap 'cleanup; finish' EXIT
 RENT_ARGS=--ssh
-quote "$(param traffic_gb 40)" 2400 2
+quote "$(param traffic_gb 40)" "$(param seconds 2400)" 2
 order; order
 ready 0; A=$NAME
 ready 1; B=$NAME
