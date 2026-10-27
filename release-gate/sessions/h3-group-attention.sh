@@ -5,6 +5,7 @@
 #   gpus       GPUs in the rental and per call (4)
 #   control    {"runtime": "<version | URL#sha256=…>", "tensorfs": "<version | URL#sha256=…>"}: put on first unless running
 #   candidate  {"runtime": "<URL#sha256=…>"}
+#   extra      {"runtime": "<URL#sha256=…>"} (optional): a third arm's Runtime, put on for cells of phase "extra"
 #   cells      [{"label", "phase": "control"|"candidate", "tree" (a packages_refs name), "prompt", "seed",
 #              "attention" ("" or a --attention-kernel pin)}], in order
 #   max_fails  failed cells that stop the session (2); a failed cell's machine logs are kept either way
@@ -27,7 +28,10 @@ version() {
 CR=$(fetch "$(jq -r .control.runtime <<<"$PARAMS")") || fail "control runtime"
 CT=$(fetch "$(jq -r .control.tensorfs <<<"$PARAMS")") || fail "control tensorfs"
 DR=$(fetch "$(jq -r .candidate.runtime <<<"$PARAMS")") || fail "candidate runtime"
-CRV=$(version "$CR") CTV=$(version "$CT") DRV=$(version "$DR")
+CRV=$(version "$CR") CTV=$(version "$CT") DRV=$(version "$DR") ER='' ERV=''
+if jq -e '.extra.runtime' <<<"$PARAMS" >/dev/null; then
+  ER=$(fetch "$(jq -r .extra.runtime <<<"$PARAMS")") || fail "extra runtime"; ERV=$(version "$ER"); say "extra runtime $ERV"
+fi
 say "control runtime $CRV, tensorfs $CTV; candidate runtime $DRV; $GPUS GPUs; cozy $(cozy --version)"
 [ "$CRV" != "$DRV" ] || fail "control and candidate are the same Runtime"
 CELLS=$(param cells '[]') COMPARE=$(param compare '[]')
@@ -76,6 +80,7 @@ for c in [run] + (run.get("calls") or []):
         "stages_s": {k: round(v["total_ms"] / 1000, 1) for k, v in ((m.get("attribution") or {}).get("stages") or {}).items()},
         "peak_GB": [round(d.get("peak_bytes", 0) / 1e9, 1) for d in (m.get("memory") or {}).get("driver") or []],
         "selected": sorted({f'{o["fields"].get("component")}={o["value"]}' for o in m.get("observations", []) if o["name"] == "attention.selected"}),
+        "gemm": sorted({f'{o["fields"].get("component")}={o["value"]}' for o in m.get("observations", []) if o["name"] == "gemm.selected"}),
         "ranks": ranks})
 print(json.dumps(out))
 PY
@@ -96,10 +101,12 @@ phase=control fails=0
 printf 'label\tphase\trun\tstatus\texecution_s\treason\n' > "$OUT/outcomes.tsv"
 for i in "${!labels[@]}"; do
   k=${labels[i]} p=$(jq -r ".[$i].phase" <<<"$CELLS") tree=$(jq -r ".[$i].tree" <<<"$CELLS") pin=$(jq -r ".[$i].attention // \"\"" <<<"$CELLS")
-  if [ "$p" = candidate ] && [ "$phase" = control ]; then
-    step candidate-update --json machine update "$NAME" --runtime "$DR" -y || fail "candidate did not go on"
-    on_runtime "${DRV%%+*}" candidate || fail "$NAME does not run the candidate's base version"
-    phase=candidate
+  if [ "$p" != "$phase" ]; then
+    case $p in candidate) W=$DR V=$DRV ;; extra) W=$ER V=$ERV ;; *) fail "$k: phase $p after $phase" ;; esac
+    [ -n "$W" ] || fail "$k: no $p runtime"
+    step "$p-update" --json machine update "$NAME" --runtime "$W" -y || fail "$p did not go on"
+    on_runtime "${V%%+*}" "$p" || fail "$NAME does not run the $p base version"
+    phase=$p
   fi
   args=(run "$PACKAGES/$tree/minimax-h3/fl2va_turbo" --input "$OUT/inputs/$k.json" --lane int8 --gpus="$GPUS" --on "$NAME" --out "$OUT/media/$k")
   [ -z "$pin" ] || args+=(--attention-kernel "$pin")
@@ -112,10 +119,16 @@ for i in "${!labels[@]}"; do
   say "$k ($p) run $n $st: $(cut -c1-1800 "$OUT/$k.summary.json")"
   rt=$(jq -r '.software_runtime // ""' "$OUT/$k.summary.json")
   if [ -z "$rt" ]; then :  # a failed call may carry no measurements
+  elif [ "$p" = extra ]; then [[ $rt == "$ERV"* ]] || fail "$k ran Runtime '$rt', not the extra $ERV"
   elif [ "$p" = candidate ]; then [[ $rt == "$DRV"* ]] || fail "$k ran Runtime '$rt', not the candidate $DRV"
   else [[ $rt == "$CRV"* && $rt != "$DRV"* ]] || fail "$k ran Runtime '$rt', not the control $CRV"; fi
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$k" "$p" "$n" "$st" "$(jq -r '(.execution_ms // 0) / 1000' "$OUT/$k.json")" \
     "$(jq -r '.reason.message // "" | gsub("[\t\n]"; " ") | .[0:300]' "$OUT/$k.json")" >> "$OUT/outcomes.tsv"
+  say "$k gemm $(jq -c '[.calls[].gemm] | add // []' "$OUT/$k.summary.json"); 'bits differ' in its record: $(grep -o 'bits differ[^"]*' "$OUT/$k.json" | sort | uniq -c | head -5 | tr '\n' ';')"
+  if [ "$p" = extra ]; then
+    cozy machine logs "$NAME" -n 3000 > "$OUT/$k.machine.log" 2>&1
+    say "$k machine log: $(grep -ciE 'bits differ' "$OUT/$k.machine.log") 'bits differ' lines; $(grep -iE 'verdict|probe' "$OUT/$k.machine.log" | tail -3 | cut -c1-300 | tr '\n' ';')"
+  fi
   if [ "$st" != completed ]; then
     cozy machine logs "$NAME" -n 300 > "$OUT/$k.tensord.log" 2>&1
     say "$k failed: $(jq -r '.reason.message // ""' "$OUT/$k.json" | cut -c1-600)"
