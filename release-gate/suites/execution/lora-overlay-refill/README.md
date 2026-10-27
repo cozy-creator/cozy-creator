@@ -18,8 +18,8 @@ It fails when:
   under one overlay served the other;
 - (Runtime 0.34+, from the request's fill trace) a warm call with the card free began with fewer than
   half the blocks resident (it could not show a stale page), one under the ballast did not refill
-  within the call, or a call baked a different number of weights than its refilled blocks hold
-  LoRA'd linears.
+  within the call, or a call baked a different number of weights than the blocks it refilled from
+  the store hold LoRA'd linears (a refill from kept baked bytes, Runtime 0.34.3+, bakes nothing).
 
 It needs a card where the int8 DiT and the f32 LoRA stay resident (about 23 GB: RTX 5090 or larger).
 On an RTX 4090 every baked block is refilled every forward, so no stale page can be served (runs
