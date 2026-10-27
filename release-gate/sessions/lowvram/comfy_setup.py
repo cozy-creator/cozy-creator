@@ -100,10 +100,14 @@ def main(payload: SetupRequest, ctx: Context, tel: Telemetry, out: Outputs) -> S
         (B / "requirements.lock").write_text(REQUIREMENTS)
         rec["requirements_sha256"] = hashlib.sha256(REQUIREMENTS.encode()).hexdigest()
         rec["steps"]["venv"] = run(f"{uv} venv -q --allow-existing --python 3.12 {B}/comfy-env", log, tel, "venv", env=env)
-        rec["steps"]["install"] = run(
-            f"{uv} pip sync --python {B}/comfy-env/bin/python --require-hashes --index-strategy unsafe-best-match "
-            f"{B}/requirements.lock", log, tel, "install", B / "comfy-env", env=env)
-        assert rec["steps"]["install"]["rc"] == 0, "the locked ComfyUI environment did not install"
+        for attempt in range(3):  # a package index can drop a download; the lock and hashes stay exact
+            rec["steps"][f"install-{attempt}"] = run(
+                f"{uv} pip sync --python {B}/comfy-env/bin/python --require-hashes --index-strategy unsafe-best-match "
+                f"{B}/requirements.lock", log, tel, "install", B / "comfy-env", env=env)
+            if rec["steps"][f"install-{attempt}"]["rc"] == 0:
+                break
+            time.sleep(20 * (attempt + 1))
+        assert rec["steps"][f"install-{attempt}"]["rc"] == 0, "the locked ComfyUI environment did not install"
         rec["torch"] = text(f"{B}/comfy-env/bin/python -c 'import torch; print(torch.__version__, torch.version.cuda)'")
         assert rec["torch"].startswith("2.14.1+cu130"), rec["torch"]
         stage, t0, files = B / "hf", time.time(), {}
@@ -122,13 +126,13 @@ def main(payload: SetupRequest, ctx: Context, tel: Telemetry, out: Outputs) -> S
         rec["files"] = files
         rec["download_gb"] = round(sum(files.values()) / 1e9, 2)
         shutil.rmtree(stage, ignore_errors=True)
-        rec["ok"] = all(v["rc"] == 0 for v in rec["steps"].values())
+        rec["ok"] = all(v["rc"] == 0 for k, v in rec["steps"].items() if not k.startswith("install-"))
     except Exception as e:  # noqa: BLE001 - the record says what failed
         rec["error"] = repr(e)
         rec["ok"] = False
-        rec["log_tail"] = log.read_text()[-3000:] if log.exists() else ""
+        rec["log_tail"] = log.read_text()[-1500:] if log.exists() else ""
     rec["seconds"] = round(time.time() - rec["started_unix_s"], 1)
     tel.log(json.dumps({k: rec.get(k) for k in ("ok", "error", "torch", "download_gb", "download_wall_s", "seconds")}))
     if not rec["ok"]:
-        raise RuntimeError(f"ComfyUI setup failed: {json.dumps(rec)[:3000]}")
+        raise RuntimeError(f"ComfyUI setup failed: {rec.get('error')}; log: {rec.get('log_tail')}")
     return SetupResult(json.dumps(rec))
