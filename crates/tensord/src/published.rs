@@ -497,7 +497,7 @@ impl Publisher {
             return Ok(Named { release, lane, tree: Some(tree), header: Some(header), reasons, ..named });
         }
         let r = origin::resolve(&self.machine, source, &named.repository, &named.release, &named.lane, hardware)
-            .map_err(|e| refused("model_resolution_failed", e))?;
+            .map_err(|e| unsigned(source, refused("model_resolution_failed", e.clone()), &e))?;
         let answer = json!([r.release, r.lane, r.commit, r.header, r.reasons]).to_string();
         service.engine.with_journal(|j| j.bind_named(&name, revision, &answer)).map_err(io_failure)?;
         Ok(Named { release: r.release, lane: r.lane, tree: Some(r.commit), header: Some(r.header), reasons: r.reasons, ..named })
@@ -1228,6 +1228,17 @@ fn make_source(
     crate::storage::transport(store, "import", source, &detail);
     crate::storage::set_local(store, &name, &header, &files, "").map_err(io_failure)?;
     Ok(made(header))
+}
+
+/// `failure`, reading `source` under no signer's capability: a private model reads as absent
+/// there, so the reason names the sign-in that reads it (a pod's shell, a laptop not logged in).
+fn unsigned(source: &hub::Source, failure: Failure, refusal: &tensorfs::err::Refusal) -> Failure {
+    use tensorfs::err::Code;
+    let absent = matches!(refusal.code, Code::REF_NOT_FOUND | Code::REPOSITORY_ABSENT | Code::CREDENTIAL_REQUIRED);
+    match source.capability.is_none() && absent {
+        true => (failure.0, format!("{}; this run carried no sign-in, and a private model reads only under one: `cozy login <email>` on the computer that sent it", failure.1)),
+        false => failure,
+    }
 }
 
 /// A TensorFS refusal as a run's reason; a download the disk cannot fit is its own.

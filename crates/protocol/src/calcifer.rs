@@ -523,6 +523,10 @@ pub struct Machine {
     /// takes to let this one use its machine.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub controller_key: Option<String>,
+    /// On `local`: where other computers reach it, what their `cozy machine add` takes (a pod's
+    /// public address; this computer's LAN address while it listens for authorized controllers).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reach: Option<String>,
 }
 
 fn yes() -> bool {

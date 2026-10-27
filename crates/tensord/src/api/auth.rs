@@ -30,7 +30,11 @@ pub struct Keys {
     home: Arc<RwLock<Vec<VerifyingKey>>>,
     changes: Arc<tokio::sync::watch::Sender<u64>>,
     source: Option<Arc<dyn Fn() -> std::io::Result<Vec<VerifyingKey>> + Send + Sync>>,
+    /// When the home's files changed last, as `stamp` reads it, and as it was when read.
+    stamp: Option<Arc<dyn Fn() -> Stamp + Send + Sync>>,
+    stamped: Arc<RwLock<Stamp>>,
 }
+type Stamp = [Option<std::time::SystemTime>; 2];
 impl Keys {
     pub fn fixed(keys: Vec<VerifyingKey>) -> Self {
         Self {
@@ -38,23 +42,51 @@ impl Keys {
             home: Arc::default(),
             changes: Arc::new(tokio::sync::watch::channel(0).0),
             source: None,
+            stamp: None,
+            stamped: Arc::default(),
         }
     }
-    /// `granted`, and the home's keys `source` reads, read again whenever a signer is unknown
-    /// (`cozy machine authorize` takes effect at the next call).
+    /// `granted`, and the home's keys `source` reads: read again when `stamp` says the home's
+    /// files changed (`cozy machine authorize`, `--remove`: the next call), and when a signer is
+    /// unknown.
     pub fn read(
         granted: Vec<VerifyingKey>,
         source: impl Fn() -> std::io::Result<Vec<VerifyingKey>> + Send + Sync + 'static,
+        stamp: impl Fn() -> Stamp + Send + Sync + 'static,
     ) -> std::io::Result<Self> {
-        let home = source()?;
-        let keys = Self { source: Some(Arc::new(source)), ..Self::fixed(granted) };
+        let (at, home) = (stamp(), source()?);
+        let keys = Self { source: Some(Arc::new(source)), stamp: Some(Arc::new(stamp)), ..Self::fixed(granted) };
         *keys.home.write().unwrap() = home;
+        *keys.stamped.write().unwrap() = at;
         Ok(keys)
+    }
+    /// The home's keys again when its files changed since they were read.
+    fn fresh(&self) {
+        let (Some(stamp), Some(source)) = (&self.stamp, &self.source) else { return };
+        let at = stamp();
+        if at == *self.stamped.read().unwrap() {
+            return;
+        }
+        match source() {
+            Ok(home) => {
+                *self.stamped.write().unwrap() = at;
+                if home != *self.home.read().unwrap() {
+                    *self.home.write().unwrap() = home;
+                    self.changed();
+                }
+            }
+            Err(error) => tracing::warn!("authorized keys unreadable: {error}"),
+        }
+    }
+    /// Told each time the admitted set changes.
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changes.subscribe()
     }
     /// `check` over the admitted keys; when it refuses and the home has a source, once more with
     /// the home's current keys. A concurrent check may have read them meanwhile (a controller's
     /// first calls, as its key is written): the set read decides, not the one refused.
     pub fn check<T, E>(&self, check: impl Fn(&[VerifyingKey]) -> Result<T, E>) -> Result<T, E> {
+        self.fresh();
         let before = self.home.read().unwrap().clone();
         let first = check(&self.admitted());
         let (Err(_), Some(source)) = (&first, &self.source) else { return first };

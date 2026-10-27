@@ -100,8 +100,14 @@ enum Verb {
         #[arg(long)]
         fingerprint: Digest,
     },
-    /// On this computer: let the controller with this public key use this machine.
-    Authorize { public_key: String },
+    /// On this computer: let the controller with this public key use this machine, which then
+    /// listens on every interface (every call still needs an authorized key).
+    Authorize {
+        public_key: String,
+        /// Take the key back: its next call is refused.
+        #[arg(long)]
+        remove: bool,
+    },
 }
 
 pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
@@ -125,7 +131,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             tensord,
             gpu_memory_limit,
         } => end::update(ctx, &name, runtime, tensorfs, tensord, gpu_memory_limit).await,
-        Verb::Authorize { public_key } => local::authorize(ctx, &public_key).await,
+        Verb::Authorize { public_key, remove } => local::authorize(ctx, &public_key, remove).await,
     }
 }
 

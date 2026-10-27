@@ -65,6 +65,17 @@ impl Local {
         crate::machines::endpoint_of(&self.ready())
     }
 
+    /// Where other computers reach the running TensorD, as its `api-ready.json` says: none on
+    /// loopback, or when none runs.
+    pub(crate) fn reach(&self) -> Option<String> {
+        #[derive(serde::Deserialize)]
+        struct Ready {
+            reach: Option<String>,
+        }
+        let ready: Ready = serde_json::from_slice(&std::fs::read(self.ready()).ok()?).ok()?;
+        ready.reach.filter(|_| self.running())
+    }
+
     /// Where the running TensorD serves, once it does (one still starting is waited for); none
     /// when none runs.
     pub(crate) async fn serving(&self) -> Option<Endpoint> {

@@ -54,7 +54,8 @@ test = "pr: candidates"
 test = "pr: this runner's own machine by its address, refused (release-gate session multi-machine: one pod adds another, runs on it, removes it)"
 "--fingerprint" = "pr: this runner's own machine, refused"
 ["machine authorize"]
-test = "pr: a new controller's key"
+test = "pr: a new controller's key, then where to add the machine (session multi-machine: another pod adds it, and a removed key is refused)"
+"--remove" = "pr: the key taken back (session multi-machine: its next call refused)"
 ["machine end"]
 test = "pr: local, refused (release: a rental; session multi-machine: an added pod removed)"
 "--force" = "release: rental, ended with a run still going"
