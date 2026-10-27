@@ -1,6 +1,6 @@
 name: pod-session
-# One rental driven from a runner, so no laptop has to stay up for it: release-gate/sessions/<script>.sh rents one
-# machine on tensorhub.com, does its work there and ends the rental (sessions/lib.sh; README.md: Sessions).
+# Rentals driven from a runner, so no laptop has to stay up for them: release-gate/sessions/<script>.sh rents its
+# machines on tensorhub.com, does its work there and ends them (sessions/lib.sh; README.md: Sessions).
 # The runner signs in as the owner (environment release-gate, COZY_CI_DEVICE_KEY, an admin); the pod renews its own run
 # capability while its runs live (cl-675). A guard ends the pod at `cap` USD, all in. Without `rent`, the $0 pre-flight only:
 # install, sign-in, the script's own checks, the quote and the guard.
@@ -130,16 +130,20 @@ jobs:
             { echo "::error::no session $SCRIPT: $(ls $s | grep -vx lib.sh | sed 's/\.sh$//' | paste -sd,)"; exit 1; }
           jq -e 'type=="object"' <<<"$PARAMS" >/dev/null || { echo "::error::params is not a JSON object"; exit 1; }
           bash "$s/$SCRIPT.sh"
-      # The script's trap ends its rental; a cancelled job can skip it, so end it here too and say so.
+      # The script's trap ends its rentals; a cancelled job can skip it, so end them here too and say so.
       - if: always()
         run: |
-          rid=$(cat "$OUT/rental" 2>/dev/null) || exit 0
-          for _ in $(seq 1 30); do
-            cozy machine list --json 2>/dev/null | jq -e --arg r "$rid" '.machines[] | select(.rental_id==$r and .state!="ended")' >/dev/null ||
-              { echo "$rid is gone"; exit 0; }
-            cozy machine end "$rid" -y || true; sleep 10
-          done
-          echo "::error::$rid is still listed: end it by hand (cozy machine end $rid)"; exit 1
+          [ -f "$OUT/rental" ] || exit 0
+          left=0
+          while read -r rid; do
+            for _ in $(seq 1 30); do
+              cozy machine list --json < /dev/null 2>/dev/null | jq -e --arg r "$rid" '.machines[] | select(.rental_id==$r and .state!="ended")' >/dev/null ||
+                { echo "$rid is gone"; continue 2; }
+              cozy machine end "$rid" -y < /dev/null || true; sleep 10
+            done
+            echo "::error::$rid is still listed: end it by hand (cozy machine end $rid)"; left=1
+          done < "$OUT/rental"
+          exit $left
       - if: always()
         uses: actions/upload-artifact@v4
         with:

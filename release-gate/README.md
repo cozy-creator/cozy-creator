@@ -112,6 +112,10 @@ renews its own run capability while its runs live, cl-675). `sessions/<script>.s
 `step`, the guard at `cap` USD and the trap that ends the rental by its own id); its header lists its `params`.
 Without `rent=true` it stops after the $0 pre-flight. `model-ingest` puts a first-party model on the root (xs-104);
 `ab` runs cells from `packages_refs` checkouts on one pod and compares their outputs (a refactor's same-bytes proof).
+`multi-machine` (xs-126) rents two pods with SSH and works in a shell on each (`cozy machine ssh`): a pod's `cozy` uses
+the image's TensorD as `local` beside the runner's runs, one pod controls the other by `authorize`/`add`, and the
+previous release and the session's cozy control each other (`-f params='{"old": "0.13.3"}'`). A session that rents
+more than one pod calls `order` per pod, then `ready` per pod; the guard and the trap cover every one.
 `h3-8gb` is the 8 GB tier: H3 Turbo 15 s on one RTX 3070 must complete, 362 frames, under its time bar.
 
 ## More cells and checks
