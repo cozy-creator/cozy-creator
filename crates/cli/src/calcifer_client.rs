@@ -265,6 +265,12 @@ impl Client {
     /// machines continue; the next Calcifer resumes what it owed.
     pub async fn stop(&self) -> Result<Down, Error> {
         let holder = self.endpoint().await?;
+        let down = self.down(&holder).await?;
+        self.remember(None);
+        Ok(down)
+    }
+
+    async fn down(&self, holder: &Holder) -> Result<Down, Error> {
         let base = format!("http://{}", holder.address);
         let request = self.0.http.post(format!("{base}/v1/down")).bearer_auth(&holder.token);
         let answer = self
@@ -272,10 +278,17 @@ impl Client {
             .await
             .map_err(unreachable)?;
         let down: Down = decode(answer).await?;
-        self.wait("Calcifer to stop", || async { !self.holds(&holder) })
+        self.wait("Calcifer to stop", || async { !self.holds(holder) })
             .await;
-        self.remember(None);
         Ok(down)
+    }
+
+    /// Whether the Calcifer `holder` names runs another cozy than this one, which is the installed
+    /// one: something replaced the binary under it (`cozy machine update` on a pod, an installer).
+    fn replaced(&self, holder: &Holder) -> bool {
+        let me = std::env::current_exe().and_then(|exe| exe.canonicalize());
+        let installed = installed(&self.0.home).ok().and_then(|it| it.canonicalize().ok());
+        holder.version != env!("CARGO_PKG_VERSION") && matches!((me, installed), (Ok(me), Some(it)) if me == it)
     }
 
     /// Reaches Calcifer, starting it if none runs.
@@ -288,6 +301,18 @@ impl Client {
             return Ok(holder);
         }
         let holder = match self.live().await {
+            // It restarts on this binary: runs on machines go on, and it resumes what it owed.
+            Some(holder) if self.replaced(&holder) => {
+                self.say(&format!(
+                    "Calcifer runs cozy {}; restarting it on {}",
+                    holder.version,
+                    env!("CARGO_PKG_VERSION")
+                ));
+                if let Err(e) = self.down(&holder).await {
+                    self.say(&format!("Calcifer did not stop cleanly ({}); starting the installed one", e.message));
+                }
+                self.start().await?
+            }
             Some(holder) => holder,
             None => self.start().await?,
         };

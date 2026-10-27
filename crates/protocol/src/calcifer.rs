@@ -519,6 +519,10 @@ pub struct Machine {
     /// Its Hub did not answer the last listing.
     #[serde(default)]
     pub unverified: bool,
+    /// On `local`: this controller's public key, what another computer's `cozy machine authorize`
+    /// takes to let this one use its machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controller_key: Option<String>,
 }
 
 fn yes() -> bool {

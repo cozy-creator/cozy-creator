@@ -200,6 +200,8 @@ impl Machines {
     /// starts for it.
     pub async fn show(self: &Arc<Self>, text: &str) -> Result<Machine, Error> {
         let Some(row) = self.up(text).await? else {
+            // Another controller's rental: its Hubs' word now, never a listing it may have ended since.
+            self.list_hubs().await;
             return self.hubs.other(text).ok_or_else(|| not_found(text));
         };
         if row.state != MachineState::Ended
@@ -253,6 +255,15 @@ impl Machines {
         };
         let leaf: [u8; 32] =
             Sha256::digest(link::presented_leaf(address).await.map_err(unreachable)?).into();
+        let local = self.store().machine("local").map_err(internal)?.and_then(|row| row.endpoint);
+        if local.is_some_and(|endpoint| endpoint.pin == leaf) {
+            return Err(Error::new(
+                Kind::Conflict,
+                "machine_is_local",
+                format!("{address} is this computer's own machine, `local`"),
+            )
+            .next("cozy machine show local"));
+        }
         if &leaf != fingerprint.bytes() {
             return Err(Error::new(
                 Kind::Credential,
@@ -550,6 +561,9 @@ impl Machines {
     pub(crate) fn picture(&self, row: &MachineRow) -> Result<Machine, Error> {
         let store = self.store();
         let mut machine = Machine::from(row);
+        if row.kind == MachineKind::Local {
+            machine.controller_key = self.controller_key().ok();
+        }
         machine.alias = store.alias(&row.name).map_err(internal)?;
         let load = store.machine_load().map_err(internal)?;
         (machine.running, machine.queued) = load.get(&row.name).copied().unwrap_or_default();

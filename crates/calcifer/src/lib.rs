@@ -678,14 +678,28 @@ impl Calcifer {
                     self.waiting(id, message);
                     pause.wait(wake, Some(&mut changed)).await;
                 }
-                // It may be authorized later: the run waits, saying what admits it.
+                // The machine refuses this controller's key: a run it never accepted fails now, naming
+                // what admits it; one it accepted ends only with its outcome, and waits saying so.
                 Err(Stop::Unauthorized(message)) => {
                     let key = self.machines().and_then(|m| m.controller_key().ok()).unwrap_or_default();
-                    self.waiting(
-                        id,
-                        format!("{name} does not admit this controller's key ({message}): on {name}, cozy machine authorize {key}"),
+                    let said = format!(
+                        "{name} does not admit this controller's key ({message}): on {name}, cozy machine authorize {key}"
                     );
-                    pause.wait(wake, Some(&mut changed)).await;
+                    if run.state == State::Accepted {
+                        self.waiting(id, said);
+                        pause.wait(wake, Some(&mut changed)).await;
+                    } else {
+                        let reason = Reason {
+                            code: "machine_unauthorized".into(),
+                            message: said,
+                            origin: "machine".into(),
+                            ..Default::default()
+                        };
+                        match self.store.fail(id.as_str(), reason) {
+                            Ok(events) => self.publish(id, events),
+                            Err(e) => warn!(run = %id, "{e}"),
+                        }
+                    }
                 }
                 // A run its machine accepted ends only with the machine's outcome.
                 Err(Stop::Refused(reason)) if run.state == State::Accepted => {

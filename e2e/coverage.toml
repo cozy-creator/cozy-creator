@@ -51,12 +51,12 @@ test = "pr: candidates"
 "--tensord" = "pr: candidates"
 "--gpu-memory-limit" = "gate: stress, the 8/6/3 GiB caps"
 ["machine add"]
-test = "pr: an added machine, this runner's own machine by its address"
-"--fingerprint" = "pr: an added machine"
+test = "pr: this runner's own machine by its address, refused (release-gate session multi-machine: one pod adds another, runs on it, removes it)"
+"--fingerprint" = "pr: this runner's own machine, refused"
 ["machine authorize"]
-test = "pr: an added machine, a new controller's key"
+test = "pr: a new controller's key"
 ["machine end"]
-test = "pr: an added machine, removed"
+test = "pr: local, refused (release: a rental; session multi-machine: an added pod removed)"
 "--force" = "release: rental, ended with a run still going"
 ["machine rent"]
 test = "release: rental"
@@ -64,7 +64,7 @@ test = "release: rental"
 "--gpus" = "release: rental, more GPUs than the SKU has is refused before buying"
 "--ssh" = "pr: renting, signed out, a private key file refused before any ask (release-gate session multi-machine rents and logs in with it)"
 ["machine ssh"]
-test = "pr: an added machine, refused as no rental (release-gate session multi-machine runs every shell step through it)"
+test = "pr: local, refused as no rental (release-gate session multi-machine runs every shell step through it)"
 ["machine keepalive"]
 test = "release: rental, keepalive moves its idle deadline"
 
