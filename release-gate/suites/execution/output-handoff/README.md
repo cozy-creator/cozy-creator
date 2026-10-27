@@ -99,3 +99,44 @@ selected timestamp-window assertions were used, with no retries or injected dela
 [Proof and immutable receipts](evidence/edda-f0d-9e95-local-lifecycle/PROOF.md).
 Normal restore17837 returned the healthy4178/c1/e521 cohort and observed zeroactive work.
 These are lifecycle gates, not performance comparisons or output-service-restart proof.
+
+## Full CLI and output-delivery timing
+
+`profile_cli.py` timestamps the ordinary CLI invocation and every decoded JSON event at the
+client, retaining raw stdout/stderr. It never rents, updates the SDK, starts a second daemon,
+or authors a cancellation. Pass the complete intended command explicitly:
+
+```bash
+python3 profile_cli.py --out /path/to/new/profile --expect-sha256 <caller-sha256> -- run <target> --on <owned-machine> --gpus=1 --input request.json --out /path/to/media --json
+```
+
+The primary measurement ends when the CLI exits after output delivery; hashing the saved output
+is outside that interval. First-use preparation, queueing, execution, encoding and transfer all
+remain part of request latency. Setup performed before the command must be disclosed separately.
+A completed `run show --once` only checks observer startup and receipt handling; it is not a
+fresh transfer benchmark. Pair the recorder with a real file-output or media request.
+
+Calcifer records machine-event arrival (`output_received`, `outcome_received`) and its
+store/publication interval (`output_recorded`, `outcome_recorded`), then `phase=output_export`, `output_prepare_file`, `output_range`, `output_check`,
+and `output_land` in its existing process log. Those phases separate request/headers, first body
+bytes, body waiting, file writes, hashing, fsync, rename, store commit and notification. Range
+records include run/output/revision and byte interval; file verification records use the staged
+file path. Durations use a monotonic clock. Parallel range durations overlap and must not be
+summed as total latency. Retry/failure records remain distinct from completed ranges.
+
+Public output-added/done/landed events have no embedded timestamp; recorder arrivals are local
+observations. `settled_at_ms` is captured in Calcifer's transaction, not the remote GPU clock,
+and excludes the remainder of that transaction and output landing. Do not attribute that whole
+tail to network transfer without these measurements. The instrumentation does not claim a
+latency improvement and must itself be checked for overhead in a coordinated real run.
+
+For a CPU-only transport/custody control, `cpu_file.py` returns deterministic bytes through
+`Outputs.temporary_file` and `Outputs.save_file`. It declares `accelerator=False`, performs no
+CUDA work, and uses the normal Runtime/TensorD/Calcifer path. Set `bytes=2097152` for an image-size
+file or `bytes=12582912` for a video-size file (maximum 32 MiB). Use new seeds to avoid repeating
+identical output bytes. Check the delivered SHA256 against `result.sha256`. This is a real
+file-output benchmark, not evidence of model quality or remote latency when run locally.
+
+```bash
+python3 profile_cli.py --out /path/to/new/cpu-profile --expect-sha256 <caller-sha256> -- run ./cpu_file.py seed=1 bytes=2097152 --on <selected-machine> --out /path/to/media --json
+```

@@ -919,7 +919,11 @@ impl Calcifer {
                     let text = serde_json::to_string(&call).expect("serializes");
                     batch.logs.push((frame.at_ms, "call".into(), text));
                 }
-                Frame::Product(product) => batch.products.push(product),
+                Frame::Product(product) => {
+                    tracing::info!(run = %id, phase = "output_received", sequence = durable,
+                        machine_at_ms = frame.at_ms);
+                    batch.products.push(product);
+                }
                 // Waiting for GPUs another run holds, named by its number; granted, it waits no more.
                 Frame::Gpu(gpu) if gpu.state == "wait" => {
                     let gpus = match gpu.width {
@@ -966,9 +970,17 @@ impl Calcifer {
                     continue;
                 }
                 Frame::Outcome(outcome) => {
+                    let received = Instant::now();
+                    tracing::info!(run = %id, phase = "outcome_received", sequence = durable,
+                        machine_at_ms = frame.at_ms);
                     self.record_batch(id, &mut batch)?;
+                    let prior_batch_ms = received.elapsed().as_secs_f64() * 1000.0;
+                    let store_began = Instant::now();
                     let events = self.store.settle(id.as_str(), &outcome, durable)?;
+                    let store_ms = store_began.elapsed().as_secs_f64() * 1000.0;
                     self.publish(id, events);
+                    tracing::info!(run = %id, phase = "outcome_recorded", prior_batch_ms, store_ms,
+                        elapsed_ms = received.elapsed().as_secs_f64() * 1000.0);
                     return Ok(());
                 }
             }
@@ -1006,8 +1018,14 @@ impl Calcifer {
 
     fn record_batch(&self, id: &RunId, batch: &mut Batch) -> Result<(), Stop> {
         if !batch.is_empty() {
+            let (products, began) = (batch.products.len(), Instant::now());
             let events = self.store.observe(id.as_str(), std::mem::take(batch))?;
+            let store_ms = began.elapsed().as_secs_f64() * 1000.0;
             self.publish(id, events);
+            if products > 0 {
+                tracing::info!(run = %id, phase = "output_recorded", products, store_ms,
+                    elapsed_ms = began.elapsed().as_secs_f64() * 1000.0);
+            }
         }
         Ok(())
     }
