@@ -28,7 +28,8 @@ app = App()
 
 class Pipeline:
     def __init__(self, config: Any) -> None:
-        self.components = {"transformer": exercise.build(config.section("transformer").mapping())}
+        # A one-component model's config is that component's own (`output.config`), not a section.
+        self.components = {"transformer": exercise.build(config.mapping())}
 
 
 class GateModel(

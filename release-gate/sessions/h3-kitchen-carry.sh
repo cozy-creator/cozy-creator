@@ -34,7 +34,13 @@ drop_model() {
 }
 trap 'st=$?; drop_model; (exit $st); finish' EXIT
 # record <step>: the run it named, as JSON; detail <step> <jq>: a field of its result's JSON detail.
-record() { local n; n=$(runno "$1"); [ -n "$n" ] || return 1; cozy run show "$n" --once --json > "$OUT/$1.json" 2>&1; }
+record() {
+  local n; n=$(runno "$1")
+  [ -n "$n" ] || n=$(grep -oE 'cozy run show [0-9]+' "$OUT/$1.txt" | tail -1 | awk '{print $4}')  # a failed run's
+  [ -n "$n" ] || return 1
+  cozy run show "$n" --once --json > "$OUT/$1.json" 2>&1  # exits non-zero for a failed run
+  jq -e .number "$OUT/$1.json" >/dev/null 2>&1
+}
 detail() { jq -r ".result.detail | fromjson | $2" "$OUT/$1.json"; }
 quote "$(param traffic_gb 30)" "$(param need_s 3600)"
 rent
@@ -59,7 +65,7 @@ want=$((LAYERS - 2))
 for try in 1 2 3; do
   step "warm-$try" run "${GPU[@]}" mode=warm "seed=$((SEED + try))" "${ON[@]}"; c=$?
   record "warm-$try" || fail "warm-$try has no run (exit $c)"
-  [ "$c" = 0 ] || fail "warm-$try exited $c: $(jq -r '.error // .failure // .status' "$OUT/warm-$try.json" | head -c 400)"
+  [ "$c" = 0 ] || fail "warm-$try exited $c: $(jq -r '.reason.message // .status' "$OUT/warm-$try.json" | head -c 400)"
   have=$(detail "warm-$try" '.producer_sites | length' 2>/dev/null); have=${have:-0}
   say "warm-$try: Kitchen producer on $have/$want sparse blocks; $(detail "warm-$try" '.backends | to_entries | map(.value) | unique | join(",")')"
   [ "$have" -ge "$want" ] && break
@@ -69,7 +75,7 @@ done
 
 step gate run "${GPU[@]}" mode=gate "seed=$((SEED + 10))" "cases=$CASES" "${ON[@]}"; c=$?
 record gate || fail "gate has no run (exit $c)"
-detail gate . > "$OUT/gate-report.json" 2>/dev/null || fail "gate exited $c: $(jq -r '.error // .failure // .status' "$OUT/gate.json" | head -c 400)"
+detail gate . > "$OUT/gate-report.json" 2>/dev/null || fail "gate exited $c: $(jq -r '.reason.message // .status' "$OUT/gate.json" | head -c 400)"
 say "gate: eager deterministic $(detail gate .eager_deterministic) (A/B max abs $(detail gate .eager_ab_max_abs)); first summaries at step $(detail gate '.first_stats_step | join(",")')"
 for k in ${CASES//,/ }; do say "$k: $(detail gate ".native.$k | tojson")"; done
 [ "$(jq -r .status "$OUT/gate.json")" = completed ] && [ "$(detail gate .passed)" = true ] || fail "gate did not pass"
