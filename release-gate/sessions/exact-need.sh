@@ -1,12 +1,13 @@
-# exact-need: a reused resident construction charges only its activation headroom when TensorD makes room (#2174),
-# so a small idle neighbour stays resident instead of being offloaded and reloaded before every call. One rental, a
-# red/green pair on one 16 GB pod, driven from a runner:
-#   red   the pod's baked TensorD (the last release, whole-peak need);
+# exact-need: a reused resident construction is charged only what it lacks when TensorD makes room (#2181: its measured
+# peak less what the driver already charges its process), so an idle neighbour is not evicted before every call. One
+# rental, a red/green pair on one 16 GB pod, driven from a runner:
+#   red   the pod's baked TensorD (the last release, charging a reuse its whole peak);
 #   green the session's cozy (the candidate), put on the pod with `machine update --tensord`.
 # Each phase warms BiRefNet and SDXL so both peaks are known and both executors resident, then reuses SDXL (the
-# decision point) and runs BiRefNet again on a fresh input. Red is expected to offload BiRefNet for SDXL and reload
-# it; green keeps it resident (no offload event, no weight bytes read, the same executor pid). If red offloads
-# nothing, the card had room for both peaks and the pair cannot discriminate: that fails as inconclusive. params:
+# decision point) and runs BiRefNet again on a fresh input. At the decision point red's make_room offloads BiRefNet;
+# green's does not. If the reuse then truly outgrows the card, green's in-call yield (`running_call`, the backstop) may
+# still offload BiRefNet mid-call: reported, not failed. Green never ends BiRefNet's process for a reuse (same pid). If
+# red's make_room offloads nothing, the pair cannot discriminate: that fails as inconclusive. params:
 #   traffic_gb  GB the provider bills: the image, SDXL and BiRefNet (default 14)
 . "$(dirname "$0")/lib.sh"
 recpid() { jq -r 'first(.measurements.execution.gpus[]?.pid) // empty' "$OUT/$1.json"; }
@@ -31,22 +32,29 @@ phase() {
   step "$p-b3" run birefnet/remove_background --on "$NAME" --asset image="$fresh" || fail "$p birefnet 3"
   for s in s2 b3; do [ "$(show "$p-$s")" = completed ] || fail "$p-$s did not complete"; done
   cozy machine logs "$NAME" memory -n 100000 > "$OUT/$p-memory.log" 2>&1
-  # An idle executor offloaded or ended for room after the warm-up: the whole-peak charge.
-  OFF[$p]=$(tail -n +"$((base + 1))" "$OUT/$p-memory.log" | python3 -c '
+  # make_room's own offloads and ends at the decision point (its `for` is a construction), apart from the in-call
+  # yield's (`running_call`), which only answers a call that truly outgrows the card.
+  read -r START[$p] YIELD[$p] ENDED[$p] < <(tail -n +"$((base + 1))" "$OUT/$p-memory.log" | python3 -c '
 import json, sys
-n = 0
+start = yielded = ended = 0
 for line in sys.stdin:
     _, _, body = line.partition("{")
     try:
         e = json.loads("{" + body)
     except ValueError:
         continue
-    n += e.get("event") in ("offload", "ended_for_room") and not e.get("failed")
-print(n)')
+    if e.get("failed"):
+        continue
+    if e.get("event") == "offload":
+        yielded += e.get("for") == "running_call"
+        start += e.get("for") != "running_call"
+    elif e.get("event") == "ended_for_room":
+        ended += 1
+print(start, yielded, ended)')
   B1[$p]=$(recpid "$p-b2") B3[$p]=$(recpid "$p-b3") READ[$p]=$(store_bytes "$p-b3")
-  say "$p: offloads/ends after warm-up ${OFF[$p]}; birefnet pid ${B1[$p]} -> ${B3[$p]}; its weights read again ${READ[$p]} B"
+  say "$p: make_room offloads ${START[$p]}, ends ${ENDED[$p]}, in-call yields ${YIELD[$p]}; birefnet pid ${B1[$p]} -> ${B3[$p]}; its weights read again ${READ[$p]} B"
 }
-declare -A OFF B1 B3 READ
+declare -A START YIELD ENDED B1 B3 READ
 
 say "red: the pod's own TensorD $(cozy machine show "$NAME" --json | jq -r .status.version)"
 phase red
@@ -56,8 +64,8 @@ v=$(cozy machine show "$NAME" --json | jq -r .status.version)
 say "green: the candidate TensorD $v"
 phase green
 
-[ "${OFF[red]}" -ge 1 ] || fail "inconclusive: red offloaded nothing after the warm-up, so this card has room for both peaks"
-[ "${OFF[green]}" = 0 ] || fail "green offloaded ${OFF[green]} executor(s) for a reused resident SDXL"
-{ [ -n "${B3[green]}" ] && [ "${B1[green]}" = "${B3[green]}" ]; } || fail "green's BiRefNet changed executor (${B1[green]} -> ${B3[green]})"
-[ "${READ[green]}" = 0 ] || fail "green's BiRefNet read ${READ[green]} B of weights again"
-say "PASS: red offloaded ${OFF[red]} for the reused SDXL and BiRefNet read ${READ[red]} B again; green kept BiRefNet resident (pid ${B3[green]}, 0 B read)"
+[ "${START[red]}" -ge 1 ] || fail "inconclusive: red's make_room offloaded nothing for the reused SDXL"
+[ "${START[green]}" = 0 ] || fail "green's make_room offloaded ${START[green]} executor(s) for a reused resident SDXL"
+[ "${ENDED[green]}" = 0 ] || fail "green ended ${ENDED[green]} process(es) for a reuse"
+{ [ -n "${B3[green]}" ] && [ "${B1[green]}" = "${B3[green]}" ]; } || fail "green's BiRefNet changed process (${B1[green]} -> ${B3[green]})"
+say "PASS: red's make_room offloaded BiRefNet ${START[red]}x for the reused SDXL; green's none (in-call yields ${YIELD[green]}, BiRefNet kept its process ${B3[green]})"
