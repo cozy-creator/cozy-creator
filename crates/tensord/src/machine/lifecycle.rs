@@ -353,11 +353,16 @@ impl Lifecycle {
     /// Takes the release once the idle clock ran out on a current reading. Irreversible but for
     /// `reopen`.
     fn claim(&self) -> io::Result<bool> {
+        self.release(true)
+    }
+
+    /// Takes the release on a current reading with nothing working, its idle clock or not (`due`).
+    fn release(&self, due: bool) -> io::Result<bool> {
         let mut state = self.state.lock().unwrap();
         if state.ledger.released {
             return Ok(true);
         }
-        if state.activating || self.working(&state) || !self.due(&state, now_ms()) {
+        if state.activating || self.working(&state) || (due && !self.due(&state, now_ms())) {
             return Ok(false);
         }
         let mut ledger = state.ledger.clone();
@@ -473,7 +478,7 @@ pub fn exit_when_idle(
         // Authorized now, on loopback (or the reverse): it exits idle, and starts listening as its
         // controllers need (Calcifer starts it again while one is authorized).
         if rebind() {
-            match lifecycle.claim().and_then(|claimed| Ok(claimed && stop()?)) {
+            match lifecycle.release(false).and_then(|claimed| Ok(claimed && stop()?)) {
                 Ok(true) => {
                     tracing::info!("its controllers changed: it starts again, listening as they need");
                     std::process::exit(0);
