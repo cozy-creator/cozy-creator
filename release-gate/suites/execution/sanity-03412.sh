@@ -5,5 +5,5 @@
 . "$HERE/suites/execution/sdxl-native-twice.sh"
 if [ -f h3.json ]; then
   st=$(run_get "$OUT" h3 .status)
-  expect h3-route "$([ "$st" = completed ] && echo PASS || echo FAIL)" "$st; route $(route h3); exact $(exact_sites h3)"
+  expect h3-route "$([ "$st" = completed ] && echo PASS || echo FAIL)" "$st; route $(route h3); served $(served h3); exact $(exact_sites h3)"
 fi
