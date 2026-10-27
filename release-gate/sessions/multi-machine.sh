@@ -5,13 +5,16 @@
 #      models swapped): every run completes (they prepare together and execute in turn; the results say how).
 #   b. A controls B: `cozy machine add` is refused with the key to authorize (the one A's `cozy machine show local`
 #      prints), `cozy machine authorize` on B admits it, the add and a run on B from A complete; the runner's own key,
-#      never authorized, is refused cleanly; A cannot add itself under another name.
+#      never authorized, is refused cleanly; A cannot add itself under another name. B's authorize prints the
+#      address the runner rents it at. `authorize --remove` on B refuses A's next run at once; authorized again, it runs.
+#   p. Two signers on A's TensorD: the runner reads a private model of the account there under its own capability;
+#      A's shell, not signed in, is refused naming `cozy login`: the runner's capability never served it.
 #   c. Mixed versions: A on the previous release controls B on the session's cozy. A goes back to the session's cozy
 #      while its shell's Calcifer still runs the previous release with a run of its own going on B: the next command
 #      restarts Calcifer on the new binary, no kill, and the run completes. Then A on the session's cozy controls B on
 #      the previous release (completes, or fails at once naming the key to authorize); the runner still runs on B. A
 #      removes b. The runner ends B; another controller of the account (a second user here) no longer shows it ready.
-# params:
+# The throwaway private model is deleted after. params:
 #   old         the previous cozy release (default 0.13.3)
 #   traffic_gb  GB the provider bills, both pods (default 40)
 . "$(dirname "$0")/lib.sh"
@@ -27,6 +30,9 @@ sudo useradd -m cozywatch && sudo install -d -o cozywatch -m 700 /home/cozywatch
   sudo install -D -m 755 "$(command -v cozy)" /opt/cozywatch/cozy || fail "no second controller"
 watcher() { sudo -u cozywatch -H /opt/cozywatch/cozy "$@" < /dev/null 2>> "$OUT/watcher.err"; }
 [ "$(watcher --json whoami | jq -r .account)" = "$(cozy --json whoami | jq -r .account)" ] || fail "the second controller is not signed in: $(tail -3 "$OUT/watcher.err")"
+TS=$(date -u +%m%d%H%M) ACCOUNT=$(cozy --json whoami | jq -r .account) M=''
+cleanup() { [ -z "$M" ] || cozy model delete "$M" -y >> "$OUT/delete.txt" 2>&1; }
+trap 'cleanup; finish' EXIT
 RENT_ARGS=--ssh
 quote "$(param traffic_gb 40)" 2400 2
 order; order
@@ -112,6 +118,12 @@ on "$A" b-refused "cozy machine add b $ADDR --fingerprint $FP" && fail "b: B adm
 KEY=$(grep -oE 'cozy machine authorize [A-Za-z0-9_-]{43}' "$OUT/b-refused.txt" | awk '{print $4}' | head -1)
 grep -q machine_unauthorized "$OUT/b-refused.txt" && [ -n "$KEY" ] || fail "b: the refusal names no key to authorize: $(tail -3 "$OUT/b-refused.txt")"
 on "$B" b-authorize "cozy machine authorize $KEY" || fail "b: authorize on B"
+at=$(awk '$1=="add" && $2=="it" && $3=="at"{print $4}' "$OUT/b-authorize.txt")
+case $at in
+  "$(jq -r .address "$OUT/show1.json")") say "b: B's authorize names the address the runner rents it at: $at" ;;
+  '') say "b: B's authorize names no address (its TensorD knows no provider mapping)" ;;
+  *) fail "b: B's authorize names $at, not the address the runner rents it at ($(jq -r .address "$OUT/show1.json"))" ;;
+esac
 on "$A" b-add "cozy machine add b $ADDR --fingerprint $FP" || fail "b: add after authorize"
 [ "$(sh "$A" 'cozy machine show local --json' | jq -r .controller_key)" = "$KEY" ] || fail "b: A's show local does not print the key B authorized"
 on "$A" b-self "cozy machine add self $(jq -r .address "$OUT/show0.json") --fingerprint $(jq -r .fingerprint "$OUT/show0.json")" &&
@@ -119,11 +131,30 @@ on "$A" b-self "cozy machine add self $(jq -r .address "$OUT/show0.json") --fing
 grep -q machine_is_local "$OUT/b-self.txt" || fail "b: A's add of itself was not refused as local: $(tail -2 "$OUT/b-self.txt")"
 on "$A" b-run "cozy run sdxl/generate --on b prompt='a sleeping cat on a coil of ship rope, oil painting' seed:=$((SEED + 2))"
 completed "$A" b-run || fail "b: A's run on B did not complete"
+on "$B" b-remove "cozy machine authorize $KEY --remove" || fail "b: authorize --remove on B"
+t=$(date +%s)
+on "$A" b-removed "timeout 120 cozy run sdxl/generate --on b prompt='a fox asleep under a fern, ink drawing' seed:=$((SEED + 7))"
+[ "$(record "$A" b-removed)" = failed ] && jq -e '.reason.code == "machine_unauthorized"' "$OUT/b-removed.json" > /dev/null ||
+  fail "b: a run from A after B removed its key was not refused: $(jq -c '{status, reason}' "$OUT/b-removed.json")"
+say "b: after --remove, A's next run on B was refused in $(($(date +%s) - t)) s"
+on "$B" b-reauthorize "cozy machine authorize $KEY" || fail "b: authorize again on B"
 s=$(date +%s)
 step b-intruder machine add intruder "$ADDR" --fingerprint "$FP" && fail "b: B admitted the runner's key, never authorized"
 grep -q machine_unauthorized "$OUT/b-intruder.txt" && grep -q 'cozy machine authorize' "$OUT/b-intruder.txt" ||
   fail "b: the unauthorized add was not refused cleanly: $(tail -3 "$OUT/b-intruder.txt")"
 say "b: PASS (the runner's key refused in $(($(date +%s) - s)) s)"
+
+# p. Two signers on A: a private model of the account, read by the renter under its capability, refused to A's
+# signed-out shell with the remedy.
+python3 -I -c 'import json,struct,sys,os; h=json.dumps({"w":{"dtype":"F32","shape":[4,4],"data_offsets":[0,64]}}).encode(); h+=b" "*(-len(h)%8); open(sys.argv[1],"wb").write(struct.pack("<Q",len(h))+h+os.urandom(64))' "$OUT/tiny.safetensors"
+M=$ACCOUNT/mm-private-$TS
+step p-upload model upload "$OUT/tiny.safetensors" "$M" --lane f32 || fail "p: upload of a private model"
+MC=$M@$(awk '$1=="commit"{c=$2} END{sub(/.*@/, "", c); print c}' "$OUT/p-upload.txt")
+step p-renter model download "$MC" --on "$A" || fail "p: the renter did not read its private model on A: $(tail -3 "$OUT/p-renter.txt")"
+on "$A" p-shell "cozy model download $MC" && fail "p: A's signed-out shell read the account's private model"
+grep -q 'cozy login' "$OUT/p-shell.txt" || fail "p: the shell's refusal does not name cozy login: $(tail -4 "$OUT/p-shell.txt")"
+cozy machine logs "$A" -n 0 > "$OUT/a-tensord.log" 2>&1
+say "p: renter read $MC on A; A's shell refused: $(grep -m1 -o 'this run carried no sign-in[^)]*' "$OUT/p-shell.txt"); capability lines on A: $(grep -c 'redeemed the run capability' "$OUT/a-tensord.log")"
 
 # c. Mixed versions, both ways.
 update "$A" "$OLD" "$OLD"
