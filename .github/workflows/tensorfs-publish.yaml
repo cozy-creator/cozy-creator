@@ -58,6 +58,11 @@ jobs:
       - run: |
           version=$(python3 -c 'import tomllib; print(tomllib.load(open("crates/tensorfs-py/pyproject.toml", "rb"))["project"]["version"])')
           [ "$GITHUB_REF" = "refs/tags/tensorfs-v$version" ] || { echo "::error::publish runs on tensorfs-v$version, not $GITHUB_REF"; exit 1; }
+          # Varena ships inside the TensorFS wheel, so its crate version is TensorFS's.
+          for crate in tensorfs tensorfs-py varena; do
+            crate_version=$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["package"]["version"])' "crates/$crate/Cargo.toml")
+            [ "$crate_version" = "$version" ] || { echo "::error::crates/$crate is $crate_version, not $version"; exit 1; }
+          done
 
   # Per platform, one cp311-abi3 wheel (CPython 3.11 and later) and one cp310 wheel. The CUDA kernels
   # ship where CUDA exists; the other wheels read on the CPU. Windows on Arm has no CPython 3.10.
