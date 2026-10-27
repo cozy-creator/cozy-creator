@@ -1,0 +1,98 @@
+{
+ "machine": "local (laptop), CPU executor: gpu -1, cuda_initialized false",
+ "cell_source": "cozy-creator fbd348a6d release-gate/suites/execution/kernel-ready-publication",
+ "cohort": {
+  "cozy": "0.13.0 sha256 3030938c08b4d2de78794a2f8f56608e69703db42cd3a8dda42340fb11a7b6b3",
+  "tensorfs": "0.17.1 sha256 fdbb60d8f569348d6d14a0e9cdbcc24a318e6b43c3b44aabbf3d2fbe858d1cd1"
+ },
+ "red_runtime": "0.34.0 canonical, source 1e70ecf97 (src identical to cozy-runtime master b6522d08a), sha256 6bf7ccd5a7e9a414b174a1e8cc52ccce4abd6fbeb978b73d64c64d4aff031294",
+ "green_runtime": "0.34.0 candidate, source 028eecca9 (cozy-runtime#1839), dev-build 40436654089, sha256 ea2c1fed72bc57363a8bf7fbe0da3923abdf0f530ab1627528e59111ae712d8b; differs from red only in kernel_ready.py, _build_provenance.py, RECORD",
+ "runs": {
+  "red": {
+   "late-success": {
+    "run": 19574,
+    "id": "run-e8d7989b8d26f5d41dfd9e97",
+    "status": "failed",
+    "execution_ms": 5866,
+    "reason": "AssertionError: ('an older background success replaced or demoted the serving kernel', {'openers': 2, 'ready_before': True, 'ready_after': False, 'same_kernel_after': False, 'failure': None, 'epoch_before': 1, 'epoch_after': 1, 'mode': 'late-success', 'runtime': '0.34.0', 'torch': '2.14.1+cu130', 'exact': False, 'cuda_initialized': False})"
+   },
+   "late-error": {
+    "run": 19575,
+    "id": "run-a6fa7e8f1dcc071e40d644d7",
+    "status": "failed",
+    "execution_ms": 95,
+    "reason": "AssertionError: ('a late real opener failure did not stop the kernel serving, or the epoch missed it', {'openers': 2, 'ready_before': True, 'ready_after': False, 'same_kernel_after': False, 'failure': 'FileNotFoundError', 'epoch_before': 3, 'epoch_after': 3, 'mode': 'late-error', 'runtime': '0.34.0', 'torch': '2.14.1+cu130', 'exact': False, 'cuda_initialized': False})"
+   },
+   "dropped-slot": {
+    "run": 19576,
+    "id": "run-2ab2210bb60aa4cef418a4ca",
+    "status": "failed",
+    "execution_ms": 122,
+    "reason": "AssertionError: (\"a waiter's verified kernel did not serve after the slot's opener failed\", {'openers': 2, 'first_waiter_failure': 'FileNotFoundError', 'ready_after': False, 'same_kernel_after': False, 'failure': None, 'epoch_before': 3, 'epoch_after': 4, 'mode': 'dropped-slot', 'runtime': '0.34.0', 'torch': '2.14.1+cu130', 'exact': False, 'cuda_initialized': False})"
+   }
+  },
+  "green": {
+   "late-success": {
+    "run": 19578,
+    "id": "run-bd7d4f4db958db31c91aeef4",
+    "status": "completed",
+    "execution_ms": 2967,
+    "facts": {
+     "cuda_initialized": false,
+     "epoch_after": 1,
+     "epoch_before": 1,
+     "exact": true,
+     "failure": null,
+     "mode": "late-success",
+     "openers": 2,
+     "ready_after": true,
+     "ready_before": true,
+     "runtime": "0.34.0",
+     "same_kernel_after": true,
+     "torch": "2.14.1+cu130"
+    }
+   },
+   "late-error": {
+    "run": 19579,
+    "id": "run-04dd0d19081bedd1209c1a8b",
+    "status": "completed",
+    "execution_ms": 39,
+    "facts": {
+     "cuda_initialized": false,
+     "epoch_after": 3,
+     "epoch_before": 2,
+     "exact": false,
+     "failure": "FileNotFoundError",
+     "mode": "late-error",
+     "openers": 2,
+     "ready_after": false,
+     "ready_before": true,
+     "runtime": "0.34.0",
+     "same_kernel_after": false,
+     "torch": "2.14.1+cu130"
+    }
+   },
+   "dropped-slot": {
+    "run": 19580,
+    "id": "run-b965fedbbfb83080f1a3c161",
+    "status": "completed",
+    "execution_ms": 86,
+    "facts": {
+     "cuda_initialized": false,
+     "epoch_after": 4,
+     "epoch_before": 3,
+     "exact": true,
+     "failure": null,
+     "first_waiter_failure": "FileNotFoundError",
+     "mode": "dropped-slot",
+     "openers": 2,
+     "ready_after": true,
+     "runtime": "0.34.0",
+     "same_kernel_after": true,
+     "torch": "2.14.1+cu130"
+    }
+   }
+  }
+ },
+ "scope": "registry publication availability, epoch and failure only; no CUDA module lifetime or GPU crash claim"
+}

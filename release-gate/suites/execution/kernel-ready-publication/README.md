@@ -19,3 +19,7 @@ cozy run /abs/worktree/release-gate/suites/execution/kernel-ready-publication/cp
 
 The gate's cells are `kernel-ready-*` in [`../core-cells.sh`](../core-cells.sh). This proves registry
 publication only: not CUDA module lifetime, and not the cause of any GPU crash.
+
+On `local` (CPU, cozy 0.13.0, TensorFS 0.17.1) all three modes failed on canonical Runtime 0.34.0 (runs
+19574–19576) and passed on cozy-runtime#1839's candidate 028eecca9 (runs 19578–19580), whose wheel differs
+from canonical only in `kernel_ready.py`. [Receipt](evidence/local-19574-19580.json).
