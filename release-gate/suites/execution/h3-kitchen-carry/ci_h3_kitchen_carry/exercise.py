@@ -342,9 +342,11 @@ def gate(transformer, payload, ctx, tel=None) -> dict[str, Any]:
     )
     cases = {"S1": 0, "S2": 1, "S4": 15}
     results: dict[str, dict[str, Any]] = {}
-    for label in payload.cases.split(","):
+    # R15 first: its eager steps then run before any native attempt has touched the device.
+    labels = payload.cases.split(",")
+    for label in sorted(labels, key=lambda label: label != "R15"):
         if label == "R15":
-            results[label] = refusal(transformer, request, fresh, name, a_state, ticker("refusal"))
+            results[label] = refusal(transformer, request, fresh, name, a_state, a_trace, ticker("refusal"))
             continue
         start = cases[label]
         state, schedulers = fresh()
@@ -403,7 +405,7 @@ def same(left: Any, right: Any) -> bool:
     return left == right
 
 
-def refusal(transformer, request, fresh, name, a_state, tick) -> dict[str, Any]:
+def refusal(transformer, request, fresh, name, a_state, a_trace, tick) -> dict[str, Any]:
     """A preparation that refuses after its carry attached, with eager statistics already held
     (15 eager steps): once planning has seen every step, step 15's layout reports a different
     protected prefix, so the first sparse warm-up call refuses. The request state must come back
@@ -424,6 +426,7 @@ def refusal(transformer, request, fresh, name, a_state, tick) -> dict[str, Any]:
     try:
         with step_invariants():
             eager(transformer, request, state, schedulers, 0, 15, name, tick=tick)
+            prefix_exact = digest(state.latents) == a_trace[14]["video"] and digest(state.audio_latents) == a_trace[14]["audio"]
             cache = getattr(sys.modules.get("comfy_kitchen.backends.cuda"), "_ROPE_FAB_CACHE", {})
             cached = set(cache)
             before = (dict(held.statistics), dict(held.replay_inputs), held.rope, dict(held.parallel_rotary))
@@ -444,7 +447,7 @@ def refusal(transformer, request, fresh, name, a_state, tick) -> dict[str, Any]:
         return {"start": 15, "error": f"{type(error).__name__}: {error}"[:900],
                 "where": traceback.format_exc()[-3000:]}
     return {
-        "start": 15, "refused": bool(reason), "reason": reason[:300],
+        "start": 15, "refused": bool(reason), "reason": reason[:300], "prefix_exact": prefix_exact,
         "request_state_restored": restored, "table_forgotten": forgotten,
         "continuation_exact": bool(torch.equal(state.latents, a_state.latents)
                                    and torch.equal(state.audio_latents, a_state.audio_latents)),

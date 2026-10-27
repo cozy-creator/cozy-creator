@@ -73,7 +73,7 @@ class Probe(msgspec.Struct, forbid_unknown_fields=True):
     seed: int = 2610272
     latent_frames: Annotated[int, msgspec.Meta(ge=2, le=107)] = 107
     text_tokens: Annotated[int, msgspec.Meta(ge=4, le=1024)] = 256
-    cases: str = "S1,S2,S4,R15"
+    cases: str = "R15,S1,S2,S4"
 
 
 class Report(msgspec.Struct):

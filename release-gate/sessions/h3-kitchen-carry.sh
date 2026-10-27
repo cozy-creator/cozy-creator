@@ -7,14 +7,14 @@
 #   runtime, tensorfs, tensord   the cohort the machine fetches (0.34.0, 0.17.1, 0.13.0)
 #   layers         DiT layers at H3's widths (4: blocks 0-1 dense paths, 2-3 Kitchen sites)
 #   latent_frames  107 is the 15 s, 362-frame request; lower only if the card cannot hold it
-#   cases          native starts to compare, and R15: a refusal after 15 eager steps (S1,S2,S4,R15)
+#   cases          R15 (a refusal after 15 eager steps, run first), then native starts (R15,S1,S2,S4)
 #   model          private model name prefix (fidika/ci-h3-kitchen-carry)
 #   traffic_gb     GB the provider bills (30)
 #   need_s         seconds the cap must buy (3600)
 . "$(dirname "$0")/lib.sh"
 SUITE=$(cd "$(dirname "$0")/../suites/execution/h3-kitchen-carry" && pwd) || fail "no h3-kitchen-carry suite in this checkout"
 TREE=$(param tree h3) RT=$(param runtime 0.34.0) TFS=$(param tensorfs 0.17.1) TD=$(param tensord 0.13.0)
-LAYERS=$(param layers 4) LF=$(param latent_frames 107) CASES=$(param cases S1,S2,S4,R15)
+LAYERS=$(param layers 4) LF=$(param latent_frames 107) CASES=$(param cases R15,S1,S2,S4)
 MODEL=$(param model fidika/ci-h3-kitchen-carry)-$(date -u +%m%d%H%M%S) SEED=$(( $(date +%s) % 100000000 ))
 H3=$PACKAGES/$TREE/minimax-h3
 [ -d "$H3/minimax_h3" ] || fail "packages/$TREE has no minimax-h3"
