@@ -1,0 +1,17 @@
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "ci-h3-kitchen-carry"
+version = "0.1.0"
+description = "Production-width H3 DiT: eager versus native segments with Kitchen summaries"
+requires-python = ">=3.12"
+dependencies = ["cozy-runtime[adapters]>=0.34,<0.35", "tensorfs>=0.17,<0.18", "diffusers==0.41.0", "msgspec>=0.19", "numpy>=1.26", "torch>=2.14,<2.15"]
+
+[project.entry-points."cozy.application"]
+default = "ci_h3_kitchen_carry:app"
+
+[tool.uv.build-backend]
+module-name = "ci_h3_kitchen_carry"
+module-root = ""

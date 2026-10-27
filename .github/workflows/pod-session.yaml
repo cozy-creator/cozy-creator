@@ -64,6 +64,7 @@ jobs:
           sparse-checkout: |
             release-gate/sessions
             release-gate/ref
+            release-gate/suites/execution/h3-kitchen-carry
             e2e/capabilities
           path: creator
       - uses: actions/checkout@v5

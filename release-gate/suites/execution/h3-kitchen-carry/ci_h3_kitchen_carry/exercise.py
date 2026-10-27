@@ -1,0 +1,365 @@
+"""Production-width H3 DiT layers: eager versus native resident segments with Kitchen summaries.
+
+Geometry is the real FL2VA 15 s request: 362 frames at 1344x768 (107 latent frames of 24x42
+patches), first and last keyframe anchors, stereo audio, 30 steps. The DiT has H3's real widths
+(hidden 5376, FFN 14336, 56 heads of 128, rotary 96) and fewer layers; weights are random but
+stored, placed, filled and served by Runtime as a model's are, so attention selection, H3's glue
+and the Kitchen producer are the production ones.
+"""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import importlib.metadata
+import json
+import time
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import torch
+from cozy_runtime import _build_provenance
+from cozy_runtime.author import AttentionLayout, attention_scope
+from cozy_runtime.internal.producers import Processor
+from diffusers import MiniMaxH3Scheduler
+from diffusers.modular_pipelines.minimax_h3.before_denoise import (
+    MiniMaxH3PrepareLayoutStep,
+    MiniMaxH3SetTimestepsStep,
+)
+from diffusers.modular_pipelines.minimax_h3.modular_pipeline import (
+    audio_latent_num_frames,
+    video_latent_num_frames,
+)
+
+from .candidate import producer
+from .candidate._prepared import prepare
+from .candidate.adaln_pruned import AdaLNPrunedMiniMaxH3Transformer, step_invariants
+
+SOURCE = json.loads(Path(__file__).with_name("source.json").read_text())
+FRAMES, HEIGHT, WIDTH, STEPS = 362, 768, 1344, 30
+#: H3's DiT config (Diffusers MiniMaxH3Transformer3DModel defaults); layers are the gate's.
+CONFIG = {
+    "num_attention_heads": 56,
+    "attention_head_dim": 128,
+    "hidden_size": 5376,
+    "ffn_dim": 14336,
+    "in_channels": 24,
+    "audio_in_channels": 32,
+    "patch_size": [1, 2, 2],
+    "text_dim": 5120,
+    "freq_dim": 256,
+    "time_embed_hidden_dim": 5376,
+    "time_embed_dim": 2688,
+    "rope_freq_dim": 16,
+}
+FLOAT32 = ("proj_in.", "audio_proj_in.", "proj_out.", "audio_proj_out.")
+
+
+def verify_source() -> None:
+    root = Path(__file__).with_name("candidate")
+    for name, digest in SOURCE["files"].items():
+        assert hashlib.sha256((root / name).read_bytes()).hexdigest() == digest, name
+
+
+def geometry(latent_frames: int, text_tokens: int) -> dict[str, Any]:
+    """The packed FL2VA layout upstream builds (`build_packed_sequence`)."""
+    position_ids, tags, video, audio, text, ncv, nca = MiniMaxH3PrepareLayoutStep.build_packed_sequence(
+        text_token_tags=torch.ones(text_tokens, dtype=torch.long),
+        num_latent_frames=latent_frames,
+        latent_height=HEIGHT // 16,
+        latent_width=WIDTH // 16,
+        num_audio_latents=audio_latent_num_frames(FRAMES),
+        patch_size=(1, 2, 2),
+        audio_channels=2,
+        audio_tag=2,
+        video_tag=0,
+        keyframe_anchors=("first", "last"),
+    )
+    fields = {"token_tags": tags, "position_ids": position_ids, "video_indices": video,
+              "audio_indices": audio, "text_indices": text}
+    return {"fields": fields, "ncv": ncv, "nca": nca}
+
+
+def schedule(layout: dict[str, Any]) -> tuple[Any, Any, list[tuple[torch.Tensor, torch.Tensor]]]:
+    """Both official schedulers (shift 12 / 3) and the per-step row plan upstream builds."""
+    video_schedule, audio_schedule = MiniMaxH3Scheduler(shift=12.0), MiniMaxH3Scheduler(shift=3.0)
+    for scheduler in (video_schedule, audio_schedule):
+        scheduler.set_timesteps(STEPS)
+    fields = layout["fields"]
+    rows = [
+        MiniMaxH3SetTimestepsStep.build_row_timesteps(
+            fields["video_indices"], fields["audio_indices"], layout["ncv"], layout["nca"],
+            fields["text_indices"].numel(), float(t), float(a), max(float(t), 0.999), 1.0,
+        )
+        for t, a in zip(video_schedule.timesteps, audio_schedule.timesteps, strict=True)
+    ]
+    return video_schedule, audio_schedule, rows
+
+
+def tables() -> tuple[list[float], list[list[int]]]:
+    """Every row timestep of the schedule (geometry-independent), and every (row, modality)."""
+    _, _, rows = schedule(geometry(2, 4))
+    times = sorted({float(v) for row, _ in rows for v in row})
+    return times, [[i, tag] for i in range(len(times)) for tag in range(3)]
+
+
+def build(config: dict[str, Any]) -> AdaLNPrunedMiniMaxH3Transformer:
+    return AdaLNPrunedMiniMaxH3Transformer.from_official_config(
+        config,
+        table_timesteps=config["table_timesteps"],
+        table_block_keys=[tuple(key) for key in config["table_block_keys"]],
+    )
+
+
+def checkpoint(seed: int, layers: int, refiner_layers: int) -> tuple[dict[str, Any], dict[str, torch.Tensor]]:
+    """Deterministic weights: PyTorch's own init, AdaLN tables kept small so activations stay
+    finite through the layers. Heads stay F32 as H3 keeps them; everything else is BF16."""
+    times, keys = tables()
+    config = {**CONFIG, "num_layers": layers, "num_refiner_layers": refiner_layers,
+              "table_timesteps": times, "table_block_keys": keys}
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(seed)
+        model = build(config)
+        with torch.no_grad():
+            for name, parameter in model.named_parameters():
+                if name.endswith(".table"):
+                    parameter.normal_(0.0, 0.02)
+    state = {
+        name: value.detach().float() if name.startswith(FLOAT32) else value.detach().to(torch.bfloat16)
+        for name, value in model.state_dict().items()
+    }
+    return config, state
+
+
+# ---- the gate --------------------------------------------------------------------------------
+def sites(transformer: Any) -> dict[str, str]:
+    """Each attention site whose Runtime wrapper serves this package's Kitchen producer."""
+    served = {}
+    for path, module in transformer.named_modules():
+        processor = getattr(module, "processor", None)
+        if isinstance(processor, Processor):
+            selected = processor._attention_backend
+            if getattr(selected, "value", str(selected)) == processor.backend and (
+                producer.PRODUCERS.get(processor.producer.name) is processor.producer
+            ):
+                served[path] = processor.producer.name
+    return served
+
+
+def backends(transformer: Any) -> dict[str, str]:
+    return {
+        path: str(getattr(module.processor, "_attention_backend", None))
+        for path, module in transformer.named_modules()
+        if hasattr(module, "processor")
+    }
+
+
+class Request:
+    """One request's inputs on the device, and fresh schedulers per pass."""
+
+    def __init__(self, seed: int, latent_frames: int, text_tokens: int, device: torch.device) -> None:
+        layout = geometry(latent_frames, text_tokens)
+        self.video_schedule, self.audio_schedule, rows = schedule(layout)
+        self.rows = [(t.to(device), i.to(device)) for t, i in rows]
+        self.fields = {k: v.to(device) for k, v in layout["fields"].items()}
+        self.ncv, self.nca = layout["ncv"], layout["nca"]
+        generator = torch.Generator().manual_seed(seed)
+        tokens = self.fields["token_tags"].numel()
+        video_rows, audio_rows = self.fields["video_indices"].numel(), self.fields["audio_indices"].numel()
+        self.video = torch.randn(video_rows, 96, generator=generator).to(device)
+        self.audio = torch.randn(audio_rows, 32, generator=generator).to(device)
+        self.prompt = (torch.randn(1, text_tokens, 5120, generator=generator) * 0.5).to(device, torch.bfloat16)
+        self.tokens = tokens
+
+    def layout(self, step: int) -> AttentionLayout:
+        # official._attention_layout, with the policy read from official.py at the candidate commit.
+        return AttentionLayout(
+            live_tokens=self.tokens,
+            protected_prefix=self.fields["text_indices"].numel() + self.ncv + self.fields["audio_indices"].numel(),
+            step=step,
+            dense_until_step=SOURCE["sol_dense_steps"],
+            dense_paths=tuple(SOURCE["dense_paths"]),
+            exact_paths=tuple(SOURCE["exact_paths"]),
+        )
+
+    def state(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            latents=self.video.clone(), audio_latents=self.audio.clone(), prompt_embeds=self.prompt,
+            row_timestep_plan=self.rows, denoiser_input_fields=self.fields, attention_kwargs={},
+            num_condition_video_rows=self.ncv, num_condition_audio_rows=self.nca,
+        )
+
+
+def statistics(name: str) -> dict[str, Any]:
+    held = producer.PRODUCERS[name].request_state()
+    return {} if held is None else held.statistics
+
+
+def eager(transformer, request, state, schedulers, first, end, name, trace=None):
+    """Steps [first, end) exactly as OfficialH3Pipeline.denoise runs them."""
+    vs, aus = schedulers
+    for index in range(first, end):
+        times, indices = request.rows[index]
+        began = time.perf_counter()
+        with torch.no_grad(), attention_scope(request.layout(index)):
+            video, audio = transformer(
+                hidden_states=state.latents[None], audio_hidden_states=state.audio_latents[None],
+                encoder_hidden_states=request.prompt, timestep=times, timestep_indices=indices,
+                attention_kwargs={}, return_dict=False, **request.fields,
+            )
+            state.latents[request.ncv:] = vs.step(
+                video[0, request.ncv:].float(), vs.timesteps[index], state.latents[request.ncv:],
+                return_dict=False)[0]
+            state.audio_latents[request.nca:] = aus.step(
+                audio[0, request.nca:].float(), aus.timesteps[index], state.audio_latents[request.nca:],
+                return_dict=False)[0]
+        torch.cuda.synchronize()
+        if trace is not None:
+            stats = {key[1]: (m.cpu(), s.cpu()) for key, (step, _, m, s) in statistics(name).items() if step == index}
+            trace.append({"step": index, "ms": (time.perf_counter() - began) * 1000, "stats": stats,
+                          "video": digest(state.latents), "audio": digest(state.audio_latents),
+                          "finite": bool(state.latents.isfinite().all() and state.audio_latents.isfinite().all())})
+
+
+def digest(tensor: torch.Tensor) -> str:
+    return hashlib.sha256(tensor.detach().cpu().contiguous().view(torch.uint8).numpy().tobytes()).hexdigest()[:16]
+
+
+def native(transformer, request, state, schedulers, start, ctx):
+    """prepare() + one native submission, as _prepared.run does; the carry's final summaries."""
+    vs, aus = schedulers
+    began = time.perf_counter()
+    plan, pieces, carry = prepare(transformer, state, vs, aus, request.layout, SOURCE["sol_dense_steps"], start=start)
+    prepared = time.perf_counter()
+    try:
+        execution = ctx.plan(plan)
+        while not execution.poll().done:
+            ctx.raise_if_cancelled()
+            time.sleep(0.05)
+        video, audio = execution.wait()
+        progress = execution.poll()
+        assert not progress.canceled and progress.completed_steps == STEPS - start, progress
+        slots = {} if carry is None else {key[1]: (s[0].cpu(), s[1].cpu()) for key, s in carry.slots.items()}
+        facts = plan.facts()
+        return {
+            "video": video, "audio": audio, "slots": slots,
+            "segments": ";".join(f"{p.first}:{p.end}:{'dense' if p.dense else 'sparse'}"
+                                 f"{'+bootstrap' if p.bootstrap else ''}:{p.unique_rows}" for p in pieces),
+            "carry_sites": 0 if carry is None else len(carry.slots),
+            "prepare_ms": (prepared - began) * 1000,
+            "execute_ms": (time.perf_counter() - prepared) * 1000,
+            "host_graph_launches": facts["host_graph_launches"],
+        }
+    finally:
+        plan.close()
+        if carry is not None:
+            carry.close()
+
+
+def max_abs(a: torch.Tensor, b: torch.Tensor) -> float:
+    return float((a.float() - b.float()).abs().max())
+
+
+def warm(transformer, payload, ctx) -> dict[str, Any]:
+    """One dense and one sparse eager step: Runtime builds what they serve; selection is reported."""
+    request = Request(payload.seed, payload.latent_frames, payload.text_tokens, torch.device(str(ctx.device)))
+    state = request.state()
+    served = sites(transformer)
+    schedulers = (copy.deepcopy(request.video_schedule), copy.deepcopy(request.audio_schedule))
+    with step_invariants():
+        eager(transformer, request, state, schedulers, 0, 1, None)
+        sparse = request.layout(SOURCE["sol_dense_steps"])
+        with torch.no_grad(), attention_scope(sparse):
+            times, indices = request.rows[sparse.step]
+            transformer(hidden_states=state.latents[None], audio_hidden_states=state.audio_latents[None],
+                        encoder_hidden_states=request.prompt, timestep=times, timestep_indices=indices,
+                        attention_kwargs={}, return_dict=False, **request.fields)
+    torch.cuda.synchronize()
+    return {"producer_sites": served, "backends": backends(transformer), "tokens": request.tokens}
+
+
+def gate(transformer, payload, ctx) -> dict[str, Any]:
+    verify_source()
+    device = torch.device(str(ctx.device))
+    served = sites(transformer)
+    names = set(served.values())
+    report: dict[str, Any] = {
+        **{k: SOURCE[k] for k in ("package_commit", "files")},
+        "runtime_commit": _build_provenance.COMMIT,
+        "runtime": importlib.metadata.version("cozy-runtime"),
+        "tensorfs": importlib.metadata.version("tensorfs"),
+        "torch": torch.__version__, "device": torch.cuda.get_device_name(device),
+        "producer_sites": served, "backends": backends(transformer),
+        "layers": len(transformer.transformer_blocks),
+    }
+    sparse_blocks = [
+        f"transformer_blocks.{i}.attn" for i in range(len(transformer.transformer_blocks))
+        if not any(f"transformer_blocks.{i}" == p for p in SOURCE["dense_paths"])
+    ]
+    missing = [path for path in sparse_blocks if path not in served]
+    if len(names) != 1 or missing:
+        report.update(passed=False, reason=f"Kitchen producer not serving {missing or 'any site'}")
+        return report
+    (name,) = names
+    request = Request(payload.seed, payload.latent_frames, payload.text_tokens, device)
+    full = payload.latent_frames == video_latent_num_frames(FRAMES, 17, 5)
+    report.update(producer=name, tokens=request.tokens, sparse_sites=sparse_blocks, full_15s_request=full)
+
+    def fresh():
+        return request.state(), (copy.deepcopy(request.video_schedule), copy.deepcopy(request.audio_schedule))
+
+    passes = {}
+    for label in ("A", "B"):
+        state, schedulers = fresh()
+        trace: list[dict[str, Any]] = []
+        with step_invariants():
+            eager(transformer, request, state, schedulers, 0, STEPS, name, trace)
+        passes[label] = (state, trace)
+    a_state, a_trace = passes["A"]
+    b_state, b_trace = passes["B"]
+    bootstrap_steps = [t["step"] for t in a_trace if t["stats"]][:1]
+    deterministic = all(x["video"] == y["video"] and x["audio"] == y["audio"] for x, y in zip(a_trace, b_trace, strict=True))
+    spread = max(max_abs(a_state.latents, b_state.latents), max_abs(a_state.audio_latents, b_state.audio_latents))
+    final_stats = a_trace[-1]["stats"]
+    report.update(
+        eager_deterministic=deterministic, eager_ab_max_abs=spread,
+        eager_finite=all(t["finite"] for t in a_trace),
+        eager_s_per_step=[round(t["ms"] / 1000, 3) for t in a_trace],
+        eager_stats_sites_per_step=[len(t["stats"]) for t in a_trace],
+        first_stats_step=bootstrap_steps,
+    )
+    cases = {"S1": 0, "S2": 1, "S4": 15}
+    results = {}
+    for label in payload.cases.split(","):
+        start = cases[label]
+        state, schedulers = fresh()
+        with step_invariants():
+            eager(transformer, request, state, schedulers, 0, start, name)
+            got = native(transformer, request, state, schedulers, start, ctx)
+        error = max(max_abs(got["video"], a_state.latents), max_abs(got["audio"], a_state.audio_latents))
+        stats_equal = {
+            site: bool(torch.equal(got["slots"][site][0], mean) and torch.equal(got["slots"][site][1], scale))
+            for site, (mean, scale) in final_stats.items()
+        }
+        results[label] = {
+            "start": start, "segments": got["segments"], "carry_sites": got["carry_sites"],
+            "video_exact": bool(torch.equal(got["video"], a_state.latents)),
+            "audio_exact": bool(torch.equal(got["audio"], a_state.audio_latents)),
+            "max_abs_vs_eager": error, "final_summaries_exact": stats_equal,
+            "prepare_s": round(got["prepare_ms"] / 1000, 2), "execute_s": round(got["execute_ms"] / 1000, 2),
+            "host_graph_launches": got["host_graph_launches"],
+            "finite": bool(got["video"].isfinite().all() and got["audio"].isfinite().all()),
+        }
+    report["native"] = results
+    expected_segments = {"S1": "+bootstrap", "S2": "+bootstrap", "S4": None}
+    ok = report["eager_finite"] and all(r["finite"] for r in results.values())
+    for label, r in results.items():
+        has = "+bootstrap" in r["segments"]
+        ok &= has == (expected_segments[label] is not None) and r["carry_sites"] == len(sparse_blocks)
+        if deterministic:
+            ok &= r["video_exact"] and r["audio_exact"] and all(r["final_summaries_exact"].values())
+        else:  # bound native by eager's own run-to-run spread
+            ok &= r["max_abs_vs_eager"] <= 2 * spread
+    report["passed"] = bool(ok)
+    return report
