@@ -1,8 +1,8 @@
 # multi-machine: every machine is a full cozy (xs-126). Two rentals of SKU with SSH (`cozy machine rent --ssh`), A
 # and B, both put on the session's cozy; then, as a user would, from a shell on each (`cozy machine ssh`):
 #   a. A's shell: its `cozy` reaches the TensorD the image started as `local` (the rental's own leaf, no second
-#      TensorD), and runs from A's shell and from the runner share A's GPU at once, twice (cold, then warm with the
-#      models swapped): every run completes.
+#      TensorD), and runs sent at once from A's shell and from the runner share A's GPU, twice (cold, then warm with the
+#      models swapped): every run completes (they prepare together and execute in turn; the results say how).
 #   b. A controls B: `cozy machine add` is refused with the key to authorize, `cozy machine authorize` on B admits it,
 #      the add and a run on B from A complete; the runner's own key, never authorized, is refused cleanly.
 #   c. Mixed versions: A on the previous release controls B on the session's cozy, then A on the session's cozy
@@ -67,9 +67,10 @@ sh "$A" 'ps -eo args' > "$OUT/a-ps.txt"
 grep 'cozy machine serve' "$OUT/a-ps.txt" | grep -qv -- '--rental' && fail "a second TensorD runs on $A: $(grep 'machine serve' "$OUT/a-ps.txt" | paste -sd';')"
 say "a: A's local is the image's TensorD ($(jq -r .address "$OUT/a-local.json")), and the only one"
 cozy machine ssh "$A" -- 'cat > /root/seed.jpg' < "$REF/seed.jpg" 2>> "$OUT/ssh.err" || fail "copy to $A"
-# overlap <remote step> <local step>: both runs' spans, and whether they overlapped.
-overlap() {
-  jq -rs '(map(.started_at_ms // .created_at_ms) | max) < (map(.settled_at_ms) | min)' "$OUT/$1.json" "$OUT/$2.json"
+# turns <step> <step>: how the two runs shared the GPU: accepted together, then each one's execution, in order.
+turns() {
+  jq -rs 'sort_by(.started_at_ms) as [$x, $y] |
+    "accepted \(((map(.accepted_at_ms) | max) - (map(.accepted_at_ms) | min)) / 1000) s apart; run \($x.number) executed \($x.started_at_ms) to \($x.settled_at_ms), run \($y.number) from \($y.started_at_ms) (\(if $y.started_at_ms < $x.settled_at_ms then "overlapping" else "\($y.started_at_ms - $x.settled_at_ms) ms after" end))"' "$OUT/$1.json" "$OUT/$2.json"
 }
 # Round 1, cold: SDXL from the runner and BiRefNet from A's shell, sent together.
 step a1-remote run sdxl/generate --on "$A" prompt="a brass telescope on a windowsill at dawn, photo" seed:=$SEED & P=$!
@@ -77,14 +78,14 @@ on "$A" a1-local "cozy run birefnet/remove_background --asset image=/root/seed.j
 wait $P; wait $Q
 completed - a1-remote || fail "a1: the runner's run on A did not complete"
 completed "$A" a1-local || fail "a1: A's own run did not complete"
-say "a1: the runs overlapped: $(overlap a1-remote a1-local)"
+say "a1: $(turns a1-remote a1-local)"
 # Round 2, warm, the models swapped between the two controllers.
 step a2-remote run birefnet/remove_background --on "$A" --asset image="$REF/seed.jpg" & P=$!
 on "$A" a2-local "cozy run sdxl/generate prompt='a paper boat on a puddle after rain, macro photo' seed:=$((SEED + 1))" & Q=$!
 wait $P; wait $Q
 completed - a2-remote || fail "a2: the runner's run on A did not complete"
 completed "$A" a2-local || fail "a2: A's own run did not complete"
-say "a2: the runs overlapped: $(overlap a2-remote a2-local)"
+say "a2: $(turns a2-remote a2-local)"
 say "a: PASS"
 
 # b. A controls B: refused with the key to authorize, authorized on B, added, run.

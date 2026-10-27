@@ -42,12 +42,14 @@ finish() {
 }
 trap finish EXIT
 trap 'RC=1; exit 1' INT TERM HUP
-# step <name> <cozy args…>: one call followed to its end; output that stops growing for 15 min cancels it.
+# step <name> <cozy args…>: one call followed to its end (looked at each second, its output every 30 s); output that
+# stops growing for 15 min cancels it.
 step() {
   local n=$1; shift; say "step $n: cozy $*"
-  cozy "$@" > "$OUT/$n.txt" 2>&1 & local p=$! last=-1 still=0 size
+  cozy "$@" > "$OUT/$n.txt" 2>&1 & local p=$! last=-1 still=0 size t=0
   while kill -0 "$p" 2>/dev/null; do
-    sleep 30; size=$(stat -c %s "$OUT/$n.txt")
+    sleep 1; t=$((t + 1)); [ $((t % 30)) = 0 ] || continue
+    size=$(stat -c %s "$OUT/$n.txt")
     if [ "$size" = "$last" ]; then still=$((still + 30)); else still=0; last=$size; fi
     [ "$still" -lt 900 ] || { kill "$p"; say "$n: no output for 15 min"; return 124; }
   done
