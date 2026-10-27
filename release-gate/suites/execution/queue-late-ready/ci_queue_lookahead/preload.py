@@ -225,6 +225,11 @@ def preload_gpu(
             time.sleep(0.01)
             return int(poll()[0])
 
+        def native_done():
+            # The program's own completion: a sequence's worker runs its stages on their own
+            # streams, so an event recorded on this stream after submission proves nothing.
+            return bool(poll()[2])
+
         before_park = native_progress()
         if payload.observer_park_ms:
             time.sleep(payload.observer_park_ms / 1000)
@@ -255,7 +260,7 @@ def preload_gpu(
         while offered is None:
             ctx.raise_if_cancelled()
             assert time.monotonic() < deadline
-            assert not done.query(), "B's late CPU preflight missed A's active native window"
+            assert not native_done(), "B's late CPU preflight missed A's active native window"
             progress = execution.poll()  # only the production observer may offer the read
             assert not progress.done, "A completed before B became CPU ready"
             offered = request.queued()
@@ -296,9 +301,9 @@ def preload_gpu(
                 read = dict(pending.read.poll())
                 if read["done"]:
                     break
-                assert not done.query(), "GPU program finished before native input read"
+                assert not native_done(), "GPU program finished before native input read"
                 time.sleep(0.001)
-            gpu_done = done.query()
+            gpu_done = native_done()
             if payload.mode == "overlap":
                 assert not gpu_done and not read["canceled"], (gpu_done, read)
                 assert read["bytes"] == block.storage_bytes, read
@@ -307,7 +312,7 @@ def preload_gpu(
             if payload.mode == "cancel":
                 while offered.valid():
                     ctx.raise_if_cancelled()
-                    assert not done.query(), "B cancel missed the active-program window"
+                    assert not native_done(), "B cancel missed the active-program window"
                     time.sleep(0.005)
                 evidence["queued_cancel_observed"] = True
                 evidence["cancel_outcome"] = (
