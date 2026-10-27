@@ -55,7 +55,6 @@ CONFIG = {
     "time_embed_dim": 2688,
     "rope_freq_dim": 16,
 }
-FLOAT32 = ("proj_in.", "audio_proj_in.", "proj_out.", "audio_proj_out.")
 
 
 def verify_source() -> None:
@@ -107,16 +106,21 @@ def tables() -> tuple[list[float], list[list[int]]]:
 
 
 def build(config: dict[str, Any]) -> AdaLNPrunedMiniMaxH3Transformer:
-    return AdaLNPrunedMiniMaxH3Transformer.from_official_config(
+    """The DiT in the dtypes its checkpoint stores: official._apply_transformer_dtype's policy
+    (each root child F32 if the class keeps it in F32, else BF16), for writer and loader alike."""
+    model = AdaLNPrunedMiniMaxH3Transformer.from_official_config(
         config,
         table_timesteps=config["table_timesteps"],
         table_block_keys=[tuple(key) for key in config["table_block_keys"]],
     )
+    for name, child in model.named_children():
+        child.to(dtype=torch.float32 if name in model._keep_in_fp32_modules else torch.bfloat16)
+    return model.eval()
 
 
 def checkpoint(seed: int, layers: int, refiner_layers: int) -> tuple[dict[str, Any], dict[str, torch.Tensor]]:
     """Deterministic weights: PyTorch's own init, AdaLN tables kept small so activations stay
-    finite through the layers. Heads stay F32 as H3 keeps them; everything else is BF16."""
+    finite through the layers, in `build`'s dtypes."""
     times, keys = tables()
     config = {**CONFIG, "num_layers": layers, "num_refiner_layers": refiner_layers,
               "table_timesteps": times, "table_block_keys": keys}
@@ -127,11 +131,7 @@ def checkpoint(seed: int, layers: int, refiner_layers: int) -> tuple[dict[str, A
             for name, parameter in model.named_parameters():
                 if name.endswith(".table"):
                     parameter.normal_(0.0, 0.02)
-    state = {
-        name: value.detach().float() if name.startswith(FLOAT32) else value.detach().to(torch.bfloat16)
-        for name, value in model.state_dict().items()
-    }
-    return config, state
+    return config, {name: value.detach() for name, value in model.state_dict().items()}
 
 
 # ---- the gate --------------------------------------------------------------------------------

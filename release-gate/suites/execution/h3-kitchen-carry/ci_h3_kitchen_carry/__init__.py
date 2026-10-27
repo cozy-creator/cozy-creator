@@ -24,6 +24,7 @@ from . import exercise
 from .candidate import glue, producer
 
 app = App()
+DTYPES = {torch.float32: "F32", torch.bfloat16: "BF16"}
 
 
 class Pipeline:
@@ -83,7 +84,7 @@ def source(payload: Make, ctx: Context) -> ModelArtifact:
     with ctx.output("model", Derivation(base=None, order=order)) as output:
         output.config("transformer", config)
         for key, value in state.items():
-            dtype = "F32" if value.dtype == torch.float32 else "BF16"
+            dtype = DTYPES[value.dtype]
             output.put("transformer", key, dtype, value.shape, value.contiguous().view(torch.uint8).numpy())
         return ctx.adopt_model(output)
 
