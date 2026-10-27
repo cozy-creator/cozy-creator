@@ -1,13 +1,13 @@
-"""The sequence. References first, each from an emptied cache with the whole card free (a scope
-that binds the DiT before its forward arms fills its blocks unarmed): a per-step LoRA (no bake, so
-no page can carry a stale overlay), then a baked LoRA and a base call. Then base and LoRA alternate
-warm with the card free, so most of the other overlay's pages are resident when each call begins,
-and again under a ballast that leaves the DiT `room_gib`, so blocks are displaced and refilled
-within every call. Every warm call must equal its reference: a page's bytes are the same filled
-now or kept."""
+"""The sequence. References first, served per step (nothing baked, so no page can carry a stale
+overlay): the LoRA (the oracle) and a base call; then, served baked (a new fill identity: every page
+goes), the baked LoRA. Then base and LoRA alternate warm with the card free, so most of the other
+overlay's pages are resident when each call begins, and again from an emptied cache under a ballast
+that leaves the DiT `room_gib`, so blocks are displaced and refilled within every call. Every warm
+call must equal its reference: a page's bytes are the same filled now or kept."""
 
 from __future__ import annotations
 
+import json
 import time
 from functools import partial
 from typing import Any
@@ -68,6 +68,31 @@ class _Memory:
         return torch.empty(0, dtype=torch.uint8, device=self.device)
 
 
+def _boundary(placement: Any, device: torch.device, kind: str, paging: bool) -> dict[str, Any]:
+    """What the device held when an allocation failed: the driver's and Torch's bytes, the weight
+    memory's own record, and the scope holds."""
+    memory = placement.memory
+    facts: dict[str, Any] = {"kind": kind, "paging": paging}
+    free, total = torch.cuda.mem_get_info(device)
+    facts.update(
+        free=free,
+        total=total,
+        allocated=torch.cuda.memory_allocated(device),
+        reserved=torch.cuda.memory_reserved(device),
+        peak=torch.cuda.max_memory_allocated(device),
+        holds=sorted(getattr(placement, "holds", {})),
+        unheld=sorted(getattr(placement, "unheld", ())),
+    )
+    for name in ("torch_stats", "classes", "room"):
+        read = getattr(memory, name, None)
+        if callable(read):
+            try:
+                facts[name] = read()
+            except Exception as error:  # a fact that cannot be read says why
+                facts[name] = f"unreadable: {error}"
+    return facts
+
+
 def _request_trace() -> list[dict[str, Any]] | None:
     """This request's fill trace (Runtime 0.34+), else None."""
     try:
@@ -117,7 +142,7 @@ def exercise(
     room = int(payload.room_gib * GIB)
     inputs = Inputs(payload.seed, payload.size, payload.steps)
 
-    def call(kind: str, *, empty: bool, paging: bool = False) -> dict[str, Any]:
+    def call(kind: str, *, empty: bool = False, paging: bool = False) -> dict[str, Any]:
         ctx.raise_if_cancelled()
         torch.cuda.synchronize(device)
         if empty:
@@ -140,6 +165,12 @@ def exercise(
                 out = model.denoise(inputs, None, after)
             else:
                 out = turbo_lora.denoise(model, inputs, after)
+        except torch.OutOfMemoryError as error:
+            facts = _boundary(placement, device, kind, paging)
+            tel.log("lora overlay refill out of memory", facts=json.dumps(facts, default=str))
+            raise RuntimeError(
+                f"out of memory in a {kind} call: {json.dumps(facts, default=str)}"
+            ) from error
         finally:
             del ballast
         row: dict[str, Any] = {
@@ -164,19 +195,24 @@ def exercise(
         tel.log("lora overlay refill call", **{k: str(v) for k, v in row.items()})
         return {**row, "out": out}
 
-    # References, each from an emptied cache. The per-step LoRA bakes nothing (its hooks add each
-    # update), so no page can carry another overlay: it is the oracle the baked LoRA must match.
+    # References. Served per step nothing is baked (the hooks add each update), so no page can
+    # carry another overlay: the per-step LoRA is the oracle, and the base call's pages are the
+    # stored bytes, as a baked base forward's are. Serving baked again changes the fill identity,
+    # so every page goes and the baked LoRA fills afresh, with no reclaim that would leave the DiT
+    # streaming for the rest of the request.
     placement.serve_lora("per_step")
-    oracle = call("lora", empty=True)
+    oracle = call("lora")
+    reference = {"base": call("base")}
     placement.serve_lora("bake")
-    reference = {"lora": call("lora", empty=True), "base": call("base", empty=True)}
+    reference["lora"] = call("lora")
     lora_effect = _rel(reference["base"]["out"], oracle["out"])
     bake_error = _rel(reference["lora"]["out"], oracle["out"])
     # Base and LoRA alternate twice over: with the card free, so the other overlay's pages are
-    # resident when a call begins (the stale page a LoRA forward must not be served), then under
-    # the ballast, so blocks are displaced and refilled within every call too.
+    # resident when a call begins (the stale page a LoRA forward must not be served), then from an
+    # emptied cache under the ballast, so blocks are displaced and refilled within every call too.
     kinds = [kind for _ in range(payload.rounds) for kind in ("base", "lora")]
-    warm = [call(kind, empty=False, paging=paging) for paging in (False, True) for kind in kinds]
+    warm = [call(kind) for kind in kinds]
+    warm += [call(kind, empty=not i, paging=True) for i, kind in enumerate(kinds)]
     failures: list[str] = []
     if reference["lora"]["serving"] != "bake":
         failures.append(f"the LoRA served {reference['lora']['serving']}, not baked")
@@ -197,7 +233,7 @@ def exercise(
         if fills is not None:
             # What this cell is for: the other overlay's pages resident when a call begins (or it
             # cannot show a stale one), and under the ballast blocks refilled within the call.
-            least = 1 if row["paging"] else blocks // 2
+            least = 0 if row["empty"] else 1 if row["paging"] else blocks // 2
             if row["resident_at_start"] < least:
                 failures.append(
                     f"warm call {index}: {row['resident_at_start']} blocks resident at its start, "

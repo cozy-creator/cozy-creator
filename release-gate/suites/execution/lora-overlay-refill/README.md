@@ -3,11 +3,12 @@
 One executor serves Qwen-Image-Edit-2511's DiT (its int8 lane; 2512's root release is bf16 only)
 and its Lightning LoRA, with no reference image, the LoRA armed by the DiT's
 own forward pre-hook from that forward's `attention_kwargs`, as H3 arms its Turbo overlay. References
-first, each from an emptied cache with the card free (a scope that binds the DiT before its forward
-arms then fills its blocks unarmed): a per-step LoRA (the oracle: nothing baked, so no page can carry a
-stale overlay), a baked LoRA and a base call. Then two rounds of base and LoRA warm with the card free
-(most of the other overlay's pages are resident when each call begins), and two more under a ballast
-that leaves the DiT `room_gib` (6 GiB), so blocks are displaced and refilled within every call.
+first, served per step (nothing baked, so no page can carry a stale overlay): the LoRA (the oracle)
+and a base call; then, served baked (a new fill identity, so every page goes), the baked LoRA. Then two
+rounds of base and LoRA warm with the card free (most of the other overlay's pages are resident when
+each call begins), and two more from an emptied cache under a ballast that leaves the DiT `room_gib`
+(6 GiB), so blocks are displaced and refilled within every call. An out-of-memory error reports the
+allocation boundary (driver, Torch and weight-memory bytes, holds).
 
 It fails when:
 
