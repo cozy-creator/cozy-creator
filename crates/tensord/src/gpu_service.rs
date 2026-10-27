@@ -1012,6 +1012,21 @@ impl Pool {
             .filter_map(|gpu| gpu.figures.request_peak(construction, "")).max()
     }
 
+    /// The bytes a call of `construction` still needs free on `lane`. A cold construction needs
+    /// its whole working set (`peak`). One whose own executor is already resident there only
+    /// needs its activation headroom (`compute`): its weights are allocated, which the driver's
+    /// free reading already counts as used, so charging the whole peak again would needlessly
+    /// evict small idle neighbours (`ask`, `remove_background`) before every segment.
+    fn room_need(&self, lane: &std::ops::Range<usize>, construction: &str, resident: bool) -> Option<u64> {
+        let peak = self.measured_peak(lane, construction)?;
+        if !resident {
+            return Some(peak);
+        }
+        let compute = self.devices.get(lane.clone()).into_iter().flatten().filter_map(|d| d.memory.as_ref())
+            .filter_map(|gpu| gpu.figures.compute_peak(construction, "")).max();
+        Some(compute.unwrap_or(peak).min(peak))
+    }
+
     fn free(&self, lane: &std::ops::Range<usize>) -> Option<u64> {
         lane.clone().map(|index| self.devices.get(index)?.memory.as_ref()?.free()).collect::<Option<Vec<_>>>()?
             .into_iter().min()
@@ -1050,20 +1065,59 @@ impl Pool {
             "ack_ms": began.elapsed().as_secs_f64() * 1e3, "failed": why}));
     }
 
-    /// Offload other idle constructions on this lane, LRU first, until current free bytes cover
-    /// its measured peak. Unknown peaks offload all candidates. Running sessions are absent
-    /// from the idle pool and are never stopped or awaited by this operation.
-    fn make_room(&self, engine: &Arc<Engine>, construction: &str, lane: std::ops::Range<usize>) {
-        let need = self.measured_peak(&lane, construction);
+    /// Idle sessions on `lane` whose weights are on the GPU, least recently used first and
+    /// outside every warm set before any member: the order `make_room` offloads and ends them in.
+    fn idle_on_lane(&self, lane: &std::ops::Range<usize>, level: Level) -> Vec<String> {
         let members: std::collections::BTreeSet<String> = self.members.lock().unwrap().values().flatten()
             .filter_map(|member| member.plan.as_ref().map(|plan| plan.construction.clone())).collect();
         let mut candidates: Vec<_> = self.sessions.lock().unwrap().iter()
-            .filter(|(_, s)| s.level == Level::Gpu && s.start < lane.end && lane.start < s.start + s.degree as usize)
+            .filter(|(_, s)| s.level >= level && s.start < lane.end && lane.start < s.start + s.degree as usize)
             .map(|(key, s)| (members.contains(&s.plan), s.used, key.clone())).collect();
         candidates.sort_by_key(|(member, used, _)| (*member, *used));
-        for (_, _, key) in candidates {
-            if need.zip(self.free(&lane)).is_some_and(|(need, free)| free >= need) { return; }
+        candidates.into_iter().map(|(_, _, key)| key).collect()
+    }
+
+    /// Make room on `lane` for a call of `construction` whose executor is `resident` there or not.
+    /// First offload other idle constructions' weights (`Map(Ram)`), LRU and outside warm sets
+    /// first, keeping their processes. If that still does not cover the need, end idle processes
+    /// in the same order to reclaim the CUDA context and package globals each keeps (2-3 GB,
+    /// which is most of an 8-12 GB card): a restart is paid only if that construction runs again,
+    /// and only when its held bytes are the difference between this call fitting or not. Unknown
+    /// peaks offload all candidates. Running sessions are absent from the idle pool and are never
+    /// stopped or awaited here.
+    fn make_room(&self, engine: &Arc<Engine>, construction: &str, lane: std::ops::Range<usize>, resident: bool) {
+        let need = self.room_need(&lane, construction, resident);
+        let covered = || need.zip(self.free(&lane)).is_some_and(|(need, free)| free >= need);
+        for key in self.idle_on_lane(&lane, Level::Gpu) {
+            if covered() { return; }
             self.offload_idle(engine, &key, construction, need);
+        }
+        // Weights are off the GPU now; contexts remain. End idle processes to reclaim them only
+        // while still short, newly offloaded (`Host`) ones among them, warm sets last.
+        for key in self.idle_on_lane(&lane, Level::Host) {
+            if covered() { return; }
+            if self.end_session(&key) {
+                self.notes.note(serde_json::json!({"event": "ended_for_room", "ended": key,
+                    "for": construction, "need": need, "free": self.free(&lane)}));
+            }
+        }
+    }
+
+    /// A running call owns its GPUs ahead of idle neighbours. A measured peak is a hint a call
+    /// can outgrow (bigger activations than any sample), so `make_room`'s one-time offload can
+    /// fall short mid-call. While a call holds GPU `index` and the driver's free bytes are under
+    /// the pressure headroom, offload idle neighbours there (weights only, LRU and warm sets
+    /// last), so the active call pages its own weights only after every idle neighbour has given
+    /// its back. Sibling Cozy executors are never foreign pressure, so ending idle processes and
+    /// cancelling stay the foreign path's rungs below. Runs on the existing 500 ms reclaim loop.
+    fn yield_to_call(&self, engine: &Arc<Engine>, index: usize, device: &Device) {
+        let calling = || self.lanes.lock().unwrap().values().any(|lane| lane.contains(&index));
+        let (Some(gpu), Some(row)) = (device.memory.as_ref(), memory::row(&device.entry, &self.config.inventory)) else { return };
+        let headroom = Pressure::headroom(row.memory_bytes);
+        if !calling() { return }
+        for key in self.idle_on_lane(&(index..index + 1), Level::Gpu) {
+            if gpu.free().is_none_or(|free| free >= headroom) || !calling() { return }
+            self.offload_idle(engine, &key, "running_call", Some(headroom));
         }
     }
 
@@ -1071,6 +1125,7 @@ impl Pool {
     /// neither elapsed time nor an unavailable driver reading authorizes cancellation.
     pub(crate) fn relieve_pressure(&self, engine: &Arc<Engine>) {
         for (index, device) in self.devices.iter().enumerate() {
+            self.yield_to_call(engine, index, device);
             let usage = device.memory.as_ref().and_then(|gpu| gpu.usage(&self.tenants));
             let blocked = {
                 let mut pressure = self.pressure.lock().unwrap();
@@ -2805,7 +2860,7 @@ impl Pool {
         };
         let session = match retained {
             Some(session) => {
-                if degree > 0 { self.make_room(engine, &plan.construction, start..start + degree as usize); }
+                if degree > 0 { self.make_room(engine, &plan.construction, start..start + degree as usize, session.level == Level::Gpu); }
                 *disposition = Disposition::Unknown(executor_births(&session.executor.birth, &session.followers));
                 engine.register_managed(
                     id,
@@ -2911,7 +2966,7 @@ impl Pool {
         on_birth: impl Fn(&Birth, &Cancellation) -> io::Result<()>,
     ) -> io::Result<Session> {
         self.gpu_cap(plan.degree)?;
-        if plan.degree > 0 { self.make_room(engine, &plan.construction, start..start + plan.degree as usize); }
+        if plan.degree > 0 { self.make_room(engine, &plan.construction, start..start + plan.degree as usize, false); }
         let launched = Instant::now();
         let (root, socket, directory) = self.executor_endpoint()?;
         let config = self.executor_config(held, root, socket, start, plan.degree)?;

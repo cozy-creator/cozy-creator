@@ -96,12 +96,27 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
   single GPU does: the child takes the lane and NCCL seal with its environment; followers are spawned
   by rank 0.
 - Before loading or reusing a GPU session, other idle constructions on its lane offload through
-  `Map(Ram)`, outside warm sets first and then LRU, until driver free bytes cover its measured
-  peak. Without a known peak all eligible candidates offload. Running sessions are absent from
-  this idle pool. The executor then makes room locally or returns its allocation failure.
+  `Map(Ram)`, outside warm sets first and then LRU, until driver free bytes cover the call's
+  need. The need is the construction's measured working-set peak when its executor is cold; when
+  that executor is already resident on the lane (a reuse), only its activation headroom
+  (`compute`), since its weights are allocated and the driver's free reading already counts them
+  as used. Charging the whole peak on a reuse would evict small idle neighbours (`ask`,
+  `remove_background`) before every segment. Without a known peak all eligible candidates offload.
+  If offloading weights still does not cover the need, idle processes end in the same order
+  (`ended_for_room`), newly offloaded ones among them and warm sets last, to reclaim the CUDA
+  context and package globals each holds (2-3 GB, most of an 8-12 GB card); a restart is paid
+  only if that construction runs again, and only when its held bytes are the difference between
+  this call fitting or not. Running sessions are absent from this idle pool. The executor then
+  makes room locally or returns its allocation failure.
   `ChildLauncher` journals the birth before Start, Load and Activate; each request sends
   PrepareRequest and Invoke. Final Invoke figures are recorded before dispatch measurements
   end, and persisted peaks retain their high-water values.
+- A measured peak is a hint a call can outgrow. While a call holds a GPU and the driver's free
+  bytes fall under the pressure headroom (the larger of 512 MiB and 10%), the reclaim loop
+  offloads idle neighbours on that GPU (`Map(Ram)`, LRU and warm sets last, `running_call`), so
+  the active call pages its own weights only after every idle neighbour has given its back.
+  Sibling Cozy executors are never foreign pressure, so ending idle processes and cancelling stay
+  the external-pressure rungs below.
 - Warming: a warm member's executor is loaded, then `Map{construction, level}` has it load its
   models at `gpu` or `ram`; varena fills them, and its priority is in use > warm > idle.
 - External pressure uses driver-attributed process usage on the existing reclaim loop: offload
