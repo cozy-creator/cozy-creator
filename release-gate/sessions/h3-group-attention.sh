@@ -6,7 +6,8 @@
 #   control    {"runtime": "<version | URL#sha256=…>", "tensorfs": "<version | URL#sha256=…>"}: put on first unless running
 #   candidate  {"runtime": "<URL#sha256=…>"}
 #   cells      [{"label", "phase": "control"|"candidate", "tree" (a packages_refs name), "prompt", "seed",
-#              "attention" ("" or a --attention-kernel pin)}], in order; two failed cells stop the session
+#              "attention" ("" or a --attention-kernel pin)}], in order
+#   max_fails  failed cells that stop the session (2); a failed cell's machine logs are kept either way
 #   compare    [["reference", "cell"], …]
 #   traffic_gb GB the provider bills (120); need_s seconds the cap must buy (3000)
 . "$(dirname "$0")/lib.sh"
@@ -92,6 +93,7 @@ step install package install "$PACKAGES/$(jq -r '.[0].tree' <<<"$CELLS")/minimax
 step download-base model download _/minimax-h3@1.0.0-rc.5 --lane int8 --on "$NAME" || fail "base download"
 step download-turbo model download _/minimax-h3-turbo-lora@1.0.1 --on "$NAME" || fail "turbo download"
 phase=control fails=0
+printf 'label\tphase\trun\tstatus\texecution_s\treason\n' > "$OUT/outcomes.tsv"
 for i in "${!labels[@]}"; do
   k=${labels[i]} p=$(jq -r ".[$i].phase" <<<"$CELLS") tree=$(jq -r ".[$i].tree" <<<"$CELLS") pin=$(jq -r ".[$i].attention // \"\"" <<<"$CELLS")
   if [ "$p" = candidate ] && [ "$phase" = control ]; then
@@ -109,12 +111,15 @@ for i in "${!labels[@]}"; do
   summary "$k" > "$OUT/$k.summary.json"
   say "$k ($p) run $n $st: $(cut -c1-1800 "$OUT/$k.summary.json")"
   rt=$(jq -r '.software_runtime // ""' "$OUT/$k.summary.json")
-  if [ "$p" = candidate ]; then [[ $rt == "$DRV"* ]] || fail "$k ran Runtime '$rt', not the candidate $DRV"
+  if [ -z "$rt" ]; then :  # a failed call may carry no measurements
+  elif [ "$p" = candidate ]; then [[ $rt == "$DRV"* ]] || fail "$k ran Runtime '$rt', not the candidate $DRV"
   else [[ $rt == "$CRV"* && $rt != "$DRV"* ]] || fail "$k ran Runtime '$rt', not the control $CRV"; fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$k" "$p" "$n" "$st" "$(jq -r '(.execution_ms // 0) / 1000' "$OUT/$k.json")" \
+    "$(jq -r '.reason.message // "" | gsub("[\t\n]"; " ") | .[0:300]' "$OUT/$k.json")" >> "$OUT/outcomes.tsv"
   if [ "$st" != completed ]; then
     cozy machine logs "$NAME" -n 300 > "$OUT/$k.tensord.log" 2>&1
     say "$k failed: $(jq -r '.reason.message // ""' "$OUT/$k.json" | cut -c1-600)"
-    fails=$((fails + 1)); [ "$fails" -lt 2 ] || fail "two cells failed"
+    fails=$((fails + 1)); [ "$fails" -lt "$(param max_fails 2)" ] || fail "$fails cells failed"
   fi
 done
 
