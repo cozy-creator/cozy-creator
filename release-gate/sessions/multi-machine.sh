@@ -21,17 +21,18 @@ SEED=$((RANDOM * 32768 + RANDOM))
 [ -f "$REF/seed.jpg" ] || fail "no reference image"
 [ "$OLD" != "$NEW" ] || fail "old ($OLD) is the session's cozy"
 [ -f ~/.ssh/id_ed25519.pub ] || { mkdir -p ~/.ssh && ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519; } || fail "no SSH key"
+# Another controller of this account: a second user on the runner, signed in with the runner's device key.
+sudo useradd -m cozywatch && sudo install -d -o cozywatch -m 700 /home/cozywatch/.cozy /home/cozywatch/.cozy/keys &&
+  sudo install -o cozywatch -m 600 ~/.cozy/keys/device-*.json /home/cozywatch/.cozy/keys/ &&
+  sudo install -D -m 755 "$(command -v cozy)" /opt/cozywatch/cozy || fail "no second controller"
+watcher() { sudo -u cozywatch -H /opt/cozywatch/cozy "$@" < /dev/null 2>> "$OUT/watcher.err"; }
+[ "$(watcher --json whoami | jq -r .account)" = "$(cozy --json whoami | jq -r .account)" ] || fail "the second controller is not signed in: $(tail -3 "$OUT/watcher.err")"
 RENT_ARGS=--ssh
 quote "$(param traffic_gb 40)" 2400 2
 order; order
 ready 0; A=$NAME
 ready 1; B=$NAME
 for i in 0 1; do jq -e '.rental.ssh // empty' "$OUT/show$i.json" > /dev/null || fail "rental $i has no ssh address"; done
-# Another controller of this account: a second user on the runner, signed in with the runner's device key.
-sudo useradd -m cozywatch && sudo install -d -o cozywatch -m 700 /home/cozywatch/.cozy /home/cozywatch/.cozy/keys &&
-  sudo install -o cozywatch -m 600 ~/.cozy/keys/device-*.json /home/cozywatch/.cozy/keys/ &&
-  sudo install -D -m 755 "$(command -v cozy)" /opt/cozywatch/cozy || fail "no second controller"
-watcher() { sudo -u cozywatch -H /opt/cozywatch/cozy "$@" < /dev/null 2>> "$OUT/watcher.err"; }
 watcher machine list --json > "$OUT/watcher-list.json"
 jq -e --arg r "$(jq -r .rental_id "$OUT/show1.json")" '.machines[] | select(.rental_id == $r and .recorded == false and .state == "ready")' \
   "$OUT/watcher-list.json" > /dev/null || fail "the second controller does not list B: $(head -c 300 "$OUT/watcher-list.json")"
