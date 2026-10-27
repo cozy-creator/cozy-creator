@@ -21,7 +21,7 @@ Expected results:
 - 0.34.2 on a 615 host: `memcpy` and `mix` fail with signal 11 after `built` (pod-sessions
   40466891536, 40470754858).
 - 0.34.2 on other drivers: PASS.
-- With cozy-runtime#1860 (0.34.5), on every driver: PASS.
+- With cozy-runtime#1860 (Runtime 0.34.4), on every driver: PASS. That includes 615.78.08 on an RTX 3060 (release-gate 40474996907).
 
 The cell catches the bug whenever a gate lands on a 615 host.
 
