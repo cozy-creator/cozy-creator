@@ -1,5 +1,7 @@
 # Varena: executor-local weight residency
 
+Varena ships inside the TensorFS wheel and has no release of its own; its crate version is TensorFS's.
+
 This is an original implementation against the CUDA Driver API. Each executor owns its own
 reservations and physical allocations. TensorFS supplies immutable bytes; it does not own device
 memory. No source from aimdo or another external allocator was used.
