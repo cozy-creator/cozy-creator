@@ -53,9 +53,11 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
   keeps free GPUs from younger requests. Each `grant`/`wait`/`release` is a `gpu` entry in the
   root's log (`RunEvent.gpu`); a wait is logged again only when its blocker (the oldest other
   request claiming, holding or calling on its lane) changes.
-- A `Plan`'s construction hashes {generation, App, entrypoint, constructed slots, degree}: its
-  executors' key. Its id adds the `Weights[M]` sources (`Invoke.sources`). A plan binding a model
-  is journaled as a `Preparation`, and `submit` records `preparation_id`; one binding none is
+- A `Plan`'s construction hashes {generation, App, constructed slots, degree}, not the entrypoint
+  that names them: its executors' key, so entrypoints building the same models (H3's
+  `ref2va_turbo` and long_form's `motion_segment`) share one executor and its weights. Its id adds
+  the entrypoint and the `Weights[M]` sources (`Invoke.sources`). A plan binding a model is
+  journaled as a `Preparation`, and `submit` records `preparation_id`; one binding none is
   derived at dispatch.
 - An empty `installation_id` binds a `published-<hash>` installation from `packages`.
 
