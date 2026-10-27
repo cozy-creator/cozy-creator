@@ -4,18 +4,24 @@ One executor serves Qwen-Image-Edit-2511's DiT (its int8 lane; 2512's root relea
 and its Lightning LoRA, with no reference image, the LoRA armed by the DiT's
 own forward pre-hook from that forward's `attention_kwargs`, as H3 arms its Turbo overlay. References
 first, each from an emptied cache with the card free (a scope that binds the DiT before its forward
-arms then fills every block unarmed): a per-step LoRA (the oracle: nothing baked, so no page can carry
-a stale overlay), a baked LoRA and a base call. Then three rounds of base and LoRA, warm, under a
-ballast that leaves the DiT `room_gib` (6 GiB), so its blocks page within every call and the resident
-ones carry over into the next; then one more LoRA, which must reuse the resident LoRA pages.
+arms then fills its blocks unarmed): a per-step LoRA (the oracle: nothing baked, so no page can carry a
+stale overlay), a baked LoRA and a base call. Then two rounds of base and LoRA warm with the card free
+(most of the other overlay's pages are resident when each call begins), and two more under a ballast
+that leaves the DiT `room_gib` (6 GiB), so blocks are displaced and refilled within every call.
 
 It fails when:
 
 - the baked LoRA is not closer to the per-step LoRA than base is (a fill baked nothing);
 - a warm call differs from its reference by more than 1e-3 (rel. L2 on the latents): a page filled
   under one overlay served the other;
-- (Runtime 0.34+, from the request's fill trace) a warm call did not page as intended, or baked a
-  different number of weights than its refilled blocks hold LoRA'd linears.
+- (Runtime 0.34+, from the request's fill trace) a warm call with the card free began with fewer than
+  half the blocks resident (it could not show a stale page), one under the ballast did not refill
+  within the call, or a call baked a different number of weights than its refilled blocks hold
+  LoRA'd linears.
+
+It needs a card where the int8 DiT and the f32 LoRA stay resident (about 23 GB: RTX 5090 or larger).
+On an RTX 4090 every baked block is refilled every forward, so no stale page can be served (runs
+40449344821: 0.34.0 and the fix alike).
 
 ```sh
 cozy run "$PWD/release-gate/suites/execution/lora-overlay-refill/gpu" seed:=321 \

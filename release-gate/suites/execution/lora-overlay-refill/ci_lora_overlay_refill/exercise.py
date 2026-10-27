@@ -1,9 +1,10 @@
-"""The sequence. References first, each from an emptied cache with the whole card free (the DiT
-fits, so a scope that binds it before its forward arms fills every block unarmed): a per-step LoRA
-(no bake, so no page can carry a stale overlay), then a baked LoRA and a base call. Then warm calls
-alternate base and LoRA under a ballast that leaves the DiT `room_gib`: blocks page within every
-call and the resident ones carry over into the next call, whose overlay differs. Every warm call
-must equal its reference: a page's bytes are the same filled now or kept."""
+"""The sequence. References first, each from an emptied cache with the whole card free (a scope
+that binds the DiT before its forward arms fills its blocks unarmed): a per-step LoRA (no bake, so
+no page can carry a stale overlay), then a baked LoRA and a base call. Then base and LoRA alternate
+warm with the card free, so most of the other overlay's pages are resident when each call begins,
+and again under a ballast that leaves the DiT `room_gib`, so blocks are displaced and refilled
+within every call. Every warm call must equal its reference: a page's bytes are the same filled
+now or kept."""
 
 from __future__ import annotations
 
@@ -116,12 +117,12 @@ def exercise(
     room = int(payload.room_gib * GIB)
     inputs = Inputs(payload.seed, payload.size, payload.steps)
 
-    def call(kind: str, *, empty: bool) -> dict[str, Any]:
+    def call(kind: str, *, empty: bool, paging: bool = False) -> dict[str, Any]:
         ctx.raise_if_cancelled()
         torch.cuda.synchronize(device)
         if empty:
             memory.empty()
-        ballast = None if empty else memory.ballast(room)
+        ballast = memory.ballast(room) if paging else None
         trace = _request_trace()
         resident = (
             sum(1 for b in held.blocks.values() if b.region is not None and b.region.resident)
@@ -147,7 +148,8 @@ def exercise(
             "serving": bakes.serving,
             "how": bakes.how,
             "baked": placement.baked() - baked,
-            "ballast_gib": 0 if empty else round(max(memory.capacity - room, 0) / GIB, 2),
+            "paging": paging,
+            "ballast_gib": round(max(memory.capacity - room, 0) / GIB, 2) if paging else 0,
         }
         if trace is not None:
             fills = [
@@ -170,9 +172,11 @@ def exercise(
     reference = {"lora": call("lora", empty=True), "base": call("base", empty=True)}
     lora_effect = _rel(reference["base"]["out"], oracle["out"])
     bake_error = _rel(reference["lora"]["out"], oracle["out"])
-    # Base and LoRA alternate; the last LoRA follows a LoRA, whose resident pages it must reuse.
-    kinds = [kind for _ in range(payload.rounds) for kind in ("base", "lora")] + ["lora"]
-    warm = [call(kind, empty=False) for kind in kinds]
+    # Base and LoRA alternate twice over: with the card free, so the other overlay's pages are
+    # resident when a call begins (the stale page a LoRA forward must not be served), then under
+    # the ballast, so blocks are displaced and refilled within every call too.
+    kinds = [kind for _ in range(payload.rounds) for kind in ("base", "lora")]
+    warm = [call(kind, empty=False, paging=paging) for paging in (False, True) for kind in kinds]
     failures: list[str] = []
     if reference["lora"]["serving"] != "bake":
         failures.append(f"the LoRA served {reference['lora']['serving']}, not baked")
@@ -191,16 +195,16 @@ def exercise(
             failures.append(f"warm call {index} ({row['kind']}) is {error:.4f} from its reference")
         fills = row.get("block_fills")
         if fills is not None:
-            # The paging this cell is for: pages of the previous call were resident when it began,
-            # and blocks were displaced and refilled within it. After a call of the same overlay
-            # its resident pages serve again: the first forward refills fewer than every block.
-            if not row["resident_at_start"] or len(fills) < 2 or sum(fills[1:]) == 0:
+            # What this cell is for: the other overlay's pages resident when a call begins (or it
+            # cannot show a stale one), and under the ballast blocks refilled within the call.
+            least = 1 if row["paging"] else blocks // 2
+            if row["resident_at_start"] < least:
                 failures.append(
-                    f"warm call {index} did not page as intended: {row['resident_at_start']} "
-                    f"blocks resident at its start, fills {fills} per forward"
+                    f"warm call {index}: {row['resident_at_start']} blocks resident at its start, "
+                    f"under {least}: it could not show a stale overlay (run where the DiT fits)"
                 )
-            if index and warm[index - 1]["kind"] == row["kind"] and fills[0] >= blocks:
-                failures.append(f"warm call {index} refilled every block after the same overlay")
+            if row["paging"] and (len(fills) < 2 or sum(fills[1:]) == 0):
+                failures.append(f"warm call {index} did not page within the call: fills {fills}")
             expected = per_block * sum(fills) if row["kind"] == "lora" else 0
             if row["baked"] != expected:
                 failures.append(
