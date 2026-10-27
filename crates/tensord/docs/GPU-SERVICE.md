@@ -103,13 +103,17 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
   reading already counts as used, so charging its whole peak again would evict small idle
   neighbours (`ask`, `remove_background`) before every segment. Where the driver cannot attribute
   the process (a container whose pids are not the driver's), a reuse is charged its whole peak.
-  Without a known peak all eligible candidates offload. If offloading weights still does not cover
-  a known, exact need (not a first call, not the whole-peak estimate), idle processes end in the same order
-  (`ended_for_room`), newly offloaded ones among them and warm sets last, to reclaim the CUDA
-  context and package globals each holds (2-3 GB, most of an 8-12 GB card); a restart is paid
-  only if that construction runs again, and only when its held bytes are the difference between
-  this call fitting or not. Running sessions are absent from this idle pool. The executor then
-  makes room locally or returns its allocation failure.
+  Without a known peak all eligible candidates offload. Offloading leaves each process's CUDA
+  context and package globals (0.5-0.8 GB a process, 2-3 GB for a group; most of an 8-12 GB card),
+  so idle processes then end (`ended_for_room`), newly offloaded ones among them:
+  - for a known, exact need, only while still short, warm sets last;
+  - for a first call (no measured peak), every offloaded one outside the warm sets, since whether
+    it fits cannot be known and they reload cheaply (their weights already left), while a first
+    call that runs short fails outright (H3 then SDXL left 2.4 GB of contexts that a first Qwen
+    4MP call on a 22 GiB 4090 could not get back);
+  - for a reuse the driver cannot attribute (its whole peak, an estimate), none.
+  A restart is paid only if that construction runs again. Running sessions are absent from this
+  idle pool. The executor then makes room locally or returns its allocation failure.
   `ChildLauncher` journals the birth before Start, Load and Activate; each request sends
   PrepareRequest and Invoke. Final Invoke figures are recorded before dispatch measurements
   end, and persisted peaks retain their high-water values.
