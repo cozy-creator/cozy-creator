@@ -10,9 +10,11 @@ and the Kitchen producer are the production ones.
 from __future__ import annotations
 
 import copy
+import dataclasses
 import hashlib
 import importlib.metadata
 import json
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,7 +22,7 @@ from typing import Any
 
 import torch
 from cozy_runtime import _build_provenance
-from cozy_runtime.author import AttentionLayout, attention_scope
+from cozy_runtime.author import AttentionLayout, CapabilityError, attention_scope
 from cozy_runtime.internal.producers import Processor
 from diffusers import MiniMaxH3Scheduler
 from diffusers.modular_pipelines.minimax_h3.before_denoise import (
@@ -196,7 +198,7 @@ def statistics(name: str) -> dict[str, Any]:
     return {} if held is None else held.statistics
 
 
-def eager(transformer, request, state, schedulers, first, end, name, trace=None):
+def eager(transformer, request, state, schedulers, first, end, name, trace=None, tick=None):
     """Steps [first, end) exactly as OfficialH3Pipeline.denoise runs them."""
     vs, aus = schedulers
     for index in range(first, end):
@@ -215,6 +217,8 @@ def eager(transformer, request, state, schedulers, first, end, name, trace=None)
                 audio[0, request.nca:].float(), aus.timesteps[index], state.audio_latents[request.nca:],
                 return_dict=False)[0]
         torch.cuda.synchronize()
+        if tick is not None:
+            tick(index)
         if trace is not None:
             stats = {key[1]: (m.cpu(), s.cpu()) for key, (step, _, m, s) in statistics(name).items() if step == index}
             trace.append({"step": index, "ms": (time.perf_counter() - began) * 1000, "stats": stats,
@@ -279,7 +283,7 @@ def warm(transformer, payload, ctx) -> dict[str, Any]:
     return {"producer_sites": served, "backends": backends(transformer), "tokens": request.tokens}
 
 
-def gate(transformer, payload, ctx) -> dict[str, Any]:
+def gate(transformer, payload, ctx, tel=None) -> dict[str, Any]:
     verify_source()
     device = torch.device(str(ctx.device))
     served = sites(transformer)
@@ -309,12 +313,17 @@ def gate(transformer, payload, ctx) -> dict[str, Any]:
     def fresh():
         return request.state(), (copy.deepcopy(request.video_schedule), copy.deepcopy(request.audio_schedule))
 
+    def ticker(stage):
+        if tel is None:
+            return None
+        return lambda index: tel.progress((index + 1) / STEPS, stage=stage)
+
     passes = {}
     for label in ("A", "B"):
         state, schedulers = fresh()
         trace: list[dict[str, Any]] = []
         with step_invariants():
-            eager(transformer, request, state, schedulers, 0, STEPS, name, trace)
+            eager(transformer, request, state, schedulers, 0, STEPS, name, trace, ticker(f"eager-{label}"))
         passes[label] = (state, trace)
     a_state, a_trace = passes["A"]
     b_state, b_trace = passes["B"]
@@ -330,13 +339,20 @@ def gate(transformer, payload, ctx) -> dict[str, Any]:
         first_stats_step=bootstrap_steps,
     )
     cases = {"S1": 0, "S2": 1, "S4": 15}
-    results = {}
+    results: dict[str, dict[str, Any]] = {}
     for label in payload.cases.split(","):
+        if label == "R15":
+            results[label] = refusal(transformer, request, fresh, name, a_state, ticker("refusal"))
+            continue
         start = cases[label]
         state, schedulers = fresh()
-        with step_invariants():
-            eager(transformer, request, state, schedulers, 0, start, name)
-            got = native(transformer, request, state, schedulers, start, ctx)
+        try:
+            with step_invariants():
+                eager(transformer, request, state, schedulers, 0, start, name, tick=ticker(f"{label}-prefix"))
+                got = native(transformer, request, state, schedulers, start, ctx)
+        except Exception as error:  # noqa: BLE001 - a case's failure is its result, not the gate's end
+            results[label] = {"start": start, "error": f"{type(error).__name__}: {error}"[:900]}
+            continue
         error = max(max_abs(got["video"], a_state.latents), max_abs(got["audio"], a_state.audio_latents))
         stats_equal = {
             site: bool(torch.equal(got["slots"][site][0], mean) and torch.equal(got["slots"][site][1], scale))
@@ -348,18 +364,86 @@ def gate(transformer, payload, ctx) -> dict[str, Any]:
             "audio_exact": bool(torch.equal(got["audio"], a_state.audio_latents)),
             "max_abs_vs_eager": error, "final_summaries_exact": stats_equal,
             "prepare_s": round(got["prepare_ms"] / 1000, 2), "execute_s": round(got["execute_ms"] / 1000, 2),
+            "native_s_per_step": round(got["execute_ms"] / 1000 / (STEPS - start), 3),
             "host_graph_launches": got["host_graph_launches"],
             "finite": bool(got["video"].isfinite().all() and got["audio"].isfinite().all()),
         }
     report["native"] = results
     expected_segments = {"S1": "+bootstrap", "S2": "+bootstrap", "S4": None}
-    ok = report["eager_finite"] and all(r["finite"] for r in results.values())
+    ok = report["eager_finite"]
     for label, r in results.items():
-        has = "+bootstrap" in r["segments"]
-        ok &= has == (expected_segments[label] is not None) and r["carry_sites"] == len(sparse_blocks)
-        if deterministic:
-            ok &= r["video_exact"] and r["audio_exact"] and all(r["final_summaries_exact"].values())
-        else:  # bound native by eager's own run-to-run spread
-            ok &= r["max_abs_vs_eager"] <= 2 * spread
+        if "error" in r:
+            ok = False
+        elif label == "R15":
+            ok &= r["refused"] and r["request_state_restored"] and r["table_forgotten"]
+            ok &= r["continuation_exact"] if deterministic else r["continuation_max_abs"] <= 2 * spread
+        else:
+            has = "+bootstrap" in r["segments"]
+            ok &= r["finite"] and has == (expected_segments[label] is not None)
+            ok &= r["carry_sites"] == len(sparse_blocks)
+            if deterministic:
+                ok &= r["video_exact"] and r["audio_exact"] and all(r["final_summaries_exact"].values())
+            else:  # bound native by eager's own run-to-run spread
+                ok &= r["max_abs_vs_eager"] <= 2 * spread
     report["passed"] = bool(ok)
     return report
+
+
+def same(left: Any, right: Any) -> bool:
+    """Identity equality of request-state contents (tensors by object, not value)."""
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(same(left[k], right[k]) for k in left)
+    if isinstance(left, tuple) and isinstance(right, tuple):
+        return len(left) == len(right) and all(same(a, b) for a, b in zip(left, right, strict=True))
+    if isinstance(left, torch.Tensor) or isinstance(right, torch.Tensor):
+        return left is right
+    return left == right
+
+
+def refusal(transformer, request, fresh, name, a_state, tick) -> dict[str, Any]:
+    """A preparation that refuses after its carry attached, with eager statistics already held
+    (15 eager steps): once planning has seen every step, step 15's layout reports a different
+    protected prefix, so the first sparse warm-up call refuses. The request state must come back
+    exactly, Kitchen's cache must not keep the native table, and eager continues as the reference."""
+    state, schedulers = fresh()
+    vs, aus = schedulers
+    held = producer.PRODUCERS[name].request_state()
+    planned = {"done": False}
+
+    def skewed(step: int) -> AttentionLayout:
+        layout = request.layout(step)
+        if step == STEPS - 1:
+            planned["done"] = True
+        if step == 15 and planned["done"]:
+            return dataclasses.replace(layout, protected_prefix=layout.protected_prefix + 64)
+        return layout
+
+    try:
+        with step_invariants():
+            eager(transformer, request, state, schedulers, 0, 15, name, tick=tick)
+            cache = getattr(sys.modules.get("comfy_kitchen.backends.cuda"), "_ROPE_FAB_CACHE", {})
+            cached = set(cache)
+            before = (dict(held.statistics), dict(held.replay_inputs), held.rope, dict(held.parallel_rotary))
+            reason = ""
+            try:
+                plan, _, carry = prepare(transformer, state, vs, aus, skewed, SOURCE["sol_dense_steps"], start=15)
+            except CapabilityError as error:
+                reason = f"{error.code}: {error}"
+            else:
+                plan.close()
+                if carry is not None:
+                    carry.close()
+            after = (dict(held.statistics), dict(held.replay_inputs), held.rope, dict(held.parallel_rotary))
+            restored = same(before, after) and held.native is None
+            forgotten = not (set(cache) - cached)
+            eager(transformer, request, state, schedulers, 15, STEPS, name, tick=tick)
+    except Exception as error:  # noqa: BLE001 - reported as this case's result
+        return {"start": 15, "error": f"{type(error).__name__}: {error}"[:900]}
+    return {
+        "start": 15, "refused": bool(reason), "reason": reason[:300],
+        "request_state_restored": restored, "table_forgotten": forgotten,
+        "continuation_exact": bool(torch.equal(state.latents, a_state.latents)
+                                   and torch.equal(state.audio_latents, a_state.audio_latents)),
+        "continuation_max_abs": max(max_abs(state.latents, a_state.latents),
+                                    max_abs(state.audio_latents, a_state.audio_latents)),
+    }

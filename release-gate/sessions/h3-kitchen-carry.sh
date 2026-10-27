@@ -7,14 +7,14 @@
 #   runtime, tensorfs, tensord   the cohort the machine fetches (0.34.0, 0.17.1, 0.13.0)
 #   layers         DiT layers at H3's widths (4: blocks 0-1 dense paths, 2-3 Kitchen sites)
 #   latent_frames  107 is the 15 s, 362-frame request; lower only if the card cannot hold it
-#   cases          native starts to compare (S1,S2,S4)
+#   cases          native starts to compare, and R15: a refusal after 15 eager steps (S1,S2,S4,R15)
 #   model          private model name prefix (fidika/ci-h3-kitchen-carry)
 #   traffic_gb     GB the provider bills (30)
 #   need_s         seconds the cap must buy (3600)
 . "$(dirname "$0")/lib.sh"
 SUITE=$(cd "$(dirname "$0")/../suites/execution/h3-kitchen-carry" && pwd) || fail "no h3-kitchen-carry suite in this checkout"
 TREE=$(param tree h3) RT=$(param runtime 0.34.0) TFS=$(param tensorfs 0.17.1) TD=$(param tensord 0.13.0)
-LAYERS=$(param layers 4) LF=$(param latent_frames 107) CASES=$(param cases S1,S2,S4)
+LAYERS=$(param layers 4) LF=$(param latent_frames 107) CASES=$(param cases S1,S2,S4,R15)
 MODEL=$(param model fidika/ci-h3-kitchen-carry)-$(date -u +%m%d%H%M%S) SEED=$(( $(date +%s) % 100000000 ))
 H3=$PACKAGES/$TREE/minimax-h3
 [ -d "$H3/minimax_h3" ] || fail "packages/$TREE has no minimax-h3"
@@ -22,7 +22,7 @@ python3 "$SUITE/prepare.py" "$H3" "$OUT/build" > "$OUT/prepare.txt" 2>&1 || fail
 BUILD=$OUT/build
 [ "$(jq -r .package_commit "$BUILD/ci_h3_kitchen_carry/source.json")" = "$(git -C "$H3" rev-parse HEAD)" ] || fail "fixture is not the checkout"
 say "fixture from packages $(git -C "$H3" rev-parse --short HEAD): $(jq -c .files "$BUILD/ci_h3_kitchen_carry/source.json")"
-[[ $LAYERS =~ ^[0-9]+$ && $LF =~ ^[0-9]+$ && $CASES =~ ^(S1|S2|S4)(,(S1|S2|S4))*$ ]] || fail "bad layers/latent_frames/cases"
+[[ $LAYERS =~ ^[0-9]+$ && $LF =~ ^[0-9]+$ && $CASES =~ ^(S1|S2|S4|R15)(,(S1|S2|S4|R15))*$ ]] || fail "bad layers/latent_frames/cases"
 if [ "$RENT" = true ]; then
   [ "$(cozy --version | awk '{print $2}')" = "$TD" ] || fail "the controller's cozy is $(cozy --version), not $TD"
 fi
@@ -45,8 +45,8 @@ jq -e --arg r "$RT" --arg t "$TFS" --arg d "$TD" '.status.runtime==$r and .statu
   "$OUT/show-updated.json" >/dev/null || fail "machine runs $(jq -c '.status | {version, runtime, tensorfs}' "$OUT/show-updated.json")"
 say "ASSERT $NAME runs cozy $TD, Runtime $RT, TensorFS $TFS"
 
-step source run "$BUILD/source" "seed=$SEED" "layers=$LAYERS" --on "$NAME" || fail "source run"
-record source && [ "$(jq -r .status "$OUT/source.json")" = completed ] || fail "source did not complete"
+step source run "$BUILD/source" "seed=$SEED" "layers=$LAYERS" --on "$NAME"; c=$?; record source
+[ "$c" = 0 ] && [ "$(jq -r .status "$OUT/source.json")" = completed ] || fail "source did not complete (exit $c)"
 step upload model upload "run:$(runno source)#model" "$MODEL" --lane bf16 --on "$NAME" -y || fail "upload"
 UPLOADED=1
 COMMIT=$(cozy model info "$MODEL" --json 2>/dev/null | jq -r '.commits[0].commit // empty')
@@ -57,8 +57,9 @@ GPU=("$BUILD/gpu" "model.model=$MODEL@$COMMIT" "latent_frames=$LF") ON=(--on "$N
 # The first calls build what they serve; the gate needs the Kitchen producer on every sparse block.
 want=$((LAYERS - 2))
 for try in 1 2 3; do
-  step "warm-$try" run "${GPU[@]}" mode=warm "seed=$((SEED + try))" "${ON[@]}" || fail "warm-$try"
-  record "warm-$try" || fail "warm-$try has no run"
+  step "warm-$try" run "${GPU[@]}" mode=warm "seed=$((SEED + try))" "${ON[@]}"; c=$?
+  record "warm-$try" || fail "warm-$try has no run (exit $c)"
+  [ "$c" = 0 ] || fail "warm-$try exited $c: $(jq -r '.error // .failure // .status' "$OUT/warm-$try.json" | head -c 400)"
   have=$(detail "warm-$try" '.producer_sites | length' 2>/dev/null); have=${have:-0}
   say "warm-$try: Kitchen producer on $have/$want sparse blocks; $(detail "warm-$try" '.backends | to_entries | map(.value) | unique | join(",")')"
   [ "$have" -ge "$want" ] && break
@@ -66,11 +67,9 @@ for try in 1 2 3; do
   sleep 120
 done
 
-step gate run "${GPU[@]}" mode=gate "seed=$((SEED + 10))" "cases=$CASES" "${ON[@]}" || fail "gate run"
-record gate || fail "gate has no run"
-detail gate . > "$OUT/gate-report.json"
+step gate run "${GPU[@]}" mode=gate "seed=$((SEED + 10))" "cases=$CASES" "${ON[@]}"; c=$?
+record gate || fail "gate has no run (exit $c)"
+detail gate . > "$OUT/gate-report.json" 2>/dev/null || fail "gate exited $c: $(jq -r '.error // .failure // .status' "$OUT/gate.json" | head -c 400)"
 say "gate: eager deterministic $(detail gate .eager_deterministic) (A/B max abs $(detail gate .eager_ab_max_abs)); first summaries at step $(detail gate '.first_stats_step | join(",")')"
-for c in ${CASES//,/ }; do
-  say "$c: $(detail gate ".native.$c | \"\(.segments) video_exact=\(.video_exact) audio_exact=\(.audio_exact) max_abs=\(.max_abs_vs_eager) summaries_exact=\([.final_summaries_exact[]] | all) prepare \(.prepare_s)s execute \(.execute_s)s\"")"
-done
+for k in ${CASES//,/ }; do say "$k: $(detail gate ".native.$k | tojson")"; done
 [ "$(jq -r .status "$OUT/gate.json")" = completed ] && [ "$(detail gate .passed)" = true ] || fail "gate did not pass"

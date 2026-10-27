@@ -48,9 +48,11 @@ class GateModel(
         return glue.install(self, self.pipe, plan)
 
     @uses_components("transformer")
-    def check(self, payload: Probe, ctx: Context) -> dict[str, Any]:
-        run = exercise.warm if payload.mode == "warm" else exercise.gate
-        return run(self.pipe.components["transformer"], payload, ctx)
+    def check(self, payload: Probe, ctx: Context, tel: Telemetry) -> dict[str, Any]:
+        transformer = self.pipe.components["transformer"]
+        if payload.mode == "warm":
+            return exercise.warm(transformer, payload, ctx)
+        return exercise.gate(transformer, payload, ctx, tel)
 
 
 class Make(msgspec.Struct, forbid_unknown_fields=True):
@@ -64,7 +66,7 @@ class Probe(msgspec.Struct, forbid_unknown_fields=True):
     seed: int = 2610272
     latent_frames: Annotated[int, msgspec.Meta(ge=2, le=107)] = 107
     text_tokens: Annotated[int, msgspec.Meta(ge=4, le=1024)] = 256
-    cases: str = "S1,S2,S4"
+    cases: str = "S1,S2,S4,R15"
 
 
 class Report(msgspec.Struct):
@@ -89,6 +91,6 @@ def source(payload: Make, ctx: Context) -> ModelArtifact:
 def gpu(payload: Probe, model: GateModel, ctx: Context, tel: Telemetry) -> Report:
     if payload.mode not in ("warm", "gate"):
         raise ValueError("mode is warm or gate")
-    report = model.check(payload, ctx)
+    report = model.check(payload, ctx, tel)
     tel.log("h3 kitchen carry", mode=payload.mode, passed=report.get("passed"))
     return Report(bool(report.get("passed", payload.mode == "warm")), json.dumps(report, default=str))

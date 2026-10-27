@@ -10,7 +10,8 @@ producer on SM120 at level 4) are the production ones. Not a video, quality or s
 and records their SHA256, the commit, and official.py's dense/exact paths and `sol_dense_steps`.
 
 `gpu mode=gate` runs eager twice (run-to-run control, per-step digests and summaries), then native from step 0
-(S1), after one eager step (S2) and seeded at step 15 (S4). It passes when native's final video/audio and every
+(S1), after one eager step (S2) and seeded at step 15 (S4); R15 makes a preparation refuse after its carry
+attached (15 eager steps held) and checks the request state, Kitchen's table cache and the eager continuation. It passes when native's final video/audio and every
 site's final F32 [H,128] summaries equal eager's (or, if eager itself is not reproducible, stay within 2× its own
 spread), S1/S2 plan a bootstrap stage and S4 none, and the producer serves every sparse block.
 
