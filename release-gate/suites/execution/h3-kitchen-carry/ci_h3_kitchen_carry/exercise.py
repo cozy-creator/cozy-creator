@@ -86,7 +86,8 @@ def schedule(layout: dict[str, Any]) -> tuple[Any, Any, list[tuple[torch.Tensor,
     """Both official schedulers (shift 12 / 3) and the per-step row plan upstream builds."""
     video_schedule, audio_schedule = MiniMaxH3Scheduler(shift=12.0), MiniMaxH3Scheduler(shift=3.0)
     for scheduler in (video_schedule, audio_schedule):
-        scheduler.set_timesteps(STEPS)
+        # H3's sigma grid has evaluations + 1 points (official TimestepPlan.sigma_grid_points).
+        scheduler.set_timesteps(STEPS + 1)
     fields = layout["fields"]
     rows = [
         MiniMaxH3SetTimestepsStep.build_row_timesteps(
@@ -302,7 +303,7 @@ def gate(transformer, payload, ctx, tel=None) -> dict[str, Any]:
         if not any(f"transformer_blocks.{i}" == p for p in SOURCE["dense_paths"])
     ]
     missing = [path for path in sparse_blocks if path not in served]
-    if len(names) != 1 or missing:
+    if not sparse_blocks or len(names) != 1 or missing:
         report.update(passed=False, reason=f"Kitchen producer not serving {missing or 'any site'}")
         return report
     (name,) = names
@@ -447,3 +448,61 @@ def refusal(transformer, request, fresh, name, a_state, tick) -> dict[str, Any]:
         "continuation_max_abs": max(max_abs(state.latents, a_state.latents),
                                     max_abs(state.audio_latents, a_state.audio_latents)),
     }
+
+
+def cpu(transformer, payload) -> dict[str, Any]:
+    """Every step before CUDA, on the CPU executor: the loaded model's dtypes and attention
+    selection, every scheduled row against its loaded tables, one sparse-layout eager forward,
+    and native preparation up to its CUDA-only refusal."""
+    verify_source()
+    device = next(transformer.parameters()).device
+    request = Request(payload.seed, payload.latent_frames, payload.text_tokens, device)
+    report: dict[str, Any] = {
+        **{k: SOURCE[k] for k in ("package_commit", "files")},
+        "runtime_commit": _build_provenance.COMMIT,
+        "runtime": importlib.metadata.version("cozy-runtime"),
+        "tensorfs": importlib.metadata.version("tensorfs"),
+        "torch": torch.__version__, "device": str(device),
+        "layers": len(transformer.transformer_blocks),
+        "f32_children": sorted(n for n, c in transformer.named_children()
+                               if any(p.dtype == torch.float32 for p in c.parameters())),
+        "parameter_dtypes": sorted({str(p.dtype) for p in transformer.parameters()}),
+        "producer_sites": sites(transformer), "backends": backends(transformer),
+        "attention_processors": sorted({type(m.processor).__name__ for m in transformer.modules()
+                                        if hasattr(m, "processor")}),
+        "tokens": request.tokens,
+    }
+    for times, indices in request.rows:  # the ordinary forward's own row check, on the loaded tables
+        transformer._arm(transformer, (), {"timestep": times, "timestep_indices": indices,
+                                           "token_tags": request.fields["token_tags"], "attention_kwargs": {}})
+        transformer._release()
+    report["rows_validated"] = len(request.rows)
+    state = request.state()
+    sparse = request.layout(SOURCE["sol_dense_steps"])
+    began = time.perf_counter()
+    with step_invariants(), torch.no_grad(), attention_scope(sparse):
+        times, indices = request.rows[sparse.step]
+        video, audio = transformer(
+            hidden_states=state.latents[None], audio_hidden_states=state.audio_latents[None],
+            encoder_hidden_states=request.prompt, timestep=times, timestep_indices=indices,
+            attention_kwargs={}, return_dict=False, **request.fields)
+    report["forward"] = {"step": sparse.step, "s": round(time.perf_counter() - began, 2),
+                         "video": list(video.shape), "audio": list(audio.shape),
+                         "finite": bool(video.isfinite().all() and audio.isfinite().all())}
+    vs, aus = copy.deepcopy(request.video_schedule), copy.deepcopy(request.audio_schedule)
+    refusal = None
+    try:
+        plan, _, carry = prepare(transformer, state, vs, aus, request.layout, SOURCE["sol_dense_steps"])
+    except CapabilityError as error:
+        refusal = error
+        report["prepare_refusal"] = str(error)
+    else:  # cannot happen off CUDA; release what it made
+        plan.close()
+        if carry is not None:
+            carry.close()
+    report["passed"] = bool(
+        report["rows_validated"] == STEPS and len(request.video_schedule.timesteps) == STEPS
+        and report["forward"]["finite"] and refusal is not None
+        and refusal.code == "prepared_graph_ineligible" and "CUDA" in str(refusal)
+    )
+    return report

@@ -15,6 +15,10 @@ attached (15 eager steps held) and checks the request state, Kitchen's table cac
 site's final F32 [H,128] summaries equal eager's (or, if eager itself is not reproducible, stay within 2× its own
 spread), S1/S2 plan a bootstrap stage and S4 none, and the producer serves every sparse block.
 
+`cpu` (no GPU) loads the same model on a CPU executor and stops where CUDA starts: fit, plan (the glue
+declines), selection (SDPA), every scheduled row against the loaded tables, one sparse-layout eager forward, and
+`prepare`'s CUDA refusal. It needs any layer count (`source layers=1 refiner_layers=0` is 0.79 GiB).
+
 Run it with `sessions/h3-kitchen-carry.sh` (rental, cohort update, checkpoint, warm-up, gate, model delete, end):
 
 ```sh

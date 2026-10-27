@@ -56,11 +56,16 @@ class GateModel(
             return exercise.warm(transformer, payload, ctx)
         return exercise.gate(transformer, payload, ctx, tel)
 
+    @uses_components("transformer")
+    def cpu_check(self, payload: Probe) -> dict[str, Any]:
+        return exercise.cpu(self.pipe.components["transformer"], payload)
+
 
 class Make(msgspec.Struct, forbid_unknown_fields=True):
     seed: int = 2610271
-    layers: Annotated[int, msgspec.Meta(ge=3, le=8)] = 4
-    refiner_layers: Annotated[int, msgspec.Meta(ge=1, le=2)] = 1
+    # The gate needs >= 3 (blocks 0-1 are dense paths); the CPU path loads any.
+    layers: Annotated[int, msgspec.Meta(ge=1, le=8)] = 4
+    refiner_layers: Annotated[int, msgspec.Meta(ge=0, le=2)] = 1
 
 
 class Probe(msgspec.Struct, forbid_unknown_fields=True):
@@ -96,3 +101,11 @@ def gpu(payload: Probe, model: GateModel, ctx: Context, tel: Telemetry) -> Repor
     report = model.check(payload, ctx, tel)
     tel.log("h3 kitchen carry", mode=payload.mode, passed=report.get("passed"))
     return Report(bool(report.get("passed", payload.mode == "warm")), json.dumps(report, default=str))
+
+
+@app.entrypoint(accelerator=False)
+def cpu(payload: Probe, model: GateModel, ctx: Context, tel: Telemetry) -> Report:
+    """The model's load, fit, plan and selection on a CPU executor, up to the CUDA-only steps."""
+    report = model.cpu_check(payload)
+    tel.log("h3 kitchen carry cpu", passed=report["passed"])
+    return Report(report["passed"], json.dumps(report, default=str))
