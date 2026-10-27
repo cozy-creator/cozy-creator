@@ -5,6 +5,11 @@ import os
 from dataclasses import dataclass
 
 
+# The Runtime's host-stall codes (cozy_runtime/author/_stalls.py) that are a weight read: bytes from TensorFS into the
+# executor's tensors, or the wait for a prefetched read to land.
+WEIGHT_READS = ('cozy_runtime.internal.residency.Memory._read_into', 'cozy_runtime.internal.residency.Memory._settle_prefetch')
+
+
 @dataclass(frozen=True)
 class Run:
     record: dict
@@ -44,15 +49,38 @@ class Run:
     def attention(self):
         return sorted({o['value'] for o in self.observations if o.get('name') == 'attention.selected'})
 
-    @property
-    def steps(self):
-        """The dominant step series (largest total) of the run and its calls, in ms."""
-        best = None
+    def _step_track(self):
+        """The dominant step track (largest total) of the run and its calls, with the measurement holding it."""
+        best = (None, None)
         for m in self.measurements:
             for v in ((m.get('attribution') or {}).get('steps') or {}).values():
-                if v.get('count') and (best is None or v.get('total_ms', 0) > best.get('total_ms', 0)):
-                    best = v
-        return [x[1] for x in (best or {}).get('series') or []]
+                if v.get('count') and (best[1] is None or v.get('total_ms', 0) > best[1].get('total_ms', 0)):
+                    best = (m, v)
+        return best
+
+    @property
+    def steps(self):
+        """The dominant step series of the run and its calls, in ms."""
+        return [x[1] for x in (self._step_track()[1] or {}).get('series') or []]
+
+    @property
+    def step1_read_ms(self):
+        """What step 1 waited on weight reads: the `host · <read>` stalls the Runtime's sampler logged at step 1's
+        end (its stage's first entry ends there). A fresh pod's first call reads its weights from a cold disk inside
+        step 1; that is I/O, which the run's execution time and the tensorfs/varena suites judge, not step compute."""
+        m, track = self._step_track()
+        series = (track or {}).get('series') or []
+        if not series:
+            return 0
+        end = series[0][0]
+        # The stall's entry is written right after the step's, in the same callback; the next step's ends later.
+        window = min(50, (series[1][0] - end) / 2) if len(series) > 1 else 50
+        ms = 0.0
+        for name, st in ((m.get('attribution') or {}).get('stages') or {}).items():
+            if name.startswith('host · ') and name[len('host · '):] in WEIGHT_READS and st.get('count'):
+                if abs(st['started_unix_ms'] + st['first_ms'] - end) <= max(window, 2):
+                    ms += st['first_ms']
+        return min(ms, series[0][1])
 
     def stage_ms(self, name):
         return sum(((m.get('attribution') or {}).get('stages') or {}).get(name, {}).get('total_ms') or 0 for m in self.measurements)

@@ -90,8 +90,13 @@ for name, target, number in cells:
         notes.append(f'{name} VRAM: {vram["added"] / 1024:.1f} GiB added, {vram["peak"] / 1024:.1f} GiB in use at its fullest (driver)')
     elif run.gpus:
         fails.append(f'{name}: run {run.number} has no driver VRAM reading (memory.driver): its machine\'s TensorD predates it')
+    # Step 1 is judged without the weight reads it waited on (a fresh pod's cold disk): execution time keeps them.
+    reads = run.step1_read_ms
+    if s and reads:
+        notes.append(f'{name}: step 1 {s[0] / 1000:.1f} s, of which {reads / 1000:.1f} s weight reads (judged in execution time)')
+        s = [s[0] - reads] + s[1:]
     c = summary[name] = {'blocking': blocking, 'run': run.number, 'target': canonical(target), 'gemm': gemm, 'attention': attn,
-                         'execution_ms': run.execution_ms, 'step1_ms': round(s[0]) if s else None,
+                         'execution_ms': run.execution_ms, 'step1_ms': round(s[0]) if s else None, 'step1_read_ms': round(reads),
                          'vram_mb': vram and vram['added'],
                          'steady_ms': round(sum(s[1:]) / len(s[1:])) if len(s) > 1 else None, 'files': list(run.outputs)}
     if len(s) > 2:
