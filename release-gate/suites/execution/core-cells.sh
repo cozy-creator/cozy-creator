@@ -15,3 +15,4 @@ cell kernel-ready-dropped-slot "$CORE_READY_TARGET" mode=dropped-slot seed:=$((R
 cell memory-bounded "$CORE_MEMORY_TARGET" mode=bounded seed:=$((R + 305)) --gpus=1
 cell memory-retry "$CORE_MEMORY_TARGET" mode=retry seed:=$((R + 306)) --gpus=1
 cell memory-capture "$CORE_MEMORY_TARGET" mode=capture seed:=$((R + 307)) --gpus=1
+cell memory-physical-retry "$CORE_MEMORY_TARGET" mode=physical-retry seed:=$((R + 308)) --gpus=1

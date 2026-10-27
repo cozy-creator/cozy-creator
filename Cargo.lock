@@ -4082,7 +4082,7 @@ dependencies = [
 
 [[package]]
 name = "tensorfs-py"
-version = "0.17.1+oom1"
+version = "0.17.1"
 dependencies = [
  "async-trait",
  "base64 0.23.1",

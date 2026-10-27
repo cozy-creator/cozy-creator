@@ -80,11 +80,12 @@ def exercise(mode, seed):
 
 def physical_retry(seed):
     """Actual runtime OOM, native reclaim/retry, then a checked kernel on the same thread."""
-    assert torch.cuda.device_count() == 1, "use one isolated rental GPU"
+    gpu_count = torch.cuda.device_count()
+    assert gpu_count == 1, "use one isolated rental GPU"
     torch.cuda.empty_cache()
     free_before, total = torch.cuda.mem_get_info(0)
-    assert total >= 8 * (1 << 30) and total - free_before <= 2 * (1 << 30), (
-        "physical retry requires a quiescent, dedicated rental GPU",
+    assert total >= 8 * (1 << 30) and free_before >= 4 * (1 << 30), (
+        "physical retry needs headroom on its dedicated rental GPU",
         free_before,
         total,
     )
@@ -108,6 +109,7 @@ def physical_retry(seed):
         assert native_before["pinned_bytes"] == 0
         assert native_before["ready_bytes"] == native_before["resident_bytes"] >= private_bytes
         assert allocator_before["activation_admission_limit"] == 0
+        assert allocator_before["budget_refusals"] == 0
         assert allocator_before["torch_reserved_bytes"] == 0
         assert torch.cuda.memory_allocated(0) == torch.cuda.memory_reserved(0) == 0
         free, total = torch.cuda.mem_get_info(0)
@@ -158,7 +160,8 @@ def physical_retry(seed):
         # Do not clear/query CUDA error state between the recovered allocation and this kernel.
         output[:1].fill_(7)
         torch.cuda.synchronize()
-        assert output[0].item() == 7
+        value = output[0].item()
+        assert value == 7
         free_after, _ = torch.cuda.mem_get_info(0)
         assert free_after >= headroom, (free_after, headroom)
         result = {
@@ -168,14 +171,18 @@ def physical_retry(seed):
             "runtime": importlib.metadata.version("cozy-runtime"),
             "tensorfs": importlib.metadata.version("tensorfs"),
             "device": torch.cuda.get_device_name(0),
+            "gpu_count": gpu_count,
             "local_memory_cap_bytes": None,
             "seed": seed,
+            "physical_in_use_before_bytes": total - free_before,
             "before": before,
             "allocator_after": allocator_after,
             "native_after": native_after,
             "raw_allocation_bytes": raw_bytes,
             "free_after_bytes": free_after,
             "next_kernel_healthy": True,
+            "next_kernel_value": value,
+            "next_kernel_synchronized": True,
             "scope": "Dedicated-rental physical CUDA OOM recovery; no model throughput claim",
         }
     finally:
