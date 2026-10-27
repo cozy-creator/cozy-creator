@@ -403,11 +403,11 @@ impl Publisher {
     fn pull(&self, source: &hub::Source, named: &Named, components: Option<&[String]>, stop: Option<&Stop>,
         bytes: &(dyn Fn(u64, u64) + Sync)) -> Result<Landed, Failure> {
         let header = named.header()?;
-        let remote = origin::remote(&self.machine, source).map_err(|e| refused("model_download_failed", e))?;
+        let remote = origin::remote(&self.machine, source).map_err(|e| unsigned(source, refused("model_download_failed", e.clone()), &e))?;
         let stop = stop.cloned().unwrap_or_default();
         let failed = |e: Refusal| match stop.is_cancelled() {
             true => canceled(),
-            false => refused("model_download_failed", e),
+            false => unsigned(source, refused("model_download_failed", e.clone()), &e),
         };
         let (started, subject) = (Instant::now(), named.shown());
         let failed = |e: Refusal| {
@@ -1382,7 +1382,7 @@ fn measured(machine: &Machine, service: &Service, source: &hub::Source, named: N
     if let Some((tree, lane, header)) = held.and_then(|held| serde_json::from_str(&held).ok()) {
         return Ok(Named { tree, lane, header: Some(header), ..named });
     }
-    let failed = |e| refused("model_resolution_failed", e);
+    let failed = |e: Refusal| unsigned(source, refused("model_resolution_failed", e.clone()), &e);
     let object = match tree.length {
         0 => origin::object(machine, source, &tree.sha256).map_err(failed)?,
         _ => tree,
