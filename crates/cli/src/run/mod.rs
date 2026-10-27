@@ -45,7 +45,7 @@ const EXAMPLES: &str = "Examples:
 A run is followed to its end: Ctrl-C stops following, never the run; `cozy run show N` follows it again.";
 
 #[derive(clap::Args, Debug)]
-#[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true, after_help = EXAMPLES)]
+#[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true, arg_required_else_help = true, after_help = EXAMPLES)]
 pub struct Args {
     #[command(subcommand)]
     verb: Option<Verb>,
