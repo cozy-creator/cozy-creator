@@ -1,9 +1,9 @@
-# executor-fault: a GPU call whose executor can no longer settle keeps its stderr with the failure (gpu_service's
-# unsettled branch; 40459633948 lost a dead follower's SIGABRT this way). One rental, driven from a runner; the session's
-# cozy carries the candidate TensorD onto the pod. The weightless fixture (fixtures/cuda-fault) prints a marker to its
-# stderr, then trips a device-side assert, which leaves its CUDA context poisoned: the same branch a dead follower takes
-# (its fault is the latch here, the lost rank there; every rank writes the leader's stderr). Then a successor completes
-# in a fresh process. params:
+# executor-fault: a GPU call whose executor dies keeps the dead process's reason (its signal) and its last stderr lines,
+# in the run's reason detail and in the machine's tensord log (40459633948 lost a dead follower's SIGABRT this way).
+# One rental, driven from a runner; the session's cozy carries the candidate TensorD onto the pod. The weightless
+# fixture (fixtures/cuda-fault) prints a marker to its stderr, then trips a device-side assert. A real driver reports
+# that as Xid 43 and TensorD ends the executor: the executor-died path. A dead group follower shares the same fault
+# section and log line (every rank writes the leader's stderr). Then a successor completes in a fresh process. params:
 #   traffic_gb  GB the provider bills: the image and the fixture's environment (default 8)
 . "$(dirname "$0")/lib.sh"
 FIX=$(cd "$(dirname "$0")/fixtures" && pwd)
@@ -30,6 +30,8 @@ say "fault run $F: $st ($code): $(jq -r '.reason.message // empty' "$OUT/fault.j
 jq -r '.reason.detail // empty' "$OUT/fault.json" > "$OUT/fault-detail.txt"
 grep -q "$MARK" "$OUT/fault-detail.txt" || fail "the failure's detail lacks the executor's stderr ($MARK): $(head -c 400 "$OUT/fault-detail.txt")"
 grep -qiE 'device-side assert|index out of bounds' "$OUT/fault-detail.txt" || fail "the detail lacks the CUDA assert: $(tail -c 400 "$OUT/fault-detail.txt")"
+grep -q 'last 50 lines of its stderr' "$OUT/fault-detail.txt" || fail "the detail is not the fault section: $(head -c 300 "$OUT/fault-detail.txt")"
+grep -qiE 'signal|xid' "$OUT/fault-detail.txt" || fail "the detail does not name how the process died: $(head -c 300 "$OUT/fault-detail.txt")"
 fpid=$(grep -oE "$MARK: pid [0-9]+" "$OUT/fault-detail.txt" | head -1 | awk '{print $3}')
 cozy machine logs "$NAME" tensord -n 5000 > "$OUT/tensord.log" 2>&1
 grep -q "$MARK" "$OUT/tensord.log" || fail "the machine log does not carry the executor's stderr ($MARK)"
