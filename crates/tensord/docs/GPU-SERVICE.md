@@ -96,12 +96,29 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
   single GPU does: the child takes the lane and NCCL seal with its environment; followers are spawned
   by rank 0.
 - Before loading or reusing a GPU session, other idle constructions on its lane offload through
-  `Map(Ram)`, outside warm sets first and then LRU, until driver free bytes cover its measured
-  peak. Without a known peak all eligible candidates offload. Running sessions are absent from
-  this idle pool. The executor then makes room locally or returns its allocation failure.
+  `Map(Ram)`, outside warm sets first and then LRU, until driver free bytes cover the call's
+  need: per GPU, the construction's measured working-set peak less what its own executor already
+  holds there (the driver's bytes for each rank's process). A cold or offloaded executor holds
+  nothing that counts; a reused resident one holds its weights and cache, which the driver's free
+  reading already counts as used, so charging its whole peak again would evict small idle
+  neighbours (`ask`, `remove_background`) before every segment. Where the driver cannot attribute
+  the process (a container whose pids are not the driver's), a reuse is charged its whole peak.
+  Without a known peak all eligible candidates offload. If offloading weights still does not cover
+  a known, exact need (not a first call, not the whole-peak estimate), idle processes end in the same order
+  (`ended_for_room`), newly offloaded ones among them and warm sets last, to reclaim the CUDA
+  context and package globals each holds (2-3 GB, most of an 8-12 GB card); a restart is paid
+  only if that construction runs again, and only when its held bytes are the difference between
+  this call fitting or not. Running sessions are absent from this idle pool. The executor then
+  makes room locally or returns its allocation failure.
   `ChildLauncher` journals the birth before Start, Load and Activate; each request sends
   PrepareRequest and Invoke. Final Invoke figures are recorded before dispatch measurements
   end, and persisted peaks retain their high-water values.
+- A measured peak is a hint a call can outgrow. While a call holds a GPU and the driver's free
+  bytes fall under the pressure headroom (the larger of 512 MiB and 10%), the reclaim loop
+  offloads idle neighbours on that GPU (`Map(Ram)`, LRU and warm sets last, `running_call`), so
+  the active call pages its own weights only after every idle neighbour has given its back.
+  Sibling Cozy executors are never foreign pressure, so ending idle processes and cancelling stay
+  the external-pressure rungs below.
 - Warming: a warm member's executor is loaded, then `Map{construction, level}` has it load its
   models at `gpu` or `ram`; varena fills them, and its priority is in use > warm > idle.
 - External pressure uses driver-attributed process usage on the existing reclaim loop: offload
@@ -113,6 +130,13 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
   triage bundle (`triage.rs`: terminal, traceback, executor pid and stderr tail; canonical JSON
   under `execution/triage/`, fsynced) and binds it in the journal; the outcome body names it as
   `triage_bundle`, and `ReadMachineExecutionTriage` returns its bytes.
+- A call whose executor cannot settle (a follower that died mid-call, the leader's poisoned
+  latch, or no quiescence) always keeps a bundle, before its kill, with its `fault` (`GPU 1's
+  process 5163 ended`, else the latch) beside the stderr tail. Every rank writes the leader's
+  stderr (followers inherit its descriptor), so the dead rank's own last words, its abort or CUDA
+  error, are in that tail: the run's reason detail and log carry the fault and its last 50 stderr
+  lines, a failed child's caller gets the traceback and them, and the machine's tensord log names
+  the fault with the same lines.
 - Start happens only after `authorize_managed`.
 - Invoke must be quiescent. A reusable executor's old cancellation handle is disabled and its
   process detached from that invocation before pool return. Owned CPU output encoding and

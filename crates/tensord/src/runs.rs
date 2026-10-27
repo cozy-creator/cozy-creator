@@ -493,7 +493,7 @@ impl Runs {
                     .map_err(|(code, message)| refused(code, message))?;
                 let hardware = self.service.gpu().map(|gpu| gpu.hardware(gpu.width() as u32)).unwrap_or_default();
                 let stage = format!("downloading {}", choice.repository);
-                let (named, (hub, volume)) = publisher.download(&self.service, hub_access()?, named, &hardware, &spec.catalog_revision, stop, &|done, total| {
+                let (named, landed) = publisher.download(&self.service, hub_access()?, named, &hardware, &spec.catalog_revision, stop, &|done, total| {
                     observe(&stage, done, total)
                 })?;
                 for reason in &named.reasons {
@@ -510,7 +510,7 @@ impl Runs {
                 let tree = named.tree.as_ref().map(ObjectRef::id);
                 let row = json!({"parameter": choice.parameter, "repository": named.repository,
                     "release": named.release, "lane": named.lane, "precision": profile.family, "tree": tree,
-                    "checkpoint": header.id(), "bytes": {"hub": hub, "volume": volume}});
+                    "checkpoint": header.id(), "bytes": {"hub": landed.origin, "volume": landed.volume, "local": landed.local}});
                 (header, named.tree, row)
             };
             // A commit's repo files (configs, a tokenizer) go with its header.
@@ -653,7 +653,7 @@ impl Runs {
             ahead = plan.as_ref().map(|plan| {
                 let order = self.service.engine.get(id).map_or(u64::MAX, |record| record.root_seq());
                 let fetch = crate::access::Fetch::new(self.publisher.machine().clone(), hub.clone(), order);
-                match fetch.ahead(&plan.upfront(), &plan.on_demand()) {
+                match fetch.ahead(&plan.upfront(), &plan.on_demand(), &self.service.engine) {
                     Ok(()) => crate::access::meter(self.service.engine.clone(), id.to_string(), &fetch),
                     Err(error) => tracing::warn!("run {id}: its weights' early fetch: {error}"),
                 }
@@ -704,7 +704,7 @@ impl Runs {
             };
             // A function's warm run ends holding what its constructions read (`downloaded`), its
             // on-demand models' too.
-            let mut moved = (0, 0);
+            let mut moved = tensorfs::fetch::Landed::default();
             if let Some(plan) = &plan {
                 let fetch = crate::access::Fetch::new(self.publisher.machine().clone(), hub.clone(), u64::MAX);
                 let report = |done, total| observe("downloading its weights", done, total);
@@ -720,7 +720,7 @@ impl Runs {
             // warm run's result.
             let installed = json!({"package": installation.package, "release": installation.release,
                 "installation": installation.alias, "interface": interface,
-                "bytes": {"hub": moved.0, "volume": moved.1}});
+                "bytes": {"hub": moved.origin, "volume": moved.volume, "local": moved.local}});
             return warm_result(installed, models);
         }
         let entry = declared.expect("checked above");
@@ -1279,6 +1279,13 @@ impl Runs {
             tracing::warn!("prefetch of a child: {error}");
         }
         Ok(())
+    }
+
+    /// Observe required-input readiness without consuming the existing fetch owner.
+    pub(crate) fn source_ready(&self, id: &str) -> crate::access::Ready {
+        self.contexts.lock().unwrap().get(id)
+            .and_then(|context| context.ahead.as_ref())
+            .map_or(crate::access::Ready::Yes, |fetch| fetch.ready())
     }
 
     /// The fetches a run's preparation started, for its call to end once its executor asks.

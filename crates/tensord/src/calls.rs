@@ -173,6 +173,10 @@ impl Calls {
         self.parents.lock().unwrap().get(id).is_some_and(|parent| parent.unfinished(engine))
     }
 
+    pub(crate) fn source_ready(&self, id: &str) -> crate::access::Ready {
+        self.runs.upgrade().map_or(crate::access::Ready::Yes, |runs| runs.source_ready(id))
+    }
+
     pub(crate) fn tensorfs(&self, id: &str) -> Option<protocol::machine::TensorFSOptions> {
         self.runs.upgrade().and_then(|runs| runs.tensorfs(id))
     }

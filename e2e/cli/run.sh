@@ -89,6 +89,27 @@ kept=$(ls ~/.cozy/packages/local/words/*.json 2> /dev/null | head -1)
 [ -n "$kept" ] && ! grep -q '"accelerator":false' "$kept" || check "the script's interface is not accelerator=True (${kept:-none kept})"
 }
 
+# The shared image contract's canvas envelope (cozy-runtime #1830): an output ratio from 1:16 through 16:1 runs and its
+# canvas stays inside it; one outside is refused while the request decodes, before the function runs.
+image_ratio() {
+step "image ratios"
+ratio=$(cd "$(dirname "$0")/script" && pwd)/ratio.py
+for r in 16:1 1:16 32000:2000; do
+  name=ratio-${r/:/-}
+  if cell "$name" "$ratio" "prompt=ratio $RANDOM" "aspect_ratio=$r"; then
+    w=$(grep -o '"width": *[0-9]*' "$OUT/$name.ndjson" | tail -1 | grep -o '[0-9]*$')
+    h=$(grep -o '"height": *[0-9]*' "$OUT/$name.ndjson" | tail -1 | grep -o '[0-9]*$')
+    { [ -n "$w" ] && [ -n "$h" ] && [ "$w" -le $((16 * h)) ] && [ "$h" -le $((16 * w)) ]; } || check "$name: canvas ${w:-?}x${h:-?} is not within 16:1"
+    echo "$name: canvas ${w}x${h}"
+  fi
+done
+for r in 17:1 1:17 32768:32; do
+  name=ratio-${r/:/-}
+  ALLOW='is outside 1:16 through 16:1' cell "$name" "$ratio" "prompt=ratio $RANDOM" "aspect_ratio=$r" || true
+  [ -f "$OUT/$name.refused" ] || check "$name: aspect_ratio $r was not refused"
+done
+}
+
 # Describe reads a checkout's editable install statically (direct_url.json and .pth paths, never their code).
 describe() {
 step "describe"
@@ -151,11 +172,11 @@ remove() { logs; step "remove cozy"; remove_cozy; }
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
 case $SHARD in
-  '') parts="weightless script_package describe first_run second_executor lifetime catalog basics yaml_requests run_flags run_follow run_filters run_play machines completions calcifer_faults update remove" ;;
+  '') parts="weightless script_package image_ratio describe first_run second_executor lifetime catalog basics yaml_requests run_flags run_follow run_filters run_play machines completions calcifer_faults update remove" ;;
   runs) parts="weightless describe first_run run_flags run_play logs" ;;
   executors) parts="describe second_executor lifetime update remove" ;;
   commands) parts="catalog basics yaml_requests run_filters logs" ;;
-  follow) parts="script_package run_follow machines completions calcifer_faults logs" ;;
+  follow) parts="script_package image_ratio run_follow machines completions calcifer_faults logs" ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;
 esac
 [ -n "$LOCAL" ] || parts="catalog refusals completions homebrew calcifer_faults update remove"

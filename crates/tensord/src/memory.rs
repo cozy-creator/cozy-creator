@@ -42,6 +42,12 @@ impl Gpu {
         platform::gpu::Device::open(&self.uuid).and_then(|gpu| gpu.free()).ok()
     }
 
+    /// The bytes the driver charges process `pid` on this GPU now; None where it cannot say (a
+    /// container whose pids are not the driver's, WDDM) or the process holds nothing here.
+    pub fn process_bytes(&self, pid: u32) -> Option<u64> {
+        platform::gpu::Device::open(&self.uuid).ok()?.read().ok()?.processes?.get(&pid).copied()
+    }
+
     pub fn usage(&self, tenants: &Tenants) -> Option<DeviceUse> {
         let read = platform::gpu::Device::open(&self.uuid).and_then(|gpu| gpu.read()).ok()?;
         if read.total == 0 { return None }

@@ -1007,9 +1007,30 @@ impl Pool {
         Ok(())
     }
 
-    fn measured_peak(&self, lane: &std::ops::Range<usize>, construction: &str) -> Option<u64> {
-        self.devices.get(lane.clone()).into_iter().flatten().filter_map(|d| d.memory.as_ref())
-            .filter_map(|gpu| gpu.figures.request_peak(construction, "")).max()
+    /// The bytes a call of `construction` still needs free on `lane`, per GPU the largest of its
+    /// measured working-set peak less what its executor already holds there (`held`, the driver's
+    /// bytes for each rank's process, aligned with the lane). A cold call holds nothing; a reused
+    /// resident one holds its weights and cache, which the driver's free reading already counts as
+    /// used, so charging its whole peak again would evict small idle neighbours (`ask`,
+    /// `remove_background`) before every segment. Runtime reports no figure for the weights alone,
+    /// so this reads the process itself.
+    fn room_need(&self, lane: &std::ops::Range<usize>, construction: &str, held: &[u64]) -> Option<u64> {
+        let devices = self.devices.get(lane.clone())?;
+        let mut need = None;
+        for (rank, device) in devices.iter().enumerate() {
+            let Some(peak) = device.memory.as_ref().and_then(|gpu| gpu.figures.request_peak(construction, "")) else { continue };
+            let extra = peak.saturating_sub(held.get(rank).copied().unwrap_or(0));
+            need = Some(need.map_or(extra, |n: u64| n.max(extra)));
+        }
+        need
+    }
+
+    /// What a reused executor holds on each GPU of its lane, by its ranks' processes; None where the
+    /// driver cannot attribute them (then its need is its whole peak, and nothing is ended for it).
+    fn held(&self, session: &Session) -> Option<Vec<u64>> {
+        let pids = std::iter::once(session.executor.birth.pid).chain(session.followers.iter().map(|f| f.birth().pid));
+        let lane = self.devices.get(session.start..session.start + session.degree as usize)?;
+        lane.iter().zip(pids).map(|(device, pid)| device.memory.as_ref()?.process_bytes(pid)).collect()
     }
 
     fn free(&self, lane: &std::ops::Range<usize>) -> Option<u64> {
@@ -1050,20 +1071,67 @@ impl Pool {
             "ack_ms": began.elapsed().as_secs_f64() * 1e3, "failed": why}));
     }
 
-    /// Offload other idle constructions on this lane, LRU first, until current free bytes cover
-    /// its measured peak. Unknown peaks offload all candidates. Running sessions are absent
-    /// from the idle pool and are never stopped or awaited by this operation.
-    fn make_room(&self, engine: &Arc<Engine>, construction: &str, lane: std::ops::Range<usize>) {
-        let need = self.measured_peak(&lane, construction);
+    /// Idle sessions on `lane` whose weights are on the GPU, least recently used first and
+    /// outside every warm set before any member: the order `make_room` offloads and ends them in.
+    fn idle_on_lane(&self, lane: &std::ops::Range<usize>, level: Level) -> Vec<String> {
         let members: std::collections::BTreeSet<String> = self.members.lock().unwrap().values().flatten()
             .filter_map(|member| member.plan.as_ref().map(|plan| plan.construction.clone())).collect();
         let mut candidates: Vec<_> = self.sessions.lock().unwrap().iter()
-            .filter(|(_, s)| s.level == Level::Gpu && s.start < lane.end && lane.start < s.start + s.degree as usize)
+            .filter(|(_, s)| s.level >= level && s.start < lane.end && lane.start < s.start + s.degree as usize)
             .map(|(key, s)| (members.contains(&s.plan), s.used, key.clone())).collect();
         candidates.sort_by_key(|(member, used, _)| (*member, *used));
-        for (_, _, key) in candidates {
-            if need.zip(self.free(&lane)).is_some_and(|(need, free)| free >= need) { return; }
+        candidates.into_iter().map(|(_, _, key)| key).collect()
+    }
+
+    /// Make room on `lane` for a call of `construction`. `held` is what its own executor holds there
+    /// (empty for a cold one), or None for a reused executor the driver cannot attribute.
+    /// First offload other idle constructions' weights (`Map(Ram)`), LRU and outside warm sets
+    /// first, keeping their processes. If that still does not cover the need, end idle processes
+    /// in the same order to reclaim the CUDA context and package globals each keeps (2-3 GB,
+    /// which is most of an 8-12 GB card): a restart is paid only if that construction runs again,
+    /// and only when its held bytes are the difference between this call fitting or not. Unknown
+    /// peaks offload all candidates. Running sessions are absent from the idle pool and are never
+    /// stopped or awaited here.
+    fn make_room(&self, engine: &Arc<Engine>, construction: &str, lane: std::ops::Range<usize>, held: Option<Vec<u64>>) {
+        let need = self.room_need(&lane, construction, held.as_deref().unwrap_or(&[]));
+        // Ending a process is paid back only for a need that is known and exact: not a first call
+        // (no peak yet) and not a reuse the driver cannot attribute (its whole peak, an estimate).
+        let exact = held.is_some() && need.is_some();
+        let covered = || need.zip(self.free(&lane)).is_some_and(|(need, free)| free >= need);
+        for key in self.idle_on_lane(&lane, Level::Gpu) {
+            if covered() { return; }
             self.offload_idle(engine, &key, construction, need);
+        }
+        // Weights are off the GPU now; contexts remain. End idle processes to reclaim them only
+        // while still short of an exact need, newly offloaded (`Host`) ones among them, warm sets
+        // last.
+        if !exact {
+            return;
+        }
+        for key in self.idle_on_lane(&lane, Level::Host) {
+            if covered() { return; }
+            if self.end_session(&key) {
+                self.notes.note(serde_json::json!({"event": "ended_for_room", "ended": key,
+                    "for": construction, "need": need, "free": self.free(&lane)}));
+            }
+        }
+    }
+
+    /// A running call owns its GPUs ahead of idle neighbours. A measured peak is a hint a call
+    /// can outgrow (bigger activations than any sample), so `make_room`'s one-time offload can
+    /// fall short mid-call. While a call holds GPU `index` and the driver's free bytes are under
+    /// the pressure headroom, offload idle neighbours there (weights only, LRU and warm sets
+    /// last), so the active call pages its own weights only after every idle neighbour has given
+    /// its back. Sibling Cozy executors are never foreign pressure, so ending idle processes and
+    /// cancelling stay the foreign path's rungs below. Runs on the existing 500 ms reclaim loop.
+    fn yield_to_call(&self, engine: &Arc<Engine>, index: usize, device: &Device) {
+        let calling = || self.lanes.lock().unwrap().values().any(|lane| lane.contains(&index));
+        let (Some(gpu), Some(row)) = (device.memory.as_ref(), memory::row(&device.entry, &self.config.inventory)) else { return };
+        let headroom = Pressure::headroom(row.memory_bytes);
+        if !calling() { return }
+        for key in self.idle_on_lane(&(index..index + 1), Level::Gpu) {
+            if gpu.free().is_none_or(|free| free >= headroom) || !calling() { return }
+            self.offload_idle(engine, &key, "running_call", Some(headroom));
         }
     }
 
@@ -1071,6 +1139,7 @@ impl Pool {
     /// neither elapsed time nor an unavailable driver reading authorizes cancellation.
     pub(crate) fn relieve_pressure(&self, engine: &Arc<Engine>) {
         for (index, device) in self.devices.iter().enumerate() {
+            self.yield_to_call(engine, index, device);
             let usage = device.memory.as_ref().and_then(|gpu| gpu.usage(&self.tenants));
             let blocked = {
                 let mut pressure = self.pressure.lock().unwrap();
@@ -2010,6 +2079,13 @@ impl Pool {
             self.note_gpus(engine, root, "release", lane, None);
         }
     }
+    /// Yield only an idle between-step lane for source I/O. An active GPU parent keeps
+    /// its registered lane so its awaited family child can enter after the source arrives.
+    pub(crate) fn release_for_fetch(&self, engine: &Engine, root: u64) {
+        if let Some(lane) = self.allocations.release_between_steps(root) {
+            self.note_gpus(engine, root, "release", lane, None);
+        }
+    }
     /// `root`'s lane, bound now when free; None while it waits. Each transition is logged on
     /// the root run as a `gpu` entry: a grant, a wait naming its current blocker, and a lane
     /// that ended for it as its younger holder's release behind it.
@@ -2805,7 +2881,11 @@ impl Pool {
         };
         let session = match retained {
             Some(session) => {
-                if degree > 0 { self.make_room(engine, &plan.construction, start..start + degree as usize); }
+                if degree > 0 {
+                    // Offloaded (`Host`) it holds only its context: as good as cold for the need.
+                    let held = match session.level { Level::Gpu => self.held(&session), _ => Some(vec![]) };
+                    self.make_room(engine, &plan.construction, start..start + degree as usize, held);
+                }
                 *disposition = Disposition::Unknown(executor_births(&session.executor.birth, &session.followers));
                 engine.register_managed(
                     id,
@@ -2911,7 +2991,7 @@ impl Pool {
         on_birth: impl Fn(&Birth, &Cancellation) -> io::Result<()>,
     ) -> io::Result<Session> {
         self.gpu_cap(plan.degree)?;
-        if plan.degree > 0 { self.make_room(engine, &plan.construction, start..start + plan.degree as usize); }
+        if plan.degree > 0 { self.make_room(engine, &plan.construction, start..start + plan.degree as usize, Some(vec![])); }
         let launched = Instant::now();
         let (root, socket, directory) = self.executor_endpoint()?;
         let config = self.executor_config(held, root, socket, start, plan.degree)?;
@@ -3208,6 +3288,7 @@ impl Pool {
                     message: prepared.detail.clone(),
                     traceback: prepared.traceback.clone(),
                 },
+                "",
             );
             defer_completion(engine, id, &session.executor.birth, &session.followers, Outcome::Failed(failure))?;
             return Ok(None);
@@ -3287,6 +3368,27 @@ impl Pool {
         let lost = self.lost_followers(start, degree, &session.followers);
         let lost_state = !reply.quiescent || !reply.poisoned.is_empty() || !lost.is_empty();
         if !reply.ok || lost_state {
+            let reason = unsettled(&reply, &lost);
+            // What ended its GPU state: a follower that died (its pid and GPU), else the leader's
+            // own latch. Every rank writes the leader's stderr (followers inherit its fd), so the
+            // dead rank's last words, its abort or CUDA error, are in the tail kept with it.
+            let fault = match (lost.is_empty(), reply.poisoned.is_empty()) {
+                (false, _) => lost.clone(),
+                (true, false) => reply.poisoned.clone(),
+                (true, true) if lost_state => "the executor did not settle quiescent".to_string(),
+                (true, true) => String::new(),
+            };
+            // The author's failure keeps its traceback and origin in triage; a group fault keeps
+            // the dead rank's stderr too. Kept before the kill, while the leader still holds it.
+            match reply.outcome.as_ref().filter(|o| !o.traceback.is_empty()) {
+                Some(outcome) => keep_triage(engine, id, &session.executor, outcome, &fault),
+                None if lost_state => {
+                    keep_lifecycle_triage(engine, id, session.executor.birth.pid,
+                        &reason.code, &reason.detail, &session.executor.stderr_tail(), &fault);
+                }
+                None => {}
+            }
+            log_fault(id, session.executor.birth.pid, &fault, &session.executor.stderr_tail());
             // Its GPU state is lost: its own allocations are destroyed at its exit, never kept
             // for another executor; it is killed now, since
             // a graceful end could spin on that state and keep its GPU memory from every later call.
@@ -3296,13 +3398,8 @@ impl Pool {
                     tracing::warn!("run {id}: killing its unsettled executor: {error}");
                 }
             }
-            // The author's failure keeps its traceback and origin in triage; the executor's
-            // end would record only "executor_ended".
-            if let Some(outcome) = reply.outcome.as_ref().filter(|o| !o.traceback.is_empty()) {
-                keep_triage(engine, id, &session.executor, outcome);
-            }
             // The run ends once the executor is gone; its own reason travels with it, typed.
-            return Err(io::Error::other(unsettled(&reply, &lost)));
+            return Err(io::Error::other(reason));
         }
         let outcome = reply
             .outcome
@@ -3327,7 +3424,7 @@ impl Pool {
                 defer_completion(engine, id, &session.executor.birth, &session.followers, Outcome::Canceled)?;
             }
             _ => {
-                keep_triage(engine, id, &session.executor, outcome);
+                keep_triage(engine, id, &session.executor, outcome, "");
                 defer_completion(engine, id, &session.executor.birth, &session.followers, Outcome::Failed(Failure::executor(
                     &outcome.terminal,
                     &outcome.origin,
@@ -3549,7 +3646,12 @@ impl Drop for Dispatched<'_> {
 fn ended_with(engine: &Engine, id: &str, error: io::Error, executor: DeviceExecutor) -> io::Error {
     let (pid, stderr_tail) = (executor.birth.pid, executor.stderr_tail());
     let error = ending(error, executor);
-    keep_lifecycle_triage(engine, id, pid, &error.to_string(), &stderr_tail);
+    // The executor died mid-command (a signal, a GPU fault ending it): its reason names the signal,
+    // and its stderr says why.
+    let fault = error.to_string();
+    if keep_lifecycle_triage(engine, id, pid, "executor_ended", &fault, &stderr_tail, &fault) {
+        log_fault(id, pid, &fault, &stderr_tail);
+    }
     error
 }
 
@@ -3627,7 +3729,10 @@ pub(crate) fn settle(engine: &Arc<Engine>, id: &str, error: &io::Error) -> io::R
         .and_then(|inner| inner.downcast_ref::<device_executor::EndedBeforeStart>())
     {
         let pid = record.process.as_ref().map_or(0, |birth| birth.pid);
-        keep_lifecycle_triage(engine, id, pid, &ended.to_string(), &ended.stderr_tail);
+        let fault = format!("executor exited before connecting ({})", ended.status);
+        if keep_lifecycle_triage(engine, id, pid, "executor_ended", &ended.to_string(), &ended.stderr_tail, &fault) {
+            log_fault(id, pid, &fault, &ended.stderr_tail);
+        }
     }
     let outcome = if record.cancel_actor.is_some() {
         // A canceled call may already have returned its executor for CPU output work.
@@ -3794,16 +3899,28 @@ fn materialize_tree(
     Ok(())
 }
 
+/// A dead or unsettled executor's fault in the machine's tensord log, with its last 50 stderr lines
+/// (every rank writes the leader's), so `cozy machine logs <m> tensord` explains it too.
+fn log_fault(id: &str, pid: u32, fault: &str, stderr_tail: &str) {
+    if fault.is_empty() {
+        return;
+    }
+    let tail = crate::triage::tail_lines(stderr_tail, 50, 8 << 10);
+    tracing::warn!("run {id}: {fault} (executor {pid}); its last stderr lines, every rank's:\n{}",
+        crate::triage::masked(&tail));
+}
+
 /// The failed attempt's triage bundle, kept before the run settles: the executor's own terminal
 /// and traceback, and its stderr tail.
 /// A lifecycle failure's bundle, when the executor wrote no terminal of its own: the reason
 /// and the end of its stderr. A canceled run keeps none.
-fn keep_lifecycle_triage(engine: &Engine, id: &str, pid: u32, reason: &str, stderr_tail: &str) {
+/// Whether it kept one: false for a canceled run or one that already has its bundle.
+fn keep_lifecycle_triage(engine: &Engine, id: &str, pid: u32, code: &str, reason: &str, stderr_tail: &str, fault: &str) -> bool {
     let Ok(record) = engine.get(id) else {
-        return;
+        return false;
     };
     if record.cancel_actor.is_some() || engine.triage(id).ok().flatten().is_some() {
-        return;
+        return false;
     }
     let request = record
         .submission
@@ -3816,13 +3933,15 @@ fn keep_lifecycle_triage(engine: &Engine, id: &str, pid: u32, reason: &str, stde
             attempt: record.attempt,
             terminal: "failed",
             origin: "machine",
-            code: "executor_ended",
+            code,
             message: reason,
             traceback: "",
             executor_pid: pid,
             stderr_tail,
+            fault,
         },
     );
+    true
 }
 
 pub(crate) fn keep_triage(
@@ -3830,6 +3949,7 @@ pub(crate) fn keep_triage(
     id: &str,
     executor: &DeviceExecutor,
     outcome: &device_executor::Outcome,
+    fault: &str,
 ) {
     let record = engine.get(id).ok();
     let request = record
@@ -3848,6 +3968,7 @@ pub(crate) fn keep_triage(
             traceback: &outcome.traceback,
             executor_pid: executor.birth.pid,
             stderr_tail: &executor.stderr_tail(),
+            fault,
         },
     );
 }
