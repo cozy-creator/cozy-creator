@@ -9,7 +9,7 @@ fetch() {
   local f=$OUT/wheels/$(basename "${1%%#*}" | sed 's/%2B/+/g')
   [[ $1 == https://*#sha256=* ]] || { echo "$1 is not https://…#sha256=" >&2; return 1; }
   mkdir -p "$OUT/wheels"
-  [ -f "$f" ] || curl -fsSL --retry 5 --retry-all-errors "${1%%#*}" -o "$f" || { echo "cannot fetch ${1%%#*}" >&2; return 1; }
+  [ -f "$f" ] || curl -fsSL --retry 5 --retry-all-errors --speed-limit 1024 --speed-time 60 "${1%%#*}" -o "$f" || { echo "cannot fetch ${1%%#*}" >&2; return 1; }
   [ "$(sha256sum "$f" | cut -d' ' -f1)" = "${1##*#sha256=}" ] || { echo "$f does not hash to ${1##*#sha256=}" >&2; return 1; }
   echo "$f"
 }
