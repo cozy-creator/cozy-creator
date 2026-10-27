@@ -136,9 +136,10 @@ jobs:
     permissions:
       contents: read
       actions: read  # a dev-build cozy, a wheel artifact of this run
-    # One gate per SKU and suite at a time: its rental and its baseline.
+    # A publishing gate waits for the SKU and suite's other publishing gate (their baseline). Every other gate rents its
+    # own pod and runs on its own, so a newer dispatch never cancels another's queued gate.
     concurrency:
-      group: release-gate-${{ matrix.sku }}-${{ matrix.key }}
+      group: release-gate-${{ matrix.sku }}-${{ matrix.key }}${{ !inputs.publish && format('-{0}', github.run_id) || '' }}
       cancel-in-progress: false
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The gate fails on the CLI's
     # typed errors and exits, never on time; H3 at the product shape on a cold machine is the long cell.
