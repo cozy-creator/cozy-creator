@@ -146,6 +146,11 @@ pub(crate) fn record(ctx: &Context, m: &Machine) -> output::Record {
     if let Some(fingerprint) = &m.fingerprint {
         record = record.field("fingerprint", fingerprint);
     }
+    if let Some(key) = &m.controller_key {
+        record = record
+            .field("controller key", key)
+            .note(format!("another computer lets this one use its machine: cozy machine authorize {key}"));
+    }
     if let Some(r) = &m.rental {
         record = record
             .field("sku", &r.sku)

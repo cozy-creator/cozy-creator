@@ -281,15 +281,15 @@ code=0; timeout 8 "$COZY" machine logs local --follow > "$OUT/log-follow.txt" 2>
 printf 'machine\x1flogs\x1flocal\x1f--follow\x1f\x1e' >> "$OUT/argv.log"  # timeout runs the binary itself
 [ "$code" = 124 ] && [ -s "$OUT/log-follow.txt" ] || check "machine logs --follow: exited $code instead of following"
 
-step "an added machine"
+step "this computer's machine, by its address and key"
+# Another computer adds it (release-gate session multi-machine): here, by its own address, it is refused.
 addr=$(jq -r .address "$OUT/local.json") || true; fp=$(jq -r .fingerprint "$OUT/local.json") || true
-cozy --json machine add e2e-self "$addr" --fingerprint "$fp" > "$OUT/added.json" || check "machine add e2e-self $addr failed"
-cozy --json machine list | J '.machines | any(.name == "e2e-self")' || check "machine add: e2e-self is not listed"
-if (cd "$here" && cozy --json run ./weightless/reverse text=added --on e2e-self > "$OUT/on-added.ndjson"); then
-  grep -q dedda "$OUT/on-added.ndjson" || check "a run on e2e-self: no reply"
-else check "a run on the added machine failed"; fi
-code=0; cozy --json machine ssh e2e-self > "$OUT/ssh-added.json" 2> "$OUT/ssh-added.err" || code=$?
-[ "$code" = 2 ] && J '.error.code == "machine_ssh_none"' "$OUT/ssh-added.json" || check "machine ssh e2e-self: exit $code, not refused as no rental: $(head -c 300 "$OUT/ssh-added.json")"
+code=0; cozy --json machine add e2e-self "$addr" --fingerprint "$fp" > "$OUT/added.json" 2> "$OUT/added.err" || code=$?
+[ "$code" = 1 ] && J '.error.code == "machine_is_local"' "$OUT/added.json" || check "machine add of this computer's own machine: exit $code, not refused: $(head -c 300 "$OUT/added.json")"
+! cozy --json machine list | J '.machines | any(.name == "e2e-self")' || check "machine add: this computer's own machine is listed again as e2e-self"
+J '.controller_key | test("^[A-Za-z0-9_-]{43}$")' "$OUT/local.json" || check "machine show local: no controller key: $(head -c 300 "$OUT/local.json")"
+code=0; cozy --json machine ssh local > "$OUT/ssh-local.json" 2> "$OUT/ssh-local.err" || code=$?
+[ "$code" = 2 ] && J '.error.code == "machine_ssh_none"' "$OUT/ssh-local.json" || check "machine ssh local: exit $code, not refused as no rental: $(head -c 300 "$OUT/ssh-local.json")"
 openssl genpkey -algorithm ed25519 -out "$OUT/controller.pem" 2> /dev/null || check "openssl could not make an Ed25519 key"
 key=$(openssl pkey -in "$OUT/controller.pem" -pubout -outform DER | tail -c 32 | base64 | tr '+/' '-_' | tr -d '=\n') || true
 cozy --json machine authorize "$key" > "$OUT/authorize.json" && J '.changed == true' "$OUT/authorize.json" || check "machine authorize: the key was not added"
@@ -297,8 +297,8 @@ grep -qx "$key" "$HOME/.cozy/keys/authorized" || check "machine authorize: the k
 cozy --json machine authorize "$key" | J '.changed == false' || check "machine authorize twice: added it again"
 # The test controller goes again (no verb takes a key back), so the machine may idle out as usual.
 grep -vx "$key" "$HOME/.cozy/keys/authorized" > "$OUT/authorized" || true; cp "$OUT/authorized" "$HOME/.cozy/keys/authorized"
-cozy --json machine end e2e-self > "$OUT/end-added.json" || check "machine end e2e-self failed"
-! cozy --json machine list | J '.machines | any(.name == "e2e-self")' || check "machine end: e2e-self is still listed"
+code=0; cozy --json machine end local > "$OUT/end-local.json" 2> "$OUT/end-local.err" || code=$?
+[ "$code" = 1 ] && J '.error.code == "machine_local"' "$OUT/end-local.json" || check "machine end local: exit $code, not refused: $(head -c 300 "$OUT/end-local.json")"
 
 step "doctor --on"
 cozy --json doctor --on local > "$OUT/doctor-local.json" || check "cozy doctor --on local found a problem"

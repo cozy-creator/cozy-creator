@@ -1531,6 +1531,7 @@ impl From<&MachineRow> for Machine {
             queued: 0,
             recorded: true,
             unverified: false,
+            controller_key: None,
         }
     }
 }
