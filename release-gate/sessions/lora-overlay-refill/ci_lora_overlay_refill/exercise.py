@@ -183,15 +183,18 @@ def exercise(
             "ballast_gib": round(max(memory.capacity - room, 0) / GIB, 2) if paging else 0,
         }
         if trace is not None:
-            fills = [
-                sum(
-                    1
-                    for entry in trace[start:stop]
-                    if entry["set"] == set_name and entry["block"] != common
-                )
-                for start, stop in zip(marks, marks[1:], strict=False)
+            spans = list(zip(marks, marks[1:], strict=False))
+            ours = [
+                [e for e in trace[start:stop] if e["set"] == set_name and e["block"] != common]
+                for start, stop in spans
             ]
-            row["block_fills"], row["resident_at_start"] = fills, resident
+            row["block_fills"] = [len(entries) for entries in ours]
+            # A refill from the block's kept baked bytes (Runtime 0.34.3+, origin "baked") bakes
+            # nothing: it copies the first bake's bytes back.
+            row["store_fills"] = [
+                sum(1 for e in entries if e.get("origin", "store") == "store") for entries in ours
+            ]
+            row["resident_at_start"] = resident
         tel.log("lora overlay refill call", **{k: str(v) for k, v in row.items()})
         return {**row, "out": out}
 
@@ -245,11 +248,12 @@ def exercise(
                 )
             if row["paging"] and (len(fills) < 2 or sum(fills[1:]) == 0):
                 failures.append(f"warm call {index} did not page within the call: fills {fills}")
-            expected = per_block * sum(fills) if row["kind"] == "lora" else 0
+            read = sum(row["store_fills"])
+            expected = per_block * read if row["kind"] == "lora" else 0
             if row["baked"] != expected:
                 failures.append(
                     f"warm call {index} ({row['kind']}) baked {row['baked']} weights for "
-                    f"{sum(fills)} refilled blocks; {expected} expected"
+                    f"{read} blocks refilled from the store; {expected} expected"
                 )
         rows.append({k: v for k, v in row.items() if k != "out"})
     return {
