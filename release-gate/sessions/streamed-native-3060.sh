@@ -1,8 +1,8 @@
-# streamed-native-3060: one RTX 3060 (12 GB) rental, where Qwen-Image-2's int8 transformer cannot stay resident:
+# streamed-native-3060: one 16 GB rental (RTX 4070 Ti Super), where Qwen-Image-2's bf16 transformer cannot stay resident:
 #   1. production cozy 0.13.1 / Runtime 0.34.2 / TensorFS 0.17.2; the 14 reduced qwen-streamed cells (#662);
 #   2. fetch gating baseline on production TensorD: a fresh Qwen-Image-2 fetch (packages #657's tree, 1 MP, its WebP
 #      output) with a weightless ready GPU request submitted behind it;
-#   3. Qwen-Image-2 1 MP / 40 steps: packages master (eager) vs #662, cold then warm;
+#   3. Qwen-Image-2 1 MP / 40 steps, bf16 lane: packages master (eager) vs #662, cold then warm;
 #   4. TensorD from creator #2154 (the runner's dev cozy): the same ready request behind a fresh SDXL fetch;
 #   5. SDXL 1024² / 30 steps: packages master vs #661, cold then warm.
 # packages_refs: m=<master> q=<#662> s=<#661> w=<#657>. params: cells (true), traffic_gb (60), need_s (3600)
@@ -115,10 +115,10 @@ for f in "$OUT"/out/base-w/*; do [ -f "$f" ] && say "#657 output $(file -b "$f" 
 
 # 3: Qwen-Image-2 at 1 MP: master (eager) vs #662, cold (same request) then warm (fresh requests).
 QP="a lighthouse on a basalt cliff at blue hour, waves breaking below, long exposure photograph"
-full qe-cold m ./qwen-image-2/generate "prompt=$QP" "seed:=$((S + 301))" megapixels:=1
-full qn-cold q ./qwen-image-2/generate "prompt=$QP" "seed:=$((S + 301))" megapixels:=1
-full qe-warm m ./qwen-image-2/generate "prompt=a bowl of ramen with a soft egg, steam rising, overhead food photograph" "seed:=$((S + 302))" megapixels:=1
-full qn-warm q ./qwen-image-2/generate "prompt=a red vintage bicycle leaning on a yellow wall, afternoon sun" "seed:=$((S + 303))" megapixels:=1
+full qe-cold m ./qwen-image-2/generate "prompt=$QP" "seed:=$((S + 301))" megapixels:=1 --lane bf16
+full qn-cold q ./qwen-image-2/generate "prompt=$QP" "seed:=$((S + 301))" megapixels:=1 --lane bf16
+full qe-warm m ./qwen-image-2/generate "prompt=a bowl of ramen with a soft egg, steam rising, overhead food photograph" "seed:=$((S + 302))" megapixels:=1 --lane bf16
+full qn-warm q ./qwen-image-2/generate "prompt=a red vintage bicycle leaning on a yellow wall, afternoon sun" "seed:=$((S + 303))" megapixels:=1 --lane bf16
 
 # 4: #2154's TensorD (the runner's dev cozy): the ready request behind a fresh SDXL fetch.
 step tensord-2154 machine update "$NAME" --tensord "$DEV" -y || fail "tensord-2154: machine update failed"
