@@ -302,8 +302,8 @@ impl Machines {
     }
 
     /// Records this computer's machine where its TensorD serves (none before its first start),
-    /// signed with this controller's owner key (minted as it first starts), and follows it while
-    /// it serves.
+    /// signed with this controller's owner key (minted on first use: a pod's TensorD the image
+    /// started reads it from the home when it first signs), and follows it while it serves.
     fn put_local(self: &Arc<Self>, endpoint: Option<Endpoint>, serving: bool) -> Result<(), Error> {
         let row = MachineRow {
             name: "local".into(),
@@ -311,7 +311,7 @@ impl Machines {
             hub: String::new(),
             rental_id: None,
             endpoint,
-            key: self.home.owner_key(),
+            key: self.owner_key()?,
             state: MachineState::Ready,
             served: true,
             reason: None,
