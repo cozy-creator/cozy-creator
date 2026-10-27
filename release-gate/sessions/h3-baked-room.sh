@@ -85,6 +85,12 @@ host() {
     "; MemTotal " + ((.meminfo.MemTotal / 1e9 * 10 | round) / 10 | tostring) + " GB, MemAvailable " + ((.meminfo.MemAvailable / 1e9 * 10 | round) / 10 | tostring) +
     " GB; RSS total " + ((.rss_total / 1e9 * 10 | round) / 10 | tostring) + " GB, top " + ([.top[0:3][] | ((.rss / 1e9 * 10 | round) / 10 | tostring) + " GB " + (.cmd | .[0:60])] | join(" | "))' "$OUT/$1.json" 2>&1 | head -c 1500
 }
+# Never more than 4 session pods at once: a rental waits here for a slot (the wheels above can take minutes).
+slots() { cozy machine list --json 2>/dev/null | jq '[.machines[] | select(.rental_id != null and .rental_id != "" and .state != "ended")] | length'; }
+if [ "$RENT" = true ]; then
+  until n=$(slots) && [ -n "$n" ] && [ "$n" -lt 4 ]; do sleep 30; done
+  say "$n session pods live: renting"
+fi
 quote "$(param traffic_gb 90)" "$(param need_s 3600)"
 rent
 

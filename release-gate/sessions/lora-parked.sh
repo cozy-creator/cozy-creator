@@ -26,6 +26,12 @@ TFS=$(fetch "$(param tensorfs)") || fail "tensorfs"
 say "tensorfs $(version "$TFS"); tensord $(cozy --version); cell $(git -C "$CELL" rev-parse --short HEAD 2>/dev/null)"
 printf 'run 5 · sync local/x (source changed)\nrun 6 · local/x/gpu\nrun      6\n' > "$OUT/probe-cell.txt"
 [ "$(runno probe-cell)" = 6 ] || fail "parsers"
+# Never more than 4 session pods at once: a rental waits here for a slot (the wheels above can take minutes).
+slots() { cozy machine list --json 2>/dev/null | jq '[.machines[] | select(.rental_id != null and .rental_id != "" and .state != "ended")] | length'; }
+if [ "$RENT" = true ]; then
+  until n=$(slots) && [ -n "$n" ] && [ "$n" -lt 4 ]; do sleep 30; done
+  say "$n session pods live: renting"
+fi
 quote "$(param traffic_gb 60)" "$(param need_s 2400)"
 rent
 grep -oE '· [0-9]+ GiB ·' "$OUT/show.txt" | head -1 | grep -qE '· ([3-9][0-9]|[1-9][0-9]{2}) GiB ·' || fail "the cell needs a card of 30 GiB or more"
