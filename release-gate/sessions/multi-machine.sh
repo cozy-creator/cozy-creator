@@ -16,6 +16,7 @@
 #      removes b. The runner ends B; another controller of the account (a second user here) no longer shows it ready.
 # The throwaway private model is deleted after. params:
 #   sku_b       B's SKU (default: the session's, A's)
+#   candidates  SKUs in order of preference (comma-separated): A and B are the first two the catalog offers
 #   old         the previous cozy release (default 0.13.3)
 #   traffic_gb  GB the provider bills, both pods (default 40)
 #   seconds     the least time the cap must buy both pods (default 2400; the session takes 10-20 min)
@@ -37,6 +38,14 @@ cleanup() { [ -z "$M" ] || cozy model delete "$M" -y >> "$OUT/delete.txt" 2>&1; 
 trap 'cleanup; finish' EXIT
 RENT_ARGS=--ssh
 SKU_B=$(param sku_b "$SKU")
+# candidates: SKUs in order of preference; A and B are the first two this runner's catalog offers singly.
+if [ -n "$(param candidates)" ]; then
+  cozy machine rent --json > "$OUT/candidates.json" 2>&1 || fail "no catalog"
+  mapfile -t offered < <(tr ',' '\n' <<<"$(param candidates)" | while read -r s; do
+    jq -e --arg s "$s" 'if type=="array" then .[] else . end | select(.name==$s) | .widths[] | select(.accelerator_count==1)' "$OUT/candidates.json" > /dev/null && echo "$s"; done)
+  [ ${#offered[@]} -ge 1 ] || fail "the catalog offers none of $(param candidates)"
+  SKU=${offered[0]} SKU_B=${offered[1]:-${offered[0]}}
+fi
 quote "$(param traffic_gb 40)" "$(param seconds 2400)" "$SKU" "$SKU_B"
 order "$SKU"; order "$SKU_B"
 ready 0; A=$NAME
