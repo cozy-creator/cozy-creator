@@ -17,6 +17,7 @@
 # The throwaway private model is deleted after. params:
 #   sku_b       B's SKU (default: the session's, A's)
 #   candidates  SKUs in order of preference (comma-separated): A and B are the first two the catalog offers
+#   parts       which of a, p, b, c run (default all; without b and c only A is rented)
 #   old         the previous cozy release (default 0.13.3)
 #   traffic_gb  GB the provider bills, both pods (default 40)
 #   seconds     the least time the cap must buy both pods (default 2400; the session takes 10-20 min)
@@ -46,14 +47,24 @@ if [ -n "$(param candidates)" ]; then
   [ ${#offered[@]} -ge 1 ] || fail "the catalog offers none of $(param candidates)"
   SKU=${offered[0]} SKU_B=${offered[1]:-${offered[0]}}
 fi
-quote "$(param traffic_gb 40)" "$(param seconds 2400)" "$SKU" "$SKU_B"
-order "$SKU"; order "$SKU_B"
-ready 0; A=$NAME
-ready 1; B=$NAME
-for i in 0 1; do jq -e '.rental.ssh // empty' "$OUT/show$i.json" > /dev/null || fail "rental $i has no ssh address"; done
-watcher machine list --json > "$OUT/watcher-list.json"
-jq -e --arg r "$(jq -r .rental_id "$OUT/show1.json")" '.machines[] | select(.rental_id == $r and .recorded == false and .state == "ready")' \
-  "$OUT/watcher-list.json" > /dev/null || fail "the second controller does not list B: $(head -c 300 "$OUT/watcher-list.json")"
+# parts: the session's parts (default a,p,b,c); without b and c only A is rented.
+PARTS=,$(param parts a,p,b,c), B=''
+has() { [[ $PARTS == *",$1,"* ]]; }
+if has b || has c; then
+  quote "$(param traffic_gb 40)" "$(param seconds 2400)" "$SKU" "$SKU_B"
+  order "$SKU"; order "$SKU_B"
+  ready 0; A=$NAME
+  ready 1; B=$NAME
+else
+  quote "$(param traffic_gb 40)" "$(param seconds 2400)" "$SKU"
+  rent; A=$NAME
+fi
+for i in 0 ${B:+1}; do jq -e '.rental.ssh // empty' "$OUT/show$i.json" > /dev/null || fail "rental $i has no ssh address"; done
+if [ -n "$B" ]; then
+  watcher machine list --json > "$OUT/watcher-list.json"
+  jq -e --arg r "$(jq -r .rental_id "$OUT/show1.json")" '.machines[] | select(.rental_id == $r and .recorded == false and .state == "ready")' \
+    "$OUT/watcher-list.json" > /dev/null || fail "the second controller does not list B: $(head -c 300 "$OUT/watcher-list.json")"
+fi
 
 # on <machine> <step> <command>: a step that runs <command> in a shell there.
 on() { local m=$1 n=$2; shift 2; step "$n" machine ssh "$m" -- "$*"; }
@@ -92,9 +103,10 @@ end_calcifer() {
     [ -z "$p" ] || { kill $p; while kill -0 $p 2>/dev/null; do sleep 1; done; }'
 }
 
-for m in "$A" "$B"; do update "$m" "$(command -v cozy)" "$NEW"; done
+for m in $A $B; do update "$m" "$(command -v cozy)" "$NEW"; done
 say "A=$A B=$B, both on cozy $NEW; shells reached by cozy machine ssh"
 
+if has a; then
 # a. A's shell: local is the TensorD the image started; it and the runner share A's GPU.
 sh "$A" 'cozy machine show local --json' > "$OUT/a-local.json" || fail "cozy machine show local on $A"
 [ "$(jq -r .fingerprint "$OUT/a-local.json")" = "$(jq -r .fingerprint "$OUT/show0.json")" ] ||
@@ -123,7 +135,9 @@ completed - a2-remote || fail "a2: the runner's run on A did not complete"
 completed "$A" a2-local || fail "a2: A's own run did not complete"
 say "a2: $(turns a2-remote a2-local)"
 say "a: PASS"
+fi
 
+if has p; then
 # p. A private model in A's store: served to its account's warm runs with no Hub read, refused to A's signed-out shell
 # though A holds it (naming `cozy login`); public models from both controllers ran in a.
 tiny() { python3 -I -c 'import json,struct,sys,os; h=json.dumps({"w":{"dtype":"F32","shape":[4,4],"data_offsets":[0,64]}}).encode(); h+=b" "*(-len(h)%8); open(sys.argv[1],"wb").write(struct.pack("<Q",len(h))+h+os.urandom(64))' "$1"; }
@@ -142,7 +156,9 @@ on "$A" p-shell "cozy model download $MC" && fail "p: A's signed-out shell read 
 grep -q 'is private' "$OUT/p-shell.txt" && grep -q 'cozy login' "$OUT/p-shell.txt" ||
   fail "p: the shell's refusal does not say private and name cozy login: $(tail -4 "$OUT/p-shell.txt")"
 say "p: $MC served warm to the renter with no Hub read (commit asks $q, redemptions $r, unchanged); A's signed-out shell refused: $(grep -m1 -o 'is private[^(]*' "$OUT/p-shell.txt")"
+fi
 
+if has b; then
 # b. A controls B: refused with the key to authorize, authorized on B, added, run.
 ADDR=$(jq -r .address "$OUT/show1.json") FP=$(jq -r .fingerprint "$OUT/show1.json")
 on "$A" b-refused "cozy machine add b $ADDR --fingerprint $FP" && fail "b: B admitted A before any authorize"
@@ -177,8 +193,9 @@ step b-intruder machine add intruder "$ADDR" --fingerprint "$FP" && fail "b: B a
 grep -q machine_unauthorized "$OUT/b-intruder.txt" && grep -q 'cozy machine authorize' "$OUT/b-intruder.txt" ||
   fail "b: the unauthorized add was not refused cleanly: $(tail -3 "$OUT/b-intruder.txt")"
 say "b: PASS (the runner's key refused in $(($(date +%s) - s)) s)"
+fi
 
-
+if has c; then
 # c. Mixed versions, both ways.
 update "$A" "$OLD" "$OLD"
 end_calcifer "$A"
@@ -229,4 +246,6 @@ w=$(jq -r '.state // .error.code' "$OUT/watcher-ended.json")
 case $w in ready|booting) fail "c: the second controller shows ended B as $w" ;; esac
 say "c: B ended; the second controller's show says $w"
 say "c: PASS"
-say "PASS: a shell on a rented worker uses its TensorD as local beside remote work; A controls B by authorize/add; cozy $OLD and $NEW control each other; Calcifer follows its binary"
+fi
+
+say "PASS:${PARTS//,/ } (a: a pod shell's local beside remote work; p: a private model only as its account; b: authorize/add; c: mixed versions, Calcifer follows its binary)"
