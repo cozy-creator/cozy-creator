@@ -1,5 +1,5 @@
 {
- "rule": 5,
+ "rule": 6,
  "features": {
   "mma": {"min": "8.0"},
   "int8": {"min": "8.0", "except": ["10.3"]},
@@ -25,7 +25,7 @@
   "fp16": {"bits": 16},
   "f32": {"bits": 16, "rank": "after"},
   "int8": {"bits": 8, "needs": "int8", "compute": [{"width": 8}]},
-  "fp8": {"bits": 8, "needs": "fp8", "compute": [{"width": 8}]},
+  "fp8": {"bits": 8, "needs": "mma", "compute": [{"when": "fp8", "width": 8}]},
   "nvfp4": {"bits": 4, "needs": "mma", "compute": [{"when": "fp4", "width": 4}]},
   "mxfp4": {"bits": 4, "needs": "mma", "compute": [{"when": "fp4", "width": 4}], "rank": "nvfp4"},
   "int4": {"bits": 4, "needs": "mma", "rank": "nvfp4"},
