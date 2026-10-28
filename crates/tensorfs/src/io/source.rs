@@ -210,7 +210,7 @@ impl Source {
     /// # Safety
     /// The destination and owner requirements are exactly `read_placements`'s. On an error,
     /// retain device destinations until `io::drain` proves completion; never infer it from
-    /// cancellation alone. This entry point accepts device destinations only.
+    /// cancellation alone. Host destinations are read on TensorFS threads and stop between pieces.
     pub unsafe fn read_placements_cancelable(
         &self,
         placements: &[Placement],
@@ -238,9 +238,6 @@ impl Source {
         cancel: &ReadControl,
         issued: Option<Issued>,
     ) -> Result<ReadStats> {
-        if placements.iter().any(|p| !matches!(p.dst, Dst::Device { .. })) {
-            return Err(invalid("cancelable placement reads require device destinations"));
-        }
         // SAFETY: the caller retains the same sources and destinations through checked completion.
         unsafe { self.read_controlled(placements, threads, mode, tally, issued, Some(cancel)) }
     }
