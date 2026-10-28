@@ -7,8 +7,8 @@
 #      prints), `cozy machine authorize` on B admits it, the add and a run on B from A complete; the runner's own key,
 #      never authorized, is refused cleanly; A cannot add itself under another name. B's authorize prints the
 #      address the runner rents it at. `authorize --remove` on B refuses A's next run at once; authorized again, it runs.
-#   p. Two signers on A's TensorD: the runner reads a private model of the account there under its own capability;
-#      A's shell, not signed in, is refused naming `cozy login`: the runner's capability never served it.
+#   p. A private model of the account in A's store: the renter's warm read asks the Hub nothing; A's signed-out shell is
+#      refused it though A holds it, told it is private and to `cozy login`.
 #   c. Mixed versions: A on the previous release controls B on the session's cozy. A goes back to the session's cozy
 #      while its shell's Calcifer still runs the previous release with a run of its own going on B: the next command
 #      restarts Calcifer on the new binary, no kill, and the run completes. Then A on the session's cozy controls B on
@@ -16,6 +16,8 @@
 #      removes b. The runner ends B; another controller of the account (a second user here) no longer shows it ready.
 # The throwaway private model is deleted after. params:
 #   sku_b       B's SKU (default: the session's, A's)
+#   candidates  SKUs in order of preference (comma-separated): A and B are the first two the catalog offers
+#   parts       which of a, p, b, c run (default all; without b and c only A is rented)
 #   old         the previous cozy release (default 0.13.3)
 #   traffic_gb  GB the provider bills, both pods (default 40)
 #   seconds     the least time the cap must buy both pods (default 2400; the session takes 10-20 min)
@@ -32,19 +34,37 @@ sudo useradd -m cozywatch && sudo install -d -o cozywatch -m 700 /home/cozywatch
   sudo install -D -m 755 "$(command -v cozy)" /opt/cozywatch/cozy || fail "no second controller"
 watcher() { sudo -u cozywatch -H /opt/cozywatch/cozy "$@" < /dev/null 2>> "$OUT/watcher.err"; }
 [ "$(watcher --json whoami | jq -r .account)" = "$(cozy --json whoami | jq -r .account)" ] || fail "the second controller is not signed in: $(tail -3 "$OUT/watcher.err")"
-TS=$(date -u +%m%d%H%M) ACCOUNT=$(cozy --json whoami | jq -r .account) M='' M2=''
-cleanup() { for m in $M $M2; do cozy model delete "$m" -y >> "$OUT/delete.txt" 2>&1; done; }
+TS=$(date -u +%m%d%H%M) ACCOUNT=$(cozy --json whoami | jq -r .account) M=''
+cleanup() { [ -z "$M" ] || cozy model delete "$M" -y >> "$OUT/delete.txt" 2>&1; }
 trap 'cleanup; finish' EXIT
 RENT_ARGS=--ssh
 SKU_B=$(param sku_b "$SKU")
-quote "$(param traffic_gb 40)" "$(param seconds 2400)" "$SKU" "$SKU_B"
-order "$SKU"; order "$SKU_B"
-ready 0; A=$NAME
-ready 1; B=$NAME
-for i in 0 1; do jq -e '.rental.ssh // empty' "$OUT/show$i.json" > /dev/null || fail "rental $i has no ssh address"; done
-watcher machine list --json > "$OUT/watcher-list.json"
-jq -e --arg r "$(jq -r .rental_id "$OUT/show1.json")" '.machines[] | select(.rental_id == $r and .recorded == false and .state == "ready")' \
-  "$OUT/watcher-list.json" > /dev/null || fail "the second controller does not list B: $(head -c 300 "$OUT/watcher-list.json")"
+# candidates: SKUs in order of preference; A and B are the first two this runner's catalog offers singly.
+if [ -n "$(param candidates)" ]; then
+  cozy machine rent --json > "$OUT/candidates.json" 2>&1 || fail "no catalog"
+  mapfile -t offered < <(tr ',' '\n' <<<"$(param candidates)" | while read -r s; do
+    jq -e --arg s "$s" 'if type=="array" then .[] else . end | select(.name==$s) | .widths[] | select(.accelerator_count==1)' "$OUT/candidates.json" > /dev/null && echo "$s"; done)
+  [ ${#offered[@]} -ge 1 ] || fail "the catalog offers none of $(param candidates)"
+  SKU=${offered[0]} SKU_B=${offered[1]:-${offered[0]}}
+fi
+# parts: the session's parts (default a,p,b,c); without b and c only A is rented.
+PARTS=,$(param parts a,p,b,c), B=''
+has() { [[ $PARTS == *",$1,"* ]]; }
+if has b || has c; then
+  quote "$(param traffic_gb 40)" "$(param seconds 2400)" "$SKU" "$SKU_B"
+  order "$SKU"; order "$SKU_B"
+  ready 0; A=$NAME
+  ready 1; B=$NAME
+else
+  quote "$(param traffic_gb 40)" "$(param seconds 2400)" "$SKU"
+  rent; A=$NAME
+fi
+for i in 0 ${B:+1}; do jq -e '.rental.ssh // empty' "$OUT/show$i.json" > /dev/null || fail "rental $i has no ssh address"; done
+if [ -n "$B" ]; then
+  watcher machine list --json > "$OUT/watcher-list.json"
+  jq -e --arg r "$(jq -r .rental_id "$OUT/show1.json")" '.machines[] | select(.rental_id == $r and .recorded == false and .state == "ready")' \
+    "$OUT/watcher-list.json" > /dev/null || fail "the second controller does not list B: $(head -c 300 "$OUT/watcher-list.json")"
+fi
 
 # on <machine> <step> <command>: a step that runs <command> in a shell there.
 on() { local m=$1 n=$2; shift 2; step "$n" machine ssh "$m" -- "$*"; }
@@ -83,9 +103,10 @@ end_calcifer() {
     [ -z "$p" ] || { kill $p; while kill -0 $p 2>/dev/null; do sleep 1; done; }'
 }
 
-for m in "$A" "$B"; do update "$m" "$(command -v cozy)" "$NEW"; done
+for m in $A $B; do update "$m" "$(command -v cozy)" "$NEW"; done
 say "A=$A B=$B, both on cozy $NEW; shells reached by cozy machine ssh"
 
+if has a; then
 # a. A's shell: local is the TensorD the image started; it and the runner share A's GPU.
 sh "$A" 'cozy machine show local --json' > "$OUT/a-local.json" || fail "cozy machine show local on $A"
 [ "$(jq -r .fingerprint "$OUT/a-local.json")" = "$(jq -r .fingerprint "$OUT/show0.json")" ] ||
@@ -114,7 +135,30 @@ completed - a2-remote || fail "a2: the runner's run on A did not complete"
 completed "$A" a2-local || fail "a2: A's own run did not complete"
 say "a2: $(turns a2-remote a2-local)"
 say "a: PASS"
+fi
 
+if has p; then
+# p. A private model in A's store: served to its account's warm runs with no Hub read, refused to A's signed-out shell
+# though A holds it (naming `cozy login`); public models from both controllers ran in a.
+tiny() { python3 -I -c 'import json,struct,sys,os; h=json.dumps({"w":{"dtype":"F32","shape":[4,4],"data_offsets":[0,64]}}).encode(); h+=b" "*(-len(h)%8); open(sys.argv[1],"wb").write(struct.pack("<Q",len(h))+h+os.urandom(64))' "$1"; }
+asked() { cozy machine logs "$A" -n 0 2> /dev/null | grep -c "$1"; }
+tiny "$OUT/tiny.safetensors"
+M=$ACCOUNT/mm-private-$TS
+step p-upload model upload "$OUT/tiny.safetensors" "$M" --lane f32 || fail "p: upload of a private model"
+MC=$M@$(awk '$1=="commit"{c=$2} END{sub(/.*@/, "", c); print c}' "$OUT/p-upload.txt")
+step p-cold model download "$MC" --on "$A" || fail "p: the renter did not read its private model on A: $(tail -3 "$OUT/p-cold.txt")"
+q=$(asked 'a commit asked of the Hub') r=$(asked 'redeemed the run capability')
+[ "$q" -ge 1 ] || fail "p: A never asked the Hub for the commit as the renter"
+step p-warm model download "$MC" --on "$A" || fail "p: the renter's warm read on A: $(tail -3 "$OUT/p-warm.txt")"
+[ "$(asked 'a commit asked of the Hub')" = "$q" ] && [ "$(asked 'redeemed the run capability')" = "$r" ] ||
+  fail "p: the renter's warm read asked the Hub (commit asks $q -> $(asked 'a commit asked of the Hub'), redemptions $r -> $(asked 'redeemed the run capability'))"
+on "$A" p-shell "cozy model download $MC" && fail "p: A's signed-out shell read the renter's private model A holds"
+grep -q 'is private' "$OUT/p-shell.txt" && grep -q 'cozy login' "$OUT/p-shell.txt" ||
+  fail "p: the shell's refusal does not say private and name cozy login: $(tail -4 "$OUT/p-shell.txt")"
+say "p: $MC served warm to the renter with no Hub read (commit asks $q, redemptions $r, unchanged); A's signed-out shell refused: $(grep -m1 -o 'is private[^(]*' "$OUT/p-shell.txt")"
+fi
+
+if has b; then
 # b. A controls B: refused with the key to authorize, authorized on B, added, run.
 ADDR=$(jq -r .address "$OUT/show1.json") FP=$(jq -r .fingerprint "$OUT/show1.json")
 on "$A" b-refused "cozy machine add b $ADDR --fingerprint $FP" && fail "b: B admitted A before any authorize"
@@ -131,7 +175,10 @@ on "$A" b-add "cozy machine add b $ADDR --fingerprint $FP" || fail "b: add after
 [ "$(sh "$A" 'cozy machine show local --json' | jq -r .controller_key)" = "$KEY" ] || fail "b: A's show local does not print the key B authorized"
 on "$A" b-self "cozy machine add self $(jq -r .address "$OUT/show0.json") --fingerprint $(jq -r .fingerprint "$OUT/show0.json")" &&
   fail "b: A added its own machine under another name"
-grep -q machine_is_local "$OUT/b-self.txt" || fail "b: A's add of itself was not refused as local: $(tail -2 "$OUT/b-self.txt")"
+# A provider that does not loop a pod's own public address back leaves nothing to refuse: A cannot reach itself there.
+grep -q machine_is_local "$OUT/b-self.txt" || grep -q machine_unreachable "$OUT/b-self.txt" ||
+  fail "b: A's add of itself was not refused as local: $(tail -2 "$OUT/b-self.txt")"
+grep -q machine_unreachable "$OUT/b-self.txt" && say "b: A cannot reach its own public address here (no hairpin): the add of itself is not tested"
 on "$A" b-run "cozy run sdxl/generate --on b prompt='a sleeping cat on a coil of ship rope, oil painting' seed:=$((SEED + 2))"
 completed "$A" b-run || fail "b: A's run on B did not complete"
 on "$B" b-remove "cozy machine authorize $KEY --remove" || fail "b: authorize --remove on B"
@@ -146,24 +193,9 @@ step b-intruder machine add intruder "$ADDR" --fingerprint "$FP" && fail "b: B a
 grep -q machine_unauthorized "$OUT/b-intruder.txt" && grep -q 'cozy machine authorize' "$OUT/b-intruder.txt" ||
   fail "b: the unauthorized add was not refused cleanly: $(tail -3 "$OUT/b-intruder.txt")"
 say "b: PASS (the runner's key refused in $(($(date +%s) - s)) s)"
+fi
 
-# p. Two signers on A: two private models of the account. The runner reads one there under its own capability; A's
-# signed-out shell asks for the other, which A does not hold, while the runner's capability is live there: refused,
-# naming the remedy. (A model a machine holds is any of its controllers' to use: the shell then reads the first.)
-tiny() { python3 -I -c 'import json,struct,sys,os; h=json.dumps({"w":{"dtype":"F32","shape":[4,4],"data_offsets":[0,64]}}).encode(); h+=b" "*(-len(h)%8); open(sys.argv[1],"wb").write(struct.pack("<Q",len(h))+h+os.urandom(64))' "$1"; }
-commit() { echo "$1@$(awk '$1=="commit"{c=$2} END{sub(/.*@/, "", c); print c}' "$OUT/$2.txt")"; }
-tiny "$OUT/tiny.safetensors"; tiny "$OUT/tiny2.safetensors"
-M=$ACCOUNT/mm-private-$TS M2=$ACCOUNT/mm-private2-$TS
-step p-upload model upload "$OUT/tiny.safetensors" "$M" --lane f32 || fail "p: upload of a private model"
-step p-upload2 model upload "$OUT/tiny2.safetensors" "$M2" --lane f32 || fail "p: upload of a second private model"
-MC=$(commit "$M" p-upload) MC2=$(commit "$M2" p-upload2)
-step p-renter model download "$MC" --on "$A" || fail "p: the renter did not read its private model on A: $(tail -3 "$OUT/p-renter.txt")"
-on "$A" p-shell "cozy model download $MC2" && fail "p: A's signed-out shell read a private model A did not hold"
-grep -q 'cozy login' "$OUT/p-shell.txt" || fail "p: the shell's refusal does not name cozy login: $(tail -4 "$OUT/p-shell.txt")"
-on "$A" p-held "cozy model download $MC" || fail "p: A's shell could not use the model A holds"
-cozy machine logs "$A" -n 0 > "$OUT/a-tensord.log" 2>&1
-say "p: the runner read $MC on A; A's shell, for $MC2: $(grep -m1 -o 'this run carried no sign-in[^)]*' "$OUT/p-shell.txt"); then used $MC, which A held; capability lines on A: $(grep -c 'redeemed the run capability' "$OUT/a-tensord.log")"
-
+if has c; then
 # c. Mixed versions, both ways.
 update "$A" "$OLD" "$OLD"
 end_calcifer "$A"
@@ -214,4 +246,6 @@ w=$(jq -r '.state // .error.code' "$OUT/watcher-ended.json")
 case $w in ready|booting) fail "c: the second controller shows ended B as $w" ;; esac
 say "c: B ended; the second controller's show says $w"
 say "c: PASS"
-say "PASS: a shell on a rented worker uses its TensorD as local beside remote work; A controls B by authorize/add; cozy $OLD and $NEW control each other; Calcifer follows its binary"
+fi
+
+say "PASS:${PARTS//,/ } (a: a pod shell's local beside remote work; p: a private model only as its account; b: authorize/add; c: mixed versions, Calcifer follows its binary)"

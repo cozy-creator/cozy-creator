@@ -15,7 +15,7 @@ use crate::{
 use base64::Engine as _;
 use serde_json::{json, Value};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs::{self, File},
     io,
     path::{Path, PathBuf},
@@ -354,6 +354,19 @@ impl Publisher {
         })
     }
 
+    /// A checkpoint held here, named by its header: a Hub commit pulled by hash is the request's
+    /// only as `commit` serves it; a release, or one made here, is anyone's.
+    pub(crate) fn held_for(&self, service: &Service, source: Option<&hub::Source>, header: &ObjectRef) -> Result<(), Failure> {
+        let Some(pulled) = Pulled::of(&self.store, header).map_err(io_failure)?.filter(|p| p.release.is_empty()) else {
+            return Ok(());
+        };
+        let named = Named { repository: pulled.repository, lane: pulled.lane, tree: Some(pulled.tree), ..Named::default() };
+        match source {
+            Some(source) => self.commit(service, source, named).map(drop),
+            None => Err(("model_resolution_failed", format!("{} is private, or no such commit: this run carries no Hub access; `cozy login <email>` on the computer that sent it", named.shown()))),
+        }
+    }
+
     /// The store models are made and held in.
     pub fn store(&self) -> &Arc<Store> {
         &self.store
@@ -488,7 +501,7 @@ impl Publisher {
     /// restarts too, asks the Hub nothing (th-245).
     pub(crate) fn resolve(&self, service: &Service, source: &hub::Source, named: Named, hardware: &Hardware, revision: &str) -> Result<Named, Failure> {
         if named.tree.is_some() {
-            return measured(&self.machine, service, source, named);
+            return self.commit(service, source, named);
         }
         let origin = hub::origin_key(&source.origin).unwrap_or_default();
         let name = json!(["resolve-v3", origin, named.repository, named.release, named.lane, hardware.gpus, hardware.plain]).to_string();
@@ -501,6 +514,61 @@ impl Publisher {
         let answer = json!([r.release, r.lane, r.commit, r.header, r.reasons]).to_string();
         service.engine.with_journal(|j| j.bind_named(&name, revision, &answer)).map_err(io_failure)?;
         Ok(Named { release: r.release, lane: r.lane, tree: Some(r.commit), header: Some(r.header), reasons: r.reasons, ..named })
+    }
+
+    /// A commit (or a bare header) named by its hash, with what a hash alone does not say: its
+    /// length and format; a commit resolves to its header and lane. A hash may name a private
+    /// commit, so what this machine holds of it serves a request only as its account, or a request
+    /// with no sign-in only once the Hub served it to one: the readers journaled with it, across
+    /// restarts like the store. Any other request asks the Hub once, as itself (its capability's
+    /// account, as the Hub named it when it redeemed it); what the Hub serves it is its account's
+    /// here too. The bytes held are reused, and the same account's warm runs ask the Hub nothing.
+    pub(crate) fn commit(&self, service: &Service, source: &hub::Source, named: Named) -> Result<Named, Failure> {
+        #[derive(serde::Deserialize, serde::Serialize)]
+        struct Held {
+            tree: Option<ObjectRef>,
+            lane: String,
+            header: ObjectRef,
+            /// The accounts the Hub served it to here; [`PUBLIC`] once it served it to no sign-in.
+            readers: BTreeSet<String>,
+        }
+        let tree = named.tree()?.clone();
+        let key = json!(["commit-v1", hub::origin_key(&source.origin).unwrap_or_default(), named.repository, tree.id()]).to_string();
+        let held: Option<Held> = service.engine.with_journal(|j| j.named(&key, "")).map_err(io_failure)?
+            .and_then(|held| serde_json::from_str(&held).ok());
+        let reader = match &source.capability {
+            Some(capability) => capability.account(),
+            None => Some(PUBLIC.to_string()),
+        };
+        let served = |held: &Held| held.readers.contains(PUBLIC) || reader.as_ref().is_some_and(|r| held.readers.contains(r));
+        if let Some(held) = held.as_ref().filter(|held| served(held)) {
+            return Ok(Named { tree: held.tree.clone(), lane: held.lane.clone(), header: Some(held.header.clone()), ..named });
+        }
+        tracing::info!(repository = %named.repository, commit = %tree.id(), reader = reader.as_deref().unwrap_or("-"),
+            "a commit asked of the Hub as the request's own reader");
+        let failed = |e: Refusal| private(source, &named, refused("model_resolution_failed", e.clone()), &e);
+        let object = origin::object(&self.machine, source, &tree.sha256).map_err(failed)?;
+        let mut held = match held {
+            Some(held) => held,
+            None => {
+                let remote = origin::remote(&self.machine, source).map_err(failed)?;
+                self.machine.objects(&remote, std::slice::from_ref(&object), priority::NOW, &Stop::default()).map_err(failed)?;
+                match storage::tree_or_header(&self.store, &object).map_err(|e| ("model_resolution_failed", e.to_string()))? {
+                    Some(commit) => {
+                        let header = commit.header().map_err(|e| ("model_resolution_failed", format!("{}: {e}", object.id())))?.1.clone();
+                        Held { tree: Some(object), lane: commit.lane, header, readers: BTreeSet::new() }
+                    }
+                    None => Held { tree: None, lane: named.lane.clone(), header: object, readers: BTreeSet::new() },
+                }
+            }
+        };
+        // A capability whose account cannot be read now (refused since) is served, not recorded.
+        if let Some(reader) = reader {
+            held.readers.insert(reader);
+            let answer = serde_json::to_string(&held).map_err(|e| io_failure(io::Error::other(e)))?;
+            service.engine.with_journal(|j| j.bind_named(&key, "", &answer)).map_err(io_failure)?;
+        }
+        Ok(Named { tree: held.tree, lane: held.lane, header: Some(held.header), ..named })
     }
 
     /// A Hub checkpoint resolved (`resolve`) and downloaded whole into the store (a warm run's
@@ -998,7 +1066,10 @@ impl Publisher {
                 choice.repository.is_empty(),
             ) {
                 // A model passed by value (a ModelArtifact a run here produced): held here.
-                return Ok((self.held_grant(installation, &path, reference)?, None, vec![]));
+                let grant = self.held_grant(installation, &path, reference)?;
+                let header = storage::held(&self.store, &sha256::hex(&reference.digest)).map_err(io_failure)?;
+                self.held_for(service, request.source.as_ref(), &header)?;
+                return Ok((grant, None, vec![]));
             }
             if choice.repository.starts_with("local/") && choice.manifest.is_none() {
                 let local = storage::local(&self.store, &choice.repository)
@@ -1230,6 +1301,9 @@ fn make_source(
     Ok(made(header))
 }
 
+/// The reader a request with no sign-in reads as: public content only.
+const PUBLIC: &str = "*";
+
 /// `failure`, reading `source` under no signer's capability: a private model reads as absent
 /// there, so the reason names the sign-in that reads it (a pod's shell, a laptop not logged in).
 fn unsigned(source: &hub::Source, failure: Failure, refusal: &tensorfs::err::Refusal) -> Failure {
@@ -1238,6 +1312,14 @@ fn unsigned(source: &hub::Source, failure: Failure, refusal: &tensorfs::err::Ref
     match source.capability.is_none() && absent {
         true => (failure.0, format!("{}; this run carried no sign-in, and a private model reads only under one: `cozy login <email>` on the computer that sent it", failure.1)),
         false => failure,
+    }
+}
+
+/// `failure` of `named`, a commit by hash, read with no sign-in: it is private (or absent).
+fn private(source: &hub::Source, named: &Named, failure: Failure, refusal: &tensorfs::err::Refusal) -> Failure {
+    match source.capability.is_none() {
+        true => (failure.0, format!("{} is private, or no such commit: this run carried no sign-in; `cozy login <email>` on the computer that sent it reads it as its account ({})", named.shown(), refusal)),
+        false => unsigned(source, failure, refusal),
     }
 }
 
@@ -1369,38 +1451,6 @@ fn newest_key(request: &Request) -> String {
     json!(["newest", request.origin(), request.package]).to_string()
 }
 
-/// A commit (or a bare header) named by its hash, with what a hash alone does not say: its
-/// length (the Hub's) and its format; a commit resolves to its header and lane. Read once under
-/// the run's access (its request's capability) and kept, since a hash never names other bytes.
-fn measured(machine: &Machine, service: &Service, source: &hub::Source, named: Named) -> Result<Named, Failure> {
-    if named.header.is_some() {
-        return Ok(named);
-    }
-    let tree = named.tree()?.clone();
-    let key = json!(["measured-v3", hub::origin_key(&source.origin).unwrap_or_default(), named.repository, tree.id()]).to_string();
-    let held = service.engine.with_journal(|j| j.named(&key, "")).map_err(io_failure)?;
-    if let Some((tree, lane, header)) = held.and_then(|held| serde_json::from_str(&held).ok()) {
-        return Ok(Named { tree, lane, header: Some(header), ..named });
-    }
-    let failed = |e: Refusal| unsigned(source, refused("model_resolution_failed", e.clone()), &e);
-    let object = match tree.length {
-        0 => origin::object(machine, source, &tree.sha256).map_err(failed)?,
-        _ => tree,
-    };
-    let remote = origin::remote(machine, source).map_err(failed)?;
-    machine.objects(&remote, std::slice::from_ref(&object), priority::NOW, &Stop::default()).map_err(failed)?;
-    let commit = storage::tree_or_header(machine.store(), &object).map_err(|e| ("model_resolution_failed", e.to_string()))?;
-    let named = match commit {
-        Some(commit) => {
-            let header = commit.header().map_err(|e| ("model_resolution_failed", format!("{}: {e}", object.id())))?.1.clone();
-            Named { tree: Some(object), lane: commit.lane, header: Some(header), ..named }
-        }
-        None => Named { tree: None, header: Some(object), ..named },
-    };
-    let answer = json!([named.tree, named.lane, named.header]).to_string();
-    service.engine.with_journal(|j| j.bind_named(&key, "", &answer)).map_err(io_failure)?;
-    Ok(named)
-}
 
 /// What installing a release reads of it, from its install plan: its interface and Python, its
 /// exact pyproject and uv.lock, and the wheels its Hub hosts for it (its project wheel and carried

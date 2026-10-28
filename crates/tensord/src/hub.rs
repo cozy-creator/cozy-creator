@@ -320,6 +320,17 @@ impl Capability {
         self.ca_der.as_deref()
     }
 
+    /// The account its runs read as: the one the Hub named in the token it redeemed this
+    /// capability for (never the capability's own claims), waited for while a renewal runs; none
+    /// once the Hub refused it or no run renews it.
+    pub fn account(&self) -> Option<String> {
+        let token = block(self.current())?;
+        let payload = token.split('.').nth(1)?;
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload).ok()?;
+        let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+        claims[ACCOUNT_CLAIM].as_str().filter(|account| !account.is_empty()).map(str::to_owned)
+    }
+
     /// It serves run `run` of `engine` too, from before the run is accepted (its preparation reads
     /// at once): it is renewed until every run it serves is over.
     pub fn serves(self: &Arc<Self>, run: &str, engine: &Arc<crate::execution::Engine>) -> Accepting {
@@ -467,6 +478,9 @@ impl Capability {
         status == 401 && !sent.is_empty() && !access.is_empty() && sent != format!("DPoP {access}")
     }
 }
+
+/// The claim naming the account a workload token reads as (the Hub's `AccountClaim`).
+const ACCOUNT_CLAIM: &str = "https://tensorhub.com/claims/account";
 
 /// Each signer's capability at each Hub, for the life of the process.
 static HELD: Mutex<BTreeMap<(String, String), Arc<Capability>>> = Mutex::new(BTreeMap::new());
