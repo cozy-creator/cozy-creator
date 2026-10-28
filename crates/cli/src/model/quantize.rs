@@ -142,14 +142,14 @@ fn recipes<'i>(interface: &'i Interface, lane: &str, components: &[String]) -> V
     (interface.recipes.iter()).filter(|r| r.lane == lane && r.reads(components)).collect()
 }
 
-/// When one of `found` calibrates on the model itself: `model.<slot>=<source>` for each model the
-/// package's `quantize` constructs (on demand). Else nothing: another recipe's model is never bound.
+/// `model.<slot>=<source>` for each model the package's `quantize` constructs on demand (a package
+/// with a calibrated recipe serves `quantize_calibrated`) whose class one of `found` reads. The
+/// machine binds every slot, so a lane that does not calibrate binds it too (run 19801: int8 of
+/// Qwen-Image-2.1-Turbo); it is built only when a recipe calibrates. Another class's is never bound.
 fn calibration(interface: &Interface, found: &[&Recipe], source: &str) -> Vec<String> {
-    if found.iter().all(|r| r.calibrate.is_empty()) {
-        return vec![];
-    }
     (interface.callables.iter()).filter(|c| c.name == RECIPES).flat_map(|c| &c.models)
-        .filter(|slot| !slot.weights).map(|slot| format!("model.{}={source}", slot.param)).collect()
+        .filter(|slot| !slot.weights && found.iter().any(|r| r.model.class == slot.class))
+        .map(|slot| format!("model.{}={source}", slot.param)).collect()
 }
 
 /// What a package declares, for a refusal: each recipe's flag and the model it reads.

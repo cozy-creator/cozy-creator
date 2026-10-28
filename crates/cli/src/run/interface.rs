@@ -23,9 +23,6 @@ pub const RECIPES: &str = "quantize";
 pub struct Recipe {
     pub lane: String,
     pub model: RecipeModel,
-    /// `module:function` that calibrates on the model itself, constructed in `quantize`'s slot.
-    #[serde(default, deserialize_with = "or_default")]
-    pub calibrate: String,
 }
 
 #[derive(Debug, Deserialize)]
