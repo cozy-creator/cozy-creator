@@ -50,6 +50,8 @@ pub struct SvdqFitted {
     pub calibration_error: f64,
     pub plain_nvfp4_error: f64,
     pub required_buffer_bytes: usize,
+    /// The workers the fit ran on (`threads`).
+    pub workers: usize,
 }
 
 fn fail(detail: impl std::fmt::Display) -> Error {
@@ -1322,5 +1324,6 @@ fn fit(
         calibration_error: served,
         plain_nvfp4_error: plain,
         required_buffer_bytes: required,
+        workers: threads(),
     })
 }

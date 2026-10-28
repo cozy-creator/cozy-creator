@@ -237,6 +237,7 @@ impl Writer {
                 .check()
                 .map_err(|e| crate::format::Error::Encode(e.to_string()))
         };
+        let started = std::time::Instant::now();
         let fitted = encode::svdq_fit(
             &weight,
             &xmax,
@@ -250,7 +251,9 @@ impl Writer {
         );
         // Preserve the existing typed cancellation even though the format core has no session dependency.
         options.control.check()?;
+        let fit_seconds = started.elapsed().as_secs_f64();
         let fitted = fitted?;
+        let fitted_workers = fitted.workers;
         drop((weight, xmax, captured));
         let measured = fitted.stats;
         let relative = if measured.energy > 0.0 {
@@ -354,6 +357,8 @@ impl Writer {
                 plain_nvfp4_error: fitted.plain_nvfp4_error,
                 calibration_bytes_read: xmax_bytes + captured_bytes,
                 required_buffer_bytes: plan.required_buffer_bytes,
+                workers: fitted_workers,
+                fit_seconds,
             }),
         })
     }
