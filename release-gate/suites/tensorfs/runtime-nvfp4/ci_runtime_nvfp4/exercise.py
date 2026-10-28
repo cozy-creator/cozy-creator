@@ -17,10 +17,9 @@ from cozy_runtime.author._loader import census
 from cozy_runtime.internal import accel, residency
 from cozy_runtime.internal.decode_cores import Cores
 from cozy_runtime.internal.decode_schemes import run as decode_reference
-from cozy_runtime.internal.encoding import launch_providers
 from cozy_runtime.internal.encoding.adapters import CoreDequant, _nvfp4_kernel
 from cozy_runtime.internal.encoding.formats import params_of
-from cozy_runtime.internal.encoding.selection import measure_device, measure_runtime
+from cozy_runtime.internal.encoding.selection import launch_providers, measure_device, measure_runtime
 from cozy_runtime.internal.fill import Checkpoint, dtype_name
 from cozy_runtime.internal.resolution import ConstructionFacts, Variant, resolve
 from cozy_runtime.internal.weights import Backend, Placement
