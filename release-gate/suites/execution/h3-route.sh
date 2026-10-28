@@ -6,3 +6,6 @@ route() { jq -r '[.calls[]?.measurements.observations[]? | select(.fields.dense_
 served() { jq -r '[.calls[]?.measurements.execution.gpus[]?.attention.observed // empty | split(",")[] | select(startswith("transformer"))] | unique | join(" ")' "$1.json" 2>/dev/null; }
 exact_sites() { jq -r '[.calls[]?.measurements.observations[]? | select(.name == "attention.sol.kernel" and .value == "exact") | .fields.site] | unique | join(",")' "$1.json" 2>/dev/null; }
 degree() { jq -r '[.calls[]?.measurements.execution // {} | select(.degree) | [.degree, (.gpus // [] | map(.uuid) | unique | length)]] | max_by(.[0]) // [1, 0] | @tsv' "$1.json" 2>/dev/null; }
+# lora <cell>: how the denoise call served its LoRA: "baked" (bytes moved from baked pages, the bake room) or "per step".
+lora() { jq -r '[.calls[]?.measurements.memory.stats.varena[]?.stats | select(.baked_pages) | {b: .moved.baked.bytes, p: .baked_pages.bytes, room: .baked_pages.room}] | max_by(.b + .p) // {b: 0, p: 0, room: null}
+  | if .b + .p > 0 then "baked (\(.b / 1073741824 * 10 | floor / 10) GiB moved baked, room \(if .room > 0 then "\(.room / 1e9 * 10 | floor / 10) GB" else .room end))" else "per step (baked 0, room \(.room))" end' "$1.json" 2>/dev/null; }

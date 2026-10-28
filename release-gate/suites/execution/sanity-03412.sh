@@ -11,5 +11,5 @@ if [ -f qwen.json ] && [ -f qwen-014.json ]; then
 fi
 if [ -f h3.json ]; then
   st=$(run_get "$OUT" h3 .status)
-  expect h3-route "$([ "$st" = completed ] && echo PASS || echo FAIL)" "$st; route $(route h3); served $(served h3); exact $(exact_sites h3)"
+  expect h3-route "$([ "$st" = completed ] && echo PASS || echo FAIL)" "$st; LoRA $(lora h3); route $(route h3); served $(served h3); exact $(exact_sites h3)"
 fi
