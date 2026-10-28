@@ -20,11 +20,13 @@
 #   an arm's "ram_free_gib": N holds host RAM so only N GiB stay available while it runs (a smaller machine)
 #   skip     ["<level>/<model>", …] cells no arm runs (a known failure measured before); an arm's "skip" replaces it
 #   keep_going  true: a failed request does not end its cell (to measure the executor after a failure)
+#   stall_s  a request with no end after this many seconds is diagnosed (machine logs) and abandoned (1200)
 #   seed_base the first request's seed (2026102700); a later session takes a new base, and every prompt is new
 #   traffic_gb, need_s
 . "$(dirname "$0")/lib.sh"
 L=$(cd "$(dirname "$0")" && pwd)/lowvram
 LEVELS=$(param levels '["full", 6144, 3072]') MODELS=$(param models '["sdxl", "anima", "qwen"]') WARM=$(param warm 2)
+STALL_S=$(param stall_s 1200)
 ARMS=$(param arms '[{"name": "comfy"}, {"name": "prod"}]') SKIP=$(param skip '[]') KEEP=$(param keep_going false)
 G=$OUT/gen; mkdir -p "$G" "$OUT/out" "$OUT/rec"
 mapfile -t levels < <(jq -r '.[] | tostring' <<<"$LEVELS")
@@ -143,7 +145,16 @@ cozy_run() {  # cozy_run <label> <model> <input file> <arm>: one request, its re
   local n=$1 m=$2 lane t target cwd=.; lane=$(model_ref "$m" | cut -d' ' -f2) t=$(tree "$4" "$2")
   target="$(pkg "$m")/generate"; [ -z "$t" ] || { target="./$target" cwd=$PACKAGES/$t; }
   local t0; t0=$(date +%s%3N)
-  QCWD=$cwd qstep "$n" run "$target" --input "$3" --lane "$lane" --on "$NAME" --out "$OUT/out/$n"; local code=$?
+  # A request with no end in STALL_S seconds is a stall to diagnose: keep the machine's logs, then stop following it.
+  ( QCWD=$cwd qstep "$n" run "$target" --input "$3" --lane "$lane" --on "$NAME" --out "$OUT/out/$n" ) & local qp=$! waited=0
+  while kill -0 "$qp" 2>/dev/null && [ "$waited" -lt "${STALL_S:-1200}" ]; do sleep 5; waited=$((waited + 5)); done
+  if kill -0 "$qp" 2>/dev/null; then
+    say "STALL: $n has no end after ${waited}s; keeping the machine's logs"
+    for log in tensord memory tensorfs; do cozy machine logs "$NAME" "$log" -n 0 > "$OUT/stall-$n-$log.log" 2>&1; done
+    cozy machine show "$NAME" --json > "$OUT/stall-$n-show.json" 2>&1
+    kill "$qp" 2>/dev/null
+  fi
+  wait "$qp"; local code=$?
   echo "{\"label\": \"$n\", \"wall_ms\": $(( $(date +%s%3N) - t0 )), \"exit\": $code}" >> "$OUT/walls.jsonl"
   local N; N=$(runno "$n")
   # The JSON record has no logs (a package's own, a native refusal's reason); the table does.
@@ -220,6 +231,7 @@ for a in "${arms[@]}"; do
     done
   done
 done
+for log in tensord memory; do cozy machine logs "$NAME" "$log" -n 0 > "$OUT/machine-$log.log" 2>&1; done
 tool hold-release hold "free_mib:=0"
 tool ramhold-release ramhold "ram_free_gib:=0"
 tool collect collect || fail "collect"
