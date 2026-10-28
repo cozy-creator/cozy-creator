@@ -47,7 +47,7 @@ rent
 
 jq -e --argjson g "$GPU_GB" '.status.gpus | length == 1 and .[0].memory_bytes < $g * 1e9' "$OUT/show.json" >/dev/null ||
   fail "not one GPU under $GPU_GB GB"
-step model model download _/minimax-h3@1.0.0-rc.5 --lane int8 --on "$NAME" || fail "model download"
+step model model download _/minimax-h3@1.0.0-rc.6 --lane int8 --on "$NAME" || fail "model download"
 step lora model download _/minimax-h3-turbo-lora@1.0.1 --on "$NAME" || fail "LoRA download"
 FAILED=""
 for a in "${NAMES[@]}"; do
