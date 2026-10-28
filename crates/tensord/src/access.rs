@@ -270,7 +270,7 @@ impl Fetch {
             }
             let phases: Vec<String> = by_phase.iter().map(|(p, n)| format!("{n} {p}")).collect();
             let last = if moved == 0 { String::new() } else { format!(", last moved {}", clock(moved)) };
-            format!("{label}: {} of {} chunks to fetch, {} of {} here ({}){last}",
+            format!("{label}: {} of {} chunks to fetch, {} of their {} received ({}){last}",
                 absent.len(), objects.len(), gib(reached), gib(length), phases.join(", "))
         }).collect();
         Some(each.join("; "))
