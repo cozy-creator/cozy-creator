@@ -153,8 +153,11 @@ class Region:
     def set_preferred(self, preferred: bool) -> None:
         self._native.set_preferred(preferred)
 
-    def prepare(self) -> Use:
-        return Use(self._native.prepare())
+    def prepare(self, *, reclaim: bool = True, evict_completed: bool = False) -> Use:
+        """A fill, or the resident contents. reclaim=False refuses (OutOfMemory) rather than
+        evict or wait; evict_completed then still evicts idle streamed regions whose
+        last-consumer events completed, oldest first."""
+        return Use(self._native.prepare(reclaim, evict_completed))
 
     def pin(self) -> Use | None:
         """Pin existing ready contents atomically, or return None for a residency miss.
