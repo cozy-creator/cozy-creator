@@ -22,6 +22,7 @@ from pathlib import Path
 import msgspec
 
 from cozy_runtime.author import App, Context, FileAsset, Outputs, Telemetry
+from cozy_runtime.internal.proctree import available_host_bytes
 
 app = App()
 D = Path("/var/tmp/lowvram")
@@ -166,9 +167,9 @@ def hold(free_mib: int, tel: Telemetry) -> str:
 RAM_HOLDER = r'''
 import json, mmap, sys, time
 from pathlib import Path
+from cozy_runtime.internal.proctree import available_host_bytes as available  # the Runtime's cgroup-aware room
 d, target = Path(sys.argv[1]), int(sys.argv[2]) << 30
-def available():
-    return next(int(l.split()[1]) << 10 for l in open("/proc/meminfo") if l.startswith("MemAvailable:"))
+print(f"available {available() / 2**30:.1f} GiB, target {target >> 30} GiB", flush=True)
 held = []
 while available() - target > (256 << 20):
     block = mmap.mmap(-1, min(available() - target, 1 << 30))
@@ -295,7 +296,9 @@ def mark(label: str) -> str:
     win = [x for x in r if x[0] > since]
     rec = {"label": label, "unix_s": time.time(), "h2d_bytes": int(r[-1][1]) if r else -1,
            "peak_used_mib": int(max((x[2] for x in win), default=-1)), "used_mib": int(r[-1][2]) if r else -1,
-           "holder": json.loads((D / "hold.json").read_text()) if (D / "hold.json").exists() else None}
+           "holder": json.loads((D / "hold.json").read_text()) if (D / "hold.json").exists() else None,
+           "ram_available_gib": round(available_host_bytes() / 2**30, 2),
+           "ramholder": json.loads((D / "ramhold.json").read_text()) if (D / "ramhold.json").exists() else None}
     with open(D / "marks.jsonl", "a") as f:
         f.write(json.dumps(rec) + "\n")
     return json.dumps(rec)
