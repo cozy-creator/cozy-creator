@@ -287,9 +287,21 @@ impl PyRegion {
         py.detach(|| self.region.set_preferred(preferred))
             .map_err(|e| raise(py, e))
     }
-    fn prepare(&self, py: Python<'_>) -> PyResult<PyUse> {
+    /// A fill (or the resident contents): `reclaim` may evict anything Varena would; without it,
+    /// `evict_completed` may evict only idle streamed regions whose consumers completed, and
+    /// neither refuses rather than wait.
+    #[pyo3(signature = (reclaim = true, evict_completed = false))]
+    fn prepare(&self, py: Python<'_>, reclaim: bool, evict_completed: bool) -> PyResult<PyUse> {
         let preparation = py
-            .detach(|| self.region.prepare())
+            .detach(|| {
+                if reclaim {
+                    self.region.prepare()
+                } else if evict_completed {
+                    self.region.prepare_evicting_completed()
+                } else {
+                    self.region.prepare_without_reclaim()
+                }
+            })
             .map_err(|e| raise(py, e))?;
         let needs_fill = matches!(preparation, varena::Preparation::Fill(_));
         Ok(PyUse {
