@@ -86,6 +86,7 @@ fi
 UP=${TDF:-$CLI}
 [ -z "$RWF" ] || CAND+=(--runtime "$RWF"); [ -z "$TWF" ] || CAND+=(--tensorfs "$TWF"); [ -z "$TDF" ] || CAND+=(--tensord "$TDF")
 BK=$SKU${SUITES:+-${SUITES//,/-}}  # the baseline's name
+echo "$BK" > "$OUT/baseline-key"  # release-gate.yml's baseline job publishes under it
 gh release download "$TAG" -R "$REPO" -D "$B" -p "gate-$BK.json" -p "ref-$SKU.*" -p "ref-$SKU-clip.mp4" 2>/dev/null
 if [ -f "$B/gate-$BK.json" ]; then
   [ -z "$ESTABLISH" ] || { log "$BK already has a baseline; --establish is only for a SKU without one"; exit 1; }
