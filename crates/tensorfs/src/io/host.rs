@@ -10,7 +10,7 @@ use std::sync::{Mutex, OnceLock};
 
 use platform::durable;
 
-use super::{Copy, Dst, Error, ReadOpts, ReadStats, Src};
+use super::{Copy, Dst, Error, ReadControl, ReadOpts, ReadStats, Src};
 use crate::format::layout::ALIGN;
 
 /// O_DIRECT's alignment of offsets, lengths and addresses.
@@ -41,9 +41,20 @@ struct Tally {
     bounced: AtomicU64,
 }
 
+/// `cancel` stops it between pieces and counts each finished piece as issued.
+///
 /// # Safety
 /// As [`super::read`], for host destinations only.
-pub(super) unsafe fn fill(copies: &[Copy], opts: &ReadOpts) -> Result<ReadStats, Error> {
+pub(super) unsafe fn fill(
+    copies: &[Copy],
+    opts: &ReadOpts,
+    cancel: Option<&ReadControl>,
+) -> Result<ReadStats, Error> {
+    let issue = |n: usize| {
+        if let Some(c) = cancel {
+            c.issue(n)
+        }
+    };
     let grid = (opts.request as u64).max(A).checked_next_multiple_of(A)
         .ok_or_else(|| invalid(0, "read request alignment overflows"))?;
     let mut index: HashMap<*const File, usize> = HashMap::new();
@@ -55,6 +66,7 @@ pub(super) unsafe fn fill(copies: &[Copy], opts: &ReadOpts) -> Result<ReadStats,
             Src::Zero => {
                 // SAFETY: the caller lends this exclusive destination until return.
                 if len != 0 { unsafe { std::slice::from_raw_parts_mut(ptr, len) }.fill(0); }
+                issue(len);
                 continue;
             }
             Src::File(f, offset) => {
@@ -92,11 +104,19 @@ pub(super) unsafe fn fill(copies: &[Copy], opts: &ReadOpts) -> Result<ReadStats,
         while !failed.load(Relaxed) {
             let Some(p) = pieces.get(next.fetch_add(1, Relaxed)) else { return };
             let segs = &segs[p.segs.clone()];
+            if cancel.is_some_and(ReadControl::canceled) {
+                let source = io::Error::new(io::ErrorKind::Interrupted, "native read canceled");
+                let copy = segs[0].copy;
+                error.lock().unwrap().get_or_insert(Error { copy, source });
+                failed.store(true, Relaxed);
+                return;
+            }
             // SAFETY: a segment lies inside its copy's destination, which the caller lends us.
             let dst = |s: &Seg| unsafe { std::slice::from_raw_parts_mut(s.dst as *mut u8, s.len) };
             let Some(i) = p.file else {
                 // SAFETY: and inside its host source.
                 dst(&segs[0]).copy_from_slice(unsafe { std::slice::from_raw_parts(segs[0].offset as *const u8, segs[0].len) });
+                issue(segs[0].len);
                 continue;
             };
             let (file, last) = (files[i], &segs[segs.len() - 1]);
@@ -120,9 +140,13 @@ pub(super) unsafe fn fill(copies: &[Copy], opts: &ReadOpts) -> Result<ReadStats,
                     Ok(())
                 }),
             };
-            if let Err(source) = r {
-                error.lock().unwrap().get_or_insert(Error { copy: segs[0].copy, source });
-                failed.store(true, Relaxed);
+            match r {
+                Ok(()) => issue(segs.iter().map(|s| s.len).sum()),
+                Err(source) => {
+                    let copy = segs[0].copy;
+                    error.lock().unwrap().get_or_insert(Error { copy, source });
+                    failed.store(true, Relaxed);
+                }
             }
         }
     };

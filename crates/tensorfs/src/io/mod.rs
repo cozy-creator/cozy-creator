@@ -216,8 +216,9 @@ pub fn pack(lens: impl IntoIterator<Item = usize>, align: usize) -> Option<(Vec<
 #[derive(Clone)]
 pub struct Landed(pub std::sync::Arc<dyn Fn(usize) + Send + Sync>);
 
-/// Native cooperative control for one owned device read. Progress counts issued bytes,
-/// not completed bytes; checked read completion remains the only publication certificate.
+/// Native cooperative control for one owned read. Progress counts issued bytes (host
+/// destinations: finished pieces); checked read completion remains the only publication
+/// certificate.
 #[derive(Default)]
 pub struct ReadControl {
     cancel: std::sync::atomic::AtomicBool,
@@ -386,7 +387,7 @@ unsafe fn read_impl(
         #[cfg(unix)]
         let host_start = Instant::now();
         // SAFETY: host copies keep `read`'s contract.
-        let stats = unsafe { host::fill(&host_copies, opts) }.map_err(|e| Error {
+        let stats = unsafe { host::fill(&host_copies, opts, cancel) }.map_err(|e| Error {
             copy: host[e.copy].0,
             source: e.source,
         })?;

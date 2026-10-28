@@ -16,6 +16,7 @@ from .. import _ext
 
 if TYPE_CHECKING:
     from torch import Tensor
+    from typing_extensions import Buffer
 
 try:
     PoisonedError = _ext.VarenaPoisonedError
@@ -177,6 +178,7 @@ class Region:
         threads: int = 2,
         reclaim: bool = True,
         evict_completed: bool = False,
+        host: Buffer | None = None,
     ) -> PreparedRead:
         """Admit a fill and warm bounded staging, without starting source I/O.
 
@@ -185,7 +187,10 @@ class Region:
         uses local available sources only; it never calls a Python transformer/fetcher.
         reclaim=False refuses admission when eviction or a prior-writer join is needed;
         with evict_completed it may still evict idle streamed regions whose last-consumer
-        events are complete, oldest first, never waiting.
+        events are complete, oldest first, never waiting. host, a writable C-contiguous
+        buffer covering every part and at most the region's length, receives the one store
+        read; one copy then fills the region from it (zeroes past it). The read row's
+        host_bytes says whether it was filled (0 when the region was already resident).
         """
         native = getattr(_ext, "_VarenaPreparedRead", None)
         if native is None:
@@ -193,7 +198,9 @@ class Region:
                 "this TensorFS build has no native owned refill capability"
             )
         return PreparedRead(
-            native(self._native, checkpoint, list(parts), threads, reclaim, evict_completed)
+            native(
+                self._native, checkpoint, list(parts), threads, reclaim, evict_completed, host
+            )
         )
 
 
@@ -218,6 +225,11 @@ def supports_prefetch() -> bool:
         and getattr(native, "CAPTURE_GUARD", False)
         and getattr(_ext._VarenaAllocatorCapture, "REPLAY_GUARD", False)
     )
+
+
+def supports_host_prefetch() -> bool:
+    """Whether prepare_read accepts host=: one store read into a caller's host page."""
+    return bool(getattr(getattr(_ext, "_VarenaPreparedRead", None), "HOST", False))
 
 
 class PreparedRead:

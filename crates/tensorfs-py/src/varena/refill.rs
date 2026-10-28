@@ -144,6 +144,47 @@ fn cuda_failure(error: io::cuda::Error) -> Failure {
     }
 }
 
+/// The caller's writable host page: the read lands here, then one copy fills the region.
+pub(super) struct HostPage {
+    ptr: *mut u8,
+    len: usize,
+    _owner: Py<PyAny>,
+}
+// SAFETY: an address whose owning buffer export is retained until Work drops.
+unsafe impl Send for HostPage {}
+// SAFETY: as above.
+unsafe impl Sync for HostPage {}
+
+impl HostPage {
+    /// A writable C-contiguous buffer, at least `end` and at most `region` bytes long.
+    fn of(py: Python<'_>, buffer: &Bound<'_, PyAny>, end: usize, region: usize) -> PyResult<Self> {
+        let view = py
+            .import("builtins")?
+            .getattr("memoryview")?
+            .call1((buffer,))?;
+        if view.getattr("readonly")?.extract::<bool>()?
+            || !view.getattr("c_contiguous")?.extract::<bool>()?
+        {
+            return Err(PyValueError::new_err(
+                "host must be a writable C-contiguous buffer",
+            ));
+        }
+        let view = view.call_method1("cast", ("B",))?;
+        let buf = pyo3::buffer::PyBuffer::<u8>::get(&view)?;
+        let (ptr, len) = (buf.buf_ptr() as *mut u8, buf.len_bytes());
+        if len < end || len > region {
+            return Err(PyValueError::new_err(format!(
+                "host is {len} bytes; it must cover the parts ({end}) and fit the region ({region})"
+            )));
+        }
+        Ok(Self {
+            ptr,
+            len,
+            _owner: view.unbind(),
+        })
+    }
+}
+
 struct Input {
     region: Arc<varena::Region>,
     items: Vec<Item>,
@@ -164,6 +205,7 @@ pub(super) struct Work {
     event_ordered: bool,
     prepared_decode: Option<Mutex<tensorfs::raw::DeviceDecode>>,
     lookahead: Option<Arc<dyn Fn() + Send + Sync>>,
+    host: Option<HostPage>,
 }
 
 /// A captured stage owns addresses/source identity, not graph-lifetime physical pins.
@@ -265,6 +307,7 @@ impl StageSource {
             event_ordered: false,
             prepared_decode: None,
             lookahead: None,
+            host: None,
         })
     }
 }
@@ -306,6 +349,7 @@ struct Shared {
     read_issued_ns: AtomicU64,
     read_completed_ns: AtomicU64,
     read_bytes: AtomicU64,
+    host_bytes: AtomicU64,
     input_bytes: Vec<u64>,
     decode_completed_ns: AtomicU64,
     decode_issued_ns: AtomicU64,
@@ -416,15 +460,22 @@ impl Shared {
                         .map_or((fill.ptr(), fill.len()), |decode| {
                             (decode.storage.ptr(), decode.storage.len())
                         });
-                    Some(Placement {
-                        items: &input.items,
-                        origin: 0,
-                        dst: Dst::Device {
+                    let dst = match &work.host {
+                        Some(host) => Dst::Host {
+                            ptr: host.ptr,
+                            len: host.len,
+                        },
+                        None => Dst::Device {
                             device,
                             ptr,
                             len,
                             stream: 0,
                         },
+                    };
+                    Some(Placement {
+                        items: &input.items,
+                        origin: 0,
+                        dst,
                     })
                 })
                 .collect();
@@ -475,7 +526,9 @@ impl Shared {
                     *issued_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
                 }
             };
-            let issued = (!placements.is_empty() && (work.decode.is_none() || work.event_ordered))
+            let issued = (!placements.is_empty()
+                && work.host.is_none()
+                && (work.decode.is_none() || work.event_ordered))
                 .then_some(&issued as io::Issued<'_>);
             // Non-preferred weights are the streaming window. Populate the OS page cache
             // on their misses so later passes do not repeatedly bypass it with O_DIRECT.
@@ -496,9 +549,10 @@ impl Shared {
             } else {
                 Mode::Cache
             };
-            // SAFETY: Work owns the checkpoint/source/items and the Fill's physical pin.
-            // The engine validates all spans, initializes padding and joins submitted work.
-            let stats = unsafe {
+            // SAFETY: Work owns the checkpoint/source/items, the host page and the Fill's
+            // physical pin. The engine validates all spans, initializes padding and joins
+            // submitted work.
+            let mut stats = unsafe {
                 work.source.read_placements_cancelable_observed(
                     &placements,
                     work.threads,
@@ -509,6 +563,51 @@ impl Shared {
                 )
             }
             .map_err(io_failure)?;
+            if let Some(host) = &work.host {
+                if self.cancel.canceled() {
+                    return Err(Failure::Canceled);
+                }
+                // One copy of the host page into the fill; the region past it is zeroed.
+                let fill = work.inputs[0].fill.as_ref().expect("host input fill");
+                let mut copies = vec![io::Copy {
+                    src: io::Src::Host(host.ptr),
+                    dst: Dst::Device {
+                        device,
+                        ptr: fill.ptr(),
+                        len: host.len,
+                        stream: 0,
+                    },
+                }];
+                if fill.len() > host.len {
+                    copies.push(io::Copy {
+                        src: io::Src::Zero,
+                        dst: Dst::Device {
+                            device,
+                            ptr: fill.ptr() + host.len as u64,
+                            len: fill.len() - host.len,
+                            stream: 0,
+                        },
+                    });
+                }
+                self.read_issued_ns.store(self.elapsed(), Ordering::Release);
+                // SAFETY: Work owns the host page and the exclusive unpublished Fill; a
+                // registered page is copied directly, else through owned staging.
+                let copied = unsafe {
+                    io::read(
+                        &copies,
+                        &io::ReadOpts {
+                            threads: work.threads,
+                            ..Default::default()
+                        },
+                    )
+                }
+                .map_err(|error| io_failure(tensorfs::io::source::Error::Read(error)))?;
+                stats.ns += copied.ns;
+                stats.pin_ns += copied.pin_ns;
+                stats.staged += copied.staged;
+                stats.busy_ns += copied.busy_ns;
+                self.host_bytes.store(host.len as u64, Ordering::Release);
+            }
             work.completed = true;
             self.read_bytes.store(stats.bytes, Ordering::Release);
             self.read_completed_ns
@@ -987,6 +1086,7 @@ pub(super) fn prepare_work(
         event_ordered: false,
         prepared_decode: None,
         lookahead: None,
+        host: None,
     };
     if initialize {
         // The existing read engine owns its explicit copy streams (Dst stream 0 is not PTDS).
@@ -1111,6 +1211,7 @@ pub(super) fn prepare_regions(
         event_ordered: false,
         prepared_decode: None,
         lookahead: None,
+        host: None,
     };
     let copies: Vec<_> = work
         .inputs
@@ -1202,6 +1303,7 @@ impl PreparedRead {
                 row.set_item("direct_bytes", stats.direct)?;
                 row.set_item("staged_bytes", stats.staged)?;
                 row.set_item("busy_ns", stats.busy_ns)?;
+                row.set_item("host_bytes", shared.host_bytes.load(Ordering::Acquire))?;
             }
             Some(Err(Failure::Canceled)) | None => {}
             Some(Err(error)) => return Err(error.raise(py)),
@@ -1520,6 +1622,12 @@ impl PreparedRead {
         event_ordered: bool,
         cancel: Arc<ReadControl>,
     ) -> Result<Self, Failure> {
+        if work.host.is_some() {
+            work.abandon();
+            return Err(Failure::Native(varena::Error::Invalid(
+                "host prefetch supports only a plain prefetch",
+            )));
+        }
         work.continuation = execution.clone();
         work.event_ordered = event_ordered;
         let producer = match varena::enter_producer(work.region.device()) {
@@ -1565,6 +1673,7 @@ impl PreparedRead {
                 read_issued_ns: AtomicU64::new(0),
                 read_completed_ns: AtomicU64::new(0),
                 read_bytes: AtomicU64::new(0),
+                host_bytes: AtomicU64::new(0),
                 input_bytes,
                 decode_completed_ns: AtomicU64::new(0),
                 decode_issued_ns: AtomicU64::new(0),
@@ -1741,9 +1850,12 @@ impl PreparedRead {
     const NO_RECLAIM: bool = true;
     #[classattr]
     const CAPTURE_GUARD: bool = true;
+    #[classattr]
+    const HOST: bool = true;
 
     #[new]
-    #[pyo3(signature = (region, checkpoint, parts, threads = 2, reclaim = true, evict_completed = false))]
+    #[pyo3(signature = (region, checkpoint, parts, threads = 2, reclaim = true, evict_completed = false, host = None))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
         region: PyRef<'_, PyRegion>,
@@ -1752,8 +1864,21 @@ impl PreparedRead {
         threads: usize,
         reclaim: bool,
         evict_completed: bool,
+        host: Option<Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         let region = region.region.clone();
+        let host = match host {
+            Some(buffer) => {
+                let end = parts
+                    .iter()
+                    .try_fold(0usize, |end, (_, offset, length)| {
+                        offset.checked_add(*length).map(|part| end.max(part))
+                    })
+                    .ok_or_else(|| PyValueError::new_err("prefetch part range overflows"))?;
+                Some(HostPage::of(py, &buffer, end, region.len())?)
+            }
+            None => None,
+        };
         let checkpoint = checkpoint.core(py)?;
         let prepared = py
             .detach(|| {
@@ -1767,7 +1892,11 @@ impl PreparedRead {
                     false,
                 )
             })
-            .map_err(|e| e.raise(py))?;
+            .map_err(|e| e.raise(py))?
+            .map(|mut work| {
+                work.host = host;
+                work
+            });
         let cached = prepared.is_none();
         let input_bytes = vec![prepared.as_ref().map_or(0, |work| {
             work.inputs[0].items.iter().map(|item| item.len).sum()
@@ -1788,6 +1917,7 @@ impl PreparedRead {
                 read_issued_ns: AtomicU64::new(0),
                 read_completed_ns: AtomicU64::new(0),
                 read_bytes: AtomicU64::new(0),
+                host_bytes: AtomicU64::new(0),
                 input_bytes,
                 decode_completed_ns: AtomicU64::new(0),
                 decode_issued_ns: AtomicU64::new(0),

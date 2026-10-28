@@ -104,6 +104,8 @@ transformer, credential callback or DLPack-owned destination on the worker.
 Staging/streams are warmed by preparation; timing events can still be acquired by
 the read engine on first use. This is not complete CUDA-resource preallocation.
 `poll()` and `wait()` report issued bytes separately from checked completion.
+`prepare_read(..., host=buf)` reads into the caller's host buffer once; one copy then fills
+the region (zeroed past `buf`), `host_bytes` says so, `supports_host_prefetch()` detects it.
 Only successful checked completion publishes the region; ordinary `prepare()` and
 DLPack views can then consume it on any stream. This first interface does not publish
 pending GPU writes, so no consumer waits on an unrecorded or pooled event.
