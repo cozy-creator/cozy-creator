@@ -11,6 +11,7 @@
 #   traffic_gb  GB the provider bills (85)
 #   arms        [{"name", "runtime": https://…#sha256=, "tensorfs": "artifact:<cozy-creator run>:<name>"}]: one
 #               request per arm on the same pod, each after its machine update (default: one arm of `runtime`)
+#   repeat      requests per arm, one after another on the arm's executor, each with a new seed (1)
 #   max_gpu_gb  the card's size bound (9: an 8 GB card; 25 for a 4090 no-regression run)
 . "$(dirname "$0")/lib.sh"
 T=$(param target minimax-h3/fl2va_turbo) URL=$(param runtime) MAX=$(param max_exec_s 2400)
@@ -49,10 +50,11 @@ jq -e --argjson g "$GPU_GB" '.status.gpus | length == 1 and .[0].memory_bytes < 
   fail "not one GPU under $GPU_GB GB"
 step model model download _/minimax-h3@1.0.0-rc.6 --lane int8 --on "$NAME" || fail "model download"
 step lora model download _/minimax-h3-turbo-lora@1.0.1 --on "$NAME" || fail "LoRA download"
-FAILED=""
-for a in "${NAMES[@]}"; do
-  flags=(); [ -z "${RT[$a]}" ] || flags+=(--runtime "${RT[$a]}"); [ -z "${TF[$a]}" ] || flags+=(--tensorfs "${TF[$a]}")
-  [ "${#flags[@]}" -eq 0 ] || step "update-$a" machine update "$NAME" "${flags[@]}" -y || fail "update $a"
+FAILED="" REPEAT=$(param repeat 1)
+for arm in "${NAMES[@]}"; do for i in $(seq 1 "$REPEAT"); do
+  a=$arm; [ "$REPEAT" = 1 ] || a=$arm-$i
+  flags=(); [ -z "${RT[$arm]}" ] || flags+=(--runtime "${RT[$arm]}"); [ -z "${TF[$arm]}" ] || flags+=(--tensorfs "${TF[$arm]}")
+  [ "${#flags[@]}" -eq 0 ] || [ "$i" -gt 1 ] || step "update-$arm" machine update "$NAME" "${flags[@]}" -y || fail "update $arm"
   say "$a: pod $(cozy machine show "$NAME" --json | jq -c '{rt: .status.runtime, tfs: .status.tensorfs, gpu: .status.gpus[0].name}')"
   jq --argjson s "$RANDOM$RANDOM" '.seed = $s' "$OUT/request.json" > "$OUT/request-$a.json"
   step "h3-$a" run "$T" --input "$OUT/request-$a.json" --lane int8 --gpus=1 --on "$NAME" --out "$OUT/media-$a"
@@ -71,5 +73,5 @@ for a in "${NAMES[@]}"; do
   S=$(jq '(.execution_ms // 0) / 1000 | floor' "$OUT/h3-$a.json")
   [ "$S" -le "$MAX" ] || { say "$a: $S s, over $MAX s"; FAILED+=" $a"; continue; }
   say "PASS $a: H3 Turbo 15 s in $S s (bar $MAX s), 362 frames"
-done
+done; done
 [ -z "$FAILED" ] || fail "failed:$FAILED"
