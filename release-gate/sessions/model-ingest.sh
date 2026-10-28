@@ -15,11 +15,13 @@
 #   request    the calls' payload (JSON); a seed key gets a fresh seed per call
 #   expect     text every gate answer contains (42; empty: none)
 #   asset      the field that takes release-gate/ref/seed.jpg (images; empty: none)
+#   gate       false: stop once the commits are written, with no call and no release, on a CPU rental whose
+#              model needs a GPU to answer; a GPU session gates them and the release follows (true)
 . "$(dirname "$0")/lib.sh"
 PACKAGE=$(param package) SOURCES=$(param sources) LANES=$(param lanes) VERSION=$(param version) GIVEN=$(param have)
 TRAFFIC_GB=$(param traffic_gb 430) FUNCTION=$(param function ask) SLOT=$(param slot model)
 REQUEST=$(param request '{"prompt": "First, what is 17 + 25? Give just the number. Then describe this picture in two sentences.", "max_tokens": 160, "temperature": 0.7, "top_p": 0.8, "presence_penalty": 1.5, "seed": 0}')
-EXPECT=$(param expect 42) ASSET=$(param asset images) IMG=$REF/seed.jpg
+EXPECT=$(param expect 42) ASSET=$(param asset images) IMG=$REF/seed.jpg GATE=$(param gate true)
 trees=("$PACKAGES"/*/)
 [ "${#trees[@]}" = 1 ] && [ -d "${trees[0]}" ] || fail "packages_refs must name one checkout"
 cd "${trees[0]}" || fail "no checkout"
@@ -92,6 +94,14 @@ for lane in "${lanes[@]}"; do
     fi
   done
 done
+if [ "$GATE" != true ]; then
+  [ "${#failed[@]}" = 0 ] || fail "not written: ${failed[*]}; every other commit is private on prod"
+  for p in "${pairs[@]}"; do m=${p%%=*}; for lane in bf16 "${lanes[@]}"; do
+    c=${BF16[$m]}; [ "$lane" = bf16 ] || c=${LANE[$m/$lane]}; say "COMMIT $m $lane $c"
+  done; done
+  say "PASS: ${pairs[*]%%=*} written (bf16 ${lanes[*]}); not gated, not released"
+  exit 0
+fi
 # 3. The gate: each model answers on its first lane's commit.
 for p in "${pairs[@]}"; do m=${p%%=*}; call "gate-$m" "$m@${LANE[$m/${lanes[0]}]}" || fail "$m did not pass on ${lanes[0]}"; done
 [ "${#failed[@]}" = 0 ] || fail "not published: ${failed[*]} failed; every other commit is private on prod"
