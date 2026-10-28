@@ -116,7 +116,7 @@ def gpus() -> str:
 @app.entrypoint(accelerator=True)
 def gpu(payload: Probe, ctx: Context) -> Report:
     assert ctx.device.type == "cuda"
-    device = ctx.device
+    device = torch.device("cuda", torch.cuda.current_device())
     torch.manual_seed(payload.seed)
     ops, checks = [], []
     for name in MIX if payload.variant == "mix" else (payload.variant,):

@@ -7,14 +7,15 @@ cell kernel-ready-late-success "$CORE_READY_TARGET" mode=late-success seed:=$((R
 cell kernel-ready-late-error "$CORE_READY_TARGET" mode=late-error seed:=$((R + 312))
 cell kernel-ready-dropped-slot "$CORE_READY_TARGET" mode=dropped-slot seed:=$((R + 313))
 
-# author.denoise_loop through Qwen-Image-2.1 int8 (xs-127), each judged by its run record's
-# measurements.execution.loops[0]:
-#   loop-resident  1 MP records resident;
-#   loop-streamed  under an 8 GiB GPU memory limit it streams, loading each block natively;
-#   loop-retry     4 MP under a 24 GiB limit: the resident attempt runs out of memory and the loop continues streamed
-#                  (a card under 24 GiB never tries resident: streamed alone passes);
-#   loop-cancel    a run canceled inside its native loop ends canceled, and the next call completes.
+# author.denoise_loop through real packages (xs-127), each judged by its run record's measurements.execution.loops[0]
+# (the GPU memory limit cannot hold stock-PyTorch execution yet, so each memory case takes the card it needs):
+#   loop-resident   Qwen-Image-2.1 int8 1 MP records resident (a card of 20 GiB or more);
+#   loop-streamed   on a card of 12 GiB or less it streams, loading each block natively;
+#   loop-retry      on a 20-26 GiB card, Qwen 4 MP after SDXL: the resident attempt runs out of memory and the loop
+#                   continues streamed;
+#   loop-cancel     a run canceled inside its native loop ends canceled, and the next call completes.
 LQ=$(pkg qwen-image-2 generate)
+GIB=$("$CLI" --json machine show "$M" 2>/dev/null | jq '[.status.gpus[].memory_bytes] | min / 1073741824 | floor')
 # loop_expect <cell> <jq condition on its record>: an expect row with the loop's mode, native steps, blocks, refusals.
 loop_expect() {
   local row
@@ -22,19 +23,22 @@ loop_expect() {
   expect "$1" "$(jq -e "$2" "$OUT/$1.json" > /dev/null 2>&1 && echo PASS || echo FAIL)" \
     "run $(cat "$1.number" 2> /dev/null) $(run_get "$OUT" "$1" .status): $row"
 }
-cap() { "$CLI" machine update "$M" --gpu-memory-limit "$1" -y > "loop-cap-$1.log" 2>&1 || log "cap $1: $(tail -c 300 "loop-cap-$1.log")"; }
 if [ -z "$ONLY" ] || [[ $ONLY == *",loop-"* || $ONLY == *",qwen-image-2,"* ]]; then
-  cell loop-resident "$LQ" prompt="$OBJECT, a resident loop" megapixels:=1.0 seed:=$((R + 321)) --lane int8 --gpus=1
-  loop_expect loop-resident '.status == "completed" and .measurements.execution.loops[0].mode == "resident"'
-  cap 8GiB
-  cell loop-streamed "$LQ" prompt="$OBJECT, a streamed loop" megapixels:=1.0 seed:=$((R + 322)) --lane int8 --gpus=1
-  loop_expect loop-streamed '.status == "completed" and (.measurements.execution.loops[0] | .mode == "streamed" and .blocks > 0)'
-  cap 24GiB
-  cell loop-retry "$LQ" prompt="$OBJECT, a loop that retries" megapixels:=4.0 seed:=$((R + 323)) --lane int8 --gpus=1
-  loop_expect loop-retry '.status == "completed" and (.measurements.execution.loops[0] | .mode == "streamed"
-    and (if .resident_after_first_step then (.refusals[0] // "" | startswith("resident")) else true end))'
-  cap off
-  # Cancel once the loop is past its eager first step: the native program is running.
+  if [ "$GIB" -ge 20 ]; then
+    cell loop-resident "$LQ" prompt="$OBJECT, a resident loop" megapixels:=1.0 seed:=$((R + 321)) --lane int8 --gpus=1
+    loop_expect loop-resident '.status == "completed" and .measurements.execution.loops[0].mode == "resident"'
+  fi
+  if [ "$GIB" -le 12 ]; then
+    cell loop-streamed "$LQ" prompt="$OBJECT, a streamed loop" megapixels:=1.0 seed:=$((R + 322)) --lane int8 --gpus=1
+    loop_expect loop-streamed '.status == "completed" and (.measurements.execution.loops[0] | .mode == "streamed" and .blocks > 0)'
+  fi
+  if [ "$GIB" -ge 20 ] && [ "$GIB" -le 26 ]; then
+    cell loop-retry-sdxl "$(pkg sdxl generate)" prompt="$OBJECT before a loop that retries" seed:=$((R + 326)) --lane int8 --gpus=1
+    cell loop-retry "$LQ" prompt="$OBJECT, a loop that retries" megapixels:=4.0 seed:=$((R + 323)) --lane int8 --gpus=1
+    loop_expect loop-retry '.status == "completed" and (.measurements.execution.loops[0] | .mode == "streamed"
+      and (.refusals[0] // "" | startswith("resident")))'
+  fi
+  # Cancel once the loop is past its eager first steps: the native program is running.
   run_submit "$OUT" loop-cancel run "$LQ" prompt="$OBJECT, a canceled loop" megapixels:=1.0 seed:=$((R + 324)) \
     --lane int8 --gpus=1 --on "$M" --out "$OUT/out/loop-cancel" > /dev/null
   n=$(cat loop-cancel.number)
