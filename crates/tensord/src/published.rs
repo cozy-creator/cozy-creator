@@ -354,6 +354,19 @@ impl Publisher {
         })
     }
 
+    /// A checkpoint held here, named by its header: a Hub commit pulled by hash is the request's
+    /// only as `commit` serves it; a release, or one made here, is anyone's.
+    pub(crate) fn held_for(&self, service: &Service, source: Option<&hub::Source>, header: &ObjectRef) -> Result<(), Failure> {
+        let Some(pulled) = Pulled::of(&self.store, header).map_err(io_failure)?.filter(|p| p.release.is_empty()) else {
+            return Ok(());
+        };
+        let named = Named { repository: pulled.repository, lane: pulled.lane, tree: Some(pulled.tree), ..Named::default() };
+        match source {
+            Some(source) => self.commit(service, source, named).map(drop),
+            None => Err(("model_resolution_failed", format!("{} is private, or no such commit: this run carries no Hub access; `cozy login <email>` on the computer that sent it", named.shown()))),
+        }
+    }
+
     /// The store models are made and held in.
     pub fn store(&self) -> &Arc<Store> {
         &self.store
@@ -1053,7 +1066,10 @@ impl Publisher {
                 choice.repository.is_empty(),
             ) {
                 // A model passed by value (a ModelArtifact a run here produced): held here.
-                return Ok((self.held_grant(installation, &path, reference)?, None, vec![]));
+                let grant = self.held_grant(installation, &path, reference)?;
+                let header = storage::held(&self.store, &sha256::hex(&reference.digest)).map_err(io_failure)?;
+                self.held_for(service, request.source.as_ref(), &header)?;
+                return Ok((grant, None, vec![]));
             }
             if choice.repository.starts_with("local/") && choice.manifest.is_none() {
                 let local = storage::local(&self.store, &choice.repository)

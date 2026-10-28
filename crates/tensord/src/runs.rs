@@ -479,6 +479,7 @@ impl Runs {
                 let sha256 = tensorfs::sha256::hex(&header.digest);
                 let held = crate::storage::held(publisher.store(), &sha256)
                     .map_err(|_| refused("checkpoint_absent", format!("this machine holds no checkpoint sha256:{sha256}")))?;
+                publisher.held_for(&self.service, hub_access().ok(), &held).map_err(|(code, message)| refused(code, message))?;
                 let row = json!({"parameter": choice.parameter, "checkpoint": format!("sha256:{sha256}")});
                 (held, None, row)
             } else if let Some(named) = if destination.is_empty() { None } else { held_tree(publisher.store(), choice)? } {
