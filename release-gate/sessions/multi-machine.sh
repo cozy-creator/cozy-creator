@@ -115,38 +115,6 @@ completed "$A" a2-local || fail "a2: A's own run did not complete"
 say "a2: $(turns a2-remote a2-local)"
 say "a: PASS"
 
-# b. A controls B: refused with the key to authorize, authorized on B, added, run.
-ADDR=$(jq -r .address "$OUT/show1.json") FP=$(jq -r .fingerprint "$OUT/show1.json")
-on "$A" b-refused "cozy machine add b $ADDR --fingerprint $FP" && fail "b: B admitted A before any authorize"
-KEY=$(grep -oE 'cozy machine authorize [A-Za-z0-9_-]{43}' "$OUT/b-refused.txt" | awk '{print $4}' | head -1)
-grep -q machine_unauthorized "$OUT/b-refused.txt" && [ -n "$KEY" ] || fail "b: the refusal names no key to authorize: $(tail -3 "$OUT/b-refused.txt")"
-on "$B" b-authorize "cozy machine authorize $KEY" || fail "b: authorize on B"
-at=$(awk '$1=="add" && $2=="it" && $3=="at"{print $4}' "$OUT/b-authorize.txt")
-case $at in
-  "$(jq -r .address "$OUT/show1.json")") say "b: B's authorize names the address the runner rents it at: $at" ;;
-  '') say "b: B's authorize names no address (its TensorD knows no provider mapping)" ;;
-  *) fail "b: B's authorize names $at, not the address the runner rents it at ($(jq -r .address "$OUT/show1.json"))" ;;
-esac
-on "$A" b-add "cozy machine add b $ADDR --fingerprint $FP" || fail "b: add after authorize"
-[ "$(sh "$A" 'cozy machine show local --json' | jq -r .controller_key)" = "$KEY" ] || fail "b: A's show local does not print the key B authorized"
-on "$A" b-self "cozy machine add self $(jq -r .address "$OUT/show0.json") --fingerprint $(jq -r .fingerprint "$OUT/show0.json")" &&
-  fail "b: A added its own machine under another name"
-grep -q machine_is_local "$OUT/b-self.txt" || fail "b: A's add of itself was not refused as local: $(tail -2 "$OUT/b-self.txt")"
-on "$A" b-run "cozy run sdxl/generate --on b prompt='a sleeping cat on a coil of ship rope, oil painting' seed:=$((SEED + 2))"
-completed "$A" b-run || fail "b: A's run on B did not complete"
-on "$B" b-remove "cozy machine authorize $KEY --remove" || fail "b: authorize --remove on B"
-t=$(date +%s)
-on "$A" b-removed "timeout 120 cozy run sdxl/generate --on b prompt='a fox asleep under a fern, ink drawing' seed:=$((SEED + 7))"
-[ "$(record "$A" b-removed)" = failed ] && jq -e '.reason.code == "machine_unauthorized"' "$OUT/b-removed.json" > /dev/null ||
-  fail "b: a run from A after B removed its key was not refused: $(jq -c '{status, reason}' "$OUT/b-removed.json")"
-say "b: after --remove, A's next run on B was refused in $(($(date +%s) - t)) s"
-on "$B" b-reauthorize "cozy machine authorize $KEY" || fail "b: authorize again on B"
-s=$(date +%s)
-step b-intruder machine add intruder "$ADDR" --fingerprint "$FP" && fail "b: B admitted the runner's key, never authorized"
-grep -q machine_unauthorized "$OUT/b-intruder.txt" && grep -q 'cozy machine authorize' "$OUT/b-intruder.txt" ||
-  fail "b: the unauthorized add was not refused cleanly: $(tail -3 "$OUT/b-intruder.txt")"
-say "b: PASS (the runner's key refused in $(($(date +%s) - s)) s)"
-
 # p. A private model in A's store: served to its account's warm runs with no Hub read, refused to A's signed-out shell
 # though A holds it (naming `cozy login`); public models from both controllers ran in a.
 tiny() { python3 -I -c 'import json,struct,sys,os; h=json.dumps({"w":{"dtype":"F32","shape":[4,4],"data_offsets":[0,64]}}).encode(); h+=b" "*(-len(h)%8); open(sys.argv[1],"wb").write(struct.pack("<Q",len(h))+h+os.urandom(64))' "$1"; }
@@ -165,6 +133,42 @@ on "$A" p-shell "cozy model download $MC" && fail "p: A's signed-out shell read 
 grep -q 'is private' "$OUT/p-shell.txt" && grep -q 'cozy login' "$OUT/p-shell.txt" ||
   fail "p: the shell's refusal does not say private and name cozy login: $(tail -4 "$OUT/p-shell.txt")"
 say "p: $MC served warm to the renter with no Hub read (commit asks $q, redemptions $r, unchanged); A's signed-out shell refused: $(grep -m1 -o 'is private[^(]*' "$OUT/p-shell.txt")"
+
+# b. A controls B: refused with the key to authorize, authorized on B, added, run.
+ADDR=$(jq -r .address "$OUT/show1.json") FP=$(jq -r .fingerprint "$OUT/show1.json")
+on "$A" b-refused "cozy machine add b $ADDR --fingerprint $FP" && fail "b: B admitted A before any authorize"
+KEY=$(grep -oE 'cozy machine authorize [A-Za-z0-9_-]{43}' "$OUT/b-refused.txt" | awk '{print $4}' | head -1)
+grep -q machine_unauthorized "$OUT/b-refused.txt" && [ -n "$KEY" ] || fail "b: the refusal names no key to authorize: $(tail -3 "$OUT/b-refused.txt")"
+on "$B" b-authorize "cozy machine authorize $KEY" || fail "b: authorize on B"
+at=$(awk '$1=="add" && $2=="it" && $3=="at"{print $4}' "$OUT/b-authorize.txt")
+case $at in
+  "$(jq -r .address "$OUT/show1.json")") say "b: B's authorize names the address the runner rents it at: $at" ;;
+  '') say "b: B's authorize names no address (its TensorD knows no provider mapping)" ;;
+  *) fail "b: B's authorize names $at, not the address the runner rents it at ($(jq -r .address "$OUT/show1.json"))" ;;
+esac
+on "$A" b-add "cozy machine add b $ADDR --fingerprint $FP" || fail "b: add after authorize"
+[ "$(sh "$A" 'cozy machine show local --json' | jq -r .controller_key)" = "$KEY" ] || fail "b: A's show local does not print the key B authorized"
+on "$A" b-self "cozy machine add self $(jq -r .address "$OUT/show0.json") --fingerprint $(jq -r .fingerprint "$OUT/show0.json")" &&
+  fail "b: A added its own machine under another name"
+# A provider that does not loop a pod's own public address back leaves nothing to refuse: A cannot reach itself there.
+grep -q machine_is_local "$OUT/b-self.txt" || grep -q machine_unreachable "$OUT/b-self.txt" ||
+  fail "b: A's add of itself was not refused as local: $(tail -2 "$OUT/b-self.txt")"
+grep -q machine_unreachable "$OUT/b-self.txt" && say "b: A cannot reach its own public address here (no hairpin): the add of itself is not tested"
+on "$A" b-run "cozy run sdxl/generate --on b prompt='a sleeping cat on a coil of ship rope, oil painting' seed:=$((SEED + 2))"
+completed "$A" b-run || fail "b: A's run on B did not complete"
+on "$B" b-remove "cozy machine authorize $KEY --remove" || fail "b: authorize --remove on B"
+t=$(date +%s)
+on "$A" b-removed "timeout 120 cozy run sdxl/generate --on b prompt='a fox asleep under a fern, ink drawing' seed:=$((SEED + 7))"
+[ "$(record "$A" b-removed)" = failed ] && jq -e '.reason.code == "machine_unauthorized"' "$OUT/b-removed.json" > /dev/null ||
+  fail "b: a run from A after B removed its key was not refused: $(jq -c '{status, reason}' "$OUT/b-removed.json")"
+say "b: after --remove, A's next run on B was refused in $(($(date +%s) - t)) s"
+on "$B" b-reauthorize "cozy machine authorize $KEY" || fail "b: authorize again on B"
+s=$(date +%s)
+step b-intruder machine add intruder "$ADDR" --fingerprint "$FP" && fail "b: B admitted the runner's key, never authorized"
+grep -q machine_unauthorized "$OUT/b-intruder.txt" && grep -q 'cozy machine authorize' "$OUT/b-intruder.txt" ||
+  fail "b: the unauthorized add was not refused cleanly: $(tail -3 "$OUT/b-intruder.txt")"
+say "b: PASS (the runner's key refused in $(($(date +%s) - s)) s)"
+
 
 # c. Mixed versions, both ways.
 update "$A" "$OLD" "$OLD"
