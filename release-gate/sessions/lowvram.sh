@@ -77,8 +77,9 @@ for a in "${artifacts[@]}"; do
     gh run download "$rid" -R cozy-creator/cozy-creator -n "$name" -D "$d" >/dev/null 2>&1 || fail "no artifact $a"
   else
     u=${a#url:} want=${a##*#sha256=}; u=${u%%#*}
-    curl -fsSL --retry 5 -o "$d/${u##*/}" "$u" || fail "cannot fetch $u"
-    [ "$(sha256sum "$d/${u##*/}" | cut -d' ' -f1)" = "$want" ] || fail "$u is not sha256 $want"
+    f=$d/$(basename "${u//%2B/+}")  # a wheel's name is its version: a local version's '+' arrives as %2B
+    curl -fsSL --retry 5 -o "$f" "$u" || fail "cannot fetch $u"
+    [ "$(sha256sum "$f" | cut -d' ' -f1)" = "$want" ] || fail "$u is not sha256 $want"
   fi
   w=$(artifact_path "$a") || fail "$a has no Linux x86_64 wheel or cozy binary"
   say "fetched $a: ${w##*/} sha256 $(sha256sum "$w" | cut -c1-16)"
