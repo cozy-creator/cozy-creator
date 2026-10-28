@@ -34,12 +34,18 @@ struct Source {
     components: Vec<String>,
 }
 
-/// Whether a header of `kinds` holds only original weights.
+/// Whether a header of `kinds` holds only original weights: 16- or 32-bit floats, beside the
+/// integer and boolean buffers (position ids, masks) a model keeps as they are, which are no
+/// weights and never quantized.
 fn original(kinds: &[String]) -> bool {
-    !kinds.is_empty() && kinds.iter().all(|kind| {
-        matches!(Dtype::parse(kind), Dtype::BF16 | Dtype::F16 | Dtype::F32)
-            || ORIGINAL.contains(&kind.as_str())
-    })
+    let float = |kind: &String| {
+        matches!(Dtype::parse(kind), Dtype::BF16 | Dtype::F16 | Dtype::F32) || ORIGINAL.contains(&kind.as_str())
+    };
+    let index = |kind: &String| {
+        use Dtype::*;
+        matches!(Dtype::parse(kind), BOOL | I16 | U16 | I32 | U32 | I64 | U64)
+    };
+    kinds.iter().any(float) && kinds.iter().all(|kind| float(kind) || index(kind))
 }
 
 /// The commit `model` names, as the model's card lists it (its org's members see every commit):
