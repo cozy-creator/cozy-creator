@@ -143,73 +143,78 @@ fn padded(rows: usize, cols: usize) -> Result<usize> {
 }
 
 pub fn svdq_fit_workspace(rows: usize, cols: usize, samples: usize) -> Result<usize> {
+    add(shared_workspace(rows, cols, samples)?, alpha_workspace(rows, cols, samples)?)
+}
+
+/// What a fit holds once, whatever its alphas in flight: the immutable F32 inputs; the reference
+/// outputs and norms; the transposed weight (while the reference is made) or the final logical
+/// weight; channel maxima, the best factors and pre; a parallel product's tiles; each worker's
+/// residual tile, its transpose, branch, residual row and product panel; the seven parts.
+fn shared_workspace(rows: usize, cols: usize, samples: usize) -> Result<usize> {
     let q = geometry(rows, cols, samples)?;
     let nk = mul(rows, cols)?;
-    let sk = mul(samples, cols)?;
-    let nq = mul(rows, q)?;
-    let kq = mul(cols, q)?;
-    let nr = mul(rows, RANK)?;
-    let kr = mul(cols, RANK)?;
-    let st = mul(samples, TILE)?;
-    // Inputs; smoothed weight; two basis buffers; reduced/sketch and V; small U;
-    // singular values and one-row Householder coefficients; current/best factors;
-    // smooth, stored pre and channel maxima; quantized activations; reference;
-    // one residual tile; current residual and low-rank output tiles; projected rows.
+    let worker = add(
+        add(mul(8 * TILE, cols)?, mul(samples, 4 * TILE)?)?,
+        add(cols, add(mul(cols, 256)?, TILE * 256)?)?,
+    )?;
     let counts = [
         nk,
-        sk,
+        mul(samples, cols)?,
         cols,
-        nk,
-        nq,
-        nq,
-        kq,
-        kq,
-        mul(q, q)?,
-        q,
-        q,
-        nr,
-        nr,
-        kr,
-        kr,
-        cols,
-        cols,
-        cols,
-        sk,
-        mul(samples, rows)?,
-        mul(TILE, cols)?,
-        st,
-        st,
-        mul(samples, RANK)?,
-        // A score's predicted outputs; the final logical weight; a parallel product's
-        // tiles (its destination, padded to whole tiles); the weight transposed; the
-        // row-major basis, sketch and range; down scaled and transposed; each worker's
-        // residual tile, its transpose, branch, residual row and product panel.
         mul(samples, rows)?,
         nk,
+        cols,
+        mul(rows, RANK)?,
+        mul(RANK, cols)?,
+        cols,
         padded(samples, rows)?.max(padded(rows, q)?).max(padded(cols, q)?),
-        nk,
-        kq,
-        nq,
-        nq,
-        kr,
-        kr,
-        mul(
-            threads(),
-            add(
-                add(mul(2 * TILE, cols)?, mul(samples, TILE)?)?,
-                add(cols, mul(cols, 256 + TILE)?)?,
-            )?,
-        )?,
+        mul(threads(), worker)?,
     ];
     let mut bytes = 64 * 1024; // bounded stack/Vec/part/shape/string metadata and RNG state
     for count in counts {
         bytes = add(bytes, mul(count, 4)?)?;
     }
-    // Norm/error accumulators, and all seven final encoded parts.
-    bytes = add(bytes, mul(mul(samples, 2)?, 8)?)?;
-    for count in [nk / 2, nk / 16, 8, mul(cols, 4)?, mul(nr, 2)?, mul(kr, 2)?] {
+    bytes = add(bytes, mul(samples, 8)?)?;
+    for count in [nk / 2, nk / 16, 8, mul(cols, 4)?, mul(rows, 2 * RANK)?, mul(cols, 2 * RANK)?] {
         bytes = add(bytes, count)?;
     }
+    Ok(bytes)
+}
+
+/// One alpha in flight (`Work`): the smoothed weight and its transpose; the sketch, basis and
+/// range (column- and row-major), V, U, singular values and Householder coefficients; the
+/// factors, down scaled and transposed; the smoothing; quantized activations, projected rows,
+/// a score's predicted outputs and errors; faer's scratch.
+fn alpha_workspace(rows: usize, cols: usize, samples: usize) -> Result<usize> {
+    let q = geometry(rows, cols, samples)?;
+    let (nk, nq, kq) = (mul(rows, cols)?, mul(rows, q)?, mul(cols, q)?);
+    let counts = [
+        nk,
+        nk,
+        nq,
+        nq,
+        nq,
+        nq,
+        kq,
+        kq,
+        kq,
+        mul(q, q)?,
+        q,
+        q,
+        mul(rows, RANK)?,
+        mul(RANK, cols)?,
+        mul(RANK, cols)?,
+        mul(RANK, cols)?,
+        cols,
+        mul(samples, cols)?,
+        mul(samples, RANK)?,
+        mul(samples, rows)?,
+    ];
+    let mut bytes = 0usize;
+    for count in counts {
+        bytes = add(bytes, mul(count, 4)?)?;
+    }
+    bytes = add(bytes, mul(samples, 8)?)?;
     add(bytes, scratch(rows, cols, q)?.unaligned_bytes_required())
 }
 
@@ -486,16 +491,10 @@ struct Work {
     hh: Vec<f32>,
     up: Vec<f32>,
     down: Vec<f32>,
-    best_up: Vec<f32>,
-    best_down: Vec<f32>,
     smooth: Vec<f32>,
-    pre: Vec<f32>,
-    wmax: Vec<f32>,
     xq: Vec<f32>,
-    reference: Vec<f32>,
-    logical: Vec<f32>,
     projected: Vec<f32>,
-    /// `a` (or the weight) transposed, [K, N]; `z`, `basis` and `y` row-major; `down`
+    /// `a` transposed, [K, N]; `z`, `basis` and `y` row-major; `down`
     /// times the smoothing, [R, K]; `down` transposed, [K, R].
     at: Vec<f32>,
     zr: Vec<f32>,
@@ -503,7 +502,6 @@ struct Work {
     yr: Vec<f32>,
     scaled: Vec<f32>,
     downt: Vec<f32>,
-    norms: Vec<f64>,
     errors: Vec<f64>,
     scratch: MemBuffer,
 }
@@ -520,14 +518,8 @@ impl Work {
             hh: zeros(q)?,
             up: zeros(n * RANK)?,
             down: zeros(RANK * k)?,
-            best_up: zeros(n * RANK)?,
-            best_down: zeros(RANK * k)?,
             smooth: zeros(k)?,
-            pre: zeros(k)?,
-            wmax: zeros(k)?,
             xq: zeros(s * k)?,
-            reference: zeros(s * n)?,
-            logical: zeros(n * k)?,
             projected: zeros(s * RANK)?,
             at: zeros(n * k)?,
             zr: zeros(k * q)?,
@@ -535,7 +527,6 @@ impl Work {
             yr: zeros(n * q)?,
             scaled: zeros(RANK * k)?,
             downt: zeros(k * RANK)?,
-            norms: zeros(s)?,
             errors: zeros(s)?,
             scratch: MemBuffer::try_new(scratch(n, k, q)?)
                 .map_err(|_| fail("cannot allocate faer scratch"))?,
@@ -785,6 +776,7 @@ fn score(
     work: &mut Work,
     weight: &[f32],
     calibration: &[f32],
+    reference: &Reference,
     n: usize,
     k: usize,
     samples: usize,
@@ -906,7 +898,7 @@ fn score(
         )
         .collect::<Result<Vec<_>>>()?;
     // Each calibration row sums its squared errors over the outputs in order.
-    let reference = &work.reference;
+    let (norms, reference) = (&reference.norms, &reference.outputs);
     work.errors.par_iter_mut().enumerate().for_each(|(s, error)| {
         let mut sum = 0.0f64;
         for (t, tile) in predicted.iter().enumerate() {
@@ -920,13 +912,81 @@ fn score(
     });
     let mut mean = 0.0f64;
     for s in 0..samples {
-        mean += work.errors[s].sqrt() / work.norms[s].max(1e-30);
+        mean += work.errors[s].sqrt() / norms[s].max(1e-30);
     }
     let mean = mean / samples as f64;
     if !mean.is_finite() {
         return Err(fail("nonfinite calibration error"));
     }
     Ok(mean)
+}
+
+/// What every alpha reads: the calibration rows' outputs through the weight, and their norms.
+struct Reference {
+    outputs: Vec<f32>,
+    norms: Vec<f64>,
+}
+
+/// One alpha's candidate in `work`: the smoothing, the low-rank factors of the smoothed weight,
+/// and its calibration error. Alphas share nothing they write, so any number run at once.
+#[allow(clippy::too_many_arguments)]
+fn candidate(
+    work: &mut Work,
+    alpha: f32,
+    weight: &[f32],
+    xmax: &[f32],
+    wmax: &[f32],
+    calibration: &[f32],
+    reference: &Reference,
+    (rows, cols, samples, q, seed): (usize, usize, usize, usize, u64),
+    check: Check,
+) -> Result<f64> {
+    check()?;
+    let mut mean = 0.0f32;
+    for j in 0..cols {
+        let s = if alpha == 0.0 {
+            1.0
+        } else {
+            (xmax[j].max(1e-5).powf(alpha) / wmax[j].max(1e-5).powf(1.0 - alpha)).max(1e-5)
+        };
+        work.smooth[j] = s;
+        mean += s;
+    }
+    mean /= cols as f32;
+    if !mean.is_finite() || mean <= 0.0 {
+        return Err(fail("unrepresentable smoothing mean"));
+    }
+    for s in &mut work.smooth {
+        let pre = 1.0 / (*s / mean);
+        *s = 1.0 / pre;
+        if !pre.is_finite() || pre <= 0.0 || !s.is_finite() || *s <= 0.0 {
+            return Err(fail("unrepresentable smoothing scale"));
+        }
+    }
+    let smooth = &work.smooth;
+    work.a.par_chunks_exact_mut(cols).zip(weight.par_chunks_exact(cols)).for_each(|(a, w)| {
+        for j in 0..cols {
+            a[j] = w[j] * smooth[j];
+        }
+    });
+    finite(&work.a, "smoothed weight")?;
+    work.factors(rows, cols, q, seed, check)?;
+    scale_down(&mut work.scaled, &work.down, &work.smooth, cols);
+    let maximum = residual_maximum(weight, rows, cols, &work.smooth, &work.up, &work.scaled, check)?;
+    let gx = (xmax
+        .iter()
+        .zip(&work.smooth)
+        .fold(0.0f32, |m, (x, s)| m.max(x.max(1e-5) / s))
+        * 2.0
+        / LEVELS)
+        .max(1e-30);
+    if !gx.is_finite() || gx <= 0.0 {
+        return Err(fail("unrepresentable activation scale"));
+    }
+    let smooth = &work.smooth;
+    input_quantize(calibration, |x, j| x / smooth[j], gx, &mut work.xq, cols, check)?;
+    let global = (maximum / LEVELS).max(1e-30);
+    score(work, weight, calibration, reference, rows, cols, samples, true, global, None, check)
 }
 
 fn part(role: &str, dtype: Dtype, shape: &[u64], bytes: Vec<u8>) -> Result<OwnedPart> {
@@ -1017,27 +1077,31 @@ fn fit(
     if xmax.iter().any(|x| *x < 0.0) {
         return Err(fail("channel maxima must be nonnegative"));
     }
-    let mut work = Work::new(rows, cols, samples, q)?;
-    if nano(samples, rows, cols) {
-        transposed(&mut work.at, weight, rows, cols);
-        exact_par(&mut work.reference, calibration, &work.at, cols, rows, check)?;
-    } else {
-        product(
-            Out::row(&mut work.reference, samples, rows),
-            View::row(calibration, samples, cols),
-            View::row(weight, rows, cols).transpose(),
-            check,
-        )?;
-    }
-    finite(&work.reference, "reference outputs")?;
-    let reference = &work.reference;
-    work.norms.par_iter_mut().enumerate().for_each(|(s, norm)| {
-        *norm = reference[s * rows..(s + 1) * rows]
-            .iter()
-            .map(|v| f64::from(*v).powi(2))
-            .sum::<f64>()
-            .sqrt();
-    });
+    let reference = {
+        let mut outputs = zeros(samples * rows)?;
+        if nano(samples, rows, cols) {
+            let mut transposed_weight = zeros(rows * cols)?;
+            transposed(&mut transposed_weight, weight, rows, cols);
+            exact_par(&mut outputs, calibration, &transposed_weight, cols, rows, check)?;
+        } else {
+            product(
+                Out::row(&mut outputs, samples, rows),
+                View::row(calibration, samples, cols),
+                View::row(weight, rows, cols).transpose(),
+                check,
+            )?;
+        }
+        finite(&outputs, "reference outputs")?;
+        let mut norms = zeros(samples)?;
+        norms.par_iter_mut().enumerate().for_each(|(s, norm)| {
+            *norm = outputs[s * rows..(s + 1) * rows]
+                .iter()
+                .map(|v| f64::from(*v).powi(2))
+                .sum::<f64>()
+                .sqrt();
+        });
+        Reference { outputs, norms }
+    };
     // Maxima are exact in any order: each worker's rows, then the workers'.
     let column_max = |mut maxima: Vec<f32>, values: &[f32]| {
         for (maximum, value) in maxima.iter_mut().zip(values) {
@@ -1049,9 +1113,17 @@ fn fit(
         .par_chunks_exact(cols)
         .fold(|| vec![0.0f32; cols], column_max)
         .reduce(|| vec![0.0f32; cols], |a, b| column_max(a, &b));
-    work.wmax.copy_from_slice(&wmax);
     let weight_max = wmax.iter().fold(0.0f32, |m, v| m.max(*v));
     let input_max = calibration.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    // Alphas at once: one per eight workers (each alpha's QR and SVD run on one), as many as
+    // the grant holds (one is `required`).
+    let each = alpha_workspace(rows, cols, samples)?;
+    let held = 1 + (max_buffer_bytes - required) / each;
+    let inflight = held.min((threads() / 8).max(1)).min(ALPHAS.len());
+    let mut works = (0..inflight)
+        .map(|_| Work::new(rows, cols, samples, q))
+        .collect::<Result<Vec<_>>>()?;
+    let work = &mut works[0];
     input_quantize(
         calibration,
         |x, _| x,
@@ -1061,9 +1133,10 @@ fn fit(
         check,
     )?;
     let plain = score(
-        &mut work,
+        work,
         weight,
         calibration,
+        &reference,
         rows,
         cols,
         samples,
@@ -1072,87 +1145,38 @@ fn fit(
         None,
         check,
     )?;
+    // The first alpha with the least error wins, as when they ran one after another.
     let mut best_error = f64::INFINITY;
     let mut best_alpha = 0.0f32;
-    for alpha in ALPHAS {
-        check()?;
-        let mut mean = 0.0f32;
-        for j in 0..cols {
-            let s = if alpha == 0.0 {
-                1.0
-            } else {
-                (xmax[j].max(1e-5).powf(alpha) / work.wmax[j].max(1e-5).powf(1.0 - alpha)).max(1e-5)
-            };
-            work.smooth[j] = s;
-            mean += s;
-        }
-        mean /= cols as f32;
-        if !mean.is_finite() || mean <= 0.0 {
-            return Err(fail("unrepresentable smoothing mean"));
-        }
-        for s in &mut work.smooth {
-            let pre = 1.0 / (*s / mean);
-            *s = 1.0 / pre;
-            if !pre.is_finite() || pre <= 0.0 || !s.is_finite() || *s <= 0.0 {
-                return Err(fail("unrepresentable smoothing scale"));
-            }
-        }
-        let smooth = &work.smooth;
-        work.a.par_chunks_exact_mut(cols).zip(weight.par_chunks_exact(cols)).for_each(|(a, w)| {
-            for j in 0..cols {
-                a[j] = w[j] * smooth[j];
-            }
-        });
-        finite(&work.a, "smoothed weight")?;
-        work.factors(rows, cols, q, seed, check)?;
-        scale_down(&mut work.scaled, &work.down, &work.smooth, cols);
-        let maximum = residual_maximum(
-            weight,
-            rows,
-            cols,
-            &work.smooth,
-            &work.up,
-            &work.scaled,
-            check,
-        )?;
-        let gx = (xmax
-            .iter()
-            .zip(&work.smooth)
-            .fold(0.0f32, |m, (x, s)| m.max(x.max(1e-5) / s))
-            * 2.0
-            / LEVELS)
-            .max(1e-30);
-        if !gx.is_finite() || gx <= 0.0 {
-            return Err(fail("unrepresentable activation scale"));
-        }
-        let smooth = &work.smooth;
-        input_quantize(calibration, |x, j| x / smooth[j], gx, &mut work.xq, cols, check)?;
-        let error = score(
-            &mut work,
-            weight,
-            calibration,
-            rows,
-            cols,
-            samples,
-            true,
-            (maximum / LEVELS).max(1e-30),
-            None,
-            check,
-        )?;
-        if error < best_error {
-            best_error = error;
-            best_alpha = alpha;
-            work.best_up.copy_from_slice(&work.up);
-            work.best_down.copy_from_slice(&work.down);
-            for (p, s) in work.pre.iter_mut().zip(&work.smooth) {
-                *p = 1.0 / s;
+    let (mut best_up, mut best_down, mut pre) = (zeros(rows * RANK)?, zeros(RANK * cols)?, zeros(cols)?);
+    let shape = (rows, cols, samples, q, seed);
+    for alphas in ALPHAS.chunks(inflight) {
+        let errors = works
+            .par_iter_mut()
+            .zip(alphas.par_iter())
+            .map(|(work, &alpha)| {
+                candidate(work, alpha, weight, xmax, &wmax, calibration, &reference, shape, check)
+            })
+            .collect::<Vec<_>>();
+        for ((work, &alpha), error) in works.iter().zip(alphas).zip(errors) {
+            let error = error?;
+            if error < best_error {
+                best_error = error;
+                best_alpha = alpha;
+                best_up.copy_from_slice(&work.up);
+                best_down.copy_from_slice(&work.down);
+                for (p, s) in pre.iter_mut().zip(&work.smooth) {
+                    *p = 1.0 / s;
+                }
             }
         }
     }
     check()?;
-    work.up.copy_from_slice(&work.best_up);
-    work.down.copy_from_slice(&work.best_down);
-    for (s, p) in work.smooth.iter_mut().zip(&work.pre) {
+    works.truncate(1);
+    let work = &mut works[0];
+    work.up.copy_from_slice(&best_up);
+    work.down.copy_from_slice(&best_down);
+    for (s, p) in work.smooth.iter_mut().zip(&pre) {
         *s = 1.0 / p;
     }
     scale_down(&mut work.scaled, &work.down, &work.smooth, cols);
@@ -1170,13 +1194,14 @@ fn fit(
     let mut scales = zeros(rows * cols / 16)?;
     // Rows on the workers: each encodes its blocks and keeps its residual (in `a`) and
     // logical values; the error statistics then sum them in the sequential order.
-    let (smooth, up, down, pre) = (&work.smooth, &work.up, &work.down, &work.pre);
+    let mut logical = zeros(rows * cols)?;
+    let (smooth, up, down) = (&work.smooth, &work.up, &work.down);
     let scaled = &work.scaled;
     let saturated = codes
         .par_chunks_exact_mut(cols / 2)
         .zip(scales.par_chunks_exact_mut(cols / 16))
         .zip(work.a.par_chunks_exact_mut(cols))
-        .zip(work.logical.par_chunks_exact_mut(cols))
+        .zip(logical.par_chunks_exact_mut(cols))
         .enumerate()
         .map(|(i, (((codes, scales), residuals), logical))| {
             check()?;
@@ -1224,7 +1249,7 @@ fn fit(
                 let code = codes[at / 2] >> ((at % 2) * 4) & 15;
                 let decoded = (crate::format::decode::elem::e2m1(code) * scale) * global;
                 residual.add(work.a[at], f64::from(decoded));
-                stats.add(weight[at], f64::from(work.logical[at]));
+                stats.add(weight[at], f64::from(logical[at]));
             }
         }
     }
@@ -1235,12 +1260,14 @@ fn fit(
         * 2.0
         / LEVELS)
         .max(1e-30);
-    let pre = &work.pre;
+    drop(logical);
+    let pre = &pre;
     input_quantize(calibration, |x, j| x * pre[j], gx, &mut work.xq, cols, check)?;
     let served = score(
-        &mut work,
+        work,
         weight,
         calibration,
+        &reference,
         rows,
         cols,
         samples,
@@ -1272,7 +1299,7 @@ fn fit(
         "pre_quant_scale",
         Dtype::F32,
         &[cols as u64],
-        float_bytes(&work.pre, false)?,
+        float_bytes(pre, false)?,
     )?);
     parts.push(part(
         "lowrank_down",
