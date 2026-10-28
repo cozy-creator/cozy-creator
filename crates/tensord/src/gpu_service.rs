@@ -1551,10 +1551,12 @@ impl Pool {
         let Some(mut session) = self.sessions.lock().unwrap().remove(&key) else {
             return Ok("its executor ended");
         };
-        if member.payload.is_some() && !session.executor.hello.program_preparation {
+        if member.payload.is_some() {
+            // Runtime 0.35 records a package's loop at its first call (author.denoise_loop);
+            // no executor prepares a program from a warm payload.
             *member.prepared.lock().unwrap() = Some(false);
             self.keep_idle(engine, session)?;
-            return Ok("its executor does not support program preparation");
+            return Ok("its executor does not prepare programs from a warm payload");
         }
         let request_id = preparation.map(|p| p.id().to_owned())
             .unwrap_or_else(|| format!("warm:{}:{}", plan.id, session.executor.birth.pid));

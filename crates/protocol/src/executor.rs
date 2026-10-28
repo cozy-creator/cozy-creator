@@ -509,8 +509,6 @@ pub struct Hello {
     pub tensorfs_version: String,
     /// Correlated PrepareRequest replies and cancellation-safe prepared-record publication.
     pub request_lookahead: bool,
-    /// A typed preparation factory on an admitted GPU Map (not a generation handler).
-    pub program_preparation: bool,
     pub sealed: BTreeMap<String, String>,
 }
 

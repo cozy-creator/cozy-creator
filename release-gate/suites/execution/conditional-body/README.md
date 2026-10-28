@@ -1,15 +1,15 @@
 # Conditional body
 
-Runtime's native `ResidentRepeat` composes a captured step into an IF -> WHILE conditional graph.
-This cell captures one step per node class, each in its own child process, through the real
-`PreparedRepeat.capture`. It runs the step 3 times natively and checks the values:
+Runtime's native `ResidentRepeat` composes a recorded step into an IF -> WHILE conditional graph. Each
+cell records one step per node class through `author.denoise_loop` (no components: tensor work only),
+runs its first step eagerly and 3 more natively, and checks the values and that the loop ran resident:
 
 `scalar`, `memset` (8-bit), `memset32`, `memcpy`, `reduce`, `parallel` (a forked stream), `triton`,
 `triton_pdl`, `cublas`, `cudnn`, `sdpa`, and `mix` (memset, memcpy, cuBLAS, cuDNN, SDPA and Triton in
 one body).
 
-A crash ends only its child. The run completes when every variant passes. Otherwise it fails, naming
-each failing variant's signal or exit code, the last stage it reached, and the GPU and driver.
+One run per variant (`conditional-body-<variant>`): a crash ends that run's executor only, and the gate
+names the variant. A refusal (the loop ran eagerly) fails the cell too.
 
 Escaped in Runtime 0.34.2: on driver 615 (615.71.09 on an RTX 5090, 615.78.08 on an RTX 3060),
 `cuGraphInstantiate` read a null pointer when the body held a memcpy node. That crashed native Qwen
@@ -26,7 +26,7 @@ Expected results:
 The cell catches the bug whenever a gate lands on a 615 host.
 
 ```sh
-cozy run "$PWD/release-gate/suites/execution/conditional-body/gpu" seed:=331 --gpus=1 --on MACHINE --json
+cozy run "$PWD/release-gate/suites/execution/conditional-body/gpu" variant=memcpy seed:=331 --gpus=1 --on MACHINE --json
 ```
 
 `cells.sh` adds it to the runtime suite.
