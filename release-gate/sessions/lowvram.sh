@@ -39,9 +39,10 @@ COMFY=$(jq -r 'map(.name) | index("comfy") // -1' <<<"$ARMS")
 COZY1=${arms[0]}; [ "$COZY1" = comfy ] && COZY1=${arms[1]:-}
 jq -e 'map(has("limit")) | . == (sort)' <<<"$ARMS" >/dev/null || fail "arms with a memory limit come last"
 arm_levels() { jq -r --arg a "$1" --argjson d "$LEVELS" '.[] | select(.name==$a) | (.levels // $d)[] | tostring' <<<"$ARMS"; }
-# Cozy side: package, model and lane per model (the lane ComfyUI's files match).
+# Cozy side: package, model and lane per model.
 pkg() { case $1 in sdxl) echo sdxl ;; anima) echo anima ;; qwen|qwen4) echo qwen-image-2 ;; esac; }
-model_ref() { case $1 in sdxl) echo "sdxl@1.0.0 bf16" ;; anima) echo "anima@1.0.0 bf16" ;; qwen|qwen4) echo "qwen-image-2.1@0.1.0 int8" ;; esac; }
+# Cozy runs every model's 8-bit lane, what users run (Paul 10-28); ComfyUI comparisons are the benchmarks runner's (bench).
+model_ref() { case $1 in sdxl) echo "sdxl@1.0.0 int8" ;; anima) echo "anima@1.0.0 int8" ;; qwen|qwen4) echo "qwen-image-2.1@0.1.0 int8" ;; esac; }
 tiers() { echo cold; for i in $(seq 1 "$WARM"); do echo "w$i"; done; }
 tree() { jq -r --arg a "$1" --arg m "$2" '.[] | select(.name==$a) | (.local // {})[$m] // empty' <<<"$ARMS"; }
 for a in "${arms[@]}"; do for m in "${models[@]}"; do
