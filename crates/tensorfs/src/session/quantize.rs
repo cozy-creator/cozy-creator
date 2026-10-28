@@ -77,6 +77,9 @@ pub struct FitDetails {
     pub plain_nvfp4_error: f64,
     pub calibration_bytes_read: u64,
     pub required_buffer_bytes: usize,
+    /// The fit's workers (one per usable core) and its wall time.
+    pub workers: usize,
+    pub fit_seconds: f64,
 }
 
 #[derive(Default, Debug, Serialize)]

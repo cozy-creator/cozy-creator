@@ -535,8 +535,10 @@ mapping described in API.md. It never commits the Writer or chooses a model reci
 
 `Writer.quantize(..., calibration=None)` optionally retains a completed calibration
 checkpoint. An SVDQ selection adds `fit: {seed, component, xmax, rows}` with exact
-calibration keys and the explicit `svdq-nvfp4-r32-faer/1` strategy. Its result includes
-per-tensor `fit` details and separate `calibration_bytes_read` and
+calibration keys and the explicit `svdq-nvfp4-r32-faer/1` strategy. The fit runs on one
+pool of the machine's usable cores and is bit-identical to a single-threaded fit. Its result
+includes per-tensor `fit` details (with its `workers` and `fit_seconds`) and separate
+`calibration_bytes_read` and
 `required_buffer_bytes` aggregates. `raw.quantization_implementation() -> str` supplies
 the full Writer producer/source-reader and pinned-dependency digest used in external
 memo provenance. Optional `component: str | None = None` limits execution to one component
