@@ -86,6 +86,7 @@ class ToolRequest(msgspec.Struct):
     op: str
     label: str = ""
     free_mib: int = 0
+    ram_free_gib: int = 0
 
 
 class ToolResult(msgspec.Struct):
@@ -160,6 +161,47 @@ def hold(free_mib: int, tel: Telemetry) -> str:
     state = json.loads((D / "hold.json").read_text()) | {"smi": smi()}
     tel.log(json.dumps(state))
     return json.dumps(state)
+
+
+RAM_HOLDER = r'''
+import json, mmap, sys, time
+from pathlib import Path
+d, target = Path(sys.argv[1]), int(sys.argv[2]) << 30
+def available():
+    return next(int(l.split()[1]) << 10 for l in open("/proc/meminfo") if l.startswith("MemAvailable:"))
+held = []
+while available() - target > (256 << 20):
+    block = mmap.mmap(-1, min(available() - target, 1 << 30))
+    for at in range(0, len(block), 4096):  # touch every page: anonymous memory, really taken
+        block[at] = 1
+    held.append(block)
+(d / "ramhold.json").write_text(json.dumps({"held_gib": round(sum(len(b) for b in held) / 2**30, 2),
+                                            "available_gib": round(available() / 2**30, 2), "target_gib": target >> 30}))
+while not (d / "ramhold.stop").exists():
+    time.sleep(0.5)
+'''
+
+
+def ramhold(free_gib: int, tel: Telemetry) -> str:
+    """Hold host RAM so only `free_gib` stays available (a smaller machine), or release it (0)."""
+    (D / "ramhold.stop").touch()
+    time.sleep(1.5)
+    (D / "ramhold.stop").unlink(missing_ok=True)
+    (D / "ramhold.json").unlink(missing_ok=True)
+    if free_gib <= 0:
+        return json.dumps({"released": True})
+    (D / "ramholder.py").write_text(RAM_HOLDER)
+    subprocess.Popen([sys.executable, str(D / "ramholder.py"), str(D), str(free_gib)], stdin=subprocess.DEVNULL,
+                     stdout=open(D / "ramholder.log", "ab"), stderr=subprocess.STDOUT, start_new_session=True)
+    for _ in range(600):
+        if (D / "ramhold.json").exists():
+            break
+        time.sleep(0.5)
+    if not (D / "ramhold.json").exists():
+        raise RuntimeError(f"the RAM holder did not start: {(D / 'ramholder.log').read_text()[-800:]}")
+    state = (D / "ramhold.json").read_text()
+    tel.log(state)
+    return state
 
 
 LIBC = ctypes.CDLL("libc.so.6", use_errno=True)
@@ -237,6 +279,8 @@ def main(payload: ToolRequest, ctx: Context, tel: Telemetry, out: Outputs) -> To
         return ToolResult(sampler())
     if payload.op == "hold":
         return ToolResult(hold(payload.free_mib, tel))
+    if payload.op == "ramhold":
+        return ToolResult(ramhold(payload.ram_free_gib, tel))
     if payload.op == "evict":
         return ToolResult(evict())
     if payload.op == "mark":

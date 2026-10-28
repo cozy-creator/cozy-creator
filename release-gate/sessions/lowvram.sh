@@ -17,6 +17,7 @@
 #            and sent from this runner.
 #   an arm's "local": {"<model>": "<packages_refs name>"} runs that model's package from that packages checkout
 #            (installed by path, removed as local/<package>) instead of its published release
+#   an arm's "ram_free_gib": N holds host RAM so only N GiB stay available while it runs (a smaller machine)
 #   skip     ["<level>/<model>", …] cells no arm runs (a known failure measured before); an arm's "skip" replaces it
 #   keep_going  true: a failed request does not end its cell (to measure the executor after a failure)
 #   seed_base the first request's seed (2026102700); a later session takes a new base, and every prompt is new
@@ -180,6 +181,8 @@ arm_update() {  # the arm's machine update (a candidate's versions, or a dev mem
 }
 for a in "${arms[@]}"; do
   arm_update "$a"
+  ram=$(jq -r --arg a "$a" '.[] | select(.name==$a) | .ram_free_gib // 0' <<<"$ARMS")
+  tool "ramhold-$a" ramhold "ram_free_gib:=$ram" || fail "ram hold for $a"
   limited=$(jq -r --arg a "$a" '.[] | select(.name==$a) | .limit // empty' <<<"$ARMS")
   for l in $(arm_levels "$a"); do
     free=$l; [ "$l" = full ] && free=0
@@ -218,5 +221,6 @@ for a in "${arms[@]}"; do
   done
 done
 tool hold-release hold "free_mib:=0"
+tool ramhold-release ramhold "ram_free_gib:=0"
 tool collect collect || fail "collect"
 python3 -I "$L/analyze.py" "$OUT" > "$OUT/table.md" 2> "$OUT/analyze.err" && cat "$OUT/table.md" >> "$R" || say "analyze failed: $(tail -3 "$OUT/analyze.err")"
