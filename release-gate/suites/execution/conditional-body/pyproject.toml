@@ -5,7 +5,7 @@ build-backend = "uv_build"
 [project]
 name = "ci-conditional-body"
 version = "0.1.0"
-description = "Each captured node class inside a native ResidentRepeat conditional body, one child process each"
+description = "Each node class inside the native conditional body denoise_loop records, one run per variant"
 requires-python = ">=3.12"
 dependencies = ["cozy-runtime>=0.34,<0.36", "cuda-bindings>=13", "msgspec>=0.19", "torch>=2.14,<2.15", "triton>=3"]
 
