@@ -18,8 +18,11 @@ store = ["dep:hmac", "dep:rustix", "dep:rustls", "dep:webpki-roots", "dep:tokio"
 
 [dependencies]
 # SVDQ producer revision pins its factorization and random-sketch implementation.
-# No Rayon/global thread pool: the existing conversion worker owns sequential work.
 faer = { version = "=0.24.4", path = "../../vendor/faer", default-features = false, features = ["std", "linalg"] }
+# The SVDQ fit's one pool of the machine's cores; faer itself stays sequential per call.
+rayon = "1.12.0"
+# The fit's products: faer's own SIMD dispatch, the arithmetic of its 16-cubed nano-GEMM.
+pulp = { version = "0.22.3", default-features = false, features = ["std", "x86-v3"] }
 rand = { version = "=0.9.5", default-features = false, features = ["std"] }
 rand_chacha = { version = "=0.9.0", default-features = false, features = ["std"] }
 rand_distr = { version = "=0.5.1", default-features = false, features = ["std"] }

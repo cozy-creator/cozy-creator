@@ -231,7 +231,7 @@ impl Writer {
             options.control,
         )
         .await?;
-        let mut check = || {
+        let check = || {
             options
                 .control
                 .check()
@@ -246,7 +246,7 @@ impl Writer {
             plan.samples,
             fit.seed,
             options.max_buffer_bytes - plan.io_buffer_bytes,
-            &mut check,
+            &check,
         );
         // Preserve the existing typed cancellation even though the format core has no session dependency.
         options.control.check()?;

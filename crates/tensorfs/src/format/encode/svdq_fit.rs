@@ -5,6 +5,12 @@
 //! Numerical matrices and encoded parts are fallibly allocated once and reused. The
 //! patched faer dependency uses one-column Householder blocks, and q <= 48 stays in
 //! its bidiagonal QR base case; no unreported GEMM packing cache is entered.
+//!
+//! The work is spread over one pool of the machine's cores (`pool`) without changing a
+//! bit: every product is the same sequence of 16-cubed faer calls per output tile, each
+//! tile on one thread; row-wise passes are independent per row; maxima are exact in any
+//! order; and every floating-point sum keeps its sequential order (a calibration row's
+//! error over the outputs, the weight's error statistics over its elements).
 
 use faer::diag::DiagMut;
 use faer::dyn_stack::{MemBuffer, MemStack, StackReq};
@@ -14,6 +20,8 @@ use faer::{Accum, Conj, MatMut, MatRef, Par};
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use rand_distr::{Distribution, StandardNormal};
+use rayon::prelude::*;
+use std::sync::OnceLock;
 
 use super::super::{OwnedPart, QuantizationStats, elem, nvfp4};
 use crate::format::{Dtype, Error, Result};
@@ -64,7 +72,7 @@ fn zeros<T: Default + Clone>(n: usize) -> Result<Vec<T>> {
     Ok(out)
 }
 fn finite(values: &[f32], what: &str) -> Result<()> {
-    if values.iter().any(|x| !x.is_finite()) {
+    if values.par_chunks(1 << 16).any(|c| c.iter().any(|x| !x.is_finite())) {
         return Err(fail(format!("nonfinite {what}")));
     }
     Ok(())
@@ -80,6 +88,24 @@ fn geometry(rows: usize, cols: usize, samples: usize) -> Result<usize> {
     mul(samples, rows)?;
     Ok(rows.min(cols).min(Q))
 }
+/// The fit's workers: one per core the process may use, made once.
+fn pool() -> Result<&'static rayon::ThreadPool> {
+    static POOL: OnceLock<std::result::Result<rayon::ThreadPool, String>> = OnceLock::new();
+    POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads())
+            .thread_name(|i| format!("tensorfs-svdq-{i}"))
+            .build()
+            .map_err(|e| e.to_string())
+    })
+    .as_ref()
+    .map_err(|e| fail(format!("cannot start the fit's workers: {e}")))
+}
+fn threads() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| n.get())
+}
+type Check<'c> = &'c (dyn Fn() -> Result<()> + Sync);
+
 fn svd_params() -> faer::Spec<svd::SvdParams, f32> {
     let mut params = faer::Spec::<svd::SvdParams, f32>::default();
     // q <= 48 must never enter divide-and-conquer's packed GEMM path.
@@ -112,6 +138,10 @@ fn scratch(rows: usize, cols: usize, q: usize) -> Result<StackReq> {
 /// A conservative peak byte bound including the immutable F32 input slices,
 /// all reusable matrices, library scratch, encoded payloads and metadata. It
 /// excludes only the caller's explicitly separate bounded file-I/O staging.
+fn padded(rows: usize, cols: usize) -> Result<usize> {
+    mul(rows.div_ceil(TILE) * TILE, cols.div_ceil(TILE) * TILE)
+}
+
 pub fn svdq_fit_workspace(rows: usize, cols: usize, samples: usize) -> Result<usize> {
     let q = geometry(rows, cols, samples)?;
     let nk = mul(rows, cols)?;
@@ -150,6 +180,26 @@ pub fn svdq_fit_workspace(rows: usize, cols: usize, samples: usize) -> Result<us
         st,
         st,
         mul(samples, RANK)?,
+        // A score's predicted outputs; the final logical weight; a parallel product's
+        // tiles (its destination, padded to whole tiles); the weight transposed; the
+        // row-major basis, sketch and range; down scaled and transposed; each worker's
+        // residual tile, its transpose, branch, residual row and product panel.
+        mul(samples, rows)?,
+        nk,
+        padded(samples, rows)?.max(padded(rows, q)?).max(padded(cols, q)?),
+        nk,
+        kq,
+        nq,
+        nq,
+        kr,
+        kr,
+        mul(
+            threads(),
+            add(
+                add(mul(2 * TILE, cols)?, mul(samples, TILE)?)?,
+                add(cols, mul(cols, 256 + TILE)?)?,
+            )?,
+        )?,
     ];
     let mut bytes = 64 * 1024; // bounded stack/Vec/part/shape/string metadata and RNG state
     for count in counts {
@@ -163,12 +213,6 @@ pub fn svdq_fit_workspace(rows: usize, cols: usize, samples: usize) -> Result<us
     add(bytes, scratch(rows, cols, q)?.unaligned_bytes_required())
 }
 
-fn row(values: &[f32], rows: usize, cols: usize) -> MatRef<'_, f32> {
-    MatRef::from_row_major_slice(values, rows, cols)
-}
-fn row_mut(values: &mut [f32], rows: usize, cols: usize) -> MatMut<'_, f32> {
-    MatMut::from_row_major_slice_mut(values, rows, cols)
-}
 fn col(values: &[f32], rows: usize, cols: usize) -> MatRef<'_, f32> {
     MatRef::from_column_major_slice(values, rows, cols)
 }
@@ -176,36 +220,259 @@ fn col_mut(values: &mut [f32], rows: usize, cols: usize) -> MatMut<'_, f32> {
     MatMut::from_column_major_slice_mut(values, rows, cols)
 }
 
-/// <= 16^3 operations selects faer's allocation-free nano-GEMM path even on
-/// machines whose regular GEMM backend keeps a large thread-local packing cache.
-fn product(
-    mut dst: MatMut<'_, f32>,
-    lhs: MatRef<'_, f32>,
-    rhs: MatRef<'_, f32>,
-    check: &mut dyn FnMut() -> Result<()>,
-) -> Result<()> {
-    for i in (0..dst.nrows()).step_by(TILE) {
-        check()?;
-        let m = (dst.nrows() - i).min(TILE);
-        for j in (0..dst.ncols()).step_by(TILE) {
-            let n = (dst.ncols() - j).min(TILE);
-            for k in (0..lhs.ncols()).step_by(TILE) {
-                if k.is_multiple_of(256) {
-                    check()?;
+/// A product's operand: a strided matrix over a slice, as faer reads it (shared by workers).
+#[derive(Clone, Copy)]
+struct View<'a> {
+    data: &'a [f32],
+    offset: usize,
+    rows: usize,
+    cols: usize,
+    rs: usize,
+    cs: usize,
+}
+impl<'a> View<'a> {
+    fn row(data: &'a [f32], rows: usize, cols: usize) -> Self {
+        Self { data, offset: 0, rows, cols, rs: cols, cs: 1 }
+    }
+    fn col(data: &'a [f32], rows: usize, cols: usize) -> Self {
+        Self { data, offset: 0, rows, cols, rs: 1, cs: rows }
+    }
+    fn transpose(self) -> Self {
+        Self { rows: self.cols, cols: self.rows, rs: self.cs, cs: self.rs, ..self }
+    }
+    fn sub(self, i: usize, j: usize, rows: usize, cols: usize) -> Self {
+        Self { offset: self.offset + i * self.rs + j * self.cs, rows, cols, ..self }
+    }
+    fn mat(self) -> MatRef<'a, f32> {
+        let data = &self.data[self.offset..];
+        if self.cs == 1 {
+            MatRef::from_row_major_slice_with_stride(data, self.rows, self.cols, self.rs)
+        } else {
+            MatRef::from_column_major_slice_with_stride(data, self.rows, self.cols, self.cs)
+        }
+    }
+}
+
+/// A product's destination: a row- or column-major slice.
+struct Out<'a> {
+    data: &'a mut [f32],
+    rows: usize,
+    cols: usize,
+    row_major: bool,
+}
+impl<'a> Out<'a> {
+    fn row(data: &'a mut [f32], rows: usize, cols: usize) -> Self {
+        Self { data, rows, cols, row_major: true }
+    }
+    fn col(data: &'a mut [f32], rows: usize, cols: usize) -> Self {
+        Self { data, rows, cols, row_major: false }
+    }
+}
+
+/// One output tile `[i, i + m) x [j, j + n)` of `lhs * rhs`: <= 16^3 operations a call
+/// selects faer's allocation-free nano-GEMM path even on machines whose regular GEMM
+/// backend keeps a large thread-local packing cache. Depth accumulates in 16s, in order.
+fn product_tile(mut dst: MatMut<'_, f32>, lhs: View<'_>, rhs: View<'_>, i: usize, j: usize) {
+    let (m, n) = (dst.nrows(), dst.ncols());
+    for k in (0..lhs.cols).step_by(TILE) {
+        let depth = (lhs.cols - k).min(TILE);
+        faer::linalg::matmul::matmul(
+            dst.rb_mut(),
+            if k == 0 { Accum::Replace } else { Accum::Add },
+            lhs.sub(i, k, m, depth).mat(),
+            rhs.sub(k, j, depth, n).mat(),
+            1.0,
+            Par::Seq,
+        );
+    }
+}
+
+/// `dst = lhs * rhs`, its tiles on the pool's workers. A worker writes its tile in a
+/// buffer laid out as `dst` is (row- or column-major, so faer takes the same kernel), and
+/// the tiles are then copied into place.
+fn product(dst: Out<'_>, lhs: View<'_>, rhs: View<'_>, check: Check) -> Result<()> {
+    assert!(dst.rows == lhs.rows && dst.cols == rhs.cols && lhs.cols == rhs.rows);
+    let (rows, cols, row_major) = (dst.rows, dst.cols, dst.row_major);
+    let across = cols.div_ceil(TILE);
+    let tiles = (0..rows.div_ceil(TILE) * across)
+        .into_par_iter()
+        .map(|t| {
+            check()?;
+            let (i, j) = (t / across * TILE, t % across * TILE);
+            let (m, n) = ((rows - i).min(TILE), (cols - j).min(TILE));
+            let mut tile = [0.0f32; TILE * TILE];
+            // (faer's from_row_major_slice_with_stride_mut lays its slice out column-major.)
+            let out = if row_major {
+                MatMut::from_column_major_slice_with_stride_mut(&mut tile, n, m, TILE).transpose_mut()
+            } else {
+                MatMut::from_column_major_slice_with_stride_mut(&mut tile, m, n, TILE)
+            };
+            product_tile(out, lhs, rhs, i, j);
+            Ok(tile)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    for (t, tile) in tiles.iter().enumerate() {
+        let (i, j) = (t / across * TILE, t % across * TILE);
+        let (m, n) = ((rows - i).min(TILE), (cols - j).min(TILE));
+        for r in 0..m {
+            for c in 0..n {
+                if row_major {
+                    dst.data[(i + r) * cols + j + c] = tile[r * TILE + c];
+                } else {
+                    dst.data[(i + r) + (j + c) * rows] = tile[r + c * TILE];
                 }
-                let depth = (lhs.ncols() - k).min(TILE);
-                faer::linalg::matmul::matmul(
-                    dst.rb_mut().submatrix_mut(i, j, m, n),
-                    if k == 0 { Accum::Replace } else { Accum::Add },
-                    lhs.submatrix(i, k, m, depth),
-                    rhs.submatrix(k, j, depth, n),
-                    1.0,
-                    Par::Seq,
-                );
             }
         }
     }
     Ok(())
+}
+
+/// Whether faer takes its nano-GEMM path for every 16-cubed call of an `m x n` product of
+/// depth `kk` (`product_tile`): a one-row or one-column tile, or a depth-one block, takes its
+/// matrix-vector or rank-update paths instead, which `exact` does not replicate.
+fn nano(m: usize, n: usize, kk: usize) -> bool {
+    m % TILE != 1 && n % TILE != 1 && kk % TILE != 1
+}
+
+/// `out[m, n] = a[m, kk] * b[kk, n]`, all row-major, each element summed exactly as faer's
+/// 16-cubed nano-GEMM calls sum it (`product_tile`, when `nano`): per 16-deep block a fused
+/// multiply-add chain from +0 in depth order, the blocks then added in order. Vectorized
+/// across columns; the order within an element is unchanged.
+struct Exact<'a> {
+    a: &'a [f32],
+    b: &'a [f32],
+    out: &'a mut [f32],
+    kk: usize,
+    n: usize,
+}
+impl pulp::WithSimd for Exact<'_> {
+    type Output = ();
+    #[inline(always)]
+    fn with_simd<S: pulp::Simd>(self, simd: S) {
+        let Exact { a, b, out, kk, n } = self;
+        // Rows outer, so a group's rows of `a` stay in cache across `b`'s columns.
+        let m = out.len() / n;
+        let width = 2 * S::F32_LANES;
+        let mut r = 0;
+        while r < m {
+            let rows = if r + 4 <= m { 4 } else { 1 };
+            let (a, out) = (&a[r * kk..(r + rows) * kk], &mut out[r * n..(r + rows) * n]);
+            for c in (0..n).step_by(width) {
+                let w = (n - c).min(width);
+                if rows == 4 {
+                    panel::<S, 4>(simd, a, b, out, kk, n, c, w);
+                } else {
+                    panel::<S, 1>(simd, a, b, out, kk, n, c, w);
+                }
+            }
+            r += rows;
+        }
+    }
+}
+
+/// `ROWS` rows of `exact`, columns `[c, c + w)` (`w` up to two vectors).
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn panel<S: pulp::Simd, const ROWS: usize>(
+    simd: S,
+    a: &[f32],
+    b: &[f32],
+    out: &mut [f32],
+    kk: usize,
+    n: usize,
+    c: usize,
+    w: usize,
+) {
+    let lanes = S::F32_LANES;
+    let zero = simd.splat_f32s(0.0);
+    let mut sum = [[zero; 2]; ROWS];
+    for block in (0..kk).step_by(TILE) {
+        let mut acc = [[zero; 2]; ROWS];
+        for d in block..(block + TILE).min(kk) {
+            let row = &b[d * n + c..d * n + c + w];
+            let (b0, b1) = if w == 2 * lanes {
+                let (v, _) = S::as_simd_f32s(row);
+                (v[0], v[1])
+            } else if w > lanes {
+                (simd.partial_load_f32s(&row[..lanes]), simd.partial_load_f32s(&row[lanes..]))
+            } else {
+                (simd.partial_load_f32s(row), zero)
+            };
+            for i in 0..ROWS {
+                let x = simd.splat_f32s(a[i * kk + d]);
+                acc[i][0] = simd.mul_add_f32s(x, b0, acc[i][0]);
+                acc[i][1] = simd.mul_add_f32s(x, b1, acc[i][1]);
+            }
+        }
+        for i in 0..ROWS {
+            sum[i][0] = simd.add_f32s(acc[i][0], sum[i][0]);
+            sum[i][1] = simd.add_f32s(acc[i][1], sum[i][1]);
+        }
+    }
+    for i in 0..ROWS {
+        let row = &mut out[i * n + c..i * n + c + w];
+        if w > lanes {
+            let (head, tail) = row.split_at_mut(lanes);
+            simd.partial_store_f32s(head, sum[i][0]);
+            simd.partial_store_f32s(tail, sum[i][1]);
+        } else {
+            simd.partial_store_f32s(row, sum[i][0]);
+        }
+    }
+}
+
+/// `exact` on this thread.
+fn exact(out: &mut [f32], a: &[f32], b: &[f32], kk: usize, n: usize) {
+    pulp::Arch::new().dispatch(Exact { a, b, out, kk, n });
+}
+
+/// `exact`, its 16-row bands of `out` on the pool's workers; within a band, columns go in
+/// blocks of 256 so a block of `b` stays in cache.
+fn exact_par(out: &mut [f32], a: &[f32], b: &[f32], kk: usize, n: usize, check: Check) -> Result<()> {
+    const COLUMNS: usize = 256;
+    out.par_chunks_mut(TILE * n).enumerate().try_for_each(|(band, out)| {
+        check()?;
+        let rows = out.len() / n;
+        let a = &a[band * TILE * kk..(band * TILE + rows) * kk];
+        if n <= COLUMNS {
+            exact(out, a, b, kk, n);
+            return Ok(());
+        }
+        let mut block = [0.0f32; TILE * COLUMNS];
+        let mut panel = Vec::new();
+        for c in (0..n).step_by(COLUMNS) {
+            let w = (n - c).min(COLUMNS);
+            panel.clear();
+            for d in 0..kk {
+                panel.extend_from_slice(&b[d * n + c..d * n + c + w]);
+            }
+            exact(&mut block[..rows * w], a, &panel, kk, w);
+            for i in 0..rows {
+                out[i * n + c..i * n + c + w].copy_from_slice(&block[i * w..(i + 1) * w]);
+            }
+        }
+        Ok(())
+    })
+}
+
+/// `src [rows, cols]` row-major, transposed into `dst [cols, rows]` row-major.
+fn transposed(dst: &mut [f32], src: &[f32], rows: usize, cols: usize) {
+    dst.par_chunks_mut(rows).enumerate().for_each(|(j, row)| {
+        for (i, x) in row.iter_mut().enumerate() {
+            *x = src[i * cols + j];
+        }
+    });
+}
+
+/// `dst = lhs * rhs` on this thread (a worker's own small product).
+fn product_seq(mut dst: MatMut<'_, f32>, lhs: View<'_>, rhs: View<'_>) {
+    for i in (0..dst.nrows()).step_by(TILE) {
+        let m = (dst.nrows() - i).min(TILE);
+        for j in (0..dst.ncols()).step_by(TILE) {
+            let n = (dst.ncols() - j).min(TILE);
+            product_tile(dst.rb_mut().submatrix_mut(i, j, m, n), lhs, rhs, i, j);
+        }
+    }
 }
 
 struct Work {
@@ -226,10 +493,16 @@ struct Work {
     wmax: Vec<f32>,
     xq: Vec<f32>,
     reference: Vec<f32>,
-    residual_tile: Vec<f32>,
-    prediction: Vec<f32>,
-    branch: Vec<f32>,
+    logical: Vec<f32>,
     projected: Vec<f32>,
+    /// `a` (or the weight) transposed, [K, N]; `z`, `basis` and `y` row-major; `down`
+    /// times the smoothing, [R, K]; `down` transposed, [K, R].
+    at: Vec<f32>,
+    zr: Vec<f32>,
+    br: Vec<f32>,
+    yr: Vec<f32>,
+    scaled: Vec<f32>,
+    downt: Vec<f32>,
     norms: Vec<f64>,
     errors: Vec<f64>,
     scratch: MemBuffer,
@@ -254,10 +527,14 @@ impl Work {
             wmax: zeros(k)?,
             xq: zeros(s * k)?,
             reference: zeros(s * n)?,
-            residual_tile: zeros(TILE * k)?,
-            prediction: zeros(s * TILE)?,
-            branch: zeros(s * TILE)?,
+            logical: zeros(n * k)?,
             projected: zeros(s * RANK)?,
+            at: zeros(n * k)?,
+            zr: zeros(k * q)?,
+            br: zeros(n * q)?,
+            yr: zeros(n * q)?,
+            scaled: zeros(RANK * k)?,
+            downt: zeros(k * RANK)?,
             norms: zeros(s)?,
             errors: zeros(s)?,
             scratch: MemBuffer::try_new(scratch(n, k, q)?)
@@ -268,7 +545,7 @@ impl Work {
         &mut self,
         n: usize,
         q: usize,
-        check: &mut dyn FnMut() -> Result<()>,
+        check: Check,
     ) -> Result<()> {
         finite(&self.y, "subspace iterate")?;
         check()?;
@@ -295,13 +572,43 @@ impl Work {
         check()?;
         finite(&self.basis, "orthogonal basis")
     }
+    /// y = a z: [n, q], depth k.
+    fn range(&mut self, n: usize, k: usize, q: usize, check: Check) -> Result<()> {
+        if !nano(n, q, k) {
+            return product(
+                Out::col(&mut self.y, n, q),
+                View::row(&self.a, n, k),
+                View::col(&self.z, k, q),
+                check,
+            );
+        }
+        transposed(&mut self.zr, &self.z, q, k);
+        exact_par(&mut self.yr, &self.a, &self.zr, k, q, check)?;
+        transposed(&mut self.y, &self.yr, n, q);
+        Ok(())
+    }
+    /// z = a^T basis: [k, q], depth n.
+    fn project(&mut self, n: usize, k: usize, q: usize, check: Check) -> Result<()> {
+        if !nano(k, q, n) {
+            return product(
+                Out::col(&mut self.z, k, q),
+                View::row(&self.a, n, k).transpose(),
+                View::col(&self.basis, n, q),
+                check,
+            );
+        }
+        transposed(&mut self.br, &self.basis, q, n);
+        exact_par(&mut self.zr, &self.at, &self.br, n, q, check)?;
+        transposed(&mut self.z, &self.zr, k, q);
+        Ok(())
+    }
     fn factors(
         &mut self,
         n: usize,
         k: usize,
         q: usize,
         seed: u64,
-        check: &mut dyn FnMut() -> Result<()>,
+        check: Check,
     ) -> Result<()> {
         let mut rng = ChaCha20Rng::seed_from_u64(seed);
         for chunk in self.z.chunks_mut(4096) {
@@ -310,35 +617,18 @@ impl Work {
                 *x = StandardNormal.sample(&mut rng);
             }
         }
-        product(
-            col_mut(&mut self.y, n, q),
-            row(&self.a, n, k),
-            col(&self.z, k, q),
-            check,
-        )?;
+        if nano(k, q, n) {
+            transposed(&mut self.at, &self.a, n, k);
+        }
+        self.range(n, k, q, check)?;
         for _ in 0..4 {
             self.orthogonalize(n, q, check)?;
-            product(
-                col_mut(&mut self.z, k, q),
-                row(&self.a, n, k).transpose(),
-                col(&self.basis, n, q),
-                check,
-            )?;
+            self.project(n, k, q, check)?;
             finite(&self.z, "subspace projection")?;
-            product(
-                col_mut(&mut self.y, n, q),
-                row(&self.a, n, k),
-                col(&self.z, k, q),
-                check,
-            )?;
+            self.range(n, k, q, check)?;
         }
         self.orthogonalize(n, q, check)?;
-        product(
-            col_mut(&mut self.z, k, q),
-            row(&self.a, n, k).transpose(),
-            col(&self.basis, n, q),
-            check,
-        )?;
+        self.project(n, k, q, check)?;
         finite(&self.z, "reduced SVD input")?;
         check()?;
         svd::svd(
@@ -355,12 +645,19 @@ impl Work {
         finite(&self.sigma, "singular values")?;
         finite(&self.u, "left singular vectors")?;
         finite(&self.v, "right singular vectors")?;
-        product(
-            row_mut(&mut self.up, n, RANK),
-            col(&self.basis, n, q),
-            col(&self.u, q, q).submatrix(0, 0, q, RANK),
-            check,
-        )?;
+        if nano(n, RANK, q) {
+            // u's first RANK columns, row-major [q, RANK]; the basis row-major [n, q].
+            let ur: Vec<f32> = (0..q * RANK).map(|e| self.u[e / RANK + (e % RANK) * q]).collect();
+            transposed(&mut self.br, &self.basis, q, n);
+            exact_par(&mut self.up, &self.br, &ur, q, RANK, check)?;
+        } else {
+            product(
+                Out::row(&mut self.up, n, RANK),
+                View::col(&self.basis, n, q),
+                View::col(&self.u, q, q).sub(0, 0, q, RANK),
+                check,
+            )?;
+        }
         for r in 0..RANK {
             check()?;
             let mut pivot = 0;
@@ -395,23 +692,29 @@ fn rounded(x: f32) -> Result<f32> {
     Ok(y)
 }
 
-/// Explicit F32 operation order, also used by the independent packing oracle.
-fn residual_value(
-    w: f32,
-    i: usize,
-    j: usize,
-    k: usize,
-    smooth: &[f32],
-    up: &[f32],
-    down: &[f32],
-) -> f32 {
-    let mut low = 0.0f32;
-    for r in 0..RANK {
-        let scaled_down = down[r * k + j] * smooth[j];
-        let term = up[i * RANK + r] * scaled_down;
-        low += term;
+/// `down` times the smoothing, `[R, K]`: `scaled[r, j] = down[r, j] * smooth[j]`.
+fn scale_down(scaled: &mut [f32], down: &[f32], smooth: &[f32], k: usize) {
+    for (scaled, down) in scaled.chunks_exact_mut(k).zip(down.chunks_exact(k)) {
+        for j in 0..k {
+            scaled[j] = down[j] * smooth[j];
+        }
     }
-    w * smooth[j] - low
+}
+/// Row `i` of the residual into `out` (`[K]`), in this explicit F32 operation order per
+/// element: `low = sum_r (up[i, r] * scaled[r, j])` from 0 in rank order, then
+/// `w * smooth[j] - low`. Columns go together; each element's order is unchanged.
+fn residual_row(out: &mut [f32], weight: &[f32], i: usize, smooth: &[f32], up: &[f32], scaled: &[f32]) {
+    let k = out.len();
+    out.fill(0.0);
+    for r in 0..RANK {
+        let u = up[i * RANK + r];
+        for (low, s) in out.iter_mut().zip(&scaled[r * k..(r + 1) * k]) {
+            *low += u * *s;
+        }
+    }
+    for ((x, w), s) in out.iter_mut().zip(&weight[i * k..(i + 1) * k]).zip(smooth) {
+        *x = *w * *s - *x;
+    }
 }
 fn residual_maximum(
     weight: &[f32],
@@ -419,21 +722,26 @@ fn residual_maximum(
     k: usize,
     smooth: &[f32],
     up: &[f32],
-    down: &[f32],
-    check: &mut dyn FnMut() -> Result<()>,
+    scaled: &[f32],
+    check: Check,
 ) -> Result<f32> {
-    let mut maximum = 0.0f32;
-    for i in 0..n {
-        check()?;
-        for j in 0..k {
-            let x = residual_value(weight[i * k + j], i, j, k, smooth, up, down);
-            if !x.is_finite() {
-                return Err(fail("nonfinite residual"));
+    // A maximum is exact in any order: rows on the workers.
+    (0..n)
+        .into_par_iter()
+        .map_init(Vec::new, |row, i| {
+            check()?;
+            row.resize(k, 0.0);
+            residual_row(row, weight, i, smooth, up, scaled);
+            let mut maximum = 0.0f32;
+            for x in row.iter() {
+                if !x.is_finite() {
+                    return Err(fail("nonfinite residual"));
+                }
+                maximum = maximum.max(x.abs());
             }
-            maximum = maximum.max(x.abs());
-        }
-    }
-    Ok(maximum)
+            Ok(maximum)
+        })
+        .try_reduce(|| 0.0f32, |a, b| Ok(a.max(b)))
 }
 fn fake_block(block: &mut [f32], global: f32) {
     let amax = block.iter().fold(0.0f32, |a, x| a.max(x.abs()));
@@ -448,14 +756,13 @@ fn fake_block(block: &mut [f32], global: f32) {
 }
 fn input_quantize(
     rows: &[f32],
-    transform: impl Fn(f32, usize) -> f32,
+    transform: impl Fn(f32, usize) -> f32 + Sync,
     global: f32,
     xq: &mut [f32],
     k: usize,
-    check: &mut dyn FnMut() -> Result<()>,
+    check: Check,
 ) -> Result<()> {
-    for (i, (src, dst)) in rows.chunks_exact(k).zip(xq.chunks_exact_mut(k)).enumerate() {
-        let _ = i;
+    rows.par_chunks_exact(k).zip(xq.par_chunks_exact_mut(k)).try_for_each(|(src, dst)| {
         check()?;
         for j in 0..k {
             dst[j] = rounded(transform(src[j], j))?;
@@ -463,13 +770,17 @@ fn input_quantize(
         for block in dst.chunks_exact_mut(16) {
             fake_block(block, global);
         }
-    }
+        Ok(())
+    })?;
     finite(xq, "quantized calibration input")
 }
 
 // None is the plain NVFP4 baseline. Some applies the current BF16 low-rank
 // factors and current canonical smoothing. `packed` selects the final residual
 // bytes; otherwise the existing fast NVFP4 rounding rule scores the candidate.
+// Each 16-row residual tile is one worker's; each calibration row then sums its
+// squared errors over the outputs in order.
+#[allow(clippy::too_many_arguments)]
 fn score(
     work: &mut Work,
     weight: &[f32],
@@ -480,16 +791,20 @@ fn score(
     fitted: bool,
     global: f32,
     packed: Option<(&[u8], &[u8])>,
-    check: &mut dyn FnMut() -> Result<()>,
+    check: Check,
 ) -> Result<f64> {
-    work.errors.fill(0.0);
     if fitted {
-        product(
-            row_mut(&mut work.projected, samples, RANK),
-            row(calibration, samples, k),
-            row(&work.down, RANK, k).transpose(),
-            check,
-        )?;
+        if nano(samples, RANK, k) {
+            transposed(&mut work.downt, &work.down, RANK, k);
+            exact_par(&mut work.projected, calibration, &work.downt, k, RANK, check)?;
+        } else {
+            product(
+                Out::row(&mut work.projected, samples, RANK),
+                View::row(calibration, samples, k),
+                View::row(&work.down, RANK, k).transpose(),
+                check,
+            )?;
+        }
         for values in work.projected.chunks_mut(4096) {
             check()?;
             for x in values {
@@ -497,68 +812,112 @@ fn score(
             }
         }
     }
-    for first in (0..n).step_by(TILE) {
-        check()?;
-        let count = (n - first).min(TILE);
-        let tile = &mut work.residual_tile[..count * k];
-        for i in 0..count {
-            for j in 0..k {
-                tile[i * k + j] = if let Some((codes, scales)) = packed {
-                    let code = codes[(first + i) * k / 2 + j / 2] >> ((j % 2) * 4) & 15;
-                    let scale =
-                        crate::format::decode::elem::e4m3(scales[(first + i) * (k / 16) + j / 16]);
-                    (crate::format::decode::elem::e2m1(code) * scale) * global
-                } else if fitted {
-                    residual_value(
-                        weight[(first + i) * k + j],
-                        first + i,
-                        j,
-                        k,
-                        &work.smooth,
-                        &work.up,
-                        &work.down,
-                    )
-                } else {
-                    weight[(first + i) * k + j]
-                };
-            }
-            if packed.is_none() {
-                for block in tile[i * k..(i + 1) * k].chunks_exact_mut(16) {
-                    fake_block(block, global);
-                }
-            }
+    let (smooth, up, scaled) = (&work.smooth, &work.up, &work.scaled);
+    let (xq, projected) = (&work.xq, &work.projected);
+    let grow = |buffer: &mut Vec<f32>, len: usize| -> Result<()> {
+        if buffer.len() < len {
+            buffer
+                .try_reserve_exact(len - buffer.len())
+                .map_err(|_| fail(format!("cannot allocate {len} workspace elements")))?;
+            buffer.resize(len, 0.0);
         }
-        finite(tile, "decoded residual tile")?;
-        product(
-            row_mut(&mut work.prediction[..samples * count], samples, count),
-            row(&work.xq, samples, k),
-            row(tile, count, k).transpose(),
-            check,
-        )?;
-        if fitted {
-            product(
-                row_mut(&mut work.branch[..samples * count], samples, count),
-                row(&work.projected, samples, RANK),
-                row(&work.up[first * RANK..(first + count) * RANK], count, RANK).transpose(),
-                check,
-            )?;
-        }
-        for s in 0..samples {
-            for i in 0..count {
-                let y = work.prediction[s * count + i]
-                    + if fitted {
-                        work.branch[s * count + i]
+        Ok(())
+    };
+    // Each group of output rows' predicted outputs, [S, count] row-major. With the 16-cubed
+    // calls all nano-GEMM (`nano`), a worker takes four 16-row tiles at a time; otherwise one,
+    // through faer itself.
+    let grouped = nano(samples, n, k);
+    let group = if grouped { 4 * TILE } else { TILE };
+    let predicted = (0..n.div_ceil(group))
+        .into_par_iter()
+        .map_init(
+            || (Vec::new(), Vec::new(), Vec::new()),
+            |(tile, branch, transpose), t| -> Result<Vec<f32>> {
+                check()?;
+                let first = t * group;
+                let count = (n - first).min(group);
+                grow(tile, count * k)?;
+                grow(branch, samples * count)?;
+                grow(transpose, count * k.max(RANK))?;
+                let tile = &mut tile[..count * k];
+                for i in 0..count {
+                    let row = &mut tile[i * k..(i + 1) * k];
+                    if let Some((codes, scales)) = packed {
+                        for j in 0..k {
+                            let code = codes[(first + i) * k / 2 + j / 2] >> ((j % 2) * 4) & 15;
+                            let scale = crate::format::decode::elem::e4m3(
+                                scales[(first + i) * (k / 16) + j / 16],
+                            );
+                            row[j] = (crate::format::decode::elem::e2m1(code) * scale) * global;
+                        }
+                    } else if fitted {
+                        residual_row(row, weight, first + i, smooth, up, scaled);
                     } else {
-                        0.0
-                    };
-                if !y.is_finite() {
-                    return Err(fail("nonfinite calibration prediction"));
+                        row.copy_from_slice(&weight[(first + i) * k..(first + i + 1) * k]);
+                    }
+                    if packed.is_none() {
+                        for block in tile[i * k..(i + 1) * k].chunks_exact_mut(16) {
+                            fake_block(block, global);
+                        }
+                    }
                 }
-                let difference = f64::from(y - work.reference[s * n + first + i]);
-                work.errors[s] += difference * difference;
+                finite(tile, "decoded residual tile")?;
+                let mut prediction = zeros(samples * count)?;
+                if grouped {
+                    let tiled = &mut transpose[..count * k];
+                    for (j, column) in tiled.chunks_exact_mut(count).enumerate() {
+                        for (i, x) in column.iter_mut().enumerate() {
+                            *x = tile[i * k + j];
+                        }
+                    }
+                    exact(&mut prediction, xq, tiled, k, count);
+                } else {
+                    product_seq(
+                        MatMut::from_row_major_slice_mut(&mut prediction, samples, count),
+                        View::row(xq, samples, k),
+                        View::row(tile, count, k).transpose(),
+                    );
+                }
+                let branch = &mut branch[..samples * count];
+                let up = &up[first * RANK..(first + count) * RANK];
+                if fitted && grouped {
+                    let tiled = &mut transpose[..count * RANK];
+                    for (r, column) in tiled.chunks_exact_mut(count).enumerate() {
+                        for (i, x) in column.iter_mut().enumerate() {
+                            *x = up[i * RANK + r];
+                        }
+                    }
+                    exact(branch, projected, tiled, RANK, count);
+                } else if fitted {
+                    product_seq(
+                        MatMut::from_row_major_slice_mut(branch, samples, count),
+                        View::row(projected, samples, RANK),
+                        View::row(up, count, RANK).transpose(),
+                    );
+                }
+                for (y, b) in prediction.iter_mut().zip(branch.iter()) {
+                    *y += if fitted { *b } else { 0.0 };
+                    if !y.is_finite() {
+                        return Err(fail("nonfinite calibration prediction"));
+                    }
+                }
+                Ok(prediction)
+            },
+        )
+        .collect::<Result<Vec<_>>>()?;
+    // Each calibration row sums its squared errors over the outputs in order.
+    let reference = &work.reference;
+    work.errors.par_iter_mut().enumerate().for_each(|(s, error)| {
+        let mut sum = 0.0f64;
+        for (t, tile) in predicted.iter().enumerate() {
+            let count = tile.len() / samples;
+            for i in 0..count {
+                let difference = f64::from(tile[s * count + i] - reference[s * n + t * group + i]);
+                sum += difference * difference;
             }
         }
-    }
+        *error = sum;
+    });
     let mut mean = 0.0f64;
     for s in 0..samples {
         mean += work.errors[s].sqrt() / work.norms[s].max(1e-30);
@@ -602,9 +961,9 @@ fn float_bytes(values: &[f32], bf16: bool) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Fit a complete tensor, including alpha selection and served calibration score.
-/// A single faer QR/SVD call is not internally cancellable; every surrounding
-/// pass, input/output tile and alpha observes the caller's native control.
+/// Fit a complete tensor, including alpha selection and served calibration score, on
+/// the pool's workers. A single faer QR/SVD call is not internally cancellable; every
+/// surrounding pass, input/output tile and alpha observes the caller's native control.
 #[allow(clippy::too_many_arguments)]
 pub fn svdq_fit(
     weight: &[f32],
@@ -615,7 +974,24 @@ pub fn svdq_fit(
     samples: usize,
     seed: u64,
     max_buffer_bytes: usize,
-    check: &mut dyn FnMut() -> Result<()>,
+    check: Check,
+) -> Result<SvdqFitted> {
+    pool()?.install(|| {
+        fit(weight, xmax, calibration, rows, cols, samples, seed, max_buffer_bytes, check)
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fit(
+    weight: &[f32],
+    xmax: &[f32],
+    calibration: &[f32],
+    rows: usize,
+    cols: usize,
+    samples: usize,
+    seed: u64,
+    max_buffer_bytes: usize,
+    check: Check,
 ) -> Result<SvdqFitted> {
     check()?;
     let q = geometry(rows, cols, samples)?;
@@ -635,37 +1011,46 @@ pub fn svdq_fit(
         (xmax, "channel maxima"),
         (calibration, "calibration rows"),
     ] {
-        for window in values.chunks(4096) {
-            check()?;
-            finite(window, name)?;
-        }
+        check()?;
+        finite(values, name)?;
     }
     if xmax.iter().any(|x| *x < 0.0) {
         return Err(fail("channel maxima must be nonnegative"));
     }
     let mut work = Work::new(rows, cols, samples, q)?;
-    product(
-        row_mut(&mut work.reference, samples, rows),
-        row(calibration, samples, cols),
-        row(weight, rows, cols).transpose(),
-        check,
-    )?;
+    if nano(samples, rows, cols) {
+        transposed(&mut work.at, weight, rows, cols);
+        exact_par(&mut work.reference, calibration, &work.at, cols, rows, check)?;
+    } else {
+        product(
+            Out::row(&mut work.reference, samples, rows),
+            View::row(calibration, samples, cols),
+            View::row(weight, rows, cols).transpose(),
+            check,
+        )?;
+    }
     finite(&work.reference, "reference outputs")?;
-    for s in 0..samples {
-        work.norms[s] = work.reference[s * rows..(s + 1) * rows]
+    let reference = &work.reference;
+    work.norms.par_iter_mut().enumerate().for_each(|(s, norm)| {
+        *norm = reference[s * rows..(s + 1) * rows]
             .iter()
             .map(|v| f64::from(*v).powi(2))
             .sum::<f64>()
             .sqrt();
-    }
-    let mut weight_max = 0.0f32;
-    for values in weight.chunks_exact(cols) {
-        check()?;
-        for (maximum, value) in work.wmax.iter_mut().zip(values) {
+    });
+    // Maxima are exact in any order: each worker's rows, then the workers'.
+    let column_max = |mut maxima: Vec<f32>, values: &[f32]| {
+        for (maximum, value) in maxima.iter_mut().zip(values) {
             *maximum = maximum.max(value.abs());
-            weight_max = weight_max.max(value.abs());
         }
-    }
+        maxima
+    };
+    let wmax = weight
+        .par_chunks_exact(cols)
+        .fold(|| vec![0.0f32; cols], column_max)
+        .reduce(|| vec![0.0f32; cols], |a, b| column_max(a, &b));
+    work.wmax.copy_from_slice(&wmax);
+    let weight_max = wmax.iter().fold(0.0f32, |m, v| m.max(*v));
     let input_max = calibration.iter().fold(0.0f32, |m, v| m.max(v.abs()));
     input_quantize(
         calibration,
@@ -712,21 +1097,22 @@ pub fn svdq_fit(
                 return Err(fail("unrepresentable smoothing scale"));
             }
         }
-        for i in 0..rows {
-            check()?;
+        let smooth = &work.smooth;
+        work.a.par_chunks_exact_mut(cols).zip(weight.par_chunks_exact(cols)).for_each(|(a, w)| {
             for j in 0..cols {
-                work.a[i * cols + j] = weight[i * cols + j] * work.smooth[j];
+                a[j] = w[j] * smooth[j];
             }
-        }
+        });
         finite(&work.a, "smoothed weight")?;
         work.factors(rows, cols, q, seed, check)?;
+        scale_down(&mut work.scaled, &work.down, &work.smooth, cols);
         let maximum = residual_maximum(
             weight,
             rows,
             cols,
             &work.smooth,
             &work.up,
-            &work.down,
+            &work.scaled,
             check,
         )?;
         let gx = (xmax
@@ -739,14 +1125,8 @@ pub fn svdq_fit(
         if !gx.is_finite() || gx <= 0.0 {
             return Err(fail("unrepresentable activation scale"));
         }
-        input_quantize(
-            calibration,
-            |x, j| x / work.smooth[j],
-            gx,
-            &mut work.xq,
-            cols,
-            check,
-        )?;
+        let smooth = &work.smooth;
+        input_quantize(calibration, |x, j| x / smooth[j], gx, &mut work.xq, cols, check)?;
         let error = score(
             &mut work,
             weight,
@@ -775,53 +1155,76 @@ pub fn svdq_fit(
     for (s, p) in work.smooth.iter_mut().zip(&work.pre) {
         *s = 1.0 / p;
     }
+    scale_down(&mut work.scaled, &work.down, &work.smooth, cols);
     let maximum = residual_maximum(
         weight,
         rows,
         cols,
         &work.smooth,
         &work.up,
-        &work.down,
+        &work.scaled,
         check,
     )?;
     let global = nvfp4::min_sse_global(f64::from(maximum))?;
     let mut codes = zeros(rows * cols / 2)?;
     let mut scales = zeros(rows * cols / 16)?;
-    let mut residual = QuantizationStats::default();
-    let mut stats = QuantizationStats::default();
+    // Rows on the workers: each encodes its blocks and keeps its residual (in `a`) and
+    // logical values; the error statistics then sum them in the sequential order.
+    let (smooth, up, down, pre) = (&work.smooth, &work.up, &work.down, &work.pre);
+    let scaled = &work.scaled;
+    let saturated = codes
+        .par_chunks_exact_mut(cols / 2)
+        .zip(scales.par_chunks_exact_mut(cols / 16))
+        .zip(work.a.par_chunks_exact_mut(cols))
+        .zip(work.logical.par_chunks_exact_mut(cols))
+        .enumerate()
+        .map(|(i, (((codes, scales), residuals), logical))| {
+            check()?;
+            residual_row(residuals, weight, i, smooth, up, scaled);
+            let mut saturated = 0u64;
+            for j in (0..cols).step_by(16) {
+                let block: [f32; 16] = std::array::from_fn(|b| residuals[j + b]);
+                let (scale, nibbles, count) = nvfp4::min_sse_block(&block, global);
+                scales[j / 16] = scale;
+                for b in 0..8 {
+                    codes[j / 2 + b] = nibbles[2 * b] | (nibbles[2 * b + 1] << 4);
+                }
+                saturated += count;
+                let scale = crate::format::decode::elem::e4m3(scale);
+                for b in 0..16 {
+                    let code = crate::format::decode::elem::e2m1(nibbles[b]);
+                    // Match decode::plan::Post::LowRank: every stored-value
+                    // operation rounds in F32; only the error accumulation is F64.
+                    logical[j + b] = ((code * scale) * global) * pre[j + b];
+                }
+            }
+            for r in 0..RANK {
+                let u = up[i * RANK + r];
+                for (value, d) in logical.iter_mut().zip(&down[r * cols..(r + 1) * cols]) {
+                    *value += u * *d;
+                }
+            }
+            Ok(saturated)
+        })
+        .try_reduce(|| 0, |a, b| Ok(a + b))?;
+    let mut residual = QuantizationStats {
+        saturated,
+        ..QuantizationStats::default()
+    };
+    let mut stats = QuantizationStats {
+        saturated,
+        ..QuantizationStats::default()
+    };
     for i in 0..rows {
         check()?;
         for j in (0..cols).step_by(16) {
-            let block: [f32; 16] = std::array::from_fn(|b| {
-                residual_value(
-                    weight[i * cols + j + b],
-                    i,
-                    j + b,
-                    cols,
-                    &work.smooth,
-                    &work.up,
-                    &work.down,
-                )
-            });
-            let (scale, nibbles, saturated) = nvfp4::min_sse_block(&block, global);
-            scales[i * (cols / 16) + j / 16] = scale;
-            for b in 0..8 {
-                codes[i * (cols / 2) + j / 2 + b] = nibbles[2 * b] | (nibbles[2 * b + 1] << 4);
-            }
-            residual.saturated += saturated;
-            stats.saturated += saturated;
-            let scale = crate::format::decode::elem::e4m3(scale);
+            let scale = crate::format::decode::elem::e4m3(scales[i * (cols / 16) + j / 16]);
             for b in 0..16 {
-                let code = crate::format::decode::elem::e2m1(nibbles[b]);
-                let decoded = (code * scale) * global;
-                residual.add(block[b], f64::from(decoded));
-                // Match decode::plan::Post::LowRank: every stored-value
-                // operation rounds in F32; only the error accumulation is F64.
-                let mut logical = decoded * work.pre[j + b];
-                for r in 0..RANK {
-                    logical += work.up[i * RANK + r] * work.down[r * cols + j + b];
-                }
-                stats.add(weight[i * cols + j + b], f64::from(logical));
+                let at = i * cols + j + b;
+                let code = codes[at / 2] >> ((at % 2) * 4) & 15;
+                let decoded = (crate::format::decode::elem::e2m1(code) * scale) * global;
+                residual.add(work.a[at], f64::from(decoded));
+                stats.add(weight[at], f64::from(work.logical[at]));
             }
         }
     }
@@ -832,14 +1235,8 @@ pub fn svdq_fit(
         * 2.0
         / LEVELS)
         .max(1e-30);
-    input_quantize(
-        calibration,
-        |x, j| x * work.pre[j],
-        gx,
-        &mut work.xq,
-        cols,
-        check,
-    )?;
+    let pre = &work.pre;
+    input_quantize(calibration, |x, j| x * pre[j], gx, &mut work.xq, cols, check)?;
     let served = score(
         &mut work,
         weight,
