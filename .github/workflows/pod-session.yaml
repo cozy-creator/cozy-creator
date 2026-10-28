@@ -70,6 +70,13 @@ jobs:
           repository: cozy-creator/packages
           fetch-depth: 0
           path: packages.git
+      - uses: actions/checkout@v5
+        if: inputs.script == 'bench'
+        with:
+          repository: cozy-creator/benchmarks
+          ref: ${{ fromJSON(inputs.params).bench_ref || 'master' }}
+          ssh-key: ${{ secrets.BENCHMARKS_READ_KEY }}
+          path: benchmarks
       - name: Packages
         env:
           REFS: ${{ inputs.packages_refs }}
@@ -116,6 +123,7 @@ jobs:
         env:
           SCRIPT: ${{ inputs.script }}
           PACKAGES: ${{ github.workspace }}/packages
+          BENCH: ${{ github.workspace }}/benchmarks
           REF: ${{ github.workspace }}/creator/release-gate/ref
           SKU: ${{ inputs.sku }}
           DISK: ${{ inputs.disk }}

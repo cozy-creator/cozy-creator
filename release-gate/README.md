@@ -117,6 +117,8 @@ the image's TensorD as `local` beside the runner's runs, one pod controls the ot
 previous release and the session's cozy control each other (`-f params='{"old": "0.13.3"}'`). A session that rents
 more than one pod calls `order` per pod, then `ready` per pod; the guard and the trap cover every one.
 `h3-8gb` is the 8 GB tier: H3 Turbo 15 s on one RTX 3070 must complete, 362 frames, under its time bar.
+`bench` runs the Cozy-vs-ComfyUI benchmark, which lives in cozy-creator/benchmarks (`params.bench_ref`, read with
+the `BENCHMARKS_READ_KEY` deploy key): it rents with SSH, starts the runner on the pod and brings its results back.
 
 ## More cells and checks
 
