@@ -54,6 +54,15 @@ def canonical(target):
     return re.sub(r'^(\./|[^/]+/(?=[^/]+/[^/]+$))', '', re.sub(r'@.*$', '', target))
 
 
+# A device without fp8 tensor cores (before sm89) serves an fp8 lane's weights at 16-bit compute (cozy-creator #2210):
+# the expected path there, not a fallback.
+def fp8_weight_only(o):
+    f = o.get('fields') or {}
+    m = re.search(r'needs cuda\.sm(\d+)\+ and this device is cuda\.sm(\d+)', f.get('reason') or '')
+    return (o.get('name') == 'gemm.fallback' and f.get('wanted') == 'fp8' and f.get('served') in ('bf16', 'fp16')
+            and bool(m) and int(m.group(2)) < 89 <= int(m.group(1)))
+
+
 cells = [l.rstrip('\n').split('\t') for l in open(os.path.join(out, 'cells.tsv')) if l.strip()]
 summary, runs, host_legs = {}, {}, {}
 for name, target, number in cells:
@@ -65,7 +74,10 @@ for name, target, number in cells:
     obs, gemm, attn = run.observations, run.gemm, run.attention
     for o in obs:
         text = f"{o.get('name')} {o.get('value')}"
-        if any(s in text for s in ('gemm.fallback', 'decoded_float')):
+        if fp8_weight_only(o):
+            f = o['fields']
+            notes.append(f'{name}: fp8 weights at {f["served"]} compute ({f.get("component")}, {f.get("sites")} sites): {f["reason"]}')
+        elif any(s in text for s in ('gemm.fallback', 'decoded_float')):
             fails.append(f'{name}: {text} {o.get("fields")}')
     for fmt, val in gemm:
         if fmt.startswith('int8') and val != 'cozy-int8':
