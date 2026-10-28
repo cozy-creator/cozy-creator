@@ -25,7 +25,7 @@ use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::future::Future;
 use std::io::Read;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -87,6 +87,9 @@ pub(crate) struct Task {
     started: AtomicBool,
     /// The most bytes any of its requests reached: only bytes past it are progress.
     reached: AtomicU64,
+    /// Where it is (`Phase`), and when it last moved: its phase changed or its bytes grew (Unix ms).
+    phase: AtomicU8,
+    moved_ms: AtomicU64,
     done: watch::Sender<Option<std::result::Result<Tier, Refusal>>>,
 }
 
@@ -94,6 +97,63 @@ impl Task {
     fn wanted(&self) -> bool {
         self.waiters.load(Ordering::Acquire) > 0
     }
+
+    fn enter(&self, phase: Phase) {
+        self.phase.store(phase as u8, Ordering::Release);
+        self.moved_ms.store(unix_ms(), Ordering::Release);
+    }
+}
+
+/// Where an object's task is: waiting for a worker, a worker looking here and at the datacenter
+/// volume, reading the volume, asking the origin (locating, connecting or between attempts), or
+/// receiving the origin's bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Phase {
+    Queued,
+    Starting,
+    Volume,
+    Origin,
+    Receiving,
+}
+
+impl Phase {
+    fn of(value: u8) -> Phase {
+        match value {
+            1 => Phase::Starting,
+            2 => Phase::Volume,
+            3 => Phase::Origin,
+            4 => Phase::Receiving,
+            _ => Phase::Queued,
+        }
+    }
+}
+
+impl std::fmt::Display for Phase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Phase::Queued => "queued",
+            Phase::Starting => "starting",
+            Phase::Volume => "reading the datacenter volume",
+            Phase::Origin => "connecting to the origin",
+            Phase::Receiving => "receiving from the origin",
+        })
+    }
+}
+
+/// An object's task as its waiters see it (`Fetcher::fetching`): where it is, its bytes so far
+/// of its length, when it last moved (Unix ms), and how many wait for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fetching {
+    pub phase: Phase,
+    pub reached: u64,
+    pub length: u64,
+    pub moved_unix_ms: u64,
+    pub waiters: usize,
+}
+
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
 /// A place in a task's line of waiters; dropping it gives the place up.
@@ -584,6 +644,8 @@ impl Shared {
                     waiters: AtomicUsize::new(1),
                     started: AtomicBool::new(false),
                     reached: AtomicU64::new(0),
+                    phase: AtomicU8::new(Phase::Queued as u8),
+                    moved_ms: AtomicU64::new(unix_ms()),
                     done: watch::channel(None).0,
                 });
                 queue.seq += 1;
@@ -621,6 +683,7 @@ impl Shared {
                 continue;
             }
             task.started.store(true, Ordering::Release);
+            task.enter(Phase::Starting);
             return Some(task);
         }
         None
@@ -628,6 +691,18 @@ impl Shared {
 
     fn waiting(&self) -> bool {
         !lock(&self.queue).heap.is_empty()
+    }
+
+    /// `object`'s task as its waiters see it; None when none is open (landed, failed or unwanted).
+    pub fn fetching(&self, object: &ObjectRef) -> Option<Fetching> {
+        let task = lock(&self.queue).tasks.get(&object.sha256).cloned()?;
+        Some(Fetching {
+            phase: Phase::of(task.phase.load(Ordering::Acquire)),
+            reached: task.reached.load(Ordering::Acquire),
+            length: task.object.length,
+            moved_unix_ms: task.moved_ms.load(Ordering::Acquire),
+            waiters: task.waiters.load(Ordering::Acquire),
+        })
     }
 
     fn finish(&self, task: &Arc<Task>, outcome: Result<Tier>) {
@@ -705,6 +780,7 @@ impl Shared {
         if let Some(volume) = self.volume.clone().filter(VolumeOrigin::answering) {
             let _reading = self.volume_reads.acquire().await;
             if volume.answering() {
+                task.enter(Phase::Volume);
                 match self
                     .read_file(task, &volume, volume.blob(&task.object), 0)
                     .await
@@ -747,6 +823,7 @@ impl Shared {
                 Some(here) => here,
                 None => {
                     delivery = None;
+                    task.enter(Phase::Origin);
                     let located = task.origin.locate(std::slice::from_ref(&task.object)).await;
                     match located.map(|mut located| located.pop()) {
                         Ok(Some(here)) => here,
@@ -855,6 +932,8 @@ impl Shared {
             self.stats
                 .landed
                 .fetch_add(reached - before, Ordering::Relaxed);
+            let _ = task.phase.compare_exchange(Phase::Origin as u8, Phase::Receiving as u8, Ordering::AcqRel, Ordering::Acquire);
+            task.moved_ms.store(unix_ms(), Ordering::Release);
         }
     }
 

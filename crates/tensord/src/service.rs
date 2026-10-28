@@ -411,11 +411,15 @@ impl Service {
             if record.invocation.degree > 0 {
                 match calls.as_ref().map_or(crate::access::Ready::Yes, |calls| calls.source_ready(&record.id)) {
                     crate::access::Ready::Yes => (),
-                    crate::access::Ready::Waiting => {
+                    crate::access::Ready::Waiting(on) => {
                         // Preserve an active parent's registered family lane; an awaited
                         // child must be able to reenter it once its required source arrives.
                         pool.release_for_fetch(&self.engine, record.root_seq());
-                        self.engine.waiting(&record.id, Some("waiting for required model inputs".into()))?;
+                        let reason = match on.is_empty() {
+                            true => "waiting for required model inputs".to_owned(),
+                            false => format!("waiting for required model inputs: {on}"),
+                        };
+                        self.engine.waiting(&record.id, Some(reason))?;
                         continue;
                     }
                     crate::access::Ready::Failed(error) => {

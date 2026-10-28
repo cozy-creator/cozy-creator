@@ -32,6 +32,7 @@ pub use volume::VolumeOrigin;
 
 use crate::err::{refuse, Code, Refusal, Result};
 use crate::format::{self, Header, ObjectRef, Tree};
+pub use download::{Fetching, Phase};
 use download::Shared;
 
 /// GET `url` from byte `from` into `sink`, for bytes the caller holds to a digest: any public host,
@@ -202,6 +203,12 @@ impl Fetcher {
             volume_written: counters.volume_written.load(Ordering::Relaxed),
             volume_skipped: counters.volume_skipped.load(Ordering::Relaxed),
         }
+    }
+
+    /// Each of `objects`' task as its waiters see it (`Fetching`): None for one with no task open
+    /// (here already, landed, failed, or wanted by nobody).
+    pub fn fetching(&self, objects: &[ObjectRef]) -> Vec<Option<Fetching>> {
+        objects.iter().map(|object| self.shared.fetching(object)).collect()
     }
 
     /// Resolves once nothing is queued, downloading or being written back to the volume.

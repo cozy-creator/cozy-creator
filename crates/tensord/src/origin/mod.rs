@@ -116,6 +116,12 @@ impl Machine {
         self.fetcher(&(remote.trust.clone(), remote.local))
     }
 
+    /// Each of `objects`' download from `remote` as it stands (`Fetching`); None for one with no
+    /// task open.
+    pub(crate) fn fetching(&self, remote: &Remote, objects: &[ObjectRef]) -> Vec<Option<tensorfs::fetch::Fetching>> {
+        self.of(remote).map_or_else(|_| vec![None; objects.len()], |fetcher| fetcher.fetching(objects))
+    }
+
     /// Runs `work` on the fetch runtime and waits for it, or for `stop`.
     pub(crate) fn block<T: Send + 'static>(&self, stop: &Stop, work: impl Future<Output = Result<T>> + Send + 'static) -> Result<T> {
         let (sent, answer) = std::sync::mpsc::channel();
