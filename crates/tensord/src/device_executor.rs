@@ -1259,6 +1259,23 @@ impl Ending {
         // Followers (degree > 1) stay in the leader's group and are ended too.
         let mut ended = match reap_group(exact, self.child.take()) {
             Ok(ended) => ended,
+            Err(error) if error.get_ref().is_some_and(|e| e.is::<crate::process::Stuck>()) => {
+                // Stuck in the kernel after its kill: nothing waits on it here, and what it held goes
+                // back when it does exit (its serving hold, socket directory, wake), not never.
+                let (retained, socket) = (std::mem::take(&mut self.retained), std::mem::take(&mut self.socket));
+                let waiter = exact.try_clone()?;
+                std::thread::Builder::new().name(format!("release-{}", waiter.birth().pid)).spawn(move || {
+                    if waiter.wait().is_ok() {
+                        if !socket.as_os_str().is_empty() {
+                            let _ = fs::remove_file(&socket);
+                        }
+                        drop(retained);
+                    } else {
+                        std::mem::forget(retained);
+                    }
+                })?;
+                return Err(error);
+            }
             Err(error) => {
                 std::mem::forget(std::mem::take(&mut self.retained));
                 return Err(error);
