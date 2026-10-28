@@ -281,8 +281,10 @@ jobs:
           pattern: gate-*
           path: gates
       - run: |
-          for d in gates/gate-*; do
-            sku=${d#gates/gate-}
-            grep -s '^VERDICT' "$d/verdict.txt" || { echo "$sku: no verdict"; continue; }
+          # One artifact lands in gates/ itself, several each in gates/gate-<key>/: every gate dir names its key.
+          for v in $(find gates -name verdict.txt); do
+            d=$(dirname "$v") sku=$(cat "$(dirname "$v")/baseline-key" 2>/dev/null)
+            [ -n "$sku" ] || { echo "$d: no baseline-key"; continue; }
+            grep -s '^VERDICT' "$v" || { echo "$sku: no verdict"; continue; }
             release-gate/publish.sh "$d" "$sku" || true
           done

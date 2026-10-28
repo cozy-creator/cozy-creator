@@ -9,11 +9,15 @@ product() {
   if declare -F "$f" >/dev/null; then "$f"; else log "$1: no product cells"; fi
 }
 
+H3_SEED=2026102801
 product_minimax_h3() {
   # H3's references: BiRefNet cleans the character image and Qwen3.5 describes it (greedy), as for a user's character.
   # While cr-215 is open (lead 10-23) the reference is the image only; the 3 s video reference returns with its fix.
-  cell h3 "$(pkg minimax-h3 ref2va_turbo)" references:="[{\"name\": \"$NAME\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
-    seed:=$((R + 1)) duration_s:=15 resolution=768p prompt="<$NAME> $MOTION"
+  # One fixed request (the Skater row, H3_SEED): quality.py holds its CLIP against the last passed gate's on it.
+  local name motion
+  IFS=$'\t' read -r name _ motion _ _ <<< "$(grep -m1 $'^Skater\t' "$HERE/scenarios.tsv")"
+  cell h3 "$(pkg minimax-h3 ref2va_turbo)" references:="[{\"name\": \"$name\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
+    seed:=$H3_SEED duration_s:=15 resolution=768p prompt="<$name> $motion"
   CLIP=$(output h3 mp4)
 }
 product_seedvr2() {

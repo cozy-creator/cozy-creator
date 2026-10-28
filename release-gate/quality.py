@@ -1,8 +1,10 @@
 """Output quality of one gate, one of analyze.py's CHECKS, with cozy-eval's two cheapest instruments on one CLIP
 (ViT-B/16, OpenAI weights, CPU):
   - adherence: cosine similarity between each render (or 3 frames of a video) and its prompt (prompts.tsv, which
-    gate.sh's `cell` writes). Every render must clear FLOOR: noise, a flat field, a broken decode or a text encoder
-    that ignores the prompt lands far under any real render;
+    gate.sh's `cell` writes). Every image must clear FLOOR: noise, a flat field, a broken decode or a text encoder
+    that ignores the prompt lands far under any real render. A video scores 0.17-0.23 against its long motion prompt
+    (every H3 gate since 0.34.5) and noise 0.16-0.18, so no fixed floor separates them: a video is held against the
+    last passed gate's score on the same prompt and seed (seeds.tsv; products.sh fixes H3's request), MARGIN under it;
   - sharpness: CLIP-IQA's "A sharp image." against "A blurry image.". Single renders vary too much to judge alone (a
     transparent object on grey reads soft), so the gate's median must hold against the last passed gates' medians.
 Never a same-seed pixel diff: a kernel swap moves the pixels (26 dB) without changing the quality.
@@ -10,7 +12,7 @@ Measured on the 10-23 gate outputs: adherence 0.325-0.430 for renders against th
 another gate's prompts, 0.16-0.18 for noise and grey. Sharpness medians 0.80 for the renders, 0.07 blurred (6 px),
 0.04 blocky (1/16), 0.16 noise.
     quality.py <gate dir> [<baseline file>]     the same verdict alone"""
-import glob, json, os, subprocess, sys, tempfile
+import glob, hashlib, json, os, subprocess, sys, tempfile
 import numpy as np
 from PIL import Image
 
@@ -19,6 +21,8 @@ from runs import Run  # noqa: E402
 
 MODEL = 'openai/clip-vit-base-patch16'
 FLOOR = 0.25
+# A video may score this far under the last passed gate's on the same prompt and seed.
+MARGIN = 0.03
 # The sharpness median may fall this far under the lowest of the last KEEP passed medians.
 BUDGET, KEEP = 0.25, 5
 SKIP = ('birefnet', 'describer', 'seedvr2')  # cutouts on white, text, upscales of H3's own frames
@@ -65,6 +69,10 @@ def check(gate):
     out, base = gate['out'], gate.get('baseline') or {}
     p = os.path.join(out, 'prompts.tsv')
     prompts = dict(l.rstrip('\n').split('\t', 1) for l in open(p) if '\t' in l) if os.path.exists(p) else {}
+    p = os.path.join(out, 'seeds.tsv')
+    seeds = dict(l.rstrip('\n').split('\t', 1) for l in open(p) if '\t' in l) if os.path.exists(p) else {}
+    label = open(os.path.join(out, 'label')).read().strip()
+    refs, kept = base.get('quality_ref') or {}, {}
     fails, notes, cells = [], [], {}
     for line in open(os.path.join(out, 'cells.tsv')):
         name, _, number = line.rstrip('\n').split('\t')[:3]
@@ -73,11 +81,24 @@ def check(gate):
         run = Run.read(os.path.join(out, name + '.json'))
         files = run.outputs if run else ()
         ims = [rgb(f) for f in files if f.endswith(('.png', '.webp', '.jpg'))] + [fr for f in files if f.endswith('.mp4') for fr in frames(f)]
-        if ims:
-            cells[name] = judge(ims, prompts[name])
-            worst = min(a for a, _ in cells[name])
+        if not ims:
+            continue
+        cells[name] = judge(ims, prompts[name])
+        worst = min(a for a, _ in cells[name])
+        if not any(f.endswith('.mp4') for f in files):
             if worst < FLOOR:
                 fails.append(f'quality {name}: adherence {worst:.3f} under {FLOOR}: not what its prompt asked for (noise, flat, broken)')
+            continue
+        key = hashlib.sha256(f'{prompts[name]}\t{seeds.get(name, "")}'.encode()).hexdigest()[:16]
+        ref = refs.get(name) or {}
+        kept[name] = {'key': key, 'adherence': worst, 'label': label}
+        if ref.get('key') != key:
+            notes.append(f'quality {name}: adherence {worst:.3f}; no passed gate on this prompt and seed to hold it against')
+        elif worst < ref['adherence'] - MARGIN:
+            fails.append(f'quality {name}: adherence {worst:.3f} under {ref["label"]}\'s {ref["adherence"]:.3f} - {MARGIN} on the same prompt and seed')
+        else:
+            notes.append(f'quality {name}: adherence {worst:.3f} against {ref["label"]}\'s {ref["adherence"]:.3f} on the same prompt and seed')
+    base['quality_ref'] = {**refs, **kept}
     if not cells:
         return fails, notes
     adh = float(np.median([a for v in cells.values() for a, _ in v]))
@@ -91,7 +112,7 @@ def check(gate):
             fails.append(line + ': the renders went soft'); line = None
     if line:
         notes.append(line)
-    hist.append({'sharpness': med, 'adherence': round(adh, 4), 'cells': cells, 'label': open(os.path.join(out, 'label')).read().strip()})
+    hist.append({'sharpness': med, 'adherence': round(adh, 4), 'cells': cells, 'label': label})
     del hist[:-KEEP]
     return fails, notes
 
