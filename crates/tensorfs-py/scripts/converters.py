@@ -479,6 +479,67 @@ def sdxl_lora(table: dict[str, Any], layers: dict[str, dict[str, tuple[int, ...]
     return {"name": "sdxl.lora", "lora": lora, "components": components}
 
 
+# ------------------------------------------------------------------ Krea 2 LoRA
+
+KREA2 = VECTORS / "krea2-headers"
+
+
+def krea2_lora() -> dict[str, Any]:
+    """Krea 2 LoRA factors onto every linear of the DiT, in each spelling a published loader reads:
+    the reference checkpoint's names (`krea2_raw_bf16`, Krea's trainer) under `diffusion_model.` (ComfyUI,
+    AI-Toolkit) or `base_model.model.` (AI-Toolkit's PEFT), each one where diffusers' own conversion reads
+    it as that module; Diffusers' names under `transformer.` (Diffusers and PEFT: Krea's LoRAs); and
+    ComfyUI's further spellings (`comfy/lora.py`, `krea2_to_diffusers`): Diffusers' names under
+    `diffusion_model.` or bare, `to_out` for `to_out.0`, kohya's flattened `lora_unet_` (musubi-tuner) and
+    `lycoris_`, and the reference names bare."""
+    from diffusers import Krea2Transformer2DModel
+
+    with torch.device("meta"):
+        model = Krea2Transformer2DModel()  # the class defaults are Krea 2's config
+    census = {n: (m.in_features, m.out_features) for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)}
+    source = header(KREA2 / "krea2_raw_bf16.safetensors.header")
+    stand_in = torch.zeros(1, 1)
+    reference: dict[str, str] = {}  # Diffusers name -> reference name
+    for key, (_, shape) in source.items():
+        if not key.endswith(".weight") or len(shape) != 2:
+            continue
+        stem = key.removesuffix(".weight")
+        for prefix in ("diffusion_model.", "base_model.model."):
+            read = lora_conversion_utils._convert_non_diffusers_krea2_lora_to_diffusers(
+                {f"{prefix}{stem}.lora_A.weight": stand_in, f"{prefix}{stem}.lora_B.weight": stand_in})
+            target = next(iter(read)).removeprefix("transformer.").removesuffix(".lora_A.weight")
+            assert census[target] == shape[::-1], (stem, target, shape)
+            assert reference.setdefault(target, stem) == stem, target
+    assert sorted(reference) == sorted(census), "the reference linears are not the DiT's census"
+
+    def spelled(diffusers: str) -> list[str]:
+        return [diffusers, diffusers.removesuffix(".0")] if diffusers.endswith(".to_out.0") else [diffusers]
+
+    spellings = {
+        "diffusion_model.": lambda d: [reference[d], *spelled(d)],
+        "base_model.model.": lambda d: [reference[d]],
+        "transformer.": spelled,
+        "lora_unet_": lambda d: [reference[d].replace(".", "_")],
+        "lycoris_": lambda d: [s.replace(".", "_") for s in spelled(d)],
+        "": lambda d: [reference[d], *spelled(d)],
+    }
+    components = [
+        {"name": "transformer", "prefix": prefix,
+         "rows": [[d, stem, {"io": list(io)}] for d, io in census.items() for stem in spell(d)]}
+        for prefix, spell in spellings.items()
+    ]
+    # Krea's own (Diffusers) and AI-Toolkit's published LoRAs are spelled as rows say.
+    for vector in ("darkbrush.safetensors.header", "krea2_style_reference.safetensors.header"):
+        keys = header(KREA2 / vector)
+        for c in components:
+            stems = {r[1] for r in c["rows"]}
+            mine = [k for k in keys if k.startswith(c["prefix"])] if c["prefix"] else []
+            assert all(k[len(c["prefix"]):].rsplit(".", 2)[0] in stems for k in mine), (vector, c["prefix"])
+        assert any(k.startswith(c["prefix"]) for c in components[:-1] for k in keys), vector
+    lora = {"a": [".lora_A.weight", ".lora_down.weight"], "b": [".lora_B.weight", ".lora_up.weight"], "alpha": [".alpha"]}
+    return {"name": "krea2.lora", "lora": lora, "components": components}
+
+
 # ------------------------------------------------------------------ SeedVR2
 
 
@@ -669,6 +730,7 @@ def generate() -> dict[str, dict[str, Any]]:
         "h3.native": native,
         "h3.lora": h3_lora(h3, source),
         "sdxl.lora": sdxl_lora(sdxl, layers, unet),
+        "krea2.lora": krea2_lora(),
         "seedvr2": seedvr2(),
         "ideogram4.fp8": ideogram4(),
         **{name: qwen_moe(name, pinned) for name, pinned in QWEN_MOE.items()},

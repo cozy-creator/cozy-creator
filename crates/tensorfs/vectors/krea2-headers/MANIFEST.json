@@ -1,0 +1,32 @@
+{
+ "note": "krea2_raw_bf16 is byte-identical to krea/Krea-2-Raw raw.safetensors (the reference checkpoint's names); the style reference is Ostris AI-Toolkit's (ostris/krea2_turbo_style_reference), darkbrush Krea's own Diffusers-format LoRA",
+ "members": [
+  {
+   "source": "Comfy-Org/Krea-2@1171f4dc7e325bf3734586942e737872506c73e1",
+   "member": "diffusion_models/krea2_raw_bf16.safetensors",
+   "header_file": "krea2_raw_bf16.safetensors.header",
+   "header_sha256": "b7337e8e3c863b74db483bda399af4c0a41e0af57fb3b2c797fe06926620de61",
+   "header_bytes": 43728,
+   "full_length": 26283332608,
+   "declared_source_sha256": "f99bb0ff8e362b77342bc4994e0c50906fe7ef7074864b181b7d48d2fa6d03d7"
+  },
+  {
+   "source": "Comfy-Org/Krea-2@1171f4dc7e325bf3734586942e737872506c73e1",
+   "member": "loras/krea2_style_reference.safetensors",
+   "header_file": "krea2_style_reference.safetensors.header",
+   "header_sha256": "bf141958b3755470d599f3a06c0b6dfeb4dbcd03ea06831c7cd13db210a17f47",
+   "header_bytes": 63696,
+   "full_length": 457111760,
+   "declared_source_sha256": "f50df5a9e62e4be8aa926a63dd5bb1a64770c4004f763c1208007ae13daa82b8"
+  },
+  {
+   "source": "krea/Krea-2-LoRA-darkbrush@af7645f3502694cfc9fd69b9c2dca113344df33d",
+   "member": "darkbrush.safetensors",
+   "header_file": "darkbrush.safetensors.header",
+   "header_sha256": "1365a3f7b38c45c299c83d4032fbe8918016f8a2e5e5dda07cd14e986f1b53fb",
+   "header_bytes": 68952,
+   "full_length": 469291992,
+   "declared_source_sha256": "f476ad1c0679bc6b14c815187e78a6ece43248f6d232faeccbfed0c4f37f36de"
+  }
+ ]
+}

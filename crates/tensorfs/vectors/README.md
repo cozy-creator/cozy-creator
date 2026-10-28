@@ -12,6 +12,7 @@ inference quality. Conversion checks must use an independent source-to-output or
 | [anima-hf-headers](anima-hf-headers/) | The corresponding Diffusers folder and its source key sets. |
 | [civitai-sdxl-headers](civitai-sdxl-headers/) | A Civitai SDXL single file; its source body was independently downloaded and hash-verified, but only its header is retained here. |
 | [sdxl-headers](sdxl-headers/) | The upstream SDXL folder, including per-member identities and shapes. |
+| [krea2-headers](krea2-headers/) | Krea 2's reference checkpoint (its module names) and two published LoRAs, Krea's Diffusers-spelled one and AI-Toolkit's; `krea2.lora` follows diffusers' Krea 2 LoRA conversion and ComfyUI's spellings. |
 
 H3 normalization has two distinct source contracts: native base QKV rows are interleaved per
 head; the reviewed trainer adapter B factors contain contiguous Q/K/V thirds. Native SwiGLU

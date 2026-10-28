@@ -23,12 +23,13 @@ macro_rules! table {
 }
 
 /// The built-in tables.
-pub const TABLES: [&str; 8] = [
+pub const TABLES: [&str; 9] = [
     table!("sdxl.single_file"),
     table!("anima.single_file"),
     table!("h3.native"),
     table!("h3.lora"),
     table!("sdxl.lora"),
+    table!("krea2.lora"),
     table!("seedvr2"),
     table!("ideogram4.fp8"),
     table!("qwen3.6-35b-a3b.experts"),
@@ -1041,7 +1042,6 @@ fn plan_lora(
         if a.encoded.is_some()
             || b.encoded.is_some()
             || rank == 0
-            || rank > (input * kernel.iter().product::<u64>()).min(output)
             || a.shape != want_a
             || b.shape != want_b
             || a.dtype != b.dtype
