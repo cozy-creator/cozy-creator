@@ -7,7 +7,7 @@ name = "ci-conditional-body"
 version = "0.1.0"
 description = "Each node class inside the native conditional body denoise_loop records, one run per variant"
 requires-python = ">=3.12"
-dependencies = ["cozy-runtime>=0.35,<0.36", "cuda-bindings>=13", "msgspec>=0.19", "torch>=2.14,<2.15", "triton>=3"]
+dependencies = ["cozy-runtime>=0.34,<0.36", "cuda-bindings>=13", "msgspec>=0.19", "torch>=2.14,<2.15", "triton>=3"]
 
 [project.entry-points."cozy.application"]
 default = "ci_conditional_body:app"
