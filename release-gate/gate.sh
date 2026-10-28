@@ -125,7 +125,9 @@ cell() {
   issue=$(jq -r --arg s "$SKU" --arg c "$name" '.[] | select((.sku == $s or .sku == "*") and ((.cells // []) | index($c))) | .issue' \
     "$HERE/known-failing.json" | head -1)
   [ -z "$issue" ] || { log "$name: pending fix $issue, not run on $SKU"; return 0; }
-  for p in "$@"; do [[ $p != prompt=* ]] || printf '%s\t%s\n' "$name" "${p#prompt=}" >> prompts.tsv; done  # quality.py
+  for p in "$@"; do  # quality.py
+    case $p in prompt=*) printf '%s\t%s\n' "$name" "${p#prompt=}" >> prompts.tsv ;; seed:=*) printf '%s\t%s\n' "$name" "${p#seed:=}" >> seeds.tsv ;; esac
+  done
   run_cell "$OUT" "$name" "$target" --on "$M" "$@" || code=$?
   n=$(cat "$name.number")
   printf '%s\t%s\t%s\n' "$name" "$target" "$n" >> cells.tsv
