@@ -39,7 +39,9 @@ jq -e 'map(has("limit")) | . == (sort)' <<<"$ARMS" >/dev/null || fail "arms with
 arm_levels() { jq -r --arg a "$1" --argjson d "$LEVELS" '.[] | select(.name==$a) | (.levels // $d)[] | tostring' <<<"$ARMS"; }
 # Cozy side: package, model and lane per model (the lane ComfyUI's files match).
 pkg() { case $1 in sdxl) echo sdxl ;; anima) echo anima ;; qwen|qwen4) echo qwen-image-2 ;; esac; }
-model_ref() { case $1 in sdxl) echo "sdxl@1.0.0 bf16" ;; anima) echo "anima@1.0.0 bf16" ;; qwen|qwen4) echo "qwen-image-2.1@0.1.0 int8" ;; esac; }
+# lane (params): SDXL's and Anima's (bf16, the lane ComfyUI's files match; int8 is what users run by default).
+LANE=$(param lane bf16)
+model_ref() { case $1 in sdxl) echo "sdxl@1.0.0 $LANE" ;; anima) echo "anima@1.0.0 $LANE" ;; qwen|qwen4) echo "qwen-image-2.1@0.1.0 int8" ;; esac; }
 tiers() { echo cold; for i in $(seq 1 "$WARM"); do echo "w$i"; done; }
 tree() { jq -r --arg a "$1" --arg m "$2" '.[] | select(.name==$a) | (.local // {})[$m] // empty' <<<"$ARMS"; }
 for a in "${arms[@]}"; do for m in "${models[@]}"; do
