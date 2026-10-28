@@ -152,6 +152,7 @@ cozy_run() {  # cozy_run <label> <model> <input file> <arm>: one request, its re
     say "STALL: $n has no end after ${waited}s; keeping the machine's logs"
     for log in tensord memory tensorfs; do cozy machine logs "$NAME" "$log" -n 0 > "$OUT/stall-$n-$log.log" 2>&1; done
     cozy machine show "$NAME" --json > "$OUT/stall-$n-show.json" 2>&1
+    tool "stacks-$n" stacks > /dev/null || say "no stacks for $n"
     kill "$qp" 2>/dev/null
   fi
   wait "$qp"; local code=$?

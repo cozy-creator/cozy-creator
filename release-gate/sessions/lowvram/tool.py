@@ -204,6 +204,33 @@ def ramhold(free_gib: int, tel: Telemetry) -> str:
     return state
 
 
+def stacks() -> str:
+    """Every Cozy executor's thread stacks (py-spy; else faulthandler through SIGABRT, read back from
+    its stderr file), with each thread's kernel wait channel: the stall's evidence."""
+    out = []
+    pids = []
+    for proc in Path("/proc").iterdir():
+        try:
+            cmd = (proc / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+        except OSError:
+            continue
+        if "cozy_runtime" in cmd and "python" in cmd:
+            pids.append((int(proc.name), cmd[:200]))
+    spy = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "py-spy"], capture_output=True, text=True)
+    for pid, cmd in pids:
+        out.append(f"=== pid {pid}: {cmd}")
+        for task in sorted(Path(f"/proc/{pid}/task").glob("*")):
+            try:
+                out.append(f"  tid {task.name} {(task / 'comm').read_text().strip()} wchan={(task / 'wchan').read_text().strip()}")
+            except OSError:
+                pass
+        if spy.returncode == 0:
+            dump = subprocess.run([str(Path(sys.executable).parent / "py-spy"), "dump", "--pid", str(pid), "--native"],
+                                  capture_output=True, text=True, timeout=120)
+            out.append(dump.stdout[-20000:] or dump.stderr[-2000:])
+    return "\n".join(out)
+
+
 LIBC = ctypes.CDLL("libc.so.6", use_errno=True)
 LIBC.mmap.restype = ctypes.c_void_p
 LIBC.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_long]
@@ -281,6 +308,9 @@ def main(payload: ToolRequest, ctx: Context, tel: Telemetry, out: Outputs) -> To
         return ToolResult(hold(payload.free_mib, tel))
     if payload.op == "ramhold":
         return ToolResult(ramhold(payload.ram_free_gib, tel))
+    if payload.op == "stacks":
+        (D / "stacks.txt").write_text(stacks())
+        return ToolResult("stacks", [out.save_file(D / "stacks.txt", media_type="text/plain")])
     if payload.op == "evict":
         return ToolResult(evict())
     if payload.op == "mark":
