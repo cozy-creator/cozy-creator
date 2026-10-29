@@ -41,9 +41,9 @@ on:
         type: string
         default: ''
       creator_ref:
-        description: The cozy-creator commit whose ci/ and e2e/ run
+        description: "The cozy-creator commit whose ci/ and e2e/ run (empty: the cozy under test's own commit)"
         type: string
-        default: master
+        default: ''
       stack_ref:
         description: The cozy-creator commit the candidate TensorD and TensorFS come from (the change's own, if cozy-creator's)
         type: string
@@ -100,7 +100,7 @@ on:
         default: cli
       creator_ref:
         type: string
-        default: master
+        default: ''
       stack_ref:
         type: string
         default: master
@@ -155,7 +155,7 @@ jobs:
       runners: ${{ steps.select.outputs.runners }}
       release_runners: ${{ steps.select.outputs.release_runners }}
       repo: ${{ steps.what.outputs.repo }}
-      ref: ${{ steps.what.outputs.ref }}
+      ref: ${{ steps.pin.outputs.ref }}
       creator: ${{ steps.pin.outputs.creator }}
       stack: ${{ steps.pin.outputs.stack }}
       runtime: ${{ steps.pin.outputs.runtime }}
@@ -167,13 +167,27 @@ jobs:
           REF: ${{ inputs.ref }}
           BASE: ${{ inputs.base }}
           CREATOR: ${{ inputs.creator_ref }}
+          STACK: ${{ inputs.stack_ref || 'master' }}
+          TENSORD: ${{ inputs.tensord }}
+          PUBLISH_RUN: ${{ inputs.publish_run }}
+          GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.merge_group.head_sha }}
           BASE_SHA: ${{ github.event.merge_group.base_sha }}
         run: |
           # No inputs: this repo's own merge group.
           [ -n "$REPO" ] || { REPO=cozy-creator REF=$HEAD_SHA BASE=$BASE_SHA CREATOR=$HEAD_SHA; }
+          # The harness (ci/, e2e/, coverage.toml) is the cozy under test's own commit unless creator_ref names one: a
+          # taken release's tag, a publish run's commit, the change's when it is cozy-creator's, else stack_ref's.
+          from_stack=
+          if [ -z "$CREATOR" ]; then
+            if [ -n "$TENSORD" ]; then CREATOR=v$TENSORD
+            elif [ -n "$PUBLISH_RUN" ]; then CREATOR=$(gh api "repos/cozy-creator/cozy-creator/actions/runs/$PUBLISH_RUN" -q .head_sha)
+            elif [ "$REPO" = cozy-creator ]; then CREATOR=$REF
+            else CREATOR=$STACK from_stack=1; fi
+          fi
           echo "repo=$REPO" >> "$GITHUB_OUTPUT"; echo "ref=$REF" >> "$GITHUB_OUTPUT"
           echo "base=$BASE" >> "$GITHUB_OUTPUT"; echo "creator=$CREATOR" >> "$GITHUB_OUTPUT"
+          echo "from_stack=$from_stack" >> "$GITHUB_OUTPUT"
           echo "github=cozy-creator/${REPO/#tensorhub/tensorhub-v2}" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v5
         with:
@@ -185,20 +199,25 @@ jobs:
       - id: pin
         env:
           GH_TOKEN: ${{ github.token }}
+          GITHUB_REPO: ${{ steps.what.outputs.github }}
+          REF: ${{ steps.what.outputs.ref }}
+          FROM_STACK: ${{ steps.what.outputs.from_stack }}
           STACK: ${{ inputs.stack_ref || 'master' }}
           RUNTIME: ${{ inputs.runtime_ref || 'master' }}
         run: |
+          commit() { gh api "repos/$1/commits/$2" -q .sha; }
+          ref=$(commit "$GITHUB_REPO" "$REF")
           creator=$(git -C .creator rev-parse HEAD)
-          stack=$(gh api "repos/cozy-creator/cozy-creator/commits/$STACK" -q .sha)
-          runtime=$(gh api "repos/cozy-creator/cozy-runtime/commits/$RUNTIME" -q .sha)
-          packages=$(gh api "repos/cozy-creator/packages/commits/master" -q .sha)
-          for c in "$creator" "$stack" "$runtime" "$packages"; do [[ $c =~ ^[0-9a-f]{40}$ ]] || { echo "::error::unresolved ref: '$c'"; exit 1; }; done
-          printf 'creator=%s\nstack=%s\nruntime=%s\npackages=%s\n' "$creator" "$stack" "$runtime" "$packages" | tee -a "$GITHUB_OUTPUT"
+          stack=$creator; [ -n "$FROM_STACK" ] || stack=$(commit cozy-creator/cozy-creator "$STACK")
+          runtime=$(commit cozy-creator/cozy-runtime "$RUNTIME")
+          packages=$(commit cozy-creator/packages master)
+          for c in "$ref" "$creator" "$stack" "$runtime" "$packages"; do [[ $c =~ ^[0-9a-f]{40}$ ]] || { echo "::error::unresolved ref: '$c'"; exit 1; }; done
+          printf 'ref=%s\ncreator=%s\nstack=%s\nruntime=%s\npackages=%s\n' "$ref" "$creator" "$stack" "$runtime" "$packages" | tee -a "$GITHUB_OUTPUT"
       - uses: actions/checkout@v5
         if: inputs.select == ''
         with:
           repository: ${{ steps.what.outputs.github }}
-          ref: ${{ steps.what.outputs.ref }}
+          ref: ${{ steps.pin.outputs.ref }}
           path: src
           fetch-depth: 0
       - id: select
@@ -206,7 +225,7 @@ jobs:
           PUBLISH_RUN: ${{ inputs.publish_run }}
           TOKENS: ${{ inputs.select }}
           REPO: ${{ steps.what.outputs.repo }}
-          REF: ${{ steps.what.outputs.ref }}
+          REF: ${{ steps.pin.outputs.ref }}
           BASE: ${{ steps.what.outputs.base }}
         run: |
           if [ -n "$TOKENS" ]; then s=$(.creator/ci/affected --tokens "$TOKENS" --json)
