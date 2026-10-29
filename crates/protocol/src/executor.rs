@@ -118,6 +118,10 @@ pub struct Start {
     /// Its stage memo tiers, when the machine memoizes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memo: Option<MemoSettings>,
+    /// Development only (the machine's `gpu_memory_limit`, never a user setting): each GPU is a
+    /// card of this many bytes, the executor's memory budget, to test constrained VRAM.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_memory_limit: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

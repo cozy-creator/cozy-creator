@@ -17,6 +17,8 @@ pub struct Gpu {
     pub figures: Figures,
     pub model: String,
     pub uuid: String,
+    /// What the card has beyond the development `gpu_memory_limit`: never free here.
+    absent: u64,
 }
 
 /// Driver-attributed owners, not the unassigned difference between total and free bytes.
@@ -28,18 +30,20 @@ pub struct DeviceUse {
 }
 
 impl Gpu {
-    pub fn create(entry: &str, inventory: &[receipt::Gpu], peaks: &Peaks, log: &MemoryLog) -> Option<Self> {
+    pub fn create(entry: &str, inventory: &[receipt::Gpu], limit: Option<u64>, peaks: &Peaks, log: &MemoryLog) -> Option<Self> {
         let row = row(entry, inventory)?;
         let figures = Figures::new().map_err(|error| log.note(serde_json::json!({"event": "gpu_figures_unavailable", "gpu": entry, "why": error.to_string()}))).ok()?;
-        let gpu = Self { figures, model: row.device_name.clone(), uuid: row.device_uuid.clone() };
+        let absent = limit.map_or(0, |limit| row.memory_bytes.saturating_sub(limit));
+        let gpu = Self { figures, model: row.device_name.clone(), uuid: row.device_uuid.clone(), absent };
         peaks.restore(&gpu.model, &gpu.figures);
         log.note(serde_json::json!({"event": "memory_mode", "gpu": gpu.uuid, "mode": "executor_owned", "tensorD_gpu_bytes": 0}));
         Some(gpu)
     }
 
-    /// A current driver reading, never a reservation or permission to allocate.
+    /// A current driver reading, never a reservation or permission to allocate; under a
+    /// development `gpu_memory_limit`, a card of that size's.
     pub fn free(&self) -> Option<u64> {
-        platform::gpu::Device::open(&self.uuid).and_then(|gpu| gpu.free()).ok()
+        platform::gpu::Device::open(&self.uuid).and_then(|gpu| gpu.free()).ok().map(|free| free.saturating_sub(self.absent))
     }
 
     /// The bytes the driver charges process `pid` on this GPU now; None where it cannot say (a

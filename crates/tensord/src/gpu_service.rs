@@ -96,8 +96,8 @@ pub struct GpuConfig {
     /// (`precision`).
     #[serde(default)]
     pub inventory: Vec<crate::machine::receipt::Gpu>,
-    /// The total machine GPU cap. Stock-allocator execution refuses it until aggregate grants
-    /// include every executor and non-allocator bytes; it is never multiplied per executor.
+    /// Development only: each GPU behaves as a card of this many bytes (Start's
+    /// `gpu_memory_limit`, and `memory::Gpu::free`).
     #[serde(default)]
     pub gpu_memory_limit: Option<u64>,
     /// Explicitly configured locations; the executor seal is imposed on top of them.
@@ -898,7 +898,7 @@ impl Pool {
         let tenants = memory::Tenants::default();
         let devices: Vec<Device> = envelope.iter().map(|entry| Device {
             entry: entry.clone(),
-            memory: memory::Gpu::create(entry, &config.inventory, &peaks, &notes).map(Arc::new),
+            memory: memory::Gpu::create(entry, &config.inventory, config.gpu_memory_limit, &peaks, &notes).map(Arc::new),
         }).collect();
         let gpus = devices.iter().filter_map(|d| d.memory.clone()).collect();
         let running = memory::Running::default();
@@ -1022,19 +1022,6 @@ impl Pool {
             self.end_session(&key)
         })
     }
-    /// No per-process fraction can enforce the machine's total cap across a call family.
-    fn gpu_cap(&self, degree: u32) -> io::Result<()> {
-        if degree > 0 {
-            if let Some(limit) = self.config.gpu_memory_limit {
-                return Err(io::Error::other(Refused {
-                    code: "gpu_memory_limit_unsupported".into(),
-                    detail: format!("the configured total GPU limit of {limit} bytes requires aggregate executor grants; stock-PyTorch execution cannot enforce it yet"),
-                }));
-            }
-        }
-        Ok(())
-    }
-
     /// The bytes a call of `construction` still needs free on `lane`, per GPU the largest of its
     /// measured working-set peak less what its executor already holds there (`held`, the driver's
     /// bytes for each rank's process, aligned with the lane). A cold call holds nothing; a reused
@@ -2882,6 +2869,7 @@ impl Pool {
                     sequence_parallel_degree: 1,
                     import_only: true,
                     memo: executor.memo_settings(),
+                    gpu_memory_limit: None,
                 }),
                 &mut device_executor::Baseline,
             )?;
@@ -3010,10 +2998,6 @@ impl Pool {
             })
         };
         let (key, degree) = (session_key(&plan.construction, start), plan.degree);
-        if let Err(error) = self.gpu_cap(degree) {
-            engine.finish(id, Outcome::Failed(Failure::machine("gpu_memory_limit_unsupported", error.to_string())))?;
-            return Ok(None);
-        }
         let retained = match degree {
             0 => {
                 let mut idle = self.deviceless.lock().unwrap();
@@ -3137,7 +3121,6 @@ impl Pool {
         start: usize,
         on_birth: impl Fn(&Birth, &Cancellation) -> io::Result<()>,
     ) -> io::Result<Session> {
-        self.gpu_cap(plan.degree)?;
         if plan.degree > 0 { self.make_room(engine, &plan.construction, start..start + plan.degree as usize, Some(vec![])); }
         let launched = Instant::now();
         let (root, socket, directory) = self.executor_endpoint()?;
@@ -3293,6 +3276,7 @@ impl Pool {
                     call_interfaces: crate::calls::call_interfaces(held, &interface_path),
                     constructions: constructions(&plan),
                     memo: session.executor.memo_settings(),
+                    gpu_memory_limit: self.config.gpu_memory_limit,
                 }),
                 &mut callbacks,
             )?)?;

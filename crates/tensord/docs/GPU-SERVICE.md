@@ -15,9 +15,9 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
   a one-GPU plan on any of them. An executor is sealed to its lane (`CUDA_VISIBLE_DEVICES`).
 - `inventory`: observed GPU identities and capacities used for measurements and lane selection.
 - `gpu_memory_limit`: a development-only machine cap for testing constrained VRAM, never a user
-  feature; real small cards are the evidence. GPU execution currently refuses this
-  setting because executor-local limits cannot enforce a total across a call family and its
-  non-allocator bytes.
+  feature; real small cards are the evidence. Each GPU is a card of that size: Start carries it
+  to every executor as its memory budget, and every free reading here and in the Runtime is the
+  smaller card's. Driver-level exhaustion is not emulated.
 - `environment`: names `launch_identity::credential_name` judges credentials never reach an executor.
 - `host`: `{mode}`: `[machine] mode` in config.toml, else `dedicated` on a rental and `shared`
   elsewhere. At start a dedicated machine imports its installed environments' parents, most
