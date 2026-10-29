@@ -399,8 +399,8 @@ def h3_native(h3: Any) -> tuple[dict[str, Any], dict[str, tuple[str, tuple[int, 
 
 
 # Who writes H3's fused Q/K/V LoRA factors as the trainers' contiguous thirds, by the keys and
-# `__metadata__` their own code writes (docs/h3-lora-source-layout.md). Recognition chooses h3.lora
-# only for these; any other source names it. Not here: fal's minimax-h3-trainer (no public code),
+# `__metadata__` their own code writes (docs/h3-lora-source-layout.md). A source with a fused Q/K/V
+# factor (rows marked `ambiguous`) is recognized as h3.lora only for these; any other names it. Not here: fal's minimax-h3-trainer (no public code),
 # DiffSynth-Studio (head-interleaved on MiniMax's raw base, `blocks.*` keys and `format: pt` only),
 # convert_h3_lora.py and MidLAB (no public code).
 GH = "https://github.com"
@@ -448,18 +448,22 @@ def h3_lora(h3: Any, source: dict[str, tuple[str, tuple[int, ...]]]) -> dict[str
             ops: dict[str, Any] = {"io": [inp, fused]}
             if b_ops := row_ops(b[:, 0].numpy(), (fused, 1)):
                 ops["b"] = b_ops
+            # Fused Q/K/V: which order (thirds or per-head) no header tells; a producer vouches.
+            if native.endswith("attn.qkv_proj"):
+                ops["ambiguous"] = True
             rows.extend([target.removesuffix(".weight"), stem, ops] for stem in stems)
     # Rows in the transformer's construction order (#624): its state_dict, not the trainer's.
     from diffusers import MiniMaxH3Transformer3DModel
 
     with torch.device("meta"):
         census = {k: i for i, k in enumerate(MiniMaxH3Transformer3DModel(**config).state_dict())}
-    # Diffusers/PEFT trainers spell the target itself under `transformer.` (Open-H3-Regenerate-2K's
-    # merged LoRA, diffusers' `save_lora_weights`).
+    # Diffusers' own module names: under `transformer.` (Open-H3-Regenerate-2K's merged LoRA,
+    # diffusers' `save_lora_weights`, PDMD) or bare (lightx2v's `*_bf16` saves). Factors as they
+    # are, and an α the source states, since a Diffusers save has no convention for one.
     shapes = {k.removesuffix(".weight"): tuple(v) for k, v in census_shapes(config).items() if k.endswith(".weight")}
     for target in dict.fromkeys(r[0] for r in list(rows)):
         out, inp = shapes[target]
-        rows.append([target, f"transformer.{target}", {"io": [inp, out]}])
+        rows.extend([target, stem, {"io": [inp, out], "stated_alpha": True}] for stem in (f"transformer.{target}", target))
     rows.sort(key=lambda r: census[r[0] + ".weight"])
     # The AdaLN curve: ComfyUI's pruned H3 computes each block's modulation from an 8-D curve of
     # the timestep (`lerp(adaln_t_table, t)`), so a LoRA trained on it adapts `adaln_proj` with
@@ -470,8 +474,9 @@ def h3_lora(h3: Any, source: dict[str, tuple[str, tuple[int, ...]]]) -> dict[str
     curve = {"io": [8, width], "table": "adaln_t_table"}
     for stem in ("transformer.transformer_blocks.{N}.adaln_proj.linear", "diffusion_model.blocks.{N}.adaln_proj.linear"):
         rows.append(["transformer_blocks.{N}.adaln_curve", stem, curve, {"N": blocks}])
-    lora = {"a": [".lora_A.weight", ".lora_down.weight", ".curve_A.weight"],
-            "b": [".lora_B.weight", ".lora_up.weight", ".curve_B.weight"], "alpha": [".alpha"]}
+    lora = {"a": [".lora_A.weight", ".lora_down.weight", ".lora_A.default.weight", ".curve_A.weight"],
+            "b": [".lora_B.weight", ".lora_up.weight", ".lora_B.default.weight", ".curve_B.weight"], "alpha": [".alpha"],
+            "alpha_metadata": ["alpha", "lora_alpha"]}
     return {"name": "h3.lora", "producers": H3_LORA_PRODUCERS, "lora": lora, "constants": {"adaln_t_table": adaln_t_table()},
             "components": [{"name": "transformer", "rows": rows}]}
 

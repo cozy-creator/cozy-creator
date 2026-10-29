@@ -44,9 +44,9 @@ pub struct Table {
     /// output takes when its source carries none.
     #[serde(default)]
     pub reference: Option<String>,
-    /// A layout whose headers match another's byte for byte (H3's fused Q/K/V rows: contiguous
-    /// thirds or head-interleaved) is chosen without being named only for a source that declares
-    /// one of these producers, whose own code writes it. Absent: its key set alone chooses it.
+    /// Who writes the rows marked [`Ops::ambiguous`]: a source holding one is chosen without
+    /// being named only when it declares one of these producers, whose own code writes that
+    /// order. Every other source is chosen by its key set alone.
     #[serde(default)]
     pub producers: Option<Vec<Producer>>,
     /// A LoRA table: rows are modules, any non-empty subset may be present.
@@ -121,6 +121,10 @@ pub struct Lora {
     pub a: Vec<String>,
     pub b: Vec<String>,
     pub alpha: Vec<String>,
+    /// `__metadata__` fields holding, as a number, the α of each module without an `.alpha`: a
+    /// Diffusers save keeps it there or nowhere (lightx2v `alpha`, PDMD `lora_alpha`).
+    #[serde(default)]
+    pub alpha_metadata: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -258,6 +262,14 @@ pub struct Ops {
     /// table's constant, written beside the factors as `<target>.table`.
     #[serde(default)]
     pub table: Option<String>,
+    /// LoRA rows under Diffusers' module names: no convention gives their α, so the source states
+    /// it (an `.alpha`, its PEFT config or a [`Lora::alpha_metadata`] field), else it is refused.
+    #[serde(default)]
+    pub stated_alpha: bool,
+    /// The source's row order is one no header tells (H3's fused Q/K/V: contiguous thirds or
+    /// head-interleaved): a source holding it is chosen unnamed only by a [`Table::producers`].
+    #[serde(default)]
+    pub ambiguous: bool,
 }
 
 /// Every built-in table, parsed once.
@@ -298,6 +310,8 @@ pub struct Recognized {
     pub producers: BTreeMap<usize, String>,
     /// Groups no table claims.
     pub unclaimed: Vec<usize>,
+    /// The caller named the format: what the source leaves unsaid takes the format's convention.
+    pub named: bool,
 }
 
 impl Recognized {
@@ -476,7 +490,7 @@ pub fn recognize(set: &SourceSet, tables: &[Table], named: Option<&str>) -> Resu
         },
         None => (0..tables.len()).collect(),
     };
-    let mut out = Recognized::default();
+    let mut out = Recognized { named: named.is_some(), ..Recognized::default() };
     let mut owner: BTreeMap<usize, usize> = BTreeMap::new();
     for t in candidates {
         let table = &tables[t];
@@ -520,11 +534,16 @@ pub fn recognize(set: &SourceSet, tables: &[Table], named: Option<&str>) -> Resu
             }
             continue;
         }
+        // The claimed groups holding a row whose order no header tells.
+        let unread: BTreeSet<usize> = (claims.iter().map(|c| c.group))
+            .filter(|g| set.groups[*g].tensors.keys().any(|k| ambiguous(table, k)))
+            .collect();
         if let (Some(producers), None) = (&table.producers, named) {
             let groups: BTreeSet<usize> = claims.iter().map(|c| c.group).collect();
             let wrote = |p: &&Producer| groups.iter().all(|g| p.wrote(&set.groups[*g]));
             match producers.iter().find(wrote) {
                 Some(p) => drop(out.producers.insert(t, p.name.clone())),
+                None if unread.is_empty() => {}
                 None => {
                     let known: BTreeSet<&str> = producers.iter().map(|p| p.name.as_str()).collect();
                     return refuse(
@@ -566,6 +585,15 @@ pub fn recognize(set: &SourceSet, tables: &[Table], named: Option<&str>) -> Resu
         .filter(|g| !owner.contains_key(g))
         .collect();
     Ok(out)
+}
+
+/// Whether source key `key` feeds a row of `table` marked [`Ops::ambiguous`].
+fn ambiguous(table: &Table, key: &str) -> bool {
+    table.components.iter().any(|c| {
+        let Some(rest) = key.strip_prefix(c.prefix.as_str()) else { return false };
+        let stem = table.lora.as_ref().and_then(|l| lora_split(l, rest)).map_or(rest, |(stem, _)| stem);
+        c.rows.iter().any(|r| r.ops.ambiguous && r.key() == Some(stem))
+    })
 }
 
 /// The tables that know any of `group`'s keys, by how many, most first: `h3.lora (580 of 600
@@ -1004,7 +1032,12 @@ pub fn plan(
                     }
                 }
                 match &table.lora {
-                    Some(lora) => plan_lora(table, lora, c, claim, group, &mut out)?,
+                    Some(lora) => {
+                        let config = super::join(&group.folder, super::lora::ADAPTER_CONFIG);
+                        let stated = group.metadata.contains_key(super::lora::DIFFUSERS_CONFIG)
+                            || set.plain.iter().any(|p| p.path == config);
+                        plan_lora(table, lora, c, claim, group, stated || r.named, &mut out)?
+                    }
                     None => {
                         for row in &c.rows {
                             let Src::Key(k) = &row.source else { continue };
@@ -1096,14 +1129,20 @@ fn plan_raw(set: &SourceSet, c: &Component, out: &mut Vec<Planned>) -> Result<()
     Ok(())
 }
 
+/// `stated`: the source has a PEFT config, which gives the α its modules lack, or the caller named
+/// the format, whose convention (α = rank) they then take.
 fn plan_lora(
     table: &Table,
     lora: &Lora,
     c: &Component,
     claim: &Claim,
     group: &Group,
+    stated: bool,
     out: &mut Vec<Planned>,
 ) -> Result<()> {
+    let metadata_alpha = (lora.alpha_metadata.iter())
+        .find_map(|k| group.metadata.get(k)?.trim().parse::<f64>().ok())
+        .filter(|a| a.is_finite() && *a > 0.0);
     let mut factors: BTreeMap<&str, [Option<(&str, &Tensor)>; 3]> = BTreeMap::new();
     let longest = |key: &str| {
         table
@@ -1164,6 +1203,22 @@ fn plan_lora(
             );
         }
         let none = Ops::default();
+        // The α a Diffusers-named module's source states outside its tensors.
+        let given = match (alpha, row.ops.stated_alpha, metadata_alpha) {
+            (None, true, Some(a)) => Some(a),
+            (None, true, None) if !stated => {
+                return refuse(
+                    Code::MISSING_FIELD,
+                    format!(
+                        "{ka}: a LoRA under Diffusers' module names that states no α (no .alpha, \
+                         PEFT config or __metadata__ {:?}), so its strength is unknown; name its format \
+                         (--source-format {}) to take α = rank",
+                        lora.alpha_metadata, table.name
+                    ),
+                );
+            }
+            _ => None,
+        };
         for (suffix, t, ops) in [
             (".lora_A.weight", Some(*a), &none),
             (
@@ -1179,6 +1234,17 @@ fn plan_lora(
         }
         if let Some(name) = &row.ops.table {
             out.push(constant(table, name, &claim.name, &format!("{}.table", row.target))?);
+        }
+        if let Some(a) = given {
+            let read = Reading::inline((a as f32).to_le_bytes().to_vec(), Dtype::F32);
+            out.push(Planned {
+                component: claim.name.clone(),
+                key: format!("{}.alpha", row.target),
+                dtype: Dtype::F32,
+                shape: vec![],
+                encoding: None,
+                parts: vec![PlannedPart { role: String::new(), dtype: Dtype::F32, shape: vec![], read }],
+            });
         }
     }
     Ok(())

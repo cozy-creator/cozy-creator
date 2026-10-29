@@ -29,7 +29,7 @@ const ALPHA: &str = ".alpha";
 /// `get_peft_model_state_dict`'s wrapper around the base model's module names.
 const PEFT_PREFIX: &str = "base_model.model.";
 /// diffusers' `save_lora_adapter` records the `LoraConfig` here, as JSON.
-const DIFFUSERS_CONFIG: &str = "lora_adapter_metadata";
+pub(crate) const DIFFUSERS_CONFIG: &str = "lora_adapter_metadata";
 /// Kohya's flattened module names (`lora_unet_down_blocks_0_…`, `lora_te1_…`): only a converter
 /// table maps them onto a model's modules.
 const KOHYA: [&str; 2] = ["lora_unet_", "lora_te"];
