@@ -206,6 +206,23 @@ impl Client {
         self.json(request.json(&json!({"family": family}))).await
     }
 
+    /// Records that org/name mirrors `source`: an admin's, into a parked org or crediting a root model.
+    pub async fn mirror_model(
+        &self,
+        org: &str,
+        name: &str,
+        source: &str,
+    ) -> Result<ModelMirror, Error> {
+        let request = self.at(Method::PUT, "/v1/models/{org}/{name}/mirror", &[org, name]);
+        self.json(request.json(&json!({"source": source}))).await
+    }
+
+    /// Claims a parked org: its code and where to post it, until a handle's page shows it.
+    pub async fn claim_org(&self, org: &str) -> Result<OrgClaim, Error> {
+        self.json(self.at(Method::POST, "/v1/orgs/{org}/claim", &[org]))
+            .await
+    }
+
     pub async fn delete_model(&self, org: &str, name: &str) -> Result<(), Error> {
         self.send(self.at(Method::DELETE, "/v1/models/{org}/{name}", &[org, name]))
             .await

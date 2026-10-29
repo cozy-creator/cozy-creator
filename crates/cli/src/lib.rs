@@ -16,6 +16,7 @@ mod daemon;
 mod doctor;
 mod machine;
 mod model;
+mod org;
 pub mod output;
 mod package;
 mod run;
@@ -52,6 +53,8 @@ enum Command {
     Package(package::Args),
     /// Find, download, upload and publish models.
     Model(model::Args),
+    /// Claim an organization parked under your name.
+    Org(org::Args),
     /// Sign in to the Hub with this computer's device key.
     Login(account::Login),
     /// Sign out of the Hub.
@@ -127,6 +130,7 @@ async fn dispatch(ctx: &Context, command: Command) -> Result<ExitCode, Error> {
         Command::Machine(args) => machine::exec(ctx, args).await,
         Command::Package(args) => package::exec(ctx, args).await,
         Command::Model(args) => model::exec(ctx, args).await,
+        Command::Org(args) => org::exec(ctx, args).await,
         Command::Login(args) => account::login(ctx, args).await,
         Command::Logout(args) => account::logout(ctx, args).await,
         Command::Whoami(args) => account::whoami(ctx, args).await,
