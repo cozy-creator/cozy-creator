@@ -13,7 +13,7 @@ use std::{
 };
 
 mod disk;
-pub use disk::{DiskClass, Filesystem, cached, filesystem, open_direct};
+pub use disk::{DiskClass, Filesystem, cached, cached_runs, filesystem, open_direct, page_size, will_need};
 
 static TEMPS: AtomicU64 = AtomicU64::new(0);
 
