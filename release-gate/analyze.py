@@ -14,7 +14,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, 'suites'))
 import lm, quality, swap  # noqa: E402
-from runs import Run  # noqa: E402
+from runs import STEP_EXTRA_MS, STEP_RATIO, Run, slow_steps  # noqa: E402
 from tensorfs import check as tensorfs  # noqa: E402  (release-gate/suites/tensorfs, never the tensorfs library)
 from varena import check as varena  # noqa: E402
 from cli import check as cli  # noqa: E402
@@ -27,10 +27,6 @@ SLACK = {'execution_ms': 0.25, 'step1_ms': 0.5, 'steady_ms': 0.10, 'vram_mb': 0.
 # And at least this much: a CUDA context's size moves between drivers (MiB); a sub-second CPU cell's time is its
 # host's scheduling (ms).
 FLOOR = {'vram_mb': 256, 'execution_ms': 250}
-# A step may cost at most 2x its reference plus 5 s: step 1 against step 2 (known-good fresh H3 executors 0.9-1.8x; the
-# 10-22 split regression 8-17x), every later step against the median of steps 2..n (a length change, such as a video
-# reference's rows leaving the sparse window, must not stall a step). The seconds absorb sub-second image steps.
-STEP_RATIO, STEP_EXTRA_MS = 2, 5_000
 # Request-path blocking work the Runtime still does (tracker cr-217), as fnmatch patterns. The list may only shrink.
 KNOWN_BLOCKING = os.path.join(HERE, 'known-blocking.json')
 BLOCKING_SLACK = 0.5
@@ -111,12 +107,8 @@ for name, target, number in cells:
                          'execution_ms': run.execution_ms, 'step1_ms': round(s[0]) if s else None, 'step1_read_ms': round(reads),
                          'vram_mb': vram and vram['added'],
                          'steady_ms': round(sum(s[1:]) / len(s[1:])) if len(s) > 1 else None, 'files': list(run.outputs)}
-    if len(s) > 2:
-        median = sorted(s[1:])[(len(s) - 1) // 2]
-        for i, (ms, ref) in enumerate([(s[0], s[1])] + [(x, median) for x in s[1:]]):
-            if ms > STEP_RATIO * ref + STEP_EXTRA_MS:
-                fails.append(f'{name}: step {i + 1} {ms / 1000:.1f} s vs {"step 2" if i == 0 else "median"} '
-                             f'{ref / 1000:.1f} s (at most {STEP_RATIO}x + {STEP_EXTRA_MS // 1000} s)')
+    for i, ms, ref, what in slow_steps(canonical(target), s):
+        fails.append(f'{name}: step {i} {ms / 1000:.1f} s vs {what} {ref / 1000:.1f} s (at most {STEP_RATIO}x + {STEP_EXTRA_MS // 1000} s)')
 
 
 def image(name):

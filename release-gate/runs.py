@@ -8,6 +8,27 @@ from dataclasses import dataclass
 # The Runtime's host-stall codes (cozy_runtime/author/_stalls.py) that are a weight read: bytes from TensorFS into the
 # executor's tensors, or the wait for a prefetched read to land.
 WEIGHT_READS = ('cozy_runtime.internal.residency.Memory._read_into', 'cozy_runtime.internal.residency.Memory._settle_prefetch')
+# A step may cost at most 2x its reference plus 5 s: step 1 against step 2 (known-good fresh H3 executors 0.9-1.8x; the
+# 10-22 split regression 8-17x), every later step against the median of its phase (a length change, such as a video
+# reference's rows leaving the sparse window, must not stall a step). The seconds absorb sub-second image steps.
+STEP_RATIO, STEP_EXTRA_MS = 2, 5_000
+# Steps 1..k of these targets are their own phase: H3 attends densely for its first evaluations, a dense step costing
+# about 2x a sparse one (minimax-h3 docs/attention-defaults.md: turbo 4 of 8, regular sampling the first 10). Against
+# one median, a healthy fl2va_turbo with dense steps 2.07x its sparse ones failed (gate 40834197815).
+DENSE_STEPS = {'minimax-h3/fl2va_turbo': 4, 'minimax-h3/ref2va_turbo': 4, 'minimax-h3/fl2va': 10, 'minimax-h3/ref2va': 10}
+
+
+def slow_steps(target, s):
+    """Each step of the series `s` (ms) over STEP_RATIO x its reference + STEP_EXTRA_MS, as (step, ms, reference, what the
+    reference is). `target` is canonical: pkg/fn."""
+    if len(s) < 3:
+        return []
+    k = DENSE_STEPS.get(target, 1)
+    refs = [(s[1], 'step 2')]
+    for phase, what in ((s[1:k], 'dense median'), (s[max(k, 1):], 'sparse median' if k > 1 else 'median')):
+        if phase:
+            refs += [(sorted(phase)[len(phase) // 2], what)] * len(phase)
+    return [(i + 1, ms, ref, what) for i, (ms, (ref, what)) in enumerate(zip(s, refs)) if ms > STEP_RATIO * ref + STEP_EXTRA_MS]
 
 
 @dataclass(frozen=True)
