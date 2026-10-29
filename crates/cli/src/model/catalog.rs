@@ -1,5 +1,5 @@
-//! `cozy model search|info|family`: the Hub's model catalog. Signed in, `info` also lists the
-//! commits of a model of the user's org.
+//! `cozy model search|info|family`: the Hub's model catalog. Signed in, `search` also finds the
+//! user's own unreleased (private) models and `info` lists the commits of a model of the user's org.
 use std::collections::BTreeMap;
 use std::process::ExitCode;
 
@@ -13,13 +13,15 @@ use crate::Context;
 use crate::context::hub_answer;
 use crate::output::{self, Record, Table};
 
-/// One search row: the model's newest release, and its lanes.
+/// One search row: the model's newest release, and its lanes; for a private model (no release,
+/// its owner's), its commits' lanes.
 #[derive(Serialize)]
 struct Found {
     model: String,
     family: Option<String>,
     release: Option<String>,
     lanes: Vec<String>,
+    private: bool,
 }
 
 #[derive(Serialize)]
@@ -32,16 +34,23 @@ struct Searched {
 fn found(card: &ModelCard) -> Found {
     // The Hub lists releases newest first.
     let release = card.releases.first();
+    let private = release.is_none();
+    let lanes = match release {
+        Some(r) => r.lanes.keys().cloned().collect(),
+        None => card.commits.iter().map(|c| c.lane.clone()).collect::<std::collections::BTreeSet<_>>().into_iter().collect(),
+    };
     Found {
         model: protocol::names::shown(&format!("{}/{}", card.model.org, card.model.name)),
         family: card.model.family.clone().filter(|f| !f.is_empty()),
         release: release.map(|r| r.version.clone()),
-        lanes: release.map(|r| r.lanes.keys().cloned().collect()).unwrap_or_default(),
+        lanes,
+        private,
     }
 }
 
 pub(crate) async fn search(ctx: &Context, args: Search) -> Result<ExitCode, Error> {
-    let client = ctx.hub_anonymous(ctx.hub());
+    // Signed in, the Hub adds the user's own private models.
+    let client = ctx.hub_client(ctx.hub())?;
     let exact = match (&args.family, args.query.as_slice()) {
         // A single word is search text (a root name among its matches, first); org/name is one model.
         (None, [one]) if one.contains('/') => Repo::parse(one).ok(),
@@ -79,7 +88,11 @@ pub(crate) async fn search(ctx: &Context, args: Search) -> Result<ExitCode, Erro
     for row in &view.models {
         let lanes = row.lanes.join(", ");
         let family = row.family.as_deref().unwrap_or("-");
-        table = table.row([row.model.as_str(), family, row.release.as_deref().unwrap_or("-"), &lanes]);
+        let release = match row.private {
+            true => "private",
+            false => row.release.as_deref().unwrap_or("-"),
+        };
+        table = table.row([row.model.as_str(), family, release, &lanes]);
     }
     let shown = view.models.len() as i64;
     if total > shown {
