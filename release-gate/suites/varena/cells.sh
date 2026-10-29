@@ -9,6 +9,7 @@
 #   reload-*         after an unload (a restart ends every executor), each model back from page cache or disk
 #   s8-* s6-* s3-*   under 8, 6 and 3 GiB software caps; at 6 GiB SDXL and Klein alternate three times
 #   (≤ 8 GB card)    cold, co and reload only: the driver's own out-of-memory paths (a capped card never fills)
+#   h3-8gb           (≤ 8 GB card) H3 Turbo 15 s, the 8 GB tier's product shape
 #   host-*           on a CPU rental, under its cgroup's memory.max (host-cap.py): pages must spill to disk
 #
 # check.py judges caps, host RAM, alternation and load/refill bandwidth as a share of `ceiling`; analyze.py, time
@@ -50,7 +51,11 @@ h3 co-h3 6 5 "The camera slowly pushes in."
 cap off  # unload
 vcell reload-sdxl "$SDXL" prompt="$SCENE at dusk, wide shot, photo" seed:=$((R + 7))
 vcell reload-klein "$KLEIN" prompt="$OBJECT, macro photo, shallow depth of field" seed:=$((R + 8))
-[ "$(grep -oE '· [0-9]+ GiB ·' machine.txt | head -1 | grep -oE '[0-9]+')" -gt 8 ] || return 0
+if [ "$(grep -oE '· [0-9]+ GiB ·' machine.txt | head -1 | grep -oE '[0-9]+')" -le 8 ]; then
+  # The 8 GB tier's product shape, H3 Turbo 15 s (1344x768 with audio): 0.35.0 ran out of memory in its step 2.
+  vcell h3-8gb "$(pkg minimax-h3 fl2va_turbo)" seed:=$((R + 15)) duration_s:=15 prompt="$MOTION Wide, steady."
+  return 0
+fi
 h3 reload-h3 9 5 "A slow pan follows the action."
 cap 8GiB
 vcell s8-sdxl "$SDXL" prompt="$OBJECT in a museum display case, photo" seed:=$((R + 11))
