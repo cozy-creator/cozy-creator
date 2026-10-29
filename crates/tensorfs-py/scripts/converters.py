@@ -418,6 +418,11 @@ H3_LORA_PRODUCERS = [
     # `lora_format: comfyui`: Diffusers' separate Q/K/V stacked into thirds.
     {"name": "SimpleTuner", "keys": ["diffusion_model."], "metadata": {"modelspec.architecture": {"prefix": "minimaxh3-"}, "modelspec.implementation": "diffusers"}, "cite": [
         f"{GH}/bghira/SimpleTuner/blob/4b7edb115f95f5bae8855da5dd8e68242eea6922/simpletuner/helpers/models/minimaxh3/modular_pipeline.py#L332-L443"]},
+    # Its MiniMax trainers' LoRAs (not `fizgig.model_eq`, a diff of whatever two checkpoints it is given).
+    *({"name": "Fizgig", "keys": ["lora_unet_"], "metadata": {"ss_network_module": {"prefix": prefix}}, "cite": [
+        f"{GH}/shootthesound/Fizgig/blob/15c8447941842aeb8c8472daf0ea627f0034fbb8/src/fizgig/minimax/model.py#L361",
+        f"{GH}/shootthesound/Fizgig/blob/15c8447941842aeb8c8472daf0ea627f0034fbb8/src/fizgig/families/minimax.py#L359-L365"]}
+      for prefix in ("fizgig.minimax", "fizgig.families (minimax")),
     # Its converter is not public; the file states the fusion of Diffusers' separate Q/K/V.
     {"name": "lightx2v", "keys": ["diffusion_model."], "metadata": {"source_format": "Diffusers PEFT LoRA", "qkv_fusion": "block diagonal B; concat A; alpha multiplied by 3"}, "cite": [
         "https://huggingface.co/lightx2v/Minimax-h3-Turbo/blob/30f485ed874aa44c8183348ad361c5eabad318da/minimax_h3_fl2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors"]},
