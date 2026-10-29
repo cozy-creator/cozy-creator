@@ -10,6 +10,19 @@ product() {
 }
 
 H3_SEED=2026102801
+# av <cell> <height>: its tallest mp4 is <height>p and carries a soundtrack as long as its picture (within 0.1 s).
+# seedvr2 0.1.0 wrote a batch's audio after all its frames, past the writer's interleave buffer (run 20347).
+av() {
+  [ -f "$1.number" ] || return 0
+  local f v a
+  f=$(run_get "$OUT" "$1" '.output[]?.path' | grep -E '\.mp4$' | while read -r p; do
+    echo "$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$p") $p"; done | sort -n | tail -1)
+  v=$(ffprobe -v error -select_streams v:0 -show_entries stream=duration -of csv=p=0 "${f#* }" 2>/dev/null)
+  a=$(ffprobe -v error -select_streams a:0 -show_entries stream=duration -of csv=p=0 "${f#* }" 2>/dev/null)
+  expect "$1-av" "$(awk -v h="${f%% *}" -v want="$2" -v v="$v" -v a="$a" \
+    'BEGIN { print (h == want && v != "" && a != "" && (v - a) ^ 2 < 0.01) ? "PASS" : "FAIL" }')" \
+    "${f%% *}p, video ${v:-none} s, audio ${a:-none} s"
+}
 product_minimax_h3() {
   # H3's references: BiRefNet cleans the character image and Qwen3.5 describes it (greedy), as for a user's character.
   # While cr-215 is open (lead 10-23) the reference is the image only; the 3 s video reference returns with its fix.
@@ -19,12 +32,23 @@ product_minimax_h3() {
   cell h3 "$(pkg minimax-h3 ref2va_turbo)" references:="[{\"name\": \"$name\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
     seed:=$H3_SEED duration_s:=15 resolution=768p prompt="<$name> $motion"
   CLIP=$(output h3 mp4)
+  # Above 768p H3 restores its render with SeedVR2 in the same call: the lock's seedvr2, with the soundtrack.
+  cell h3-1080p "$(pkg minimax-h3 fl2va_turbo)" prompt="$SCENE, slow push-in, ambient sound" seed:=$((R + 16)) duration_s:=5 resolution=1080p
+  av h3-1080p 1080
+  cell h3-1440p "$(pkg minimax-h3 fl2va_turbo)" prompt="$CHAR $MOTION, street sounds" seed:=$((R + 17)) duration_s:=5 resolution=1440p
+  av h3-1440p 1440
 }
 product_seedvr2() {
   local src=${CLIP:-$(ls "$B/ref-$SKU-clip.mp4" 2>/dev/null)}
   if [ -n "$src" ]; then nice -n 19 ffmpeg -v error -y -i "$src" -t 1 -an -c:v libx264 -pix_fmt yuv420p clip-1s.mp4
   else nice -n 19 ffmpeg -v error -y -loop 1 -i "$REF" -t 1 -r 24 -vf scale=-2:768 -c:v libx264 -pix_fmt yuv420p clip-1s.mp4; fi
   cell seedvr2 "$(pkg seedvr2 upscale)" --asset video="$OUT/clip-1s.mp4" resolution=1080p seed:=$((R + 2))
+  # 5 s with its sound at 1440p, as H3 calls it.
+  if [ -n "$src" ]; then nice -n 19 ffmpeg -v error -y -i "$src" -t 5 -c:v libx264 -pix_fmt yuv420p -c:a aac clip-5s.mp4
+  else nice -n 19 ffmpeg -v error -y -loop 1 -i "$REF" -f lavfi -i sine=frequency=440 -t 5 -r 24 -vf scale=-2:768 \
+    -c:v libx264 -pix_fmt yuv420p -c:a aac clip-5s.mp4; fi
+  cell seedvr2-1440p "$(pkg seedvr2 upscale)" --asset video="$OUT/clip-5s.mp4" resolution=1440p aspect_ratio=16:9 seed:=$((R + 18))
+  av seedvr2-1440p 1440
 }
 product_sdxl() { cell sdxl "$(pkg sdxl generate)" prompt="$SCENE, photo" seed:=$((R + 3)); }
 product_flux_3_klein() {
