@@ -41,9 +41,9 @@ on:
         type: string
         default: ''
       creator_ref:
-        description: The cozy-creator commit whose ci/ and e2e/ run
+        description: "The cozy-creator commit whose ci/ and e2e/ run (empty: the cozy under test's own commit)"
         type: string
-        default: master
+        default: ''
       stack_ref:
         description: The cozy-creator commit the candidate TensorD and TensorFS come from (the change's own, if cozy-creator's)
         type: string
@@ -100,7 +100,7 @@ on:
         default: cli
       creator_ref:
         type: string
-        default: master
+        default: ''
       stack_ref:
         type: string
         default: master
@@ -155,8 +155,11 @@ jobs:
       runners: ${{ steps.select.outputs.runners }}
       release_runners: ${{ steps.select.outputs.release_runners }}
       repo: ${{ steps.what.outputs.repo }}
-      ref: ${{ steps.what.outputs.ref }}
-      creator: ${{ steps.what.outputs.creator }}
+      ref: ${{ steps.pin.outputs.ref }}
+      creator: ${{ steps.pin.outputs.creator }}
+      stack: ${{ steps.pin.outputs.stack }}
+      runtime: ${{ steps.pin.outputs.runtime }}
+      packages: ${{ steps.pin.outputs.packages }}
     steps:
       - id: what
         env:
@@ -164,24 +167,57 @@ jobs:
           REF: ${{ inputs.ref }}
           BASE: ${{ inputs.base }}
           CREATOR: ${{ inputs.creator_ref }}
+          STACK: ${{ inputs.stack_ref || 'master' }}
+          TENSORD: ${{ inputs.tensord }}
+          PUBLISH_RUN: ${{ inputs.publish_run }}
+          GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.merge_group.head_sha }}
           BASE_SHA: ${{ github.event.merge_group.base_sha }}
         run: |
           # No inputs: this repo's own merge group.
           [ -n "$REPO" ] || { REPO=cozy-creator REF=$HEAD_SHA BASE=$BASE_SHA CREATOR=$HEAD_SHA; }
+          # The harness (ci/, e2e/, coverage.toml) is the cozy under test's own commit unless creator_ref names one: a
+          # taken release's tag, a publish run's commit, the change's when it is cozy-creator's, else stack_ref's.
+          from_stack=
+          if [ -z "$CREATOR" ]; then
+            if [ -n "$TENSORD" ]; then CREATOR=v$TENSORD
+            elif [ -n "$PUBLISH_RUN" ]; then CREATOR=$(gh api "repos/cozy-creator/cozy-creator/actions/runs/$PUBLISH_RUN" -q .head_sha)
+            elif [ "$REPO" = cozy-creator ]; then CREATOR=$REF
+            else CREATOR=$STACK from_stack=1; fi
+          fi
           echo "repo=$REPO" >> "$GITHUB_OUTPUT"; echo "ref=$REF" >> "$GITHUB_OUTPUT"
           echo "base=$BASE" >> "$GITHUB_OUTPUT"; echo "creator=$CREATOR" >> "$GITHUB_OUTPUT"
+          echo "from_stack=$from_stack" >> "$GITHUB_OUTPUT"
           echo "github=cozy-creator/${REPO/#tensorhub/tensorhub-v2}" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v5
         with:
           repository: cozy-creator/cozy-creator
           ref: ${{ steps.what.outputs.creator }}
           path: .creator
+      # Each ref resolves once, here, to the commit every job checks out: a branch that moves mid-run never mixes two
+      # commits in one run (one master's coverage.toml against another's candidate cozy, cozy-runtime 40887117045).
+      - id: pin
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPO: ${{ steps.what.outputs.github }}
+          REF: ${{ steps.what.outputs.ref }}
+          FROM_STACK: ${{ steps.what.outputs.from_stack }}
+          STACK: ${{ inputs.stack_ref || 'master' }}
+          RUNTIME: ${{ inputs.runtime_ref || 'master' }}
+        run: |
+          commit() { gh api "repos/$1/commits/$2" -q .sha; }
+          ref=$(commit "$GITHUB_REPO" "$REF")
+          creator=$(git -C .creator rev-parse HEAD)
+          stack=$creator; [ -n "$FROM_STACK" ] || stack=$(commit cozy-creator/cozy-creator "$STACK")
+          runtime=$(commit cozy-creator/cozy-runtime "$RUNTIME")
+          packages=$(commit cozy-creator/packages master)
+          for c in "$ref" "$creator" "$stack" "$runtime" "$packages"; do [[ $c =~ ^[0-9a-f]{40}$ ]] || { echo "::error::unresolved ref: '$c'"; exit 1; }; done
+          printf 'ref=%s\ncreator=%s\nstack=%s\nruntime=%s\npackages=%s\n' "$ref" "$creator" "$stack" "$runtime" "$packages" | tee -a "$GITHUB_OUTPUT"
       - uses: actions/checkout@v5
         if: inputs.select == ''
         with:
           repository: ${{ steps.what.outputs.github }}
-          ref: ${{ steps.what.outputs.ref }}
+          ref: ${{ steps.pin.outputs.ref }}
           path: src
           fetch-depth: 0
       - id: select
@@ -189,7 +225,7 @@ jobs:
           PUBLISH_RUN: ${{ inputs.publish_run }}
           TOKENS: ${{ inputs.select }}
           REPO: ${{ steps.what.outputs.repo }}
-          REF: ${{ steps.what.outputs.ref }}
+          REF: ${{ steps.pin.outputs.ref }}
           BASE: ${{ steps.what.outputs.base }}
         run: |
           if [ -n "$TOKENS" ]; then s=$(.creator/ci/affected --tokens "$TOKENS" --json)
@@ -236,7 +272,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           repository: cozy-creator/${{ matrix.repo }}
-          ref: ${{ needs.affected.outputs.repo == matrix.repo && needs.affected.outputs.ref || matrix.repo == 'cozy-runtime' && (inputs.runtime_ref || 'master') || (inputs.stack_ref || 'master') }}
+          ref: ${{ needs.affected.outputs.repo == matrix.repo && needs.affected.outputs.ref || matrix.repo == 'cozy-runtime' && needs.affected.outputs.runtime || needs.affected.outputs.stack }}
           path: .build
           # The first-parent line build.sh walks back for a run that built the same sources.
           fetch-depth: ${{ matrix.what == 'runtime' && 1 || 30 }}
@@ -293,6 +329,7 @@ jobs:
           path: .creator
       - uses: ./.creator/e2e/candidates
         with:
+          packages_ref: ${{ needs.affected.outputs.packages }}
           repo: ${{ needs.affected.outputs.repo }}
           ref: ${{ needs.affected.outputs.ref }}
           build: ${{ env.BUILD }}
@@ -341,11 +378,12 @@ jobs:
           path: .creator
       - uses: ./.creator/e2e/candidates
         with:
+          packages_ref: ${{ needs.affected.outputs.packages }}
           repo: ${{ needs.affected.outputs.repo }}
           ref: ${{ needs.affected.outputs.ref }}
           build: ${{ env.BUILD }}
-          stack_ref: ${{ inputs.stack_ref || 'master' }}
-          runtime_ref: ${{ inputs.runtime_ref || 'master' }}
+          stack_ref: ${{ needs.affected.outputs.stack }}
+          runtime_ref: ${{ needs.affected.outputs.runtime }}
           tensord: ${{ inputs.tensord }}
           tensorfs: ${{ inputs.tensorfs }}
           runtime: ${{ inputs.runtime }}
@@ -390,13 +428,14 @@ jobs:
           path: .creator
       - uses: ./.creator/e2e/candidates
         with:
+          packages_ref: ${{ needs.affected.outputs.packages }}
           repo: ${{ needs.affected.outputs.repo }}
           ref: ${{ needs.affected.outputs.ref }}
           build: ${{ env.BUILD }}
           # Linux takes the candidate jobs' set; macOS and Windows build their cozy here.
           from: ${{ matrix.runner == 'ubuntu-24.04' && 'artifacts' || '' }}
-          stack_ref: ${{ inputs.stack_ref || 'master' }}
-          runtime_ref: ${{ inputs.runtime_ref || 'master' }}
+          stack_ref: ${{ needs.affected.outputs.stack }}
+          runtime_ref: ${{ needs.affected.outputs.runtime }}
           tensord: ${{ inputs.tensord }}
           tensorfs: ${{ inputs.tensorfs }}
           runtime: ${{ inputs.runtime }}
@@ -444,6 +483,7 @@ jobs:
           path: .creator
       - uses: ./.creator/e2e/candidates
         with:
+          packages_ref: ${{ needs.affected.outputs.packages }}
           repo: ${{ needs.affected.outputs.repo }}
           ref: ${{ needs.affected.outputs.ref }}
           build: ${{ env.BUILD }}
@@ -485,11 +525,12 @@ jobs:
           path: .creator
       - uses: ./.creator/e2e/candidates
         with:
+          packages_ref: ${{ needs.affected.outputs.packages }}
           repo: ${{ needs.affected.outputs.repo }}
           ref: ${{ needs.affected.outputs.ref }}
           build: ${{ env.BUILD }}
-          stack_ref: ${{ inputs.stack_ref || 'master' }}
-          runtime_ref: ${{ inputs.runtime_ref || 'master' }}
+          stack_ref: ${{ needs.affected.outputs.stack }}
+          runtime_ref: ${{ needs.affected.outputs.runtime }}
           tensord: ${{ inputs.tensord }}
           tensorfs: ${{ inputs.tensorfs }}
           runtime: ${{ inputs.runtime }}
