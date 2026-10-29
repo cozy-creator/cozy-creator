@@ -1,0 +1,19 @@
+[project]
+name = "xs132-pipeline"
+version = "0.1.0"
+description = "release-gate session fixture (warming.sh, xs-132): a CPU orchestrator whose one step calls birefnet"
+requires-python = ">=3.12"
+dependencies = ["cozy-runtime[media]>=0.35,<0.36", "msgspec>=0.19", "birefnet>=0.1.0", "torch>=2.14,<2.15", "torchvision>=0.29,<0.30"]
+
+[project.entry-points."cozy.application"]
+default = "xs132_pipeline:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["xs132_pipeline"]
+
+[tool.uv.sources]
+birefnet = { index = "tensorhub" }
