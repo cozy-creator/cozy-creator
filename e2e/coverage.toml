@@ -125,6 +125,11 @@ test = "gate: cli cells, the throwaway model's int8 and fp8 lanes"
 "--package" = "gate: cli cells"
 "--on" = "gate: cli cells"
 
+["org edit"]
+test = "manual: a platform admin edits a parked org's name, links and handles on tensorhub.com (xs-131); CI holds no admin key"
+"--name" = "manual: as the command"
+"--link" = "manual: as the command"
+"--handle" = "manual: as the command"
 ["org claim"]
 test = "manual: the author posts the code on a handle the org lists, then claims (xs-131, proved on the dev Hub); a CI claim needs a parked org and a public handle"
 

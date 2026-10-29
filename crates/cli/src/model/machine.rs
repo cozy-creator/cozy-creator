@@ -258,8 +258,12 @@ async fn mirror(ctx: &Context, source: &str, page: &str, repo: &Repo) -> Result<
         page => page,
     };
     let answer = hub_answer(ctx.hub_signed_in(ctx.hub())?.mirror_model(&repo.org, &repo.name, page).await)?;
+    let org = answer.author.as_ref().map(|a| a.org.clone()).unwrap_or_else(|| repo.org.clone());
     let by = answer.author.map(|a| a.reserved.unwrap_or(format!("credits {} ({})", a.name, a.org)));
     output::say(ctx, &format!("{} mirrors {}{}", answer.model, answer.source, by.map(|b| format!(". {b}")).unwrap_or_default()));
+    if let Some(handle) = answer.added_handle {
+        output::say(ctx, &format!("added {handle} to {org}'s claim handles"));
+    }
     Ok(())
 }
 

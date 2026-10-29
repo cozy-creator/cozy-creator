@@ -178,6 +178,34 @@ pub struct ModelMirror {
     pub model: String,
     pub source: String,
     pub author: Option<ModelAuthor>,
+    /// The source's handle, when it was new to the org (`site:handle`).
+    pub added_handle: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct OrgPage {
+    pub name: String,
+    pub display_name: String,
+    #[serde(deserialize_with = "null_is_empty")]
+    pub links: Vec<String>,
+    #[serde(deserialize_with = "null_is_empty")]
+    pub handles: Vec<OrgHandle>,
+    pub parked: bool,
+    pub reserved: Option<String>,
+    #[serde(deserialize_with = "null_is_empty")]
+    pub models: Vec<String>,
+    #[serde(deserialize_with = "null_is_empty")]
+    pub mirrors: Vec<String>,
+    #[serde(deserialize_with = "null_is_empty")]
+    pub admin_uploads: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct OrgHandle {
+    pub site: String,
+    pub handle: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -222,6 +250,8 @@ pub struct ModelRelease {
     pub created_at: String,
     /// Published while its org was parked: not its author's.
     pub mirror: bool,
+    /// Published by a platform admin where it is no member.
+    pub by_admin: bool,
     #[serde(deserialize_with = "null_is_empty")]
     pub lanes: BTreeMap<String, ModelReleaseLane>,
 }
@@ -263,6 +293,9 @@ pub struct ModelCommit {
     pub releases: Vec<String>,
     #[serde(default)]
     pub created_at: String,
+    /// Uploaded by a platform admin where it is no member.
+    #[serde(default)]
+    pub by_admin: bool,
 }
 
 /// The recipe that wrote a commit: its header's `metadata.provenance`.

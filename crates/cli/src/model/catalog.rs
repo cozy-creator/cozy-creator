@@ -136,6 +136,8 @@ struct Release {
     created_at: String,
     /// Published while its org was parked: not its author's.
     mirror: bool,
+    /// Published by a platform admin where it is no member.
+    by_admin: bool,
     lanes: Vec<Lane>,
 }
 
@@ -178,6 +180,7 @@ pub(crate) async fn info(ctx: &Context, args: Info) -> Result<ExitCode, Error> {
             version: r.version,
             created_at: r.created_at,
             mirror: r.mirror,
+            by_admin: r.by_admin,
             lanes: r.lanes.into_iter().map(|(lane, l)| Lane { lane, commit: l.commit, bytes: l.bytes, kinds: l.kinds, provenance: l.provenance }).collect(),
         })
         .collect();
@@ -221,7 +224,11 @@ pub(crate) async fn info(ctx: &Context, args: Info) -> Result<ExitCode, Error> {
     }
     record.print(ctx);
     for release in &view.releases {
-        let mirror = if release.mirror { " (mirror)" } else { "" };
+        let mirror = match (release.mirror, release.by_admin) {
+            (true, _) => " (mirror)",
+            (false, true) => " (uploaded by Tensorhub admin)",
+            _ => "",
+        };
         anstream::println!("\n{shown}@{}{mirror}", release.version);
         let mut table = Table::new(ctx, ["lane", "kinds", "bytes", "commit", "recipe"]);
         for lane in &release.lanes {
