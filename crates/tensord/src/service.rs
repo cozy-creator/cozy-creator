@@ -265,15 +265,14 @@ impl Service {
         }
         self.engine.notify_activity();
     }
-    /// The machine started: its most recently used environments' import pages are read ahead
-    /// (`Pool::read_ahead_recent`), and a dedicated one's import-only parents import, the most
-    /// recently used first, while the host has room for them (`Pool::import_recent`).
+    /// The machine started: a dedicated one's installed environments' import-only parents import,
+    /// the most recently used first, while the host has room for them, and the rest's import
+    /// pages are read ahead; a shared one reads ahead its few most recently used
+    /// (`Pool::import_recent`).
     pub fn import_installed(&self) -> io::Result<()> {
         let Some(gpu) = self.gpu() else { return Ok(()) };
         let bound = self.engine.with_journal(|journal| journal.bound_generations())?;
-        let recent = self.catalog.recent(bound);
-        gpu.read_ahead_recent(&recent);
-        gpu.import_recent(recent);
+        gpu.import_recent(self.catalog.recent(bound));
         Ok(())
     }
     pub fn idle(&self) -> io::Result<bool> {

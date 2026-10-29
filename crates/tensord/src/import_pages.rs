@@ -1,8 +1,9 @@
 //! An environment's import pages (xs-132): the page-cache pages its import-only parent's import
-//! read, recorded once beside the environment, and asked of the kernel again (`WILLNEED`) before
-//! a later import and at machine start, so an import after a reboot or a page-cache eviction reads
-//! no more from disk than a warm one. SDXL on a laptop: 4.4 s cached, 11.1 s with its files
-//! evicted (518 MB read in 7,200 faults); its pages read back first, 4.1 s.
+//! read, recorded once beside the environment, and asked of the kernel again (`WILLNEED`) at
+//! machine start, so a later import after a reboot or a page-cache eviction reads no more from
+//! disk than a warm one. SDXL on a laptop: 4.4 s cached, 11.1 s with its files evicted (518 MB
+//! read in 7,200 faults); its pages read back first, 4.1 s. Asked as the import starts, they
+//! competed with its own reads and bought nothing, so nothing races an import.
 //! The parent's shared objects count the pages its own page tables hold, never the whole file
 //! (SDXL touches 541 MB of the 3.7 GB its 71 objects hold); its other files (bytecode, sources,
 //! data) count what the page cache holds of them. Only reclaimable cache: nothing is locked or
@@ -91,16 +92,14 @@ fn record(held: &HeldGeneration, parent: &platform::process::Birth, path: &Path)
     Ok(())
 }
 
-/// `held`'s recorded pages, asked of the kernel now. `background`: at the lowest CPU and I/O
-/// priority, for an import that is not waiting on it.
-pub fn read_ahead_later(held: Vec<HeldGeneration>, background: bool) {
+/// `held`'s recorded pages, asked of the kernel at the lowest CPU and I/O priority, off the
+/// caller's thread.
+pub fn read_ahead_later(held: Vec<HeldGeneration>) {
     if held.is_empty() {
         return;
     }
     let started = std::thread::Builder::new().name("read-ahead".into()).spawn(move || {
-        if background {
-            platform::process::background_thread();
-        }
+        platform::process::background_thread();
         for pages in held.iter().filter_map(read) {
             for (path, runs) in &pages.files {
                 let Ok(file) = std::fs::File::open(path) else { continue };
