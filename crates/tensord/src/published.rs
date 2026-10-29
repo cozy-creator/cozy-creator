@@ -1365,7 +1365,7 @@ fn held_local(store: &Store, repository: &str) -> Result<storage::Local, Failure
 
 /// The oldest Runtime and TensorFS whose executors open an adapter view from Load's bytes
 /// (`tensorfs.view`, cl-683).
-const VIEWS: [(&str, &str, &str); 2] = [("cozy-runtime", "Runtime", "0.35.5"), ("tensorfs", "TensorFS", "0.17.12")];
+const VIEWS: [(&str, &str, &str); 2] = [("cozy-runtime", "Runtime", "0.35.5"), ("tensorfs", "TensorFS", "0.17.13")];
 
 /// A LoRA'd call runs only where the installation's environment opens adapter views; without
 /// LoRAs, any pair runs as before.
