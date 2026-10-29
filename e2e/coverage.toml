@@ -114,6 +114,7 @@ test = "release: throwaway model, uploaded from a file and from a run's output"
 "--on" = "release: throwaway model"
 "--lane" = "release: throwaway model, two lanes"
 "--source-format" = "none: needs a reviewed TensorFS format for a small provider model, and none exists"
+"--mirror" = "manual: an admin mirrors a real author's model into its parked org (xs-131, proved on the dev Hub); a CI run would park a real author's org on tensorhub.com"
 ["model publish"]
 test = "release: throwaway model, published with two lanes"
 ["model delete"]
@@ -123,6 +124,9 @@ test = "gate: cli cells, the throwaway model's int8 and fp8 lanes"
 "--lane" = "gate: cli cells"
 "--package" = "gate: cli cells"
 "--on" = "gate: cli cells"
+
+["org claim"]
+test = "manual: the author posts the code on a handle the org lists, then claims (xs-131, proved on the dev Hub); a CI claim needs a parked org and a public handle"
 
 [run]
 test = "pr: a weightless request; BiRefNet on the CPU"
