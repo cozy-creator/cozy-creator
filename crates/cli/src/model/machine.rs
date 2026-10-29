@@ -204,6 +204,10 @@ pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Erro
     if let Some(reference) = args.source.strip_prefix("run:") {
         return super::from_run::upload(ctx, reference, &destination, &args.lane).await;
     }
+    // A Hub commit is already at the Hub: the destination records it there, and nothing moves.
+    if let Ok(ModelRef::Commit { repo, commit }) = ModelRef::parse(&args.source) {
+        return recorded(ctx, &repo, &commit, &Repo::hub(&args.destination)?, &args.lane).await;
+    }
     let on = args.placement.on()?;
     // The machine publishes under this computer's sign-in; refuse before anything is made.
     ctx.hub_session(ctx.hub())?;
@@ -215,6 +219,31 @@ pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Erro
     };
     let target = format!("{} → {destination} ({})", args.source, args.lane);
     warm(ctx, on, target, made, destination, args.lane).await
+}
+
+/// Commit `commit` of `from` as a commit of `to` on the same Hub: the Hub records it when this
+/// account may read its whole closure, so no machine pulls it and no byte uploads.
+async fn recorded(ctx: &Context, from: &Repo, commit: &str, to: &Repo, lane: &str) -> Result<ExitCode, Error> {
+    let client = ctx.hub_signed_in(ctx.hub())?;
+    let card = hub_answer(client.get_model(&from.org, &from.name).await)?;
+    let lanes = card.releases.iter().flat_map(|r| r.lanes.iter().map(|(lane, l)| (lane.as_str(), l.commit.as_str(), l.length)));
+    let (held, length) = card.commits.iter().map(|c| (c.lane.as_str(), c.id.as_str(), c.length)).chain(lanes)
+        .find(|(_, id, _)| *id == commit)
+        .map(|(lane, _, length)| (lane.to_owned(), length))
+        .ok_or_else(|| Error::new(Kind::NotFound, "commit_not_found", format!("{from} has no commit {commit} this account reads")))?;
+    if held != lane {
+        return Err(Error::new(Kind::Usage, "commit_lane_mismatch", format!("{from}@{commit} is lane {held}, not {lane}"))
+            .next(format!("cozy model upload {from}@{commit} {to} --lane {held}")));
+    }
+    let made = hub_answer(client.create_model_commit(&to.org, &to.name, commit, length).await)?;
+    if ctx.json {
+        output::json(&serde_json::json!({"model": to.to_string(), "commit": made.id, "lane": made.lane, "from": format!("{from}@{commit}")}));
+        return Ok(ExitCode::SUCCESS);
+    }
+    Record::new().field("commit", &format!("{to}@{}", made.id)).field("lane", &made.lane)
+        .field("from", &format!("{from}@{commit}")).note("recorded at the Hub: nothing uploaded").print(ctx);
+    output::next(ctx, &[&format!("cozy model publish {to} <version> {}", made.id)]);
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Records the destination as a mirror of its author's model before anything uploads: bare

@@ -99,6 +99,7 @@ pub(crate) struct Upload {
     /// A provider source, local/<alias>, a Hub model or commit, ./file.safetensors, a
     /// CozyTensors folder (one .cozytensors file and its repo files; its chunks may already be at
     /// the Hub), or run:N[#output], a run's weights output, uploaded from the machine that holds it.
+    /// A Hub commit (org/name@sha256:…) is recorded at the Hub directly: nothing moves.
     #[arg(add = clap_complete::ArgValueCompleter::new(crate::completion::local))]
     source: String,
     /// The Hub model it becomes a commit of: org/name.
