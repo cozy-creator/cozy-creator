@@ -182,7 +182,7 @@ pub(crate) async fn download(ctx: &Context, args: Download) -> Result<ExitCode, 
         Some(_) => return Err(usage("model_alias_invalid", "the name a machine keeps a model under is local/<name>")),
         None => String::new(),
     };
-    let mut made = source(&args.model, &[])?;
+    let mut made = source(&args.model, &args.profiles)?;
     if made.1.is_some() && destination.is_empty() {
         return Err(usage("model_alias_missing", "a local file is kept under a name: add local/<name>"));
     }

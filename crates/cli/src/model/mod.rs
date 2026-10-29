@@ -87,6 +87,9 @@ pub(crate) struct Download {
     /// Keep it on the machine under this name.
     #[arg(value_name = "local/ALIAS")]
     alias: Option<String>,
+    /// A reviewed TensorFS profile to convert a provider source or local file with (`h3.lora`).
+    #[arg(long = "source-profile", value_name = "PROFILE")]
+    profiles: Vec<String>,
     #[command(flatten)]
     placement: crate::run::Placement,
 }

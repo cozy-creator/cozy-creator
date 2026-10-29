@@ -105,6 +105,7 @@ test = "pr: models"
 test = "pr: models"
 "--lane" = "pr: models"
 "--on" = "pr: models"
+"--source-profile" = "none: needs a reviewed TensorFS profile for a small provider model, and none exists"
 ["model family"]
 test = "release: throwaway model, family set and cleared"
 "--clear" = "release: throwaway model, family set and cleared"
