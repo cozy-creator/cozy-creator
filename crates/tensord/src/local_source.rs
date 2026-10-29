@@ -305,7 +305,6 @@ impl LocalSources {
         manifest: Manifest,
         digest: &str,
         job: &Job,
-        imports: bool,
     ) -> Result<Installation, Refused> {
         let home = self.home(actor, &manifest.package)?;
         let home = if manifest.path.is_empty() { home.join(format!("source-{digest}")) } else { home };
@@ -405,7 +404,7 @@ impl LocalSources {
             interface: serde_json::to_vec(&held.record.interface).map_err(std::io::Error::other)?,
             hub: String::new(),
         })?;
-        service.installed(&held, imports);
+        service.installed(&held);
         Ok(installed)
     }
 
@@ -455,7 +454,6 @@ impl LocalSources {
         stop: Option<&Stop>,
         run: &str,
         observer: published::Observer,
-        imports: bool,
     ) -> Result<Installation, Refused> {
         // Like published installations, local aliases include the selected SDK. The source
         // digest alone cannot identify the environment after an update.
@@ -506,7 +504,7 @@ impl LocalSources {
             }),
             ..Default::default()
         };
-        self.install_live(service, actor, alias, manifest, &object.sha256, &job, imports)
+        self.install_live(service, actor, alias, manifest, &object.sha256, &job)
     }
 }
 

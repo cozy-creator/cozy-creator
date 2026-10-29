@@ -3,6 +3,7 @@
 //! residency in each executor. TensorD schedules calls with GPU permits, offloads
 //! idle executors, and observes exact process exit. Engine owns
 //! acceptance and run custody.
+use platform::contain::host_memory;
 use platform::process::{Birth, Exact};
 use crate::{
     catalog::HeldGeneration,
@@ -610,6 +611,14 @@ impl Zygote {
 
 /// A parent that died (killed, out of memory): the pool starts a new one.
 const ENDED: &str = "import-only executor ended";
+
+/// What one more import-only parent may hold of the host: torch, Diffusers and Transformers
+/// imported come to 0.73–0.85 GB resident (SDXL, Qwen-Image, Krea 2, Anima, H3 on CPU).
+const PARENT_BYTES: i64 = 1 << 30;
+
+/// Executors fork from an import-only parent on Linux only; elsewhere each one spawns, and no
+/// parent imports ahead of it.
+const FORKS: bool = cfg!(target_os = "linux");
 
 /// The `sessions` key of `plan`'s executor whose lane starts at GPU `start`.
 fn session_key(plan: &str, start: usize) -> String {
@@ -2685,6 +2694,30 @@ impl Pool {
         }
     }
 
+    /// The machine's installed environments `held`, the most recently used first: each one's
+    /// import-only parent imports in turn, off the caller's thread, while the host keeps half its
+    /// memory free with one more parent ([`PARENT_BYTES`]). A short host ends idle parents least
+    /// recently used first (`host_short`), as ever.
+    pub fn import_recent(self: &Arc<Self>, held: Vec<HeldGeneration>) {
+        let pool = Arc::downgrade(self);
+        let started = std::thread::Builder::new().name("import-installed".into()).spawn(move || {
+            for held in held {
+                let Some(pool) = pool.upgrade() else { return };
+                let room = host_memory::read().available;
+                let half = host_memory::limit().map_or(i64::MAX, |limit| i64::try_from(limit / 2).unwrap_or(i64::MAX));
+                if room < 0 || room - PARENT_BYTES < half {
+                    pool.notes.note(serde_json::json!({"event": "import_installed", "stopped": held.record.identity, "available": room}));
+                    return;
+                }
+                let why = pool.import(&held);
+                pool.notes.note(serde_json::json!({"event": "import_installed", "generation": held.record.identity, "why": why}));
+            }
+        });
+        if let Err(error) = started {
+            tracing::warn!("importing the installed environments: {error}");
+        }
+    }
+
     /// Drop a dead parent, if it is still the generation's: the next launch starts another.
     fn forget_parent(&self, held: &HeldGeneration, dead: &Arc<Zygote>) {
         let mut zygotes = self.zygotes.lock().unwrap();
@@ -2698,11 +2731,11 @@ impl Pool {
     }
 
     /// The generation's import-only executor, and whether the caller must start it. None
-    /// when this pool spawns every executor (no GPU) or the generation
+    /// when this pool spawns every executor (no GPU, or no fork here) or the generation
     /// constructs no model.
     fn zygote(&self, held: &HeldGeneration) -> Option<(Arc<Zygote>, bool)> {
         let stopped = self.stopped.load(Ordering::Acquire);
-        if stopped || self.devices.is_empty() || !binds_models(&held.record.interface) {
+        if stopped || !FORKS || self.devices.is_empty() || !binds_models(&held.record.interface) {
             return None;
         }
         let mut zygotes = self.zygotes.lock().unwrap();

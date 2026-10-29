@@ -256,16 +256,22 @@ impl Service {
         self.engine.notify_activity();
         Ok(())
     }
-    /// A package installed, release or local: its environment's kernels compile now, and a call's
-    /// imports (`imports`) start, while its weights come.
-    pub fn installed(&self, held: &crate::catalog::HeldGeneration, imports: bool) {
+    /// A package installed, release or local: its environment's kernels compile and its
+    /// import-only parent imports now, while its weights come, so its first call forks.
+    pub fn installed(&self, held: &crate::catalog::HeldGeneration) {
         if let Some(gpu) = self.gpu() {
             gpu.kernel_boot(held.clone());
-            if imports {
-                gpu.prespawn(held.clone());
-            }
+            gpu.prespawn(held.clone());
         }
         self.engine.notify_activity();
+    }
+    /// The machine started: its installed environments' import-only parents import, the most
+    /// recently used first, while the host has room for them (`Pool::import_recent`).
+    pub fn import_installed(&self) -> io::Result<()> {
+        let Some(gpu) = self.gpu() else { return Ok(()) };
+        let bound = self.engine.with_journal(|journal| journal.bound_generations())?;
+        gpu.import_recent(self.catalog.recent(bound));
+        Ok(())
     }
     pub fn idle(&self) -> io::Result<bool> {
         Ok(self.engine.nonterminal(1)?.is_empty())

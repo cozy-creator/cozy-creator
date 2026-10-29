@@ -114,9 +114,6 @@ pub struct Request {
     pub gpus: u32,
     /// The main model's lane; empty lets the Hub pick for the hardware.
     pub lane: String,
-    /// A call's: its imports start as soon as it installs. A warm run imports only when its
-    /// level asks (`downloaded` never does).
-    pub imports: bool,
 }
 
 impl Request {
@@ -783,11 +780,9 @@ impl Publisher {
         }
         // Cached installations may have lost their import-only parent. Restart the same
         // parent before model resolution, as a fresh install already does.
-        if request.imports {
-            if let Some(gpu) = service.gpu() {
-                let held = service.catalog.resolve(&installation.generation).map_err(io_failure)?;
-                gpu.prespawn(held);
-            }
+        if let Some(gpu) = service.gpu() {
+            let held = service.catalog.resolve(&installation.generation).map_err(io_failure)?;
+            gpu.prespawn(held);
         }
         let gpu = service.pool().ok_or((
             "capability_unavailable",
@@ -855,7 +850,7 @@ impl Publisher {
         self.generation(service.catalog.root(), &identity, &wanted, job)?;
         keep_card(&service.catalog.root().join(&identity), &card);
         let held = service.catalog.resolve(&identity).map_err(io_failure)?;
-        service.installed(&held, request.imports);
+        service.installed(&held);
         service
             .engine
             .bind_installation(Installation {
