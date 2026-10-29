@@ -15,6 +15,11 @@
 #   upload-cut/-resume    new weights cancelled part-way, then uploaded again: only the rest is sent
 #   mc-source/-upload/-quantize/-inspect  multi-conversion/: a recipe that encodes each component in its own call into
 #                    one output (H3's) writes every component; its lane's commit read back through `cozy run`
+#   family-refusal   an SDXL inpainting single file (sdxl.single_file's keys, conv_in at 9 channels) is refused from
+#                    its header: FAMILY_MISMATCH, with only the header and the reference's configs downloaded
+#   layout-probe     Comfy-Org's ComfyUI H3 Ref2VA DiT (contiguous Q/K/V) read as h3.native: the layout probe refuses it
+#                    (LAYOUT_MISMATCH) after the header and the probed rows. That layout read right passes the probe in
+#                    the h3-comfy-layout cell's import.
 # check.py holds each against the SKU's last passed suite and records a PASS. The throwaway models are deleted at the end.
 TFS_MODEL=${TFS_MODEL:-qwen3.5-9b} TFS_RESUME=${TFS_RESUME:-flux-3-klein} TFS_UPLOAD_MB=${TFS_UPLOAD_MB:-256}
 T=$OUT/suite-tensorfs TFS_DESTS=()
@@ -103,7 +108,7 @@ tfs_cleanup() {
 }
 trap 'tfs_cleanup; declare -F hub_cleanup >/dev/null && hub_cleanup; end_it' EXIT
 
-# tfs_case <case>: whether --only selects it (none selects every case: probe, download, upload, multi-conversion,
+# tfs_case <case>: whether --only selects it (none selects every case: probe, download, upload, family, multi-conversion,
 # straggler, lora-alpha); a selected case is listed in cases, the ones check.py judges.
 tfs_case() { [ -z "$ONLY" ] || [[ $ONLY == *",$1,"* ]] || return 1; echo "$1" >> "$T/cases"; }
 
@@ -123,6 +128,13 @@ WHO=; for _ in 1 2 3; do  # a dropped connection is asked again
   sleep 5
 done
 # Local paths go absolute: `cozy model upload ./folder` resolves them against Calcifer, not here (2026-10-24).
+# Refused before the bulk downloads (tfs-137): nothing reaches the Hub, so no model to delete.
+if tfs_case family && [ -n "$WHO" ]; then
+  tfs_step family-refusal model upload "hf://wangqyqq/sd_xl_base_1.0_inpainting_0.1.safetensors@26a6b2ff3ea6d7762d33eb57b0ad424f96ac3e09/sd_xl_base_1.0_inpainting_0.1.safetensors" \
+    "$WHO/ci-tfs-family-$R" --lane fp16 --on "$M" -y
+  tfs_step layout-probe model upload "hf://Comfy-Org/MiniMax-H3@77aac5182eb85bb20930536bac73e498bbe2bfd7/diffusion_models/minimax_h3_ref2va_bf16.safetensors" \
+    "$WHO/ci-tfs-layout-$R" --lane bf16 --source-format h3.native --on "$M" -y
+fi
 if ! tfs_case upload; then :
 elif [ -n "$WHO" ] && tfs_weights "$T/up-a" "$TFS_UPLOAD_MB" && tfs_weights "$T/up-c" "$TFS_UPLOAD_MB"; then
   d=$WHO/ci-tfs-$R; TFS_DESTS+=("$d")

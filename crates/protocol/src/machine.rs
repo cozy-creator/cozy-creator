@@ -403,6 +403,9 @@ pub struct ModelChoice {
     /// selectors or conversion profiles. Missing folder payload must already be at the endpoint.
     pub source: String,
     pub profiles: Vec<String>,
+    /// The base component a LoRA source was trained on, as its uploader says (`--trained-on`);
+    /// empty: what its producer's fields declare, or nothing.
+    pub trained_on: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

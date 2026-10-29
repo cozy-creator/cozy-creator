@@ -158,6 +158,9 @@ pub struct ModelSummary {
     pub source: Option<String>,
     /// The org it credits (a root model) or is in (a mirror).
     pub author: Option<ModelAuthor>,
+    /// Words a LoRA's prompt uses, and its recommended strength (on a card); never applied.
+    pub trigger: Option<String>,
+    pub strength: Option<f64>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]

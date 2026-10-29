@@ -101,6 +101,7 @@ fn choices(sent: Vec<v1::ModelChoice>) -> Result<Vec<domain::ModelChoice>, Error
                 },
                 source: choice.source,
                 profiles: choice.profiles,
+                trained_on: choice.trained_on,
                 adapters: choice
                     .adapters
                     .into_iter()

@@ -315,7 +315,7 @@ impl Publisher {
                 format!("{path} names a source and a catalog checkpoint"),
             ));
         }
-        let made = self.make(&choice.source, &choice.profiles, providers, job.stop.as_ref(), &|stage, moved, total| {
+        let made = self.make(&choice.source, &choice.profiles, &choice.trained_on, providers, job.stop.as_ref(), &|stage, moved, total| {
             job.set(format!("{stage} for {path}"), moved, total)
         })?;
         job.stage(format!("{} for {path}", made.format));
@@ -380,25 +380,26 @@ impl Publisher {
         &self,
         source: &str,
         profiles: &[String],
+        trained_on: &str,
         providers: &Providers,
         stop: Option<&Stop>,
         progress: &(dyn Fn(&str, u64, u64) + Sync),
     ) -> Result<Made, Refused> {
-        self.make(source, profiles, providers, stop, progress)
+        self.make(source, profiles, trained_on, providers, stop, progress)
             .map_err(|(code, message)| Refused { code, message })
     }
 
     /// A provider source made into a local model (`make_source`), one maker per source.
-    fn make(&self, source: &str, profiles: &[String], providers: &Providers,
+    fn make(&self, source: &str, profiles: &[String], trained_on: &str, providers: &Providers,
         stop: Option<&Stop>, progress: &(dyn Fn(&str, u64, u64) + Sync),
     ) -> Result<Made, Failure> {
         let mut sorted = profiles.to_vec();
         sorted.sort();
-        let key = json!([source, sorted]).to_string();
+        let key = json!([source, sorted, trained_on]).to_string();
         let gate = self.making.lock().unwrap().entry(key.clone()).or_default().clone();
         let made = {
             let _one = gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            make_source(&self.store, source, profiles, providers, stop.cloned(), progress)
+            make_source(&self.store, source, profiles, trained_on, providers, stop.cloned(), progress)
         };
         let mut making = self.making.lock().unwrap();
         if Arc::strong_count(&gate) == 2 {
@@ -1136,7 +1137,7 @@ impl Publisher {
                     .and_then(|slot| slot["components"].as_array())
                     .map(|names| names.iter().filter_map(|n| n.as_str().map(str::to_owned)).collect())
                     .unwrap_or_default();
-                apply_adapters(self, request.source.as_ref(), &resolve, choice, grant, &runs, &request.providers, job)?;
+                warnings.extend(apply_adapters(self, request.source.as_ref(), &resolve, choice, grant, &runs, &request.providers, job)?);
             }
         }
         job.stage(format!("preparing {}", request.package));
@@ -1219,8 +1220,11 @@ pub struct Made {
     /// The pinned source the provider resolved.
     pub resolved: String,
     pub profiles: Vec<String>,
-    /// How TensorFS read the source's layout: `detected h3.lora (musubi-tuner)`.
+    /// How TensorFS read the source's layout, and what it verified it as: `detected h3.lora
+    /// (musubi-tuner); LoRA of minimax-h3 transformer, trained on transformer_ref (…)`.
     pub format: String,
+    /// The words its provider says a LoRA's prompt uses (Civitai's trainedWords).
+    pub trigger: Vec<String>,
 }
 
 /// `source` imported into a local model (normalized at ingest, design §6), or the one already
@@ -1230,6 +1234,7 @@ fn make_source(
     store: &Store,
     source: &str,
     profiles: &[String],
+    trained_on: &str,
     providers: &Providers,
     cancellation: Option<Stop>,
     progress: &(dyn Fn(&str, u64, u64) + Sync),
@@ -1249,15 +1254,23 @@ fn make_source(
         .and_then(|spec| tensorfs::import::remote::list(&spec, &access))
         .map_err(|e| refused("model_source_failed", e))?;
     let tables = tensorfs::import::engine::tables_digest();
-    let identity = serde_json_canonicalizer::to_vec(&json!(["cozy.machine-source-model/2", listed.pinned, converter, tables]))
+    let families = tensorfs::family::families_digest();
+    let identity = serde_json_canonicalizer::to_vec(&json!(["cozy.machine-source-model/3", listed.pinned, converter, tables, families, trained_on]))
         .map_err(|e| io_failure(io::Error::other(e)))?;
     let name = format!("source-{}", &sha256::hex_digest(&identity)[..40]);
-    let made = |header: ObjectRef| Made {
-        repository: format!("local/{name}"),
-        format: store.source_format(&header).ok().flatten().map(|f| f.to_string()).unwrap_or_default(),
-        header,
-        resolved: listed.pinned.clone(),
-        profiles: profiles.to_vec(),
+    let made = |header: ObjectRef| {
+        let format = store.source_format(&header).ok().flatten().map(|f| f.to_string()).unwrap_or_default();
+        let family = (store.read(&header).ok())
+            .and_then(|bytes| tensorfs::format::Header::from_cbor(&bytes).ok())
+            .and_then(|h| tensorfs::family::summary(&h.metadata));
+        Made {
+            repository: format!("local/{name}"),
+            format: family.map_or(format.clone(), |f| format!("{format}; {f}")),
+            header,
+            resolved: listed.pinned.clone(),
+            profiles: profiles.to_vec(),
+            trigger: listed.trigger.clone(),
+        }
     };
     let held = crate::storage::local(store, &format!("local/{name}")).map_err(io_failure)?;
     if let Some(local) = held.filter(|local| store.holds(&local.header)) {
@@ -1277,6 +1290,7 @@ fn make_source(
         sources: &[source.to_string()],
         converter,
         source_variant: None,
+        trained_on: (!trained_on.is_empty()).then_some(trained_on),
         access: &access,
         tmp: &store.root().join("tmp"),
         progress: &counted,
@@ -1358,9 +1372,9 @@ fn apply_adapters(
     runs: &[String],
     providers: &Providers,
     job: &Job,
-) -> Result<(), Failure> {
+) -> Result<Vec<String>, Failure> {
     if choice.adapters.is_empty() {
-        return Ok(());
+        return Ok(vec![]);
     }
     let store = &publisher.store;
     job.stage(format!("preparing model adapters for {}", grant.slot));
@@ -1393,7 +1407,7 @@ fn apply_adapters(
             named.header()?.id()
         } else {
             // A provider-source LoRA (civitai://, hf://) is made here, normalized at ingest.
-            let made = publisher.make(&adapter.source, &adapter.profiles, providers, job.stop.as_ref(), &|stage, moved, total| {
+            let made = publisher.make(&adapter.source, &adapter.profiles, "", providers, job.stop.as_ref(), &|stage, moved, total| {
                 job.set(format!("{stage} for an adapter of {}", grant.slot), moved, total)
             })?;
             job.stage(format!("{} for an adapter of {}", made.format, grant.slot));
@@ -1433,9 +1447,15 @@ fn apply_adapters(
         })
         .collect();
     job.stage(format!("{}: {}", grant.slot, applied.join("; ")));
+    let warnings = (choice.adapters.iter().zip(&composed.warnings))
+        .flat_map(|(adapter, said)| {
+            let named = if adapter.source.is_empty() { &adapter.model } else { &adapter.source };
+            said.iter().map(move |w| format!("{named}: {w}"))
+        })
+        .collect();
     grant.repository = composed.name;
     grant.manifest = composed.checkpoint.id().id();
-    Ok(())
+    Ok(warnings)
 }
 
 /// A catalog read the Hub answered 404 to is the thing named absent there; any other failure

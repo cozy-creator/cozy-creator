@@ -19,7 +19,7 @@ same SKU and suites; any FAIL blocks the promotion. Design: tracker `design/ci-v
 | `packages` | the packages `--pins` (or `--only`) names, plus the SDXL smoke | rtx-4090, rtx-5090 | ~$1–3 · 15–30 min | a package bump |
 | `varena` | the memory manager: cold load, co-residency, reload, 8/6/3 GiB caps, a real 8 GB card, host RAM (below) | its `skus` | | a varena or memory change |
 | `tensord` | the machine agent through `cozy`: a package generation installed, updated and rolled back, the Runtime back and forward; a run queued, canceled queued and running, its outputs landed whole; models stacked until the describer must fit (idle executors end); a new executor after a restart; a restart mid-run never re-executes; a `--warm gpu` member kept and its executor reused; two runs at once on two GPUs; output landing against this computer's download speed | rtx-5060-ti ×2 | ~$0.60 · ~60 min | a TensorD or cozy change |
-| `tensorfs` | downloads as fast as the last pass (Hub and datacenter cache), nothing from the Hub again, resume after a cut; uploads of new weights, dedup of a re-upload, resume after a cut; a recipe that encodes each component in its own call writes every component; a straggler re-asked, not waited out; a LoRA's scale never taken from training metadata (below) | cpu | ~$0.3 · ~40 min | a TensorFS, download, upload or quantize change |
+| `tensorfs` | downloads as fast as the last pass (Hub and datacenter cache), nothing from the Hub again, resume after a cut; uploads of new weights, dedup of a re-upload, resume after a cut; a recipe that encodes each component in its own call writes every component; a straggler re-asked, not waited out; a LoRA's scale never taken from training metadata; a source that is no form of its family refused before it downloads (below) | cpu | ~$0.3 · ~40 min | a TensorFS, download, upload or quantize change |
 | `hub` | the API contract (`api/openapi.yaml`): anonymous paths, then account, an admin rental on each provider (RunPod, vast), package publish/yank/pin/un-yank and model upload/publish/yank/delete through `cozy` (below); the migration rehearsal before a deploy | cpu | ~$0.2 · ~30 min | any Hub release |
 | `cli` | (building) | | | a CLI change |
 
@@ -164,7 +164,11 @@ its kernel compiles are up; it reads the executors' memory after each machine st
     throwaway `<account>/ci-tfs-mc-<R>`, `model quantize --package`, then `inspect` reads the lane's commit back: both
     components' weights encoded and near the source, biases the source's bytes. The model is deleted after. Escaped
     from TensorFS 0.17.0 to #2238 (a writer bound one conversion and refused the second component).
-  - `--only` picks cases (`probe`, `download`, `upload`, `multi-conversion`, `straggler`, `lora-alpha`); `check.py` judges only those.
+  - `family` (tfs-137): two `model upload`s refused before their bulk downloads. An SDXL inpainting single file
+    (sdxl.single_file's keys, `conv_in` at 9 channels) is no SDXL form (`FAMILY_MISMATCH`, at most 64 MiB moved).
+    Comfy-Org's ComfyUI H3 Ref2VA DiT forced as `h3.native` fails the layout probe (`LAYOUT_MISMATCH`, at most
+    512 MiB): its contiguous Q/K/V is not where the official rows are. Nothing reaches the Hub.
+  - `--only` picks cases (`probe`, `download`, `upload`, `family`, `multi-conversion`, `straggler`, `lora-alpha`); `check.py` judges only those.
 - **hub** (`suites/hub`, one `cpu` rental, ~$0.2, ~30 min, `-f suites=hub`): pick it for any Hub release. It shows the
   API contract (tensorhub `api/openapi.yaml`, as the Hub serves it at `/openapi.yaml`) holds as cozy uses it:
   - `contract.py`: each path no verb reaches, called anonymously through `e2e/hubcheck`, answers as its contract says

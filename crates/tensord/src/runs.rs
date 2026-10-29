@@ -456,10 +456,10 @@ impl Runs {
                 (folder.header.clone(), Some(folder.tree.clone()), row)
             } else if !choice.source.is_empty() {
                 let source = self.written_source(actor, &choice.source)?;
-                let made = publisher.make_source(&source, &choice.profiles, &spec.providers, stop, observe)?;
+                let made = publisher.make_source(&source, &choice.profiles, &choice.trained_on, &spec.providers, stop, observe)?;
                 let row = json!({"parameter": choice.parameter, "source": choice.source,
                     "resolved": made.resolved, "profiles": made.profiles, "format": made.format,
-                    "repository": made.repository, "checkpoint": made.header.id()});
+                    "trigger": made.trigger.join(", "), "repository": made.repository, "checkpoint": made.header.id()});
                 let tree = crate::storage::local(publisher.store(), &made.repository)?.map(|local| local.tree);
                 (made.header, tree, row)
             } else if let (Some(name), None) = (choice.repository.strip_prefix("local/"), &choice.manifest) {

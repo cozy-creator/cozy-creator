@@ -114,6 +114,17 @@ pub(crate) struct Upload {
     /// claim. Bare, the hf:// or civitai:// source is the upstream page; else name it.
     #[arg(long, value_name = "URL", num_args = 0..=1, default_missing_value = "")]
     mirror: Option<String>,
+    /// The base component a LoRA was trained on, when its file does not declare it (H3:
+    /// transformer for FL2VA, transformer_ref for Ref2VA).
+    #[arg(long = "trained-on", value_name = "COMPONENT")]
+    trained_on: Option<String>,
+    /// Words the LoRA's prompt uses, shown by `cozy model info`; a Civitai source's own when
+    /// omitted.
+    #[arg(long)]
+    trigger: Option<String>,
+    /// The LoRA's recommended strength, shown by `cozy model info`; --lora still defaults to 1.0.
+    #[arg(long, allow_hyphen_values = true)]
+    strength: Option<f64>,
     #[command(flatten)]
     placement: crate::run::Placement,
 }

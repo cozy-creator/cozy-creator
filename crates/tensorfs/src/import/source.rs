@@ -1,5 +1,6 @@
-//! A source on local disk, read from its safetensors headers only: tensor groups (a folder's
-//! sharded checkpoint, or one loose file) and plain files.
+//! A source, read from its safetensors headers only: tensor groups (a folder's sharded
+//! checkpoint, or one loose file) and plain files. A large remote file may hold only its header
+//! locally until it lands whole; [`SourceSet::read_at`] reads what is not here yet by range.
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -75,9 +76,24 @@ pub struct Plain {
 #[derive(Debug, Default)]
 pub struct SourceSet {
     pub files: Vec<PathBuf>,
+    /// Each file's remote member, read by range while only its header is local.
+    pub remote: Vec<Option<super::remote::Member>>,
+    pub access: Option<super::remote::Access>,
     pub groups: Vec<Group>,
     pub plain: Vec<Plain>,
     digests: Mutex<BTreeMap<usize, String>>,
+    /// Bytes read ahead by range: `(file, start, len)`.
+    fetched: Mutex<BTreeMap<(usize, u64, u64), Vec<u8>>>,
+}
+
+/// A member as the scan reads it: its local file (whole, or a remote file's prefix holding its
+/// header) and its whole length.
+#[derive(Debug, Clone)]
+pub struct Head {
+    pub path: String,
+    pub local: PathBuf,
+    pub length: u64,
+    pub remote: Option<super::remote::Member>,
 }
 
 fn io(what: &Path, e: std::io::Error) -> Refusal {
@@ -91,11 +107,11 @@ struct Entry {
     data_offsets: (u64, u64),
 }
 
-/// A safetensors file's tensors, validated against its length (whole-byte sizes that fit the data
-/// section and do not overlap), and its `__metadata__`.
-pub fn read_header(path: &Path, file: usize) -> Result<Header> {
+/// A safetensors file's tensors, validated against its whole length `len_of_file` (whole-byte
+/// sizes that fit the data section and do not overlap), and its `__metadata__`. Only the header
+/// need be at `path`.
+pub fn read_header(path: &Path, file: usize, len_of_file: u64) -> Result<Header> {
     let mut f = File::open(path).map_err(|e| io(path, e))?;
-    let len_of_file = f.metadata().map_err(|e| io(path, e))?.len();
     let mut prefix = [0u8; 8];
     f.read_exact(&mut prefix).map_err(|e| io(path, e))?;
     let n = u64::from_le_bytes(prefix);
@@ -181,15 +197,14 @@ struct Index {
 }
 
 impl SourceSet {
-    /// The source from `(relative path, local file)` pairs: each `*.safetensors.index.json`
-    /// with its shards is one group, every other `*.safetensors` file one group (groups by
-    /// folder, then stem, however they are sharded), and the rest plain files.
-    pub fn scan(members: &[(String, PathBuf)]) -> Result<SourceSet> {
+    /// The source from its members: each `*.safetensors.index.json` with its shards is one
+    /// group, every other `*.safetensors` file one group (groups by folder, then stem, however
+    /// they are sharded), and the rest plain files (whole).
+    pub fn scan(members: &[Head]) -> Result<SourceSet> {
         let mut set = SourceSet::default();
-        let by_path: BTreeMap<&str, &PathBuf> =
-            members.iter().map(|(p, f)| (p.as_str(), f)).collect();
+        let by_path: BTreeMap<&str, &Head> = members.iter().map(|h| (h.path.as_str(), h)).collect();
         let mut sharded = std::collections::BTreeSet::new();
-        for (path, local) in members {
+        for Head { path, local, .. } in members {
             let Some(stem) = path
                 .strip_suffix(".json")
                 .and_then(|p| p.split_once(".safetensors.index"))
@@ -219,16 +234,15 @@ impl SourceSet {
                 } else {
                     format!("{folder}/{shard}")
                 };
-                let Some(local) = by_path.get(shard_path.as_str()) else {
+                let Some(shard) = by_path.get(shard_path.as_str()) else {
                     return refuse(
                         Code::MISSING_TENSOR,
                         format!("{path}: shard {shard_path} is not in the source"),
                     );
                 };
                 sharded.insert(shard_path.clone());
-                let file = set.files.len();
-                set.files.push(local.to_path_buf());
-                let (tensors, metadata) = read_header(local, file)?;
+                let file = set.push(shard);
+                let (tensors, metadata) = read_header(&shard.local, file, shard.length)?;
                 let mut named: Vec<&str> = keys.clone();
                 named.sort();
                 if tensors.keys().map(String::as_str).ne(named.iter().copied()) {
@@ -242,13 +256,13 @@ impl SourceSet {
             }
             set.groups.push(group);
         }
-        for (path, local) in members {
+        for head in members {
+            let path = &head.path;
             if path.ends_with(".safetensors") && !sharded.contains(path) {
-                let file = set.files.len();
-                set.files.push(local.clone());
+                let file = set.push(head);
                 let (folder, name) = split(path);
                 let stem = name.strip_suffix(".safetensors").unwrap_or(name);
-                let (tensors, metadata) = read_header(local, file)?;
+                let (tensors, metadata) = read_header(&head.local, file, head.length)?;
                 set.groups.push(Group {
                     folder: folder.into(),
                     stem: stem.into(),
@@ -256,17 +270,87 @@ impl SourceSet {
                     metadata,
                 });
             } else if !path.contains(".safetensors") {
-                let len = std::fs::metadata(local).map_err(|e| io(local, e))?.len();
-                set.plain.push(Plain {
-                    path: path.clone(),
-                    file: set.files.len(),
-                    len,
-                });
-                set.files.push(local.clone());
+                let file = set.push(head);
+                set.plain.push(Plain { path: path.clone(), file, len: head.length });
             }
         }
         set.groups.sort_by(|a, b| (&a.folder, &a.stem).cmp(&(&b.folder, &b.stem)));
         Ok(set)
+    }
+
+    fn push(&mut self, head: &Head) -> usize {
+        self.files.push(head.local.clone());
+        self.remote.push(head.remote.clone());
+        self.files.len() - 1
+    }
+
+    /// Reads ahead, by range and several at once, the tensors `wanted` names that are not here
+    /// yet: what folding and normalizing read of a file only its header holds (markers, stated
+    /// shapes, LoRA alphas), so that is not one request after another.
+    pub fn read_ahead(&self, wanted: impl Fn(&str, &Tensor) -> bool) -> Result<()> {
+        let ranges: Vec<(usize, u64, u64)> = (self.groups.iter())
+            .flat_map(|g| g.tensors.iter())
+            .filter(|(k, t)| wanted(k, t))
+            .map(|(_, t)| (t.file, t.start, t.len))
+            .collect();
+        self.read_ranges(&ranges)
+    }
+
+    /// Reads `(file, start, len)` ranges that are not here yet by range, eight at a time, for
+    /// [`SourceSet::read_at`].
+    pub fn read_ranges(&self, ranges: &[(usize, u64, u64)]) -> Result<()> {
+        let here: Vec<u64> = self.files.iter().map(|p| std::fs::metadata(p).map_or(0, |m| m.len())).collect();
+        let mut todo: Vec<(usize, u64, u64)> = (ranges.iter().copied())
+            .filter(|(file, start, len)| start + len > here[*file] && self.remote[*file].is_some())
+            .collect();
+        todo.sort();
+        todo.dedup();
+        let Some(access) = &self.access else { return Ok(()) };
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| -> Result<()> {
+                        loop {
+                            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some(&(file, start, len)) = todo.get(i) else { return Ok(()) };
+                            let member = self.remote[file].as_ref().expect("remote");
+                            let bytes = super::remote::read_range(member, start, start + len, access)?;
+                            self.fetched.lock().unwrap_or_else(|e| e.into_inner()).insert((file, start, len), bytes);
+                        }
+                    })
+                })
+                .collect();
+            workers.into_iter().try_for_each(|w| w.join().expect("a read-ahead worker"))
+        })
+    }
+
+    /// Lets go of what was read ahead (the layout probe's rows), once nothing reads it again.
+    pub fn forget_read_ahead(&self) {
+        self.fetched.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+
+    /// `len` bytes of `file` at `start`: from the local file when they are there, else read
+    /// ahead or by range from its remote member (before it lands whole).
+    pub fn read_at(&self, file: usize, start: u64, len: u64) -> Result<Vec<u8>> {
+        use platform::durable::FileAt as _;
+        if let Some(bytes) = self.fetched.lock().unwrap_or_else(|e| e.into_inner()).get(&(file, start, len)) {
+            return Ok(bytes.clone());
+        }
+        let path = &self.files[file];
+        let here = std::fs::metadata(path).map_err(|e| io(path, e))?.len();
+        if start + len <= here {
+            let mut buf = vec![0u8; len as usize];
+            File::open(path).and_then(|f| f.read_exact_at(&mut buf, start)).map_err(|e| io(path, e))?;
+            return Ok(buf);
+        }
+        match (self.remote.get(file).and_then(Option::as_ref), &self.access) {
+            (Some(member), Some(access)) => super::remote::read_range(member, start, start + len, access),
+            _ => refuse(
+                Code::CARRIER_TRUNCATED,
+                format!("{}: {start}+{len} is past its {here} bytes", path.display()),
+            ),
+        }
     }
 
     /// The plain file whose bytes are `sha256` (hashed only when its length matches).

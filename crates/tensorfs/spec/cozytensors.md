@@ -156,6 +156,17 @@ location  = [chunk_index, offset, length]
   source, plan}`): the package release and recipe that wrote it, the recipe's fingerprint (the digest of its plan's
   canonical form; of a code hook, its identity with that release), the source header's id and the plan. No reader
   needs it to load a lane, a malformed one is ignored, and a writer never carries it over from a base.
+- **`family`** (`{name, form, reference, components}`): the model family an ingest verified the checkpoint as, written
+  only when verified. Every base component's keys and shapes are one `form` of the family's canonical components
+  (`canonical`, or a declared edit such as H3's `curve` and `pruned` DiTs), read from its pinned `reference`. Where a
+  converter permutes rows (fused Q/K/V), a layout probe matched them too. `components` maps each stored component to
+  the family component it is (`transformer` → `transformer_ref` for a Ref2VA DiT stored alone), by name or by the
+  probe. A writer re-verifies a carried `family` against what it writes: it keeps the form the components are, or
+  drops the field. Absent: unverified (an unknown architecture, `as-is`, a component the family does not list).
+- **`adapter`** (`{<LoRA component>: {family, component, trained_on?}}`): the family and base component a LoRA
+  component's factors fit, and, when declared, `trained_on` `{component, from}`: the base component it was trained
+  on and the evidence, a producer's field (`ss_h3_training_mode=ref2va`) or the uploader's `--trained-on`. Never
+  inferred from structure. Display text (trigger words, a recommended strength) is repo metadata, never here.
 - **Construction order is data.** `components`, each component's `tensors` and each encoded tensor's parts are
   arrays in construction order: the order in which the model builds and fills them (its `state_dict()` order). The
   order is part of the header's bytes, so reordering changes its digest. A writer MUST take the order from its

@@ -663,6 +663,7 @@ impl Writer {
         // What wrote the base did not write this one.
         metadata.remove(crate::format::Provenance::KEY);
         metadata.extend(self.metadata.clone());
+        crate::family::reverify(&mut metadata, &components);
         let pipeline = self.pipeline.clone().or_else(|| self.base.as_ref()?.pipeline().cloned());
         let header = Header::new(chunks, pipeline, components, metadata)?;
         if let Dest::Endpoint { store, stream, .. } = &self.dest {
