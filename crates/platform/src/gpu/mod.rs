@@ -16,7 +16,8 @@ pub use faults::{Fault, watch_faults};
 use crate::{Error, Result};
 use nvml_wrapper::{
     Nvml,
-    enum_wrappers::device::ComputeMode,
+    bitmasks::device::ThrottleReasons,
+    enum_wrappers::device::{Clock, ComputeMode, TemperatureSensor},
     enums::device::UsedGpuMemory,
     error::NvmlError,
     struct_wrappers::device::{MemoryInfo, ProcessInfo},
@@ -250,12 +251,78 @@ impl Device {
 }
 
 /// One GPU's bytes in use as the driver reads them ([`Device::used`]): when a [`Peak`] began and
-/// at its fullest.
-#[derive(Clone, Copy, Debug, serde::Serialize)]
+/// at its fullest. With its clocks while busy (readings NVML calls idle left out), so a slowed
+/// host shows in every call: the SM clock's mean and lowest against the card's maximum, the
+/// limits the driver applied (power cap, thermal, hardware slowdown) and the share of busy
+/// readings under one, the hottest temperature and the highest power draw.
+#[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct Used {
     pub gpu: u32,
     pub before_bytes: u64,
     pub peak_bytes: u64,
+    pub sm_mhz_limit: u32,
+    pub sm_mhz_mean: u32,
+    pub sm_mhz_low: u32,
+    pub throttles: Vec<&'static str>,
+    pub throttled_share: f32,
+    pub temperature_max_c: u32,
+    pub power_max_w: u32,
+}
+
+/// The driver's clock limits a busy reading can carry, by name.
+const THROTTLES: [(ThrottleReasons, &str); 6] = [
+    (ThrottleReasons::SW_POWER_CAP, "power_cap"),
+    (ThrottleReasons::HW_SLOWDOWN, "hw_slowdown"),
+    (ThrottleReasons::SW_THERMAL_SLOWDOWN, "sw_thermal"),
+    (ThrottleReasons::HW_THERMAL_SLOWDOWN, "hw_thermal"),
+    (ThrottleReasons::HW_POWER_BRAKE_SLOWDOWN, "power_brake"),
+    (ThrottleReasons::APPLICATIONS_CLOCKS_SETTING, "app_clocks"),
+];
+
+/// A call's clock readings of one GPU, summed into [`Used`] at the end.
+struct Clocks {
+    busy: u32,
+    mhz_sum: u64,
+    low: u32,
+    throttled: u32,
+    seen: ThrottleReasons,
+    temperature: u32,
+    power_mw: u32,
+}
+
+impl Clocks {
+    fn new() -> Self {
+        Self { busy: 0, mhz_sum: 0, low: 0, throttled: 0, seen: ThrottleReasons::empty(), temperature: 0, power_mw: 0 }
+    }
+
+    fn read(&mut self, device: &Device) {
+        let Ok(gpu) = device.nvml.device_by_index(device.index) else { return };
+        self.temperature = self.temperature.max(gpu.temperature(TemperatureSensor::Gpu).unwrap_or(0));
+        self.power_mw = self.power_mw.max(gpu.power_usage().unwrap_or(0));
+        let reasons = gpu.current_throttle_reasons().unwrap_or(ThrottleReasons::empty());
+        let Ok(mhz) = gpu.clock_info(Clock::SM) else { return };
+        if reasons.contains(ThrottleReasons::GPU_IDLE) {
+            return;
+        }
+        self.busy += 1;
+        self.mhz_sum += u64::from(mhz);
+        self.low = if self.busy == 1 { mhz } else { self.low.min(mhz) };
+        let limited = THROTTLES.iter().fold(ThrottleReasons::empty(), |all, (r, _)| all | (reasons & *r));
+        self.throttled += u32::from(!limited.is_empty());
+        self.seen |= limited;
+    }
+
+    fn into(self, used: &mut Used, limit: u32) {
+        used.sm_mhz_limit = limit;
+        if self.busy > 0 {
+            used.sm_mhz_mean = (self.mhz_sum / u64::from(self.busy)) as u32;
+            used.sm_mhz_low = self.low;
+            used.throttled_share = self.throttled as f32 / self.busy as f32;
+        }
+        used.throttles = THROTTLES.iter().filter(|(r, _)| self.seen.contains(*r)).map(|(_, n)| *n).collect();
+        used.temperature_max_c = self.temperature;
+        used.power_max_w = self.power_mw / 1000;
+    }
 }
 
 /// A call's GPUs, read every 100 ms on a thread of its own from [`Peak::watch`] until
@@ -274,15 +341,22 @@ impl Peak {
         let (stop, stopped) = std::sync::mpsc::channel::<()>();
         let thread = std::thread::Builder::new().name("gpu-peak".into()).spawn(move || {
             let devices: Vec<Device> = entries.iter().filter_map(|entry| Device::open(entry).ok()).collect();
-            let mut rows: Vec<(Used, &Device)> = devices.iter()
-                .filter_map(|d| d.used().ok().map(|bytes| (Used { gpu: d.index, before_bytes: bytes, peak_bytes: bytes }, d)))
+            let mut rows: Vec<(Used, &Device, Clocks)> = devices.iter()
+                .filter_map(|d| d.used().ok().map(|bytes| (Used { gpu: d.index, before_bytes: bytes, peak_bytes: bytes, ..Used::default() }, d, Clocks::new())))
                 .collect();
             while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(std::time::Duration::from_millis(100)) {
-                for (row, device) in &mut rows {
+                for (row, device, clocks) in &mut rows {
                     row.peak_bytes = row.peak_bytes.max(device.used().unwrap_or(0));
+                    clocks.read(device);
                 }
             }
-            rows.into_iter().map(|(row, _)| row).collect()
+            rows.into_iter()
+                .map(|(mut row, device, clocks)| {
+                    let limit = device.nvml.device_by_index(device.index).and_then(|gpu| gpu.max_clock_info(Clock::SM)).unwrap_or(0);
+                    clocks.into(&mut row, limit);
+                    row
+                })
+                .collect()
         });
         thread.ok().map(|thread| Peak { stop, thread })
     }
