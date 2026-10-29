@@ -7,7 +7,7 @@
 # idle-h3-cancel,-after-cancel).
 # idle_entrypoints.py judges:
 #   idle-klein-b, -a2, -b2, idle-h3-t  on the previous cell's processes, none of them offloaded or ended between the two
-#                      calls; Klein's also under the card limit with none of its own weights read twice (each fits alone)
+#                      calls; Klein's with none of its own weights read twice (each fits alone, two never)
 #   idle-h3-lf         long_form's segment on ref2va_turbo's processes: one construction serves both
 #   idle-after-cancel, idle-h3-after-cancel  the other construction's call after idle-cancel (idle-h3-cancel) was
 #                      canceled mid-call, which ends every construction of its process: completed, on new processes
@@ -40,10 +40,11 @@ ln -sfn "$REF" "idle-ref.${REF##*.}"
 lead="references: [{name: Lead, kind: character, image: ./idle-ref.${REF##*.}}]
 clean_references: false
 describe_references: false"
-# The standard construction at 8 steps: what is measured is the executor it runs on, not its quality.
-printf '%s\nprompt: "<Lead> %s The camera holds, then pans right."\nduration_s: 15\nresolution: 768p\nsteps: 8\nseed: %d\n' \
+# The pair's clips are 5 s: what is measured is the executor the second runs on, not the clip (the standard
+# construction's fewest steps, 30, cost a 15 s clip about an hour on a 4090).
+printf '%s\nprompt: "<Lead> %s The camera holds, then pans right."\nduration_s: 5\nresolution: 768p\nseed: %d\n' \
   "$lead" "$MOTION" $((R + 409)) > idle-ref2va.yaml
-printf '%s\nprompt: "<Lead> %s The camera drifts left."\nduration_s: 15\nresolution: 768p\nseed: %d\n' \
+printf '%s\nprompt: "<Lead> %s The camera drifts left."\nduration_s: 5\nresolution: 768p\nseed: %d\n' \
   "$lead" "$MOTION" $((R + 404)) > idle-ref2va-turbo.yaml
 printf '%s\nsegments: [{prompt: "<Lead> %s A slow push in.", duration_s: 15, seed: %d}]\n' \
   "$lead" "$MOTION" $((R + 405)) > idle-long-form.yaml
@@ -51,9 +52,9 @@ cell idle-h3-s "$(pkg minimax-h3 ref2va)" --input idle-ref2va.yaml --gpus="${GPU
 cell idle-h3-t "$(pkg minimax-h3 ref2va_turbo)" --input idle-ref2va-turbo.yaml --gpus="${GPUS:-1}"
 cell idle-h3-lf "$(pkg minimax-h3 long_form)" --input idle-long-form.yaml --gpus="${GPUS:-1}"
 # The same in a group: the standard construction canceled in its denoise, then Turbo on whatever comes back.
-printf '%s\nprompt: "<Lead> %s A crane shot rises over the scene."\nduration_s: 15\nresolution: 768p\nsteps: 8\nseed: %d\n' \
+printf '%s\nprompt: "<Lead> %s A crane shot rises over the scene."\nduration_s: 5\nresolution: 768p\nseed: %d\n' \
   "$lead" "$MOTION" $((R + 410)) > idle-h3-cancel.yaml
-printf '%s\nprompt: "<Lead> %s The camera circles slowly."\nduration_s: 15\nresolution: 768p\nseed: %d\n' \
+printf '%s\nprompt: "<Lead> %s The camera circles slowly."\nduration_s: 5\nresolution: 768p\nseed: %d\n' \
   "$lead" "$MOTION" $((R + 411)) > idle-h3-after-cancel.yaml
 canceled idle-h3-cancel cell idle-h3-cancel "$(pkg minimax-h3 ref2va)" --input idle-h3-cancel.yaml --gpus="${GPUS:-1}"
 cell idle-h3-after-cancel "$(pkg minimax-h3 ref2va_turbo)" --input idle-h3-after-cancel.yaml --gpus="${GPUS:-1}"
