@@ -51,6 +51,12 @@ impl Store {
         Ok(ck)
     }
 
+    /// How the import that made `header` read its source, as its header records it.
+    pub fn source_format(&self, header: &ObjectRef) -> Result<Option<crate::import::SourceFormat>> {
+        let parsed = Header::from_cbor(&self.read(header)?)?;
+        Ok(crate::import::SourceFormat::read(&parsed.metadata))
+    }
+
     /// The tree document `tree`.
     pub fn tree(&self, tree: &ObjectRef) -> Result<Tree> {
         Ok(Tree::from_json(&self.read(tree)?)?)

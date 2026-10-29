@@ -46,7 +46,7 @@ from safetensors.numpy import save_file
 rng = np.random.default_rng()
 save_file({f"blocks.{i}.weight": rng.standard_normal((1024, 1024)).astype(np.float16) for i in range(int(sys.argv[2]) // 2)}, sys.argv[1])
 PY
-  TENSORFS_HOME=$T/tfs-store uv tool run -q --from "${TWF:-tensorfs}" tfs import "$1.safetensors" --name "local/$(basename "$1")" >/dev/null &&
+  TENSORFS_HOME=$T/tfs-store uv tool run -q --from "${TWF:-tensorfs}" tfs import "$1.safetensors" --converter as-is --name "local/$(basename "$1")" >/dev/null &&
     TENSORFS_HOME=$T/tfs-store uv tool run -q --from "${TWF:-tensorfs}" tfs export "local/$(basename "$1")" "$1" >/dev/null
 }
 # tfs_straggler <name> <stragglers>: `tfs download` of BiRefNet into a store of its own, through straggler.py.

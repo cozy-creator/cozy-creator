@@ -6,7 +6,9 @@
 //!    it. Local members are read where they are.
 //! 3. Fold quantized carriers into encoded tensors, by their producer's declaration
 //!    (`carriers`). Recognize from safetensors headers alone: a built-in table claims a group
-//!    when its key set is the table's (`engine`). Unclaimed groups are stored as they are.
+//!    when its key set is the table's, and a table whose layout headers cannot tell only when the
+//!    file declares one of its producers (`engine`). A layout nothing recognizes is refused unless
+//!    the caller names [`engine::AS_IS`], which stores every group as it is.
 //! 4. Map every other file ([`layout`]): `model_index.json` becomes the pipeline, a component's
 //!    config its structured config, the other run files in its folder its assets; README,
 //!    LICENSE, images, code and docs stay repo files. A table's pinned reference supplies the
@@ -36,7 +38,7 @@ use crate::format::{
 use crate::store::Error;
 use crate::writer::{Data, PartData, Source, Writer};
 
-pub use engine::{tables, Table};
+pub use engine::{tables, Table, AS_IS};
 pub use order::{constructor_order, Ordered};
 pub use remote::Access;
 
@@ -166,6 +168,8 @@ const CONFIGS: [&str; 5] = [
 pub const SOURCE: &str = "source";
 /// Header metadata: run data a pinned reference supplied, `{from, files, note}`.
 pub const FILLED: &str = "filled";
+/// Header metadata: how the source's layout was read ([`SourceFormat`]).
+pub const SOURCE_FORMAT: &str = "source_format";
 /// The header metadata key of each component's source safetensors `__metadata__`
 /// (`{component: {key: value}}`), which export writes back.
 pub const FILE_METADATA: &str = "safetensors_metadata";
@@ -173,13 +177,68 @@ pub const FILE_METADATA: &str = "safetensors_metadata";
 /// `__metadata__` keys that declare a quantized carrier, which the encodings now state.
 const DECLARATIONS: [&str; 2] = ["_quantization_metadata", "quantization_config"];
 
+/// How a source's layout was read: what converted it, and what chose that.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SourceFormat {
+    /// What converted it, each table with the producer that let recognition choose it
+    /// (`h3.lora (musubi-tuner)`), `peft.lora`, `gguf.<arch>`; [`AS_IS`] when kept as it is;
+    /// none for the source's own Diffusers or Transformers layout.
+    pub formats: Vec<String>,
+    /// The format the caller named.
+    pub asked: Option<String>,
+    /// What detection alone finds, when the caller named something else.
+    pub detected: Option<String>,
+}
+
+impl SourceFormat {
+    /// The record a header's [`SOURCE_FORMAT`] metadata holds.
+    pub fn read(metadata: &Metadata) -> Option<SourceFormat> {
+        let Some(Value::Map(m)) = metadata.get(SOURCE_FORMAT) else { return None };
+        let text = |k: &str| match m.get(k) {
+            Some(Value::Str(s)) => Some(s.clone()),
+            _ => None,
+        };
+        let formats = match m.get("formats") {
+            Some(Value::List(l)) => l.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect(),
+            _ => vec![],
+        };
+        Some(SourceFormat { formats, asked: text("asked"), detected: text("detected") })
+    }
+
+    fn value(&self) -> Value {
+        let mut m = BTreeMap::from([(
+            "formats".to_owned(),
+            Value::List(self.formats.iter().map(|f| Value::Str(f.clone())).collect()),
+        )]);
+        for (k, v) in [("asked", &self.asked), ("detected", &self.detected)] {
+            if let Some(v) = v {
+                m.insert(k.to_owned(), Value::Str(v.clone()));
+            }
+        }
+        Value::Map(m)
+    }
+}
+
+/// `detected h3.lora (musubi-tuner)`, `h3.lora, as asked`, or `detected sdxl.lora; using h3.lora
+/// as asked`.
+impl std::fmt::Display for SourceFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let formats = match self.formats.as_slice() {
+            [] => "its own Diffusers or Transformers layout".to_owned(),
+            some => some.join(", "),
+        };
+        match (&self.asked, &self.detected) {
+            (None, _) => write!(f, "detected {formats}"),
+            (Some(_), None) => write!(f, "{formats}, as asked"),
+            (Some(_), Some(detected)) => write!(f, "detected {detected}; using {formats} as asked"),
+        }
+    }
+}
+
 /// What a convert reports; the header's metadata comes from it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Imported {
-    /// Every key is canonical: converted by a table, or the source's own Diffusers or
-    /// Transformers layout. `false` means stored as-is from a layout nothing recognized.
-    pub normalized: bool,
-    pub converters: Vec<String>,
+    pub format: SourceFormat,
     /// The pinned sources.
     pub sources: Vec<String>,
     /// Each pinned reference that supplied run data the source lacks, with the paths.
@@ -189,7 +248,8 @@ pub struct Imported {
 }
 
 impl Imported {
-    /// The header's loading metadata: `source`, `filled` and each component's `__metadata__`.
+    /// The header's loading metadata: `source`, `source_format`, `filled` and each component's
+    /// `__metadata__`.
     pub fn metadata(&self) -> Metadata {
         let text = |s: &str| Value::Str(s.to_owned());
         let texts = |l: &[String]| Value::List(l.iter().map(|s| text(s)).collect());
@@ -202,6 +262,7 @@ impl Imported {
             SOURCE.into(),
             one(self.sources.iter().map(|s| text(s)).collect()),
         );
+        out.insert(SOURCE_FORMAT.into(), self.format.value());
         let filled = (self.filled.iter()).map(|(from, files)| {
             Value::Map(BTreeMap::from([
                 ("from".to_owned(), text(from)),
@@ -228,7 +289,8 @@ impl Imported {
 
 pub struct Request<'a> {
     pub sources: &'a [String],
-    /// A table to convert with; required for tables recognition never picks alone.
+    /// The format to convert with ([`AS_IS`]: none); required for a table whose layout headers
+    /// cannot tell from another's when the source declares none of its producers. Absent: detected.
     pub converter: Option<&'a str>,
     /// The source's Diffusers weights variant (`fp16`), when a folder has several.
     pub source_variant: Option<&'a str>,
@@ -658,22 +720,29 @@ pub fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
     let landed = land(&members, &area.join("source"), req)?;
     stopped(req)?;
     let mut set = source::SourceSet::scan(&landed)?;
-    carriers::fold(&mut set)?;
+    let as_is = req.converter == Some(AS_IS);
+    if !as_is {
+        carriers::fold(&mut set)?;
+    }
 
     let tables = tables();
     let recognized = engine::recognize(&set, tables, req.converter)?;
-    let converters: Vec<String> = recognized
-        .tables
-        .iter()
-        .map(|t| tables[*t].name.clone())
-        .collect();
+    // What detection alone finds, to tell a caller who named something else.
+    let detected = req.converter.and_then(|asked| {
+        let found = engine::recognize(&set, tables, None).ok()?;
+        let names: Vec<&str> = found.tables.iter().map(|t| tables[*t].name.as_str()).collect();
+        (!names.is_empty() && names != [asked]).then(|| found.formats(tables).join(", "))
+    });
+    let mut formats = match as_is {
+        true => vec![AS_IS.to_owned()],
+        false => recognized.formats(tables),
+    };
     // The source's own Diffusers or Transformers layout is canonical by definition.
     let canonical = set.plain.iter().any(|p| {
         let (folder, name) = p.path.rsplit_once('/').unwrap_or(("", &p.path));
         name.ends_with(PIPELINE_FILE)
             || (name == CONFIG_FILE && set.groups.iter().any(|g| g.folder == folder))
     });
-    let normalized = recognized.unclaimed.is_empty() || canonical;
 
     let ggufs: Vec<&source::Plain> = set.plain.iter().filter(|p| is_gguf(&p.path)).collect();
     let component = |f: &str, stem: &str| {
@@ -689,17 +758,29 @@ pub fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
     let identity = |g: &source::Group| component(&g.folder, &g.stem);
     let mut planned = engine::plan(&set, tables, &recognized, &identity)?;
     let (mut files, mut filled, mut versions) = documents(&set, &recognized, &planned, req, &area)?;
-    let (mut converters, mut normalized) = (converters, normalized);
     let sources: BTreeMap<String, &source::Group> = (recognized.claims.iter())
         .map(|c| (c.name.clone(), &set.groups[c.group]))
         .chain((recognized.unclaimed.iter()).map(|g| (identity(&set.groups[*g]), &set.groups[*g])))
         .collect();
-    let mut adapters = lora::normalize(&mut planned, &sources, &mut files, &set.files)?;
+    let mut adapters = match as_is {
+        true => BTreeMap::new(),
+        false => lora::normalize(&mut planned, &sources, &mut files, &set.files)?,
+    };
     // A PEFT adapter's keys are its base model's module names: canonical once unwrapped.
     let peft = |g: &usize| adapters.get(&identity(&set.groups[*g])).is_some_and(|a| a.stated);
-    if recognized.unclaimed.iter().any(peft) {
-        converters.push("peft.lora".into());
-        normalized |= recognized.unclaimed.iter().all(peft);
+    if !as_is && recognized.unclaimed.iter().any(peft) {
+        formats.push("peft.lora".into());
+    }
+    // What no format reads: a layout the runtime cannot use.
+    let mut unknown: Vec<String> = Vec::new();
+    if !canonical {
+        for g in recognized.unclaimed.iter().filter(|g| !peft(g)) {
+            let group = &set.groups[*g];
+            unknown.push(match engine::closest(group, tables).as_slice() {
+                [] => format!("{}: no format knows any of its keys", group.label()),
+                near => format!("{}: nearest {}", group.label(), near.join(", ")),
+            });
+        }
     }
     let mut ggufs_planned = Vec::new();
     for p in &ggufs {
@@ -709,8 +790,11 @@ pub fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
         let opened = File::open(local)
             .map_err(|e| crate::err::classify_io(format!("open {}", local.display()), e))?;
         let plan = gguf::plan(&gguf::read(&opened)?, &component)?;
-        normalized &= plan.normalized;
-        converters.extend(plan.arch.as_ref().map(|a| format!("gguf.{a}")));
+        if !plan.normalized {
+            let arch = plan.arch.as_deref().unwrap_or("no stated architecture");
+            unknown.push(format!("{}: GGUF of {arch}, whose names no table maps", p.path));
+        }
+        formats.extend(plan.arch.as_ref().map(|a| format!("gguf.{a}")));
         let record = serde_json::to_vec(&plan.meta).expect("the record serializes");
         files.insert(format!("{}.json", p.path), record);
         if let Some(reference) = &plan.reference {
@@ -719,6 +803,19 @@ pub fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
             filled.extend((!added.is_empty()).then_some((pin, added)));
         }
         ggufs_planned.push((p.file, component, plan));
+    }
+    if !unknown.is_empty() && !as_is {
+        let built_in: Vec<&str> = tables.iter().map(|t| t.name.as_str()).collect();
+        return refuse(
+            Code::UNREGISTERED_FINGERPRINT,
+            format!(
+                "no format reads this layout, so the runtime could not use it: {}. Name a format to \
+                 see what the source lacks (--source-format <format>; built in: {}), or keep it \
+                 unconverted for code that reads its keys raw (--source-format {AS_IS})",
+                unknown.join("; "),
+                built_in.join(", ")
+            ),
+        );
     }
     let mut tensored: Vec<String> = Vec::new();
     let names = (planned.iter().map(|p| &p.component)).chain(ggufs_planned.iter().map(|g| &g.1));
@@ -811,8 +908,11 @@ pub fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
     }
     file_metadata.retain(|_, m| !m.is_empty());
     let imported = Imported {
-        normalized,
-        converters,
+        format: SourceFormat {
+            formats,
+            asked: req.converter.map(str::to_owned),
+            detected,
+        },
         sources: pinned,
         filled,
         file_metadata,

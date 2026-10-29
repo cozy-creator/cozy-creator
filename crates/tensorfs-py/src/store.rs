@@ -926,10 +926,17 @@ impl PyCheckpoint {
         result.or_raise(py)
     }
 
-    /// The header's loading metadata (`source`, `filled`, `safetensors_metadata`).
+    /// The header's loading metadata (`source`, `source_format`, `filled`, `safetensors_metadata`).
     #[getter]
     fn metadata<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         metadata(py, &self.header.metadata)
+    }
+
+    /// How its import read the source's layout: `detected h3.lora (musubi-tuner)`; None for a
+    /// checkpoint no import made.
+    #[getter]
+    fn source_format(&self) -> Option<String> {
+        tensorfs::import::SourceFormat::read(&self.header.metadata).map(|f| f.to_string())
     }
 }
 

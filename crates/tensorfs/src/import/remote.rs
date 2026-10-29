@@ -1,7 +1,7 @@
 //! Sources: parse, pin, list and select their members, and download remote ones.
 //!
 //! `hf://<org>/<repo>[@<revision>][/<path>]`, `civitai://<version>[/<file id>]`, a
-//! huggingface.co or civitai.com URL, any other https URL (one file), or a local file or
+//! huggingface.co, civitai.com or civitai.red URL, any other https URL (one file), or a local file or
 //! directory. A revision pins to its full commit; members carry the provider's sha256.
 
 use std::collections::BTreeMap;
@@ -186,7 +186,8 @@ pub fn parse(raw: &str) -> Result<Spec> {
                 "{raw}: a Hugging Face URL names a repository, a tree or a file"
             )),
         },
-        "civitai.com" => {
+        // civitai.red serves the same versions (mature ones too) through civitai.com's API.
+        "civitai.com" | "www.civitai.com" | "civitai.red" | "www.civitai.red" => {
             let version = query
                 .split('&')
                 .find_map(|q| q.strip_prefix("modelVersionId="));

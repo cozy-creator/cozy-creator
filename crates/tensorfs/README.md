@@ -68,7 +68,8 @@ each fused Q/K/V factor as one tensor in three contiguous thirds, while H3's nat
 interleaves Q, K and V per head. Both have the same shape, and a safetensors header records
 neither order, so a wrong guess still loads and silently scrambles the attention heads: our
 2026-10-01 converter gave Q head 1 row 384 instead of row 128. The `h3.lora` importer is therefore
-never selected automatically; the uploader names the source's convention once. The imported
+selected automatically only for a file that declares a trainer whose own code writes contiguous
+thirds (ai-toolkit, musubi-tuner, …); for any other, the uploader names the source's convention once. The imported
 cozytensors stores Q, K and V as separate tensors in the canonical layout, so no reader guesses
 again.
 Computation-graph support is deferred to
@@ -341,8 +342,11 @@ operations are optional compatibility tools.
 ## Convert, write and share
 
 `convert_to_cozytensors` accepts files, directories, `hf://`, `civitai://` and HTTPS sources. It pins upstream revisions and records
-source metadata. Recognized source layouts use converter tables; `converter=` declares a layout that cannot be
-inferred safely. `materialize(checkpoint, local_dir=directory, format="safetensors")` writes ordinary Hugging Face filenames, configs and assets.
+source metadata. Recognized source layouts use converter tables. A table whose layout headers cannot tell from
+another's (H3's fused Q/K/V LoRA rows) is chosen only for a file that declares a producer the table lists, by the
+keys and `__metadata__` that producer's code writes; `converter=` names it for any other. A layout no table
+recognizes is refused, unless `converter="as-is"` keeps its keys unconverted for code that reads them raw. A
+checkpoint's `source_format` says what was detected (`detected h3.lora (musubi-tuner)`). `materialize(checkpoint, local_dir=directory, format="safetensors")` writes ordinary Hugging Face filenames, configs and assets.
 Encoded tensors retain their parts unless `dequantize=` requests ordinary values.
 
 ```python

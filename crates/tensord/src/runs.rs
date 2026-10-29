@@ -458,7 +458,7 @@ impl Runs {
                 let source = self.written_source(actor, &choice.source)?;
                 let made = publisher.make_source(&source, &choice.profiles, &spec.providers, stop, observe)?;
                 let row = json!({"parameter": choice.parameter, "source": choice.source,
-                    "resolved": made.resolved, "profiles": made.profiles,
+                    "resolved": made.resolved, "profiles": made.profiles, "format": made.format,
                     "repository": made.repository, "checkpoint": made.header.id()});
                 let tree = crate::storage::local(publisher.store(), &made.repository)?.map(|local| local.tree);
                 (made.header, tree, row)

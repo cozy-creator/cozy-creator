@@ -144,7 +144,7 @@ tiny() { python3 -I -c 'import json,struct,sys,os; h=json.dumps({"w":{"dtype":"F
 asked() { cozy machine logs "$A" -n 0 2> /dev/null | grep -c "$1"; }
 tiny "$OUT/tiny.safetensors"
 M=$ACCOUNT/mm-private-$TS
-step p-upload model upload "$OUT/tiny.safetensors" "$M" --lane f32 || fail "p: upload of a private model"
+step p-upload model upload "$OUT/tiny.safetensors" "$M" --lane f32 --source-format as-is || fail "p: upload of a private model"
 MC=$M@$(awk '$1=="commit"{c=$2} END{sub(/.*@/, "", c); print c}' "$OUT/p-upload.txt")
 step p-cold model download "$MC" --on "$A" || fail "p: the renter did not read its private model on A: $(tail -3 "$OUT/p-cold.txt")"
 q=$(asked 'a commit asked of the Hub') r=$(asked 'redeemed the run capability')
