@@ -27,6 +27,7 @@ if [ "${1:-}" != --copy ]; then
   exec bash "$c" --copy "$(cd "$(dirname "$0")" && pwd)" "$@"
 fi
 HERE=$2; shift 2
+. "$HERE/machines.sh"
 REPO=cozy-creator/cozy-creator TAG=release-gate-baselines
 SKU=$1; shift; CAND=() ONLY= EXTRA=() BEFORE=() CLI=cozy DISK=400 OUT= PKGS= ESTABLISH= PUBLISH= PINS= SUITES= K= CLIP= GPUS= FIRST= ON= IMAGE=
 BIN= RW= TW= TD=
@@ -98,18 +99,21 @@ mapfile -t ROWS < <(grep -v '^#' "$HERE/scenarios.tsv")
 I=$(( $(date +%s) / 60 + $(cksum <<< "$SKU" | cut -d' ' -f1) ))
 IFS=$'\t' read -r NAME CHAR MOTION OBJECT SCENE <<< "${ROWS[$((I % ${#ROWS[@]}))]}"
 R=$(( $(date +%s%N) / 1000 % 4000000000 ))
-M= KEEP=
+M= RID= RP= KEEP=
 end_it() {
   [ -z "$KEEP" ] || kill "$KEEP" 2>/dev/null
-  [ -n "$M" ] || return
-  # The machine's own logs leave with it: keep them for every gate (a poisoned executor is diagnosed from them).
-  "$CLI" machine logs "$M" memory -n 0 >machine-memory.log 2>&1
-  "$CLI" machine logs "$M" tensord -n 0 >machine-tensord.log 2>&1
-  if "$CLI" logs --help >/dev/null 2>&1; then "$CLI" logs calcifer; else "$CLI" machine logs local calcifer -n 0; fi >calcifer.log 2>&1
+  [ -z "$RP" ] || kill "$RP" 2>/dev/null  # the boot's follower only: the order is ended below
+  if [ -n "$M" ]; then
+    # The machine's own logs leave with it: keep them for every gate (a poisoned executor is diagnosed from them).
+    "$CLI" machine logs "$M" memory -n 0 >machine-memory.log 2>&1
+    "$CLI" machine logs "$M" tensord -n 0 >machine-tensord.log 2>&1
+    if "$CLI" logs --help >/dev/null 2>&1; then "$CLI" logs calcifer; else "$CLI" machine logs local calcifer -n 0; fi >calcifer.log 2>&1
+  fi
   [ -z "$ON" ] || { M=; return; }
+  [ -n "$RID" ] || return
   # `machine end` returns once the Hub affirms the pod gone.
-  "$CLI" machine end "$M" -y >end.log 2>&1 && ! "$CLI" machine ls 2>/dev/null | grep -q "^$M " && { log "ended $M, gone"; M=; return; }
-  log "WARNING $M still listed: $(tail -c 300 end.log)"
+  "$CLI" machine end "$RID" -y >end.log 2>&1 && ! listed "$RID" "$CLI" && { log "ended $RID${M:+ ($M)}, gone"; M= RID=; return; }
+  log "WARNING $RID${M:+ ($M)} still listed: $(tail -c 300 end.log)"
 }
 trap end_it EXIT
 trap 'exit 143' TERM INT
@@ -145,16 +149,20 @@ output() { run_output "$OUT" "$1" "$2"; }
 . "$HERE/products.sh"
 log "gate on $SKU (suites ${SUITES//,/ }): scenario $NAME, seeds from $R, candidate: ${CAND[*]:-released}${PKGS:+ packages $PKGS}${PINS:+ pins ${PINS//,/ }}, cli: $CLI"
 [ -z "$ON" ] || { M=$ON; BEFORE=(); }
-[ -n "$ON" ] || "$CLI" machine rent "$SKU" ${GPUS:+--gpus "$GPUS"} ${IMAGE:+--image-digest "$IMAGE"} --disk-gb "$DISK" -y --json >rent.json 2>rent.err
-[ -n "$M" ] || M=$(python3 -c 'import json,sys
-t = open(sys.argv[1]).read(); dec = json.JSONDecoder(); i = 0
-while i < len(t):
-    i = t.find("{", i)
-    if i < 0: break
-    d, i = dec.raw_decode(t, i)
-    m = d.get("machine")
-    if isinstance(m, dict) and m.get("name"): print(m["name"]); break' rent.json)
-[ -n "$M" ] || { log "rent failed: $(tail -c 300 rent.err) $(tail -c 300 rent.json)"; exit 1; }
+# rented <machine>: its rental id into RID and `rental`, which end_it and the workflow's cleanup end.
+rented() { RID=$("$CLI" --json machine show "$1" 2>/dev/null | jq -r '.rental_id // empty'); [ -z "$RID" ] || echo "$RID" > rental; }
+if [ -z "$ON" ]; then
+  # Followed in the background: the order's first booting line names it, so a gate cancelled mid-boot still ends it.
+  "$CLI" machine rent "$SKU" ${GPUS:+--gpus "$GPUS"} ${IMAGE:+--image-digest "$IMAGE"} --disk-gb "$DISK" -y >rent.out 2>rent.err & RP=$!
+  until first=$(grep -m1 -oE '^[a-z0-9][a-z0-9-]*: (booting|ready|offline)' rent.err | cut -d: -f1); [ -n "$first" ] || ! kill -0 "$RP" 2>/dev/null; do
+    sleep 2
+  done
+  [ -z "$first" ] || rented "$first"
+  wait "$RP"; rc=$? RP=
+  [ -n "$RID" ] || { first=$(awk '$1=="machine"{print $2; exit}' rent.out); [ -z "$first" ] || rented "$first"; }
+  [ "$rc" != 0 ] || [ -z "$RID" ] || M=$("$CLI" --json machine show "$RID" 2>/dev/null | jq -r '.name // empty')
+fi
+[ -n "$M" ] || { log "rent failed: $(tail -c 300 rent.err) $(tail -c 300 rent.out)"; exit 1; }
 echo "$M" > machine
 log "${ON:+on }${ON:-rented} $M"
 # The gate holds the rental between runs too (fetches, uploads, analysis here): reset its 15-minute idle clock.

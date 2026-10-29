@@ -14,12 +14,8 @@ fail() { say "FAIL: $*"; RC=1; exit 1; }
 # param <key> [default]: the session's setting from PARAMS (a non-string as JSON).
 param() { jq -r --arg k "$1" --arg d "${2-}" 'if has($k) then (.[$k] | if type == "string" then . else tojson end) else $d end' <<<"$PARAMS"; }
 state() { cozy machine show "$1" --json 2>/dev/null | jq -r '.state // empty'; }
-# live <rental id>: listed and not ended; a list that does not answer counts as live.
-live() {
-  local j; j=$(cozy machine ls --json 2>/dev/null) || return 0
-  jq -e --arg r "$1" '.machines[] | select(.rental_id==$r and .state!="ended")' <<<"$j" >/dev/null
-}
-gone() { local s; s=$(state "$1"); { [ "$s" = ended ] || [ -z "$s" ]; } && ! live "$1"; }
+. "$(dirname "${BASH_SOURCE[0]}")/../machines.sh"
+gone() { local s; s=$(state "$1"); { [ "$s" = ended ] || [ -z "$s" ]; } && ! listed "$1"; }
 # runno <name>: the run a step's output names last (its own, after a local source's sync run).
 runno() { awk '$1=="run" && NF==2{print $2}' "$OUT/$1.txt" | tail -1; }
 finish() {
@@ -35,7 +31,7 @@ finish() {
       fi
       tries=$((tries + 1)); sleep 10
     done
-    say "GONE $r: ended, and no live machine in cozy machine ls holds it"
+    say "GONE $r: ended, and the machine listing holds no live machine of it"
   done
   say "RESULT $([ "$RC" = 0 ] && echo PASSED || echo FAILED)"
   exit "$RC"
@@ -65,7 +61,7 @@ quote() {
   local gb=$1 need=$2; shift 2
   local skus=("${@:-$SKU}") s storage bw gpu disk hourly=0 rate=0 said=''
   say "cozy $(cozy --version); $(cozy whoami 2>&1 | grep -E '^account')"
-  ! live pr-pod-session-probe || fail "gone-check: a rental that never existed reads live"
+  ! listed pr-pod-session-probe || fail "gone-check: a rental that never existed reads live (no machine listing answers?)"
   cozy machine rent --json > "$OUT/skus.json" 2>&1 || fail "no catalog"
   for s in "${skus[@]}"; do
     read -r storage bw < <(jq -r --arg s "$s" 'if type=="array" then .[] else . end | select(.name==$s) | .widths[] | select(.accelerator_count==1) |
