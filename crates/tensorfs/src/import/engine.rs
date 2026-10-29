@@ -23,7 +23,7 @@ macro_rules! table {
 }
 
 /// The built-in tables.
-pub const TABLES: [&str; 9] = [
+pub const TABLES: [&str; 10] = [
     table!("sdxl.single_file"),
     table!("anima.single_file"),
     table!("h3.native"),
@@ -31,6 +31,7 @@ pub const TABLES: [&str; 9] = [
     table!("sdxl.lora"),
     table!("krea2.lora"),
     table!("seedvr2"),
+    table!("h3.latent_upscaler"),
     table!("ideogram4.fp8"),
     table!("qwen3.6-35b-a3b.experts"),
 ];
@@ -58,6 +59,9 @@ pub struct Table {
     /// tensors of the layout that config builds (Transformers' fused experts, one per expert).
     #[serde(default)]
     pub keep_config: bool,
+    /// Fixed tensors the layout needs and no source holds, by name (a row's `table`).
+    #[serde(default)]
+    pub constants: BTreeMap<String, Constant>,
     pub components: Vec<Component>,
 }
 
@@ -98,6 +102,16 @@ impl Producer {
             }
         })
     }
+}
+
+/// A fixed tensor stated in the table: its bytes (base64) and their digest.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Constant {
+    pub dtype: Dtype,
+    pub shape: Vec<u64>,
+    pub sha256: String,
+    pub base64: String,
 }
 
 /// Source key suffixes of each factor; the output spells them PEFT's way.
@@ -240,6 +254,10 @@ pub struct Ops {
     /// LoRA rows: the ops applied to B.
     #[serde(default)]
     pub b: Option<Box<Ops>>,
+    /// LoRA rows whose input is a fixed table, not the module's input (H3's AdaLN curve): the
+    /// table's constant, written beside the factors as `<target>.table`.
+    #[serde(default)]
+    pub table: Option<String>,
 }
 
 /// Every built-in table, parsed once.
@@ -1159,8 +1177,36 @@ fn plan_lora(
             let key = format!("{}{suffix}", row.target);
             out.push(planned(&claim.name, &key, t, ops, None)?);
         }
+        if let Some(name) = &row.ops.table {
+            out.push(constant(table, name, &claim.name, &format!("{}.table", row.target))?);
+        }
     }
     Ok(())
+}
+
+/// A table's constant as one planned tensor, its bytes checked against their digest.
+fn constant(table: &Table, name: &str, component: &str, key: &str) -> Result<Planned> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    let Some(c) = table.constants.get(name) else {
+        return refuse(Code::MISSING_FIELD, format!("{}: no constant {name:?}", table.name));
+    };
+    let bytes = STANDARD.decode(&c.base64).ok().filter(|b| {
+        c.dtype.byte_len(&c.shape) == Some(b.len() as u64)
+            && crate::sha256::hex_digest(b) == c.sha256
+    });
+    let Some(bytes) = bytes else {
+        return refuse(Code::SHAPE_MISMATCH, format!("{}: constant {name:?} differs from its digest", table.name));
+    };
+    let read = Reading::inline(bytes, c.dtype.clone());
+    let part = PlannedPart { role: String::new(), dtype: c.dtype.clone(), shape: c.shape.clone(), read };
+    Ok(Planned {
+        component: component.to_owned(),
+        key: key.to_owned(),
+        dtype: c.dtype.clone(),
+        shape: c.shape.clone(),
+        encoding: None,
+        parts: vec![part],
+    })
 }
 
 // ------------------------------------------------------------------------------ bytes

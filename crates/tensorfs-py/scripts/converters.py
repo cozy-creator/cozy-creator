@@ -454,9 +454,64 @@ def h3_lora(h3: Any, source: dict[str, tuple[str, tuple[int, ...]]]) -> dict[str
 
     with torch.device("meta"):
         census = {k: i for i, k in enumerate(MiniMaxH3Transformer3DModel(**config).state_dict())}
+    # Diffusers/PEFT trainers spell the target itself under `transformer.` (Open-H3-Regenerate-2K's
+    # merged LoRA, diffusers' `save_lora_weights`).
+    shapes = {k.removesuffix(".weight"): tuple(v) for k, v in census_shapes(config).items() if k.endswith(".weight")}
+    for target in dict.fromkeys(r[0] for r in list(rows)):
+        out, inp = shapes[target]
+        rows.append([target, f"transformer.{target}", {"io": [inp, out]}])
     rows.sort(key=lambda r: census[r[0] + ".weight"])
-    lora = {"a": [".lora_A.weight", ".lora_down.weight"], "b": [".lora_B.weight", ".lora_up.weight"], "alpha": [".alpha"]}
-    return {"name": "h3.lora", "producers": H3_LORA_PRODUCERS, "lora": lora, "components": [{"name": "transformer", "rows": rows}]}
+    # The AdaLN curve: ComfyUI's pruned H3 computes each block's modulation from an 8-D curve of
+    # the timestep (`lerp(adaln_t_table, t)`), so a LoRA trained on it adapts `adaln_proj` with
+    # A [r, 8]. Its update, B·A·curve(t), depends on t alone: the curve site carries its factors
+    # and the curve table it reads, and the serving side folds it into exact-timestep tables.
+    blocks = config["num_layers"]
+    width = shapes["transformer_blocks.0.adaln_proj.linear"][0]
+    curve = {"io": [8, width], "table": "adaln_t_table"}
+    for stem in ("transformer.transformer_blocks.{N}.adaln_proj.linear", "diffusion_model.blocks.{N}.adaln_proj.linear"):
+        rows.append(["transformer_blocks.{N}.adaln_curve", stem, curve, {"N": blocks}])
+    lora = {"a": [".lora_A.weight", ".lora_down.weight", ".curve_A.weight"],
+            "b": [".lora_B.weight", ".lora_up.weight", ".curve_B.weight"], "alpha": [".alpha"]}
+    return {"name": "h3.lora", "producers": H3_LORA_PRODUCERS, "lora": lora, "constants": {"adaln_t_table": adaln_t_table()},
+            "components": [{"name": "transformer", "rows": rows}]}
+
+
+def census_shapes(config: dict[str, Any]) -> dict[str, torch.Size]:
+    from diffusers import MiniMaxH3Transformer3DModel
+
+    with torch.device("meta"):
+        return {k: v.shape for k, v in MiniMaxH3Transformer3DModel(**config).state_dict().items()}
+
+
+# ComfyUI's pruned-AdaLN curve table: 1025 timesteps x 8, F32, read by byte range from its pinned file.
+ADALN_T_TABLE = (
+    "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/e5eb578a89295337b8ff433a035929ce0279e0b6/"
+    "diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+    "adaln_t_table",
+    "c02a6c11888297688c1e6278185ea1f947023acfc69f9003bbcdcec9a229a8e7",
+)
+
+
+def fetch_range(url: str, start: int, length: int) -> bytes:
+    request = urllib.request.Request(url, headers={"Range": f"bytes={start}-{start + length - 1}"})
+    with urllib.request.urlopen(request, timeout=120) as response:
+        body = response.read()
+    if response.status != 206 or len(body) != length:
+        sys.exit(f"{url}: range {start}+{length} was not served")
+    return body
+
+
+def adaln_t_table() -> dict[str, Any]:
+    import base64
+
+    url, name, digest = ADALN_T_TABLE
+    (length,) = struct.unpack("<Q", fetch_range(url, 0, 8))
+    entry = json.loads(fetch_range(url, 8, length))[name]
+    begin, end = entry["data_offsets"]
+    body = fetch_range(url, 8 + length + begin, end - begin)
+    if hashlib.sha256(body).hexdigest() != digest or entry["dtype"] != "F32" or entry["shape"] != [1025, 8]:
+        sys.exit(f"{url}: {name} is not the pinned F32 [1025, 8] table")
+    return {"dtype": "F32", "shape": [1025, 8], "sha256": digest, "base64": base64.b64encode(body).decode()}
 
 
 # ------------------------------------------------------------------ SDXL LoRA
@@ -646,6 +701,37 @@ def seedvr2() -> dict[str, Any]:
     return {"name": "seedvr2", "files": {"config.json": {"architecture": "SeedVR2-7B"}}, "components": components}
 
 
+# ------------------------------------------------------------------ H3 latent upscaler
+
+# LBH-123-AI's 3D-conv latent upscaler node, unchanged, as NVlabs' Open-H3-Regenerate-2K vendors it.
+H3_UPSCALER_NODE = (
+    "https://raw.githubusercontent.com/NVlabs/Sana/6e4a44002149418a547434b91d7280a8bbdcace3/"
+    "models/Open-H3-Regenerate-2K/open_h3/upscaler_node.py",
+    "f5945b500ddb38afee23c377034bf15394ba64748511a7e9608953040c4be437",
+)
+
+
+def h3_latent_upscaler() -> dict[str, Any]:
+    """LBH's checkpoint as it is: rows in `LatentResizer3D`'s construction order, built from the
+    node's own code (its ComfyUI imports stubbed), against the banked header's key set."""
+    for name in ("folder_paths", "comfy", "comfy.model_management", "comfy_api", "comfy_api.latest"):
+        sys.modules.setdefault(name, types.ModuleType(name))
+    sys.modules["folder_paths"].folder_names_and_paths = {"latent_upscale_models": ([], set())}
+    sys.modules["folder_paths"].models_dir = tempfile.mkdtemp()
+    with tempfile.NamedTemporaryFile("wb", suffix=".py", delete=False) as f:
+        f.write(fetch(*H3_UPSCALER_NODE))
+    spec = importlib.util.spec_from_file_location("h3_upscaler_node", f.name)
+    node = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(node)
+    keys = header(VECTORS / "h3-latent-upscaler-headers" / "minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors.header")
+    config = node._detect_arch({k: torch.empty(shape, device="meta") for k, (_, shape) in keys.items()})
+    with torch.device("meta"):
+        census = list(node.LatentResizer3D(**config).state_dict())
+    assert sorted(census) == sorted(keys), "the upscaler's header is not LatentResizer3D's state_dict"
+    return {"name": "h3.latent_upscaler", "files": {"config.json": {"architecture": "minimax-h3-latent-upscaler-3d-conv-v1"}},
+            "components": [{"name": "upscaler", "rows": [[k] for k in census]}]}
+
+
 # ------------------------------------------------------------------ Ideogram 4
 
 # Diffusers #14126's `convert_ideogram4_transformer_checkpoint_to_diffusers` (`attention.o` ->
@@ -766,6 +852,7 @@ def generate() -> dict[str, dict[str, Any]]:
         "sdxl.lora": sdxl_lora(sdxl, layers, unet),
         "krea2.lora": krea2_lora(),
         "seedvr2": seedvr2(),
+        "h3.latent_upscaler": h3_latent_upscaler(),
         "ideogram4.fp8": ideogram4(),
         **{name: qwen_moe(name, pinned) for name, pinned in QWEN_MOE.items()},
     }
