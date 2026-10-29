@@ -199,6 +199,17 @@ def check(gate):
             (fails if sec > limit else notes).append(
                 f'tensorfs upload-resume: {sec:.1f} s for the rest after {moved / 2**20:.0f} of {total / 2**20:.0f} MiB '
                 f'(limit {limit:.1f} s at the upload\'s own rate)')
+    p = os.path.join(t, 'lora-alpha.json')
+    try:
+        (cfg,) = [c['config'] for c in json.load(open(p))['components'] if c.get('config', {}).get('peft_type') == 'LORA']
+    except (OSError, ValueError, KeyError):
+        fails.append(f'tensorfs lora-alpha: no LoRA component was imported (see {t}/lora-alpha/import.txt)')
+    else:
+        if cfg.get('lora_alpha') != cfg.get('r'):
+            fails.append(f'tensorfs lora-alpha: committed lora_alpha {cfg.get("lora_alpha")} at r {cfg.get("r")}: kohya\'s '
+                         'ss_network_alpha set the scale, which no loader of a file without .alpha tensors does')
+        else:
+            notes.append(f'tensorfs lora-alpha: lora_alpha {cfg["lora_alpha"]} = r, whatever the metadata says')
     if not fails:
         label = open(os.path.join(gate['out'], 'label')).read().strip()
         at = time.strftime('%Y-%m-%dT%H:%MZ', time.gmtime())

@@ -1,6 +1,9 @@
 # Suite `tensorfs` (gate.sh --suite tensorfs): TensorFS moves weights as fast as before and dedups.
 #   straggler        on this host: `tfs download` of BiRefNet clean and through straggler.py, which drips its first
 #                    objects as a slow storage GET does (10-01): TensorFS must re-ask a straggler, not wait out its tail
+#   lora-alpha       on this host: `tfs import` of a LoRA with no `.alpha` tensors whose kohya metadata says
+#                    ss_network_alpha 420 at rank 4: its committed `lora_alpha` must be r, a scale of 1, as kohya's and
+#                    ComfyUI's loaders apply it (10-29: the Mystic XXX LoRAs rendered colour noise at 420/16)
 # On the rented machine $M, through `cozy`:
 #   probe            the machine's disk, written and read cold; an executor never dials, so no network figure
 #   download-cold    a large many-object model ($TFS_MODEL), its time held against the last pass
@@ -64,6 +67,28 @@ tfs_straggler() {
   rm -rf "$T/$1-store" "$T/$1-out"
   log "tensorfs $1: $(tail -n 1 "$T/straggler.tsv")"
 }
+# tfs_lora_alpha: the LoRA above, imported into a store of its own; its inspected record in lora-alpha.json.
+tfs_lora_alpha() {
+  local s=$T/lora-alpha
+  rm -rf "$s"; mkdir -p "$s"
+  uv run -q --no-project --with numpy --with safetensors python -I - "$s/lora.safetensors" <<'PY' || return 1
+import sys
+import numpy as np
+from safetensors.numpy import save_file
+rng = np.random.default_rng()
+w = {}
+for i in range(2):
+    w[f"blocks.{i}.proj.lora_A.weight"] = rng.standard_normal((4, 16)).astype(np.float32)
+    w[f"blocks.{i}.proj.lora_B.weight"] = rng.standard_normal((32, 4)).astype(np.float32)
+save_file(w, sys.argv[1], metadata={"ss_network_alpha": "420", "ss_network_dim": "69"})
+PY
+  TENSORFS_HOME=$s/store uv tool run -q --from "${TWF:-tensorfs}" tfs import "$s/lora.safetensors" --name local/lora-alpha \
+    >"$s/import.txt" 2>&1 &&
+    TENSORFS_HOME=$s/store uv tool run -q --from "${TWF:-tensorfs}" tfs --json inspect local/lora-alpha >"$T/lora-alpha.json" \
+      2>>"$s/import.txt"
+  log "tensorfs lora-alpha: exit $? $(grep -o '"lora_alpha":[^,}]*' "$T/lora-alpha.json" 2>/dev/null | head -1)"
+  rm -rf "$s/store"
+}
 tfs_cleanup() {
   [ -n "$TFS_DEST" ] || return 0
   "$CLI" model delete "$TFS_DEST" -y >"$T/delete.log" 2>&1 && log "tensorfs: deleted $TFS_DEST" ||
@@ -98,3 +123,4 @@ fi
 # On this host, after the machine's cases: the machine is not left idle while it runs.
 tfs_straggler straggler-clean 0
 tfs_straggler straggler-slow 3
+tfs_lora_alpha
