@@ -75,6 +75,9 @@ FAMILIES: list[dict[str, Any]] = [
             },
         },
         "form_sizes": {"canonical": 638, "curve": 635, "pruned": 583},
+        # h3.lora's LoRA-only AdaLN-curve sites (#2245): factors over the curve's k coordinates, folded into the
+        # served tables, never a weight.
+        "sites": {"transformer": [[f"transformer_blocks.{n}.adaln_curve", [96768, 8]] for n in range(50)]},
         "probe": {"component": "transformer", "keys": H3_PROBED, "variants": {"transformer": "transformer", "transformer_ref": "transformer_ref"}},
         # musubi-tuner (AkaneTendo25@0499c2f8 minimax_h3_train_network.py `extra_metadata`): the
         # mode picks the DiT it trains. ai-toolkit (ostris@b69b9831 minimax_h3.py): only the
