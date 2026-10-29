@@ -4,7 +4,8 @@
 # $OBJECT. Every cozy call is logged (release-gate.yml runs gate.sh with --cli e2e/bin/cozy) for e2e/coverage.py.
 #   --gpus 1 · --lane bf16 · --attention-kernel sdpa · --lora and --input's lora: (an SDXL LoRA by its Hugging Face
 #   ref, the function's model and the UNet found from it)
-#   machine update --gpu-memory-limit 12GiB, then off · model quantize --lane int8 / fp8, --package, --on
+#   machine update --gpu-memory-limit 12GiB, then off · model quantize --lane int8 / fp8, --package, --on ·
+#   model upload --lane of a Hub model, and a family lane that is not the weights' width
 cli_fail() { log "cli: $*"; echo "$*" >> cli-fails.txt; }
 
 cell cli-gpus "$(pkg sdxl generate)" prompt="$OBJECT on a marble plinth, photo" seed:=$((R + 201)) --gpus 1
@@ -34,4 +35,17 @@ qc=$("$CLI" --json model info "$q" 2>/dev/null | python3 -c 'import json,sys; pr
 "$CLI" --json model info "$q" > cli-quantized.json 2>&1 || cli_fail "model info $q: $(tail -c 300 cli-quantized.json)"
 grep -q '"lane": *"int8"' cli-quantized.json || cli_fail "model quantize --lane int8: $q has no int8 commit"
 grep -q '"lane": *"fp8"' cli-quantized.json || cli_fail "model quantize --lane fp8: $q has no fp8 commit"
+# `model upload` of a Hub model by name copies the lane --lane names, as `download --lane` reads it: bf16 weights.
+# A lane naming a precision family is its weights' width: the int8 commit as local/, labelled bf16, is refused.
+"$CLI" --json model upload anima "$q" --lane bf16 --on "$M" > cli-upload-lane.ndjson 2>&1 \
+  || cli_fail "model upload anima --lane bf16: $(tail -c 400 cli-upload-lane.ndjson)"
+held=$(python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1]) if l.startswith("{")]; m=[e for e in r if e.get("type") == "run.completed"][-1]["run"]["result"]["models"][0]; print(m["lane"], m["precision"])' cli-upload-lane.ndjson 2>/dev/null)
+[ "$held" = "bf16 bf16" ] || cli_fail "model upload anima --lane bf16 copied lane/precision '${held:-none}', not bf16"
+q8=$(python3 -c 'import json,sys; print(next(c["commit"] for c in json.load(open(sys.argv[1]))["commits"] if c["lane"] == "int8"))' cli-quantized.json 2>/dev/null)
+"$CLI" --json model download "$q@$q8" "local/ci-e2e-q8-$R" --on "$M" > cli-alias.ndjson 2>&1 \
+  || cli_fail "model download $q@$q8 local/ci-e2e-q8-$R: $(tail -c 300 cli-alias.ndjson)"
+if "$CLI" --json model upload "local/ci-e2e-q8-$R" "$q" --lane bf16 --on "$M" > cli-mislabel.ndjson 2>&1 \
+  || ! grep -q commit_lane_mismatch cli-mislabel.ndjson; then
+  cli_fail "model upload of int8 weights as lane bf16 was not refused commit_lane_mismatch: $(tail -c 300 cli-mislabel.ndjson)"
+fi
 "$CLI" --json model delete "$q" -y > /dev/null 2>&1 || cli_fail "model delete $q failed: delete it by hand"

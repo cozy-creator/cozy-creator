@@ -231,6 +231,16 @@ pub(crate) fn upload(
 ) -> Result<tensorfs::fetch::Uploaded, Refused> {
     use tensorfs::fetch::{bearer, upload_commit, Client, Endpoint, SourcePolicy};
     let failed = |error: String| refused("upload_failed", error);
+    // A lane the precision table names is the weights' width: never int8 weights labelled bf16.
+    let read = store.read(header).map_err(|e| e.to_string())
+        .and_then(|bytes| tensorfs::format::Header::from_cbor(&bytes).map_err(|e| e.to_string()))
+        .map_err(|e| refused("checkpoint_invalid", e))?;
+    let held = crate::precision::Profile::of(&read);
+    let named = crate::precision::bits(lane);
+    if named > 0 && held.bits > 0 && named != held.bits {
+        return Err(refused("commit_lane_mismatch", format!(
+            "lane {lane} is {named}-bit, and these weights are {} ({}-bit): name the lane they hold", held.family, held.bits)));
+    }
     let commit = tensorfs::format::Tree::of(lane, header.clone(), files).map_err(|e| refused("invalid_request", e.to_string()))?;
     let tree = store.put_tree(&commit).map_err(|e| failed(e.to_string()))?;
     let policy = SourcePolicy { any_host: true, allow_local: true, max_redirects: 8, ..Default::default() };

@@ -239,6 +239,11 @@ pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Erro
         source(&args.source, &args.profiles)?.into()
     };
     made.choice.trained_on = args.trained_on.clone().unwrap_or_default();
+    // A Hub model by name is copied in that lane, as `model download --lane` reads it; never the
+    // machine's pick under another lane's label.
+    if !made.choice.repository.is_empty() && !made.choice.repository.starts_with("local/") {
+        made.choice.lane = args.lane.clone();
+    }
     let target = format!("{} → {destination} ({})", args.source, args.lane);
     let run = warm_run(ctx, on, target, made, destination.clone(), args.lane.clone()).await?;
     if run.status == Status::Completed {
