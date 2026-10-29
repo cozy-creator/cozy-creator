@@ -87,8 +87,8 @@ pub struct Choice {
     pub adapters: Vec<Adapter>,
 }
 
-/// A LoRA. The machine applies it to the component of its slot's model that the call runs and
-/// its layers fit.
+/// A LoRA. The machine applies each of its parts to the component of its slot's model, of those
+/// the call runs, named like it or that its layers fit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Adapter {
     pub reference: String,
@@ -502,7 +502,7 @@ impl Binder<'_> {
                     format!("--lora {written}: {slot:?} is not a model slot"),
                 )
                 .remedy(format!(
-                    "--lora [<slot>=]<lora>[,strength], a slot by its short name: {}",
+                    "--lora <org/lora>[,strength] adapts the function's model; <slot>=<org/lora> names one of: {}",
                     self.slot_names().join(", ")
                 )));
             }
