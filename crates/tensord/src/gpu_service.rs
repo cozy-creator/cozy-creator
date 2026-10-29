@@ -3,7 +3,7 @@
 //! residency in each executor. TensorD schedules calls with GPU permits, offloads
 //! idle executors, and observes exact process exit. Engine owns
 //! acceptance and run custody.
-use platform::contain::host_memory;
+use platform::contain::{host_memory, host_pressure::HostMode};
 use platform::process::{Birth, Exact};
 use crate::{
     catalog::HeldGeneration,
@@ -83,7 +83,7 @@ pub struct HostOptions {
     /// `shared` (the default): a guest that gives memory back whenever anything on the host
     /// stalls on it; `dedicated` (a rented pod's image or grant): only when this cgroup does.
     #[serde(default)]
-    pub mode: platform::contain::host_pressure::HostMode,
+    pub mode: HostMode,
 }
 
 /// Root-sealed configuration, never peer-controlled paths or environment logic switches.
@@ -621,6 +621,9 @@ const ENDED: &str = "import-only executor ended";
 /// What one more import-only parent may hold of the host: torch, Diffusers and Transformers
 /// imported come to 0.73–0.85 GB resident (SDXL, Qwen-Image, Krea 2, Anima, H3 on CPU).
 const PARENT_BYTES: i64 = 1 << 30;
+
+/// How recently a shared machine's environment was used for its parent to import at machine start.
+const SHARED_RECENT: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 
 /// Executors fork from an import-only parent on Linux only; elsewhere each one spawns, and no
 /// parent imports ahead of it.
@@ -2706,11 +2709,42 @@ impl Pool {
         }
     }
 
+    /// A generation installed: its kernels compile (niced) and its import-only parent imports.
+    /// A shared machine keeps one parent imported ahead of a request: this one replaces the idle
+    /// others (Paul, 10-29: a laptop must not hold half its RAM for packages it is not using).
+    pub fn installed(self: &Arc<Self>, held: HeldGeneration) {
+        self.kernel_boot(held.clone());
+        if self.config.host.mode == HostMode::Shared {
+            let key = parent_app(&held);
+            let idle: Vec<Arc<Zygote>> = {
+                let mut zygotes = self.zygotes.lock().unwrap();
+                let others: Vec<App> = zygotes.iter().filter(|(app, z)| **app != key && z.childless()).map(|(app, _)| app.clone()).collect();
+                others.iter().filter_map(|app| zygotes.remove(app)).collect()
+            };
+            for zygote in idle {
+                if let ZygoteState::Ready(parent) = std::mem::take(&mut *zygote.state.lock().unwrap()) {
+                    if let Err(error) = parent.terminate() {
+                        tracing::warn!("ending an idle import-only executor: {error}");
+                    }
+                }
+            }
+        }
+        self.prespawn(held);
+    }
+
     /// The machine's installed environments `held`, the most recently used first: each one's
     /// import-only parent imports in turn, off the caller's thread, while the host keeps half its
-    /// memory free with one more parent ([`PARENT_BYTES`]). A short host ends idle parents least
+    /// memory free with one more parent ([`PARENT_BYTES`]). A shared machine (a local one) imports
+    /// only its most recently used environment, and only one used within [`SHARED_RECENT`]; the rest
+    /// import when a request or `--warm imported` asks. A short host ends idle parents least
     /// recently used first (`host_short`), as ever.
-    pub fn import_recent(self: &Arc<Self>, held: Vec<HeldGeneration>) {
+    pub fn import_recent(self: &Arc<Self>, held: Vec<(std::time::SystemTime, HeldGeneration)>) {
+        let held: Vec<HeldGeneration> = match self.config.host.mode {
+            HostMode::Dedicated => held.into_iter().map(|(_, held)| held).collect(),
+            HostMode::Shared => held.into_iter().take(1)
+                .filter(|(used, _)| used.elapsed().is_ok_and(|since| since < SHARED_RECENT))
+                .map(|(_, held)| held).collect(),
+        };
         let pool = Arc::downgrade(self);
         let started = std::thread::Builder::new().name("import-installed".into()).spawn(move || {
             for held in held {
