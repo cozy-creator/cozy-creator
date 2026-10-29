@@ -1,6 +1,6 @@
 //! Package environments, built one way for a release (`published`) and for local code
 //! (`local_source`): uv's Python, the locked (or resolved) dependencies, wheels from files, the
-//! project, this machine's Runtime/TensorFS pair over them, all byte-compiled, then the
+//! project, this machine's Runtime/TensorFS pair over them, all of it byte-compiled, then the
 //! environment's description by its own Runtime and its record. uv runs under one environment.
 use super::{canceled, io_failure, Failure, Job, Locked, Publisher, SDK};
 use crate::{catalog::normalized, machine::update, process::Supervised};
@@ -36,11 +36,6 @@ pub(crate) struct Project<'a> {
     pub fetch: Option<&'a dyn Fn() -> Result<(), Failure>>,
 }
 
-/// Every uv step compiles the bytecode of what it installs (uv compiles only that, never the
-/// whole environment): executors run `-I` from an environment they may not write, so an
-/// uncompiled module compiles again in every executor that imports it.
-const COMPILE: &str = "--compile-bytecode";
-
 /// What its record says of the Runtime pair it holds.
 #[derive(serde::Deserialize, serde::Serialize)]
 pub(crate) struct Built {
@@ -62,7 +57,7 @@ impl Publisher {
         let own_sdk = !self.sdk.requirements.is_empty();
         let editable_after = project.editable && project.locked.is_some();
         let steps = [true, project.locked.is_some() && project.wheels.is_some(), editable_after, own_sdk];
-        let total = steps.iter().filter(|s| **s).count() + 1 + usize::from(project.fetch.is_some());
+        let total = steps.iter().filter(|s| **s).count() + 2 + usize::from(project.fetch.is_some());
         let step = std::cell::Cell::new(0);
         let next = || {
             step.set(step.get() + 1);
@@ -85,7 +80,7 @@ impl Publisher {
         match project.locked {
             Some(locked) => {
                 let mut args = vec!["sync", "--frozen", "--inexact", "--no-dev", "--no-editable", "--no-install-project",
-                    "--project", &dir, "--python", &py, COMPILE];
+                    "--project", &dir, "--python", &py];
                 let held = carried.iter().map(|(name, _)| name.as_str()).chain(project.skip.iter().map(String::as_str))
                     .chain(pair.iter().copied().filter(|name| locked.packages.contains_key(*name)));
                 for name in held {
@@ -109,7 +104,7 @@ impl Publisher {
                 }
             }
             None => {
-                let mut args = vec!["pip", "install", "--python", &py, COMPILE];
+                let mut args = vec!["pip", "install", "--python", &py];
                 if let Some(wheels) = project.wheels {
                     args.extend(["--find-links", wheels.to_str().unwrap_or_default()]);
                 }
@@ -128,14 +123,14 @@ impl Publisher {
             next();
             let pins: Vec<String> = carried.iter().map(|(name, version)| format!("{name}=={version}")).collect();
             let mut args = vec!["pip", "install", "--python", &py, "--no-deps", "--no-index", "--link-mode", "copy",
-                "--find-links", wheels.to_str().unwrap_or_default(), COMPILE];
+                "--find-links", wheels.to_str().unwrap_or_default()];
             args.extend(pins.iter().map(String::as_str));
             self.uv(&args, &[], job)?;
         }
         if editable_after {
             next();
             // Its dependencies are in place: the project alone, whatever indexes its sources name.
-            self.uv(&["pip", "install", "--python", &py, "--no-deps", "--no-sources", "--editable", &dir, COMPILE], &[], job)?;
+            self.uv(&["pip", "install", "--python", &py, "--no-deps", "--no-sources", "--editable", &dir], &[], job)?;
         }
         if project.editable {
             live_paths(env).map_err(io_failure)?;
@@ -161,7 +156,28 @@ impl Publisher {
                 job.stage(format!("warning: {fallback}"));
             }
         }
+        next();
+        self.compile(env, job)?;
         Ok(Built { sdk: if own_sdk { "machine" } else { "locked" }.into(), fallback })
+    }
+
+    /// The whole environment's bytecode, once every step is in. Executors run `-I` from an
+    /// environment they may not write, so a module without it compiles again in every executor
+    /// that imports it (Diffusers, Transformers: 5.8-7.7 s of imports against 2.2-2.7 s). uv's own
+    /// `--compile-bytecode` cannot do it: it compiles only what that step installs, and `uv sync`
+    /// skips the files it links into an image's seeded cache. compileall follows the links. A file
+    /// that does not compile (a package's deliberately broken test data) stays a warning.
+    fn compile(&self, env: &Path, job: &Job) -> Result<(), Failure> {
+        let mut command = Command::new(platform::paths::venv_python(env));
+        command.args(["-I", "-m", "compileall", "-q", "-j", "0"]).args(platform::paths::venv_site_packages(env));
+        match run(command, job) {
+            Err(failure) if failure.0 == super::CANCELED => Err(failure),
+            Err((_, detail)) => {
+                tracing::warn!("compiling {}: {detail}", env.display());
+                Ok(())
+            }
+            Ok(()) => Ok(()),
+        }
     }
 
     /// This machine's own Runtime and TensorFS over the environment. Every other installed version
@@ -179,7 +195,7 @@ impl Publisher {
         let constraints = constraints.to_string_lossy();
         let links = self.sdk.find_links.as_ref().map(|p| p.to_string_lossy().to_string());
         let install = |how: &[&str]| {
-            let mut args = vec!["pip", "install", "--python", py, COMPILE];
+            let mut args = vec!["pip", "install", "--python", py];
             args.extend(how);
             if let Some(links) = &links {
                 args.extend(["--find-links", links]);
@@ -285,25 +301,35 @@ impl Publisher {
     /// second; its process group is killed when the run is canceled (`process::supervise`).
     pub(crate) fn uv(&self, args: &[&str], env: &[(&str, &std::ffi::OsStr)], job: &Job) -> Result<(), Failure> {
         let mut command = self.sdk.uv.command().map_err(|e| ("uv_unavailable", e.to_string()))?;
-        command.args(args).envs(env.iter().copied()).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
-        platform::process::own_group(&mut command);
-        let mut child = command.spawn().map_err(|e| ("package_installation_uv_absent", format!("cannot run uv: {e}")))?;
-        let mut stderr = child.stderr.take().expect("piped uv stderr");
-        let (ended, stderr) = std::thread::scope(|scope| {
-            let drained = scope.spawn(move || {
-                let mut kept = Vec::new();
-                let _ = stderr.read_to_end(&mut kept);
-                kept
-            });
-            let ended = crate::process::supervise(&mut child, job.stop.as_ref(), &|read| job.bytes(read, 0));
-            (ended, drained.join().unwrap_or_default())
-        });
+        command.args(args).envs(env.iter().copied());
         let step = args[..2.min(args.len())].join(" ");
-        match ended.map_err(|e| ("package_installation_uv_failed", format!("uv: {e}")))? {
-            Supervised::Exited(status) if status.success() => Ok(()),
-            Supervised::Exited(_) => Err(("package_installation_uv_failed", format!("uv {step}:\n{}", stderr_tail(&stderr)))),
-            Supervised::Canceled => Err(canceled()),
-        }
+        run(command, job).map_err(|(code, detail)| match code {
+            "package_installation_failed" => ("package_installation_uv_failed", format!("uv {step}:\n{detail}")),
+            _ => (code, detail),
+        })
+    }
+}
+
+/// `command` to its end under the job (its stop cancels it), its stderr kept for the failure.
+fn run(mut command: Command, job: &Job) -> Result<(), Failure> {
+    command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
+    platform::process::own_group(&mut command);
+    let program = command.get_program().to_string_lossy().into_owned();
+    let mut child = command.spawn().map_err(|e| ("package_installation_uv_absent", format!("cannot run {program}: {e}")))?;
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    let (ended, stderr) = std::thread::scope(|scope| {
+        let drained = scope.spawn(move || {
+            let mut kept = Vec::new();
+            let _ = stderr.read_to_end(&mut kept);
+            kept
+        });
+        let ended = crate::process::supervise(&mut child, job.stop.as_ref(), &|read| job.bytes(read, 0));
+        (ended, drained.join().unwrap_or_default())
+    });
+    match ended.map_err(|e| ("package_installation_uv_failed", format!("{program}: {e}")))? {
+        Supervised::Exited(status) if status.success() => Ok(()),
+        Supervised::Exited(_) => Err(("package_installation_failed", stderr_tail(&stderr))),
+        Supervised::Canceled => Err(canceled()),
     }
 }
 
