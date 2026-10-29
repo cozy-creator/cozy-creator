@@ -83,7 +83,7 @@ def check(gate):
 
     def chosen(name):
         case = name.split('-')[0]
-        return cases is None or {'mc': 'multi-conversion', 'lora': 'lora-alpha'}.get(case, case) in cases
+        return cases is None or {'mc': 'multi-conversion', 'lora': 'lora-alpha', 'layout': 'family'}.get(case, case) in cases
 
     def done(name, cancelled=False):
         if not chosen(name):
@@ -233,6 +233,23 @@ def check(gate):
             f'tensorfs multi-conversion: quantize run {rows["mc-quantize"]["run"]}, one call per component: '
             f'{", ".join(encoded) or "no component"} encoded{"" if ok else " (want decoder, encoder)"}; '
             f'worst relative error {worst:.4f}')
+    # Refused at ingest, before the bulk downloads (tfs-137): the refusal's code, and what moved before it.
+    for name, code, cap in (('family-refusal', 'FAMILY_MISMATCH', 64 << 20), ('layout-probe', 'LAYOUT_MISMATCH', 512 << 20)):
+        if not chosen(name):
+            continue
+        r = rows.get(name)
+        if r is None:
+            fails.append(f'tensorfs {name}: did not run')
+            continue
+        rec = r['rec'] or {}
+        why = json.dumps(rec.get('reason') or '')
+        moved = max((stage_progress([e], 'download')[0] for e in r['evs']), default=0)
+        if rec.get('status') != 'failed' or code not in why:
+            fails.append(f'tensorfs {name}: run {r["run"]} {rec.get("status")}, not refused with {code}: {why[:300]}')
+        elif moved > cap:
+            fails.append(f'tensorfs {name}: {moved / 2**20:.0f} MiB downloaded before the refusal (at most {cap >> 20})')
+        else:
+            notes.append(f'tensorfs {name}: refused ({code}) after {moved / 2**20:.1f} MiB, {r["wall_s"]} s')
     if not fails:
         label = open(os.path.join(gate['out'], 'label')).read().strip()
         at = time.strftime('%Y-%m-%dT%H:%MZ', time.gmtime())

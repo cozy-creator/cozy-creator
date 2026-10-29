@@ -153,6 +153,15 @@ enum Probed {
 fn probe_component(set: &SourceSet, fam: &Family, name: &str, tensors: &[&Planned]) -> Result<Probed> {
     let (Some(probe), Some((root, _))) = (&fam.probe, fam.def(name)) else { return Ok(Probed::Unprobed) };
     let variants = fam.variants(name);
+    // Every probed row range at once, read ahead in parallel.
+    let mut ranges = Vec::new();
+    for t in probe.of(root) {
+        let Some(p) = tensors.iter().find(|p| p.key == t.key) else { continue };
+        for b in &t.blocks {
+            ranges.extend(block_ranges(p, b * probe.rows, probe.rows));
+        }
+    }
+    set.read_ranges(&ranges)?;
     // Each variant's worst block over every probed tensor (cosine, key, block), and its summed
     // mean distance.
     let mut seen: BTreeMap<String, ((f64, String, u64), f64)> = BTreeMap::new();
@@ -230,9 +239,24 @@ fn block(set: &SourceSet, p: &Planned, first: u64, count: u64) -> Result<Option<
     Ok(values(&p.dtype, &decoded[first as usize * row..(first + count) as usize * row]))
 }
 
-/// The source bytes of output rows `first..first + count` of a plain reading (`elem` bytes per
-/// element, `cols` per row), range by range through its runs.
-fn rows(set: &SourceSet, read: &Reading, elem: u64, cols: u64, first: u64, count: u64) -> Result<Vec<u8>> {
+/// The ranges [`block`] reads of `p`: `(file, start, len)`.
+fn block_ranges(p: &Planned, first: u64, count: u64) -> Vec<(usize, u64, u64)> {
+    let cols: u64 = p.shape[1..].iter().product();
+    let whole = |r: &Reading| ranges(r, r.unit, 1, 0, r.runs.count() * r.runs.run);
+    let plain = |r: &Reading| match (r.inline.is_some() || r.derive.is_some(), r.source.bits()) {
+        (false, Some(bits)) if bits.is_multiple_of(8) => ranges(r, bits / 8, cols, first, count),
+        _ => vec![],
+    };
+    let out: Vec<(u64, u64, usize)> = match &p.encoding {
+        None => plain(&p.parts[0].read).into_iter().map(|(s, l)| (s, l, p.parts[0].read.file)).collect(),
+        Some(_) => (p.parts.iter()).flat_map(|part| whole(&part.read).into_iter().map(|(s, l)| (s, l, part.read.file))).collect(),
+    };
+    out.into_iter().map(|(s, l, f)| (f, s, l)).collect()
+}
+
+/// The byte ranges of output rows `first..first + count` of a plain reading (`elem` bytes per
+/// element, `cols` per row), through its runs; adjacent ones joined.
+fn ranges(read: &Reading, elem: u64, cols: u64, first: u64, count: u64) -> Vec<(u64, u64)> {
     let per = elem / read.unit;
     let (from, to) = (first * cols * per, (first + count) * cols * per);
     let run = read.runs.run;
@@ -249,8 +273,13 @@ fn rows(set: &SourceSet, read: &Reading, elem: u64, cols: u64, first: u64, count
         }
         at = end;
     }
+    ranges
+}
+
+/// The source bytes of output rows `first..first + count` of a plain reading.
+fn rows(set: &SourceSet, read: &Reading, elem: u64, cols: u64, first: u64, count: u64) -> Result<Vec<u8>> {
     let mut out = Vec::new();
-    for (start, len) in ranges {
+    for (start, len) in ranges(read, elem, cols, first, count) {
         out.extend(set.read_at(read.file, start, len)?);
     }
     Ok(out)

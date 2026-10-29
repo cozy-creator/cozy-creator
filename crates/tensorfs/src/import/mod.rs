@@ -920,6 +920,7 @@ pub fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
             (folder.config, folder.config_file) = (adapter.config, Some(lora::ADAPTER_CONFIG.into()));
         }
     }
+    progress("checking its family", 0, 0);
     let checked = match as_is {
         true => verify::Checked::default(),
         false => verify::check(&verify::Input {
@@ -933,6 +934,7 @@ pub fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
             trained_on: req.trained_on,
         })?,
     };
+    set.forget_read_ahead();
     for note in &checked.notes {
         tracing::info!("family: {note}");
     }

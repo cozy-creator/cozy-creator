@@ -288,11 +288,20 @@ impl SourceSet {
     /// yet: what folding and normalizing read of a file only its header holds (markers, stated
     /// shapes, LoRA alphas), so that is not one request after another.
     pub fn read_ahead(&self, wanted: impl Fn(&str, &Tensor) -> bool) -> Result<()> {
-        let here: Vec<u64> = self.files.iter().map(|p| std::fs::metadata(p).map_or(0, |m| m.len())).collect();
-        let mut todo: Vec<(usize, u64, u64)> = (self.groups.iter())
+        let ranges: Vec<(usize, u64, u64)> = (self.groups.iter())
             .flat_map(|g| g.tensors.iter())
-            .filter(|(k, t)| t.start + t.len > here[t.file] && self.remote[t.file].is_some() && wanted(k, t))
+            .filter(|(k, t)| wanted(k, t))
             .map(|(_, t)| (t.file, t.start, t.len))
+            .collect();
+        self.read_ranges(&ranges)
+    }
+
+    /// Reads `(file, start, len)` ranges that are not here yet by range, eight at a time, for
+    /// [`SourceSet::read_at`].
+    pub fn read_ranges(&self, ranges: &[(usize, u64, u64)]) -> Result<()> {
+        let here: Vec<u64> = self.files.iter().map(|p| std::fs::metadata(p).map_or(0, |m| m.len())).collect();
+        let mut todo: Vec<(usize, u64, u64)> = (ranges.iter().copied())
+            .filter(|(file, start, len)| start + len > here[*file] && self.remote[*file].is_some())
             .collect();
         todo.sort();
         todo.dedup();
@@ -314,6 +323,11 @@ impl SourceSet {
                 .collect();
             workers.into_iter().try_for_each(|w| w.join().expect("a read-ahead worker"))
         })
+    }
+
+    /// Lets go of what was read ahead (the layout probe's rows), once nothing reads it again.
+    pub fn forget_read_ahead(&self) {
+        self.fetched.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
     /// `len` bytes of `file` at `start`: from the local file when they are there, else read
