@@ -197,9 +197,9 @@ read them.
 - A LoRA component's config is PEFT's `adapter_config.json` (`config_file`; `peft_type: "LORA"`,
   `base_model_name_or_path`, `r`, `lora_alpha`, `target_modules`, …). A converter normalizes the scale at ingest:
   PEFT's `alpha_pattern` (and rsLoRA's `α / √r`) become each module's `.alpha`, its `rank_pattern` is each
-  `lora_A`'s rows already, and both are left empty in the config. Kohya's `<module>.alpha` stays as it is, and its
-  training metadata maps to the config (`ss_network_dim` is `r`, `ss_network_alpha` `lora_alpha`,
-  `ss_sd_model_name` the base model).
+  `lora_A`'s rows already, and both are left empty in the config. Kohya's `<module>.alpha` stays as it is, and
+  `ss_sd_model_name` is the base model. Training metadata never sets the scale: kohya's and ComfyUI's loaders read
+  only `.alpha` tensors, so a file without them is `α = r` whatever its `ss_network_alpha` says.
 - A writer MUST NOT deviate from these names unless the deviation is listed below with its written, measured reason.
 
 | Model | Upstream name | Stored name | Measured reason |
