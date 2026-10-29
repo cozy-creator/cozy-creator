@@ -1,10 +1,9 @@
 """idle-entrypoints.sh's verdicts: `<dir> <memory log> <card bytes>` in, `name<TAB>PASS|FAIL<TAB>why` rows out.
-A pair none of whose cells ran prints nothing."""
+A cell that did not run prints nothing."""
 import json
 import sys
 from pathlib import Path
 
-LIMIT = 512 << 20  # the driver's reserve: a call within it of the card sat at its limit
 
 
 def record(name):
@@ -68,31 +67,68 @@ def row(name, ok, why):
     print(f'{name}\tPASS\t{why}' if ok else f'{name}\tFAIL\t{why}')
 
 
+def reclaimed(m):
+    """Bytes the process's Runtime had reclaimed of its weights by the call's end (cumulative, every GPU)."""
+    return sum(((r.get('stats') or {}).get('weight_residency') or {}).get('reclaimed_bytes') or 0
+               for r in ((m.get('memory') or {}).get('stats') or {}).get('varena') or [])
+
+
+def ready_s(rec, m):
+    """From the run's acceptance to its GPU call's first kernel."""
+    accepted = rec.get('accepted_at_ms') or 0
+    return (kernels_ms(m)[0] - accepted) / 1e3 if accepted else float('nan')
+
+
+def legs(m):
+    return ((m['execution'].get('executor') or {}).get('legs_ms')) or {}
+
+
 card = int(sys.argv[3] or 0)
-klein = {n: record(f'idle-klein-{n}') for n in ('a', 'b', 'a2', 'b2')}
-if any(klein.values()):
-    calls = {n: r and r.get('status') == 'completed' and gpu_calls(r) for n, r in klein.items()}
-    for idle, active in (('a', 'b'), ('a2', 'b2')):
-        if not (calls[idle] and calls[active]):
-            row(f'idle-klein-{active}', False, f'{idle} {klein[idle] and klein[idle].get("status")}, '
-                f'{active} {klein[active] and klein[active].get("status")}')
-            continue
-        mi, ma = calls[idle][-1], calls[active][-1]
-        pids, _ = executor(mi)
-        since, until = kernels_ms(mi)[1], kernels_ms(ma)[0]
-        moved = any(pid in pids and since <= at <= until for at, pid in offloads())
+pairs = (('idle-klein-a', 'idle-klein-b'), ('idle-klein-b', 'idle-klein-a2'), ('idle-klein-a2', 'idle-klein-b2'),
+         ('idle-h3-s', 'idle-h3-t'))
+recs = {n: record(n) for pair in pairs for n in pair}
+for idle, active in pairs:
+    if not recs[active]:
+        continue
+    ri, ra = recs[idle], recs[active]
+    ci = ri and ri.get('status') == 'completed' and gpu_calls(ri)
+    ca = ra.get('status') == 'completed' and gpu_calls(ra)
+    if not (ci and ca):
+        row(active, False, f'{idle} {ri and ri.get("status")}, {active} {ra.get("status")}')
+        continue
+    mi, ma = ci[-1], ca[-1]
+    was, now = executor(mi), executor(ma)
+    since, until = kernels_ms(mi)[1], kernels_ms(ma)[0]
+    moved = any(pid in was[0] and since <= at <= until for at, pid in offloads())
+    ok, why = was == now and not moved, f'on {now}, {idle} on {was}; offloaded by TensorD between: {moved}'
+    if active.startswith('idle-klein'):
+        # One process fills the card (its Runtime evicts the idle construction's blocks as it needs the room): sitting
+        # near the limit is no stall by itself; its own weights read twice would be.
         top, again = peak(ma), refilled(ma)
-        row(f'idle-klein-{active}', moved and card and top < card - LIMIT and again == 0,
-            f'idle executor {pids} offloaded first: {moved}; driver peak {top / 2**30:.2f} of {card / 2**30:.2f} GiB; '
-            f'{again} B of its weights read again; host stall {host_stall_s(ma):.1f} s')
-    for first, again in (('a', 'a2'), ('b', 'b2')):
-        if calls[first] and calls[again]:
-            was, now = executor(calls[first][-1]), executor(calls[again][-1])
-            row(f'idle-klein-{again}-executor', was == now, f'{again} on executor {now}, {first} on {was}')
+        ok = ok and again == 0
+        why += f'; driver peak {top / 2**30:.2f} of {card / 2**30:.2f} GiB; {again} B of its weights read again'
+    evicted = reclaimed(ma) - reclaimed(mi) if was == now else reclaimed(ma)
+    row(active, ok, f'{why}; Runtime reclaimed {evicted / 2**30:.2f} GiB of weights during it; ready '
+        f'{ready_s(ra, ma):.1f} s after acceptance ({idle} {ready_s(ri, mi):.1f} s); host stall {host_stall_s(ma):.1f} s')
 t, lf = record('idle-h3-t'), record('idle-h3-lf')
-if t or lf:
+if lf:
     ok = all(r is not None and r.get('status') == 'completed' and gpu_calls(r) for r in (t, lf))
     first, second = (executor(gpu_calls(r)[-1]) if ok else None for r in (t, lf))
     row('idle-h3-lf', ok and first == second,
         f'ref2va_turbo executor {first}, long_form segment executor {second}; statuses '
         f'{t and t.get("status")}, {lf and lf.get("status")}')
+# A cancel ends every construction of its process; the next call of a sibling starts a new one, cold.
+for befores, canceled, after in ((('idle-klein-b2',), 'idle-cancel', 'idle-after-cancel'),
+                                 (('idle-h3-lf', 'idle-h3-t'), 'idle-h3-cancel', 'idle-h3-after-cancel')):
+    rc, ra = record(canceled), record(after)
+    if not ra:
+        continue
+    rb = next(filter(None, map(record, befores)), None)
+    ca = ra.get('status') == 'completed' and gpu_calls(ra)
+    cb = rb and rb.get('status') == 'completed' and gpu_calls(rb)
+    if not (rc and rc.get('status') == 'canceled' and ca and cb):
+        row(after, False, f'{canceled} {rc and rc.get("status")}, {after} {ra.get("status")}')
+        continue
+    was, now = executor(cb[-1]), executor(ca[-1])
+    row(after, was != now, f'on {now} after {canceled} was canceled, which ran beside {was}; ready '
+        f'{ready_s(ra, ca[-1]):.1f} s after acceptance (warm before: {ready_s(rb, cb[-1]):.1f} s), its start {legs(ca[-1])}')

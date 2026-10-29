@@ -130,6 +130,9 @@ its kernel compiles are up; it reads the executors' memory after each machine st
 - An environment's import with its files evicted from the page cache vs cached, and with its import pages read back first (SDXL, H3).
 - `--warm gpu` held and reused.
 - A request queued behind another package's run. With a dev TensorD (`tensord`), item `4b` runs this in shared mode (via the pod's config.toml) and then dedicated; its pipeline is the `fixtures/xs132-pipeline` orchestrator.
+`one-executor` (xs-113) runs `suites/tensord/idle-entrypoints.sh` once per TensorD arm on one pod (1 GPU or a
+`gpus` group): two constructions of one package on the same processes, then a cancel and a clean successor, with the
+pod's executor processes and GPU bytes after each cell, set side by side in `summary.tsv`.
 
 ## More cells and checks
 
