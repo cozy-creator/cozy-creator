@@ -447,8 +447,19 @@ fn by_reference(sources: &[&Header], takes: &[Take], adapted: &BTreeSet<&str>, g
             chunks.push(sources[source].chunks[*chunk as usize].clone());
         }
     }
+    // Each component's base tensors in the base's own order (a renamed layer keeps its place),
+    // then the factors: the order their bytes lie in, so a block reads as contiguously as the
+    // base does. The writer this replaced re-packed small parts in header order instead.
+    let place: BTreeMap<(&str, &str), usize> = (base.components().iter())
+        .flat_map(|c| c.tensors.iter().enumerate().map(move |(i, t)| ((c.name.as_str(), t.key.as_str()), i)))
+        .collect();
+    let mut ordered: Vec<(usize, &Take, Tensor)> = takes.iter().zip(tensors).enumerate().map(|(i, (take, tensor))| (i, take, tensor)).collect();
+    ordered.sort_by_key(|(i, take, _)| match take.2 {
+        0 => (0, place.get(&(take.3.as_str(), take.4.as_str())).copied().unwrap_or(usize::MAX), *i),
+        _ => (1, 0, *i),
+    });
     let mut by_component: BTreeMap<&str, Vec<Tensor>> = BTreeMap::new();
-    for (take, mut tensor) in takes.iter().zip(tensors) {
+    for (_, take, mut tensor) in ordered {
         // An empty range touches no chunk and keeps any index.
         let moved = |chunk: u64| index[take.2].get(&chunk).copied().unwrap_or_default();
         match &mut tensor.body {
