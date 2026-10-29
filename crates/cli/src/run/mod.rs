@@ -427,13 +427,13 @@ async fn call_code(
         Some(level) => {
             let target = format!("{}/{}", code.package, callable.name);
             let (models, payload) = bind::warm_choices(
-                &target, code.release, callable, &terms, level == Warm::Gpu,
+                &target, code.release, code.interface, callable, &terms, level == Warm::Gpu,
             )?;
             (call.warm(level, &models, payload)?, None, None)
         }
         None => {
             let target = format!("{}/{}", code.package, callable.name);
-            let bound = bind::bind(&target, code.release, callable, &terms)?;
+            let bound = bind::bind(&target, code.release, code.interface, callable, &terms)?;
             if let Some(warning) = bound.warning(&target) {
                 output::warn(&warning);
             }

@@ -162,6 +162,20 @@ pub fn contract(target: &str, interface: &Interface, callable: &Callable) -> Str
             out.push('\n');
         }
     }
+    let mut called: Vec<(&str, &str, Vec<&str>)> = Vec::new();
+    for slot in interface.call_slots(callable) {
+        let callee = slot.path.split(".models.").next().unwrap_or_default();
+        match called.iter_mut().find(|(param, class, _)| *param == slot.param && *class == slot.class) {
+            Some((_, _, callees)) => callees.push(callee),
+            None => called.push((&slot.param, &slot.class, vec![callee])),
+        }
+    }
+    if !called.is_empty() {
+        out.push_str("  models, through the calls it makes (model.<slot>=, --lora <slot>:<component>=):\n");
+        for (param, class, callees) in called {
+            let _ = writeln!(out, "    {param}: {class} ({})", callees.join(", "));
+        }
+    }
     if !callable.weights_outputs.is_empty() {
         let written: Vec<&str> = callable
             .weights_outputs
