@@ -1137,7 +1137,7 @@ impl Publisher {
                     .and_then(|slot| slot["components"].as_array())
                     .map(|names| names.iter().filter_map(|n| n.as_str().map(str::to_owned)).collect())
                     .unwrap_or_default();
-                apply_adapters(self, request.source.as_ref(), &resolve, choice, grant, &runs, &request.providers, job)?;
+                warnings.extend(apply_adapters(self, request.source.as_ref(), &resolve, choice, grant, &runs, &request.providers, job)?);
             }
         }
         job.stage(format!("preparing {}", request.package));
@@ -1372,9 +1372,9 @@ fn apply_adapters(
     runs: &[String],
     providers: &Providers,
     job: &Job,
-) -> Result<(), Failure> {
+) -> Result<Vec<String>, Failure> {
     if choice.adapters.is_empty() {
-        return Ok(());
+        return Ok(vec![]);
     }
     let store = &publisher.store;
     job.stage(format!("preparing model adapters for {}", grant.slot));
@@ -1447,9 +1447,15 @@ fn apply_adapters(
         })
         .collect();
     job.stage(format!("{}: {}", grant.slot, applied.join("; ")));
+    let warnings = (choice.adapters.iter().zip(&composed.warnings))
+        .flat_map(|(adapter, said)| {
+            let named = if adapter.source.is_empty() { &adapter.model } else { &adapter.source };
+            said.iter().map(move |w| format!("{named}: {w}"))
+        })
+        .collect();
     grant.repository = composed.name;
     grant.manifest = composed.checkpoint.id().id();
-    Ok(())
+    Ok(warnings)
 }
 
 /// A catalog read the Hub answered 404 to is the thing named absent there; any other failure

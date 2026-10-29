@@ -41,6 +41,8 @@ pub struct Composed {
     pub checkpoint: Checkpoint,
     /// The base components each selection adapts, in order.
     pub adapted: Vec<Vec<String>>,
+    /// What each selection's run is told: a LoRA trained on another component than it adapts.
+    pub warnings: Vec<Vec<String>>,
 }
 
 fn refuse(code: &str, detail: impl Into<String>) -> io::Error {
@@ -149,7 +151,9 @@ fn keyed(component: &Component) -> BTreeMap<String, Tensor> {
     component.tensors.iter().map(|t| (t.key.clone(), t.clone())).collect()
 }
 
-fn infer_component(base: &Header, runs: &[String], factors: &BTreeMap<String, Tensor>) -> io::Result<String> {
+/// The one base component `factors` fit among those the call `runs`; of several, the one the LoRA
+/// was `trained_on` (a family component, through the base's `family` record) when it is one.
+fn infer_component(base: &Header, runs: &[String], factors: &BTreeMap<String, Tensor>, trained_on: Option<&str>) -> io::Result<String> {
     let pairs = pairs(factors)?;
     let fits = |tensors: &BTreeMap<String, Tensor>| {
         !pairs.is_empty()
@@ -164,6 +168,11 @@ fn infer_component(base: &Header, runs: &[String], factors: &BTreeMap<String, Te
         true => "the model's components".to_string(),
         false => format!("the components this call runs ({})", runs.join(", ")),
     };
+    let family = tensorfs::family::Record::read(&base.metadata);
+    let trained = |c: &&&String| trained_on.is_some_and(|t| family.as_ref().map_or(c.as_str(), |f| f.component(c)) == t);
+    if let (true, Some(one)) = (matches.len() > 1, matches.iter().find(trained)) {
+        return Ok((*one).clone());
+    }
     match matches.as_slice() {
         [one] => Ok((*one).clone()),
         [] => Err(refuse("component", format!("the LoRA's layers fit none of {}", ran()))),
@@ -180,7 +189,7 @@ type Take = (String, String, usize, String, String);
 
 /// What the view takes, in execution order, and its graph, refusing unsupported keys before
 /// anything is written.
-fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(Vec<Take>, Graph)> {
+fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(Vec<Take>, Graph, Vec<Vec<String>>)> {
     if base.components().iter().any(|c| c.assets.contains_key(GRAPH_FILE)) {
         return Err(refuse("nested", "select the original base and one complete ordered adapter stack"));
     }
@@ -188,7 +197,13 @@ fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(
     let mut renamed: BTreeMap<(String, String), String> = BTreeMap::new();
     let mut grafts: BTreeMap<String, Vec<Take>> = BTreeMap::new();
     let mut graph = Graph { format: FORMAT, layers: vec![], adapters: vec![] };
+    // The base's verified family, and each stored component's family component (tfs-137).
+    let family = tensorfs::family::Record::read(&header.metadata);
+    let mut warnings = vec![];
     for (index, (selection, adapter)) in adapters.iter().enumerate() {
+        let declared = tensorfs::family::Adapter::read_all(&adapter.header().metadata);
+        let trained_on = |name: &str| declared.get(name).and_then(|a| a.trained_on.as_ref()).map(|t| t.component.as_str());
+        let mut said = vec![];
         if !selection.strength.is_finite() {
             return Err(refuse("scale", "adapter strength must be finite"));
         }
@@ -212,12 +227,12 @@ fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(
             (false, false) => vec![(named(&selection.source_component).ok_or_else(absent)?, selection.component.clone())],
             (true, false) => {
                 let found = named(&selection.source_component).ok_or_else(absent)?;
-                vec![(found, infer_component(header, &selection.runs, &keyed(found))?)]
+                vec![(found, infer_component(header, &selection.runs, &keyed(found), trained_on(&found.name))?)]
             }
             (true, true) => (components.iter())
                 .map(|found| match runs(&found.name) && header.component(&found.name).is_some() {
                     true => Ok((found, found.name.clone())),
-                    false => Ok((found, infer_component(header, &selection.runs, &keyed(found))?)),
+                    false => Ok((found, infer_component(header, &selection.runs, &keyed(found), trained_on(&found.name))?)),
                 })
                 .collect::<io::Result<_>>()?,
         };
@@ -226,6 +241,18 @@ fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(
         }
         for (found, component) in targets {
             let (source_component, factors) = (&found.name, &keyed(found));
+            // A LoRA of another family is refused before any layer is read; one trained on another
+            // component of its family than it adapts is applied, with a warning on the run.
+            let applied = family.as_ref().map_or(component.as_str(), |f| f.component(&component));
+            if let (Some(lora), Some(base)) = (declared.get(source_component.as_str()), &family) {
+                if lora.family != base.name {
+                    return Err(refuse("family", format!("a {} LoRA, and the base model is {}", lora.family, base.name)));
+                }
+            }
+            if let Some(t) = declared.get(source_component.as_str()).and_then(|a| a.trained_on.as_ref()).filter(|t| t.component != applied) {
+                let slot = if applied == component { String::new() } else { format!(" ({applied})") };
+                said.push(format!("trained on {} ({}), applied to {component}{slot}", t.component, t.from));
+            }
             // PEFT's adapter_config, the LoRA component's config: α where a module has no `.alpha`.
             let lora_alpha = found.config.get("lora_alpha").and_then(serde_json::Value::as_f64);
             if factors.is_empty() {
@@ -294,6 +321,7 @@ fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(
                 });
             }
         }
+        warnings.push(said);
     }
     let mut takes = vec![];
     for component in header.components() {
@@ -307,7 +335,7 @@ fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(
         takes.extend(renames);
         takes.extend(grafts.remove(name).unwrap_or_default());
     }
-    Ok((takes, graph))
+    Ok((takes, graph, warnings))
 }
 
 /// The adapter view of `base` with `selections`, composed (the same bytes, so the same id, each
@@ -317,7 +345,7 @@ pub fn compose(store: &Store, base: &ObjectRef, selections: &[Selection]) -> io:
     let base_ref = base;
     let base = checkpoint(base)?;
     let adapters = selections.iter().map(|s| Ok((s.clone(), checkpoint(&s.checkpoint)?))).collect::<io::Result<Vec<_>>>()?;
-    let (takes, graph) = plan(&base, &adapters)?;
+    let (takes, graph, warnings) = plan(&base, &adapters)?;
     let each = (selections.iter())
         .map(|s| {
             let id = s.checkpoint.id();
@@ -362,5 +390,5 @@ pub fn compose(store: &Store, base: &ObjectRef, selections: &[Selection]) -> io:
         writer.set_metadata(key, value.clone());
     }
     let header = writer.commit().map_err(storage::io_error)?;
-    Ok(Composed { name: id, checkpoint: checkpoint(&header)?, adapted: each })
+    Ok(Composed { name: id, checkpoint: checkpoint(&header)?, adapted: each, warnings })
 }
