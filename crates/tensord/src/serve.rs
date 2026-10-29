@@ -274,6 +274,9 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
             config,
             store,
         )?)?;
+        if let Err(error) = service.import_installed() {
+            tracing::warn!("importing the installed environments: {error}");
+        }
     }
     if !rental {
         let (lifecycle, engine, home) = (lifecycle.clone(), service.engine.clone(), grant.home.clone());

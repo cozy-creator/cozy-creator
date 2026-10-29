@@ -609,8 +609,7 @@ impl Runs {
                     let observe = observe.clone();
                     move |stage: &str, done: u64, total: u64| observe(stage, done, total)
                 });
-                // A call's imports start as soon as its code is installed, as a release's do.
-                let installed = local.install(&self.service, actor, digest, Some(&stoppable.stop), id, observer, !spec.warm)?;
+                let installed = local.install(&self.service, actor, digest, Some(&stoppable.stop), id, observer)?;
                 self.supersede(actor, &installed)?;
                 local.collect(actor, &installed.package);
                 Some(installed)
@@ -652,8 +651,7 @@ impl Runs {
             .map_err(|_| refused("package_interface_invalid", "held interface is corrupt"))?;
         let generation = self.service.catalog.resolve(&installation.generation)?;
         // A call's weights come from here on, in the Start pass's order, until its executor
-        // asks for them itself; its imports start now unless they already did at install. A
-        // warm run imports only when its level asks (`downloaded` never does).
+        // asks for them itself; its import-only parent starts now unless it already did.
         let mut ahead = None;
         if let (false, Some(gpu)) = (spec.warm, self.service.gpu()) {
             ahead = plan.as_ref().map(|plan| {
@@ -1106,7 +1104,6 @@ impl Runs {
             choices: choices.to_vec(),
             gpus: spec.gpus,
             lane: lane.into(),
-            imports: !spec.warm,
         };
         let prepared = self
             .publisher
