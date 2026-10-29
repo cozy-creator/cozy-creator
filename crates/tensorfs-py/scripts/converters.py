@@ -233,7 +233,8 @@ SINGLE_FILE = {
              "optional": ["text_model.embeddings.position_ids"], "upstream": "sdxl-headers/text_encoder__model.fp16.safetensors.header"},
             {"name": "text_encoder_2", "prefix": "conditioner.embedders.1.model.", "model": "transformers:CLIPTextModelWithProjection",
              "config": "text_encoder_2/config.json", "convert": "convert_open_clip_checkpoint", "arguments": ["model", "checkpoint", "prefix"],
-             "optional": ["transformer.text_model.embeddings.position_ids"], "upstream": "sdxl-headers/text_encoder_2__model.fp16.safetensors.header"},
+             # Some community checkpoints (Juggernaut XL v9) carry no `logit_scale`: the model never reads it.
+             "optional": ["logit_scale", "transformer.text_model.embeddings.position_ids"], "upstream": "sdxl-headers/text_encoder_2__model.fp16.safetensors.header"},
             {"name": "unet", "prefix": "model.diffusion_model.", "model": "diffusers:UNet2DConditionModel", "config": "unet/config.json",
              "convert": "convert_ldm_unet_checkpoint", "arguments": ["checkpoint", "config"],
              "upstream": "sdxl-headers/unet__diffusion_pytorch_model.fp16.safetensors.header"},
