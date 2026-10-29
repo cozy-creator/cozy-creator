@@ -1,7 +1,8 @@
 # cold-start: a package's first request right after its install, on one rental, once per TensorD arm. Each arm puts
 # its TensorD on the pod (the pod's own image for `image`), installs each of its models' packages afresh (remove, then
-# install), counts each environment's bytecode, drops the weights from the page cache and runs one cold request each;
-# the executor processes' memory is read after the machine starts and after the requests. An arm's `wait` says when
+# install), drops the weights from the page cache first, runs one cold request each and counts the environment's
+# bytecode after it; the executor processes' memory is read after the machine starts and after the requests, and the
+# machine's kernel boots at the end. An arm's `wait` says when
 # its requests go after their install: `now`, once the package's level is `imported` (its import-only parent is up),
 # or once that parent's kernel compiles have ended too (`compiled`); the session says how long each took. Nothing
 # here compares: the run records and the stamped event streams are the evidence. params:
@@ -164,10 +165,13 @@ for i in "${!names[@]}"; do
   wait=$(jq -r --argjson i "$i" '.[$i].wait // "now"' <<<"$ARMS")
   for m in $(jq -r --argjson i "$i" '.[$i].models // ["sdxl", "anima"] | .[]' <<<"$ARMS"); do
     fn=${FN[$m]} pkg=${PKG[$m]} module=${PKG[$m]//-/_}
+    # The weights leave the page cache first, so nothing this session does runs beside the imports
+    # an install starts.
+    podpy evict > "$OUT/$a-$m-evict.json"; say "$a $m evicted: $(cat "$OUT/$a-$m-evict.json")"
     step "rm-$a-$m" package remove "$pkg" --on "$NAME" -y
-    step "in-$a-$m" package install "$pkg" --on "$NAME" || fail "$a: install $m"
+    # The release the request names, never the newest: another would install on the request's own path.
+    step "in-$a-$m" package install "$pkg@${fn##*@}" --on "$NAME" || fail "$a: install $m"
     installed=$(date +%s)
-    podpy pyc "$module" > "$OUT/$a-$m-pyc.json"; say "$a $m bytecode (py, pyc): $(jq -c .packages "$OUT/$a-$m-pyc.json")"
     if [ "$wait" != now ]; then
       level=''
       for t in $(seq 1 120); do
@@ -186,7 +190,6 @@ for i in "${!names[@]}"; do
       fi
       podpy ps > "$OUT/$a-$m-ps-ready.json"; say "$a $m: executors before its request $(cat "$OUT/$a-$m-ps-ready.json")"
     fi
-    podpy evict > "$OUT/$a-$m-evict.json"; say "$a $m evicted: $(cat "$OUT/$a-$m-evict.json")"
     k=$(( (k + 1) % ${#PROMPTS[@]} ))
     if [ "$m" = sdxl ]; then
       jq -n --arg p "${PROMPTS[$k]}" --argjson s "$RANDOM$i" '{megapixels: 1.0, aspect_ratio: "1:1", steps: 20, guidance: 7.0, hidiffusion: false, prompt_upsampling: false, prompt: $p, seed: $s}' > "$OUT/$a-$m.yaml"
@@ -196,7 +199,10 @@ for i in "${!names[@]}"; do
       jq -n --arg p "${PROMPTS[$k]}" --argjson s "$RANDOM$i" '{megapixels: 2.25, aspect_ratio: "1:1", steps: 30, guidance: 4.5, cfg_interval_start: 0.0, cfg_interval_stop: 1.0, prompt_upsampling: false, prompt: $p, seed: $s, negative_prompt: "worst quality, low quality, blurry, jpeg artifacts"}' > "$OUT/$a-$m.yaml"
     fi
     request "$a-$m-cold" "$fn" "$OUT/$a-$m.yaml" || fail "$a: $m request"
+    podpy pyc "$module" > "$OUT/$a-$m-pyc.json"; say "$a $m bytecode after its request (py, pyc): $(jq -c .packages "$OUT/$a-$m-pyc.json")"
   done
   podpy ps > "$OUT/$a-ps-after.json"; say "$a: executors after the requests $(cat "$OUT/$a-ps-after.json")"
 done
+T=60 pod "cat /var/lib/cozy/tensord/gpu/kernel-boot.jsonl" > "$OUT/kernel-boot.jsonl" 2>&1 < /dev/null
+say "kernel boots: $(wc -l < "$OUT/kernel-boot.jsonl") lines"
 say "PASS: ${#names[@]} arms"
