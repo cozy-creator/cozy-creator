@@ -3,7 +3,7 @@
 Both engines: time (Cozy: the CLI's round trip and the machine's execution; ComfyUI: submit to saved image on the
 pod), steady seconds per step, the engine's peak VRAM (NVML used minus the level's idle baseline, so the holder and
 the driver are not counted), and H2D GB from the one NVML sampler. Cozy also: TensorFS store bytes, reclaimed bytes,
-cut sites below level 0, prefetch wait."""
+cut sites below level 0, prefetch wait, post (the run's settle minus the executor's last observation)."""
 import json
 import statistics
 import sys
@@ -51,10 +51,12 @@ def cozy_row(label: str, rec: dict, wall: dict, mk: dict, prev: dict | None, bas
     phases = v.get("phases") or []
     sites = ((m.get("execution") or {}).get("cuts") or {}).get("sites") or []
     driver = (m.get("memory") or {}).get("driver") or [{}]
+    seen = [o.get("at_unix_ms") for o in m.get("observations") or [] if o.get("at_unix_ms")]
     return {
         "label": label, "engine": "cozy", "status": rec.get("status"), "run": rec.get("number"),
         "wall_s": round(wall.get("wall_ms", 0) / 1000, 2) if wall else None,
         "exec_s": round((rec.get("execution_ms") or 0) / 1000, 2),
+        "post_s": round(((rec.get("settled_at_ms") or 0) - max(seen)) / 1000, 2) if seen and rec.get("settled_at_ms") else None,
         "hub_s": round(((rec.get("settled_at_ms") or 0) - (rec.get("created_at_ms") or 0)) / 1000, 2),
         "denoise_s": round((stages.get("denoise") or {}).get("total_ms", 0) / 1000, 2) if stages.get("denoise") else None,
         "step1_s": round(series[0], 3) if series else None,
@@ -104,17 +106,17 @@ def main() -> None:
     for f in sorted((OUT / "rec").glob("*.json")):
         label = f.stem
         parts = label.split("-")
-        if len(parts) < 4 or parts[-1] not in ("cold", "w1", "w2", "w3") or label.startswith(("comfy-", "mark-", "hold-", "evict-")):
+        if len(parts) < 4 or parts[-1] not in ("cold", "w1", "w2", "w3", "w4", "w5", "w6") or label.startswith(("comfy-", "mark-", "hold-", "evict-")):
             continue
         rec = load(f) or {}
         group = "-".join(parts[:-1])
-        prev = mk.get(f"{group}-start") if parts[-1] == "cold" else mk.get(f"{group}-{ {'w1': 'cold', 'w2': 'w1', 'w3': 'w2'}[parts[-1]] }")
+        prev = mk.get(f"{group}-start") if parts[-1] == "cold" else mk.get(f"{group}-{'cold' if parts[-1] == 'w1' else 'w' + str(int(parts[-1][1:]) - 1)}")
         rows.append(cozy_row(label, rec, walls.get(label), mk.get(label), prev, mk.get(f"{group}-start")))
     for r in rows:
         arm, *rest = r["label"].split("-")
         r["arm"], r["level"], r["model"], r["tier"] = arm, rest[0], rest[1], rest[2]
     (OUT / "rows.json").write_text(json.dumps(rows, indent=1))
-    cols = ["arm", "tier", "status", "wall_s", "hub_s", "exec_s", "step1_s", "steady_s", "peak_engine_mib", "h2d_gb", "store_gb",
+    cols = ["arm", "tier", "status", "wall_s", "hub_s", "exec_s", "post_s", "step1_s", "steady_s", "peak_engine_mib", "h2d_gb", "store_gb",
             "reclaimed_gb", "cut_deep", "run"]
     for level in dict.fromkeys(r["level"] for r in rows):
         for model in dict.fromkeys(r["model"] for r in rows if r["level"] == level):

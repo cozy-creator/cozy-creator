@@ -148,7 +148,7 @@ cozy_run() {  # cozy_run <label> <model> <input file> <arm>: one request, its re
   local t0; t0=$(date +%s%3N)
   # A request with no end in STALL_S seconds is a stall to diagnose: keep the machine's logs, then stop following it.
   ( QCWD=$cwd qstep "$n" run "$target" --input "$3" --lane "$lane" --on "$NAME" --out "$OUT/out/$n" ) & local qp=$! waited=0
-  while kill -0 "$qp" 2>/dev/null && [ "$waited" -lt "${STALL_S:-1200}" ]; do sleep 5; waited=$((waited + 5)); done
+  while kill -0 "$qp" 2>/dev/null && [ "$waited" -lt "${STALL_S:-1200}" ]; do sleep 1; waited=$((waited + 1)); done
   if kill -0 "$qp" 2>/dev/null; then
     say "STALL: $n has no end after ${waited}s; keeping the machine's logs"
     for log in tensord memory tensorfs; do cozy machine logs "$NAME" "$log" -n 0 > "$OUT/stall-$n-$log.log" 2>&1; done
