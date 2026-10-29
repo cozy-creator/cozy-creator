@@ -13,10 +13,12 @@
 #   upload           new random weights (a CozyTensors folder) to a throwaway <account>/ci-tfs-<R>
 #   upload-again     the same folder to a second tag: no chunk is sent again (dedup)
 #   upload-cut/-resume    new weights cancelled part-way, then uploaded again: only the rest is sent
-# check.py holds each against the SKU's last passed suite and records a PASS. The throwaway model is deleted at the end.
+#   mc-source/-upload/-quantize/-inspect  multi-conversion/: a recipe that encodes each component in its own call into
+#                    one output (H3's) writes every component; its lane's commit read back through `cozy run`
+# check.py holds each against the SKU's last passed suite and records a PASS. The throwaway models are deleted at the end.
 TFS_MODEL=${TFS_MODEL:-qwen3.5-9b} TFS_RESUME=${TFS_RESUME:-flux-3-klein} TFS_UPLOAD_MB=${TFS_UPLOAD_MB:-256}
-T=$OUT/suite-tensorfs TFS_DEST=
-mkdir -p "$T"
+T=$OUT/suite-tensorfs TFS_DESTS=()
+mkdir -p "$T"; : > "$T/cases"
 # tfs_step <name> <cozy args...>: one command that makes a run, followed to its end (e2e/run.sh): its events in
 # <name>.ndjson, its record in <name>.json, its wall time in steps.tsv.
 tfs_step() {
@@ -91,37 +93,64 @@ PY
   rm -rf "$s/store"
 }
 tfs_cleanup() {
-  [ -n "$TFS_DEST" ] || return 0
-  "$CLI" model delete "$TFS_DEST" -y >"$T/delete.log" 2>&1 && log "tensorfs: deleted $TFS_DEST" ||
-    grep -q model_not_found "$T/delete.log" ||  # no upload landed: nothing to delete
-    expect tensorfs-cleanup FAIL "cozy model delete $TFS_DEST: $(tail -c 300 "$T/delete.log")"
-  TFS_DEST=
+  local d
+  for d in "${TFS_DESTS[@]}"; do
+    "$CLI" model delete "$d" -y >"$T/delete.log" 2>&1 && log "tensorfs: deleted $d" ||
+      grep -qE "model[._]not_found" "$T/delete.log" ||  # no upload landed: nothing to delete
+      expect tensorfs-cleanup FAIL "cozy model delete $d: $(tail -c 300 "$T/delete.log")"
+  done
+  TFS_DESTS=()
 }
 trap 'tfs_cleanup; declare -F hub_cleanup >/dev/null && hub_cleanup; end_it' EXIT
 
-ln -sfn "$HERE/suites/tensorfs/probe" "$OUT/ci-tfs-probe"
-echo '{}' > "$T/probe.yaml"
-tfs_step probe run ./ci-tfs-probe/measure --on "$M" --input "$T/probe.yaml"
-tfs_step download-cold model download "$TFS_MODEL" --on "$M" -y
-tfs_step download-again model download "$TFS_MODEL" --on "$M" -y
-tfs_cut download-cut download 0.3 model download "$TFS_RESUME" --on "$M" -y
-tfs_step download-resume model download "$TFS_RESUME" --on "$M" -y
+# tfs_case <case>: whether --only selects it (none selects every case: probe, download, upload, multi-conversion,
+# straggler, lora-alpha); a selected case is listed in cases, the ones check.py judges.
+tfs_case() { [ -z "$ONLY" ] || [[ $ONLY == *",$1,"* ]] || return 1; echo "$1" >> "$T/cases"; }
+
+if tfs_case probe; then
+  ln -sfn "$HERE/suites/tensorfs/probe" "$OUT/ci-tfs-probe"
+  echo '{}' > "$T/probe.yaml"
+  tfs_step probe run ./ci-tfs-probe/measure --on "$M" --input "$T/probe.yaml"
+fi
+if tfs_case download; then
+  tfs_step download-cold model download "$TFS_MODEL" --on "$M" -y
+  tfs_step download-again model download "$TFS_MODEL" --on "$M" -y
+  tfs_cut download-cut download 0.3 model download "$TFS_RESUME" --on "$M" -y
+  tfs_step download-resume model download "$TFS_RESUME" --on "$M" -y
+fi
 WHO=; for _ in 1 2 3; do  # a dropped connection is asked again
   WHO=$("$CLI" --json whoami 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["account"])' 2>/dev/null) && [ -n "$WHO" ] && break
   sleep 5
 done
 # Local paths go absolute: `cozy model upload ./folder` resolves them against Calcifer, not here (2026-10-24).
-if [ -n "$WHO" ] && tfs_weights "$T/up-a" "$TFS_UPLOAD_MB" && tfs_weights "$T/up-c" "$TFS_UPLOAD_MB"; then
-  TFS_DEST=$WHO/ci-tfs-$R
-  tfs_step upload model upload "$T/up-a" "$TFS_DEST" --lane bf16 --on "$M" -y
-  tfs_step upload-again model upload "$T/up-a" "$TFS_DEST" --lane bf16-b --on "$M" -y
-  tfs_cut upload-cut "uploading to" 0.3 model upload "$T/up-c" "$TFS_DEST" --lane bf16-c --on "$M" -y
-  tfs_step upload-resume model upload "$T/up-c" "$TFS_DEST" --lane bf16-c --on "$M" -y
+if ! tfs_case upload; then :
+elif [ -n "$WHO" ] && tfs_weights "$T/up-a" "$TFS_UPLOAD_MB" && tfs_weights "$T/up-c" "$TFS_UPLOAD_MB"; then
+  d=$WHO/ci-tfs-$R; TFS_DESTS+=("$d")
+  tfs_step upload model upload "$T/up-a" "$d" --lane bf16 --on "$M" -y
+  tfs_step upload-again model upload "$T/up-a" "$d" --lane bf16-b --on "$M" -y
+  tfs_cut upload-cut "uploading to" 0.3 model upload "$T/up-c" "$d" --lane bf16-c --on "$M" -y
+  tfs_step upload-resume model upload "$T/up-c" "$d" --lane bf16-c --on "$M" -y
   tfs_cleanup
 else
   expect tensorfs-upload FAIL "no account (${WHO:-not signed in}) or no weights to upload"
 fi
+# One output, each component encoded in its own call with its own plan (minimax-h3-tools' recipes). Escaped from
+# TensorFS 0.17.0 (#2118) to #2238: a writer bound one conversion and refused the second component (run 20032).
+if tfs_case multi-conversion && [ -n "$WHO" ]; then
+  ln -sfn "$HERE/suites/tensorfs/multi-conversion" "$OUT/ci-multi-conversion"
+  d=$WHO/ci-tfs-mc-$R; TFS_DESTS+=("$d")
+  tfs_step mc-source run ./ci-multi-conversion/source seed:=$R --on "$M"
+  [ "$(run_get "$T" mc-source .status)" != completed ] ||
+    tfs_step mc-upload model upload "run:$(cat "$T/mc-source.number")#model" "$d" --lane bf16 --on "$M" -y
+  c=$(run_get "$T" mc-upload "[.result.models[]?.published | select(.destination == \"$d\") | .commit][0]")
+  [ -z "$c" ] || tfs_step mc-quantize model quantize "$d@$c" --lane int8 --package ./ci-multi-conversion --on "$M" -y
+  c=$(run_get "$T" mc-quantize '[.output[]? | select(.name == "int8") | .checkpoint.revision][0]')
+  [ -z "$c" ] || tfs_step mc-inspect run ./ci-multi-conversion/inspect "model.model=$d@$c" seed:=$R --on "$M"
+  tfs_cleanup
+fi
 # On this host, after the machine's cases: the machine is not left idle while it runs.
-tfs_straggler straggler-clean 0
-tfs_straggler straggler-slow 3
-tfs_lora_alpha
+if tfs_case straggler; then
+  tfs_straggler straggler-clean 0
+  tfs_straggler straggler-slow 3
+fi
+if tfs_case lora-alpha; then tfs_lora_alpha; fi

@@ -1,0 +1,17 @@
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "ci-multi-conversion"
+version = "0.1.0"
+description = "The tensorfs suite's multi-conversion cell: a recipe that encodes each component in its own call"
+requires-python = ">=3.12"
+dependencies = ["cozy-runtime>=0.35,<0.36", "msgspec>=0.19", "numpy>=1.26", "tensorfs>=0.17,<0.18"]
+
+[project.entry-points."cozy.application"]
+default = "ci_multi_conversion:app"
+
+[tool.uv.build-backend]
+module-name = "ci_multi_conversion"
+module-root = ""
