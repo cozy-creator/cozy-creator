@@ -615,6 +615,10 @@ impl Arena {
         if bytes == 0 {
             return Ok(report);
         }
+        self.reclaim_contentless(state, bytes, preferred, exclude, reason, &mut report)?;
+        if report.reclaimed_bytes >= bytes {
+            return Ok(report);
+        }
         let mut candidates: Vec<_> = state
             .entries
             .iter()
@@ -715,6 +719,59 @@ impl Arena {
             }
         }
         Ok(report)
+    }
+
+    /// Backing whose contents nothing needs (a canceled or failed fill, a dropped region) goes
+    /// before any Ready page, oldest first, waiting or joining for it if it must. Reclaim order
+    /// otherwise takes every completed page first, so unfenced leftovers outlived resident
+    /// weights (SDXL int8 at 6 GiB free: 618 MiB of canceled prefetches cost 656 MiB of UNet
+    /// every request).
+    fn reclaim_contentless(
+        &self,
+        state: &mut State,
+        bytes: usize,
+        preferred: bool,
+        exclude: Option<u64>,
+        reason: ReclaimReason,
+        report: &mut ReclaimReport,
+    ) -> Result<()> {
+        let mut idle: Vec<_> = state
+            .entries
+            .iter()
+            .filter(|(id, entry)| {
+                Some(**id) != exclude
+                    && entry.uses.pins() == 0
+                    && matches!(entry.uses.state(), Contents::Cold | Contents::Retired)
+                    && entry.handle.is_some()
+                    && (preferred || !entry.preferred())
+            })
+            .map(|(id, entry)| (entry.last_use, *id))
+            .collect();
+        idle.sort_unstable();
+        let mut unjoined = Vec::new();
+        for (_, id) in idle {
+            if report.reclaimed_bytes >= bytes {
+                return Ok(());
+            }
+            match self.completion(state, id)? {
+                Completion::Done => self.evict(state, id, reason, report)?,
+                Completion::Pending => {
+                    self.wait_fences(state, id)?;
+                    self.evict(state, id, reason, report)?;
+                }
+                Completion::Unjoined => unjoined.push(id),
+            }
+        }
+        if report.reclaimed_bytes < bytes && !unjoined.is_empty() {
+            self.join_context(state, &unjoined)?;
+            for id in unjoined {
+                if report.reclaimed_bytes >= bytes {
+                    break;
+                }
+                self.evict(state, id, reason, report)?;
+            }
+        }
+        Ok(())
     }
 
     /// Whether every consumer of an unpinned region is known complete, without waiting.
