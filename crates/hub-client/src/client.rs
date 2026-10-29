@@ -231,6 +231,29 @@ impl Client {
         self.json(request.json(&json!({"commit": {"sha256": sha256, "length": length}}))).await
     }
 
+    /// Sets an org's display name, links and claim handles (a platform admin); each given field
+    /// replaces the stored one, and an org that does not exist yet is parked.
+    pub async fn edit_org(
+        &self,
+        org: &str,
+        name: Option<&str>,
+        links: Option<&[String]>,
+        handles: Option<&[String]>,
+    ) -> Result<OrgPage, Error> {
+        let mut body = serde_json::Map::new();
+        if let Some(name) = name {
+            body.insert("display_name".into(), json!(name));
+        }
+        if let Some(links) = links {
+            body.insert("links".into(), json!(links));
+        }
+        if let Some(handles) = handles {
+            body.insert("handles".into(), json!(handles));
+        }
+        let request = self.at(Method::PUT, "/v1/orgs/{org}", &[org]);
+        self.json(request.json(&body)).await
+    }
+
     /// Claims a parked org: its code and where to post it, until a handle's page shows it.
     pub async fn claim_org(&self, org: &str) -> Result<OrgClaim, Error> {
         self.json(self.at(Method::POST, "/v1/orgs/{org}/claim", &[org]))

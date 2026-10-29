@@ -198,15 +198,16 @@ pub(crate) async fn download(ctx: &Context, args: Download) -> Result<ExitCode, 
 
 pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Error> {
     let destination = Repo::hub(&args.destination)?.to_string();
+    // A Hub commit is already at the Hub: the destination records it there, and nothing moves.
+    if let Ok(ModelRef::Commit { repo, commit }) = ModelRef::parse(&args.source) {
+        let to = Repo::hub(&args.destination)?;
+        return recorded(ctx, &repo, &commit, &to, &args.lane, args.mirror.as_deref().map(|page| (args.source.as_str(), page))).await;
+    }
     if let Some(page) = &args.mirror {
         mirror(ctx, &args.source, page, &Repo::hub(&args.destination)?).await?;
     }
     if let Some(reference) = args.source.strip_prefix("run:") {
         return super::from_run::upload(ctx, reference, &destination, &args.lane).await;
-    }
-    // A Hub commit is already at the Hub: the destination records it there, and nothing moves.
-    if let Ok(ModelRef::Commit { repo, commit }) = ModelRef::parse(&args.source) {
-        return recorded(ctx, &repo, &commit, &Repo::hub(&args.destination)?, &args.lane).await;
     }
     let on = args.placement.on()?;
     // The machine publishes under this computer's sign-in; refuse before anything is made.
@@ -223,7 +224,7 @@ pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Erro
 
 /// Commit `commit` of `from` as a commit of `to` on the same Hub: the Hub records it when this
 /// account may read its whole closure, so no machine pulls it and no byte uploads.
-async fn recorded(ctx: &Context, from: &Repo, commit: &str, to: &Repo, lane: &str) -> Result<ExitCode, Error> {
+async fn recorded(ctx: &Context, from: &Repo, commit: &str, to: &Repo, lane: &str, mirrored: Option<(&str, &str)>) -> Result<ExitCode, Error> {
     let client = ctx.hub_signed_in(ctx.hub())?;
     let card = hub_answer(client.get_model(&from.org, &from.name).await)?;
     let lanes = card.releases.iter().flat_map(|r| r.lanes.iter().map(|(lane, l)| (lane.as_str(), l.commit.as_str(), l.length)));
@@ -234,6 +235,10 @@ async fn recorded(ctx: &Context, from: &Repo, commit: &str, to: &Repo, lane: &st
     if held != lane {
         return Err(Error::new(Kind::Usage, "commit_lane_mismatch", format!("{from}@{commit} is lane {held}, not {lane}"))
             .next(format!("cozy model upload {from}@{commit} {to} --lane {held}")));
+    }
+    // Checked first, so a refused record parks and credits nothing.
+    if let Some((source, page)) = mirrored {
+        mirror(ctx, source, page, to).await?;
     }
     let made = hub_answer(client.create_model_commit(&to.org, &to.name, commit, length).await)?;
     if ctx.json {
@@ -258,8 +263,12 @@ async fn mirror(ctx: &Context, source: &str, page: &str, repo: &Repo) -> Result<
         page => page,
     };
     let answer = hub_answer(ctx.hub_signed_in(ctx.hub())?.mirror_model(&repo.org, &repo.name, page).await)?;
+    let org = answer.author.as_ref().map(|a| a.org.clone()).unwrap_or_else(|| repo.org.clone());
     let by = answer.author.map(|a| a.reserved.unwrap_or(format!("credits {} ({})", a.name, a.org)));
     output::say(ctx, &format!("{} mirrors {}{}", answer.model, answer.source, by.map(|b| format!(". {b}")).unwrap_or_default()));
+    if let Some(handle) = answer.added_handle {
+        output::say(ctx, &format!("added {handle} to {org}'s claim handles"));
+    }
     Ok(())
 }
 
