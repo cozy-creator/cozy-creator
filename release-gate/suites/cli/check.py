@@ -15,10 +15,10 @@ def check(gate):
         (fails if len(gpus) > 1 else notes).append(f'cli-gpus: --gpus 1 ran on GPU(s) {gpus or [0]}')
     if 'cli-lane16' in runs:
         run = runs['cli-lane16']
-        lanes = {m.get('lane') for m in (run.result or {}).get('models') or []}
+        lanes = {m.get('lane') for m in run.models}
         int8 = [g for g in run.gemm if g[0].startswith(('int8', 'fp8', 'nvfp4'))]
-        if 'bf16' not in lanes or int8:
-            fails.append(f'cli-lane16: --lane bf16 served {sorted(p for p in lanes if p)} and GEMM {int8}')
+        (fails if 'bf16' not in lanes or int8 else notes).append(
+            f'cli-lane16: --lane bf16 served {sorted(p for p in lanes if p)} and 8/4-bit GEMM {int8}')
     if 'cli-attn' in runs:
         attn = runs['cli-attn'].attention
         (notes if attn == ['sdpa'] else fails).append(f'cli-attn: --attention-kernel sdpa served {attn}')

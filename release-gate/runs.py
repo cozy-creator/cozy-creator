@@ -49,6 +49,11 @@ class Run:
     def attention(self):
         return sorted({o['value'] for o in self.observations if o.get('name') == 'attention.selected'})
 
+    @property
+    def models(self):
+        """Each model it ran as the machine resolved it (`measurements.models`: slot, repository, lane, …)."""
+        return [m for ms in self.measurements for m in ms.get('models') or []]
+
     def _step_track(self):
         """The dominant step track (largest total) of the run and its calls, with the measurement holding it."""
         best = (None, None)
