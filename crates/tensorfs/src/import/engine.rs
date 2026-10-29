@@ -1230,9 +1230,9 @@ fn plan_lora(
                 return refuse(
                     Code::MISSING_FIELD,
                     format!(
-                        "{ka}: a LoRA under Diffusers' module names that states no α (no .alpha or PEFT \
+                        "{ka}: a LoRA under Diffusers' module names that states no alpha (no .alpha or PEFT \
                          config; {who}), so its strength is unknown; name its format (--source-format {}) \
-                         to take α = rank",
+                         to take alpha = rank",
                         table.name
                     ),
                 );
