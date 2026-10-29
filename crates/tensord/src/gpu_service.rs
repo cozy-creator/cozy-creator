@@ -195,6 +195,9 @@ pub struct PlanSlot {
     /// Its LoRAs, when its checkpoint is their adapter view (`run show`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adapted: Option<Adapted>,
+    /// What composes its adapter view again, when its checkpoint is one (`adapter::ensure`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<crate::adapter::Recipe>,
 }
 
 /// One `Weights[M]` argument: the checkpoint a call reads raw (never constructed), and the
@@ -2186,6 +2189,7 @@ impl Pool {
                 on_demand: model.get("on_demand").and_then(serde_json::Value::as_bool) == Some(true),
                 placeable,
                 adapted: grant.adapted.clone(),
+                view: crate::storage::view(&grant.manifest).map(|view| view.recipe.clone()),
             });
         }
         let construction = construction(&installed.generation, application, &planned, degree)?;
@@ -2207,8 +2211,15 @@ impl Pool {
             degree,
         })
     }
+    /// `preparation`'s plan, each adapter view it reads kept in memory (composed again if lost).
     pub fn plan(&self, preparation: &Preparation) -> io::Result<Plan> {
-        Plan::of(preparation)
+        let plan = Plan::of(preparation)?;
+        for slot in &plan.slots {
+            if let Some(recipe) = &slot.view {
+                crate::adapter::ensure(&self.store, &slot.binding.snapshot, recipe)?;
+            }
+        }
+        Ok(plan)
     }
     fn permit(
         self: &Arc<Self>,

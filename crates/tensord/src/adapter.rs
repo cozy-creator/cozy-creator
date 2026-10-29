@@ -12,7 +12,7 @@ use std::{
     io,
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tensorfs::format::{Body, Component, Dtype, Header, ObjectRef, Tensor};
 use tensorfs::store::{Checkpoint, Store};
 
@@ -33,6 +33,46 @@ pub struct Selection {
     pub source_component: String,
     pub strength: f64,
     pub runs: Vec<String>,
+}
+
+/// What composes a view again, by id: a plan keeps it, since a view lives only in memory (a
+/// restart, or the registry's cap, loses it).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Recipe {
+    pub base: String,
+    pub selections: Vec<Chosen>,
+}
+
+/// One [`Selection`] by its checkpoint's id.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Chosen {
+    pub checkpoint: String,
+    pub component: String,
+    pub source_component: String,
+    pub strength: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runs: Vec<String>,
+}
+
+/// The view `id`, composed again from `recipe` when this process no longer keeps it.
+pub fn ensure(store: &Store, id: &str, recipe: &Recipe) -> io::Result<()> {
+    if storage::view(id).is_some() {
+        return Ok(());
+    }
+    let selections = (recipe.selections.iter())
+        .map(|c| Ok(Selection {
+            checkpoint: storage::held(store, &c.checkpoint)?,
+            component: c.component.clone(),
+            source_component: c.source_component.clone(),
+            strength: c.strength,
+            runs: c.runs.clone(),
+        }))
+        .collect::<io::Result<Vec<_>>>()?;
+    let composed = compose(store, &storage::held(store, &recipe.base)?, &selections)?;
+    match composed.checkpoint.id().sha256 == id.trim_start_matches("sha256:") {
+        true => Ok(()),
+        false => Err(io::Error::other(format!("{id} composes again as {}", composed.checkpoint.id().id()))),
+    }
 }
 
 /// The composed view, `view-<composition>`, open in memory (`storage::view`): it holds the base's
@@ -366,7 +406,19 @@ pub fn compose(store: &Store, base: &ObjectRef, selections: &[Selection]) -> io:
     let graph = serde_json_canonicalizer::to_vec(&graph).map_err(io::Error::other)?;
     let sources: Vec<&Header> = std::iter::once(base.header()).chain(adapters.iter().map(|(_, a)| a.header())).collect();
     let header = by_reference(&sources, &takes, &adapted, ObjectRef::of(&graph))?.to_cbor().map_err(io::Error::other)?;
-    let checkpoint = storage::keep_view(store, header, vec![graph])?;
+    let recipe = Recipe {
+        base: base_ref.id(),
+        selections: (selections.iter())
+            .map(|s| Chosen {
+                checkpoint: s.checkpoint.id(),
+                component: s.component.clone(),
+                source_component: s.source_component.clone(),
+                strength: s.strength,
+                runs: s.runs.clone(),
+            })
+            .collect(),
+    };
+    let checkpoint = storage::keep_view(store, header, vec![graph], recipe)?;
     Ok(Composed { name: id, checkpoint, adapted: each, warnings })
 }
 

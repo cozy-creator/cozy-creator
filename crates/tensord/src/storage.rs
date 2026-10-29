@@ -120,11 +120,13 @@ pub fn tree_or_header(store: &Store, object: &ObjectRef) -> io::Result<Option<Tr
     })
 }
 
-/// A header composed in memory and the objects it cites that no store holds (its graph).
+/// A header composed in memory, the objects it cites that no store holds (its graph), and what
+/// composes it again.
 #[derive(Debug)]
 pub struct View {
     pub header: Vec<u8>,
     pub own: Vec<Vec<u8>>,
+    pub recipe: crate::adapter::Recipe,
 }
 
 /// The views' bytes this process keeps; past them the oldest goes, and a run that names it again
@@ -137,12 +139,12 @@ fn views() -> &'static Mutex<VecDeque<(String, Arc<View>)>> {
 }
 
 /// Keeps `header` (and `own`) as a view in memory, open over `store`; nothing is written.
-pub fn keep_view(store: &Store, header: Vec<u8>, own: Vec<Vec<u8>>) -> io::Result<tensorfs::store::Checkpoint> {
+pub fn keep_view(store: &Store, header: Vec<u8>, own: Vec<Vec<u8>>, recipe: crate::adapter::Recipe) -> io::Result<tensorfs::store::Checkpoint> {
     let checkpoint = store.view(&header, &own).map_err(io_error)?;
     let sha256 = checkpoint.id().sha256.clone();
     let mut views = views().lock().unwrap();
     views.retain(|(id, _)| *id != sha256);
-    views.push_back((sha256, Arc::new(View { header, own })));
+    views.push_back((sha256, Arc::new(View { header, own, recipe })));
     let size = |views: &VecDeque<(String, Arc<View>)>| views.iter().map(|(_, v)| v.header.len() + v.own.iter().map(Vec::len).sum::<usize>()).sum::<usize>();
     while views.len() > 1 && size(&views) > VIEW_BYTES {
         views.pop_front();
