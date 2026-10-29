@@ -278,7 +278,7 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     }
     if !rental {
         let (lifecycle, engine, home) = (lifecycle.clone(), service.engine.clone(), grant.home.clone());
-        let (released, stopped) = (service.clone(), service.clone());
+        let (released, parents, stopped) = (service.clone(), service.clone(), service.clone());
         // A change of its controllers (`cozy machine authorize`, `--remove`) wakes its lifecycle.
         let (mut changes, woken) = (keys.subscribe(), service.engine.clone());
         runtime.spawn(async move {
@@ -292,6 +292,7 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
                 lifecycle,
                 engine,
                 move || released.release_idle(),
+                move || parents.release_parents(),
                 move || stopped.stop(),
                 // Kept up for its authorized controllers, unless `cozy update` replaced its binary:
                 // it exits idle and Calcifer starts the new one.

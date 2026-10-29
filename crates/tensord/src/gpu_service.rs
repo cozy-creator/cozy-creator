@@ -1427,15 +1427,26 @@ impl Pool {
         self.end_idle_of(|generation| generation == identity);
     }
     /// This computer's machine idle a while: every idle executor ends, so its CUDA context and
-    /// memory go back with its process. Import-only parents (host memory, no GPU) stay until the
-    /// machine's idle exit, so a package used in the last quarter hour forks without importing.
+    /// memory go back with its process. Import-only parents (host memory, no GPU) stay the whole
+    /// idle window (`release_parents`, or the exit), so a package used in the last quarter hour
+    /// forks without importing.
     /// Warm sets stay declared: the next call's pass brings them back.
     pub fn release_idle(&self) {
         self.end_idle_executors(|_| true);
     }
+    /// This computer's machine idle its whole window but kept up for its controllers: a shared
+    /// machine's childless parents end as they would with the process (a dedicated one keeps them).
+    pub fn release_parents(&self) {
+        if self.config.host.mode == HostMode::Shared {
+            self.end_idle_parents(|_| true);
+        }
+    }
     /// Every idle executor and import-only parent of the generations `which` names ends.
     fn end_idle_of(&self, which: impl Fn(&str) -> bool) {
         self.end_idle_executors(&which);
+        self.end_idle_parents(which);
+    }
+    fn end_idle_parents(&self, which: impl Fn(&str) -> bool) {
         let parents: Vec<Arc<Zygote>> = {
             let mut zygotes = self.zygotes.lock().unwrap();
             let ended: Vec<App> = zygotes
@@ -1448,7 +1459,7 @@ impl Pool {
         for zygote in parents {
             if let ZygoteState::Ready(parent) = std::mem::take(&mut *zygote.state.lock().unwrap()) {
                 if let Err(error) = parent.terminate() {
-                    tracing::warn!("ending a removed package's import-only executor: {error}");
+                    tracing::warn!("ending an idle import-only executor: {error}");
                 }
             }
         }

@@ -285,6 +285,13 @@ impl Service {
             pool.release_idle();
         }
     }
+    /// This computer's machine idle its whole window yet kept up: a shared one's idle import-only
+    /// parents end too.
+    pub fn release_parents(&self) {
+        if let Some(pool) = self.pool() {
+            pool.release_parents();
+        }
+    }
     pub fn stop(&self) -> io::Result<bool> {
         let mut stopped = self.stopped.lock().unwrap();
         if !self.idle()? {
