@@ -58,10 +58,10 @@ pub fn peft_key(key: &str) -> Option<String> {
 
 /// PEFT's `adapter_config.json` for LoRA `modules` (module, rank): `source`'s fields where it
 /// states them (its patterns as they are: a caller that folds them into `.alpha` empties them),
-/// else `r` the commonest rank, `target_modules` the modules, `lora_alpha` kohya's
-/// `ss_network_alpha`, else `r` when every rank is `r` (omitted otherwise: each module's own
-/// rank is its `α`), and `base_model_name_or_path` `base_model`, else the source's, else kohya's
-/// `ss_sd_model_name`.
+/// else `r` the commonest rank, `target_modules` the modules, `lora_alpha` `r` when every rank is
+/// `r` (omitted otherwise: each module's own rank is its `α`), and `base_model_name_or_path`
+/// `base_model`, else the source's, else kohya's `ss_sd_model_name`. Kohya's `ss_network_alpha`
+/// is never a scale: its loaders, and ComfyUI's, read only `.alpha` tensors (none is `α = r`).
 pub fn adapter_config(
     modules: impl IntoIterator<Item = (String, u64)>,
     metadata: &BTreeMap<String, String>,
@@ -77,14 +77,8 @@ pub fn adapter_config(
     let mut config = source.cloned().unwrap_or_default();
     config.insert("peft_type".into(), "LORA".into());
     config.entry("r").or_insert(json!(r));
-    let stated = metadata.get("ss_network_alpha").and_then(|a| a.trim().parse::<f64>().ok());
-    let alpha = match stated {
-        Some(a) if a.fract() == 0.0 => Some(json!(a as i64)),
-        Some(a) => Some(json!(a)),
-        None => (counts.len() == 1).then(|| json!(r)),
-    };
-    if let (false, Some(alpha)) = (config.contains_key("lora_alpha"), alpha) {
-        config.insert("lora_alpha".into(), alpha);
+    if !config.contains_key("lora_alpha") && counts.len() == 1 {
+        config.insert("lora_alpha".into(), json!(r));
     }
     config.entry("target_modules").or_insert(json!(modules.keys().collect::<Vec<_>>()));
     let base = (base_model.map(str::to_owned))
