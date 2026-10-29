@@ -19,7 +19,10 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
   setting because executor-local limits cannot enforce a total across a call family and its
   non-allocator bytes.
 - `environment`: names `launch_identity::credential_name` judges credentials never reach an executor.
-- `host`: `{mode}`, `dedicated` on a rental, else `shared`.
+- `host`: `{mode}`: `[machine] mode` in config.toml, else `dedicated` on a rental and `shared`
+  elsewhere. At start a dedicated machine imports its installed environments' parents, most
+  recently used first, while half the host's memory stays free; a shared one imports none, and an
+  install imports its environment and ends the other parents no request has used.
 
 ## Preparation
 
