@@ -76,6 +76,12 @@ pub struct Producer {
     pub metadata: BTreeMap<String, Match>,
     /// The pinned code (or, without public code, the declaration) the layout is read from.
     pub cite: Vec<String>,
+    /// The `__metadata__` field its loader takes each module's α from, when no `.alpha` gives it.
+    #[serde(default)]
+    pub alpha_metadata: Option<String>,
+    /// The field holding the scale its loader applies, `W += scale·B·A`: α = scale × rank.
+    #[serde(default)]
+    pub scale_metadata: Option<String>,
 }
 
 /// A `__metadata__` value a producer writes.
@@ -121,10 +127,6 @@ pub struct Lora {
     pub a: Vec<String>,
     pub b: Vec<String>,
     pub alpha: Vec<String>,
-    /// `__metadata__` fields holding, as a number, the α of each module without an `.alpha`: a
-    /// Diffusers save keeps it there or nowhere (lightx2v `alpha`, PDMD `lora_alpha`).
-    #[serde(default)]
-    pub alpha_metadata: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -263,7 +265,9 @@ pub struct Ops {
     #[serde(default)]
     pub table: Option<String>,
     /// LoRA rows under Diffusers' module names: no convention gives their α, so the source states
-    /// it (an `.alpha`, its PEFT config or a [`Lora::alpha_metadata`] field), else it is refused.
+    /// it (an `.alpha`, its PEFT config, or its producer's [`Producer::alpha_metadata`] or
+    /// [`Producer::scale_metadata`]); else it is refused, or takes α = rank when the caller names
+    /// the format.
     #[serde(default)]
     pub stated_alpha: bool,
     /// The source's row order is one no header tells (H3's fused Q/K/V: contiguous thirds or
@@ -306,8 +310,8 @@ pub struct Recognized {
     pub claims: Vec<Claim>,
     /// Table indices used, in order.
     pub tables: Vec<usize>,
-    /// For a table with [`Table::producers`] that recognition chose, the producer that let it.
-    pub producers: BTreeMap<usize, String>,
+    /// For a table with [`Table::producers`], the one (its index) whose file the source is.
+    pub producers: BTreeMap<usize, usize>,
     /// Groups no table claims.
     pub unclaimed: Vec<usize>,
     /// The caller named the format: what the source leaves unsaid takes the format's convention.
@@ -318,9 +322,9 @@ impl Recognized {
     /// The tables used, each with the producer that chose it: `h3.lora (musubi-tuner)`.
     pub fn formats(&self, tables: &[Table]) -> Vec<String> {
         (self.tables.iter())
-            .map(|t| match self.producers.get(t) {
-                Some(p) => format!("{} ({p})", tables[*t].name),
-                None => tables[*t].name.clone(),
+            .map(|t| match (self.producers.get(t), &tables[*t].producers) {
+                (Some(p), Some(known)) if !self.named => format!("{} ({})", tables[*t].name, known[*p].name),
+                _ => tables[*t].name.clone(),
             })
             .collect()
     }
@@ -538,12 +542,12 @@ pub fn recognize(set: &SourceSet, tables: &[Table], named: Option<&str>) -> Resu
         let unread: BTreeSet<usize> = (claims.iter().map(|c| c.group))
             .filter(|g| set.groups[*g].tensors.keys().any(|k| ambiguous(table, k)))
             .collect();
-        if let (Some(producers), None) = (&table.producers, named) {
+        if let Some(producers) = &table.producers {
             let groups: BTreeSet<usize> = claims.iter().map(|c| c.group).collect();
             let wrote = |p: &&Producer| groups.iter().all(|g| p.wrote(&set.groups[*g]));
-            match producers.iter().find(wrote) {
-                Some(p) => drop(out.producers.insert(t, p.name.clone())),
-                None if unread.is_empty() => {}
+            match producers.iter().position(|p| wrote(&p)) {
+                Some(p) => drop(out.producers.insert(t, p)),
+                None if unread.is_empty() || named.is_some() => {}
                 None => {
                     let known: BTreeSet<&str> = producers.iter().map(|p| p.name.as_str()).collect();
                     return refuse(
@@ -1036,7 +1040,9 @@ pub fn plan(
                         let config = super::join(&group.folder, super::lora::ADAPTER_CONFIG);
                         let stated = group.metadata.contains_key(super::lora::DIFFUSERS_CONFIG)
                             || set.plain.iter().any(|p| p.path == config);
-                        plan_lora(table, lora, c, claim, group, stated || r.named, &mut out)?
+                        let producer = (r.producers.get(&t)).zip(table.producers.as_ref()).map(|(p, all)| &all[*p]);
+                        let alpha = Alpha { stated, named: r.named, producer };
+                        plan_lora(table, lora, c, claim, group, &alpha, &mut out)?
                     }
                     None => {
                         for row in &c.rows {
@@ -1129,20 +1135,32 @@ fn plan_raw(set: &SourceSet, c: &Component, out: &mut Vec<Planned>) -> Result<()
     Ok(())
 }
 
-/// `stated`: the source has a PEFT config, which gives the α its modules lack, or the caller named
-/// the format, whose convention (α = rank) they then take.
+/// Where a Diffusers-named module's α comes from when no `.alpha` gives it.
+struct Alpha<'t> {
+    /// The source has a PEFT config, which gives it.
+    stated: bool,
+    /// The caller named the format: α = rank, unless its producer says otherwise.
+    named: bool,
+    /// The producer whose file it is: its loader's rule (`alpha_metadata`, `scale_metadata`).
+    producer: Option<&'t Producer>,
+}
+
 fn plan_lora(
     table: &Table,
     lora: &Lora,
     c: &Component,
     claim: &Claim,
     group: &Group,
-    stated: bool,
+    from: &Alpha,
     out: &mut Vec<Planned>,
 ) -> Result<()> {
-    let metadata_alpha = (lora.alpha_metadata.iter())
-        .find_map(|k| group.metadata.get(k)?.trim().parse::<f64>().ok())
-        .filter(|a| a.is_finite() && *a > 0.0);
+    let number = |field: &Option<String>| {
+        (field.as_ref()).and_then(|k| group.metadata.get(k)?.trim().parse::<f64>().ok()).filter(|a| a.is_finite() && *a > 0.0)
+    };
+    let (by_alpha, by_scale) = match from.producer {
+        Some(p) => (number(&p.alpha_metadata), number(&p.scale_metadata)),
+        None => (None, None),
+    };
     let mut factors: BTreeMap<&str, [Option<(&str, &Tensor)>; 3]> = BTreeMap::new();
     let longest = |key: &str| {
         table
@@ -1204,16 +1222,18 @@ fn plan_lora(
         }
         let none = Ops::default();
         // The α a Diffusers-named module's source states outside its tensors.
-        let given = match (alpha, row.ops.stated_alpha, metadata_alpha) {
-            (None, true, Some(a)) => Some(a),
-            (None, true, None) if !stated => {
+        let given = match (alpha, row.ops.stated_alpha, by_alpha, by_scale) {
+            (None, true, Some(a), _) => Some(a),
+            (None, true, None, Some(scale)) => Some(scale * rank as f64),
+            (None, true, None, None) if !(from.stated || from.named) => {
+                let who = from.producer.map_or("no known producer".to_owned(), |p| format!("{}, without its stated field", p.name));
                 return refuse(
                     Code::MISSING_FIELD,
                     format!(
-                        "{ka}: a LoRA under Diffusers' module names that states no α (no .alpha, \
-                         PEFT config or __metadata__ {:?}), so its strength is unknown; name its format \
-                         (--source-format {}) to take α = rank",
-                        lora.alpha_metadata, table.name
+                        "{ka}: a LoRA under Diffusers' module names that states no α (no .alpha or PEFT \
+                         config; {who}), so its strength is unknown; name its format (--source-format {}) \
+                         to take α = rank",
+                        table.name
                     ),
                 );
             }

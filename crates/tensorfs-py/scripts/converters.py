@@ -423,6 +423,16 @@ H3_LORA_PRODUCERS = [
         f"{GH}/shootthesound/Fizgig/blob/15c8447941842aeb8c8472daf0ea627f0034fbb8/src/fizgig/minimax/model.py#L361",
         f"{GH}/shootthesound/Fizgig/blob/15c8447941842aeb8c8472daf0ea627f0034fbb8/src/fizgig/families/minimax.py#L359-L365"]}
       for prefix in ("fizgig.minimax", "fizgig.families (minimax")),
+    # Diffusers-named saves state no α a loader reads; only these producers' own loaders take it
+    # from metadata, each proven against an independent reference (TensorFS's numeric checks).
+    # lightx2v's `*_bf16` Turbo files: α in `alpha`, matching their Comfy twins' exactly.
+    {"name": "lightx2v-diffusers", "keys": ["transformer_blocks.", "token_refiner."], "metadata": {"floating_dtype": {"prefix": ""}},
+     "alpha_metadata": "alpha", "cite": [
+        "https://huggingface.co/lightx2v/Minimax-h3-Turbo/blob/30f485ed874aa44c8183348ad361c5eabad318da/minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16.safetensors"]},
+    # PDMD: its file states the fuse its loader applies, W += lora_scale * (lora_B @ lora_A).
+    {"name": "PDMD", "keys": ["transformer."], "metadata": {"fuse": "W_base += lora_scale * (lora_B @ lora_A)"},
+     "scale_metadata": "lora_scale", "cite": [
+        "https://huggingface.co/pdmd2026/pdmd_4NFE_lora/blob/9913253b4cee1702671c38637bf3941e1de489f5/lora_model_0.safetensors"]},
     # Its converter is not public; the file states the fusion of Diffusers' separate Q/K/V.
     {"name": "lightx2v", "keys": ["diffusion_model."], "metadata": {"source_format": "Diffusers PEFT LoRA", "qkv_fusion": "block diagonal B; concat A; alpha multiplied by 3"}, "cite": [
         "https://huggingface.co/lightx2v/Minimax-h3-Turbo/blob/30f485ed874aa44c8183348ad361c5eabad318da/minimax_h3_fl2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors"]},
@@ -475,8 +485,7 @@ def h3_lora(h3: Any, source: dict[str, tuple[str, tuple[int, ...]]]) -> dict[str
     for stem in ("transformer.transformer_blocks.{N}.adaln_proj.linear", "diffusion_model.blocks.{N}.adaln_proj.linear"):
         rows.append(["transformer_blocks.{N}.adaln_curve", stem, curve, {"N": blocks}])
     lora = {"a": [".lora_A.weight", ".lora_down.weight", ".lora_A.default.weight", ".curve_A.weight"],
-            "b": [".lora_B.weight", ".lora_up.weight", ".lora_B.default.weight", ".curve_B.weight"], "alpha": [".alpha"],
-            "alpha_metadata": ["alpha", "lora_alpha"]}
+            "b": [".lora_B.weight", ".lora_up.weight", ".lora_B.default.weight", ".curve_B.weight"], "alpha": [".alpha"]}
     return {"name": "h3.lora", "producers": H3_LORA_PRODUCERS, "lora": lora, "constants": {"adaln_t_table": adaln_t_table()},
             "components": [{"name": "transformer", "rows": rows}]}
 
