@@ -346,8 +346,13 @@ def main(payload: ToolRequest, ctx: Context, tel: Telemetry, out: Outputs) -> To
         return ToolResult(hold(payload.free_mib, tel))
     if payload.op == "ramhold":
         return ToolResult(ramhold(payload.ram_free_gib, tel))
-    if payload.op == "pinprobe":
-        res = subprocess.run([sys.executable, "-c", PIN_PROBE], capture_output=True, text=True, env={**os.environ, "CUDA_VISIBLE_DEVICES": "0"})
+    if payload.op == "pinprobe":  # the first Python on the pod with torch: the image's, else a TensorD env's
+        pys = [*map(str, sorted(Path("/var/lib/cozy/tensord/generations").glob("*/env/bin/python"))), "/usr/local/bin/python3",
+               "/usr/bin/python3", "/opt/conda/bin/python", COMFY_PY]
+        py = next((p for p in pys if Path(p).exists() and subprocess.run([p, "-c", "import torch"], capture_output=True).returncode == 0), None)
+        if py is None:
+            return ToolResult("no python with torch: " + ", ".join(pys))
+        res = subprocess.run([py, "-c", PIN_PROBE], capture_output=True, text=True, env=gpu_env())
         tel.log(res.stderr[-2000:])
         return ToolResult(res.stdout.strip() or res.stderr[-2000:])
     if payload.op == "stacks":
