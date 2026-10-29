@@ -1,6 +1,6 @@
 //! Package environments, built one way for a release (`published`) and for local code
 //! (`local_source`): uv's Python, the locked (or resolved) dependencies, wheels from files, the
-//! project, this machine's Runtime/TensorFS pair over them with its bytecode compiled, then the
+//! project, this machine's Runtime/TensorFS pair over them, all byte-compiled, then the
 //! environment's description by its own Runtime and its record. uv runs under one environment.
 use super::{canceled, io_failure, Failure, Job, Locked, Publisher, SDK};
 use crate::{catalog::normalized, machine::update, process::Supervised};
@@ -36,6 +36,11 @@ pub(crate) struct Project<'a> {
     pub fetch: Option<&'a dyn Fn() -> Result<(), Failure>>,
 }
 
+/// Every uv step compiles the bytecode of what it installs (uv compiles only that, never the
+/// whole environment): executors run `-I` from an environment they may not write, so an
+/// uncompiled module compiles again in every executor that imports it.
+const COMPILE: &str = "--compile-bytecode";
+
 /// What its record says of the Runtime pair it holds.
 #[derive(serde::Deserialize, serde::Serialize)]
 pub(crate) struct Built {
@@ -56,12 +61,7 @@ impl Publisher {
     pub(crate) fn build(&self, env: &Path, project: &Project, job: &Job) -> Result<Built, Failure> {
         let own_sdk = !self.sdk.requirements.is_empty();
         let editable_after = project.editable && project.locked.is_some();
-        // The last uv step compiles the whole environment's bytecode: executors run `-I` from an
-        // environment they may not write, so uncompiled modules compile again in every executor
-        // (SDXL's imports: 10.7 s uncompiled, 4.5 s compiled; J/BREAKDOWN.md).
         let steps = [true, project.locked.is_some() && project.wheels.is_some(), editable_after, own_sdk];
-        let last = steps.iter().rposition(|s| *s);
-        let compile = |step: usize| if Some(step) == last { "--compile-bytecode" } else { "--no-compile-bytecode" };
         let total = steps.iter().filter(|s| **s).count() + 1 + usize::from(project.fetch.is_some());
         let step = std::cell::Cell::new(0);
         let next = || {
@@ -85,7 +85,7 @@ impl Publisher {
         match project.locked {
             Some(locked) => {
                 let mut args = vec!["sync", "--frozen", "--inexact", "--no-dev", "--no-editable", "--no-install-project",
-                    "--project", &dir, "--python", &py, compile(0)];
+                    "--project", &dir, "--python", &py, COMPILE];
                 let held = carried.iter().map(|(name, _)| name.as_str()).chain(project.skip.iter().map(String::as_str))
                     .chain(pair.iter().copied().filter(|name| locked.packages.contains_key(*name)));
                 for name in held {
@@ -109,7 +109,7 @@ impl Publisher {
                 }
             }
             None => {
-                let mut args = vec!["pip", "install", "--python", &py, compile(0)];
+                let mut args = vec!["pip", "install", "--python", &py, COMPILE];
                 if let Some(wheels) = project.wheels {
                     args.extend(["--find-links", wheels.to_str().unwrap_or_default()]);
                 }
@@ -128,14 +128,14 @@ impl Publisher {
             next();
             let pins: Vec<String> = carried.iter().map(|(name, version)| format!("{name}=={version}")).collect();
             let mut args = vec!["pip", "install", "--python", &py, "--no-deps", "--no-index", "--link-mode", "copy",
-                "--find-links", wheels.to_str().unwrap_or_default(), compile(1)];
+                "--find-links", wheels.to_str().unwrap_or_default(), COMPILE];
             args.extend(pins.iter().map(String::as_str));
             self.uv(&args, &[], job)?;
         }
         if editable_after {
             next();
             // Its dependencies are in place: the project alone, whatever indexes its sources name.
-            self.uv(&["pip", "install", "--python", &py, "--no-deps", "--no-sources", "--editable", &dir, compile(2)], &[], job)?;
+            self.uv(&["pip", "install", "--python", &py, "--no-deps", "--no-sources", "--editable", &dir, COMPILE], &[], job)?;
         }
         if project.editable {
             live_paths(env).map_err(io_failure)?;
@@ -148,7 +148,7 @@ impl Publisher {
                 Some(locked) => locked.packages.clone(),
                 None => installed(env),
             };
-            fallback = match self.pair(env, &py, compile(3), job) {
+            fallback = match self.pair(env, &py, job) {
                 Ok(warning) => warning,
                 Err(Pair::Failed(failure)) => return Err(failure),
                 Err(Pair::Floor(floors)) => {
@@ -170,7 +170,7 @@ impl Publisher {
     /// pair that it misses (Fibo's `cozy-runtime>=0.30.16` for #1700's BatchNorm fix) is `Floor`,
     /// never a run on a Runtime too old for it. What else uv's check finds that the pair adds (a
     /// ceiling a newer pair passes: version skew is allowed) is the run's warning.
-    fn pair(&self, env: &Path, py: &str, compile: &str, job: &Job) -> Result<String, Pair> {
+    fn pair(&self, env: &Path, py: &str, job: &Job) -> Result<String, Pair> {
         let failed = Pair::Failed;
         let constraints = env.join("cozy-constraints.txt");
         let pins: String = installed(env).iter().filter(|(name, _)| !SDK.contains(&name.as_str()))
@@ -179,7 +179,7 @@ impl Publisher {
         let constraints = constraints.to_string_lossy();
         let links = self.sdk.find_links.as_ref().map(|p| p.to_string_lossy().to_string());
         let install = |how: &[&str]| {
-            let mut args = vec!["pip", "install", "--python", py, compile];
+            let mut args = vec!["pip", "install", "--python", py, COMPILE];
             args.extend(how);
             if let Some(links) = &links {
                 args.extend(["--find-links", links]);
