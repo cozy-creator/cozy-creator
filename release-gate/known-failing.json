@@ -100,5 +100,14 @@
    "qwen"
   ],
   "what": "pending fix cr-223 (d6766ae3f, needs a Runtime 0.32.x candidate): the fusion RecursionError on Qwen-Image 2.1's first request"
+ },
+ {
+  "cell": "H3 Turbo 15 s on an 8 GB card",
+  "issue": "xs-127",
+  "sku": "rtx-3070",
+  "what": "gate 40822058281 (cozy 0.13.7, Runtime 0.35.2, TensorFS 0.17.6, minimax-h3 0.1.8): step 2 device_out_of_memory allocating 1.09 GiB with 1.05 GiB free and 2.15 GiB reserved by Torch but unallocated (Varena 424 MiB resident, all ready); intermittent (pod-session 40818685145 passed in 1593 s). The fix's PR removes this entry",
+  "cells": [
+   "h3-8gb"
+  ]
  }
 ]
