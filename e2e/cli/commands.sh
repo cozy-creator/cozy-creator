@@ -56,7 +56,11 @@ cozy --json model info birefnet > "$OUT/model-info.json" && J '.releases[0].lane
 lane=$(jq -r '.releases[0].lanes[0].lane' "$OUT/model-info.json") || true
 
 step "renting, signed out"
-cozy machine rent > "$OUT/rent-catalog.txt" 2>&1 && grep -q 'rtx-4090' "$OUT/rent-catalog.txt" || check "machine rent: no catalog: $(head -c 300 "$OUT/rent-catalog.txt")"
+# The catalog's shape, never its stock: an empty market or a sold-out SKU is not a code failure.
+cozy machine rent > "$OUT/rent-catalog.txt" 2>&1 && grep -q -E '^NAME +GPU +GPUS +COMPUTE +VRAM +\$/HOUR' "$OUT/rent-catalog.txt" \
+  || check "machine rent: no catalog table: $(head -c 300 "$OUT/rent-catalog.txt")"
+cozy --json machine rent > "$OUT/rent-catalog.json" 2> "$OUT/rent-catalog.err" && J 'type == "array" and all(.[]; .name | length > 0)' "$OUT/rent-catalog.json" \
+  || check "machine rent --json: no catalog array: $(head -c 300 "$OUT/rent-catalog.json") $(head -c 200 "$OUT/rent-catalog.err")"
 code=0; cozy --json run birefnet/remove_background --asset "image=$(picture dog1.jpg)" --on new > "$OUT/rent-signed-out.json" 2>&1 || code=$?
 [ "$code" != 0 ] && grep -q 'cozy login' "$OUT/rent-signed-out.json" || check "run --on new signed out: exit $code, not refused for sign-in: $(head -c 300 "$OUT/rent-signed-out.json")"
 printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n' > "$OUT/id_private"
