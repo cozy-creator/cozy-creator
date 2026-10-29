@@ -37,6 +37,9 @@ enum Objects {
     Store(Store),
     /// A plain folder's `chunks/<sha256>`, else the cache.
     Folder { dir: PathBuf, cache: Option<Store> },
+    /// A header that lives only in memory ([`Store::view`]): its own small objects, by digest,
+    /// here; everything else from the store.
+    Memory { store: Store, own: Arc<BTreeMap<String, Arc<[u8]>>> },
 }
 
 impl Store {
@@ -49,6 +52,17 @@ impl Store {
         self.used(&header.sha256, ck.closure())?;
         self.maintain(0)?;
         Ok(ck)
+    }
+
+    /// A header kept only in memory: `header` (cozytensors CBOR) and the objects it cites that
+    /// no store holds (`own`, a view's graph), over the chunks and assets of this store, held
+    /// while open. Nothing is written and no use is recorded, so it ends with its process.
+    pub fn view(&self, header: &[u8], own: &[Vec<u8>]) -> Result<Checkpoint> {
+        let parsed = Header::from_cbor(header)?;
+        let own: BTreeMap<String, Arc<[u8]>> = own.iter().map(|b| (ObjectRef::of(b).sha256, Arc::from(b.as_slice()))).collect();
+        let objects = Objects::Memory { store: self.clone(), own: Arc::new(own) };
+        let _fence = retention::acquire(self)?;
+        Checkpoint::opened(objects, ObjectRef::of(header), parsed, None)
     }
 
     /// How the import that made `header` read its source, as its header records it.
@@ -83,7 +97,7 @@ impl Checkpoint {
     /// Holds the header and what it cites in the store it reads, and the snapshot folder it is in.
     fn opened(objects: Objects, id: ObjectRef, header: Header, header_file: Option<PathBuf>) -> Result<Self> {
         let hold = match &objects {
-            Objects::Store(store) | Objects::Folder { cache: Some(store), .. } => {
+            Objects::Store(store) | Objects::Folder { cache: Some(store), .. } | Objects::Memory { store, .. } => {
                 let mut held: Vec<String> = std::iter::once(&id).chain(header.objects()).map(|o| o.sha256.clone()).collect();
                 if let Objects::Folder { dir, .. } = &objects {
                     let real = fs::canonicalize(dir).ok();
@@ -150,6 +164,10 @@ impl Checkpoint {
                 }
                 cache.as_ref()
             }
+            Objects::Memory { store, own } => match own.get(&object.sha256) {
+                Some(bytes) => return frozen(bytes),
+                None => Some(store),
+            },
         };
         if let Some(store) = store {
             let path = store.path(object)?;
@@ -169,6 +187,7 @@ impl Checkpoint {
     pub fn path(&self) -> Result<PathBuf> {
         match &self.objects {
             Objects::Folder { dir, .. } => Ok(dir.clone()),
+            Objects::Memory { .. } => Err(Error::Invalid { path: PathBuf::new(), why: format!("{} is held in memory and has no folder", self.id.id()) }),
             Objects::Store(store) => {
                 let dir = store.root().join("snapshots").join(&self.id.sha256);
                 store.used(&self.id.sha256, self.closure())?;
@@ -254,7 +273,7 @@ impl Checkpoint {
     pub fn chunk_path(&self, i: usize) -> PathBuf {
         let sha256 = &self.header.chunks[i].sha256;
         match &self.objects {
-            Objects::Store(store) => store.object_path(sha256),
+            Objects::Store(store) | Objects::Memory { store, .. } => store.object_path(sha256),
             Objects::Folder { dir, cache } => {
                 let own = dir.join(CHUNKS_DIR).join(sha256);
                 match (own.exists(), cache) {
@@ -269,6 +288,10 @@ impl Checkpoint {
     pub fn object(&self, object: &ObjectRef) -> Result<File> {
         match &self.objects {
             Objects::Store(store) => store.file(object),
+            Objects::Memory { store, own } => match own.get(&object.sha256) {
+                Some(bytes) => frozen(bytes),
+                None => store.file(object),
+            },
             Objects::Folder { dir, cache } => match folder_file(dir, object)? {
                 Some(file) => Ok(file),
                 None => match cache {
@@ -283,6 +306,7 @@ impl Checkpoint {
     pub fn holds(&self, object: &ObjectRef) -> Result<bool> {
         match &self.objects {
             Objects::Store(store) => store.reuse(object),
+            Objects::Memory { store, own } => Ok(own.contains_key(&object.sha256) || store.reuse(object)?),
             Objects::Folder { dir, cache } => Ok(folder_file(dir, object)?.is_some()
                 || cache.as_ref().map(|c| c.reuse(object)).transpose()?.unwrap_or(false)),
         }
@@ -291,7 +315,7 @@ impl Checkpoint {
     /// The store it reads (a folder's cache).
     pub(crate) fn store(&self) -> Option<&Store> {
         match &self.objects {
-            Objects::Store(store) => Some(store),
+            Objects::Store(store) | Objects::Memory { store, .. } => Some(store),
             Objects::Folder { cache, .. } => cache.as_ref(),
         }
     }
@@ -301,6 +325,11 @@ impl Checkpoint {
         let Some(object) = self.component(component)?.assets.get(name) else {
             return Err(format::Error::Invalid(format!("{component} has no asset {name:?}")).into());
         };
+        if let Objects::Memory { own, .. } = &self.objects {
+            if let Some(bytes) = own.get(&object.sha256) {
+                return Ok(bytes.to_vec());
+            }
+        }
         let mut bytes = Vec::with_capacity(object.length as usize);
         (self.object(object)?.read_to_end(&mut bytes)).map_err(fail("read", name))?;
         Ok(bytes)
@@ -382,6 +411,27 @@ impl Checkpoint {
                 Ok(decode(&tensor.dtype, &tensor.shape, encoding, &views)?)
             }
         }
+    }
+}
+
+/// One of a memory view's own objects as a file: written in the OS temp dir and unlinked at
+/// once, so this descriptor is the only way to it and it is gone when that closes.
+fn frozen(bytes: &[u8]) -> Result<File> {
+    use std::io::{Seek, SeekFrom, Write};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    loop {
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(".tensorfs-view-{}-{n}", std::process::id()));
+        let mut file = match fs::OpenOptions::new().read(true).write(true).create_new(true).open(&path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(fail("create", &path)(e)),
+        };
+        let _ = fs::remove_file(&path);
+        file.write_all(bytes).map_err(fail("write", &path))?;
+        file.seek(SeekFrom::Start(0)).map_err(fail("seek", &path))?;
+        return Ok(file);
     }
 }
 

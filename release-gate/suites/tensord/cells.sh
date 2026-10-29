@@ -148,3 +148,27 @@ took = end - done; expect = size / link if link else 0
 print('PASS' if size and took <= 10 * expect + 5 else 'FAIL', f'{size / 1e6:.1f} MB landed in {took:.1f} s; this computer downloads {link / 1e6:.1f} MB/s, so {expect:.1f} s (bar: 10x + 5 s)')
 PY
 read -r v rest < "$T/delivery.txt"; expect tensord-output-delivery "$v" "$rest"
+
+# Adapter views (cl-683): distinct LoRA'd calls add nothing to the machine's disk beyond their LoRAs. A view is a header
+# in memory over the base's and the LoRAs' own chunks; one written to the store re-packed every small part of the base
+# again (GBs per SDXL call; H3 filled a 100 GB pod in its third, run 20445). The LoRAs and the base land first (one
+# LoRA'd call); three more stacks, each a new view, must leave the disk's free bytes where they were (bar: 512 MiB for
+# records and outputs).
+free_bytes() { "$CLI" --json machine show "$M" 2>/dev/null | jq -r '.status.disk_free_bytes // empty'; }
+ikea=ostris/ikea-lora-sdxl balloon=proomptengineer/balloon-lora-sdxl
+for l in $ikea $balloon; do "$CLI" model download "$l" --on "$M" -y > "$T/views-$(basename "$l").log" 2>&1; done
+v0=$(submit "sdxl/generate@$NEW" prompt="$OBJECT as flat-pack furniture, catalog photo" seed:=$((R + 60)) --lora "$ikea")
+until_status "$v0" terminal; f0=$(free_bytes)
+v1=$(submit "sdxl/generate@$NEW" prompt="PEBalloonStyle, $CHAR made of balloons" seed:=$((R + 61)) --lora "$balloon")
+until_status "$v1" terminal
+v2=$(submit "sdxl/generate@$NEW" prompt="PEBalloonStyle, $SCENE as a flat-pack kit" seed:=$((R + 62)) --lora "$ikea,0.6" --lora "$balloon,0.8")
+until_status "$v2" terminal
+v3=$(submit "sdxl/generate@$NEW" prompt="$OBJECT, flat-pack, half strength" seed:=$((R + 63)) --lora "$ikea,0.5")
+until_status "$v3" terminal; f1=$(free_bytes)
+s="$(get "$v0" status)$(get "$v1" status)$(get "$v2" status)$(get "$v3" status)"
+grew=$(( ${f0:-0} - ${f1:-0} ))
+if [ "$s" = completedcompletedcompletedcompleted ] && [ -n "$f0" ] && [ -n "$f1" ] && [ "$grew" -le $((512 << 20)) ]; then
+  expect tensord-adapter-views PASS "runs $v1 $v2 $v3 (three new LoRA stacks after run $v0) used $(( grew >> 20 )) MiB of disk"
+else
+  expect tensord-adapter-views FAIL "runs $v0 $v1 $v2 $v3: $s; the disk's free bytes went ${f0:-?} -> ${f1:-?} ($(( grew >> 20 )) MiB used)"
+fi

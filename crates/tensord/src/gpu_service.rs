@@ -34,6 +34,18 @@ use std::{
 };
 use crate::storage::Store;
 
+/// The snapshots of `binding` that are views this process keeps (`storage::view`), as the
+/// executor opens them: their bytes, which no store holds.
+fn views(binding: &Binding) -> BTreeMap<String, protocol::executor::View> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    (binding.snapshots.values().chain(std::iter::once(&binding.snapshot)))
+        .filter_map(|id| crate::storage::view(id).map(|view| (id.clone(), protocol::executor::View {
+            header: STANDARD.encode(&view.header),
+            own: view.own.iter().map(|o| STANDARD.encode(o)).collect(),
+        })))
+        .collect()
+}
+
 /// A slot's model as the run's preparation resolved it (`published`).
 #[derive(Clone, Debug)]
 pub struct ModelGrant {
@@ -183,6 +195,9 @@ pub struct PlanSlot {
     /// Its LoRAs, when its checkpoint is their adapter view (`run show`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adapted: Option<Adapted>,
+    /// What composes its adapter view again, when its checkpoint is one (`adapter::ensure`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<crate::adapter::Recipe>,
 }
 
 /// One `Weights[M]` argument: the checkpoint a call reads raw (never constructed), and the
@@ -2174,6 +2189,7 @@ impl Pool {
                 on_demand: model.get("on_demand").and_then(serde_json::Value::as_bool) == Some(true),
                 placeable,
                 adapted: grant.adapted.clone(),
+                view: crate::storage::view(&grant.manifest).map(|view| view.recipe.clone()),
             });
         }
         let construction = construction(&installed.generation, application, &planned, degree)?;
@@ -2195,8 +2211,15 @@ impl Pool {
             degree,
         })
     }
+    /// `preparation`'s plan, each adapter view it reads kept in memory (composed again if lost).
     pub fn plan(&self, preparation: &Preparation) -> io::Result<Plan> {
-        Plan::of(preparation)
+        let plan = Plan::of(preparation)?;
+        for slot in &plan.slots {
+            if let Some(recipe) = &slot.view {
+                crate::adapter::ensure(&self.store, &slot.binding.snapshot, recipe)?;
+            }
+        }
+        Ok(plan)
     }
     fn permit(
         self: &Arc<Self>,
@@ -3475,6 +3498,7 @@ impl Pool {
                         binding.package_interface = interface_path.to_string_lossy().into();
                         binding.store = store.clone();
                         binding.homes = homes.get(&slot.binding.model_binding_path).cloned().unwrap_or_default();
+                        binding.views = views(&binding);
                         ModelLoad { binding }
                     };
                     let first = load(first);

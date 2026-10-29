@@ -40,6 +40,13 @@ def open(name_or_path, *, release=None, lane=None, gpus=None, endpoint=None, loc
     )
 
 
+def view(header, own=(), *, endpoint=None, local_files_only=False, cache_dir=None, token=None):
+    """A checkpoint whose header (cozytensors bytes) lives only in memory: an adapter view composed
+    by reference. Its chunks come from the cache, else the endpoint; `own` are the objects it
+    cites that no store holds. Nothing is written."""
+    return _client(cache_dir, endpoint, token).view(bytes(header), [bytes(o) for o in own], local_files_only=local_files_only)
+
+
 def materialize(source: str | _ext.Checkpoint, *, local_dir=None, format="cozytensors", decode=False, release=None, lane=None, components=None, cache_dir=None, local_files_only=False, token=None, endpoint=None) -> str:
     if format not in {"cozytensors", "safetensors"}:
         raise ValueError("format must be cozytensors or safetensors")

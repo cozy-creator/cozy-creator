@@ -4,11 +4,13 @@
 //! - A checkpoint's id is its cozytensors header's object (`sha256:<hex>`).
 //! - Local models are `local/<name>` repos, never evicted: one commit, its newest.
 //! - A Hub model this machine pulled is a cached ref naming its commit (`held_models::Pulled`).
+//! - An adapter view (`adapter::compose`) lives only in this process's memory ([`keep_view`]):
+//!   its id resolves here like a stored header's, and its executor is sent its bytes at Load.
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     io::{self, Write as _},
     path::Path,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -118,17 +120,62 @@ pub fn tree_or_header(store: &Store, object: &ObjectRef) -> io::Result<Option<Tr
     })
 }
 
-/// The object `id` (`sha256:<hex>` or bare hex) as the store holds it, its length read off disk.
+/// A header composed in memory, the objects it cites that no store holds (its graph), and what
+/// composes it again.
+#[derive(Debug)]
+pub struct View {
+    pub header: Vec<u8>,
+    pub own: Vec<Vec<u8>>,
+    pub recipe: crate::adapter::Recipe,
+}
+
+/// The views' bytes this process keeps; past them the oldest goes, and a run that names it again
+/// composes it again (an H3 view is about 1 MB).
+const VIEW_BYTES: usize = 256 << 20;
+
+fn views() -> &'static Mutex<VecDeque<(String, Arc<View>)>> {
+    static VIEWS: Mutex<VecDeque<(String, Arc<View>)>> = Mutex::new(VecDeque::new());
+    &VIEWS
+}
+
+/// Keeps `header` (and `own`) as a view in memory, open over `store`; nothing is written.
+pub fn keep_view(store: &Store, header: Vec<u8>, own: Vec<Vec<u8>>, recipe: crate::adapter::Recipe) -> io::Result<tensorfs::store::Checkpoint> {
+    let checkpoint = store.view(&header, &own).map_err(io_error)?;
+    let sha256 = checkpoint.id().sha256.clone();
+    let mut views = views().lock().unwrap();
+    views.retain(|(id, _)| *id != sha256);
+    views.push_back((sha256, Arc::new(View { header, own, recipe })));
+    let size = |views: &VecDeque<(String, Arc<View>)>| views.iter().map(|(_, v)| v.header.len() + v.own.iter().map(Vec::len).sum::<usize>()).sum::<usize>();
+    while views.len() > 1 && size(&views) > VIEW_BYTES {
+        views.pop_front();
+    }
+    Ok(checkpoint)
+}
+
+/// The view `id` (`sha256:<hex>` or bare hex) this process keeps.
+pub fn view(id: &str) -> Option<Arc<View>> {
+    let sha256 = id.trim_start_matches("sha256:");
+    views().lock().unwrap().iter().find(|(id, _)| id == sha256).map(|(_, v)| v.clone())
+}
+
+/// The object `id` (`sha256:<hex>` or bare hex) as the store holds it, its length read off disk;
+/// a view by its header's length.
 pub fn held(store: &Store, id: &str) -> io::Result<ObjectRef> {
     let sha256 = id.trim_start_matches("sha256:").to_string();
+    if let Some(view) = view(&sha256) {
+        return Ok(ObjectRef { sha256, length: view.header.len() as u64 });
+    }
     let path = store.path(&ObjectRef { sha256: sha256.clone(), length: 0 }).map_err(io_error)?;
     let length = std::fs::metadata(path)?.len();
     Ok(ObjectRef { sha256, length })
 }
 
-/// The checkpoint `id` names, held here (its structure; chunks may be absent): a header, or a
-/// commit's (a run's checkpoint output names its commit).
+/// The checkpoint `id` names, held here (its structure; chunks may be absent): a header, a
+/// commit's (a run's checkpoint output names its commit), or a view this process keeps.
 pub fn checkpoint(store: &Store, id: &str) -> io::Result<tensorfs::store::Checkpoint> {
+    if let Some(view) = view(id) {
+        return store.view(&view.header, &view.own).map_err(io_error);
+    }
     let object = held(store, id)?;
     match store.tree(&object) {
         Ok(_) => store.at_commit(&object),
@@ -137,10 +184,13 @@ pub fn checkpoint(store: &Store, id: &str) -> io::Result<tensorfs::store::Checkp
     .map_err(io_error)
 }
 
-/// The chunks and assets `components` read (all components when empty), each once; none when
-/// it names a component the checkpoint lacks.
+/// The chunks and assets `components` read (all components when empty), each once, that the
+/// store holds or fetches: never a view's own objects (its graph), which live in memory. None
+/// when it names a component the checkpoint lacks.
 pub fn chunks(checkpoint: &tensorfs::store::Checkpoint, components: &[String]) -> Vec<ObjectRef> {
-    tensorfs::fetch::wanted(checkpoint.header(), (!components.is_empty()).then_some(components)).unwrap_or_default()
+    let own: Vec<String> = view(&checkpoint.id().sha256).map(|v| v.own.iter().map(|o| ObjectRef::of(o).sha256).collect()).unwrap_or_default();
+    let wanted = tensorfs::fetch::wanted(checkpoint.header(), (!components.is_empty()).then_some(components)).unwrap_or_default();
+    wanted.into_iter().filter(|o| !own.contains(&o.sha256)).collect()
 }
 
 /// `text` is 64 lowercase hex digits (a bare sha256), or `sha256:` and them when `prefixed`.
