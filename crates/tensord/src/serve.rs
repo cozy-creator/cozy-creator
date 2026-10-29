@@ -278,7 +278,7 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     }
     if !rental {
         let (lifecycle, engine, home) = (lifecycle.clone(), service.engine.clone(), grant.home.clone());
-        let (released, parents, stopped) = (service.clone(), service.clone(), service.clone());
+        let (released, parents, stopped, warm) = (service.clone(), service.clone(), service.clone(), service.clone());
         // A change of its controllers (`cozy machine authorize`, `--remove`) wakes its lifecycle.
         let (mut changes, woken) = (keys.subscribe(), service.engine.clone());
         runtime.spawn(async move {
@@ -294,11 +294,11 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
                 move || released.release_idle(),
                 move || parents.release_parents(),
                 move || stopped.stop(),
-                // Kept up for its authorized controllers, unless `cozy update` replaced its binary:
-                // it exits idle and Calcifer starts the new one.
+                // Kept up for its authorized controllers and for a warm set member it holds, unless
+                // `cozy update` replaced its binary: it exits idle and Calcifer starts the new one.
                 move || {
                     let swapped = crate::machine::binary::launch().is_some_and(|launch| launch.swapped());
-                    crate::machine::grant::authorized(&home) && !swapped
+                    (crate::machine::grant::authorized(&home) || warm.keeps_warm()) && !swapped
                 },
                 // On every interface exactly while another computer's controller is authorized.
                 move || !configured && open != crate::machine::grant::authorized(&authorizes),

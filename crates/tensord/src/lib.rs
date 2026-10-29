@@ -20,6 +20,7 @@ pub mod gpu_service;
 pub mod held_models;
 pub mod gateway;
 pub mod hub;
+mod import_pages;
 pub mod calls;
 pub mod journal;
 pub mod launch_identity;

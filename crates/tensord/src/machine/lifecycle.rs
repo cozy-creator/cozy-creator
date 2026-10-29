@@ -4,9 +4,9 @@
 //! The clock is durable state, never a sample held in memory: the journal's last job end and the
 //! ledger's idle start (this rental's first boot, a keepalive, or an update's activation or end),
 //! so restarts and updates neither shorten nor lose it. This computer's machine counts the same clock from its start: after 5 minutes its
-//! executors exit and give back every byte they held, after 15 it exits itself (Calcifer starts
-//! it again when something uses it), unless another computer's controller is authorized to use
-//! it. A client following a run or a log, reading an output or uploading an object, holds either
+//! executors outside the warm sets exit and give back every byte they held, after 15 it exits
+//! itself (Calcifer starts it again when something uses it), unless another computer's controller
+//! is authorized to use it or a warm set keeps a member in memory (`cozy run <fn> --warm`). A client following a run or a log, reading an output or uploading an object, holds either
 //! clock. Also the Hub lease of authorized keys.
 use super::hub::{Hub, Refusal};
 use crate::api::auth::Keys;
@@ -452,9 +452,10 @@ pub async fn release_when_idle(
 }
 
 /// This computer's machine through its idle clock: after a third of the window with no work its
-/// executors exit (`release`), after the whole window the machine stops (`stop`, false when work
-/// came meanwhile) and this process exits. While `kept` (another computer's controller is
-/// authorized to use it) it stays up, and at the whole window its import-only parents go instead
+/// executors outside the warm sets exit (`release`), after the whole window the machine stops
+/// (`stop`, false when work came meanwhile) and this process exits. While `kept` (another
+/// computer's controller is authorized to use it, or a warm set member is held here) it stays up,
+/// and at the whole window its import-only parents outside the warm sets go instead
 /// (`release_parents`). It sleeps until activity or the next deadline.
 pub fn exit_when_idle(
     lifecycle: Arc<Lifecycle>,

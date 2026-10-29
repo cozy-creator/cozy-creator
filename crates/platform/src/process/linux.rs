@@ -92,6 +92,17 @@ pub(super) fn wait(handle: &Handle, period: Option<Duration>) -> io::Result<bool
     unix::readable(handle.0.as_fd(), period)
 }
 
+pub(super) fn background_thread() {
+    // SAFETY: all three act on the calling thread alone (Linux keeps nice and the I/O class per
+    // thread): setpriority names its tid (the raw syscall: glibc's gettid is newer than the
+    // manylinux floor), ioprio_set's IOPRIO_WHO_PROCESS 0 is the caller.
+    unsafe {
+        let tid = libc::syscall(libc::SYS_gettid);
+        libc::setpriority(libc::PRIO_PROCESS, tid as libc::id_t, 19);
+        libc::syscall(libc::SYS_ioprio_set, 1, 0, 3 << 13);
+    }
+}
+
 pub(super) fn set_name(name: &str) -> crate::Result<()> {
     let failed = crate::Error::os("name this process");
     let name = std::ffi::CString::new(name)

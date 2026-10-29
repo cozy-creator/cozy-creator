@@ -146,6 +146,12 @@ pub fn set_name(name: &str) -> Result<()> {
     sys::set_name(name)
 }
 
+/// The calling thread at the lowest CPU and I/O priority (nice 19, the idle I/O class), for
+/// background work nothing waits on. Elsewhere it keeps its priority.
+pub fn background_thread() {
+    sys::background_thread()
+}
+
 /// A handle naming exactly one birth (a pidfd, a kqueue on its exit, a process HANDLE): its kill
 /// and its exit never reach a process that reused the PID.
 #[derive(Debug)]

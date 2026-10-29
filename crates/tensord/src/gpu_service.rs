@@ -607,6 +607,13 @@ impl Zygote {
     fn ready(&self) -> bool {
         matches!(*self.state.lock().unwrap(), ZygoteState::Ready(_))
     }
+    /// The parent process, once it is ready.
+    fn birth(&self) -> Option<Birth> {
+        match &*self.state.lock().unwrap() {
+            ZygoteState::Ready(parent) => Some(parent.birth.clone()),
+            _ => None,
+        }
+    }
     /// Ready and with no live child: ending it ends nothing else.
     fn childless(&self) -> bool {
         if !matches!(*self.state.lock().unwrap(), ZygoteState::Ready(_)) {
@@ -624,6 +631,9 @@ const ENDED: &str = "import-only executor ended";
 /// What one more import-only parent may hold of the host: torch, Diffusers and Transformers
 /// imported come to 0.73–0.85 GB resident (SDXL, Qwen-Image, Krea 2, Anima, H3 on CPU).
 const PARENT_BYTES: i64 = 1 << 30;
+/// How many of a shared machine's most recently used environments it reads ahead at start: the
+/// few a person is likely to use next (lead, 10-29).
+const SHARED_READ_AHEAD: usize = 3;
 
 /// Executors fork from an import-only parent on Linux only; elsewhere each one spawns, and no
 /// parent imports ahead of it.
@@ -1426,32 +1436,44 @@ impl Pool {
     pub fn end_generation(&self, identity: &str) {
         self.end_idle_of(|generation| generation == identity);
     }
-    /// This computer's machine idle a while: every idle executor ends, so its CUDA context and
-    /// memory go back with its process. Import-only parents (host memory, no GPU) stay the whole
+    /// This computer's machine idle a while: every idle executor outside the warm sets ends, so
+    /// its CUDA context and memory go back with its process. A member's executor stays (it yields
+    /// under memory pressure as ever). Import-only parents (host memory, no GPU) stay the whole
     /// idle window (`release_parents`, or the exit), so a package used in the last quarter hour
     /// forks without importing.
-    /// Warm sets stay declared: the next call's pass brings them back.
     pub fn release_idle(&self) {
-        self.end_idle_executors(|_| true);
+        let members: std::collections::BTreeSet<String> = self.members.lock().unwrap().values().flatten()
+            .filter(|member| member.level >= Level::Host)
+            .filter_map(|member| member.plan.as_ref().map(|plan| plan.construction.clone())).collect();
+        self.end_idle_executors(|session| !members.contains(&session.plan));
     }
-    /// This computer's machine idle its whole window but kept up for its controllers: a shared
-    /// machine's childless parents end as they would with the process (a dedicated one keeps them).
+    /// A warm set keeps something in memory here (a member at `imported` or above), so this
+    /// computer's machine stays up for it instead of exiting idle.
+    pub fn keeps_warm(&self) -> bool {
+        self.members.lock().unwrap().values().flatten().any(|member| member.level >= Level::Imported)
+    }
+    /// This computer's machine idle its whole window but kept up (its controllers, a warm set): a
+    /// shared machine's childless parents outside the warm sets end as they would with the process
+    /// (a dedicated one keeps them).
     pub fn release_parents(&self) {
         if self.config.host.mode == HostMode::Shared {
-            self.end_idle_parents(|_| true);
+            let members: std::collections::BTreeSet<App> = self.members.lock().unwrap().values().flatten()
+                .filter(|member| member.level >= Level::Imported && member.plan.is_some())
+                .map(|member| parent_app(&member.held)).collect();
+            self.end_idle_parents(|key| !members.contains(key));
         }
     }
     /// Every idle executor and import-only parent of the generations `which` names ends.
     fn end_idle_of(&self, which: impl Fn(&str) -> bool) {
-        self.end_idle_executors(&which);
-        self.end_idle_parents(which);
+        self.end_idle_executors(|session| which(&session.generation));
+        self.end_idle_parents(|(generation, _)| which(generation));
     }
-    fn end_idle_parents(&self, which: impl Fn(&str) -> bool) {
+    fn end_idle_parents(&self, which: impl Fn(&App) -> bool) {
         let parents: Vec<Arc<Zygote>> = {
             let mut zygotes = self.zygotes.lock().unwrap();
             let ended: Vec<App> = zygotes
                 .iter()
-                .filter(|((generation, _), zygote)| which(generation) && zygote.childless())
+                .filter(|(key, zygote)| which(key) && zygote.childless())
                 .map(|(key, _)| key.clone())
                 .collect();
             ended.into_iter().filter_map(|key| zygotes.remove(&key)).collect()
@@ -1464,11 +1486,11 @@ impl Pool {
             }
         }
     }
-    /// Every idle executor of the generations `which` names ends.
-    fn end_idle_executors(&self, which: impl Fn(&str) -> bool) {
+    /// Every idle executor `which` names ends.
+    fn end_idle_executors(&self, which: impl Fn(&Session) -> bool) {
         let lanes: Vec<(String, usize, u32)> = {
             let sessions = self.sessions.lock().unwrap();
-            let idle = sessions.values().filter(|s| which(&s.generation));
+            let idle = sessions.values().filter(|s| which(s));
             idle.map(|s| (s.plan.clone(), s.start, s.degree)).collect()
         };
         for (plan, start, degree) in lanes {
@@ -1478,7 +1500,7 @@ impl Pool {
             self.end_session(&session_key(&plan, start));
             drop(permit);
         }
-        while self.end_idle_deviceless(|session| which(&session.generation)) {}
+        while self.end_idle_deviceless(&which) {}
     }
     /// One pass over `actor`'s warm set: each member is brought as far toward its level as
     /// free room and the room of idle tenants outside every warm set allow. It never takes
@@ -2750,6 +2772,24 @@ impl Pool {
         self.prespawn(held);
     }
 
+    /// The machine started: the recorded import pages of its most recently used environments are
+    /// read ahead at the lowest priority while half the host's memory stays available, a shared
+    /// machine's few ([`SHARED_READ_AHEAD`]) and a dedicated one's all. Cache only: the kernel
+    /// takes it back whenever anything needs the memory.
+    pub fn read_ahead_recent(&self, held: &[HeldGeneration]) {
+        let half = host_memory::limit().map_or(i64::MAX, |limit| i64::try_from(limit / 2).unwrap_or(i64::MAX));
+        let mut room = host_memory::read().available.saturating_sub(half);
+        let few = match self.config.host.mode {
+            HostMode::Shared => SHARED_READ_AHEAD,
+            HostMode::Dedicated => usize::MAX,
+        };
+        let fits = |held: &&HeldGeneration| {
+            room = room.saturating_sub(i64::try_from(crate::import_pages::recorded(held)).unwrap_or(i64::MAX));
+            room >= 0
+        };
+        crate::import_pages::read_ahead_later(held.iter().take(few).take_while(fits).cloned().collect(), true);
+    }
+
     /// The machine's installed environments `held`, the most recently used first: each one's
     /// import-only parent imports in turn, off the caller's thread, while the host keeps half its
     /// memory free with one more parent ([`PARENT_BYTES`]). A short host ends idle parents least
@@ -2809,8 +2849,14 @@ impl Pool {
     }
 
     /// Brings `zygote` up as `held`'s import-only parent, and tells the engine it did (or failed).
+    /// Its environment's import pages are asked of the kernel as it starts; its first import
+    /// records them (`import_pages`).
     fn start_parent(&self, zygote: &Zygote, held: &HeldGeneration) {
+        crate::import_pages::read_ahead_later(vec![held.clone()], false);
         zygote.set(self.import_only(held));
+        if let Some(parent) = zygote.birth() {
+            crate::import_pages::record_later(held, parent);
+        }
         if let Some(engine) = self.engine.get().and_then(Weak::upgrade) {
             engine.notify_activity();
         }

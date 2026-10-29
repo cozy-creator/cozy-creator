@@ -149,6 +149,48 @@ pub fn cached(file: &File, off: u64, len: u64) -> Option<bool> {
     }
 }
 
+/// The OS's page size.
+pub fn page_size() -> u64 {
+    #[cfg(target_os = "linux")]
+    {
+        linux::page_size()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        4096
+    }
+}
+
+/// The pages of `file` the page cache holds, as `(first page, count)` runs of [`page_size`]
+/// bytes, by `mincore(2)` over a mapping (it never faults one in); empty where the OS cannot say.
+pub fn cached_runs(file: &File) -> Vec<(u64, u64)> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::cached_runs(file)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = file;
+        vec![]
+    }
+}
+
+/// Asks the kernel to read `[off, off+len)` of `file` into the page cache in the background
+/// (`POSIX_FADV_WILLNEED`): reclaimable cache, nothing read into this process. Nothing where the
+/// OS has no such advice.
+pub fn will_need(file: &File, off: u64, len: u64) {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        // SAFETY: advice on our own open descriptor; it reads nothing into this process.
+        unsafe { libc::posix_fadvise(file.as_raw_fd(), off as libc::off_t, len as libc::off_t, libc::POSIX_FADV_WILLNEED) };
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (file, off, len);
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod linux {
     use std::fs::File;
@@ -185,9 +227,41 @@ mod linux {
         Some((rc != 0 || overlay(file)) && resident(file, off, len, page))
     }
 
-    fn page_size() -> u64 {
+    pub(super) fn page_size() -> u64 {
         // SAFETY: sysconf reads a constant.
         (unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64).max(4096)
+    }
+
+    pub(super) fn cached_runs(file: &File) -> Vec<(u64, u64)> {
+        let Ok(len) = file.metadata().map(|m| m.len() as usize) else { return vec![] };
+        if len == 0 {
+            return vec![];
+        }
+        // SAFETY: a read-only shared mapping of our descriptor, unmapped below.
+        let p = unsafe { libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ, libc::MAP_SHARED, file.as_raw_fd(), 0) };
+        if p == libc::MAP_FAILED {
+            return vec![];
+        }
+        let mut pages = vec![0u8; len.div_ceil(page_size() as usize)];
+        // SAFETY: the vector holds one byte per page of the mapping.
+        let ok = unsafe { libc::mincore(p, len, pages.as_mut_ptr()) } == 0;
+        // SAFETY: unmaps the mapping made above, which nothing else references.
+        unsafe { libc::munmap(p, len) };
+        if !ok {
+            return vec![];
+        }
+        let (mut runs, mut start) = (vec![], None);
+        for (i, byte) in pages.iter().chain([&0]).enumerate() {
+            match (byte & 1 == 1, start) {
+                (true, None) => start = Some(i),
+                (false, Some(s)) => {
+                    runs.push((s as u64, (i - s) as u64));
+                    start = None;
+                }
+                _ => (),
+            }
+        }
+        runs
     }
 
     fn overlay(file: &File) -> bool {
