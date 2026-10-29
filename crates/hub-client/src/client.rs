@@ -243,7 +243,17 @@ impl Client {
         self.send(request).await.map(drop)
     }
 
-    /// Releases `commits` (one per lane) as `release`, public for good.
+    /// Deletes release `release`; its version is never published again.
+    pub async fn delete_model_release(&self, org: &str, name: &str, release: &str) -> Result<(), Error> {
+        let request = self.at(
+            Method::DELETE,
+            "/v1/models/{org}/{name}/releases/{release}",
+            &[org, name, release],
+        );
+        self.send(request).await.map(drop)
+    }
+
+    /// Releases `commits` (one per lane) as `release`, public until deleted.
     pub async fn publish_model_release(
         &self,
         org: &str,

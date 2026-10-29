@@ -54,6 +54,9 @@ pub(crate) async fn publish(ctx: &Context, args: Publish) -> Result<ExitCode, Er
 #[derive(Serialize)]
 struct Deleted {
     model: String,
+    /// One release, by version.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    release: Option<String>,
     /// One commit; absent when the whole model went.
     #[serde(skip_serializing_if = "Option::is_none")]
     commit: Option<String>,
@@ -61,10 +64,11 @@ struct Deleted {
 
 /// Never prompts: `--yes` is the confirmation, and without it nothing is sent.
 pub(crate) async fn delete(ctx: &Context, args: Delete) -> Result<ExitCode, Error> {
-    let (repo, commit) = match ModelRef::parse(&args.model)? {
-        ModelRef::Hub { repo, release: None } => (repo, None),
-        ModelRef::Commit { repo, commit } => (repo, Some(commit)),
-        _ => return Err(usage("model_ref_invalid", format!("{:?}: delete takes [org/]name or [org/]name@sha256:<commit>", args.model))),
+    let (repo, release, commit) = match ModelRef::parse(&args.model)? {
+        ModelRef::Hub { repo, release } => (repo, release, None),
+        ModelRef::Commit { repo, commit } => (repo, None, Some(commit)),
+        _ => return Err(usage("model_ref_invalid", format!(
+            "{:?}: delete takes [org/]name, [org/]name@<version> or [org/]name@sha256:<commit>", args.model))),
     };
     let hub = ctx.hub();
     if !ctx.yes {
@@ -72,14 +76,24 @@ pub(crate) async fn delete(ctx: &Context, args: Delete) -> Result<ExitCode, Erro
             .remedy("run it again with --yes"));
     }
     let client = ctx.hub_signed_in(&hub)?;
-    match &commit {
-        Some(id) => hub_answer(client.delete_model_commit(&repo.org, &repo.name, id).await)?,
-        None => hub_answer(client.delete_model(&repo.org, &repo.name).await)?,
-    }
-    let view = Deleted { model: repo.to_string(), commit };
+    let note = match (&release, &commit) {
+        (Some(version), _) => {
+            hub_answer(client.delete_model_release(&repo.org, &repo.name, version).await)?;
+            format!("{version} is never published again; what only it released is private again.")
+        }
+        (None, Some(id)) => {
+            hub_answer(client.delete_model_commit(&repo.org, &repo.name, id).await)?;
+            "The Hub's GC reclaims the objects nothing else names.".into()
+        }
+        (None, None) => {
+            hub_answer(client.delete_model(&repo.org, &repo.name).await)?;
+            "The Hub's GC reclaims the objects nothing else names.".into()
+        }
+    };
+    let view = Deleted { model: repo.to_string(), release, commit };
     match ctx.json {
         true => output::json(&view),
-        false => Record::of(&view).note("The Hub's GC reclaims the objects nothing else names.").print(ctx),
+        false => Record::of(&view).note(note).print(ctx),
     }
     Ok(ExitCode::SUCCESS)
 }

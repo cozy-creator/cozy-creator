@@ -51,6 +51,13 @@
    "items": {
     "$ref": "#/$defs/objectRef"
    }
+  },
+  "deleted": {
+   "type": "array",
+   "description": "Versions of deleted releases, in deletion order: never released again.",
+   "items": {
+    "$ref": "#/$defs/label"
+   }
   }
  },
  "$defs": {
