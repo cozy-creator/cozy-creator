@@ -506,6 +506,9 @@ def build(spec: dict[str, Any]) -> dict[str, Any]:
         comps[folder] = {"class": class_of(spec["reference"], files, folder), "keys": [[k, s] for k, s in keys]}
         if folder in spec.get("optional", {}):
             comps[folder]["optional"] = spec["optional"][folder]
+    # LoRA-only targets a family's adapters train that no weight is: [path, [out, in]].
+    for comp, sites in spec.get("sites", {}).items():
+        comps[comp]["sites"] = sites
     for comp, path in spec.get("banked", {}).items():
         comps[comp] = {"keys": [[k, s] for k, s in banked(path)]}
     if spec["name"] == "seedvr2":
