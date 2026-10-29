@@ -77,7 +77,17 @@ def check(gate):
         rows[name] = {'run': number, 'wall_s': int(wall) / 1000 if wall else None,
                       'rec': json.load(open(p)) if os.path.exists(p) else None, 'evs': events(os.path.join(t, name + '.ndjson'))}
 
+    # The cases cells.sh ran (--only selects some); none listed: every case.
+    path = os.path.join(t, 'cases')
+    cases = set(open(path).read().split()) if os.path.exists(path) else None
+
+    def chosen(name):
+        case = name.split('-')[0]
+        return cases is None or {'mc': 'multi-conversion', 'lora': 'lora-alpha'}.get(case, case) in cases
+
     def done(name, cancelled=False):
+        if not chosen(name):
+            return False
         r = rows.get(name)
         status = ((r or {}).get('rec') or {}).get('status')
         if r is None:
@@ -120,7 +130,9 @@ def check(gate):
                     'reasked': sum(1 for r in objs if r['ask'] > 1), 'bytes': sum(r['bytes'] for r in objs),
                     'error': open(os.path.join(t, name + '.err')).read()[-300:] if code != '0' else ''}
     c, sl = st.get('straggler-clean'), st.get('straggler-slow')
-    if not c or not sl:
+    if not chosen('straggler'):
+        pass
+    elif not c or not sl:
         fails.append('tensorfs straggler: the case did not run')
     elif not c['ok'] or not sl['ok']:
         fails.append(f'tensorfs straggler: tfs download failed (clean: {c["error"]}; with stragglers: {sl["error"]})')
@@ -199,17 +211,28 @@ def check(gate):
             (fails if sec > limit else notes).append(
                 f'tensorfs upload-resume: {sec:.1f} s for the rest after {moved / 2**20:.0f} of {total / 2**20:.0f} MiB '
                 f'(limit {limit:.1f} s at the upload\'s own rate)')
-    p = os.path.join(t, 'lora-alpha.json')
-    try:
-        (cfg,) = [c['config'] for c in json.load(open(p))['components'] if c.get('config', {}).get('peft_type') == 'LORA']
-    except (OSError, ValueError, KeyError):
-        fails.append(f'tensorfs lora-alpha: no LoRA component was imported (see {t}/lora-alpha/import.txt)')
-    else:
-        if cfg.get('lora_alpha') != cfg.get('r'):
-            fails.append(f'tensorfs lora-alpha: committed lora_alpha {cfg.get("lora_alpha")} at r {cfg.get("r")}: kohya\'s '
-                         'ss_network_alpha set the scale, which no loader of a file without .alpha tensors does')
+    if chosen('lora-alpha'):
+        p = os.path.join(t, 'lora-alpha.json')
+        try:
+            (cfg,) = [c['config'] for c in json.load(open(p))['components'] if c.get('config', {}).get('peft_type') == 'LORA']
+        except (OSError, ValueError, KeyError):
+            fails.append(f'tensorfs lora-alpha: no LoRA component was imported (see {t}/lora-alpha/import.txt)')
         else:
-            notes.append(f'tensorfs lora-alpha: lora_alpha {cfg["lora_alpha"]} = r, whatever the metadata says')
+            if cfg.get('lora_alpha') != cfg.get('r'):
+                fails.append(f'tensorfs lora-alpha: committed lora_alpha {cfg.get("lora_alpha")} at r {cfg.get("r")}: kohya\'s '
+                             'ss_network_alpha set the scale, which no loader of a file without .alpha tensors does')
+            else:
+                notes.append(f'tensorfs lora-alpha: lora_alpha {cfg["lora_alpha"]} = r, whatever the metadata says')
+    # The lane's commit holds both components' weights encoded (inspect also held them to the source).
+    if all(done(name) for name in ('mc-source', 'mc-upload', 'mc-quantize', 'mc-inspect')):
+        held = (rows['mc-inspect']['rec'].get('result') or {}).get('tensors') or []
+        encoded = sorted({h['component'] for h in held if h.get('scheme') == 'int8.convrot'})
+        worst = max((h['relative_error'] for h in held if h.get('relative_error') is not None), default=0)
+        ok = encoded == ['decoder', 'encoder']
+        (notes if ok else fails).append(
+            f'tensorfs multi-conversion: quantize run {rows["mc-quantize"]["run"]}, one call per component: '
+            f'{", ".join(encoded) or "no component"} encoded{"" if ok else " (want decoder, encoder)"}; '
+            f'worst relative error {worst:.4f}')
     if not fails:
         label = open(os.path.join(gate['out'], 'label')).read().strip()
         at = time.strftime('%Y-%m-%dT%H:%MZ', time.gmtime())
