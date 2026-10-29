@@ -327,6 +327,7 @@ impl Publisher {
             lane: String::new(),
             manifest: made.header.id(),
             components: self.components(&made.header.id())?,
+            adapted: None,
         })
     }
 
@@ -349,6 +350,7 @@ impl Publisher {
             lane: String::new(),
             components: checkpoint.header().components().iter().map(|c| c.name.clone()).collect(),
             manifest: checkpoint.id().id(),
+            adapted: None,
         })
     }
 
@@ -1074,7 +1076,7 @@ impl Publisher {
                 return Ok((ModelGrant {
                     package: installation.package.clone(), slot: path, repository: choice.repository.clone(),
                     release: String::new(), lane: local.lane,
-                    components: self.components(&header)?, manifest: header,
+                    components: self.components(&header)?, manifest: header, adapted: None,
                 }, None, vec![]));
             }
             let mut named = choose(choice, &path)?;
@@ -1095,6 +1097,7 @@ impl Publisher {
                 lane: named.lane.clone(),
                 manifest: named.header()?.id(),
                 components: vec![],
+                adapted: None,
             };
             Ok((grant, (!named.repository.starts_with("local/")).then_some(named), warnings))
         };
@@ -1439,21 +1442,22 @@ fn apply_adapters(
     // The view is the store's to keep from here: the call that reads it holds it open.
     let composed = crate::adapter::compose(store, &base, &selections)
         .map_err(|e| ("model_adapter_refused", e.to_string()))?;
-    // What each LoRA adapts, for the run's record: `generate.models.model: org/lora on unet, …`.
-    let applied: Vec<String> = (choice.adapters.iter().zip(&composed.adapted))
-        .map(|(adapter, components)| {
-            let named = if adapter.source.is_empty() { &adapter.model } else { &adapter.source };
-            format!("{named} on {}", components.join(", "))
+    // The run's record names the base model and what each LoRA adapts (`Plan::models`).
+    let adapters = (choice.adapters.iter().zip(&selections).zip(&composed.adapted))
+        .map(|((adapter, selection), components)| crate::gpu_service::Applied {
+            model: if adapter.source.is_empty() { adapter.model.clone() } else { adapter.source.clone() },
+            strength: selection.strength,
+            components: components.clone(),
         })
         .collect();
-    job.stage(format!("{}: {}", grant.slot, applied.join("; ")));
     let warnings = (choice.adapters.iter().zip(&composed.warnings))
         .flat_map(|(adapter, said)| {
             let named = if adapter.source.is_empty() { &adapter.model } else { &adapter.source };
             said.iter().map(move |w| format!("{named}: {w}"))
         })
         .collect();
-    grant.repository = composed.name;
+    let base = std::mem::replace(&mut grant.repository, composed.name);
+    grant.adapted = Some(crate::gpu_service::Adapted { repository: base, adapters });
     grant.manifest = composed.checkpoint.id().id();
     Ok(warnings)
 }
