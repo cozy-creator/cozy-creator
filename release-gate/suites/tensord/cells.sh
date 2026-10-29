@@ -62,7 +62,7 @@ fi
 busy=(); for i in $(seq "${NGPU:-1}"); do busy+=("$(submit "sdxl/generate@$NEW" prompt="$SCENE, the long run $i" steps:=60 seed:=$((R + 50 + i)))"); done
 a=${busy[0]}
 b=$(submit "sdxl/generate@$NEW" prompt="$OBJECT, the queued run" steps:=60 seed:=$((R + 35)))
-until_status "$a" in_progress; qb=$(get "$b" machine_state)
+until_status "$a" in_progress; qb=$(get "$b" machine_state); [ -n "$qb" ] || qb=$(get "$b" status)  # queued: at Calcifer, or accepted and queued on the machine
 "$CLI" run cancel "$b" -y > "$T/cancel-queued.log" 2>&1; until_status "$b" terminal
 for x in "${busy[@]}"; do "$CLI" run cancel "$x" -y > "$T/cancel-running-$x.log" 2>&1; done
 for x in "${busy[@]}"; do until_status "$x" terminal; done
@@ -73,7 +73,7 @@ if [ "$qb" = queued ] && [ "$(get "$b" status)" = canceled ] && [ -z "$(get "$b"
   expect tensord-run-lifecycle PASS "run $b queued behind $a and canceled unrun; $a canceled running; $c's $want bytes landed"
 else
   ran=$(get "$b" ms)
-  expect tensord-run-lifecycle FAIL "run $b was machine_state ${qb:-?} then $(get "$b" status) (ran ${ran:-0} ms); $a $(get "$a" status); $c $(get "$c" status), landed ${f:-nothing} ($(stat -c %s "$f" 2>/dev/null || echo 0) of ${want:-?} bytes)"
+  expect tensord-run-lifecycle FAIL "run $b was ${qb:-?} then $(get "$b" status) (ran ${ran:-0} ms); $a $(get "$a" status); $c $(get "$c" status), landed ${f:-nothing} ($(stat -c %s "$f" 2>/dev/null || echo 0) of ${want:-?} bytes)"
 fi
 
 # Executors and leases: models stack on the pod and idle executors end when the last one needs the card (cr-216's
