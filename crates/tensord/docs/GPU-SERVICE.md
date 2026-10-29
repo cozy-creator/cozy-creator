@@ -60,9 +60,17 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
   root's log (`RunEvent.gpu`); a wait is logged again only when its blocker (the oldest other
   request claiming, holding or calling on its lane) changes.
 - A `Plan`'s construction hashes {generation, App, constructed slots, degree}, not the entrypoint
-  that names them: its executors' key, so entrypoints building the same models (H3's
-  `ref2va_turbo` and long_form's `motion_segment`) share one executor and its weights. Its id adds
-  the entrypoint and the `Weights[M]` sources (`Invoke.sources`). A plan binding a model is
+  that names them, so entrypoints building the same models (H3's `ref2va_turbo` and long_form's
+  `motion_segment`) share one construction and its weights. Its id adds the entrypoint and the
+  `Weights[M]` sources (`Invoke.sources`).
+- Its executors' key (`Plan::executor`) hashes {generation, App, degree}: one process per
+  environment, App, degree and lane loads every construction of the package once (H3's `ref2va`,
+  `ref2va_turbo` and `motion_segment`; Klein's base and Turbo), on one CUDA context, import and
+  group. TensorD sends `Activate` when a call's construction is not the active one. The process's
+  Runtime decides where all their weights live and evicts an idle construction's blocks when a
+  stage needs room; TensorD's offloads and ends act on other processes only. A fault, cancel or kill
+  ends every construction the process held, and the next call starts a fresh one. A plan
+  constructing nothing keeps its construction as its key. A plan binding a model is
   journaled as a `Preparation`, and `submit` records `preparation_id`; one binding none is
   derived at dispatch.
 - An empty `installation_id` binds a `published-<hash>` installation from `packages`.
@@ -101,10 +109,11 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
   with the executor's own code (a group's first fault names its GPU). A group forks from the generation's import-only parent like a
   single GPU does: the child takes the lane and NCCL seal with its environment; followers are spawned
   by rank 0.
-- Before loading or reusing a GPU session, other idle constructions on its lane offload through
-  `Map(Ram)`, outside warm sets first and then LRU, until driver free bytes cover the call's
-  need: per GPU, the construction's measured working-set peak less what its own executor already
-  holds there (the driver's bytes for each rank's process). A cold or offloaded executor holds
+- Before loading or reusing a GPU session, other idle executors on its lane offload through
+  `Map(Ram)` of each construction they hold on the GPU, outside warm sets first and then LRU, until
+  driver free bytes cover the call's need: per GPU, the construction's measured working-set peak (a
+  request's own: Runtime leaves its process's other constructions' resident sets out) less what its
+  own executor already holds there (the driver's bytes for each rank's process). A cold or offloaded executor holds
   nothing that counts; a reused resident one holds its weights and cache, which the driver's free
   reading already counts as used, so charging its whole peak again would evict small idle
   neighbours (`ask`, `remove_background`) before every segment. Where the driver cannot attribute
