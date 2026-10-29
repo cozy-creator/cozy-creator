@@ -62,6 +62,15 @@ function, and it does not automatically correct model-layout mistakes.
 Supported importers translate known source layouts once, at import, into each class's
 canonical layout ([canonical names](spec/cozytensors.md#canonical-names)), so readers
 do not repeat those conversions. This is separate from encoding self-description.
+
+Layout is often as ambiguous as encoding. A MiniMax H3 LoRA from ComfyUI or a trainer stores
+each fused Q/K/V factor as one tensor in three contiguous thirds, while H3's native checkpoint
+interleaves Q, K and V per head. Both have the same shape, and a safetensors header records
+neither order, so a wrong guess still loads and silently scrambles the attention heads: our
+2026-10-01 converter gave Q head 1 row 384 instead of row 128. The `h3.lora` importer is therefore
+never selected automatically; the uploader names the source's convention once. The imported
+cozytensors stores Q, K and V as separate tensors in the canonical layout, so no reader guesses
+again.
 Computation-graph support is deferred to
 [xs-057](https://github.com/cozy-creator/tracker/blob/master/tracker/cross-cutting/xs-057-computation-graph-evaluation.md).
 
