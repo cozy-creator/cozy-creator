@@ -167,6 +167,13 @@ enum At {
     Reused(Vec<ObjectRef>),
 }
 
+/// A conversion bound to a writer: its identity, and the tensors it selected.
+struct Conversion {
+    identity: String,
+    normalization: bool,
+    keys: BTreeSet<Name>,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Line {
@@ -234,10 +241,8 @@ pub struct Writer {
     components_ranked: bool,
     metadata: Metadata,
     tensors: Tensors,
-    quantization: Option<String>,
-    normalization: Option<String>,
-    quantization_keys: Option<BTreeSet<Name>>,
-    normalization_keys: Option<BTreeSet<Name>>,
+    /// The conversions bound to this writer, each with the tensors it selected.
+    conversions: Vec<Conversion>,
     /// (component, asset name) → (object, given by `reuse_asset`).
     assets: BTreeMap<Name, (ObjectRef, bool)>,
     /// Repo files given to `repo_file` (README, LICENSE).
@@ -389,10 +394,7 @@ impl Writer {
             components_ranked: false,
             metadata: Metadata::new(),
             tensors: Tensors::default(),
-            quantization: None,
-            normalization: None,
-            quantization_keys: None,
-            normalization_keys: None,
+            conversions: Vec::new(),
             assets: BTreeMap::new(),
             repo: BTreeMap::new(),
             spool,
@@ -417,8 +419,8 @@ impl Writer {
         self.pipeline = Some(Pipeline { class, config });
     }
 
-    /// One immutable conversion selection owns the existing resume journal. Entries
-    /// without that binding are never mistaken for this producer's completed work.
+    /// A conversion's immutable selection owns its part of the resume journal: entries without
+    /// its binding are never mistaken for its completed work.
     pub(crate) fn bind_quantization(&mut self, identity: &str, selected: &[(String, String)]) -> Result<()> {
         self.bind_conversion(identity, selected, false)
     }
@@ -427,23 +429,14 @@ impl Writer {
         self.bind_conversion(identity, selected, true)
     }
 
+    /// Several conversions may share one writer (a recipe encodes each component in its own call):
+    /// each owns the tensors it selected, and a resumed one adopts only its own.
     fn bind_conversion(&mut self, identity: &str, selected: &[(String, String)], normalization: bool) -> Result<()> {
-        let binding = if normalization { &self.normalization } else { &self.quantization };
-        let (other, other_keys) = if normalization {
-            (&self.quantization, &self.quantization_keys)
-        } else {
-            (&self.normalization, &self.normalization_keys)
-        };
-        if other.is_some() {
-            let keys = other_keys.as_ref().ok_or_else(|| bad("cannot mix normalization and a legacy conversion journal without reserved tensor keys"))?;
-            if selected.iter().any(|name| keys.contains(name)) {
-                return Err(bad("selected tensor is reserved by the other conversion operation"));
-            }
+        if self.conversions.iter().any(|c| c.identity == identity && c.normalization == normalization) {
+            return Ok(());
         }
-        if let Some(bound) = binding {
-            return if bound == identity { Ok(()) } else {
-                Err(bad("writer quantization source or resolved recipe changed"))
-            };
+        if let Some((component, key)) = selected.iter().find(|name| self.conversions.iter().any(|c| c.keys.contains(*name))) {
+            return Err(bad(format!("{component}/{key} is selected by another conversion of this writer")));
         }
         if selected.iter().any(|(component, key)| self.has(component, key)) {
             return Err(bad("selected tensor was written without this quantization identity"));
@@ -1029,13 +1022,8 @@ impl Writer {
     fn apply(&mut self, line: Line) {
         match line {
             Line::Quantization { identity, normalization, selected } => {
-                if normalization {
-                    self.normalization = Some(identity);
-                    self.normalization_keys = selected.map(|names| names.into_iter().collect());
-                } else {
-                    self.quantization = Some(identity);
-                    self.quantization_keys = selected.map(|names| names.into_iter().collect());
-                }
+                let keys = selected.unwrap_or_default().into_iter().collect();
+                self.conversions.push(Conversion { identity, normalization, keys });
             },
             Line::Tensor(e) => self.tensors.insert(e),
             Line::Asset {
