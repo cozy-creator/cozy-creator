@@ -645,6 +645,8 @@ pub struct RentalSkuStatus {
     /// Why compatible stock is held back (cooldown, retry_in_progress).
     pub unavailable_reason: Option<String>,
     pub retry_after: Option<String>,
+    /// Why the offer that frees first is held: no_capacity or failed_boot; absent from an older Hub.
+    pub held_for: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
