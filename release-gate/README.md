@@ -119,6 +119,9 @@ more than one pod calls `order` per pod, then `ready` per pod; the guard and the
 `h3-8gb` is the 8 GB tier: H3 Turbo 15 s on one RTX 3070 must complete, 362 frames, under its time bar.
 `bench` runs the Cozy-vs-ComfyUI benchmark, which lives in cozy-creator/benchmarks (`params.bench_ref`, read with
 the `BENCHMARKS_READ_KEY` deploy key): it rents with SSH, starts the runner on the pod and brings its results back.
+`byo-model` is a user's own model as the docs show it, on one pod: a LoRA downloaded under a `local/` name runs by
+that name, a `local/` name the pod lacks is refused with its fix, and a whole SDXL checkpoint replaces the package's
+model by its `local/` name and by its provider source.
 `cold-start` is a package's first request right after its install, once per TensorD arm on one pod (each a
 release, a dev-build run or the image's): it reinstalls SDXL and Anima (and Qwen-Image), counts their environments'
 bytecode, evicts their weights and runs one cold request each, now or once the import-only parent (`imported`) and

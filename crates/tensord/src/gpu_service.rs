@@ -2010,10 +2010,16 @@ impl Pool {
                 .filter(|c| wanted.is_empty() || wanted.contains(*c))
                 .cloned()
                 .collect();
-            if components.is_empty() || wanted.iter().any(|c| !components.contains(c)) {
+            let missing: Vec<&str> = wanted.iter().filter(|c| !components.contains(c)).map(String::as_str).collect();
+            if components.is_empty() || !missing.is_empty() {
+                let model = if grant.repository.is_empty() { grant.manifest.clone() } else { grant.repository.clone() };
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
-                    format!("declared components of {path} exceed authorized cached model scope"),
+                    format!(
+                        "{path} uses {} that its model {model} does not hold (it holds {})",
+                        if missing.is_empty() { "components".to_string() } else { missing.join(", ") },
+                        if grant.components.is_empty() { "none".to_string() } else { grant.components.join(", ") }
+                    ),
                 ));
             }
             let (selected_encoded_bytes, length) = selected_bytes(&self.store, &grant.manifest, &components)?;
