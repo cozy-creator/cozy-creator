@@ -34,6 +34,18 @@ use std::{
 };
 use crate::storage::Store;
 
+/// The snapshots of `binding` that are views this process keeps (`storage::view`), as the
+/// executor opens them: their bytes, which no store holds.
+fn views(binding: &Binding) -> BTreeMap<String, protocol::executor::View> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    (binding.snapshots.values().chain(std::iter::once(&binding.snapshot)))
+        .filter_map(|id| crate::storage::view(id).map(|view| (id.clone(), protocol::executor::View {
+            header: STANDARD.encode(&view.header),
+            own: view.own.iter().map(|o| STANDARD.encode(o)).collect(),
+        })))
+        .collect()
+}
+
 /// A slot's model as the run's preparation resolved it (`published`).
 #[derive(Clone, Debug)]
 pub struct ModelGrant {
@@ -3475,6 +3487,7 @@ impl Pool {
                         binding.package_interface = interface_path.to_string_lossy().into();
                         binding.store = store.clone();
                         binding.homes = homes.get(&slot.binding.model_binding_path).cloned().unwrap_or_default();
+                        binding.views = views(&binding);
                         ModelLoad { binding }
                     };
                     let first = load(first);

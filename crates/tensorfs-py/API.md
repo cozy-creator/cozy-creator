@@ -315,6 +315,17 @@ stored array's `dtype` and `shape`, a `chunk` index, and byte `offset` and `leng
 that chunk. This call only inspects metadata. Normal model code uses `TensorMetadata`
 and `read` instead of managing these ranges.
 
+### Advanced: open a header held in memory
+
+```python
+checkpoint = tensorfs.view(header_bytes, [graph_bytes])
+```
+
+`view` opens a cozytensors header that was never stored, such as an adapter view composed by
+reference over other checkpoints' chunks. Chunks come from the cache, else the endpoint. The
+second argument holds the objects it cites that no store has. Nothing is written, and nothing
+of it outlives the process.
+
 ### Advanced: decode resident encoded parts
 
 `tensorfs.raw.decode_into` is for integrations that already hold encoded parts in memory and own the

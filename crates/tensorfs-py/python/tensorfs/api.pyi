@@ -19,6 +19,9 @@ def open(name_or_path: StrPath, *, release: str | None = None, lane: str | None 
          gpus: Sequence[str] | None = None,
          endpoint: str | None = None, local_files_only: bool = False, cache_dir: StrPath | None = None,
          token: Token | None = None, lazy: bool = True) -> Checkpoint: ...
+def view(header: bytes, own: Sequence[bytes] = (), *, endpoint: str | None = None,
+         local_files_only: bool = False, cache_dir: StrPath | None = None,
+         token: Token | None = None) -> Checkpoint: ...
 def materialize(source: str | Checkpoint, *, local_dir: StrPath | None = None,
                 format: str = "cozytensors", decode: bool = False,
                 release: str | None = None, lane: str | None = None,

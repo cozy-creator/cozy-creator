@@ -40,7 +40,7 @@ from ._ext import (
     ceiling,
 )
 from . import raw
-from .api import CheckpointFile, ComponentWriter, Endpoint, Writer, configure, convert_to_cozytensors, download_file, open, materialize, upload_folder
+from .api import CheckpointFile, ComponentWriter, Endpoint, Writer, configure, convert_to_cozytensors, download_file, open, materialize, upload_folder, view
 
 Mapping.register(Tensors)
 
@@ -82,4 +82,5 @@ __all__ = [
     "open",
     "materialize",
     "upload_folder",
+    "view",
 ]

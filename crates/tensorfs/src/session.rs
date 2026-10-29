@@ -239,6 +239,20 @@ impl Client {
         Ok(checkpoint)
     }
 
+    /// A checkpoint whose header lives only in memory (an adapter view composed by reference):
+    /// `header`'s chunks and assets come from the cache, else from the endpoint as `open` reads
+    /// them, and `own` holds the objects it cites that no store has. Nothing is written.
+    pub fn view(&self, header: &[u8], own: &[Vec<u8>], options: &Open) -> Result<Checkpoint> {
+        let raw = self.store.view(header, own)?;
+        let source = remote::Remote {
+            store: self.store.clone(),
+            endpoint: Endpoint::with_config(options.endpoint.as_deref().unwrap_or(&self.config.endpoint), &self.config)?,
+            mirror: self.config.mirror.clone(),
+            offline: options.local_files_only,
+        };
+        Ok(Checkpoint::memory(raw, header.to_vec(), source))
+    }
+
     /// Holds every fetched object while building the view. A `local_dir` belongs to the caller.
     pub async fn materialize(
         &self,

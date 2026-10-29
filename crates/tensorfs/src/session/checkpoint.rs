@@ -73,6 +73,22 @@ impl Checkpoint {
         Ok(Self::from_data(data))
     }
 
+    /// A header held in memory ([`Stored`] from `Store::view`): its own bytes, and `source` for
+    /// what the store lacks.
+    pub(super) fn memory(raw: Stored, header_bytes: Vec<u8>, source: Remote) -> Self {
+        let store = source.store.clone();
+        Self::from_data(Data {
+            raw,
+            header_bytes: header_bytes.into(),
+            named: None,
+            tree: None,
+            remote: Some(source),
+            _extra: None,
+            store,
+            local_repo: None,
+        })
+    }
+
     pub(super) fn managed(
         raw: Stored,
         named: Option<Ref>,

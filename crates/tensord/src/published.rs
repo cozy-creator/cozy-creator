@@ -1434,12 +1434,12 @@ fn apply_adapters(
             runs: runs.to_vec(),
         });
     }
-    // The view re-packs the base's small parts: its chunks come first (its load reads them anyway).
+    // The view reads the base's own chunks, from this store: they come first.
     let base = object(&grant.manifest)?;
     if let (Some(pulled), Some(source)) = (publisher.pulled(&base).map_err(io_failure)?, source) {
         publisher.ensure(source, &pulled, job.stop.as_ref(), &|d, t| job.bytes(d, t))?;
     }
-    // The view is the store's to keep from here: the call that reads it holds it open.
+    // The view is composed by reference and kept in memory, never written; Load sends its bytes.
     let composed = crate::adapter::compose(store, &base, &selections)
         .map_err(|e| ("model_adapter_refused", e.to_string()))?;
     // The run's record names the base model and what each LoRA adapts (`Plan::models`).

@@ -335,6 +335,18 @@ impl PreparedUse {
     }
 }
 
+/// A checkpoint whose header lives only in TensorD's memory (an adapter view composed by
+/// reference): the executor opens it from these bytes (`tensorfs.view`), never from the store.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
+#[serde(default)]
+pub struct View {
+    /// The cozytensors header, base64.
+    pub header: String,
+    /// The objects it cites that no store holds (its graph), base64.
+    pub own: Vec<String>,
+}
+
 /// One model's construction: its class, where its weights are, and how to fill them. A
 /// weightless binding names only its release and an empty `model_class`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -362,6 +374,9 @@ pub struct Binding {
     pub package: String,
     pub model: String,
     pub adapters: Vec<Adapter>,
+    /// The snapshots above that are views, by id: set only on the Load sent, never planned.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub views: BTreeMap<String, View>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prepared_use: Option<PreparedUse>,
     /// A group's placeable components and the GPU that keeps each, an index within the group
@@ -392,6 +407,7 @@ impl Default for Binding {
             package: String::new(),
             model: String::new(),
             adapters: Vec::new(),
+            views: BTreeMap::new(),
             prepared_use: None,
             homes: BTreeMap::new(),
         }

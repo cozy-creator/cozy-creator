@@ -44,6 +44,7 @@ from ._ext.executor import (
     Start,
     TensorFSOptions,
     Unload,
+    View,
     decode_answer,
     decode_command,
 )
@@ -89,6 +90,7 @@ __all__ = [
     "Start",
     "TensorFSOptions",
     "Unload",
+    "View",
     "decode_answer",
     "decode_command",
 ]

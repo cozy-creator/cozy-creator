@@ -5,7 +5,8 @@
 //! with PEFT. Nothing is computed, and large parts keep their objects. Factors must already be
 //! canonical PEFT keys (`<path>.lora_A.weight`, `<path>.lora_B.weight`, optional scalar
 //! `<path>.alpha`): foreign layouts are normalized when a model is imported, never here. A view is
-//! the store's like any checkpoint written to it: kept while open, then a cache TensorFS evicts.
+//! composed by reference and never written: a header in memory whose tensors point at the base's
+//! and the factors' own chunks (`storage::view`), and its graph, the only bytes it adds.
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -34,7 +35,8 @@ pub struct Selection {
     pub runs: Vec<String>,
 }
 
-/// The composed view, `view-<composition>`, open: the store keeps it while the caller holds it.
+/// The composed view, `view-<composition>`, open in memory (`storage::view`): it holds the base's
+/// and the factors' objects while the caller holds it.
 #[derive(Clone, Debug)]
 pub struct Composed {
     pub name: String,
@@ -338,8 +340,8 @@ fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(
     Ok((takes, graph, warnings))
 }
 
-/// The adapter view of `base` with `selections`, composed (the same bytes, so the same id, each
-/// time); one left unfinished by a crash resumes.
+/// The adapter view of `base` with `selections`, composed by reference (the same bytes, so the
+/// same id, each time) and kept in this process's memory, never the store.
 pub fn compose(store: &Store, base: &ObjectRef, selections: &[Selection]) -> io::Result<Composed> {
     let checkpoint = |header: &ObjectRef| store.checkpoint(header).map_err(storage::io_error);
     let base_ref = base;
@@ -362,33 +364,58 @@ pub fn compose(store: &Store, base: &ObjectRef, selections: &[Selection]) -> io:
     let id = format!("view-{}", &identity[..40]);
     let adapted: BTreeSet<&str> = graph.adapters.iter().map(|a| a.component.as_str()).collect();
     let graph = serde_json_canonicalizer::to_vec(&graph).map_err(io::Error::other)?;
-    let mut writer = store.writer(None, Some(&id)).map_err(storage::io_error)?;
-    if let Some(pipeline) = base.pipeline() {
-        writer.pipeline(pipeline.class.clone(), pipeline.config.clone());
-    }
-    for component in base.components() {
-        let mut declared = (writer.component(&component.name, component.class.clone(), component.config.clone(), component.config_file.as_deref()))
-            .map_err(storage::io_error)?;
-        for (name, object) in &component.assets {
-            declared.reuse_asset(name, object).map_err(storage::io_error)?;
+    let sources: Vec<&Header> = std::iter::once(base.header()).chain(adapters.iter().map(|(_, a)| a.header())).collect();
+    let header = by_reference(&sources, &takes, &adapted, ObjectRef::of(&graph))?.to_cbor().map_err(io::Error::other)?;
+    let checkpoint = storage::keep_view(store, header, vec![graph])?;
+    Ok(Composed { name: id, checkpoint, adapted: each, warnings })
+}
+
+/// The view's header: each take's tensor as its source header has it, renamed, its parts in the
+/// source's own chunks. Every source's chunks that a take touches keep their order (a range runs
+/// on into the next chunk); no byte is read. The base's components, its pipeline and metadata
+/// (less the recipe that wrote its lane), and `graph` as each adapted component's asset.
+fn by_reference(sources: &[&Header], takes: &[Take], adapted: &BTreeSet<&str>, graph: ObjectRef) -> io::Result<Header> {
+    let base = sources[0];
+    let found = |(component, key, source, from_component, from_key): &Take| -> io::Result<Tensor> {
+        let tensor = sources[*source].tensor(from_component, from_key)
+            .ok_or_else(|| io::Error::other(format!("{component}.{key}: its source has no {from_component}.{from_key}")))?;
+        Ok(Tensor { key: key.clone(), ..tensor.clone() })
+    };
+    let tensors = takes.iter().map(found).collect::<io::Result<Vec<_>>>()?;
+    let mut touched = vec![BTreeSet::new(); sources.len()];
+    for (take, tensor) in takes.iter().zip(&tensors) {
+        for (_, at) in tensor.locations() {
+            touched[take.2].extend(sources[take.2].spans(&at).into_iter().map(|s| s.chunk as u64));
         }
-        if adapted.contains(component.name.as_str()) {
-            declared.asset(GRAPH_FILE, &graph).map_err(storage::io_error)?;
+    }
+    let (mut chunks, mut index) = (vec![], vec![BTreeMap::new(); sources.len()]);
+    for (source, used) in touched.iter().enumerate() {
+        for chunk in used {
+            index[source].insert(*chunk, chunks.len() as u64);
+            chunks.push(sources[source].chunks[*chunk as usize].clone());
         }
     }
-    let order: Vec<(&str, &str)> = takes.iter().map(|t| (t.0.as_str(), t.1.as_str())).collect();
-    writer.set_order(&order);
-    for (component, key, source, from_component, from_key) in &takes {
-        let from = match source {
-            0 => &base,
-            i => &adapters[i - 1].1,
-        };
-        writer.get(component).copy_as(key, from, from_component, from_key).map_err(storage::io_error)?;
+    let mut by_component: BTreeMap<&str, Vec<Tensor>> = BTreeMap::new();
+    for (take, mut tensor) in takes.iter().zip(tensors) {
+        // An empty range touches no chunk and keeps any index.
+        let moved = |chunk: u64| index[take.2].get(&chunk).copied().unwrap_or_default();
+        match &mut tensor.body {
+            Body::Data(at) => at.chunk = moved(at.chunk),
+            Body::Encoded { parts, .. } => parts.iter_mut().for_each(|p| p.chunk = moved(p.chunk)),
+        }
+        by_component.entry(&take.0).or_default().push(tensor);
     }
+    let components = (base.components().iter())
+        .map(|c| {
+            let mut component = Component { tensors: by_component.remove(c.name.as_str()).unwrap_or_default(), ..c.clone() };
+            if adapted.contains(c.name.as_str()) {
+                component.assets.insert(GRAPH_FILE.into(), graph.clone());
+            }
+            component
+        })
+        .collect();
     // A composition is not the lane its base's recipe wrote.
-    for (key, value) in (base.header().metadata.iter()).filter(|(key, _)| *key != tensorfs::format::Provenance::KEY) {
-        writer.set_metadata(key, value.clone());
-    }
-    let header = writer.commit().map_err(storage::io_error)?;
-    Ok(Composed { name: id, checkpoint: checkpoint(&header)?, adapted: each, warnings })
+    let mut metadata = base.metadata.clone();
+    metadata.remove(tensorfs::format::Provenance::KEY);
+    Header::new(chunks, base.pipeline().cloned(), components, metadata).map_err(io::Error::other)
 }

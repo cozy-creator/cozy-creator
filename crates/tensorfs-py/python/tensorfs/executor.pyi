@@ -66,6 +66,10 @@ class PreparedUse(_Wire):
     max_resident_bytes: int
     workspace_bytes: int
 
+class View(_Wire):
+    header: str
+    own: list[str]
+
 class Binding(_Wire):
     application: str
     package_interface: str
@@ -86,6 +90,7 @@ class Binding(_Wire):
     package: str
     model: str
     adapters: list[Adapter]
+    views: dict[str, View]
     prepared_use: PreparedUse | None
     homes: dict[str, int]
 
