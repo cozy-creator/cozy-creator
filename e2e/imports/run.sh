@@ -64,7 +64,7 @@ count=0 i=-1
 if [ -n "$PUBLISHED" ] || [ -n "$PINS" ]; then
   # A release's question: the published releases (or the pinned candidates) on the candidate set.
   step "published packages"
-  cozy --json package search --limit 200 > "$OUT/search.json" || fail "cozy package search failed"
+  cozy --json package ls --limit 200 > "$OUT/search.json" || fail "cozy package ls failed"
   releases=''
   for name in $(jq -r '.packages[] | select(.package | contains("/") | not) | .package' "$OUT/search.json"); do
     pin=$(tr ',' '\n' <<< "$PINS" | sed -n "s/^$name@//p" | head -1)

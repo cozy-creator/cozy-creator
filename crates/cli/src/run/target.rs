@@ -87,7 +87,7 @@ impl Target {
                 format!("{raw:?} is not [org/]package[/function][@release]"),
             )
             .remedy("omit /function to list the package's functions; ./dir or ./script.py is local code")
-            .next("cozy package search <words>")
+            .next("cozy package ls <words>")
         };
         if parts.len() == 4 {
             return Err(malformed().remedy(format!(
@@ -143,7 +143,7 @@ pub(crate) async fn resolve(
                     let first = package.trim_start_matches("_/");
                     Err(Error::new(Kind::NotFound, "package_not_found",
                         format!("the Hub has neither a package {first} nor {owned}"))
-                        .next(format!("cozy package search {first}")))
+                        .next(format!("cozy package ls {first}")))
                 }
                 Err(e) => Err(e),
             }

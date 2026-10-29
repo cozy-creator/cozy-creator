@@ -102,7 +102,7 @@ install_cozy() {
   cozy --version
   [ -n "$RELEASE" ] || return 0
   serve_release
-  cozy --json machine list > /dev/null || check "the installed cozy's Calcifer did not start"
+  cozy --json machine ls > /dev/null || check "the installed cozy's Calcifer did not start"
   want="cozy $(sed -n 's/^APP_VERSION="\(.*\)"$/\1/p' "$RELEASE/cozy-installer.sh")"
   if [ "$RUNNER_OS" = Windows ]; then
     $ps -NoProfile -ExecutionPolicy Bypass -c "& '$(cygpath -w "$RELEASE")\cozy-installer.ps1'" || fail "the release's installer failed over a running cozy"

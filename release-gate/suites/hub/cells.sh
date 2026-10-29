@@ -87,9 +87,9 @@ hub_do catalog ok machine rent
 # The rental itself is gate.sh's (rent, then end and check it is gone).
 P=$("$CLI" --json machine show "$M" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["rental"]["sku"])' 2>/dev/null)
 [ -n "$P" ] && expect "hub rental" PASS "$M is a $P rental" || expect "hub rental" FAIL "machine show $M names no rental"
-# hub_machines: the names `cozy machine list` shows, one per line.
+# hub_machines: the names `cozy machine ls` shows, one per line.
 hub_machines() {
-  "$CLI" --json machine list 2>/dev/null | python3 -c 'import json,sys
+  "$CLI" --json machine ls 2>/dev/null | python3 -c 'import json,sys
 def walk(o):
     if isinstance(o, dict):
         if isinstance(o.get("name"), str) and ("rental" in o or "kind" in o): print(o["name"])
@@ -99,7 +99,7 @@ def walk(o):
 walk(json.load(sys.stdin))' 2>/dev/null | sort -u
 }
 # hub_rent_on <provider>: a rental of `cpu` there (`machine rent --provider`, in dev builds only; the Hub decides who may), ended and checked
-# gone. A rental it cannot name from the reply is the one new in `machine list`; hub_cleanup ends any left.
+# gone. A rental it cannot name from the reply is the one new in `machine ls`; hub_cleanup ends any left.
 hub_rent_on() {
   local m before
   before=$(hub_machines)

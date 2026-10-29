@@ -544,7 +544,7 @@ impl Machines {
                 "machine_ended",
                 format!("{} has ended", row.name),
             )
-            .next("cozy machine list"));
+            .next("cozy machine ls"));
         }
         match self.calcifer.link(&row.name) {
             Ok(Some(link)) => Ok((row, link)),
@@ -1665,7 +1665,7 @@ fn refusal(name: &str, e: LinkError) -> Error {
 fn ended_refusal(name: &str, reason: &str) -> Error {
     Error::new(Kind::Conflict, "machine_ended", format!("{name} has ended: {reason}"))
         .remedy("`--on new` rents a machine, or name another")
-        .next("cozy machine list")
+        .next("cozy machine ls")
 }
 
 fn offline_refusal(name: &str, reason: &str) -> Error {
@@ -1689,7 +1689,7 @@ pub(crate) fn not_found(text: &str) -> Error {
         "machine_not_found",
         format!("no machine is named {text:?}"),
     )
-    .next("cozy machine list")
+    .next("cozy machine ls")
 }
 
 /// The refusal to end `name` while outputs of its runs have not landed.

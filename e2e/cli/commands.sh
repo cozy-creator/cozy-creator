@@ -17,13 +17,13 @@ fi
 
 step hub
 # tensorhub.com unless COZY_HUB_URL (or config.toml's hub_url) names another: one there is none at fails.
-! COZY_HUB_URL=http://127.0.0.1:9 cozy --json package search birefnet --limit 1 > "$OUT/hub-env.json" 2>&1 \
-  || check "COZY_HUB_URL=http://127.0.0.1:9: package search did not go there"
+! COZY_HUB_URL=http://127.0.0.1:9 cozy --json package ls birefnet --limit 1 > "$OUT/hub-env.json" 2>&1 \
+  || check "COZY_HUB_URL=http://127.0.0.1:9: package ls did not go there"
 # A run made at that other Hub (local code reads none), then the variable unset: Calcifer still lists and shows it.
 if [ -n "$LOCAL" ] && (cd "$here" && COZY_HUB_URL=http://127.0.0.1:9 cell other-hub ./weightless/reverse "text=hub$RANDOM"); then
   n=$(cat "$OUT/other-hub.number")
-  cozy --json run list --limit 0 | J --argjson n "$n" 'any(.runs[]; .number == $n and .hub == "http://127.0.0.1:9")' \
-    || check "run list: run $n, made at another Hub, is not listed"
+  cozy --json run ls --limit 0 | J --argjson n "$n" 'any(.runs[]; .number == $n and .hub == "http://127.0.0.1:9")' \
+    || check "run ls: run $n, made at another Hub, is not listed"
   cozy --json run show "$n" --once | J '.hub == "http://127.0.0.1:9" and .status == "completed"' || check "run show $n: not its record at the other Hub"
 fi
 
@@ -32,8 +32,8 @@ cozy --json whoami > "$OUT/whoami.json" && J '.logged_in == false' "$OUT/whoami.
 cozy --json logout > "$OUT/logout.json" || check "logout while signed out failed"
 
 step packages
-cozy --json package search birefnet --limit 1 > "$OUT/search.json" && J '(.packages | length) == 1 and .packages[0].package == "birefnet"' "$OUT/search.json" \
-  || check "package search --limit 1: not exactly birefnet"
+cozy --json package ls birefnet --limit 1 > "$OUT/search.json" && J '(.packages | length) == 1 and .packages[0].package == "birefnet"' "$OUT/search.json" \
+  || check "package ls --limit 1: not exactly birefnet"
 cozy --json package info birefnet > "$OUT/package-info.json" && J '(.latest_release | length > 0) and (.releases | length > 0)' "$OUT/package-info.json" \
   || check "package info birefnet: no releases"
 cozy --json run birefnet/remove_background --describe > "$OUT/describe-published.json" 2> "$OUT/describe-published.err" \
@@ -41,16 +41,16 @@ cozy --json run birefnet/remove_background --describe > "$OUT/describe-published
 cozy run birefnet > "$OUT/functions.txt" 2>&1 && grep -q remove_background "$OUT/functions.txt" || check "run birefnet: remove_background is not listed"
 
 step models
-cozy --json model search birefnet --limit 1 > "$OUT/models-search.json" && J '(.models | length) == 1' "$OUT/models-search.json" \
-  || check "model search --limit 1: not one model"
-cozy --json model search --limit 100 > "$OUT/models-all.json" || check "model search --limit 100: $(head -c 300 "$OUT/models-all.json")"
+cozy --json model ls birefnet --limit 1 > "$OUT/models-search.json" && J '(.models | length) == 1' "$OUT/models-search.json" \
+  || check "model ls --limit 1: not one model"
+cozy --json model ls --limit 100 > "$OUT/models-all.json" || check "model ls --limit 100: $(head -c 300 "$OUT/models-all.json")"
 family=$(jq -r '[.models[].family | select(. != null)][0] // empty' "$OUT/models-all.json") || true
 if [ -n "$family" ]; then
-  cozy --json model search --family "$family" > "$OUT/family.json" && J --arg f "$family" '(.models | length > 0) and all(.models[]; .family == $f)' "$OUT/family.json" \
-    || check "model search --family $family: other families listed"
+  cozy --json model ls --family "$family" > "$OUT/family.json" && J --arg f "$family" '(.models | length > 0) and all(.models[]; .family == $f)' "$OUT/family.json" \
+    || check "model ls --family $family: other families listed"
 else
-  cozy --json model search --family e2e-no-such-family > "$OUT/family.json" && J '(.models | length) == 0' "$OUT/family.json" \
-    || check "model search --family: an unknown family listed models"
+  cozy --json model ls --family e2e-no-such-family > "$OUT/family.json" && J '(.models | length) == 0' "$OUT/family.json" \
+    || check "model ls --family: an unknown family listed models"
 fi
 cozy --json model info birefnet > "$OUT/model-info.json" && J '.releases[0].lanes | length > 0' "$OUT/model-info.json" || check "model info birefnet: no lanes"
 lane=$(jq -r '.releases[0].lanes[0].lane' "$OUT/model-info.json") || true
@@ -71,9 +71,9 @@ step "packages on local"
 # whatever the Hub has published (a published name is installed by the release suite's throwaway, and by every run).
 cozy --json package install "$here/weightless" --on local > "$OUT/install.ndjson" \
   || check "package install ./weightless --on local failed: $(grep -oE '"message": *"[^"]*"' "$OUT/install.ndjson" | tail -1)"
-cozy --json package list --on local > "$OUT/packages.json" && grep -q 'e2e-weightless' "$OUT/packages.json" || check "package list --on local: no local/e2e-weightless"
+cozy --json package ls --on local > "$OUT/packages.json" && grep -q 'e2e-weightless' "$OUT/packages.json" || check "package ls --on local: no local/e2e-weightless"
 cozy --json package remove local/e2e-weightless --on local > "$OUT/remove.ndjson" || check "package remove local/e2e-weightless --on local failed"
-cozy --json package list --on local > "$OUT/packages-after.json" && ! grep -q 'e2e-weightless' "$OUT/packages-after.json" \
+cozy --json package ls --on local > "$OUT/packages-after.json" && ! grep -q 'e2e-weightless' "$OUT/packages-after.json" \
   || check "package remove: local/e2e-weightless is still installed"
 
 step "models on local"
@@ -83,10 +83,10 @@ cozy --json model download birefnet local/e2e-birefnet > "$OUT/download-alias.nd
 # and made from its object (object://sha256:…/<name>).
 tiny "$OUT/tiny.safetensors"
 cozy --json model download "$OUT/tiny.safetensors" local/e2e-tiny > "$OUT/download-file.ndjson" || check "model download ./tiny.safetensors local/e2e-tiny failed: $(grep -oE '"message": *"[^"]*"' "$OUT/download-file.ndjson" | tail -1)"
-cozy --json model list --on local > "$OUT/models.json" || check "model list --on local failed"
-grep -q e2e-tiny "$OUT/models.json" || check "model list: the local file's local/e2e-tiny is not listed"
-J --arg lane "$lane" 'any(.models[]; .model == "_/birefnet" and .lane == $lane)' "$OUT/models.json" || check "model list: no _/birefnet in lane $lane after --lane $lane"
-grep -q e2e-birefnet "$OUT/models.json" || check "model list: the local/e2e-birefnet alias is not listed"
+cozy --json model ls --on local > "$OUT/models.json" || check "model ls --on local failed"
+grep -q e2e-tiny "$OUT/models.json" || check "model ls --on local: the local file's local/e2e-tiny is not listed"
+J --arg lane "$lane" 'any(.models[]; .model == "_/birefnet" and .lane == $lane)' "$OUT/models.json" || check "model ls --on local: no _/birefnet in lane $lane after --lane $lane"
+grep -q e2e-birefnet "$OUT/models.json" || check "model ls --on local: the local/e2e-birefnet alias is not listed"
 }
 
 # tiny <file>: a 4×4 F16 .safetensors file.
@@ -101,7 +101,7 @@ PY
 
 # Where this OS runs no models itself (macOS, Windows): every verb that would use this computer's machine refuses
 # `local_unavailable` (exit 1) with the rental to use instead, before anything is staged or started; nothing ever
-# starts a machine here or makes its root; `machine list` and `status` say so in one line; doctor is healthy.
+# starts a machine here or makes its root; `machine ls` and `status` say so in one line; doctor is healthy.
 refusals() {
 step "local runs refused"
 dog=$(picture dog2.jpg) key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
@@ -134,14 +134,14 @@ grep -q "local runs aren't available on" "$OUT/refused.txt" && grep -q -- '--on 
   || check "the refusal does not say local runs aren't available and --on new: $(head -c 300 "$OUT/refused.txt")"
 
 step "no local machine"
-cozy --json machine list > "$OUT/machines.json" && J '.machines | all(.name != "local")' "$OUT/machines.json" || check "machine list: a local machine is listed"
-cozy machine list > "$OUT/machines.txt" 2>&1 && grep -q "local runs aren't available on" "$OUT/machines.txt" || check "machine list does not say local runs aren't available"
+cozy --json machine ls > "$OUT/machines.json" && J '.machines | all(.name != "local")' "$OUT/machines.json" || check "machine ls: a local machine is listed"
+cozy machine ls > "$OUT/machines.txt" 2>&1 && grep -q "local runs aren't available on" "$OUT/machines.txt" || check "machine ls does not say local runs aren't available"
 cozy status > "$OUT/status.txt" 2>&1 && grep -q "local runs aren't available on" "$OUT/status.txt" || check "status does not say local runs aren't available"
 cozy --json doctor > "$OUT/doctor-gated.json" && J '.healthy and (.checks | any(.check == "machine" and (.state | contains("aren'"'"'t available"))))' "$OUT/doctor-gated.json" \
   || check "doctor: not healthy, or no line that local runs aren't available: $(jq -c .checks "$OUT/doctor-gated.json")"
 cozy machine logs local calcifer --lines 5 > "$OUT/log-calcifer.txt" && [ -s "$OUT/log-calcifer.txt" ] || check "machine logs local calcifer: no Calcifer log"
-cozy --json package list > "$OUT/packages.json" || check "package list failed"
-cozy --json model list > "$OUT/models.json" || check "model list failed"
+cozy --json package ls --on all > "$OUT/packages.json" || check "package ls --on all failed"
+cozy --json model ls --on all > "$OUT/models.json" || check "model ls --on all failed"
 [ ! -e "$HOME/.cozy/machine/var/lib/cozy/tensord" ] || check "a machine root was made on this computer: $(ls "$HOME/.cozy/machine/var/lib/cozy")"
 ! pgrep -f "cozy.* machine serve" > /dev/null 2>&1 || check "a machine runs on this computer: $(pgrep -af 'machine serve')"
 }
@@ -180,10 +180,10 @@ fi
 # After a BiRefNet run: the warm levels find it installed.
 run_flags() {
 step "run flags"
-before=$(cozy --json run list --limit 0 | jq '.runs | length') || true
+before=$(cozy --json run ls --limit 0 | jq '.runs | length') || true
 (cd "$here" && cozy --json run ./weightless/reverse --describe) > "$OUT/describe.json" || check "run --describe failed"
 J '.fields | any(.name == "text")' "$OUT/describe.json" || check "run --describe: no text field"
-[ "$(cozy --json run list --limit 0 | jq '.runs | length')" = "$before" ] || check "run --describe started a run"
+[ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$before" ] || check "run --describe started a run"
 note=$OUT/inputs/note.txt; echo "an asset" > "$note"
 if (cd "$here" && cell fidelity ./weightless/fidelities --asset "notes=$note" --asset-fidelity notes=high); then
   grep -q 'notes=high' "$OUT/fidelity.ndjson" || check "--asset-fidelity notes=high: the executor saw $(grep -o '"assets":\[[^]]*\]' "$OUT/fidelity.ndjson")"
@@ -221,19 +221,19 @@ if [ -z "$n" ]; then check "the waiting run never got a number"; else
   J '.status == "canceled"' "$OUT/canceled.json" || check "run cancel: run $n is $(jq -r '.status, .reason.code? // empty' "$OUT/canceled.json" | paste -sd' ' -), not canceled"
 fi
 
-step "run list filters"
-cozy --json run list --state canceled > "$OUT/canceled.json" && J --argjson n "${n:-0}" '(.runs | length > 0) and all(.runs[]; .status == "canceled") and any(.runs[]; .number == $n)' "$OUT/canceled.json" \
-  || check "run list --state canceled: wrong runs"
+step "run ls filters"
+cozy --json run ls --state canceled > "$OUT/canceled.json" && J --argjson n "${n:-0}" '(.runs | length > 0) and all(.runs[]; .status == "canceled") and any(.runs[]; .number == $n)' "$OUT/canceled.json" \
+  || check "run ls --state canceled: wrong runs"
 }
 
 # After `basics`: its model downloads are runs of birefnet.
 run_filters() {
-step "run list filters"
-cozy --json run list --package birefnet > "$OUT/by-package.json" && J '(.runs | length > 0) and all(.runs[]; .target | test("birefnet"))' "$OUT/by-package.json" \
-  || check "run list --package birefnet: other packages listed"
-cozy --json run list --on local > "$OUT/by-machine.json" && J '(.runs | length > 0) and all(.runs[]; .machine == "local")' "$OUT/by-machine.json" \
-  || check "run list --on local: other machines listed"
-cozy --json run list --limit 1 > "$OUT/limit.json" && J '(.runs | length) == 1' "$OUT/limit.json" || check "run list --limit 1: not one run"
+step "run ls filters"
+cozy --json run ls --package birefnet > "$OUT/by-package.json" && J '(.runs | length > 0) and all(.runs[]; .target | test("birefnet"))' "$OUT/by-package.json" \
+  || check "run ls --package birefnet: other packages listed"
+cozy --json run ls --on local > "$OUT/by-machine.json" && J '(.runs | length > 0) and all(.runs[]; .machine == "local")' "$OUT/by-machine.json" \
+  || check "run ls --on local: other machines listed"
+cozy --json run ls --limit 1 > "$OUT/limit.json" && J '(.runs | length) == 1' "$OUT/limit.json" || check "run ls --limit 1: not one run"
 }
 
 # After the first BiRefNet run (run.sh's first_run).
@@ -269,7 +269,7 @@ if [ -n "$CAND_RT" ] && [ -n "$CAND_TFS" ]; then
   cozy --json machine show local | J --arg rt "$rt" --arg tfs "$tfs" '$rt != "" and .status.runtime == $rt and .status.tensorfs == $tfs' \
     || check "machine update --runtime --tensorfs reported Runtime '$rt', TensorFS '$tfs': the machine reports other versions"
 fi
-cozy --json machine list > "$OUT/machines.json" && J '.machines | any(.name == "local")' "$OUT/machines.json" || check "machine list: no local"
+cozy --json machine ls > "$OUT/machines.json" && J '.machines | any(.name == "local")' "$OUT/machines.json" || check "machine ls: no local"
 cozy --json machine show local > "$OUT/local.json" && J '.state == "ready" and (.address | length > 0)' "$OUT/local.json" || check "machine show local: not ready"
 
 step "machine logs"
@@ -286,7 +286,7 @@ step "this computer's machine, by its address and key"
 addr=$(jq -r .address "$OUT/local.json") || true; fp=$(jq -r .fingerprint "$OUT/local.json") || true
 code=0; cozy --json machine add e2e-self "$addr" --fingerprint "$fp" > "$OUT/added.json" 2> "$OUT/added.err" || code=$?
 [ "$code" = 1 ] && J '.error.code == "machine_is_local"' "$OUT/added.json" || check "machine add of this computer's own machine: exit $code, not refused: $(head -c 300 "$OUT/added.json")"
-! cozy --json machine list | J '.machines | any(.name == "e2e-self")' || check "machine add: this computer's own machine is listed again as e2e-self"
+! cozy --json machine ls | J '.machines | any(.name == "e2e-self")' || check "machine add: this computer's own machine is listed again as e2e-self"
 J '.controller_key | test("^[A-Za-z0-9_-]{43}$")' "$OUT/local.json" || check "machine show local: no controller key: $(head -c 300 "$OUT/local.json")"
 code=0; cozy --json machine ssh local > "$OUT/ssh-local.json" 2> "$OUT/ssh-local.err" || code=$?
 [ "$code" = 2 ] && J '.error.code == "machine_ssh_none"' "$OUT/ssh-local.json" || check "machine ssh local: exit $code, not refused as no rental: $(head -c 300 "$OUT/ssh-local.json")"

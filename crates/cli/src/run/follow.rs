@@ -2,7 +2,7 @@
 //! on stdout at the end; NDJSON of Calcifer's events with `--json`, its terminal event last. A
 //! followed run is over once it ended and each output's last revision landed here (checked
 //! against its digest) or failed; an output not saved fails the follow. Ctrl-C (Esc or q in
-//! `cozy run list`) stops following and never cancels: the run is Calcifer's, and `cozy run
+//! `cozy run ls`) stops following and never cancels: the run is Calcifer's, and `cozy run
 //! show` reattaches.
 use std::{
     collections::{HashSet, VecDeque},
@@ -400,7 +400,7 @@ struct View {
     shown: (String, i64, i64),
     machine: Option<String>,
     /// The run's own word for where it is (`queued`, the machine's state), and why it waits now
-    /// (Calcifer's reason, as `cozy run list` shows it): the status line says the reason first.
+    /// (Calcifer's reason, as `cozy run ls` shows it): the status line says the reason first.
     state: String,
     waiting: Option<String>,
     status: Option<Status>,

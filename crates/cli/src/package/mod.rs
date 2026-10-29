@@ -25,13 +25,17 @@ pub struct Args {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Search the Hub's packages.
-    Search {
+    /// The Hub's packages; words search. `--on` lists what machines have installed instead, live on
+    /// a terminal.
+    Ls {
         /// Words to match; none lists every package.
         query: Vec<String>,
         /// At most this many results.
         #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u32).range(1..=200))]
         limit: u32,
+        /// What machines hold instead of the Hub's packages: `local`, a machine's name, or `all`.
+        #[arg(long, value_name = "MACHINE")]
+        on: Option<String>,
     },
     /// A published package's releases, newest first; one release, with what its publish warned
     /// of (its owner sees the warnings).
@@ -56,12 +60,6 @@ enum Command {
         packages: Vec<String>,
         #[command(flatten)]
         placement: Placement,
-    },
-    /// The packages your ready machines hold, live on a terminal.
-    List {
-        /// Only this machine.
-        #[arg(long, value_name = "MACHINE")]
-        on: Option<String>,
     },
     /// Lock this project's dependencies for the Hub and account it publishes to (needs uv).
     Lock {
@@ -96,7 +94,17 @@ enum Command {
 
 pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     match args.command {
-        Command::Search { query, limit } => catalog::search(ctx, &query.join(" "), limit).await,
+        Command::Ls { query, limit, on } => match on {
+            Some(on) if query.is_empty() => {
+                machine::list(ctx, (on != "all").then(|| on.into())).await
+            }
+            Some(_) => Err(Error::new(
+                Kind::Usage,
+                "package_ls_on_query",
+                "--on lists what machines hold; words search the Hub",
+            )),
+            None => catalog::search(ctx, &query.join(" "), limit).await,
+        },
         Command::Info { package } => catalog::info(ctx, &PackageRef::parse(&package)?).await,
         Command::Install { package, placement } => match local(ctx, &package)? {
             Some(path) => machine::install_directory(ctx, &path, placement.on()?).await,
@@ -106,7 +114,6 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             packages,
             placement,
         } => machine::remove(ctx, &names(&packages)?, placement.on()?).await,
-        Command::List { on } => machine::list(ctx, on.map(Into::into)).await,
         Command::Lock { upgrade, root } => author::lock(ctx, &upgrade, root).await,
         Command::Publish { root } => author::publish(ctx, root).await,
         Command::Delete { package } => author::delete(ctx, &PackageRef::parse(&package)?).await,

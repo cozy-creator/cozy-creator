@@ -1349,7 +1349,15 @@ fn apply_adapters(
     };
     let mut selections = vec![];
     for adapter in &choice.adapters {
-        let header = if adapter.source.is_empty() {
+        let header = if adapter.source.is_empty() && adapter.model.starts_with("local/") {
+            // One this machine holds by name (`cozy model download … local/<name>`).
+            storage::local(store, &adapter.model)
+                .map_err(io_failure)?
+                .filter(|local| store.holds(&local.header))
+                .ok_or_else(|| ("checkpoint_absent", format!("this machine holds no {}", adapter.model)))?
+                .header
+                .id()
+        } else if adapter.source.is_empty() {
             // By name, resolved at the Hub, or the owner's by hash (th-245).
             if adapter.model.is_empty() {
                 return Err(("adapter_absent", format!("an adapter of {} names no model", grant.slot)));

@@ -126,8 +126,8 @@ enum Warm {
 
 #[derive(clap::Subcommand, Debug)]
 enum Verb {
-    /// Every run, newest first.
-    List {
+    /// Every run, newest first; live on a terminal.
+    Ls {
         /// Only runs in this state.
         #[arg(long, value_parser = ["queued", "in_progress", "completed", "failed", "canceled"])]
         state: Option<String>,
@@ -170,7 +170,7 @@ enum Verb {
 
 pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     match args.verb {
-        Some(Verb::List {
+        Some(Verb::Ls {
             state,
             package,
             on,

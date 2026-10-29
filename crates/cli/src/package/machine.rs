@@ -1,4 +1,4 @@
-//! `cozy package install|remove|list`: runs on a machine through Calcifer. The machine resolves
+//! `cozy package install|remove|ls --on`: runs on a machine through Calcifer. The machine resolves
 //! releases from the Hub and owns its environments; the CLI reads nothing from the Hub.
 use std::{path::Path, process::ExitCode};
 
@@ -132,7 +132,7 @@ async fn installed(
         .clone()
         .and_then(|r| serde_json::from_value(r).ok());
     let machine = settled.machine.clone().unwrap_or_default();
-    let mut next = vec![format!("cozy package list --on {machine}")];
+    let mut next = vec![format!("cozy package ls --on {machine}")];
     if let Some(installed) = installed {
         output::say(
             ctx,
@@ -255,7 +255,7 @@ fn held(names: &[String], envs: &[&Environment], machine: &str) -> Result<(), Er
             "package_not_installed",
             format!("{name} is not installed on {machine}"),
         )
-        .next(format!("cozy package list --on {machine}"))),
+        .next(format!("cozy package ls --on {machine}"))),
         None => Ok(()),
     }
 }
@@ -323,7 +323,7 @@ pub async fn list(ctx: &Context, on: Option<On>) -> Result<ExitCode, Error> {
         println!("No packages installed.");
         output::next(
             ctx,
-            &["cozy package search", "cozy package install <[org/]name>"],
+            &["cozy package ls", "cozy package install <[org/]name>"],
         );
         return Ok(ExitCode::SUCCESS);
     }

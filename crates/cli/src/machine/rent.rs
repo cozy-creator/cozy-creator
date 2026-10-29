@@ -103,8 +103,8 @@ pub async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
         // An answer lost on the way back may still have placed the order, which Calcifer keeps.
         Err(e) if matches!(e.kind, Kind::Unavailable | Kind::Internal) => {
             return Err(e
-                .remedy("the order may stand: `cozy machine list` shows it before you rent again")
-                .next("cozy machine list"));
+                .remedy("the order may stand: `cozy machine ls` shows it before you rent again")
+                .next("cozy machine ls"));
         }
         answer => answer?,
     };

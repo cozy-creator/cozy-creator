@@ -1,4 +1,4 @@
-//! `cozy package list` as a live view (`crate::tui`): an install is a run whose outcome reaches
+//! `cozy package ls --on all` as a live view (`crate::tui`): an install is a run whose outcome reaches
 //! Calcifer's machine events as the machine's environments.
 use protocol::{
     calcifer::{Machine, MachineState, On},

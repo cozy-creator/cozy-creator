@@ -323,9 +323,9 @@ pub mod testing {
 
     /// A live view the product tests draw.
     pub enum View {
-        /// `cozy run list`
+        /// `cozy run ls`
         Runs,
-        /// `cozy package list`
+        /// `cozy package ls --on all`
         Packages,
     }
 

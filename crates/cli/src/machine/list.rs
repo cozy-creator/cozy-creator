@@ -1,4 +1,4 @@
-//! `cozy machine list` and `show`: Calcifer's picture of every machine, which never waits on a Hub.
+//! `cozy machine ls` and `show`: Calcifer's picture of every machine, which never waits on a Hub.
 use std::process::ExitCode;
 
 use protocol::{

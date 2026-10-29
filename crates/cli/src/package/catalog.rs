@@ -1,4 +1,4 @@
-//! `cozy package search|info`: the Hub's catalog, as this computer's account sees it (anonymous when signed out).
+//! `cozy package ls|info`: the Hub's catalog, as this computer's account sees it (anonymous when signed out).
 use std::process::ExitCode;
 
 use protocol::{
@@ -60,7 +60,7 @@ pub async fn search(ctx: &Context, query: &str, limit: u32) -> Result<ExitCode, 
         let next = if query.is_empty() {
             "cozy package publish --help"
         } else {
-            "cozy package search"
+            "cozy package ls"
         };
         output::next(ctx, &[next]);
         return Ok(ExitCode::SUCCESS);
@@ -199,6 +199,6 @@ fn missing(error: Error, package: &PackageRef, hub: &str) -> Error {
         format!("no package {} on {hub}", package.package()),
     )
     .remedy("check the name")
-    .next(format!("cozy package search {}", package.name))
+    .next(format!("cozy package ls {}", package.name))
     .cause(cause)
 }

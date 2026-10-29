@@ -2,7 +2,7 @@
 # The `cli` suite: cozy as a person uses it on a computer with no GPU, Linux, macOS or Windows. Install,
 # status, the local machine, the candidates through `cozy machine update local` (cozy doctor restarts the
 # installer's Calcifer on them and must find everything healthy), a weightless request through them, a real
-# BiRefNet removal on the CPU from a YAML request, run list/show, a second executor (the machine restarted)
+# BiRefNet removal on the CPU from a YAML request, run ls/show, a second executor (the machine restarted)
 # with an --asset input, a stuck Calcifer that cozy doctor restarts, and removal as the README says. Where the OS
 # runs no models itself (macOS, Windows: lib.sh's LOCAL), what needs no machine, every local verb refused, and the
 # rest of that list but the machine.
@@ -128,8 +128,8 @@ if cell first "$(birefnet)" --input "$OUT/request.yaml"; then white_background "
 first=$(cat "$OUT/first.number")
 if [ "$first" != none ]; then
   grep -q '"number": *'"$first" "$OUT/first.json" || check "cozy run show $first does not show it"
-  cozy --json run list > "$OUT/runs.json" || check "cozy run list failed"
-  grep -Eq "\"number\": *$first([^0-9]|\$)" "$OUT/runs.json" || check "cozy run list does not list run $first"
+  cozy --json run ls > "$OUT/runs.json" || check "cozy run ls failed"
+  grep -Eq "\"number\": *$first([^0-9]|\$)" "$OUT/runs.json" || check "cozy run ls does not list run $first"
 fi
 }
 

@@ -6,7 +6,7 @@
 # it: the CLI's quote names no storage or traffic, so the cap leaves them headroom). A throwaway fidika/ci-e2e-<run> package and model go through lock,
 # publish, yank, un-yank and delete, run on this computer's machine or, where the OS runs none (macOS, Windows), on the
 # rental. On the rental: package install and list, BiRefNet from a YAML request and with --asset, each output landed
-# here (one in a folder named with spaces and non-ASCII), machine list, show and logs, keepalive, a run followed and
+# here (one in a folder named with spaces and non-ASCII), machine ls, show and logs, keepalive, a run followed and
 # canceled, and an end while a run still goes, checked gone. The throwaway and the rental are removed in an EXIT trap
 # whatever fails. --quote stops at the rental's quote and rents nothing: the $0 pre-flight of every step before it.
 #   e2e/release/run.sh --out DIR [--key FILE | --installed] [--sku SKU] [--max-hourly USD] [--max-usd USD] [--quote] [--release DIR]
@@ -24,15 +24,15 @@ rented() {
   { jq -r '.. | objects | select(.kind? == "rental") | .name // empty' "$1" 2> /dev/null || true; } | tail -1 | grep . \
     || grep -o 'rental rent-[0-9a-f]* did not come up' "$1" | head -1 | cut -d' ' -f2
 }
-# Whether `machine list` lists machine $1.
-listed() { cozy --json machine list | J --arg m "$1" '.machines | any(.name == $m)'; }
+# Whether `machine ls` lists machine $1.
+listed() { cozy --json machine ls | J --arg m "$1" '.machines | any(.name == $m)'; }
 cleanup() {
   set +e
   [ -n "$M" ] || [ ! -s "$OUT/rent.ndjson" ] || M=$(rented "$OUT/rent.ndjson")
   # `machine end` returns once the Hub affirms the pod gone.
   if [ -n "$M" ]; then
     cozy --json machine end "$M" --force -y > "$OUT/end-trap.json" 2>&1
-    ! listed "$M" || echo "::error::the trap ended $M, but machine list still lists it: end it by hand"
+    ! listed "$M" || echo "::error::the trap ended $M, but machine ls still lists it: end it by hand"
   fi
   cozy --json package delete "fidika/$pkg" -y > /dev/null 2>&1
   cozy --json model delete "$model" -y > /dev/null 2>&1
@@ -83,23 +83,23 @@ awk -v h="$hourly" -v max="$MAX_HOURLY" 'BEGIN { exit !(h / 1e6 <= max) }' || fa
 minutes=$(awk -v h="$hourly" -v max="$MAX_USD" 'BEGIN { printf "%.0f", max / (h / 1e6) * 60 }')
 echo "quote: $SKU at \$$(usd "$hourly")/h; --max-usd \$$MAX_USD buys $minutes min"
 if [ -n "$QUOTE" ]; then
-  ! listed "ci-e2e-quote-$run" || check "machine list: the gone check by name lists a machine never rented"
+  ! listed "ci-e2e-quote-$run" || check "machine ls: the gone check by name lists a machine never rented"
   rented_at=$(($(date +%s) - 60)); [ "$(spent)" != 0.000 ] || check "the spend guard reads \$0 after a minute at \$$(usd "$hourly")/h"
   finish "cli-release --quote: $SKU at \$$(usd "$hourly")/h ($minutes min under --max-usd \$$MAX_USD), nothing rented"
   exit 0
 fi
 
 step rental
-before=$(cozy --json machine list | jq '[.machines[] | select(.kind == "rental")] | length') || true
+before=$(cozy --json machine ls | jq '[.machines[] | select(.kind == "rental")] | length') || true
 ! cozy --json machine rent "$SKU" --gpus 64 -y > "$OUT/rent-too-many.json" 2>&1 || check "machine rent --gpus 64 bought something"
-[ "$(cozy --json machine list | jq '[.machines[] | select(.kind == "rental")] | length')" = "$before" ] || check "machine rent --gpus 64: a rental appeared"
+[ "$(cozy --json machine ls | jq '[.machines[] | select(.kind == "rental")] | length')" = "$before" ] || check "machine rent --gpus 64: a rental appeared"
 rented_at=$(date +%s)
 cozy --json machine rent "$SKU" --disk-gb 60 -y > "$OUT/rent.ndjson" || fail "machine rent $SKU failed: $(tail -c 400 "$OUT/rent.ndjson")"
 M=$(rented "$OUT/rent.ndjson") || true
 [ -n "$M" ] || fail "machine rent: no machine named"
 echo "rented $M ($SKU)"
 cozy --json machine show "$M" > "$OUT/rental.json" && J '.rental.disk_gb >= 60' "$OUT/rental.json" || check "machine rent --disk-gb 60: $(jq .rental.disk_gb "$OUT/rental.json") GB"
-cozy --json machine list | J --arg m "$M" '.machines | any(.name == $m and .kind == "rental")' || check "machine list does not list $M"
+cozy --json machine ls | J --arg m "$M" '.machines | any(.name == $m and .kind == "rental")' || check "machine ls does not list $M"
 cozy machine logs "$M" --lines 5 > "$OUT/rental-log.txt" && [ -s "$OUT/rental-log.txt" ] || check "machine logs $M --lines 5: nothing"
 # Where this OS runs no models itself, the throwaway runs on the rental.
 ON=$M
@@ -165,7 +165,7 @@ cozy --json model delete "$model" -y > "$OUT/model-delete.json" || check "model 
 step "BiRefNet on $M"
 watched install-birefnet package install birefnet --on "$M" \
   || check "package install birefnet --on $M failed: $(run_get "$OUT" install-birefnet '.reason.message' | head -c 300)"
-cozy --json package list --on "$M" > "$OUT/packages-rental.json" && grep -q birefnet "$OUT/packages-rental.json" || check "package list --on $M: no birefnet"
+cozy --json package ls --on "$M" > "$OUT/packages-rental.json" && grep -q birefnet "$OUT/packages-rental.json" || check "package ls --on $M: no birefnet"
 # A request file beside its image, in a folder named with spaces and non-ASCII; its output lands in another such folder.
 far="$OUT/in dir é ü" landing="$OUT/out dir é ü"
 mkdir -p "$far" && cp "$(picture dog1.jpg)" "$far/chien é.jpg" && printf 'image: chien é.jpg\n' > "$far/request é.yaml"
@@ -178,8 +178,8 @@ dog=$(picture dog2.jpg)
 if run_cell "$OUT" birefnet-asset birefnet/remove_background --asset "image=$dog" --on "$M"; then
   white_background "$(run_output "$OUT" birefnet-asset webp)" "$dog" || check "birefnet-asset: not a background removal"
 else check "birefnet-asset: cozy run --asset --on $M did not complete: $(run_get "$OUT" birefnet-asset '.reason.message' | head -c 300)"; fi
-cozy --json run list --on "$M" > "$OUT/runs-rental.json" && J --arg m "$M" '(.runs | length > 0) and all(.runs[]; .machine == $m)' "$OUT/runs-rental.json" \
-  || check "run list --on $M: other machines' runs, or none"
+cozy --json run ls --on "$M" > "$OUT/runs-rental.json" && J --arg m "$M" '(.runs | length > 0) and all(.runs[]; .machine == $m)' "$OUT/runs-rental.json" \
+  || check "run ls --on $M: other machines' runs, or none"
 
 step "a run on $M followed, then canceled"
 deadline=$(jq '.idle_deadline_ms // 0' "$OUT/rental.json") || true

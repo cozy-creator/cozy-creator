@@ -1,4 +1,4 @@
-//! `cozy run list` as a live view (`crate::tui`), fed by Calcifer's events.
+//! `cozy run ls` as a live view (`crate::tui`), fed by Calcifer's events.
 use protocol::{
     calcifer::{Run, RunsEvent},
     error::Error,
@@ -7,7 +7,7 @@ use protocol::{
 use super::list;
 use crate::{Context, calcifer_client::Watch};
 
-/// The runs `cozy run list` shows, kept as Calcifer says they change.
+/// The runs `cozy run ls` shows, kept as Calcifer says they change.
 pub(crate) struct Runs {
     query: list::Query,
     limit: u64,

@@ -1,4 +1,4 @@
-//! `cozy model list|download|upload`: models on machines. Download and upload are warm runs on
+//! `cozy model ls --on`, `download` and `upload`: models on machines. Download and upload are warm runs on
 //! the machine `--on` names. The machine fetches,
 //! makes and publishes the bytes itself, so no weight passes through this computer; a local file
 //! goes to the machine as the run's input.
@@ -14,7 +14,7 @@ use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
 use super::refs::{ModelRef, Repo};
-use super::{Download, List, Upload};
+use super::{Download, Upload};
 use crate::Context;
 use crate::output::{self, Record, Table};
 
@@ -38,7 +38,7 @@ impl From<(ModelChoice, Option<StagedInput>)> for ModelInput {
 /// its headers without importing or fetching the tensor objects a thin folder omits.
 fn folder(path: &Path, profiles: &[String], manifests: &Path, memo: &Path) -> Result<ModelInput, Error> {
     if !profiles.is_empty() {
-        return Err(usage("model_profile_unused", "a CozyTensors folder is already converted; omit --source-profile"));
+        return Err(usage("model_profile_unused", "a CozyTensors folder is already converted; omit --source-format"));
     }
     let staged = crate::run::tree::stage(path, Some(memo), manifests)?;
     let input = InputFile {
@@ -72,7 +72,7 @@ fn source(raw: &str, profiles: &[String]) -> Result<(ModelChoice, Option<StagedI
         (ModelRef::parse(raw)?.choice("model"), None)
     };
     if !profiles.is_empty() && choice.source.is_empty() {
-        return Err(usage("model_profile_unused", "--source-profile converts a provider source or a local file"));
+        return Err(usage("model_profile_unused", "--source-format converts a provider source or a local file"));
     }
     choice.profiles = profiles.to_vec();
     Ok((choice, staged))
@@ -182,7 +182,7 @@ pub(crate) async fn download(ctx: &Context, args: Download) -> Result<ExitCode, 
         Some(_) => return Err(usage("model_alias_invalid", "the name a machine keeps a model under is local/<name>")),
         None => String::new(),
     };
-    let mut made = source(&args.model, &[])?;
+    let mut made = source(&args.model, &args.profiles)?;
     if made.1.is_some() && destination.is_empty() {
         return Err(usage("model_alias_missing", "a local file is kept under a name: add local/<name>"));
     }
@@ -229,8 +229,9 @@ struct Held {
 }
 
 /// What every machine holds (or the one `--on` names), from its latest Status through Calcifer.
-pub(crate) async fn list(ctx: &Context, args: List) -> Result<ExitCode, Error> {
-    let on = match &args.on {
+/// The models machines hold: `on` one, else every machine.
+pub(crate) async fn list(ctx: &Context, on: Option<String>) -> Result<ExitCode, Error> {
+    let on = match &on {
         Some(on) => Some(crate::machine::machine(ctx, on).await?.name),
         None => None,
     };
