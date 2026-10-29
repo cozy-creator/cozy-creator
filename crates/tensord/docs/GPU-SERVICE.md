@@ -22,7 +22,9 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
 - `host`: `{mode}`: `[machine] mode` in config.toml, else `dedicated` on a rental and `shared`
   elsewhere. At start a dedicated machine imports its installed environments' parents, most
   recently used first, while half the host's memory stays free; a shared one imports none, and an
-  install imports its environment and ends the other parents no request has used.
+  install imports its environment and ends the other parents no request has used. Idle, a local
+  machine's executors end at a third of its window and its parents at the whole window: with the
+  process, or, kept up by an authorized controller, a shared machine ends them in place.
 
 ## Preparation
 

@@ -454,16 +454,18 @@ pub async fn release_when_idle(
 /// This computer's machine through its idle clock: after a third of the window with no work its
 /// executors exit (`release`), after the whole window the machine stops (`stop`, false when work
 /// came meanwhile) and this process exits. While `kept` (another computer's controller is
-/// authorized to use it) only the executors go. It sleeps until activity or the next deadline.
+/// authorized to use it) it stays up, and at the whole window its import-only parents go instead
+/// (`release_parents`). It sleeps until activity or the next deadline.
 pub fn exit_when_idle(
     lifecycle: Arc<Lifecycle>,
     engine: Arc<crate::execution::Engine>,
     release: impl Fn(),
+    release_parents: impl Fn(),
     stop: impl Fn() -> io::Result<bool>,
     kept: impl Fn() -> bool,
     rebind: impl Fn() -> bool,
 ) {
-    let mut released = None;
+    let (mut released, mut parents_released) = (None, None);
     loop {
         let (seen, epoch) = (engine.activity_epoch(), lifecycle.epoch());
         match engine.jobs(lifecycle.ended_ms()) {
@@ -494,6 +496,11 @@ pub fn exit_when_idle(
         }
         let held = kept();
         lifecycle.kept.store(held, Ordering::Release);
+        if now >= since + grace && held && parents_released != Some(since) {
+            tracing::info!("idle {} s, kept up for its controllers: its import-only parents end", (now - since) / 1000);
+            release_parents();
+            parents_released = Some(since);
+        }
         if now >= since + grace && !held {
             match lifecycle.claim().and_then(|claimed| Ok(claimed && stop()?)) {
                 Ok(true) => {
