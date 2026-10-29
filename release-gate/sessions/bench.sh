@@ -15,6 +15,8 @@
 #   update     `cozy machine update` flags run on the pod before the runner: a candidate's Cozy side (["--runtime",
 #              "url:https://…#sha256=<hex>", "--tensorfs", "artifact:<cozy-creator run id>:<artifact>"]); each url:
 #              or artifact: value is fetched here before renting and sent from this runner ([]: the pod as rented)
+#   candidates {"<package>": "<packages_refs name>"}: each package runs from that packages checkout (local/<package>),
+#              not its Hub release: a package fix's proof ({}: the Hub's)
 . "$(dirname "$0")/lib.sh"
 MODELS=$(param models '["sdxl", "anima", "moss", "qwen", "h3_turbo", "h3_full"]') TIERS=$(param tiers scout) ARMS=$(param arms matched)
 FREE=$(param free_mib 0) RAM=$(param ram_free_gib 0) STALL=$(param stall_s 1800)
@@ -39,7 +41,16 @@ for i in "${!update[@]}"; do
   update[$i]=$(ls "$d"/*.whl | grep -m1 'manylinux.*x86_64') || fail "$v has no Linux x86_64 wheel"
 done
 for m in "${models[@]}"; do grep -q "^\[models\.$m\]" "$BENCH/cells.toml" || fail "cells.toml has no model $m"; done
-python3 "$BENCH/bench.py" check --describe > "$OUT/check.json" 2>&1 || fail "the runner's dry run: $(head -c 600 "$OUT/check.json")"
+# Each candidate package: its checkout here, copied to /root/candidates/<package> on the pod.
+mapfile -t candidates < <(param candidates '{}' | jq -r 'to_entries[] | "\(.key)=\(.value)"')
+here=() there=()
+for c in "${candidates[@]}"; do
+  pkg=${c%%=*} tree=${c#*=}; d=$PACKAGES/$tree/$pkg
+  [[ $pkg =~ ^[a-z0-9.-]+$ && $tree =~ ^[A-Za-z0-9_-]+$ && -f $d/pyproject.toml ]] || fail "candidate $c: no packages_refs checkout $tree/$pkg"
+  here+=(--candidate "$pkg=$d") there+=(--candidate "$pkg=/root/candidates/$pkg")
+  say "candidate $pkg: packages $(git -C "$d" rev-parse --short HEAD) ($tree)"
+done
+python3 "$BENCH/bench.py" check --describe "${here[@]}" > "$OUT/check.json" 2>&1 || fail "the runner's dry run: $(head -c 600 "$OUT/check.json")"
 say "benchmarks $(git -C "$BENCH" rev-parse --short HEAD): models ${models[*]}; tiers $TIERS; arms $ARMS; free_mib $(jq -c . <<<"$FREE"); ram_free_gib $RAM; update ${update[*]##*/}"
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 RENT_ARGS=--ssh
@@ -51,17 +62,22 @@ if [ "${#update[@]}" -gt 0 ]; then
   cozy machine show "$NAME" > "$OUT/show-update.txt" 2>&1; grep -E '^(version|runtime|tensorfs) ' "$OUT/show-update.txt" | tee -a "$R"
 fi
 S=$(date -u +%Y%m%dT%H%MZ)-$SKU; [[ $FREE == 0 || $FREE == {* ]] || S=$S-$FREE; [ "$RAM" = 0 ] || S=$S-ram$RAM
-[ "${#update[@]}" = 0 ] || S=$S-candidate
+[ "${#update[@]}" = 0 ] && [ "${#candidates[@]}" = 0 ] || S=$S-candidate
 pod() { timeout "${T:-120}" cozy machine ssh "$NAME" "$@"; }
 for i in $(seq 1 20); do pod true < /dev/null > /dev/null 2>&1 && break; [ "$i" = 20 ] && fail "no SSH into $NAME"; sleep 15; done
 tar -C "$BENCH" -cz --exclude .git --exclude results . | T=600 pod "mkdir -p /root/bench && tar -xz -C /root/bench" || fail "copy the runner"
+for c in "${candidates[@]}"; do
+  pkg=${c%%=*}
+  tar -C "$PACKAGES/${c#*=}/$pkg" -cz --exclude .venv . | T=600 pod "mkdir -p /root/candidates/$pkg && tar -xz -C /root/candidates/$pkg" ||
+    fail "copy the candidate $pkg"
+done
 T=900 pod "command -v ffprobe >/dev/null || { apt-get update -qq && apt-get install -y -qq ffmpeg; } >/dev/null 2>&1; ffprobe -version | head -1" \
   < /dev/null >> "$R" 2>&1 || fail "no ffmpeg on the pod"
 # One detached plan on the pod: a dropped SSH connection or a lost runner leaves it running, and the rental ends itself
 # 15 min after the plan stops making progress.
 plan="cd /root/bench && { python3 bench.py setup --models $(IFS=,; echo "${models[*]}") --sku $SKU --session $S && {"
 for m in "${models[@]}"; do
-  plan="$plan python3 bench.py cell --model $m --tiers $TIERS --arms $ARMS --free-mib $(free_of "$m") --ram-free-gib $RAM --sku $SKU --session $S;"
+  plan="$plan python3 bench.py cell --model $m --tiers $TIERS --arms $ARMS --free-mib $(free_of "$m") --ram-free-gib $RAM --sku $SKU --session $S ${there[*]};"
 done
 plan="$plan }; echo \$? > done; } > run.log 2>&1"
 pod "nohup bash -c '$plan' > /dev/null 2>&1 &" < /dev/null || fail "start the runner"
