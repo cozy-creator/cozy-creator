@@ -1,5 +1,6 @@
-"""Every prebuilt GEMM tile and every dense attention candidate of this card's family, timed at
-product shapes against the rule's own pick (GEMM config -1; a cell's first kernel that opens)."""
+"""Every prebuilt GEMM tile and every attention candidate of this card's family, timed at product
+shapes against the rule's own pick: GEMM config -1; a dense cell's first kernel that opens; a
+sparse site's walk at each level (its sparse cells at that level and above, the first that opens)."""
 
 import json
 import math
@@ -9,8 +10,15 @@ from functools import partial
 
 import msgspec
 import torch
-from cozy_runtime.author import App, Context
-from cozy_runtime.internal import arch, attention, prebuilt
+from cozy_runtime.author import App, AttentionLayout, Context, attention_scope
+from cozy_runtime.internal import (
+    arch,
+    attention,
+    attention_sol,
+    kernel_cache,
+    kernel_ready,
+    prebuilt,
+)
 from cozy_runtime.internal.encoding.selection import measure_device
 from diffusers.models.attention_dispatch import dispatch_attention_fn
 
@@ -26,6 +34,9 @@ GEMMS = {
 #: (batch, tokens, heads, head dim): the same models' attention; H3 as one rank of four
 ATTENTION = {"sdxl64": (2, 4096, 10, 64), "sdxl32": (2, 1024, 20, 64),
              "qwen": (1, 4352, 24, 128), "h3": (1, 111334, 14, 128)}  # fmt: skip
+#: (tokens, heads, protected prefix) of a sparse step's Sol call: H3 Turbo 15 s on one GPU. Random
+#: Q/K route about 16% of key blocks against H3's measured 22-23%, so times run low; the order holds.
+SPARSE = {"h3": (109115, 56, 1259)}
 
 
 class Probe(msgspec.Struct, forbid_unknown_fields=True):
@@ -99,6 +110,54 @@ def _attend(ready: dict, shape: tuple[int, ...]) -> dict:
     return {"ms": ms, "best": best, "regret": round(next(iter(ms.values())) / ms[best] - 1, 4)}
 
 
+def _sol_built(q: torch.Tensor) -> None:
+    """Upstream Sol's CuTe object and preprocess kernels for this length, waited for: until they
+    land, a sparse step serves its dense reference (`attention_sol._ready`, `_preprocessed`)."""
+    card, store, index = attention_sol._capability(q.device), kernel_cache.configured(), q.device.index or 0
+    if card is None or store is None:
+        return
+    tokens, heads, found = q.shape[1], q.shape[2], attention_sol._job_for(q.shape[1], card)
+    kernel_ready.wait(f"{attention_sol.KERNEL} {found.key.digest[:16]}",
+                      partial(attention_sol._open, store, found, card))  # fmt: skip
+    kernel_ready.wait(f"{attention_sol.KERNEL} preprocess {tokens}x{heads} cuda:{index}",
+                      partial(attention_sol._warm, index, tokens, heads))  # fmt: skip
+
+
+def _sparse(row: arch.Row, ready: dict, shape: tuple[int, ...]) -> dict:
+    """Each sparse candidate as a sparse step calls it (inside its model's layout and a Sol site),
+    and per level the rule's pick (the walk's first that serves) against the walk's best."""
+    tokens, heads, prefix = shape
+    q, k, v = (torch.randn(1, tokens, heads, 128, device="cuda", dtype=torch.bfloat16) for _ in range(3))
+    layout = AttentionLayout(live_tokens=tokens, protected_prefix=prefix, step=1, dense_until_step=1)
+    calls, not_sparse = {}, {}
+    site = attention_sol._SITE.set(attention_sol.Site("kernel-regret", "h3.attn"))
+    try:
+        with attention_scope(layout):
+            for name, r in ready.items():
+                if r.candidate.refusal(q, k, {}):
+                    continue
+                if r.candidate.import_name == "sol_attn":
+                    _sol_built(q)
+                call = partial(lambda i, m: dispatch_attention_fn(q, k, v, backend=m), m=r.member)
+                with attention_sol.observing() as counts:
+                    call(0)
+                if counts["sparse"] != 1:  # it served a dense reference: not a sparse time
+                    not_sparse[name] = dict(counts)
+                    continue
+                calls[name] = call
+            ms = _bench(calls) if calls else {}
+    finally:
+        attention_sol._SITE.reset(site)
+    family, levels = attention.SPARSE.get(row.family, {}), {}
+    for at in attention.LEVELS:
+        walk = [n for lv in attention.LEVELS[attention.LEVELS.index(at) :] for n in family.get(lv, ())]
+        timed = [n for n in walk if n in ms]
+        if at in family and timed:
+            best = min(timed, key=ms.__getitem__)
+            levels[at] = {"rule": timed[0], "best": best, "regret": round(ms[timed[0]] / ms[best] - 1, 4)}
+    return {"ms": ms, "levels": levels, "not_sparse": not_sparse}
+
+
 def _measured(what: str, measure: Callable[[], dict]) -> dict:
     try:
         return {"shape": what, **measure()}
@@ -141,11 +200,31 @@ def gpu(payload: Probe, ctx: Context) -> Report:
             ctx.raise_if_cancelled()
             row = _measured(label, partial(_attend, ready, shape))
             report["attention"].append({"level": level, "refused": refused, **row})
+    row = arch.row(device.sm)
+    names = list(dict.fromkeys(n for cell in attention.SPARSE.get(row.family, {}).values() for n in cell))
+    ready, refused = {}, {}
+    for name in names:
+        try:
+            ready[name] = attention.pinned(name, device)[0]
+        except Exception as exc:
+            refused[name] = f"{type(exc).__name__}: {exc}"[:300]
+    if "sol-attn" in ready:  # its dense rows: what its walk binds at the family's 8-bit level
+        walk = attention.walk(row, 8 if 8 in attention.DENSE.get(row.family, {}) else 16, layout=True)
+        attention._bind_sol_dense(attention._sol_dense(walk[walk.index("sol-attn") + 1 :], device, {}, {}))
+    report["sparse"] = []
+    for label, shape in SPARSE.items():
+        ctx.raise_if_cancelled()
+        report["sparse"].append({"refused": refused, **_measured(label, partial(_sparse, row, ready, shape))})
     rows = [*(report["gemm"] if ops is not None else []), *report["attention"]]
     report["over_3pct"] = [
         f"{r.get('format', r.get('level'))} {r['shape']}: {r['regret']:.1%}, best {r['best']}"
         for r in rows
         if r.get("regret", 0) > 0.03
+    ] + [
+        f"sparse {at} {r['shape']}: {v['regret']:.1%}, rule {v['rule']}, best {v['best']}"
+        for r in report["sparse"]
+        for at, v in r.get("levels", {}).items()
+        if v["regret"] > 0.03
     ]
     print("KERNEL-REGRET " + json.dumps(report, sort_keys=True), flush=True)
     return Report(True, json.dumps(report, sort_keys=True))

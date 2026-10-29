@@ -1,9 +1,17 @@
 # Kernel regret
 
-Times every prebuilt GEMM tile, and every dense attention candidate of the card's family
-(`attention.DENSE`), at SDXL, Qwen-Image and H3 product shapes. Each is compared against the
-pick of the Runtime's own rule: GEMM config -1 (`choose()`), and the first kernel of each
-attention cell that opens. The cell measures; it has no pass bar.
+Times every prebuilt GEMM tile, and every attention candidate of the card's family
+(`attention.DENSE` and `attention.SPARSE`), at SDXL, Qwen-Image and H3 product shapes. Each is
+compared against the pick of the Runtime's own rule: GEMM config -1 (`choose()`), the first
+kernel of each dense cell that opens, and per level the first sparse kernel of a sparse site's
+walk (its sparse cells at that level and above) that opens. The cell measures; it has no pass bar.
+
+- Sparse: each candidate runs as an H3 Turbo 15 s sparse step calls it (one GPU: 109,115 tokens,
+  56 heads, 1,259 protected prefix rows), inside an `AttentionLayout` and a Sol site, after
+  upstream Sol's per-length builds land; a call that served its dense reference instead is
+  `not_sparse`, not timed. Random Q/K route about 16% of key blocks against H3's measured 22-23%,
+  so the times run low; the order is what the cell reports. The package producers (minimax-h3's
+  chunked Kitchen calls) are not in it: their kernel is `kitchen-sol`'s.
 
 Opt-in only, through `cells=`: no suite or `core-cells.sh` sources it. It opens every
 candidate inside its own request, so `analyze.py` reports those builds and self-checks as
@@ -21,7 +29,7 @@ never on a promotion gate.
 
 `choose()` (cozy-runtime `kernels/csrc/gemm/`) changes only where the regret is above 3%, with
 the numbers in a comment (magnitude study, `outputs/opus-takeover-20261027/magnitude-study`).
-Attention regret only informs the `DENSE` order; it is not the GEMM rule.
+Attention regret only informs the `DENSE` and `SPARSE` orders; it is not the GEMM rule.
 
 ```sh
 cozy run /abs/worktree/release-gate/suites/execution/kernel-regret/gpu seed=202610270321 --on <machine> --gpus=1 --json
