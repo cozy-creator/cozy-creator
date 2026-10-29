@@ -102,6 +102,25 @@ case "$(get "$x" status):$(get "$x" attempt)" in
   *) expect tensord-no-reexecution FAIL "run $x $(get "$x" status), attempt $(get "$x" attempt)";;
 esac
 
+# Warm set (xs-132): after a restart (no executor), `--warm gpu` loads SDXL; the machine lists it at gpu, and a minute
+# later too; the next request runs on its executor (started before the request) vs run $r's cold start; `--warm off`
+# takes it out of the set (what it holds stays until the room is needed, owner 10-05).
+"$CLI" machine update "$M" --gpu-memory-limit off -y > "$T/warm-restart.log" 2>&1
+wn=$(basename "$(mktemp -u "$T/run-XXXXXX")")
+w=$(run_submit "$T" "$wn" run "sdxl/generate@$NEW" --warm gpu --on "$M") && echo "$wn" > "$T/$w.name"; until_status "$w" terminal
+warm_level() { "$CLI" --json machine show "$M" 2>/dev/null | jq -r '[.status.warm[]? | select(.entrypoint == "generate")][0]
+  | if . == null then "none" else "\(.level)/\(if .holds == "" then .level else .holds end)" end'; }
+l1=$(warm_level); sleep 60; l2=$(warm_level)
+x=$(submit "sdxl/generate@$NEW" prompt="$CHAR, kept warm" seed:=$((R + 44))); until_status "$x" terminal
+read -r x0 _ <<< "$(get "$x" window)"; xe=$(get "$x" executor)
+"$CLI" run "sdxl/generate@$NEW" --on "$M" --warm off > "$T/warm-off.log" 2>&1; l3=$(warm_level)
+if [ "$(get "$w" status)" = completed ] && [ "$l1 $l2" = "gpu/gpu gpu/gpu" ] && [ "$(get "$x" status)" = completed ] \
+   && [ "${xe:-0}" -gt 0 ] && [ "${xe:-0}" -lt "${x0:-0}" ] && [ "$l3" = none ]; then
+  expect tensord-warm-gpu PASS "--warm gpu run $w held gpu, a minute later too; run $x on its executor (started $(( (x0 - xe) / 1000 )) s before the request) in $(get "$x" ms) ms vs run $r's cold $(get "$r" ms) ms; --warm off left the set"
+else
+  expect tensord-warm-gpu FAIL "--warm gpu run $w $(get "$w" status), held $l1 then $l2; run $x $(get "$x" status), executor ${xe:-?} vs request ${x0:-?}; after --warm off $l3"
+fi
+
 # Multi-GPU placement: two runs at once go to two GPUs.
 if [ "${NGPU:-1}" -ge 2 ]; then
   p=$(submit "sdxl/generate@$NEW" prompt="$SCENE, GPU one" steps:=40 seed:=$((R + 41)))
