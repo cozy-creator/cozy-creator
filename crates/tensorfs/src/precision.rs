@@ -87,6 +87,11 @@ impl Profile {
     }
 }
 
+/// A family's weight width (16, 8 or 4; the table's `families`), 0 for one it does not name.
+pub fn bits(family: &str) -> u32 {
+    TABLE.families.get(family).map_or(0, |f| f.bits)
+}
+
 /// A kind's family and width (the table's `kinds`); `("", 0)` outside it.
 fn family(kind: &str) -> (&'static str, u32) {
     let found = TABLE.kinds.iter().find(|k| !k.kind.is_empty() && k.kind == kind || !k.prefix.is_empty() && kind.starts_with(&k.prefix));
