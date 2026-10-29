@@ -14,8 +14,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Kept in the generation's directory, so it goes with the environment.
-const FILE: &str = "import-pages.json";
+/// Kept in the generation's directory, so it goes with the environment; one per App (a callee's
+/// parent imports its own package).
+fn file(held: &HeldGeneration) -> Option<PathBuf> {
+    let app: String = held.record.application.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+    Some(directory(held)?.join(format!("import-pages-{app}.json")))
+}
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 struct Pages {
@@ -36,14 +40,14 @@ pub fn recorded(held: &HeldGeneration) -> u64 {
 }
 
 fn read(held: &HeldGeneration) -> Option<Pages> {
-    let raw = std::fs::read(directory(held)?.join(FILE)).ok()?;
+    let raw = std::fs::read(file(held)?).ok()?;
     serde_json::from_slice(&raw).ok()
 }
 
 /// Right after `held`'s parent (`parent`) imported: what of its environment and interpreter it
 /// read, unless an earlier import recorded it. Off the caller's thread.
 pub fn record_later(held: &HeldGeneration, parent: platform::process::Birth) {
-    let Some(path) = directory(held).map(|dir| dir.join(FILE)) else { return };
+    let Some(path) = file(held) else { return };
     if path.exists() {
         return;
     }
