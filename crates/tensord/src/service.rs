@@ -266,7 +266,9 @@ impl Service {
         self.engine.notify_activity();
     }
     /// The machine started: a dedicated one's installed environments' import-only parents import,
-    /// the most recently used first, while the host has room for them (`Pool::import_recent`).
+    /// the most recently used first, while the host has room for them, and the rest's import
+    /// pages are read ahead; a shared one reads ahead its few most recently used
+    /// (`Pool::import_recent`).
     pub fn import_installed(&self) -> io::Result<()> {
         let Some(gpu) = self.gpu() else { return Ok(()) };
         let bound = self.engine.with_journal(|journal| journal.bound_generations())?;
@@ -279,7 +281,8 @@ impl Service {
     pub fn hold_while(&self, held: impl Fn() -> bool + Send + Sync + 'static) {
         let _ = self.held.set(Box::new(held));
     }
-    /// This computer's machine idle a while: every idle executor ends, and what it held goes back.
+    /// This computer's machine idle a while: every idle executor outside the warm sets ends, and
+    /// what it held goes back.
     pub fn release_idle(&self) {
         if let Some(pool) = self.pool() {
             pool.release_idle();
@@ -291,6 +294,10 @@ impl Service {
         if let Some(pool) = self.pool() {
             pool.release_parents();
         }
+    }
+    /// A warm set member is kept in memory here: this computer's machine stays up for it.
+    pub fn keeps_warm(&self) -> bool {
+        self.pool().is_some_and(|pool| pool.keeps_warm())
     }
     pub fn stop(&self) -> io::Result<bool> {
         let mut stopped = self.stopped.lock().unwrap();

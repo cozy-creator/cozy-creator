@@ -94,6 +94,8 @@ pub(super) fn kill(_: &Handle, birth: &Birth) -> io::Result<()> {
     Ok(())
 }
 
+pub(super) fn background_thread() {}
+
 pub(super) fn set_name(_: &str) -> crate::Result<()> {
     Err(crate::Error::unsupported(crate::Seam::Process))
 }

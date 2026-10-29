@@ -131,6 +131,10 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
   the external-pressure rungs below.
 - Warming: a warm member's executor is loaded, then `Map{construction, level}` has it load its
   models at `gpu` or `ram`; varena fills them, and its priority is in use > warm > idle.
+  On this computer's machine a member at `imported` or above keeps TensorD from its 15-minute idle
+  exit, the 5-minute release leaves a `host`/`gpu` member's executor, and a kept-up machine's
+  parent release (`release_parents`) leaves a member's parent. Pressure still takes them.
+  `--warm off` takes a member out of the set; what it holds stays until something needs the room.
 - External pressure uses driver-attributed process usage on the existing reclaim loop: offload
   idle executors first, then end idle processes, then cancel affected active roots if headroom
   remains low. Cancellation kills their executors and scopes; weights are reloaded on later
