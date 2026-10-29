@@ -162,9 +162,10 @@ fn probe_component(set: &SourceSet, fam: &Family, name: &str, tensors: &[&Planne
         }
     }
     set.read_ranges(&ranges)?;
-    // Each variant's worst block over every probed tensor (cosine, key, block), and its summed
-    // mean distance.
+    // Each variant's worst block over every probed tensor (cosine, key, block), and its mean
+    // distance over them.
     let mut seen: BTreeMap<String, ((f64, String, u64), f64)> = BTreeMap::new();
+    let mut probed = 0;
     for t in probe.of(root) {
         let Some(p) = tensors.iter().find(|p| p.key == t.key) else { continue };
         let cols: u64 = p.shape[1..].iter().product();
@@ -176,6 +177,7 @@ fn probe_component(set: &SourceSet, fam: &Family, name: &str, tensors: &[&Planne
             };
             sketches.push(probe.sketch(&rows, cols as usize));
         }
+        probed += 1;
         for a in probe::agreements(probe, t, &sketches).into_iter().filter(|a| variants.contains(&a.variant.as_str())) {
             let entry = seen.entry(a.variant.clone()).or_insert(((f64::INFINITY, String::new(), 0), 0.0));
             if a.worst < entry.0 .0 {
@@ -183,6 +185,9 @@ fn probe_component(set: &SourceSet, fam: &Family, name: &str, tensors: &[&Planne
             }
             entry.1 += a.distance;
         }
+    }
+    for entry in seen.values_mut() {
+        entry.1 /= probed.max(1) as f64;
     }
     let Some((_, ((cosine, key, block), _))) = seen.iter().max_by(|a, b| a.1 .0 .0.total_cmp(&b.1 .0 .0)) else {
         return Ok(Probed::Unprobed);
