@@ -404,17 +404,19 @@ def h3_lora(h3: Any, source: dict[str, tuple[str, tuple[int, ...]]]) -> dict[str
     leaves = {"attn.qkv_proj": "attn_qkv_proj", "attn.out_proj": "attn_out_proj", "mlp.fc1": "mlp_fc1", "mlp.fc2": "mlp_fc2"}
     blocks = [("blocks", i, True) for i in range(config["num_layers"])]
     blocks += [("token_refiner.blocks", i, False) for i in range(config["num_refiner_layers"])]
+    modules = [(f"{family}.{i}.{leaf}", f"blocks_{i}_{flat}" if kohya else None)
+               for family, i, kohya in blocks for leaf, flat in leaves.items()]
+    # The audio patch projections, which audio-trained LoRAs adapt (Mystic XXX v5).
+    modules += [("audio_patch_proj", "audio_patch_proj"), ("final_layer.audio_out", "final_layer_audio_out")]
     rows = []
-    for family, i, kohya in blocks:
-        for leaf, flat in leaves.items():
-            native = f"{family}.{i}.{leaf}"
-            stems = [f"diffusion_model.{native}"] + ([f"lora_unet_blocks_{i}_{flat}"] if kohya else [])
-            fused, inp = source[f"{native}.weight"][1]
-            for target, b in h3.convert_transformer_key(f"{native}.weight", h3_index(fused), config):
-                ops: dict[str, Any] = {"io": [inp, fused]}
-                if b_ops := row_ops(b[:, 0].numpy(), (fused, 1)):
-                    ops["b"] = b_ops
-                rows.extend([target.removesuffix(".weight"), stem, ops] for stem in stems)
+    for native, flat in modules:
+        stems = [f"diffusion_model.{native}"] + ([f"lora_unet_{flat}"] if flat else [])
+        fused, inp = source[f"{native}.weight"][1]
+        for target, b in h3.convert_transformer_key(f"{native}.weight", h3_index(fused), config):
+            ops: dict[str, Any] = {"io": [inp, fused]}
+            if b_ops := row_ops(b[:, 0].numpy(), (fused, 1)):
+                ops["b"] = b_ops
+            rows.extend([target.removesuffix(".weight"), stem, ops] for stem in stems)
     # Rows in the transformer's construction order (#624): its state_dict, not the trainer's.
     from diffusers import MiniMaxH3Transformer3DModel
 
