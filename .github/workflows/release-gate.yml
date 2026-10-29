@@ -248,15 +248,17 @@ jobs:
       # Every gate-tier command and flag ran (e2e/coverage.py), in the gate that ran the cli suite.
       - if: ${{ !cancelled() && contains(format(',{0},', matrix.suite), ',cli,') }}
         run: uv run -q --no-project python -I creator/e2e/coverage.py check "$HOME/.cozy/bin/cozy" creator/e2e/coverage.toml --tiers gate --log "$OUT/argv.log" --source creator/crates/cli/src
-      # gate.sh ends its rental in a trap; a cancelled job can skip it, so end it here too and say so.
+      # gate.sh ends its rental in a trap; a cancelled job can skip it, so end it here too and say so. gate.sh writes
+      # the rental id to $OUT/rental as soon as the order names it, booting or not.
       - if: always()
         run: |
-          m=$(cat "$OUT/machine" 2>/dev/null) || exit 0
+          r=$(cat "$OUT/rental" 2>/dev/null) || exit 0
+          . creator/release-gate/machines.sh
           for _ in $(seq 1 30); do
-            timeout 30 cozy machine ls 2>/dev/null | grep -q "^$m " || { echo "$m is gone"; exit 0; }
-            cozy machine end "$m" -y || true; sleep 10
+            listed "$r" || { echo "$r is gone"; exit 0; }
+            cozy machine end "$r" -y || true; sleep 10
           done
-          echo "::error::$m is still listed: end it by hand (cozy machine end $m)"; exit 1
+          echo "::error::$r is still listed, or no machine listing answered: end it by hand (cozy machine end $r)"; exit 1
       - if: always()
         uses: actions/upload-artifact@v4
         with:

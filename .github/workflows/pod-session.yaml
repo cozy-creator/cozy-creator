@@ -140,14 +140,14 @@ jobs:
       - if: always()
         run: |
           [ -f "$OUT/rental" ] || exit 0
+          . creator/release-gate/machines.sh
           left=0
           while read -r rid; do
             for _ in $(seq 1 30); do
-              cozy machine ls --json < /dev/null 2>/dev/null | jq -e --arg r "$rid" '.machines[] | select(.rental_id==$r and .state!="ended")' >/dev/null ||
-                { echo "$rid is gone"; continue 2; }
+              listed "$rid" || { echo "$rid is gone"; continue 2; }
               cozy machine end "$rid" -y < /dev/null || true; sleep 10
             done
-            echo "::error::$rid is still listed: end it by hand (cozy machine end $rid)"; left=1
+            echo "::error::$rid is still listed, or no machine listing answered: end it by hand (cozy machine end $rid)"; left=1
           done < "$OUT/rental"
           exit $left
       - if: always()
