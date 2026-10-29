@@ -439,6 +439,21 @@ H3_LORA_PRODUCERS = [
 ]
 
 
+def h3_curve(comfy: dict[str, Any]) -> dict[str, Any]:
+    """ComfyUI's curve-form DiT (comfy/ldm/minimax/model.py, `use_adaln_curves`; PinkCherry,
+    Eros Max), saved bare: h3.comfy's rows but the time embedder's, plus the `[grid, k]`
+    `adaln_t_table` every AdaLN linear reads k coordinates of, with no SiLU. minimax-h3-tools
+    evaluates the curve into timestep tables. `adaln_basis`/`adaln_mean` (some exports) are never
+    read, as in ComfyUI."""
+    component = {k: v for k, v in comfy["components"][0].items() if k != "prefix"}
+    rows = component["rows"]
+    at = next(i for i, r in enumerate(rows) if r[0].startswith("time_embedder."))
+    rows = [r for r in rows if not r[0].startswith("time_embedder.")]
+    component["rows"] = [*rows[:at], ["adaln_t_table"], *rows[at:]]
+    component["optional"] = ["adaln_basis", "adaln_mean"]
+    return {"name": "h3.curve", "reference": comfy["reference"], "components": [component]}
+
+
 def h3_lora(h3: Any, source: dict[str, tuple[str, tuple[int, ...]]]) -> dict[str, Any]:
     """Trainer LoRA factors: A as is, B through diffusers' own transformer conversion given the
     trainer's contiguous Q/K/V thirds (docs/h3-lora-source-layout.md), so fc1 B halves swap."""
@@ -772,7 +787,8 @@ def generate() -> dict[str, dict[str, Any]]:
         "sdxl.single_file": sdxl,
         "anima.single_file": anima,
         "h3.native": native,
-        "h3.comfy": h3_native(h3, comfy=True)[0],
+        "h3.comfy": (comfy := h3_native(h3, comfy=True)[0]),
+        "h3.curve": h3_curve(comfy),
         "h3.lora": h3_lora(h3, source),
         "sdxl.lora": sdxl_lora(sdxl, layers, unet),
         "krea2.lora": krea2_lora(),
