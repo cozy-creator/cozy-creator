@@ -184,10 +184,13 @@ pub fn checkpoint(store: &Store, id: &str) -> io::Result<tensorfs::store::Checkp
     .map_err(io_error)
 }
 
-/// The chunks and assets `components` read (all components when empty), each once; none when
-/// it names a component the checkpoint lacks.
+/// The chunks and assets `components` read (all components when empty), each once, that the
+/// store holds or fetches: never a view's own objects (its graph), which live in memory. None
+/// when it names a component the checkpoint lacks.
 pub fn chunks(checkpoint: &tensorfs::store::Checkpoint, components: &[String]) -> Vec<ObjectRef> {
-    tensorfs::fetch::wanted(checkpoint.header(), (!components.is_empty()).then_some(components)).unwrap_or_default()
+    let own: Vec<String> = view(&checkpoint.id().sha256).map(|v| v.own.iter().map(|o| ObjectRef::of(o).sha256).collect()).unwrap_or_default();
+    let wanted = tensorfs::fetch::wanted(checkpoint.header(), (!components.is_empty()).then_some(components)).unwrap_or_default();
+    wanted.into_iter().filter(|o| !own.contains(&o.sha256)).collect()
 }
 
 /// `text` is 64 lowercase hex digits (a bare sha256), or `sha256:` and them when `prefixed`.
