@@ -3367,6 +3367,7 @@ impl Pool {
             .collect();
         let operation = crate::call_memo::operation(&held.record, &record.invocation.module, protocol::interface::invocable(&entry))
             .unwrap_or_default();
+        session.executor.codec().prestart();
         let invoked = Instant::now();
         let first = !session.invoked;
         session.invoked = true;
@@ -3397,11 +3398,23 @@ impl Pool {
         );
         drop(invoking);
         let reply = reply?;
+        // When the reply came (with the executor's handler and device-lease times) and when it
+        // was recorded: the executor's tail after its last stage and TensorD's before
+        // `gpu_returned`, apart.
+        let phase = |phase: serde_json::Value| {
+            if let Err(error) = engine.append_log(id, "info", &phase.to_string()) {
+                tracing::warn!("run {id}: {error}");
+            }
+        };
+        let metrics = reply.metrics.clone().unwrap_or_default();
+        phase(serde_json::json!({"phase": "executor_replied", "handler_ms": metrics.handler_ms,
+            "device_lease_ms": metrics.device_lease_ms, "d2h_wait_ms": metrics.d2h_wait_ms}));
         dispatched.record(&reply, &self.config.inventory);
         session.level = Level::Gpu;
         self.record_invoke(&construction, &lane, first, invoked.elapsed(), &reply);
         self.note_decisions(id, session.executor.birth.pid, &lane, &reply);
         record_measurements(engine, id, &plan, &reply, &driver.map(platform::gpu::Peak::end).unwrap_or_default());
+        phase(serde_json::json!({"phase": "measurements_recorded"}));
         if reply.attention_applied {
             if let Err(error) = engine.apply_attention(id) {
                 tracing::warn!("run {id}: applied attention pin not recorded: {error}");

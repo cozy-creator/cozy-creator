@@ -429,6 +429,17 @@ impl Codec {
             helper: Mutex::new(None),
         }
     }
+    /// Start the helper now if none runs, so a call's first output does not wait for its
+    /// interpreter and imports (0.4-0.6 s on a pod); `encode` starts one if this could not.
+    pub fn prestart(&self) {
+        let mut helper = self.helper.lock().unwrap();
+        if helper.is_none() {
+            match self.spawn() {
+                Ok(started) => *helper = Some(started),
+                Err(error) => tracing::warn!("encoder prestart: {error}"),
+            }
+        }
+    }
     /// Retain the log inode before an idle executor can be ended or its root removed.
     pub fn retain_log(&self) -> io::Result<()> {
         let mut stderr = self.stderr.lock().unwrap();
