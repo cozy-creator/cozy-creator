@@ -5,6 +5,11 @@ import os
 GIB = 1 << 30
 
 
+def reserved_mib(run):
+    """Torch's reservations plus native backing at their fullest (`memory.peak_reserved_bytes`), in MiB."""
+    return round(max((m.get('memory') or {}).get('peak_reserved_bytes') or 0 for m in run.measurements) / 2**20)
+
+
 def check(gate):
     fails, notes, runs, summary = [], [], gate['runs'], gate['summary']
     if not any(n.startswith('cli-') for n in summary) and not os.path.exists(os.path.join(gate['out'], 'cli-fails.txt')):
@@ -31,6 +36,16 @@ def check(gate):
     if vram:
         (fails if vram['peak'] * (1 << 20) > 12 * GIB else notes).append(
             f'cli-cap: {vram["peak"]} MiB in use at its fullest under the 12 GiB --gpu-memory-limit')
+    # 6 GiB binds SDXL (about 9 GiB uncapped): its driver peak stays within the cap plus what the driver charges beyond
+    # Torch's reservations and native backing (the CUDA context), measured on this pod's uncapped cli-gpus.
+    capped, open_ = runs.get('cli-cap6'), runs.get('cli-gpus')
+    if capped and capped.vram and open_ and open_.vram:
+        reserve = max(open_.vram['peak'] - reserved_mib(open_), 0)
+        bar = 6 * 1024 + reserve
+        (fails if capped.vram['peak'] > bar else notes).append(
+            f'cli-cap6: {capped.vram["peak"]} MiB in use at its fullest under the 6 GiB --gpu-memory-limit '
+            f'(bar {bar} MiB: 6144 + {reserve} the driver charges beyond Torch and native backing uncapped; '
+            f'uncapped {open_.vram["peak"]} MiB)')
     p = os.path.join(gate['out'], 'cli-fails.txt')
     if os.path.exists(p):
         fails += [f'cli: {l.strip()}' for l in open(p) if l.strip()]
