@@ -1067,9 +1067,7 @@ impl Publisher {
                 return Ok((grant, None, vec![]));
             }
             if choice.repository.starts_with("local/") && choice.manifest.is_none() {
-                let local = storage::local(&self.store, &choice.repository)
-                    .and_then(|local| local.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "this machine holds no such model")))
-                    .map_err(|error| ("model_resolution_failed", format!("{}: {error}", choice.repository)))?;
+                let local = held_local(&self.store, &choice.repository)?;
                 let header = local.header.id();
                 return Ok((ModelGrant {
                     package: installation.package.clone(), slot: path, repository: choice.repository.clone(),
@@ -1328,6 +1326,15 @@ fn refused(code: &'static str, refusal: tensorfs::err::Refusal) -> Failure {
     }
 }
 
+/// The model `repository` (`local/<name>`) as this machine holds it. Absent, the reason says that
+/// a `local/` name lives on the machine that runs it, and how to put it there.
+fn held_local(store: &Store, repository: &str) -> Result<storage::Local, Failure> {
+    let held = storage::local(store, repository).map_err(io_failure)?.filter(|local| store.holds(&local.header));
+    held.ok_or_else(|| ("checkpoint_absent", format!(
+        "this machine holds no {repository}: a local/ name is a model downloaded to the machine that runs it; \
+         download it there first (`cozy model download <source> {repository} --on <machine>`)")))
+}
+
 /// A slot's caller adapters applied to its resolved base: each adapter downloaded, then one
 /// adapter view composed (`adapter::compose`); the grant then names the view.
 fn apply_adapters(
@@ -1351,12 +1358,7 @@ fn apply_adapters(
     for adapter in &choice.adapters {
         let header = if adapter.source.is_empty() && adapter.model.starts_with("local/") {
             // One this machine holds by name (`cozy model download … local/<name>`).
-            storage::local(store, &adapter.model)
-                .map_err(io_failure)?
-                .filter(|local| store.holds(&local.header))
-                .ok_or_else(|| ("checkpoint_absent", format!("this machine holds no {}", adapter.model)))?
-                .header
-                .id()
+            held_local(store, &adapter.model)?.header.id()
         } else if adapter.source.is_empty() {
             // By name, resolved at the Hub, or the owner's by hash (th-245).
             if adapter.model.is_empty() {
