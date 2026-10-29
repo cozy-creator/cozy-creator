@@ -7,6 +7,7 @@
 #               {"name": "one", "tensord": "<dev-build run id>"}]; tensord `image` (no update), a release version or a
 #               dev-build run id; `only` the arm's cells (default: the session's)
 #   runtime     a candidate Runtime wheel, https://…#sha256=<hex>, put on before any package installs (optional)
+#   tensorfs    a TensorFS wheel the same way, when the Runtime's floor is not on PyPI (optional)
 #   gpus        GPUs rented, and the H3 cells' group (1)
 #   only        the cells, comma-separated (default: every cell)
 #   models      downloaded first, so no arm's call waits on its weights
@@ -30,13 +31,17 @@ for i in "${!names[@]}"; do
   b=$(ls "$d"/cozy-*/cozy-linux-x86_64 2>/dev/null | head -1); [ -n "$b" ] || fail "run ${builds[$i]} has no cozy-linux-x86_64"
   chmod +x "$b"; say "arm ${names[$i]}: $("$b" --version)"; bins+=("$b")
 done
-W=''
-if [ -n "$URL" ]; then
-  [[ $URL == https://*'#sha256='* ]] || fail "runtime is not https://…#sha256=<hex>"
-  W=$OUT/wheel/$(basename "${URL%%#*}"); W=$(printf '%b' "${W//%/\\x}"); mkdir -p "$OUT/wheel"
-  curl -fsSL --retry 5 --retry-all-errors "${URL%%#*}" -o "$W" || fail "cannot fetch the runtime wheel"
-  [ "$(sha256sum "$W" | cut -c1-64)" = "${URL##*sha256=}" ] || fail "runtime wheel sha256"
-fi
+# wheel <https://…#sha256=hex>: the wheel fetched here under its own name (a URL's %2B is a local version's +).
+wheel() {
+  [[ $1 == https://*'#sha256='* ]] || fail "$1 is not https://…#sha256=<hex>"
+  local w; w=$OUT/wheel/$(basename "${1%%#*}"); w=$(printf '%b' "${w//%/\\x}"); mkdir -p "$OUT/wheel"
+  curl -fsSL --retry 5 --retry-all-errors "${1%%#*}" -o "$w" || fail "cannot fetch ${1%%#*}"
+  [ "$(sha256sum "$w" | cut -c1-64)" = "${1##*sha256=}" ] || fail "$w sha256"
+  echo "$w"
+}
+W='' TW=''
+[ -z "$URL" ] || W=$(wheel "$URL") || exit 1
+[ -z "$(param tensorfs)" ] || TW=$(wheel "$(param tensorfs)") || exit 1
 # The pod's executors and GPUs now, as JSON: [{pid, ppid, nvidia_fds, rss_mib, age_s}], [{gpu, used_mib, total_mib}].
 POD_PY=$(cat <<'EOF'
 import glob, json, os, subprocess, time
@@ -64,7 +69,7 @@ rent
 pod() { timeout "${T:-120}" cozy machine ssh "$NAME" "$@"; }
 for i in $(seq 1 20); do pod true < /dev/null > /dev/null 2>&1 && break; [ "$i" = 20 ] && fail "no SSH into $NAME"; sleep 15; done
 snapshot() { printf '%s' "$POD_PY" | pod "cat > /tmp/one.py && python3 /tmp/one.py" 2>/dev/null; }
-[ -z "$W" ] || step runtime machine update "$NAME" --runtime "$W" -y || fail "runtime update"
+[ -z "$W$TW" ] || step runtime machine update "$NAME" ${W:+--runtime "$W"} ${TW:+--tensorfs "$TW"} -y || fail "runtime update"
 k=0
 while read -r m; do
   k=$((k + 1)); [ -n "$m" ] || continue
