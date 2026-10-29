@@ -394,23 +394,23 @@ fn sku_refusal(sku: &str, gpus: u32, status: &RentalSkuStatus) -> Error {
         )
         .next("cozy machine rent");
     }
+    // The Hub's reason, of the offer that frees first; an older Hub gives none.
+    let why = match status.held_for.as_deref() {
+        Some("no_capacity") => "has no capacity in the offers we can buy",
+        Some("failed_boot") => "is held back after a recent boot failure",
+        _ => "is held back",
+    };
     let held = match status.unavailable_reason.as_deref() {
         Some("cooldown") => Some((
             "sku_cooldown",
             match &status.retry_after {
-                Some(at) => {
-                    format!("{ask} is held back after a recent boot failure; try again after {at}")
-                }
-                None => {
-                    format!("{ask} is held back after a recent boot failure; try again shortly")
-                }
+                Some(at) => format!("{ask} {why}; retry after {at}"),
+                None => format!("{ask} {why}; retry shortly"),
             },
         )),
         Some("retry_in_progress") => Some((
             "sku_retry_in_progress",
-            format!(
-                "{ask} is held back while a retry after a recent boot failure runs; try again once it ends"
-            ),
+            format!("{ask} {why} while another rental retries it; try again once that ends"),
         )),
         _ => None,
     };
