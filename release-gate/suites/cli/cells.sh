@@ -4,8 +4,9 @@
 # $OBJECT. Every cozy call is logged (release-gate.yml runs gate.sh with --cli e2e/bin/cozy) for e2e/coverage.py.
 #   --gpus 1 · --lane bf16 · --attention-kernel sdpa · --lora and --input's lora: (an SDXL LoRA by its Hugging Face
 #   ref, the function's model and the UNet found from it)
-#   machine update --gpu-memory-limit 12GiB, then off · model quantize --lane int8 / fp8, --package, --on ·
-#   model upload --lane of a Hub model, and a family lane that is not the weights' width
+#   machine update --gpu-memory-limit 12GiB, then 6GiB (one SDXL holds less than its uncapped 9 GiB), then off ·
+#   model quantize --lane int8 / fp8, --package, --on · model upload --lane of a Hub model, and a family lane that is
+#   not the weights' width
 cli_fail() { log "cli: $*"; echo "$*" >> cli-fails.txt; }
 
 cell cli-gpus "$(pkg sdxl generate)" prompt="$OBJECT on a marble plinth, photo" seed:=$((R + 201)) --gpus 1
@@ -20,6 +21,8 @@ cell cli-lora-input "$(pkg sdxl generate)" --input "$PWD/cli-lora.yaml"
 
 "$CLI" machine update "$M" --gpu-memory-limit 12GiB -y > cli-cap.log 2>&1 || cli_fail "machine update --gpu-memory-limit 12GiB: $(tail -c 300 cli-cap.log)"
 cell cli-cap "$(pkg sdxl generate)" prompt="$SCENE at noon, photo" seed:=$((R + 205))
+"$CLI" machine update "$M" --gpu-memory-limit 6GiB -y > cli-cap6.log 2>&1 || cli_fail "machine update --gpu-memory-limit 6GiB: $(tail -c 300 cli-cap6.log)"
+cell cli-cap6 "$(pkg sdxl generate)" prompt="$CHAR at dusk, photo" seed:=$((R + 207))
 "$CLI" machine update "$M" --gpu-memory-limit off -y > cli-cap-off.log 2>&1 || cli_fail "machine update --gpu-memory-limit off: $(tail -c 300 cli-cap-off.log)"
 
 # A model's int8 and fp8 lanes by its package's recipes, from a throwaway repository's copy of anima's original
