@@ -206,6 +206,9 @@ struct State {
     clock: u64,
     streaming_limit: usize,
     phase_boundary: Option<u64>,
+    /// The clock when the current request began (`begin_request`): idle pages it touched are
+    /// reclaimed newest first, after every page it did not touch.
+    request_boundary: Option<u64>,
     preferred_end: Option<u64>,
     poison: Option<String>,
     fills: u64,
@@ -420,6 +423,7 @@ impl Arena {
                 clock: 0,
                 streaming_limit: usize::MAX,
                 phase_boundary: None,
+                request_boundary: None,
                 preferred_end: None,
                 poison: None,
                 fills: 0,
@@ -582,6 +586,14 @@ impl Arena {
         Ok(())
     }
 
+    /// Start a request. A request repeats its phases in order, so among idle pages those it
+    /// has not touched go first, oldest first, then its own newest first: what it needs last.
+    pub fn begin_request(&self) -> Result<()> {
+        let mut state = self.lock()?;
+        state.request_boundary = (state.clock != u64::MAX).then_some(state.clock);
+        Ok(())
+    }
+
     /// Make phase headroom without evicting the incoming phase's preferred cached bytes.
     pub fn reclaim_unpreferred(&self, bytes: usize) -> Result<ReclaimReport> {
         self.reclaim_with_preference(bytes, false, ReclaimReason::Requested)
@@ -628,8 +640,11 @@ impl Arena {
             })
             .map(|(id, entry)| (*id, entry.preferred(), entry.last_use))
             .collect();
-        candidates.sort_by_key(|(id, preferred, age)| {
-            (*preferred, if *preferred { u64::MAX - id } else { *age })
+        let boundary = state.request_boundary;
+        candidates.sort_by_key(|(id, preferred, age)| match (*preferred, boundary) {
+            (true, _) => (true, false, u64::MAX - id),
+            (false, Some(start)) if *age > start => (false, true, u64::MAX - age),
+            (false, _) => (false, false, *age),
         });
         // The arena lock excludes new pins; each candidate already has zero physical pins.
         // Idle cache goes completed-first, then after its own events, and joins the context

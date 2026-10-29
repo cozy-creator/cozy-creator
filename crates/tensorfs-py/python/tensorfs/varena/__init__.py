@@ -104,6 +104,10 @@ class Arena:
         """Begin an explicit execution phase without changing pins, mappings or VA."""
         self._native.reset_preferences()
 
+    def begin_request(self) -> None:
+        """Start a request: its own idle pages are reclaimed newest first, after the rest."""
+        self._native.begin_request()
+
     def reclaim_unpreferred(self, bytes: int) -> int:
         """Reclaim only idle nonpreferred backing; every physical pin still wins."""
         return self._native.reclaim_unpreferred(bytes)

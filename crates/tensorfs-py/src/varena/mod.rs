@@ -152,6 +152,10 @@ impl PyArena {
         py.detach(|| self.arena.reset_preferences())
             .map_err(|e| raise(py, e))
     }
+    fn begin_request(&self, py: Python<'_>) -> PyResult<()> {
+        py.detach(|| self.arena.begin_request())
+            .map_err(|e| raise(py, e))
+    }
     fn reclaim_unpreferred(&self, py: Python<'_>, bytes: usize) -> PyResult<usize> {
         py.detach(|| self.arena.reclaim_unpreferred(bytes))
             .map(|r| r.reclaimed_bytes)
