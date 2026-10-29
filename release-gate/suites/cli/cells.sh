@@ -17,9 +17,10 @@ cell cli-cap "$(pkg sdxl generate)" prompt="$SCENE at noon, photo" seed:=$((R + 
 "$CLI" machine update "$M" --gpu-memory-limit off -y > cli-cap-off.log 2>&1 || cli_fail "machine update --gpu-memory-limit off: $(tail -c 300 cli-cap-off.log)"
 
 # A model's int8 and fp8 lanes by its package's recipes, from a throwaway repository's copy of anima's original
-# weights (the Hub holds its bytes already), deleted at once.
+# weights, deleted at once. The copy names anima's bf16 commit: the Hub records it, and nothing moves.
 q=fidika/ci-e2e-q-$R
-"$CLI" --json model upload anima "$q" --lane bf16 --on "$M" > cli-copy.ndjson 2>&1 || cli_fail "model upload anima $q: $(tail -c 400 cli-copy.ndjson)"
+bf16=$("$CLI" --json model info anima 2>/dev/null | python3 -c 'import json,sys; print(next(l["commit"] for l in json.load(sys.stdin)["releases"][0]["lanes"] if l["lane"] == "bf16"))' 2>/dev/null)
+"$CLI" --json model upload "anima@$bf16" "$q" --lane bf16 > cli-copy.ndjson 2>&1 || cli_fail "model upload anima@$bf16 $q: $(tail -c 400 cli-copy.ndjson)"
 qc=$("$CLI" --json model info "$q" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["commits"][0]["commit"])' 2>/dev/null)
 "$CLI" --json model quantize "$q@$qc" --lane int8 --package anima --on "$M" > cli-quantize.ndjson 2>&1 \
   || cli_fail "model quantize --lane int8: $(tail -c 400 cli-quantize.ndjson)"
