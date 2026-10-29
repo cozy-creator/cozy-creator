@@ -11,7 +11,7 @@ use std::sync::{Arc, OnceLock};
 use platform::durable;
 
 use super::retention::{self, Hold};
-use super::{fail, invalid, platform, Error, Result, Store};
+use super::{fail, invalid, Error, Result, Store};
 use crate::format::{
     self, decode, is_header, Body, Component, Header, Location, ObjectRef, HEADER_PATH,
     PartBytes, Pipeline, Tensor, Tree, CHUNKS_DIR,
@@ -414,9 +414,25 @@ impl Checkpoint {
     }
 }
 
-/// One of a memory view's own objects as a file: anonymous, so it ends with its descriptors.
+/// One of a memory view's own objects as a file: written in the OS temp dir and unlinked at
+/// once, so this descriptor is the only way to it and it is gone when that closes.
 fn frozen(bytes: &[u8]) -> Result<File> {
-    platform::shm::frozen("tensorfs-view", bytes).map_err(platform("hold in memory", "tensorfs-view"))
+    use std::io::{Seek, SeekFrom, Write};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    loop {
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(".tensorfs-view-{}-{n}", std::process::id()));
+        let mut file = match fs::OpenOptions::new().read(true).write(true).create_new(true).open(&path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(fail("create", &path)(e)),
+        };
+        let _ = fs::remove_file(&path);
+        file.write_all(bytes).map_err(fail("write", &path))?;
+        file.seek(SeekFrom::Start(0)).map_err(fail("seek", &path))?;
+        return Ok(file);
+    }
 }
 
 fn absent(component: &str, key: &str) -> super::Error {
