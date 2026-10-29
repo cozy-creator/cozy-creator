@@ -1,0 +1,202 @@
+# cold-start: a package's first request right after its install, on one rental, once per TensorD arm. Each arm puts
+# its TensorD on the pod (the pod's own image for `image`), installs each of its models' packages afresh (remove, then
+# install), counts each environment's bytecode, drops the weights from the page cache and runs one cold request each;
+# the executor processes' memory is read after the machine starts and after the requests. An arm's `wait` says when
+# its requests go after their install: `now`, once the package's level is `imported` (its import-only parent is up),
+# or once that parent's kernel compiles have ended too (`compiled`); the session says how long each took. Nothing
+# here compares: the run records and the stamped event streams are the evidence. params:
+#   arms        [{"name": "fix", "tensord": "<dev-build run id>", "models": ["sdxl", "anima"], "wait": "now"},
+#               {"name": "again", "tensord": "same"}, {"name": "prod", "tensord": "0.13.7"}, …], in order. tensord:
+#               `image` or `same` (no update), a release version, or a dev-build run id; models: sdxl, anima, qwen
+#   sdxl        the SDXL function (sdxl/generate@0.1.3)
+#   anima       the Anima function (anima/generate@0.1.1)
+#   qwen        the Qwen-Image function (qwen-image-2/generate@0.1.8), at 1 MP, 20 steps
+#   traffic_gb  GB the provider bills: the image and both models' weights (40)
+#   need_s      seconds the guard must buy (5400)
+. "$(dirname "$0")/lib.sh"
+ARMS=$(param arms '[{"name": "prod", "tensord": "image"}]') SDXL=$(param sdxl sdxl/generate@0.1.3) ANIMA=$(param anima anima/generate@0.1.1)
+QWEN=$(param qwen qwen-image-2/generate@0.1.8)
+mapfile -t names < <(jq -r '.[].name' <<<"$ARMS")
+mapfile -t builds < <(jq -r '.[].tensord' <<<"$ARMS")
+[ "${#names[@]}" -gt 0 ] || fail "no arms"
+# Each arm's cozy, fetched before renting, so a missing one costs nothing.
+bins=()
+for i in "${!names[@]}"; do
+  [[ ${names[$i]} =~ ^[a-z0-9-]+$ ]] || fail "arm name ${names[$i]}"
+  if [ "${builds[$i]}" = image ] || [ "${builds[$i]}" = same ]; then bins+=(""); continue; fi
+  if [[ ${builds[$i]} =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then bins+=("${builds[$i]}"); continue; fi
+  d=$OUT/arms/${names[$i]}; mkdir -p "$d"
+  gh run download "${builds[$i]}" -R cozy-creator/cozy-creator -p 'cozy-*' -D "$d" >/dev/null 2>&1 || fail "no cozy artifact in run ${builds[$i]}"
+  b=$(ls "$d"/cozy-*/cozy-linux-x86_64 2>/dev/null | head -1); [ -n "$b" ] || fail "run ${builds[$i]} has no cozy-linux-x86_64"
+  chmod +x "$b"; say "arm ${names[$i]}: $("$b" --version)"; bins+=("$b")
+done
+POD_PY=$(cat <<'EOF'
+import glob, json, os, sys, time
+def roots(name):
+    found = set()
+    for env in glob.glob("/proc/[0-9]*/environ"):
+        try:
+            for kv in open(env, "rb").read().split(b"\0"):
+                if kv.startswith(name.encode() + b"="):
+                    found.add(kv.split(b"=", 1)[1].decode())
+        except OSError:
+            pass
+    return sorted(r for r in found if os.path.isdir(r))
+def generations():
+    for g in glob.glob("/var/lib/cozy/tensord/generations/*/generation.json"):
+        try:
+            yield os.path.getmtime(g), g, json.load(open(g))
+        except (OSError, ValueError):
+            pass
+def resident(path):
+    import ctypes
+    libc = ctypes.CDLL("libc.so.6", use_errno=True)
+    libc.mmap.restype = ctypes.c_void_p
+    libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_long]
+    size = os.path.getsize(path)
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        addr = libc.mmap(None, size, 1, 1, fd, 0)
+        if addr in (None, ctypes.c_void_p(-1).value):
+            return 0
+        vec = ctypes.create_string_buffer((size + 4095) // 4096)
+        rc = libc.mincore(ctypes.c_void_p(addr), ctypes.c_size_t(size), vec)
+        libc.munmap(ctypes.c_void_p(addr), ctypes.c_size_t(size))
+        return 0 if rc else sum(b & 1 for b in vec.raw) * 4096
+    finally:
+        os.close(fd)
+mode = sys.argv[1]
+if mode == "pyc":
+    module = sys.argv[2]
+    rows = sorted((t, g, d) for t, g, d in generations() if d.get("application", "").split(":")[0] == module)
+    if not rows:
+        print(json.dumps({"module": module, "error": "no generation"})); sys.exit()
+    t, g, d = rows[-1]
+    env = os.path.realpath(os.path.join(os.path.dirname(g), "env"))
+    site = glob.glob(os.path.join(env, "lib/python3*/site-packages"))[0]
+    out = {"module": module, "generation": os.path.basename(os.path.dirname(g)), "packages": {}}
+    for name in ("torch", "diffusers", "transformers", "sympy", "peft", "accelerate", "huggingface_hub", "safetensors", "cozy_runtime"):
+        p = os.path.join(site, name)
+        if os.path.isdir(p):
+            py = pyc = 0
+            for _, _, files in os.walk(p):
+                py += sum(f.endswith(".py") for f in files); pyc += sum(f.endswith(".pyc") for f in files)
+            out["packages"][name] = [py, pyc]
+    print(json.dumps(out))
+elif mode == "evict":
+    files = [os.path.join(dp, f) for r in roots("TENSORFS_HOME") for dp, _, fs in os.walk(r) for f in fs]
+    files = [f for f in files if os.path.isfile(f) and not os.path.islink(f) and os.path.getsize(f) > (1 << 20)]
+    before = sum(resident(f) for f in files)
+    os.sync()
+    for f in files:
+        fd = os.open(f, os.O_RDONLY)
+        try:
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        finally:
+            os.close(fd)
+    print(json.dumps({"files": len(files), "gb": round(sum(os.path.getsize(f) for f in files) / 1e9, 2),
+                      "resident_gb_before": round(before / 1e9, 2), "resident_gb_after": round(sum(resident(f) for f in files) / 1e9, 2)}))
+elif mode == "ps":
+    rows = []
+    for d in glob.glob("/proc/[0-9]*"):
+        try:
+            cmd = open(d + "/cmdline", "rb").read().replace(b"\0", b" ").decode(errors="replace")
+            kind = ("codec" if "frame-codec" in cmd else "compile" if "cozy_runtime.author.kernels" in cmd
+                    else "executor" if "cozy_runtime.internal.executor" in cmd else "")
+            if not kind:
+                continue
+            status = dict(l.split(":", 1) for l in open(d + "/status").read().splitlines() if ":" in l)
+            pss = next((int(l.split()[1]) for l in open(d + "/smaps_rollup") if l.startswith("Pss:")), 0)
+            fds = [os.readlink(f) for f in glob.glob(d + "/fd/*") if os.path.exists(f)]
+            started = os.stat(d).st_mtime
+            rows.append({"pid": int(d[6:]), "ppid": int(status["PPid"]), "rss_mib": int(status["VmRSS"].split()[0]) // 1024,
+                         "pss_mib": pss // 1024, "nvidia_fds": sum("/dev/nvidia" in f for f in fds),
+                         "age_s": round(time.time() - started), "kind": kind})
+        except (OSError, KeyError, ValueError, StopIteration):
+            continue
+    for r in rows:
+        r["children"] = sum(o["ppid"] == r["pid"] for o in rows)
+    print(json.dumps(sorted(rows, key=lambda r: r["pid"])))
+EOF
+)
+[ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
+RENT_ARGS=--ssh
+quote "$(param traffic_gb 40)" "$(param need_s 5400)"
+rent
+pod() { timeout "${T:-120}" cozy machine ssh "$NAME" "$@"; }
+for i in $(seq 1 20); do pod true < /dev/null > /dev/null 2>&1 && break; [ "$i" = 20 ] && fail "no SSH into $NAME"; sleep 15; done
+podpy() { printf '%s' "$POD_PY" | T=600 pod "cat > /tmp/cold.py && python3 /tmp/cold.py $*"; }
+# One request, its events stamped with the runner's clock from just before the CLI starts.
+request() {
+  local label=$1 fn=$2 input=$3 t0
+  t0=$(date +%s.%N)
+  cozy run "$fn" --on "$NAME" --input "$input" --json --out "$OUT/$label" 2> "$OUT/$label.err" |
+    python3 -u -c 'import sys,time; t0=float(sys.argv[1]); [print(f"{time.time()-t0:.3f} {l}", end="", flush=True) for l in sys.stdin]' "$t0" > "$OUT/$label.ndjson"
+  local n; n=$(grep -o '"number":[0-9]*' "$OUT/$label.ndjson" | head -1 | cut -d: -f2)
+  [ -n "$n" ] || { say "$label: no run"; return 1; }
+  cozy run show "$n" --once --json > "$OUT/$label.json" 2>&1
+  say "$label: run $n $(jq -r .status "$OUT/$label.json"), landed $(grep output_item.landed "$OUT/$label.ndjson" | tail -1 | cut -d' ' -f1) s; legs $(jq -c '.measurements.execution.executor.legs_ms' "$OUT/$label.json")"
+}
+declare -A FN=([sdxl]=$SDXL [anima]=$ANIMA [qwen]=$QWEN) PKG=([sdxl]=sdxl [anima]=anima [qwen]=qwen-image-2)
+declare -A WEIGHTS=([sdxl]=_/sdxl@1.0.0 [anima]=_/anima@1.0.0 [qwen]=_/qwen-image-2.1@0.1.0)
+for m in $(jq -r '[.[].models // ["sdxl", "anima"] | .[]] | unique | .[]' <<<"$ARMS"); do
+  [ -n "${FN[$m]:-}" ] || fail "no model $m"
+  step "dl-$m" model download "${WEIGHTS[$m]}" --on "$NAME" || fail "$m weights"
+done
+PROMPTS=("a lighthouse keeper's desk at dawn, watercolor" "a night market under paper lanterns, film photo" "a fox asleep in a library window, gouache"
+  "a desert observatory under the milky way, matte painting" "a tram crossing a snowy bridge, ukiyo-e" "a greenhouse of carnivorous plants, macro photo"
+  "a clocktower interior with brass gears, ink and wash" "a fishing village at low tide, oil painting"
+  "a glacier cave lit by a single torch, concept art" "a rooftop garden in the rain, pastel" "an abandoned arcade at noon, flash photo"
+  "a beekeeper among lavender rows, impressionist" "a submarine galley at midnight, cel shading" "a salt flat mirror at sunset, long exposure"
+  "a puppet workshop full of marionettes, charcoal" "a canyon railway viaduct in fog, linocut")
+k=0
+for i in "${!names[@]}"; do
+  a=${names[$i]}
+  if [ -n "${bins[$i]}" ]; then
+    step "update-$a" machine update "$NAME" --tensord "${bins[$i]}" -y || fail "$a: update"
+    v=$(cozy machine show "$NAME" --json | jq -r .status.version); say "$a: pod TensorD $v"
+    want=${bins[$i]}; [ -x "$want" ] && want=$("$want" --version | awk '{print $2}')
+    [ "$v" = "$want" ] || fail "$a: the pod runs TensorD $v, not $want"
+  fi
+  if [ -n "${bins[$i]}" ]; then
+    sleep 30; podpy ps > "$OUT/$a-ps-start.json"; say "$a: executors 30 s after start $(cat "$OUT/$a-ps-start.json")"
+  fi
+  wait=$(jq -r --argjson i "$i" '.[$i].wait // "now"' <<<"$ARMS")
+  for m in $(jq -r --argjson i "$i" '.[$i].models // ["sdxl", "anima"] | .[]' <<<"$ARMS"); do
+    fn=${FN[$m]} pkg=${PKG[$m]} module=${PKG[$m]//-/_}
+    step "rm-$a-$m" package remove "$pkg" --on "$NAME" -y
+    step "in-$a-$m" package install "$pkg" --on "$NAME" || fail "$a: install $m"
+    installed=$(date +%s)
+    podpy pyc "$module" > "$OUT/$a-$m-pyc.json"; say "$a $m bytecode (py, pyc): $(jq -c .packages "$OUT/$a-$m-pyc.json")"
+    if [ "$wait" != now ]; then
+      level=''
+      for t in $(seq 1 120); do
+        level=$(cozy package list --on "$NAME" --json 2>/dev/null | jq -r --arg p "$pkg" '[.packages[] | select(.package == $p or .package == "_/" + $p) | .level] | first // empty')
+        [ "$level" = imported ] && break
+        sleep 2
+      done
+      say "$a $m: level $level $(( $(date +%s) - installed )) s after its install"
+      if [ "$wait" = compiled ]; then
+        for t in $(seq 1 120); do
+          podpy ps > "$OUT/$a-$m-ps-compiling.json"
+          [ "$(jq '[.[] | select(.kind == "compile")] | length' "$OUT/$a-$m-ps-compiling.json")" = 0 ] && break
+          sleep 5
+        done
+        say "$a $m: its kernel compiles ended $(( $(date +%s) - installed )) s after its install"
+      fi
+      podpy ps > "$OUT/$a-$m-ps-ready.json"; say "$a $m: executors before its request $(cat "$OUT/$a-$m-ps-ready.json")"
+    fi
+    podpy evict > "$OUT/$a-$m-evict.json"; say "$a $m evicted: $(cat "$OUT/$a-$m-evict.json")"
+    k=$(( (k + 1) % ${#PROMPTS[@]} ))
+    if [ "$m" = sdxl ]; then
+      jq -n --arg p "${PROMPTS[$k]}" --argjson s "$RANDOM$i" '{megapixels: 1.0, aspect_ratio: "1:1", steps: 20, guidance: 7.0, hidiffusion: false, prompt_upsampling: false, prompt: $p, seed: $s}' > "$OUT/$a-$m.yaml"
+    elif [ "$m" = qwen ]; then
+      jq -n --arg p "${PROMPTS[$k]}" --argjson s "$RANDOM$i" '{megapixels: 1.0, aspect_ratio: "1:1", steps: 20, prompt_upsampling: false, prompt: $p, seed: $s}' > "$OUT/$a-$m.yaml"
+    else
+      jq -n --arg p "${PROMPTS[$k]}" --argjson s "$RANDOM$i" '{megapixels: 2.25, aspect_ratio: "1:1", steps: 30, guidance: 4.5, cfg_interval_start: 0.0, cfg_interval_stop: 1.0, prompt_upsampling: false, prompt: $p, seed: $s, negative_prompt: "worst quality, low quality, blurry, jpeg artifacts"}' > "$OUT/$a-$m.yaml"
+    fi
+    request "$a-$m-cold" "$fn" "$OUT/$a-$m.yaml" || fail "$a: $m request"
+  done
+  podpy ps > "$OUT/$a-ps-after.json"; say "$a: executors after the requests $(cat "$OUT/$a-ps-after.json")"
+done
+say "PASS: ${#names[@]} arms"
