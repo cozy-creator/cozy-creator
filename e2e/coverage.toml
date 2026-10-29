@@ -120,6 +120,7 @@ test = "release: throwaway model, uploaded from a file and from a run's output"
 "--trained-on" = "manual: tfs-137 proof, an SDXL LoRA's adapter record on local (the H3 warning run on a 4090)"
 "--trigger" = "manual: tfs-137 proof on the dev Hub, set at upload and shown by model info"
 "--strength" = "manual: tfs-137 proof on the dev Hub, set at upload and shown by model info"
+"--base" = "none: a community DiT (66 GB) on a Hub model's header, on a rental; proven by hand"
 ["model publish"]
 test = "release: throwaway model, published with two lanes"
 ["model delete"]
