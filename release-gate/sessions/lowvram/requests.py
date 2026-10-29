@@ -17,7 +17,7 @@ STYLES = ["35mm film photograph, natural light", "oil painting, thick impasto", 
           "watercolor illustration, soft edges", "studio product photo, softbox lighting", "cinematic still, shallow depth of field",
           "ukiyo-e woodblock print", "anime key visual, vivid colors"]
 LIGHTS = ["at golden hour", "under an overcast sky", "at night", "in morning mist", "in harsh noon sun", "by candlelight"]
-LEVELS, MODELS, TIERS = ["full", "6144", "3072", "4096", "2048", "8192", "12288"], ["sdxl", "anima", "qwen", "qwen4"], ["cold", "w1", "w2", "w3"]
+LEVELS, MODELS, TIERS = ["full", "6144", "3072", "4096", "2048", "8192", "12288"], ["sdxl", "anima", "qwen", "qwen4"], ["cold", "w1", "w2", "w3", "w4", "w5", "w6"]
 
 
 def main() -> None:
