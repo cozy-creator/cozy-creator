@@ -16,6 +16,10 @@ STEP_RATIO, STEP_EXTRA_MS = 2, 5_000
 # about 2x a sparse one (minimax-h3 docs/attention-defaults.md: turbo 4 of 8, regular sampling the first 10). Against
 # one median, a healthy fl2va_turbo with dense steps 2.07x its sparse ones failed (gate 40834197815).
 DENSE_STEPS = {'minimax-h3/fl2va_turbo': 4, 'minimax-h3/ref2va_turbo': 4, 'minimax-h3/fl2va': 10, 'minimax-h3/ref2va': 10}
+# The step tracks the step rule judges: a sampler's steps (`tel.step_callback` stages). Not an autoregressive stage
+# (HunyuanImage-3's `thinking`: token 1 is the prompt's prefill, gate 40907841888) and not per-item work (`decode_video`
+# frames, `scan`, `assemble`, `calibrating`).
+STEP_STAGES = ('denoise', 'generating image', 'refine', 'step')
 
 
 def slow_steps(target, s):
@@ -76,10 +80,13 @@ class Run:
         return [m for ms in self.measurements for m in ms.get('models') or []]
 
     def _step_track(self):
-        """The dominant step track (largest total) of the run and its calls, with the measurement holding it."""
+        """The dominant sampler step track (STEP_STAGES, largest total) of the run and its calls, with the measurement
+        holding it."""
         best = (None, None)
         for m in self.measurements:
-            for v in ((m.get('attribution') or {}).get('steps') or {}).values():
+            for name, v in ((m.get('attribution') or {}).get('steps') or {}).items():
+                if name not in STEP_STAGES:
+                    continue
                 if v.get('count') and (best[1] is None or v.get('total_ms', 0) > best[1].get('total_ms', 0)):
                     best = (m, v)
         return best
