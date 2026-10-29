@@ -1140,6 +1140,7 @@ impl Publisher {
                     .and_then(|slot| slot["components"].as_array())
                     .map(|names| names.iter().filter_map(|n| n.as_str().map(str::to_owned)).collect())
                     .unwrap_or_default();
+                opens_views(service, installation, choice)?;
                 warnings.extend(apply_adapters(self, request.source.as_ref(), &resolve, choice, grant, &runs, &request.providers, job)?);
             }
         }
@@ -1360,6 +1361,31 @@ fn held_local(store: &Store, repository: &str) -> Result<storage::Local, Failure
     held.ok_or_else(|| ("checkpoint_absent", format!(
         "this machine holds no {repository}: a local/ name is a model downloaded to the machine that runs it; \
          download it there first (`cozy model download <source> {repository} --on <machine>`)")))
+}
+
+/// The oldest Runtime and TensorFS whose executors open an adapter view from Load's bytes
+/// (`tensorfs.view`, cl-683).
+const VIEWS: [(&str, &str, &str); 2] = [("cozy-runtime", "Runtime", "0.35.5"), ("tensorfs", "TensorFS", "0.17.12")];
+
+/// A LoRA'd call runs only where the installation's environment opens adapter views; without
+/// LoRAs, any pair runs as before.
+fn opens_views(service: &Service, installation: &Installation, choice: &domain::ModelChoice) -> Result<(), Failure> {
+    if choice.adapters.is_empty() {
+        return Ok(());
+    }
+    let held = service.catalog.resolve(&installation.generation).map_err(io_failure)?;
+    let release = |version: &str| -> Vec<u64> {
+        version.split(['+', '-']).next().unwrap_or_default().split('.').map_while(|part| part.parse().ok()).collect()
+    };
+    let has = |name: &str| (held.record.dependencies.iter()).find(|d| normalized(&d.name) == name).map(|d| d.version.clone()).unwrap_or_default();
+    let pair: Vec<(&str, &str, String)> = VIEWS.iter().map(|(name, label, floor)| (*label, *floor, has(name))).collect();
+    if pair.iter().all(|(_, floor, version)| release(version) >= release(floor)) {
+        return Ok(());
+    }
+    let runs: Vec<String> = pair.iter().map(|(label, _, version)| format!("{label} {}", if version.is_empty() { "none" } else { version })).collect();
+    Err(("model_adapter_refused", format!(
+        "LoRAs need Runtime {} and TensorFS {} or newer, and {} runs on {}: update this machine (`cozy machine update`)",
+        VIEWS[0].2, VIEWS[1].2, installation.package, runs.join(" / "))))
 }
 
 /// A slot's caller adapters applied to its resolved base: each adapter downloaded, then one
