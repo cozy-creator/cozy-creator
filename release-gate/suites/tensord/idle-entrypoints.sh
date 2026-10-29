@@ -40,8 +40,8 @@ ln -sfn "$REF" "idle-ref.${REF##*.}"
 lead="references: [{name: Lead, kind: character, image: ./idle-ref.${REF##*.}}]
 clean_references: false
 describe_references: false"
-# The standard construction at 10 steps: what is measured is the executor it runs on, not its quality.
-printf '%s\nprompt: "<Lead> %s The camera holds, then pans right."\nduration_s: 15\nresolution: 768p\nsteps: 10\nseed: %d\n' \
+# The standard construction at 8 steps: what is measured is the executor it runs on, not its quality.
+printf '%s\nprompt: "<Lead> %s The camera holds, then pans right."\nduration_s: 15\nresolution: 768p\nsteps: 8\nseed: %d\n' \
   "$lead" "$MOTION" $((R + 409)) > idle-ref2va.yaml
 printf '%s\nprompt: "<Lead> %s The camera drifts left."\nduration_s: 15\nresolution: 768p\nseed: %d\n' \
   "$lead" "$MOTION" $((R + 404)) > idle-ref2va-turbo.yaml
@@ -50,13 +50,13 @@ printf '%s\nsegments: [{prompt: "<Lead> %s A slow push in.", duration_s: 15, see
 cell idle-h3-s "$(pkg minimax-h3 ref2va)" --input idle-ref2va.yaml --gpus="${GPUS:-1}"
 cell idle-h3-t "$(pkg minimax-h3 ref2va_turbo)" --input idle-ref2va-turbo.yaml --gpus="${GPUS:-1}"
 cell idle-h3-lf "$(pkg minimax-h3 long_form)" --input idle-long-form.yaml --gpus="${GPUS:-1}"
-# The same in a group: Turbo canceled in its denoise, then the standard construction on whatever comes back.
-printf '%s\nprompt: "<Lead> %s A crane shot rises over the scene."\nduration_s: 15\nresolution: 768p\nseed: %d\n' \
+# The same in a group: the standard construction canceled in its denoise, then Turbo on whatever comes back.
+printf '%s\nprompt: "<Lead> %s A crane shot rises over the scene."\nduration_s: 15\nresolution: 768p\nsteps: 8\nseed: %d\n' \
   "$lead" "$MOTION" $((R + 410)) > idle-h3-cancel.yaml
-printf '%s\nprompt: "<Lead> %s The camera circles slowly."\nduration_s: 15\nresolution: 768p\nsteps: 10\nseed: %d\n' \
+printf '%s\nprompt: "<Lead> %s The camera circles slowly."\nduration_s: 15\nresolution: 768p\nseed: %d\n' \
   "$lead" "$MOTION" $((R + 411)) > idle-h3-after-cancel.yaml
-canceled idle-h3-cancel cell idle-h3-cancel "$(pkg minimax-h3 ref2va_turbo)" --input idle-h3-cancel.yaml --gpus="${GPUS:-1}"
-cell idle-h3-after-cancel "$(pkg minimax-h3 ref2va)" --input idle-h3-after-cancel.yaml --gpus="${GPUS:-1}"
+canceled idle-h3-cancel cell idle-h3-cancel "$(pkg minimax-h3 ref2va)" --input idle-h3-cancel.yaml --gpus="${GPUS:-1}"
+cell idle-h3-after-cancel "$(pkg minimax-h3 ref2va_turbo)" --input idle-h3-after-cancel.yaml --gpus="${GPUS:-1}"
 "$CLI" machine logs "$M" memory -n 5000 > idle-memory.log 2>&1
 cap=$("$CLI" --json machine show "$M" 2>/dev/null | jq '.status.gpus[0].memory_bytes // 0')
 python3 -I "$HERE/suites/tensord/idle_entrypoints.py" . idle-memory.log "$cap" > idle-entrypoints.tsv
