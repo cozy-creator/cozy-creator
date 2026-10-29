@@ -6,7 +6,7 @@ use crate::machine::{
     endpoint::Endpoint,
     grant::{Grant, Lifetime},
 };
-use protocol::config::{self as shared, Loaded, ENV};
+use protocol::config::{self as shared, Loaded, MachineConfig, MachineMode, ENV};
 use std::{
     collections::BTreeMap,
     io,
@@ -54,7 +54,7 @@ pub struct Config {
     /// The most memory each GPU offers (`machine.gpu_memory_limit`).
     pub gpu_memory_limit: Option<u64>,
     /// How it shares its computer: `machine.mode`, else a rental dedicated and anything else shared.
-    pub mode: protocol::config::MachineMode,
+    pub mode: MachineMode,
     /// The provider's public mapping of this pod's ports, told to the Hub at boot.
     pub endpoint: Option<Endpoint>,
     /// The provider's names, for [`crate::machine::provider::ProviderSelf::take`].
@@ -71,11 +71,22 @@ pub fn load(lifetime: Lifetime) -> io::Result<Config> {
     from_loaded(lifetime, loaded, shared::environment())
 }
 
-/// `machine.gpu_memory_limit` as config.toml says it now. The service reads it at each start:
-/// it is forked from a parent that loaded the config before an update wrote the limit.
-pub fn gpu_memory_limit() -> io::Result<Option<u64>> {
+/// `machine.gpu_memory_limit` and `machine.mode` as config.toml says them now. The service reads
+/// them at each start: it is forked from a parent that loaded the config before an update wrote
+/// the limit or a hand edit the mode.
+pub fn reread(config: &mut Config) -> io::Result<()> {
     let loaded = shared::load().map_err(|e| invalid(&named(&e.message)))?;
-    Ok(loaded.config.machine.gpu_memory_limit)
+    config.gpu_memory_limit = loaded.config.machine.gpu_memory_limit;
+    config.mode = mode(config.grant.lifetime, &loaded.config.machine);
+    Ok(())
+}
+
+/// `machine.mode`, else a rental dedicated and anything else shared.
+fn mode(lifetime: Lifetime, machine: &MachineConfig) -> MachineMode {
+    machine.mode.unwrap_or(match lifetime {
+        Lifetime::Rental => MachineMode::Dedicated,
+        Lifetime::Local => MachineMode::Shared,
+    })
 }
 
 /// Takes the readiness key out of the environment, so nothing this machine starts inherits it.
@@ -113,10 +124,7 @@ fn from_loaded(lifetime: Lifetime, loaded: Loaded, environment: &BTreeMap<String
         logs: grant.layout.state.join("logs"),
         visible_devices: machine.visible_devices.clone(),
         gpu_memory_limit: machine.gpu_memory_limit,
-        mode: machine.mode.unwrap_or(match rental {
-            true => protocol::config::MachineMode::Dedicated,
-            false => protocol::config::MachineMode::Shared,
-        }),
+        mode: mode(lifetime, machine),
         endpoint: rental.then(|| crate::machine::endpoint::from_env(provider.clone())).flatten(),
         provider,
         grant,

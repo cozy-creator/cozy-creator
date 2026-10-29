@@ -1426,27 +1426,16 @@ impl Pool {
     pub fn end_generation(&self, identity: &str) {
         self.end_idle_of(|generation| generation == identity);
     }
-    /// This computer's machine idle a while: every idle executor and import-only parent ends, so
-    /// their CUDA contexts and RAM go back with their owning processes.
+    /// This computer's machine idle a while: every idle executor ends, so its CUDA context and
+    /// memory go back with its process. Import-only parents (host memory, no GPU) stay until the
+    /// machine's idle exit, so a package used in the last quarter hour forks without importing.
     /// Warm sets stay declared: the next call's pass brings them back.
     pub fn release_idle(&self) {
-        self.end_idle_of(|_| true);
+        self.end_idle_executors(|_| true);
     }
     /// Every idle executor and import-only parent of the generations `which` names ends.
     fn end_idle_of(&self, which: impl Fn(&str) -> bool) {
-        let lanes: Vec<(String, usize, u32)> = {
-            let sessions = self.sessions.lock().unwrap();
-            let idle = sessions.values().filter(|s| which(&s.generation));
-            idle.map(|s| (s.plan.clone(), s.start, s.degree)).collect()
-        };
-        for (plan, start, degree) in lanes {
-            let Some(permit) = self.allocations.upkeep(start..start + degree as usize) else {
-                continue;
-            };
-            self.end_session(&session_key(&plan, start));
-            drop(permit);
-        }
-        while self.end_idle_deviceless(|session| which(&session.generation)) {}
+        self.end_idle_executors(&which);
         let parents: Vec<Arc<Zygote>> = {
             let mut zygotes = self.zygotes.lock().unwrap();
             let ended: Vec<App> = zygotes
@@ -1463,6 +1452,22 @@ impl Pool {
                 }
             }
         }
+    }
+    /// Every idle executor of the generations `which` names ends.
+    fn end_idle_executors(&self, which: impl Fn(&str) -> bool) {
+        let lanes: Vec<(String, usize, u32)> = {
+            let sessions = self.sessions.lock().unwrap();
+            let idle = sessions.values().filter(|s| which(&s.generation));
+            idle.map(|s| (s.plan.clone(), s.start, s.degree)).collect()
+        };
+        for (plan, start, degree) in lanes {
+            let Some(permit) = self.allocations.upkeep(start..start + degree as usize) else {
+                continue;
+            };
+            self.end_session(&session_key(&plan, start));
+            drop(permit);
+        }
+        while self.end_idle_deviceless(|session| which(&session.generation)) {}
     }
     /// One pass over `actor`'s warm set: each member is brought as far toward its level as
     /// free room and the room of idle tenants outside every warm set allow. It never takes
