@@ -217,6 +217,20 @@ impl Client {
         self.json(request.json(&json!({"source": source}))).await
     }
 
+    /// Records commit `sha256:<hex>` (its tree, `length` bytes) as a commit of org/name: the Hub
+    /// takes it when the account may read its whole closure, so nothing uploads.
+    pub async fn create_model_commit(
+        &self,
+        org: &str,
+        name: &str,
+        commit: &str,
+        length: i64,
+    ) -> Result<ModelCommit, Error> {
+        let request = self.at(Method::POST, "/v1/models/{org}/{name}/commits", &[org, name]);
+        let sha256 = commit.trim_start_matches("sha256:");
+        self.json(request.json(&json!({"commit": {"sha256": sha256, "length": length}}))).await
+    }
+
     /// Claims a parked org: its code and where to post it, until a handle's page shows it.
     pub async fn claim_org(&self, org: &str) -> Result<OrgClaim, Error> {
         self.json(self.at(Method::POST, "/v1/orgs/{org}/claim", &[org]))
