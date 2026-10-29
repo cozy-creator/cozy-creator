@@ -35,6 +35,8 @@ pub struct MachineIdentity {
     pub gpus: Vec<receipt::Gpu>,
     /// The most memory each of them offers (`machine.gpu_memory_limit`).
     pub gpu_memory_limit: Option<u64>,
+    /// `shared` or `dedicated` (`machine.mode`, else by its lifetime).
+    pub mode: &'static str,
 }
 
 impl MachineIdentity {
@@ -67,6 +69,7 @@ impl MachineIdentity {
             store: None,
             gpus: vec![],
             gpu_memory_limit: None,
+            mode: "",
             webrtc: None,
             player: Default::default(),
             webrtc_port: None,

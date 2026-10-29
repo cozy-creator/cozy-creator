@@ -87,11 +87,8 @@ fn run(lifetime: Lifetime, service_ready: Option<u64>) -> io::Result<()> {
     #[cfg(unix)]
     let ready = supervise::supervise(&paths, grant.provider.clone())?;
     // The service: why it fails reaches its parent's rollback reason.
-    config::gpu_memory_limit()
-        .and_then(|limit| {
-            config.gpu_memory_limit = limit;
-            run_machine(config, ready)
-        })
+    config::reread(&mut config)
+        .and_then(|()| run_machine(config, ready))
         .inspect_err(|error| update::service_failed(&paths, error))
 }
 
@@ -149,7 +146,7 @@ pub fn version() -> io::Result<()> {
 /// Runs the machine from its grant: identity and readiness under the machine root, the engine
 /// under `var/lib/cozy/tensord`, the API on the granted port.
 fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Ready) -> io::Result<()> {
-    let config::Config { mut grant, visible_devices, gpu_memory_limit, endpoint, logs, .. } = config;
+    let config::Config { mut grant, visible_devices, gpu_memory_limit, mode, endpoint, logs, .. } = config;
     let runtime = machine_runtime()?;
     use crate::machine::{identity, receipt};
     let layout = grant.layout.clone();
@@ -249,6 +246,7 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     }
     identity.gpus = gpus.clone();
     identity.gpu_memory_limit = gpu_memory_limit;
+    identity.mode = mode.name();
     boot.at("pool");
     {
         let devices: Vec<String> = gpus.iter().map(|g| g.device_index.to_string()).collect();
@@ -260,8 +258,8 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
             "authorized_device_limit_bytes": null,
             "gpu_memory_limit": gpu_memory_limit,
             "environment": {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": home, "COZY_HOME": home},
-            // A rented pod is the machine's alone (its grant says so); anywhere else it is a guest.
-            "host": {"mode": if rental { "dedicated" } else { "shared" }},
+            // `machine.mode`, else a rented pod is the machine's alone and anywhere else it is a guest.
+            "host": {"mode": mode.name()},
             "image_kernels": (!gpus.is_empty()).then(|| image_kernels(&layout.root, &paths.sdk())).flatten(),
             "toolchain": crate::machine::toolchain::dir(&engine),
         });

@@ -3,7 +3,7 @@
 //! residency in each executor. TensorD schedules calls with GPU permits, offloads
 //! idle executors, and observes exact process exit. Engine owns
 //! acceptance and run custody.
-use platform::contain::host_memory;
+use platform::contain::{host_memory, host_pressure::HostMode};
 use platform::process::{Birth, Exact};
 use crate::{
     catalog::HeldGeneration,
@@ -83,7 +83,7 @@ pub struct HostOptions {
     /// `shared` (the default): a guest that gives memory back whenever anything on the host
     /// stalls on it; `dedicated` (a rented pod's image or grant): only when this cgroup does.
     #[serde(default)]
-    pub mode: platform::contain::host_pressure::HostMode,
+    pub mode: HostMode,
 }
 
 /// Root-sealed configuration, never peer-controlled paths or environment logic switches.
@@ -540,6 +540,8 @@ struct Zygote {
     children: Mutex<Vec<Birth>>,
     /// Its last fork (or its start): childless parents end least recently used first.
     used: Mutex<Option<Instant>>,
+    /// It forked a request's executor: imported ahead of a request no more, but used.
+    served: std::sync::atomic::AtomicBool,
 }
 #[derive(Default)]
 enum ZygoteState {
@@ -589,6 +591,7 @@ impl Zygote {
             Forked::Ready(child) => {
                 self.children.lock().unwrap().push(child.birth.clone());
                 *self.used.lock().unwrap() = Some(Instant::now());
+                self.served.store(true, Ordering::Release);
             }
             Forked::Lost(..) => {
                 // Its children ended with it; the pool replaces it (`new_session`).
@@ -1423,27 +1426,16 @@ impl Pool {
     pub fn end_generation(&self, identity: &str) {
         self.end_idle_of(|generation| generation == identity);
     }
-    /// This computer's machine idle a while: every idle executor and import-only parent ends, so
-    /// their CUDA contexts and RAM go back with their owning processes.
+    /// This computer's machine idle a while: every idle executor ends, so its CUDA context and
+    /// memory go back with its process. Import-only parents (host memory, no GPU) stay until the
+    /// machine's idle exit, so a package used in the last quarter hour forks without importing.
     /// Warm sets stay declared: the next call's pass brings them back.
     pub fn release_idle(&self) {
-        self.end_idle_of(|_| true);
+        self.end_idle_executors(|_| true);
     }
     /// Every idle executor and import-only parent of the generations `which` names ends.
     fn end_idle_of(&self, which: impl Fn(&str) -> bool) {
-        let lanes: Vec<(String, usize, u32)> = {
-            let sessions = self.sessions.lock().unwrap();
-            let idle = sessions.values().filter(|s| which(&s.generation));
-            idle.map(|s| (s.plan.clone(), s.start, s.degree)).collect()
-        };
-        for (plan, start, degree) in lanes {
-            let Some(permit) = self.allocations.upkeep(start..start + degree as usize) else {
-                continue;
-            };
-            self.end_session(&session_key(&plan, start));
-            drop(permit);
-        }
-        while self.end_idle_deviceless(|session| which(&session.generation)) {}
+        self.end_idle_executors(&which);
         let parents: Vec<Arc<Zygote>> = {
             let mut zygotes = self.zygotes.lock().unwrap();
             let ended: Vec<App> = zygotes
@@ -1460,6 +1452,22 @@ impl Pool {
                 }
             }
         }
+    }
+    /// Every idle executor of the generations `which` names ends.
+    fn end_idle_executors(&self, which: impl Fn(&str) -> bool) {
+        let lanes: Vec<(String, usize, u32)> = {
+            let sessions = self.sessions.lock().unwrap();
+            let idle = sessions.values().filter(|s| which(&s.generation));
+            idle.map(|s| (s.plan.clone(), s.start, s.degree)).collect()
+        };
+        for (plan, start, degree) in lanes {
+            let Some(permit) = self.allocations.upkeep(start..start + degree as usize) else {
+                continue;
+            };
+            self.end_session(&session_key(&plan, start));
+            drop(permit);
+        }
+        while self.end_idle_deviceless(|session| which(&session.generation)) {}
     }
     /// One pass over `actor`'s warm set: each member is brought as far toward its level as
     /// free room and the room of idle tenants outside every warm set allow. It never takes
@@ -2706,11 +2714,40 @@ impl Pool {
         }
     }
 
+    /// A generation installed: its kernels compile (niced) and its import-only parent imports.
+    /// A shared machine keeps one parent imported ahead of a request: this one replaces any other
+    /// that never served one (Paul, 10-29: a laptop must not hold half its RAM for packages it
+    /// is not using). A parent a request used stays until the machine's idle exit.
+    pub fn installed(self: &Arc<Self>, held: HeldGeneration) {
+        self.kernel_boot(held.clone());
+        if self.config.host.mode == HostMode::Shared {
+            let key = parent_app(&held);
+            let idle: Vec<Arc<Zygote>> = {
+                let mut zygotes = self.zygotes.lock().unwrap();
+                let ahead = |z: &Zygote| z.childless() && !z.served.load(Ordering::Acquire);
+                let others: Vec<App> = zygotes.iter().filter(|(app, z)| **app != key && ahead(z)).map(|(app, _)| app.clone()).collect();
+                others.iter().filter_map(|app| zygotes.remove(app)).collect()
+            };
+            for zygote in idle {
+                if let ZygoteState::Ready(parent) = std::mem::take(&mut *zygote.state.lock().unwrap()) {
+                    if let Err(error) = parent.terminate() {
+                        tracing::warn!("ending an idle import-only executor: {error}");
+                    }
+                }
+            }
+        }
+        self.prespawn(held);
+    }
+
     /// The machine's installed environments `held`, the most recently used first: each one's
     /// import-only parent imports in turn, off the caller's thread, while the host keeps half its
     /// memory free with one more parent ([`PARENT_BYTES`]). A short host ends idle parents least
-    /// recently used first (`host_short`), as ever.
+    /// recently used first (`host_short`), as ever. A shared machine imports none: it starts
+    /// because a command ran, and that command imports what it needs.
     pub fn import_recent(self: &Arc<Self>, held: Vec<HeldGeneration>) {
+        if self.config.host.mode == HostMode::Shared {
+            return;
+        }
         let pool = Arc::downgrade(self);
         let started = std::thread::Builder::new().name("import-installed".into()).spawn(move || {
             for held in held {
