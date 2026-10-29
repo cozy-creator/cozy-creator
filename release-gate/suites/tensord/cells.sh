@@ -62,15 +62,16 @@ fi
 busy=(); for i in $(seq "${NGPU:-1}"); do busy+=("$(submit "sdxl/generate@$NEW" prompt="$SCENE, the long run $i" steps:=60 seed:=$((R + 50 + i)))"); done
 a=${busy[0]}
 b=$(submit "sdxl/generate@$NEW" prompt="$OBJECT, the queued run" steps:=60 seed:=$((R + 35)))
-until_status "$a" in_progress; qb=$(get "$b" machine_state); [ -n "$qb" ] || qb=$(get "$b" status)  # queued: at Calcifer, or accepted and queued on the machine
+until_status "$a" in_progress; qb=$(get "$b" machine_state); [ -n "$qb" ] || qb=$(get "$b" status)  # where it waits: Calcifer, preparing, queued
 "$CLI" run cancel "$b" -y > "$T/cancel-queued.log" 2>&1; until_status "$b" terminal
 for x in "${busy[@]}"; do "$CLI" run cancel "$x" -y > "$T/cancel-running-$x.log" 2>&1; done
 for x in "${busy[@]}"; do until_status "$x" terminal; done
 c=$(submit "sdxl/generate@$NEW" prompt="$CHAR, the landed run" seed:=$((R + 36))); until_status "$c" terminal
 f=$(get "$c" output) want=$(get "$c" length)
-if [ "$qb" = queued ] && [ "$(get "$b" status)" = canceled ] && [ -z "$(get "$b" ms)" ] && [ "$(get "$a" status)" = canceled ] \
+# The property is that b never executes: it waits (at Calcifer, preparing or queued on the machine), cancels, ran 0 ms.
+if [ "$qb" != running ] && [ "$(get "$b" status)" = canceled ] && [ -z "$(get "$b" ms)" ] && [ "$(get "$a" status)" = canceled ] \
    && [ "$(get "$c" status)" = completed ] && [ -n "$f" ] && [ "$(stat -c %s "$f")" = "$want" ]; then
-  expect tensord-run-lifecycle PASS "run $b queued behind $a and canceled unrun; $a canceled running; $c's $want bytes landed"
+  expect tensord-run-lifecycle PASS "run $b waited (${qb}) behind $a and canceled unrun; $a canceled running; $c's $want bytes landed"
 else
   ran=$(get "$b" ms)
   expect tensord-run-lifecycle FAIL "run $b was ${qb:-?} then $(get "$b" status) (ran ${ran:-0} ms); $a $(get "$a" status); $c $(get "$c" status), landed ${f:-nothing} ($(stat -c %s "$f" 2>/dev/null || echo 0) of ${want:-?} bytes)"
