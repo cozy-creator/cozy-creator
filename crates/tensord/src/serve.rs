@@ -87,11 +87,8 @@ fn run(lifetime: Lifetime, service_ready: Option<u64>) -> io::Result<()> {
     #[cfg(unix)]
     let ready = supervise::supervise(&paths, grant.provider.clone())?;
     // The service: why it fails reaches its parent's rollback reason.
-    config::gpu_memory_limit()
-        .and_then(|limit| {
-            config.gpu_memory_limit = limit;
-            run_machine(config, ready)
-        })
+    config::reread(&mut config)
+        .and_then(|()| run_machine(config, ready))
         .inspect_err(|error| update::service_failed(&paths, error))
 }
 
