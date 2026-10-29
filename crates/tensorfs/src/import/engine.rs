@@ -23,10 +23,11 @@ macro_rules! table {
 }
 
 /// The built-in tables.
-pub const TABLES: [&str; 10] = [
+pub const TABLES: [&str; 11] = [
     table!("sdxl.single_file"),
     table!("anima.single_file"),
     table!("h3.native"),
+    table!("h3.comfy"),
     table!("h3.lora"),
     table!("sdxl.lora"),
     table!("krea2.lora"),

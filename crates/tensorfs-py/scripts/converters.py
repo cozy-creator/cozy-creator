@@ -358,8 +358,11 @@ def h3_index(rows: int) -> torch.Tensor:
     return torch.arange(rows).reshape(rows, 1)
 
 
-def h3_native(h3: Any) -> tuple[dict[str, Any], dict[str, tuple[str, tuple[int, ...]]]]:
-    """The native transformer table, and the native header (for the LoRA)."""
+def h3_native(h3: Any, comfy: bool = False) -> tuple[dict[str, Any], dict[str, tuple[str, tuple[int, ...]]]]:
+    """The native transformer table, and the native header (for the LoRA). `comfy`: ComfyUI's
+    layout of the same keys, which holds each fused qkv as [q_all; k_all; v_all]
+    (comfy/ldm/minimax/model.py splits it contiguously, and nothing reorders it on load) where the
+    official shards interleave it per head; everything else is the same."""
     config = h3.MINIMAX_H3_TRANSFORMER_CONFIG
     heads, head_dim = config["num_attention_heads"], config["attention_head_dim"]
     from diffusers import MiniMaxH3Transformer3DModel
@@ -378,7 +381,8 @@ def h3_native(h3: Any) -> tuple[dict[str, Any], dict[str, tuple[str, tuple[int, 
     for key, (_, shape) in source.items():
         stand_in = h3_index(shape[0]) if len(shape) > 1 else torch.arange(shape[0])
         if key.endswith(".attn.qkv_proj.weight"):
-            stand_in = h3.reorder_interleaved_qkv(stand_in, heads, head_dim)
+            if not comfy:
+                stand_in = h3.reorder_interleaved_qkv(stand_in, heads, head_dim)
             norm = key.replace("qkv_proj.weight", "q_norm.weight")
             expect[norm] = [head_dim]
             assert source[norm][1] == (head_dim,), norm
@@ -393,8 +397,14 @@ def h3_native(h3: Any) -> tuple[dict[str, Any], dict[str, tuple[str, tuple[int, 
             got = apply(np.zeros(shape, np.int8), ops) if ops else np.zeros(shape, np.int8)
             assert got.shape == census[target], (target, got.shape, census[target])
     assert sorted(mapped) == sorted(census), "targets are not the transformer's census"
+    rows = [mapped[k] for k in census]
+    if comfy:
+        # ComfyUI saves a DiT alone under its checkpoint prefix (Singularity V2).
+        component = {"name": "transformer", "prefix": "model.diffusion_model.",
+                     "drop": sorted(dropped), "expect": dict(sorted(expect.items())), "rows": rows}
+        return {"name": "h3.comfy", "reference": H3_REFERENCE, "components": [component]}, source
     component = {"name": "transformer", "folders": {"FL2VA/transformer": "transformer", "Ref2VA/transformer": "transformer_ref"},
-                 "drop": sorted(dropped), "expect": dict(sorted(expect.items())), "rows": [mapped[k] for k in census]}
+                 "drop": sorted(dropped), "expect": dict(sorted(expect.items())), "rows": rows}
     return {"name": "h3.native", "reference": H3_REFERENCE, "components": [component]}, source
 
 
@@ -848,6 +858,7 @@ def generate() -> dict[str, dict[str, Any]]:
         "sdxl.single_file": sdxl,
         "anima.single_file": anima,
         "h3.native": native,
+        "h3.comfy": h3_native(h3, comfy=True)[0],
         "h3.lora": h3_lora(h3, source),
         "sdxl.lora": sdxl_lora(sdxl, layers, unet),
         "krea2.lora": krea2_lora(),
