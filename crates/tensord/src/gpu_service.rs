@@ -238,6 +238,12 @@ impl Plan {
         }
         Ok(plan)
     }
+    /// The request's weight precision (`PrepareRequest::bits`): its main model's lane width, the
+    /// first slot built up front (the one `--lane` names). At 16 the Runtime attends exactly. Read
+    /// from the slot's precision family, which a plan journaled by an earlier TensorD carries too.
+    pub fn bits(&self) -> u32 {
+        self.slots.iter().find(|slot| !slot.on_demand).map_or(0, |slot| crate::precision::bits(&slot.precision))
+    }
     pub fn selections(&self) -> Vec<SelectedManifest> {
         merged(&self.slots)
     }
@@ -649,7 +655,7 @@ fn prepare_request(record: &Execution, plan: &Plan) -> PrepareRequest {
         entrypoint: plan.entrypoint.clone(),
         payload: protocol::executor::Json(record.invocation.input.clone()),
         attention_kernel: record.invocation.attention_kernel.clone(),
-        bits: 0,
+        bits: plan.bits(),
         input_metadata: record.invocation.inputs.iter().map(|i| (i.input_id.clone(), InputMetadata {
             input_id: i.input_id.clone(), media_type: i.media_type.clone(), digest: i.digest.clone(),
             length: i.length, order: i.order.into(),
@@ -3388,7 +3394,7 @@ impl Pool {
                 spool: spool.clone(),
                 deadline_s: None,
                 attention_kernel: record.invocation.attention_kernel.clone(),
-                bits: 0,
+                bits: plan.bits(),
                 inputs: inputs.inputs,
                 trees: inputs.trees,
                 sources: plan.sources.iter().map(|s| (s.parameter.clone(), s.manifest.clone())).collect(),
