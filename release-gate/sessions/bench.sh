@@ -75,7 +75,7 @@ T=900 pod "command -v ffprobe >/dev/null || { apt-get update -qq && apt-get inst
   < /dev/null >> "$R" 2>&1 || fail "no ffmpeg on the pod"
 # One detached plan on the pod: a dropped SSH connection or a lost runner leaves it running, and the rental ends itself
 # 15 min after the plan stops making progress.
-plan="cd /root/bench && { python3 bench.py setup --models $(IFS=,; echo "${models[*]}") --sku $SKU --session $S && {"
+plan="cd /root/bench && { python3 bench.py setup --models $(IFS=,; echo "${models[*]}") --arms $ARMS --sku $SKU --session $S && {"
 for m in "${models[@]}"; do
   plan="$plan python3 bench.py cell --model $m --tiers $TIERS --arms $ARMS --free-mib $(free_of "$m") --ram-free-gib $RAM --sku $SKU --session $S ${there[*]};"
 done
