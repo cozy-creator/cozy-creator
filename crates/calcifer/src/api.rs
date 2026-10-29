@@ -191,7 +191,7 @@ impl From<crate::Error> for Refusal {
                 "machine_not_found",
                 format!("no machine named {name:?}"),
             )
-            .next("cozy machine list"),
+            .next("cozy machine ls"),
             crate::Error::Store(e) => Error::new(Kind::Internal, "calcifer_store", e.to_string()),
             crate::Error::Invalid(message) => Error::new(Kind::Validation, "run_invalid", message),
             e @ crate::Error::Input { .. } => {
@@ -369,7 +369,7 @@ pub(crate) fn find(api: &Api, key: &str) -> Result<RunRow, Refusal> {
     row.ok_or_else(|| {
         Refusal(
             Error::new(Kind::NotFound, "run_not_found", format!("no run {key}"))
-                .next("cozy run list"),
+                .next("cozy run ls"),
         )
     })
 }

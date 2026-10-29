@@ -2,7 +2,7 @@
 use std::process::ExitCode;
 
 use clap::{ArgGroup, Subcommand};
-use protocol::error::Error;
+use protocol::error::{Error, Kind};
 
 use crate::Context;
 
@@ -21,14 +21,14 @@ pub struct Args {
 
 #[derive(Subcommand, Debug)]
 enum Verb {
-    /// Search the Hub's models: one row per model with its newest release.
-    Search(Search),
+    /// The Hub's models you can see, one row each with its newest release: public ones, and your
+    /// own and your orgs' while private (no release yet). Words search; `--on` lists what machines
+    /// hold instead.
+    Ls(Ls),
     /// A model's releases and their lanes; to its org's members, every commit too.
     Info(Info),
     /// Set or clear a model's discovery family.
     Family(Family),
-    /// The models machines hold.
-    List(List),
     /// Make a model present in a machine's store. Follows it to its end; Ctrl-C stops following, never the work.
     Download(Download),
     /// Make a model on a machine, or take a run's weights output (run:N), and upload it as a new
@@ -45,8 +45,8 @@ enum Verb {
 }
 
 #[derive(clap::Args, Debug)]
-pub(crate) struct Search {
-    /// Search text, or an exact org/name.
+pub(crate) struct Ls {
+    /// Search text, or an exact org/name; none lists every model you can see.
     query: Vec<String>,
     /// Only models of this discovery family.
     #[arg(long)]
@@ -54,6 +54,9 @@ pub(crate) struct Search {
     /// At most this many models (1–100).
     #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u32).range(1..=100))]
     limit: u32,
+    /// What machines hold instead of the Hub's models: `local`, a machine's name, or `all`.
+    #[arg(long, value_name = "MACHINE")]
+    on: Option<String>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -72,13 +75,6 @@ pub(crate) struct Family {
     /// Clear the family.
     #[arg(long)]
     clear: bool,
-}
-
-#[derive(clap::Args, Debug)]
-pub(crate) struct List {
-    /// Only this machine; default: every machine.
-    #[arg(long, value_name = "MACHINE")]
-    on: Option<String>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -148,12 +144,21 @@ pub(crate) struct Delete {
 
 pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     match args.verb {
-        Verb::Search(args) => catalog::search(ctx, args).await,
+        Verb::Ls(args) => match args.on {
+            Some(on) if args.query.is_empty() && args.family.is_none() => {
+                machine::list(ctx, (on != "all").then_some(on)).await
+            }
+            Some(_) => Err(Error::new(
+                Kind::Usage,
+                "model_ls_on_query",
+                "--on lists what machines hold; words and --family search the Hub",
+            )),
+            None => catalog::search(ctx, args).await,
+        },
         Verb::Info(args) => catalog::info(ctx, args).await,
         Verb::Family(args) => catalog::family(ctx, args).await,
         Verb::Publish(args) => releases::publish(ctx, args).await,
         Verb::Delete(args) => releases::delete(ctx, args).await,
-        Verb::List(args) => machine::list(ctx, args).await,
         Verb::Download(args) => machine::download(ctx, args).await,
         Verb::Upload(args) => machine::upload(ctx, args).await,
         Verb::Quantize(args) => quantize::quantize(ctx, args).await,

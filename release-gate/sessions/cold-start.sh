@@ -171,7 +171,7 @@ for i in "${!names[@]}"; do
     if [ "$wait" != now ]; then
       level=''
       for t in $(seq 1 120); do
-        level=$(cozy package list --on "$NAME" --json 2>/dev/null | jq -r --arg p "$pkg" '[.packages[] | select(.package == $p or .package == "_/" + $p) | .level] | first // empty')
+        level=$(cozy package ls --on "$NAME" --json 2>/dev/null | jq -r --arg p "$pkg" '[.packages[] | select(.package == $p or .package == "_/" + $p) | .level] | first // empty')
         [ "$level" = imported ] && break
         sleep 2
       done

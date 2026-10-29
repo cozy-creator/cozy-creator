@@ -632,7 +632,7 @@ impl Events {
                             ),
                         )
                         .remedy("the run is still recorded")
-                        .next("cozy run list")));
+                        .next("cozy run ls")));
                     }
                 }
             }

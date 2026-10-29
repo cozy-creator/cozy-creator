@@ -138,7 +138,7 @@ fn absent(error: Error, what: &str) -> Error {
     )
     .cause(error.code)
     .next(format!(
-        "cozy package search {}",
+        "cozy package ls {}",
         name.rsplit('/').next().unwrap_or(name)
     ))
 }

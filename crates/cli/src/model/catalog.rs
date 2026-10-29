@@ -1,5 +1,5 @@
-//! `cozy model search|info|family`: the Hub's model catalog. Signed in, `search` also finds the
-//! user's own unreleased (private) models and `info` lists the commits of a model of the user's org.
+//! `cozy model ls|info|family`: the Hub's model catalog. Signed in, `ls` also lists the user's own
+//! unreleased (private) models and `info` lists the commits of a model of the user's org.
 use std::collections::BTreeMap;
 use std::process::ExitCode;
 
@@ -8,7 +8,7 @@ use hub_client::types::{ModelCard, ModelLaneProvenance};
 use serde::Serialize;
 
 use super::refs::{ModelRef, Repo};
-use super::{Family, Info, Search};
+use super::{Family, Info, Ls};
 use crate::Context;
 use crate::context::hub_answer;
 use crate::output::{self, Record, Table};
@@ -48,7 +48,7 @@ fn found(card: &ModelCard) -> Found {
     }
 }
 
-pub(crate) async fn search(ctx: &Context, args: Search) -> Result<ExitCode, Error> {
+pub(crate) async fn search(ctx: &Context, args: Ls) -> Result<ExitCode, Error> {
     // Signed in, the Hub adds the user's own private models.
     let client = ctx.hub_client(ctx.hub())?;
     let exact = match (&args.family, args.query.as_slice()) {
@@ -101,7 +101,7 @@ pub(crate) async fn search(ctx: &Context, args: Search) -> Result<ExitCode, Erro
     table.print();
     match view.models.first() {
         Some(first) => output::next(ctx, &[&format!("cozy model info {}", first.model)]),
-        None => output::next(ctx, &["cozy model search"]),
+        None => output::next(ctx, &["cozy model ls"]),
     }
     Ok(ExitCode::SUCCESS)
 }

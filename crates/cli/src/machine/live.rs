@@ -1,4 +1,4 @@
-//! `cozy machine list` as a live view (`crate::tui`), fed by Calcifer's machine events.
+//! `cozy machine ls` as a live view (`crate::tui`), fed by Calcifer's machine events.
 use protocol::{
     calcifer::{Machine, MachineList, MachineState, MachinesEvent},
     error::Error,
@@ -67,7 +67,7 @@ impl Following {
     }
 }
 
-/// Every machine as `cozy machine list` shows it, kept as Calcifer says it changes.
+/// Every machine as `cozy machine ls` shows it, kept as Calcifer says it changes.
 pub(crate) struct Machines {
     list: MachineList,
     watch: Watch<MachinesEvent>,

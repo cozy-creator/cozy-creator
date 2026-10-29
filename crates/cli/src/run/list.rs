@@ -1,4 +1,4 @@
-//! `cozy run list`: every run, newest first: a live view on a terminal, else a table or
+//! `cozy run ls`: every run, newest first: a live view on a terminal, else a table or
 //! JSON.
 use std::process::ExitCode;
 
@@ -54,7 +54,7 @@ pub async fn exec(ctx: &Context, mut query: Query) -> Result<ExitCode, Error> {
     }
     if list.older > 0 {
         table = table.note(format!(
-            "{} older runs: cozy run list --limit 0",
+            "{} older runs: cozy run ls --limit 0",
             list.older
         ));
     }

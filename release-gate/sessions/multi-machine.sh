@@ -61,7 +61,7 @@ else
 fi
 for i in 0 ${B:+1}; do jq -e '.rental.ssh // empty' "$OUT/show$i.json" > /dev/null || fail "rental $i has no ssh address"; done
 if [ -n "$B" ]; then
-  watcher machine list --json > "$OUT/watcher-list.json"
+  watcher machine ls --json > "$OUT/watcher-list.json"
   jq -e --arg r "$(jq -r .rental_id "$OUT/show1.json")" '.machines[] | select(.rental_id == $r and .recorded == false and .state == "ready")' \
     "$OUT/watcher-list.json" > /dev/null || fail "the second controller does not list B: $(head -c 300 "$OUT/watcher-list.json")"
 fi
@@ -199,7 +199,7 @@ if has c; then
 # c. Mixed versions, both ways.
 update "$A" "$OLD" "$OLD"
 end_calcifer "$A"
-on "$A" c1-version 'cozy --version; cozy machine list' || fail "c1: cozy $OLD on A"
+on "$A" c1-version 'cozy --version; cozy machine ls' || fail "c1: cozy $OLD on A"
 [ "$(calcifer_on "$A")" = "$OLD" ] || fail "c1: A's Calcifer runs $(calcifer_on "$A"), not $OLD"
 on "$A" c1-run "cozy run sdxl/generate --on b prompt='a tin robot watering a bonsai, studio photo' seed:=$((SEED + 3))"
 completed "$A" c1-run || fail "c1: A on $OLD did not run on B on $NEW"
@@ -216,7 +216,7 @@ N=''; for _ in $(seq 1 90); do
 done
 [ -n "$N" ] || fail "c: the run from A's $OLD Calcifer never started: $(sh "$A" 'tail -3 /root/inflight.txt')"
 say "c: run $N from A's Calcifer on $OLD is running on B; the next command on A"
-on "$A" c-restart 'cozy machine list' || fail "c: the first command after the update"
+on "$A" c-restart 'cozy machine ls' || fail "c: the first command after the update"
 grep -q "restarting it on $NEW" "$OUT/c-restart.txt" || fail "c: the command did not restart Calcifer: $(head -3 "$OUT/c-restart.txt")"
 [ "$(calcifer_on "$A")" = "$NEW" ] || fail "c: A's Calcifer runs $(calcifer_on "$A") after the restart, not $NEW"
 on "$A" c-inflight "cozy run show $N"

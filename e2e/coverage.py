@@ -162,7 +162,7 @@ def hidden_in_source(src: str) -> set[str]:
 
 
 def manifest(path: str) -> dict[str, tuple[str, str]]:
-    """coverage.toml: `[command]` tables (`"run list"`), `test` for the command itself and one key per
+    """coverage.toml: `[command]` tables (`"run ls"`), `test` for the command itself and one key per
     flag, each `"tier: the step that tests it"`; `[global]` for the root's flags."""
     with open(path, "rb") as f:
         doc = tomllib.load(f)

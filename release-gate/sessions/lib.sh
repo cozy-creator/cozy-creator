@@ -16,7 +16,7 @@ param() { jq -r --arg k "$1" --arg d "${2-}" 'if has($k) then (.[$k] | if type =
 state() { cozy machine show "$1" --json 2>/dev/null | jq -r '.state // empty'; }
 # live <rental id>: listed and not ended; a list that does not answer counts as live.
 live() {
-  local j; j=$(cozy machine list --json 2>/dev/null) || return 0
+  local j; j=$(cozy machine ls --json 2>/dev/null) || return 0
   jq -e --arg r "$1" '.machines[] | select(.rental_id==$r and .state!="ended")' <<<"$j" >/dev/null
 }
 gone() { local s; s=$(state "$1"); { [ "$s" = ended ] || [ -z "$s" ]; } && ! live "$1"; }
@@ -35,7 +35,7 @@ finish() {
       fi
       tries=$((tries + 1)); sleep 10
     done
-    say "GONE $r: ended, and no live machine in cozy machine list holds it"
+    say "GONE $r: ended, and no live machine in cozy machine ls holds it"
   done
   say "RESULT $([ "$RC" = 0 ] && echo PASSED || echo FAILED)"
   exit "$RC"

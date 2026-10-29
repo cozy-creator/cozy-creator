@@ -29,7 +29,7 @@ settled() {
   wait "$begun" 2> /dev/null || true
 }
 # update_waiting <name>: `cozy machine update local --gpu-memory-limit off` (a restart) in the background, its pid in
-# $updating, until `machine show` and `run list` say it waits for run $n.
+# $updating, until `machine show` and `run ls` say it waits for run $n.
 update_waiting() {
   (cozy --json machine update local --gpu-memory-limit off -y > "$OUT/$1.update.json" 2>&1; echo $? > "$OUT/$1.update.code") &
   updating=$!
@@ -41,9 +41,9 @@ update_waiting() {
   done
   J --arg w "$said" '.status.update == $w' "$OUT/$1.machine.json" \
     || check "$1: machine show local never said \"$said\": $(jq -c .status.update "$OUT/$1.machine.json")"
-  cozy --json run list > "$OUT/$1.list.json" || true
+  cozy --json run ls > "$OUT/$1.list.json" || true
   J --arg w "$said" 'any(.runs[]; .kind == "update" and ((.waiting // "") | contains($w)))' "$OUT/$1.list.json" \
-    || check "$1: run list shows no update $said: $(jq -c '[.runs[] | select(.kind == "update") | .waiting]' "$OUT/$1.list.json")"
+    || check "$1: run ls shows no update $said: $(jq -c '[.runs[] | select(.kind == "update") | .waiting]' "$OUT/$1.list.json")"
 }
 # update_done <name>: the update's end (at most 5 min), and the machine ready after its restart.
 update_done() {

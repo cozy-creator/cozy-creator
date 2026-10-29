@@ -119,7 +119,7 @@ pub async fn end(ctx: &Context, name: &str, force: bool) -> Result<ExitCode, Err
         let burn: i64 = live.iter().map(|r| r.usd_micros_per_hour).sum();
         println!("Rentals running: {} · {}/hour now", live.len(), usd(burn));
     }
-    output::next(ctx, &["cozy machine list"]);
+    output::next(ctx, &["cozy machine ls"]);
     Ok(ExitCode::SUCCESS)
 }
 

@@ -33,7 +33,7 @@ pub struct Args {
 #[derive(Subcommand, Debug)]
 enum Verb {
     /// Every machine: this computer's, rentals and added ones; live on a terminal.
-    List,
+    Ls,
     /// One machine and what it reports of itself; live on a terminal while it lives.
     Show {
         /// A machine name or rental id.
@@ -113,7 +113,7 @@ enum Verb {
 
 pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     match args.verb {
-        Verb::List => list::list(ctx).await,
+        Verb::Ls => list::list(ctx).await,
         Verb::Show { name } => list::show(ctx, &name).await,
         Verb::Logs { name, query } => crate::daemon::machine_log(ctx, &name, &query).await,
         Verb::Rent(rent) => rent::exec(ctx, rent).await,
@@ -160,7 +160,7 @@ pub(crate) fn route(name: &str) -> Result<String, Error> {
             "machine_name_invalid",
             format!("{name:?} is not a machine name or rental id"),
         )
-        .next("cozy machine list"));
+        .next("cozy machine ls"));
     }
     Ok(format!("/v1/machines/{name}"))
 }
@@ -252,7 +252,7 @@ async fn ssh(ctx: &Context, name: &str, command: &[String]) -> Result<ExitCode, 
     }
 }
 
-/// The line `machine list` and `status` show where this OS runs no models itself (no `local`).
+/// The line `machine ls` and `status` show where this OS runs no models itself (no `local`).
 pub(crate) fn local_note() -> Option<String> {
     let off = protocol::calcifer::local_usable("local").err()?;
     Some(format!("{}: {}", off.message, off.remedy.unwrap_or_default()))

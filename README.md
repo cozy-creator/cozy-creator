@@ -48,7 +48,7 @@ Ctrl-C stops following, never the run, and `cozy run show <N>` picks it up again
 
 ```sh
 cozy machine rent            # what is for rent; then cozy machine rent <sku>
-cozy model search sdxl
+cozy model ls sdxl
 ```
 
 First-party packages and models have no owner (`sdxl/generate`, `flux-3-klein@0.1.0`); everyone
@@ -66,7 +66,7 @@ restarts a Calcifer that is stuck or runs an older cozy.
 
 ## Remove cozy
 
-End your rentals first (`cozy machine list`, `cozy machine end <name>`). Then:
+End your rentals first (`cozy machine ls`, `cozy machine end <name>`). Then:
 
 Linux:
 

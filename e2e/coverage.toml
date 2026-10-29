@@ -35,7 +35,7 @@ test = "pr: status, Calcifer and the local machine"
 [update]
 test = "pr: update, the candidate to the newest release"
 
-["machine list"]
+["machine ls"]
 test = "pr: machines"
 ["machine show"]
 test = "pr: machines"
@@ -69,15 +69,13 @@ test = "pr: local, refused as no rental (release-gate session multi-machine runs
 ["machine keepalive"]
 test = "release: rental, keepalive moves its idle deadline"
 
-["package search"]
+["package ls"]
 test = "pr: packages"
 "--limit" = "pr: packages"
+"--on" = "pr: packages"
 ["package info"]
 test = "pr: packages"
 ["package install"]
-test = "pr: packages"
-"--on" = "pr: packages"
-["package list"]
 test = "pr: packages"
 "--on" = "pr: packages"
 ["package remove"]
@@ -96,15 +94,13 @@ test = "release: throwaway package, yanked"
 ["package delete"]
 test = "release: throwaway package, deleted"
 
-["model search"]
+["model ls"]
 test = "pr: models"
 "--family" = "pr: models"
 "--limit" = "pr: models"
+"--on" = "pr: models"
 ["model info"]
 test = "pr: models"
-["model list"]
-test = "pr: models"
-"--on" = "pr: models"
 ["model download"]
 test = "pr: models"
 "--lane" = "pr: models"
@@ -143,12 +139,12 @@ test = "pr: a weightless request; BiRefNet on the CPU"
 ["run show"]
 test = "pr: a run followed, a snapshot, a cancel"
 "--once" = "pr: a run followed, a snapshot, a cancel"
-["run list"]
-test = "pr: run list filters"
-"--state" = "pr: run list filters"
-"--package" = "pr: run list filters"
-"--on" = "pr: run list filters"
-"--limit" = "pr: run list filters"
+["run ls"]
+test = "pr: run ls filters"
+"--state" = "pr: run ls filters"
+"--package" = "pr: run ls filters"
+"--on" = "pr: run ls filters"
+"--limit" = "pr: run ls filters"
 ["run cancel"]
 test = "pr: a run followed, a snapshot, a cancel"
 ["run play"]

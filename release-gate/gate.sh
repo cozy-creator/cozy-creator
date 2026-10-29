@@ -108,7 +108,7 @@ end_it() {
   if "$CLI" logs --help >/dev/null 2>&1; then "$CLI" logs calcifer; else "$CLI" machine logs local calcifer -n 0; fi >calcifer.log 2>&1
   [ -z "$ON" ] || { M=; return; }
   # `machine end` returns once the Hub affirms the pod gone.
-  "$CLI" machine end "$M" -y >end.log 2>&1 && ! "$CLI" machine list 2>/dev/null | grep -q "^$M " && { log "ended $M, gone"; M=; return; }
+  "$CLI" machine end "$M" -y >end.log 2>&1 && ! "$CLI" machine ls 2>/dev/null | grep -q "^$M " && { log "ended $M, gone"; M=; return; }
   log "WARNING $M still listed: $(tail -c 300 end.log)"
 }
 trap end_it EXIT

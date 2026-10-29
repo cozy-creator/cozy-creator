@@ -250,7 +250,7 @@ impl Table {
         self
     }
 
-    /// A line under the table, such as "12 more: cozy run list --before 40".
+    /// A line under the table, such as "12 more: cozy run ls --before 40".
     pub fn note(mut self, note: impl Into<String>) -> Self {
         self.notes.push(shown(&note.into()));
         self

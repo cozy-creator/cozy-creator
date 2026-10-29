@@ -1,4 +1,4 @@
-//! `cozy model list|download|upload`: models on machines. Download and upload are warm runs on
+//! `cozy model ls --on`, `download` and `upload`: models on machines. Download and upload are warm runs on
 //! the machine `--on` names. The machine fetches,
 //! makes and publishes the bytes itself, so no weight passes through this computer; a local file
 //! goes to the machine as the run's input.
@@ -14,7 +14,7 @@ use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
 use super::refs::{ModelRef, Repo};
-use super::{Download, List, Upload};
+use super::{Download, Upload};
 use crate::Context;
 use crate::output::{self, Record, Table};
 
@@ -229,8 +229,9 @@ struct Held {
 }
 
 /// What every machine holds (or the one `--on` names), from its latest Status through Calcifer.
-pub(crate) async fn list(ctx: &Context, args: List) -> Result<ExitCode, Error> {
-    let on = match &args.on {
+/// The models machines hold: `on` one, else every machine.
+pub(crate) async fn list(ctx: &Context, on: Option<String>) -> Result<ExitCode, Error> {
+    let on = match &on {
         Some(on) => Some(crate::machine::machine(ctx, on).await?.name),
         None => None,
     };
