@@ -257,7 +257,11 @@ async fn display(ctx: &Context, args: &Upload, destination: &str, offered: Optio
     }
     let repo = Repo::hub(destination)?;
     let client = ctx.hub_signed_in(ctx.hub())?;
-    hub_answer(client.set_model_display(&repo.org, &repo.name, trigger, args.strength.map(Some)).await)?;
+    // The upload stands either way; a Hub that predates display metadata answers 404.
+    if let Err(e) = hub_answer(client.set_model_display(&repo.org, &repo.name, trigger, args.strength.map(Some)).await) {
+        output::warn(&format!("{repo}: the Hub did not take the trigger and strength: {e}"));
+        return Ok(());
+    }
     let mut said = vec![];
     if let Some(trigger) = trigger {
         said.push(format!("trigger {trigger:?}"));

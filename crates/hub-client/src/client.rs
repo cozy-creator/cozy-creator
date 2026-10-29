@@ -222,7 +222,7 @@ impl Client {
         if let Some(strength) = strength {
             body.insert("strength".into(), json!(strength));
         }
-        let request = self.at(Method::PATCH, "/v1/models/{org}/{name}", &[org, name]);
+        let request = self.at(Method::PATCH, "/v1/models/{org}/{name}/display", &[org, name]);
         self.json(request.json(&body)).await
     }
 
