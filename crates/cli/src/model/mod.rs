@@ -104,7 +104,8 @@ pub(crate) struct Upload {
     source: String,
     /// The Hub model it becomes a commit of: org/name.
     destination: String,
-    /// The commit's lane, a label (bf16, fp8, int8-convrot, …).
+    /// The commit's lane, a label (bf16, fp8, int8-convrot, …); from a Hub model, the lane it
+    /// copies. A lane named bf16, fp16, int8, fp8, nvfp4, … must be the weights' width.
     #[arg(long, value_parser = refs::lane)]
     lane: String,
     /// The source file's convention: a reviewed TensorFS format, e.g. h3.lora; usually detected.
