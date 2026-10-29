@@ -1447,10 +1447,10 @@ impl Pool {
             .filter_map(|member| member.plan.as_ref().map(|plan| plan.construction.clone())).collect();
         self.end_idle_executors(|session| !members.contains(&session.plan));
     }
-    /// A warm set keeps something in memory here (a member at `imported` or above), so this
-    /// computer's machine stays up for it instead of exiting idle.
+    /// A warm set keeps something in memory here (a member at `imported` or above that binds a
+    /// model), so this computer's machine stays up for it instead of exiting idle.
     pub fn keeps_warm(&self) -> bool {
-        self.members.lock().unwrap().values().flatten().any(|member| member.level >= Level::Imported)
+        self.members.lock().unwrap().values().flatten().any(|member| member.level >= Level::Imported && member.plan.is_some())
     }
     /// This computer's machine idle its whole window but kept up (its controllers, a warm set): a
     /// shared machine's childless parents outside the warm sets end as they would with the process
@@ -2772,45 +2772,45 @@ impl Pool {
         self.prespawn(held);
     }
 
-    /// The machine started: the recorded import pages of its most recently used environments are
-    /// read ahead at the lowest priority while half the host's memory stays available, a shared
-    /// machine's few ([`SHARED_READ_AHEAD`]) and a dedicated one's all. Cache only: the kernel
-    /// takes it back whenever anything needs the memory.
-    pub fn read_ahead_recent(&self, held: &[HeldGeneration]) {
+    /// The recorded import pages of `held` (the most recently used first), read ahead at the lowest
+    /// priority: the first `few` while half the host's memory stays available. Cache only: the
+    /// kernel takes it back whenever anything needs the memory.
+    fn read_ahead(&self, held: impl IntoIterator<Item = HeldGeneration>, few: usize) {
         let half = host_memory::limit().map_or(i64::MAX, |limit| i64::try_from(limit / 2).unwrap_or(i64::MAX));
         let mut room = host_memory::read().available.saturating_sub(half);
-        let few = match self.config.host.mode {
-            HostMode::Shared => SHARED_READ_AHEAD,
-            HostMode::Dedicated => usize::MAX,
-        };
-        let fits = |held: &&HeldGeneration| {
+        let fits = |held: &HeldGeneration| {
             room = room.saturating_sub(i64::try_from(crate::import_pages::recorded(held)).unwrap_or(i64::MAX));
             room >= 0
         };
-        crate::import_pages::read_ahead_later(held.iter().take(few).take_while(fits).cloned().collect(), true);
+        crate::import_pages::read_ahead_later(held.into_iter().take(few).take_while(fits).collect());
     }
 
     /// The machine's installed environments `held`, the most recently used first: each one's
     /// import-only parent imports in turn, off the caller's thread, while the host keeps half its
-    /// memory free with one more parent ([`PARENT_BYTES`]). A short host ends idle parents least
-    /// recently used first (`host_short`), as ever. A shared machine imports none: it starts
-    /// because a command ran, and that command imports what it needs.
+    /// memory free with one more parent ([`PARENT_BYTES`]); the import pages of the rest are read
+    /// ahead while they fit. A short host ends idle parents least recently used first
+    /// (`host_short`), as ever. A shared machine imports none: it starts because a command ran, and
+    /// that command imports what it needs; it reads ahead its few most recently used environments'
+    /// pages ([`SHARED_READ_AHEAD`]), for that command's import and the next ones.
     pub fn import_recent(self: &Arc<Self>, held: Vec<HeldGeneration>) {
         if self.config.host.mode == HostMode::Shared {
+            self.read_ahead(held, SHARED_READ_AHEAD);
             return;
         }
         let pool = Arc::downgrade(self);
         let started = std::thread::Builder::new().name("import-installed".into()).spawn(move || {
-            for held in held {
+            let mut held = held.into_iter();
+            while let Some(next) = held.next() {
                 let Some(pool) = pool.upgrade() else { return };
                 let room = host_memory::read().available;
                 let half = host_memory::limit().map_or(i64::MAX, |limit| i64::try_from(limit / 2).unwrap_or(i64::MAX));
                 if room < 0 || room - PARENT_BYTES < half {
-                    pool.notes.note(serde_json::json!({"event": "import_installed", "stopped": held.record.identity, "available": room}));
+                    pool.notes.note(serde_json::json!({"event": "import_installed", "stopped": next.record.identity, "available": room}));
+                    pool.read_ahead(std::iter::once(next).chain(held), usize::MAX);
                     return;
                 }
-                let why = pool.import(&held);
-                pool.notes.note(serde_json::json!({"event": "import_installed", "generation": held.record.identity, "why": why}));
+                let why = pool.import(&next);
+                pool.notes.note(serde_json::json!({"event": "import_installed", "generation": next.record.identity, "why": why}));
             }
         });
         if let Err(error) = started {
@@ -2849,10 +2849,8 @@ impl Pool {
     }
 
     /// Brings `zygote` up as `held`'s import-only parent, and tells the engine it did (or failed).
-    /// Its environment's import pages are asked of the kernel as it starts; its first import
-    /// records them (`import_pages`).
+    /// Its first import records its environment's import pages (`import_pages`).
     fn start_parent(&self, zygote: &Zygote, held: &HeldGeneration) {
-        crate::import_pages::read_ahead_later(vec![held.clone()], false);
         zygote.set(self.import_only(held));
         if let Some(parent) = zygote.birth() {
             crate::import_pages::record_later(held, parent);
