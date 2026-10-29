@@ -861,7 +861,7 @@ impl Engine {
                     ..opts.clone()
                 };
                 // SAFETY: the staging slot is this engine's own and the source is the caller's (read's contract).
-                let stats = unsafe { host::fill(&[copy], &options) }.map_err(|e| Error {
+                let stats = unsafe { host::fill(&[copy], &options, None) }.map_err(|e| Error {
                     copy: job.copy,
                     source: e.source,
                 })?;
