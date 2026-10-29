@@ -37,10 +37,10 @@ enum Verb {
     /// Write a new commit in a lane from a commit or release, by the recipe a named package
     /// declares for that lane. Follows it to its end; Ctrl-C stops following, never the work.
     Quantize(Quantize),
-    /// Release commits as a version, public for good: one commit per lane, the version higher
-    /// than every earlier one.
+    /// Release commits as a version, public until you delete it: one commit per lane, the version
+    /// higher than every earlier one, deleted or not.
     Publish(Publish),
-    /// Delete a commit no release names, or the whole model.
+    /// Delete a release (its version is never reused), a commit no release names, or the whole model.
     Delete(Delete),
 }
 
@@ -141,7 +141,8 @@ pub(crate) struct Publish {
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct Delete {
-    /// org/name for the whole model, or org/name@sha256:<commit> for a commit no release names.
+    /// org/name for the whole model, org/name@<version> for one release, or org/name@sha256:<commit>
+    /// for a commit no release names.
     model: String,
 }
 

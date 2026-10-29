@@ -682,16 +682,18 @@ or source-tree layout.
 ## 7. Repo, store and origin
 
 ```
-{format: "cozytensors.repo/1", name: "<org>/<name>", releases: [{version, lanes: {lane: object-ref}}], commits: [object-ref]}
+{format: "cozytensors.repo/1", name: "<org>/<name>", releases: [{version, lanes: {lane: object-ref}}], commits: [object-ref], deleted: [version]}
 ```
 
 A repo is a model's commits and releases:
 
 - A **commit** (§3) is a tree; its id is the tree's object ref, `sha256:<hex>`. Every upload makes one. `commits`
   lists the repo's commits no release names, newest last.
-- A **release** names one commit per lane under a version: a PEP 440 version higher than every earlier release's.
-  `releases` lists them oldest first. A release is public for good; a commit no release names is private, readable
-  only by members of the repo's organization (distribution.md §5).
+- A **release** names one commit per lane under a version: a PEP 440 version higher than every earlier release's,
+  deleted or not. `releases` lists them oldest first. A release is public until its owner deletes it; a commit no
+  release names is private, readable only by members of the repo's organization (distribution.md §5).
+- `deleted` (optional) lists the versions of deleted releases, in deletion order. A deleted version is burned: it is
+  never released again, so no cache or lock sees two contents under one version.
 - Repo names are case-insensitive: `Acme/SDXL` and `acme/sdxl` are one repo. Keys and paths use the name with ASCII
   `A`–`Z` lowered (`refs/acme/sdxl.json`); the document's `name` keeps the writer's spelling.
 - **Roots.** Every commit a repo names is a referenced root until its owner deletes it; keeping a complete copy of
