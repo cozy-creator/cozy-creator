@@ -32,8 +32,8 @@ rent
 
 jq -e '.status.gpus | length == 1 and .[0].memory_bytes < 9e9' "$OUT/show.json" >/dev/null || fail "not one 8 GB GPU"
 [ -z "$URL" ] || step update machine update "$NAME" --runtime "$W" -y || fail "update"
-step model model download _/minimax-h3@1.0.0-rc.5 --lane int8 --on "$NAME" || fail "model download"
-step lora model download _/minimax-h3-turbo-lora@1.0.1 --on "$NAME" || fail "LoRA download"
+step model model download minimaxai/minimax-h3@1.0.0-rc.5 --lane int8 --on "$NAME" || fail "model download"
+step lora model download alibaba-pai/minimax-h3-turbo-lora@1.0.1 --on "$NAME" || fail "LoRA download"
 say "pod $(cozy machine show "$NAME" --json | jq -c '{rt: .status.runtime, tfs: .status.tensorfs, gpu: .status.gpus[0].name}')"
 step h3 run "$T" --input "$OUT/request.json" --lane int8 --gpus=1 --on "$NAME" --out "$OUT/media"
 N=$(runno h3); [ -n "$N" ] || fail "the run named no number"

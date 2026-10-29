@@ -64,7 +64,7 @@ package 0.11.3 instead requires Runtime<0.32 and TensorFS<0.15; 0.12.0/0.12.1 ar
 Use the reviewed source directory rather than those incompatible published dependencies.
 
 `anima-request.json` requests 1024², 30 steps, guidance 4.5, CFG interval 0.15–0.70 and first-block
-cache disabled. Its model default is the published `anima@1.0.0`; live CLI metadata and exact
+cache disabled. Its model default is the published `circlestone-labs/anima@1.0.0`; live CLI metadata and exact
 manifests are saved in `anima-preparation.json`:
 
 | Lane | Stored bytes | GiB | RTX 3070/SM86 route evidence |

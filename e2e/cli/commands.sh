@@ -52,7 +52,7 @@ else
   cozy --json model ls --family e2e-no-such-family > "$OUT/family.json" && J '(.models | length) == 0' "$OUT/family.json" \
     || check "model ls --family: an unknown family listed models"
 fi
-cozy --json model info birefnet > "$OUT/model-info.json" && J '.releases[0].lanes | length > 0' "$OUT/model-info.json" || check "model info birefnet: no lanes"
+cozy --json model info zhengpeng7/birefnet > "$OUT/model-info.json" && J '.releases[0].lanes | length > 0' "$OUT/model-info.json" || check "model info zhengpeng7/birefnet: no lanes"
 lane=$(jq -r '.releases[0].lanes[0].lane' "$OUT/model-info.json") || true
 
 step "renting, signed out"
@@ -81,15 +81,15 @@ cozy --json package ls --on local > "$OUT/packages-after.json" && ! grep -q 'e2e
   || check "package remove: local/e2e-weightless is still installed"
 
 step "models on local"
-cozy --json model download birefnet --lane "$lane" --on local > "$OUT/download.ndjson" || check "model download --lane $lane failed"
-cozy --json model download birefnet local/e2e-birefnet > "$OUT/download-alias.ndjson" || check "model download birefnet local/e2e-birefnet failed"
+cozy --json model download zhengpeng7/birefnet --lane "$lane" --on local > "$OUT/download.ndjson" || check "model download --lane $lane failed"
+cozy --json model download zhengpeng7/birefnet local/e2e-birefnet > "$OUT/download-alias.ndjson" || check "model download zhengpeng7/birefnet local/e2e-birefnet failed"
 # A local .safetensors file, made into a model the machine keeps by name: the file is written to the machine
 # and made from its object (object://sha256:…/<name>). No format knows its one key `w`, so it is kept as-is.
 tiny "$OUT/tiny.safetensors"
 cozy --json model download "$OUT/tiny.safetensors" local/e2e-tiny --source-format as-is > "$OUT/download-file.ndjson" || check "model download ./tiny.safetensors local/e2e-tiny failed: $(grep -oE '"message": *"[^"]*"' "$OUT/download-file.ndjson" | tail -1)"
 cozy --json model ls --on local > "$OUT/models.json" || check "model ls --on local failed"
 grep -q e2e-tiny "$OUT/models.json" || check "model ls --on local: the local file's local/e2e-tiny is not listed"
-J --arg lane "$lane" 'any(.models[]; .model == "_/birefnet" and .lane == $lane)' "$OUT/models.json" || check "model ls --on local: no _/birefnet in lane $lane after --lane $lane"
+J --arg lane "$lane" 'any(.models[]; .model == "zhengpeng7/birefnet" and .lane == $lane)' "$OUT/models.json" || check "model ls --on local: no zhengpeng7/birefnet in lane $lane after --lane $lane"
 grep -q e2e-birefnet "$OUT/models.json" || check "model ls --on local: the local/e2e-birefnet alias is not listed"
 }
 
@@ -125,9 +125,9 @@ refused run-warm run birefnet/remove_background --warm installed
 refused install package install birefnet
 refused install-code package install "$here/weightless"
 refused remove package remove birefnet
-refused download model download birefnet
+refused download model download zhengpeng7/birefnet
 refused upload model upload "$OUT/refused.safetensors" fidika/e2e-refused --lane f16
-refused quantize model quantize anima --lane int8 --package anima
+refused quantize model quantize circlestone-labs/anima --lane int8 --package anima
 refused update machine update local --runtime 0.30.0 -y
 refused show machine show local
 refused logs machine logs local --lines 5

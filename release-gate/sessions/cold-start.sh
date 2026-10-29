@@ -139,7 +139,7 @@ request() {
   say "$label: run $n $(jq -r .status "$OUT/$label.json"), landed $(grep output_item.landed "$OUT/$label.ndjson" | tail -1 | cut -d' ' -f1) s; legs $(jq -c '.measurements.execution.executor.legs_ms' "$OUT/$label.json")"
 }
 declare -A FN=([sdxl]=$SDXL [anima]=$ANIMA [qwen]=$QWEN) PKG=([sdxl]=sdxl [anima]=anima [qwen]=qwen-image-2)
-declare -A WEIGHTS=([sdxl]=_/sdxl@1.0.0 [anima]=_/anima@1.0.0 [qwen]=_/qwen-image-2.1@0.1.0)
+declare -A WEIGHTS=([sdxl]=stabilityai/sdxl@1.0.0 [anima]=circlestone-labs/anima@1.0.0 [qwen]=qwen/qwen-image-2.1@0.1.0)
 for m in $(jq -r '[.[].models // ["sdxl", "anima"] | .[]] | unique | .[]' <<<"$ARMS"); do
   [ -n "${FN[$m]:-}" ] || fail "no model $m"
   step "dl-$m" model download "${WEIGHTS[$m]}" --on "$NAME" || fail "$m weights"
