@@ -614,6 +614,11 @@ impl Zygote {
             _ => None,
         }
     }
+    /// Importing or imported ahead of its request: no request has forked from it yet.
+    fn ahead(&self) -> bool {
+        !self.served.load(Ordering::Acquire)
+            && matches!(*self.state.lock().unwrap(), ZygoteState::Starting | ZygoteState::Ready(_))
+    }
     /// Ready and with no live child: ending it ends nothing else.
     fn childless(&self) -> bool {
         if !matches!(*self.state.lock().unwrap(), ZygoteState::Ready(_)) {
@@ -681,6 +686,13 @@ type App = (String, String);
 
 fn parent_app(held: &HeldGeneration) -> App {
     (held.record.identity.clone(), held.record.application.clone())
+}
+
+/// The host keeps half its memory free with one more import-only parent ([`PARENT_BYTES`]).
+fn room_for_parent() -> bool {
+    let room = host_memory::read().available;
+    let half = host_memory::limit().map_or(i64::MAX, |limit| i64::try_from(limit / 2).unwrap_or(i64::MAX));
+    room >= 0 && room - PARENT_BYTES >= half
 }
 
 /// The manifests live executors read. A download's GC must not evict them: an evicted file a
@@ -2712,11 +2724,23 @@ impl Pool {
         }
     }
 
-    /// Start a generation's import-only executor in the background for a call being prepared,
-    /// so its imports overlap the rest of the preparation.
+    /// Start a generation's import-only executor in the background for a call being prepared, or
+    /// waiting behind others, so its imports overlap the preparation and the wait. One budget in
+    /// both modes: the host keeps half its memory free with it ([`room_for_parent`]), and a shared
+    /// machine holds at most one parent imported ahead of its request. Past it, only its import
+    /// pages are read ahead; its parent starts when its call does.
     pub fn prespawn(self: &Arc<Self>, held: HeldGeneration) {
-        if self.zygotes.lock().unwrap().contains_key(&parent_app(&held)) {
-            return;
+        {
+            let zygotes = self.zygotes.lock().unwrap();
+            if zygotes.contains_key(&parent_app(&held)) {
+                return;
+            }
+            let shared_full = self.config.host.mode == HostMode::Shared && zygotes.values().any(|z| z.ahead());
+            if shared_full || !room_for_parent() {
+                drop(zygotes);
+                crate::import_pages::read_ahead_later(vec![held]);
+                return;
+            }
         }
         let Some((zygote, true)) = self.zygote(&held) else {
             return;
@@ -2789,9 +2813,8 @@ impl Pool {
             let mut held = held.into_iter();
             while let Some(next) = held.next() {
                 let Some(pool) = pool.upgrade() else { return };
-                let room = host_memory::read().available;
-                let half = host_memory::limit().map_or(i64::MAX, |limit| i64::try_from(limit / 2).unwrap_or(i64::MAX));
-                if room < 0 || room - PARENT_BYTES < half {
+                if !room_for_parent() {
+                    let room = host_memory::read().available;
                     pool.notes.note(serde_json::json!({"event": "import_installed", "stopped": next.record.identity, "available": room}));
                     pool.read_ahead(std::iter::once(next).chain(held), usize::MAX);
                     return;
