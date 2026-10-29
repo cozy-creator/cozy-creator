@@ -569,9 +569,10 @@ impl Publisher {
         Ok(Named { tree: held.tree, lane: held.lane, header: Some(held.header), ..named })
     }
 
-    /// A Hub checkpoint resolved (`resolve`) and downloaded whole into the store (a warm run's
-    /// model choice: `cozy model download`); answers what the Hub named and its bytes by where
-    /// they came from (`pull`).
+    /// A Hub checkpoint resolved (`resolve`) and downloaded into the store (a warm run's model
+    /// choice: `cozy model download`): whole, or its header and tree alone (`structure`: a
+    /// composition's base, whose components stay the Hub's). Answers what the Hub named and its
+    /// bytes by where they came from (`pull`).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn download(
         &self,
@@ -580,13 +581,15 @@ impl Publisher {
         named: Named,
         hardware: &Hardware,
         revision: &str,
+        structure: bool,
         stop: Option<&Stop>,
         bytes: &(dyn Fn(u64, u64) + Sync),
     ) -> Result<(Named, Landed), Refused> {
         let failed = |(code, message)| Refused { code, message };
         let named = self.resolve(service, source, named, hardware, revision).map_err(failed)?;
         // A checkpoint this store already holds whole moves nothing and asks the Hub nothing.
-        let moved = self.ensure(source, &named, stop, bytes).map_err(failed)?;
+        let components = structure.then_some(&[][..]);
+        let moved = self.pull(source, &named, components, stop, bytes).map_err(failed)?;
         Ok((named, moved))
     }
 

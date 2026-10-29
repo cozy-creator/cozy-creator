@@ -25,20 +25,22 @@ fn usage(code: &str, message: impl Into<String>) -> Error {
 
 struct ModelInput {
     choice: ModelChoice,
+    /// The model it starts from (`--base`): choice `base[:<component>,…]`.
+    base: Option<ModelChoice>,
     staged: Vec<StagedInput>,
     files: Vec<InputFile>,
 }
 
 impl From<(ModelChoice, Option<StagedInput>)> for ModelInput {
     fn from((choice, staged): (ModelChoice, Option<StagedInput>)) -> Self {
-        Self { choice, staged: staged.into_iter().collect(), files: vec![] }
+        Self { choice, base: None, staged: staged.into_iter().collect(), files: vec![] }
     }
 }
 
 /// A plain CozyTensors folder travels as an ordinary retained input tree. The machine admits
 /// its headers without importing or fetching the tensor objects a thin folder omits.
-fn folder(path: &Path, profiles: &[String], manifests: &Path, memo: &Path) -> Result<ModelInput, Error> {
-    if !profiles.is_empty() {
+fn folder(path: &Path, profile: Option<&String>, manifests: &Path, memo: &Path) -> Result<ModelInput, Error> {
+    if profile.is_some() {
         return Err(usage("model_profile_unused", "a CozyTensors folder is already converted; omit --source-format"));
     }
     let staged = crate::run::tree::stage(path, Some(memo), manifests)?;
@@ -53,14 +55,15 @@ fn folder(path: &Path, profiles: &[String], manifests: &Path, memo: &Path) -> Re
     files.push(staged.manifest);
     Ok(ModelInput {
         choice: ModelChoice { parameter: "model".into(), source: "input://model".into(), ..Default::default() },
+        base: None,
         staged: files,
         files: vec![input],
     })
 }
 
 /// The model a warm run makes present: a reference, or a local `.safetensors` file.
-fn source(raw: &str, profiles: &[String]) -> Result<(ModelChoice, Option<StagedInput>), Error> {
-    let (mut choice, staged) = if raw.starts_with('.') || Path::new(raw).is_absolute() {
+fn source(raw: &str) -> Result<(ModelChoice, Option<StagedInput>), Error> {
+    let (choice, staged) = if raw.starts_with('.') || Path::new(raw).is_absolute() {
         let staged = measure(Path::new(raw))?;
         let name = Path::new(raw).file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
         let choice = ModelChoice {
@@ -72,11 +75,38 @@ fn source(raw: &str, profiles: &[String]) -> Result<(ModelChoice, Option<StagedI
     } else {
         (ModelRef::parse(raw)?.choice("model"), None)
     };
-    if !profiles.is_empty() && choice.source.is_empty() {
+    Ok((choice, staged))
+}
+
+/// `--source-format`: the one format `choice`, a provider source or a local file, converts with.
+fn formatted(choice: &mut ModelChoice, format: &str) -> Result<(), Error> {
+    if choice.source.is_empty() {
         return Err(usage("model_profile_unused", "--source-format converts a provider source or a local file"));
     }
-    choice.profiles = profiles.to_vec();
-    Ok((choice, staged))
+    choice.profiles = vec![format.to_owned()];
+    Ok(())
+}
+
+/// `--base MODEL[:COMPONENT,…]`: choice `base[:COMPONENT,…]` of a Hub model (a release in the
+/// commit's `lane`, or a commit) or a `local/` one.
+fn base(raw: &str, lane: &str) -> Result<ModelChoice, Error> {
+    let segment = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
+    // The last `:` starts a component list unless it is a commit's `sha256:`.
+    let (model, names) = match raw.rsplit_once(':') {
+        Some((model, names)) if !model.ends_with("@sha256") && names.split(',').all(segment) => (model, Some(names)),
+        _ => (raw, None),
+    };
+    let mut choice = match ModelRef::parse(model)? {
+        ModelRef::Provider(_) => return Err(usage("model_base_invalid", format!("--base {model}: name a Hub model or a local/ one"))),
+        reference => reference.choice(protocol::machine::BASE),
+    };
+    if !choice.repository.starts_with("local/") && choice.manifest.is_empty() {
+        choice.lane = lane.to_owned();
+    }
+    if let Some(names) = names {
+        choice.parameter = format!("{}:{names}", choice.parameter);
+    }
+    Ok(choice)
 }
 
 /// A local model file, measured once: one regular `.safetensors` file.
@@ -127,7 +157,7 @@ async fn warm(
     let spec = RunSpec {
         kind: SpecKind::Warm,
         lane,
-        models: vec![input.choice],
+        models: std::iter::once(input.choice).chain(input.base).collect(),
         inputs: input.files,
         weights_destination: destination,
         ..Default::default()
@@ -165,6 +195,16 @@ fn made(ctx: &Context, run: &Run) {
             record = record.field(key, value);
         }
     }
+    // A composition: its base's commit, the components the source took, and what was sent.
+    if let Some(commit) = model["base"]["tree"].as_str() {
+        record = record.field("base", format!("{}@{commit}", model["base"]["repository"].as_str().unwrap_or_default()));
+    }
+    for (name, from) in model["components"].as_object().into_iter().flatten() {
+        record = record.field(name, from.as_str().unwrap_or_default());
+    }
+    if let Some(bytes) = model["published"]["sent"]["bytes"].as_u64() {
+        record = record.field("sent", output::bytes(bytes));
+    }
     let published = &model["published"];
     let (destination, commit) = (published["destination"].as_str(), published["commit"].as_str());
     if let (Some(destination), Some(commit)) = (destination, commit) {
@@ -183,7 +223,10 @@ pub(crate) async fn download(ctx: &Context, args: Download) -> Result<ExitCode, 
         Some(_) => return Err(usage("model_alias_invalid", "the name a machine keeps a model under is local/<name>")),
         None => String::new(),
     };
-    let mut made = source(&args.model, &args.profiles)?;
+    let mut made = source(&args.model)?;
+    if let Some(format) = &args.format {
+        formatted(&mut made.0, format)?;
+    }
     if made.1.is_some() && destination.is_empty() {
         return Err(usage("model_alias_missing", "a local file is kept under a name: add local/<name>"));
     }
@@ -202,22 +245,36 @@ pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Erro
         mirror(ctx, &args.source, page, &Repo::hub(&args.destination)?).await?;
     }
     if let Some(reference) = args.source.strip_prefix("run:") {
+        if args.base.is_some() {
+            return Err(usage("model_base_invalid", "a run's weights output uploads as it is; upload a model source on a base"));
+        }
         return super::from_run::upload(ctx, reference, &destination, &args.lane).await;
     }
-    // A Hub commit is already at the Hub: the destination records it there, and nothing moves.
-    if let Ok(ModelRef::Commit { repo, commit }) = ModelRef::parse(&args.source) {
+    // A Hub commit is already at the Hub: the destination records it there, and nothing moves
+    // (on a base it is composed instead).
+    if let (Ok(ModelRef::Commit { repo, commit }), None) = (ModelRef::parse(&args.source), &args.base) {
         return recorded(ctx, &repo, &commit, &Repo::hub(&args.destination)?, &args.lane).await;
     }
     let on = args.placement.on()?;
     // The machine publishes under this computer's sign-in; refuse before anything is made.
     ctx.hub_session(ctx.hub())?;
     let path = Path::new(&args.source);
-    let made = if (args.source.starts_with('.') || path.is_absolute()) && path.is_dir() {
-        folder(path, &args.profiles, &ctx.home.root().join("cache/trees"), &ctx.home.root().join("cache/digests"))?
+    let mut made: ModelInput = if (args.source.starts_with('.') || path.is_absolute()) && path.is_dir() {
+        if args.base.is_some() {
+            return Err(usage("model_base_invalid", "a CozyTensors folder uploads as it is; upload a model source on a base"));
+        }
+        folder(path, args.format.as_ref(), &ctx.home.root().join("cache/trees"), &ctx.home.root().join("cache/digests"))?
     } else {
-        source(&args.source, &args.profiles)?.into()
+        source(&args.source)?.into()
     };
-    let target = format!("{} → {destination} ({})", args.source, args.lane);
+    if let Some(format) = &args.format {
+        formatted(&mut made.choice, format)?;
+    }
+    made.base = args.base.as_deref().map(|raw| base(raw, &args.lane)).transpose()?;
+    let target = match &args.base {
+        None => format!("{} → {destination} ({})", args.source, args.lane),
+        Some(on) => format!("{} on {on} → {destination} ({})", args.source, args.lane),
+    };
     warm(ctx, on, target, made, destination, args.lane).await
 }
 

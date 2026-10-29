@@ -17,6 +17,7 @@
 //!
 //! A GGUF file is one component of its own (`gguf`).
 
+pub mod base;
 pub mod carriers;
 pub mod engine;
 pub mod gguf;

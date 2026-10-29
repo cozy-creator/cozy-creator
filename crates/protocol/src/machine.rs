@@ -378,6 +378,13 @@ pub struct InputFile {
     pub order: u32,
 }
 
+/// The parameter of a model-only upload's base (`cozy model upload --base`): `base` keeps the
+/// base's components the uploaded model lacks and takes its own in place of the base's;
+/// `base:<component>[,…]` replaces only those: the uploaded model's of each name, or its one
+/// component with tensors under every name. Of Hub checkpoints the machine holds only headers and
+/// trees: their components stay the Hub's.
+pub const BASE: &str = "base";
+
 /// One model slot's choice, by name (th-245: the machine resolves it at the Hub). A Hub model is
 /// `repository` at `release` (empty: the newest) in `lane`, else in the lane the Hub picks for
 /// the machine's hardware. `manifest` names a commit (or a header) by hash: one of the
@@ -386,7 +393,8 @@ pub struct InputFile {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModelChoice {
-    /// A root slot parameter or full slot path.
+    /// A root slot parameter or full slot path; in a model-only upload, [`BASE`] names the model
+    /// it starts from.
     pub parameter: String,
     pub repository: String,
     pub release: String,

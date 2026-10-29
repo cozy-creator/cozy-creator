@@ -115,6 +115,7 @@ test = "release: throwaway model, uploaded from a file and from a run's output"
 "--lane" = "release: throwaway model, two lanes"
 "--source-format" = "release: throwaway model, its files kept as-is"
 "--mirror" = "manual: an admin mirrors a real author's model into its parked org (xs-131, proved on the dev Hub); a CI run would park a real author's org on tensorhub.com"
+"--base" = "none: a community DiT (66 GB) on a Hub model's header, on a rental; proven by hand"
 ["model publish"]
 test = "release: throwaway model, published with two lanes"
 ["model delete"]
