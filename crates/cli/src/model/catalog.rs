@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::process::ExitCode;
 
 use protocol::error::{Error, Kind};
-use hub_client::types::{ModelCard, ModelLaneProvenance};
+use hub_client::types::{ModelAuthor, ModelCard, ModelLaneProvenance};
 use serde::Serialize;
 
 use super::refs::{ModelRef, Repo};
@@ -22,6 +22,16 @@ struct Found {
     release: Option<String>,
     lanes: Vec<String>,
     private: bool,
+    /// Who made it: the org it credits, or the parked org it mirrors into.
+    author: Option<ModelAuthor>,
+}
+
+/// An author as a person reads it: its name, and while its org is parked, that it is reserved.
+fn by(author: &ModelAuthor) -> String {
+    match author.parked {
+        true => format!("{} ({}, reserved)", author.name, author.org),
+        false => format!("{} ({})", author.name, author.org),
+    }
 }
 
 #[derive(Serialize)]
@@ -45,6 +55,7 @@ fn found(card: &ModelCard) -> Found {
         release: release.map(|r| r.version.clone()),
         lanes,
         private,
+        author: card.model.author.clone(),
     }
 }
 
@@ -84,7 +95,7 @@ pub(crate) async fn search(ctx: &Context, args: Ls) -> Result<ExitCode, Error> {
         output::json(&view);
         return Ok(ExitCode::SUCCESS);
     }
-    let mut table = Table::new(ctx, ["model", "family", "release", "lanes"]);
+    let mut table = Table::new(ctx, ["model", "family", "release", "lanes", "by"]);
     for row in &view.models {
         let lanes = row.lanes.join(", ");
         let family = row.family.as_deref().unwrap_or("-");
@@ -92,7 +103,8 @@ pub(crate) async fn search(ctx: &Context, args: Ls) -> Result<ExitCode, Error> {
             true => "private",
             false => row.release.as_deref().unwrap_or("-"),
         };
-        table = table.row([row.model.as_str(), family, release, &lanes]);
+        let author = row.author.as_ref().map_or_else(|| "-".to_owned(), by);
+        table = table.row([row.model.as_str(), family, release, &lanes, &author]);
     }
     let shown = view.models.len() as i64;
     if total > shown {
@@ -122,6 +134,8 @@ struct Lane {
 struct Release {
     version: String,
     created_at: String,
+    /// Published while its org was parked: not its author's.
+    mirror: bool,
     lanes: Vec<Lane>,
 }
 
@@ -140,6 +154,9 @@ struct Detail {
     model: String,
     family: Option<String>,
     created_at: String,
+    /// The pinned upstream source, and who made it.
+    source: Option<String>,
+    author: Option<ModelAuthor>,
     releases: Vec<Release>,
     /// Every commit, newest first, to the model's members.
     commits: Vec<Commit>,
@@ -160,6 +177,7 @@ pub(crate) async fn info(ctx: &Context, args: Info) -> Result<ExitCode, Error> {
         .map(|r| Release {
             version: r.version,
             created_at: r.created_at,
+            mirror: r.mirror,
             lanes: r.lanes.into_iter().map(|(lane, l)| Lane { lane, commit: l.commit, bytes: l.bytes, kinds: l.kinds, provenance: l.provenance }).collect(),
         })
         .collect();
@@ -174,6 +192,8 @@ pub(crate) async fn info(ctx: &Context, args: Info) -> Result<ExitCode, Error> {
         model: repo.to_string(),
         family: card.model.family.filter(|f| !f.is_empty()),
         created_at: card.model.created_at,
+        source: card.model.source.filter(|s| !s.is_empty()),
+        author: card.model.author,
         releases,
         commits,
     };
@@ -184,9 +204,25 @@ pub(crate) async fn info(ctx: &Context, args: Info) -> Result<ExitCode, Error> {
     let shown = protocol::names::shown(&repo.to_string());
     let mut record = Record::new().field("model", &view.model).field("family", view.family.as_deref().unwrap_or("-"));
     record = record.field("created", &view.created_at);
+    if let Some(author) = &view.author {
+        record = record.field("by", &by(author));
+    }
+    if let Some(source) = &view.source {
+        record = record.field("source", source);
+    }
+    if let Some(author) = &view.author
+        && let Some(reserved) = &author.reserved
+    {
+        let mirror = repo.org == author.org;
+        record = record.note(match mirror {
+            true => format!("Mirror of {}. {reserved}", view.source.as_deref().unwrap_or("its author's model")),
+            false => format!("{}: {reserved}", author.org),
+        });
+    }
     record.print(ctx);
     for release in &view.releases {
-        anstream::println!("\n{shown}@{}", release.version);
+        let mirror = if release.mirror { " (mirror)" } else { "" };
+        anstream::println!("\n{shown}@{}{mirror}", release.version);
         let mut table = Table::new(ctx, ["lane", "kinds", "bytes", "commit", "recipe"]);
         for lane in &release.lanes {
             let recipe = lane.provenance.as_ref().map_or_else(|| "-".into(), |p| format!("{}@{} {}", protocol::names::shown(&p.package), p.release, p.recipe));

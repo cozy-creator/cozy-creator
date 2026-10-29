@@ -109,6 +109,10 @@ pub(crate) struct Upload {
     /// The source file's convention: a reviewed TensorFS format, e.g. h3.lora; usually detected.
     #[arg(long = "source-format", value_name = "FORMAT")]
     profiles: Vec<String>,
+    /// It mirrors its author's model (admins): the destination org is parked for the author to
+    /// claim. Bare, the hf:// or civitai:// source is the upstream page; else name it.
+    #[arg(long, value_name = "URL", num_args = 0..=1, default_missing_value = "")]
+    mirror: Option<String>,
     #[command(flatten)]
     placement: crate::run::Placement,
 }

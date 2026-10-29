@@ -21,6 +21,9 @@ pub struct Account {
     pub name: String,
     /// The AuthKit user it is.
     pub user_id: String,
+    /// The orgs it is a member of.
+    #[serde(deserialize_with = "null_is_empty")]
+    pub orgs: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -151,6 +154,49 @@ pub struct ModelSummary {
     pub name: String,
     pub family: Option<String>,
     pub created_at: String,
+    /// The pinned upstream source (on a card).
+    pub source: Option<String>,
+    /// The org it credits (a root model) or is in (a mirror).
+    pub author: Option<ModelAuthor>,
+}
+
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ModelAuthor {
+    pub org: String,
+    /// The author's display name.
+    pub name: String,
+    /// True until the author claims the org.
+    pub parked: bool,
+    /// A parked org's line.
+    pub reserved: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct ModelMirror {
+    pub model: String,
+    pub source: String,
+    pub author: Option<ModelAuthor>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct OrgClaim {
+    pub org: String,
+    pub claimed: bool,
+    pub code: Option<String>,
+    #[serde(deserialize_with = "null_is_empty")]
+    pub proofs: Vec<OrgProof>,
+    pub proven_by: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct OrgProof {
+    pub handle: String,
+    pub r#where: String,
+    pub checked: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -174,6 +220,8 @@ pub struct ModelCard {
 pub struct ModelRelease {
     pub version: String,
     pub created_at: String,
+    /// Published while its org was parked: not its author's.
+    pub mirror: bool,
     #[serde(deserialize_with = "null_is_empty")]
     pub lanes: BTreeMap<String, ModelReleaseLane>,
 }

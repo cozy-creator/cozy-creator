@@ -16,6 +16,7 @@ use sha2::{Digest as _, Sha256};
 use super::refs::{ModelRef, Repo};
 use super::{Download, Upload};
 use crate::Context;
+use crate::context::hub_answer;
 use crate::output::{self, Record, Table};
 
 fn usage(code: &str, message: impl Into<String>) -> Error {
@@ -197,6 +198,9 @@ pub(crate) async fn download(ctx: &Context, args: Download) -> Result<ExitCode, 
 
 pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Error> {
     let destination = Repo::hub(&args.destination)?.to_string();
+    if let Some(page) = &args.mirror {
+        mirror(ctx, &args.source, page, &Repo::hub(&args.destination)?).await?;
+    }
     if let Some(reference) = args.source.strip_prefix("run:") {
         return super::from_run::upload(ctx, reference, &destination, &args.lane).await;
     }
@@ -211,6 +215,23 @@ pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Erro
     };
     let target = format!("{} → {destination} ({})", args.source, args.lane);
     warm(ctx, on, target, made, destination, args.lane).await
+}
+
+/// Records the destination as a mirror of its author's model before anything uploads: bare
+/// `--mirror` names the hf:// or civitai:// source itself.
+async fn mirror(ctx: &Context, source: &str, page: &str, repo: &Repo) -> Result<(), Error> {
+    let page = match page {
+        "" if source.starts_with("hf://") || source.starts_with("civitai://") => source,
+        "" => {
+            return Err(Error::new(Kind::Usage, "mirror_source_required", format!(
+                "{source:?} is not an hf:// or civitai:// source: name the upstream page, --mirror <URL>")));
+        }
+        page => page,
+    };
+    let answer = hub_answer(ctx.hub_signed_in(ctx.hub())?.mirror_model(&repo.org, &repo.name, page).await)?;
+    let by = answer.author.map(|a| a.reserved.unwrap_or(format!("credits {} ({})", a.name, a.org)));
+    output::say(ctx, &format!("{} mirrors {}{}", answer.model, answer.source, by.map(|b| format!(". {b}")).unwrap_or_default()));
+    Ok(())
 }
 
 /// One checkpoint a machine holds, and its repository's bytes there.

@@ -287,9 +287,11 @@ pub async fn whoami(ctx: &Context, _args: Whoami) -> Result<ExitCode, Error> {
     };
     let buy = balance.is_some().then(|| format!("{hub}/account"));
     let key = session.as_ref().filter(|_| accepted).map(|s| s.key());
+    let orgs = account.as_ref().map(|a| a.orgs.clone()).unwrap_or_default();
+    let account = account.map(|a| a.name);
     if ctx.json {
         output::json(&json!({
-            "logged_in": accepted, "account": account, "email": key.map(|k| &k.email),
+            "logged_in": accepted, "account": account, "orgs": orgs, "email": key.map(|k| &k.email),
             "billing": balance.map(|b| if b.is_some() { "metered" } else { "unmetered" }),
             "balance_usd_micros": balance.flatten(), "device_key": key.map(|k| &k.id),
             "buy_credits": buy,
@@ -302,6 +304,9 @@ pub async fn whoami(ctx: &Context, _args: Whoami) -> Result<ExitCode, Error> {
             record = record
                 .field("account", account.as_deref().unwrap_or("none yet"))
                 .field("email", &key.email);
+            if !orgs.is_empty() {
+                record = record.field("orgs", &orgs.join(", "));
+            }
             if let Some(balance) = balance {
                 record = record.field("balance", balance.map_or("unmetered".into(), usd));
             }
@@ -324,9 +329,9 @@ pub async fn whoami(ctx: &Context, _args: Whoami) -> Result<ExitCode, Error> {
 
 /// The account this computer's key signs in as at `hub`: `None` when the Hub no longer accepts
 /// the key (revoked from another computer), `Some(None)` when the account has no name yet.
-async fn standing(ctx: &Context, hub: &Origin) -> Result<Option<Option<String>>, Error> {
+async fn standing(ctx: &Context, hub: &Origin) -> Result<Option<Option<hub_client::types::Account>>, Error> {
     match hub_answer(ctx.hub_signed_in(hub)?.get_current_account().await) {
-        Ok(account) => Ok(Some(Some(account.name))),
+        Ok(account) => Ok(Some(Some(account))),
         Err(e) if e.code == "account.name_required" => Ok(Some(None)),
         Err(e) if e.kind == Kind::Credential => Ok(None),
         Err(e) => Err(e),
