@@ -9,7 +9,7 @@
 #   prompt      the request (each session draws a new seed)
 #   max_exec_s  the run's execution bar (2400: the proof's 2020 s and some host spread)
 #   traffic_gb  GB the provider bills (85)
-#   arms        [{"name", "runtime": https://…#sha256=, "tensorfs": "artifact:<cozy-creator run>:<name>"}]: one
+#   arms        [{"name", "runtime": https://…#sha256= or a release, "tensorfs": "artifact:<cozy-creator run>:<name>" or a release}]: one
 #               request per arm on the same pod, each after its machine update (default: one arm of `runtime`)
 #   repeat      requests per arm, one after another on the arm's executor, each with a new seed (1)
 #   max_gpu_gb  the card's size bound (9: an 8 GB card; 25 for a 4090 no-regression run)
@@ -26,6 +26,7 @@ if [[ $T == tree:* ]]; then
 fi
 fetch() {  # fetch <arm> <kind>: the arm's wheel path ("" for none)
   local v d; v=$(jq -r --arg a "$1" --arg k "$2" '.[] | select(.name==$a) | .[$k] // empty' <<<"$ARMS"); [ -n "$v" ] || return 0
+  [[ $v =~ ^[0-9][0-9a-z.+]*$ ]] && { echo "$v"; return 0; }  # a release the machine fetches itself
   d=$OUT/wheel/$1-$2; mkdir -p "$d"
   if [[ $v == artifact:* ]]; then
     IFS=: read -r _ rid name <<<"$v"
