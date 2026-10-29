@@ -268,16 +268,14 @@ impl Family {
         Err(format!("closest is {form}, {n} differences: {}", named.join("; ")))
     }
 
-    /// The base weight or LoRA site `path` targets in `component` under any form: `[out, in]`
-    /// (with a convolution's kernel), or none.
-    pub fn target(&self, component: &str, path: &str) -> Option<Vec<Option<u64>>> {
-        let (_, def) = self.def(component)?;
-        if let Some((_, s)) = def.sites.iter().find(|(p, _)| p == path) {
-            return Some(s.iter().map(|d| Some(*d)).collect());
-        }
+    /// The shapes the base weight or LoRA site `path` has in `component`, one per form that has it:
+    /// `[out, in]` (with a convolution's kernel).
+    pub fn targets(&self, component: &str, path: &str) -> Vec<Vec<Option<u64>>> {
+        let Some((_, def)) = self.def(component) else { return vec![] };
         let weight = format!("{path}.weight");
-        (self.form_names().into_iter())
-            .find_map(|form| self.expected(component, form)?.remove(&weight))
+        let sites = (def.sites.iter()).filter(|(p, _)| p == path).map(|(_, s)| s.iter().map(|d| Some(*d)).collect());
+        let forms = (self.form_names().into_iter()).filter_map(|form| self.expected(component, form)?.remove(&weight));
+        sites.chain(forms).collect()
     }
 
     /// The component a LoRA was trained on, by its producer's declared field: `(component,

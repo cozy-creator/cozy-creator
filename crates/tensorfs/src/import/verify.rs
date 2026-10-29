@@ -329,13 +329,11 @@ fn lora(input: &Input, component: &str, tensors: &[&Planned]) -> Result<Option<A
     }
     // A target fits base `[out, in, kernel…]` as A `[r, in, kernel…]` and B `[out, r, 1…]`.
     let fits = |fam: &Family, base: &str, path: &str, (a, b): &(Option<&[u64]>, Option<&[u64]>)| {
-        let (Some(a), Some(b), Some(want)) = (a, b, fam.target(base, path)) else { return false };
+        let (Some(a), Some(b)) = (a, b) else { return false };
         let at = |v: &[Option<u64>], i: usize, got: u64| v.get(i).copied().flatten().is_none_or(|w| w == got);
-        want.len() == a.len()
-            && a.len() == b.len()
-            && a.len() >= 2
-            && at(&want, 0, b[0])
-            && (1..a.len()).all(|i| at(&want, i, a[i]))
+        fam.targets(base, path).iter().any(|want| {
+            want.len() == a.len() && a.len() == b.len() && a.len() >= 2 && at(want, 0, b[0]) && (1..a.len()).all(|i| at(want, i, a[i]))
+        })
     };
     let claimed = (input.recognized.claims.iter())
         .find(|c| c.name == component && input.tables[c.table].lora.is_some())
