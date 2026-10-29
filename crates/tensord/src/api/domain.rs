@@ -176,6 +176,8 @@ pub struct ModelChoice {
     pub manifest: Option<Ref>,
     pub source: String,
     pub profiles: Vec<String>,
+    /// The base component a LoRA source was trained on, as its uploader says (`--trained-on`).
+    pub trained_on: String,
     pub adapters: Vec<DownloadAdapterRef>,
 }
 

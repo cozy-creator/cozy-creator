@@ -206,6 +206,26 @@ impl Client {
         self.json(request.json(&json!({"family": family}))).await
     }
 
+    /// Sets a model's display metadata: trigger words (empty clears them) and recommended
+    /// strength (`Some(None)` clears it); a `None` field is left as it is.
+    pub async fn set_model_display(
+        &self,
+        org: &str,
+        name: &str,
+        trigger: Option<&str>,
+        strength: Option<Option<f64>>,
+    ) -> Result<ModelAnswer, Error> {
+        let mut body = serde_json::Map::new();
+        if let Some(trigger) = trigger {
+            body.insert("trigger".into(), json!(trigger));
+        }
+        if let Some(strength) = strength {
+            body.insert("strength".into(), json!(strength));
+        }
+        let request = self.at(Method::PATCH, "/v1/models/{org}/{name}", &[org, name]);
+        self.json(request.json(&body)).await
+    }
+
     /// Records that org/name mirrors `source`: an admin's, into a parked org or crediting a root model.
     pub async fn mirror_model(
         &self,

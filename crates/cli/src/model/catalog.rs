@@ -159,6 +159,9 @@ struct Detail {
     /// The pinned upstream source, and who made it.
     source: Option<String>,
     author: Option<ModelAuthor>,
+    /// Words a LoRA's prompt uses, and its recommended strength (a run's default stays 1.0).
+    trigger: Option<String>,
+    strength: Option<f64>,
     releases: Vec<Release>,
     /// Every commit, newest first, to the model's members.
     commits: Vec<Commit>,
@@ -197,6 +200,8 @@ pub(crate) async fn info(ctx: &Context, args: Info) -> Result<ExitCode, Error> {
         created_at: card.model.created_at,
         source: card.model.source.filter(|s| !s.is_empty()),
         author: card.model.author,
+        trigger: card.model.trigger.filter(|t| !t.is_empty()),
+        strength: card.model.strength,
         releases,
         commits,
     };
@@ -212,6 +217,12 @@ pub(crate) async fn info(ctx: &Context, args: Info) -> Result<ExitCode, Error> {
     }
     if let Some(source) = &view.source {
         record = record.field("source", source);
+    }
+    if let Some(trigger) = &view.trigger {
+        record = record.field("trigger", trigger);
+    }
+    if let Some(strength) = view.strength {
+        record = record.field("strength", &format!("{strength} (recommended; --lora uses 1.0 unless given)"));
     }
     if let Some(author) = &view.author
         && let Some(reserved) = &author.reserved

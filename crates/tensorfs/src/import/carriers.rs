@@ -6,9 +6,7 @@
 //! ambiguous carrier is refused with what was found.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::File;
 
-use platform::durable::FileAt;
 use serde::Deserialize;
 use serde_json::Value as Json;
 
@@ -502,13 +500,7 @@ fn bytes(set: &SourceSet, key: &str, t: &Tensor) -> Result<Vec<u8>> {
     if t.len > 1 << 20 {
         return refuse(Code::SIZE_CAP, format!("{key}: a {} byte marker", t.len));
     }
-    let path = &set.files[t.file];
-    let io = |e| crate::err::classify_io(format!("read {key} in {}", path.display()), e);
-    let mut buf = vec![0; t.len as usize];
-    File::open(path)
-        .and_then(|f| f.read_exact_at(&mut buf, t.start))
-        .map_err(io)?;
-    Ok(buf)
+    set.read_at(t.file, t.start, t.len)
 }
 
 /// Every declaration of `group`'s producer: refused when two producers declare it.

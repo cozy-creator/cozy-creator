@@ -412,8 +412,11 @@ struct Lfs {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CivitaiVersion {
     files: Vec<CivitaiFile>,
+    #[serde(default)]
+    trained_words: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -435,6 +438,9 @@ pub struct Listing {
     pub root: String,
     pub exact: bool,
     pub members: Vec<Member>,
+    /// The words its provider says a LoRA's prompt uses (Civitai's `trainedWords`): display
+    /// metadata for the Hub, never the header.
+    pub trigger: Vec<String>,
 }
 
 pub fn list(spec: &Spec, access: &Access) -> Result<Listing> {
@@ -517,6 +523,7 @@ fn list_in(spec: &Spec, access: &Scope<'_>) -> Result<Listing> {
                 root: if exact { String::new() } else { path.clone() },
                 exact,
                 members,
+                trigger: vec![],
             })
         }
         Spec::Civitai { version, file } => {
@@ -563,6 +570,7 @@ fn list_in(spec: &Spec, access: &Scope<'_>) -> Result<Listing> {
                 root: String::new(),
                 exact: true,
                 members: vec![member],
+                trigger: doc.trained_words.iter().map(|w| w.trim().to_owned()).filter(|w| !w.is_empty()).collect(),
             })
         }
         Spec::Url(url) => {
@@ -590,6 +598,7 @@ fn list_in(spec: &Spec, access: &Scope<'_>) -> Result<Listing> {
                 root: String::new(),
                 exact: true,
                 members: vec![member],
+                trigger: vec![],
             })
         }
         Spec::Local(path) => {
@@ -618,6 +627,7 @@ fn list_in(spec: &Spec, access: &Scope<'_>) -> Result<Listing> {
                 root: String::new(),
                 exact,
                 members,
+                trigger: vec![],
             })
         }
     }

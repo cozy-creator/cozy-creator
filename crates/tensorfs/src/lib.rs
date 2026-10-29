@@ -10,6 +10,8 @@ pub mod err;
 pub mod export;
 pub mod failure;
 pub use failure::{Failure, Kind, Result};
+/// Model families: each first-party model's canonical form, verified at ingest.
+pub mod family;
 #[cfg(feature = "store")]
 pub mod fetch;
 pub mod format;

@@ -10,14 +10,11 @@
 //! config alone scales as one of the factors does.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
-use std::path::PathBuf;
 
 use serde_json::{json, Value as Json};
 
 use super::engine::{Planned, PlannedPart, Reading};
-use super::source::Group;
+use super::source::{Group, SourceSet};
 use crate::err::{refuse, Code, Refusal, Result};
 use crate::format::{Config, Dtype};
 
@@ -105,12 +102,12 @@ pub struct Adapter {
 
 /// Normalizes, in `planned`, each component holding LoRA factors ([`peft_key`]), and returns its
 /// adapter. `sources` is each component's source group; an adapter config file read becomes the
-/// component's config and leaves `files`. `paths` are the source files a reading names.
+/// component's config and leaves `files`. `set` reads the source files a reading names.
 pub fn normalize(
     planned: &mut Vec<Planned>,
     sources: &BTreeMap<String, &Group>,
     files: &mut BTreeMap<String, Vec<u8>>,
-    paths: &[PathBuf],
+    set: &SourceSet,
 ) -> Result<BTreeMap<String, Adapter>> {
     let (mut adapters, mut read, mut alphas) = (BTreeMap::new(), BTreeSet::new(), Vec::new());
     for (component, group) in sources {
@@ -156,7 +153,7 @@ pub fn normalize(
         let mut stated: BTreeMap<String, f64> = BTreeMap::new();
         for i in &mine {
             let Some(m) = planned[*i].key.strip_suffix(ALPHA).map(str::to_owned) else { continue };
-            let value = scalar(component, &planned[*i], paths)?;
+            let value = scalar(component, &planned[*i], set)?;
             stated.insert(m, value);
             let p = &mut planned[*i];
             let read = Reading::inline((value as f32).to_le_bytes().to_vec(), Dtype::F32);
@@ -205,7 +202,7 @@ pub fn normalize(
 }
 
 /// The value of a one-element tensor, read from its source.
-fn scalar(component: &str, p: &Planned, paths: &[PathBuf]) -> Result<f64> {
+fn scalar(component: &str, p: &Planned, set: &SourceSet) -> Result<f64> {
     let refused = |why: &str| refuse(Code::WRONG_TYPE, format!("{component}/{}: {why}", p.key));
     let (Some(part), true) = (p.parts.first(), p.encoding.is_none() && p.shape.iter().product::<u64>() == 1) else {
         return refused("a LoRA alpha is one plain element");
@@ -213,15 +210,7 @@ fn scalar(component: &str, p: &Planned, paths: &[PathBuf]) -> Result<f64> {
     let read = &part.read;
     let bytes = match &read.inline {
         Some(bytes) => bytes.clone(),
-        None => {
-            let path = &paths[read.file];
-            let io = |e| crate::err::classify_io(format!("read {}", path.display()), e);
-            let mut file = File::open(path).map_err(io)?;
-            file.seek(SeekFrom::Start(read.start)).map_err(io)?;
-            let mut bytes = vec![0; read.len as usize];
-            file.read_exact(&mut bytes).map_err(io)?;
-            bytes
-        }
+        None => set.read_at(read.file, read.start, read.len)?,
     };
     let word = |n: usize| {
         let mut w = [0u8; 8];

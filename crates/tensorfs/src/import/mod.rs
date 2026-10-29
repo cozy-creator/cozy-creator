@@ -1,9 +1,12 @@
 //! Convert: sources become one canonical model in the D10 layout (normalize at ingest).
 //!
 //! 1. List and pin each source, and select what the model is built from (`remote`).
-//! 2. Download remote members into `<tmp>/import/<id>/`, never the store; resumable, since
+//! 2. Land each remote member's header into `<tmp>/import/<id>/`, never the store: a large
+//!    safetensors file only its header (by range), every other member whole. Resumable, since
 //!    `<id>` is the pinned selection's digest, and locked (`<id>.lock`) while one convert uses
-//!    it. Local members are read where they are.
+//!    it. Local members are read where they are. Steps 3–4 and the family check read only these
+//!    headers and, by range, the few bytes they need, so a source that is refused is refused
+//!    before its bulk downloads.
 //! 3. Fold quantized carriers into encoded tensors, by their producer's declaration
 //!    (`carriers`). Recognize from safetensors headers alone: a built-in table claims a group
 //!    when its key set is the table's, and a table whose layout headers cannot tell only when the
@@ -13,7 +16,9 @@
 //!    config its structured config, the other run files in its folder its assets; README,
 //!    LICENSE, images, code and docs stay repo files. A table's pinned reference supplies the
 //!    configs and tokenizers the source lacks (recorded as `filled`).
-//! 5. Convert row by row into the [`Sink`], then delete the tmp area.
+//! 5. Check the planned model against its family ([`verify`], [`crate::family`]).
+//! 6. Land the rest of every member (the downloads resume from the headers), convert row by row
+//!    into the [`Sink`], then delete the tmp area.
 //!
 //! A GGUF file is one component of its own (`gguf`).
 
@@ -24,6 +29,7 @@ pub mod lora;
 pub mod order;
 pub mod remote;
 pub mod source;
+pub mod verify;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
@@ -245,11 +251,17 @@ pub struct Imported {
     pub filled: Vec<(String, Vec<String>)>,
     /// Each component's source safetensors `__metadata__` (LoRA training fields, `format`, …).
     pub file_metadata: BTreeMap<String, BTreeMap<String, String>>,
+    /// The family it was verified as, if any.
+    pub family: Option<crate::family::Record>,
+    /// Each LoRA component's base, by the LoRA component.
+    pub adapters: BTreeMap<String, crate::family::Adapter>,
+    /// What the family check found, a line each.
+    pub notes: Vec<String>,
 }
 
 impl Imported {
-    /// The header's loading metadata: `source`, `source_format`, `filled` and each component's
-    /// `__metadata__`.
+    /// The header's loading metadata: `source`, `source_format`, `filled`, each component's
+    /// `__metadata__`, and the verified `family` and `adapter`s.
     pub fn metadata(&self) -> Metadata {
         let text = |s: &str| Value::Str(s.to_owned());
         let texts = |l: &[String]| Value::List(l.iter().map(|s| text(s)).collect());
@@ -283,6 +295,12 @@ impl Imported {
             let by_component = (self.file_metadata.iter()).map(|(c, m)| (c.clone(), strings(m)));
             out.insert(FILE_METADATA.into(), Value::Map(by_component.collect()));
         }
+        if let Some(family) = &self.family {
+            out.insert(crate::family::FAMILY.into(), family.value());
+        }
+        if !self.adapters.is_empty() {
+            out.insert(crate::family::ADAPTER.into(), crate::family::Adapter::value_all(&self.adapters));
+        }
         out
     }
 }
@@ -294,6 +312,8 @@ pub struct Request<'a> {
     pub converter: Option<&'a str>,
     /// The source's Diffusers weights variant (`fp16`), when a folder has several.
     pub source_variant: Option<&'a str>,
+    /// The component a LoRA was trained on, as its uploader says (`--trained-on`).
+    pub trained_on: Option<&'a str>,
     pub access: &'a Access,
     /// The store's tmp directory.
     pub tmp: &'a Path,
@@ -340,6 +360,69 @@ fn land(
     progress("downloading", done, total);
     access.check()?;
     Ok(out)
+}
+
+/// A remote safetensors file larger than this lands only its header before the family check.
+const HEADER_FIRST: u64 = 64 << 20;
+
+fn header_first(m: &remote::Member) -> bool {
+    matches!(m.at, remote::At::Remote { .. })
+        && m.path.ends_with(".safetensors")
+        && m.length.is_some_and(|l| l > HEADER_FIRST)
+}
+
+/// Each member as the scan reads it, landed under `area`: a large remote safetensors file only
+/// its header (the prefix its download later resumes from, by range), every other member whole.
+fn heads(members: &[remote::Member], area: &Path, req: &Request<'_>) -> Result<Vec<source::Head>> {
+    let whole: Vec<remote::Member> = members.iter().filter(|m| !header_first(m)).cloned().collect();
+    let landed: BTreeMap<String, PathBuf> = land(&whole, area, req)?.into_iter().collect();
+    let mut out = Vec::new();
+    for (n, m) in members.iter().enumerate() {
+        stopped(req)?;
+        let remote = matches!(m.at, remote::At::Remote { .. }).then(|| m.clone());
+        let local = match landed.get(&m.path) {
+            Some(local) => local.clone(),
+            None => {
+                (req.progress)("reading headers", n as u64, members.len() as u64);
+                header_prefix(m, &area.join(&m.path), req)?
+            }
+        };
+        let length = match (header_first(m), m.length) {
+            (true, Some(length)) => length,
+            _ => std::fs::metadata(&local).map_err(|e| crate::err::classify_io(format!("read {}", local.display()), e))?.len(),
+        };
+        out.push(source::Head { path: m.path.clone(), local, length, remote });
+    }
+    Ok(out)
+}
+
+/// A remote safetensors file's first bytes at `dest`, through its header: what is there already
+/// is kept, the rest of the header read by range.
+fn header_prefix(m: &remote::Member, dest: &Path, req: &Request<'_>) -> Result<PathBuf> {
+    use std::io::Write as _;
+    let io = |e| crate::err::classify_io(format!("write {}", dest.display()), e);
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(io)?;
+    }
+    let mut file = std::fs::OpenOptions::new().create(true).read(true).append(true).open(dest).map_err(io)?;
+    let mut have = file.metadata().map_err(io)?.len();
+    let mut fetch = |to: u64, have: &mut u64| -> Result<()> {
+        if *have < to {
+            let bytes = remote::read_range(m, *have, to, req.access)?;
+            file.write_all(&bytes).map_err(io)?;
+            *have = to;
+        }
+        Ok(())
+    };
+    fetch(8, &mut have)?;
+    let mut prefix = [0u8; 8];
+    std::fs::File::open(dest).and_then(|mut f| f.read_exact(&mut prefix)).map_err(io)?;
+    let n = u64::from_le_bytes(prefix);
+    if n > 100 << 20 || m.length.is_some_and(|l| 8 + n > l) {
+        return refuse(Code::CARRIER_GEOMETRY, format!("{}: header length {n} outside the file", m.path));
+    }
+    fetch(8 + n, &mut have)?;
+    Ok(dest.to_path_buf())
 }
 
 fn folder(path: &str) -> &str {
@@ -717,9 +800,15 @@ pub fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
             crate::err::classify_io("lock the import area", std::io::Error::other(e.to_string()))
         })?;
     stopped(req)?;
-    let landed = land(&members, &area.join("source"), req)?;
+    let heads = heads(&members, &area.join("source"), req)?;
     stopped(req)?;
-    let mut set = source::SourceSet::scan(&landed)?;
+    let mut set = source::SourceSet::scan(&heads)?;
+    set.access = Some(req.access.clone());
+    // What folding and normalizing read of a file only its header is here holds: small integer
+    // tensors (markers, stated shapes) and scalars (LoRA alphas).
+    let small = |t: &source::Tensor| t.len <= 64 << 10;
+    let read = |t: &source::Tensor| t.shape.is_empty() || matches!(t.dtype, Dtype::U8 | Dtype::I32 | Dtype::I64);
+    set.read_ahead(|_, t| small(t) && read(t))?;
     let as_is = req.converter == Some(AS_IS);
     if !as_is {
         carriers::fold(&mut set)?;
@@ -764,7 +853,7 @@ pub fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
         .collect();
     let mut adapters = match as_is {
         true => BTreeMap::new(),
-        false => lora::normalize(&mut planned, &sources, &mut files, &set.files)?,
+        false => lora::normalize(&mut planned, &sources, &mut files, &set)?,
     };
     // A PEFT adapter's keys are its base model's module names: canonical once unwrapped.
     let peft = |g: &usize| adapters.get(&identity(&set.groups[*g])).is_some_and(|a| a.stated);
@@ -831,6 +920,27 @@ pub fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
             (folder.config, folder.config_file) = (adapter.config, Some(lora::ADAPTER_CONFIG.into()));
         }
     }
+    let checked = match as_is {
+        true => verify::Checked::default(),
+        false => verify::check(&verify::Input {
+            set: &set,
+            tables,
+            recognized: &recognized,
+            planned: &planned,
+            layout: &layout,
+            sources: &sources,
+            gguf: !ggufs_planned.is_empty(),
+            trained_on: req.trained_on,
+        })?,
+    };
+    for note in &checked.notes {
+        tracing::info!("family: {note}");
+    }
+    stopped(req)?;
+    // Nothing refused: the bulk lands, each download resuming from its header.
+    let rest: Vec<remote::Member> = members.iter().filter(|m| header_first(m)).cloned().collect();
+    land(&rest, &area.join("source"), req)?;
+    stopped(req)?;
     sink.begin(&layout)?;
     let opened: Vec<File> = set
         .files
@@ -916,6 +1026,9 @@ pub fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
         sources: pinned,
         filled,
         file_metadata,
+        family: checked.family,
+        adapters: checked.adapters,
+        notes: checked.notes,
     };
     // Reports completed conversion before publication: even the final progress callback
     // can refuse without committing a header. This is the final cooperative cancellation

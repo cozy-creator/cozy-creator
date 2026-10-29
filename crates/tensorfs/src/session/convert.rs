@@ -180,6 +180,7 @@ impl Client {
                 sources: &sources,
                 converter: converter.as_deref(),
                 source_variant: source_variant.as_deref(),
+                trained_on: None,
                 access: &access,
                 tmp: &tmp,
                 progress: &report,

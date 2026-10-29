@@ -116,14 +116,20 @@ fn escape(name: &str) -> String {
 
 /// Submits one warm run of `choice` to `destination` (a `local/` alias, a Hub repository, or
 /// none) and follows it; `lane` labels the commit an upload makes.
-async fn warm(
+async fn warm(ctx: &Context, on: On, target: String, input: ModelInput, destination: String, lane: String) -> Result<ExitCode, Error> {
+    let run = warm_run(ctx, on, target, input, destination, lane).await?;
+    Ok(crate::run::exit_code(&run))
+}
+
+/// The warm run that makes `input` present (and uploads it to `destination`), followed to its end.
+async fn warm_run(
     ctx: &Context,
     on: On,
     target: String,
     input: ModelInput,
     destination: String,
     lane: String,
-) -> Result<ExitCode, Error> {
+) -> Result<Run, Error> {
     let spec = RunSpec {
         kind: SpecKind::Warm,
         lane,
@@ -146,7 +152,7 @@ async fn warm(
     let submitted = crate::run::submit(ctx, submit, None).await?;
     let run = crate::run::follow(ctx, submitted.run).await?;
     made(ctx, &run);
-    Ok(crate::run::exit_code(&run))
+    Ok(run)
 }
 
 /// What the machine made (TensorD's `result.models[0]`), after `follow`'s record; `--json`
@@ -198,28 +204,69 @@ pub(crate) async fn download(ctx: &Context, args: Download) -> Result<ExitCode, 
 
 pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Error> {
     let destination = Repo::hub(&args.destination)?.to_string();
+    if args.strength.is_some_and(|s| !s.is_finite() || s.abs() > 10.0) {
+        return Err(usage("model_strength_invalid", "--strength is a number between -10 and 10"));
+    }
+    let converted = !args.source.starts_with("run:") && !matches!(ModelRef::parse(&args.source), Ok(ModelRef::Commit { .. }));
+    if args.trained_on.is_some() && !converted {
+        return Err(usage("model_trained_on_unused", "--trained-on is read when a LoRA source is converted; this source already was"));
+    }
     // A Hub commit is already at the Hub: the destination records it there, and nothing moves.
     if let Ok(ModelRef::Commit { repo, commit }) = ModelRef::parse(&args.source) {
         let to = Repo::hub(&args.destination)?;
-        return recorded(ctx, &repo, &commit, &to, &args.lane, args.mirror.as_deref().map(|page| (args.source.as_str(), page))).await;
+        let code = recorded(ctx, &repo, &commit, &to, &args.lane, args.mirror.as_deref().map(|page| (args.source.as_str(), page))).await?;
+        display(ctx, &args, &destination, None).await?;
+        return Ok(code);
     }
     if let Some(page) = &args.mirror {
         mirror(ctx, &args.source, page, &Repo::hub(&args.destination)?).await?;
     }
     if let Some(reference) = args.source.strip_prefix("run:") {
-        return super::from_run::upload(ctx, reference, &destination, &args.lane).await;
+        let code = super::from_run::upload(ctx, reference, &destination, &args.lane).await?;
+        display(ctx, &args, &destination, None).await?;
+        return Ok(code);
     }
     let on = args.placement.on()?;
     // The machine publishes under this computer's sign-in; refuse before anything is made.
     ctx.hub_session(ctx.hub())?;
     let path = Path::new(&args.source);
-    let made = if (args.source.starts_with('.') || path.is_absolute()) && path.is_dir() {
+    let mut made: ModelInput = if (args.source.starts_with('.') || path.is_absolute()) && path.is_dir() {
+        if args.trained_on.is_some() {
+            return Err(usage("model_trained_on_unused", "--trained-on is read when a LoRA source is converted; a CozyTensors folder already was"));
+        }
         folder(path, &args.profiles, &ctx.home.root().join("cache/trees"), &ctx.home.root().join("cache/digests"))?
     } else {
         source(&args.source, &args.profiles)?.into()
     };
+    made.choice.trained_on = args.trained_on.clone().unwrap_or_default();
     let target = format!("{} → {destination} ({})", args.source, args.lane);
-    warm(ctx, on, target, made, destination, args.lane).await
+    let run = warm_run(ctx, on, target, made, destination.clone(), args.lane.clone()).await?;
+    if run.status == Status::Completed {
+        let offered = run.result.as_ref().and_then(|r| r["models"][0]["trigger"].as_str()).filter(|t| !t.is_empty());
+        display(ctx, &args, &destination, offered).await?;
+    }
+    Ok(crate::run::exit_code(&run))
+}
+
+/// Sets the destination's trigger and strength at the Hub: the flags, else the words its
+/// provider gave (Civitai's trainedWords). Nothing is applied by them: runs default to 1.0.
+async fn display(ctx: &Context, args: &Upload, destination: &str, offered: Option<&str>) -> Result<(), Error> {
+    let trigger = args.trigger.as_deref().or(offered);
+    if trigger.is_none() && args.strength.is_none() {
+        return Ok(());
+    }
+    let repo = Repo::hub(destination)?;
+    let client = ctx.hub_signed_in(ctx.hub())?;
+    hub_answer(client.set_model_display(&repo.org, &repo.name, trigger, args.strength.map(Some)).await)?;
+    let mut said = vec![];
+    if let Some(trigger) = trigger {
+        said.push(format!("trigger {trigger:?}"));
+    }
+    if let Some(strength) = args.strength {
+        said.push(format!("recommended strength {strength}"));
+    }
+    output::say(ctx, &format!("{repo}: {}", said.join(", ")));
+    Ok(())
 }
 
 /// Commit `commit` of `from` as a commit of `to` on the same Hub: the Hub records it when this

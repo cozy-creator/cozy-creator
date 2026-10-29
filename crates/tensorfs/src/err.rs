@@ -111,6 +111,10 @@ codes![
     UNREGISTERED_FINGERPRINT,
     AMBIGUOUS_CLASSIFICATION,
     TENSOR_SCHEMA_MISMATCH,
+    // ingest border: a converted source is no form of its family (keys and shapes), or its
+    // permuted rows are not where the family's reference holds them (the layout probe)
+    FAMILY_MISMATCH,
+    LAYOUT_MISMATCH,
     // ingest border: conversion
     CONVERTS_NOTHING,
     MISSING_COMPANION_ROLE,
