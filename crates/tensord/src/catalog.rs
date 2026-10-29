@@ -185,16 +185,16 @@ impl Catalog {
     pub fn root(&self) -> &Path {
         &self.root
     }
-    /// `identities`, the most recently used first (their `.hold`'s time, which `resolve` sets).
-    /// They resolve least recent first, so the times this sets keep that order.
-    pub fn recent(&self, identities: impl IntoIterator<Item = String>) -> Vec<HeldGeneration> {
+    /// `identities` with their last use (their `.hold`'s time, which `resolve` sets), the most
+    /// recently used first. They resolve least recent first, so the times this sets keep that order.
+    pub fn recent(&self, identities: impl IntoIterator<Item = String>) -> Vec<(SystemTime, HeldGeneration)> {
         let used = |identity: &str| {
             let hold = self.directory(identity).ok()?.join(".hold");
             hold.metadata().ok()?.modified().ok()
         };
         let mut found: Vec<_> = identities.into_iter().filter_map(|i| Some((used(&i)?, i))).collect();
         found.sort();
-        let mut held: Vec<_> = found.iter().filter_map(|(_, identity)| self.resolve(identity).ok()).collect();
+        let mut held: Vec<_> = found.into_iter().filter_map(|(used, identity)| Some((used, self.resolve(&identity).ok()?))).collect();
         held.reverse();
         held
     }
