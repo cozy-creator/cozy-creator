@@ -87,8 +87,8 @@ pub(crate) struct Download {
     /// Keep it on the machine under this name.
     #[arg(value_name = "local/ALIAS")]
     alias: Option<String>,
-    /// A reviewed TensorFS profile to convert a provider source or local file with (`h3.lora`).
-    #[arg(long = "source-profile", value_name = "PROFILE")]
+    /// The source file's convention: a reviewed TensorFS format, e.g. h3.lora; usually detected.
+    #[arg(long = "source-format", value_name = "FORMAT")]
     profiles: Vec<String>,
     #[command(flatten)]
     placement: crate::run::Placement,
@@ -106,8 +106,8 @@ pub(crate) struct Upload {
     /// The commit's lane, a label (bf16, fp8, int8-convrot, …).
     #[arg(long, value_parser = refs::lane)]
     lane: String,
-    /// A reviewed TensorFS profile to convert with; repeat to compose one model.
-    #[arg(long = "source-profile", value_name = "PROFILE")]
+    /// The source file's convention: a reviewed TensorFS format, e.g. h3.lora; usually detected.
+    #[arg(long = "source-format", value_name = "FORMAT")]
     profiles: Vec<String>,
     #[command(flatten)]
     placement: crate::run::Placement,

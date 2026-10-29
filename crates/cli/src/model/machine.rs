@@ -38,7 +38,7 @@ impl From<(ModelChoice, Option<StagedInput>)> for ModelInput {
 /// its headers without importing or fetching the tensor objects a thin folder omits.
 fn folder(path: &Path, profiles: &[String], manifests: &Path, memo: &Path) -> Result<ModelInput, Error> {
     if !profiles.is_empty() {
-        return Err(usage("model_profile_unused", "a CozyTensors folder is already converted; omit --source-profile"));
+        return Err(usage("model_profile_unused", "a CozyTensors folder is already converted; omit --source-format"));
     }
     let staged = crate::run::tree::stage(path, Some(memo), manifests)?;
     let input = InputFile {
@@ -72,7 +72,7 @@ fn source(raw: &str, profiles: &[String]) -> Result<(ModelChoice, Option<StagedI
         (ModelRef::parse(raw)?.choice("model"), None)
     };
     if !profiles.is_empty() && choice.source.is_empty() {
-        return Err(usage("model_profile_unused", "--source-profile converts a provider source or a local file"));
+        return Err(usage("model_profile_unused", "--source-format converts a provider source or a local file"));
     }
     choice.profiles = profiles.to_vec();
     Ok((choice, staged))
