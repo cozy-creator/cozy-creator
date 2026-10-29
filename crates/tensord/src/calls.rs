@@ -532,6 +532,10 @@ pub(crate) struct Seen {
     steps: (String, u32, f64),
 }
 
+/// A stage as the record keeps it: whole for any a call says (a child's under its caller's, a stack
+/// of LoRAs), bounded for one that runs on.
+const STAGE_CHARS: usize = 1000;
+
 /// One progress frame of run `id`'s executor: a package log line, or its stage, with its steady
 /// step time (the child call's it relays, when it is one, and that call's download bytes).
 pub(crate) fn observe(engine: &Engine, id: &str, seen: &mut Seen, frame: &Frame, caller: Option<&Caller>) {
@@ -548,7 +552,7 @@ pub(crate) fn observe(engine: &Engine, id: &str, seen: &mut Seen, frame: &Frame,
     // `advance` is the attempt's monotone position in completed units (Runtime
     // `Telemetry`); a zero one is telemetry, not work.
     seen.completed = seen.completed.max(frame.advance);
-    let mut payload = json!({"stage": frame.stage.chars().take(120).collect::<String>(), "step_ms": frame.step_ms.unwrap_or(0.0)});
+    let mut payload = json!({"stage": frame.stage.chars().take(STAGE_CHARS).collect::<String>(), "step_ms": frame.step_ms.unwrap_or(0.0)});
     for (name, value) in [
         ("stage_fraction", frame.stage_fraction.map(Value::from)),
         ("overall_fraction", frame.overall_fraction.map(Value::from)),

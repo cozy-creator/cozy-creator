@@ -21,15 +21,17 @@ pub const FORMAT: &str = "cozy.model.lora/1";
 /// The graph's asset in each adapted component of the view.
 pub const GRAPH_FILE: &str = "model_adapters.json";
 
-/// One caller adapter, in order. An empty `component` is inferred when exactly one base
-/// component fits every factor pair; an empty `source_component` is the adapter's component
-/// named like `component`, else `adapter`, else its only one.
+/// One caller adapter, in order. With neither component named, each of the adapter's factor
+/// components adapts the base component named like it, else the one its layers fit, of those the
+/// call `runs` (empty: all); a named `source_component` alone adapts the one it fits; a named
+/// `component` takes the factor component named like it, else `adapter`, else the only one.
 #[derive(Clone, Debug)]
 pub struct Selection {
     pub checkpoint: ObjectRef,
     pub component: String,
     pub source_component: String,
     pub strength: f64,
+    pub runs: Vec<String>,
 }
 
 /// The composed view, `view-<composition>`, open: the store keeps it while the caller holds it.
@@ -37,6 +39,8 @@ pub struct Selection {
 pub struct Composed {
     pub name: String,
     pub checkpoint: Checkpoint,
+    /// The base components each selection adapts, in order.
+    pub adapted: Vec<Vec<String>>,
 }
 
 fn refuse(code: &str, detail: impl Into<String>) -> io::Error {
@@ -145,7 +149,7 @@ fn keyed(component: &Component) -> BTreeMap<String, Tensor> {
     component.tensors.iter().map(|t| (t.key.clone(), t.clone())).collect()
 }
 
-fn infer_component(base: &Header, factors: &BTreeMap<String, Tensor>) -> io::Result<String> {
+fn infer_component(base: &Header, runs: &[String], factors: &BTreeMap<String, Tensor>) -> io::Result<String> {
     let pairs = pairs(factors)?;
     let fits = |tensors: &BTreeMap<String, Tensor>| {
         !pairs.is_empty()
@@ -154,15 +158,18 @@ fn infer_component(base: &Header, factors: &BTreeMap<String, Tensor>) -> io::Res
                 _ => false,
             })
     };
-    let matches: Vec<&String> = base.components().iter().filter(|c| fits(&keyed(c))).map(|c| &c.name).collect();
+    let run = |c: &&Component| runs.is_empty() || runs.contains(&c.name);
+    let matches: Vec<&String> = base.components().iter().filter(run).filter(|c| fits(&keyed(c))).map(|c| &c.name).collect();
+    let ran = || match runs.is_empty() {
+        true => "the model's components".to_string(),
+        false => format!("the components this call runs ({})", runs.join(", ")),
+    };
     match matches.as_slice() {
         [one] => Ok((*one).clone()),
+        [] => Err(refuse("component", format!("the LoRA's layers fit none of {}", ran()))),
         _ => Err(refuse(
             "component",
-            format!(
-                "select one adapter component; compatible choices: {}",
-                if matches.is_empty() { "none".into() } else { matches.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ") }
-            ),
+            format!("the LoRA's layers fit more than one of {}: {}", ran(), matches.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")),
         )),
     }
 }
@@ -185,95 +192,107 @@ fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(
         if !selection.strength.is_finite() {
             return Err(refuse("scale", "adapter strength must be finite"));
         }
-        // The factor component: the one the selection names; else the one named like the
-        // selected base component (an SDXL LoRA names its components after the base's), else
-        // `adapter`, else the adapter's only component.
+        // What it adapts, (factor component, base component): the components the selection
+        // names; else, with only a factor component named, the base component its layers fit;
+        // else every factor component, onto the base component named like it (an SDXL LoRA names
+        // its components after the base's) that the call runs, else the one its layers fit.
         let components = adapter.header().components();
         let named = |name: &str| adapter.header().component(name);
-        let found = match selection.source_component.is_empty() {
-            true => named(&selection.component)
-                .or_else(|| named("adapter"))
-                .or_else(|| (components.len() == 1).then(|| &components[0])),
-            false => named(&selection.source_component),
-        };
-        let Some(found) = found else {
+        let absent = || {
             let has: Vec<&str> = components.iter().map(|c| c.name.as_str()).collect();
-            return Err(refuse(
-                "components",
-                format!("the adapter has no factor component for this selection; it has: {}", has.join(", ")),
-            ));
+            refuse("components", format!("the adapter has no factor component for this selection; it has: {}", has.join(", ")))
         };
-        let (source_component, factors) = (&found.name, &keyed(found));
-        // PEFT's adapter_config, the LoRA component's config: α where a module has no `.alpha`.
-        let lora_alpha = found.config.get("lora_alpha").and_then(serde_json::Value::as_f64);
-        if factors.is_empty() {
+        let runs = |name: &str| selection.runs.is_empty() || selection.runs.iter().any(|r| r == name);
+        let targets: Vec<(&Component, String)> = match (selection.component.is_empty(), selection.source_component.is_empty()) {
+            (false, true) => {
+                let found = (named(&selection.component).or_else(|| named("adapter")))
+                    .or_else(|| (components.len() == 1).then(|| &components[0]));
+                vec![(found.ok_or_else(absent)?, selection.component.clone())]
+            }
+            (false, false) => vec![(named(&selection.source_component).ok_or_else(absent)?, selection.component.clone())],
+            (true, false) => {
+                let found = named(&selection.source_component).ok_or_else(absent)?;
+                vec![(found, infer_component(header, &selection.runs, &keyed(found))?)]
+            }
+            (true, true) => (components.iter())
+                .map(|found| match runs(&found.name) && header.component(&found.name).is_some() {
+                    true => Ok((found, found.name.clone())),
+                    false => Ok((found, infer_component(header, &selection.runs, &keyed(found))?)),
+                })
+                .collect::<io::Result<_>>()?,
+        };
+        if targets.is_empty() {
             return Err(refuse("empty", "adapter contains no factors"));
         }
-        let component = match selection.component.is_empty() {
-            true => infer_component(header, factors)?,
-            false => selection.component.clone(),
-        };
-        let base_tensors = &keyed(
-            header.component(&component).ok_or_else(|| refuse("component", format!("base has no component {component:?}")))?,
-        );
-        let mut scalars = BTreeMap::new();
-        for (key, tensor) in factors {
-            match (validate(adapter, source_component, key, tensor)?, key.strip_suffix(".alpha")) {
-                (Some(value), Some(path)) => drop(scalars.insert(path.to_string(), value)),
-                (None, Some(_)) => return Err(refuse("alpha", format!("{key}: alpha must be a scalar"))),
-                _ => {}
+        for (found, component) in targets {
+            let (source_component, factors) = (&found.name, &keyed(found));
+            // PEFT's adapter_config, the LoRA component's config: α where a module has no `.alpha`.
+            let lora_alpha = found.config.get("lora_alpha").and_then(serde_json::Value::as_f64);
+            if factors.is_empty() {
+                return Err(refuse("empty", "adapter contains no factors"));
             }
-        }
-        graph.adapters.push(AdapterRef {
-            reference: selection.checkpoint.id(),
-            scale: selection.strength,
-            kind: "lora",
-            component: component.clone(),
-            source_component: source_component.clone(),
-            family: "",
-        });
-        let alias = format!("adapter_{index}");
-        for (path, pair) in pairs(factors)? {
-            let (Some((a_key, a)), Some((b_key, b))) = (pair.get("a"), pair.get("b")) else {
-                return Err(refuse("pair", format!("{component}.{path}: incomplete A/B pair")));
-            };
-            let Some(weight) = base_tensors.get(&format!("{path}.weight")) else {
-                return Err(refuse("target", format!("{component}.{path}: the base has no such layer")));
-            };
-            if !matches!(weight.shape.len(), 2 | 4) {
-                return Err(refuse("target_type", format!("{component}.{path}: only linear and 2-D convolution LoRA targets are supported")));
-            }
-            if !(matches!(weight.dtype, Dtype::F16 | Dtype::BF16 | Dtype::F32) && a.dtype == b.dtype && fits(a, b, weight)) {
-                return Err(refuse("shape", format!("{component}.{path}: factors do not fit the base projection")));
-            }
-            let rank = a.shape[0];
-            let alpha = scalars.get(&path).copied().or(lora_alpha).unwrap_or(rank as f64);
-            if !(alpha / rank as f64 * selection.strength).is_finite() {
-                return Err(refuse("scale", format!("{component}.{path}: effective scale is not finite")));
-            }
-            if selection.strength == 0.0 {
-                continue;
-            }
-            for suffix in ["weight", "bias"] {
-                let key = format!("{path}.{suffix}");
-                if base_tensors.contains_key(&key) {
-                    renamed.entry((component.clone(), key)).or_insert(format!("{path}.base_layer.{suffix}"));
+            let base_tensors = &keyed(
+                header.component(&component).ok_or_else(|| refuse("component", format!("base has no component {component:?}")))?,
+            );
+            let mut scalars = BTreeMap::new();
+            for (key, tensor) in factors {
+                match (validate(adapter, source_component, key, tensor)?, key.strip_suffix(".alpha")) {
+                    (Some(value), Some(path)) => drop(scalars.insert(path.to_string(), value)),
+                    (None, Some(_)) => return Err(refuse("alpha", format!("{key}: alpha must be a scalar"))),
+                    _ => {}
                 }
             }
-            for (role, key) in [("A", a_key), ("B", b_key)] {
-                let grafted = format!("{path}.lora_{role}.{alias}.weight");
-                let take = (component.clone(), grafted, index + 1, source_component.clone(), key.clone());
-                grafts.entry(component.clone()).or_default().push(take);
-            }
-            graph.layers.push(Layer {
+            let alias = format!("adapter_{}", graph.adapters.len());
+            graph.adapters.push(AdapterRef {
+                reference: selection.checkpoint.id(),
+                scale: selection.strength,
+                kind: "lora",
                 component: component.clone(),
-                target: path.clone(),
-                adapter: alias.clone(),
-                rank,
-                alpha,
-                strength: selection.strength,
-                dtype: a.dtype.name().into(),
+                source_component: source_component.clone(),
+                family: "",
             });
+            for (path, pair) in pairs(factors)? {
+                let (Some((a_key, a)), Some((b_key, b))) = (pair.get("a"), pair.get("b")) else {
+                    return Err(refuse("pair", format!("{component}.{path}: incomplete A/B pair")));
+                };
+                let Some(weight) = base_tensors.get(&format!("{path}.weight")) else {
+                    return Err(refuse("target", format!("{component}.{path}: the base has no such layer")));
+                };
+                if !matches!(weight.shape.len(), 2 | 4) {
+                    return Err(refuse("target_type", format!("{component}.{path}: only linear and 2-D convolution LoRA targets are supported")));
+                }
+                if !(matches!(weight.dtype, Dtype::F16 | Dtype::BF16 | Dtype::F32) && a.dtype == b.dtype && fits(a, b, weight)) {
+                    return Err(refuse("shape", format!("{component}.{path}: factors do not fit the base projection")));
+                }
+                let rank = a.shape[0];
+                let alpha = scalars.get(&path).copied().or(lora_alpha).unwrap_or(rank as f64);
+                if !(alpha / rank as f64 * selection.strength).is_finite() {
+                    return Err(refuse("scale", format!("{component}.{path}: effective scale is not finite")));
+                }
+                if selection.strength == 0.0 {
+                    continue;
+                }
+                for suffix in ["weight", "bias"] {
+                    let key = format!("{path}.{suffix}");
+                    if base_tensors.contains_key(&key) {
+                        renamed.entry((component.clone(), key)).or_insert(format!("{path}.base_layer.{suffix}"));
+                    }
+                }
+                for (role, key) in [("A", a_key), ("B", b_key)] {
+                    let grafted = format!("{path}.lora_{role}.{alias}.weight");
+                    let take = (component.clone(), grafted, index + 1, source_component.clone(), key.clone());
+                    grafts.entry(component.clone()).or_default().push(take);
+                }
+                graph.layers.push(Layer {
+                    component: component.clone(),
+                    target: path.clone(),
+                    adapter: alias.clone(),
+                    rank,
+                    alpha,
+                    strength: selection.strength,
+                    dtype: a.dtype.name().into(),
+                });
+            }
         }
     }
     let mut takes = vec![];
@@ -294,18 +313,25 @@ fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(
 /// The adapter view of `base` with `selections`, composed (the same bytes, so the same id, each
 /// time); one left unfinished by a crash resumes.
 pub fn compose(store: &Store, base: &ObjectRef, selections: &[Selection]) -> io::Result<Composed> {
-    let rows: Vec<_> = selections
-        .iter()
-        .map(|s| serde_json::json!([&s.checkpoint.id(), s.component, s.source_component, s.strength.to_string()]))
-        .collect();
-    let identity = tensorfs::sha256::hex_digest(
-        &serde_json_canonicalizer::to_vec(&serde_json::json!([FORMAT, base.id(), rows])).map_err(io::Error::other)?,
-    );
-    let id = format!("view-{}", &identity[..40]);
     let checkpoint = |header: &ObjectRef| store.checkpoint(header).map_err(storage::io_error);
+    let base_ref = base;
     let base = checkpoint(base)?;
     let adapters = selections.iter().map(|s| Ok((s.clone(), checkpoint(&s.checkpoint)?))).collect::<io::Result<Vec<_>>>()?;
     let (takes, graph) = plan(&base, &adapters)?;
+    let each = (selections.iter())
+        .map(|s| {
+            let id = s.checkpoint.id();
+            (graph.adapters.iter()).filter(|a| a.reference == id).map(|a| a.component.clone()).collect()
+        })
+        .collect();
+    // Named by what it applies, the components as resolved.
+    let rows: Vec<_> = (graph.adapters.iter())
+        .map(|a| serde_json::json!([&a.reference, a.component, a.source_component, a.scale.to_string()]))
+        .collect();
+    let identity = tensorfs::sha256::hex_digest(
+        &serde_json_canonicalizer::to_vec(&serde_json::json!([FORMAT, base_ref.id(), rows])).map_err(io::Error::other)?,
+    );
+    let id = format!("view-{}", &identity[..40]);
     let adapted: BTreeSet<&str> = graph.adapters.iter().map(|a| a.component.as_str()).collect();
     let graph = serde_json_canonicalizer::to_vec(&graph).map_err(io::Error::other)?;
     let mut writer = store.writer(None, Some(&id)).map_err(storage::io_error)?;
@@ -336,5 +362,5 @@ pub fn compose(store: &Store, base: &ObjectRef, selections: &[Selection]) -> io:
         writer.set_metadata(key, value.clone());
     }
     let header = writer.commit().map_err(storage::io_error)?;
-    Ok(Composed { name: id, checkpoint: checkpoint(&header)? })
+    Ok(Composed { name: id, checkpoint: checkpoint(&header)?, adapted: each })
 }

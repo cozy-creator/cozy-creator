@@ -2,7 +2,8 @@
 # `gate` tier), each checked in its record by ./check.py. A failure this file sees itself goes to cli-fails.txt, which
 # check.py reports. Sourced in gate.sh's shell: `cell`, `pkg`, `log`, $CLI, $M, $R and the scenario's $SCENE $CHAR
 # $OBJECT. Every cozy call is logged (release-gate.yml runs gate.sh with --cli e2e/bin/cozy) for e2e/coverage.py.
-#   --gpus 1 · --lane bf16 · --attention-kernel sdpa · --lora (an SDXL LoRA by its Hugging Face ref)
+#   --gpus 1 · --lane bf16 · --attention-kernel sdpa · --lora and --input's lora: (an SDXL LoRA by its Hugging Face
+#   ref, the function's model and the UNet found from it)
 #   machine update --gpu-memory-limit 12GiB, then off · model quantize --lane int8 / fp8, --package, --on
 cli_fail() { log "cli: $*"; echo "$*" >> cli-fails.txt; }
 
@@ -10,7 +11,11 @@ cell cli-gpus "$(pkg sdxl generate)" prompt="$OBJECT on a marble plinth, photo" 
 cell cli-lane16 "$(pkg sdxl generate)" prompt="$SCENE in winter, photo" seed:=$((R + 202)) --lane bf16
 cell cli-attn "$(pkg sdxl generate)" prompt="$CHAR reading a map, film still" seed:=$((R + 203)) --attention-kernel sdpa
 cell cli-lora "$(pkg sdxl generate)" prompt="$OBJECT, studio light" seed:=$((R + 204)) steps:=8 \
-  --lora model:unet=hf://latent-consistency/lcm-lora-sdxl
+  --lora hf://latent-consistency/lcm-lora-sdxl
+printf 'prompt: "%s, watercolor"\nseed: %s\nsteps: 8\nlora:\n  - {ref: hf://latent-consistency/lcm-lora-sdxl, strength: 0.8}\n' \
+  "$CHAR" $((R + 206)) > cli-lora.yaml
+printf 'cli-lora-input\t%s, watercolor\n' "$CHAR" >> prompts.tsv  # quality.py, as cell writes it from argv
+cell cli-lora-input "$(pkg sdxl generate)" --input "$PWD/cli-lora.yaml"
 
 "$CLI" machine update "$M" --gpu-memory-limit 12GiB -y > cli-cap.log 2>&1 || cli_fail "machine update --gpu-memory-limit 12GiB: $(tail -c 300 cli-cap.log)"
 cell cli-cap "$(pkg sdxl generate)" prompt="$SCENE at noon, photo" seed:=$((R + 205))

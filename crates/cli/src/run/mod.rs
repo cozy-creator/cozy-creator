@@ -38,6 +38,7 @@ const EXAMPLES: &str = "Examples:
                      aspect_ratio: \"16:9\"
                      seed: 7
   cozy run sdxl/generate --input request.yaml seed=8   (an inline input overrides the file)
+  cozy run sdxl/generate --input request.yaml --lora org/sdxl-lora,0.8
   cozy run birefnet/remove_background --asset image=./character.png
   cozy run sdxl/generate prompt='a fox in fresh snow'  (inline, for quick runs)
   cozy run sdxl/generate --describe                    (the fields it takes)
@@ -83,8 +84,9 @@ struct RunArgs {
     /// A hint for one attached asset: `label-or-index=auto|low|medium|high`.
     #[arg(long = "asset-fidelity", value_name = "ASSET=FIDELITY", value_parser = fidelity)]
     fidelities: Vec<String>,
-    /// Apply a LoRA: `slot:component=ref[,strength]`, in order.
-    #[arg(long = "lora", value_name = "SLOT:COMPONENT=REF")]
+    /// Apply a LoRA, in order: `org/lora[,strength]` adapts the function's model; `slot=org/lora`
+    /// names one of several (strength 1 by default).
+    #[arg(long = "lora", value_name = "[SLOT=]REF[,STRENGTH]")]
     loras: Vec<String>,
     /// Where the outputs land (default ~/.cozy/outputs).
     #[arg(long, value_name = "DIR", value_hint = ValueHint::DirPath)]
