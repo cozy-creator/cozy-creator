@@ -156,7 +156,10 @@ jobs:
       release_runners: ${{ steps.select.outputs.release_runners }}
       repo: ${{ steps.what.outputs.repo }}
       ref: ${{ steps.what.outputs.ref }}
-      creator: ${{ steps.what.outputs.creator }}
+      creator: ${{ steps.pin.outputs.creator }}
+      stack: ${{ steps.pin.outputs.stack }}
+      runtime: ${{ steps.pin.outputs.runtime }}
+      packages: ${{ steps.pin.outputs.packages }}
     steps:
       - id: what
         env:
@@ -177,6 +180,20 @@ jobs:
           repository: cozy-creator/cozy-creator
           ref: ${{ steps.what.outputs.creator }}
           path: .creator
+      # Each ref resolves once, here, to the commit every job checks out: a branch that moves mid-run never mixes two
+      # commits in one run (one master's coverage.toml against another's candidate cozy, cozy-runtime 40887117045).
+      - id: pin
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STACK: ${{ inputs.stack_ref || 'master' }}
+          RUNTIME: ${{ inputs.runtime_ref || 'master' }}
+        run: |
+          creator=$(git -C .creator rev-parse HEAD)
+          stack=$(gh api "repos/cozy-creator/cozy-creator/commits/$STACK" -q .sha)
+          runtime=$(gh api "repos/cozy-creator/cozy-runtime/commits/$RUNTIME" -q .sha)
+          packages=$(gh api "repos/cozy-creator/packages/commits/master" -q .sha)
+          for c in "$creator" "$stack" "$runtime" "$packages"; do [[ $c =~ ^[0-9a-f]{40}$ ]] || { echo "::error::unresolved ref: '$c'"; exit 1; }; done
+          printf 'creator=%s\nstack=%s\nruntime=%s\npackages=%s\n' "$creator" "$stack" "$runtime" "$packages" | tee -a "$GITHUB_OUTPUT"
       - uses: actions/checkout@v5
         if: inputs.select == ''
         with:
@@ -236,7 +253,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           repository: cozy-creator/${{ matrix.repo }}
-          ref: ${{ needs.affected.outputs.repo == matrix.repo && needs.affected.outputs.ref || matrix.repo == 'cozy-runtime' && (inputs.runtime_ref || 'master') || (inputs.stack_ref || 'master') }}
+          ref: ${{ needs.affected.outputs.repo == matrix.repo && needs.affected.outputs.ref || matrix.repo == 'cozy-runtime' && needs.affected.outputs.runtime || needs.affected.outputs.stack }}
           path: .build
           # The first-parent line build.sh walks back for a run that built the same sources.
           fetch-depth: ${{ matrix.what == 'runtime' && 1 || 30 }}
@@ -293,6 +310,7 @@ jobs:
           path: .creator
       - uses: ./.creator/e2e/candidates
         with:
+          packages_ref: ${{ needs.affected.outputs.packages }}
           repo: ${{ needs.affected.outputs.repo }}
           ref: ${{ needs.affected.outputs.ref }}
           build: ${{ env.BUILD }}
@@ -341,11 +359,12 @@ jobs:
           path: .creator
       - uses: ./.creator/e2e/candidates
         with:
+          packages_ref: ${{ needs.affected.outputs.packages }}
           repo: ${{ needs.affected.outputs.repo }}
           ref: ${{ needs.affected.outputs.ref }}
           build: ${{ env.BUILD }}
-          stack_ref: ${{ inputs.stack_ref || 'master' }}
-          runtime_ref: ${{ inputs.runtime_ref || 'master' }}
+          stack_ref: ${{ needs.affected.outputs.stack }}
+          runtime_ref: ${{ needs.affected.outputs.runtime }}
           tensord: ${{ inputs.tensord }}
           tensorfs: ${{ inputs.tensorfs }}
           runtime: ${{ inputs.runtime }}
@@ -390,13 +409,14 @@ jobs:
           path: .creator
       - uses: ./.creator/e2e/candidates
         with:
+          packages_ref: ${{ needs.affected.outputs.packages }}
           repo: ${{ needs.affected.outputs.repo }}
           ref: ${{ needs.affected.outputs.ref }}
           build: ${{ env.BUILD }}
           # Linux takes the candidate jobs' set; macOS and Windows build their cozy here.
           from: ${{ matrix.runner == 'ubuntu-24.04' && 'artifacts' || '' }}
-          stack_ref: ${{ inputs.stack_ref || 'master' }}
-          runtime_ref: ${{ inputs.runtime_ref || 'master' }}
+          stack_ref: ${{ needs.affected.outputs.stack }}
+          runtime_ref: ${{ needs.affected.outputs.runtime }}
           tensord: ${{ inputs.tensord }}
           tensorfs: ${{ inputs.tensorfs }}
           runtime: ${{ inputs.runtime }}
@@ -444,6 +464,7 @@ jobs:
           path: .creator
       - uses: ./.creator/e2e/candidates
         with:
+          packages_ref: ${{ needs.affected.outputs.packages }}
           repo: ${{ needs.affected.outputs.repo }}
           ref: ${{ needs.affected.outputs.ref }}
           build: ${{ env.BUILD }}
@@ -485,11 +506,12 @@ jobs:
           path: .creator
       - uses: ./.creator/e2e/candidates
         with:
+          packages_ref: ${{ needs.affected.outputs.packages }}
           repo: ${{ needs.affected.outputs.repo }}
           ref: ${{ needs.affected.outputs.ref }}
           build: ${{ env.BUILD }}
-          stack_ref: ${{ inputs.stack_ref || 'master' }}
-          runtime_ref: ${{ inputs.runtime_ref || 'master' }}
+          stack_ref: ${{ needs.affected.outputs.stack }}
+          runtime_ref: ${{ needs.affected.outputs.runtime }}
           tensord: ${{ inputs.tensord }}
           tensorfs: ${{ inputs.tensorfs }}
           runtime: ${{ inputs.runtime }}

@@ -29,6 +29,9 @@ inputs:
   runtime_ref:
     description: The cozy-runtime commit the Runtime comes from, unless the change is cozy-runtime's
     default: master
+  packages_ref:
+    description: The packages commit beside a change that isn't the packages' (empty, its master)
+    default: ''
   tensord:
     description: TensorD (cozy) to take instead of building it, an exact release version
     default: ''
@@ -60,6 +63,7 @@ runs:
       uses: actions/checkout@v5
       with:
         repository: cozy-creator/packages
+        ref: ${{ inputs.packages_ref }}
         path: .pkgs
     - if: inputs.repo != 'packages'
       shell: bash
