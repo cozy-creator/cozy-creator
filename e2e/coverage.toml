@@ -117,6 +117,7 @@ test = "release: throwaway model, uploaded from a file and from a run's output"
 "--on" = "release: throwaway model"
 "--lane" = "release: throwaway model, two lanes"
 "--source-profile" = "none: needs a reviewed TensorFS profile for a small provider model, and none exists"
+"--component" = "none: composes a Hub model's components with a provider DiT (66 GB), on a rental; proven by hand"
 ["model publish"]
 test = "release: throwaway model, published with two lanes"
 ["model delete"]

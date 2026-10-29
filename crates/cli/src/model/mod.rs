@@ -32,7 +32,8 @@ enum Verb {
     /// Make a model present in a machine's store. Follows it to its end; Ctrl-C stops following, never the work.
     Download(Download),
     /// Make a model on a machine, or take a run's weights output (run:N), and upload it as a new
-    /// private commit in a lane: its id. Follows it to its end; Ctrl-C stops following, never the work.
+    /// private commit in a lane: its id. `--component` composes it from other models' components.
+    /// Follows it to its end; Ctrl-C stops following, never the work.
     Upload(Upload),
     /// Write a new commit in a lane from a commit or release, by the recipe a named package
     /// declares for that lane. Follows it to its end; Ctrl-C stops following, never the work.
@@ -107,9 +108,15 @@ pub(crate) struct Upload {
     /// The commit's lane, a label (bf16, fp8, int8-convrot, …).
     #[arg(long, value_parser = refs::lane)]
     lane: String,
-    /// A reviewed TensorFS profile to convert with; repeat to compose one model.
+    /// The reviewed TensorFS profile its provider sources and files convert with; absent, the
+    /// one their headers select.
     #[arg(long = "source-profile", value_name = "PROFILE")]
-    profiles: Vec<String>,
+    profile: Option<String>,
+    /// NAME=MODEL: MODEL's component NAME, else its one component with tensors, becomes this
+    /// model's NAME, under this model's config and assets for it (a name it lacks is added).
+    /// Repeat per component; one MODEL under several names is stored and uploaded once.
+    #[arg(long = "component", value_name = "NAME=MODEL")]
+    components: Vec<String>,
     #[command(flatten)]
     placement: crate::run::Placement,
 }

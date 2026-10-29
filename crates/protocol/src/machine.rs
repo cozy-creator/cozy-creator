@@ -386,7 +386,10 @@ pub struct InputFile {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModelChoice {
-    /// A root slot parameter or full slot path.
+    /// A root slot parameter or full slot path. In a model-only warm run with a weights
+    /// destination, `<parameter>:<component>` supplies that component of the one model (`cozy
+    /// model upload --component`): this choice's component of that name, else its only one with
+    /// tensors.
     pub parameter: String,
     pub repository: String,
     pub release: String,

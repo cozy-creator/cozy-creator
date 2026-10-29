@@ -11,6 +11,7 @@ mod boundary_json;
 mod call_memo;
 pub mod cas;
 pub mod catalog;
+pub mod compose;
 pub mod config;
 pub mod child_launcher;
 pub mod device_executor;

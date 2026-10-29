@@ -571,9 +571,10 @@ impl Publisher {
         Ok(Named { tree: held.tree, lane: held.lane, header: Some(held.header), ..named })
     }
 
-    /// A Hub checkpoint resolved (`resolve`) and downloaded whole into the store (a warm run's
-    /// model choice: `cozy model download`); answers what the Hub named and its bytes by where
-    /// they came from (`pull`).
+    /// A Hub checkpoint resolved (`resolve`) and downloaded into the store (a warm run's model
+    /// choice: `cozy model download`): whole, or but for the tensors of the components `without`
+    /// names, which a composition replaces (their assets come). Answers what the Hub named and
+    /// its bytes by where they came from (`pull`).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn download(
         &self,
@@ -582,14 +583,37 @@ impl Publisher {
         named: Named,
         hardware: &Hardware,
         revision: &str,
+        without: &[String],
         stop: Option<&Stop>,
         bytes: &(dyn Fn(u64, u64) + Sync),
     ) -> Result<(Named, Landed), Refused> {
         let failed = |(code, message)| Refused { code, message };
         let named = self.resolve(service, source, named, hardware, revision).map_err(failed)?;
         // A checkpoint this store already holds whole moves nothing and asks the Hub nothing.
-        let moved = self.ensure(source, &named, stop, bytes).map_err(failed)?;
-        Ok((named, moved))
+        let moved = match without {
+            [] => self.ensure(source, &named, stop, bytes),
+            _ => self.pull_without(source, &named, without, stop, bytes),
+        };
+        Ok((named, moved.map_err(failed)?))
+    }
+
+    /// `named` pulled but for the tensors of the components `without` names.
+    fn pull_without(&self, source: &hub::Source, named: &Named, without: &[String], stop: Option<&Stop>,
+        bytes: &(dyn Fn(u64, u64) + Sync)) -> Result<Landed, Failure> {
+        let structure = self.pull(source, named, Some(&[]), stop, &|_, _| ())?;
+        let checkpoint = storage::checkpoint(&self.store, &named.header()?.id()).map_err(io_failure)?;
+        let (replaced, kept): (Vec<_>, Vec<_>) = checkpoint.components().iter().partition(|c| without.contains(&c.name));
+        let assets: Vec<ObjectRef> = replaced.iter().flat_map(|c| c.assets.values().cloned()).collect();
+        let remote = origin::remote(&self.machine, source).map_err(|e| unsigned(source, refused("model_download_failed", e.clone()), &e))?;
+        let assets = self.machine.objects(&remote, &assets, priority::NOW, &stop.cloned().unwrap_or_default())
+            .map_err(|e| unsigned(source, refused("model_download_failed", e.clone()), &e))?;
+        let kept: Vec<String> = kept.iter().map(|c| c.name.clone()).collect();
+        let landed = self.pull(source, named, Some(&kept), stop, bytes)?;
+        Ok(Landed {
+            origin: structure.origin + assets.origin + landed.origin,
+            volume: structure.volume + assets.volume + landed.volume,
+            local: assets.local + landed.local,
+        })
     }
 
     /// The installation a request names. An unnamed release is the one the Hub named under
