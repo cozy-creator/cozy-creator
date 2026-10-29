@@ -935,8 +935,9 @@ pub fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
         })?,
     };
     set.forget_read_ahead();
+    // What it was verified as, for the run's record.
     for note in &checked.notes {
-        tracing::info!("family: {note}");
+        progress(&format!("family: {note}"), 0, 0);
     }
     stopped(req)?;
     // Nothing refused: the bulk lands, each download resuming from its header.
