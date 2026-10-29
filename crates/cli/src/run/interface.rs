@@ -265,6 +265,19 @@ impl Interface {
             && (self.callables.iter())
                 .any(|c| c.internal && c.accelerator != Some(false) && !c.models.is_empty())
     }
+
+    /// The model slots of the calls an orchestrator makes: its package's internal GPU functions'.
+    /// A run names one by its parameter, and the machine gives that choice to every call
+    /// declaring it.
+    pub fn call_slots(&self, callable: &Callable) -> Vec<&Slot> {
+        if !self.orchestrates(callable) {
+            return vec![];
+        }
+        (self.callables.iter())
+            .filter(|c| c.internal && c.accelerator != Some(false))
+            .flat_map(|c| &c.models)
+            .collect()
+    }
 }
 
 impl Callable {

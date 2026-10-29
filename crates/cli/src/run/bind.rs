@@ -21,7 +21,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::{
     describe,
-    interface::{AssetsSlot, Callable, Constraints, Field, Struct, Type, Wire},
+    interface::{AssetsSlot, Callable, Constraints, Field, Interface, Slot, Struct, Type, Wire},
 };
 
 /// A file with no declared bound is still bounded.
@@ -133,11 +133,13 @@ fn canonical(value: &Value) -> String {
 /// A warm run's model choices: `model.<slot>=`, `--lora` and a conversion's input model. It
 /// carries no payload, so any other term is refused.
 pub fn warm_choices(
-    target: &str, release: Option<&str>, callable: &Callable, terms: &Terms, program: bool,
+    target: &str, release: Option<&str>, interface: &Interface, callable: &Callable, terms: &Terms,
+    program: bool,
 ) -> Result<(Vec<Choice>, Option<protocol::machine::Json>), Error> {
     let mut binder = Binder {
         target: "",
         callable,
+        calls: interface.call_slots(callable),
         terms,
         document: Map::new(),
         choices: BTreeMap::new(),
@@ -161,7 +163,7 @@ pub fn warm_choices(
             if !binder.files.is_empty() || !terms.assets.is_empty() || !terms.fidelities.is_empty() {
                 return Err(usage("warm_inputs", "GPU program warming takes scalar inputs, not media files"));
             }
-            let bound = bind(target, release, callable, terms)?;
+            let bound = bind(target, release, interface, callable, terms)?;
             if !bound.files.is_empty() || !bound.tree_files.is_empty() || bound.destination.is_some() {
                 return Err(usage("warm_inputs", "GPU program warming takes scalar inputs, not files, trees or output destinations"));
             }
@@ -181,12 +183,14 @@ pub fn warm_choices(
 pub fn bind(
     target: &str,
     release: Option<&str>,
+    interface: &Interface,
     callable: &Callable,
     terms: &Terms,
 ) -> Result<Bound, Error> {
     let mut binder = Binder {
         target,
         callable,
+        calls: interface.call_slots(callable),
         terms,
         document: Map::new(),
         choices: BTreeMap::new(),
@@ -218,6 +222,8 @@ pub fn bind(
 struct Binder<'a> {
     target: &'a str,
     callable: &'a Callable,
+    /// The model slots of the calls it makes (`Interface::call_slots`).
+    calls: Vec<&'a Slot>,
     terms: &'a Terms,
     document: Map<String, Value>,
     choices: BTreeMap<String, Choice>,
@@ -442,7 +448,10 @@ impl Binder<'_> {
                 reference: nonempty(reference, slot)?,
                 scale: canonical_scale(scale)?,
             };
-            self.choice(slot)?.adapters.push(adapter);
+            self.each(slot, |choice| {
+                choice.adapters.push(adapter.clone());
+                Ok(())
+            })?;
         }
         Ok(())
     }
@@ -465,56 +474,79 @@ impl Binder<'_> {
                 reference,
                 scale: canonical_scale(&scale)?,
             };
-            self.choice(slot)?.adapters.push(adapter);
+            self.each(slot, |choice| {
+                choice.adapters.push(adapter.clone());
+                Ok(())
+            })?;
         }
         Ok(())
     }
 
     fn choose(&mut self, slot: &str, reference: String) -> Result<(), Error> {
-        let choice = self.choice(slot)?;
-        if choice.reference.is_some() {
-            return Err(usage(
-                "model_slot_repeated",
-                format!("model slot {slot} was chosen more than once"),
-            ));
+        self.each(slot, |choice| {
+            if choice.reference.is_some() {
+                return Err(usage(
+                    "model_slot_repeated",
+                    format!("model slot {slot} was chosen more than once"),
+                ));
+            }
+            choice.reference = Some(reference.clone());
+            Ok(())
+        })
+    }
+
+    /// Applies `f` to the choice of every slot `asked` names.
+    fn each(
+        &mut self,
+        asked: &str,
+        mut f: impl FnMut(&mut Choice) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        for slot in self.slots(asked)? {
+            f(self.choices.entry(slot.clone()).or_insert_with(|| Choice {
+                slot,
+                ..Choice::default()
+            }))?;
         }
-        choice.reference = Some(reference);
         Ok(())
     }
 
-    /// The choice for `asked`: a declared slot's parameter or path, or another callable's full
-    /// slot path (`[org/pkg/]callable.models.param`), whose machine checks it.
-    fn choice(&mut self, asked: &str) -> Result<&mut Choice, Error> {
-        let slot = match self.callable.slot(asked) {
-            Some(slot) => slot.param.clone(),
-            None if child_slot(asked)
-                && !asked.starts_with(&format!("{}.", self.callable.name)) =>
-            {
-                asked.to_owned()
-            }
-            None => {
-                let declared: Vec<&str> = self
-                    .callable
-                    .models
-                    .iter()
-                    .map(|s| s.param.as_str())
-                    .collect();
-                let remedy = if declared.is_empty() {
-                    format!("{} declares no model slots", self.callable.name)
-                } else {
-                    format!("{} declares: {}", self.callable.name, declared.join(", "))
-                };
+    /// The slots `asked` names: a declared slot (its parameter or path), another callable's full
+    /// slot path (`[org/pkg/]callable.models.param`), whose machine checks it, or a parameter the
+    /// calls it makes declare (every one of them, which must load one model class).
+    fn slots(&self, asked: &str) -> Result<Vec<String>, Error> {
+        if let Some(slot) = self.callable.slot(asked) {
+            return Ok(vec![slot.param.clone()]);
+        }
+        if child_slot(asked) && !asked.starts_with(&format!("{}.", self.callable.name)) {
+            return Ok(vec![asked.to_owned()]);
+        }
+        let called: Vec<&Slot> = self.calls.iter().copied().filter(|s| s.param == asked).collect();
+        if let Some(first) = called.first() {
+            if let Some(other) = called.iter().find(|s| s.class != first.class) {
                 return Err(usage(
-                    "model_slot_unknown",
-                    format!("no model slot {asked:?} for {}", self.callable.name),
+                    "model_slot_ambiguous",
+                    format!(
+                        "{asked} names slots of different models in {}'s calls: {} ({}) and {} ({})",
+                        self.callable.name, first.path, first.class, other.path, other.class
+                    ),
                 )
-                .remedy(remedy));
+                .remedy("name one by its path, `<callable>.models.<parameter>`"));
             }
+            return Ok(called.iter().map(|s| s.path.clone()).collect());
+        }
+        let mut declared: Vec<&str> = self.callable.models.iter().map(|s| s.param.as_str()).collect();
+        let through: BTreeSet<&str> = self.calls.iter().map(|s| s.param.as_str()).collect();
+        declared.extend(through.iter().filter(|p| !declared.contains(p)).collect::<Vec<_>>());
+        let remedy = if declared.is_empty() {
+            format!("{} declares no model slots", self.callable.name)
+        } else {
+            format!("{} takes: {}", self.callable.name, declared.join(", "))
         };
-        Ok(self.choices.entry(slot.clone()).or_insert_with(|| Choice {
-            slot,
-            ..Choice::default()
-        }))
+        Err(usage(
+            "model_slot_unknown",
+            format!("no model slot {asked:?} for {}", self.callable.name),
+        )
+        .remedy(remedy))
     }
 
     /// Folds a field name onto its declared spelling; an exact spelling wins.
