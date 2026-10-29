@@ -1,8 +1,8 @@
-//! The pool runs every call on a retained executor of its plan: deviceless (degree 0), on one
-//! GPU, or on a group of K (rank 0 forms followers). Runtime owns allocations and model
-//! residency in each executor. TensorD schedules calls with GPU permits, offloads
-//! idle executors, and observes exact process exit. Engine owns
-//! acceptance and run custody.
+//! The pool runs every call on a retained executor of its environment, App and degree: deviceless
+//! (degree 0), on one GPU, or on a group of K (rank 0 forms followers), which loads each
+//! construction it serves once. Runtime owns allocations and model residency in each executor.
+//! TensorD schedules calls with GPU permits, offloads idle executors, and observes exact process
+//! exit. Engine owns acceptance and run custody.
 use platform::contain::{host_memory, host_pressure::HostMode};
 use platform::process::{Birth, Exact};
 use crate::{
@@ -183,16 +183,22 @@ pub struct PlanSource {
 
 /// A prepared call: its entrypoint, its construction (the package's generation, App, constructed
 /// models and degree) and the checkpoints it reads raw. Not who submitted or which entrypoint:
-/// every call of the same construction is served by its executors, one per GPU lane (several
-/// deviceless), a request at a time each. What an actor may run is its own journal rows.
+/// every call of the same environment, App and degree is served by its executors, one per GPU
+/// lane (several deviceless), a request at a time each, which hold each construction they served.
+/// What an actor may run is its own journal rows.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Plan {
     /// The preparation: the construction, entrypoint and sources.
     pub id: String,
-    /// Its executors' key: the construction alone, so calls of other entrypoints or reading
-    /// other sources share them.
+    /// What it builds, not which entrypoint names it, so entrypoints building the same models share
+    /// them: Runtime's Load/Activate/Invoke key and its measured figures' key.
     #[serde(default)]
     pub construction: String,
+    /// Its executors' key: its environment's App and degree (`environment`), so every construction
+    /// of a package loads into one process per lane; one constructing nothing keeps its
+    /// construction's (already per environment, App and degree).
+    #[serde(default)]
+    pub executor: String,
     pub installation: String,
     pub generation: String,
     pub entrypoint: String,
@@ -211,6 +217,7 @@ impl Plan {
             "application": application, "slots": [], "degree": degree})));
         Self {
             id: format!("plan-{}", digest(serde_json::json!({"construction": construction, "entrypoint": entrypoint}))),
+            executor: construction.clone(),
             construction,
             installation: String::new(),
             generation: generation.into(),
@@ -233,8 +240,12 @@ impl Plan {
         // Derived again, so a preparation journaled under an earlier key shares executors too.
         if let Some(application) = plan.slots.first().map(|slot| slot.binding.application.clone()) {
             plan.construction = construction(&plan.generation, &application, &plan.slots, plan.degree)?;
+            plan.executor = environment(&plan.generation, &application, plan.degree)?;
         } else if plan.construction.is_empty() {
             plan.construction = plan.id.clone();
+        }
+        if plan.executor.is_empty() {
+            plan.executor = plan.construction.clone();
         }
         Ok(plan)
     }
@@ -435,8 +446,10 @@ impl Member {
     }
 }
 
+/// One executor process: its environment's App on a lane, with every construction it loaded.
 struct Session {
-    plan: String,
+    /// The executors' key it serves (`Plan::executor`).
+    env: String,
     /// Its lane's first GPU (envelope index), for groups as well as one-GPU replicas.
     start: usize,
     generation: String,
@@ -446,23 +459,39 @@ struct Session {
     /// call that fails can name the GPU whose process ended first.
     degree: u32,
     followers: Vec<platform::process::Exact>,
-    loaded: bool,
+    /// Its Start ran: its devices, group and package are up.
+    started: bool,
+    /// Each construction it loaded, and where TensorD last had its models brought (Runtime places
+    /// them): `host` once loaded, `gpu` after a call or a `gpu` warming.
+    loaded: BTreeMap<String, Level>,
+    /// The construction Runtime serves invokes of (`Activate`).
+    active: String,
     executor: DeviceExecutor,
     /// When it last came back idle: idle executors end least recently used first.
     used: Instant,
     /// How this executor was launched (fork or spawn) and its start's timings.
     launch: Launch,
-    /// It has served a call: its next one is not its first.
-    invoked: bool,
-    /// Where TensorD last had its models brought (Runtime places them): `host` once loaded,
-    /// `gpu` after a call or a `gpu` warming.
-    level: Level,
+    /// The constructions it has served a call of: their next one is not their first.
+    invoked: std::collections::BTreeSet<String>,
+    /// Its row of `Serving`: the manifests its constructions read.
+    serving: u64,
+}
+impl Session {
+    /// The highest level a construction of it holds; `host` before any loads.
+    fn level(&self) -> Level {
+        self.loaded.values().copied().max().unwrap_or(Level::Host)
+    }
+    fn lane(&self) -> std::ops::Range<usize> {
+        self.start..self.start + self.degree as usize
+    }
 }
 
 #[derive(Clone)]
 struct Leader {
     birth: Birth,
-    construction: String,
+    /// Its session's `env`, and the constructions it loaded.
+    env: String,
+    constructions: std::collections::BTreeSet<String>,
     start: usize,
     lookahead: Option<device_executor::Lookahead>,
 }
@@ -652,13 +681,20 @@ fn session_key(plan: &str, start: usize) -> String {
     }
 }
 
-/// Executors' key: what is constructed, not which entrypoint names it, so entrypoints whose
-/// slots build the same models share one construction and its executors.
+/// What is constructed, not which entrypoint names it, so entrypoints whose slots build the same
+/// models share one construction.
 fn construction(generation: &str, application: &str, slots: &[PlanSlot], degree: u32) -> io::Result<String> {
     let built: Vec<PlanSlot> = slots.iter().cloned()
         .map(|mut slot| { slot.binding.model_binding_path.clear(); slot }).collect();
     Ok(format!("gpu-{}", canonical_digest(serde_json::json!({"generation": generation,
         "application": application, "slots": built, "degree": degree}))?))
+}
+
+/// Executors' key: the package environment's App and degree. Every construction of it on a lane
+/// loads into one process, whose Runtime decides where their weights live (xs-113).
+fn environment(generation: &str, application: &str, degree: u32) -> io::Result<String> {
+    Ok(format!("env-{}", canonical_digest(serde_json::json!({"generation": generation,
+        "application": application, "degree": degree}))?))
 }
 
 fn canonical_digest(value: serde_json::Value) -> io::Result<String> {
@@ -724,11 +760,11 @@ pub struct Pool {
     notes: MemoryLog,
     /// Each root's lane and each GPU's call (`gpu_allocation`).
     allocations: Arc<crate::gpu_allocation::Allocations>,
-    /// Idle GPU executors by `session_key`: a call takes its own out for its run. One per
-    /// construction and lane; idle offload changes which retain GPU weights.
+    /// Idle GPU executors by `session_key` of their `env`: a call takes its own out for its run.
+    /// One per environment, App, degree and lane; idle offload changes which retain GPU weights.
     sessions: Mutex<BTreeMap<String, Session>>,
-    /// Idle deviceless executors, least recently used first: any number per construction, as
-    /// many as ran at once. They end with their generation.
+    /// Idle deviceless executors, least recently used first: any number per `env`, as many as
+    /// ran at once. They end with their generation.
     deviceless: Mutex<Vec<Session>>,
     /// Set (under `sessions`) once the pool stops: an executor coming back then is ended.
     stopped: std::sync::atomic::AtomicBool,
@@ -745,7 +781,8 @@ pub struct Pool {
     members: Mutex<BTreeMap<String, Vec<Arc<Member>>>>,
     /// One pass over the warm sets at a time.
     keeping: Mutex<()>,
-    /// Each cached executor's measured (App, level) and exact owner, retained during its call.
+    /// Each construction a cached executor holds, by `session_key` of the construction and its
+    /// lane: its (App, level) and exact owner, retained during its call.
     levels: Mutex<BTreeMap<String, (App, Level, Birth)>>,
     /// Each envelope GPU and its measurement book, in envelope order.
     devices: Vec<Device>,
@@ -1025,8 +1062,7 @@ impl Pool {
         };
         let mut idle: Vec<(bool, Instant, String, std::ops::Range<usize>)> = {
             let sessions = self.sessions.lock().unwrap();
-            let lane = |s: &Session| s.start..s.start + s.degree as usize;
-            sessions.iter().map(|(key, s)| (members.contains(&s.plan), s.used, key.clone(), lane(s))).collect()
+            sessions.iter().map(|(key, s)| (s.loaded.keys().any(|c| members.contains(c)), s.used, key.clone(), s.lane())).collect()
         };
         idle.sort_by_key(|(member, used, _, _)| (*member, *used));
         idle.into_iter().any(|(_, _, key, lane)| {
@@ -1065,11 +1101,12 @@ impl Pool {
             .into_iter().min()
     }
 
-    /// A session removed from the idle pool cannot be taken by a call while Map runs.
+    /// A session removed from the idle pool cannot be taken by a call while Map runs. Each of its
+    /// constructions on the GPU goes to RAM.
     fn offload_idle(&self, engine: &Arc<Engine>, key: &str, reason: &str, need: Option<u64>) {
         let Some(mut session) = self.sessions.lock().unwrap().remove(key) else { return };
-        let lane = session.start..session.start + session.degree as usize;
-        let (pid, plan, began) = (session.executor.birth.pid, session.plan.clone(), Instant::now());
+        let lane = session.lane();
+        let (pid, plan, began) = (session.executor.birth.pid, session.env.clone(), Instant::now());
         let before = self.free(&lane);
         self.notes.note(serde_json::json!({"event": "offload_begin", "for": reason, "pid": pid,
             "plan": plan, "need": need, "free_before": before}));
@@ -1083,15 +1120,18 @@ impl Pool {
                 "ack_ms": began.elapsed().as_secs_f64() * 1e3, "ended_pending_preparation": true, "failed": why}));
             return;
         }
-        let reply = session.executor.command(&Command::Map(Map {
-            construction: session.plan.clone(), level: protocol::executor::Level::Ram,
-            ..Default::default()
-        }), &mut device_executor::Baseline);
-        let why = match &reply {
-            Ok(reply) if reply.ok => { session.level = Level::Host; String::new() }
-            Ok(reply) => format!("{} {}", reply.code, reply.detail),
-            Err(error) => error.to_string(),
-        };
+        let mut why = String::new();
+        for (construction, level) in session.loaded.iter_mut().filter(|(_, level)| **level == Level::Gpu) {
+            let reply = session.executor.command(&Command::Map(Map {
+                construction: construction.clone(), level: protocol::executor::Level::Ram,
+                ..Default::default()
+            }), &mut device_executor::Baseline);
+            match &reply {
+                Ok(reply) if reply.ok => *level = Level::Host,
+                Ok(reply) => why = format!("{} {}", reply.code, reply.detail),
+                Err(error) => { why = error.to_string(); break }
+            }
+        }
         if let Err(error) = self.keep_idle(engine, session) { tracing::warn!("offloading {plan}: {error}"); }
         self.notes.note(serde_json::json!({"event": "offload", "for": reason, "pid": pid,
             "plan": plan, "need": need, "free_before": before, "free_after": self.free(&lane),
@@ -1109,8 +1149,8 @@ impl Pool {
         let members: std::collections::BTreeSet<String> = self.members.lock().unwrap().values().flatten()
             .filter_map(|member| member.plan.as_ref().map(|plan| plan.construction.clone())).collect();
         let mut candidates: Vec<_> = self.sessions.lock().unwrap().iter()
-            .filter(|(_, s)| s.level >= level && s.start < lane.end && lane.start < s.start + s.degree as usize)
-            .map(|(key, s)| (members.contains(&s.plan), s.used, key.clone())).collect();
+            .filter(|(_, s)| s.level() >= level && s.start < lane.end && lane.start < s.start + s.degree as usize)
+            .map(|(key, s)| (s.loaded.keys().any(|c| members.contains(c)), s.used, key.clone())).collect();
         candidates.sort_by_key(|(member, used, _)| (*member, *used));
         candidates.into_iter().map(|(member, _, key)| (member, key)).collect()
     }
@@ -1206,7 +1246,7 @@ impl Pool {
             let idle = || {
                 let mut sessions: Vec<_> = self.sessions.lock().unwrap().iter()
                     .filter(|(_, session)| session.start <= index && index < session.start + session.degree as usize)
-                    .map(|(key, session)| (session.used, key.clone(), session.level)).collect();
+                    .map(|(key, session)| (session.used, key.clone(), session.level())).collect();
                 sessions.sort_by_key(|(used, _, _)| *used);
                 sessions
             };
@@ -1262,7 +1302,7 @@ impl Pool {
         let Some(session) = victim else {
             return false;
         };
-        let (plan, start) = (session.plan.clone(), session.start);
+        let (plan, start) = (session.env.clone(), session.start);
         if let Err(error) = session.executor.terminate() {
             tracing::warn!("ending idle deviceless executor of {plan}: {error}");
         }
@@ -1274,8 +1314,9 @@ impl Pool {
         let Some(session) = self.sessions.lock().unwrap().remove(key) else {
             return false;
         };
-        let (plan, start, degree) = (session.plan.clone(), session.start, session.degree);
-        self.notes.note(serde_json::json!({"event": "end_idle", "plan": plan, "gpus": start..start + degree as usize}));
+        let (plan, start, degree) = (session.env.clone(), session.start, session.degree);
+        self.notes.note(serde_json::json!({"event": "end_idle", "plan": plan,
+            "constructions": session.loaded.keys().collect::<Vec<_>>(), "gpus": start..start + degree as usize}));
         if let Err(error) = session.executor.terminate() {
             tracing::warn!("memory: ending idle executor {key}: {error}");
         }
@@ -1348,33 +1389,29 @@ impl Pool {
             .collect::<Vec<_>>()
             .join(","))
     }
-    /// `plan`'s executor on the lane from `start` is gone, its processes with it: once their
+    /// `env`'s executor on the lane from `start` is gone, its processes with it: once their
     /// exits are proven, each GPU of the lane reaps their rows.
-    fn ended(&self, plan: &str, start: usize) {
+    fn ended(&self, env: &str, start: usize) {
         let mut births: Vec<Birth> = self.leaders.lock().unwrap().values()
-            .filter(|leader| leader.construction == plan && leader.start == start).map(|leader| leader.birth.clone()).collect();
+            .filter(|leader| leader.env == env && leader.start == start).map(|leader| leader.birth.clone()).collect();
         births.extend(self.tenants.lock().unwrap().values()
-            .filter(|t| t.plan == plan && t.start == start).map(|t| t.exact.birth().clone()));
-        self.retire(plan, start, &births);
+            .filter(|t| t.plan == env && t.start == start).map(|t| t.exact.birth().clone()));
+        self.retire(env, start, &births);
     }
-    /// Retire only proven exited incarnations. Another same-plan/lane session may already
-    /// be running or cached; neither its row nor its most recent measured level is ours.
-    fn retire(&self, plan: &str, start: usize, births: &[Birth]) {
+    /// Retire only proven exited incarnations. Another same-environment/lane session may already
+    /// be running or cached; neither its row nor its most recent measured levels are ours. Every
+    /// construction the gone process held leaves `levels`.
+    fn retire(&self, env: &str, start: usize, births: &[Birth]) {
         let gone: std::collections::HashSet<&Birth> = births.iter()
             .filter(|birth| birth.ended().unwrap_or(false)).collect();
         if gone.is_empty() {
             return;
         }
-        let key = session_key(plan, start);
-        let mut levels = self.levels.lock().unwrap();
-        if levels.get(&key).is_some_and(|(_, _, owner)| gone.contains(owner)) {
-            levels.remove(&key);
-        }
-        drop(levels);
+        self.levels.lock().unwrap().retain(|_, (_, _, owner)| !gone.contains(owner));
         self.leaders.lock().unwrap().retain(|_, leader|
-            !(leader.construction == plan && leader.start == start && gone.contains(&leader.birth)));
+            !(leader.env == env && leader.start == start && gone.contains(&leader.birth)));
         self.tenants.lock().unwrap().retain(|_, t|
-            !(t.plan == plan && t.start == start && gone.contains(t.exact.birth())));
+            !(t.plan == env && t.start == start && gone.contains(t.exact.birth())));
     }
     /// Wake the engine on memory events as well as GPU permit changes.
     pub fn wake_on_freed(&self, engine: &Arc<Engine>) {
@@ -1444,7 +1481,7 @@ impl Pool {
         let members: std::collections::BTreeSet<String> = self.members.lock().unwrap().values().flatten()
             .filter(|member| member.level >= Level::Host)
             .filter_map(|member| member.plan.as_ref().map(|plan| plan.construction.clone())).collect();
-        self.end_idle_executors(|session| !members.contains(&session.plan));
+        self.end_idle_executors(|session| !session.loaded.keys().any(|construction| members.contains(construction)));
     }
     /// A warm set keeps something in memory here (a member at `imported` or above that binds a
     /// model), so this computer's machine stays up for it instead of exiting idle.
@@ -1490,7 +1527,7 @@ impl Pool {
         let lanes: Vec<(String, usize, u32)> = {
             let sessions = self.sessions.lock().unwrap();
             let idle = sessions.values().filter(|s| which(s));
-            idle.map(|s| (s.plan.clone(), s.start, s.degree)).collect()
+            idle.map(|s| (s.env.clone(), s.start, s.degree)).collect()
         };
         for (plan, start, degree) in lanes {
             let Some(permit) = self.allocations.upkeep(start..start + degree as usize) else {
@@ -1603,9 +1640,13 @@ impl Pool {
         if holds == Some(level) && member.payload.is_none() {
             return Ok("mapped");
         }
-        let Some(mut session) = self.sessions.lock().unwrap().remove(&key) else {
+        let Some(mut session) = self.sessions.lock().unwrap().remove(&session_key(&plan.executor, start)) else {
             return Ok("its executor ended");
         };
+        if !session.loaded.contains_key(&plan.construction) {
+            self.keep_idle(engine, session)?;
+            return Ok("its executor no longer holds it");
+        }
         if member.payload.is_some() {
             // Runtime 0.35 records a package's loop at its first call (author.denoise_loop);
             // no executor prepares a program from a warm payload.
@@ -1657,7 +1698,7 @@ impl Pool {
             usable = offloaded.as_ref().is_ok_and(|reply| reply.ok && reply.poisoned.is_empty());
             offload_failed = !usable;
             if usable {
-                session.level = Level::Host;
+                session.loaded.insert(plan.construction.clone(), Level::Host);
             } else {
                 let detail = match &offloaded {
                     Ok(reply) => format!("{} {} {}", reply.code, reply.detail, reply.poisoned),
@@ -1666,7 +1707,7 @@ impl Pool {
                 tracing::warn!("warm set: offloading unsuccessful preparation {}: {detail}", plan.construction);
             }
         } else if reply.as_ref().is_ok_and(|reply| reply.ok) {
-            session.level = level;
+            session.loaded.insert(plan.construction.clone(), level);
         }
         if member.payload.is_some() {
             *member.prepared.lock().unwrap() = Some(ready && usable);
@@ -1679,7 +1720,7 @@ impl Pool {
             let births = executor_births(&session.executor.birth, &session.followers);
             if let Err(error) = self.keep_idle(engine, session) {
                 await_executor_exit(engine, &births);
-                self.retire_returned(&plan.construction, start, &births);
+                self.retire_returned(&plan.executor, start, &births);
                 return Err(error);
             }
         } else {
@@ -1746,7 +1787,7 @@ impl Pool {
     /// Keep an executor idle for its next call, noting what a loaded one holds for Status.
     /// Once the pool stopped, or a cancel killed it, it ends instead.
     fn keep_idle(&self, engine: &Arc<Engine>, session: Session) -> io::Result<Disposition> {
-        let key = session_key(&session.plan, session.start);
+        let key = session_key(&session.env, session.start);
         let killed = !session.executor.idle() || session.executor.abandoned_lookahead();
         if session.degree == 0 {
             let mut idle = self.deviceless.lock().unwrap();
@@ -1758,7 +1799,7 @@ impl Pool {
             }
             drop(idle);
             let births = executor_births(&session.executor.birth, &session.followers);
-            let (plan, start) = (session.plan.clone(), session.start);
+            let (plan, start) = (session.env.clone(), session.start);
             session.executor.terminate()?;
             self.retire_returned(&plan, start, &births);
             return Ok(Disposition::ProvenEnded(births));
@@ -1768,7 +1809,7 @@ impl Pool {
             let mut sessions = self.sessions.lock().unwrap();
             if killed || self.stopped.load(Ordering::Acquire) {
                 drop(sessions);
-                let (plan, start) = (session.plan.clone(), session.start);
+                let (plan, start) = (session.env.clone(), session.start);
                 let births = executor_births(&session.executor.birth, &session.followers);
                 session.executor.terminate()?;
                 self.retire_returned(&plan, start, &births);
@@ -1777,7 +1818,7 @@ impl Pool {
             if let Some(replaced) = sessions.remove(&key) {
                 drop(sessions);
                 let births = executor_births(&replaced.executor.birth, &replaced.followers);
-                let (plan, start) = (replaced.plan.clone(), replaced.start);
+                let (plan, start) = (replaced.env.clone(), replaced.start);
                 if let Err(error) = replaced.executor.terminate() {
                     tracing::warn!("ending replaced executor {key}: {error}");
                 }
@@ -1786,10 +1827,12 @@ impl Pool {
                 continue;
             }
             session.used = Instant::now();
-            if session.loaded {
-                let noted = ((session.generation.clone(), session.application.clone()), session.level, session.executor.birth.clone());
-                self.levels.lock().unwrap().insert(key.clone(), noted);
+            let app = (session.generation.clone(), session.application.clone());
+            let mut levels = self.levels.lock().unwrap();
+            for (construction, level) in &session.loaded {
+                levels.insert(session_key(construction, session.start), (app.clone(), *level, session.executor.birth.clone()));
             }
+            drop(levels);
             sessions.insert(key, session);
             drop(sessions);
             self.exits.iter().for_each(Exits::changed);
@@ -1800,9 +1843,9 @@ impl Pool {
     /// A canceled invocation leaves no reusable GPU session. Kill its exact owning process
     /// and retain the accounting until exit is observed, just as for an explicit user cancel.
     fn retire_canceled(&self, engine: &Arc<Engine>, id: &str, session: Session) -> Disposition {
-        let lane = session.start..session.start + session.degree as usize;
+        let lane = session.lane();
         let births = executor_births(&session.executor.birth, &session.followers);
-        let (plan, start, began) = (session.plan.clone(), session.start, Instant::now());
+        let (plan, start, began) = (session.env.clone(), session.start, Instant::now());
         let before = self.free(&lane);
         let ended = session.executor.terminate();
         await_executor_exit(engine, &births);
@@ -1911,7 +1954,7 @@ impl Pool {
         };
         for session in gone {
             let births = executor_births(&session.executor.birth, &session.followers);
-            self.retire_returned(&session.plan, session.start, &births);
+            self.retire_returned(&session.env, session.start, &births);
         }
         let gone: Vec<_> = self.tenants.lock().unwrap().values().filter(|t| t.exact.ended())
             .map(|t| (t.plan.clone(), t.start, t.exact.birth().clone())).collect();
@@ -2109,9 +2152,14 @@ impl Pool {
         let construction = construction(&installed.generation, application, &planned, degree)?;
         let id = format!("plan-{}", canonical_digest(serde_json::json!({"construction": construction,
             "entrypoint": entrypoint, "slots": planned, "sources": sources}))?);
+        let executor = match planned.is_empty() {
+            true => construction.clone(),
+            false => environment(&installed.generation, application, degree)?,
+        };
         Ok(Plan {
             id,
             construction,
+            executor,
             installation: installed.alias.clone(),
             generation: installed.generation.clone(),
             entrypoint: entrypoint.into(),
@@ -2193,10 +2241,16 @@ impl Pool {
             tracing::warn!("gpu allocation entry: {error}");
         }
     }
-    /// The GPUs with an executor of `plan` now, by envelope index (a lane's first).
-    fn hosting(&self, plan: &str) -> Vec<usize> {
-        let leaders = self.leaders.lock().unwrap();
-        leaders.values().filter(|leader| leader.construction == plan).map(|leader| leader.start).collect::<std::collections::BTreeSet<_>>().into_iter().collect()
+    /// The GPUs with an executor of `plan`'s environment now, by envelope index (a lane's first),
+    /// each with whether it loaded `plan`'s construction; those that did first.
+    fn hosting(&self, plan: &Plan) -> Vec<(usize, bool)> {
+        let mut lanes: BTreeMap<usize, bool> = BTreeMap::new();
+        for leader in self.leaders.lock().unwrap().values().filter(|leader| leader.env == plan.executor) {
+            *lanes.entry(leader.start).or_default() |= leader.constructions.contains(&plan.construction);
+        }
+        let mut hosts: Vec<(usize, bool)> = lanes.into_iter().collect();
+        hosts.sort_by_key(|(start, loaded)| (!loaded, *start));
+        hosts
     }
 
     /// The first actual waiting GPU root may prepare on one compatible active executor.
@@ -2206,7 +2260,7 @@ impl Pool {
             && engine.get(&record.id).is_ok_and(|now| now.state == State::Queued && now.cancel_actor.is_none()));
         let leaders = self.leaders.lock().unwrap();
         let selected = next.and_then(|(record, plan)| leaders.iter()
-            .filter(|(_, leader)| leader.construction == plan.construction
+            .filter(|(_, leader)| leader.env == plan.executor && leader.constructions.contains(&plan.construction)
                 && !leader.birth.ended().unwrap_or(true)
                 && leader.lookahead.as_ref().is_some_and(|a| a.active() || a.pending(&record.id)))
             .min_by_key(|(_, leader)|
@@ -2248,7 +2302,7 @@ impl Pool {
         let take = |start: usize, claims: &Claims| {
             self.permit(engine, root, family, start..start + degree, claims).map(|permit| (start, permit))
         };
-        let hosts: Vec<usize> = self.hosting(&plan.construction).into_iter().filter(|s| starts.contains(s)).collect();
+        let hosts: Vec<usize> = self.hosting(plan).into_iter().map(|(start, _)| start).filter(|s| starts.contains(s)).collect();
         let placed = hosts
             .iter()
             .find_map(|start| take(*start, claims))
@@ -2332,8 +2386,9 @@ impl Pool {
             result
         })
     }
-    /// One line per Load in `loads.jsonl`: the executor's load facts, and
-    /// the machine's and executor's RSS/PSS.
+    /// One line per Load in `loads.jsonl`: the executor's load facts, the machine's and executor's
+    /// RSS/PSS, and its process: its key and the constructions it held before (none: a new one).
+    #[allow(clippy::too_many_arguments)]
     fn record_load(
         &self,
         plan: &str,
@@ -2342,6 +2397,7 @@ impl Pool {
         loaded: &Frame,
         executor: u32,
         launch: &Launch,
+        (env, beside): (&str, &[&str]),
     ) -> io::Result<()> {
         use platform::contain::host_memory::{process, ProcessMemory};
         #[derive(Serialize)]
@@ -2353,8 +2409,12 @@ impl Pool {
             machine: ProcessMemory,
             executor: ProcessMemory,
             launch: &'a Launch,
+            env: &'a str,
+            beside: &'a [&'a str],
         }
         let line = Line {
+            env,
+            beside,
             plan,
             gpus,
             load_ms: took.as_secs_f64() * 1e3,
@@ -2435,7 +2495,7 @@ impl Pool {
                     zygote.wait_started();
                 }
                 let key = plan.construction.clone();
-                if !pool.hosting(&key).is_empty() {
+                if pool.hosting(&plan).iter().any(|(_, loaded)| *loaded) {
                     return pool.note_prewarm(&key, asked.elapsed(), Default::default(), &Ok("already loaded"));
                 }
                 // Queued requests of its root and older roots go first; a released lane ends
@@ -2489,7 +2549,8 @@ impl Pool {
         }
     }
 
-    /// Load `plan` on the lane from `start`, whose call slots the caller holds.
+    /// Load `plan` on the lane from `start`, whose call slots the caller holds: into its
+    /// environment's idle executor there, else a new one.
     fn prewarm(
         &self,
         engine: &Arc<Engine>,
@@ -2499,34 +2560,51 @@ impl Pool {
         fetch: Option<Arc<crate::access::Fetch>>,
         preparation: Option<&Stoppable>,
     ) -> io::Result<&'static str> {
-        if self.sessions.lock().unwrap().contains_key(&session_key(&plan.construction, start)) {
-            return Ok("already loaded");
-        }
-        let born = Mutex::new(vec![]);
+        let retained = self.sessions.lock().unwrap().remove(&session_key(&plan.executor, start));
         let cancellation = Mutex::new(None::<Cancellation>);
         let halt = Mutex::new(None);
-        let created = self.new_session(engine, held, &plan, start, |birth, cancel| {
-            born.lock().unwrap().push(birth.clone());
+        let serve = |cancel: &Cancellation| {
             if let Some(preparation) = preparation {
                 let (cancel, id) = (cancel.clone(), preparation.id().to_owned());
                 cancel.serve(&id);
                 *cancellation.lock().unwrap() = Some(cancel.clone());
                 *halt.lock().unwrap() = Some(preparation.during(move || cancel.cancel(&id)));
             }
-            Ok(())
-        });
-        let mut session = match created {
-            Ok(session) => session,
-            Err(error) => {
-                if let Some(cancel) = cancellation.lock().unwrap().as_ref() { cancel.disable(); }
-                drop(halt);
-                let births = born.into_inner().unwrap();
-                await_executor_exit(engine, &births);
-                self.retire_returned(&plan.construction, start, &births);
-                return Err(error);
+        };
+        let mut session = match retained {
+            Some(session) if session.loaded.contains_key(&plan.construction) => {
+                self.keep_idle(engine, session)?;
+                return Ok("already loaded");
+            }
+            Some(session) => {
+                if plan.degree > 0 {
+                    let held = match session.level() { Level::Gpu => self.held(&session), _ => Some(vec![]) };
+                    self.make_room(engine, &plan.construction, session.lane(), held);
+                }
+                serve(&session.executor.cancellation());
+                session
+            }
+            None => {
+                let born = Mutex::new(vec![]);
+                let created = self.new_session(engine, held, &plan, start, |birth, cancel| {
+                    born.lock().unwrap().push(birth.clone());
+                    serve(cancel);
+                    Ok(())
+                });
+                match created {
+                    Ok(session) => session,
+                    Err(error) => {
+                        if let Some(cancel) = cancellation.lock().unwrap().as_ref() { cancel.disable(); }
+                        drop(halt);
+                        let births = born.into_inner().unwrap();
+                        await_executor_exit(engine, &births);
+                        self.retire_returned(&plan.executor, start, &births);
+                        return Err(error);
+                    }
+                }
             }
         };
-        let key = plan.construction.clone();
+        let key = plan.executor.clone();
         let result = self.call(engine, "", held, plan, &mut session, true, None, fetch);
         if let Some(cancel) = cancellation.lock().unwrap().as_ref() { cancel.disable(); }
         drop(halt);
@@ -2558,7 +2636,7 @@ impl Pool {
         };
         let deviceless = std::mem::take(&mut *self.deviceless.lock().unwrap());
         for session in sessions.into_values().chain(deviceless) {
-            let (plan, start) = (session.plan.clone(), session.start);
+            let (plan, start) = (session.env.clone(), session.start);
             session.executor.terminate()?;
             self.ended(&plan, start);
         }
@@ -2980,7 +3058,7 @@ impl Pool {
         start: usize,
         calls: Option<&Arc<crate::calls::Calls>>,
     ) -> io::Result<Option<Postprocess>> {
-        let key = plan.construction.clone();
+        let key = plan.executor.clone();
         let mut disposition = Disposition::default();
         if plan.degree > 0 {
             self.lanes.lock().unwrap().insert(id.into(), start..start + plan.degree as usize);
@@ -2991,8 +3069,8 @@ impl Pool {
         result
     }
 
-    /// One call on the lane from `start` (none, deviceless): an idle executor of its plan there
-    /// leaves the pool for the call (or one starts), and comes back once it served it.
+    /// One call on the lane from `start` (none, deviceless): an idle executor of its environment
+    /// there leaves the pool for the call (or one starts), and comes back once it served it.
     #[allow(clippy::too_many_arguments)]
     fn run_on(
         &self,
@@ -3020,12 +3098,13 @@ impl Pool {
                 canceled
             })
         };
-        let (key, degree) = (session_key(&plan.construction, start), plan.degree);
+        let (key, degree) = (session_key(&plan.executor, start), plan.degree);
         let retained = match degree {
             0 => {
                 let mut idle = self.deviceless.lock().unwrap();
                 idle.retain(|session| !session.executor.birth.ended().unwrap_or(true));
-                let newest = idle.iter().rposition(|session| session.plan == plan.construction);
+                let newest = idle.iter().rposition(|s| s.env == plan.executor && s.loaded.contains_key(&plan.construction))
+                    .or_else(|| idle.iter().rposition(|s| s.env == plan.executor));
                 newest.map(|at| idle.remove(at))
             }
             _ => {
@@ -3036,8 +3115,10 @@ impl Pool {
         let session = match retained {
             Some(session) => {
                 if degree > 0 {
-                    // Offloaded (`Host`) it holds only its context: as good as cold for the need.
-                    let held = match session.level { Level::Gpu => self.held(&session), _ => Some(vec![]) };
+                    // Offloaded (`Host`) it holds only its context: as good as cold for the need. A
+                    // sibling construction's resident weights count as held: its Runtime evicts them
+                    // for this one, so TensorD never offloads the calling process.
+                    let held = match session.level() { Level::Gpu => self.held(&session), _ => Some(vec![]) };
                     self.make_room(engine, &plan.construction, start..start + degree as usize, held);
                 }
                 *disposition = Disposition::Unknown(executor_births(&session.executor.birth, &session.followers));
@@ -3126,7 +3207,7 @@ impl Pool {
         }
         tracing::warn!("execution {id}: {error}; starting it on a fresh executor");
         if let Disposition::Unknown(births) = disposition {
-            self.retire_returned(&fresh.construction, start, births);
+            self.retire_returned(&fresh.executor, start, births);
         }
         if !engine.redeliver(id)? {
             return Ok(None); // canceled meanwhile
@@ -3134,8 +3215,8 @@ impl Pool {
         self.run_on(engine, id, held, fresh, start, calls, disposition)
     }
 
-    /// Launch an executor for `plan` (fork from its generation's import-only executor, else
-    /// spawn) and open its selected metadata sources and CPU-buffer grants.
+    /// Launch an executor for `plan`'s environment (fork from its generation's import-only
+    /// executor, else spawn) and open its selected metadata sources and CPU-buffer grants.
     fn new_session(
         &self,
         engine: &Arc<Engine>,
@@ -3203,10 +3284,10 @@ impl Pool {
         executor.keep_memo(self.memo.clone());
         if plan.degree > 0 {
             let exact = Exact::open(&executor.birth)?.ok_or_else(|| io::Error::other("executor exited before its start"))?;
-            let tenant = Tenant { plan: plan.construction.clone(), start, exact };
+            let tenant = Tenant { plan: plan.executor.clone(), start, exact };
             self.tenants.lock().unwrap().insert(executor.birth.pid, tenant);
             self.leaders.lock().unwrap().insert(executor.birth.pid, Leader {
-                birth: executor.birth.clone(), construction: plan.construction.clone(), start,
+                birth: executor.birth.clone(), env: plan.executor.clone(), constructions: Default::default(), start,
                 lookahead: (plan.degree == 1 && executor.hello.request_lookahead).then(|| executor.lookahead()),
             });
         }
@@ -3223,23 +3304,26 @@ impl Pool {
             id,
         });
         Ok(Session {
-            plan: plan.construction.clone(),
+            env: plan.executor.clone(),
             start,
             generation: plan.generation.clone(),
             application: held.record.application.clone(),
             degree: plan.degree,
             followers: vec![],
-            loaded: false,
+            started: false,
+            loaded: BTreeMap::new(),
+            active: String::new(),
             executor,
             used: Instant::now(),
             launch,
-            invoked: false,
-            level: Level::Host,
+            invoked: Default::default(),
+            serving: id,
         })
     }
 
-    /// Load once and invoke (unless `load_only`: a prewarm). A known outcome stays in
-    /// the journal until run_on returns its executor idle or proves its teardown ended.
+    /// Start the process once, load the plan's construction into it once and invoke it, active
+    /// (unless `load_only`: a prewarm). A known outcome stays in the journal until run_on returns
+    /// its executor idle or proves its teardown ended.
     #[allow(clippy::too_many_arguments)]
     fn call(
         &self,
@@ -3258,10 +3342,16 @@ impl Pool {
         let driver = platform::gpu::Peak::watch(gpus.iter().map(|d| d.entry.clone()).collect());
         // A call begins: the host is looked at before it grows.
         self.nudge_host();
-        let retained = session.loaded;
+        let retained = session.started;
         if retained {
             session.executor.begin_request();
         }
+        // A retained executor that went away while idle: this call's first command enters no
+        // handler (Activate, Load and PrepareRequest alike), so the attempt never started (`run_on`).
+        let before_entry = |error: io::Error| match retained && channel_lost(&error) {
+            true => io::Error::other(Undelivered(format!("retained executor cannot prepare this request before entry: {error}"))),
+            false => error,
+        };
         // A group runs one rank per GPU; a plan that constructs nothing holds its GPUs in one
         // process (the Runtime refuses a group without constructed models).
         let ranks = if plan.slots.is_empty() { 1 } else { degree.max(1) };
@@ -3277,12 +3367,12 @@ impl Pool {
             formation: Some(Formation {
                 tenants: self.tenants.clone(),
                 leader: session.executor.birth.clone(),
-                plan: construction.clone(),
+                plan: session.env.clone(),
                 start,
             }),
             host: self.host.as_deref(),
         };
-        if !session.loaded {
+        if !session.started {
             // Runtime initializes and validates its allocator. TensorD schedules device work
             // and owns no allocator-specific protocol or backend-name admission gate.
             let interface_path = self.interface_file(&session.executor, held)?;
@@ -3321,6 +3411,16 @@ impl Pool {
                     code: "group_unformed".into(),
                     detail: "a follower exited before its GPU ledger could be associated".into(),
                 }));
+            }
+            session.started = true;
+        }
+        if !session.loaded.contains_key(&construction) {
+            let interface_path = session.executor.root_path().join("package-interface.json");
+            // Its manifests are held against storage reclaim for as long as the process lives.
+            if let Some(manifests) = self.serving.held.lock().unwrap().get_mut(&session.serving) {
+                for selected in plan.selections() {
+                    if !manifests.contains(&selected.manifest) { manifests.push(selected.manifest); }
+                }
             }
             // The request's signer, whose capability the Runtime keeps apart.
             let actor = engine.get(id).ok().and_then(|record| record.submission).map(|s| s.actor).unwrap_or_default();
@@ -3373,7 +3473,8 @@ impl Pool {
                 }
             };
             let started = std::time::Instant::now();
-            let loaded = command_ok(session.executor.command(&load, &mut callbacks)?)?;
+            let loaded = command_ok(session.executor.command(&load, &mut callbacks).map_err(before_entry)?)?;
+            let beside: Vec<&str> = session.loaded.keys().map(String::as_str).collect();
             self.record_load(
                 &construction,
                 &lane,
@@ -3381,17 +3482,26 @@ impl Pool {
                 &loaded,
                 session.executor.birth.pid,
                 &session.launch,
+                (&session.env, &beside),
             )?;
+            session.loaded.insert(construction.clone(), Level::Host);
+            if let Some(leader) = self.leaders.lock().unwrap().get_mut(&session.executor.birth.pid) {
+                leader.constructions.insert(construction.clone());
+            }
+        }
+        if load_only {
+            return Ok(None);
+        }
+        // Runtime invokes only its active construction; switching moves nothing (its Memory evicts
+        // an idle construction's blocks when a stage needs the room).
+        if session.active != construction {
             command_ok(session.executor.command(
                 &Command::Activate(Activate {
                     construction: construction.clone(),
                 }),
                 &mut callbacks,
-            )?)?;
-            session.loaded = true;
-        }
-        if load_only {
-            return Ok(None);
+            ).map_err(before_entry)?)?;
+            session.active = construction.clone();
         }
         let record = engine.get(id)?;
         let prepared = session.executor.command(
@@ -3480,8 +3590,7 @@ impl Pool {
             .unwrap_or_default();
         session.executor.codec().prestart();
         let invoked = Instant::now();
-        let first = !session.invoked;
-        session.invoked = true;
+        let first = session.invoked.insert(construction.clone());
         let invoking = session.executor.lookahead().invoking(id);
         engine.notify_activity(); // Queued work may have arrived before this executor became ready.
         let reply = session.executor.command(
@@ -3521,7 +3630,7 @@ impl Pool {
         phase(serde_json::json!({"phase": "executor_replied", "handler_ms": metrics.handler_ms,
             "device_lease_ms": metrics.device_lease_ms, "d2h_wait_ms": metrics.d2h_wait_ms}));
         dispatched.record(&reply, &self.config.inventory);
-        session.level = Level::Gpu;
+        session.loaded.insert(construction.clone(), Level::Gpu);
         self.record_invoke(&construction, &lane, first, invoked.elapsed(), &reply);
         self.note_decisions(id, session.executor.birth.pid, &lane, &reply);
         record_measurements(engine, id, &plan, &reply, &driver.map(platform::gpu::Peak::end).unwrap_or_default());
