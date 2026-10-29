@@ -135,7 +135,10 @@ jobs:
           left=0
           while read -r rid; do
             for _ in $(seq 1 30); do
-              cozy machine list --json < /dev/null 2>/dev/null | jq -e --arg r "$rid" '.machines[] | select(.rental_id==$r and .state!="ended")' >/dev/null ||
+              j=$(cozy machine ls --json < /dev/null 2>/dev/null || cozy machine list --json < /dev/null 2>/dev/null)
+              # gone only on a listing that has a machines array without it; unread counts as live
+              jq -e '.machines | type == "array"' <<<"$j" >/dev/null 2>&1 &&
+                ! jq -e --arg r "$rid" '.machines[] | select(.rental_id==$r and .state!="ended")' <<<"$j" >/dev/null &&
                 { echo "$rid is gone"; continue 2; }
               cozy machine end "$rid" -y < /dev/null || true; sleep 10
             done

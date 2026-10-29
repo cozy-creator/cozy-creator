@@ -15,8 +15,9 @@ fail() { say "FAIL: $*"; RC=1; exit 1; }
 param() { jq -r --arg k "$1" --arg d "${2-}" 'if has($k) then (.[$k] | if type == "string" then . else tojson end) else $d end' <<<"$PARAMS"; }
 state() { cozy machine show "$1" --json 2>/dev/null | jq -r '.state // empty'; }
 # live <rental id>: listed and not ended; a list that does not answer counts as live.
-live() {
-  local j; j=$(cozy machine list --json 2>/dev/null) || return 0
+live() {  # `ls` (cozy 0.13.9), else `list`; a listing with no machines array is unread: live
+  local j; j=$(cozy machine ls --json 2>/dev/null || cozy machine list --json 2>/dev/null) || return 0
+  jq -e '.machines | type == "array"' <<<"$j" >/dev/null 2>&1 || return 0
   jq -e --arg r "$1" '.machines[] | select(.rental_id==$r and .state!="ended")' <<<"$j" >/dev/null
 }
 gone() { local s; s=$(state "$1"); { [ "$s" = ended ] || [ -z "$s" ]; } && ! live "$1"; }
