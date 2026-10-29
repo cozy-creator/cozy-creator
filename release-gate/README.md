@@ -126,6 +126,10 @@ model by its `local/` name and by its provider source.
 release, a dev-build run or the image's): it reinstalls SDXL and Anima (and Qwen-Image), counts their environments'
 bytecode, evicts their weights and runs one cold request each, now or once the import-only parent (`imported`) and
 its kernel compiles are up; it reads the executors' memory after each machine start.
+`warming` (xs-132) covers several measurements on one pod.
+- An environment's import with its files evicted from the page cache vs cached, and with its import pages read back first (SDXL, H3).
+- `--warm gpu` held and reused.
+- A request queued behind another package's run. With a dev TensorD (`tensord`), item `4b` runs this in shared mode (via the pod's config.toml) and then dedicated; its pipeline is the `fixtures/xs132-pipeline` orchestrator.
 
 ## More cells and checks
 
