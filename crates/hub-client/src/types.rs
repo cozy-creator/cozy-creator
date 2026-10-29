@@ -673,6 +673,8 @@ pub struct Rental {
     pub worker_address: Option<String>,
     /// `host:port` of its sshd, for a rental asked with an SSH key.
     pub ssh_address: Option<String>,
+    /// It was asked with an SSH key: root logs in with it once it is ready.
+    pub development: bool,
     pub cert_pem: Option<String>,
     pub base_worker_image_digest: String,
     pub hourly_rate_usd_micros: i64,

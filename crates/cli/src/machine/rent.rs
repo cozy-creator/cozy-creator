@@ -5,7 +5,7 @@ use std::{
 };
 
 use protocol::{
-    calcifer::{Machine, MachineState, NewMachine, Quote, Rented, RunQuote},
+    calcifer::{Ended, Machine, MachineState, NewMachine, Quote, Rented, RunQuote},
     config::Origin,
     error::{Error, Kind},
 };
@@ -119,6 +119,9 @@ pub async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
             "replay": rented.replay,
         }));
     }
+    if ssh_key.is_some() {
+        ssh_ordered(ctx, &hub, &calcifer, &rented.machine).await?;
+    }
     let mut notices = Notices::default();
     for note in notices.fresh(&rented.machine) {
         output::say(ctx, note);
@@ -171,6 +174,38 @@ pub async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
         ],
     );
     Ok(ExitCode::SUCCESS)
+}
+
+/// The Hub holds the order's SSH key. A Calcifer older than `--ssh` drops the key unread, and its
+/// pod can never be logged into (two rtx-pro-4000 pods, 2026-10-29, ordered by a newer cozy than
+/// the Calcifer that placed them): such an order ends at once, before it boots and bills.
+async fn ssh_ordered(
+    ctx: &Context,
+    hub: &Origin,
+    calcifer: &crate::calcifer_client::Client,
+    machine: &Machine,
+) -> Result<(), Error> {
+    let Some(id) = machine.rental_id.as_deref() else {
+        return Ok(());
+    };
+    let rental = hub_answer(ctx.hub_signed_in(hub)?.get_rental(id).await)?;
+    if rental.development {
+        return Ok(());
+    }
+    let ended = calcifer
+        .delete::<Ended>(&format!("{}?force=true", super::route(id)?))
+        .await;
+    let fate = match ended {
+        Ok(_) => "it was ended before it booted".to_owned(),
+        Err(e) => format!("ending it failed ({}): `cozy machine end {id}` ends it", e.message),
+    };
+    Err(Error::new(
+        Kind::Conflict,
+        "rental_ssh_dropped",
+        format!("{} reached the Hub without its SSH key, so nobody could log in; {fate}", machine.name),
+    )
+    .remedy("this computer's Calcifer runs an older cozy that drops `--ssh`: rent with the installed cozy (`cozy update` brings both to one release)")
+    .next(format!("cozy machine rent {} --ssh", rental.sku.as_deref().unwrap_or("<sku>"))))
 }
 
 /// The OpenSSH public key `--ssh` names (none: the user's own), as one line.
