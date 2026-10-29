@@ -259,6 +259,16 @@ struct Model {
     /// The header's precision family (`int8`, …), shown beside the lane.
     precision: String,
     manifest: String,
+    /// The LoRAs on it, as the run named them.
+    adapters: Vec<Adapter>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Adapter {
+    model: String,
+    strength: f64,
+    components: Vec<String>,
 }
 
 /// A run not yet settled is followed to its end in every mode (Ctrl-C stops following, never the
@@ -526,11 +536,14 @@ fn stage_rows(measured: &Measured) -> Vec<Vec<String>> {
 fn model_rows(measured: &Measured) -> Vec<Vec<String>> {
     let measured = &measured.m;
     let row = |m: &Model| {
-        let model = match (m.repository.is_empty(), m.release.is_empty()) {
+        let mut model = match (m.repository.is_empty(), m.release.is_empty()) {
             (true, _) => m.manifest.chars().take(19).collect(),
             (false, true) => m.repository.clone(),
             (false, false) => format!("{}@{}", m.repository, m.release),
         };
+        for a in &m.adapters {
+            model += &format!(" + {},{} on {}", a.model, a.strength, a.components.join(", "));
+        }
         let lane = match m.precision.is_empty() {
             true => or_dash(&m.lane),
             false => format!("{} ({})", or_dash(&m.lane), m.precision),

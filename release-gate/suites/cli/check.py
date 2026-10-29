@@ -1,6 +1,5 @@
 """Suite `cli` (./cells.sh): each GPU-only `run` flag did what it says, in its run's record.
     check(gate) -> (fails, notes)"""
-import json
 import os
 
 GIB = 1 << 30
@@ -24,9 +23,10 @@ def check(gate):
         (notes if attn == ['sdpa'] else fails).append(f'cli-attn: --attention-kernel sdpa served {attn}')
     for cell in ('cli-lora', 'cli-lora-input'):
         if cell in runs:
-            text = json.dumps(runs[cell].record).lower()
-            if 'lcm-lora-sdxl' not in text and 'adapter' not in text:
-                fails.append(f'{cell}: the record names no LoRA (lcm-lora-sdxl) applied')
+            rows = [(m.get('repository'), a) for m in runs[cell].models for a in m.get('adapters') or []]
+            named = [f"{base} + {a.get('model')},{a.get('strength')} on {a.get('components')}" for base, a in rows]
+            ok = any(base == '_/sdxl' and 'lcm-lora-sdxl' in (a.get('model') or '') and a.get('components') for base, a in rows)
+            (notes if ok else fails).append(f'{cell}: the record names {named or "no LoRA"}')
     vram = 'cli-cap' in runs and runs['cli-cap'].vram  # none read fails in analyze.py
     if vram:
         (fails if vram['peak'] * (1 << 20) > 12 * GIB else notes).append(

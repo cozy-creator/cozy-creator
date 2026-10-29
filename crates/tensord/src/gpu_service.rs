@@ -44,6 +44,24 @@ pub struct ModelGrant {
     pub lane: String,
     pub manifest: String,
     pub components: Vec<String>,
+    /// The LoRAs its model carries, when `manifest` is their adapter view.
+    pub adapted: Option<Adapted>,
+}
+
+/// A slot's adapter view as the run's record names it: the base model and each LoRA on it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Adapted {
+    /// The base model the view adapts (org/name).
+    pub repository: String,
+    pub adapters: Vec<Applied>,
+}
+
+/// One LoRA as the run named it, its strength, and the base components it adapts.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Applied {
+    pub model: String,
+    pub strength: f64,
+    pub components: Vec<String>,
 }
 
 /// Extract only the source-declared use fields. Unrelated prompt/seed data never changes
@@ -162,6 +180,9 @@ pub struct PlanSlot {
     /// the GPU that keeps each at Load (`Binding::homes`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub placeable: Vec<String>,
+    /// Its LoRAs, when its checkpoint is their adapter view (`run show`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapted: Option<Adapted>,
 }
 
 /// One `Weights[M]` argument: the checkpoint a call reads raw (never constructed), and the
@@ -269,7 +290,12 @@ impl Plan {
         };
         let constructed = self.slots.iter().map(|s| {
             let model = s.binding.model.rsplit_once('@').unwrap_or_default();
-            row(&s.binding.model_parameter_name, model, (&s.lane, &s.precision), &s.binding.snapshot)
+            let mut row = row(&s.binding.model_parameter_name, model, (&s.lane, &s.precision), &s.binding.snapshot);
+            if let Some(adapted) = &s.adapted {
+                row["repository"] = adapted.repository.clone().into();
+                row["adapters"] = serde_json::json!(adapted.adapters);
+            }
+            row
         });
         let raw = self.sources.iter().map(|s| row(&s.parameter, (&s.repository, &s.release), (&s.lane, &s.precision), &s.manifest));
         constructed.chain(raw).collect()
@@ -2147,6 +2173,7 @@ impl Pool {
                 selected_encoded_bytes,
                 on_demand: model.get("on_demand").and_then(serde_json::Value::as_bool) == Some(true),
                 placeable,
+                adapted: grant.adapted.clone(),
             });
         }
         let construction = construction(&installed.generation, application, &planned, degree)?;
