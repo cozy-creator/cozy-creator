@@ -26,7 +26,7 @@ if [ -f "$GD/head-swap.json" ]; then
   cell h3-guide "$HT" --input "$GD/head-swap-abs.json" --lane int8 \
     --lora "generate_ref2va_turbo.models.base_model:transformer_ref=fidika/minimax-h3-head-swap@sha256:2adf611eee7e5f94e9de733b9dd62734058a4664d4ea5ca686c116045178af37,1.0"
   out=$(output h3-guide mp4)
-  a=$([ -n "$out" ] && python3 "$GD/align.py" "$GD/source.mp4" "guide=$out" 2>&1 | tail -1)
+  a=$([ -n "$out" ] && uv run -q --no-project --with numpy python -I "$GD/align.py" "$GD/source.mp4" "guide=$out" 2>&1 | tail -1)
   s=$(grep -oE 'same-index mean [0-9.]+' <<< "$a" | grep -oE '[0-9.]+$') w=$(grep -oE 'in [0-9]+% of sampled' <<< "$a" | grep -oE '[0-9]+')
   expect h3-guide "$([ "$(run_get "$OUT" h3-guide .status)" = completed ] && awk -v s="${s:-0}" -v w="${w:-0}" 'BEGIN{exit !(s >= 0.7 && w >= 90)}' && echo PASS || echo FAIL)" \
     "$(run_get "$OUT" h3-guide .status) $(ex h3-guide) s; $a"
