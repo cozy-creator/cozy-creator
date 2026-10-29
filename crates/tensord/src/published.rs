@@ -1425,6 +1425,14 @@ fn apply_adapters(
     // The view is the store's to keep from here: the call that reads it holds it open.
     let composed = crate::adapter::compose(store, &base, &selections)
         .map_err(|e| ("model_adapter_refused", e.to_string()))?;
+    // What each LoRA adapts, for the run's record: `generate.models.model: org/lora on unet, …`.
+    let applied: Vec<String> = (choice.adapters.iter().zip(&composed.adapted))
+        .map(|(adapter, components)| {
+            let named = if adapter.source.is_empty() { &adapter.model } else { &adapter.source };
+            format!("{named} on {}", components.join(", "))
+        })
+        .collect();
+    job.stage(format!("{}: {}", grant.slot, applied.join("; ")));
     grant.repository = composed.name;
     grant.manifest = composed.checkpoint.id().id();
     Ok(())

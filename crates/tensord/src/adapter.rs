@@ -39,6 +39,8 @@ pub struct Selection {
 pub struct Composed {
     pub name: String,
     pub checkpoint: Checkpoint,
+    /// The base components each selection adapts, in order.
+    pub adapted: Vec<Vec<String>>,
 }
 
 fn refuse(code: &str, detail: impl Into<String>) -> io::Error {
@@ -316,6 +318,12 @@ pub fn compose(store: &Store, base: &ObjectRef, selections: &[Selection]) -> io:
     let base = checkpoint(base)?;
     let adapters = selections.iter().map(|s| Ok((s.clone(), checkpoint(&s.checkpoint)?))).collect::<io::Result<Vec<_>>>()?;
     let (takes, graph) = plan(&base, &adapters)?;
+    let each = (selections.iter())
+        .map(|s| {
+            let id = s.checkpoint.id();
+            (graph.adapters.iter()).filter(|a| a.reference == id).map(|a| a.component.clone()).collect()
+        })
+        .collect();
     // Named by what it applies, the components as resolved.
     let rows: Vec<_> = (graph.adapters.iter())
         .map(|a| serde_json::json!([&a.reference, a.component, a.source_component, a.scale.to_string()]))
@@ -354,5 +362,5 @@ pub fn compose(store: &Store, base: &ObjectRef, selections: &[Selection]) -> io:
         writer.set_metadata(key, value.clone());
     }
     let header = writer.commit().map_err(storage::io_error)?;
-    Ok(Composed { name: id, checkpoint: checkpoint(&header)? })
+    Ok(Composed { name: id, checkpoint: checkpoint(&header)?, adapted: each })
 }
