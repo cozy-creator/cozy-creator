@@ -152,8 +152,8 @@ its kernel compiles are up; it reads the executors' memory after each machine st
   - `straggler` (on the gate's host, where a client may dial): `tfs download` of BiRefNet clean and through
     `straggler.py`, which drips its first objects as a slow storage GET does. A straggler must be re-asked, not
     waited out (at most 1.5x clean + 20 s).
-  - `lora-alpha` (on the gate's host): `tfs import` of a LoRA with no `.alpha` tensors whose kohya metadata says
-    `ss_network_alpha` 420 at rank 4. Its committed `lora_alpha` must be `r`, a scale of 1, as kohya's and ComfyUI's
+  - `lora-alpha` (on the gate's host): `tfs import --converter h3.lora` of an H3 LoRA in ComfyUI's spelling with no
+    `.alpha` tensors whose kohya metadata says `ss_network_alpha` 420 at rank 4. Its committed `lora_alpha` must be `r`, a scale of 1, as kohya's and ComfyUI's
     loaders apply it; metadata alpha scaled the Mystic XXX LoRAs 26x into colour noise (10-29).
 - **hub** (`suites/hub`, one `cpu` rental, ~$0.2, ~30 min, `-f suites=hub`): pick it for any Hub release. It shows the
   API contract (tensorhub `api/openapi.yaml`, as the Hub serves it at `/openapi.yaml`) holds as cozy uses it:

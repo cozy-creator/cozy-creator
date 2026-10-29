@@ -1,9 +1,10 @@
 # Suite `tensorfs` (gate.sh --suite tensorfs): TensorFS moves weights as fast as before and dedups.
 #   straggler        on this host: `tfs download` of BiRefNet clean and through straggler.py, which drips its first
 #                    objects as a slow storage GET does (10-01): TensorFS must re-ask a straggler, not wait out its tail
-#   lora-alpha       on this host: `tfs import` of a LoRA with no `.alpha` tensors whose kohya metadata says
-#                    ss_network_alpha 420 at rank 4: its committed `lora_alpha` must be r, a scale of 1, as kohya's and
-#                    ComfyUI's loaders apply it (10-29: the Mystic XXX LoRAs rendered colour noise at 420/16)
+#   lora-alpha       on this host: `tfs import --converter h3.lora` of an H3 LoRA in ComfyUI's spelling with no `.alpha`
+#                    tensors whose kohya metadata says ss_network_alpha 420 at rank 4: its committed `lora_alpha` must be r,
+#                    a scale of 1, as kohya's and ComfyUI's loaders apply it (10-29: the Mystic XXX LoRAs, this format,
+#                    rendered colour noise at 420/16)
 # On the rented machine $M, through `cozy`:
 #   probe            the machine's disk, written and read cold; an executor never dials, so no network figure
 #   download-cold    a large many-object model ($TFS_MODEL), its time held against the last pass
@@ -78,12 +79,12 @@ from safetensors.numpy import save_file
 rng = np.random.default_rng()
 w = {}
 for i in range(2):
-    w[f"blocks.{i}.proj.lora_A.weight"] = rng.standard_normal((4, 16)).astype(np.float32)
-    w[f"blocks.{i}.proj.lora_B.weight"] = rng.standard_normal((32, 4)).astype(np.float32)
+    w[f"diffusion_model.blocks.{i}.attn.out_proj.lora_A.weight"] = rng.standard_normal((4, 7168)).astype(np.float32)
+    w[f"diffusion_model.blocks.{i}.attn.out_proj.lora_B.weight"] = rng.standard_normal((5376, 4)).astype(np.float32)
 save_file(w, sys.argv[1], metadata={"ss_network_alpha": "420", "ss_network_dim": "69"})
 PY
   TENSORFS_HOME=$s/store uv tool run -q --from "${TWF:-tensorfs}" tfs import "$s/lora.safetensors" --name local/lora-alpha \
-    >"$s/import.txt" 2>&1 &&
+    --converter h3.lora >"$s/import.txt" 2>&1 &&
     TENSORFS_HOME=$s/store uv tool run -q --from "${TWF:-tensorfs}" tfs --json inspect local/lora-alpha >"$T/lora-alpha.json" \
       2>>"$s/import.txt"
   log "tensorfs lora-alpha: exit $? $(grep -o '"lora_alpha":[^,}]*' "$T/lora-alpha.json" 2>/dev/null | head -1)"
