@@ -219,6 +219,7 @@ fn picture(identity: &MachineIdentity, held: Held) -> v1::StatusFrame {
         webrtc: identity.webrtc_port.map(|port| {
             crate::machine::player::endpoint(port, &identity.player, &identity.cert_der)
         }),
+        mode: identity.mode.into(),
         driver_floor: match identity.gpus.is_empty() {
             true => String::new(),
             false => platform::gpu::DRIVER_FLOOR.into(),

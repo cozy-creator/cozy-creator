@@ -110,6 +110,27 @@ pub struct MachineConfig {
     /// for a smaller one (`cozy machine update --gpu-memory-limit`).
     #[serde(deserialize_with = "size")]
     pub gpu_memory_limit: Option<u64>,
+    /// `shared` (a guest: memory goes back to the computer's other work, one environment is
+    /// imported ahead of a request) or `dedicated` (the machine's alone). Absent: a rental is
+    /// dedicated, anything else shared.
+    pub mode: Option<MachineMode>,
+}
+
+/// How a machine shares its computer (`machine.mode`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MachineMode {
+    Shared,
+    Dedicated,
+}
+
+impl MachineMode {
+    pub fn name(self) -> &'static str {
+        match self {
+            MachineMode::Shared => "shared",
+            MachineMode::Dedicated => "dedicated",
+        }
+    }
 }
 
 impl MachineConfig {

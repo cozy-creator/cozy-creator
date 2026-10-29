@@ -53,6 +53,8 @@ pub struct Config {
     pub visible_devices: Option<String>,
     /// The most memory each GPU offers (`machine.gpu_memory_limit`).
     pub gpu_memory_limit: Option<u64>,
+    /// How it shares its computer: `machine.mode`, else a rental dedicated and anything else shared.
+    pub mode: protocol::config::MachineMode,
     /// The provider's public mapping of this pod's ports, told to the Hub at boot.
     pub endpoint: Option<Endpoint>,
     /// The provider's names, for [`crate::machine::provider::ProviderSelf::take`].
@@ -111,6 +113,10 @@ fn from_loaded(lifetime: Lifetime, loaded: Loaded, environment: &BTreeMap<String
         logs: grant.layout.state.join("logs"),
         visible_devices: machine.visible_devices.clone(),
         gpu_memory_limit: machine.gpu_memory_limit,
+        mode: machine.mode.unwrap_or(match rental {
+            true => protocol::config::MachineMode::Dedicated,
+            false => protocol::config::MachineMode::Shared,
+        }),
         endpoint: rental.then(|| crate::machine::endpoint::from_env(provider.clone())).flatten(),
         provider,
         grant,

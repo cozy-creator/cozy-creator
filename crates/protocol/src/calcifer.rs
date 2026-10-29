@@ -620,6 +620,9 @@ pub struct MachineStatus {
     pub environments: Vec<Environment>,
     #[serde(default)]
     pub warm: Vec<WarmItem>,
+    /// `shared` or `dedicated` (`machine.mode`); empty from an older machine.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub mode: String,
     /// The oldest NVIDIA driver its kernels run on; empty: no GPU stack.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub driver_floor: String,

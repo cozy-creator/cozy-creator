@@ -726,6 +726,9 @@ pub struct StatusFrame {
     pub webrtc: Option<WebRtc>,
     /// The caller's warm set, each with what it holds now.
     pub warm: Vec<WarmItem>,
+    /// `shared` or `dedicated`: how it shares its computer (`machine.mode`); empty from an older one.
+    #[serde(default)]
+    pub mode: String,
     /// The oldest NVIDIA driver this machine's kernels run on; empty: no GPU stack.
     pub driver_floor: String,
     /// What builds kernels here when no prebuilt one serves the card.
