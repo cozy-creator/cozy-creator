@@ -8,11 +8,12 @@ submit() {
   n=$(run_submit "$T" "$nm" run "$@" --on "$M" --out "$T/out/$nm") && [ -n "$n" ] && echo "$nm" > "$T/$n.name" && echo "$n"
 }
 nm() { cat "$T/$1.name" 2>/dev/null; }
-# get <run> <field>: the run's record, now (status, reason, attempt, executor, gpus, window, ms, stage, output, length).
+# get <run> <field>: the run's record, now (status, machine_state, reason, attempt, executor, gpus, window, ms, stage, output,
+# length). An accepted run's status is in_progress; machine_state says whether the machine queued or runs it.
 get() {
   local q=
   case $2 in
-    status) q=.status;; reason) q=.reason.code;; ms) q=.execution_ms;; attempt) q=.measurements.software.attempt_ordinal;;
+    status) q=.status;; machine_state) q=.machine_state;; reason) q=.reason.code;; ms) q=.execution_ms;; attempt) q=.measurements.software.attempt_ordinal;;
     executor) q=.measurements.execution.executor.started_unix_ms;;
     gpus) q='[.measurements | .. | objects | select((.gpu | type) == "number" and .gpu >= 0) | .gpu] | unique | map(tostring) | join(",")';;
     window) q='"\(.accepted_at_ms // 0) \(.settled_at_ms // 0)"';; stage) q=.progress.stage;;
@@ -61,7 +62,7 @@ fi
 busy=(); for i in $(seq "${NGPU:-1}"); do busy+=("$(submit "sdxl/generate@$NEW" prompt="$SCENE, the long run $i" steps:=60 seed:=$((R + 50 + i)))"); done
 a=${busy[0]}
 b=$(submit "sdxl/generate@$NEW" prompt="$OBJECT, the queued run" steps:=60 seed:=$((R + 35)))
-until_status "$a" in_progress; qb=$(get "$b" status)
+until_status "$a" in_progress; qb=$(get "$b" machine_state)
 "$CLI" run cancel "$b" -y > "$T/cancel-queued.log" 2>&1; until_status "$b" terminal
 for x in "${busy[@]}"; do "$CLI" run cancel "$x" -y > "$T/cancel-running-$x.log" 2>&1; done
 for x in "${busy[@]}"; do until_status "$x" terminal; done
@@ -72,7 +73,7 @@ if [ "$qb" = queued ] && [ "$(get "$b" status)" = canceled ] && [ -z "$(get "$b"
   expect tensord-run-lifecycle PASS "run $b queued behind $a and canceled unrun; $a canceled running; $c's $want bytes landed"
 else
   ran=$(get "$b" ms)
-  expect tensord-run-lifecycle FAIL "run $b was ${qb:-?} then $(get "$b" status) (ran ${ran:-0} ms); $a $(get "$a" status); $c $(get "$c" status), landed ${f:-nothing} ($(stat -c %s "$f" 2>/dev/null || echo 0) of ${want:-?} bytes)"
+  expect tensord-run-lifecycle FAIL "run $b was machine_state ${qb:-?} then $(get "$b" status) (ran ${ran:-0} ms); $a $(get "$a" status); $c $(get "$c" status), landed ${f:-nothing} ($(stat -c %s "$f" 2>/dev/null || echo 0) of ${want:-?} bytes)"
 fi
 
 # Executors and leases: models stack on the pod and idle executors end when the last one needs the card (cr-216's
