@@ -265,8 +265,8 @@ impl Service {
         }
         self.engine.notify_activity();
     }
-    /// The machine started: its installed environments' import-only parents import, the most
-    /// recently used first, as many as its sharing mode keeps (`Pool::import_recent`).
+    /// The machine started: a dedicated one's installed environments' import-only parents import,
+    /// the most recently used first, while the host has room for them (`Pool::import_recent`).
     pub fn import_installed(&self) -> io::Result<()> {
         let Some(gpu) = self.gpu() else { return Ok(()) };
         let bound = self.engine.with_journal(|journal| journal.bound_generations())?;
