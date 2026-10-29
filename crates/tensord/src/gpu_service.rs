@@ -540,6 +540,8 @@ struct Zygote {
     children: Mutex<Vec<Birth>>,
     /// Its last fork (or its start): childless parents end least recently used first.
     used: Mutex<Option<Instant>>,
+    /// It forked a request's executor: imported ahead of a request no more, but used.
+    served: std::sync::atomic::AtomicBool,
 }
 #[derive(Default)]
 enum ZygoteState {
@@ -589,6 +591,7 @@ impl Zygote {
             Forked::Ready(child) => {
                 self.children.lock().unwrap().push(child.birth.clone());
                 *self.used.lock().unwrap() = Some(Instant::now());
+                self.served.store(true, Ordering::Release);
             }
             Forked::Lost(..) => {
                 // Its children ended with it; the pool replaces it (`new_session`).
@@ -621,9 +624,6 @@ const ENDED: &str = "import-only executor ended";
 /// What one more import-only parent may hold of the host: torch, Diffusers and Transformers
 /// imported come to 0.73–0.85 GB resident (SDXL, Qwen-Image, Krea 2, Anima, H3 on CPU).
 const PARENT_BYTES: i64 = 1 << 30;
-
-/// How recently a shared machine's environment was used for its parent to import at machine start.
-const SHARED_RECENT: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 
 /// Executors fork from an import-only parent on Linux only; elsewhere each one spawns, and no
 /// parent imports ahead of it.
@@ -2710,15 +2710,17 @@ impl Pool {
     }
 
     /// A generation installed: its kernels compile (niced) and its import-only parent imports.
-    /// A shared machine keeps one parent imported ahead of a request: this one replaces the idle
-    /// others (Paul, 10-29: a laptop must not hold half its RAM for packages it is not using).
+    /// A shared machine keeps one parent imported ahead of a request: this one replaces any other
+    /// that never served one (Paul, 10-29: a laptop must not hold half its RAM for packages it
+    /// is not using). A parent a request used stays until the machine's idle exit.
     pub fn installed(self: &Arc<Self>, held: HeldGeneration) {
         self.kernel_boot(held.clone());
         if self.config.host.mode == HostMode::Shared {
             let key = parent_app(&held);
             let idle: Vec<Arc<Zygote>> = {
                 let mut zygotes = self.zygotes.lock().unwrap();
-                let others: Vec<App> = zygotes.iter().filter(|(app, z)| **app != key && z.childless()).map(|(app, _)| app.clone()).collect();
+                let ahead = |z: &Zygote| z.childless() && !z.served.load(Ordering::Acquire);
+                let others: Vec<App> = zygotes.iter().filter(|(app, z)| **app != key && ahead(z)).map(|(app, _)| app.clone()).collect();
                 others.iter().filter_map(|app| zygotes.remove(app)).collect()
             };
             for zygote in idle {
@@ -2734,17 +2736,13 @@ impl Pool {
 
     /// The machine's installed environments `held`, the most recently used first: each one's
     /// import-only parent imports in turn, off the caller's thread, while the host keeps half its
-    /// memory free with one more parent ([`PARENT_BYTES`]). A shared machine (a local one) imports
-    /// only its most recently used environment, and only one used within [`SHARED_RECENT`]; the rest
-    /// import when a request or `--warm imported` asks. A short host ends idle parents least
-    /// recently used first (`host_short`), as ever.
-    pub fn import_recent(self: &Arc<Self>, held: Vec<(std::time::SystemTime, HeldGeneration)>) {
-        let held: Vec<HeldGeneration> = match self.config.host.mode {
-            HostMode::Dedicated => held.into_iter().map(|(_, held)| held).collect(),
-            HostMode::Shared => held.into_iter().take(1)
-                .filter(|(used, _)| used.elapsed().is_ok_and(|since| since < SHARED_RECENT))
-                .map(|(_, held)| held).collect(),
-        };
+    /// memory free with one more parent ([`PARENT_BYTES`]). A short host ends idle parents least
+    /// recently used first (`host_short`), as ever. A shared machine imports none: it starts
+    /// because a command ran, and that command imports what it needs.
+    pub fn import_recent(self: &Arc<Self>, held: Vec<HeldGeneration>) {
+        if self.config.host.mode == HostMode::Shared {
+            return;
+        }
         let pool = Arc::downgrade(self);
         let started = std::thread::Builder::new().name("import-installed".into()).spawn(move || {
             for held in held {
