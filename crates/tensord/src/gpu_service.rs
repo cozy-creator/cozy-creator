@@ -96,8 +96,8 @@ pub struct GpuConfig {
     /// (`precision`).
     #[serde(default)]
     pub inventory: Vec<crate::machine::receipt::Gpu>,
-    /// The total machine GPU cap. Stock-allocator execution refuses it until aggregate grants
-    /// include every executor and non-allocator bytes; it is never multiplied per executor.
+    /// Development only: each GPU behaves as a card of this many bytes (Start's
+    /// `gpu_memory_limit`, and `memory::Gpu::free`).
     #[serde(default)]
     pub gpu_memory_limit: Option<u64>,
     /// Explicitly configured locations; the executor seal is imposed on top of them.
