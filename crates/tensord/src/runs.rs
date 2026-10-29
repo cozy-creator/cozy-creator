@@ -664,6 +664,16 @@ impl Runs {
                 fetch
             });
             gpu.prespawn(generation.clone());
+            // A pipeline's next packages: a root's calls go to the other packages' Apps its
+            // environment holds, so their parents start now too, under the same budget.
+            if spec.parent.is_empty() {
+                for callee in generation.record.callees.iter().filter(|callee| !callee.package.starts_with("runtime/")) {
+                    match generation.application(&callee.application) {
+                        Ok(view) => gpu.prespawn(view),
+                        Err(error) => tracing::warn!("run {id}: {}'s parent: {error}", callee.application),
+                    }
+                }
+            }
         }
         let fallback = (!generation.record.sdk_fallback.is_empty())
             .then(|| format!("{} {}: {}", installation.package, installation.release, generation.record.sdk_fallback));
