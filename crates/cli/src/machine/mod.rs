@@ -47,7 +47,8 @@ enum Verb {
         query: crate::daemon::LogQuery,
     },
     /// Rent a machine; with no SKU, list what is for rent. Follows its boot; Ctrl-C stops following,
-    /// never the order.
+    /// never the order. With --json: NDJSON lines, the quote and then `rental.accepted` (its rental
+    /// id and name) once the Hub accepts, then the machine's document when it is ready.
     Rent(rent::Rent),
     /// End a rental (billing stops once its Hub confirms), or remove an added machine, once
     /// its runs' outputs have landed here.

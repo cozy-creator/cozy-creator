@@ -108,6 +108,17 @@ pub async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
         }
         answer => answer?,
     };
+    if ctx.json {
+        // The order stands from here, so a script that stops watching mid-boot can name and end it.
+        output::ndjson(&serde_json::json!({
+            "type": "rental.accepted",
+            "rental_id": rented.machine.rental_id,
+            "name": rented.machine.name,
+            "sku": sku,
+            "gpus": gpus,
+            "replay": rented.replay,
+        }));
+    }
     let mut notices = Notices::default();
     for note in notices.fresh(&rented.machine) {
         output::say(ctx, note);
@@ -245,7 +256,9 @@ fn placed(q: &RunQuote) -> String {
 /// The renter's yes to `quoted` (said as `placed`: its first line the offer, the rest why):
 /// `--yes`, else a person's on a terminal (a no is `false`). With neither nothing is rented, and
 /// the refusal carries the offer, in text and JSON. `--json` first prints the quote as one line,
-/// for tools to check: the machine, our price an hour, and the disk the Hub sized for it.
+/// for tools to check: the machine, our price an hour, and the disk the Hub sized for it. Once the
+/// Hub accepts the order, `cozy machine rent` prints `{"type":"rental.accepted", rental_id, name}`
+/// at once, and the machine's document when it is ready.
 pub(crate) fn agree(ctx: &Context, quoted: &RunQuote) -> Result<bool, Error> {
     if ctx.json {
         output::ndjson(&serde_json::json!({"quote": {
