@@ -308,6 +308,9 @@ pub fn status_fields(status: &MachineStatus) -> Vec<(String, String)> {
         ));
     }
     fields.extend(status.runs.iter().map(live_run));
+    if !status.mode.is_empty() {
+        fields.push(("mode".into(), status.mode.clone()));
+    }
     if !status.driver_floor.is_empty() {
         let old: Vec<String> = status
             .gpus
