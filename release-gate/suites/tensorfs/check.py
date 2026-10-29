@@ -10,6 +10,19 @@ import sys
 import time
 
 SLACK = 0.25
+# Block 0's and refiner 0's projections of MiniMaxAI/MiniMax-H3@42ed227e's Ref2VA DiT as h3.native reads them (each
+# head's [q k v] gathered, fc1's halves swapped): sha256 of their bf16 bytes. Comfy-Org's repack is those bytes in
+# ComfyUI's layout ([q; k; v] whole), so its import must give exactly these.
+H3_OFFICIAL = {
+    'transformer_blocks.0.attn.to_q.weight': 'd2a366742ee3018c728d43db72b5ac0c56161d417e1443766c59af7cc250f2d8',
+    'transformer_blocks.0.attn.to_k.weight': 'a1cb573cd85db86b67ccbd90fcad505e05235b5045fb59ba951b8a4f4341444d',
+    'transformer_blocks.0.attn.to_v.weight': 'f879ff97e05685c5737b450132c8692d380f5f3789bd6eeda2e2fe3e6a17b22a',
+    'transformer_blocks.0.ff.net.0.proj.weight': 'e7cf97ae56a095d37b98a17fc4da01df7aaee6ef022fa045d02530038cae3b19',
+    'token_refiner.refiner_blocks.0.attn.to_q.weight': '2d84f6fbfee39b4c0c07b2d8528e27b33ece946bd0f785bc462119102bb38109',
+    'token_refiner.refiner_blocks.0.attn.to_k.weight': '9327d52f06cb66ed5c74db26e4034e5b3ce8a2284246cda114f81f066704d370',
+    'token_refiner.refiner_blocks.0.attn.to_v.weight': '9316a158bdc07d981352c3f61992756f20de9ca30ebe8e01cdeed1f856574d72',
+    'token_refiner.refiner_blocks.0.ff.net.0.proj.weight': '8334e1d9153839356e1caba239d318b75e73a71aefe2423c8e5b27542c1293d0',
+}
 
 
 def events(path):
@@ -83,7 +96,7 @@ def check(gate):
 
     def chosen(name):
         case = name.split('-')[0]
-        return cases is None or {'mc': 'multi-conversion', 'lora': 'lora-alpha', 'layout': 'family'}.get(case, case) in cases
+        return cases is None or {'mc': 'multi-conversion', 'lora': 'lora-alpha', 'layout': 'family', 'h3': 'h3-comfy'}.get(case, case) in cases
 
     def done(name, cancelled=False):
         if not chosen(name):
@@ -186,6 +199,14 @@ def check(gate):
             notes.append(f'tensorfs download-resume: held {mib(local)} of {mib(total)} ({mib(moved)} had landed by the cut), '
                          f'fetched only the rest: {mib(hub)} from the Hub, {mib(vol)} from the volume'
                          + ('' if hub else ' (the cache served it: the Hub path was not exercised)'))
+    if done('h3-comfy-download') and done('h3-comfy-layout'):
+        got = {h.get('key'): h.get('sha256') for h in (rows['h3-comfy-layout']['rec'].get('result') or {}).get('hashes') or []}
+        wrong = sorted(k for k, v in H3_OFFICIAL.items() if got.get(k) != v)
+        if wrong:
+            fails.append(f'tensorfs h3-comfy-layout: {len(wrong)} of {len(H3_OFFICIAL)} projections are not the official '
+                         f'bytes ({", ".join(wrong[:4])}): ComfyUI\'s H3 DiT imported in the wrong layout renders grey')
+        else:
+            notes.append(f'tensorfs h3-comfy-layout: ComfyUI\'s H3 DiT imports to the official bytes ({len(H3_OFFICIAL)} projections)')
     up = None
     if done('upload'):
         evs = rows['upload']['evs']

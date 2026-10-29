@@ -10,6 +10,9 @@
 #   download-cold    a large many-object model ($TFS_MODEL), its time held against the last pass
 #   download-again   the same model again: nothing comes from the Hub
 #   download-cut/-resume  $TFS_RESUME cancelled part-way, then downloaded again: only the rest comes
+#   h3-comfy-download/-layout  ComfyUI's H3 DiT ($TFS_COMFY, Comfy-Org's repack of the official Ref2VA, 40 GB) imported
+#                    as local/ci-h3-comfy, then block 0's and refiner 0's q/k/v and fc1 hashed on CPU
+#                    (h3-comfy-layout/rows): they must be the official bytes (a qkv read per head renders grey)
 #   upload           new random weights (a CozyTensors folder) to a throwaway <account>/ci-tfs-<R>
 #   upload-again     the same folder to a second tag: no chunk is sent again (dedup)
 #   upload-cut/-resume    new weights cancelled part-way, then uploaded again: only the rest is sent
@@ -22,6 +25,7 @@
 #                    the h3-comfy-layout cell's import.
 # check.py holds each against the SKU's last passed suite and records a PASS. The throwaway models are deleted at the end.
 TFS_MODEL=${TFS_MODEL:-qwen3.5-9b} TFS_RESUME=${TFS_RESUME:-flux-3-klein} TFS_UPLOAD_MB=${TFS_UPLOAD_MB:-256}
+TFS_COMFY=${TFS_COMFY:-hf://Comfy-Org/MiniMax-H3@77aac5182eb85bb20930536bac73e498bbe2bfd7/diffusion_models/minimax_h3_ref2va_pruned_bf16.safetensors}
 T=$OUT/suite-tensorfs TFS_DESTS=()
 mkdir -p "$T"; : > "$T/cases"
 # tfs_step <name> <cozy args...>: one command that makes a run, followed to its end (e2e/run.sh): its events in
@@ -108,8 +112,8 @@ tfs_cleanup() {
 }
 trap 'tfs_cleanup; declare -F hub_cleanup >/dev/null && hub_cleanup; end_it' EXIT
 
-# tfs_case <case>: whether --only selects it (none selects every case: probe, download, upload, family, multi-conversion,
-# straggler, lora-alpha); a selected case is listed in cases, the ones check.py judges.
+# tfs_case <case>: whether --only selects it (none selects every case: probe, download, h3-comfy, upload, family,
+# multi-conversion, straggler, lora-alpha); a selected case is listed in cases, the ones check.py judges.
 tfs_case() { [ -z "$ONLY" ] || [[ $ONLY == *",$1,"* ]] || return 1; echo "$1" >> "$T/cases"; }
 
 if tfs_case probe; then
@@ -122,6 +126,11 @@ if tfs_case download; then
   tfs_step download-again model download "$TFS_MODEL" --on "$M" -y
   tfs_cut download-cut download 0.3 model download "$TFS_RESUME" --on "$M" -y
   tfs_step download-resume model download "$TFS_RESUME" --on "$M" -y
+fi
+if tfs_case h3-comfy; then
+  ln -sfn "$HERE/suites/tensorfs/h3-comfy-layout" "$OUT/ci-h3-comfy-layout"
+  tfs_step h3-comfy-download model download "$TFS_COMFY" local/ci-h3-comfy --on "$M" -y
+  tfs_step h3-comfy-layout run ./ci-h3-comfy-layout/rows model.dit=local/ci-h3-comfy --on "$M"
 fi
 WHO=; for _ in 1 2 3; do  # a dropped connection is asked again
   WHO=$("$CLI" --json whoami 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["account"])' 2>/dev/null) && [ -n "$WHO" ] && break
