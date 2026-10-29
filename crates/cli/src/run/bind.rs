@@ -41,7 +41,7 @@ pub struct Terms {
     pub assets: Vec<String>,
     /// `--asset-fidelity label-or-index=auto|low|medium|high`.
     pub fidelities: Vec<String>,
-    /// `--lora slot:component=ref[,strength]`.
+    /// `--lora [slot=]ref[,strength]`.
     pub loras: Vec<String>,
     /// The run's idempotency key, which an omitted integer `seed` derives from.
     pub key: String,
@@ -87,9 +87,10 @@ pub struct Choice {
     pub adapters: Vec<Adapter>,
 }
 
+/// A LoRA. The machine applies it to the component of its slot's model that the call runs and
+/// its layers fit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Adapter {
-    pub component: Option<String>,
     pub reference: String,
     /// A canonical decimal.
     pub scale: String,
@@ -144,6 +145,7 @@ pub fn warm_choices(
         document: Map::new(),
         choices: BTreeMap::new(),
         files: Vec::new(),
+        dropped: Vec::new(),
     };
     let mut inputs = terms.inputs.clone();
     let destination = binder.conversion(&mut inputs)?;
@@ -195,6 +197,7 @@ pub fn bind(
         document: Map::new(),
         choices: BTreeMap::new(),
         files: Vec::new(),
+        dropped: Vec::new(),
     };
     let mut inputs = terms.inputs.clone();
     let destination = binder.conversion(&mut inputs)?;
@@ -208,7 +211,9 @@ pub fn bind(
     binder.fidelities()?;
     let tree_files = binder.trees(&mut files)?;
     binder.seed();
-    let ignored = validate(target, release, callable, &mut binder.document)?;
+    let mut ignored = validate(target, release, callable, &mut binder.document)?;
+    ignored.extend(binder.dropped);
+    ignored.sort();
     Ok(Bound {
         payload: binder.document,
         files,
@@ -229,6 +234,8 @@ struct Binder<'a> {
     choices: BTreeMap<String, Choice>,
     /// Positional local files, bound to media inputs by kind.
     files: Vec<PathBuf>,
+    /// Unknown keys of `--input`'s `models` and `lora` entries, warned of with the payload's.
+    dropped: Vec<String>,
 }
 
 impl Binder<'_> {
@@ -301,9 +308,20 @@ impl Binder<'_> {
         };
         let base = path.parent().unwrap_or(Path::new(".")).to_path_buf();
         for (key, mut value) in loaded {
-            if key == "models" {
-                self.envelope(value)?;
-                continue;
+            match (key.as_str(), value) {
+                ("models", models) => {
+                    self.envelope(models)?;
+                    continue;
+                }
+                ("lora", Value::Array(list)) => {
+                    self.overlays(None, &list, "lora")?;
+                    continue;
+                }
+                ("lora", _) => {
+                    return Err(usage("lora_malformed", "lora must be a list of {ref, strength}")
+                        .remedy("lora: [{ref: org/lora, strength: 0.8}]"));
+                }
+                (_, kept) => value = kept,
             }
             let key = self.fold(&key)?;
             if let Some(field) = self.callable.field(&key) {
@@ -315,25 +333,32 @@ impl Binder<'_> {
         Ok(())
     }
 
-    /// `{"models": {"<slot>": {"ref": "…", "lora": [{"ref": "…", "weight": 0.8}]}}}`.
+    /// `{"models": {"<slot>": {"ref": "…", "lora": [{"ref": "…", "strength": 0.8}]}}}`.
     fn envelope(&mut self, value: Value) -> Result<(), Error> {
         let malformed = || {
             usage("model_binding_invalid", "models must be an object keyed by model slot").remedy(
-                r#"{"models": {"<slot>": {"ref": "org/model@release", "lora": [{"ref": "org/adapter", "weight": 0.8}]}}}"#,
+                r#"{"models": {"<slot>": {"ref": "org/model@release", "lora": [{"ref": "org/lora", "strength": 0.8}]}}}"#,
             )
         };
         let Value::Object(slots) = value else {
             return Err(malformed());
         };
         for (slot, entry) in slots {
+            let Value::Object(entry) = entry else {
+                return Err(malformed());
+            };
             if let Some(reference) = entry.get("ref").and_then(Value::as_str) {
                 self.choose(&slot, reference.to_owned())?;
             }
             match entry.get("lora") {
                 None => {}
-                Some(Value::Array(list)) => self.overlays(&slot, list)?,
+                Some(Value::Array(list)) => {
+                    self.overlays(Some(&slot), list, &format!("models.{slot}.lora"))?
+                }
                 Some(_) => return Err(malformed()),
             }
+            let unknown = entry.keys().filter(|k| !matches!(k.as_str(), "ref" | "lora"));
+            self.dropped.extend(unknown.map(|k| format!("models.{slot}.{k}")));
         }
         Ok(())
     }
@@ -422,64 +447,136 @@ impl Binder<'_> {
         Ok(())
     }
 
-    /// `--lora slot[:component]=ref[,strength]`, in order; without a component, Runtime matches
-    /// the adapter's own.
+    /// `--lora [slot=]ref[,strength]`, in order. A `://` before the `=` is a source's URL.
     fn loras(&mut self) -> Result<(), Error> {
         for raw in &self.terms.loras {
-            let malformed = || {
-                usage(
-                    "lora_malformed",
-                    "--lora expects slot[:component]=reference[,strength]",
-                )
+            let (slot, rest) = match raw.split_once('=') {
+                Some((slot, rest)) if !slot.contains("://") => (Some(slot), rest),
+                _ => (None, raw.as_str()),
             };
-            let (target, reference) = raw.split_once('=').ok_or_else(malformed)?;
-            let (slot, component) = match target.split_once(':') {
-                Some((_, component))
-                    if component.is_empty() || component.contains([',', ' ', '\t']) =>
-                {
-                    return Err(malformed());
-                }
-                Some((slot, component)) => (slot, Some(component.to_owned())),
-                None => (target, None),
-            };
-            let (reference, scale) = reference.split_once(',').unwrap_or((reference, "1"));
-            let adapter = Adapter {
-                component,
-                reference: nonempty(reference, slot)?,
-                scale: canonical_scale(scale)?,
-            };
-            self.each(slot, |choice| {
-                choice.adapters.push(adapter.clone());
-                Ok(())
-            })?;
+            let (reference, strength) = rest.split_once(',').unwrap_or((rest, "1"));
+            self.lora(slot, reference, strength, raw)?;
         }
         Ok(())
     }
 
-    fn overlays(&mut self, slot: &str, list: &[Value]) -> Result<(), Error> {
-        for entry in list {
-            let reference = nonempty(entry["ref"].as_str().unwrap_or_default(), slot)?;
-            let scale = match &entry["weight"] {
-                Value::Number(n) => n.to_string(),
-                Value::String(s) => s.clone(),
-                _ => {
-                    return Err(usage(
-                        "model_overlay_invalid",
-                        format!("model overlay for {slot} requires a numeric weight"),
-                    ));
+    /// `--input`'s `[{ref, strength}]` at `path`.
+    fn overlays(&mut self, slot: Option<&str>, list: &[Value], path: &str) -> Result<(), Error> {
+        for (i, entry) in list.iter().enumerate() {
+            let at = format!("{path}[{i}]");
+            let Value::Object(entry) = entry else {
+                return Err(usage("lora_malformed", format!("{at} is not {{ref, strength}}")));
+            };
+            let reference = entry.get("ref").and_then(Value::as_str).unwrap_or_default();
+            let strength = match entry.get("strength") {
+                None => "1".to_owned(),
+                Some(Value::Number(n)) => n.to_string(),
+                Some(Value::String(s)) => s.clone(),
+                Some(_) => {
+                    return Err(usage("lora_strength_invalid", format!("{at}.strength is not a number")));
                 }
             };
-            let adapter = Adapter {
-                component: entry["component"].as_str().map(str::to_owned),
-                reference,
-                scale: canonical_scale(&scale)?,
+            let unknown = entry.keys().filter(|k| !matches!(k.as_str(), "ref" | "strength"));
+            self.dropped.extend(unknown.map(|k| format!("{at}.{k}")));
+            let written = match slot {
+                Some(slot) => format!("{slot}={reference},{strength}"),
+                None => format!("{reference},{strength}"),
             };
-            self.each(slot, |choice| {
-                choice.adapters.push(adapter.clone());
-                Ok(())
-            })?;
+            self.lora(slot, reference, &strength, &written)?;
         }
         Ok(())
+    }
+
+    /// One LoRA on the slot named, else on the function's model ([`Self::lora_slots`]); `written`
+    /// is how the person wrote it.
+    fn lora(&mut self, slot: Option<&str>, reference: &str, strength: &str, written: &str) -> Result<(), Error> {
+        let reference = reference.trim();
+        if reference.is_empty() {
+            return Err(usage("lora_malformed", format!("--lora {written} names no LoRA")));
+        }
+        let slots = match slot {
+            Some(slot) if ident(slot) => self.slots(slot)?,
+            Some(slot) => {
+                return Err(usage(
+                    "lora_malformed",
+                    format!("--lora {written}: {slot:?} is not a model slot"),
+                )
+                .remedy(format!(
+                    "--lora [<slot>=]<lora>[,strength], a slot by its short name: {}",
+                    self.slot_names().join(", ")
+                )));
+            }
+            None => self.lora_slots(written)?,
+        };
+        let adapter = Adapter {
+            reference: reference.to_owned(),
+            scale: canonical_scale(strength)?,
+        };
+        self.at(slots, |choice| {
+            choice.adapters.push(adapter.clone());
+            Ok(())
+        })
+    }
+
+    /// Where a LoRA naming no slot goes: each call's main model (its first constructed slot, the
+    /// one `--lane` names), when those are one model. More than one is refused, naming each.
+    fn lora_slots(&self, written: &str) -> Result<Vec<String>, Error> {
+        let candidates: Vec<(String, &Slot)> = match main_slot(self.callable.models.iter()) {
+            Some(own) => vec![(own.param.clone(), own)],
+            None => {
+                let mut callees: Vec<&str> = self.calls.iter().map(|s| callee(&s.path)).collect();
+                callees.dedup();
+                (callees.into_iter())
+                    .filter_map(|c| main_slot(self.calls.iter().copied().filter(|s| callee(&s.path) == c)))
+                    .map(|s| (s.path.clone(), s))
+                    .collect()
+            }
+        };
+        // One model: the same default `org/name`, else (no default) the same class.
+        let model = |s: &Slot| match &s.default {
+            Some(default) => default.split('@').next().unwrap_or(default).to_ascii_lowercase(),
+            None => s.class.clone(),
+        };
+        let mut models: Vec<(String, Vec<&str>)> = Vec::new();
+        for (_, slot) in &candidates {
+            match models.iter_mut().find(|(m, _)| *m == model(slot)) {
+                Some((_, params)) if params.contains(&slot.param.as_str()) => {}
+                Some((_, params)) => params.push(&slot.param),
+                None => models.push((model(slot), vec![&slot.param])),
+            }
+        }
+        let name = if self.target.is_empty() { &self.callable.name } else { self.target };
+        match models.len() {
+            0 => Err(usage(
+                "lora_slot_absent",
+                format!("--lora {written}: {name} loads no model a LoRA applies to"),
+            )),
+            1 => Ok(candidates.into_iter().map(|(slot, _)| slot).collect()),
+            n => {
+                let each = |f: &dyn Fn(&str, &str) -> String| -> Vec<String> {
+                    (models.iter()).flat_map(|(m, params)| params.iter().map(|p| f(p, m))).collect()
+                };
+                Err(usage(
+                    "lora_slot_ambiguous",
+                    format!(
+                        "--lora {written}: {name} runs {n} models a LoRA could adapt: {}; name one",
+                        each(&|p, m| format!("{p} ({m})")).join(", ")
+                    ),
+                )
+                .remedy(each(&|p, _| format!("--lora {p}={written}")).join("\n  ")))
+            }
+        }
+    }
+
+    /// The short slot names a run may choose: its own, and those of the calls it makes.
+    fn slot_names(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self.callable.models.iter().map(|s| s.param.as_str()).collect();
+        for slot in &self.calls {
+            if !names.contains(&slot.param.as_str()) {
+                names.push(&slot.param);
+            }
+        }
+        names
     }
 
     fn choose(&mut self, slot: &str, reference: String) -> Result<(), Error> {
@@ -499,9 +596,18 @@ impl Binder<'_> {
     fn each(
         &mut self,
         asked: &str,
+        f: impl FnMut(&mut Choice) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let slots = self.slots(asked)?;
+        self.at(slots, f)
+    }
+
+    fn at(
+        &mut self,
+        slots: Vec<String>,
         mut f: impl FnMut(&mut Choice) -> Result<(), Error>,
     ) -> Result<(), Error> {
-        for slot in self.slots(asked)? {
+        for slot in slots {
             f(self.choices.entry(slot.clone()).or_insert_with(|| Choice {
                 slot,
                 ..Choice::default()
@@ -1842,26 +1948,26 @@ fn canonical_scale(raw: &str) -> Result<String, Error> {
     })
 }
 
-fn nonempty(reference: &str, slot: &str) -> Result<String, Error> {
-    let reference = reference.trim();
-    if reference.is_empty() {
-        return Err(usage(
-            "lora_malformed",
-            format!("a LoRA for {slot} names no reference"),
-        ));
-    }
-    Ok(reference.to_owned())
+/// A slot's or callable's name.
+fn ident(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// A call's main model: its first constructed slot that loads with the call, which `--lane`
+/// names (TensorD's `main_model`).
+fn main_slot<'s>(mut slots: impl Iterator<Item = &'s Slot>) -> Option<&'s Slot> {
+    slots.find(|s| !s.weights && !s.on_demand)
+}
+
+/// The callable a slot path (`<callable>.models.<param>`) belongs to.
+fn callee(path: &str) -> &str {
+    path.split(".models.").next().unwrap_or(path)
 }
 
 /// `[org/pkg/]callable.models.param`: another callable's slot, which its machine checks.
 fn child_slot(asked: &str) -> bool {
     let tail = asked.rsplit('/').next().unwrap_or(asked);
     let mut parts = tail.split('.');
-    let ident = |s: &str| {
-        !s.is_empty()
-            && s.chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    };
     matches!(
         (parts.next(), parts.next(), parts.next(), parts.next()),
         (Some(callable), Some("models"), Some(param), None) if ident(callable) && ident(param)

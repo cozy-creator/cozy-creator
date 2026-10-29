@@ -1130,7 +1130,13 @@ impl Publisher {
             {
                 // An adapter resolves for the run's hardware: `--lane` is the main model's.
                 let resolve = |source: &hub::Source, named| self.resolve(service, source, named, &hardware, &request.catalog_revision);
-                apply_adapters(self, request.source.as_ref(), &resolve, choice, grant, &request.providers, job)?;
+                // It adapts a component this call runs (`components=`; none declared: any).
+                let runs: Vec<String> = (slots.iter())
+                    .find(|slot| slot["path"] == grant.slot.as_str())
+                    .and_then(|slot| slot["components"].as_array())
+                    .map(|names| names.iter().filter_map(|n| n.as_str().map(str::to_owned)).collect())
+                    .unwrap_or_default();
+                apply_adapters(self, request.source.as_ref(), &resolve, choice, grant, &runs, &request.providers, job)?;
             }
         }
         job.stage(format!("preparing {}", request.package));
@@ -1340,13 +1346,16 @@ fn held_local(store: &Store, repository: &str) -> Result<storage::Local, Failure
 }
 
 /// A slot's caller adapters applied to its resolved base: each adapter downloaded, then one
-/// adapter view composed (`adapter::compose`); the grant then names the view.
+/// adapter view composed (`adapter::compose`) over the components the call `runs`; the grant
+/// then names the view.
+#[allow(clippy::too_many_arguments)]
 fn apply_adapters(
     publisher: &Publisher,
     source: Option<&hub::Source>,
     resolve: &dyn Fn(&hub::Source, Named) -> Result<Named, Failure>,
     choice: &domain::ModelChoice,
     grant: &mut ModelGrant,
+    runs: &[String],
     providers: &Providers,
     job: &Job,
 ) -> Result<(), Failure> {
@@ -1405,6 +1414,7 @@ fn apply_adapters(
             component: adapter.component.clone(),
             source_component: adapter.source_component.clone(),
             strength,
+            runs: runs.to_vec(),
         });
     }
     // The view re-packs the base's small parts: its chunks come first (its load reads them anyway).

@@ -22,10 +22,11 @@ def check(gate):
     if 'cli-attn' in runs:
         attn = runs['cli-attn'].attention
         (notes if attn == ['sdpa'] else fails).append(f'cli-attn: --attention-kernel sdpa served {attn}')
-    if 'cli-lora' in runs:
-        text = json.dumps(runs['cli-lora'].record).lower()
-        if 'lcm-lora-sdxl' not in text and 'adapter' not in text:
-            fails.append('cli-lora: the record names no LoRA (lcm-lora-sdxl) applied')
+    for cell in ('cli-lora', 'cli-lora-input'):
+        if cell in runs:
+            text = json.dumps(runs[cell].record).lower()
+            if 'lcm-lora-sdxl' not in text and 'adapter' not in text:
+                fails.append(f'{cell}: the record names no LoRA (lcm-lora-sdxl) applied')
     vram = 'cli-cap' in runs and runs['cli-cap'].vram  # none read fails in analyze.py
     if vram:
         (fails if vram['peak'] * (1 << 20) > 12 * GIB else notes).append(

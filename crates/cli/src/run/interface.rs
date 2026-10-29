@@ -85,6 +85,9 @@ pub struct Slot {
     /// `decode` for an LM token loop; absent is compute.
     #[serde(default, deserialize_with = "or_default")]
     pub phase: Option<String>,
+    /// Built, and its weights fetched, when the function first reads it.
+    #[serde(default, deserialize_with = "or_default")]
+    pub on_demand: bool,
 }
 
 #[derive(Debug, Deserialize)]

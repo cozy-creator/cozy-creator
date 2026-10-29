@@ -171,7 +171,7 @@ pub fn contract(target: &str, interface: &Interface, callable: &Callable) -> Str
         }
     }
     if !called.is_empty() {
-        out.push_str("  models, through the calls it makes (model.<slot>=, --lora <slot>:<component>=):\n");
+        out.push_str("  models, through the calls it makes (model.<slot>=, --lora <slot>=):\n");
         for (param, class, callees) in called {
             let _ = writeln!(out, "    {param}: {class} ({})", callees.join(", "));
         }

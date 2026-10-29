@@ -194,14 +194,13 @@ fn choices(models: &[Choice]) -> Result<Vec<ModelChoice>, Error> {
             for adapter in &choice.adapters {
                 let parsed = ModelRef::parse(&adapter.reference)?.choice("");
                 out.adapters.push(v1::Adapter {
-                    component: adapter.component.clone().unwrap_or_default(),
                     model: parsed.repository,
                     release: parsed.release,
                     lane: parsed.lane,
                     manifest: parsed.manifest,
                     scale: adapter.scale.clone(),
                     source: parsed.source,
-                    profiles: vec![],
+                    ..Default::default()
                 });
             }
             Ok(out)

@@ -21,15 +21,16 @@ pub const FORMAT: &str = "cozy.model.lora/1";
 /// The graph's asset in each adapted component of the view.
 pub const GRAPH_FILE: &str = "model_adapters.json";
 
-/// One caller adapter, in order. An empty `component` is inferred when exactly one base
-/// component fits every factor pair; an empty `source_component` is the adapter's component
-/// named like `component`, else `adapter`, else its only one.
+/// One caller adapter, in order. An empty `component` is the one base component, of those the
+/// call `runs` (empty: all), that fits every factor pair; an empty `source_component` is the
+/// adapter's component named like `component`, else `adapter`, else its only one.
 #[derive(Clone, Debug)]
 pub struct Selection {
     pub checkpoint: ObjectRef,
     pub component: String,
     pub source_component: String,
     pub strength: f64,
+    pub runs: Vec<String>,
 }
 
 /// The composed view, `view-<composition>`, open: the store keeps it while the caller holds it.
@@ -145,7 +146,7 @@ fn keyed(component: &Component) -> BTreeMap<String, Tensor> {
     component.tensors.iter().map(|t| (t.key.clone(), t.clone())).collect()
 }
 
-fn infer_component(base: &Header, factors: &BTreeMap<String, Tensor>) -> io::Result<String> {
+fn infer_component(base: &Header, runs: &[String], factors: &BTreeMap<String, Tensor>) -> io::Result<String> {
     let pairs = pairs(factors)?;
     let fits = |tensors: &BTreeMap<String, Tensor>| {
         !pairs.is_empty()
@@ -154,15 +155,18 @@ fn infer_component(base: &Header, factors: &BTreeMap<String, Tensor>) -> io::Res
                 _ => false,
             })
     };
-    let matches: Vec<&String> = base.components().iter().filter(|c| fits(&keyed(c))).map(|c| &c.name).collect();
+    let run = |c: &&Component| runs.is_empty() || runs.contains(&c.name);
+    let matches: Vec<&String> = base.components().iter().filter(run).filter(|c| fits(&keyed(c))).map(|c| &c.name).collect();
+    let ran = || match runs.is_empty() {
+        true => "the model's components".to_string(),
+        false => format!("the components this call runs ({})", runs.join(", ")),
+    };
     match matches.as_slice() {
         [one] => Ok((*one).clone()),
+        [] => Err(refuse("component", format!("the LoRA's layers fit none of {}", ran()))),
         _ => Err(refuse(
             "component",
-            format!(
-                "select one adapter component; compatible choices: {}",
-                if matches.is_empty() { "none".into() } else { matches.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ") }
-            ),
+            format!("the LoRA's layers fit more than one of {}: {}", ran(), matches.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")),
         )),
     }
 }
@@ -210,7 +214,7 @@ fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(
             return Err(refuse("empty", "adapter contains no factors"));
         }
         let component = match selection.component.is_empty() {
-            true => infer_component(header, factors)?,
+            true => infer_component(header, &selection.runs, factors)?,
             false => selection.component.clone(),
         };
         let base_tensors = &keyed(
@@ -294,18 +298,19 @@ fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(
 /// The adapter view of `base` with `selections`, composed (the same bytes, so the same id, each
 /// time); one left unfinished by a crash resumes.
 pub fn compose(store: &Store, base: &ObjectRef, selections: &[Selection]) -> io::Result<Composed> {
-    let rows: Vec<_> = selections
-        .iter()
-        .map(|s| serde_json::json!([&s.checkpoint.id(), s.component, s.source_component, s.strength.to_string()]))
-        .collect();
-    let identity = tensorfs::sha256::hex_digest(
-        &serde_json_canonicalizer::to_vec(&serde_json::json!([FORMAT, base.id(), rows])).map_err(io::Error::other)?,
-    );
-    let id = format!("view-{}", &identity[..40]);
     let checkpoint = |header: &ObjectRef| store.checkpoint(header).map_err(storage::io_error);
+    let base_ref = base;
     let base = checkpoint(base)?;
     let adapters = selections.iter().map(|s| Ok((s.clone(), checkpoint(&s.checkpoint)?))).collect::<io::Result<Vec<_>>>()?;
     let (takes, graph) = plan(&base, &adapters)?;
+    // Named by what it applies, the components as resolved.
+    let rows: Vec<_> = (graph.adapters.iter())
+        .map(|a| serde_json::json!([&a.reference, a.component, a.source_component, a.scale.to_string()]))
+        .collect();
+    let identity = tensorfs::sha256::hex_digest(
+        &serde_json_canonicalizer::to_vec(&serde_json::json!([FORMAT, base_ref.id(), rows])).map_err(io::Error::other)?,
+    );
+    let id = format!("view-{}", &identity[..40]);
     let adapted: BTreeSet<&str> = graph.adapters.iter().map(|a| a.component.as_str()).collect();
     let graph = serde_json_canonicalizer::to_vec(&graph).map_err(io::Error::other)?;
     let mut writer = store.writer(None, Some(&id)).map_err(storage::io_error)?;
