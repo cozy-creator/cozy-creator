@@ -164,6 +164,39 @@ def hold(free_mib: int, tel: Telemetry) -> str:
     return json.dumps(state)
 
 
+PIN_PROBE = r'''
+import json, os, sys, threading, time, torch
+torch.cuda.init()
+cudart = torch.cuda.cudart()
+out = {"cpus": os.cpu_count(), "torch": torch.__version__}
+def t(f):
+    t0 = time.perf_counter(); r = f(); return time.perf_counter() - t0, r
+for mib in (64, 256, 1024):
+    n, rows = mib << 20, {}
+    for _ in range(2):
+        z, a = t(lambda: torch.zeros(n, dtype=torch.uint8)); rows.setdefault("zeros_s", []).append(round(z, 4))
+        g, _c = t(lambda: cudart.cudaHostRegister(a.data_ptr(), n, 0)); rows.setdefault("register_touched_s", []).append(round(g, 4))
+        d = torch.empty(n, dtype=torch.uint8, device="cuda")
+        c, _ = t(lambda: (d.copy_(a, non_blocking=True), torch.cuda.synchronize())); rows.setdefault("h2d_s", []).append(round(c, 4))
+        u, _ = t(lambda: cudart.cudaHostUnregister(a.data_ptr())); rows.setdefault("unregister_s", []).append(round(u, 4))
+        del a, d
+        e, b = t(lambda: torch.empty(n, dtype=torch.uint8)); rows.setdefault("empty_s", []).append(round(e, 4))
+        g2, _ = t(lambda: cudart.cudaHostRegister(b.data_ptr(), n, 0)); rows.setdefault("register_untouched_s", []).append(round(g2, 4))
+        cudart.cudaHostUnregister(b.data_ptr()); del b
+        p, c2 = t(lambda: torch.empty(n, dtype=torch.uint8, pin_memory=True)); rows.setdefault("torch_pinned_s", []).append(round(p, 4))
+        del c2
+        # one register from a background thread while the main thread copies
+        f = torch.empty(n, dtype=torch.uint8); f.fill_(1)
+        done = {}
+        th = threading.Thread(target=lambda: done.setdefault("rc", int(cudart.cudaHostRegister(f.data_ptr(), n, 0))))
+        bg, _ = t(lambda: (th.start(), th.join())); rows.setdefault("register_thread_s", []).append(round(bg, 4))
+        cudart.cudaHostUnregister(f.data_ptr()); del f
+    out[f"{mib}MiB"] = {k: [round(n / 2**30 / max(x, 1e-9), 2) for x in v] for k, v in rows.items()}
+    out[f"{mib}MiB_s"] = rows
+print(json.dumps(out))
+'''
+
+
 RAM_HOLDER = r'''
 import json, mmap, sys, time
 from pathlib import Path
@@ -313,6 +346,10 @@ def main(payload: ToolRequest, ctx: Context, tel: Telemetry, out: Outputs) -> To
         return ToolResult(hold(payload.free_mib, tel))
     if payload.op == "ramhold":
         return ToolResult(ramhold(payload.ram_free_gib, tel))
+    if payload.op == "pinprobe":
+        res = subprocess.run([sys.executable, "-c", PIN_PROBE], capture_output=True, text=True, env={**os.environ, "CUDA_VISIBLE_DEVICES": "0"})
+        tel.log(res.stderr[-2000:])
+        return ToolResult(res.stdout.strip() or res.stderr[-2000:])
     if payload.op == "stacks":
         (D / "stacks.txt").write_text(stacks())
         return ToolResult("stacks", [out.save_file(D / "stacks.txt", media_type="text/plain")])
