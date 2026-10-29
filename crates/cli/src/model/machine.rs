@@ -160,7 +160,7 @@ fn made(ctx: &Context, run: &Run) {
     }
     let text = |key: &str| model[key].as_str().filter(|s| !s.is_empty());
     let mut record = Record::new();
-    for key in ["repository", "release", "lane", "precision", "checkpoint", "resolved"] {
+    for key in ["repository", "release", "lane", "precision", "checkpoint", "resolved", "format"] {
         if let Some(value) = text(key) {
             record = record.field(key, value);
         }

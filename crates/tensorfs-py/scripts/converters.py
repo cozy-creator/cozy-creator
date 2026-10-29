@@ -398,6 +398,32 @@ def h3_native(h3: Any) -> tuple[dict[str, Any], dict[str, tuple[str, tuple[int, 
     return {"name": "h3.native", "reference": H3_REFERENCE, "components": [component]}, source
 
 
+# Who writes H3's fused Q/K/V LoRA factors as the trainers' contiguous thirds, by the keys and
+# `__metadata__` their own code writes (docs/h3-lora-source-layout.md). Recognition chooses h3.lora
+# only for these; any other source names it. Not here: fal's minimax-h3-trainer (no public code),
+# DiffSynth-Studio (head-interleaved on MiniMax's raw base, `blocks.*` keys and `format: pt` only),
+# convert_h3_lora.py and MidLAB (no public code).
+GH = "https://github.com"
+H3_LORA_PRODUCERS = [
+    {"name": "ai-toolkit", "keys": ["diffusion_model."], "metadata": {"software": {"json": {"name": "ai-toolkit"}}}, "cite": [
+        f"{GH}/ostris/ai-toolkit/blob/b69b98314557f7c8b08e11bbb14e48d959e6ab26/extensions_built_in/diffusion_models/minimax_h3/src/transformer.py#L184",
+        f"{GH}/ostris/ai-toolkit/blob/b69b98314557f7c8b08e11bbb14e48d959e6ab26/extensions_built_in/diffusion_models/minimax_h3/minimax_h3.py#L1113",
+        f"{GH}/ostris/ai-toolkit/blob/b69b98314557f7c8b08e11bbb14e48d959e6ab26/toolkit/metadata.py#L20"]},
+    # Its own keys, and `convert_lora.py --target other`'s, which keep its metadata.
+    {"name": "musubi-tuner", "keys": ["lora_unet_", "diffusion_model."], "metadata": {"ss_network_module": "networks.lora_minimax_h3"}, "cite": [
+        f"{GH}/kohya-ss/musubi-tuner/blob/f8a1b03794a49239a3539015075f5123d6c07d66/src/musubi_tuner/minimax_h3/model.py#L436",
+        f"{GH}/kohya-ss/musubi-tuner/blob/f8a1b03794a49239a3539015075f5123d6c07d66/src/musubi_tuner/convert_lora.py#L143-L154",
+        f"{GH}/AkaneTendo25/musubi-tuner/blob/0499c2f8105994bc98ea912dd46ff5ae1ac2628c/src/musubi_tuner/minimax_h3/model.py#L535",
+        f"{GH}/AkaneTendo25/musubi-tuner/blob/0499c2f8105994bc98ea912dd46ff5ae1ac2628c/src/musubi_tuner/networks/lora.py#L1132-L1143"]},
+    # `lora_format: comfyui`: Diffusers' separate Q/K/V stacked into thirds.
+    {"name": "SimpleTuner", "keys": ["diffusion_model."], "metadata": {"modelspec.architecture": {"prefix": "minimaxh3-"}, "modelspec.implementation": "diffusers"}, "cite": [
+        f"{GH}/bghira/SimpleTuner/blob/4b7edb115f95f5bae8855da5dd8e68242eea6922/simpletuner/helpers/models/minimaxh3/modular_pipeline.py#L332-L443"]},
+    # Its converter is not public; the file states the fusion of Diffusers' separate Q/K/V.
+    {"name": "lightx2v", "keys": ["diffusion_model."], "metadata": {"source_format": "Diffusers PEFT LoRA", "qkv_fusion": "block diagonal B; concat A; alpha multiplied by 3"}, "cite": [
+        "https://huggingface.co/lightx2v/Minimax-h3-Turbo/blob/30f485ed874aa44c8183348ad361c5eabad318da/minimax_h3_fl2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors"]},
+]
+
+
 def h3_lora(h3: Any, source: dict[str, tuple[str, tuple[int, ...]]]) -> dict[str, Any]:
     """Trainer LoRA factors: A as is, B through diffusers' own transformer conversion given the
     trainer's contiguous Q/K/V thirds (docs/h3-lora-source-layout.md), so fc1 B halves swap."""
@@ -425,7 +451,7 @@ def h3_lora(h3: Any, source: dict[str, tuple[str, tuple[int, ...]]]) -> dict[str
         census = {k: i for i, k in enumerate(MiniMaxH3Transformer3DModel(**config).state_dict())}
     rows.sort(key=lambda r: census[r[0] + ".weight"])
     lora = {"a": [".lora_A.weight", ".lora_down.weight"], "b": [".lora_B.weight", ".lora_up.weight"], "alpha": [".alpha"]}
-    return {"name": "h3.lora", "explicit": True, "lora": lora, "components": [{"name": "transformer", "rows": rows}]}
+    return {"name": "h3.lora", "producers": H3_LORA_PRODUCERS, "lora": lora, "components": [{"name": "transformer", "rows": rows}]}
 
 
 # ------------------------------------------------------------------ SDXL LoRA

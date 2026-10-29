@@ -254,6 +254,9 @@ class Checkpoint:
         """The header's chunk objects in order: `(sha256, length)`."""
     @property
     def metadata(self) -> dict[str, Any]: ...
+    @property
+    def source_format(self) -> str | None:
+        """How its import read the source's layout: `detected h3.lora (musubi-tuner)`."""
     def open_file(self) -> CheckpointFile:
         """The checkpoint as one read-only, seekable file: its header, then its chunks and assets
         in header order at 4 KiB-aligned offsets, assembled from the store on demand; nothing is

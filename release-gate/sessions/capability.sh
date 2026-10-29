@@ -37,14 +37,14 @@ say "pod TensorD $v"
 
 # 2. A private commit from the runner, read on the pod.
 tiny "$OUT/a.safetensors"
-step upload-a model upload "$OUT/a.safetensors" "$MA" --lane f32 || fail "upload from the runner"
+step upload-a model upload "$OUT/a.safetensors" "$MA" --lane f32 --source-format as-is || fail "upload from the runner"
 CA=$(made upload-a); say "$MA@$CA (private)"
 step read model download "$MA@$CA" --on "$NAME" || fail "the pod did not read a private commit"
 say "read: $(grep -E 'bytes|hub' "$OUT/read.txt" | tail -2 | tr -s ' ' | paste -sd';')"
 
 # 3. An upload on the pod, under its token.
 tiny "$OUT/b.safetensors"
-step upload-b model upload "$OUT/b.safetensors" "$MB" --lane f32 --on "$NAME" || fail "upload --on the pod"
+step upload-b model upload "$OUT/b.safetensors" "$MB" --lane f32 --source-format as-is --on "$NAME" || fail "upload --on the pod"
 CB=$(made upload-b); say "$MB@$CB written on the pod"
 
 # 4. The cell, with the rental live (its Bearer fresh: it signs as this computer's device key).
@@ -55,7 +55,7 @@ cat "$OUT/cell.txt" >> "$R"
 
 # 5. The probe, its weights a private commit from the runner; the runner's Calcifer stops while it waits.
 tiny "$OUT/c.safetensors"
-step upload-c model upload "$OUT/c.safetensors" "$MC" --lane f32 || fail "upload from the runner"
+step upload-c model upload "$OUT/c.safetensors" "$MC" --lane f32 --source-format as-is || fail "upload from the runner"
 CC=$(made upload-c)
 cozy --json run "$CELL/probe.py" "model.weights=$MC@$CC" "ref=$MC@$CC" "hub=${COZY_HUB_URL:-https://tensorhub.com}" \
   "seconds=$PROBE_S" --on "$NAME" > "$OUT/probe.ndjson" 2> "$OUT/probe.err" & PP=$!

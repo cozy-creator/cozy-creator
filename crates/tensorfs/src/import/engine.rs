@@ -43,10 +43,11 @@ pub struct Table {
     /// output takes when its source carries none.
     #[serde(default)]
     pub reference: Option<String>,
-    /// Never chosen by recognition alone: the caller names it (layouts whose headers match
-    /// another layout's byte-for-byte).
+    /// A layout whose headers match another's byte for byte (H3's fused Q/K/V rows: contiguous
+    /// thirds or head-interleaved) is chosen without being named only for a source that declares
+    /// one of these producers, whose own code writes it. Absent: its key set alone chooses it.
     #[serde(default)]
-    pub explicit: bool,
+    pub producers: Option<Vec<Producer>>,
     /// A LoRA table: rows are modules, any non-empty subset may be present.
     #[serde(default)]
     pub lora: Option<Lora>,
@@ -58,6 +59,45 @@ pub struct Table {
     #[serde(default)]
     pub keep_config: bool,
     pub components: Vec<Component>,
+}
+
+/// A trainer or converter, by what its own code writes into a file: the key spelling and the
+/// `__metadata__` fields.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Producer {
+    pub name: String,
+    /// Every source key starts with one of these.
+    pub keys: Vec<String>,
+    pub metadata: BTreeMap<String, Match>,
+    /// The pinned code (or, without public code, the declaration) the layout is read from.
+    pub cite: Vec<String>,
+}
+
+/// A `__metadata__` value a producer writes.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum Match {
+    Is(String),
+    Prefix { prefix: String },
+    /// A JSON object holding these fields (ai-toolkit's `software`).
+    Json { json: BTreeMap<String, serde_json::Value> },
+}
+
+impl Producer {
+    /// Whether `group` is this producer's file.
+    pub fn wrote(&self, group: &Group) -> bool {
+        let keys = (group.tensors.keys()).all(|k| self.keys.iter().any(|p| k.starts_with(p.as_str())));
+        keys && self.metadata.iter().all(|(field, want)| {
+            let Some(value) = group.metadata.get(field) else { return false };
+            match want {
+                Match::Is(v) => value == v,
+                Match::Prefix { prefix } => value.starts_with(prefix.as_str()),
+                Match::Json { json } => serde_json::from_str::<BTreeMap<String, serde_json::Value>>(value)
+                    .is_ok_and(|got| json.iter().all(|(k, v)| got.get(k) == Some(v))),
+            }
+        })
+    }
 }
 
 /// Source key suffixes of each factor; the output spells them PEFT's way.
@@ -236,9 +276,26 @@ pub struct Recognized {
     pub claims: Vec<Claim>,
     /// Table indices used, in order.
     pub tables: Vec<usize>,
-    /// Groups no table claims: stored as they are.
+    /// For a table with [`Table::producers`] that recognition chose, the producer that let it.
+    pub producers: BTreeMap<usize, String>,
+    /// Groups no table claims.
     pub unclaimed: Vec<usize>,
 }
+
+impl Recognized {
+    /// The tables used, each with the producer that chose it: `h3.lora (musubi-tuner)`.
+    pub fn formats(&self, tables: &[Table]) -> Vec<String> {
+        (self.tables.iter())
+            .map(|t| match self.producers.get(t) {
+                Some(p) => format!("{} ({p})", tables[*t].name),
+                None => tables[*t].name.clone(),
+            })
+            .collect()
+    }
+}
+
+/// The format a caller names to keep a source's keys as they are, for code that reads them raw.
+pub const AS_IS: &str = "as-is";
 
 fn lora_split<'k>(lora: &Lora, key: &'k str) -> Option<(&'k str, Factor)> {
     let mut best: Option<(&str, Factor)> = None;
@@ -382,8 +439,12 @@ fn output_name(c: &Component, folder: &str) -> String {
 }
 
 /// Which tables claim which groups. `named` restricts recognition to that table and makes
-/// a mismatch a refusal; otherwise an unmatched group is simply unclaimed.
+/// a mismatch a refusal ([`AS_IS`]: to none); otherwise an unmatched group is unclaimed.
 pub fn recognize(set: &SourceSet, tables: &[Table], named: Option<&str>) -> Result<Recognized> {
+    if named == Some(AS_IS) {
+        let unclaimed = (0..set.groups.len()).collect();
+        return Ok(Recognized { unclaimed, ..Recognized::default() });
+    }
     let candidates: Vec<usize> = match named {
         Some(name) => match tables.iter().position(|t| t.name == name) {
             Some(i) => vec![i],
@@ -441,15 +502,24 @@ pub fn recognize(set: &SourceSet, tables: &[Table], named: Option<&str>) -> Resu
             }
             continue;
         }
-        if table.explicit && named.is_none() {
-            return refuse(
-                Code::AMBIGUOUS_CLASSIFICATION,
-                format!(
-                    "the source matches {0}, whose headers are identical to other layouts'; \
-                     name it to convert ({0}), or import it as-is",
-                    table.name
-                ),
-            );
+        if let (Some(producers), None) = (&table.producers, named) {
+            let groups: BTreeSet<usize> = claims.iter().map(|c| c.group).collect();
+            let wrote = |p: &&Producer| groups.iter().all(|g| p.wrote(&set.groups[*g]));
+            match producers.iter().find(wrote) {
+                Some(p) => drop(out.producers.insert(t, p.name.clone())),
+                None => {
+                    let known: BTreeSet<&str> = producers.iter().map(|p| p.name.as_str()).collect();
+                    return refuse(
+                        Code::AMBIGUOUS_CLASSIFICATION,
+                        format!(
+                            "the source matches {0}, whose headers are identical to other layouts', and \
+                             declares none of its known producers {known:?}; name it to convert \
+                             (--source-format {0}), or keep it unconverted (--source-format {AS_IS})",
+                            table.name
+                        ),
+                    );
+                }
+            }
         }
         let mut names = BTreeSet::new();
         for claim in &claims {
@@ -478,6 +548,28 @@ pub fn recognize(set: &SourceSet, tables: &[Table], named: Option<&str>) -> Resu
         .filter(|g| !owner.contains_key(g))
         .collect();
     Ok(out)
+}
+
+/// The tables that know any of `group`'s keys, by how many, most first: `h3.lora (580 of 600
+/// keys)`.
+pub fn closest(group: &Group, tables: &[Table]) -> Vec<String> {
+    let knows = |table: &Table, key: &str| {
+        table.components.iter().any(|c| {
+            let Some(rest) = key.strip_prefix(c.prefix.as_str()) else { return false };
+            let known = |k: &str| c.rows.iter().any(|r| r.key() == Some(k));
+            match &table.lora {
+                Some(lora) => lora_split(lora, rest).is_some_and(|(stem, _)| known(stem)),
+                None => known(rest) || c.drop.iter().chain(&c.optional).any(|k| k == rest),
+            }
+        })
+    };
+    let total = group.tensors.len();
+    let mut near: Vec<(usize, &str)> = (tables.iter())
+        .map(|t| (group.tensors.keys().filter(|k| knows(t, k)).count(), t.name.as_str()))
+        .filter(|(n, _)| *n > 0)
+        .collect();
+    near.sort_by_key(|(n, _)| std::cmp::Reverse(*n));
+    near.iter().take(3).map(|(n, name)| format!("{name} ({n} of {total} keys)")).collect()
 }
 
 fn raw_present(set: &SourceSet, c: &Component) -> bool {

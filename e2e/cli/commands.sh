@@ -80,9 +80,9 @@ step "models on local"
 cozy --json model download birefnet --lane "$lane" --on local > "$OUT/download.ndjson" || check "model download --lane $lane failed"
 cozy --json model download birefnet local/e2e-birefnet > "$OUT/download-alias.ndjson" || check "model download birefnet local/e2e-birefnet failed"
 # A local .safetensors file, made into a model the machine keeps by name: the file is written to the machine
-# and made from its object (object://sha256:…/<name>).
+# and made from its object (object://sha256:…/<name>). No format knows its one key `w`, so it is kept as-is.
 tiny "$OUT/tiny.safetensors"
-cozy --json model download "$OUT/tiny.safetensors" local/e2e-tiny > "$OUT/download-file.ndjson" || check "model download ./tiny.safetensors local/e2e-tiny failed: $(grep -oE '"message": *"[^"]*"' "$OUT/download-file.ndjson" | tail -1)"
+cozy --json model download "$OUT/tiny.safetensors" local/e2e-tiny --source-format as-is > "$OUT/download-file.ndjson" || check "model download ./tiny.safetensors local/e2e-tiny failed: $(grep -oE '"message": *"[^"]*"' "$OUT/download-file.ndjson" | tail -1)"
 cozy --json model ls --on local > "$OUT/models.json" || check "model ls --on local failed"
 grep -q e2e-tiny "$OUT/models.json" || check "model ls --on local: the local file's local/e2e-tiny is not listed"
 J --arg lane "$lane" 'any(.models[]; .model == "_/birefnet" and .lane == $lane)' "$OUT/models.json" || check "model ls --on local: no _/birefnet in lane $lane after --lane $lane"

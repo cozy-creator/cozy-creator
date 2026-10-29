@@ -318,6 +318,7 @@ impl Publisher {
         let made = self.make(&choice.source, &choice.profiles, providers, job.stop.as_ref(), &|stage, moved, total| {
             job.set(format!("{stage} for {path}"), moved, total)
         })?;
+        job.stage(format!("{} for {path}", made.format));
         Ok(ModelGrant {
             package: installation.package.clone(),
             slot: path.to_string(),
@@ -1212,6 +1213,8 @@ pub struct Made {
     /// The pinned source the provider resolved.
     pub resolved: String,
     pub profiles: Vec<String>,
+    /// How TensorFS read the source's layout: `detected h3.lora (musubi-tuner)`.
+    pub format: String,
 }
 
 /// `source` imported into a local model (normalized at ingest, design §6), or the one already
@@ -1243,8 +1246,9 @@ fn make_source(
     let identity = serde_json_canonicalizer::to_vec(&json!(["cozy.machine-source-model/2", listed.pinned, converter, tables]))
         .map_err(|e| io_failure(io::Error::other(e)))?;
     let name = format!("source-{}", &sha256::hex_digest(&identity)[..40]);
-    let made = |header| Made {
+    let made = |header: ObjectRef| Made {
         repository: format!("local/{name}"),
+        format: store.source_format(&header).ok().flatten().map(|f| f.to_string()).unwrap_or_default(),
         header,
         resolved: listed.pinned.clone(),
         profiles: profiles.to_vec(),
@@ -1383,6 +1387,7 @@ fn apply_adapters(
             let made = publisher.make(&adapter.source, &adapter.profiles, providers, job.stop.as_ref(), &|stage, moved, total| {
                 job.set(format!("{stage} for an adapter of {}", grant.slot), moved, total)
             })?;
+            job.stage(format!("{} for an adapter of {}", made.format, grant.slot));
             made.header.id()
         };
         let strength = if adapter.scale.is_empty() {

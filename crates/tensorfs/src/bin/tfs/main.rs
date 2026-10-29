@@ -215,7 +215,8 @@ async fn run(args: &Args) -> Done {
                 let tree = ck.tree().expect("a conversion names its tree").clone();
                 name_locally(&root, &Store::open(&root)?, name, &tree).await?;
             }
-            Ok(Some((Json::Object(identity(&ck)), format!("converted sha256:{}", ck.id().sha256))))
+            let format = tensorfs::import::SourceFormat::read(ck.metadata()).map(|f| f.to_string()).unwrap_or_default();
+            Ok(Some((Json::Object(identity(&ck)), format!("converted sha256:{} ({format})", ck.id().sha256))))
         }
         ["download", reference] => {
             let mut reference: Ref = reference.parse()?;

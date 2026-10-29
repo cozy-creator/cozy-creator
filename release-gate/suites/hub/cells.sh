@@ -149,7 +149,7 @@ import numpy as np
 from safetensors.numpy import save_file
 save_file({f"w.{i}": np.random.default_rng().standard_normal((1024, 1024)).astype(np.float16) for i in range(4)}, sys.argv[1])
 PY
-TENSORFS_HOME=$HB/tfs-store uv tool run -q --from "${TWF:-tensorfs}" tfs import "$HB/w.safetensors" --name local/ci-hub >/dev/null &&
+TENSORFS_HOME=$HB/tfs-store uv tool run -q --from "${TWF:-tensorfs}" tfs import "$HB/w.safetensors" --converter as-is --name local/ci-hub >/dev/null &&
   TENSORFS_HOME=$HB/tfs-store uv tool run -q --from "${TWF:-tensorfs}" tfs export local/ci-hub "$HB/w" >/dev/null
 HUB_MODEL=$WHO/$HUB_PKG
 hub_do model-upload ok model upload "$HB/w" "$HUB_MODEL" --lane f16 --on "$M" -y
