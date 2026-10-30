@@ -46,7 +46,7 @@ arm_levels() { jq -r --arg a "$1" --argjson d "$LEVELS" '.[] | select(.name==$a)
 # Cozy side: package, model and lane per model.
 pkg() { case $1 in sdxl) echo sdxl ;; anima) echo anima ;; qwen|qwen4) echo qwen-image-2 ;; esac; }
 # Cozy runs every model's 8-bit lane, what users run (Paul 10-28); ComfyUI comparisons are the benchmarks runner's (bench).
-model_ref() { case $1 in sdxl) echo "sdxl@1.0.0 int8" ;; anima) echo "anima@1.0.0 int8" ;; qwen|qwen4) echo "qwen-image-2.1@0.1.0 int8" ;; esac; }
+model_ref() { case $1 in sdxl) echo "stabilityai/sdxl@1.0.0 int8" ;; anima) echo "circlestone-labs/anima@1.0.0 int8" ;; qwen|qwen4) echo "qwen/qwen-image-2.1@0.1.0 int8" ;; esac; }
 tiers() { echo cold; for i in $(seq 1 "$WARM"); do echo "w$i"; done; }
 tree() { jq -r --arg a "$1" --arg m "$2" '.[] | select(.name==$a) | (.local // {})[$m] // empty' <<<"$ARMS"; }
 for a in "${arms[@]}"; do for m in "${models[@]}"; do
@@ -247,8 +247,8 @@ if [ -n "$H3" ] && [ "$H3" != null ]; then
   ha=$(jq -r .arm <<<"$H3") ht=$(jq -r .tree <<<"$H3") hmax=$(jq -r '.max_exec_s // 2400' <<<"$H3")
   [ -f "$PACKAGES/$ht/minimax-h3/h3.py" ] || fail "h3: no packages checkout $ht/minimax-h3"
   arm_update "$ha"
-  qstep h3-model model download _/minimax-h3@1.0.0-rc.6 --lane int8 --on "$NAME" || fail "h3 model download"
-  qstep h3-lora model download _/minimax-h3-turbo-lora@1.0.1 --on "$NAME" || fail "h3 LoRA download"
+  qstep h3-model model download minimaxai/minimax-h3@1.0.0-rc.6 --lane int8 --on "$NAME" || fail "h3 model download"
+  qstep h3-lora model download alibaba-pai/minimax-h3-turbo-lora@1.0.1 --on "$NAME" || fail "h3 LoRA download"
   jq -n --argjson s "$RANDOM$RANDOM" '{prompt: "integrated_multimodal_description: A steady tracking shot of an adult courier cycling a cargo bike through a narrow cobbled old-town street after rain, past cafe tables and a flower stall, then down a gentle slope into a sunlit square.\n\naudio: Tires hissing on wet cobbles, a bicycle bell, cafe chatter and a distant tram.\n\nnon_diegetic_music: N/A", seed: $s, duration_s: 15}' > "$G/h3.json"
   qstep h3 run "$PACKAGES/$ht/minimax-h3/fl2va_turbo" --input "$G/h3.json" --lane int8 --gpus=1 --on "$NAME" --out "$OUT/out/h3"
   N=$(runno h3); [ -n "$N" ] || fail "h3: the run named no number"

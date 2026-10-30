@@ -72,8 +72,8 @@ hold() {  # hold <arm>: after each machine update (a restart can take the holder
   ( cd "$G" && step "hold-$1" run ./tool.py op=hold "free_mib:=$HOLD" --on "$NAME" --out "$OUT/hold-$1" ) || fail "hold $HOLD MiB"
   say "$1: holding all but $HOLD MiB: $(tail -c 300 "$OUT/hold-$1.txt" | tr '\n' ' ')"
 }
-step model model download _/minimax-h3@1.0.0-rc.6 --lane int8 --on "$NAME" || fail "model download"
-step lora model download _/minimax-h3-turbo-lora@1.0.1 --on "$NAME" || fail "LoRA download"
+step model model download minimaxai/minimax-h3@1.0.0-rc.6 --lane int8 --on "$NAME" || fail "model download"
+step lora model download alibaba-pai/minimax-h3-turbo-lora@1.0.1 --on "$NAME" || fail "LoRA download"
 FAILED="" REPEAT=$(param repeat 1)
 for arm in "${NAMES[@]}"; do for i in $(seq 1 "$REPEAT"); do
   a=$arm; [ "$REPEAT" = 1 ] || a=$arm-$i
