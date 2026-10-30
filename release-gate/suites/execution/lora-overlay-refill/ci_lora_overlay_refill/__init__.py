@@ -202,8 +202,8 @@ class Report(msgspec.Struct):
 
 @app.entrypoint(
     defaults={
-        "model": "qwen-image-edit-2511@0.1.0",
-        "turbo_lora": "qwen-image-edit-2511-lightning-lora@0.1.0",
+        "model": "qwen/qwen-image-edit-2511@0.1.0",
+        "turbo_lora": "lightx2v/qwen-image-edit-2511-lightning-lora@0.1.0",
     },
     components={"model": ("transformer",)},
 )

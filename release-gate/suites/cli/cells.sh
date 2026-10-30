@@ -28,8 +28,8 @@ cell cli-cap6 "$(pkg sdxl generate)" prompt="$CHAR at dusk, photo" seed:=$((R + 
 # A model's int8 and fp8 lanes by its package's recipes, from a throwaway repository's copy of anima's original
 # weights, deleted at once. The copy names anima's bf16 commit: the Hub records it, and nothing moves.
 q=fidika/ci-e2e-q-$R
-bf16=$("$CLI" --json model info anima 2>/dev/null | python3 -c 'import json,sys; print(next(l["commit"] for l in json.load(sys.stdin)["releases"][0]["lanes"] if l["lane"] == "bf16"))' 2>/dev/null)
-"$CLI" --json model upload "anima@$bf16" "$q" --lane bf16 > cli-copy.ndjson 2>&1 || cli_fail "model upload anima@$bf16 $q: $(tail -c 400 cli-copy.ndjson)"
+bf16=$("$CLI" --json model info circlestone-labs/anima 2>/dev/null | python3 -c 'import json,sys; print(next(l["commit"] for l in json.load(sys.stdin)["releases"][0]["lanes"] if l["lane"] == "bf16"))' 2>/dev/null)
+"$CLI" --json model upload "circlestone-labs/anima@$bf16" "$q" --lane bf16 > cli-copy.ndjson 2>&1 || cli_fail "model upload circlestone-labs/anima@$bf16 $q: $(tail -c 400 cli-copy.ndjson)"
 qc=$("$CLI" --json model info "$q" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["commits"][0]["commit"])' 2>/dev/null)
 "$CLI" --json model quantize "$q@$qc" --lane int8 --package anima --on "$M" > cli-quantize.ndjson 2>&1 \
   || cli_fail "model quantize --lane int8: $(tail -c 400 cli-quantize.ndjson)"
@@ -40,10 +40,10 @@ grep -q '"lane": *"int8"' cli-quantized.json || cli_fail "model quantize --lane 
 grep -q '"lane": *"fp8"' cli-quantized.json || cli_fail "model quantize --lane fp8: $q has no fp8 commit"
 # `model upload` of a Hub model by name copies the lane --lane names, as `download --lane` reads it: bf16 weights.
 # A lane naming a precision family is its weights' width: the int8 commit as local/, labelled bf16, is refused.
-"$CLI" --json model upload anima "$q" --lane bf16 --on "$M" > cli-upload-lane.ndjson 2>&1 \
-  || cli_fail "model upload anima --lane bf16: $(tail -c 400 cli-upload-lane.ndjson)"
+"$CLI" --json model upload circlestone-labs/anima "$q" --lane bf16 --on "$M" > cli-upload-lane.ndjson 2>&1 \
+  || cli_fail "model upload circlestone-labs/anima --lane bf16: $(tail -c 400 cli-upload-lane.ndjson)"
 held=$(python3 -c 'import json,sys; r=[json.loads(l) for l in open(sys.argv[1]) if l.startswith("{")]; m=[e for e in r if e.get("type") == "run.completed"][-1]["run"]["result"]["models"][0]; print(m["lane"], m["precision"])' cli-upload-lane.ndjson 2>/dev/null)
-[ "$held" = "bf16 bf16" ] || cli_fail "model upload anima --lane bf16 copied lane/precision '${held:-none}', not bf16"
+[ "$held" = "bf16 bf16" ] || cli_fail "model upload circlestone-labs/anima --lane bf16 copied lane/precision '${held:-none}', not bf16"
 q8=$(python3 -c 'import json,sys; print(next(c["commit"] for c in json.load(open(sys.argv[1]))["commits"] if c["lane"] == "int8"))' cli-quantized.json 2>/dev/null)
 "$CLI" --json model download "$q@$q8" "local/ci-e2e-q8-$R" --on "$M" > cli-alias.ndjson 2>&1 \
   || cli_fail "model download $q@$q8 local/ci-e2e-q8-$R: $(tail -c 300 cli-alias.ndjson)"

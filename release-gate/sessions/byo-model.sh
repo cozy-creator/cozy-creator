@@ -31,7 +31,7 @@ check() {
   if [ "$status" = "$2" ] && { [ -z "${3:-}" ] || grep -qF -- "$3" <<<"$reason"; }; then say "CHECK $1: run $n $status${reason:+: $reason}"
   else say "CHECK FAILED $1: run $n $status, wanted $2${3:+ with \"$3\"}: $reason"; failed=$((failed + 1)); fi
 }
-step dl-sdxl model download _/sdxl@1.0.0 --on "$NAME" || fail "sdxl weights"
+step dl-sdxl model download stabilityai/sdxl@1.0.0 --on "$NAME" || fail "sdxl weights"
 step dl-lora model download "$LORA" local/byo-lora --on "$NAME" || fail "the LoRA's download"
 step lora-local run "$SDXL" --on "$NAME" --lora model=local/byo-lora,0.8 prompt="a lighthouse on a cliff at dusk, pixel art" seed:=$RANDOM
 check lora-local completed

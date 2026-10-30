@@ -51,8 +51,8 @@ cozy machine rent            # what is for rent; then cozy machine rent <sku>
 cozy model ls sdxl
 ```
 
-First-party packages and models have no owner (`sdxl/generate`, `flux-3-klein@0.1.0`); everyone
-else's are `owner/name` (`you/my-pack/generate`).
+First-party packages have no owner (`sdxl/generate`); everyone else's are `owner/name`
+(`you/my-pack/generate`). Models live in their authors' orgs (`stabilityai/sdxl`).
 
 `cozy login` signs you up on first use, with a code it emails. On Linux, runs go to this computer's
 machine, which starts when used and stops after 15 minutes idle; without an NVIDIA GPU here, add
