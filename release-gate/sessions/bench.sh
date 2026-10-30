@@ -13,7 +13,8 @@
 #   need_s     seconds the guard must buy (10800); a hosted job ends at 6 h, so size a session below that
 #   stall_s    no runner progress for this long ends the session (1800)
 #   update     `cozy machine update` flags run on the pod before the runner: a candidate's Cozy side (["--runtime",
-#              "url:https://…#sha256=<hex>", "--tensorfs", "artifact:<cozy-creator run id>:<artifact>"]); each url:
+#              "url:https://…#sha256=<hex>", "--tensorfs", "artifact:<cozy-creator run id>:<artifact>"], or a
+#              dev-build cozy as "--tensord", "artifact:<run id>:cozy-<sha>"); each url:
 #              or artifact: value is fetched here before renting and sent from this runner ([]: the pod as rented)
 #   candidates {"<package>": "<packages_refs name>"}: each package runs from that packages checkout (local/<package>),
 #              not its Hub release: a package fix's proof ({}: the Hub's)
@@ -38,7 +39,10 @@ for i in "${!update[@]}"; do
     curl -fsSL --retry 5 -o "$d/$f" "$u" || fail "cannot fetch $u"
     [ "$(sha256sum "$d/$f" | cut -d' ' -f1)" = "$want" ] || fail "$u is not sha256 $want"
   fi
-  update[$i]=$(ls "$d"/*.whl | grep -m1 'manylinux.*x86_64') || fail "$v has no Linux x86_64 wheel"
+  # A Linux x86_64 wheel, else a dev-build cozy binary (`--tensord`), made executable.
+  w=$(ls "$d"/*.whl 2>/dev/null | grep -m1 'manylinux.*x86_64') || w=$(find "$d" -type f -name cozy-linux-x86_64 | head -1)
+  [ -n "$w" ] || fail "$v has no Linux x86_64 wheel or cozy binary"
+  chmod +x "$w"; update[$i]=$w
 done
 for m in "${models[@]}"; do grep -q "^\[models\.$m\]" "$BENCH/cells.toml" || fail "cells.toml has no model $m"; done
 # Each candidate package: its checkout here, copied to /root/candidates/<package> on the pod.
