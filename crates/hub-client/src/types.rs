@@ -703,8 +703,21 @@ pub struct RentalFailure {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct RentalBoot {
+    pub attempt: u32,
+    pub state: String,
+    pub started_at: Option<String>,
     pub phase: Option<String>,
     pub activity: Option<String>,
     pub last_progress_at: Option<String>,
     pub observed_at: String,
+    pub replanned_from: Option<ReplannedBoot>,
+}
+
+/// The failed attempt a rental's current one replaced.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct ReplannedBoot {
+    pub attempt: u32,
+    pub ended_at: String,
+    pub failure_code: String,
 }
