@@ -798,7 +798,8 @@ pub(crate) struct Described {
 fn describe(uv: &Path, dir: &Path, python: &str, runtime: Option<&str>) -> Result<Described, Error> {
     let from = match runtime {
         Some(version) => format!("cozy-runtime=={version}"),
-        None => "cozy-runtime".into(),
+        // `@latest`: a bare name would take whatever cozy-runtime `uv tool install` left here.
+        None => "cozy-runtime@latest".into(),
     };
     let said = run(
         self::uv(uv, dir)
