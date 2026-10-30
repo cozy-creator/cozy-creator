@@ -83,7 +83,7 @@ pub(super) fn state(id: &str, state: &domain::MachineExecutionState) -> v1::RunS
 }
 
 /// A run's model choices as the preparation path reads them.
-fn choices(sent: Vec<v1::ModelChoice>) -> Result<Vec<domain::ModelChoice>, Error> {
+pub(crate) fn choices(sent: Vec<v1::ModelChoice>) -> Result<Vec<domain::ModelChoice>, Error> {
     sent.into_iter()
         .map(|choice| -> Result<domain::ModelChoice, Error> {
             Ok(domain::ModelChoice {

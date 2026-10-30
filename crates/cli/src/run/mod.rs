@@ -70,7 +70,7 @@ struct RunArgs {
     gpus: Option<u32>,
     /// The lane of the function's main model (a label: bf16, fp8, int8, …); its LoRAs and other
     /// models take their own. Absent, the Hub picks what this machine's hardware runs best.
-    #[arg(long, value_parser = crate::model::refs::lane)]
+    #[arg(long, value_parser = protocol::model_ref::lane)]
     lane: Option<String>,
     /// Pin an attention kernel for this run: everywhere, or at one `[slot/]component`.
     #[arg(long, value_name = "[[SLOT/]COMPONENT=]KERNEL", value_parser = attention_pin, conflicts_with = "warm")]

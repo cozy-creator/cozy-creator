@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use protocol::error::{Error, Kind};
 use serde::Serialize;
 
-use super::refs::{self, ModelRef, Repo};
+use protocol::model_ref::{self as refs, ModelRef, Repo};
 use super::{Delete, Publish};
 use crate::Context;
 use crate::context::hub_answer;

@@ -13,7 +13,7 @@ use protocol::machine::{InputFile, ModelChoice, RunKind as SpecKind, RunSpec};
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
-use super::refs::{ModelRef, Repo};
+use protocol::model_ref::{ModelRef, Repo};
 use super::{Download, Upload};
 use crate::Context;
 use crate::context::hub_answer;

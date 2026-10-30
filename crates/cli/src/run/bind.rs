@@ -510,7 +510,7 @@ impl Binder<'_> {
         };
         let adapter = Adapter {
             reference: reference.to_owned(),
-            scale: canonical_scale(strength)?,
+            scale: protocol::model_ref::strength(strength)?,
         };
         self.at(slots, |choice| {
             choice.adapters.push(adapter.clone());
@@ -1918,33 +1918,6 @@ fn sniff(path: &Path) -> Result<Sniffed, Error> {
     Ok(Sniffed {
         length,
         media_type: media_type.to_owned(),
-    })
-}
-
-/// A LoRA strength as a canonical decimal string: finite, `0` for zero.
-fn canonical_scale(raw: &str) -> Result<String, Error> {
-    let malformed = || {
-        usage(
-            "lora_strength_invalid",
-            format!("LoRA strength {raw:?} must be a finite decimal number"),
-        )
-    };
-    let trimmed = raw.trim();
-    if trimmed.is_empty()
-        || !trimmed
-            .chars()
-            .all(|c| c.is_ascii_digit() || "+-.eE".contains(c))
-    {
-        return Err(malformed());
-    }
-    let value: f64 = trimmed.parse().map_err(|_| malformed())?;
-    if !value.is_finite() {
-        return Err(malformed());
-    }
-    Ok(if value == 0.0 {
-        "0".into()
-    } else {
-        format!("{value}")
     })
 }
 
