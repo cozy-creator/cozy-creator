@@ -22,6 +22,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use futures::stream::{FuturesUnordered, TryStreamExt};
+
 pub use endpoint::{upload_commit, Endpoint, Hardware, Payload, Resolved, Stream, UploadControl, Uploaded};
 pub use net::Client;
 pub(crate) use net::GetError;
@@ -276,18 +278,23 @@ impl Fetcher {
             }
         }
         let landed = Mutex::new(landed);
-        futures::future::try_join_all(waiting.into_iter().map(|(length, waiter)| {
-            let landed = &landed;
-            async move {
-                let tier = waiter.wait().await?;
-                landed.lock().unwrap().add(tier, length);
-                if let Some(progress) = want.progress {
-                    progress.held.fetch_add(length, Ordering::Relaxed);
+        // Unordered: the first refusal ends the pull when it comes, not once every object listed
+        // before it has landed (try_join_all of more than 30 is ordered).
+        let waits: FuturesUnordered<_> = waiting
+            .into_iter()
+            .map(|(length, waiter)| {
+                let landed = &landed;
+                async move {
+                    let tier = waiter.wait().await?;
+                    landed.lock().unwrap().add(tier, length);
+                    if let Some(progress) = want.progress {
+                        progress.held.fetch_add(length, Ordering::Relaxed);
+                    }
+                    Ok::<(), Refusal>(())
                 }
-                Ok::<(), Refusal>(())
-            }
-        }))
-        .await?;
+            })
+            .collect();
+        waits.try_collect::<()>().await?;
         Ok(landed.into_inner().unwrap())
     }
 
