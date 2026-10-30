@@ -19,6 +19,7 @@
 #   sample      true: the pod's disk, process I/O, pressure and GPU sampled for the session (samples.jsonl, dmon.txt)
 #   settle      true: each cold request waits until the disk reads at 80% of its rate before the weights landed
 #   settle_s    the longest a cold request waits for that (1800)
+#   an arm's `probe_signal` (KILL or SEGV) signals its cold request's executor mid prebuilt-int8 probe (cr-227)
 . "$(dirname "$0")/lib.sh"
 ARMS=$(param arms '[{"name": "prod", "tensord": "image"}]') SDXL=$(param sdxl sdxl/generate@0.1.3) ANIMA=$(param anima anima/generate@0.1.1)
 QWEN=$(param qwen qwen-image-2/generate@0.1.8)
@@ -205,6 +206,28 @@ elif mode == "diskprobe":
         t.join()
     took = time.perf_counter() - began
     print(json.dumps({"bytes": done[0], "s": round(took, 3), "mb_s": round(done[0] / max(took, 1e-9) / 1e6)}))
+elif mode == "probesignal":
+    # cr-227's proof: the first executor process to hold a prebuilt 8-bit probe's lock (a marker
+    # `prebuilt-int8-*.json` beside it) gets signal argv[2] mid-probe: KILL as TensorD ends one, SEGV as
+    # a probe crash would. Prints what it signalled; waits up to argv[3] seconds.
+    import signal
+    sig, deadline = getattr(signal, "SIG" + sys.argv[2]), time.time() + float(sys.argv[3])
+    while time.time() < deadline:
+        for marker in [m for v in glob.glob("/var/lib/cozy/tensord/gpu/kernels/*/verified") for m in glob.glob(v + "/prebuilt-int8-*.json")]:
+            lock = marker[:-5] + ".lock"
+            for d in glob.glob("/proc/[0-9]*"):
+                try:
+                    cmd = open(d + "/cmdline", "rb").read()
+                    if b"cozy_runtime.internal.executor" not in cmd:
+                        continue
+                    if any(os.path.realpath(f) == lock for f in glob.glob(d + "/fd/*") if os.path.islink(f)):
+                        os.kill(int(d[6:]), sig)
+                        print(json.dumps({"marker": os.path.basename(marker), "pid": int(d[6:]), "signal": sys.argv[2]}))
+                        sys.exit(0)
+                except OSError:
+                    continue
+        time.sleep(0.002)
+    print(json.dumps({"signal": sys.argv[2], "missed": True}))
 elif mode == "ps":
     rows = []
     for d in glob.glob("/proc/[0-9]*"):
@@ -303,6 +326,7 @@ for i in "${!names[@]}"; do
   if [ -n "${bins[$i]}${wheels[$i]}" ]; then
     sleep 30; podpy ps > "$OUT/$a-ps-start.json"; say "$a: executors 30 s after start $(cat "$OUT/$a-ps-start.json")"
   fi
+  sig=$(jq -r --argjson i "$i" '.[$i].probe_signal // empty' <<<"$ARMS")
   wait=$(jq -r --argjson i "$i" '.[$i].wait // "now"' <<<"$ARMS") warm=$(jq -r --argjson i "$i" '.[$i].warm // 0' <<<"$ARMS")
   for m in $(jq -r --argjson i "$i" '.[$i].models // ["sdxl", "anima"] | .[]' <<<"$ARMS"); do
     fn=${FN[$m]} pkg=${PKG[$m]} module=${PKG[$m]//-/_}
@@ -344,6 +368,13 @@ for i in "${!names[@]}"; do
       label="$a-$m-cold"; [ "$w" = 0 ] || label="$a-$m-warm$w"
       [ "$w" != 0 ] || settled "$label"
       [ "$(param sample false)" != true ] || { podpy diskprobe > "$OUT/$label-disk.json"; say "$label: disk before it $(cat "$OUT/$label-disk.json")"; }
+      # `probe_signal` (KILL or SEGV): the arm's cold request's executor is signalled mid-probe; it fails, and
+      # its next request's new executor shows what the marker it left does (cr-227).
+      if [ -n "$sig" ] && [ "$w" = 0 ]; then
+        (podpy probesignal "$sig" 600 > "$OUT/$label-signal.json") & SIGP=$!
+        request "$label" "$fn" "$OUT/$a-$m-$w.yaml"; wait "$SIGP"; say "$label: $(cat "$OUT/$label-signal.json")"
+        continue
+      fi
       request "$label" "$fn" "$OUT/$a-$m-$w.yaml" || fail "$a: $m request"
     done
     podpy pyc "$module" > "$OUT/$a-$m-pyc.json"; say "$a $m bytecode after its request (py, pyc): $(jq -c .packages "$OUT/$a-$m-pyc.json")"
