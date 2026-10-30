@@ -30,7 +30,9 @@ def check(gate):
         if cell in runs:
             rows = [(m.get('repository'), a) for m in runs[cell].models for a in m.get('adapters') or []]
             named = [f"{base} + {a.get('model')},{a.get('strength')} on {a.get('components')}" for base, a in rows]
-            ok = any(base == '_/sdxl' and 'lcm-lora-sdxl' in (a.get('model') or '') and a.get('components') for base, a in rows)
+            # The base by its model name under whichever org holds it (`_/sdxl`, since xs-133 `stabilityai/sdxl`).
+            ok = any((base or '').split('@')[0].rsplit('/', 1)[-1] == 'sdxl' and 'lcm-lora-sdxl' in (a.get('model') or '')
+                     and a.get('components') for base, a in rows)
             (notes if ok else fails).append(f'{cell}: the record names {named or "no LoRA"}')
     vram = 'cli-cap' in runs and runs['cli-cap'].vram  # none read fails in analyze.py
     if vram:
