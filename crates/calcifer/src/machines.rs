@@ -83,8 +83,9 @@ pub(crate) struct Seen {
     unreachable: Option<String>,
     /// Since when it has not answered (unix ms).
     since: Option<i64>,
-    /// A booting rental's phase, as its Hub says it.
+    /// A booting rental's phase and attempt, as its Hub says them.
     pub(crate) boot: Option<String>,
+    pub(crate) attempt: Option<wire::Attempt>,
     /// `local` is not running: it starts when something uses it.
     stopped: bool,
 }
@@ -599,6 +600,7 @@ impl Machines {
             machine.unreachable.clone_from(&seen.unreachable);
             machine.unreachable_since_ms = seen.since;
             machine.boot.clone_from(&seen.boot);
+            machine.attempt.clone_from(&seen.attempt);
         }
         if let Some(status) = &mut machine.status {
             status.runs = held.into_iter().map(|run| self.held(run)).collect();
@@ -655,7 +657,7 @@ impl Machines {
             task.abort();
         }
         if let Some(seen) = lock(&self.seen).get_mut(name) {
-            seen.boot = None;
+            (seen.boot, seen.attempt) = (None, None);
         }
         self.calcifer.machine_changed();
     }

@@ -99,9 +99,10 @@ mapfile -t ROWS < <(grep -v '^#' "$HERE/scenarios.tsv")
 I=$(( $(date +%s) / 60 + $(cksum <<< "$SKU" | cut -d' ' -f1) ))
 IFS=$'\t' read -r NAME CHAR MOTION OBJECT SCENE <<< "${ROWS[$((I % ${#ROWS[@]}))]}"
 R=$(( $(date +%s%N) / 1000 % 4000000000 ))
-M= RID= RP= KEEP=
+M= RID= RP= KEEP= AQ=
 end_it() {
   [ -z "$KEEP" ] || kill "$KEEP" 2>/dev/null
+  [ -z "$AQ" ] || kill "$AQ" 2>/dev/null
   [ -z "$RP" ] || kill "$RP" 2>/dev/null  # the boot's follower only: the order is ended below
   if [ -n "$M" ]; then
     # The machine's own logs leave with it: keep them for every gate (a poisoned executor is diagnosed from them).
@@ -149,6 +150,54 @@ output() { run_output "$OUT" "$1" "$2"; }
 . "$HERE/products.sh"
 log "gate on $SKU (suites ${SUITES//,/ }): scenario $NAME, seeds from $R, candidate: ${CAND[*]:-released}${PKGS:+ packages $PKGS}${PINS:+ pins ${PINS//,/ }}, cli: $CLI"
 [ -z "$ON" ] || { M=$ON; BEFORE=(); }
+# acquisition <rental>: the Hub's acquisition attempt while the rental boots, every 5 s into acquisition.jsonl (cl-684).
+# An attempt whose create is still unanswered (obligated, ambiguous) one inventory pass (120 s, plus 30 s for the
+# absence reads) after it began is the 10-29 hang: RunPod refused the create, the pod was read absent, the attempt's
+# failure rolled back and nothing replanned for 5 h. Its rent is stopped there and the gate fails.
+ONE_PASS=150
+acquisition() {
+  local show
+  while show=$("$CLI" --json machine show "$1" 2>/dev/null); do
+    jq -c --argjson t "$(date +%s%3N)" '{t: $t, state, attempt}' <<< "$show" >> acquisition.jsonl
+    [ "$(jq -r .state <<< "$show")" = booting ] || return 0
+    if jq -e --argjson pass $((ONE_PASS * 1000)) '.attempt | select(.state == "obligated" or .state == "ambiguous")
+        | .observed_at_ms - .started_at_ms > $pass' <<< "$show" > /dev/null 2>&1; then
+      jq -r '"attempt \(.attempt.number) still \(.attempt.state) \((.attempt.observed_at_ms - .attempt.started_at_ms) / 1000 | floor) s after it began"' \
+        <<< "$show" > acquisition.stuck
+      [ -z "$RP" ] || kill "$RP" 2>/dev/null
+      return 0
+    fi
+    sleep 5
+  done
+}
+# acquired: the cell's verdict. Each replan the rent saw is named; a refused create shows as an attempt replaced for
+# provider.no_capacity. A cozy whose machines name no attempt (before 0.13.16) leaves only a log line.
+acquired() {
+  local v
+  [ -s acquisition.jsonl ] || return 0
+  if [ -s acquisition.stuck ]; then expect "acquisition replans" FAIL "$(cat acquisition.stuck)"; return; fi
+  v=$(python3 -I - acquisition.jsonl <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1])]
+attempts = [r['attempt'] for r in rows if r.get('attempt')]
+if not attempts:
+    sys.exit()
+seen = {}
+for a in attempts:
+    seen.setdefault(a['number'], a)
+    if a.get('started_at_ms'):
+        seen[a['number']] = a
+said = []
+for n, a in sorted(seen.items()):
+    r = a.get('replaced')
+    if r:
+        gap = f"{(a['started_at_ms'] - r['ended_at_ms']) / 1000:.0f} s after it ended" if a.get('started_at_ms') else 'still replanning'
+        said.append(f"attempt {n} replaced attempt {r['number']} ({r['failure']}), {gap}")
+print('; '.join(said) or 'its create was answered: no refused create to replan this time')
+PY
+)
+  [ -n "$v" ] && expect "acquisition replans" PASS "$v" || log "acquisition replans: this cozy names no acquisition attempt"
+}
 # rented <machine>: its rental id into RID and `rental`, which end_it and the workflow's cleanup end.
 rented() { RID=$("$CLI" --json machine show "$1" 2>/dev/null | jq -r '.rental_id // empty'); [ -z "$RID" ] || echo "$RID" > rental; }
 if [ -z "$ON" ]; then
@@ -158,11 +207,14 @@ if [ -z "$ON" ]; then
     sleep 2
   done
   [ -z "$first" ] || rented "$first"
+  [ -z "$RID" ] || { acquisition "$RID" & AQ=$!; }
   wait "$RP"; rc=$? RP=
+  [ -z "$AQ" ] || { kill "$AQ" 2>/dev/null; wait "$AQ" 2>/dev/null; AQ=; }
+  acquired
   [ -n "$RID" ] || { first=$(awk '$1=="machine"{print $2; exit}' rent.out); [ -z "$first" ] || rented "$first"; }
   [ "$rc" != 0 ] || [ -z "$RID" ] || M=$("$CLI" --json machine show "$RID" 2>/dev/null | jq -r '.name // empty')
 fi
-[ -n "$M" ] || { log "rent failed: $(tail -c 300 rent.err) $(tail -c 300 rent.out)"; exit 1; }
+[ -n "$M" ] || { log "rent failed: $(cat acquisition.stuck 2>/dev/null) $(tail -c 300 rent.err) $(tail -c 300 rent.out)"; exit 1; }
 echo "$M" > machine
 log "${ON:+on }${ON:-rented} $M"
 # The gate holds the rental between runs too (fetches, uploads, analysis here): reset its 15-minute idle clock.

@@ -13,8 +13,8 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use platform::paths::Home;
 use protocol::{
     calcifer::{
-        Agreed, Ended, HubListing, HubProblem, Machine, MachineKind, MachineState, On, Quote,
-        Alternative, Reason, Rental, Rented, RunQuote, SubmitRun, Warning,
+        Agreed, Attempt, Ended, HubListing, HubProblem, Machine, MachineKind, MachineState, On,
+        Quote, Alternative, Reason, Rental, Rented, Replaced, RunQuote, SubmitRun, Warning,
     },
     config,
     error::{Error, Kind},
@@ -698,7 +698,11 @@ impl Machines {
                         }
                     }
                     let boot = boot_phase(&rental);
-                    lock(&self.seen).entry(row.name.clone()).or_default().boot = boot.clone();
+                    {
+                        let mut seen = lock(&self.seen);
+                        let seen = seen.entry(row.name.clone()).or_default();
+                        (seen.boot, seen.attempt) = (boot, attempt(&rental));
+                    }
                     self.calcifer.machine_changed();
                     if gone(&rental.state) {
                         return self.ended(&row.name, &cause(&rental));
@@ -710,7 +714,9 @@ impl Machines {
                             warn!(machine = row.name, "recording its address: {e}");
                             continue;
                         }
-                        lock(&self.seen).entry(row.name.clone()).or_default().boot = None;
+                        if let Some(seen) = lock(&self.seen).get_mut(&row.name) {
+                            (seen.boot, seen.attempt) = (None, None);
+                        }
                         self.calcifer.machine_changed();
                         return self.watch(&row);
                     }
@@ -1163,6 +1169,21 @@ fn boot_phase(rental: &types::Rental) -> Option<String> {
     (!words.is_empty()).then(|| words.join(": ") + &still.unwrap_or_default())
 }
 
+/// The attempt a booting rental is on, and the one it replaced.
+fn attempt(rental: &types::Rental) -> Option<Attempt> {
+    let boot = rental.boot.as_ref()?;
+    Some(Attempt {
+        number: boot.attempt,
+        state: boot.state.clone(),
+        started_at_ms: boot.started_at.as_deref().and_then(ms),
+        last_progress_at_ms: boot.last_progress_at.as_deref().and_then(ms),
+        observed_at_ms: ms(&boot.observed_at)?,
+        replaced: boot.replanned_from.as_ref().and_then(|r| {
+            Some(Replaced { number: r.attempt, failure: r.failure_code.clone(), ended_at_ms: ms(&r.ended_at)? })
+        }),
+    })
+}
+
 /// What we charge for the rental an hour, its GPUs; disk and traffic are never the user's.
 fn hourly(rental: &types::Rental) -> i64 {
     rental.compute_usd_micros_per_hour.unwrap_or(rental.hourly_rate_usd_micros)
@@ -1274,6 +1295,7 @@ fn other(origin: &str, rental: &types::Rental, unverified: bool) -> Machine {
         unreachable: None,
         unreachable_since_ms: None,
         boot: boot_phase(rental).filter(|_| rental.state != "ready"),
+        attempt: attempt(rental).filter(|_| rental.state != "ready"),
         running: 0,
         queued: 0,
         recorded: false,

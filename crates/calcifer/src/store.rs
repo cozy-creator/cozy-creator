@@ -1527,6 +1527,7 @@ impl From<&MachineRow> for Machine {
             unreachable: None,
             unreachable_since_ms: None,
             boot: None,
+            attempt: None,
             running: 0,
             queued: 0,
             recorded: true,

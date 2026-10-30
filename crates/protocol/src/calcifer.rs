@@ -508,6 +508,9 @@ pub struct Machine {
     /// A booting rental's phase, as its Hub says it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub boot: Option<String>,
+    /// A booting rental's acquisition attempt, as its Hub says it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt: Option<Attempt>,
     /// Calcifer's runs on it.
     #[serde(default)]
     pub running: u32,
@@ -541,6 +544,30 @@ pub fn clock(ms: i64) -> String {
         60..3600 => format!("{}m", s / 60),
         _ => format!("{}h{:02}m", s / 3600, s % 3600 / 60),
     }
+}
+
+/// A booting rental's acquisition attempt: the first is 1. `state` is the Hub's: obligated or
+/// ambiguous while its create is answered, booting, or replanning between attempts. Times are
+/// the Hub's clock (unix ms).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attempt {
+    pub number: u32,
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_progress_at_ms: Option<i64>,
+    pub observed_at_ms: i64,
+    /// The attempt this one replaced: its number, why it failed, and when.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaced: Option<Replaced>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Replaced {
+    pub number: u32,
+    pub failure: String,
+    pub ended_at_ms: i64,
 }
 
 /// A rental as its Hub says it.
