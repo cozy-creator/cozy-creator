@@ -1,0 +1,94 @@
+"""One output video against the video it came from, as one JSON line (suites/h3).
+
+    frames.py regen ORIGINAL OUTPUT                        # an upscale against its 768p original
+    frames.py guide SOURCE OUTPUT [--guided S] [--fps24]   # a guided render against its guide clip
+
+regen: both in the original's 1344x768 frame (a 16:9 output un-stretched): mean luma PSNR and SSIM over every
+4th frame, and the soundtrack's lag (ms) and correlation at zero lag against the original's.
+guide: gray frames at 192x108 over the first S seconds (all of them by default); --fps24 first retimes the source to
+the 24-fps clock by timestamp. Same-index SSIM, the share of every 3rd frame whose best-matching source frame within
++-12 is within +-1 (an output that follows its source frame by frame scores 1), and after S seconds the mean SSIM of
+consecutive output frames (coherence: a render that falls apart scores low). Plus the output's size and frame count.
+"""
+
+import json
+import subprocess
+import sys
+
+import numpy as np
+
+FPS = 24
+
+
+def probe(path: str) -> dict:
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames", "-show_entries",
+                          "stream=width,height,nb_read_frames", "-of", "json", path], capture_output=True, check=True)
+    s = json.loads(out.stdout)["streams"][0]
+    return {"width": int(s["width"]), "height": int(s["height"]), "frames": int(s["nb_read_frames"])}
+
+
+def gray(path: str, width: int, height: int, vf: str = "") -> np.ndarray:
+    chain = f"{vf}{',' if vf else ''}scale={width}:{height}:flags=area,format=gray"
+    raw = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", path, "-vf", chain, "-f", "rawvideo", "-"],
+                         capture_output=True, check=True).stdout
+    return np.frombuffer(raw, np.uint8).reshape(-1, height, width).astype(np.float64)
+
+
+def ssim(a: np.ndarray, b: np.ndarray) -> float:
+    """Mean SSIM with an 8x8 box window."""
+    c1, c2, k = (0.01 * 255) ** 2, (0.03 * 255) ** 2, 8
+
+    def box(z: np.ndarray) -> np.ndarray:
+        s = np.pad(z.cumsum(-1).cumsum(-2), [(0, 0)] * (z.ndim - 2) + [(1, 0), (1, 0)])
+        return (s[..., k:, k:] - s[..., :-k, k:] - s[..., k:, :-k] + s[..., :-k, :-k]) / (k * k)
+
+    ma, mb = box(a), box(b)
+    va, vb, cov = box(a * a) - ma**2, box(b * b) - mb**2, box(a * b) - ma * mb
+    return float((((2 * ma * mb + c1) * (2 * cov + c2)) / ((ma**2 + mb**2 + c1) * (va + vb + c2))).mean())
+
+
+def pcm(path: str) -> np.ndarray:
+    raw = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", path, "-vn", "-ac", "1", "-ar", "8000",
+                          "-f", "f32le", "-"], capture_output=True, check=True).stdout
+    return np.frombuffer(raw, np.float32)
+
+
+def regen(original: str, output: str) -> dict:
+    a, b = gray(original, 1344, 768), gray(output, 1344, 768)
+    n = min(len(a), len(b))
+    mse = [float(np.mean((a[i] - b[i]) ** 2)) for i in range(0, n, 4)]
+    x, y = pcm(original), pcm(output)
+    m = min(len(x), len(y))
+    lag, corr = None, None
+    if m > 800:
+        x, y = x[:m] - x[:m].mean(), y[:m] - y[:m].mean()
+        size = 1 << (2 * m - 1).bit_length()
+        c = np.fft.irfft(np.fft.rfft(y, size) * np.conj(np.fft.rfft(x, size)), size)
+        c = np.concatenate([c[-(m - 1):], c[:m]])
+        lag = (int(np.argmax(c)) - (m - 1)) / 8.0
+        corr = round(float(np.dot(x, y) / (np.linalg.norm(x) * np.linalg.norm(y) + 1e-12)), 4)
+    return {**probe(output), "psnr": round(float(np.mean([99.0 if e == 0 else 10 * np.log10(255**2 / e) for e in mse])), 2),
+            "ssim": round(float(np.mean([ssim(a[i], b[i]) for i in range(0, n, 4)])), 3), "lag_ms": lag, "corr": corr}
+
+
+def guide(source: str, output: str, guided: float | None, fps24: bool) -> dict:
+    src, out = gray(source, 192, 108, f"fps={FPS}" if fps24 else ""), gray(output, 192, 108)
+    n = min(len(out), len(src), len(out) if guided is None else round(guided * FPS))
+    same = [ssim(out[i], src[i]) for i in range(n)]
+    offsets = []
+    for i in range(0, n, 3):
+        window = range(max(0, i - 12), min(len(src), i + 13))
+        offsets.append(max(window, key=lambda j: ssim(out[i], src[j])) - i)
+    after = [ssim(out[i], out[i + 1]) for i in range(n, len(out) - 1)]
+    return {**probe(output), "guided_frames": n, "ssim": round(float(np.mean(same)), 3),
+            "within_1": round(float(np.mean(np.abs(offsets) <= 1)), 3),
+            "coherence_after": round(float(np.mean(after)), 3) if after else None}
+
+
+if __name__ == "__main__":
+    mode, first, second, *rest = sys.argv[1:]
+    if mode == "regen":
+        print(json.dumps(regen(first, second)))
+    else:
+        guided = float(rest[rest.index("--guided") + 1]) if "--guided" in rest else None
+        print(json.dumps(guide(first, second, guided, "--fps24" in rest)))
