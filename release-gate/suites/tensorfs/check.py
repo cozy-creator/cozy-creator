@@ -126,24 +126,29 @@ def check(gate):
         name, code, ms = line.rstrip('\n').split('\t')
         proxy = events(os.path.join(t, name + '.proxy'))
         objs = [r for r in proxy if r.get('kind') == 'object']
-        st[name] = {'ok': code == '0', 'seconds': int(ms) / 1000, 'slowed': sum(1 for r in objs if r['slow']),
+        slow = {r['path'] for r in objs if r['slow']}
+        st[name] = {'ok': code == '0', 'seconds': int(ms) / 1000, 'slowed': len(slow),
                     'reasked': sum(1 for r in objs if r['ask'] > 1), 'bytes': sum(r['bytes'] for r in objs),
+                    'asks': max((r['ask'] for r in objs if r['path'] in slow), default=0),
                     'error': open(os.path.join(t, name + '.err')).read()[-300:] if code != '0' else ''}
-    c, sl = st.get('straggler-clean'), st.get('straggler-slow')
-    if not chosen('straggler'):
-        pass
-    elif not c or not sl:
-        fails.append('tensorfs straggler: the case did not run')
-    elif not c['ok'] or not sl['ok']:
-        fails.append(f'tensorfs straggler: tfs download failed (clean: {c["error"]}; with stragglers: {sl["error"]})')
-    elif not sl['slowed']:
-        fails.append('tensorfs straggler: no object was slowed: the case tested nothing')
-    else:
-        limit = 1.5 * c['seconds'] + 20
-        (fails if sl['seconds'] > limit else notes).append(
-            f'tensorfs straggler: {sl["slowed"]} slow objects, {sl["reasked"]} re-asked; {sl["seconds"]:.1f} s vs clean '
-            f'{c["seconds"]:.1f} s (limit {limit:.1f})')
-        against('straggler', sl['seconds'], c['bytes'], 'download with stragglers')
+    c = st.get('straggler-clean')
+    # Each slowed arm against the clean one: stragglers (the first ask drips), cold objects (every ask drips, tfs-138).
+    for name, case, what in (('straggler-slow', 'straggler', 'stragglers'), ('straggler-cold', 'straggler-cold', 'cold objects')):
+        sl = st.get(name)
+        if not chosen('straggler'):
+            break
+        if not c or not sl:
+            fails.append(f'tensorfs {case}: the case did not run')
+        elif not c['ok'] or not sl['ok']:
+            fails.append(f'tensorfs {case}: tfs download failed (clean: {c["error"]}; with {what}: {sl["error"]})')
+        elif not sl['slowed']:
+            fails.append(f'tensorfs {case}: no object was slowed: the case tested nothing')
+        else:
+            limit = 1.5 * c['seconds'] + 20
+            (fails if sl['seconds'] > limit else notes).append(
+                f'tensorfs {case}: {sl["slowed"]} slow objects, {sl["reasked"]} re-asked, at most {sl["asks"]} asks of one; '
+                f'{sl["seconds"]:.1f} s vs clean {c["seconds"]:.1f} s (limit {limit:.1f})')
+            against(case, sl['seconds'], c['bytes'], f'download with {what}')
 
     def rate(name, nbytes, seconds):
         if nbytes and seconds:
