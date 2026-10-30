@@ -10,8 +10,8 @@ cell kernel-ready-dropped-slot "$CORE_READY_TARGET" mode=dropped-slot seed:=$((R
 # author.denoise_loop through real packages (xs-127), each judged by its run record's measurements.execution.loops[0]
 # (the GPU memory limit cannot hold stock-PyTorch execution yet, so each memory case takes the card it needs). Only a
 # program some call keeps is recorded (cozy-runtime #1891 and the streamed rule after it):
-#   loop-kept       SDXL's keyed loop on a card of 20 GiB or more: the first call runs eagerly, the idle period after it
-#                   records the whole call, the later calls run it natively from start to end (reused);
+#   loop-kept       SDXL's keyed loop on a card of 20 GiB or more: the first call records the whole call after its eager
+#                   first step and runs the rest natively, the later calls run it natively from start to end (reused);
 #   loop-eager      Qwen-Image-2.1 int8 1 MP, a loop no call keeps, runs eagerly: resident on a large card, streamed
 #                   on a small one;
 #   loop-cancel     a run canceled inside its loop ends canceled, and the next call completes.
