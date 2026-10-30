@@ -182,10 +182,12 @@ def check(gate):
         elif local < 0.8 * min(moved, total) or fetched > total - local + 64 * 2**20:
             fails.append(f'tensorfs download-resume: held {mib(local)} of {mib(total)} after {mib(moved)} had landed, '
                          f'then fetched {mib(fetched)}: it started over')
+        elif vol or not hub:
+            fails.append(f'tensorfs download-resume: {mib(hub)} from the Hub, {mib(vol)} from the volume: the private '
+                         f'fixture never reaches a volume, so the Hub path was not exercised')
         else:
             notes.append(f'tensorfs download-resume: held {mib(local)} of {mib(total)} ({mib(moved)} had landed by the cut), '
-                         f'fetched only the rest: {mib(hub)} from the Hub, {mib(vol)} from the volume'
-                         + ('' if hub else ' (the cache served it: the Hub path was not exercised)'))
+                         f'fetched only the rest, {mib(hub)}, from the Hub')
     up = None
     if done('upload'):
         evs = rows['upload']['evs']
