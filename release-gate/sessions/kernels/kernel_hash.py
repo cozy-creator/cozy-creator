@@ -38,8 +38,8 @@ SEED = 2026103003
 
 
 class Request(msgspec.Struct, frozen=True):
-    #: Comma-separated op-name prefixes (`attn:sageattention3`, `gemm:`): run only these, or every op but these. A
-    #: device fault ends the executor, so an op that may fault runs in its own request.
+    #: Comma-separated kernels or ops (`attn:sageattention3-fp4`, or a prefix ending in `:`, `gemm:`): run only these, or
+    #: every op but these. A device fault ends the executor, so an op that may fault runs in its own request.
     only: str = ""
     skip: str = ""
 
@@ -80,8 +80,12 @@ def main(payload: Request) -> Result:
     only = tuple(x for x in payload.only.split(",") if x)
     skip = tuple(x for x in payload.skip.split(",") if x)
 
+    def hits(name: str, items: tuple[str, ...]) -> bool:
+        # An item names an op or a kernel whole (`attn:sageattention3-fp4` is not its `-fixed-means`); `x:` is a prefix.
+        return any(name == i or name.startswith(i if i.endswith(":") else i + ":") for i in items)
+
     def wanted(name: str) -> bool:
-        return (not only or name.startswith(only)) and not (skip and name.startswith(skip))
+        return (not only or hits(name, only)) and not hits(name, skip)
 
     def run(name: str, fn, ref: torch.Tensor | None = None) -> None:
         if not wanted(name):
