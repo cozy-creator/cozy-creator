@@ -1,6 +1,9 @@
 # Suite `tensorfs` (gate.sh --suite tensorfs): TensorFS moves weights as fast as before and dedups.
 #   straggler        on this host: `tfs download` of BiRefNet clean and through straggler.py, which drips its first
-#                    objects as a slow storage GET does (10-01): TensorFS must re-ask a straggler, not wait out its tail
+#                    objects as a slow storage GET does (10-01): TensorFS must re-ask a straggler, not wait out its tail;
+#                    then with three cold objects, each ask of which sends 2 MiB and drips the rest, as a cold R2
+#                    object stalls again at a later MiB for whoever asks: re-asked every time, however often before
+#                    (tfs-138: one 64 MiB chunk dripped unjudged for 5-8.5 min on a 3090 pod, runs 20867/20878)
 #   lora-alpha       on this host: `tfs import --converter h3.lora` of an H3 LoRA in ComfyUI's spelling with no `.alpha`
 #                    tensors whose kohya metadata says ss_network_alpha 420 at rank 4: its committed `lora_alpha` must be r,
 #                    a scale of 1, as kohya's and ComfyUI's loaders apply it (10-29: the Mystic XXX LoRAs, this format,
@@ -67,11 +70,11 @@ tfs_weights() {
   TENSORFS_HOME=$T/tfs-store uv tool run -q --from "${TWF:-tensorfs}" tfs import "$1.safetensors" --converter as-is --name "local/$(basename "$1")" >/dev/null &&
     TENSORFS_HOME=$T/tfs-store uv tool run -q --from "${TWF:-tensorfs}" tfs export "local/$(basename "$1")" "$1" >/dev/null
 }
-# tfs_straggler <name> <stragglers>: `tfs download` of BiRefNet into a store of its own, through straggler.py.
+# tfs_straggler <name> <stragglers> [<burst>]: `tfs download` of BiRefNet into a store of its own, through straggler.py.
 tfs_straggler() {
   local port pid t0
   port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
-  python3 -I "$HERE/suites/tensorfs/straggler.py" "$port" "${HUB_URL:-https://tensorhub.com}" "$2" 65536 "$T/$1.proxy" &
+  python3 -I "$HERE/suites/tensorfs/straggler.py" "$port" "${HUB_URL:-https://tensorhub.com}" "$2" 65536 "$T/$1.proxy" ${3:-} &
   pid=$!
   for _ in $(seq 50); do (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null && break; sleep 0.1; done
   t0=$(date +%s%3N)
@@ -183,5 +186,6 @@ fi
 if tfs_case straggler; then
   tfs_straggler straggler-clean 0
   tfs_straggler straggler-slow 3
+  tfs_straggler straggler-cold 3 2097152
 fi
 if tfs_case lora-alpha; then tfs_lora_alpha; fi
