@@ -1,5 +1,6 @@
 # Suite `h3`: minimax-h3's routes at their edges, from the package users get (or its --pins release).
-# - Regenerate in one call at 1080p, 1440p and 2160p, each against the 768p render it starts from (same request).
+# - Regenerate in one call at 1080p, 1440p and 2160p, each against the 768p render it starts from (same request): its
+#   layout at 112x64 (frames.py), since regenerated texture rightly differs.
 # - SeedVR2, the default method, at 2160p.
 # - A guide clip (`guide: true`) as long as the render, shorter, longer, at 30 fps and at 9:16: a synthetic,
 #   people-free test pattern the output must follow frame by frame.
@@ -30,7 +31,7 @@ ONLY=$SAVED
 for r in 1080 1440 2160; do
   cell "regen-${r}p" "$(pkg minimax-h3 fl2va_turbo)" "${REGEN[@]}" resolution=${r}p 'upscale:={"method":"regenerate"}'
   av "regen-${r}p" $r
-  judge "regen-${r}p-frames" "regen-${r}p" ".psnr >= 18 and .ssim >= 0.5 and .lag_ms != null and (.lag_ms | $ABS) <= 10 and .corr >= 0.95" \
+  judge "regen-${r}p-frames" "regen-${r}p" ".structure_psnr >= 18 and .structure_ssim >= 0.5 and .lag_ms != null and (.lag_ms | $ABS) <= 10 and .corr >= 0.95" \
     regen "$(video_of regen-768p)"
 done
 cell seedvr2-2160p "$(pkg minimax-h3 fl2va_turbo)" prompt="$CHAR $MOTION at dusk, wind and distant traffic" seed:=$((R + 71)) \
@@ -43,7 +44,7 @@ if [[ $ONLY == *",regen-2160p-15s,"* ]]; then
   ONLY=$SAVED
   cell regen-2160p-15s "$(pkg minimax-h3 fl2va_turbo)" "${REGEN15[@]}" resolution=2160p 'upscale:={"method":"regenerate"}'
   av regen-2160p-15s 2160
-  judge regen-2160p-15s-frames regen-2160p-15s ".psnr >= 18 and .ssim >= 0.5 and (.lag_ms | $ABS) <= 10 and .corr >= 0.95" \
+  judge regen-2160p-15s-frames regen-2160p-15s ".structure_psnr >= 18 and .structure_ssim >= 0.5 and (.lag_ms | $ABS) <= 10 and .corr >= 0.95" \
     regen "$(video_of regen-768p-15s)"
 fi
 
