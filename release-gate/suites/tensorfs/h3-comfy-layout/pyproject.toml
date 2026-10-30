@@ -1,0 +1,17 @@
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "ci-h3-comfy-layout"
+version = "0.1.0"
+description = "The tensorfs suite's ComfyUI H3 layout cell: an imported ComfyUI DiT's projections, hashed"
+requires-python = ">=3.12"
+dependencies = ["cozy-runtime>=0.33", "msgspec>=0.19"]
+
+[project.entry-points."cozy.application"]
+default = "ci_h3_comfy_layout:app"
+
+[tool.uv.build-backend]
+module-name = "ci_h3_comfy_layout"
+module-root = ""
