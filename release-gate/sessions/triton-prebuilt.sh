@@ -15,6 +15,7 @@ REQUEST=$(param request '{}') FIX=$(dirname "$0")/fixtures
 [ -f "$FIX/triton_prebuilt_eval.py" ] && [ -n "$LORA" ] && jq -e '(.prompt | length > 0) and (.seed | type == "number")' <<<"$REQUEST" >/dev/null ||
   fail "fixtures, lora or request"
 jq . <<<"$REQUEST" > "$OUT/request.json"
+command -v ffmpeg >/dev/null || sudo apt-get install -y -qq ffmpeg >/dev/null 2>&1 || fail "no ffmpeg"
 declare -A WHEEL WANT
 for arm in c p; do
   src=$(jq -r --arg a "$arm" '.[$a] // empty' <<<"$RUNTIMES")
@@ -127,10 +128,14 @@ T=30 pod "cat $BOOT" < /dev/null > "$OUT/kernel-boot-p.jsonl" 2>&1
 podpy cc on > "$OUT/cc-on.json"
 for r in "${RIDS[@]}"; do cozy machine end "$r" -y >> "$OUT/end.txt" 2>&1 || cozy machine end "$r" -y --force >> "$OUT/end.txt" 2>&1; done
 say "END requested after the last request"
-image() { ls "$OUT/out/$1"/*.png "$OUT/out/$1"/*.webp "$OUT/out/$1"/*.jpg 2>/dev/null | head -1; }
-if [ -n "$(image c1)" ] && [ -n "$(image p1)" ]; then
-  cmp -s "$(image c1)" "$(image p1)" && echo "p1 identical bytes" >> "$OUT/ab.txt" || echo "p1 differs" >> "$OUT/ab.txt"
-fi
+# As ab.sh compares: the result digests, else the decoded image.
+digests() { jq -r '[.result | .. | .digest? // empty] | join(",")' "$OUT/$1.json" 2>/dev/null; }
+frames() { local f; f=$(jq -r '.output[]?.path' "$OUT/$1.json" 2>/dev/null | grep -E '\.(png|webp|jpg)$' | head -1)
+  [ -s "$f" ] || { echo none; return; }; ffmpeg -nostdin -v error -i "$f" -map 0 -f framemd5 - | grep -v '^#' | md5sum | cut -c1-16; }
+da=$(digests c1) db=$(digests p1) fa=$(frames c1) fb=$(frames p1)
+if [ -n "$da" ] && [ "$da" = "$db" ]; then echo "p1 identical bytes" >> "$OUT/ab.txt"
+elif [ "$fa" != none ] && [ "$fa" = "$fb" ]; then echo "p1 identical decoded image" >> "$OUT/ab.txt"
+else echo "p1 differs: digests $da / $db, decoded $fa / $fb" >> "$OUT/ab.txt"; fi
 say "A/B against c1: $(paste -sd' ' "$OUT/ab.txt" 2>/dev/null)"
 python3 "$FIX/triton_prebuilt_eval.py" "$OUT" | tee -a "$R"
 [ "${PIPESTATUS[0]}" = 0 ] || fail "a bar failed"

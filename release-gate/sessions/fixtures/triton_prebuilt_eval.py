@@ -1,6 +1,6 @@
 """triton-prebuilt's bars (proof-only):
 1. arm P's kernel boot, with no C compiler on the pod, readies the Runtime's Triton sets (copied from the wheel);
-2. arm P's LoRA request completes and matches arm C's (with a compiler) byte for byte;
+2. arm P's LoRA request completes and matches arm C's (with a compiler): the same bytes, else the same decoded image;
 3. the package environment's Runtime carries the prebuilt sets and this Python's launcher.
 Reported: each kernel boot's Triton sets and their times (arm C compiles them; arm P copies them).
 Prints the verdict as JSON; exits 1 when a bar fails."""
@@ -35,8 +35,9 @@ def run(label):
     if not path.exists():
         return {"status": "no run"}
     r = json.loads(path.read_text())
-    return {"run": r.get("number"), "status": r.get("status"), "exec_s": round((r.get("execution_ms") or 0) / 1000, 1),
-            "warnings": [w for w in (r.get("result") or {}).get("warnings") or [] if "lora" in w.lower() or "kernel" in w.lower()][:4]}
+    ready = sorted({str(o.get("value")) for c in r.get("calls") or [] for o in (c.get("measurements") or {}).get("observations") or []
+                    if o.get("name") == "kernel.ready"})
+    return {"status": r.get("status"), "exec_s": round((r.get("execution_ms") or 0) / 1000, 1), "kernel_ready": ready}
 
 
 c_lines = len((out / "kernel-boot-c.jsonl").read_text().splitlines()) if (out / "kernel-boot-c.jsonl").exists() else 0
@@ -54,7 +55,7 @@ if "cozy-lora-bake" not in p_sets or any(v["state"] != "ready" for v in p_sets.v
     failed.append(f"arm P's boot without a compiler: {p_sets or 'no Runtime set'}")
 if verdict["requests"]["p1"].get("status") != "completed":
     failed.append(f"p1: {verdict['requests']['p1']}")
-if "p1 identical bytes" not in verdict["ab"]:
+if not {"p1 identical bytes", "p1 identical decoded image"} & set(verdict["ab"]):
     failed.append(f"p1 against c1: {verdict['ab']}")
 env = verdict["package_env"] or {}
 if not env.get("shipped") or not env.get("kernels"):
