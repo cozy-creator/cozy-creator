@@ -3,8 +3,10 @@
     frames.py regen ORIGINAL OUTPUT                        # an upscale against its 768p original
     frames.py guide SOURCE OUTPUT [--guided S] [--fps24]   # a guided render against its guide clip
 
-regen: both in the original's 1344x768 frame (a 16:9 output un-stretched): mean luma PSNR and SSIM over every
-4th frame, and the soundtrack's lag (ms) and correlation at zero lag against the original's.
+regen: both in the original's 1344x768 frame (a 16:9 output un-stretched), over every 4th frame: mean luma PSNR and
+SSIM at full size (reported: regenerated texture, dense foliage most, rightly moves them), and at 112x64, where texture
+averages out and only the layout is left (structure_psnr, structure_ssim: judged); plus the soundtrack's lag (ms) and
+correlation at zero lag against the original's.
 guide: gray frames at 192x108 over the first S seconds (all of them by default); --fps24 first retimes the source to
 the 24-fps clock by timestamp. Same-index SSIM, the share of every 3rd frame whose best-matching source frame within
 +-12 is within +-1 (an output that follows its source frame by frame scores 1), and after S seconds the mean SSIM of
@@ -53,10 +55,18 @@ def pcm(path: str) -> np.ndarray:
     return np.frombuffer(raw, np.float32)
 
 
-def regen(original: str, output: str) -> dict:
-    a, b = gray(original, 1344, 768), gray(output, 1344, 768)
+def similarity(original: str, output: str, width: int, height: int) -> tuple[float, float]:
+    """Mean luma PSNR and SSIM over every 4th frame, both scaled to width x height."""
+    a, b = gray(original, width, height), gray(output, width, height)
     n = min(len(a), len(b))
     mse = [float(np.mean((a[i] - b[i]) ** 2)) for i in range(0, n, 4)]
+    return (round(float(np.mean([99.0 if e == 0 else 10 * np.log10(255**2 / e) for e in mse])), 2),
+            round(float(np.mean([ssim(a[i], b[i]) for i in range(0, n, 4)])), 3))
+
+
+def regen(original: str, output: str) -> dict:
+    psnr, ss = similarity(original, output, 1344, 768)
+    structure_psnr, structure_ssim = similarity(original, output, 112, 64)
     x, y = pcm(original), pcm(output)
     m = min(len(x), len(y))
     lag, corr = None, None
@@ -67,8 +77,8 @@ def regen(original: str, output: str) -> dict:
         c = np.concatenate([c[-(m - 1):], c[:m]])
         lag = (int(np.argmax(c)) - (m - 1)) / 8.0
         corr = round(float(np.dot(x, y) / (np.linalg.norm(x) * np.linalg.norm(y) + 1e-12)), 4)
-    return {**probe(output), "psnr": round(float(np.mean([99.0 if e == 0 else 10 * np.log10(255**2 / e) for e in mse])), 2),
-            "ssim": round(float(np.mean([ssim(a[i], b[i]) for i in range(0, n, 4)])), 3), "lag_ms": lag, "corr": corr}
+    return {**probe(output), "psnr": psnr, "ssim": ss, "structure_psnr": structure_psnr, "structure_ssim": structure_ssim,
+            "lag_ms": lag, "corr": corr}
 
 
 def guide(source: str, output: str, guided: float | None, fps24: bool) -> dict:

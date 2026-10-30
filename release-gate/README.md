@@ -118,6 +118,8 @@ the image's TensorD as `local` beside the runner's runs, one pod controls the ot
 previous release and the session's cozy control each other (`-f params='{"old": "0.13.3"}'`). A session that rents
 more than one pod calls `order` per pod, then `ready` per pod; the guard and the trap cover every one.
 `h3-8gb` is the 8 GB tier: H3 Turbo 15 s on one RTX 3070 must complete, 362 frames, under its time bar.
+`hunyuan-48gb` (cr-225) pages Hunyuan-Image-3's 82 GB int8 lane through one 48 GB card (a40 or l40s): a text-only
+warm-up, then `runs` more, each completed with a 3:4 image that is not flat. Runtime 0.35.6 failed the warm-up.
 `bench` runs the Cozy-vs-ComfyUI benchmark, which lives in cozy-creator/benchmarks (`params.bench_ref`, read with
 the `BENCHMARKS_READ_KEY` deploy key): it rents with SSH, starts the runner on the pod and brings its results back.
 `byo-model` is a user's own model as the docs show it, on one pod: a LoRA downloaded under a `local/` name runs by

@@ -173,9 +173,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.merge_group.head_sha }}
           BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref || github.event.merge_group.base_ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref || github.event.merge_group.head_ref }}
         run: |
           # No inputs: this repo's own merge group.
           [ -n "$REPO" ] || { REPO=cozy-creator REF=$HEAD_SHA BASE=$BASE_SHA CREATOR=$HEAD_SHA; }
+          # A cut across repos lands as `rc/<x>` in each: a change on or into one runs against its siblings' `rc/<x>`
+          # where they have one, else master. A merge group's head names the PR, not the PR's branch.
+          rc=
+          for b in "${BASE_REF#refs/heads/}" "${HEAD_REF#refs/heads/}"; do [[ $b == rc/* ]] && { rc=$b; break; }; done
+          if [ -z "$rc" ] && [[ ${HEAD_REF#refs/heads/} =~ ^gh-readonly-queue/.+/pr-([0-9]+)- ]]; then
+            b=$(gh api "repos/cozy-creator/${REPO/#tensorhub/tensorhub-v2}/pulls/${BASH_REMATCH[1]}" -q .head.ref 2>/dev/null) || b=
+            [[ $b != rc/* ]] || rc=$b
+          fi
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          if [ -n "$rc" ] && [ "$STACK" = master ] && gh api "repos/cozy-creator/cozy-creator/branches/$rc" -q .name >/dev/null 2>&1; then
+            STACK=$rc
+          fi
           # The harness (ci/, e2e/, coverage.toml) is the cozy under test's own commit unless creator_ref names one: a
           # taken release's tag, a publish run's commit, the change's when it is cozy-creator's, else stack_ref's.
           from_stack=
@@ -204,13 +218,16 @@ jobs:
           FROM_STACK: ${{ steps.what.outputs.from_stack }}
           STACK: ${{ inputs.stack_ref || 'master' }}
           RUNTIME: ${{ inputs.runtime_ref || 'master' }}
+          RC: ${{ steps.what.outputs.rc }}
         run: |
           commit() { gh api "repos/$1/commits/$2" -q .sha; }
+          # The sibling's `rc/<x>` (the `what` step's) when it has one, else what was asked.
+          sibling() { if [ -n "$RC" ] && [ "$2" = master ] && gh api "repos/$1/branches/$RC" -q .name >/dev/null 2>&1; then echo "$RC"; else echo "$2"; fi; }
           ref=$(commit "$GITHUB_REPO" "$REF")
           creator=$(git -C .creator rev-parse HEAD)
-          stack=$creator; [ -n "$FROM_STACK" ] || stack=$(commit cozy-creator/cozy-creator "$STACK")
-          runtime=$(commit cozy-creator/cozy-runtime "$RUNTIME")
-          packages=$(commit cozy-creator/packages master)
+          stack=$creator; [ -n "$FROM_STACK" ] || stack=$(commit cozy-creator/cozy-creator "$(sibling cozy-creator/cozy-creator "$STACK")")
+          runtime=$(commit cozy-creator/cozy-runtime "$(sibling cozy-creator/cozy-runtime "$RUNTIME")")
+          packages=$(commit cozy-creator/packages "$(sibling cozy-creator/packages master)")
           for c in "$ref" "$creator" "$stack" "$runtime" "$packages"; do [[ $c =~ ^[0-9a-f]{40}$ ]] || { echo "::error::unresolved ref: '$c'"; exit 1; }; done
           printf 'ref=%s\ncreator=%s\nstack=%s\nruntime=%s\npackages=%s\n' "$ref" "$creator" "$stack" "$runtime" "$packages" | tee -a "$GITHUB_OUTPUT"
       - uses: actions/checkout@v5
