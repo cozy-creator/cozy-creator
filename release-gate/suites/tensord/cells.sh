@@ -25,8 +25,9 @@ get() {
 # (e2e/run.sh's run_wait).
 until_status() { run_wait "$T" "$(nm "$1")" "${2#terminal}"; }
 envs() { "$CLI" --json machine show "$M" 2>/dev/null | jq -r '[.status.environments[] | (.package | split("/") | last) + "@" + .release] | sort | join(" ")'; }
-released() {  # released <package>: its two newest releases users get (not yanked), newest first
-  "$CLI" package info "$1" --json 2>/dev/null | jq -r '[.releases[] | select(.yanked | not) | .release][:2] | join(" ")'; }
+released() {  # released <package>: the newest release users get (not yanked), then the one before it (an exact pin installs a yanked one)
+  "$CLI" package info "$1" --json 2>/dev/null | jq -r '[.releases[].release] as $a | ([.releases[] | select(.yanked | not) | .release][0]) as $n
+    | [$n, $a[($a | index($n)) + 1]] | map(select(. != null)) | join(" ")'; }
 NGPU=$("$CLI" --json machine show "$M" 2>/dev/null | jq '.status.gpus | length')
 
 # Generations: install, update and roll back a package; then the Runtime back a release and forward to the candidate.
@@ -37,12 +38,13 @@ OLD=$first; [ "$OLD" != "$NEW" ] || OLD=$second
 "$CLI" package install "sdxl@$NEW" --on "$M" -y > "$T/update.log" 2>&1; b=$(envs)
 n1=$(submit "sdxl/generate@$NEW" prompt="$SCENE, generation $NEW" seed:=$((R + 30))); until_status "$n1" terminal
 "$CLI" package install "sdxl@$OLD" --on "$M" -y > "$T/rollback.log" 2>&1; c=$(envs)
-n2=$(submit "sdxl/generate@$OLD" prompt="$OBJECT, generation $OLD" seed:=$((R + 31))); until_status "$n2" terminal
+# A release from before the xs-133 cutover names `_/sdxl`, which moved: the rollback names its home, as its user would.
+n2=$(submit "sdxl/generate@$OLD" prompt="$OBJECT, generation $OLD" seed:=$((R + 31)) model.model=stabilityai/sdxl@1.0.0); until_status "$n2" terminal
 if [[ " $a " == *" sdxl@$OLD "* && " $b " == *" sdxl@$NEW "* && " $c " == *" sdxl@$OLD "* ]] \
    && [ "$(get "$n1" status)" = completed ] && [ "$(get "$n2" status)" = completed ]; then
   expect tensord-generations PASS "sdxl $OLD installed, updated to $NEW (run $n1), rolled back to $OLD (run $n2)"
 else
-  expect tensord-generations FAIL "installed [$a] updated [$b] rolled back [$c]; run $n1 $(get "$n1" status), run $n2 $(get "$n2" status)"
+  expect tensord-generations FAIL "installed [$a] updated [$b] rolled back [$c]; run $n1 $(get "$n1" status) $(get "$n1" reason), run $n2 $(get "$n2" status) $(get "$n2" reason)"
 fi
 if [ -n "$RWF$TWF" ]; then
   # Back to the last release (PyPI's newest Runtime and TensorFS, which the machine fetches by version).
