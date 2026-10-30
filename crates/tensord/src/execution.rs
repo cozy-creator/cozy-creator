@@ -787,6 +787,15 @@ impl Engine {
         let mut journal = self.journal.lock().unwrap();
         let mut record = journal.get(id)?;
         if !record.observed() || (!owned && record.state != State::Queued) {
+            // Weights that landed as the run left the queue (it is starting) stop showing over
+            // its own progress, though it is not observed now: the meter's last word is this.
+            if weights.is_none() {
+                if let Some(held) = progress.get_mut(id) {
+                    if let Some((_, own)) = held.weights.take() {
+                        held.detail = own;
+                    }
+                }
+            }
             return Ok(());
         }
         if let Some(snapshot) = held {
