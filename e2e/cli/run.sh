@@ -3,7 +3,7 @@
 # status, the local machine, the candidates through `cozy machine update local` (cozy doctor restarts the
 # installer's Calcifer on them and must find everything healthy), a weightless request through them, a real
 # BiRefNet removal on the CPU from a YAML request, run ls/show, a second executor (the machine restarted)
-# with an --asset input, a stuck Calcifer that cozy doctor restarts, and removal as the README says. Where the OS
+# with an --file input, a stuck Calcifer that cozy doctor restarts, and removal as the README says. Where the OS
 # runs no models itself (macOS, Windows: lib.sh's LOCAL), what needs no machine, every local verb refused, and the
 # rest of that list but the machine.
 # A broken step is recorded and the suite goes on, so one run reports all of them.
@@ -139,7 +139,7 @@ step "a second executor"
 machine_stop || check "the local machine did not stop"
 machine_ready
 dog=$(picture dog2.jpg)
-if cell second "$(birefnet)" --asset "image=$dog"; then white_background "$(output second webp)" "$dog" || check "second: not a background removal"; fi
+if cell second "$(birefnet)" --file "image=$dog"; then white_background "$(output second webp)" "$dog" || check "second: not a background removal"; fi
 
 step "Calcifer reaps the machine it started"; machine_reaped
 step "a restarted Calcifer adopts the machine"; calcifer_restart_adopts

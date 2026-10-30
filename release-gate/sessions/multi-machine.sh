@@ -122,13 +122,13 @@ turns() {
 }
 # Round 1, cold: SDXL from the runner and BiRefNet from A's shell, sent together.
 step a1-remote run sdxl/generate --on "$A" prompt="a brass telescope on a windowsill at dawn, photo" seed:=$SEED & P=$!
-on "$A" a1-local "cozy run birefnet/remove_background --asset image=/root/seed.jpg" & Q=$!
+on "$A" a1-local "cozy run birefnet/remove_background --file image=/root/seed.jpg" & Q=$!
 wait $P; wait $Q
 completed - a1-remote || fail "a1: the runner's run on A did not complete"
 completed "$A" a1-local || fail "a1: A's own run did not complete"
 say "a1: $(turns a1-remote a1-local)"
 # Round 2, warm, the models swapped between the two controllers.
-step a2-remote run birefnet/remove_background --on "$A" --asset image="$REF/seed.jpg" & P=$!
+step a2-remote run birefnet/remove_background --on "$A" --file image="$REF/seed.jpg" & P=$!
 on "$A" a2-local "cozy run sdxl/generate prompt='a paper boat on a puddle after rain, macro photo' seed:=$((SEED + 1))" & Q=$!
 wait $P; wait $Q
 completed - a2-remote || fail "a2: the runner's run on A did not complete"

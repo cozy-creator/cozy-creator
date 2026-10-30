@@ -139,8 +139,8 @@ test = "manual: the author posts the code on a handle the org lists, then claims
 [run]
 test = "pr: a weightless request; BiRefNet on the CPU"
 "--input" = "pr: a YAML request, then inline inputs over it"
-"--asset" = "pr: BiRefNet on the CPU"
-"--asset-fidelity" = "pr: run flags"
+"--file" = "pr: BiRefNet on the CPU"
+"--file-fidelity" = "pr: run flags"
 "--describe" = "pr: run flags, the contract and no run"
 "--warm" = "pr: run flags, each warm level and off"
 "--out" = "pr: BiRefNet on the CPU"

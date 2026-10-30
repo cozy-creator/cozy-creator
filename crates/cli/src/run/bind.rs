@@ -38,9 +38,9 @@ pub struct Terms<'a> {
     pub inputs: Vec<String>,
     /// `--input FILE`: the whole payload as JSON or YAML; inline terms override it.
     pub input_file: Option<PathBuf>,
-    /// `--asset [field.path=|label=]FILE`.
+    /// `--file [field.path=|label=]FILE`.
     pub assets: Vec<String>,
-    /// `--asset-fidelity label-or-index=auto|low|medium|high`.
+    /// `--file-fidelity label-or-index=auto|low|medium|high`.
     pub fidelities: Vec<String>,
     /// `--lora [slot=]ref[,strength]`.
     pub loras: Vec<String>,
@@ -699,7 +699,7 @@ impl Binder<'_> {
                     "asset_needs_file",
                     format!("{name} is an input file and `key=value` cannot attach one"),
                 )
-                .remedy(format!("use --asset {}=<file>", field.name)),
+                .remedy(format!("use --file {}=<file>", field.name)),
                 Type::List(_) | Type::Map(_) | Type::Struct(_) | Type::Model => invalid(
                     "value_not_scalar",
                     format!("{name} is not a scalar and `key=value` cannot spell one"),
@@ -753,7 +753,7 @@ impl Binder<'_> {
         super::target::spelled(&path.to_string_lossy(), &self.terms.cwd, &self.terms.user_home)
     }
 
-    /// Binds every file: those named in the payload, `--asset` and positional files. Each value
+    /// Binds every file: those named in the payload, `--file` and positional files. Each value
     /// becomes the file's digest, and the file its InputFile. A video path naming a segment of
     /// it (`clip.mp4#t=5,12`) is sent as that segment's clip.
     async fn attach(&mut self) -> Result<Vec<InputFile>, Error> {
@@ -785,7 +785,7 @@ impl Binder<'_> {
                     if parts.iter().any(|p| p.is_empty()) {
                         return Err(usage(
                             "asset_path_malformed",
-                            format!("--asset field path {field:?} is malformed"),
+                            format!("--file field path {field:?} is malformed"),
                         ));
                     }
                     parts[0] = self.fold(&parts[0])?;
@@ -796,12 +796,12 @@ impl Binder<'_> {
                         return Err(usage(
                             "assets_undeclared",
                             format!(
-                                "{} declares no Assets input for {}",
+                                "{} declares no Files input for {}",
                                 self.callable.name,
                                 spec.source.display()
                             ),
                         )
-                        .remedy("use --asset <field-path>=<file> for a named input"));
+                        .remedy("use --file <field-path>=<file> for a named input"));
                     };
                     let list =
                         self.document[&assets.parameter]
@@ -960,7 +960,7 @@ impl Binder<'_> {
         Ok(members)
     }
 
-    /// `--asset-fidelity`: each hint goes on the Assets occurrence its label or index names, for
+    /// `--file-fidelity`: each hint goes on the Files occurrence its label or index names, for
     /// the package to read.
     fn fidelities(&mut self) -> Result<(), Error> {
         if self.terms.fidelities.is_empty() {
@@ -970,7 +970,7 @@ impl Binder<'_> {
             return Err(usage(
                 "assets_undeclared",
                 format!(
-                    "{} declares no Assets input for --asset-fidelity",
+                    "{} declares no Files input for --file-fidelity",
                     self.callable.name
                 ),
             ));
@@ -990,13 +990,13 @@ impl Binder<'_> {
             let Some(index) = index.filter(|i| list[*i].is_object()) else {
                 return Err(usage(
                     "asset_fidelity_unmatched",
-                    format!("--asset-fidelity {key:?} names no attached asset"),
+                    format!("--file-fidelity {key:?} names no attached file"),
                 ));
             };
             if !given.insert(index) {
                 return Err(usage(
                     "asset_fidelity_repeated",
-                    format!("asset {key:?} was given a fidelity more than once"),
+                    format!("file {key:?} was given a fidelity more than once"),
                 ));
             }
             list[index]["fidelity"] = fidelity.into();
@@ -1199,8 +1199,8 @@ impl Binder<'_> {
                 several => {
                     let names: Vec<&str> = several.iter().map(|i| i.name).collect();
                     let choice = |i: &&Input| match i.assets {
-                        true => format!("--asset {shown} (joins {})", i.name),
-                        false => format!("--asset {}={shown}", i.name),
+                        true => format!("--file {shown} (joins {})", i.name),
+                        false => format!("--file {}={shown}", i.name),
                     };
                     let choices: Vec<String> = several.iter().map(choice).collect();
                     return Err(usage(
@@ -1241,7 +1241,7 @@ impl Binder<'_> {
             if !labels.insert(label.clone()) {
                 return Err(invalid(
                     "asset_label_repeated",
-                    format!("asset label {label:?} was given more than once"),
+                    format!("file label {label:?} was given more than once"),
                 ));
             }
         }
@@ -1878,6 +1878,9 @@ fn bounds(c: &Constraints, value: &Value, path: &str) -> Result<(), String> {
             return Err(format!("{path} has length {length}; its minimum is {min}"));
         }
         if let Some(max) = c.max_length.filter(|max| length > *max) {
+            if max == 0 && value.is_array() {
+                return Err(format!("it takes no {path}"));
+            }
             return Err(format!("{path} has length {length}; its maximum is {max}"));
         }
     }

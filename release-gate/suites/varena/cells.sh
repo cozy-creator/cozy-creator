@@ -32,7 +32,7 @@ cap() {
   log "cap $1 on $M: $(grep -E '^status' "cap-$1.log")"
 }
 SDXL=$(pkg sdxl generate) KLEIN=$(pkg flux-3-klein generate_turbo) H3=$(pkg minimax-h3 ref2va_turbo)
-h3() { vcell "$1" "$H3" --asset ref="$REF" seed:=$((R + $2)) duration_s:="$3" resolution=768p prompt="$MOTION $4"; }
+h3() { vcell "$1" "$H3" --file ref="$REF" seed:=$((R + $2)) duration_s:="$3" resolution=768p prompt="$MOTION $4"; }
 ln -sfn "$V/ceiling.py" ceiling.py; ln -sfn "$V/host-cap.py" host-cap.py
 
 if ! grep -q '^GPU 0' machine.txt; then

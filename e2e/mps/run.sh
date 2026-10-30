@@ -55,7 +55,7 @@ fi
 
 step "BiRefNet on the Apple GPU"
 dog=$(picture dog1.jpg)
-if cell birefnet "$(birefnet)" --asset "image=$dog" --gpus=1; then
+if cell birefnet "$(birefnet)" --file "image=$dog" --gpus=1; then
   served_mps birefnet
   white_background "$(output birefnet webp)" "$dog" || check "birefnet: not a background removal"
 fi

@@ -26,7 +26,7 @@ fn bound(field: &Value) -> io::Result<Option<u64>> {
             .as_u64()
             .filter(|n| *n > 0)
             .map(Some)
-            .ok_or_else(|| invalid("installed asset max_bytes must be a positive integer")),
+            .ok_or_else(|| invalid("installed file max_bytes must be a positive integer")),
     }
 }
 

@@ -5,7 +5,7 @@
 # GPU; nothing dearer than --max-hourly an hour; each step is refused once its GPU time reached --max-usd, which ends
 # it: the CLI's quote names no storage or traffic, so the cap leaves them headroom). A throwaway fidika/ci-e2e-<run> package and model go through lock,
 # publish, yank, un-yank and delete, run on this computer's machine or, where the OS runs none (macOS, Windows), on the
-# rental. On the rental: package install and list, BiRefNet from a YAML request and with --asset, each output landed
+# rental. On the rental: package install and list, BiRefNet from a YAML request and with --file, each output landed
 # here (one in a folder named with spaces and non-ASCII), machine ls, show and logs, keepalive, a run followed and
 # canceled, and an end while a run still goes, checked gone. The throwaway and the rental are removed in an EXIT trap
 # whatever fails. --quote stops at the rental's quote and rents nothing: the $0 pre-flight of every step before it.
@@ -175,9 +175,9 @@ if watched birefnet-yaml run birefnet/remove_background --input "$far/request é
   white_background "$out" "$far/chien é.jpg" || check "birefnet-yaml: not a background removal"
 else check "birefnet-yaml: cozy run birefnet/remove_background --input --on $M did not complete: $(run_get "$OUT" birefnet-yaml '.reason.message' | head -c 300)"; fi
 dog=$(picture dog2.jpg)
-if run_cell "$OUT" birefnet-asset birefnet/remove_background --asset "image=$dog" --on "$M"; then
+if run_cell "$OUT" birefnet-asset birefnet/remove_background --file "image=$dog" --on "$M"; then
   white_background "$(run_output "$OUT" birefnet-asset webp)" "$dog" || check "birefnet-asset: not a background removal"
-else check "birefnet-asset: cozy run --asset --on $M did not complete: $(run_get "$OUT" birefnet-asset '.reason.message' | head -c 300)"; fi
+else check "birefnet-asset: cozy run --file --on $M did not complete: $(run_get "$OUT" birefnet-asset '.reason.message' | head -c 300)"; fi
 cozy --json run ls --on "$M" > "$OUT/runs-rental.json" && J --arg m "$M" '(.runs | length > 0) and all(.runs[]; .machine == $m)' "$OUT/runs-rental.json" \
   || check "run ls --on $M: other machines' runs, or none"
 

@@ -20,16 +20,16 @@ IMG=$REF/seed.jpg
 # phase <name>: warm both, then the decision point (SDXL reused) and BiRefNet again; the memory log window is its own.
 phase() {
   local p=$1 base
-  step "$p-b1" run birefnet/remove_background --on "$NAME" --asset image="$IMG" || fail "$p birefnet 1"
+  step "$p-b1" run birefnet/remove_background --on "$NAME" --file image="$IMG" || fail "$p birefnet 1"
   step "$p-s1" run sdxl/generate --on "$NAME" prompt="a lighthouse in fog, photo, $p" seed:=$RANDOM --out "$OUT/$p-s1" || fail "$p sdxl 1"
   local warm; warm=$(ls "$OUT/$p-s1"/*.webp "$OUT/$p-s1"/*.png 2>/dev/null | head -1)
-  step "$p-b2" run birefnet/remove_background --on "$NAME" --asset image="$warm" || fail "$p birefnet 2"
+  step "$p-b2" run birefnet/remove_background --on "$NAME" --file image="$warm" || fail "$p birefnet 2"
   for s in b1 s1 b2; do [ "$(show "$p-$s")" = completed ] || fail "$p-$s did not complete"; done
   # The decision point's window is the memory log past this line count (the pod's clock, not the runner's).
   base=$(cozy machine logs "$NAME" memory -n 100000 2>/dev/null | wc -l)
   step "$p-s2" run sdxl/generate --on "$NAME" prompt="a desert road at noon, photo, $p" seed:=$RANDOM --out "$OUT/$p-s2" || fail "$p sdxl 2"
   local fresh; fresh=$(ls "$OUT/$p-s2"/*.webp "$OUT/$p-s2"/*.png 2>/dev/null | head -1)
-  step "$p-b3" run birefnet/remove_background --on "$NAME" --asset image="$fresh" || fail "$p birefnet 3"
+  step "$p-b3" run birefnet/remove_background --on "$NAME" --file image="$fresh" || fail "$p birefnet 3"
   for s in s2 b3; do [ "$(show "$p-$s")" = completed ] || fail "$p-$s did not complete"; done
   cozy machine logs "$NAME" memory -n 100000 > "$OUT/$p-memory.log" 2>&1
   # make_room's own offloads and ends at the decision point (its `for` is a construction), apart from the in-call

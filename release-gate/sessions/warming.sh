@@ -394,7 +394,7 @@ item4() {
   done
   say "i4: A run ${na:-?} in progress"
   podpy ps > "$OUT/i4-ps-before-b.json"
-  runrec i4-b "$QUEUED" --asset image="$REF/seed.jpg" & local pb=$!
+  runrec i4-b "$QUEUED" --file image="$REF/seed.jpg" & local pb=$!
   while kill -0 "$pa" 2>/dev/null; do
     printf '%s %s\n' "$(date +%s.%N)" "$(podpy ps)" >> "$OUT/i4-ps.ndjson"; sleep 1
   done
@@ -482,9 +482,9 @@ queue4b() {
   done
   say "$l: SDXL run ${n:-?} executing"
   png "$OUT/$l-b.png" "$RANDOM"; png "$OUT/$l-c.png" "$RANDOM"
-  runrec "$l-b" "$QUEUED" --asset image="$OUT/$l-b.png" & local pb=$!
+  runrec "$l-b" "$QUEUED" --file image="$OUT/$l-b.png" & local pb=$!
   sleep 2
-  runrec "$l-c" "$PIPE/cut" --asset image="$OUT/$l-c.png" & local pc=$!
+  runrec "$l-c" "$PIPE/cut" --file image="$OUT/$l-c.png" & local pc=$!
   while kill -0 "$pa" 2>/dev/null || kill -0 "$pb" 2>/dev/null || kill -0 "$pc" 2>/dev/null; do
     printf '{"t": %s, "ps": %s}\n' "$(date +%s%3N)" "$(podpy ps)" >> "$OUT/$l-ps.ndjson"; sleep 1
   done

@@ -31,7 +31,7 @@ lane_of() { cozy model info "$1" --json 2>/dev/null | jq -r --arg c "$2" '.commi
 # answers (texts) each contain EXPECT.
 call() {
   local n=$1 ref=$2 N asset=()
-  [ -z "$ASSET" ] || asset=(--asset "$ASSET=$IMG")
+  [ -z "$ASSET" ] || asset=(--file "$ASSET=$IMG")
   jq --argjson s "$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')" 'if has("seed") then .seed = $s else . end' \
     <<<"$REQUEST" > "$OUT/$n.json" || return 1
   step "$n" run "./$PACKAGE/$FUNCTION" "model.$SLOT=$ref" --input "$OUT/$n.json" "${asset[@]}" --on "$NAME" || return 1

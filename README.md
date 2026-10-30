@@ -38,16 +38,16 @@ seed: 7
 cozy login you@example.com
 cozy run sdxl/generate --input request.yaml
 cozy run sdxl/generate --input request.yaml seed=8      # an inline input overrides the file
-cozy run birefnet/remove_background --asset image=./character.png
+cozy run birefnet/remove_background --file image=./character.png
 cozy run sdxl/generate --describe                       # the fields a function takes
 ```
 
 Inline `key=value` inputs are the quick form: `cozy run sdxl/generate prompt='a fox in fresh snow'`.
-Files go in with `--asset` (or by path inside the YAML, relative to it). A run is followed to its end;
+Files go in with `--file` (or by path inside the YAML, relative to it). A run is followed to its end;
 Ctrl-C stops following, never the run, and `cozy run show <N>` picks it up again.
 
 A video path can name a segment of it, `#t=<start>,<end>` (whole seconds, `m:ss` or `h:mm:ss`; either
-end may be left out: `#t=5`, `#t=,0:12`), in the YAML or in `--asset name=path#t=…`. cozy cuts it once,
+end may be left out: `#t=5`, `#t=,0:12`), in the YAML or in `--file name=path#t=…`. cozy cuts it once,
 frame-accurately, keeps it in `~/.cozy/cache/clips`, and sends the cut, not the whole file; a machine that
 already holds it is not sent it again:
 
