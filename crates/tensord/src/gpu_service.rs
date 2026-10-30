@@ -1143,9 +1143,9 @@ impl Pool {
     }
 
     /// A session removed from the idle pool cannot be taken by a call while Map runs. Each of its
-    /// constructions on the GPU goes to RAM.
-    fn offload_idle(&self, engine: &Arc<Engine>, key: &str, reason: &str, need: Option<u64>) {
-        let Some(mut session) = self.sessions.lock().unwrap().remove(key) else { return };
+    /// constructions on the GPU goes to RAM. False when its executor refused or failed one.
+    fn offload_idle(&self, engine: &Arc<Engine>, key: &str, reason: &str, need: Option<u64>) -> bool {
+        let Some(mut session) = self.sessions.lock().unwrap().remove(key) else { return true };
         let lane = session.lane();
         let (pid, plan, began) = (session.executor.birth.pid, session.env.clone(), Instant::now());
         let before = self.free(&lane);
@@ -1159,7 +1159,7 @@ impl Pool {
             self.notes.note(serde_json::json!({"event": "offload", "for": reason, "pid": pid,
                 "plan": plan, "need": need, "free_before": before, "free_after": self.free(&lane),
                 "ack_ms": began.elapsed().as_secs_f64() * 1e3, "ended_pending_preparation": true, "failed": why}));
-            return;
+            return why.is_empty();
         }
         let mut why = String::new();
         for (construction, level) in session.loaded.iter_mut().filter(|(_, level)| **level == Level::Gpu) {
@@ -1177,6 +1177,7 @@ impl Pool {
         self.notes.note(serde_json::json!({"event": "offload", "for": reason, "pid": pid,
             "plan": plan, "need": need, "free_before": before, "free_after": self.free(&lane),
             "ack_ms": began.elapsed().as_secs_f64() * 1e3, "failed": why}));
+        why.is_empty()
     }
 
     /// Idle sessions on `lane` whose weights are on the GPU, least recently used first and
@@ -1247,7 +1248,15 @@ impl Pool {
         if !calling() { return }
         for key in self.idle_on_lane(&(index..index + 1), Level::Gpu) {
             if gpu.free().is_none_or(|free| free >= headroom) || !calling() { return }
-            self.offload_idle(engine, &key, "running_call", Some(headroom));
+            // An executor that refuses its offload keeps its weights where the running call
+            // needs room, and asking again every tick never changes that: end it, as placement
+            // does (0.36.0 gate 41034222864: Klein's refusal, 13 asks, then Qwen out of memory).
+            if !self.offload_idle(engine, &key, "running_call", Some(headroom))
+                && gpu.free().is_some_and(|free| free < headroom) && calling() && self.end_session(&key)
+            {
+                self.notes.note(serde_json::json!({"event": "ended_for_room", "ended": key,
+                    "for": "running_call", "need": headroom, "free": gpu.free()}));
+            }
         }
     }
 
