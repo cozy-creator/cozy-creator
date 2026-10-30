@@ -1,10 +1,14 @@
 # Sourced by kernel-hash.sh and bench.sh (proof-only): kernel_hash.py under two Runtimes on $NAME, compared op by op.
-# hash_arms <{"a": ..., "b": ...}>: each arm's Runtime, before renting: a release the machine fetches (`0.35.6`) or a
-# cozy-runtime dev-build's manylinux x86_64 wheel (`run:<run id>/<commit>`), downloaded here; sets HASH_WANT.
+# hash_arms <{"a": ..., "b": ..., …}>: each arm's Runtime, before renting: a release the machine fetches (`0.35.6`) or a
+# cozy-runtime dev-build's manylinux x86_64 wheel (`run:<run id>/<commit>`), downloaded here; sets HASH_WANT and
+# HASH_ARMS (the arms in name order: a runs first, after the TensorFS pairing).
 declare -A HASH_WANT
+HASH_ARMS=()
 hash_arms() {
   local arm src
-  for arm in a b; do
+  mapfile -t HASH_ARMS < <(jq -r 'keys[]' <<<"$1")
+  [ "${HASH_ARMS[0]:-}" = a ] || { echo "no arm a"; return 1; }
+  for arm in "${HASH_ARMS[@]}"; do
     src=$(jq -r --arg a "$arm" '.[$a] // empty' <<<"$1")
     if [[ $src =~ ^run:([0-9]+)/([0-9a-f]{40})$ ]]; then
       mkdir -p "$OUT/wheel-$arm"
