@@ -9,6 +9,7 @@
 #   cells      [{"name", "tree" (a packages_refs name), "target" ("<package>/<function>"), "args" ([inputs and flags]),
 #              "update" (optional: {"runtime", "tensorfs"}, each a wheel URL or, for runtime, a cozy-runtime dev-build
 #              run id; the pod's `machine update` before this cell, so cells before and after compare two pairs)}];
+#              "expect" (optional: the status the cell must end in, `completed` by default; `failed` for a refusal it proves);
 #              in args, `{ref}` is release-gate/ref and `{out:<cell>}` an earlier cell's image or video;
 #              two failed cells stop the session
 #   compare    [["A", "B"], …]: the result digests, else the decoded frames of every stream, and the video's PSNR
@@ -100,7 +101,9 @@ for k in "${names[@]}"; do
   st=$(jq -r '.status // "none"' "$OUT/$k.json" 2>/dev/null)
   MADE[$k]=$(find "$OUT/out/$k" -type f \( -name '*.png' -o -name '*.webp' -o -name '*.jpg' -o -name '*.mp4' \) 2>/dev/null | sort | head -1)
   say "$k run ${N:-none} ${st:-none} (exit $code): $(summary "$k")"
-  [ "$st" = completed ] || { fails=$((fails + 1)); [ "$fails" -lt 2 ] || fail "two cells failed"; }
+  want=$(jq -r '.expect // "completed"' <<<"$c")
+  [ "$st" = completed ] || say "$k reason: $(jq -r '.reason.message // .reason // "none"' "$OUT/$k.json" 2>/dev/null | head -c 600)"
+  [ "$st" = "$want" ] || { fails=$((fails + 1)); [ "$fails" -lt 2 ] || fail "two cells failed"; }
 done
 rm -f "$OUT/current"
 
