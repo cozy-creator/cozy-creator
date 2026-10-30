@@ -1,11 +1,10 @@
 # H3 over two GPUs (sequence parallel, --gpus=2) on a 2-GPU machine: a 15 s Turbo call and a standard 30-step call,
-# each with one character reference that BiRefNet cleans and Qwen3.5 describes, as a user's. Sourced by gate.sh --cells;
+# each with one character picture, as a project sends it. Sourced by gate.sh --cells;
 # `only` names h3-u2-turbo, h3-u2-std. Each is held to two ranks on two GPUs and a 768p, 300+ frame video with audio.
 H3REF="[{\"name\": \"$NAME\", \"kind\": \"character\", \"image\": \"$REF\"}]"
-cell h3-u2-turbo "$(pkg minimax-h3 ref2va_turbo)" references:="$H3REF" seed:=$((R + 351)) duration_s:=15 resolution=768p \
-  prompt="<$NAME> $MOTION" --gpus=2
-cell h3-u2-std "$(pkg minimax-h3 ref2va)" references:="$H3REF" seed:=$((R + 352)) duration_s:=15 resolution=768p steps:=30 \
-  prompt="<$NAME> $MOTION The camera slowly pushes in." --gpus=2
+cell h3-u2-turbo "$(pkg minimax-h3 shot)" assets:="$H3REF" prompt="<$NAME> $MOTION" seed:=$((R + 351)) duration_s:=15 --gpus=2
+cell h3-u2-std "$(pkg minimax-h3 shot)" assets:="$H3REF" prompt="<$NAME> $MOTION The camera slowly pushes in." \
+  seed:=$((R + 352)) duration_s:=15 turbo:=false steps:=30 --gpus=2
 for n in h3-u2-turbo h3-u2-std; do
   [ -f "$n.json" ] || continue
   v=$(run_output "$OUT" "$n" mp4)

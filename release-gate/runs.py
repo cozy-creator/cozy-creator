@@ -12,10 +12,11 @@ WEIGHT_READS = ('cozy_runtime.internal.residency.Memory._read_into', 'cozy_runti
 # 10-22 split regression 8-17x), every later step against the median of its phase (a length change, such as a video
 # reference's rows leaving the sparse window, must not stall a step). The seconds absorb sub-second image steps.
 STEP_RATIO, STEP_EXTRA_MS = 2, 5_000
-# Steps 1..k of these targets are their own phase: H3 attends densely for its first evaluations, a dense step costing
+# Steps 1..k of H3's series are their own phase: it attends densely for its first evaluations, a dense step costing
 # about 2x a sparse one (minimax-h3 docs/attention-defaults.md: turbo 4 of 8, regular sampling the first 10). Against
-# one median, a healthy fl2va_turbo with dense steps 2.07x its sparse ones failed (gate 40834197815).
-DENSE_STEPS = {'minimax-h3/fl2va_turbo': 4, 'minimax-h3/ref2va_turbo': 4, 'minimax-h3/fl2va': 10, 'minimax-h3/ref2va': 10}
+# one median, a healthy turbo call with dense steps 2.07x its sparse ones failed (gate 40834197815).
+def dense_steps(target, steps):
+    return (4 if steps <= 8 else 10) if target == 'minimax-h3/shot' else 1
 # The step tracks the step rule judges: a sampler's steps (`tel.step_callback` stages). Not an autoregressive stage
 # (HunyuanImage-3's `thinking`: token 1 is the prompt's prefill, gate 40907841888) and not per-item work (`decode_video`
 # frames, `scan`, `assemble`, `calibrating`).
@@ -27,7 +28,7 @@ def slow_steps(target, s):
     reference is). `target` is canonical: pkg/fn."""
     if len(s) < 3:
         return []
-    k = DENSE_STEPS.get(target, 1)
+    k = dense_steps(target, len(s))
     refs = [(s[1], 'step 2')]
     for phase, what in ((s[1:k], 'dense median'), (s[max(k, 1):], 'sparse median' if k > 1 else 'median')):
         if phase:

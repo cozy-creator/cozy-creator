@@ -31,8 +31,10 @@ cap() {
   done
   log "cap $1 on $M: $(grep -E '^status' "cap-$1.log")"
 }
-SDXL=$(pkg sdxl generate) KLEIN=$(pkg flux-3-klein generate_turbo) H3=$(pkg minimax-h3 ref2va_turbo)
-h3() { vcell "$1" "$H3" --file ref="$REF" seed:=$((R + $2)) duration_s:="$3" resolution=768p prompt="$MOTION $4"; }
+SDXL=$(pkg sdxl generate) KLEIN=$(pkg flux-3-klein generate_turbo) H3=$(pkg minimax-h3 shot)
+# One character picture, as a project sends it: no model but H3's.
+H3REF="[{\"name\": \"Lead\", \"kind\": \"character\", \"image\": \"$REF\"}]"
+h3() { vcell "$1" "$H3" assets:="$H3REF" prompt="<Lead> $MOTION $4" seed:=$((R + $2)) duration_s:="$3"; }
 ln -sfn "$V/ceiling.py" ceiling.py; ln -sfn "$V/host-cap.py" host-cap.py
 
 if ! grep -q '^GPU 0' machine.txt; then
@@ -53,7 +55,7 @@ vcell reload-sdxl "$SDXL" prompt="$SCENE at dusk, wide shot, photo" seed:=$((R +
 vcell reload-klein "$KLEIN" prompt="$OBJECT, macro photo, shallow depth of field" seed:=$((R + 8))
 if [ "$(grep -oE '· [0-9]+ GiB ·' machine.txt | head -1 | grep -oE '[0-9]+')" -le 8 ]; then
   # The 8 GB tier's product shape, H3 Turbo 15 s (1344x768 with audio): 0.35.0 ran out of memory in its step 2.
-  vcell h3-8gb "$(pkg minimax-h3 fl2va_turbo)" seed:=$((R + 15)) duration_s:=15 prompt="$MOTION Wide, steady."
+  vcell h3-8gb "$H3" prompt="$MOTION Wide, steady." seed:=$((R + 15)) duration_s:=15
   return 0
 fi
 h3 reload-h3 9 5 "A slow pan follows the action."

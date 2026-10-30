@@ -115,7 +115,7 @@ if lf:
     ok = all(r is not None and r.get('status') == 'completed' and gpu_calls(r) for r in (t, lf))
     first, second = (executor(gpu_calls(r)[-1]) if ok else None for r in (t, lf))
     row('idle-h3-lf', ok and first == second,
-        f'ref2va_turbo executor {first}, long_form segment executor {second}; statuses '
+        f'turbo call executor {first}, two-piece shot executor {second}; statuses '
         f'{t and t.get("status")}, {lf and lf.get("status")}')
 # A cancel ends every construction of its process; the next call of a sibling starts a new one, cold.
 for befores, canceled, after in ((('idle-klein-b2',), 'idle-cancel', 'idle-after-cancel'),

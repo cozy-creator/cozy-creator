@@ -30,19 +30,21 @@ refs() {
     assets:="[{\"name\": \"Hero\", \"image\": \"${K:-$REF}\"}, {\"name\": \"Lighthouse\", \"image\": \"$REF\"}]"
 }
 product_minimax_h3() {
-  # H3's references: BiRefNet cleans the character image and Qwen3.5 describes it (greedy), as for a user's character.
-  # While cr-215 is open (lead 10-23) the reference is the image only; the 3 s video reference returns with its fix.
-  # One fixed request (the Skater row, H3_SEED): quality.py holds its CLIP against the last passed gate's on it.
-  local name motion
+  # One fixed request (the Skater row, H3_SEED): quality.py holds its CLIP against the last passed gate's on it. The
+  # character picture goes to H3 as given (a project cleans it first).
+  local name motion p="$SCENE, slow push-in, ambient sound" SAVED=$ONLY r
   IFS=$'\t' read -r name _ motion _ _ <<< "$(grep -m1 $'^Skater\t' "$HERE/scenarios.tsv")"
-  cell h3 "$(pkg minimax-h3 ref2va_turbo)" references:="[{\"name\": \"$name\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
-    seed:=$H3_SEED duration_s:=15 resolution=768p prompt="<$name> $motion"
+  cell h3 "$(pkg minimax-h3 shot)" assets:="[{\"name\": \"$name\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
+    prompt="<$name> $motion" seed:=$H3_SEED duration_s:=15
   CLIP=$(output h3 mp4)
-  # Above 768p H3 restores its render with SeedVR2 in the same call: the lock's seedvr2, with the soundtrack.
-  cell h3-1080p "$(pkg minimax-h3 fl2va_turbo)" prompt="$SCENE, slow push-in, ambient sound" seed:=$((R + 16)) duration_s:=5 resolution=1080p
-  av h3-1080p 1080
-  cell h3-1440p "$(pkg minimax-h3 fl2va_turbo)" prompt="$CHAR $MOTION, street sounds" seed:=$((R + 17)) duration_s:=5 resolution=1440p
-  av h3-1440p 1440
+  # Above 768p a shot is upscaled whole, by SeedVR2 (the lock's seedvr2) by default, with its soundtrack.
+  [[ $ONLY == *",h3-1080p,"* || $ONLY == *",h3-1440p,"* ]] && ONLY="$ONLY,h3-5s,"
+  cell h3-5s "$(pkg minimax-h3 shot)" prompt="$p" seed:=$((R + 16)) duration_s:=5
+  ONLY=$SAVED
+  for r in 1080 1440; do
+    cell "h3-${r}p" "$(pkg minimax-h3 upscale)" --asset video="$(output h3-5s mp4)" resolution=${r}p seed:=$((R + 17))
+    av "h3-${r}p" $r
+  done
 }
 product_seedvr2() {
   local src=${CLIP:-$(ls "$B/ref-$SKU-clip.mp4" 2>/dev/null)}

@@ -1,9 +1,10 @@
-# Suite `h3`: minimax-h3's routes at their edges, from the package users get (or its --pins release).
-# - Regenerate in one call at 1080p, 1440p and 2160p, each against the 768p render it starts from (same request): its
+# Suite `h3`: minimax-h3's shot and upscale at their edges, from the package users get (or its --pins release).
+# - Regenerate-2K (`upscale.model: regenerate-2k`) at 1080p, 1440p and 2160p, each against the 768p shot it starts from: its
 #   layout at 112x64 (frames.py), since regenerated texture rightly differs.
-# - SeedVR2, the default method, at 2160p.
-# - A guide clip (`guide: true`) as long as the render, shorter, longer, at 30 fps and at 9:16: a synthetic,
-#   people-free test pattern the output must follow frame by frame.
+# - SeedVR2, the default model, at 2160p on the same shot.
+# - A plate (a synthetic, people-free test pattern) as long as the shot, shorter, longer, at 30 fps and at 9:16: the
+#   output must follow it frame by frame.
+# - First and last keyframes: the shot opens and ends on them without a cut.
 # `regen-2160p-15s` (about an hour on 24 GB, in three windows) runs only when --only names it. A run that breaches its
 # memory envelope fails (analyze.py: not completed), so every cell below also asserts that.
 FR=(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/frames.py")
@@ -23,32 +24,34 @@ judge() {
 }
 ABS='if . < 0 then -. else . end'
 
-# Regenerate: one render, at 768p and through the latent upscaler and refine at each size.
-REGEN=(prompt="$SCENE, a painted shop sign reads OPEN, slow push-in, street sounds" seed:=$((R + 70)) duration_s:=5)
-SAVED=$ONLY; [[ $ONLY == *",regen-"* ]] && ONLY="$ONLY,regen-768p,"
-cell regen-768p "$(pkg minimax-h3 fl2va_turbo)" "${REGEN[@]}" resolution=768p
+# Regenerate-2K and SeedVR2: one 5 s shot, upscaled whole at each size.
+SHOT=$(pkg minimax-h3 shot) UP=$(pkg minimax-h3 upscale)
+P="$SCENE, a painted shop sign reads OPEN, slow push-in, street sounds"
+SAVED=$ONLY; [[ $ONLY == *",regen-"* || $ONLY == *",seedvr2-2160p,"* ]] && ONLY="$ONLY,regen-768p,"
+cell regen-768p "$SHOT" prompt="$P" seed:=$((R + 70)) duration_s:=5
 ONLY=$SAVED
 for r in 1080 1440 2160; do
-  cell "regen-${r}p" "$(pkg minimax-h3 fl2va_turbo)" "${REGEN[@]}" resolution=${r}p 'upscale:={"method":"regenerate"}'
+  cell "regen-${r}p" "$UP" --asset video="$(video_of regen-768p)" resolution=${r}p prompt="$P" seed:=$((R + 70)) \
+    'upscale:={"model": "regenerate-2k"}'
   av "regen-${r}p" $r
   judge "regen-${r}p-frames" "regen-${r}p" ".structure_psnr >= 18 and .structure_ssim >= 0.5 and .lag_ms != null and (.lag_ms | $ABS) <= 10 and .corr >= 0.95" \
     regen "$(video_of regen-768p)"
 done
-cell seedvr2-2160p "$(pkg minimax-h3 fl2va_turbo)" prompt="$CHAR $MOTION at dusk, wind and distant traffic" seed:=$((R + 71)) \
-  duration_s:=5 resolution=2160p
+cell seedvr2-2160p "$UP" --asset video="$(video_of regen-768p)" resolution=2160p seed:=$((R + 71))
 av seedvr2-2160p 2160
 if [[ $ONLY == *",regen-2160p-15s,"* ]]; then
-  REGEN15=(prompt="$SCENE at night, rain on the windows, a neon sign reads CAFE, rain and footsteps" seed:=$((R + 72)) duration_s:=15)
+  P15="$SCENE at night, rain on the windows, a neon sign reads CAFE, rain and footsteps"
   SAVED=$ONLY; ONLY="$ONLY,regen-768p-15s,"
-  cell regen-768p-15s "$(pkg minimax-h3 fl2va_turbo)" "${REGEN15[@]}" resolution=768p
+  cell regen-768p-15s "$SHOT" prompt="$P15" seed:=$((R + 72)) duration_s:=15
   ONLY=$SAVED
-  cell regen-2160p-15s "$(pkg minimax-h3 fl2va_turbo)" "${REGEN15[@]}" resolution=2160p 'upscale:={"method":"regenerate"}'
+  cell regen-2160p-15s "$UP" --asset video="$(video_of regen-768p-15s)" resolution=2160p prompt="$P15" seed:=$((R + 72)) \
+    'upscale:={"model": "regenerate-2k"}'
   av regen-2160p-15s 2160
   judge regen-2160p-15s-frames regen-2160p-15s ".structure_psnr >= 18 and .structure_ssim >= 0.5 and (.lag_ms | $ABS) <= 10 and .corr >= 0.95" \
     regen "$(video_of regen-768p-15s)"
 fi
 
-# Guide clips: testsrc2 (colour bars, a moving sweep and a running timecode), beside a picture of its first frame.
+# Plates: testsrc2 (colour bars, a moving sweep and a running timecode), beside a picture of its first frame.
 pattern() {  # pattern <file> <WxH> <fps> <seconds>
   nice -n 19 ffmpeg -v error -y -f lavfi -i "testsrc2=size=$2:rate=$3:duration=$4" -c:v libx264 -pix_fmt yuv420p "$1"
 }
@@ -57,8 +60,8 @@ pattern guide-30fps.mp4 1344x768 30 5; pattern guide-9x16.mp4 1080x1920 24 5
 for f in guide-5s guide-9x16; do nice -n 19 ffmpeg -v error -y -i "$f.mp4" -frames:v 1 "$f.png"; done
 GUIDE_PROMPT=$'video_editing:\n\nsubject_definitions:\n<Pattern> is the background in <Picture 1>.\n<Video 1> is the source video for the target video edit.\n\nsummary:\n[video editing]\nThe target video is <Video 1>, unchanged.\n\nretention_analysis:\n<Video 1> (entire target timeline): fully_preserved - its motion, framing, timing and composition are kept.\n\ndetailed_description:\nA synthetic broadcast test pattern fills the frame: colour bars, a moving gradient sweep, a turning marker and a running timecode on a dark field. The camera is static and no person appears.\n'
 guide_cell() {  # guide_cell <cell> <clip> <picture> <seed>
-  cell "$1" "$(pkg minimax-h3 ref2va_turbo)" prompt="$GUIDE_PROMPT" duration_s:=5 seed:=$4 clean_references:=false \
-    describe_references:=false references:="[{\"name\": \"Pattern\", \"kind\": \"background\", \"image\": \"$OUT/$3\"}, {\"name\": \"Source\", \"kind\": \"video\", \"video\": \"$OUT/$2\", \"guide\": true}]"
+  cell "$1" "$SHOT" prompt="$GUIDE_PROMPT" duration_s:=5 seed:=$4 \
+    assets:="[{\"name\": \"Pattern\", \"kind\": \"environment\", \"image\": \"$OUT/$3\"}]" plate:="{\"video\": \"$OUT/$2\"}"
 }
 guide_cell guide-equal guide-5s.mp4 guide-5s.png $((R + 73))
 judge guide-equal guide-equal '.within_1 >= 0.8' guide "$OUT/guide-5s.mp4"
@@ -75,3 +78,9 @@ judge guide-30fps guide-30fps '.within_1 >= 0.8' guide "$OUT/guide-30fps.mp4" --
 # 9:16: the render takes the clip's canvas, 768x1344 at 768p.
 guide_cell guide-aspect guide-9x16.mp4 guide-9x16.png $((R + 77))
 judge guide-aspect guide-aspect '.width == 768 and .height == 1344 and .within_1 >= 0.8' guide "$OUT/guide-9x16.mp4"
+# Keyframes: a shot from the pattern's first frame to its last (FL2VA), each end on its keyframe, with no cut onto it.
+nice -n 19 ffmpeg -v error -y -sseof -0.1 -i guide-5s.mp4 -frames:v 1 guide-5s-last.png
+cell keyframes "$SHOT" prompt="A synthetic broadcast test pattern: colour bars, a moving gradient sweep and a running timecode." \
+  duration_s:=5 seed:=$((R + 78)) keyframes:="{\"first\": \"$OUT/guide-5s.png\", \"last\": \"$OUT/guide-5s-last.png\"}"
+judge keyframes-first keyframes '.ssim >= 0.9 and .ssim > .other' still "$OUT/guide-5s.png" first
+judge keyframes-last keyframes '.ssim >= 0.9 and .ssim > .other' still "$OUT/guide-5s-last.png" last
