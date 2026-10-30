@@ -10,11 +10,14 @@
 //! - **Judging a request** is relative and measured, never a timeout. Each request measures
 //!   the rate of every stretch of body it receives between two writes into the store; every
 //!   tick the watch drops one with no answer after 8× the fetch's median time to answer, or
-//!   whose body moved under an eighth of the median stretch rate over its window, and it is
-//!   asked again from the byte it reached. A request that was dropped gets twice the window
-//!   next time, so an origin that is honestly slow still answers, and a fetch whose every
-//!   request is slow restarts none. A cold R2 object stalls at a MiB boundary for whoever asks
-//!   first while a fresh ranged ask is answered at once (pod measurements, 2026-10-01).
+//!   whose body moved under an eighth of the median stretch rate over its window (its last
+//!   ticks on the network: a write into the store neither counts nor starts it over), and it is
+//!   asked again from the byte it reached. An object whose dropped request moved nothing gets
+//!   twice the patience next time, so an origin that is honestly slow still answers; one whose
+//!   request moved bytes is asked again as at first. A cold R2 object stalls at a MiB boundary
+//!   for whoever asks first, again and again, while a fresh ranged ask is answered at once (pod
+//!   measurements, 2026-10-01); a patience that grew per drop let such a drip run unjudged for
+//!   minutes (tfs-138). A fetch whose every request is slow restarts none.
 //! - **Ending.** An object ends on an answer asking again cannot change (absent, refused after
 //!   a fresh location, the same wrong bytes twice), or when nothing in the whole fetch has
 //!   landed for twice its measured patience; the refusal quotes the last answer.
@@ -521,7 +524,6 @@ impl<'s> Sink<'s> {
         if let Some(flight) = flight {
             flight.moved();
             flight.stretch_begins();
-            lock(&flight.window).clear();
             flight.local.store(false, Ordering::Release);
         }
         let (admission, mut buffer, written) = written.map_err(|error| Refusal {
@@ -913,12 +915,12 @@ impl Shared {
                     Err(refusal) => return Err(refusal),
                 },
                 Attempt::Again { why, wait, dropped, heard } => {
+                    let moved = task.reached.load(Ordering::Acquire) > reached;
                     if dropped {
                         self.stats.restarts.fetch_add(1, Ordering::Relaxed);
-                        doublings = (doublings + 1).min(MAX_DOUBLINGS);
-                        tracing::debug!(object = %task.object.sha256, at = sink.reached, %why, "restart");
+                        doublings = if moved { 0 } else { (doublings + 1).min(MAX_DOUBLINGS) };
+                        tracing::info!(object = %task.object.sha256, at = sink.reached, %why, "restart");
                     }
-                    let moved = task.reached.load(Ordering::Acquire) > reached;
                     if let Some(pause) = retry.again(task, &why, heard, moved || dropped, wait)? {
                         tokio::time::sleep(pause).await;
                     }
