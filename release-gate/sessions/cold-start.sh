@@ -16,6 +16,7 @@
 #   qwen        the Qwen-Image function (qwen-image-2/generate@0.1.8), at 1 MP, 20 steps
 #   traffic_gb  GB the provider bills: the image and both models' weights (40)
 #   need_s      seconds the guard must buy (5400)
+#   sample      true: the pod's disk, process I/O, pressure and GPU sampled for the session (samples.jsonl, dmon.txt)
 . "$(dirname "$0")/lib.sh"
 ARMS=$(param arms '[{"name": "prod", "tensord": "image"}]') SDXL=$(param sdxl sdxl/generate@0.1.3) ANIMA=$(param anima anima/generate@0.1.1)
 QWEN=$(param qwen qwen-image-2/generate@0.1.8)
@@ -121,6 +122,41 @@ elif mode == "evict":
             os.close(fd)
     print(json.dumps({"files": len(files), "gb": round(sum(os.path.getsize(f) for f in files) / 1e9, 2),
                       "resident_gb_before": round(before / 1e9, 2), "resident_gb_after": round(sum(resident(f) for f in files) / 1e9, 2)}))
+elif mode == "sample":
+    # Every 0.5 s until /tmp/sample.stop: each block device's reads, each cozy process's I/O (read_bytes is
+    # what came from storage, rchar every read), and the pressure stalls: where a slow encode's time went.
+    def cozy_processes():
+        for d in glob.glob("/proc/[0-9]*"):
+            try:
+                cmd = open(d + "/cmdline", "rb").read().replace(b"\0", b" ").decode(errors="replace")
+            except OSError:
+                continue
+            kind = ("executor" if "cozy_runtime.internal.executor" in cmd else "compile" if "compileall" in cmd
+                    else "kernels" if "cozy_runtime.author.kernels" in cmd or "machine_kernels" in cmd
+                    else "cozy" if cmd.split(" ")[0].endswith("/cozy") else "")
+            if kind:
+                yield int(d[6:]), kind, d
+    out = open(sys.argv[2], "a")
+    while not os.path.exists("/tmp/sample.stop"):
+        row = {"t": round(time.time(), 3), "disk": {}, "procs": [], "psi": {}}
+        for line in open("/proc/diskstats"):
+            f = line.split()
+            if not f[2].startswith(("loop", "ram")) and int(f[3]) + int(f[7]):
+                row["disk"][f[2]] = [int(f[5]) * 512, int(f[9]) * 512, int(f[11])]  # bytes read, written, ios in flight
+        for pid, kind, d in cozy_processes():
+            try:
+                io = dict(l.split(": ") for l in open(d + "/io").read().splitlines())
+                state = open(d + "/stat").read().rsplit(")", 1)[1].split()[0]
+                row["procs"].append([pid, kind, int(io["read_bytes"]), int(io["rchar"]), int(io["write_bytes"]), state])
+            except (OSError, KeyError, ValueError):
+                pass
+        for res in ("io", "memory", "cpu"):
+            try:
+                row["psi"][res] = [l.split()[0] + " " + l.split()[4] for l in open(f"/proc/pressure/{res}")]
+            except OSError:
+                pass
+        out.write(json.dumps(row) + "\n"); out.flush()
+        time.sleep(0.5)
 elif mode == "ps":
     rows = []
     for d in glob.glob("/proc/[0-9]*"):
@@ -151,6 +187,14 @@ rent
 pod() { timeout "${T:-120}" cozy machine ssh "$NAME" "$@"; }
 for i in $(seq 1 20); do pod true < /dev/null > /dev/null 2>&1 && break; [ "$i" = 20 ] && fail "no SSH into $NAME"; sleep 15; done
 podpy() { printf '%s' "$POD_PY" | T=600 pod "cat > /tmp/cold.py && python3 /tmp/cold.py $*"; }
+# `sample: true`: the pod's disk, process I/O, pressure and GPU (nvidia-smi dmon) every 0.5-1 s for the whole
+# session, into samples.jsonl and dmon.txt.
+if [ "$(param sample false)" = true ]; then
+  printf '%s' "$POD_PY" | T=60 pod "cat > /tmp/cold.py && rm -f /tmp/sample.stop /tmp/samples.jsonl &&
+    (setsid nohup python3 /tmp/cold.py sample /tmp/samples.jsonl > /dev/null 2>&1 &) &&
+    (setsid nohup nvidia-smi dmon -s ut -d 1 -o T > /tmp/dmon.txt 2>&1 & echo \$! > /tmp/dmon.pid)" < /dev/null || fail "sampler"
+  say "sampling the pod's disk, process I/O, pressure and GPU"
+fi
 # One request, its events stamped with the runner's clock from just before the CLI starts.
 request() {
   local label=$1 fn=$2 input=$3 t0
@@ -237,5 +281,11 @@ for i in "${!names[@]}"; do
   podpy ps > "$OUT/$a-ps-after.json"; say "$a: executors after the requests $(cat "$OUT/$a-ps-after.json")"
 done
 T=60 pod "cat /var/lib/cozy/tensord/gpu/kernel-boot.jsonl" > "$OUT/kernel-boot.jsonl" 2>&1 < /dev/null
+if [ "$(param sample false)" = true ]; then
+  T=120 pod "touch /tmp/sample.stop; sleep 1; cat /tmp/samples.jsonl" > "$OUT/samples.jsonl" 2> /dev/null < /dev/null
+  T=60 pod "kill \$(cat /tmp/dmon.pid); cat /tmp/dmon.txt" > "$OUT/dmon.txt" 2> /dev/null < /dev/null
+  for log in tensord memory; do cozy machine logs "$NAME" "$log" -n 0 > "$OUT/machine-$log.log" 2>&1 < /dev/null; done
+  say "samples: $(wc -l < "$OUT/samples.jsonl") rows"
+fi
 say "kernel boots: $(wc -l < "$OUT/kernel-boot.jsonl") lines"
 say "PASS: ${#names[@]} arms"
