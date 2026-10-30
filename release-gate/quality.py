@@ -74,6 +74,15 @@ def check(gate):
     label = open(os.path.join(out, 'label')).read().strip()
     refs, kept = base.get('quality_ref') or {}, {}
     fails, notes, cells = [], [], {}
+    # Every image cell, judged or not: a flat picture is a failed decode (a non-finite one reads back black).
+    for line in open(os.path.join(out, 'cells.tsv')):
+        name, _, number = line.rstrip('\n').split('\t')[:3]
+        run = Run.read(os.path.join(out, name + '.json')) if number.isdigit() else None
+        for f in (run.outputs if run else ()):
+            ims = [rgb(f)] if f.endswith(('.png', '.webp', '.jpg')) else frames(f) if f.endswith('.mp4') else []
+            flat = [round(float(np.asarray(im, dtype=np.float32).std()), 2) for im in ims]
+            if flat and min(flat) < 2.0:
+                fails.append(f'pixels {name}: {os.path.basename(f)} is flat (std {min(flat)}): a failed or non-finite decode')
     for line in open(os.path.join(out, 'cells.tsv')):
         name, _, number = line.rstrip('\n').split('\t')[:3]
         if name not in prompts or not number.isdigit() or name.split('-')[0] in SKIP:
