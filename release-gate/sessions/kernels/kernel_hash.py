@@ -91,7 +91,8 @@ def main(payload: Request) -> Result:
         except Exception as exc:
             ops[f"attn:{name}"] = {"error": f"{type(exc).__name__}: {exc}"[:240]}
             continue
-        for b, s, h, d, dtype in SHAPES:
+        # Datacenter rows compile each CuTe shape per call site in-process: one shape keeps both arms in their guard.
+        for b, s, h, d, dtype in SHAPES if row.family == arch.MMA_SYNC else SHAPES[:1]:
             if candidate.refusal(torch.empty(b, s, h, d, dtype=dtype, device="meta"),
                                  torch.empty(b, s, h, d, dtype=dtype, device="meta"), {}):
                 continue
