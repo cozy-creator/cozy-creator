@@ -260,7 +260,8 @@ impl Service {
     /// its import-only parent imports now, while its weights come, so its first call forks
     /// (`Pool::installed`).
     pub fn installed(&self, held: &crate::catalog::HeldGeneration) {
-        crate::published::environment::compile_bytecode(&held.record.python);
+        let archives = self.publisher.lock().unwrap().as_ref().and_then(|publisher| publisher.sdk.uv.archives());
+        crate::published::environment::compile_bytecode(&held.record.python, archives.as_deref());
         if let Some(gpu) = self.gpu() {
             gpu.installed(held.clone());
         }

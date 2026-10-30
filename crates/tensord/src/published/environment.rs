@@ -508,19 +508,25 @@ pub(crate) fn hold(dir: &Path) -> Result<(), Failure> {
     File::create(dir.join(".hold")).map(drop).map_err(io_failure)
 }
 
-/// Compiles `python`'s environment's bytecode beside its first import, at the lowest priority on
-/// the cores the machine may use; already compiled files are skipped. Uncompiled, an import
-/// compiles each module it reaches on one core (SDXL's: 17-19 s, 6.5-8.5 s compiled), and again
-/// in every executor that may not write the environment. uv's `--compile-bytecode` compiles only
-/// what its own step installs. A failure is a warning.
-pub(crate) fn compile_bytecode(python: &Path) {
+/// Compiles `python`'s environment's bytecode beside its first import, then that of the uv
+/// `archives` its files link from, at the lowest priority on the cores the machine may use;
+/// already compiled files are skipped. Uncompiled, an import compiles each module it reaches on
+/// one core (SDXL's: 17-19 s, 6.5-8.5 s compiled), and again in every executor that may not write
+/// the environment. uv links an archive's bytecode into every environment it builds later, so a
+/// package's next environment (an update, a reinstall, another package over the same Torch)
+/// imports compiled from its start. uv's `--compile-bytecode` compiles only into the environment
+/// its own step installs. A failure in the environment is a warning.
+pub(crate) fn compile_bytecode(python: &Path, archives: Option<&Path>) {
     let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
     let script = format!(
-        "import compileall, os, sysconfig\ngetattr(os, 'nice', lambda _: 0)(19)\n\
-         compileall.compile_dir(sysconfig.get_paths()['purelib'], quiet=2, workers={workers})"
+        "import compileall, os, sys, sysconfig\ngetattr(os, 'nice', lambda _: 0)(19)\n\
+         ok = compileall.compile_dir(sysconfig.get_paths()['purelib'], quiet=2, workers={workers})\n\
+         for archives in sys.argv[1:]: compileall.compile_dir(archives, quiet=2, workers={workers})\n\
+         sys.exit(not ok)"
     );
     let started = crate::launch_identity::trampoline(python, None).and_then(|mut command| {
         command.envs(crate::launch_identity::interpreter_environment(python)?).args(["-I", "-c", &script]);
+        command.args(archives);
         command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
         command.spawn()
     });

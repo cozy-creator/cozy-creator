@@ -78,6 +78,16 @@ impl Uv {
         matches!(self.cache, Cache::Seeded(_))
     }
 
+    /// The unpacked wheels environments link their files from, where this machine may write
+    /// beside them: an image's seeded cache or its own (an owner's cache is the owner's uv's).
+    /// uv links an archive's bytecode into each later environment with its sources.
+    pub fn archives(&self) -> Option<PathBuf> {
+        match &self.cache {
+            Cache::Seeded(cache) | Cache::Machine(cache) => Some(cache.join("archive-v0")),
+            Cache::Owner(_) => None,
+        }
+    }
+
     /// The pinned uv in place: fetched when absent, held to its sha256, its directory put in
     /// place whole.
     fn fetched(&self) -> io::Result<()> {
