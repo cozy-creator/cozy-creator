@@ -32,7 +32,7 @@ G=$OUT/gen; mkdir -p "$G" "$OUT/out" "$OUT/rec"
 mapfile -t levels < <(jq -r '.[] | tostring' <<<"$LEVELS")
 mapfile -t models < <(jq -r '.[]' <<<"$MODELS")
 mapfile -t arms < <(jq -r '.[].name' <<<"$ARMS")
-for m in "${models[@]}"; do case $m in sdxl|anima|qwen|qwen4) ;; *) fail "no model $m" ;; esac; done
+for m in "${models[@]}"; do case $m in sdxl|anima|qwen|qwen4|krea) ;; *) fail "no model $m" ;; esac; done
 for a in "${arms[@]}"; do [[ $a =~ ^[a-z0-9]+$ ]] || fail "arm names are letters and digits: $a"; done
 COMFY=$(jq -r 'map(.name) | index("comfy") // -1' <<<"$ARMS")
 [ "$COMFY" -le 0 ] || fail "comfy runs first, on a card no Cozy executor has touched"
@@ -40,9 +40,9 @@ COZY1=${arms[0]}; [ "$COZY1" = comfy ] && COZY1=${arms[1]:-}
 jq -e 'map(has("limit")) | . == (sort)' <<<"$ARMS" >/dev/null || fail "arms with a memory limit come last"
 arm_levels() { jq -r --arg a "$1" --argjson d "$LEVELS" '.[] | select(.name==$a) | (.levels // $d)[] | tostring' <<<"$ARMS"; }
 # Cozy side: package, model and lane per model.
-pkg() { case $1 in sdxl) echo sdxl ;; anima) echo anima ;; qwen|qwen4) echo qwen-image-2 ;; esac; }
+pkg() { case $1 in sdxl) echo sdxl ;; anima) echo anima ;; qwen|qwen4) echo qwen-image-2 ;; krea) echo krea-2 ;; esac; }
 # Cozy runs every model's 8-bit lane, what users run (Paul 10-28); ComfyUI comparisons are the benchmarks runner's (bench).
-model_ref() { case $1 in sdxl) echo "sdxl@1.0.0 int8" ;; anima) echo "anima@1.0.0 int8" ;; qwen|qwen4) echo "qwen-image-2.1@0.1.0 int8" ;; esac; }
+model_ref() { case $1 in sdxl) echo "sdxl@1.0.0 int8" ;; anima) echo "anima@1.0.0 int8" ;; qwen|qwen4) echo "qwen-image-2.1@0.1.0 int8" ;; krea) echo "krea-2@0.1.0 int8" ;; esac; }
 tiers() { echo cold; for i in $(seq 1 "$WARM"); do echo "w$i"; done; }
 tree() { jq -r --arg a "$1" --arg m "$2" '.[] | select(.name==$a) | (.local // {})[$m] // empty' <<<"$ARMS"; }
 for a in "${arms[@]}"; do for m in "${models[@]}"; do
@@ -100,6 +100,7 @@ cozy_input() {  # cozy_input <model> <request json> <file>: Cozy's inputs at Com
             cfg_interval_start: 0.0, cfg_interval_stop: 1.0}' ;;
     qwen) jq -n --argjson r "$r" '{prompt: $r.prompt, seed: $r.seed, steps: 40, megapixels: 1.0, aspect_ratio: "1:1"}' ;;
     qwen4) jq -n --argjson r "$r" '{prompt: $r.prompt, seed: $r.seed, steps: 40, megapixels: 4.0, aspect_ratio: "1:1"}' ;;
+    krea) jq -n --argjson r "$r" '{prompt: $r.prompt, seed: $r.seed}' ;;  # Krea 2 Raw's own settings (52 steps, 1 MP)
   esac > "$3"
 }
 ANIMA_NEG="worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia"
