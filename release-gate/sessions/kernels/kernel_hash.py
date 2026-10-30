@@ -13,6 +13,7 @@ fp8 GEMMs (CUTLASS) and, on FP4 rows, Kitchen's NVFP4 GEMM."""
 import hashlib
 import importlib.metadata as md
 import json
+import sys
 import time
 from importlib import import_module
 
@@ -74,6 +75,8 @@ def main(payload: Request) -> Result:
                               "cozy_runtime": md.version("cozy-runtime"), "torch": torch.__version__, "ops": ops}
 
     def run(name: str, fn, ref: torch.Tensor | None = None) -> None:
+        # Each op is named on stderr before it launches: a device fault ends the executor, whose stderr the run keeps.
+        print(f"[kernel_hash] {name}", file=sys.stderr, flush=True)
         try:
             first = fn()
             second = fn()
@@ -93,6 +96,7 @@ def main(payload: Request) -> Result:
         off = attention._off_row(candidate, row)
         if off:
             continue
+        print(f"[kernel_hash] open {name}", file=sys.stderr, flush=True)
         try:
             ready = attention.pinned(name, device)[0]
             forward = attention._local(ready.candidate).forward
