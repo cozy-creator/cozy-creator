@@ -23,6 +23,12 @@ av() {
     'BEGIN { print (h == want && v != "" && a != "" && (v - a) ^ 2 < 0.01) ? "PASS" : "FAIL" }')" \
     "${f%% *}p, video ${v:-none} s, audio ${a:-none} s"
 }
+# refs <cell> <package> <function> <seed>: two named references and their mentions (xs-135): Klein's character (else
+# the gate's reference) placed in the gate's reference scene. The output shows the character in that scene.
+refs() {
+  cell "$1" "$(pkg "$2" "$3")" seed:=$4 prompt="<Hero> stands on the rocks below <Lighthouse>, in its light and weather" \
+    references:="[{\"name\": \"Hero\", \"image\": \"${K:-$REF}\"}, {\"name\": \"Lighthouse\", \"image\": \"$REF\"}]"
+}
 product_minimax_h3() {
   # H3's references: BiRefNet cleans the character image and Qwen3.5 describes it (greedy), as for a user's character.
   # While cr-215 is open (lead 10-23) the reference is the image only; the 3 s video reference returns with its fix.
@@ -54,9 +60,11 @@ product_sdxl() { cell sdxl "$(pkg sdxl generate)" prompt="$SCENE, photo" seed:=$
 product_flux_3_klein() {
   cell klein "$(pkg flux-3-klein generate_turbo)" prompt="$CHAR" prompt_upsampling:=true seed:=$((R + 4))
   K=$(output klein 'png|webp|jpg')
+  refs klein-refs flux-3-klein generate_turbo $((R + 19))
 }
 product_qwen_image_2() {
   cell qwen "$(pkg qwen-image-2 generate)" seed:=$((R + 5)) prompt="This is an RGBA image with transparency. $OBJECT, semi-transparent with soft reflections. The image has alpha channel and the background is transparent."
+  refs qwen-refs qwen-image-2 generate_turbo $((R + 20))
 }
 product_anima() { cell anima "$(pkg anima generate)" prompt="masterpiece, best quality, anime illustration of $CHAR" seed:=$((R + 6)); }
 product_birefnet() { cell birefnet "$(pkg birefnet remove_background)" --asset image="${K:-$REF}"; }
@@ -64,8 +72,14 @@ product_qwen3_5() {
   cell describer "$(pkg qwen3.5 ask)" prompt="Describe this character: appearance, clothing and pose." --asset images="${K:-$REF}"
 }
 # Fibo's prompt upsampler (a greedy VLM) runs, as by default.
-product_fibo_2() { cell fibo "$(pkg fibo-2 generate)" prompt="$SCENE" prompt_upsampling:=true seed:=$((R + 8)); }
-product_hidream_o1() { cell hidream "$(pkg hidream-o1 generate)" prompt="$CHAR, cinematic portrait" seed:=$((R + 9)); }
+product_fibo_2() {
+  cell fibo "$(pkg fibo-2 generate)" prompt="$SCENE" prompt_upsampling:=true seed:=$((R + 8))
+  refs fibo-refs fibo-2 generate_turbo $((R + 21))
+}
+product_hidream_o1() {
+  cell hidream "$(pkg hidream-o1 generate)" prompt="$CHAR, cinematic portrait" seed:=$((R + 9))
+  refs hidream-refs hidream-o1 generate_turbo $((R + 22))
+}
 product_moss_image() { cell moss "$(pkg moss-image generate)" prompt="$OBJECT, studio shot" seed:=$((R + 10)); }
 product_qwen_image() {
   cell qwen-image "$(pkg qwen-image generate)" prompt="$SCENE at dusk, wide shot" seed:=$((R + 11))
@@ -75,9 +89,10 @@ product_qwen_image() {
   # an edit. No first-party SDXL LoRA exists to swap.
   local qi; qi=$(output qwen-image 'png|webp|jpg')
   cell qwen-image-edit "$(pkg qwen-image generate)" prompt="$SCENE at dusk, covered in fresh snow, wide shot" \
-    --asset reference_images.0="${qi:-$REF}" seed:=$((R + 12))
+    references:="[{\"name\": \"Scene\", \"image\": \"${qi:-$REF}\"}]" seed:=$((R + 12))
   cell qwen-image-t2i "$(pkg qwen-image generate)" prompt="$OBJECT on a beach at noon, photo" seed:=$((R + 13))
   cell qwen-image-turbo "$(pkg qwen-image generate_turbo)" prompt="$CHAR on a rainy street at night, photo" seed:=$((R + 14))
   cell qwen-image-turbo-edit "$(pkg qwen-image generate_turbo)" prompt="$SCENE in bright morning sun, wide shot" \
-    --asset reference_images.0="${qi:-$REF}" seed:=$((R + 15))
+    references:="[{\"name\": \"Scene\", \"image\": \"${qi:-$REF}\"}]" seed:=$((R + 15))
+  refs qwen-image-refs qwen-image generate_turbo $((R + 23))
 }

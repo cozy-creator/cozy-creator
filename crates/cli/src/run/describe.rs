@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 
 use serde_json::Value;
 
-use super::interface::{Callable, Constraints, Field, Interface, Type, Wire};
+use super::interface::{Callable, Constraints, Field, Interface, Struct, Type, Wire};
 
 /// One concrete invocation: required terms bare, optional ones bracketed. A conversion reads its
 /// input model and the repository it writes first.
@@ -230,7 +230,8 @@ fn fields(
             None => {}
         }
         out.push('\n');
-        if let Type::Struct(nested) = &field.ty
+        if let Some(nested) = members(&field.ty)
+            && field.constraints.max_length != Some(0)
             && indent.len() < 12
         {
             self::fields(
@@ -242,6 +243,18 @@ fn fields(
                 request,
             );
         }
+    }
+}
+
+/// The struct whose members a field is filled with: its own, its list items', or an optional one's.
+fn members(ty: &Type) -> Option<&Struct> {
+    match ty {
+        Type::Struct(nested) => Some(nested),
+        Type::List(item) => members(item),
+        Type::Union { branches, .. } if branches.len() == 2 && branches.contains(&Type::Null) => {
+            branches.iter().find(|b| **b != Type::Null).and_then(members)
+        }
+        _ => None,
     }
 }
 

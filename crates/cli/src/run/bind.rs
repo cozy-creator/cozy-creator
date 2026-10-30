@@ -1878,6 +1878,9 @@ fn bounds(c: &Constraints, value: &Value, path: &str) -> Result<(), String> {
             return Err(format!("{path} has length {length}; its minimum is {min}"));
         }
         if let Some(max) = c.max_length.filter(|max| length > *max) {
+            if max == 0 && value.is_array() {
+                return Err(format!("it takes no {path}"));
+            }
             return Err(format!("{path} has length {length}; its maximum is {max}"));
         }
     }

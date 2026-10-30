@@ -6,7 +6,10 @@
 # a fused block eager until it is built), so give each tree a warm-up cell before the cells it compares; each cell's
 # summary shows its `kernel.ready` and plan reports.
 # params:
-#   cells      [{"name", "tree" (a packages_refs name), "target" ("<package>/<function>"), "args" ([inputs and flags])}];
+#   cells      [{"name", "tree" (a packages_refs name), "target" ("<package>/<function>"), "args" ([inputs and flags]),
+#              "update" (optional: {"runtime", "tensorfs"}, each a wheel URL or, for runtime, a cozy-runtime dev-build
+#              run id; the pod's `machine update` before this cell, so cells before and after compare two pairs)}];
+#              in args, `{ref}` is release-gate/ref and `{out:<cell>}` an earlier cell's image or video;
 #              two failed cells stop the session
 #   compare    [["A", "B"], …]: the result digests, else the decoded frames of every stream, and the video's PSNR
 #   traffic_gb GB the provider bills: the image, the models, the outputs (100)
@@ -25,6 +28,25 @@ for k in "${names[@]}"; do
 done
 jq -e --argjson n "$(jq -c 'map(.name)' <<<"$CELLS")" 'all(.[]; length == 2 and all(.[]; . as $x | $n | index($x)))' <<<"$COMPARE" >/dev/null ||
   fail "compare names cells that are not there"
+# Each update's wheels, fetched before renting so a missing one costs nothing.
+wheel() {
+  local d=$OUT/wheels/$1-$2; mkdir -p "$d"
+  case $3 in
+    https://*) curl -fsSL --retry 5 -o "$d/${3##*/}" "$3" || return 1 ;;
+    *) gh run download "$3" -R cozy-creator/cozy-runtime -p 'cozy-runtime-*' -D "$d" >/dev/null 2>&1 || return 1 ;;
+  esac
+  find "$d" -name '*manylinux*x86_64*.whl' | head -1
+}
+declare -A UPDATE=()
+for k in "${names[@]}"; do
+  w=()
+  for kind in runtime tensorfs; do
+    src=$(jq -r --arg k "$k" --arg t "$kind" 'map(select(.name==$k)) | first | .update[$t] // empty' <<<"$CELLS"); [ -n "$src" ] || continue
+    f=$(wheel "$k" "$kind" "$src") && [ -n "$f" ] || fail "cell $k: no $kind wheel from $src"
+    say "cell $k: updates $kind to ${f##*/}"; w+=("--$kind" "$f")
+  done
+  [ "${#w[@]}" = 0 ] || UPDATE[$k]="${w[*]}"
+done
 printf 'run 5 · sync local/x (source changed)\nrun 6 · local/x/f\nrun      6\n' > "$OUT/probe-cell.txt"
 current() { awk '$1=="run" && $3=="·" && $4!="sync"{n=$2} END{print n}' "$OUT/$1.txt" 2>/dev/null; }
 [ "$(runno probe-cell)" = 6 ] && [ "$(current probe-cell)" = 6 ] || fail "parsers"
@@ -53,8 +75,22 @@ summary() { jq -r '"exec \((.execution_ms // 0) / 1000 | floor)s" + ([.calls[]? 
   + "ready \([$m.observations[]? | select(.name == "kernel.ready") | .value] | unique | join(",")), "
   + "plan \([$m.execution.plan_reports[]? | to_entries[] | "\(.key)=\(.value.applied)\(if (.value.code // "") != "" then "(\(.value.code))" else "" end)"] | join(" "))"] | join(""))' "$OUT/$1.json" 2>/dev/null; }
 fails=0
+declare -A MADE=()
 for k in "${names[@]}"; do
   c=$(jq -c --arg k "$k" 'map(select(.name==$k)) | first' <<<"$CELLS"); mapfile -t args < <(jq -r '.args[]' <<<"$c")
+  for i in "${!args[@]}"; do
+    a=${args[$i]//\{ref\}/$REF}
+    while [[ $a =~ \{out:([A-Za-z0-9_-]+)\} ]]; do
+      [ -n "${MADE[${BASH_REMATCH[1]}]:-}" ] || fail "cell $k: ${BASH_REMATCH[1]} made no image or video"
+      a=${a//"${BASH_REMATCH[0]}"/"${MADE[${BASH_REMATCH[1]}]}"}
+    done
+    args[$i]=$a
+  done
+  if [ -n "${UPDATE[$k]:-}" ]; then
+    # shellcheck disable=SC2086 # the update's flags and wheel paths (no spaces)
+    step "update-$k" machine update "$NAME" ${UPDATE[$k]} -y || fail "$k: the update"
+    say "$k: pod Runtime $(cozy machine show "$NAME" --json | jq -r .status.runtime), TensorFS $(cozy machine show "$NAME" --json | jq -r .status.tensorfs)"
+  fi
   echo "$k" > "$OUT/current"
   cd "$PACKAGES/$(jq -r .tree <<<"$c")" || fail "no tree for $k"
   step "$k" run "./$(jq -r .target <<<"$c")" "${args[@]}" --on "$NAME" --out "$OUT/out/$k"; code=$?
@@ -62,6 +98,7 @@ for k in "${names[@]}"; do
   N=$(runno "$k")
   if [ -n "$N" ]; then cozy run show "$N" --once --json > "$OUT/$k.json" 2>/dev/null; fi
   st=$(jq -r '.status // "none"' "$OUT/$k.json" 2>/dev/null)
+  MADE[$k]=$(find "$OUT/out/$k" -type f \( -name '*.png' -o -name '*.webp' -o -name '*.jpg' -o -name '*.mp4' \) 2>/dev/null | sort | head -1)
   say "$k run ${N:-none} ${st:-none} (exit $code): $(summary "$k")"
   [ "$st" = completed ] || { fails=$((fails + 1)); [ "$fails" -lt 2 ] || fail "two cells failed"; }
 done
