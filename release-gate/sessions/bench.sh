@@ -17,7 +17,15 @@
 #              or artifact: value is fetched here before renting and sent from this runner ([]: the pod as rented)
 #   candidates {"<package>": "<packages_refs name>"}: each package runs from that packages checkout (local/<package>),
 #              not its Hub release: a package fix's proof ({}: the Hub's)
+#   kernel_hash (proof branch rc/kernel-pins-proof only) {"runtimes": {"a": ..., "b": ...}, "tensorfs": ...}: after the
+#              runner's results, kernels/kernel_hash.py under both Runtimes on the same pod (kernels/hash.sh); a warning,
+#              never the session's verdict
 . "$(dirname "$0")/lib.sh"
+KH=$(param kernel_hash '')
+if [ -n "$KH" ]; then
+  . "$(dirname "$0")/kernels/hash.sh"
+  hash_arms "$(jq -c '.runtimes' <<<"$KH")" > "$OUT/arms.txt" || fail "kernel_hash: $(cat "$OUT/arms.txt")"
+fi
 MODELS=$(param models '["sdxl", "anima", "moss", "qwen", "h3_turbo", "h3_full"]') TIERS=$(param tiers scout) ARMS=$(param arms matched)
 FREE=$(param free_mib 0) RAM=$(param ram_free_gib 0) STALL=$(param stall_s 1800)
 [ -f "${BENCH:-}/bench.py" ] || fail "no benchmarks checkout at ${BENCH:-}"
@@ -106,4 +114,8 @@ say "runner exit $(pod 'cat /root/bench/done' < /dev/null 2>/dev/null); $(tail -
 cp -r "$OUT/results/results/." "$BENCH/results/" 2>/dev/null && (cd "$BENCH" && python3 chart.py results/$S.jsonl) >> "$R" 2>&1
 cp "$BENCH/results/cells.csv" "$BENCH/results/profile.md" "$BENCH/chart.svg" "$OUT/" 2>/dev/null
 [ -s "$OUT/results/results/$S.jsonl" ] || fail "no results"
+if [ -n "$KH" ]; then
+  for arm in a b; do hash_run "$arm" "$(jq -r '.tensorfs // "0.17.13"' <<<"$KH")" || { say "WARNING kernel_hash: arm $arm gave no report"; break; }; done
+  [ ! -s "$OUT/report-b.json" ] || hash_compare || say "WARNING kernel_hash: not every op is byte-identical (compare.json)"
+fi
 say "PASS: $(wc -l < "$OUT/results/results/$S.jsonl") requests in results/$S.jsonl"
