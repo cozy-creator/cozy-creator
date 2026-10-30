@@ -22,6 +22,9 @@
 #   keep_going  true: a failed request does not end its cell (to measure the executor after a failure)
 #   stall_s  a request with no end after this many seconds is diagnosed (machine logs) and abandoned (1200)
 #   seed_base the first request's seed (2026102700); a later session takes a new base, and every prompt is new
+#   h3       {"arm": <an arm's name>, "tree": <packages_refs name>, "max_exec_s": 2400}: after the arms, the same pod
+#            goes back to that arm's versions and runs H3 Turbo 15 s (fl2va_turbo from the tree, int8) once on the
+#            full card: completes, 362 frames, under max_exec_s (the 8 GB tier, h3-8gb.sh's cell, without a second pod)
 #   traffic_gb, need_s
 . "$(dirname "$0")/lib.sh"
 L=$(cd "$(dirname "$0")" && pwd)/lowvram
@@ -36,6 +39,7 @@ for m in "${models[@]}"; do case $m in sdxl|anima|qwen|qwen4) ;; *) fail "no mod
 for a in "${arms[@]}"; do [[ $a =~ ^[a-z0-9]+$ ]] || fail "arm names are letters and digits: $a"; done
 COMFY=$(jq -r 'map(.name) | index("comfy") // -1' <<<"$ARMS")
 [ "$COMFY" -le 0 ] || fail "comfy runs first, on a card no Cozy executor has touched"
+command -v ffprobe >/dev/null || sudo apt-get install -y -qq ffmpeg >/dev/null 2>&1 || true
 COZY1=${arms[0]}; [ "$COZY1" = comfy ] && COZY1=${arms[1]:-}
 jq -e 'map(has("limit")) | . == (sort)' <<<"$ARMS" >/dev/null || fail "arms with a memory limit come last"
 arm_levels() { jq -r --arg a "$1" --argjson d "$LEVELS" '.[] | select(.name==$a) | (.levels // $d)[] | tostring' <<<"$ARMS"; }
@@ -238,3 +242,21 @@ tool hold-release hold "free_mib:=0"
 tool ramhold-release ramhold "ram_free_gib:=0"
 tool collect collect || fail "collect"
 python3 -I "$L/analyze.py" "$OUT" > "$OUT/table.md" 2> "$OUT/analyze.err" && cat "$OUT/table.md" >> "$R" || say "analyze failed: $(tail -3 "$OUT/analyze.err")"
+H3=$(param h3 '')
+if [ -n "$H3" ] && [ "$H3" != null ]; then
+  ha=$(jq -r .arm <<<"$H3") ht=$(jq -r .tree <<<"$H3") hmax=$(jq -r '.max_exec_s // 2400' <<<"$H3")
+  [ -f "$PACKAGES/$ht/minimax-h3/h3.py" ] || fail "h3: no packages checkout $ht/minimax-h3"
+  arm_update "$ha"
+  qstep h3-model model download _/minimax-h3@1.0.0-rc.6 --lane int8 --on "$NAME" || fail "h3 model download"
+  qstep h3-lora model download _/minimax-h3-turbo-lora@1.0.1 --on "$NAME" || fail "h3 LoRA download"
+  jq -n --argjson s "$RANDOM$RANDOM" '{prompt: "integrated_multimodal_description: A steady tracking shot of an adult courier cycling a cargo bike through a narrow cobbled old-town street after rain, past cafe tables and a flower stall, then down a gentle slope into a sunlit square.\n\naudio: Tires hissing on wet cobbles, a bicycle bell, cafe chatter and a distant tram.\n\nnon_diegetic_music: N/A", seed: $s, duration_s: 15}' > "$G/h3.json"
+  qstep h3 run "$PACKAGES/$ht/minimax-h3/fl2va_turbo" --input "$G/h3.json" --lane int8 --gpus=1 --on "$NAME" --out "$OUT/out/h3"
+  N=$(runno h3); [ -n "$N" ] || fail "h3: the run named no number"
+  cozy run show "$N" --once --json > "$OUT/rec/h3.json" 2>&1
+  hs=$(jq -r .status "$OUT/rec/h3.json") hx=$(jq '(.execution_ms // 0) / 1000 | floor' "$OUT/rec/h3.json")
+  V=$(jq -r '[.output[]?.path | select(endswith(".mp4"))][0] // empty' "$OUT/rec/h3.json")
+  F=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 "$V" 2>/dev/null)
+  say "h3 ($ha): run $N $hs, exec $hx s, $F frames; $(jq -r '([.calls[] | select(.function | startswith("generate_")) | .measurements] | last) as $m | "steps \([$m.attribution.steps.denoise.series[]?[1] / 1000 | floor]), peak driver \(([$m.memory.driver[]?.peak_bytes] | max // 0) / 1e9 * 100 | floor / 100) GB"' "$OUT/rec/h3.json" | tr -s ' \n' ' ')"
+  [ "$hs" = completed ] && [ "$F" = 362 ] && [ "$hx" -le "$hmax" ] || fail "h3 8 GB: $hs, $F frames, $hx s (bar $hmax s)"
+  say "PASS h3 8 GB: H3 Turbo 15 s in $hx s (bar $hmax s), 362 frames"
+fi
