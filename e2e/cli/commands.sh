@@ -230,11 +230,11 @@ cozy --json run ls --state canceled > "$OUT/canceled.json" && J --argjson n "${n
   || check "run ls --state canceled: wrong runs"
 }
 
-# After `basics`: its model downloads are runs of birefnet.
+# After `basics`: its model downloads are runs of zhengpeng7/birefnet.
 run_filters() {
 step "run ls filters"
-cozy --json run ls --package birefnet > "$OUT/by-package.json" && J '(.runs | length > 0) and all(.runs[]; .target | test("birefnet"))' "$OUT/by-package.json" \
-  || check "run ls --package birefnet: other packages listed"
+cozy --json run ls --package zhengpeng7/birefnet > "$OUT/by-package.json" && J '(.runs | length > 0) and all(.runs[]; .target | startswith("zhengpeng7/birefnet"))' "$OUT/by-package.json" \
+  || check "run ls --package zhengpeng7/birefnet: none listed, or others listed"
 cozy --json run ls --on local > "$OUT/by-machine.json" && J '(.runs | length > 0) and all(.runs[]; .machine == "local")' "$OUT/by-machine.json" \
   || check "run ls --on local: other machines listed"
 cozy --json run ls --limit 1 > "$OUT/limit.json" && J '(.runs | length) == 1' "$OUT/limit.json" || check "run ls --limit 1: not one run"
