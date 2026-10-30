@@ -1,8 +1,9 @@
 //! Local code: `cozy run ./dir[/fn]` and `cozy run ./script.py[/fn]`, a package nobody published. The
 //! machine installs it and answers its interface; the CLI binds the terms against that and calls
-//! it, just as it calls a release. No Python runs here. The interface is the source's (a static
-//! description), so it is kept by the source manifest's digest: a source sent before is called
-//! at once, and its machine makes its environment ready inside the call.
+//! it, just as it calls a release. None of its code runs here. The interface is the source's (a
+//! static description), so it is kept by the source manifest's digest: a source sent before is
+//! called at once, and its machine makes its environment ready inside the call. `--describe` reads
+//! it from the source here, as a publish does, and installs nothing.
 use std::{
     path::{Path, PathBuf},
     process::ExitCode,
@@ -78,13 +79,6 @@ impl Prepared {
 /// The code at `path` made callable `on` its machine. A warm set names the machine's
 /// installation, which only an install answers.
 pub(crate) async fn prepare(ctx: &Context, path: &Path, on: On, warm: bool) -> Result<Prepared, Error> {
-    if !path.exists() {
-        return Err(Error::new(
-            Kind::NotFound,
-            "target_not_found",
-            format!("{} does not exist", path.display()),
-        ));
-    }
     let hub = ctx.hub();
     let local = crate::package::local::source(ctx, path, &on).await?;
     let installed = match kept(&ctx.home, &local).filter(|_| !warm) {
@@ -104,34 +98,49 @@ pub(super) async fn run(
     function: Option<String>,
     args: RunArgs,
 ) -> Result<ExitCode, Error> {
-    let prepared = prepare(ctx, path, args.placement.on()?, args.warm.is_some()).await?;
-    let (package, interface) = (prepared.package(), prepared.interface());
-    // Local code's one callable runs bare, a recipe too: local code is its author's to run.
-    let callables: Vec<&str> = (interface.callables.iter()).filter(|c| !c.internal).map(|c| c.name.as_str()).collect();
-    let function = match (function, callables.as_slice()) {
-        (Some(function), _) => function,
-        (None, [only]) => (*only).to_owned(),
-        (None, _) => {
-            super::unnamed(package, None, interface, &args)?;
-            super::functions_of(ctx, package, ("local", ""), None, interface);
-            return Ok(ExitCode::SUCCESS);
-        }
-    };
     if args.describe {
-        let callable = super::callable(package, interface, &function)?;
-        if ctx.json {
-            let document = std::fs::read(file(&ctx.home, &prepared.local)).ok();
-            let document: serde_json::Value = document.and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
-            crate::output::json(&super::catalog::request(&document, &callable.name));
-            return Ok(ExitCode::SUCCESS);
-        }
-        let target = format!("{package}/{}", callable.name);
-        let contract = describe::contract(&target, interface, callable);
-        anstream::print!("{contract}");
-        return Ok(ExitCode::SUCCESS);
+        return described(ctx, path, function, &args).await;
     }
+    let prepared = prepare(ctx, path, args.placement.on()?, args.warm.is_some()).await?;
+    let Some(function) = chosen(ctx, prepared.package(), prepared.interface(), function, &args)? else {
+        return Ok(ExitCode::SUCCESS);
+    };
     let run = prepared.call(ctx, &function, args).await?;
     Ok(super::exit_code(&run))
+}
+
+/// `--describe`: the function's contract, read from the source as a publish reads it. Nothing
+/// installs, and no machine is asked.
+async fn described(ctx: &Context, path: &Path, function: Option<String>, args: &RunArgs) -> Result<ExitCode, Error> {
+    let (package, described) = crate::package::local::describe(ctx, path).await?;
+    let interface = &described.interface;
+    let Some(function) = chosen(ctx, &package, interface, function, args)? else {
+        return Ok(ExitCode::SUCCESS);
+    };
+    let callable = super::callable(&package, interface, &function)?;
+    if ctx.json {
+        crate::output::json(&super::catalog::request(&described.document, &callable.name));
+    } else {
+        let target = format!("{package}/{}", callable.name);
+        anstream::print!("{}", describe::contract(&target, interface, callable));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The function a run of local code names, else its one callable: local code is its author's to
+/// run, a recipe too. None when it names none of several, which are listed.
+fn chosen(ctx: &Context, package: &str, interface: &Interface, function: Option<String>, args: &RunArgs)
+    -> Result<Option<String>, Error> {
+    let callables: Vec<&str> = (interface.callables.iter()).filter(|c| !c.internal).map(|c| c.name.as_str()).collect();
+    match (function, callables.as_slice()) {
+        (Some(function), _) => Ok(Some(function)),
+        (None, [only]) => Ok(Some((*only).to_owned())),
+        (None, _) => {
+            super::unnamed(package, None, interface, args)?;
+            super::functions_of(ctx, package, ("local", ""), None, interface);
+            Ok(None)
+        }
+    }
 }
 
 /// Installs the code on its machine: a WARM run naming no function, whose result is the

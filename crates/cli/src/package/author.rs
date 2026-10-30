@@ -24,7 +24,7 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
 use super::{PackageRef, carried};
-use crate::{Context, context::hub_error, output};
+use crate::{Context, context::hub_error, output, run::interface::Interface};
 
 /// The uv index name a project's sources use for its own account's packages.
 pub(super) const INDEX: &str = "tensorhub";
@@ -222,6 +222,18 @@ impl Project {
             full: full.trim().to_owned(),
         })
     }
+
+    /// Its interface, read where it is as a publish reads it, with the Runtime release its lock
+    /// holds (else the newest). Nothing installs, and none of it runs.
+    pub(super) async fn describe(&self, ctx: &Context) -> Result<Described, Error> {
+        let uv = crate::tools::uv(ctx).await?;
+        let python = self.python(&uv)?;
+        let lock = fs::read_to_string(self.root.join("uv.lock")).unwrap_or_default();
+        let runtime = (toml::from_str::<Lock>(&lock).ok())
+            .and_then(|lock| lock.package.into_iter().find(|p| p.name == "cozy-runtime"))
+            .map(|p| p.version);
+        describe(&uv, &self.root, &python.request, runtime.as_deref())
+    }
 }
 
 struct Python {
@@ -365,22 +377,8 @@ fn walk(root: &Path, rel: &Path, files: &mut Vec<PathBuf>) -> Result<(), Error> 
     Ok(())
 }
 
-/// Each locked package's version.
 /// The packages a lock takes from a Tensorhub account index, by exact version.
 fn index_pins(lock: &str) -> Result<BTreeMap<String, String>, Error> {
-    #[derive(Deserialize)]
-    struct Lock {
-        #[serde(default)]
-        package: Vec<Locked>,
-    }
-    #[derive(Deserialize)]
-    struct Locked {
-        name: String,
-        #[serde(default)]
-        version: String,
-        #[serde(default)]
-        source: toml::Table,
-    }
     let lock: Lock = toml::from_str(lock).map_err(|e| refuse("lock_invalid", e))?;
     Ok(lock
         .package
@@ -395,20 +393,24 @@ fn index_pins(lock: &str) -> Result<BTreeMap<String, String>, Error> {
         .collect())
 }
 
+/// A uv.lock, as far as cozy reads it.
+#[derive(Deserialize)]
+struct Lock {
+    #[serde(default)]
+    package: Vec<LockedPackage>,
+}
+
+#[derive(Deserialize)]
+struct LockedPackage {
+    name: String,
+    #[serde(default)]
+    version: String,
+    #[serde(default)]
+    source: toml::Table,
+}
+
+/// Each locked package's version.
 fn versions(lock: &str) -> Result<BTreeMap<String, String>, Error> {
-    #[derive(Deserialize)]
-    struct Lock {
-        #[serde(default)]
-        package: Vec<Locked>,
-    }
-    #[derive(Deserialize)]
-    struct Locked {
-        name: String,
-        #[serde(default)]
-        version: String,
-        #[serde(default)]
-        source: toml::Table,
-    }
     let lock: Lock = toml::from_str(lock).map_err(|e| refuse("lock_invalid", e))?;
     let mut out = BTreeMap::new();
     for package in lock.package {
@@ -673,9 +675,16 @@ pub async fn publish(ctx: &Context, root: bool) -> Result<ExitCode, Error> {
         "build_failed",
     )?;
     let git_wheels = carried::git_wheels(ctx, &stage, &python.request)?;
-    let interface = describe(&stage, &python, after.get("cozy-runtime"))?;
+    let runtime = after.get("cozy-runtime").map(String::as_str);
+    let described = describe(&stage.uv, &stage.src, &python.request, runtime)?;
+    if let Some((callable, why)) = described.interface.unavailable.first() {
+        return Err(refuse(
+            "package_interface_invalid",
+            format!("installs could not call {callable}: {why}"),
+        ));
+    }
     let interface_path = stage.root.join("package-interface.json");
-    fs::write(&interface_path, &interface).map_err(|e| refuse("stage_unavailable", e))?;
+    fs::write(&interface_path, &described.said).map_err(|e| refuse("stage_unavailable", e))?;
 
     let wheel = carried::single(&dist, ".whl")?;
     let sdist = carried::single(&dist, ".tar.gz")?;
@@ -774,45 +783,44 @@ fn unmet(error: Error, pins: &BTreeMap<String, String>, account: &str, hub: &Ori
     }
 }
 
-/// The interface Runtime's static describer reads from the staged source, as it reads it; refused
-/// when installs could not read it. A model default with no org stays as written: it names a
-/// first-party model (a machine reads `sdxl@1.0.0` as `_/sdxl@1.0.0`), and the Runtime's interface
-/// parser refuses an org of `_`.
-fn describe(stage: &Stage, python: &Python, runtime: Option<&String>) -> Result<Vec<u8>, Error> {
+/// What Runtime's static describer reads from a package's source: its exact words, the document
+/// they are, and the interface this cozy reads in it.
+pub(crate) struct Described {
+    pub said: String,
+    pub document: Value,
+    pub interface: Interface,
+}
+
+/// The interface Runtime's static describer reads from the source at `dir`, as it reads it, with
+/// `runtime`'s release (else the newest) on `python`; refused when installs would refuse it. A
+/// model default with no org stays as written: it names a first-party model (a machine reads
+/// `sdxl@1.0.0` as `_/sdxl@1.0.0`), and the Runtime's interface parser refuses an org of `_`.
+fn describe(uv: &Path, dir: &Path, python: &str, runtime: Option<&str>) -> Result<Described, Error> {
     let from = match runtime {
         Some(version) => format!("cozy-runtime=={version}"),
-        None => "cozy-runtime".into(),
+        // `@latest`: a bare name would take whatever cozy-runtime `uv tool install` left here.
+        None => "cozy-runtime@latest".into(),
     };
     let said = run(
-        uv(&stage.uv, &stage.src)
-            .args([
-                "tool",
-                "run",
-                "--no-progress",
-                "--python",
-                python.request.as_str(),
-                "--from",
-                from.as_str(),
-            ])
+        self::uv(uv, dir)
+            .args(["tool", "run", "--no-progress", "--python", python, "--from", from.as_str()])
             .args(["cozy-runtime", "--json", "--dir"])
-            .arg(&stage.src)
+            .arg(dir)
             .arg("describe"),
         "describe_failed",
     )?;
-    let interface: Value = serde_json::from_str(&said).map_err(|e| refuse("describe_failed", e))?;
-    let readable = crate::run::interface::Interface::parse(&interface).map_err(|why| {
+    let document: Value = serde_json::from_str(&said).map_err(|e| refuse("describe_failed", e))?;
+    let interface = Interface::parse(&document).map_err(|why| {
         refuse(
             "package_interface_invalid",
             format!("installs would refuse it: {why}"),
         )
     })?;
-    if let Some((callable, why)) = readable.unavailable.first() {
-        return Err(refuse(
-            "package_interface_invalid",
-            format!("installs could not call {callable}: {why}"),
-        ));
-    }
-    Ok(said.trim_end().as_bytes().to_vec())
+    Ok(Described {
+        said: said.trim_end().to_owned(),
+        document,
+        interface,
+    })
 }
 
 /// Sends each file the Hub does not hold to its grant, once per digest, sixteen at once; the bytes
