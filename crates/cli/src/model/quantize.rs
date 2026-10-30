@@ -15,7 +15,7 @@ use protocol::error::{Error, Kind};
 use tensorfs::format::{Dtype, Header, ObjectRef};
 use tensorfs::{Config, Endpoint};
 
-use super::refs::{ModelRef, Repo};
+use protocol::model_ref::{ModelRef, Repo};
 use super::Quantize;
 use crate::Context;
 use crate::context::{hub_answer, hub_error};

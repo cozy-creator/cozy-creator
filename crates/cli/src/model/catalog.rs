@@ -7,7 +7,7 @@ use protocol::error::{Error, Kind};
 use hub_client::types::{ModelAuthor, ModelCard, ModelLaneProvenance};
 use serde::Serialize;
 
-use super::refs::{ModelRef, Repo};
+use protocol::model_ref::{ModelRef, Repo};
 use super::{Family, Info, Ls};
 use crate::Context;
 use crate::context::hub_answer;

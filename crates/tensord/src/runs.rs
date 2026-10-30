@@ -1237,16 +1237,31 @@ impl Runs {
             digest: digest.into(),
             journaled: vec![],
         };
-        // Both demand and prefetch overlay explicit artifacts on the same inherited
-        // choices. Declaration and data-access validation stay in the existing resolver.
+        // Both demand and prefetch overlay the call's choices on the same inherited ones. One
+        // naming a model replaces the slot's; one of LoRAs alone keeps the slot's model and stacks
+        // them after its LoRAs: the same LoRA again takes the new strength, and strength 0 drops
+        // it. Declaration and data-access validation stay in the existing resolver.
         for choice in passed {
             let path = addressed(&choice.parameter, &installed.package, &callee_interface)
                 .filter(|path| path.starts_with(&prefix))
                 .ok_or_else(|| refused("invalid_request", "model choice does not name a declared callee slot"))?;
-            let mut choice = choice.clone();
-            choice.parameter = path;
-            spec.models.retain(|prior| prior.parameter != choice.parameter);
-            spec.models.push(choice);
+            let prior = spec.models.iter().position(|prior| prior.parameter == path).map(|at| spec.models.remove(at));
+            let names_model = !choice.repository.is_empty() || choice.manifest.is_some() || !choice.source.is_empty();
+            let mut chosen = match prior {
+                Some(prior) if !names_model => prior,
+                _ => domain::ModelChoice { parameter: path, adapters: vec![], ..choice.clone() },
+            };
+            for adapter in &choice.adapters {
+                let named = |held: &&mut domain::DownloadAdapterRef| {
+                    domain::DownloadAdapterRef { scale: adapter.scale.clone(), ..(*held).clone() } == *adapter
+                };
+                match chosen.adapters.iter_mut().find(named) {
+                    Some(held) => held.scale = adapter.scale.clone(),
+                    None => chosen.adapters.push(adapter.clone()),
+                }
+            }
+            chosen.adapters.retain(|adapter| adapter.scale != "0");
+            spec.models.push(chosen);
         }
         Ok(spec)
     }

@@ -2755,6 +2755,7 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "sha2",
+ "tensorfs",
  "thiserror 2.0.21",
  "tokio",
  "tokio-rustls",

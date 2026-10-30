@@ -10,7 +10,6 @@ mod catalog;
 mod from_run;
 mod machine;
 mod quantize;
-pub(crate) mod refs;
 mod releases;
 
 #[derive(clap::Args, Debug)]
@@ -80,7 +79,7 @@ pub(crate) struct Family {
 #[derive(clap::Args, Debug)]
 pub(crate) struct Download {
     /// The lane (a label: bf16, fp8, …); absent, the Hub picks what the machine runs best.
-    #[arg(long, value_parser = refs::lane)]
+    #[arg(long, value_parser = protocol::model_ref::lane)]
     lane: Option<String>,
     /// org/name[@release], org/name@sha256:<commit>, hf://…, civitai://… or https://….
     model: String,
@@ -106,7 +105,7 @@ pub(crate) struct Upload {
     destination: String,
     /// The commit's lane, a label (bf16, fp8, int8-convrot, …); from a Hub model, the lane it
     /// copies. A lane named bf16, fp16, int8, fp8, nvfp4, … must be the weights' width.
-    #[arg(long, value_parser = refs::lane)]
+    #[arg(long, value_parser = protocol::model_ref::lane)]
     lane: String,
     /// The source file's convention: a reviewed TensorFS format, e.g. h3.lora; usually detected.
     #[arg(long = "source-format", value_name = "FORMAT")]
@@ -135,7 +134,7 @@ pub(crate) struct Quantize {
     /// What it reads: org/name@sha256:<commit> or org/name@<release> (none: the newest).
     model: String,
     /// The lane to write: a recipe the package declares for this model; the new commit's lane.
-    #[arg(long, value_parser = refs::lane)]
+    #[arg(long, value_parser = protocol::model_ref::lane)]
     lane: String,
     /// The package whose recipe writes the lane: org/name[@release], or ./dir for one not yet
     /// published. Required: packages that serve the same model can each declare one.

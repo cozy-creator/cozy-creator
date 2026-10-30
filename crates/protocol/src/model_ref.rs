@@ -1,4 +1,5 @@
-//! The one model-reference grammar, shared by `cozy model …` and `cozy run model.<slot>=…`:
+//! The one model-reference grammar, shared by `cozy model …`, `cozy run model.<slot>=…` and
+//! `--lora`, and by a package's child calls (`ModelChoice(ref=…, lora=[…])`):
 //!
 //! ```text
 //! [org/]name[@release]          a Hub model by name (no org: first-party, the root's); the Hub
@@ -9,20 +10,20 @@
 //! ```
 use std::fmt;
 
-use protocol::error::{Error, Kind};
-use protocol::machine::ModelChoice;
-use protocol::names::ROOT;
+use crate::error::{Error, Kind};
+use crate::machine::{Adapter, ModelChoice};
+use crate::names::ROOT;
 
 /// A Hub repository, `org/name`, lowercased (names are case-insensitive); a root one's org is
 /// [`ROOT`].
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Repo {
+pub struct Repo {
     pub org: String,
     pub name: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ModelRef {
+pub enum ModelRef {
     Hub {
         repo: Repo,
         release: Option<String>,
@@ -52,7 +53,7 @@ fn slug(part: &str) -> bool {
 }
 
 /// A release or lane label: alphanumeric first, then up to 63 of `A-Za-z0-9._+!-`.
-pub(crate) fn label(flag: &str, value: &str) -> Result<String, Error> {
+pub fn label(flag: &str, value: &str) -> Result<String, Error> {
     match tensorfs::format::label(value) {
         true => Ok(value.to_owned()),
         false => Err(usage(
@@ -63,12 +64,12 @@ pub(crate) fn label(flag: &str, value: &str) -> Result<String, Error> {
 }
 
 /// `--lane`, as clap validates it.
-pub(crate) fn lane(value: &str) -> Result<String, String> {
+pub fn lane(value: &str) -> Result<String, String> {
     label("--lane", value).map_err(|e| e.message)
 }
 
 /// A commit id: `sha256:` and 64 lowercase hex digits.
-pub(crate) fn commit(value: &str) -> Result<String, Error> {
+pub fn commit(value: &str) -> Result<String, Error> {
     match value.strip_prefix("sha256:") {
         Some(hex)
             if hex.len() == 64
@@ -85,7 +86,7 @@ pub(crate) fn commit(value: &str) -> Result<String, Error> {
 }
 
 impl Repo {
-    pub(crate) fn parse(raw: &str) -> Result<Self, Error> {
+    pub fn parse(raw: &str) -> Result<Self, Error> {
         let lower = raw.trim().to_ascii_lowercase();
         match lower.split_once('/').unwrap_or((ROOT, &lower)) {
             (org, name) if (slug(org) || org == ROOT) && slug(name) => Ok(Repo {
@@ -101,7 +102,7 @@ impl Repo {
     }
 
     /// A destination on the Hub: never `local/`.
-    pub(crate) fn hub(raw: &str) -> Result<Self, Error> {
+    pub fn hub(raw: &str) -> Result<Self, Error> {
         let repo = Self::parse(raw)?;
         if repo.org == "local" {
             return Err(usage(
@@ -121,7 +122,7 @@ impl fmt::Display for Repo {
 }
 
 impl ModelRef {
-    pub(crate) fn parse(raw: &str) -> Result<Self, Error> {
+    pub fn parse(raw: &str) -> Result<Self, Error> {
         let raw = raw.trim();
         if let Some((scheme, _)) = raw.split_once("://") {
             return match scheme {
@@ -154,7 +155,7 @@ impl ModelRef {
     }
 
     /// The machine's choice for `parameter`.
-    pub(crate) fn choice(&self, parameter: &str) -> ModelChoice {
+    pub fn choice(&self, parameter: &str) -> ModelChoice {
         let mut choice = ModelChoice {
             parameter: parameter.to_owned(),
             ..Default::default()
@@ -174,6 +175,38 @@ impl ModelRef {
         choice
     }
 
+    /// A LoRA of this model at `strength` (a [`strength`]), as the machine applies it.
+    pub fn adapter(&self, strength: &str) -> Adapter {
+        let named = self.choice("");
+        Adapter {
+            model: named.repository,
+            release: named.release,
+            lane: named.lane,
+            manifest: named.manifest,
+            scale: strength.to_owned(),
+            source: named.source,
+            ..Default::default()
+        }
+    }
+}
+
+/// A LoRA strength as a canonical decimal string: finite, `0` for zero.
+pub fn strength(raw: &str) -> Result<String, Error> {
+    let malformed = || {
+        usage(
+            "lora_strength_invalid",
+            format!("LoRA strength {raw:?} must be a finite decimal number"),
+        )
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || !trimmed.chars().all(|c| c.is_ascii_digit() || "+-.eE".contains(c)) {
+        return Err(malformed());
+    }
+    let value: f64 = trimmed.parse().map_err(|_| malformed())?;
+    if !value.is_finite() {
+        return Err(malformed());
+    }
+    Ok(if value == 0.0 { "0".into() } else { format!("{value}") })
 }
 
 impl fmt::Display for ModelRef {

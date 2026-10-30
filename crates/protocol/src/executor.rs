@@ -112,6 +112,10 @@ pub struct Start {
     /// package and brokers each attempt's calls.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub call_interfaces: Vec<CallInterface>,
+    /// Its calls take a model choice per slot (`{ref, lora}`), not only an exact checkpoint: a
+    /// Runtime refuses one to an older machine, naming `cozy machine update`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub model_choices: bool,
     /// Each constructed slot's checkpoint, so the Runtime schedules fetches before it imports.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub constructions: Vec<Construction>,
@@ -810,7 +814,7 @@ pub struct GpuRelease {}
 pub struct ModelPrefetch {
     pub module: String,
     pub export: String,
-    /// The canonical `{slot: ModelArtifact | None}` document.
+    /// The canonical `{slot: ModelChoice | None}` document.
     #[serde(default)]
     pub payload: String,
 }

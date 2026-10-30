@@ -668,8 +668,7 @@ fn module_interface(interface: &Value, module: &str) -> Value {
     narrowed
 }
 
-/// A serving call's request and the model choices it carries: each `models` entry that is a
-/// ModelArtifact becomes the exact checkpoint of the callee's slot `<entrypoint>.models.<name>`.
+/// A serving call's request and the model choices it carries (`model_choices`).
 fn serving_call(
     call: &Value,
     entrypoint: &str,
@@ -679,34 +678,56 @@ fn serving_call(
     Ok((request.clone(), model_choices(&call["models"], entrypoint)?))
 }
 
+/// A call's choice for each of the callee's slots `<entrypoint>.models.<name>` (null: its
+/// parent's): `ref`, a model as `cozy run model.<slot>=` names it or an exact checkpoint (a
+/// ModelArtifact; an older Runtime sends the artifact itself), and `lora`, `[{ref, strength}]`
+/// as `--lora` names them. Without a `ref`, the LoRAs stack onto the parent's choice
+/// (`Runs::child`).
 fn model_choices(
     models: &Value,
     entrypoint: &str,
 ) -> Result<Vec<crate::api::domain::ModelChoice>, (&'static str, String)> {
-    let refuse = |why: &str| ("child_call_refused", format!("model choices {why}"));
+    use protocol::model_ref::{self, ModelRef};
+    let refuse = |why: String| ("child_call_refused", format!("model choices {why}"));
     if !models.is_null() && !models.is_object() {
-        return Err(refuse("must be an object"));
+        return Err(refuse("must be an object".into()));
     }
     let mut choices = vec![];
-    for (name, artifact) in models.as_object().into_iter().flatten() {
-        if artifact.is_null() {
+    for (name, chosen) in models.as_object().into_iter().flatten() {
+        if chosen.is_null() {
             continue;
         }
-        let digest = artifact["checkpoint"].as_str().and_then(|d| d.strip_prefix("sha256:"))
-            .filter(|d| d.len() == 64 && d.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
-            .ok_or_else(|| refuse(&format!("passes {name} without an exact checkpoint")))?;
-        let digest = (0..64).step_by(2).map(|i| u8::from_str_radix(&digest[i..i + 2], 16).unwrap()).collect();
-        choices.push(crate::api::domain::ModelChoice {
-            parameter: format!("{entrypoint}.models.{name}"),
-            manifest: Some(crate::api::domain::Ref {
-                digest,
-                // Local model resolution obtains the header's length from the shared store.
-                length: 0,
-            }),
-            ..Default::default()
-        });
+        if !chosen.is_object() {
+            return Err(refuse(format!("for {name}: a choice is {{ref, lora}}")));
+        }
+        let invalid = |error: protocol::error::Error| refuse(format!("for {name}: {}", error.message));
+        let parameter = format!("{entrypoint}.models.{name}");
+        let artifact = if chosen["ref"].is_object() { &chosen["ref"] } else { chosen };
+        let mut choice = match (&chosen["ref"], &artifact["checkpoint"]) {
+            (Value::String(raw), Value::Null) => ModelRef::parse(raw).map_err(invalid)?.choice(&parameter),
+            (Value::Object(_) | Value::Null, Value::String(digest)) => protocol::machine::ModelChoice {
+                parameter,
+                manifest: model_ref::commit(digest).map_err(invalid)?,
+                ..Default::default()
+            },
+            (Value::Null, Value::Null) => protocol::machine::ModelChoice { parameter, ..Default::default() },
+            _ => return Err(refuse(format!("for {name}: ref is neither a model name nor a ModelArtifact"))),
+        };
+        if !chosen["lora"].is_null() && !chosen["lora"].is_array() {
+            return Err(refuse(format!("for {name}: lora must be a list of {{ref, strength}}")));
+        }
+        for lora in chosen["lora"].as_array().into_iter().flatten() {
+            let raw = lora["ref"].as_str().ok_or_else(|| refuse(format!("for {name}: a LoRA names no ref")))?;
+            let strength = match &lora["strength"] {
+                Value::Null => "1".to_owned(),
+                Value::Number(n) => model_ref::strength(&n.to_string()).map_err(invalid)?,
+                _ => return Err(refuse(format!("for {name}: a LoRA's strength is not a number"))),
+            };
+            choice.adapters.push(ModelRef::parse(raw).map_err(invalid)?.adapter(&strength));
+        }
+        choices.push(choice);
     }
-    Ok(choices)
+    crate::api::machine_runs::choices(choices).map_err(|error| refuse(error.message))
 }
 
 /// The child's file inputs: every string of its request naming a file the parent holds (its

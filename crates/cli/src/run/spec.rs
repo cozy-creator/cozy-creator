@@ -12,7 +12,7 @@ use super::{
     bind::{Bound, Choice},
     interface::Callable,
 };
-use crate::model::refs::ModelRef;
+use protocol::model_ref::ModelRef;
 
 /// A function as a run names it: a published release's, or local code's.
 pub struct Call<'a> {
@@ -192,16 +192,7 @@ fn choices(models: &[Choice]) -> Result<Vec<ModelChoice>, Error> {
                 },
             };
             for adapter in &choice.adapters {
-                let parsed = ModelRef::parse(&adapter.reference)?.choice("");
-                out.adapters.push(v1::Adapter {
-                    model: parsed.repository,
-                    release: parsed.release,
-                    lane: parsed.lane,
-                    manifest: parsed.manifest,
-                    scale: adapter.scale.clone(),
-                    source: parsed.source,
-                    ..Default::default()
-                });
+                out.adapters.push(ModelRef::parse(&adapter.reference)?.adapter(&adapter.scale));
             }
             Ok(out)
         })
