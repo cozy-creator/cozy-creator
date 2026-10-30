@@ -14,6 +14,10 @@ if [ -z "$ONLY" ] || [[ $ONLY == *",sdxl-p2,"* || $ONLY == *",sdxl,"* ]]; then
   "$CLI" machine update "$M" --gpu-memory-limit off -y >restart.log 2>&1; log "restarted $M: $(grep -E '^status' restart.log)"
 fi
 cell sdxl-p2 "$(pkg sdxl generate)" prompt="$OBJECT on a wooden table, product photo" seed:=$((R + 7))
+# SDXL cold, then two warm calls back to back, after each of three restarts (cr-227).
+source "$HERE/suites/execution/first-warm-capture/cells.sh"
+# A loop step no capture records is refused and runs on eagerly (cr-227).
+source "$HERE/suites/execution/capture-refusal/cells.sh"
 # A LoRA armed in the forward (H3 Turbo's contract) through paging and base/LoRA alternation (run 19471).
 source "$HERE/suites/execution/lora-overlay-refill/cells.sh"
 # A child call's own LoRA stack per slot, over the request's --lora (cl-687).
