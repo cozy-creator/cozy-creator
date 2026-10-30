@@ -9,7 +9,8 @@
 # here compares: the run records and the stamped event streams are the evidence. params:
 #   arms        [{"name": "fix", "tensord": "<dev-build run id>", "models": ["sdxl", "anima"], "wait": "now", "warm": 1},
 #               {"name": "again", "tensord": "same"}, {"name": "prod", "tensord": "0.13.7"}, …], in order. tensord:
-#               `image` or `same` (no update), a release version, or a dev-build run id; models: sdxl, anima, qwen
+#               `image` or `same` (no update), a release version, or a dev-build run id; models: sdxl, anima, qwen;
+#               `runtime` and `tensorfs` (optional): a wheel URL, or a cozy-runtime dev-build run id for `runtime`
 #   sdxl        the SDXL function (sdxl/generate@0.1.3)
 #   anima       the Anima function (anima/generate@0.1.1)
 #   qwen        the Qwen-Image function (qwen-image-2/generate@0.1.8), at 1 MP, 20 steps
@@ -31,6 +32,25 @@ for i in "${!names[@]}"; do
   gh run download "${builds[$i]}" -R cozy-creator/cozy-creator -p 'cozy-*' -D "$d" >/dev/null 2>&1 || fail "no cozy artifact in run ${builds[$i]}"
   b=$(ls "$d"/cozy-*/cozy-linux-x86_64 2>/dev/null | head -1); [ -n "$b" ] || fail "run ${builds[$i]} has no cozy-linux-x86_64"
   chmod +x "$b"; say "arm ${names[$i]}: $("$b" --version)"; bins+=("$b")
+done
+# Each arm's Runtime and TensorFS wheels (`--runtime`, `--tensorfs` of its update), fetched before renting too.
+wheel() {
+  local d=$OUT/arms/$1-$2; mkdir -p "$d"
+  case $3 in
+    https://*) curl -fsSL --retry 5 -o "$d/${3##*/}" "$3" || return 1 ;;
+    *) gh run download "$3" -R cozy-creator/cozy-runtime -p 'cozy-runtime-*' -D "$d" >/dev/null 2>&1 || return 1 ;;
+  esac
+  find "$d" -name '*manylinux*x86_64*.whl' | head -1
+}
+wheels=()
+for i in "${!names[@]}"; do
+  w=()
+  for kind in runtime tensorfs; do
+    src=$(jq -r --argjson i "$i" --arg k "$kind" '.[$i][$k] // empty' <<<"$ARMS"); [ -n "$src" ] || continue
+    f=$(wheel "${names[$i]}" "$kind" "$src") && [ -n "$f" ] || fail "arm ${names[$i]}: no $kind wheel from $src"
+    say "arm ${names[$i]}: $kind ${f##*/}"; w+=("--$kind" "$f")
+  done
+  wheels+=("${w[*]}")
 done
 POD_PY=$(cat <<'EOF'
 import glob, json, os, sys, time
@@ -160,7 +180,12 @@ for i in "${!names[@]}"; do
     want=${bins[$i]}; [ -x "$want" ] && want=$("$want" --version | awk '{print $2}')
     [ "$v" = "$want" ] || fail "$a: the pod runs TensorD $v, not $want"
   fi
-  if [ -n "${bins[$i]}" ]; then
+  if [ -n "${wheels[$i]}" ]; then
+    # shellcheck disable=SC2086 # the arm's flags and wheel paths (no spaces)
+    step "pair-$a" machine update "$NAME" ${wheels[$i]} -y || fail "$a: Runtime/TensorFS update"
+    say "$a: pod Runtime $(cozy machine show "$NAME" --json | jq -r .status.runtime), TensorFS $(cozy machine show "$NAME" --json | jq -r .status.tensorfs)"
+  fi
+  if [ -n "${bins[$i]}${wheels[$i]}" ]; then
     sleep 30; podpy ps > "$OUT/$a-ps-start.json"; say "$a: executors 30 s after start $(cat "$OUT/$a-ps-start.json")"
   fi
   wait=$(jq -r --argjson i "$i" '.[$i].wait // "now"' <<<"$ARMS") warm=$(jq -r --argjson i "$i" '.[$i].warm // 0' <<<"$ARMS")
