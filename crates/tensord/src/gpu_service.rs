@@ -1066,7 +1066,7 @@ impl Pool {
     }
     /// The host is short of what its running calls must keep free: one idle process ends,
     /// least recently used first: a deviceless executor, else an import-only parent with no live
-    /// child, else an executor on a GPU no call holds (outside every warm set first).
+    /// child, else an idle GPU executor (outside every warm set first, a GPU no call holds first).
     fn host_short(&self) {
         let ended = match () {
             () if self.end_idle_deviceless(|_| true) => "deviceless",
@@ -1094,8 +1094,11 @@ impl Pool {
         }
         true
     }
-    /// End the least recently used idle GPU executor (outside every warm set first) whose lane's
-    /// call slots are free meanwhile; whether one ended.
+    /// End the least recently used idle GPU executor (outside every warm set first); whether one
+    /// ended. One on a GPU no call holds goes first, under that lane's upkeep permit. Then one
+    /// beside a call: out of the idle pool, no call can take it, and on a one-GPU pod the call
+    /// short of host RAM always holds that GPU (gate 40991023097: SeedVR2's 2160p decode was
+    /// killed beside an idle H3 executor with 49 GB of host RAM that nothing could end).
     fn end_lru_idle(&self) -> bool {
         let members: std::collections::BTreeSet<String> = {
             let sets = self.members.lock().unwrap();
@@ -1106,10 +1109,8 @@ impl Pool {
             sessions.iter().map(|(key, s)| (s.loaded.keys().any(|c| members.contains(c)), s.used, key.clone(), s.lane())).collect()
         };
         idle.sort_by_key(|(member, used, _, _)| (*member, *used));
-        idle.into_iter().any(|(_, _, key, lane)| {
-            let Some(_upkeep) = self.allocations.upkeep(lane) else { return false };
-            self.end_session(&key)
-        })
+        idle.iter().any(|(_, _, key, lane)| self.allocations.upkeep(lane.clone()).is_some_and(|_upkeep| self.end_session(key)))
+            || idle.iter().any(|(_, _, key, _)| self.end_session(key))
     }
     /// The bytes a call of `construction` still needs free on `lane`, per GPU the largest of its
     /// measured working-set peak less what its executor already holds there (`held`, the driver's
