@@ -10,7 +10,7 @@ sha() { f=$(output "$1" mp4); [ -n "$f" ] && sha256sum "$f" | cut -c1-16; }
 KR=$(pkg krea-2 generate) KRT=$(pkg krea-2 generate_turbo) HT=$(pkg minimax-h3 ref2va_turbo) MO=$(pkg moss-image generate)
 cell krea "$KR" prompt="$SCENE, photo" seed:=$((R + 381))
 cell krea-turbo-lora "$KRT" prompt="$OBJECT, ink wash painting" seed:=$((R + 383)) \
-  --lora "model:transformer=fidika/krea-2-darkbrush@sha256:95afffbed63209deecd40744849fa42e8ed61aaada1e52b09c033d447d428ed0,1.0"
+  --lora "fidika/krea-2-darkbrush@sha256:95afffbed63209deecd40744849fa42e8ed61aaada1e52b09c033d447d428ed0,1.0"
 if [ -f h3.json ]; then
   expect h3-route "$([ "$(run_get "$OUT" h3 .status)" = completed ] && echo PASS || echo FAIL)" \
     "$(run_get "$OUT" h3 .status); LoRA $(lora h3); served $(served h3); exact $(exact_sites h3); vae $(vae h3); decode $(decode_s h3) s"
@@ -24,7 +24,7 @@ if [ -f "$GD/head-swap.json" ]; then
   jq --arg g "$GD" '.references |= map(if .image then .image = ($g + "/" + (.image | ltrimstr("./"))) else . end
     | if .video then .video = ($g + "/" + (.video | ltrimstr("./"))) else . end)' "$GD/head-swap.json" > "$GD/head-swap-abs.json"
   cell h3-guide "$HT" --input "$GD/head-swap-abs.json" --lane int8 \
-    --lora "generate_ref2va_turbo.models.base_model:transformer_ref=fidika/minimax-h3-head-swap@sha256:2adf611eee7e5f94e9de733b9dd62734058a4664d4ea5ca686c116045178af37,1.0"
+    --lora "fidika/minimax-h3-head-swap@sha256:2adf611eee7e5f94e9de733b9dd62734058a4664d4ea5ca686c116045178af37,1.0"
   out=$(output h3-guide mp4)
   a=$([ -n "$out" ] && uv run -q --no-project --with numpy python -I "$GD/align.py" "$GD/source.mp4" "guide=$out" 2>&1 | tail -1)
   s=$(grep -oE 'same-index mean [0-9.]+' <<< "$a" | grep -oE '[0-9.]+$') w=$(grep -oE 'in [0-9]+% of sampled' <<< "$a" | grep -oE '[0-9]+')
