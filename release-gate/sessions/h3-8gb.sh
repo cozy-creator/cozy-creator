@@ -11,6 +11,7 @@
 #   traffic_gb  GB the provider bills (85)
 #   arms        [{"name", "runtime": https://…#sha256= or a release, "tensorfs": "artifact:<cozy-creator run>:<name>" or a release}]: one
 #               request per arm on the same pod, each after its machine update (default: one arm of `runtime`)
+#               "tensord": a cozy release or prerelease version for the machine's TensorD (`machine update --tensord`)
 #   repeat      requests per arm, one after another on the arm's executor, each with a new seed (1)
 #   max_gpu_gb  the card's size bound (9: an 8 GB card; 25 for a 4090 no-regression run)
 #   hold_free_mib  on a larger card, a separate non-Cozy process holds VRAM so only this much stays free, as a user's
@@ -77,6 +78,7 @@ FAILED="" REPEAT=$(param repeat 1)
 for arm in "${NAMES[@]}"; do for i in $(seq 1 "$REPEAT"); do
   a=$arm; [ "$REPEAT" = 1 ] || a=$arm-$i
   flags=(); [ -z "${RT[$arm]}" ] || flags+=(--runtime "${RT[$arm]}"); [ -z "${TF[$arm]}" ] || flags+=(--tensorfs "${TF[$arm]}")
+  td=$(jq -r --arg a "$arm" '.[] | select(.name==$a) | .tensord // empty' <<<"$ARMS"); [ -z "$td" ] || flags+=(--tensord "$td")
   [ "${#flags[@]}" -eq 0 ] || [ "$i" -gt 1 ] || step "update-$arm" machine update "$NAME" "${flags[@]}" -y || fail "update $arm"
   [ "$i" -gt 1 ] || hold "$arm"
   say "$a: pod $(cozy machine show "$NAME" --json | jq -c '{rt: .status.runtime, tfs: .status.tensorfs, gpu: .status.gpus[0].name}')"
