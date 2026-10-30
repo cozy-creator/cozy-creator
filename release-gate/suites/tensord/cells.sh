@@ -25,8 +25,9 @@ get() {
 # (e2e/run.sh's run_wait).
 until_status() { run_wait "$T" "$(nm "$1")" "${2#terminal}"; }
 envs() { "$CLI" --json machine show "$M" 2>/dev/null | jq -r '[.status.environments[] | (.package | split("/") | last) + "@" + .release] | sort | join(" ")'; }
-released() {  # released <package>: its two newest releases users get (not yanked), newest first
-  "$CLI" package info "$1" --json 2>/dev/null | jq -r '[.releases[] | select(.yanked | not) | .release][:2] | join(" ")'; }
+released() {  # released <package>: the newest release users get (not yanked), then the one before it (an exact pin installs a yanked one)
+  "$CLI" package info "$1" --json 2>/dev/null | jq -r '[.releases[].release] as $a | ([.releases[] | select(.yanked | not) | .release][0]) as $n
+    | [$n, $a[($a | index($n)) + 1]] | map(select(. != null)) | join(" ")'; }
 NGPU=$("$CLI" --json machine show "$M" 2>/dev/null | jq '.status.gpus | length')
 
 # Generations: install, update and roll back a package; then the Runtime back a release and forward to the candidate.
