@@ -697,6 +697,9 @@ fn model_choices(
         if chosen.is_null() {
             continue;
         }
+        if !chosen.is_object() {
+            return Err(refuse(format!("for {name}: a choice is {{ref, lora}}")));
+        }
         let invalid = |error: protocol::error::Error| refuse(format!("for {name}: {}", error.message));
         let parameter = format!("{entrypoint}.models.{name}");
         let artifact = if chosen["ref"].is_object() { &chosen["ref"] } else { chosen };
