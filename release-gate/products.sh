@@ -42,7 +42,7 @@ product_minimax_h3() {
   cell h3-5s "$(pkg minimax-h3 shot)" prompt="$p" seed:=$((R + 16)) duration_s:=5
   ONLY=$SAVED
   for r in 1080 1440; do
-    cell "h3-${r}p" "$(pkg minimax-h3 upscale)" --asset video="$(output h3-5s mp4)" resolution=${r}p seed:=$((R + 17))
+    cell "h3-${r}p" "$(pkg minimax-h3 upscale)" --file video="$(output h3-5s mp4)" resolution=${r}p seed:=$((R + 17))
     av "h3-${r}p" $r
   done
 }

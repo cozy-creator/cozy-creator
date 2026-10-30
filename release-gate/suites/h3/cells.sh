@@ -31,20 +31,20 @@ SAVED=$ONLY; [[ $ONLY == *",regen-"* || $ONLY == *",seedvr2-2160p,"* ]] && ONLY=
 cell regen-768p "$SHOT" prompt="$P" seed:=$((R + 70)) duration_s:=5
 ONLY=$SAVED
 for r in 1080 1440 2160; do
-  cell "regen-${r}p" "$UP" --asset video="$(video_of regen-768p)" resolution=${r}p prompt="$P" seed:=$((R + 70)) \
+  cell "regen-${r}p" "$UP" --file video="$(video_of regen-768p)" resolution=${r}p prompt="$P" seed:=$((R + 70)) \
     'upscale:={"model": "regenerate-2k"}'
   av "regen-${r}p" $r
   judge "regen-${r}p-frames" "regen-${r}p" ".structure_psnr >= 18 and .structure_ssim >= 0.5 and .lag_ms != null and (.lag_ms | $ABS) <= 10 and .corr >= 0.95" \
     regen "$(video_of regen-768p)"
 done
-cell seedvr2-2160p "$UP" --asset video="$(video_of regen-768p)" resolution=2160p seed:=$((R + 71))
+cell seedvr2-2160p "$UP" --file video="$(video_of regen-768p)" resolution=2160p seed:=$((R + 71))
 av seedvr2-2160p 2160
 if [[ $ONLY == *",regen-2160p-15s,"* ]]; then
   P15="$SCENE at night, rain on the windows, a neon sign reads CAFE, rain and footsteps"
   SAVED=$ONLY; ONLY="$ONLY,regen-768p-15s,"
   cell regen-768p-15s "$SHOT" prompt="$P15" seed:=$((R + 72)) duration_s:=15
   ONLY=$SAVED
-  cell regen-2160p-15s "$UP" --asset video="$(video_of regen-768p-15s)" resolution=2160p prompt="$P15" seed:=$((R + 72)) \
+  cell regen-2160p-15s "$UP" --file video="$(video_of regen-768p-15s)" resolution=2160p prompt="$P15" seed:=$((R + 72)) \
     'upscale:={"model": "regenerate-2k"}'
   av regen-2160p-15s 2160
   judge regen-2160p-15s-frames regen-2160p-15s ".structure_psnr >= 18 and .structure_ssim >= 0.5 and (.lag_ms | $ABS) <= 10 and .corr >= 0.95" \
