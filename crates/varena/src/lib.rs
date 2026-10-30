@@ -121,7 +121,7 @@ struct Fence {
 }
 
 /// What a fill may do for room: anything (`Any`), nothing (`None`), or evict only idle
-/// streamed regions whose consumers are already complete (`Completed`).
+/// streamed regions, waiting at most on their own consumer events (`Completed`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Admission {
     Any,
@@ -224,6 +224,21 @@ impl State {
                 && entry.last_use <= boundary
                 && entry.uses.state() == Contents::Ready
         })
+    }
+
+    /// Idle nonpreferred eviction order, ascending: other phases' cache oldest first, then the
+    /// running phase's own regions most recently used first. A phase loops over its streamed
+    /// blocks (every denoise step); with more of them than the window holds, oldest-first
+    /// evicts each block just before its next use and refills all of them every pass, while
+    /// newest-first keeps the ones the loop reaches next (Qwen-Image int8 on 8 GB: 3 of 3
+    /// streamed blocks refilled every step). Without a phase there is no loop: oldest first.
+    fn eviction_key(&self, entry: &Entry) -> (bool, u64) {
+        match self.phase_boundary {
+            Some(boundary) if self.clock != u64::MAX && entry.last_use > boundary => {
+                (true, u64::MAX - entry.last_use)
+            }
+            _ => (false, entry.last_use),
+        }
     }
 
     fn streaming_bytes(&self) -> usize {
@@ -515,7 +530,8 @@ impl Arena {
     /// Ready cache last pinned before reset_preferences is standby: only capacity pressure
     /// or explicit reclamation evicts it. Without a phase reset the bound remains global.
     /// Active/graph pins are working memory and excluded; real CUDA capacity still bounds them.
-    /// A single larger group is permitted. Older idle groups go first; preferred groups survive.
+    /// A single larger group is permitted. The most recently used idle groups go first
+    /// (`State::eviction_key`); preferred groups survive.
     pub fn set_streaming_limit(&self, bytes: usize) -> Result<()> {
         self.lock()?.streaming_limit = bytes;
         Ok(())
@@ -630,15 +646,21 @@ impl Arena {
                     && (preferred || !entry.preferred())
                     && (!matches!(reason, ReclaimReason::StreamingLimit) || !state.standby(entry))
             })
-            .map(|(id, entry)| (*id, entry.preferred(), entry.last_use))
+            .map(|(id, entry)| {
+                let preferred = entry.preferred();
+                let key = if preferred {
+                    (false, u64::MAX - id)
+                } else {
+                    state.eviction_key(entry)
+                };
+                (*id, preferred, key)
+            })
             .collect();
-        candidates.sort_by_key(|(id, preferred, age)| {
-            (*preferred, if *preferred { u64::MAX - id } else { *age })
-        });
+        candidates.sort_by_key(|(_, preferred, key)| (*preferred, *key));
         // The arena lock excludes new pins; each candidate already has zero physical pins.
-        // Idle cache goes completed-first, then after its own events, and joins the context
-        // only for unfenced releases. The preferred suffix keeps strict order, since each of
-        // its evictions permanently shortens the retained prefix.
+        // Idle cache goes in `eviction_key` order, completed-first, then after its own events,
+        // and joins the context only for unfenced releases. The preferred suffix keeps strict
+        // order, since each of its evictions permanently shortens the retained prefix.
         let idle = candidates.partition_point(|(_, preferred, _)| !preferred);
         let (mut pending, mut unjoined) = (Vec::new(), Vec::new());
         for &(id, _, _) in &candidates[..idle] {
@@ -683,8 +705,9 @@ impl Arena {
         Ok(report)
     }
 
-    /// Evict idle, non-preferred regions whose last-consumer events have all completed, oldest
-    /// first, until `bytes` are free. Never waits on an event or joins the context.
+    /// Evict idle, non-preferred regions in `State::eviction_key` order until `bytes` are free:
+    /// completed ones first, then, if they together free enough, ones whose own last-consumer
+    /// events are pending, after those events. Never joins the context.
     fn reclaim_completed_locked(
         &self,
         state: &mut State,
@@ -707,16 +730,35 @@ impl Arena {
                     && !entry.preferred()
                     && (!matches!(reason, ReclaimReason::StreamingLimit) || !state.standby(entry))
             })
-            .map(|(id, entry)| (*id, entry.last_use))
+            .map(|(id, entry)| (*id, state.eviction_key(entry)))
             .collect();
-        candidates.sort_by_key(|(_, age)| *age);
+        candidates.sort_by_key(|(_, key)| *key);
+        let (mut pending, mut held) = (Vec::new(), 0);
         for (id, _) in candidates {
+            if report.reclaimed_bytes >= bytes {
+                return Ok(report);
+            }
+            match self.completion(state, id)? {
+                Completion::Done => self.evict(state, id, reason, &mut report)?,
+                Completion::Pending => {
+                    held += state.entries[&id].bytes;
+                    pending.push(id);
+                }
+                Completion::Unjoined => {}
+            }
+        }
+        // A loop's newest idle block is often still being read when the next one is prefetched
+        // (Qwen-Image int8 on 8 GB, once a step). Refused, the prefetch emptied Torch's cache to
+        // retry; waiting for that block's own events is shorter than that full synchronize.
+        if report.reclaimed_bytes + held < bytes {
+            return Ok(report);
+        }
+        for id in pending {
             if report.reclaimed_bytes >= bytes {
                 break;
             }
-            if self.completion(state, id)? == Completion::Done {
-                self.evict(state, id, reason, &mut report)?;
-            }
+            self.wait_fences(state, id)?;
+            self.evict(state, id, reason, &mut report)?;
         }
         Ok(report)
     }
@@ -1051,10 +1093,10 @@ impl Region {
         self.prepare_with_reclaim(Admission::None)
     }
 
-    /// Admit a streamed block's read ahead of its use: it may evict idle streamed regions whose
-    /// last-consumer events are already complete, oldest first, and never waits or joins. The
-    /// retained prefix and every pending region stay; otherwise this refuses like
-    /// `prepare_without_reclaim`.
+    /// Admit a streamed block's read ahead of its use: it may evict idle streamed regions
+    /// (`State::eviction_key` order), completed ones first, then ones whose own last-consumer
+    /// events are pending, after waiting on those events; it never joins. The retained prefix
+    /// stays; otherwise this refuses like `prepare_without_reclaim`.
     pub fn prepare_evicting_completed(self: &Arc<Self>) -> Result<Preparation> {
         self.prepare_with_reclaim(Admission::Completed)
     }

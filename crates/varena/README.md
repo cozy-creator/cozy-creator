@@ -39,7 +39,10 @@ boundary, or after clock saturation, the original global window applies. Cold/re
 is never exempted as useful standby. Already pinned common inputs and graph dependencies are
 active working memory, excluded from the idle cache limit, and remain subject to actual CUDA
 capacity. Dropping those pins can temporarily grow the idle cache; the next allocation trims it.
-Preparing streamed groups evicts only idle nonpreferred groups. Activation
+Preparing streamed groups evicts only idle nonpreferred groups: standby oldest first, then the
+current phase's own most recently pinned first. A phase loops over its streamed groups (each
+denoise step); with more of them than the window holds, oldest first would evict each one just
+before its next use. Activation
 pressure via `reclaim(device, bytes)` can additionally evict the preferred suffix, permanently
 lowering its watermark. New reservations at or after the watermark cannot become preferred while
 any existing Region owner remains. After all old Regions and escaped pins are dropped, the next

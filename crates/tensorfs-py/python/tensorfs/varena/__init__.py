@@ -156,8 +156,9 @@ class Region:
 
     def prepare(self, *, reclaim: bool = True, evict_completed: bool = False) -> Use:
         """A fill, or the resident contents. reclaim=False refuses (OutOfMemory) rather than
-        evict or wait; evict_completed then still evicts idle streamed regions whose
-        last-consumer events completed, oldest first."""
+        evict or wait; evict_completed then still evicts idle streamed regions (other
+        phases' oldest first, then the running phase's most recently used first), completed
+        ones first, then ones after their own last-consumer events; it never joins."""
         return Use(self._native.prepare(reclaim, evict_completed))
 
     def pin(self) -> Use | None:
@@ -186,10 +187,10 @@ class Region:
         This region must be dedicated to that immutable source recipe. Native prefetch
         uses local available sources only; it never calls a Python transformer/fetcher.
         reclaim=False refuses admission when eviction or a prior-writer join is needed;
-        with evict_completed it may still evict idle streamed regions whose last-consumer
-        events are complete, oldest first, never waiting. host, a writable C-contiguous
-        buffer covering every part and at most the region's length, receives the one store
-        read; one copy then fills the region from it (zeroes past it). The read row's
+        with evict_completed it may still evict idle streamed regions as `prepare` does.
+        host, a writable C-contiguous buffer covering every part and at most the region's
+        length, receives the one store read; one copy then fills the region from it (zeroes
+        past it). The read row's
         host_bytes says whether it was filled (0 when the region was already resident).
         """
         native = getattr(_ext, "_VarenaPreparedRead", None)
