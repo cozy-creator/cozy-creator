@@ -396,7 +396,8 @@ impl Engine {
     /// The preparing run names its code and models and becomes dispatchable, or completes with
     /// the memoized result that answered it (`answer`). Its observation ends under the lock a
     /// dispatcher claims under: a claim made the moment the run is queued keeps its ownership
-    /// (else `reconcile` takes the attempt for an orphan).
+    /// (else `reconcile` takes the attempt for an orphan). Weights it still waits on stay shown
+    /// over its own progress: its meter goes on observing them (`observe_weights`).
     pub fn bind_prepared(
         &self,
         id: &str,
@@ -412,7 +413,19 @@ impl Engine {
             .lock()
             .unwrap()
             .bind_prepared(id, invocation, preparation, memo, answer);
-        progress.remove(id);
+        let held = progress.remove(id);
+        if let (Ok(bound), Some(ProgressSnapshot { weights: Some((arriving, own)), .. })) = (&record, held) {
+            if bound.state == State::Queued {
+                progress.insert(id.into(), ProgressSnapshot {
+                    completed_units: bound.completed_units,
+                    detail: arriving.over(&own),
+                    waiting: bound.waiting.clone(),
+                    weights: Some((arriving, own)),
+                    revision: bound.revision.saturating_add(1),
+                    at_ms: crate::machine::lifecycle::now_ms() as u64,
+                });
+            }
+        }
         owned.remove(id);
         drop((progress, owned));
         self.notify_activity();
@@ -762,11 +775,10 @@ impl Engine {
 
     /// The weights run `id` waits on while they arrive (`access::meter`), shown over its own
     /// progress; `None` once they are here, when its own shows again. A queued run keeps why it
-    /// waits.
+    /// waits. A dispatchable run waits for its weights queued and owned by no dispatcher yet, so
+    /// a queued run is observed whoever owns it (cl-691: its bytes froze at their first value).
     pub fn observe_weights(&self, id: &str, weights: Option<Weights>) -> io::Result<()> {
-        if !self.owned.lock().unwrap().contains(id) {
-            return Ok(());
-        }
+        let owned = self.owned.lock().unwrap().contains(id);
         let mut progress = self.progress.lock().unwrap();
         let held = progress.get(id);
         if held.and_then(|snapshot| snapshot.weights.as_ref().map(|(w, _)| w)) == weights.as_ref() {
@@ -774,7 +786,7 @@ impl Engine {
         }
         let mut journal = self.journal.lock().unwrap();
         let mut record = journal.get(id)?;
-        if !record.observed() {
+        if !record.observed() || (!owned && record.state != State::Queued) {
             return Ok(());
         }
         if let Some(snapshot) = held {
