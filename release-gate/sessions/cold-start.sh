@@ -17,6 +17,9 @@
 #   traffic_gb  GB the provider bills: the image and both models' weights (40)
 #   need_s      seconds the guard must buy (5400)
 #   sample      true: the pod's disk, process I/O, pressure and GPU sampled for the session (samples.jsonl, dmon.txt)
+#   settle      true: each cold request waits until the disk reads at 80% of its rate before the weights landed
+#   settle_s    the longest a cold request waits for that (1800)
+#   an arm's `probe_signal` (KILL or SEGV) signals its cold request's executor mid prebuilt-int8 probe (cr-227)
 . "$(dirname "$0")/lib.sh"
 ARMS=$(param arms '[{"name": "prod", "tensord": "image"}]') SDXL=$(param sdxl sdxl/generate@0.1.3) ANIMA=$(param anima anima/generate@0.1.1)
 QWEN=$(param qwen qwen-image-2/generate@0.1.8)
@@ -158,20 +161,73 @@ elif mode == "sample":
         out.write(json.dumps(row) + "\n"); out.flush()
         time.sleep(0.5)
 elif mode == "diskprobe":
-    # The disk's own read rate now: 1 GiB of the largest weight file in 4 MiB O_DIRECT reads (the page cache
-    # neither helps nor fills).
-    import mmap
-    tops = set(roots("TENSORFS_HOME")) | set(roots("COZY_TENSORFS_ROOT"))
-    paths = [os.path.join(dp, f) for r in tops for dp, _, fs in os.walk(r) for f in fs]
-    size, path = max((os.path.getsize(p), p) for p in paths if os.path.isfile(p) and not os.path.islink(p))
-    want, buf, done = min(size, 1 << 30) // (4 << 20) * (4 << 20), mmap.mmap(-1, 4 << 20), 0
-    fd = os.open(path, os.O_RDONLY | os.O_DIRECT)
+    # The disk's own read rate now, as a cold device read does (TensorFS's volume probe): 1 GiB of the
+    # volume's largest files in 1 MiB O_DIRECT requests on 8 threads; the page cache neither helps nor fills.
+    # Before any weight lands the largest are the image's own files, on the same disk.
+    import mmap, stat, threading
+    tops = sorted(set(roots("TENSORFS_HOME")) | set(roots("COZY_TENSORFS_ROOT"))) + ["/opt", "/usr"]
+    found = {}
+    for top in tops:
+        for dp, _, fs in os.walk(top):
+            for f in fs:
+                path = os.path.join(dp, f)
+                try:
+                    st = os.lstat(path)
+                except OSError:
+                    continue
+                if stat.S_ISREG(st.st_mode) and st.st_size >= 16 << 20:
+                    found[path] = st.st_size
+    blocks, total = [], 0
+    for path, size in sorted(found.items(), key=lambda kv: -kv[1]):
+        for off in range(0, size // (1 << 20) * (1 << 20), 1 << 20):
+            if total >= 1 << 30:
+                break
+            blocks.append((path, off)); total += 1 << 20
+        if total >= 1 << 30:
+            break
+    done, lock = [0], threading.Lock()
+    def read(part):
+        buf, fds = mmap.mmap(-1, 1 << 20), {}
+        for path, off in part:
+            try:
+                fd = fds.get(path) or fds.setdefault(path, os.open(path, os.O_RDONLY | os.O_DIRECT))
+                got = os.preadv(fd, [buf], off)
+            except OSError:
+                continue
+            with lock:
+                done[0] += got
+        for fd in fds.values():
+            os.close(fd)
+    threads = [threading.Thread(target=read, args=(blocks[i::8],)) for i in range(8)]
     began = time.perf_counter()
-    while done < want and (got := os.preadv(fd, [buf], done)) > 0:
-        done += got
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
     took = time.perf_counter() - began
-    os.close(fd)
-    print(json.dumps({"bytes": done, "s": round(took, 3), "mb_s": round(done / took / 1e6)}))
+    print(json.dumps({"bytes": done[0], "s": round(took, 3), "mb_s": round(done[0] / max(took, 1e-9) / 1e6)}))
+elif mode == "probesignal":
+    # cr-227's proof: the first executor process to hold a prebuilt 8-bit probe's lock (a marker
+    # `prebuilt-int8-*.json` beside it) gets signal argv[2] mid-probe: KILL as TensorD ends one, SEGV as
+    # a probe crash would. Prints what it signalled; waits up to argv[3] seconds.
+    import signal
+    sig, deadline = getattr(signal, "SIG" + sys.argv[2]), time.time() + float(sys.argv[3])
+    while time.time() < deadline:
+        for marker in [m for v in glob.glob("/var/lib/cozy/tensord/gpu/kernels/*/verified") for m in glob.glob(v + "/prebuilt-int8-*.json")]:
+            lock = marker[:-5] + ".lock"
+            for d in glob.glob("/proc/[0-9]*"):
+                try:
+                    cmd = open(d + "/cmdline", "rb").read()
+                    if b"cozy_runtime.internal.executor" not in cmd:
+                        continue
+                    if any(os.path.realpath(f) == lock for f in glob.glob(d + "/fd/*") if os.path.islink(f)):
+                        os.kill(int(d[6:]), sig)
+                        print(json.dumps({"marker": os.path.basename(marker), "pid": int(d[6:]), "signal": sys.argv[2]}))
+                        sys.exit(0)
+                except OSError:
+                    continue
+        time.sleep(0.002)
+    print(json.dumps({"signal": sys.argv[2], "missed": True}))
 elif mode == "ps":
     rows = []
     for d in glob.glob("/proc/[0-9]*"):
@@ -224,6 +280,25 @@ request() {
 }
 declare -A FN=([sdxl]=$SDXL [anima]=$ANIMA [qwen]=$QWEN) PKG=([sdxl]=sdxl [anima]=anima [qwen]=qwen-image-2)
 declare -A WEIGHTS=([sdxl]=stabilityai/sdxl@1.0.0 [anima]=circlestone-labs/anima@1.0.0 [qwen]=qwen/qwen-image-2.1@0.1.0)
+# `settle: true`: the disk's read rate before this session writes anything is its reference, and every cold request
+# waits (probing every 30 s, at most `settle_s`) until the disk reads at 80% of it again. A pod's disk can read at a
+# quarter of its rate for minutes after the weights land (an RTX 3070's four-disk array: 70-90 against 250-320 MB/s
+# a disk for ~10 min after ~20 GB, pod-session 41031312618), and a cold read is that rate.
+SETTLE=$(param settle false) SETTLE_S=$(param settle_s 1800) R0=0
+if [ "$SETTLE" = true ]; then
+  R0=$(podpy diskprobe | jq -r .mb_s); [ "${R0:-0}" -gt 0 ] || fail "no disk reference"
+  say "disk reference before any weight lands: $R0 MB/s"
+fi
+# settled <label>: the disk reads at 80% of its reference, or `settle_s` passed (said either way).
+settled() {
+  local waited=0 r
+  [ "$SETTLE" = true ] || return 0
+  while r=$(podpy diskprobe | jq -r .mb_s); [ $((r * 100)) -lt $((R0 * 80)) ]; do
+    [ "$waited" -lt "$SETTLE_S" ] || { say "$1: disk unsettled after ${waited}s: $r of $R0 MB/s"; return 0; }
+    sleep 30; waited=$((waited + 30))
+  done
+  say "$1: disk settled at $r of $R0 MB/s after ${waited}s"
+}
 for m in $(jq -r '[.[].models // ["sdxl", "anima"] | .[]] | unique | .[]' <<<"$ARMS"); do
   [ -n "${FN[$m]:-}" ] || fail "no model $m"
   step "dl-$m" model download "${WEIGHTS[$m]}" --on "$NAME" || fail "$m weights"
@@ -251,6 +326,7 @@ for i in "${!names[@]}"; do
   if [ -n "${bins[$i]}${wheels[$i]}" ]; then
     sleep 30; podpy ps > "$OUT/$a-ps-start.json"; say "$a: executors 30 s after start $(cat "$OUT/$a-ps-start.json")"
   fi
+  sig=$(jq -r --argjson i "$i" '.[$i].probe_signal // empty' <<<"$ARMS")
   wait=$(jq -r --argjson i "$i" '.[$i].wait // "now"' <<<"$ARMS") warm=$(jq -r --argjson i "$i" '.[$i].warm // 0' <<<"$ARMS")
   for m in $(jq -r --argjson i "$i" '.[$i].models // ["sdxl", "anima"] | .[]' <<<"$ARMS"); do
     fn=${FN[$m]} pkg=${PKG[$m]} module=${PKG[$m]//-/_}
@@ -290,7 +366,15 @@ for i in "${!names[@]}"; do
         jq -n --arg p "${PROMPTS[$k]}" --argjson s "$RANDOM$i$w" '{megapixels: 2.25, aspect_ratio: "1:1", steps: 30, guidance: 4.5, cfg_interval_start: 0.0, cfg_interval_stop: 1.0, prompt_upsampling: false, prompt: $p, seed: $s, negative_prompt: "worst quality, low quality, blurry, jpeg artifacts"}' > "$OUT/$a-$m-$w.yaml"
       fi
       label="$a-$m-cold"; [ "$w" = 0 ] || label="$a-$m-warm$w"
+      [ "$w" != 0 ] || settled "$label"
       [ "$(param sample false)" != true ] || { podpy diskprobe > "$OUT/$label-disk.json"; say "$label: disk before it $(cat "$OUT/$label-disk.json")"; }
+      # `probe_signal` (KILL or SEGV): the arm's cold request's executor is signalled mid-probe; it fails, and
+      # its next request's new executor shows what the marker it left does (cr-227).
+      if [ -n "$sig" ] && [ "$w" = 0 ]; then
+        (podpy probesignal "$sig" 600 > "$OUT/$label-signal.json") & SIGP=$!
+        request "$label" "$fn" "$OUT/$a-$m-$w.yaml"; wait "$SIGP"; say "$label: $(cat "$OUT/$label-signal.json")"
+        continue
+      fi
       request "$label" "$fn" "$OUT/$a-$m-$w.yaml" || fail "$a: $m request"
     done
     podpy pyc "$module" > "$OUT/$a-$m-pyc.json"; say "$a $m bytecode after its request (py, pyc): $(jq -c .packages "$OUT/$a-$m-pyc.json")"
