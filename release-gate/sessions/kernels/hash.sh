@@ -36,6 +36,8 @@ hash_run() {
 }
 # hash_compare: $OUT/compare.json and a verdict a line; true when every op both arms ran gave the same bytes.
 hash_compare() {
+  jq -e -n --slurpfile a "$OUT/report-a.json" --slurpfile b "$OUT/report-b.json" '$a[0].inputs == $b[0].inputs' >/dev/null ||
+    { say "the arms' inputs differ: $(jq -c .inputs "$OUT/report-a.json") / $(jq -c .inputs "$OUT/report-b.json")"; return 1; }
   jq -n --slurpfile a "$OUT/report-a.json" --slurpfile b "$OUT/report-b.json" '
     $a[0].ops as $x | $b[0].ops as $y |
     [($x | keys[]) as $k | {op: $k, a: $x[$k], b: ($y[$k] // {error: "absent"})} |

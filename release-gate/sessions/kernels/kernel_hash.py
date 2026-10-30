@@ -31,8 +31,12 @@ DENSE = ("kitchen-int8", "sageattention3-fp4", "sageattention3-fp4-global-lowmem
 SHAPES = ((1, 4608, 24, 128, torch.bfloat16), (1, 1037, 16, 64, torch.bfloat16), (2, 2048, 24, 128, torch.float16))
 
 
+#: The inputs' CPU seed: a constant, never a request field (a request's seed may be drawn per run).
+SEED = 2026103003
+
+
 class Request(msgspec.Struct, frozen=True):
-    seed: int = 2026103003
+    label: str = "kernel-hash"
 
 
 class Result(msgspec.Struct, frozen=True):
@@ -80,6 +84,9 @@ def main(payload: Request) -> Result:
             ops[name] = {"error": f"{type(exc).__name__}: {exc}"[:240]}
 
     started = time.perf_counter()
+    # The inputs both arms must share: a differing digest here voids the comparison.
+    out["inputs"] = {"q": digest(cpu(SEED, 1, 4608, 24, 128)), "x": digest(cpu(SEED + 20, 300, 4096)),
+                     "w": digest(torch.randint(-127, 128, (4096, 4096), generator=torch.Generator().manual_seed(SEED + 21), dtype=torch.int8))}
     for name in DENSE:
         candidate = attention.BY_NAME[name]
         off = attention._off_row(candidate, row)
@@ -96,10 +103,10 @@ def main(payload: Request) -> Result:
             if candidate.refusal(torch.empty(b, s, h, d, dtype=dtype, device="meta"),
                                  torch.empty(b, s, h, d, dtype=dtype, device="meta"), {}):
                 continue
-            q, k, v = (cpu(payload.seed + i, b, s, h, d, dtype=dtype).to(dev) for i in range(3))
+            q, k, v = (cpu(SEED + i, b, s, h, d, dtype=dtype).to(dev) for i in range(3))
             run(f"attn:{name}:{b}x{s}x{h}x{d}:{str(dtype)[6:]}", lambda: forward(q, k, v), reference(q, k, v))
     # Sol: Kitchen's (INT8 rows) and upstream's (CuTe DSL), as the Runtime calls them.
-    q, k, v = (cpu(payload.seed + 10 + i, 1, 16640, 24, 128).to(dev) for i in range(3))
+    q, k, v = (cpu(SEED + 10 + i, 1, 16640, 24, 128).to(dev) for i in range(3))
     try:
         int8_linear.kitchen_module(torch, index, True)
         kitchen = import_module("comfy_kitchen")
@@ -116,9 +123,9 @@ def main(payload: Request) -> Result:
     # GEMMs: Kitchen's int8 (the leaves' fallback), the wheel's int8 and fp8 (CUTLASS).
     lib, why = prebuilt.library(torch, index, device.sm)
     for m, n, kk in ((3, 3072, 3072), (300, 4096, 4096), (16640, 3072, 3072), (16640, 16384, 3072), (16640, 3072, 8192)):
-        x = cpu(payload.seed + 20, m, kk).to(dev)
-        data = torch.randint(-127, 128, (n, kk), generator=torch.Generator().manual_seed(payload.seed + 21), dtype=torch.int8).to(dev)
-        scale = (cpu(payload.seed + 22, n, dtype=torch.float32).abs() + 0.5).mul(1e-3).to(dev)
+        x = cpu(SEED + 20, m, kk).to(dev)
+        data = torch.randint(-127, 128, (n, kk), generator=torch.Generator().manual_seed(SEED + 21), dtype=torch.int8).to(dev)
+        scale = (cpu(SEED + 22, n, dtype=torch.float32).abs() + 0.5).mul(1e-3).to(dev)
         try:
             module = int8_linear.kitchen_module(torch, index, True)[0]
             run(f"gemm:kitchen-int8:{m}x{n}x{kk}", lambda: module.int8_linear(x, data, scale, None, torch.bfloat16,
@@ -130,13 +137,13 @@ def main(payload: Request) -> Result:
             continue
         run(f"gemm:cozy-int8:{m}x{n}x{kk}", lambda: lib.int8_linear(x, data, scale, None, torch.bfloat16))
         if row.fp8:
-            w8, s8 = prebuilt._fp8_law(torch, cpu(payload.seed + 23, n, kk, dtype=torch.float32, scale=0.02).to(dev))
+            w8, s8 = prebuilt._fp8_law(torch, cpu(SEED + 23, n, kk, dtype=torch.float32, scale=0.02).to(dev))
             run(f"gemm:cozy-fp8:{m}x{n}x{kk}", lambda: lib.fp8_linear(x, w8, s8.view(-1), None, torch.bfloat16),
                 x.float() @ (w8.float() * s8.view(-1)[:, None]).t() if m <= 300 else None)
     # Kitchen's NVFP4 GEMM, where the card's row has FP4 tensor cores.
     if row.fp4:
         n, kk = 4096, 4096
-        g = torch.Generator().manual_seed(payload.seed + 30)
+        g = torch.Generator().manual_seed(SEED + 30)
         weight = torch.randint(0, 256, (n, kk // 2), generator=g, dtype=torch.uint8).to(dev)
         bscale = (torch.rand(n, kk // 16, generator=g) * 2 + 0.05).to(dev).to(torch.float8_e4m3fn)
         scale_2 = torch.tensor([0.02], device=dev)
@@ -148,7 +155,7 @@ def main(payload: Request) -> Result:
         if nvfp4_linear.kitchen(torch, index, False) is None:
             ops["gemm:kitchen-nvfp4"] = {"error": f"does not serve: {kernel_ready.failed(name) or 'timed out'}"[:240]}
         else:
-            x = cpu(payload.seed + 31, 1, 256, kk).to(dev)
+            x = cpu(SEED + 31, 1, 256, kk).to(dev)
             run("gemm:kitchen-nvfp4:256x4096x4096",
                 lambda: nvfp4_linear.matmul(torch, x, weight, blocked, lambda: bscale, scale_2, torch.bfloat16))
     out["seconds"] = round(time.perf_counter() - started, 1)
