@@ -106,7 +106,10 @@ if mode == "pyc":
             out["packages"][name] = [py, pyc]
     print(json.dumps(out))
 elif mode == "evict":
-    files = [os.path.join(dp, f) for r in roots("TENSORFS_HOME") for dp, _, fs in os.walk(r) for f in fs]
+    # Executors name the store (TENSORFS_HOME); before the first install only the machine runs, which the image
+    # names it to (COZY_TENSORFS_ROOT). The first arm otherwise found no weights and ran on a warm page cache.
+    tops = set(roots("TENSORFS_HOME")) | set(roots("COZY_TENSORFS_ROOT"))
+    files = sorted({os.path.join(dp, f) for r in tops for dp, _, fs in os.walk(r) for f in fs})
     files = [f for f in files if os.path.isfile(f) and not os.path.islink(f) and os.path.getsize(f) > (1 << 20)]
     before = sum(resident(f) for f in files)
     os.sync()
@@ -194,6 +197,7 @@ for i in "${!names[@]}"; do
     # The weights leave the page cache first, so nothing this session does runs beside the imports
     # an install starts.
     podpy evict > "$OUT/$a-$m-evict.json"; say "$a $m evicted: $(cat "$OUT/$a-$m-evict.json")"
+    [ "$(jq -r .files "$OUT/$a-$m-evict.json" 2>/dev/null)" != 0 ] || fail "$a $m: found no weights to evict"
     step "rm-$a-$m" package remove "$pkg" --on "$NAME" -y
     # The release the request names, never the newest: another would install on the request's own path.
     step "in-$a-$m" package install "$pkg@${fn##*@}" --on "$NAME" || fail "$a: install $m"
