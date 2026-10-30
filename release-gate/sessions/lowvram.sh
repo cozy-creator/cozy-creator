@@ -18,6 +18,8 @@
 #   an arm's "local": {"<model>": "<packages_refs name>"} runs that model's package from that packages checkout
 #            (installed by path, removed as local/<package>) instead of its published release
 #   an arm's "ram_free_gib": N holds host RAM so only N GiB stay available while it runs (a smaller machine)
+#   an arm's "run_args": [...] are added to each of its `cozy run`s (`--lora model:unet=hf://…`), and its "input":
+#            {...} replaces those fields of each request's input (a LoRA's own steps and guidance)
 #   skip     ["<level>/<model>", …] cells no arm runs (a known failure measured before); an arm's "skip" replaces it
 #   keep_going  true: a failed request does not end its cell (to measure the executor after a failure)
 #   stall_s  a request with no end after this many seconds is diagnosed (machine logs) and abandoned (1200)
@@ -144,11 +146,12 @@ tool() {  # tool <step> <op> [inputs]: tool.py's result value, or fail
   jq -r '.result.value' "$OUT/rec/$n.json" | tee -a "$OUT/tool.log" | cut -c1-400 >> "$R"
 }
 cozy_run() {  # cozy_run <label> <model> <input file> <arm>: one request, its record and a mark after it
-  local n=$1 m=$2 lane t target cwd=.; lane=$(model_ref "$m" | cut -d' ' -f2) t=$(tree "$4" "$2")
+  local n=$1 m=$2 lane t target cwd=. extra; lane=$(model_ref "$m" | cut -d' ' -f2) t=$(tree "$4" "$2")
+  mapfile -t extra < <(jq -r --arg a "$4" '.[] | select(.name==$a) | (.run_args // [])[]' <<<"$ARMS")
   target="$(pkg "$m")/generate"; [ -z "$t" ] || { target="./$target" cwd=$PACKAGES/$t; }
   local t0; t0=$(date +%s%3N)
   # A request with no end in STALL_S seconds is a stall to diagnose: keep the machine's logs, then stop following it.
-  ( QCWD=$cwd qstep "$n" run "$target" --input "$3" --lane "$lane" --on "$NAME" --out "$OUT/out/$n" ) & local qp=$! waited=0
+  ( QCWD=$cwd qstep "$n" run "$target" --input "$3" --lane "$lane" "${extra[@]}" --on "$NAME" --out "$OUT/out/$n" ) & local qp=$! waited=0
   while kill -0 "$qp" 2>/dev/null && [ "$waited" -lt "${STALL_S:-1200}" ]; do sleep 5; waited=$((waited + 5)); done
   if kill -0 "$qp" 2>/dev/null; then
     say "STALL: $n has no end after ${waited}s; keeping the machine's logs"
@@ -224,6 +227,8 @@ for a in "${arms[@]}"; do
       else
         for t in $(tiers); do
           cozy_input "$m" "$(req "$a" "$l" "$m" "$t")" "$G/$a-$l-$m-$t.json"
+          jq --argjson o "$(jq -c --arg a "$a" '.[] | select(.name==$a) | .input // {}' <<<"$ARMS")" '. + $o' \
+            "$G/$a-$l-$m-$t.json" > "$G/in.json" && mv "$G/in.json" "$G/$a-$l-$m-$t.json"
           cozy_run "$a-$l-$m-$t" "$m" "$G/$a-$l-$m-$t.json" "$a"
           # A failed request's executor is not the product's warm state (an OOM can leave it crawling).
           [ "$(jq -r '.status // "none"' "$OUT/rec/$a-$l-$m-$t.json" 2>/dev/null)" = completed ] || [ "$KEEP" = true ] ||
