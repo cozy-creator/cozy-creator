@@ -6,7 +6,7 @@ import time
 
 import msgspec
 
-from cozy_runtime.author import App, Assets, FileAsset, Telemetry
+from cozy_runtime.author import App, File, Files, Telemetry
 
 app = App()
 
@@ -71,6 +71,6 @@ class Seen(msgspec.Struct):
 
 
 @app.entrypoint(accelerator=False)
-def fidelities(payload: Nothing, assets: Assets[FileAsset]) -> Seen:
+def fidelities(payload: Nothing, assets: Files[File]) -> Seen:
     """Each attached asset as the executor was granted it: `label=fidelity`."""
     return Seen(assets=[f"{assets.info(i).label}={assets.info(i).fidelity}" for i in range(len(assets))])

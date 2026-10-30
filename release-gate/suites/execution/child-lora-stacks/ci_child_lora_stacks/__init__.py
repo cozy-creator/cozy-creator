@@ -13,7 +13,7 @@ from cozy_runtime.author import (
     Adjustments,
     App,
     Context,
-    FileAsset,
+    File,
     ImageResult,
     Lora,
     ModelChoice,
@@ -56,7 +56,7 @@ class Call(msgspec.Struct):
 class Compared(msgspec.Struct):
     calls: list[Call]
     #: Each distinct child image, in call order, as this run's own output (a list output).
-    images: list[FileAsset]
+    images: list[File]
 
 
 async def compare(ctx: Context, payload: Compare, out: Outputs) -> Compared:
@@ -70,7 +70,7 @@ async def compare(ctx: Context, payload: Compare, out: Outputs) -> Compared:
         ("inherited, first request again", None, s),
     ]
     calls: list[Call] = []
-    images: list[FileAsset] = []
+    images: list[File] = []
     for stack, model, seed in plan:
         started = time.monotonic()
         result = await paint(prompt=payload.prompt, seed=seed, steps=payload.steps, model=model)

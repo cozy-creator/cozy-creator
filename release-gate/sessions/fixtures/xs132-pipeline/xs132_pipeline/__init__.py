@@ -5,15 +5,15 @@ from typing import Annotated
 import msgspec
 from birefnet import remove_background
 
-from cozy_runtime.author import App, AssetBound, Context, ImageAsset
+from cozy_runtime.author import App, Context, FileBound, ImageFile
 
 app = App()
 
 
 class CutInput(msgspec.Struct):
     image: Annotated[
-        ImageAsset,
-        AssetBound(max_bytes=64 << 20, max_decoded_bytes=256 << 20, media_types=("image/png", "image/jpeg", "image/webp")),
+        ImageFile,
+        FileBound(max_bytes=64 << 20, max_decoded_bytes=256 << 20, media_types=("image/png", "image/jpeg", "image/webp")),
     ]
 
 
