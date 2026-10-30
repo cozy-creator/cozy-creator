@@ -157,6 +157,21 @@ elif mode == "sample":
                 pass
         out.write(json.dumps(row) + "\n"); out.flush()
         time.sleep(0.5)
+elif mode == "diskprobe":
+    # The disk's own read rate now: 1 GiB of the largest weight file in 4 MiB O_DIRECT reads (the page cache
+    # neither helps nor fills).
+    import mmap
+    tops = set(roots("TENSORFS_HOME")) | set(roots("COZY_TENSORFS_ROOT"))
+    paths = [os.path.join(dp, f) for r in tops for dp, _, fs in os.walk(r) for f in fs]
+    size, path = max((os.path.getsize(p), p) for p in paths if os.path.isfile(p) and not os.path.islink(p))
+    want, buf, done = min(size, 1 << 30) // (4 << 20) * (4 << 20), mmap.mmap(-1, 4 << 20), 0
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECT)
+    began = time.perf_counter()
+    while done < want and (got := os.preadv(fd, [buf], done)) > 0:
+        done += got
+    took = time.perf_counter() - began
+    os.close(fd)
+    print(json.dumps({"bytes": done, "s": round(took, 3), "mb_s": round(done / took / 1e6)}))
 elif mode == "ps":
     rows = []
     for d in glob.glob("/proc/[0-9]*"):
@@ -190,9 +205,10 @@ podpy() { printf '%s' "$POD_PY" | T=600 pod "cat > /tmp/cold.py && python3 /tmp/
 # `sample: true`: the pod's disk, process I/O, pressure and GPU (nvidia-smi dmon) every 0.5-1 s for the whole
 # session, into samples.jsonl and dmon.txt.
 if [ "$(param sample false)" = true ]; then
-  printf '%s' "$POD_PY" | T=60 pod "cat > /tmp/cold.py && rm -f /tmp/sample.stop /tmp/samples.jsonl &&
-    (setsid nohup python3 /tmp/cold.py sample /tmp/samples.jsonl > /dev/null 2>&1 &) &&
-    (setsid nohup nvidia-smi dmon -s ut -d 1 -o T > /tmp/dmon.txt 2>&1 & echo \$! > /tmp/dmon.pid)" < /dev/null || fail "sampler"
+  # Each sampler is held by an SSH call of its own for the session (one started detached never wrote a row).
+  T=60 pod "rm -f /tmp/sample.stop /tmp/samples.jsonl /tmp/dmon.txt" < /dev/null || fail "sampler"
+  (printf '%s' "$POD_PY" | T=9000 pod "cat > /tmp/cold-sample.py && python3 /tmp/cold-sample.py sample /tmp/samples.jsonl 2> /tmp/sample.err") &
+  (T=9000 pod "nvidia-smi dmon -s ut -d 1 -o T > /tmp/dmon.txt 2>&1 & echo \$! > /tmp/dmon.pid; wait" < /dev/null) &
   say "sampling the pod's disk, process I/O, pressure and GPU"
 fi
 # One request, its events stamped with the runner's clock from just before the CLI starts.
@@ -274,6 +290,7 @@ for i in "${!names[@]}"; do
         jq -n --arg p "${PROMPTS[$k]}" --argjson s "$RANDOM$i$w" '{megapixels: 2.25, aspect_ratio: "1:1", steps: 30, guidance: 4.5, cfg_interval_start: 0.0, cfg_interval_stop: 1.0, prompt_upsampling: false, prompt: $p, seed: $s, negative_prompt: "worst quality, low quality, blurry, jpeg artifacts"}' > "$OUT/$a-$m-$w.yaml"
       fi
       label="$a-$m-cold"; [ "$w" = 0 ] || label="$a-$m-warm$w"
+      [ "$(param sample false)" != true ] || { podpy diskprobe > "$OUT/$label-disk.json"; say "$label: disk before it $(cat "$OUT/$label-disk.json")"; }
       request "$label" "$fn" "$OUT/$a-$m-$w.yaml" || fail "$a: $m request"
     done
     podpy pyc "$module" > "$OUT/$a-$m-pyc.json"; say "$a $m bytecode after its request (py, pyc): $(jq -c .packages "$OUT/$a-$m-pyc.json")"
@@ -282,7 +299,8 @@ for i in "${!names[@]}"; do
 done
 T=60 pod "cat /var/lib/cozy/tensord/gpu/kernel-boot.jsonl" > "$OUT/kernel-boot.jsonl" 2>&1 < /dev/null
 if [ "$(param sample false)" = true ]; then
-  T=120 pod "touch /tmp/sample.stop; sleep 1; cat /tmp/samples.jsonl" > "$OUT/samples.jsonl" 2> /dev/null < /dev/null
+  T=120 pod "touch /tmp/sample.stop; sleep 2; cat /tmp/samples.jsonl" > "$OUT/samples.jsonl" 2> /dev/null < /dev/null
+  T=60 pod "cat /tmp/sample.err" > "$OUT/sample.err" 2>&1 < /dev/null
   T=60 pod "kill \$(cat /tmp/dmon.pid); cat /tmp/dmon.txt" > "$OUT/dmon.txt" 2> /dev/null < /dev/null
   for log in tensord memory; do cozy machine logs "$NAME" "$log" -n 0 > "$OUT/machine-$log.log" 2>&1 < /dev/null; done
   say "samples: $(wc -l < "$OUT/samples.jsonl") rows"
