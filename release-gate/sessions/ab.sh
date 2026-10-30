@@ -102,8 +102,13 @@ for k in "${names[@]}"; do
   MADE[$k]=$(find "$OUT/out/$k" -type f \( -name '*.png' -o -name '*.webp' -o -name '*.jpg' -o -name '*.mp4' \) 2>/dev/null | sort | head -1)
   say "$k run ${N:-none} ${st:-none} (exit $code): $(summary "$k")"
   want=$(jq -r '.expect // "completed"' <<<"$c")
-  [ "$st" = completed ] || say "$k reason: $(jq -r '.reason.message // .reason // "none"' "$OUT/$k.json" 2>/dev/null | head -c 600)"
-  [ "$st" = "$want" ] || { fails=$((fails + 1)); [ "$fails" -lt 2 ] || fail "two cells failed"; }
+  if [ "$st" != completed ]; then
+    why=$(jq -r '.reason.message // .reason // empty' "$OUT/$k.json" 2>/dev/null)
+    say "$k reason: $(printf '%s' "${why:-$(tail -c 600 "$OUT/$k.txt")}" | head -c 600)"
+  fi
+  # A refusal before any run (st none) is the failure an `expect: failed` cell proves.
+  [ "$st" = "$want" ] || { [ "$want" = failed ] && [ "$st" = none ] && [ "$code" != 0 ]; } ||
+    { fails=$((fails + 1)); [ "$fails" -lt 2 ] || fail "two cells failed"; }
 done
 rm -f "$OUT/current"
 
