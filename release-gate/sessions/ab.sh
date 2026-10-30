@@ -6,9 +6,12 @@
 # a fused block eager until it is built), so give each tree a warm-up cell before the cells it compares; each cell's
 # summary shows its `kernel.ready` and plan reports.
 # params:
-#   cells      [{"name", "tree" (a packages_refs name), "target" ("<package>/<function>"), "args" ([inputs and flags]),
+#   cells      [{"name", "tree" (a packages_refs name; absent, `target` is a published `<package>/<function>[@release]`,
+#              run from the packages directory: an unchanged release on a candidate Runtime), "target"
+#              ("<package>/<function>"), "args" ([inputs and flags]),
 #              "update" (optional: {"runtime", "tensorfs"}, each a wheel URL or, for runtime, a cozy-runtime dev-build
-#              run id; the pod's `machine update` before this cell, so cells before and after compare two pairs)}];
+#              run id, and "gpu_memory_limit" (`10GiB`, `off`: the development VRAM cap); the pod's `machine update`
+#              before this cell, so cells before and after compare two pairs)}];
 #              "expect" (optional: the status the cell must end in, `completed` by default; `failed` for a refusal it proves);
 #              in args, `{ref}` is release-gate/ref and `{out:<cell>}` an earlier cell's image or video;
 #              two failed cells stop the session
@@ -23,6 +26,7 @@ mapfile -t names < <(jq -r '.[].name' <<<"$CELLS")
 for k in "${names[@]}"; do
   c=$(jq -c --arg k "$k" 'map(select(.name==$k)) | first' <<<"$CELLS")
   [[ $k =~ ^[A-Za-z0-9_-]+$ ]] && [ "$(jq --arg k "$k" 'map(select(.name==$k)) | length' <<<"$CELLS")" = 1 ] || fail "cell names must be unique words: $k"
+  if [ -z "$(jq -r '.tree // empty' <<<"$c")" ]; then say "cell $k: published $(jq -r .target <<<"$c") $(jq -r '.args | join(" ")' <<<"$c")"; continue; fi
   t=$PACKAGES/$(jq -r .tree <<<"$c")/$(jq -r .target <<<"$c")
   [ -d "${t%/*}" ] || fail "cell $k: no ${t#$PACKAGES/}"
   say "cell $k: $(git -C "${t%/*}" rev-parse --short HEAD) ./$(jq -r .target <<<"$c") $(jq -r '.args | join(" ")' <<<"$c")"
@@ -46,6 +50,9 @@ for k in "${names[@]}"; do
     f=$(wheel "$k" "$kind" "$src") && [ -n "$f" ] || fail "cell $k: no $kind wheel from $src"
     say "cell $k: updates $kind to ${f##*/}"; w+=("--$kind" "$f")
   done
+  cap=$(jq -r --arg k "$k" 'map(select(.name==$k)) | first | .update.gpu_memory_limit // empty' <<<"$CELLS")
+  [[ -z $cap || $cap =~ ^([0-9]+[MG]iB|off)$ ]] || fail "cell $k: gpu_memory_limit $cap"
+  [ -z "$cap" ] || { say "cell $k: caps VRAM at $cap"; w+=(--gpu-memory-limit "$cap"); }
   [ "${#w[@]}" = 0 ] || UPDATE[$k]="${w[*]}"
 done
 printf 'run 5 · sync local/x (source changed)\nrun 6 · local/x/f\nrun      6\n' > "$OUT/probe-cell.txt"
@@ -93,8 +100,10 @@ for k in "${names[@]}"; do
     say "$k: pod Runtime $(cozy machine show "$NAME" --json | jq -r .status.runtime), TensorFS $(cozy machine show "$NAME" --json | jq -r .status.tensorfs)"
   fi
   echo "$k" > "$OUT/current"
-  cd "$PACKAGES/$(jq -r .tree <<<"$c")" || fail "no tree for $k"
-  step "$k" run "./$(jq -r .target <<<"$c")" "${args[@]}" --on "$NAME" --out "$OUT/out/$k"; code=$?
+  tree=$(jq -r '.tree // empty' <<<"$c") target=$(jq -r .target <<<"$c")
+  cd "$PACKAGES/$tree" || fail "no tree for $k"
+  [ -z "$tree" ] || target=./$target
+  step "$k" run "$target" "${args[@]}" --on "$NAME" --out "$OUT/out/$k"; code=$?
   cd "$OUT" || fail "no $OUT"
   N=$(runno "$k")
   if [ -n "$N" ]; then cozy run show "$N" --once --json > "$OUT/$k.json" 2>/dev/null; fi
