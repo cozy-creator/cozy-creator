@@ -7,13 +7,13 @@
 #   mode       hash (compare a against b op by op) or order (each arm a request after the one before it: PASS when
 #              every arm reports, none ended by a device fault) (hash)
 #   tensorfs   the TensorFS every arm runs with (0.17.13)
-#   ops        kernel_hash.py's request fields, e.g. "skip=attn:sageattention3" or "only=attn:sageattention3" ("")
+#   ops        kernel_hash.py's request fields, e.g. "skip=attn:sageattention3-fp4", "only=gemm:" or "parts=sage3" ("")
 #   traffic_gb GB the provider bills (8); need_s seconds the guard must buy (2400)
 . "$(dirname "$0")/lib.sh"
 . "$(dirname "$0")/kernels/hash.sh"
 hash_arms "$(param runtimes '{}')" > "$OUT/arms.txt" || fail "$(cat "$OUT/arms.txt")"
 MODE=$(param mode hash) HASH_ARGS=$(param ops '')
-[[ $HASH_ARGS =~ ^((only|skip)=[a-z0-9:,_-]+ ?)*$ ]] || fail "ops"
+[[ $HASH_ARGS =~ ^((only|skip|parts)=[a-z0-9:,_-]+ ?)*$ ]] || fail "ops"
 [[ $MODE == hash || $MODE == order ]] || fail "mode"
 for arm in "${HASH_ARMS[@]}"; do say "arm $arm: ${HASH_WANT[$arm]##*/}"; done
 quote "$(param traffic_gb 8)" "$(param need_s 2400)"

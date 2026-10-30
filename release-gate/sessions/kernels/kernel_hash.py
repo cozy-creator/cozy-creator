@@ -42,6 +42,10 @@ class Request(msgspec.Struct, frozen=True):
     #: every op but these. A device fault ends the executor, so an op that may fault runs in its own request.
     only: str = ""
     skip: str = ""
+    #: `sage3`: instead of the ops, SageAttention3's own steps one at a time (group mean, the three FP4 quantizers,
+    #: the attention at each case its row's self-check runs), each named on stderr and synchronized, so a device
+    #: fault names its step.
+    parts: str = ""
 
 
 class Result(msgspec.Struct, frozen=True):
@@ -65,6 +69,44 @@ def cpu(seed: int, *shape: int, dtype=torch.bfloat16, scale: float = 1.0) -> tor
 def reference(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
     f = lambda t: t.float().transpose(1, 2)  # noqa: E731
     return torch.nn.functional.scaled_dot_product_attention(f(q), f(k), f(v)).transpose(1, 2)
+
+
+def sage3_parts(dev: torch.device, index: int, device) -> dict[str, object]:
+    """SageAttention3 (the wheel's) step by step, outside its row's self-check."""
+    sage3 = import_module("cozy_runtime.internal.sage3")
+    done: dict[str, object] = {}
+
+    def step(name: str, fn) -> object:
+        print(f"[kernel_hash] sage3 {name}", file=sys.stderr, flush=True)
+        try:
+            got = fn()
+            torch.cuda.synchronize(dev)
+            done[name] = "ok"
+            return got
+        except Exception as exc:
+            done[name] = f"{type(exc).__name__}: {exc}"[:200]
+            return None
+
+    launch = step("group-mean launcher", lambda: triton_kernels.ready(sage3.KERNELS, True, device=f"cuda:{index}"))
+    if launch is None:
+        return done
+    sage3.serve(index, launch)
+    x = cpu(SEED, 1, 24, 512, 128).to(dev)
+    step("group mean 1x24x512x128 bf16", lambda: sage3.triton_group_mean(x))
+    step("group mean 1x16x512x64 bf16", lambda: sage3.triton_group_mean(cpu(SEED, 1, 16, 512, 64).to(dev)))
+    step("quant", lambda: sage3.scale_and_quant_fp4(x))
+    step("quant permute", lambda: sage3.scale_and_quant_fp4_permute(x))
+    step("quant transpose", lambda: sage3.scale_and_quant_fp4_transpose(x))
+    # (head dim, dtype, batch, query, keys, per-block mean): equal 128-multiples first, then the self-check's cases.
+    for d, dtype, b, lq, lk, block in ((128, torch.bfloat16, 1, 512, 512, False), (128, torch.bfloat16, 1, 512, 512, True),
+                                       (128, torch.bfloat16, 1, 257, 257, True), (128, torch.bfloat16, 2, 257, 257, True),
+                                       (128, torch.bfloat16, 2, 300, 257, True), (128, torch.float16, 2, 300, 257, True),
+                                       (64, torch.bfloat16, 2, 300, 257, True), (64, torch.float16, 2, 300, 257, True)):
+        q = cpu(SEED + 1, b, 24, lq, d, dtype=dtype).to(dev)
+        k, v = (cpu(SEED + 2 + i, b, 24, lk, d, dtype=dtype).to(dev) for i in range(2))
+        step(f"attention d{d} {str(dtype)[6:]} b{b} q{lq} k{lk} {'block' if block else 'global'} mean",
+             lambda: sage3.sageattn3_blackwell(q, k.clone(), v, per_block_mean=block))
+    return done
 
 
 @app.entrypoint()
@@ -102,6 +144,8 @@ def main(payload: Request) -> Result:
         except Exception as exc:
             ops[name] = {"error": f"{type(exc).__name__}: {exc}"[:240]}
 
+    if payload.parts == "sage3":
+        return Result(json.dumps({**out, "sage3": sage3_parts(dev, index, device)}, separators=(",", ":")))
     started = time.perf_counter()
     # The inputs both arms must share: a differing digest here voids the comparison.
     out["inputs"] = {"q": digest(cpu(SEED, 1, 4608, 24, 128)), "x": digest(cpu(SEED + 20, 300, 4096)),
