@@ -5,7 +5,8 @@
 # the packages checkout (packages master, the RC's package source, or the change's own); with --published or
 # --pins, each root package's latest unyanked release or the pinned one (a gated candidate is published
 # yanked and looks like a retired release, so only a pin makes it a candidate; one with neither is skipped),
-# and imports it there as an executor does: its entry points and every module under them. A Runtime that
+# and imports it there as an executor does: its entry points and every module under them. Then paging.py reports how each
+# of its models pages (each component's largest unit; a warning above 1 GiB), from the checkpoints' headers. A Runtime that
 # moves or drops what a published package imports fails here, before the Runtime reaches PyPI. A release
 # whose Runtime floor the candidate does not meet is refused by name and skipped. With --packages, the
 # checkout's package directories are installed and imported the same way. --shard K/N takes every Nth package,
@@ -14,7 +15,7 @@
 #                      [--published] [--pins name@release,...] [--shard K/N]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
-PROBE=$(cd "$(dirname "$0")" && pwd)/probe.py
+PROBE=$(cd "$(dirname "$0")" && pwd)/probe.py PAGING=$(cd "$(dirname "$0")" && pwd)/paging.py
 
 step install; install_cozy
 user_services
@@ -34,6 +35,9 @@ import_release() {
   "$py" -I "$PROBE" "$2" > "$OUT/import-$1.log" 2>&1 \
     || check "$1: $(grep -m3 '^FAIL' "$OUT/import-$1.log" | tr '\n' ' ')"
   tail -2 "$OUT/import-$1.log"
+  # How each of its models pages (paging.py): a row per component, a warning for a unit over 1 GiB. Advisory.
+  "$py" -I "$PAGING" "$2" > "$OUT/paging-$1.log" 2>&1 || echo "::warning::paging: $1: the check exited $?"
+  grep -E '^(paging|::warning::paging)' "$OUT/paging-$1.log" || true
   [ -z "$CAND_RUNTIME" ] || grep -qF "cozy-runtime $CAND_RUNTIME," "$OUT/import-$1.log" \
     || check "$1: imported with $(head -1 "$OUT/import-$1.log"), not the candidate Runtime $CAND_RUNTIME"
 }
