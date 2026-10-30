@@ -16,7 +16,7 @@
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 ARMS=$(param arms '[{"name": "release", "tensord": "image"}]') URL=$(param runtime) GPUS=$(param gpus 1)
-MODELS=$(param models '["_/flux-3-klein-base@0.1.0 --lane bf16", "_/flux-3-klein@0.1.0 --lane bf16", "_/minimax-h3@1.0.0-rc.6", "_/minimax-h3-turbo-lora@1.0.1"]')
+MODELS=$(param models '["black-forest-labs/flux-3-klein-base@0.1.0 --lane bf16", "black-forest-labs/flux-3-klein@0.1.0 --lane bf16", "minimaxai/minimax-h3@1.0.0-rc.6", "alibaba-pai/minimax-h3-turbo-lora@1.0.1"]')
 mapfile -t names < <(jq -r '.[].name' <<<"$ARMS")
 mapfile -t builds < <(jq -r '.[].tensord' <<<"$ARMS")
 [ "${#names[@]}" -gt 0 ] || fail "no arms"
