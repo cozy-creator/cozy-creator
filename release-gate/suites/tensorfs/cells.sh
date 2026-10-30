@@ -9,7 +9,9 @@
 #   probe            the machine's disk, written and read cold; an executor never dials, so no network figure
 #   download-cold    a large many-object model ($TFS_MODEL), its time held against the last pass
 #   download-again   the same model again: nothing comes from the Hub
-#   download-cut/-resume  $TFS_RESUME cancelled part-way, then downloaded again: only the rest comes
+#   download-cut/-resume  new random weights ($TFS_RESUME_MB MiB), uploaded private from this computer's machine, cancelled
+#                    part-way on $M, then downloaded again: only the rest comes, from the Hub. No datacenter volume
+#                    holds them (TensorFS writes back public objects only), so a cache never serves the resume (cl-686)
 #   upload           new random weights (a CozyTensors folder) to a throwaway <account>/ci-tfs-<R>
 #   upload-again     the same folder to a second tag: no chunk is sent again (dedup)
 #   upload-cut/-resume    new weights cancelled part-way, then uploaded again: only the rest is sent
@@ -21,7 +23,7 @@
 #                    (LAYOUT_MISMATCH) after the header and the probed rows. That layout read right passes the probe in
 #                    the h3-comfy-layout cell's import.
 # check.py holds each against the SKU's last passed suite and records a PASS. The throwaway models are deleted at the end.
-TFS_MODEL=${TFS_MODEL:-qwen3.5-9b} TFS_RESUME=${TFS_RESUME:-flux-3-klein} TFS_UPLOAD_MB=${TFS_UPLOAD_MB:-256}
+TFS_MODEL=${TFS_MODEL:-qwen3.5-9b} TFS_RESUME_MB=${TFS_RESUME_MB:-2048} TFS_UPLOAD_MB=${TFS_UPLOAD_MB:-256}
 T=$OUT/suite-tensorfs TFS_DESTS=()
 mkdir -p "$T"; : > "$T/cases"
 # tfs_step <name> <cozy args...>: one command that makes a run, followed to its end (e2e/run.sh): its events in
@@ -41,22 +43,27 @@ tfs_cut() {
   while [ -n "$n" ] && kill -0 "$(cat "$T/$name.pid")" 2>/dev/null; do
     moved=$(python3 -I "$HERE/suites/tensorfs/check.py" --past "$T/$name.ndjson" "$stage" "$frac")
     if [ -n "$moved" ]; then "$CLI" run cancel "$n" -y >/dev/null 2>&1; echo "$moved" > "$T/$name.cut"; break; fi
-    sleep 2
+    sleep 0.5
   done
   run_wait "$T" "$name"
   printf '%s\t%s\t\n' "$name" "${n:-none}" >> "$T/steps.tsv"
   log "tensorfs $name: run ${n:-none} cancelled at $(cat "$T/$name.cut" 2>/dev/null || echo '?') bytes"
 }
-# tfs_weights <dir> <MiB>: new random weights as a CozyTensors folder (tfs import + export, the candidate TensorFS).
-tfs_weights() {
-  rm -rf "$1" "$1.safetensors"
-  uv run -q --no-project --with numpy --with safetensors python -I - "$1.safetensors" "$2" <<'PY' || return 1
+# tfs_random <file> <MiB>: new random F16 weights as one .safetensors file.
+tfs_random() {
+  rm -f "$1"
+  uv run -q --no-project --with numpy --with safetensors python -I - "$1" "$2" <<'PY'
 import sys
 import numpy as np
 from safetensors.numpy import save_file
 rng = np.random.default_rng()
 save_file({f"blocks.{i}.weight": rng.standard_normal((1024, 1024)).astype(np.float16) for i in range(int(sys.argv[2]) // 2)}, sys.argv[1])
 PY
+}
+# tfs_weights <dir> <MiB>: new random weights as a CozyTensors folder (tfs import + export, the candidate TensorFS).
+tfs_weights() {
+  rm -rf "$1"
+  tfs_random "$1.safetensors" "$2" || return 1
   TENSORFS_HOME=$T/tfs-store uv tool run -q --from "${TWF:-tensorfs}" tfs import "$1.safetensors" --converter as-is --name "local/$(basename "$1")" >/dev/null &&
     TENSORFS_HOME=$T/tfs-store uv tool run -q --from "${TWF:-tensorfs}" tfs export "local/$(basename "$1")" "$1" >/dev/null
 }
@@ -117,16 +124,28 @@ if tfs_case probe; then
   echo '{}' > "$T/probe.yaml"
   tfs_step probe run ./ci-tfs-probe/measure --on "$M" --input "$T/probe.yaml"
 fi
-if tfs_case download; then
-  tfs_step download-cold model download "$TFS_MODEL" --on "$M" -y
-  tfs_step download-again model download "$TFS_MODEL" --on "$M" -y
-  tfs_cut download-cut download 0.3 model download "$TFS_RESUME" --on "$M" -y
-  tfs_step download-resume model download "$TFS_RESUME" --on "$M" -y
-fi
 WHO=; for _ in 1 2 3; do  # a dropped connection is asked again
   WHO=$("$CLI" --json whoami 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["account"])' 2>/dev/null) && [ -n "$WHO" ] && break
   sleep 5
 done
+if tfs_case download; then
+  tfs_step download-cold model download "$TFS_MODEL" --on "$M" -y
+  tfs_step download-again model download "$TFS_MODEL" --on "$M" -y
+  d=$WHO/ci-tfs-resume-$R c=
+  if [ -n "$WHO" ] && tfs_random "$T/resume.safetensors" "$TFS_RESUME_MB"; then
+    TFS_DESTS+=("$d")
+    tfs_step download-fixture model upload "$T/resume.safetensors" "$d" --lane f16 --source-format as-is --on local -y
+    c=$(run_get "$T" download-fixture "[.result.models[]?.published | select(.destination == \"$d\") | .commit][0]")
+  fi
+  rm -f "$T/resume.safetensors"
+  if [ -n "$c" ]; then
+    tfs_cut download-cut download 0.3 model download "$d@$c" --on "$M" -y
+    tfs_step download-resume model download "$d@$c" --on "$M" -y
+  else
+    expect tensorfs-download-resume FAIL "no private model to resume (${WHO:-not signed in}): $(run_get "$T" download-fixture .reason.message)"
+  fi
+  tfs_cleanup
+fi
 # Local paths go absolute: `cozy model upload ./folder` resolves them against Calcifer, not here (2026-10-24).
 # Refused before the bulk downloads (tfs-137): nothing reaches the Hub, so no model to delete.
 if tfs_case family && [ -n "$WHO" ]; then
