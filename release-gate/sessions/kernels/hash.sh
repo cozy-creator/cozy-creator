@@ -20,10 +20,13 @@ hash_arms() {
   done
 }
 # hash_run <arm> <tensorfs>: the pod on that arm's Runtime, then kernel_hash.py; its report in $OUT/report-<arm>.json.
+# Arm a pairs the TensorFS release; arm b keeps it (a dev Runtime with a TensorFS version resolves it on PyPI alone).
 hash_run() {
-  local arm=$1 n
-  step "update-$arm" machine update "$NAME" --runtime "${HASH_WANT[$arm]}" --tensorfs "$2" -y || return 1
+  local arm=$1 n tfs=()
+  [ "$arm" = b ] || tfs=(--tensorfs "$2")
+  step "update-$arm" machine update "$NAME" --runtime "${HASH_WANT[$arm]}" "${tfs[@]}" -y || return 1
   cozy machine show "$NAME" 2>&1 | grep -E '^(runtime|tensorfs|GPU) ' | tee -a "$R"
+  say "hash-$arm: the script's environment and run (the install is timed apart in hash-$arm.txt)"
   (cd "$(dirname "${BASH_SOURCE[0]}")" && step "hash-$arm" run ./kernel_hash.py --gpus=1 --on "$NAME") ||
     say "WARNING hash-$arm: $(tail -c 600 "$OUT/hash-$arm.txt" | tr '\n' ' ')"
   n=$(runno "hash-$arm"); [ -n "$n" ] || return 1

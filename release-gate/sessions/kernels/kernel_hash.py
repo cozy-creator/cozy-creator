@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime>=0.35", "msgspec>=0.19", "torch>=2.14"]
+# dependencies = ["cozy-runtime>=0.35", "diffusers>=0.40.0", "msgspec>=0.19", "torch>=2.14"]
 # ///
 """Every third-party kernel this machine's Runtime serves, through the Runtime's own paths, on inputs drawn from a fixed
 CPU seed: the sha256 of each output's bytes, twice (a kernel that does not repeat its own bytes is `nondeterministic`
