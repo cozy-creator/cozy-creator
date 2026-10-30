@@ -508,29 +508,34 @@ pub(crate) fn hold(dir: &Path) -> Result<(), Failure> {
     File::create(dir.join(".hold")).map(drop).map_err(io_failure)
 }
 
-/// Compiles `python`'s environment's bytecode beside its first import, at the lowest priority on
-/// the cores the machine may use; already compiled files are skipped. Uncompiled, an import
-/// compiles each module it reaches on one core (SDXL's: 17-19 s, 6.5-8.5 s compiled), and again
-/// in every executor that may not write the environment. uv's `--compile-bytecode` compiles only
-/// what its own step installs. A failure is a warning.
+/// Compiles `python`'s environment's bytecode beside its first import, on the cores the machine
+/// may use; already compiled files are skipped. It starts from a thread at the lowest CPU and idle
+/// I/O priority (`background_thread`), which the compile inherits: it reads 11k sources and writes
+/// their bytecode, and must never slow a request's weight reads. Uncompiled, an import compiles
+/// each module it reaches on one core (SDXL's: 17-19 s, 6.5-8.5 s compiled), and again in every
+/// executor that may not write the environment. uv's `--compile-bytecode` compiles only what its
+/// own step installs. A failure is a warning.
 pub(crate) fn compile_bytecode(python: &Path) {
-    let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
-    let script = format!(
-        "import compileall, os, sysconfig\ngetattr(os, 'nice', lambda _: 0)(19)\n\
-         compileall.compile_dir(sysconfig.get_paths()['purelib'], quiet=2, workers={workers})"
-    );
-    let started = crate::launch_identity::trampoline(python, None).and_then(|mut command| {
-        command.envs(crate::launch_identity::interpreter_environment(python)?).args(["-I", "-c", &script]);
-        command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-        command.spawn()
-    });
-    let reaped = started.and_then(|mut child| {
-        std::thread::Builder::new().name("bytecode".into()).spawn(move || match child.wait() {
+    let python = python.to_path_buf();
+    let started = std::thread::Builder::new().name("bytecode".into()).spawn(move || {
+        platform::process::background_thread();
+        let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let script = format!(
+            "import compileall, sysconfig\n\
+             compileall.compile_dir(sysconfig.get_paths()['purelib'], quiet=2, workers={workers})"
+        );
+        let run = crate::launch_identity::trampoline(&python, None).and_then(|mut command| {
+            command.envs(crate::launch_identity::interpreter_environment(&python)?).args(["-I", "-c", &script]);
+            command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+            command.status()
+        });
+        match run {
             Ok(status) if !status.success() => tracing::warn!("environment bytecode: compileall exited {status}"),
-            _ => {}
-        })
+            Ok(_) => {}
+            Err(error) => tracing::warn!("environment bytecode: {error}"),
+        }
     });
-    if let Err(error) = reaped {
+    if let Err(error) = started {
         tracing::warn!("environment bytecode: {error}");
     }
 }
