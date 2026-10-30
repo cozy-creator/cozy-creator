@@ -22,9 +22,13 @@ hash_arms() {
 # hash_run <arm> <tensorfs>: the pod on that arm's Runtime, then kernel_hash.py; its report in $OUT/report-<arm>.json.
 # Arm a pairs the TensorFS release; arm b keeps it (a dev Runtime with a TensorFS version resolves it on PyPI alone).
 hash_run() {
-  local arm=$1 n tfs=()
-  [ "$arm" = b ] || tfs=(--tensorfs "$2")
-  step "update-$arm" machine update "$NAME" --runtime "${HASH_WANT[$arm]}" "${tfs[@]}" -y || return 1
+  local arm=$1 n
+  if [ "$arm" = a ]; then
+    # The TensorFS release pairs with a released Runtime; a dev Runtime then keeps it (with a version it resolves PyPI alone).
+    step pair machine update "$NAME" --runtime "${HASH_PAIR:-0.35.6}" --tensorfs "$2" -y || return 1
+  fi
+  [ "${HASH_WANT[$arm]}" = "${HASH_PAIR:-0.35.6}" ] && [ "$arm" = a ] ||
+    step "update-$arm" machine update "$NAME" --runtime "${HASH_WANT[$arm]}" -y || return 1
   cozy machine show "$NAME" 2>&1 | grep -E '^(runtime|tensorfs|GPU) ' | tee -a "$R"
   # A fresh pod's first environment install prints nothing while it downloads: 30 min of silence, not lib.sh's 15.
   say "step hash-$arm: cozy run ./kernel_hash.py --gpus=1 --on $NAME"
