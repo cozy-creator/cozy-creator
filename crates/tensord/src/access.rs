@@ -14,11 +14,20 @@ use crate::{
     stop::Stop,
     storage::{self, Store},
 };
+use platform::contain::host_memory;
 use std::{
     collections::BTreeSet,
-    io,
-    sync::{Arc, Mutex},
+    fs::File,
+    io::{self, Read},
+    sync::{
+        atomic::{AtomicI64, AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
 };
+
+/// Readers of a cold call's weights ahead of its executor: enough requests in flight for an
+/// array of disks, as the executor's own reads keep.
+const READ_AHEAD_THREADS: usize = 4;
 use tensorfs::{
     err::{Code, Refusal},
     format::ObjectRef,
@@ -164,11 +173,16 @@ impl Fetch {
     /// Want each of `selected`'s (header, components) components next, before the call's
     /// executor reads them, in Runtime's Start-pass order: the smallest component first; then
     /// `later`'s (its on-demand models, built when a stage first uses one) the same way, right
-    /// behind them. Held until the call ends. Its run's progress waits on `selected` only.
+    /// behind them. Held until the call ends. Its run's progress waits on `selected` only. For a
+    /// `cold` call (no executor holds its construction) the chunks already on disk are read into
+    /// the page cache in the same order meanwhile (`read_ahead`).
     pub fn ahead(
-        self: &Arc<Self>, selected: &[(String, Vec<String>)], later: &[(String, Vec<String>)],
+        self: &Arc<Self>, selected: &[(String, Vec<String>)], later: &[(String, Vec<String>)], cold: bool,
         engine: &Arc<Engine>,
     ) -> io::Result<()> {
+        if cold {
+            self.read_ahead(selected, later);
+        }
         let mut wanted = match self.components(selected, true) {
             Ok(wanted) => wanted,
             Err(error) => {
@@ -224,6 +238,56 @@ impl Fetch {
             }
         }
         Ok(())
+    }
+
+    /// The page cache takes `selected`'s and then `later`'s chunks on disk, the smallest component
+    /// first, while the call's executor forks, imports and opens its GPU: its Start pass and first
+    /// phase then read memory, not the disk (a cold Qwen-Image text encoder is 8.4 GB). Read on
+    /// threads of their own, a chunk the cache holds skipped, within half of the host's available
+    /// memory, ending with the call.
+    fn read_ahead(self: &Arc<Self>, selected: &[(String, Vec<String>)], later: &[(String, Vec<String>)]) {
+        let store = self.store().clone();
+        let ordered = |groups: &[(String, Vec<String>)]| {
+            let mut components: Vec<(u64, Vec<ObjectRef>)> = groups.iter()
+                .filter_map(|(header, components)| Some((checkpoint(&store, header).ok()?, components)))
+                .flat_map(|(checkpoint, components)| components.iter().map(move |component| {
+                    let objects = storage::chunks(&checkpoint, std::slice::from_ref(component));
+                    (objects.iter().map(|o| o.length).sum(), objects)
+                }).collect::<Vec<_>>())
+                .collect();
+            components.sort_by_key(|(bytes, _)| *bytes);
+            components.into_iter().flat_map(|(_, objects)| objects).collect::<Vec<_>>()
+        };
+        let chunks: Vec<ObjectRef> = ordered(selected).into_iter().chain(ordered(later))
+            .filter(|o| store.holds(o)).collect();
+        if chunks.is_empty() {
+            return;
+        }
+        let half = host_memory::limit().map_or(i64::MAX, |limit| i64::try_from(limit / 2).unwrap_or(i64::MAX));
+        let room = Arc::new(AtomicI64::new(host_memory::read().available.saturating_sub(half)));
+        let (chunks, next) = (Arc::new(chunks), Arc::new(AtomicUsize::new(0)));
+        for reader in 0..READ_AHEAD_THREADS {
+            let (store, chunks, next, room, call) = (store.clone(), chunks.clone(), next.clone(), room.clone(), Arc::downgrade(self));
+            let started = std::thread::Builder::new().name(format!("read-ahead-{reader}")).spawn(move || {
+                let mut buf = vec![0u8; 8 << 20];
+                while let Some(object) = chunks.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    if call.upgrade().is_none_or(|call| call.stop.is_cancelled()) {
+                        return;
+                    }
+                    let Some(mut file) = store.path(object).ok().and_then(|path| File::open(path).ok()) else { continue };
+                    if platform::durable::cached(&file, 0, object.length) == Some(true) {
+                        continue;
+                    }
+                    if room.fetch_sub(i64::try_from(object.length).unwrap_or(i64::MAX), Ordering::Relaxed) < 0 {
+                        return;
+                    }
+                    while matches!(file.read(&mut buf), Ok(n) if n > 0) {}
+                }
+            });
+            if let Err(error) = started {
+                tracing::warn!("reading a call's weights ahead: {error}");
+            }
+        }
     }
 
     pub(crate) fn ready(&self) -> Ready {

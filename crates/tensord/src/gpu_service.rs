@@ -2293,6 +2293,11 @@ impl Pool {
     }
     /// The GPUs with an executor of `plan`'s environment now, by envelope index (a lane's first),
     /// each with whether it loaded `plan`'s construction; those that did first.
+    /// Whether an executor holds `plan`'s construction loaded: its call reads no weights.
+    pub fn loaded(&self, plan: &Plan) -> bool {
+        self.hosting(plan).iter().any(|(_, loaded)| *loaded)
+    }
+
     fn hosting(&self, plan: &Plan) -> Vec<(usize, bool)> {
         let mut lanes: BTreeMap<usize, bool> = BTreeMap::new();
         for leader in self.leaders.lock().unwrap().values().filter(|leader| leader.env == plan.executor) {
