@@ -17,6 +17,12 @@ def gpu_calls(rec):
     return [m for m in rows if (m.get('execution') or {}).get('gpus')]
 
 
+def piece_calls(rec):
+    """minimax-h3 shot's piece calls' measurements, in order (not its one-latent decode)."""
+    return [c['measurements'] for c in rec.get('calls') or []
+            if str(c.get('function', '')).endswith('_piece') and ((c.get('measurements') or {}).get('execution') or {}).get('gpus')]
+
+
 def executor(m):
     e = m['execution']
     return tuple(sorted(g['pid'] for g in e['gpus'])), (e.get('executor') or {}).get('started_unix_ms')
@@ -112,8 +118,8 @@ for idle, active in pairs:
         f'{ready_s(ra, ma):.1f} s after acceptance ({idle} {ready_s(ri, mi):.1f} s); host stall {host_stall_s(ma):.1f} s')
 t, lf = record('idle-h3-t'), record('idle-h3-lf')
 if lf:
-    ok = all(r is not None and r.get('status') == 'completed' and gpu_calls(r) for r in (t, lf))
-    first, second = (executor(gpu_calls(r)[-1]) if ok else None for r in (t, lf))
+    ok = all(r is not None and r.get('status') == 'completed' and piece_calls(r) for r in (t, lf))
+    first, second = (executor(piece_calls(r)[-1]) if ok else None for r in (t, lf))
     row('idle-h3-lf', ok and first == second,
         f'turbo call executor {first}, two-piece shot executor {second}; statuses '
         f'{t and t.get("status")}, {lf and lf.get("status")}')

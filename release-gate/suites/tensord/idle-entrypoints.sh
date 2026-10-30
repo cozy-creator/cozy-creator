@@ -46,7 +46,7 @@ h3_shot() {  # h3_shot <file> <prompt> <seed> [yaml lines]
 }
 h3_shot idle-h3-standard.yaml "The camera holds, then pans right." $((R + 409)) $'turbo: false\nsteps: 30\n'
 h3_shot idle-h3-turbo.yaml "The camera drifts left." $((R + 404))
-# Two pieces (16 s, cut on the beat at 8 s), both on idle-h3-t's Turbo Ref2VA construction.
+# Two pieces (16 s: 10 s, then 6 s cut between its beats), both on idle-h3-t's Turbo Ref2VA construction.
 h3_shot idle-h3-pieces.yaml "A slow push in." $((R + 405)) \
   $'beats: [{at: 0, prompt: "<Lead> walks toward the camera."}, {at: 8, prompt: "<Lead> turns to the camera."}]\n'
 sed -i 's/^duration_s: 5$/duration_s: 16/' idle-h3-pieces.yaml
