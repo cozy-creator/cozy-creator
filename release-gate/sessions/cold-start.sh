@@ -4,9 +4,10 @@
 # bytecode after it; the executor processes' memory is read after the machine starts and after the requests, and the
 # machine's kernel boots at the end. An arm's `wait` says when
 # its requests go after their install: `now`, once the package's level is `imported` (its import-only parent is up),
-# or once that parent's kernel compiles have ended too (`compiled`); the session says how long each took. Nothing
+# or once that parent's kernel compiles have ended too (`compiled`); the session says how long each took. An arm's
+# `warm` requests follow each cold one on the same executor, each a new prompt and seed (0 by default). Nothing
 # here compares: the run records and the stamped event streams are the evidence. params:
-#   arms        [{"name": "fix", "tensord": "<dev-build run id>", "models": ["sdxl", "anima"], "wait": "now"},
+#   arms        [{"name": "fix", "tensord": "<dev-build run id>", "models": ["sdxl", "anima"], "wait": "now", "warm": 1},
 #               {"name": "again", "tensord": "same"}, {"name": "prod", "tensord": "0.13.7"}, …], in order. tensord:
 #               `image` or `same` (no update), a release version, or a dev-build run id; models: sdxl, anima, qwen
 #   sdxl        the SDXL function (sdxl/generate@0.1.3)
@@ -162,7 +163,7 @@ for i in "${!names[@]}"; do
   if [ -n "${bins[$i]}" ]; then
     sleep 30; podpy ps > "$OUT/$a-ps-start.json"; say "$a: executors 30 s after start $(cat "$OUT/$a-ps-start.json")"
   fi
-  wait=$(jq -r --argjson i "$i" '.[$i].wait // "now"' <<<"$ARMS")
+  wait=$(jq -r --argjson i "$i" '.[$i].wait // "now"' <<<"$ARMS") warm=$(jq -r --argjson i "$i" '.[$i].warm // 0' <<<"$ARMS")
   for m in $(jq -r --argjson i "$i" '.[$i].models // ["sdxl", "anima"] | .[]' <<<"$ARMS"); do
     fn=${FN[$m]} pkg=${PKG[$m]} module=${PKG[$m]//-/_}
     # The weights leave the page cache first, so nothing this session does runs beside the imports
@@ -190,15 +191,18 @@ for i in "${!names[@]}"; do
       fi
       podpy ps > "$OUT/$a-$m-ps-ready.json"; say "$a $m: executors before its request $(cat "$OUT/$a-$m-ps-ready.json")"
     fi
-    k=$(( (k + 1) % ${#PROMPTS[@]} ))
-    if [ "$m" = sdxl ]; then
-      jq -n --arg p "${PROMPTS[$k]}" --argjson s "$RANDOM$i" '{megapixels: 1.0, aspect_ratio: "1:1", steps: 20, guidance: 7.0, hidiffusion: false, prompt_upsampling: false, prompt: $p, seed: $s}' > "$OUT/$a-$m.yaml"
-    elif [ "$m" = qwen ]; then
-      jq -n --arg p "${PROMPTS[$k]}" --argjson s "$RANDOM$i" '{megapixels: 1.0, aspect_ratio: "1:1", steps: 20, prompt_upsampling: false, prompt: $p, seed: $s}' > "$OUT/$a-$m.yaml"
-    else
-      jq -n --arg p "${PROMPTS[$k]}" --argjson s "$RANDOM$i" '{megapixels: 2.25, aspect_ratio: "1:1", steps: 30, guidance: 4.5, cfg_interval_start: 0.0, cfg_interval_stop: 1.0, prompt_upsampling: false, prompt: $p, seed: $s, negative_prompt: "worst quality, low quality, blurry, jpeg artifacts"}' > "$OUT/$a-$m.yaml"
-    fi
-    request "$a-$m-cold" "$fn" "$OUT/$a-$m.yaml" || fail "$a: $m request"
+    for w in $(seq 0 "$warm"); do
+      k=$(( (k + 1) % ${#PROMPTS[@]} ))
+      if [ "$m" = sdxl ]; then
+        jq -n --arg p "${PROMPTS[$k]}" --argjson s "$RANDOM$i$w" '{megapixels: 1.0, aspect_ratio: "1:1", steps: 20, guidance: 7.0, hidiffusion: false, prompt_upsampling: false, prompt: $p, seed: $s}' > "$OUT/$a-$m-$w.yaml"
+      elif [ "$m" = qwen ]; then
+        jq -n --arg p "${PROMPTS[$k]}" --argjson s "$RANDOM$i$w" '{megapixels: 1.0, aspect_ratio: "1:1", steps: 20, prompt_upsampling: false, prompt: $p, seed: $s}' > "$OUT/$a-$m-$w.yaml"
+      else
+        jq -n --arg p "${PROMPTS[$k]}" --argjson s "$RANDOM$i$w" '{megapixels: 2.25, aspect_ratio: "1:1", steps: 30, guidance: 4.5, cfg_interval_start: 0.0, cfg_interval_stop: 1.0, prompt_upsampling: false, prompt: $p, seed: $s, negative_prompt: "worst quality, low quality, blurry, jpeg artifacts"}' > "$OUT/$a-$m-$w.yaml"
+      fi
+      label="$a-$m-cold"; [ "$w" = 0 ] || label="$a-$m-warm$w"
+      request "$label" "$fn" "$OUT/$a-$m-$w.yaml" || fail "$a: $m request"
+    done
     podpy pyc "$module" > "$OUT/$a-$m-pyc.json"; say "$a $m bytecode after its request (py, pyc): $(jq -c .packages "$OUT/$a-$m-pyc.json")"
   done
   podpy ps > "$OUT/$a-ps-after.json"; say "$a: executors after the requests $(cat "$OUT/$a-ps-after.json")"
