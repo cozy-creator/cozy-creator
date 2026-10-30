@@ -12,14 +12,14 @@ use std::{
 
 use protocol::{
     calcifer::{On, StagedInput},
-    error::Error,
+    error::{Error, Kind},
     ids::Digest,
     machine as v1,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use super::author::{INDEX, Project, account, index_url, refuse, source_files};
+use super::author::{Described, INDEX, Project, account, index_url, refuse, source_files};
 use crate::Context;
 
 #[derive(Serialize)]
@@ -66,16 +66,35 @@ pub(crate) struct Local {
     _manifest: tempfile::TempDir,
 }
 
+/// The project `path` names: a package directory, or a script as the one-file package it is.
+fn project(ctx: &Context, path: &Path) -> Result<PathBuf, Error> {
+    if !path.exists() {
+        return Err(Error::new(
+            Kind::NotFound,
+            "target_not_found",
+            format!("{} does not exist", path.display()),
+        ));
+    }
+    let path = fs::canonicalize(path)
+        .map_err(|e| refuse("project_unreadable", format!("{}: {e}", path.display())))?;
+    match path.is_file() {
+        true => script(ctx, &path),
+        false => Ok(path),
+    }
+}
+
+/// The `local/<name>` package at `path` and its interface, read from its source as a publish
+/// reads it: nothing installs, and none of it runs.
+pub(crate) async fn describe(ctx: &Context, path: &Path) -> Result<(String, Described), Error> {
+    let project = Project::read(project(ctx, path)?)?;
+    Ok((format!("local/{}", project.name), project.describe(ctx).await?))
+}
+
 /// `path` (a package directory or a script) as the machine `on` installs it. This
 /// computer's machine reads the files where they are; another is sent them.
 pub(crate) async fn source(ctx: &Context, path: &Path, on: &On) -> Result<Local, Error> {
     let in_place = matches!(on, On::Machine(name) if name.eq_ignore_ascii_case("local"));
-    let path = fs::canonicalize(path)
-        .map_err(|e| refuse("project_unreadable", format!("{}: {e}", path.display())))?;
-    let project_dir = match path.is_file() {
-        true => script(ctx, &path)?,
-        false => path,
-    };
+    let project_dir = project(ctx, path)?;
     let project = Project::read(project_dir.clone())?;
     let locals = path_dependencies(&project_dir)?;
     let root = common(
