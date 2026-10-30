@@ -98,13 +98,13 @@ for k in "${names[@]}"; do
   cd "$OUT" || fail "no $OUT"
   N=$(runno "$k")
   if [ -n "$N" ]; then cozy run show "$N" --once --json > "$OUT/$k.json" 2>/dev/null; fi
-  st=$(jq -r '.status // "none"' "$OUT/$k.json" 2>/dev/null)
+  st=$(jq -r '.status // "none"' "$OUT/$k.json" 2>/dev/null); st=${st:-none}
   MADE[$k]=$(find "$OUT/out/$k" -type f \( -name '*.png' -o -name '*.webp' -o -name '*.jpg' -o -name '*.mp4' \) 2>/dev/null | sort | head -1)
   say "$k run ${N:-none} ${st:-none} (exit $code): $(summary "$k")"
   want=$(jq -r '.expect // "completed"' <<<"$c")
   if [ "$st" != completed ]; then
     why=$(jq -r '.reason.message // .reason // empty' "$OUT/$k.json" 2>/dev/null)
-    say "$k reason: $(printf '%s' "${why:-$(tail -c 600 "$OUT/$k.txt")}" | head -c 600)"
+    say "$k reason: $(printf '%s' "${why:-$(tr '\r' '\n' < "$OUT/$k.txt" | grep -m1 -E '^error:' || tail -c 600 "$OUT/$k.txt")}" | head -c 600)"
   fi
   # A refusal before any run (st none) is the failure an `expect: failed` cell proves.
   [ "$st" = "$want" ] || { [ "$want" = failed ] && [ "$st" = none ] && [ "$code" != 0 ]; } ||
