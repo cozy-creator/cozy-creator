@@ -1,8 +1,9 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime>=0.35", "diffusers>=0.40.0", "msgspec>=0.19", "torch>=2.14"]
+# dependencies = ["cozy-runtime>=0.35", "diffusers>=0.40.0", "msgspec>=0.19", "torch==2.14.0"]
 # ///
-"""Every third-party kernel this machine's Runtime serves, through the Runtime's own paths, on inputs drawn from a fixed
+"""(torch is the pods' image's own, torch2.14.0-cu130: an environment that resolves another downloads it first.)
+Every third-party kernel this machine's Runtime serves, through the Runtime's own paths, on inputs drawn from a fixed
 CPU seed: the sha256 of each output's bytes, twice (a kernel that does not repeat its own bytes is `nondeterministic`
 and is compared by its error instead), and its relative L2 against a float32 reference. Two Runtimes' reports, the
 same card, compare op by op (`kernel-hash.sh`): equal digests are equal bytes.

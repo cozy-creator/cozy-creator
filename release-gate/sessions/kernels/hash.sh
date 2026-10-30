@@ -26,9 +26,19 @@ hash_run() {
   [ "$arm" = b ] || tfs=(--tensorfs "$2")
   step "update-$arm" machine update "$NAME" --runtime "${HASH_WANT[$arm]}" "${tfs[@]}" -y || return 1
   cozy machine show "$NAME" 2>&1 | grep -E '^(runtime|tensorfs|GPU) ' | tee -a "$R"
-  say "hash-$arm: the script's environment and run (the install is timed apart in hash-$arm.txt)"
-  (cd "$(dirname "${BASH_SOURCE[0]}")" && step "hash-$arm" run ./kernel_hash.py --gpus=1 --on "$NAME") ||
-    say "WARNING hash-$arm: $(tail -c 600 "$OUT/hash-$arm.txt" | tr '\n' ' ')"
+  # A fresh pod's first environment install prints nothing while it downloads: 30 min of silence, not lib.sh's 15.
+  say "step hash-$arm: cozy run ./kernel_hash.py --gpus=1 --on $NAME"
+  (cd "$(dirname "${BASH_SOURCE[0]}")" && exec cozy run ./kernel_hash.py --gpus=1 --on "$NAME") > "$OUT/hash-$arm.txt" 2>&1 &
+  local p=$! last=-1 still=0 size
+  while kill -0 "$p" 2>/dev/null; do
+    sleep 30; size=$(stat -c %s "$OUT/hash-$arm.txt")
+    if [ "$size" = "$last" ]; then still=$((still + 30)); else still=0 last=$size; fi
+    [ "$still" -lt 1800 ] || { kill "$p"; say "hash-$arm: no output for 30 min"; break; }
+  done
+  wait "$p" || say "WARNING hash-$arm: $(tr '\r' '\n' < "$OUT/hash-$arm.txt" | tail -c 600 | tr '\n' ' ')"
+  local install; install=$(grep -oE 'run [0-9]+ · install' "$OUT/hash-$arm.txt" | head -1 | awk '{print $2}')
+  [ -z "$install" ] || say "hash-$arm: environment install run $install took $(cozy run show "$install" --once --json 2>/dev/null |
+    jq -r '((.settled_at_ms // 0) - (.accepted_at_ms // .created_at_ms // 0)) / 1000 | floor') s"
   n=$(runno "hash-$arm"); [ -n "$n" ] || return 1
   cozy run show "$n" --once --json > "$OUT/hash-$arm.json" 2>&1
   jq -r '.result.value' "$OUT/hash-$arm.json" > "$OUT/report-$arm.json" 2>/dev/null && jq -e .ops "$OUT/report-$arm.json" >/dev/null || return 1
