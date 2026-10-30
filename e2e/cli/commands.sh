@@ -121,7 +121,10 @@ refused run run birefnet/remove_background --asset "image=$dog"
 refused run-on-local run birefnet/remove_background --input "$OUT/refused.yaml" --on local
 refused run-warm run birefnet/remove_background --warm installed
 (cd "$here" && refused run-code run ./weightless/reverse text=refused)
-(cd "$here" && refused run-describe run ./weightless/reverse --describe)
+# Describing local code reads its source here and uses no machine: it works where none runs.
+(cd "$here" && cozy --json run ./weightless/reverse --describe > "$OUT/describe-code.json" 2> "$OUT/describe-code.err") \
+  && J '.fields | any(.name == "text")' "$OUT/describe-code.json" \
+  || check "cozy run ./weightless/reverse --describe: $(head -c 300 "$OUT/describe-code.json") $(head -c 200 "$OUT/describe-code.err")"
 refused install package install birefnet
 refused install-code package install "$here/weightless"
 refused remove package remove birefnet
