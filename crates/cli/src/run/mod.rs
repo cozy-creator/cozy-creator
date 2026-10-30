@@ -40,7 +40,7 @@ const EXAMPLES: &str = "Examples:
                      seed: 7
   cozy run sdxl/generate --input request.yaml seed=8   (an inline input overrides the file)
   cozy run sdxl/generate --input request.yaml --lora org/sdxl-lora,0.8
-  cozy run birefnet/remove_background --asset image=./character.png
+  cozy run birefnet/remove_background --file image=./character.png
   cozy run sdxl/generate prompt='a fox in fresh snow'  (inline, for quick runs)
   cozy run sdxl/generate --describe                    (the fields it takes)
 
@@ -82,11 +82,11 @@ struct RunArgs {
     /// The whole payload from a JSON or YAML file; inline inputs override it.
     #[arg(long = "input", value_name = "FILE")]
     input_file: Option<PathBuf>,
-    /// Attach a file: `field.path=FILE`, `label=FILE`, or `FILE` into the declared assets.
-    #[arg(long = "asset", value_name = "[NAME=]FILE", value_hint = ValueHint::FilePath)]
+    /// Attach a file: `field.path=FILE`, `label=FILE`, or `FILE` into the declared files.
+    #[arg(long = "file", value_name = "[NAME=]FILE", value_hint = ValueHint::FilePath)]
     assets: Vec<String>,
-    /// A hint for one attached asset: `label-or-index=auto|low|medium|high`.
-    #[arg(long = "asset-fidelity", value_name = "ASSET=FIDELITY", value_parser = fidelity)]
+    /// A hint for one attached file: `label-or-index=auto|low|medium|high`.
+    #[arg(long = "file-fidelity", value_name = "FILE=FIDELITY", value_parser = fidelity)]
     fidelities: Vec<String>,
     /// Apply a LoRA, in order: `org/lora[,strength]` adapts the function's model; `slot=org/lora`
     /// names one of several (strength 1 by default).
@@ -502,7 +502,7 @@ fn attention_pin(pin: &str) -> Result<String, String> {
     }
 }
 
-/// `--asset-fidelity`'s form; which asset it names is checked as the run binds.
+/// `--file-fidelity`'s form; which file it names is checked as the run binds.
 fn fidelity(term: &str) -> Result<String, String> {
     match term.rsplit_once('=') {
         Some((asset, "auto" | "low" | "medium" | "high")) if !asset.is_empty() => Ok(term.into()),

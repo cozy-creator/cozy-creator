@@ -61,7 +61,7 @@ cozy machine rent > "$OUT/rent-catalog.txt" 2>&1 && grep -q -E '^NAME +GPU +GPUS
   || check "machine rent: no catalog table: $(head -c 300 "$OUT/rent-catalog.txt")"
 cozy --json machine rent > "$OUT/rent-catalog.json" 2> "$OUT/rent-catalog.err" && J 'type == "array" and all(.[]; .name | length > 0)' "$OUT/rent-catalog.json" \
   || check "machine rent --json: no catalog array: $(head -c 300 "$OUT/rent-catalog.json") $(head -c 200 "$OUT/rent-catalog.err")"
-code=0; cozy --json run birefnet/remove_background --asset "image=$(picture dog1.jpg)" --on new > "$OUT/rent-signed-out.json" 2>&1 || code=$?
+code=0; cozy --json run birefnet/remove_background --file "image=$(picture dog1.jpg)" --on new > "$OUT/rent-signed-out.json" 2>&1 || code=$?
 [ "$code" != 0 ] && grep -q 'cozy login' "$OUT/rent-signed-out.json" || check "run --on new signed out: exit $code, not refused for sign-in: $(head -c 300 "$OUT/rent-signed-out.json")"
 printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n' > "$OUT/id_private"
 code=0; cozy --json machine rent rtx-4090 --ssh "$OUT/id_private" > "$OUT/rent-ssh.json" 2> "$OUT/rent-ssh.err" || code=$?
@@ -117,7 +117,7 @@ refused() {  # refused <name> <cozy args...>
   [ "$code" = 1 ] && J '.error.code == "local_unavailable" and (.error.remedy | contains("--on new"))' "$OUT/refused-$name.json" \
     || check "cozy $*: exit $code, not refused local_unavailable: $(head -c 300 "$OUT/refused-$name.json") $(head -c 200 "$OUT/refused-$name.err")"
 }
-refused run run birefnet/remove_background --asset "image=$dog"
+refused run run birefnet/remove_background --file "image=$dog"
 refused run-on-local run birefnet/remove_background --input "$OUT/refused.yaml" --on local
 refused run-warm run birefnet/remove_background --warm installed
 (cd "$here" && refused run-code run ./weightless/reverse text=refused)
@@ -136,7 +136,7 @@ refused show machine show local
 refused logs machine logs local --lines 5
 refused authorize machine authorize "$key"
 refused doctor doctor --on local
-cozy run birefnet/remove_background --asset "image=$dog" > "$OUT/refused.txt" 2>&1 && check "a local run without --on was not refused"
+cozy run birefnet/remove_background --file "image=$dog" > "$OUT/refused.txt" 2>&1 && check "a local run without --on was not refused"
 grep -q "local runs aren't available on" "$OUT/refused.txt" && grep -q -- '--on new' "$OUT/refused.txt" \
   || check "the refusal does not say local runs aren't available and --on new: $(head -c 300 "$OUT/refused.txt")"
 
@@ -192,8 +192,8 @@ before=$(cozy --json run ls --limit 0 | jq '.runs | length') || true
 J '.fields | any(.name == "text")' "$OUT/describe.json" || check "run --describe: no text field"
 [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$before" ] || check "run --describe started a run"
 note=$OUT/inputs/note.txt; echo "an asset" > "$note"
-if (cd "$here" && cell fidelity ./weightless/fidelities --asset "notes=$note" --asset-fidelity notes=high); then
-  grep -q 'notes=high' "$OUT/fidelity.ndjson" || check "--asset-fidelity notes=high: the executor saw $(grep -o '"assets":\[[^]]*\]' "$OUT/fidelity.ndjson")"
+if (cd "$here" && cell fidelity ./weightless/fidelities --file "notes=$note" --file-fidelity notes=high); then
+  grep -q 'notes=high' "$OUT/fidelity.ndjson" || check "--file-fidelity notes=high: the executor saw $(grep -o '"assets":\[[^]]*\]' "$OUT/fidelity.ndjson")"
 fi
 for level in installed downloaded imported host; do
   cozy --json run "$(birefnet)" --warm "$level" --on local > "$OUT/warm-$level.ndjson" || check "run --warm $level failed"

@@ -27,13 +27,13 @@ pub fn usage_line(target: &str, callable: &Callable) -> String {
 fn term(callable: &Callable, field: &Field) -> String {
     if callable.is_assets(&field.name) {
         return if field.constraints.min_length.unwrap_or(0) > 0 {
-            "--asset <file> [--asset <file>]...".into()
+            "--file <file> [--file <file>]...".into()
         } else {
-            "[--asset <file>]...".into()
+            "[--file <file>]...".into()
         };
     }
     let term = match &field.ty {
-        Type::Asset(_) => format!("--asset {}=<file>", field.name),
+        Type::Asset(_) => format!("--file {}=<file>", field.name),
         Type::Str
         | Type::Int
         | Type::Float

@@ -1033,7 +1033,7 @@ fn rewrite_assets(
     if schema.get("asset").is_some() || schema["input"] == "tree" {
         let object = value
             .as_object_mut()
-            .ok_or_else(|| Error::internal("custody_corrupt", "asset result differs from declared schema"))?;
+            .ok_or_else(|| Error::internal("custody_corrupt", "file result differs from declared schema"))?;
         if let Some(reference) = object.get("asset_ref").and_then(Value::as_str) {
             let (artifact, mime, source) = sources.get(reference).ok_or_else(|| {
                 Error::conflict("precondition_failed",
@@ -1057,7 +1057,7 @@ fn rewrite_assets(
                 ..Default::default()
             });
         } else {
-            return Err(Error::internal("custody_corrupt", "declared asset has no reference"));
+            return Err(Error::internal("custody_corrupt", "declared file has no reference"));
         }
     } else if let Some(fields) = schema.get("fields").and_then(Value::as_array) {
         let object = value

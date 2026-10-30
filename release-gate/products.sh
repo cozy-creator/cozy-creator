@@ -23,11 +23,11 @@ av() {
     'BEGIN { print (h == want && v != "" && a != "" && (v - a) ^ 2 < 0.01) ? "PASS" : "FAIL" }')" \
     "${f%% *}p, video ${v:-none} s, audio ${a:-none} s"
 }
-# refs <cell> <package> <function> <seed>: two named references and their mentions (xs-135): Klein's character (else
-# the gate's reference) placed in the gate's reference scene. The output shows the character in that scene.
+# refs <cell> <package> <function> <seed>: two named assets and their mentions (xs-135): Klein's character (else the
+# gate's reference) placed in the gate's reference scene. The output shows the character in that scene.
 refs() {
   cell "$1" "$(pkg "$2" "$3")" seed:=$4 prompt="<Hero> stands on the rocks below <Lighthouse>, in its light and weather" \
-    references:="[{\"name\": \"Hero\", \"image\": \"${K:-$REF}\"}, {\"name\": \"Lighthouse\", \"image\": \"$REF\"}]"
+    assets:="[{\"name\": \"Hero\", \"image\": \"${K:-$REF}\"}, {\"name\": \"Lighthouse\", \"image\": \"$REF\"}]"
 }
 product_minimax_h3() {
   # H3's references: BiRefNet cleans the character image and Qwen3.5 describes it (greedy), as for a user's character.
@@ -48,12 +48,12 @@ product_seedvr2() {
   local src=${CLIP:-$(ls "$B/ref-$SKU-clip.mp4" 2>/dev/null)}
   if [ -n "$src" ]; then nice -n 19 ffmpeg -v error -y -i "$src" -t 1 -an -c:v libx264 -pix_fmt yuv420p clip-1s.mp4
   else nice -n 19 ffmpeg -v error -y -loop 1 -i "$REF" -t 1 -r 24 -vf scale=-2:768 -c:v libx264 -pix_fmt yuv420p clip-1s.mp4; fi
-  cell seedvr2 "$(pkg seedvr2 upscale)" --asset video="$OUT/clip-1s.mp4" resolution=1080p seed:=$((R + 2))
+  cell seedvr2 "$(pkg seedvr2 upscale)" --file video="$OUT/clip-1s.mp4" resolution=1080p seed:=$((R + 2))
   # 5 s with its sound at 1440p, as H3 calls it.
   if [ -n "$src" ]; then nice -n 19 ffmpeg -v error -y -i "$src" -t 5 -c:v libx264 -pix_fmt yuv420p -c:a aac clip-5s.mp4
   else nice -n 19 ffmpeg -v error -y -loop 1 -i "$REF" -f lavfi -i sine=frequency=440 -t 5 -r 24 -vf scale=-2:768 \
     -c:v libx264 -pix_fmt yuv420p -c:a aac clip-5s.mp4; fi
-  cell seedvr2-1440p "$(pkg seedvr2 upscale)" --asset video="$OUT/clip-5s.mp4" resolution=1440p aspect_ratio=16:9 seed:=$((R + 18))
+  cell seedvr2-1440p "$(pkg seedvr2 upscale)" --file video="$OUT/clip-5s.mp4" resolution=1440p aspect_ratio=16:9 seed:=$((R + 18))
   av seedvr2-1440p 1440
 }
 product_sdxl() { cell sdxl "$(pkg sdxl generate)" prompt="$SCENE, photo" seed:=$((R + 3)); }
@@ -67,9 +67,9 @@ product_qwen_image_2() {
   refs qwen-refs qwen-image-2 generate_turbo $((R + 20))
 }
 product_anima() { cell anima "$(pkg anima generate)" prompt="masterpiece, best quality, anime illustration of $CHAR" seed:=$((R + 6)); }
-product_birefnet() { cell birefnet "$(pkg birefnet remove_background)" --asset image="${K:-$REF}"; }
+product_birefnet() { cell birefnet "$(pkg birefnet remove_background)" --file image="${K:-$REF}"; }
 product_qwen3_5() {
-  cell describer "$(pkg qwen3.5 ask)" prompt="Describe this character: appearance, clothing and pose." --asset images="${K:-$REF}"
+  cell describer "$(pkg qwen3.5 ask)" prompt="Describe this character: appearance, clothing and pose." --file images="${K:-$REF}"
 }
 # Fibo's prompt upsampler (a greedy VLM) runs, as by default.
 product_fibo_2() {
@@ -89,10 +89,10 @@ product_qwen_image() {
   # an edit. No first-party SDXL LoRA exists to swap.
   local qi; qi=$(output qwen-image 'png|webp|jpg')
   cell qwen-image-edit "$(pkg qwen-image generate)" prompt="$SCENE at dusk, covered in fresh snow, wide shot" \
-    references:="[{\"name\": \"Scene\", \"image\": \"${qi:-$REF}\"}]" seed:=$((R + 12))
+    assets:="[{\"name\": \"Scene\", \"image\": \"${qi:-$REF}\"}]" seed:=$((R + 12))
   cell qwen-image-t2i "$(pkg qwen-image generate)" prompt="$OBJECT on a beach at noon, photo" seed:=$((R + 13))
   cell qwen-image-turbo "$(pkg qwen-image generate_turbo)" prompt="$CHAR on a rainy street at night, photo" seed:=$((R + 14))
   cell qwen-image-turbo-edit "$(pkg qwen-image generate_turbo)" prompt="$SCENE in bright morning sun, wide shot" \
-    references:="[{\"name\": \"Scene\", \"image\": \"${qi:-$REF}\"}]" seed:=$((R + 15))
+    assets:="[{\"name\": \"Scene\", \"image\": \"${qi:-$REF}\"}]" seed:=$((R + 15))
   refs qwen-image-refs qwen-image generate_turbo $((R + 23))
 }

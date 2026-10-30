@@ -75,7 +75,7 @@ fn spool_file(spool: &Path, name: &str) -> io::Result<PathBuf> {
     let refuse = || {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            "the published asset names no file in this attempt's spool",
+            "the published file names none in this attempt's spool",
         )
     };
     let relative = Path::new(name);
@@ -261,7 +261,7 @@ fn commit(
         io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
-                "{:?} is not an asset field of this function's result",
+                "{:?} is not a file field of this function's result",
                 publish.output
             ),
         )
