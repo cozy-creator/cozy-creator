@@ -202,7 +202,7 @@ impl Machines {
     pub async fn show(self: &Arc<Self>, text: &str) -> Result<Machine, Error> {
         let row = match self.named_now(text).await? {
             Named::Here(row) => row,
-            Named::Other(machine) => return Ok(machine),
+            Named::Other(machine) => return Ok(*machine),
         };
         if row.state != MachineState::Ended
             && self.offline(&row.name).is_none()
@@ -410,7 +410,7 @@ impl Machines {
         let (ended, live): (Vec<MachineRow>, Vec<MachineRow>) =
             rows.into_iter().partition(|row| row.state == MachineState::Ended);
         let mut found: Vec<Named> = (live.into_iter().map(Named::Here))
-            .chain(others.map(Named::Other))
+            .chain(others.map(|machine| Named::Other(Box::new(machine))))
             .collect();
         match found.len() {
             0 if ended.is_empty() => Ok(None),
@@ -478,7 +478,7 @@ impl Machines {
         }
         let row = match self.named_now(text).await? {
             Named::Here(row) => row,
-            Named::Other(machine) => return self.end_other(machine),
+            Named::Other(machine) => return self.end_other(*machine),
         };
         if row.kind == MachineKind::Local {
             return Err(local_refusal());
@@ -1732,7 +1732,7 @@ fn local_refusal() -> Error {
 /// this account as its Hub lists it.
 pub(crate) enum Named {
     Here(MachineRow),
-    Other(Machine),
+    Other(Box<Machine>),
 }
 
 /// The refusal of a name only ended machines had: a Hub gives a name again once its rental ends,
