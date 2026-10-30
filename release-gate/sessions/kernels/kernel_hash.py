@@ -109,6 +109,49 @@ def sage3_parts(dev: torch.device, index: int, device) -> dict[str, object]:
     return done
 
 
+def group_mean_parts(dev: torch.device, index: int) -> dict[str, object]:
+    """Sage3's group mean at D=64 and D=128: Triton's own JIT launch (upstream's), then the Runtime set's launcher on
+    the same inputs, their outputs compared; the launcher's D=64 entry last, its compile metadata said first."""
+    sage3 = import_module("cozy_runtime.internal.sage3")
+    done: dict[str, object] = {}
+
+    def step(name: str, fn) -> object:
+        print(f"[kernel_hash] group-mean {name}", file=sys.stderr, flush=True)
+        try:
+            got = fn()
+            torch.cuda.synchronize(dev)
+            done[name] = "ok"
+            return got
+        except Exception as exc:
+            done[name] = f"{type(exc).__name__}: {exc}"[:200]
+            return None
+
+    def jit(q: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        b, h, length, d = q.shape
+        q_out, qm = torch.empty_like(q), torch.empty(b, h, length // 128, d, device=q.device, dtype=q.dtype)
+        sage3.group_mean_kernel[(b, h, length // 128)](q, q_out, qm, b, h, length, d, *q.stride(), *qm.stride(), 128, 1)
+        return q_out, qm
+
+    inputs = {d: cpu(SEED, 1, 16, 512, d).to(dev) for d in (128, 64)}
+    want = {d: step(f"jit d{d}", lambda d=d: jit(inputs[d])) for d in (128, 64)}
+    launch = step("launcher", lambda: triton_kernels.ready(sage3.KERNELS, True, device=f"cuda:{index}"))
+    if launch is None:
+        return done
+    sage3.serve(index, launch)
+    for key, kernel in launch.compiled.items():
+        meta = kernel.metadata
+        line = f"{key}: shared {meta.shared}, warps {meta.num_warps}, scratch {getattr(meta, 'global_scratch_size', None)}"
+        print(f"[kernel_hash] group-mean {line}", file=sys.stderr, flush=True)
+        done[key] = line
+    got = step("launcher d128", lambda: sage3.triton_group_mean(inputs[128]))
+    if got is not None and want[128] is not None:
+        done["d128 launcher == jit"] = bool(torch.equal(got[0], want[128][0]) and torch.equal(got[1], want[128][1]))
+    got = step("launcher d64", lambda: sage3.triton_group_mean(inputs[64]))
+    if got is not None and want[64] is not None:
+        done["d64 launcher == jit"] = bool(torch.equal(got[0], want[64][0]) and torch.equal(got[1], want[64][1]))
+    return done
+
+
 @app.entrypoint()
 def main(payload: Request) -> Result:
     index = torch.cuda.current_device()
@@ -146,6 +189,8 @@ def main(payload: Request) -> Result:
 
     if payload.parts == "sage3":
         return Result(json.dumps({**out, "sage3": sage3_parts(dev, index, device)}, separators=(",", ":")))
+    if payload.parts == "group-mean":
+        return Result(json.dumps({**out, "group_mean": group_mean_parts(dev, index)}, separators=(",", ":")))
     started = time.perf_counter()
     # The inputs both arms must share: a differing digest here voids the comparison.
     out["inputs"] = {"q": digest(cpu(SEED, 1, 4608, 24, 128)), "x": digest(cpu(SEED + 20, 300, 4096)),
