@@ -23,7 +23,7 @@
 #                    (LAYOUT_MISMATCH) after the header and the probed rows. That layout read right passes the probe in
 #                    the h3-comfy-layout cell's import.
 # check.py holds each against the SKU's last passed suite and records a PASS. The throwaway models are deleted at the end.
-TFS_MODEL=${TFS_MODEL:-qwen3.5-9b} TFS_RESUME_MB=${TFS_RESUME_MB:-2048} TFS_UPLOAD_MB=${TFS_UPLOAD_MB:-256}
+TFS_MODEL=${TFS_MODEL:-qwen/qwen3.5-9b} TFS_RESUME_MB=${TFS_RESUME_MB:-2048} TFS_UPLOAD_MB=${TFS_UPLOAD_MB:-256}
 T=$OUT/suite-tensorfs TFS_DESTS=()
 mkdir -p "$T"; : > "$T/cases"
 # tfs_step <name> <cozy args...>: one command that makes a run, followed to its end (e2e/run.sh): its events in
@@ -76,7 +76,7 @@ tfs_straggler() {
   for _ in $(seq 50); do (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null && break; sleep 0.1; done
   t0=$(date +%s%3N)
   TENSORFS_HOME=$T/$1-store uv tool run -q --from "${TWF:-tensorfs}" tfs --endpoint "http://127.0.0.1:$port" --json \
-    download birefnet --dir "$T/$1-out" >"$T/$1.out" 2>"$T/$1.err"
+    download zhengpeng7/birefnet --dir "$T/$1-out" >"$T/$1.out" 2>"$T/$1.err"
   printf '%s\t%s\t%s\n' "$1" "$?" "$(( $(date +%s%3N) - t0 ))" >> "$T/straggler.tsv"
   kill "$pid"; wait "$pid" 2>/dev/null || true  # the proxy ends on TERM
   rm -rf "$T/$1-store" "$T/$1-out"

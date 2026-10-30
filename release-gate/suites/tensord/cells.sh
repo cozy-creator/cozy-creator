@@ -37,12 +37,13 @@ OLD=$first; [ "$OLD" != "$NEW" ] || OLD=$second
 "$CLI" package install "sdxl@$NEW" --on "$M" -y > "$T/update.log" 2>&1; b=$(envs)
 n1=$(submit "sdxl/generate@$NEW" prompt="$SCENE, generation $NEW" seed:=$((R + 30))); until_status "$n1" terminal
 "$CLI" package install "sdxl@$OLD" --on "$M" -y > "$T/rollback.log" 2>&1; c=$(envs)
-n2=$(submit "sdxl/generate@$OLD" prompt="$OBJECT, generation $OLD" seed:=$((R + 31))); until_status "$n2" terminal
+# A release from before the xs-133 cutover names `_/sdxl`, which moved: the rollback names its home, as its user would.
+n2=$(submit "sdxl/generate@$OLD" prompt="$OBJECT, generation $OLD" seed:=$((R + 31)) model.model=stabilityai/sdxl@1.0.0); until_status "$n2" terminal
 if [[ " $a " == *" sdxl@$OLD "* && " $b " == *" sdxl@$NEW "* && " $c " == *" sdxl@$OLD "* ]] \
    && [ "$(get "$n1" status)" = completed ] && [ "$(get "$n2" status)" = completed ]; then
   expect tensord-generations PASS "sdxl $OLD installed, updated to $NEW (run $n1), rolled back to $OLD (run $n2)"
 else
-  expect tensord-generations FAIL "installed [$a] updated [$b] rolled back [$c]; run $n1 $(get "$n1" status), run $n2 $(get "$n2" status)"
+  expect tensord-generations FAIL "installed [$a] updated [$b] rolled back [$c]; run $n1 $(get "$n1" status) $(get "$n1" reason), run $n2 $(get "$n2" status) $(get "$n2" reason)"
 fi
 if [ -n "$RWF$TWF" ]; then
   # Back to the last release (PyPI's newest Runtime and TensorFS, which the machine fetches by version).
