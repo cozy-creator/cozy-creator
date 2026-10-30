@@ -13,6 +13,8 @@
 #               request per arm on the same pod, each after its machine update (default: one arm of `runtime`)
 #   repeat      requests per arm, one after another on the arm's executor, each with a new seed (1)
 #   max_gpu_gb  the card's size bound (9: an 8 GB card; 25 for a 4090 no-regression run)
+#   hold_free_mib  on a larger card, a separate non-Cozy process holds VRAM so only this much stays free, as a user's
+#               game would (lowvram's holder: its ComfyUI venv's torch, no models); 0 holds nothing
 . "$(dirname "$0")/lib.sh"
 T=$(param target minimax-h3/fl2va_turbo) URL=$(param runtime) MAX=$(param max_exec_s 2400)
 ARMS=$(param arms "$(jq -cn --arg u "$URL" '[{name: "run", runtime: $u}]')") GPU_GB=$(param max_gpu_gb 9)
@@ -42,6 +44,18 @@ fetch() {  # fetch <arm> <kind>: the arm's wheel path ("" for none)
 mapfile -t NAMES < <(jq -r '.[].name' <<<"$ARMS")
 declare -A RT TF
 for a in "${NAMES[@]}"; do RT[$a]=$(fetch "$a" runtime) TF[$a]=$(fetch "$a" tensorfs); done
+HOLD=$(param hold_free_mib 0)
+if [ "$HOLD" -gt 0 ]; then
+  L=$(cd "$(dirname "$0")" && pwd)/lowvram G=$OUT/gen; mkdir -p "$G"
+  python3 - "$L/comfy_setup.py" "$L/comfy-requirements.lock" "$G/comfy_setup.py" <<'PY2' || fail "render comfy_setup"
+import sys
+src, lock, dst = sys.argv[1:]
+s = open(src).read()
+assert s.count("REQUIREMENTS = None  # @REQUIREMENTS@") == 1
+open(dst, "w").write(s.replace("REQUIREMENTS = None  # @REQUIREMENTS@", "REQUIREMENTS = " + repr(open(lock).read())))
+PY2
+  cp "$L/tool.py" "$G/" && python3 -I -m py_compile "$G/comfy_setup.py" "$G/tool.py" || fail "holder scripts"
+fi
 command -v ffprobe >/dev/null || sudo apt-get install -y -qq ffmpeg >/dev/null 2>&1 || fail "no ffmpeg"
 jq -n --arg p "$PROMPT" --argjson s "$RANDOM$RANDOM" '{prompt: $p, seed: $s, duration_s: 15}' > "$OUT/request.json"
 quote "$(param traffic_gb 85)" 3600
@@ -49,6 +63,14 @@ rent
 
 jq -e --argjson g "$GPU_GB" '.status.gpus | length == 1 and .[0].memory_bytes < $g * 1e9' "$OUT/show.json" >/dev/null ||
   fail "not one GPU under $GPU_GB GB"
+if [ "$HOLD" -gt 0 ]; then
+  ( cd "$G" && step holder-env run ./comfy_setup.py "models:=[]" --on "$NAME" --out "$OUT/holder-env" ) || fail "holder venv"
+fi
+hold() {  # hold <arm>: after each machine update (a restart can take the holder down), all but HOLD MiB held again
+  [ "$HOLD" -gt 0 ] || return 0
+  ( cd "$G" && step "hold-$1" run ./tool.py op=hold "free_mib:=$HOLD" --on "$NAME" --out "$OUT/hold-$1" ) || fail "hold $HOLD MiB"
+  say "$1: holding all but $HOLD MiB: $(tail -c 300 "$OUT/hold-$1.txt" | tr '\n' ' ')"
+}
 step model model download _/minimax-h3@1.0.0-rc.6 --lane int8 --on "$NAME" || fail "model download"
 step lora model download _/minimax-h3-turbo-lora@1.0.1 --on "$NAME" || fail "LoRA download"
 FAILED="" REPEAT=$(param repeat 1)
@@ -56,6 +78,7 @@ for arm in "${NAMES[@]}"; do for i in $(seq 1 "$REPEAT"); do
   a=$arm; [ "$REPEAT" = 1 ] || a=$arm-$i
   flags=(); [ -z "${RT[$arm]}" ] || flags+=(--runtime "${RT[$arm]}"); [ -z "${TF[$arm]}" ] || flags+=(--tensorfs "${TF[$arm]}")
   [ "${#flags[@]}" -eq 0 ] || [ "$i" -gt 1 ] || step "update-$arm" machine update "$NAME" "${flags[@]}" -y || fail "update $arm"
+  [ "$i" -gt 1 ] || hold "$arm"
   say "$a: pod $(cozy machine show "$NAME" --json | jq -c '{rt: .status.runtime, tfs: .status.tensorfs, gpu: .status.gpus[0].name}')"
   jq --argjson s "$RANDOM$RANDOM" '.seed = $s' "$OUT/request.json" > "$OUT/request-$a.json"
   step "h3-$a" run "$T" --input "$OUT/request-$a.json" --lane int8 --gpus=1 --on "$NAME" --out "$OUT/media-$a"
