@@ -256,10 +256,11 @@ impl Service {
         self.engine.notify_activity();
         Ok(())
     }
-    /// A package installed, release or local: its environment's kernels compile and its
-    /// import-only parent imports now, while its weights come, so its first call forks
+    /// A package installed, release or local: its environment's bytecode and kernels compile and
+    /// its import-only parent imports now, while its weights come, so its first call forks
     /// (`Pool::installed`).
     pub fn installed(&self, held: &crate::catalog::HeldGeneration) {
+        crate::published::environment::compile_bytecode(&held.record.python);
         if let Some(gpu) = self.gpu() {
             gpu.installed(held.clone());
         }
