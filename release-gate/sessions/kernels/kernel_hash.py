@@ -38,7 +38,10 @@ SEED = 2026103003
 
 
 class Request(msgspec.Struct, frozen=True):
-    label: str = "kernel-hash"
+    #: Comma-separated op-name prefixes (`attn:sageattention3`, `gemm:`): run only these, or every op but these. A
+    #: device fault ends the executor, so an op that may fault runs in its own request.
+    only: str = ""
+    skip: str = ""
 
 
 class Result(msgspec.Struct, frozen=True):
@@ -74,7 +77,15 @@ def main(payload: Request) -> Result:
     out: dict[str, object] = {"gpu": device.name, "sm": device.sm, "family": row.family,
                               "cozy_runtime": md.version("cozy-runtime"), "torch": torch.__version__, "ops": ops}
 
+    only = tuple(x for x in payload.only.split(",") if x)
+    skip = tuple(x for x in payload.skip.split(",") if x)
+
+    def wanted(name: str) -> bool:
+        return (not only or name.startswith(only)) and not (skip and name.startswith(skip))
+
     def run(name: str, fn, ref: torch.Tensor | None = None) -> None:
+        if not wanted(name):
+            return
         # Each op is named on stderr before it launches: a device fault ends the executor, whose stderr the run keeps.
         print(f"[kernel_hash] {name}", file=sys.stderr, flush=True)
         try:
@@ -94,7 +105,7 @@ def main(payload: Request) -> Result:
     for name in DENSE:
         candidate = attention.BY_NAME[name]
         off = attention._off_row(candidate, row)
-        if off:
+        if off or not wanted(f"attn:{name}"):
             continue
         print(f"[kernel_hash] open {name}", file=sys.stderr, flush=True)
         try:

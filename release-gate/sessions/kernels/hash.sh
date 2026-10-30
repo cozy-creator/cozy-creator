@@ -36,7 +36,7 @@ hash_run() {
   cozy machine show "$NAME" 2>&1 | grep -E '^(runtime|tensorfs|GPU) ' | tee -a "$R"
   # A fresh pod's first environment install prints nothing while it downloads: 30 min of silence, not lib.sh's 15.
   say "step hash-$arm: cozy run ./kernel_hash.py --gpus=1 --on $NAME"
-  (cd "$(dirname "${BASH_SOURCE[0]}")" && exec cozy run ./kernel_hash.py --gpus=1 --on "$NAME") > "$OUT/hash-$arm.txt" 2>&1 &
+  (cd "$(dirname "${BASH_SOURCE[0]}")" && exec cozy run ./kernel_hash.py --gpus=1 --on "$NAME" ${HASH_ARGS:-}) > "$OUT/hash-$arm.txt" 2>&1 &
   local p=$! last=-1 still=0 size
   while kill -0 "$p" 2>/dev/null; do
     sleep 30; size=$(stat -c %s "$OUT/hash-$arm.txt")
