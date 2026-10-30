@@ -77,6 +77,15 @@ for c in "${candidates[@]}"; do
 done
 T=900 pod "command -v ffprobe >/dev/null || { apt-get update -qq && apt-get install -y -qq ffmpeg; } >/dev/null 2>&1; ffprobe -version | head -1" \
   < /dev/null >> "$R" 2>&1 || fail "no ffmpeg on the pod"
+# ComfyUI, its environment and its weight files come from this runner (the runner's `ship`), so the pod's setup
+# downloads only Cozy's models: five 3060 hosts in a row could not reach PyPI, pytorch.org or Hugging Face. The
+# environment (about 10 GB) is built here; the weights stream through. A keepalive holds the rental meanwhile.
+( while sleep 240; do cozy machine keepalive "$NAME" > /dev/null 2>&1; done ) & KA=$!
+if ! python3 "$BENCH/bench.py" ship --models "$(IFS=,; echo "${models[*]}")" --arms "$ARMS" --pod "timeout 3600 cozy machine ssh $NAME" \
+    < /dev/null > "$OUT/ship.log" 2>&1; then
+  kill "$KA"; fail "ship: $(tail -3 "$OUT/ship.log")"
+fi
+kill "$KA"; say "$(tail -1 "$OUT/ship.log")"
 # One detached plan on the pod: a dropped SSH connection or a lost runner leaves it running, and the rental ends itself
 # 15 min after the plan stops making progress.
 plan="cd /root/bench && { python3 bench.py setup --models $(IFS=,; echo "${models[*]}") --arms $ARMS --sku $SKU --session $S && {"
