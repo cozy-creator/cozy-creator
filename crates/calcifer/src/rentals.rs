@@ -145,16 +145,16 @@ impl Hubs {
         (hubs, problems, signed_out, others)
     }
 
-    /// A live rental of this account that this controller did not rent, by name or rental id.
-    pub(crate) fn other(&self, text: &str) -> Option<Machine> {
+    /// The live rentals of this account in the Hubs' last listings that `text` names, by name or
+    /// rental id: this controller's own among them.
+    pub(crate) fn listed(&self, text: &str) -> Vec<Machine> {
         let listings = lock(&self.listings);
-        listings.iter().find_map(|(origin, listing)| {
-            listing
-                .rentals
-                .values()
-                .find(|rental| names(rental, text) && !gone(&rental.state))
+        let rentals = listings.iter().flat_map(|(origin, listing)| {
+            (listing.rentals.values())
+                .filter(|rental| names(rental, text) && !gone(&rental.state))
                 .map(|rental| other(origin, rental, listing.problem.is_some()))
-        })
+        });
+        rentals.collect()
     }
 
     /// The configured Hub and every Hub a live rental was asked of.
@@ -194,10 +194,8 @@ impl Machines {
         let row = match ask.state {
             AskState::Done => {
                 let name = ask.machine.as_deref().unwrap_or_default();
-                self.store()
-                    .find_machine(name)
-                    .map_err(internal)?
-                    .ok_or_else(|| not_found(name))?
+                let rows = self.store().machines_named(name).map_err(internal)?;
+                rows.into_iter().next().ok_or_else(|| not_found(name))?
             }
             AskState::Failed => {
                 return Err(Error::new(
@@ -852,12 +850,8 @@ impl Machines {
         })
     }
 
-    /// Ends a live rental of this account that this controller did not rent, by its name.
-    pub(crate) async fn end_other(self: &Arc<Self>, text: &str) -> Result<Ended, Error> {
-        if self.hubs.other(text).is_none() {
-            self.list_hubs().await;
-        }
-        let mut machine = self.hubs.other(text).ok_or_else(|| not_found(text))?;
+    /// Ends a live rental of this account that this controller did not rent.
+    pub(crate) fn end_other(self: &Arc<Self>, mut machine: Machine) -> Result<Ended, Error> {
         let id = machine.rental_id.clone().unwrap_or_default();
         self.ask_end(&machine.hub, &id, None)?;
         machine.state = MachineState::Ending;

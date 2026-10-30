@@ -270,13 +270,14 @@ impl Calcifer {
                 serde_json::to_vec(&asked).expect("serializes")
             ))
         );
+        let mut named = None;
         if !self.store.recorded(key)?
             && let Some(machines) = self.machines()
         {
-            machines.admit(&submit).await.map_err(Error::Refused)?;
+            named = machines.admit(&submit).await.map_err(Error::Refused)?;
         }
         let (machine, pinned, wants) = match &submit.on {
-            On::Machine(name) => (Some(name.clone()), true, None),
+            On::Machine(name) => (Some(named.unwrap_or_else(|| name.clone())), true, None),
             on => (None, false, Some(on.to_string())),
         };
         let out_dir = match submit.out {

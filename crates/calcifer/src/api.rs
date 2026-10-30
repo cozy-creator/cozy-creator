@@ -408,7 +408,7 @@ async fn list(
     let Query(listing) = query?;
     let store = api.calcifer.store();
     let machine = match listing.machine {
-        Some(text) => Some(match store.find_machine(&text)? {
+        Some(text) => Some(match api.machines.here(&text).map_err(Refusal)? {
             Some(row) => row.name,
             // Its runs are listed while it is off.
             None if text == "local" => text,

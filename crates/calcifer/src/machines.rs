@@ -197,13 +197,12 @@ impl Machines {
         })
     }
 
-    /// One machine by its name, former name or rental id, with its Status read now: `local`
-    /// starts for it.
+    /// One machine by its name, former name or rental id (`named`), with its Status read now:
+    /// `local` starts for it.
     pub async fn show(self: &Arc<Self>, text: &str) -> Result<Machine, Error> {
-        let Some(row) = self.up(text).await? else {
-            // Another controller's rental: its Hubs' word now, never a listing it may have ended since.
-            self.list_hubs().await;
-            return self.hubs.other(text).ok_or_else(|| not_found(text));
+        let row = match self.named_now(text).await? {
+            Named::Here(row) => row,
+            Named::Other(machine) => return Ok(*machine),
         };
         if row.state != MachineState::Ended
             && self.offline(&row.name).is_none()
@@ -237,9 +236,8 @@ impl Machines {
         fingerprint: &Digest,
     ) -> Result<Machine, Error> {
         valid_name(name)?;
-        if let Some(row) = self.store().find_machine(name).map_err(internal)?
-            && (row.state != MachineState::Ended || row.kind != MachineKind::Added)
-        {
+        let rows = self.store().machines_named(name).map_err(internal)?;
+        if (rows.iter()).any(|row| row.state != MachineState::Ended || row.kind != MachineKind::Added) {
             return Err(Error::new(
                 Kind::Conflict,
                 "machine_name_taken",
@@ -396,13 +394,53 @@ impl Machines {
         self.put_local(Some(endpoint), true)
     }
 
-    /// The machine `text` names, with `local` brought up first.
-    async fn up(self: &Arc<Self>, text: &str) -> Result<Option<MachineRow>, Error> {
+    /// What `text` names. A rental id names its machine whatever its state. A name or former
+    /// name names the live machine that has it: this controller's, or another controller's rental
+    /// of this account in the Hubs' last listing. Several such are refused by rental id, and an
+    /// ended machine is named only by its rental id: a Hub gives a name again once its rental ends.
+    pub(crate) fn named(&self, text: &str) -> Result<Option<Named>, Error> {
+        let store = self.store();
+        let rows = store.machines_named(text).map_err(internal)?;
+        if let Some(row) = rows.iter().find(|row| row.rental_id.as_deref() == Some(text)) {
+            return Ok(Some(Named::Here(row.clone())));
+        }
+        let ours = |id: &str| store.machines_named(id).is_ok_and(|rows| !rows.is_empty());
+        let others = (self.hubs.listed(text).into_iter())
+            .filter(|machine| !machine.rental_id.as_deref().is_some_and(ours));
+        let (ended, live): (Vec<MachineRow>, Vec<MachineRow>) =
+            rows.into_iter().partition(|row| row.state == MachineState::Ended);
+        let mut found: Vec<Named> = (live.into_iter().map(Named::Here))
+            .chain(others.map(|machine| Named::Other(Box::new(machine))))
+            .collect();
+        match found.len() {
+            0 if ended.is_empty() => Ok(None),
+            0 => Err(ended_by_name(text, &ended)),
+            1 => Ok(found.pop()),
+            _ => Err(ambiguous(text, &found)),
+        }
+    }
+
+    /// `named`, after the Hubs' word now unless it is one of this controller's machines: another
+    /// controller's rental is never answered from a listing it may have ended since. `local`
+    /// starts for it.
+    async fn named_now(self: &Arc<Self>, text: &str) -> Result<Named, Error> {
         if text == "local" {
             self.local_row()?;
             self.local_up().await?;
         }
-        self.store().find_machine(text).map_err(internal)
+        if let Ok(Some(Named::Here(row))) = self.named(text) {
+            return Ok(Named::Here(row));
+        }
+        self.list_hubs().await;
+        self.named(text)?.ok_or_else(|| not_found(text))
+    }
+
+    /// The machine of this controller's that `text` names (`named`).
+    pub(crate) fn here(&self, text: &str) -> Result<Option<MachineRow>, Error> {
+        Ok(match self.named(text)? {
+            Some(Named::Here(row)) => Some(row),
+            Some(Named::Other(_)) | None => None,
+        })
     }
 
     /// `local`'s TensorD exited (after its idle time, or ended): it is no longer followed, and
@@ -435,12 +473,12 @@ impl Machines {
     /// from this controller. `local` is never ended. While outputs of its runs have not landed
     /// it is refused `outputs_exporting`; `force` ends it anyway and names them given up.
     pub async fn end(self: &Arc<Self>, text: &str, force: bool) -> Result<Ended, Error> {
-        let row = self.store().find_machine(text).map_err(internal)?;
-        let Some(row) = row.filter(|_| text != "local") else {
-            return match text {
-                "local" => Err(local_refusal()),
-                _ => self.end_other(text).await,
-            };
+        if text == "local" {
+            return Err(local_refusal());
+        }
+        let row = match self.named_now(text).await? {
+            Named::Here(row) => row,
+            Named::Other(machine) => return self.end_other(*machine),
         };
         if row.kind == MachineKind::Local {
             return Err(local_refusal());
@@ -500,7 +538,7 @@ impl Machines {
                     "machine_ended" | "machine_unreachable" | "machine_unanswered"
                 ) =>
             {
-                let row = self.store().find_machine(text).map_err(internal)?;
+                let row = self.here(text)?;
                 row.and_then(|row| self.kept_log(&row.name, log, lines)).ok_or(error)
             }
             read => read,
@@ -516,7 +554,7 @@ impl Machines {
         lines: u64,
         after: Option<&str>,
     ) -> Result<crate::link::Live<v1::LogLines>, Error> {
-        let (row, link) = self.linked(text).map_err(|error| match self.store().find_machine(text) {
+        let (row, link) = self.linked(text).map_err(|error| match self.here(text) {
             Ok(Some(row)) if self.kept_log(&row.name, log, 1).is_some() => error
                 .remedy("without --follow, it prints the copy of the log Calcifer kept"),
             _ => error,
@@ -534,11 +572,7 @@ impl Machines {
 
     /// A machine and its connection, which it has only once it has an endpoint.
     pub(crate) fn linked(&self, text: &str) -> Result<(MachineRow, Link), Error> {
-        let row = self
-            .store()
-            .find_machine(text)
-            .map_err(internal)?
-            .ok_or_else(|| not_found(text))?;
+        let row = self.here(text)?.ok_or_else(|| not_found(text))?;
         if row.state == MachineState::Ended {
             return Err(Error::new(
                 Kind::Conflict,
@@ -812,18 +846,24 @@ impl Machines {
         }
     }
 
-    /// Refuses a run to a machine it cannot reach, before anything is recorded: one that ended,
-    /// one its Hub says is offline, and one that answers no connect while its Hub says nothing
-    /// of it coming. A rental on its way takes it. A machine whose Status stream is live is asked
-    /// nothing, nor is its Hub; a Hub is asked only of a rental that did not answer.
-    async fn reach(self: &Arc<Self>, text: &str) -> Result<(), Error> {
+    /// The name of the machine a run's `--on` names (`named`), refused before anything is
+    /// recorded when the run could not reach it.
+    async fn reach(self: &Arc<Self>, text: &str) -> Result<String, Error> {
         // This computer's machine starts for the run.
         if text == "local" {
-            return self.local_row().map(drop);
+            return self.local_row().map(|_| text.to_owned());
         }
-        let Some(row) = self.store().find_machine(text).map_err(internal)? else {
-            return Ok(());
+        let Some(row) = self.here(text)? else {
+            return Ok(text.to_owned());
         };
+        self.reachable(&row).await.map(|()| row.name)
+    }
+
+    /// Refuses a run to a machine it cannot reach: one that ended, one its Hub says is offline,
+    /// and one that answers no connect while its Hub says nothing of it coming. A rental on its
+    /// way takes it. A machine whose Status stream is live is asked nothing, nor is its Hub; a
+    /// Hub is asked only of a rental that did not answer.
+    async fn reachable(self: &Arc<Self>, row: &MachineRow) -> Result<(), Error> {
         let name = row.name.clone();
         if row.state == MachineState::Ended {
             let reason = row.reason.as_deref().unwrap_or("no reason was given");
@@ -943,20 +983,21 @@ impl Machines {
         }
     }
 
-    /// Refuses `new` before the run is recorded from a computer not signed in to the run's Hub
+    /// The name of the machine a run names, refused when it could not reach it (`reach`);
+    /// refuses `new` before the run is recorded from a computer not signed in to the run's Hub
     /// (it could only fail once it was), and without the quote its renter agreed to.
-    pub(crate) async fn admit(self: &Arc<Self>, submit: &SubmitRun) -> Result<(), Error> {
+    pub(crate) async fn admit(self: &Arc<Self>, submit: &SubmitRun) -> Result<Option<String>, Error> {
         match &submit.on {
-            On::Machine(name) => self.reach(name).await,
+            On::Machine(name) => self.reach(name).await.map(Some),
             On::New(_) => match self.hubs.client(&submit.hub).map(|_| submit.agreed) {
                 Ok(None) => Err(Error::new(
                     Kind::Usage,
                     "quote_unagreed",
                     "a run that rents names the quote its renter agreed to (POST /v1/run-quotes)",
                 )),
-                agreed => agreed.map(drop),
+                agreed => agreed.map(|_| None),
             },
-            On::Any => Ok(()),
+            On::Any => Ok(None),
         }
     }
 
@@ -1159,8 +1200,9 @@ pub(crate) async fn show(
 /// One of Calcifer's machines with the Status frame it answered now, recorded as its latest:
 /// one that cannot answer is `machine_unavailable`, never its last picture.
 async fn fresh(machines: &Arc<Machines>, text: &str) -> Result<Machine, Error> {
-    let row = machines.up(text).await?;
-    let row = row.ok_or_else(|| not_found(text))?;
+    let Named::Here(row) = machines.named_now(text).await? else {
+        return Err(not_found(text));
+    };
     let unavailable = |why: String| {
         let message = format!("{} cannot answer now: {why}", row.name);
         Error::new(Kind::Unavailable, "machine_unavailable", message)
@@ -1684,6 +1726,49 @@ fn local_refusal() -> Error {
         "machine_local",
         "`local` is this computer's machine: it starts when used and stops after 15 minutes idle",
     )
+}
+
+/// A machine `Machines::named` found: this controller's, or another controller's live rental of
+/// this account as its Hub lists it.
+pub(crate) enum Named {
+    Here(MachineRow),
+    Other(Box<Machine>),
+}
+
+/// The refusal of a name only ended machines had: a Hub gives a name again once its rental ends,
+/// so an ended machine is named by its rental id.
+fn ended_by_name(text: &str, ended: &[MachineRow]) -> Error {
+    let ids: Vec<&str> = ended.iter().filter_map(|row| row.rental_id.as_deref()).collect();
+    let mut error = Error::new(
+        Kind::NotFound,
+        "machine_name_ended",
+        format!("no live machine is named {text:?}; the one that was has ended"),
+    )
+    .remedy("name an ended machine by its rental id");
+    for id in ids {
+        error = error.next(format!("cozy machine show {id}"));
+    }
+    error.next("cozy machine ls")
+}
+
+/// The refusal of a name several live machines have, naming each by its rental id.
+fn ambiguous(text: &str, found: &[Named]) -> Error {
+    let named: Vec<String> = (found.iter())
+        .map(|found| match found {
+            Named::Here(row) => row.rental_id.clone().unwrap_or_else(|| format!("{} (this controller's)", row.name)),
+            Named::Other(machine) => machine.rental_id.clone().unwrap_or_else(|| machine.name.clone()),
+        })
+        .collect();
+    let mut error = Error::new(
+        Kind::Conflict,
+        "machine_name_ambiguous",
+        format!("{} live machines are named {text:?}: {}", named.len(), named.join(", ")),
+    )
+    .remedy("name one by its rental id");
+    for id in named.iter().filter(|id| !id.contains(' ')) {
+        error = error.next(format!("cozy machine show {id}"));
+    }
+    error
 }
 
 pub(crate) fn not_found(text: &str) -> Error {

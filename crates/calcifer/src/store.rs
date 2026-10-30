@@ -377,19 +377,18 @@ impl Store {
         })
     }
 
-    /// The machine a name, a former name (alias) or a rental id names.
-    pub fn find_machine(&self, text: &str) -> Result<Option<MachineRow>> {
+    /// The machines a name, a former name (alias) or a rental id names, in any state; one with
+    /// that very name first.
+    pub fn machines_named(&self, text: &str) -> Result<Vec<MachineRow>> {
         self.read(|conn| {
-            conn.query_row(
-                &format!(
-                    "SELECT {MACHINE_COLUMNS} FROM machines WHERE name = ?1 OR alias = ?1 OR rental_id = ?1
-                     ORDER BY name = ?1 DESC LIMIT 1"
-                ),
-                [text],
-                machine_row,
-            )
-            .optional()?
-            .transpose()
+            let mut statement = conn.prepare(&format!(
+                "SELECT {MACHINE_COLUMNS} FROM machines WHERE name = ?1 OR alias = ?1 OR rental_id = ?1
+                 ORDER BY name = ?1 DESC"
+            ))?;
+            let rows = statement
+                .query_map([text], machine_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows.into_iter().collect()
         })
     }
 
@@ -570,18 +569,13 @@ impl Store {
             if let Some((id, recorded)) = recorded {
                 return if recorded == digest { Ok((id, false)) } else { Err(StoreError::Conflict(key.into())) };
             }
-            // A machine is named by its name, the name it had before its Hub named it, or its rental id.
+            // The machine's name, as `Machines::named` resolved what the run named.
             let machine = match &new.machine {
                 None => None,
-                Some(text) => Some(
-                    tx.query_row(
-                        "SELECT name FROM machines WHERE name = ?1 OR alias = ?1 OR rental_id = ?1
-                         ORDER BY name = ?1 DESC LIMIT 1",
-                        [text],
-                        |r| r.get::<_, String>(0),
-                    )
-                    .optional()?
-                    .ok_or_else(|| StoreError::UnknownMachine(text.clone()))?,
+                Some(name) => Some(
+                    tx.query_row("SELECT name FROM machines WHERE name = ?1", [name], |r| r.get::<_, String>(0))
+                        .optional()?
+                        .ok_or_else(|| StoreError::UnknownMachine(name.clone()))?,
                 ),
             };
             tx.execute(

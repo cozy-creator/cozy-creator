@@ -36,12 +36,12 @@ enum Verb {
     Ls,
     /// One machine and what it reports of itself; live on a terminal while it lives.
     Show {
-        /// A machine name or rental id.
+        /// A live machine's name, or any machine's rental id.
         name: String,
     },
     /// Print a machine's log: its own, or the tensorfs or memory log it keeps.
     Logs {
-        /// A machine name or rental id.
+        /// A live machine's name, or any machine's rental id.
         name: String,
         #[command(flatten)]
         query: crate::daemon::LogQuery,
@@ -166,8 +166,8 @@ pub(crate) fn route(name: &str) -> Result<String, Error> {
     Ok(format!("/v1/machines/{name}"))
 }
 
-/// The machine `text` names, by Calcifer's one resolver: its name, the name it had before, or its
-/// rental id. Every `--on` that reads a machine resolves it here.
+/// The machine `text` names, by Calcifer's one resolver: a live machine's name or the name it had
+/// before, or any machine's rental id. Every `--on` that reads a machine resolves it here.
 pub(crate) async fn machine(ctx: &Context, text: &str) -> Result<Machine, Error> {
     ctx.calcifer().await?.get(&route(text)?).await
 }
