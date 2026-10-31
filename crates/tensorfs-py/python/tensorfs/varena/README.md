@@ -29,11 +29,9 @@ It must precede concurrent CUDA work and other allocator/profiler hook installat
 
 Torch's native caching allocator still owns activation segments, splitting, caching, graph
 pools and stream records. Every thread using the verified imports reaches the same native hook.
-A real CUDA allocation OOM first evicts idle nonpreferred groups (streamed blocks whose consumers
-completed, another phase's cache; never a resident prefix, never a context join) and retries
-that one `cudaMalloc` once. Only if that is not enough does it go back to Torch, which frees its
-whole cache and asks again for the same size; on that retry the hook reclaims any inactive
-group in its process/device, the prefix included, and retries once if pages were released. Native errors return through
+A real CUDA allocation OOM goes back to Torch first, which frees its cached blocks and asks
+again for the same size. Only on that retry does the hook reclaim inactive groups in its
+process/device, then retry that one `cudaMalloc` call once if pages were released. Native errors return through
 Torch's normal CUDA exception path. Direct native calls preserve CUDA codes on
 `torch.AcceleratorError`; an unusable arena raises `PoisonedError`, whose `sticky` attribute is true, for executor
 retirement, without inventing a driver error code. It never enters Python, acquires the GIL, reads bytes,
@@ -41,11 +39,11 @@ contacts another process, or reruns package operations. Reclamation may join the
 CUDA context; it has no bounded latency guarantee for opaque kernels.
 
 `set_activation_limit(device, bytes)` optionally checks new hooked Torch segments plus current
-resident weight pages. A deficit is recovered the same way: idle groups first, then Torch's
-cache, then on Torch's retry any inactive weight group, before the real allocation. This is an **activation admission limit**, not a hard GPU/process cap: later weight
+resident weight pages. A deficit is refused the same way first; on Torch's retry it reclaims
+inactive weight groups before attempting the real allocation. This is an **activation admission limit**, not a hard GPU/process cap: later weight
 fills, CUDA contexts, and allocations outside the hooked imports can exceed it. Configure it
 before Torch reserves memory. `allocator_stats()` reports actual hooked reservations, calls,
-reclaims, refusals (`cache_refusals`: first refusals Torch answered by freeing its cache) and retries; it is not a GPU ownership authority.
+reclaims, refusals and retries; it is not a GPU ownership authority.
 
 `capture(device)` forbids residency changes and allocation recovery across the entire process
 on that device. Prepare and pin every dependency before capture/replay, and retain those pins

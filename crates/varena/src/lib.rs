@@ -1640,30 +1640,6 @@ impl Drop for Arena {
 /// Allocator-pressure entry point: native-only, one finite pass, no callbacks or external waits.
 /// The caller retries its allocation once only if this returns enough useful reclaimed bytes.
 pub fn reclaim(device: i32, bytes: usize) -> Result<ReclaimReport> {
-    reclaim_each(device, bytes, |arena, bytes| {
-        arena.reclaim_with_preference(bytes, true, ReclaimReason::Allocator)
-    })
-}
-
-/// `reclaim` of idle nonpreferred pages whose consumers completed (or whose own events are
-/// pending, where they together suffice): streamed blocks and another phase's cache, never a
-/// resident prefix, never a context join. What an activation takes before Torch's own cache.
-pub fn reclaim_idle(device: i32, bytes: usize) -> Result<ReclaimReport> {
-    reclaim_each(device, bytes, |arena, bytes| {
-        let captures = capture_counts()?;
-        ensure_recovery_allowed(&captures, arena.device)?;
-        let mut state = arena.lock()?;
-        let _context = arena.driver.enter()?;
-        // No region is excluded: ids start at 1.
-        arena.reclaim_completed_locked(&mut state, bytes, 0, ReclaimReason::Allocator)
-    })
-}
-
-fn reclaim_each(
-    device: i32,
-    bytes: usize,
-    reclaim: impl Fn(&Arena, usize) -> Result<ReclaimReport>,
-) -> Result<ReclaimReport> {
     check_process()?;
     if is_recovery_blocked(device)? {
         return Err(Error::CaptureActive);
@@ -1686,7 +1662,11 @@ fn reclaim_each(
         if report.reclaimed_bytes >= bytes {
             break;
         }
-        let next = reclaim(&arena, bytes - report.reclaimed_bytes)?;
+        let next = arena.reclaim_with_preference(
+            bytes - report.reclaimed_bytes,
+            true,
+            ReclaimReason::Allocator,
+        )?;
         report.reclaimed_bytes += next.reclaimed_bytes;
         report.evicted_regions += next.evicted_regions;
     }

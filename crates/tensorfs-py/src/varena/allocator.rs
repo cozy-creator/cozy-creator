@@ -39,8 +39,6 @@ struct Device {
     retries: u64,
     reclaimed: usize,
     refusals: u64,
-    /// First refusals returned to Torch, each of which frees its whole cache before its retry.
-    cache_refusals: u64,
 }
 #[derive(Default)]
 struct Book {
@@ -95,20 +93,11 @@ fn allocate(output: *mut *mut c_void, bytes: usize) -> i32 {
     }
     let row = book.devices.entry(device).or_default();
     row.calls += 1;
-    // Idle weights go before Torch's cache: Torch answers a refused cudaMalloc by freeing every
-    // cached block it holds (`release_cached_blocks`, a device sync and a cudaMalloc back each)
-    // and asking once more for the same size. So a first refusal first evicts idle nonpreferred
-    // pages (streamed blocks whose consumers completed, another phase's cache), never the
-    // running phase's resident prefix, and goes back to Torch only if that is not enough; only
-    // Torch's retry may evict the prefix (H3 30-step on an RTX 4090: 4 cache drops a sparse step).
+    // Weights go only after Torch's own cache. Torch's caching allocator answers a refused
+    // cudaMalloc by freeing every cached block it holds (`release_cached_blocks`) and asking once
+    // more for the same size, and raises OOM only if that fails too. So a first refusal goes back
+    // to Torch untouched, and only its retry may evict weights.
     let retry = row.refused.take() == Some(bytes);
-    let reclaim = |need: usize| {
-        if retry {
-            varena::reclaim(device, need)
-        } else {
-            varena::reclaim_idle(device, need)
-        }
-    };
     if let Some(limit) = row.limit {
         let resident = match varena::resident_bytes(device) {
             Ok(n) => n,
@@ -124,7 +113,11 @@ fn allocate(output: *mut *mut c_void, bytes: usize) -> i32 {
                 Ok(false) => (),
                 Err(error) => return error_code(error),
             }
-            match reclaim(need) {
+            if !retry {
+                row.refused = Some(bytes);
+                return 2;
+            }
+            match varena::reclaim(device, need) {
                 Ok(report) => {
                     row.reclaimed += report.reclaimed_bytes;
                 }
@@ -135,12 +128,7 @@ fn allocate(output: *mut *mut c_void, bytes: usize) -> i32 {
                 Err(e) => return error_code(e),
             };
             if resident.saturating_add(row.reserved).saturating_add(bytes) > limit {
-                if !retry {
-                    row.refused = Some(bytes);
-                    row.cache_refusals += 1;
-                } else {
-                    row.refusals += 1;
-                }
+                row.refusals += 1;
                 return 2;
             }
         }
@@ -153,6 +141,11 @@ fn allocate(output: *mut *mut c_void, bytes: usize) -> i32 {
             Ok(false) => (),
             Err(error) => return error_code(error),
         }
+        if !retry {
+            // Torch clears CUDA's OOM error itself before it frees its cache.
+            row.refused = Some(bytes);
+            return status;
+        }
         // Torch normally consumes a failed cudaMalloc's error before recovery. The hook
         // hides that failure on success, so consume its OOM before retrying it ourselves.
         // SAFETY: this function belongs to the original allocation's CUDA runtime instance.
@@ -160,7 +153,7 @@ fn allocate(output: *mut *mut c_void, bytes: usize) -> i32 {
         if pending != 0 && pending != 2 {
             return pending;
         }
-        match reclaim(bytes) {
+        match varena::reclaim(device, bytes) {
             Ok(report) if report.reclaimed_bytes > 0 => {
                 row.retries += 1;
                 row.reclaimed += report.reclaimed_bytes;
@@ -169,11 +162,6 @@ fn allocate(output: *mut *mut c_void, bytes: usize) -> i32 {
             }
             Ok(_) => (),
             Err(error) => return error_code(error),
-        }
-        if status == 2 && !retry {
-            row.refused = Some(bytes);
-            row.cache_refusals += 1;
-            return status;
         }
     }
     if status == 0 {
@@ -276,7 +264,6 @@ pub(super) fn stats(device: i32) -> Result<BTreeMap<&'static str, u64>, String> 
         ("oom_retries", row.retries),
         ("reclaimed_bytes", row.reclaimed as u64),
         ("budget_refusals", row.refusals),
-        ("cache_refusals", row.cache_refusals),
         ("activation_admission_limit", row.limit.unwrap_or(0) as u64),
     ]))
 }
