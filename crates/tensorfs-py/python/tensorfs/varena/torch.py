@@ -45,7 +45,7 @@ def _device(device=None) -> int:
 def install(device: int | None = None) -> None:
     """Select Varena once per process. An explicit device is initialized outside capture.
 
-    The wheel must contain the ahead-of-time shim for this Torch version/C++ ABI.
+    The wheel must list this Torch patch cohort and match its CUDA/C++ ABI and platform.
     This never compiles at runtime and cannot coexist with the old cudaMalloc hook.
     """
     global _owner, _library, _allocator
@@ -67,13 +67,14 @@ def install(device: int | None = None) -> None:
             if not library.is_file() or not metadata.is_file():
                 raise RuntimeError("this TensorFS wheel has no P0 Torch shim; build with scripts/build-wheel.sh --torch-python <python-with-torch>")
             actual = json.loads(metadata.read_text())
+            runtime_torch = str(torch.__version__)
             expected = {
-                "abi": 1, "torch": torch.__version__,
+                "abi": 1, "cuda": torch.version.cuda,
                 "cxx11_abi": int(torch._C._GLIBCXX_USE_CXX11_ABI),
                 "system": platform.system(), "machine": platform.machine(),
             }
-            if any(actual.get(key) != value for key, value in expected.items()):
-                raise RuntimeError(f"Varena Torch shim ABI mismatch: built {actual}, running {expected}")
+            if runtime_torch not in actual.get("supported_torch", ()) or any(actual.get(key) != value for key, value in expected.items()):
+                raise RuntimeError(f"Varena Torch shim ABI mismatch: built {actual}, running {dict(torch=runtime_torch, **expected)}")
             native = ctypes.CDLL(str(library))
             native.varena_torch_bind.argtypes = [ctypes.c_void_p]
             native.varena_torch_bind.restype = ctypes.c_int

@@ -11,6 +11,8 @@ import subprocess
 
 import torch
 
+TORCH_ABI_COHORTS = ("2.14.0+cu130", "2.14.1+cu130")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -18,6 +20,9 @@ def main() -> None:
     args = parser.parse_args()
     if platform.system() != "Linux":
         raise SystemExit("the P0 Torch shim build currently qualifies Linux only")
+    build_torch = str(torch.__version__)
+    if build_torch not in TORCH_ABI_COHORTS or torch.version.cuda != "13.0":
+        raise SystemExit(f"the reviewed P0 shim ABI covers {TORCH_ABI_COHORTS} with CUDA 13.0; got {build_torch} / {torch.version.cuda}")
     root = Path(torch.__file__).resolve().parent
     args.out.mkdir(parents=True, exist_ok=True)
     output = args.out / "_varena_torch.so"
@@ -35,7 +40,8 @@ def main() -> None:
     finally:
         temporary.unlink(missing_ok=True)
     metadata = {
-        "abi": 1, "torch": torch.__version__, "cxx11_abi": abi,
+        "abi": 1, "torch": build_torch, "supported_torch": list(TORCH_ABI_COHORTS),
+        "cuda": torch.version.cuda, "cxx11_abi": abi,
         "system": platform.system(), "machine": platform.machine(),
         "torch_git": torch.version.git_version,
     }
