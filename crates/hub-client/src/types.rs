@@ -682,6 +682,10 @@ pub struct Rental {
     pub bandwidth_usd_micros_per_gb: Option<i64>,
     pub spend_usd_micros: i64,
     pub spend_basis: String,
+    /// What the provider billed Tensorhub for it, on the basis `provider_billed` or `estimate`:
+    /// an operator's read only.
+    pub provider_cost_usd_micros: Option<i64>,
+    pub provider_cost_basis: Option<String>,
     pub container_disk_gb: i64,
     pub created_at: String,
     pub ended_at: Option<String>,

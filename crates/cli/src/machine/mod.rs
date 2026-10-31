@@ -12,6 +12,7 @@ use protocol::{
 use crate::{Context, output};
 
 mod end;
+mod history;
 mod list;
 pub(crate) mod live;
 mod local;
@@ -33,7 +34,15 @@ pub struct Args {
 #[derive(Subcommand, Debug)]
 enum Verb {
     /// Every machine: this computer's, rentals and added ones; live on a terminal.
-    Ls,
+    Ls {
+        /// Every rental instead, ended ones too and rented from any computer, newest first: what
+        /// each ran and cost, and the total per UTC day and in all.
+        #[arg(long)]
+        history: bool,
+        /// Only rentals started within this long (`48h`, `7d`); implies --history.
+        #[arg(long, value_name = "DURATION", value_parser = history::since)]
+        since: Option<jiff::SignedDuration>,
+    },
     /// One machine and what it reports of itself; live on a terminal while it lives.
     Show {
         /// A live machine's name, or any machine's rental id.
@@ -114,7 +123,8 @@ enum Verb {
 
 pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     match args.verb {
-        Verb::Ls => list::list(ctx).await,
+        Verb::Ls { history, since } if history || since.is_some() => history::list(ctx, since).await,
+        Verb::Ls { .. } => list::list(ctx).await,
         Verb::Show { name } => list::show(ctx, &name).await,
         Verb::Logs { name, query } => crate::daemon::machine_log(ctx, &name, &query).await,
         Verb::Rent(rent) => rent::exec(ctx, rent).await,

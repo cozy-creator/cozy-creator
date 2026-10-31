@@ -7,7 +7,7 @@
 # publish, yank, un-yank and delete, run on this computer's machine or, where the OS runs none (macOS, Windows), on the
 # rental. On the rental: package install and list, BiRefNet from a YAML request and with --file, each output landed
 # here (one in a folder named with spaces and non-ASCII), machine ls, show and logs, keepalive, a run followed and
-# canceled, and an end while a run still goes, checked gone. The throwaway and the rental are removed in an EXIT trap
+# canceled, an end while a run still goes, checked gone, and the ended rental in `machine ls --history`. The throwaway and the rental are removed in an EXIT trap
 # whatever fails. --quote stops at the rental's quote and rents nothing: the $0 pre-flight of every step before it.
 #   e2e/release/run.sh --out DIR [--key FILE | --installed] [--sku SKU] [--max-hourly USD] [--max-usd USD] [--quote] [--release DIR]
 #                      [--tensord F|V] [--tensorfs F|V] [--runtime F|V]
@@ -204,10 +204,19 @@ step "an end while a run goes"
 going=$!
 until run_reached "$OUT/rental-wait.ndjson" in_progress || ! kill -0 "$going" 2> /dev/null; do sleep 0.2; done
 # `machine end` returns once the Hub affirms the pod gone.
+ended=$M
 cozy --json machine end "$M" --force -y > "$OUT/end.json" || check "machine end $M --force failed"
 ! listed "$M" && M='' || check "machine end --force: $M is still listed"
 # Its follower ends with the run (machine_lost); a bare `wait` would wait on --release's loopback server too.
 wait "$going" || true
+
+step "the rental in its history"
+# Ended, it stays in the Hub's history with what it cost (cl-693).
+cozy --json machine ls --since 1h > "$OUT/history.json" || check "machine ls --since 1h failed"
+J --arg m "$ended" '.rentals | any(.name == $m and .ended_at != null and .spend_usd_micros >= 0)' "$OUT/history.json" \
+  || check "machine ls --since 1h: $ended is not in its history as ended"
+cozy machine ls --history --since 1h > "$OUT/history.txt" && grep -q "^Total since" "$OUT/history.txt" \
+  || check "machine ls --history --since 1h printed no total"
 
 step coverage; coverage "$COZY" release
 finish "cli-release: $pkg, $model, ${SKU} at \$$(usd "$hourly")/h, \$$(spent) of GPU time"
