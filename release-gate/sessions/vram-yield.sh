@@ -2,7 +2,9 @@
 # and the job is never ended for it (design/vram-yield.md). Escaped on 0.14.3 / Runtime 0.36.7 (xs-088, rtx-3070):
 # in a container TensorD saw no foreign use once an executor ran, and its last rung cancelled the running call. One
 # rental (an 8 GB card), the session's cozy as TensorD, the machine in shared mode (a desktop's default). The game is
-# fixtures/game.py: raw driver allocations from a process that is not cozy's. Cells:
+# fixtures/game.py: raw driver allocations from a process that is not cozy's. A root shell starts it over
+# `cozy machine ssh`: started under cozy (a run), cozy's process tree holds it and it is counted as ours wherever the
+# driver names the container's pids (driver 610). Cells:
 #   idle    SDXL and Qwen warm and idle; an idle_gb game starts: all of it within 2 s; a Qwen call beside it completes
 #   midjob  a Qwen call; a midjob_gb game starts once the GPU is busy and exits 8 s later: all of it within 2 s; the
 #           call completes, never cancelled, with its image
@@ -17,6 +19,8 @@
 #   idle_gb, midjob_gb, big_gb  the games (default 5, 3 and 5, of an 8 GB card)
 #   traffic_gb         GB the provider bills: the image, SDXL, Qwen and the fixture's environment (default 45)
 . "$(dirname "$0")/lib.sh"
+[ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
+RENT_ARGS=--ssh
 FIX=$(cd "$(dirname "$0")/fixtures" && pwd)
 [ -f "$FIX/game.py" ] || fail "no fixture checkout"
 quote "$(param traffic_gb 45)" 3000
@@ -30,6 +34,19 @@ cd "$FIX" || fail "no fixtures"
 value() { cozy run show "$(runno "$1")" --once --json > "$OUT/$1.json" 2>&1; jq -r '.result.value // empty' "$OUT/$1.json"; }
 status() { jq -r '.status // empty' "$OUT/$1.json"; }
 run() { local n=$1; shift; step "$n" run "$@" --on "$NAME" || fail "$n"; value "$n" > "$OUT/$n.value"; }
+# game <name> <cfg json>: the stand-in game, started by a root shell; waits up to its wait_s for it to have all of it.
+game() {
+  local n=$1 cfg=$2 launch st t s
+  run "$n-write" ./game.py op=write cfg="$cfg"
+  launch=$(jq -r .launch "$OUT/$n-write.value") st=$(jq -r .state "$OUT/$n-write.value")
+  cozy machine ssh "$NAME" "setsid nohup sh $launch > /dev/null 2>&1 < /dev/null &" || fail "$n: the game did not start"
+  t=$(date +%s)
+  while [ $(( $(date +%s) - t )) -lt "$(jq -r '.wait_s // 0' <<<"$cfg")" ]; do
+    s=$(cozy machine ssh "$NAME" "cat $st 2>/dev/null")
+    [ -n "$s" ] && jq -e '.t_done // empty' <<<"$s" > /dev/null 2>&1 && break
+    sleep 1
+  done
+}
 step restart0 machine update "$NAME" --gpu-memory-limit off -y || fail "restart"  # writes TensorD's config.toml
 step mode run ./game.py --on "$NAME" op=mode cfg='{"mode": "shared"}' || fail "mode"
 step restart machine update "$NAME" --gpu-memory-limit off -y || fail "restart"
@@ -42,20 +59,21 @@ judge() {  # judge <cell> <game record file>: all of it within 2 s
 
 run warm-sdxl sdxl/generate prompt="a red barn in snow, photo" seed:=$RANDOM
 run warm-qwen qwen-image-2/generate prompt="a lighthouse at dusk, photo" seed:=$RANDOM megapixels:=1
-run idle-game ./game.py op=start cfg="{\"name\": \"idle\", \"gb\": $(param idle_gb 5), \"trigger\": \"now\", \"give_up_s\": 60, \"hold_s\": 900, \"wait_s\": 70}"
-judge idle "$OUT/idle-game.value"
+game idle-game "{\"name\": \"idle\", \"gb\": $(param idle_gb 5), \"trigger\": \"now\", \"give_up_s\": 60, \"hold_s\": 900, \"wait_s\": 70}"
+run idle-status ./game.py op=status cfg='{"name": "idle"}'
+judge idle "$OUT/idle-status.value"
 run idle-qwen qwen-image-2/generate prompt="a tea house in rain, photo" seed:=$RANDOM megapixels:=1
 [ "$(status idle-qwen)" = completed ] || fail "idle: the Qwen call beside the game is $(status idle-qwen)"
 run idle-stop ./game.py op=stop cfg='{"name": "idle"}'
 
-run mid-arm ./game.py op=start cfg="{\"name\": \"mid\", \"gb\": $(param midjob_gb 3), \"trigger\": \"util\", \"util_pct\": 80, \"util_s\": 3, \"delay_s\": 1, \"give_up_s\": 60, \"hold_s\": 8}"
+game mid-arm "{\"name\": \"mid\", \"gb\": $(param midjob_gb 3), \"trigger\": \"util\", \"util_pct\": 80, \"util_s\": 3, \"delay_s\": 1, \"give_up_s\": 60, \"hold_s\": 8}"
 run mid-qwen qwen-image-2/generate prompt="a fox reading a newspaper in a cafe, photo" seed:=$RANDOM megapixels:=1
 run mid-game ./game.py op=status cfg='{"name": "mid"}'
 judge midjob "$OUT/mid-game.value"
 [ "$(status mid-qwen)" = completed ] || fail "midjob: the Qwen call is $(status mid-qwen): $(jq -c .reason "$OUT/mid-qwen.json")"
 jq -e '.output[] | select(.status == "completed")' "$OUT/mid-qwen.json" > /dev/null || fail "midjob: the Qwen call left no image"
 
-run big-arm ./game.py op=start cfg="{\"name\": \"big\", \"gb\": $(param big_gb 5), \"trigger\": \"util\", \"util_pct\": 80, \"util_s\": 3, \"delay_s\": 1, \"give_up_s\": 60, \"hold_s\": 20}"
+game big-arm "{\"name\": \"big\", \"gb\": $(param big_gb 5), \"trigger\": \"util\", \"util_pct\": 80, \"util_s\": 3, \"delay_s\": 1, \"give_up_s\": 60, \"hold_s\": 20}"
 run big-qwen qwen-image-2/generate prompt="a lantern-lit tea house in the snow, photo" seed:=$RANDOM megapixels:=1
 sleep 25; run big-game ./game.py op=status cfg='{"name": "big"}'
 say "big game: $(jq -c '{phase, gb: .cfg.gb, alloc_s, held_mib}' "$OUT/big-game.value")"  # both do not fit: the call is the bar
@@ -64,7 +82,7 @@ say "big game: $(jq -c '{phase, gb: .cfg.gb, alloc_s, held_mib}' "$OUT/big-game.
 memlines() { cozy machine logs "$NAME" memory -n 0 2>/dev/null | wc -l; }
 run shrink-base qwen-image-2/generate prompt="a heron in reeds at dawn, photo" seed:=$RANDOM megapixels:=1
 m0=$(memlines)
-run shrink-arm ./game.py op=start cfg='{"name": "shrink", "gb": 4, "trigger": "util", "util_pct": 80, "util_s": 3, "delay_s": 1, "give_up_s": 60, "shrink_to_gb": 1.5, "shrink_after_s": 8, "hold_s": 900}'
+game shrink-arm '{"name": "shrink", "gb": 4, "trigger": "util", "util_pct": 80, "util_s": 3, "delay_s": 1, "give_up_s": 60, "shrink_to_gb": 1.5, "shrink_after_s": 8, "hold_s": 900}'
 run shrink-job qwen-image-2/generate prompt="a red tram on a rainy street, photo" seed:=$RANDOM megapixels:=1
 run shrink-next qwen-image-2/generate prompt="a glass teapot of blooming tea, photo" seed:=$RANDOM megapixels:=1
 grew=$(cozy machine logs "$NAME" memory -n 0 2>/dev/null | tail -n +$((m0 + 1)) | grep '"event":"room"' | grep -c '"grow":[0-9]')
@@ -76,7 +94,7 @@ say "shrink: $grew grow records; next Qwen $next ms, $base ms with no game"
 
 step restart2 machine update "$NAME" --gpu-memory-limit off -y || fail "restart"
 m0=$(memlines)
-run start-arm ./game.py op=start cfg='{"name": "start", "gb": 2, "trigger": "executor", "delay_s": 0, "give_up_s": 60, "hold_s": 40}'
+game start-arm '{"name": "start", "gb": 2, "trigger": "executor", "delay_s": 0, "give_up_s": 60, "hold_s": 40}'
 run start-sdxl sdxl/generate prompt="a copper kettle on a stove, photo" seed:=$RANDOM
 sleep 45
 w=$(cozy machine logs "$NAME" memory -n 0 2>/dev/null | tail -n +$((m0 + 1)))

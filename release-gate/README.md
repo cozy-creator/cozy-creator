@@ -120,7 +120,9 @@ previous release and the session's cozy control each other (`-f params='{"old": 
 more than one pod calls `order` per pod, then `ready` per pod; the guard and the trap cover every one.
 `h3-8gb` is the 8 GB tier: H3 Turbo 15 s on one RTX 3070 must complete, 362 frames, under its time bar.
 `vram-yield` (xs-088) starts a stand-in game (`fixtures/game.py`) on an 8 GB card in shared mode, with models idle and
-mid-call: it must have its memory within 2 s, and the call must complete, never ended for it.
+mid-call: it must have its memory within 2 s, and the call must complete, never ended for it. The game must start
+outside cozy's process tree (the session rents with SSH; a root shell starts it over `cozy machine ssh`): started by
+a cozy run, it is counted as ours wherever the driver names the container's pids.
 `hunyuan-48gb` (cr-225) pages Hunyuan-Image-3's 82 GB int8 lane through one 48 GB card (a40 or l40s): a text-only
 warm-up, then `runs` more, each completed with a 3:4 image that is not flat. Runtime 0.35.6 failed the warm-up.
 `bench` runs the Cozy-vs-ComfyUI benchmark, which lives in cozy-creator/benchmarks (`params.bench_ref`, read with

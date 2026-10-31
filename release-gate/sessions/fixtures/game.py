@@ -344,6 +344,18 @@ def run(cfg: dict) -> dict:
         if not alive(pid) and "t_done" not in s and not str(s.get("phase", "")).startswith("trigger"):
             s["log"] = (D / f"holder-{name}.log").read_text()[-1500:]
         return s
+    if op == "write":  # the holder and its launcher, for a root shell to start (`cozy machine ssh`)
+        if load(st).get("pid") and alive(load(st)["pid"]):
+            stop_and_wait(st, stop)
+        stop.unlink(missing_ok=True)
+        st.unlink(missing_ok=True)
+        path, log, launch = D / f"holder-{name}.py", D / f"holder-{name}.log", D / f"holder-{name}.sh"
+        path.write_text(HOLDER)
+        arg = json.dumps(cfg | {"dir": str(D)}).replace("'", "'\\''")
+        launch.write_text(
+            f"#!/bin/sh\nCUDA_VISIBLE_DEVICES=0 exec {sys.executable} -I {path} '{arg}' >> {log} 2>&1 < /dev/null\n"
+        )
+        return {"launch": str(launch), "state": str(st)}
     if op == "status":
         return load(st)
     if op == "stop":
