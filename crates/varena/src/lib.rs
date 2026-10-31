@@ -719,6 +719,7 @@ impl Arena {
             requested_bytes: bytes,
             ..ReclaimReport::default()
         };
+        // Backing nothing needs goes before any Ready page here too, as in `reclaim_contentless`.
         let mut candidates: Vec<_> = state
             .entries
             .iter()
@@ -730,7 +731,10 @@ impl Arena {
                     && !entry.preferred()
                     && (!matches!(reason, ReclaimReason::StreamingLimit) || !state.standby(entry))
             })
-            .map(|(id, entry)| (*id, state.eviction_key(entry)))
+            .map(|(id, entry)| {
+                let ready = !matches!(entry.uses.state(), Contents::Cold | Contents::Retired);
+                (*id, (ready, state.eviction_key(entry)))
+            })
             .collect();
         candidates.sort_by_key(|(_, key)| *key);
         let (mut pending, mut held) = (Vec::new(), 0);
@@ -867,6 +871,26 @@ impl Arena {
         reason: ReclaimReason,
         report: &mut ReclaimReport,
     ) -> Result<()> {
+        let was_preferred = state.entries[&id].preferred();
+        let (size, retired) = self.release_backing(state, id)?;
+        if was_preferred && !retired {
+            // Pressure permanently shortens the retained prefix. Later scans cannot rebuild it.
+            state.preferred_end = Some(state.preferred_end.map_or(id, |end| end.min(id)));
+            for (_, later) in state.entries.range_mut(id..) {
+                later.preferred = false;
+            }
+        }
+        report.reclaimed_bytes += size;
+        report.evicted_regions += 1;
+        state.evictions = state.evictions.saturating_add(1);
+        state.reclaimed_bytes = state.reclaimed_bytes.saturating_add(size as u64);
+        state.reclaimed_by_reason.add(reason, size);
+        Ok(())
+    }
+
+    /// Unmap and release a joined, unpinned region's physical pages; a retired region's
+    /// address goes too. Returns its bytes and whether it was retired.
+    fn release_backing(&self, state: &mut State, id: u64) -> Result<(usize, bool)> {
         let entry = state
             .entries
             .get(&id)
@@ -888,29 +912,16 @@ impl Arena {
         for fence in entry.uses.fences().drain(..) {
             let _ = self.driver.destroy_event(fence.event);
         }
-        let was_preferred = entry.preferred();
         entry.handle = None;
         entry.uses.invalidate();
         let retired = entry.uses.state() == Contents::Retired;
-        if was_preferred && !retired {
-            // Pressure permanently shortens the retained prefix. Later scans cannot rebuild it.
-            state.preferred_end = Some(state.preferred_end.map_or(id, |end| end.min(id)));
-            for (_, later) in state.entries.range_mut(id..) {
-                later.preferred = false;
-            }
-        }
-        report.reclaimed_bytes += size;
-        report.evicted_regions += 1;
-        state.evictions = state.evictions.saturating_add(1);
-        state.reclaimed_bytes = state.reclaimed_bytes.saturating_add(size as u64);
-        state.reclaimed_by_reason.add(reason, size);
         if retired {
             if let Err(error) = self.driver.free_address(ptr, size) {
                 return Err(poison(state, error));
             }
             state.entries.remove(&id);
         }
-        Ok(())
+        Ok((size, retired))
     }
 
     pub fn stats(&self) -> Result<Stats> {
@@ -1070,6 +1081,29 @@ impl Region {
             .uses
             .state()
             == Contents::Ready)
+    }
+
+    /// Release this region's pages now if nothing needs them: no pin, no contents, and every
+    /// user known complete (a fill aborted after its writers were checked). `CaptureActive`
+    /// during a capture or replay; while an earlier release is unfenced they stay (false) for
+    /// reclamation, which takes them before any Ready page (`reclaim_contentless`).
+    pub fn release_unready(&self) -> Result<bool> {
+        let captures = capture_counts()?;
+        ensure_recovery_allowed(&captures, self.arena.device)?;
+        let mut state = self.arena.lock()?;
+        let Some(entry) = state.entries.get(&self.id) else {
+            return Ok(false);
+        };
+        if entry.handle.is_none()
+            || entry.uses.pins() != 0
+            || !matches!(entry.uses.state(), Contents::Cold | Contents::Retired)
+            || self.arena.completion(&mut state, self.id)? != Completion::Done
+        {
+            return Ok(false);
+        }
+        let _context = self.arena.driver.enter()?;
+        self.arena.release_backing(&mut state, self.id)?;
+        Ok(true)
     }
 
     pub fn set_preferred(&self, preferred: bool) -> Result<()> {
@@ -1367,6 +1401,22 @@ impl Fill {
 }
 
 impl Fill {
+    /// Abort a fill whose writers are all checked complete: the pages hold no contents, and
+    /// `Region::release_unready` may release them at once instead of after a context join.
+    ///
+    /// # Safety
+    /// Every write through this fill's mapping completed in this device's primary context and
+    /// nothing submits through it again. An escaped view keeps its own Pin.
+    #[allow(unsafe_code)]
+    pub unsafe fn abort_completed(mut self) -> Arc<Region> {
+        let pin = self.pin.take().expect("uncommitted fill");
+        if pin.region().arena.pid == std::process::id() {
+            pin.region().uses.set(Contents::Cold);
+        }
+        // SAFETY: the caller proved every writer complete; unpublished contents have no reader.
+        unsafe { pin.into_completed_region() }
+    }
+
     /// Abort without waiting, returning reservation ownership for deferred final teardown.
     pub fn into_unpinned_region(mut self) -> Arc<Region> {
         let pin = self.pin.take().expect("uncommitted fill");
