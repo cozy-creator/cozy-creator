@@ -918,6 +918,16 @@ struct Pressure {
     samples: BTreeMap<u32, (u64, u64)>,
 }
 
+/// Whether the executor rooted at `root` answered a room ask made `ago`: its Runtime wrote `room.json`
+/// since (an older Runtime writes none, and its gives are judged by progress alone).
+fn answered(root: Option<&PathBuf>, ago: std::time::Duration) -> bool {
+    let Some(at) = root.and_then(|root| fs::read(root.join("room.json")).ok())
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|reading| reading.get("at")?.as_f64()) else { return false };
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+    at >= now - ago.as_secs_f64()
+}
+
 impl Pressure {
     /// H, what another program finds free (design/vram-yield.md §3.1).
     fn headroom(total: u64) -> u64 { (total / 16).max(512 << 20) }
@@ -1389,9 +1399,11 @@ impl Pool {
         let headroom = Pressure::headroom(now.total);
         let running: std::collections::BTreeSet<u32> = engine.active(usize::MAX).unwrap_or_default().into_iter()
             .filter_map(|record| Some(record.process.as_ref()?.pid)).collect();
-        let mut idle: Vec<(Instant, String, u32, Level)> = self.sessions.lock().unwrap().iter()
+        let (mut idle, roots): (Vec<(Instant, String, u32, Level)>, BTreeMap<u32, PathBuf>) = self.sessions.lock().unwrap().iter()
             .filter(|(_, session)| session.start == index && session.degree > 0)
-            .map(|(key, session)| (session.used, key.clone(), session.executor.birth.pid, session.level())).collect();
+            .map(|(key, session)| ((session.used, key.clone(), session.executor.birth.pid, session.level()),
+                (session.executor.birth.pid, session.executor.root_path().to_path_buf())))
+            .unzip();
         idle.sort_by_key(|i| i.0);
         let lines: BTreeMap<u32, device_executor::Line> = self.leaders.lock().unwrap().iter()
             .filter(|(_, leader)| leader.start == index)
@@ -1452,19 +1464,29 @@ impl Pool {
                 // running or on a disk), as when its turn waits behind the command it is finishing.
                 // Nothing is ended while one is (riful, 0.15.1: the Qwen asked whole 4 s after its
                 // call was ended one reading later; the game waited 2.2 s for the exit). One that made
-                // none since the last reading is stalled, and goes first when one must end.
+                // none since the last reading is stalled, and goes first when one must end. One that
+                // answered the ask (its Runtime's `room.json` written since) gave what it could: what
+                // it holds is its process, which only ending frees, however that process works
+                // (sousaku midjob: a whole-given SDXL's threads kept the running Qwen from being asked
+                // and a 3 GB game waited 2.96 s).
                 let (mut giving, mut stalled) = (false, None);
                 for i in &idle {
                     let (Some(&target), true) = (state.limited.get(&i.2), lines.contains_key(&i.2)) else { continue };
                     let bytes = by.get(&i.2).copied().unwrap_or(0);
                     if bytes <= target + SLACK { state.samples.remove(&i.2); continue }
+                    if state.asked.get(&i.2).is_some_and(|at| answered(roots.get(&i.2), at.elapsed())) {
+                        if stalled.is_none() { stalled = Some((i.1.clone(), "it gave what it could; the rest is its process")) }
+                        continue;
+                    }
                     let usage = platform::process::usage(i.2).ok();
                     let sample = (bytes, usage.map_or(0, |u| u.cpu));
                     let moved = match state.samples.insert(i.2, sample) {
                         None => true,
                         Some((was, cpu)) => bytes + SLACK <= was || sample.1 > cpu || usage.is_some_and(|u| u.running),
                     };
-                    if moved { giving = true } else if stalled.is_none() { stalled = Some(i.1.clone()) }
+                    if moved { giving = true } else if stalled.is_none() {
+                        stalled = Some((i.1.clone(), "no progress toward its target since the last reading"))
+                    }
                 }
                 if round == 1 && giving { round = 0 }
                 // Only another program's demand ends a model: shared mode's own H never cold-starts
@@ -1493,10 +1515,7 @@ impl Pool {
                             if sent { told.push(pid) }
                         }
                     }
-                    1 => end = Some(match stalled {
-                        Some(key) => (key, "no progress toward its target since the last reading"),
-                        None => (idle[0].1.clone(), "least recently used, with nothing left to give but its process"),
-                    }),
+                    1 => end = Some(stalled.unwrap_or_else(|| (idle[0].1.clone(), "least recently used, with nothing left to give but its process"))),
                     2 => {
                         let mut left = deficit;
                         for &pid in &calls {
