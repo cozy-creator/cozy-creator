@@ -1,10 +1,64 @@
-# Varena: executor-local weight residency
+# Varena: process-local GPU memory
 
 Varena ships inside the TensorFS wheel and has no release of its own; its crate version is TensorFS's.
 
 This is an original implementation against the CUDA Driver API. Each executor owns its own
 reservations and physical allocations. TensorFS supplies immutable bytes; it does not own device
 memory. No source from aimdo or another external allocator was used.
+
+## P0 working allocator
+
+`varena::working` adds VMM working slabs and prepared graph pools beside the existing weight pager.
+It is a source-build spike, not GPU-qualified or enabled in the shipped Runtime. Small size classes
+are 512-byte aligned; large blocks own whole VMM pages. Own-stream allocation reuse does no driver
+work. Single-consumer legacy-default frees also do no driver work; cross-stream reuse and trim
+first seal those deferred frees with completion events. Other eager streams retain immediate free
+fences. Physical trim and cross-stream reuse require completed consumers. The allocation slow path
+reclaims idle weights and can wait for already submitted work
+on wholly free working segments. Weight allocation pressure first offers free working pages back.
+`trim` remains nonblocking: sealing a deferred free may leave a pending event; a later trim can
+return its pages after completion. Explicit cleanup seals, synchronizes, then trims again.
+
+Initialize the device outside capture, then `pool_reserve` the measured capacity before recording.
+The reservation remains owned until the first `pool_begin` or explicit `pool_release` without a
+capture. `pool_begin` registers matching allocation streams and takes one graph reference per
+capture session. `pool_end` only closes routing; the owner calls `pool_capture_complete` after CUDA
+has actually ended capture, including on an abandoned capture. During capture allocation/free are
+metadata operations on prepared backing; a short pool returns OOM without allocator driver work.
+Multi-stream frees cannot be reused until the capture session completes.
+Prepared pool segments begin as whole free ranges. On a size-class miss, allocation selects the
+smallest compatible contiguous free run within one segment, splits its head and keeps the tail.
+Only completed ranges or ranges ordered on the requesting capture stream can coalesce; live
+addresses never move. Resizing transfers old block event handles to the pool, which retains them
+until outside-capture polling confirms completion and destroys them. `event_handles` includes them.
+
+Before dropping a graph, its owner records every replay/consumer stream with `pool_record_stream`.
+`pool_release` drops one graph reference. Backing is reclaimed only after references, live output
+allocations and outstanding replay/consumer events are gone. Shared graph pools require ordered,
+nonconcurrent replay. Ordinary weight `Region`/`Pin` ownership below remains unchanged.
+
+`WorkingStats` reports live requested bytes, mapped bytes (including pools), pending free bytes and
+attempted working-driver memory/event operations. Counters cover this working allocator, not all
+CUDA library/context allocations. Stats on an unopened device do not initialize CUDA. Read/write
+after fork is rejected. No Python callback, background daemon or cross-process policy is added here.
+The default-stream optimization and size-class fragmentation still need the matched P0 performance proof.
+Integrations call `working::bind_process` when registering callbacks, before CUDA initialization.
+Every core operation still checks the actual PID before inherited locks, including null alloc/free
+and record-stream callbacks; the integration need not repeat that syscall on the healthy hot path.
+
+Default and Torch-pooled streams live for the process. A caller owning a destroyable stream must
+stop submissions, synchronize it, call `working::retire_stream(device, stream)`, then destroy it.
+Retirement checks completion without waiting, removes its consumer/fence references and marks each
+allocation's original stream retired. A tensor may be freed afterward without touching the dead
+handle; new uses must still declare their live consumer streams. No global tombstone rejects a new
+stream that reuses the raw handle. Capture-time retirement is rejected.
+
+Torch `record_stream` accepts interior pointers within live working allocations. Freed blocks,
+padding, uncarved mappings and retired addresses still inside Varena's reserved VA are rejected.
+Only addresses outside every working reservation are treated as foreign storage and ignored, as
+by Torch's native allocator. TensorFS Region aliases still require their own Pin/`consume_on` contract.
+
+## Weight residency
 
 ```text
 Arena::reserve -> Region (stable VA, no physical pages)
@@ -25,8 +79,9 @@ Consumers treat published weights as immutable.
 
 Reservations and mappings use the device's minimum VMM allocation granularity. One Region is
 one allocation and one eviction group: reserve at the execution block/group level, not per
-scalar or page. Allocation has at most one finite reclaim pass and one retry after an actual
-`cuMemCreate` capacity failure. It calls no Python, filesystem, TensorFS, network, or remote owner.
+scalar or page. On `cuMemCreate` capacity failure, allocation first retries after returning free
+working pages, then makes one finite weight reclaim pass and retries. It calls no Python,
+filesystem, TensorFS, network, or remote owner.
 
 Runtime selects a preferred prefix with `set_preferred` and sets `set_streaming_limit` to its
 largest block/window in CUDA-rounded bytes. Before a new allocation, the window counts only idle

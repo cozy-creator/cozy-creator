@@ -26,7 +26,7 @@ pub(super) struct Functions {
 static OWNER_PID: AtomicU32 = AtomicU32::new(0);
 static FUNCTIONS: OnceLock<Functions> = OnceLock::new();
 static BOOK: OnceLock<Mutex<Book>> = OnceLock::new();
-static INSTALL: Mutex<()> = Mutex::new(());
+pub(super) static INSTALL: Mutex<()> = Mutex::new(());
 static INSTALLED: OnceLock<Result<usize, String>> = OnceLock::new();
 
 #[derive(Default)]
@@ -221,6 +221,9 @@ pub(super) fn install() -> Result<usize, String> {
     let _lock = INSTALL
         .lock()
         .map_err(|_| "allocator installation mutex poisoned")?;
+    if super::working::installed() {
+        return Err("the whole-process Varena allocator is already selected".into());
+    }
     if let Some(result) = INSTALLED.get() {
         return result.clone();
     }
@@ -240,6 +243,10 @@ pub(super) fn install() -> Result<usize, String> {
     }
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     Err("native Torch allocation hook is not implemented on this platform".into())
+}
+
+pub(super) fn installed() -> bool {
+    FUNCTIONS.get().is_some()
 }
 
 pub(super) fn set_limit(device: i32, limit: Option<usize>) -> Result<(), String> {
