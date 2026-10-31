@@ -133,15 +133,25 @@ def seams(output: str, at: list[float]) -> dict:
     b = gray(output, 224, 128)
     d = np.abs(np.diff(b, axis=0)).mean(axis=(1, 2))
     med = max(float(np.median(d)), 0.5)
+    def window(t: float) -> tuple[int, int]:
+        return max(0, round((t - 0.5) * FPS)), min(len(d), round((t + 0.5) * FPS))
+
+    def worst_ssim(t: float) -> float:
+        lo, hi = window(t)
+        return min(ssim(b[i], b[i + 1]) for i in range(lo, hi))
+
     out = []
     for t in at:
-        lo, hi = max(0, round((t - 0.5) * FPS)), min(len(d), round((t + 0.5) * FPS))
+        lo, hi = window(t)
         k = lo + int(np.argmax(d[lo:hi]))
         out.append({"at": t, "worst_at_s": round((k + 1) / FPS, 2), "ratio": round(float(d[k]) / med, 2),
-                    "ssim": round(min(ssim(b[i], b[i + 1]) for i in range(lo, hi)), 3)})
+                    "ssim": round(worst_ssim(t), 3)})
+    # The same worst-SSIM window every 2.5 s away from the boundaries: how alike the shot's own consecutive frames are.
+    inside = [t for t in np.arange(2.5, len(d) / FPS - 1, 2.5) if all(abs(t - a) > 1.5 for a in at)]
+    ref = float(np.median([worst_ssim(t) for t in inside])) if inside else None
     frames = np.where((d > 3 * med) & (d > 4))[0] + 1
-    return {**probe(output), "median_change": round(med, 2), "boundaries": out, "flicker": int(len(frames)),
-            "flicker_at_s": [round(int(f) / FPS, 2) for f in frames[:8]]}
+    return {**probe(output), "median_change": round(med, 2), "inside_ssim": None if ref is None else round(ref, 3),
+            "boundaries": out, "flicker": int(len(frames)), "flicker_at_s": [round(int(f) / FPS, 2) for f in frames[:8]]}
 
 
 if __name__ == "__main__":
