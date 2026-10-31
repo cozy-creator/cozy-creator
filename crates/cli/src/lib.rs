@@ -19,6 +19,7 @@ mod model;
 mod org;
 pub mod output;
 mod package;
+mod project;
 mod run;
 pub mod tools;
 pub mod tui;
@@ -53,6 +54,10 @@ enum Command {
     Package(package::Args),
     /// Find, download, upload and publish models.
     Model(model::Args),
+    /// A video project: make one, choose versions, see what is missing or out of date (`cozy render` makes them).
+    Project(project::Args),
+    /// New versions of a project's entities, made on a machine; `all` brings everything up to date.
+    Render(project::Render),
     /// Claim an organization parked under your name.
     Org(org::Args),
     /// Sign in to the Hub with this computer's device key.
@@ -130,6 +135,8 @@ async fn dispatch(ctx: &Context, command: Command) -> Result<ExitCode, Error> {
         Command::Machine(args) => machine::exec(ctx, args).await,
         Command::Package(args) => package::exec(ctx, args).await,
         Command::Model(args) => model::exec(ctx, args).await,
+        Command::Project(args) => project::exec(ctx, args).await,
+        Command::Render(args) => project::render(ctx, args).await,
         Command::Org(args) => org::exec(ctx, args).await,
         Command::Login(args) => account::login(ctx, args).await,
         Command::Logout(args) => account::logout(ctx, args).await,

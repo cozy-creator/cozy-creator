@@ -43,6 +43,7 @@ const MAX_BODY: usize = 8 << 20;
 pub struct Api {
     pub calcifer: Arc<Calcifer>,
     pub machines: Arc<Machines>,
+    pub projects: crate::project::Projects,
     /// The three spellings of this server's own `host:port`.
     hosts: [String; 3],
     bearer: [u8; 32],
@@ -62,6 +63,7 @@ impl Api {
         Arc::new(Self {
             calcifer,
             machines,
+            projects: Default::default(),
             hosts: [
                 format!("127.0.0.1:{port}"),
                 format!("localhost:{port}"),
@@ -133,6 +135,7 @@ pub fn router(api: Arc<Api>) -> Router {
         .route("/v1/machines/{name}/logs/{log}", get(machines::logs))
         .route("/v1/rental-quotes", post(machines::quote))
         .route("/v1/run-quotes", post(machines::run_quote))
+        .merge(crate::project::routes())
         // Routes go above this line: the bearer and the admission gate guard only those.
         .route_layer(middleware::from_fn_with_state(api.clone(), admit))
         .fallback(unknown_route)

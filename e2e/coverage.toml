@@ -172,3 +172,20 @@ test = "pr: run play, its link serves the output, then expires"
 [hidden]
 "machine rent --provider" = "pending: dev builds only (cargo feature `dev`), never in a release; release-gate/suites/hub rents cpu once per provider with a dev-build cozy, ended and checked gone; the Hub decides who may"
 "machine rent --image-digest" = "pending: release tier, a Hub admin's gated worker-image bake; waits for the CI key"
+
+["project new"]
+test = "gate: cli-project (release-gate/suites/cli/cells.sh): a project from its script, entities written"
+"--project" = "gate: cli-project"
+
+["project status"]
+test = "gate: cli-project: each entity's state and its renders"
+"--project" = "gate: cli-project"
+
+["project approve"]
+test = "gate: cli-project: an entity's render approved, its version locked"
+"--project" = "gate: cli-project"
+
+["render"]
+test = "gate: cli-project: the project's renders through Calcifer on the gate's pod"
+"--project" = "gate: cli-project"
+"--on" = "gate: cli-project, on the gate's pod"

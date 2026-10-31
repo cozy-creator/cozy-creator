@@ -17,6 +17,7 @@ futures-util.workspace = true
 hex.workspace = true
 reqwest.workspace = true
 rustls.workspace = true
+saphyr.workspace = true
 serde.workspace = true
 tensorfs.workspace = true
 serde_ignored.workspace = true
