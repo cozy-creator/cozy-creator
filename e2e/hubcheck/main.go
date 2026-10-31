@@ -238,6 +238,10 @@ func (c *checker) check(w http.ResponseWriter, r *http.Request, route *routers.R
 	}
 	recorder := &recorder{ResponseWriter: w, keep: !raw && r.Method != http.MethodHead}
 	c.proxy.ServeHTTP(recorder, r)
+	if r.Context().Err() != nil {
+		// The client went away mid-call: the proxy's own 502 ("context canceled") is not the Hub's answer.
+		return
+	}
 	at.Status = recorder.status
 	c.count(r.Method + " " + route.Path)
 	if op.Responses.Status(recorder.status) == nil && op.Responses.Default() == nil {
