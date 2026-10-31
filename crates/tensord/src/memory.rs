@@ -162,9 +162,10 @@ struct Drivers {
     /// Per GPU: executors whose driver pids could not be told, with the candidates (None: the
     /// driver could not be read).
     unattributed: BTreeMap<String, Vec<Unattributed>>,
-    /// Per GPU: what the driver charged our last executor whose pid was told at its context's
-    /// opening (its context alone): how ours is told from another program's in a later window.
-    context: BTreeMap<String, u64>,
+    /// Per GPU and executor environment (one Torch/CUDA build): what the driver charged our last
+    /// executor whose pid was told at its context's opening (its context alone), how ours is told
+    /// from another program's in a later window.
+    context: BTreeMap<(String, String), u64>,
     next: u64,
 }
 /// Executors whose driver pids could not be told, and the candidates (None: driver unreadable).
@@ -173,6 +174,8 @@ struct Window {
     id: u64,
     before: Option<BTreeSet<u32>>,
     executors: Vec<u32>,
+    /// Their environment (`Tenant::plan`).
+    plan: String,
 }
 /// An executor's CUDA context opening on one GPU (`Registry::opening`); dropped before it opened,
 /// its executors stay unlearned (that GPU's readings unknown while they live).
@@ -197,20 +200,22 @@ impl Registry {
         self.tenants.lock().unwrap_or_else(|e| e.into_inner()).extend(tenants);
     }
 
-    /// `executors` open their CUDA context on GPU `gpu`, whose driver pids are `now`.
-    pub fn opening(self: &Arc<Self>, gpu: &str, now: Option<BTreeSet<u32>>, executors: Vec<u32>) -> Opening {
+    /// `executors` of environment `plan` open their CUDA context on GPU `gpu`, whose driver pids are `now`.
+    pub fn opening(self: &Arc<Self>, gpu: &str, now: Option<BTreeSet<u32>>, executors: Vec<u32>, plan: &str) -> Opening {
         let mut drivers = self.drivers.lock().unwrap_or_else(|e| e.into_inner());
         drivers.next += 1;
         let id = drivers.next;
-        drivers.open.entry(gpu.into()).or_default().push(Window { id, before: now, executors });
+        drivers.open.entry(gpu.into()).or_default().push(Window { id, before: now, executors, plan: plan.into() });
         Opening(self.clone(), gpu.into(), id)
     }
 
     /// The context opened; `now`: the driver's pids there with their bytes. Settled once no window
     /// there is open: the pids that appeared since the first of them opened are ours when exactly
     /// as many as the executors that opened. With more (another program started meanwhile), ours
-    /// are those charged a context alone (as our last told one was) when exactly as many; else
-    /// they stay unattributed.
+    /// are those charged a context alone, as our last told one of the same environment was, when
+    /// exactly as many are and every other candidate clearly is not; else they stay unattributed
+    /// (a program opening in the first window of an environment leaves the reading unknown until
+    /// it exits).
     pub fn opened(&self, opening: Opening, now: Option<BTreeMap<u32, u64>>) -> Option<Learned> {
         let mut drivers = self.drivers.lock().unwrap_or_else(|e| e.into_inner());
         let gpu = opening.1.clone();
@@ -230,19 +235,25 @@ impl Registry {
         let new = before.zip(now).map(|(before, now)| {
             now.into_iter().filter(|(pid, _)| !claimed.contains(pid) && !before.contains(pid)).collect::<BTreeMap<u32, u64>>()
         });
-        let context = drivers.context.get(&gpu).copied();
+        // One environment's contexts are alike; another Torch/CUDA build's need not be.
+        let plans: BTreeSet<&str> = batch.iter().map(|window| window.plan.as_str()).collect();
+        let key = (plans.len() == 1).then(|| (gpu.clone(), plans.first().map(|p| p.to_string()).unwrap_or_default()));
+        let context = key.as_ref().and_then(|key| drivers.context.get(key).copied());
+        const NEAR: u64 = 64 << 20;
         let ours = new.as_ref().and_then(|new| match new.len().cmp(&executors.len()) {
             std::cmp::Ordering::Equal => Some(new.clone()),
             std::cmp::Ordering::Greater => {
-                let alone: BTreeMap<u32, u64> = new.iter().filter(|(_, bytes)| context.is_some_and(|c| bytes.abs_diff(c) <= 64 << 20))
+                let c = context?;
+                let alone: BTreeMap<u32, u64> = new.iter().filter(|(_, bytes)| bytes.abs_diff(c) <= NEAR)
                     .map(|(pid, bytes)| (*pid, *bytes)).collect();
-                (alone.len() == executors.len()).then_some(alone)
+                let clear = new.values().all(|bytes| bytes.abs_diff(c) <= NEAR || bytes.abs_diff(c) > 2 * NEAR);
+                (alone.len() == executors.len() && clear).then_some(alone)
             }
             std::cmp::Ordering::Less => None,
         });
         match ours {
             Some(new) => {
-                if let Some(&bytes) = new.values().max() { drivers.context.insert(gpu.clone(), bytes); }
+                if let (Some(key), Some(&bytes)) = (key, new.values().max()) { drivers.context.insert(key, bytes); }
                 let ours = drivers.ours.entry(gpu.clone()).or_default();
                 for pid in new.keys() { ours.insert(*pid, executors.clone()); }
                 Some(Learned { gpu, ours: new.into_keys().collect(), unattributed: None })
@@ -255,9 +266,10 @@ impl Registry {
         }
     }
 
-    /// What the driver charged our last executor told at its context's opening on GPU `uuid`.
-    pub fn context(&self, uuid: &str) -> Option<u64> {
-        self.drivers.lock().unwrap_or_else(|e| e.into_inner()).context.get(uuid).copied()
+    /// What the driver charged our last executor of environment `plan` told at its context's
+    /// opening on GPU `uuid`.
+    pub fn context(&self, uuid: &str, plan: &str) -> Option<u64> {
+        self.drivers.lock().unwrap_or_else(|e| e.into_inner()).context.get(&(uuid.to_string(), plan.to_string())).copied()
     }
 
     /// Our driver pids on GPU `uuid` among `processes`, each with its executors; None when a

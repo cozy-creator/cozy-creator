@@ -1343,6 +1343,8 @@ impl Pool {
     /// binds it, so its first fills are not refused. Dedicated with no other program it lifts;
     /// otherwise it may hold what it holds plus what is free, less the band.
     fn open_room(&self, index: usize, pid: u32) {
+        // Most calls go to an executor held to no room: that costs one map lookup, no driver reading.
+        if !self.pressure.lock().unwrap().get(index).is_some_and(|state| state.limited.contains_key(&pid)) { return }
         let Some(line) = self.leaders.lock().unwrap().get(&pid).and_then(|leader| leader.room.clone()) else { return };
         let reading = self.devices.get(index).and_then(|d| d.memory.as_ref()).and_then(|gpu| gpu.usage_by(&self.tenants));
         let shared = self.config.host.mode == HostMode::Shared;
@@ -1584,16 +1586,16 @@ impl Pool {
     pub fn hardware(&self, degree: u32) -> tensorfs::fetch::Hardware {
         let devices: Vec<&Device> = self.devices.iter().take(degree as usize).collect();
         let gpus = devices.iter().filter_map(|d| self.inventory(&d.entry)).map(|g| g.compute_cap.clone()).filter(|cc| !cc.is_empty()).collect();
-        let idle: Vec<(usize, u32)> = self.sessions.lock().unwrap().values()
-            .map(|session| (session.start, session.executor.birth.pid)).collect();
+        let idle: Vec<(usize, u32, String)> = self.sessions.lock().unwrap().values()
+            .map(|session| (session.start, session.executor.birth.pid, session.env.clone())).collect();
         let free_vram = devices.iter().enumerate().filter_map(|(index, d)| {
             let gpu = d.memory.as_ref()?;
             let free = gpu.free()?;
             // Attribution unknown: the driver's free bytes alone, as before.
             let Some((_, by)) = gpu.usage_by(&self.tenants) else { return Some(free) };
-            let context = self.tenants.context(&gpu.uuid).unwrap_or(0);
-            let weights: u64 = idle.iter().filter(|(start, _)| *start == index)
-                .filter_map(|(_, pid)| by.get(pid)).map(|bytes| bytes.saturating_sub(context)).sum();
+            let weights: u64 = idle.iter().filter(|(start, _, _)| *start == index)
+                .filter_map(|(_, pid, env)| Some(by.get(pid)?.saturating_sub(self.tenants.context(&gpu.uuid, env).unwrap_or(0))))
+                .sum();
             Some(free + weights)
         }).min();
         tensorfs::fetch::Hardware { gpus, free_vram, plain: false }
@@ -4693,7 +4695,7 @@ impl Formation {
         match phase {
             "opening" => {
                 let pids = gpu.processes().map(|processes| processes.into_keys().collect());
-                self.opening = Some(self.tenants.opening(&gpu.uuid, pids, vec![self.leader.pid]));
+                self.opening = Some(self.tenants.opening(&gpu.uuid, pids, vec![self.leader.pid], &self.plan));
             }
             "open" => {
                 let Some(opening) = self.opening.take() else { return };
