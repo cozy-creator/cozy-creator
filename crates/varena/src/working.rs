@@ -1068,7 +1068,8 @@ pub fn retire_stream(device: i32, stream: u64) -> Result<()> {
             if let Some(event) = block.events.remove(&stream) {
                 owner.driver.destroy_event(event)?;
             }
-            if block.life == Life::Live || block.life == Life::Captured {
+            if matches!(block.life, Life::Live | Life::Captured | Life::Unjoined) {
+                // Retiring one known stream cannot prove completion of unknown DLPack users.
                 continue;
             }
             if block.life == Life::Deferred {
