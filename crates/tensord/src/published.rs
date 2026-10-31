@@ -505,7 +505,7 @@ impl Publisher {
             return self.commit(service, source, named);
         }
         let origin = hub::origin_key(&source.origin).unwrap_or_default();
-        let name = json!(["resolve-v3", origin, named.repository, named.release, named.lane, hardware.gpus, hardware.plain]).to_string();
+        let name = json!(["resolve-v3", origin, named.repository, named.release, named.lane, hardware.gpus, hardware.plain, hardware.components]).to_string();
         let held = service.engine.with_journal(|j| j.named(&name, revision)).map_err(io_failure)?;
         if let Some((release, lane, tree, header, reasons)) = held.and_then(|held| serde_json::from_str(&held).ok()) {
             return Ok(Named { release, lane, tree: Some(tree), header: Some(header), reasons, ..named });
@@ -1086,7 +1086,10 @@ impl Publisher {
             }
             // A class that takes no encoded leaves, or raw weights read as data, takes plain lanes only.
             let plain = slot["encoded_leaves"] != "accept" || slot["weights"] == true;
-            let hardware = tensorfs::fetch::Hardware { plain, ..hardware.clone() };
+            // A lane fits by the components this slot loads (`components=`; none declared: the lane).
+            let components = slot["components"].as_array().into_iter().flatten()
+                .filter_map(Value::as_str).map(str::to_string).collect();
+            let hardware = tensorfs::fetch::Hardware { plain, components, ..hardware.clone() };
             let named = self.resolve(service, request.hub(&format!("the model for {path}"))?, named, &hardware, &request.catalog_revision)?;
             let warnings = named.reasons.iter().map(|why| format!("{}: {why}", named.repository)).collect();
             let grant = ModelGrant {
