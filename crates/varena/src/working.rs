@@ -885,6 +885,15 @@ pub fn pool_begin(device: i32, pool: PoolId, stream: u64) -> Result<()> {
     let owner = owner(device)?;
     let guard = crate::enter_capture(device)?;
     let mut state = owner.lock()?;
+    if state
+        .pools
+        .iter()
+        .any(|(id, session)| *id != pool && session.capture.is_some())
+    {
+        return Err(Error::Invalid(
+            "P0 capture sessions on one device must be sequential",
+        ));
+    }
     let pool = state.pools.entry(pool).or_default();
     if pool.capture.is_some() {
         if !pool.routing {
@@ -922,6 +931,7 @@ pub fn pool_end(device: i32, id: PoolId) -> Result<()> {
 /// The graph owner calls this only after cudaStreamEndCapture, including failed captures.
 pub fn pool_capture_complete(device: i32, id: PoolId) -> Result<()> {
     let owner = owner(device)?;
+    let _captures = crate::capture_counts()?;
     let mut state = owner.lock()?;
     let pool = state
         .pools
@@ -929,6 +939,26 @@ pub fn pool_capture_complete(device: i32, id: PoolId) -> Result<()> {
         .ok_or(Error::Invalid("unknown graph pool"))?;
     if pool.routing {
         return Err(Error::Invalid("graph pool routing is still active"));
+    }
+    if pool.capture.is_none() {
+        return Err(Error::Invalid("graph capture is already complete"));
+    }
+    // Auxiliary streams (Torch RNG setup, for example) execute eagerly during capture.
+    // Their frees are metadata-only until now, so fence them before permitting pool retirement.
+    let completion = (|| {
+        let _context = owner.driver.enter()?;
+        for stream in &pool.streams {
+            if owner.driver.is_capturing(*stream as usize)? {
+                return Err(Error::CaptureActive);
+            }
+        }
+        for stream in &pool.streams {
+            owner.record(&mut pool.events, *stream)?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = completion {
+        return Err(owner.fail(&mut state, error));
     }
     let guard = pool
         .capture
