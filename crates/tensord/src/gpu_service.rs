@@ -903,6 +903,9 @@ struct Device {
 struct Pressure {
     baseline: Option<u64>,
     blocked: bool,
+    /// Its use rose since the last reading while blocked: it is still taking what we give.
+    pressing: bool,
+    foreign: u64,
     observable: Option<bool>,
     sampled: Option<Instant>,
     /// Executors (by pid) held to a target, the last one each was sent.
@@ -931,6 +934,8 @@ impl Pressure {
             self.blocked = usage.foreign.saturating_sub(baseline) >= 128 << 20
                 && usage.free < Self::headroom(usage.total);
         }
+        self.pressing = self.blocked && usage.foreign >= self.foreign.saturating_add(64 << 20);
+        self.foreign = usage.foreign;
     }
 }
 
@@ -1252,7 +1257,7 @@ impl Pool {
     pub(crate) fn relieve_pressure(&self, engine: &Arc<Engine>) {
         for (index, device) in self.devices.iter().enumerate() {
             let reading = device.memory.as_ref().and_then(|gpu| gpu.usage_by(&self.tenants));
-            let blocked = {
+            let (blocked, pressing) = {
                 let mut pressure = self.pressure.lock().unwrap();
                 let state = &mut pressure[index];
                 let now = Instant::now();
@@ -1273,10 +1278,10 @@ impl Pool {
                         "headroom_bytes": Pressure::headroom(usage.total), "sample_gap_ms": gap}));
                     engine.notify_activity();
                 }
-                state.blocked
+                (state.blocked, state.pressing)
             };
             if let Some((usage, by)) = reading {
-                self.room(engine, index, device, &usage, &by, blocked);
+                self.room(engine, index, device, &usage, &by, blocked, pressing);
             }
         }
     }
@@ -1293,7 +1298,7 @@ impl Pool {
     /// other program pressing (dedicated), the limit lifts. `room` reaches an executor's first GPU
     /// only (a group's other GPUs are not yielded).
     fn room(&self, engine: &Arc<Engine>, index: usize, device: &Device, now: &memory::DeviceUse,
-        by: &BTreeMap<u32, u64>, blocked: bool) {
+        by: &BTreeMap<u32, u64>, blocked: bool, pressing: bool) {
         const SLACK: u64 = 64 << 20;
         let headroom = Pressure::headroom(now.total);
         let shared = self.config.host.mode == HostMode::Shared;
@@ -1309,9 +1314,11 @@ impl Pool {
         let calls: Vec<u32> = running.iter().copied().filter(|pid| lines.contains_key(pid)).collect();
         // Read from the driver's free bytes, not the card less what processes hold: the driver's
         // own reserve (about 0.5 GB once any process has the device open) is in neither.
-        // With another program pressing, a give keeps 2H free (the band, §3.5) so it is not met
-        // again at the next block it takes; shared mode with none keeps H (option B).
-        let band = if blocked { 2 * headroom } else { headroom };
+        // While another program is still taking what we give, a give keeps 2H free (the band,
+        // §3.5) so it is not met again at its next block; once it holds steady, or in shared mode
+        // with none, H (option B), so a call beside it runs in all the rest (sieg s2: a 2H band
+        // held for the game's life left Qwen 1.3 GB beside 5 GB, short of its 1.2 GB embedding).
+        let band = if pressing { 2 * headroom } else { headroom };
         let room = (shared || blocked).then(|| (now.own + now.free).saturating_sub(band));
         let deficit = match room {
             Some(room) => now.own.saturating_sub(room),
