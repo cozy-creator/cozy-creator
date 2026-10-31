@@ -297,6 +297,61 @@ def replay_after_remap():
     return {"stable_pointer": pointer, "replays_after_refill": 3, "arena": after, "stats": figures()}
 
 
+def rng_capture():
+    seed = torch.initial_seed()
+    custom = torch.Generator(device="cuda").manual_seed(seed + 1)
+    torch.manual_seed(seed)
+    expected = []
+    for _ in range(2):
+        expected.append([
+            torch.rand(2048, dtype=torch.float32, device="cuda").cpu(),
+            torch.rand(2048, dtype=torch.float32, device="cuda", generator=custom).cpu(),
+        ])
+    assert all(not torch.equal(a, b) for a, b in zip(expected[0], expected[1], strict=True))
+    torch.manual_seed(seed)
+    custom.manual_seed(seed + 1)
+    clean()
+    # No eager blocks remain to hide the first-RNG auxiliary-stream allocation path.
+    assert figures()["allocated_bytes"] == figures()["mapped_bytes"] == 0
+    g = torch.cuda.CUDAGraph()
+
+    def body():
+        return [
+            torch.rand(2048, dtype=torch.float32, device="cuda"),
+            torch.rand(2048, dtype=torch.float32, device="cuda", generator=custom),
+        ]
+
+    outputs, pool, _ = capture(g, body, reserve=8 * MIB)
+    replay_stream = torch.cuda.Stream()
+    digests = []
+    for reference in expected:
+        vt.replay(g, stream=replay_stream)
+        with torch.cuda.stream(replay_stream):
+            observed = [tensor.cpu() for tensor in outputs]
+        vt.record_pool_stream(pool, replay_stream)
+        assert all(torch.equal(a, b) for a, b in zip(observed, reference, strict=True))
+        digests.append([hashlib.sha256(bytes(t.view(torch.uint8).tolist())).hexdigest() for t in observed])
+    torch.manual_seed(seed)
+    custom.manual_seed(seed + 1)
+    vt.replay(g, stream=replay_stream)
+    with torch.cuda.stream(replay_stream):
+        observed = [tensor.cpu() for tensor in outputs]
+    vt.record_pool_stream(pool, replay_stream)
+    assert all(torch.equal(a, b) for a, b in zip(observed, expected[0], strict=True))
+    g.reset()
+    del g
+    clean()
+    assert figures()["pools_bytes"] > 0, "reset freed retained random output storage"
+    assert all(torch.equal(t.cpu(), r) for t, r in zip(outputs, expected[0], strict=True))
+    del outputs, observed, custom
+    clean()
+    retired = figures()
+    assert retired["pools"] == retired["event_handles"] == 0, retired
+    assert retired["allocated_bytes"] == retired["mapped_bytes"] == 0, retired
+    return {"default_and_custom_generators": True, "reseed_reproduced": True,
+            "eager_replay_sha256": digests, "stats": retired}
+
+
 CASES = {
     "empty-capture": empty_capture,
     "allocator-reuse": allocator_reuse,
@@ -307,6 +362,7 @@ CASES = {
     "distinct-pools": distinct_pools,
     "capture-exhaustion": capture_exhaustion,
     "replay-after-remap": replay_after_remap,
+    "rng-capture": rng_capture,
 }
 
 

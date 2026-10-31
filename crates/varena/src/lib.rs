@@ -549,8 +549,13 @@ impl Arena {
     pub fn enter_phase(&self, incoming: &[Arc<Region>]) -> Result<()> {
         let captures = capture_counts()?;
         ensure_recovery_allowed(&captures, self.device)?;
-        if incoming.iter().any(|region| !std::ptr::eq(self, Arc::as_ptr(&region.arena))) {
-            return Err(Error::Invalid("phase regions must belong to the same arena"));
+        if incoming
+            .iter()
+            .any(|region| !std::ptr::eq(self, Arc::as_ptr(&region.arena)))
+        {
+            return Err(Error::Invalid(
+                "phase regions must belong to the same arena",
+            ));
         }
         let mut state = self.lock()?;
         state.preferred_end = None;
@@ -559,7 +564,10 @@ impl Arena {
             entry.preferred = false;
         }
         for region in incoming {
-            let entry = state.entries.get_mut(&region.id).ok_or(Error::Invalid("phase region is retired"))?;
+            let entry = state
+                .entries
+                .get_mut(&region.id)
+                .ok_or(Error::Invalid("phase region is retired"))?;
             entry.preferred = entry.handle.is_some() && entry.uses.state() == Contents::Ready;
         }
         Ok(())
@@ -1070,7 +1078,13 @@ impl Region {
     /// Native capture detachment uses this only to refuse surviving foreign storage.
     pub fn has_live_pins(&self) -> Result<bool> {
         let state = self.arena.lock()?;
-        Ok(state.entries.get(&self.id).expect("live region").uses.pins() != 0)
+        Ok(state
+            .entries
+            .get(&self.id)
+            .expect("live region")
+            .uses
+            .pins()
+            != 0)
     }
 
     pub fn is_resident(&self) -> Result<bool> {

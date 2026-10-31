@@ -15,7 +15,7 @@ cozy run ./release-gate/suites/varena/p0-working/gpu --on "$NAME" --gpus=1 \
 
 Get expected version and the two binary hashes from the exact candidate wheel, before installing it. The fixture
 checks the installed extension (which contains Rust Varena) and shim, then records paths, Python, Torch commit,
-GPU and per-case results. `case=<name>` selects one case; default `all` requires all nine. Candidate build/installation
+GPU and per-case results. `case=<name>` selects one case; default `all` requires all ten. Candidate build/installation
 identity is separate from a source checkout. Never install this candidate into a shared local generation.
 
 Cases cover empty capture initialization, 512-byte alignment, same-stream reuse, cross-stream retirement, reuse
@@ -23,6 +23,8 @@ inside capture, retained outputs after graph destruction, changed replay stream,
 clean capture exhaustion, and three graph replays after managed weight-region eviction/refill at the same address.
 Driver memory/event counters are compared inside capture, outside setup and teardown. Each physical-byte
 partition must balance; after every case all fixture allocations, graph pools and allocator event handles retire.
-Captured arithmetic is deterministic and contains no RNG operations; RNG-capture support is not claimed here. No mock allocator/driver,
+The RNG case starts with no retained eager blocks, compares default and custom generators with eager byte-exact
+references across two replays, reseeds and reproduces the first result, then verifies retained-output and final
+teardown lifetimes. Its auxiliary default-stream allocations must also use pre-mapped capacity. No mock allocator/driver,
 whole-card ballast, injected device fault, or package-call retry is used. Full SDXL/H3 performance/quality and real
 card-pressure qualification remain separate P0 requirements.
