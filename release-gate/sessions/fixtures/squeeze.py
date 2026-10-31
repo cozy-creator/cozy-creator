@@ -1,8 +1,8 @@
 """A host-RAM squeeze from outside cozy's process tree (cl-697), started by a root shell over `cozy machine ssh`.
 
-squeeze.py <floor MB> <timeout s> <memory.log>: touches anonymous memory in 64 MB steps until the room TensorD counts
-(the host's MemAvailable and, for each limited cgroup on this process's path, its limit less what it uses and cannot
-give back) is under the floor, and holds it. It prints the memory log's first `end_idle` line written after it began,
+squeeze.py <floor MB> <timeout s> <memory.log>: maps populated anonymous memory (1 GB steps, 64 MB near the floor) until
+the room TensorD counts (the host's MemAvailable and, for each limited cgroup on this process's path, its limit less
+what it uses and cannot give back) is under the floor, and holds it. It prints the memory log's first `end_idle` line written after it began,
 the moment it appears, and exits, so its memory goes back at once; `timeout <room MB>` when none came. The OOM killer
 takes it first.
 """
@@ -11,7 +11,8 @@ import os
 import sys
 import time
 
-STEP = 64 << 20
+BIG, STEP = 1 << 30, 64 << 20
+POPULATE = getattr(mmap, "MAP_POPULATE", 0x8000)
 
 
 def number(path):
@@ -45,22 +46,24 @@ def main():
         adj.write("1000")
     follow = open(log)
     follow.seek(0, os.SEEK_END)
-    held, deadline = [], time.monotonic() + timeout
+    held, deadline = 0, time.monotonic() + timeout
+    blocks = []
     print(f"room {room() >> 20} MB at start", file=sys.stderr, flush=True)
     while time.monotonic() < deadline:
         for line in follow.readlines():
             if '"event":"end_idle"' in line:
                 print(line.strip(), flush=True)
-                print(f"held {len(held) * STEP >> 20} MB, room {room() >> 20} MB", file=sys.stderr, flush=True)
+                print(f"held {held >> 20} MB, room {room() >> 20} MB", file=sys.stderr, flush=True)
                 os._exit(0)
-        if room() > floor:
-            block = mmap.mmap(-1, STEP)
-            block.write(b"\1" * STEP)
-            held.append(block)
+        free = room() - floor
+        if free > 0:
+            size = BIG if free > 2 * BIG else STEP
+            blocks.append(mmap.mmap(-1, size, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS | POPULATE))
+            held += size
         else:
             time.sleep(0.01)
     print(f"timeout {room() >> 20}", flush=True)
-    print(f"held {len(held) * STEP >> 20} MB", file=sys.stderr, flush=True)
+    print(f"held {held >> 20} MB", file=sys.stderr, flush=True)
 
 
 main()

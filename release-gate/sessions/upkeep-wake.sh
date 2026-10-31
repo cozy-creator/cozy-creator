@@ -35,26 +35,32 @@ grep -qE 'max=[0-9]|high=[0-9]' "$OUT/host.txt" || fail "the pod's cgroups set n
 SUBJECTS=("a red barn in snow" "a lighthouse at dusk" "a fox in tall grass" "a tram on a rainy street" "a teapot on a sill"
   "a sailboat at dawn" "a stone bridge in fog" "an owl on a fence post" "a market stall of lemons" "a cabin by a lake"
   "a cat on a windowsill" "a desert road at noon" "a koi pond in autumn" "a bicycle by a canal" "a snowy pine forest")
-MP=50  # megapixels x 100: each idle call a size not run before, so its growth is unforeseen (TensorD's host rule)
-sdxl() {  # sdxl <what>: CALL, one real SDXL request's arguments
-  local mp; mp=$(awk -v m="$MP" 'BEGIN{printf "%.2f", m / 100}'); MP=$((MP + 2))
+# Each idle call is a size not run before (an aspect ratio, at 1 or 1.25 MP): its executor's growth is unforeseen, so
+# TensorD's host rule keeps room for it, and the squeeze can press under that. A size it has measured settles it away.
+SHAPES=() SHAPE=0
+for mp in 1 1.25; do for a in 1:1 9:7 7:9 3:2 2:3 16:9 9:16 2:1 1:2 21:9 9:21 3:1 1:3; do SHAPES+=("$a $mp"); done; done
+sdxl() {  # sdxl <what> [new]: CALL, one real SDXL request's arguments; `new`: the next size not run before
+  local a=1:1 mp=1
+  [ "${2-}" != new ] || { read -r a mp <<<"${SHAPES[$SHAPE]}"; SHAPE=$((SHAPE + 1)); }
   CALL=(run sdxl/generate "prompt=gate cl-697 $1: ${SUBJECTS[$((RANDOM % ${#SUBJECTS[@]}))]}, photo" "seed:=$RANDOM$RANDOM"
-    "megapixels:=$mp" --on "$NAME")
+    "aspect_ratio=$a" "megapixels:=$mp" --on "$NAME")
 }
 show() { cozy run show "$1" --once --json > "$2" 2>&1; }
 
-sdxl "first call, installs SDXL"; step first "${CALL[@]}" || fail "the first SDXL call"
+sdxl "first call, installs SDXL" new; step first "${CALL[@]}" || fail "the first SDXL call"
 LOG=$(pod 'find / \( -path /proc -o -path /sys -o -path /dev \) -prune -o -name memory.log -print 2>/dev/null' | grep '/logs/memory.log$' | head -1)
 [ -n "$LOG" ] || fail "no memory.log on the pod"
 say "memory log $LOG"
 
-# try <arm> <i>: 0 the late request ran, 1 it hung (cancelled), 2 no end_idle came under the squeeze.
+# try <arm> <i>: 0 the late request ran, 1 it hung (cancelled), 2 no end_idle came under the squeeze (no verdict).
 try() {
   local n=$1-$2 line r t0 s lp placed=''
-  sdxl "$1 try $2, the call whose executor goes idle"; step "$n-idle" "${CALL[@]}" || fail "$n: the idle call failed"
-  exec {fd}< <(cozy machine ssh "$NAME" -- "python3 -I /root/squeeze.py $FLOOR 120 $LOG" < /dev/null 2> "$OUT/$n-squeeze.err")
+  sdxl "$1 try $2, the call whose executor goes idle" new; step "$n-idle" "${CALL[@]}" || fail "$n: the idle call failed"
+  exec {fd}< <(cozy machine ssh "$NAME" -- "python3 -I /root/squeeze.py $FLOOR 300 $LOG" < /dev/null 2> "$OUT/$n-squeeze.err")
   read -r line <&"$fd"
-  case $line in *'"event":"end_idle"'*) ;; *) exec {fd}<&-; say "$n: no end_idle under the squeeze: $line"; return 2;; esac
+  case $line in *'"event":"end_idle"'*) ;; *) exec {fd}<&-
+    cozy machine logs "$NAME" memory -n 0 > "$OUT/$n-memory.log" 2>&1
+    say "$n: no verdict, no end_idle under the squeeze: $line ($(tail -1 "$OUT/$n-squeeze.err"))"; return 2;; esac
   sdxl "$1 try $2, sent as the host rule ended the idle executor"
   cozy "${CALL[@]}" > "$OUT/$n-late.txt" 2>&1 & lp=$!
   t0=$(date +%s); exec {fd}<&-
@@ -83,12 +89,16 @@ try() {
   cozy run cancel "$r" -y >> "$OUT/$n-cancel.txt" 2>&1 || fail "$n: cancel $r"
   wait "$lp"; return 1
 }
-arm() {  # arm <name> <stop at hangs>: HANGS and DONE for it
-  local i h=0 c; DONE=0
+arm() {  # arm <name> <stop at hangs>: HANGS, DONE (tries with a verdict) and NONE (without) for it
+  local i h=0 c run=0; DONE=0 NONE=0
   for i in $(seq 1 "$TRIES"); do
     try "$1" "$i"; c=$?
-    [ "$c" = 2 ] && fail "$1 try $i: the host rule ended no executor under the squeeze (floor $FLOOR MB)"
-    DONE=$i; h=$((h + c))
+    if [ "$c" = 2 ]; then
+      NONE=$((NONE + 1)) run=$((run + 1))
+      [ "$run" -lt 2 ] || fail "$1: two tries in a row ended no executor under the squeeze (floor $FLOOR MB)"
+      continue
+    fi
+    run=0 DONE=$((DONE + 1)) h=$((h + c))
     [ "$h" -lt "$2" ] || break
   done
   HANGS=$h
@@ -96,12 +106,12 @@ arm() {  # arm <name> <stop at hangs>: HANGS and DONE for it
 
 v0=$(cozy machine show "$NAME" --json | jq -r .status.version)
 arm production 2; PH=$HANGS PD=$DONE
-say "production TensorD $v0: $PH hangs in $PD tries"
+say "production TensorD $v0: $PH hangs in $PD tries with a verdict ($NONE without)"
 step update machine update "$NAME" --tensord "$CAND" -y || fail "update"
 v1=$(cozy machine show "$NAME" --json | jq -r .status.version)
-sdxl "first call on the candidate"; step first-candidate "${CALL[@]}" || fail "the first call on the candidate"
+sdxl "first call on the candidate" new; step first-candidate "${CALL[@]}" || fail "the first call on the candidate"
 arm candidate 1; CH=$HANGS CD=$DONE
-say "candidate TensorD $v1: $CH hangs in $CD tries"
+say "candidate TensorD $v1: $CH hangs in $CD tries with a verdict ($NONE without)"
 column -t -s $'\t' "$OUT/tries.tsv" | tee -a "$R"
 [ "$CH" = 0 ] || fail "the candidate hung: $CH of $CD"
 say "PASS: candidate $v1 placed every request that arrived as an idle executor ended ($CD tries); production $v0 hung $PH of $PD"
