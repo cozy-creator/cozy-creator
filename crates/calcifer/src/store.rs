@@ -948,6 +948,7 @@ impl Store {
                     vec![lifecycle(tx, &id)?]
                 } else {
                     let message = match row.state {
+                        State::Accepted if reason == "released_by_pod" => format!("{machine} accepted the run, but its result never reached Calcifer, and {machine} released itself after 15 idle minutes: the result is gone"),
                         State::Accepted => format!("its machine {machine} ended mid-run, and the run was not retried: {reason}"),
                         _ => format!("its machine {machine} ended before it accepted the run: {reason}"),
                     };

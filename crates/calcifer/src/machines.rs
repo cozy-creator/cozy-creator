@@ -715,7 +715,7 @@ impl Machines {
                 let error = match self.status_frames(&name, &mut pause).await {
                     Ok(()) if kind == MachineKind::Local => return self.local_exited().await,
                     Ok(()) => {
-                        self.ended(&name, "it released itself after its idle time");
+                        self.ended(&name, "released_by_pod");
                         return;
                     }
                     Err(error) => error,
