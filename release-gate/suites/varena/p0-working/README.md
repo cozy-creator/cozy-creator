@@ -125,3 +125,23 @@ full memcheck/leak checking and the error exit code remain unchanged. This does 
 Instrumented runs return the complete report with `passed=false` on tool/teardown failure, avoiding exception
 message truncation. As with the benchmark, successful CLI delivery is not qualification: require `result.passed`
 and the instrumented report's zero exit code and zero error summaries.
+
+## Native cuDNN lifetime control
+
+The explicit `/native_cudnn` entrypoint launches a fresh child from the same interpreter/SDK and checks the same
+Torch0 and candidate binary provenance. It never installs Varena; it asserts Torch's native allocator. A real
+float32 convolution uses input1×32×128×128,32 output channels and3×3 filters, matching the shortfall case's
+selected geometry. It verifies finite copied output, deletes every tensor, synchronizes and empties native device
+and public host caches. Both native allocated/reserved and host active/allocated counters must reach zero.
+
+Use the same `compute_sanitizer` payload and2025.4.1 binary as `/gpu`. The shared launcher retains memcheck,
+full leak checking, error exit99 and all-process checking. A nonzero sanitizer verdict remains `passed:false`
+with its complete report; the control does not suppress leaks or redefine a failing sanitizer run as clean.
+
+Torch2.14.0's cuDNN handle destroy callback intentionally omits cudnnDestroy because of shutdown-order crashes;
+thread exit returns handles to the process pool. The5,384bytes reported through cudnnCreate in run23987 are
+therefore a distinct ownership hypothesis from the1+8bytes of scalar pinned-host cache. This control tests
+whether the same cuDNN allocations persist with the native allocator after legitimate cache cleanup.
+Source: https://raw.githubusercontent.com/pytorch/pytorch/v2.14.0/aten/src/ATen/cudnn/Handle.cpp
+No borrowed handle is manually destroyed; no context reset or suppression is used. All16 Varena cases and the
+allocator microbenchmark remain unchanged.

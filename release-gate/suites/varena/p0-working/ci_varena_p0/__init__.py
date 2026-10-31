@@ -63,8 +63,18 @@ def fork(payload: Probe, tel: Telemetry) -> Report:
 
 @app.entrypoint(accelerator=True)
 def gpu(payload: Probe, tel: Telemetry) -> Report:
+    return _cuda_child(payload, tel, "probe.py", "varena-p0")
+
+
+@app.entrypoint(accelerator=True)
+def native_cudnn(payload: Probe, tel: Telemetry) -> Report:
+    """Fresh native-Torch cuDNN lifetime control, retaining the same strict sanitizer verdict."""
+    return _cuda_child(payload, tel, "native_cudnn.py", "native-cudnn-lifetime")
+
+
+def _cuda_child(payload: Probe, tel: Telemetry, filename: str, stage: str) -> Report:
     config = msgspec.json.encode(payload).decode()
-    child = Path(__file__).with_name("probe.py")
+    child = Path(__file__).with_name(filename)
     result = None
     command = [sys.executable, "-I", str(child), config]
     summaries = []
@@ -74,7 +84,7 @@ def gpu(payload: Probe, tel: Telemetry) -> Report:
             raise ValueError("compute_sanitizer must name an installed absolute executable")
         command = [str(tool), "--tool", "memcheck", "--leak-check", "full",
                    "--error-exitcode", "99", "--target-processes", "all", *command]
-    with tel.stage("varena-p0"):
+    with tel.stage(stage):
         process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -106,7 +116,7 @@ def gpu(payload: Probe, tel: Telemetry) -> Report:
         }
         return Report(result["passed"], json.dumps(result, sort_keys=True))
     if code or not isinstance(result, dict) or not result.get("passed"):
-        raise RuntimeError(f"varena P0 child failed ({code}): {result}")
+        raise RuntimeError(f"{stage} child failed ({code}): {result}")
     return Report(True, json.dumps(result, sort_keys=True))
 
 
