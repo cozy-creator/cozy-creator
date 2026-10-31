@@ -4,6 +4,7 @@
     frames.py guide SOURCE OUTPUT [--guided S] [--fps24]   # a guided render against its guide clip
     frames.py still IMAGE OUTPUT first|last                # a keyframe against the output's first or last frame
     frames.py variant CONTROL OUTPUT                       # a fine-tune's or LoRA's render against a same-seed control
+    frames.py seams OUTPUT --at S[,S...]                   # a several-piece shot at its piece boundaries
 
 regen: both in the original's 1344x768 frame (a 16:9 output un-stretched), over every 4th frame: mean luma PSNR and
 SSIM at full size (reported: regenerated texture, dense foliage most, rightly moves them), and at 112x64, where texture
@@ -128,6 +129,21 @@ def variant(control: str, output: str) -> dict:
             "coherence": round(float(np.mean(cons)), 3), "seam": round(cons[k], 3), "seam_at_s": round((k + 1) / FPS, 2)}
 
 
+def seams(output: str, at: list[float]) -> dict:
+    b = gray(output, 224, 128)
+    d = np.abs(np.diff(b, axis=0)).mean(axis=(1, 2))
+    med = max(float(np.median(d)), 0.5)
+    out = []
+    for t in at:
+        lo, hi = max(0, round((t - 0.5) * FPS)), min(len(d), round((t + 0.5) * FPS))
+        k = lo + int(np.argmax(d[lo:hi]))
+        out.append({"at": t, "worst_at_s": round((k + 1) / FPS, 2), "ratio": round(float(d[k]) / med, 2),
+                    "ssim": round(min(ssim(b[i], b[i + 1]) for i in range(lo, hi)), 3)})
+    frames = np.where((d > 3 * med) & (d > 4))[0] + 1
+    return {**probe(output), "median_change": round(med, 2), "boundaries": out, "flicker": int(len(frames)),
+            "flicker_at_s": [round(int(f) / FPS, 2) for f in frames[:8]]}
+
+
 if __name__ == "__main__":
     mode, first, second, *rest = sys.argv[1:]
     if mode == "regen":
@@ -136,6 +152,9 @@ if __name__ == "__main__":
         print(json.dumps(still(first, second, rest[0])))
     elif mode == "variant":
         print(json.dumps(variant(first, second)))
+    elif mode == "seams":
+        args = [second, *rest]
+        print(json.dumps(seams(first, [float(x) for x in args[args.index("--at") + 1].split(",")])))
     else:
         guided = float(rest[rest.index("--guided") + 1]) if "--guided" in rest else None
         print(json.dumps(guide(first, second, guided, "--fps24" in rest)))
