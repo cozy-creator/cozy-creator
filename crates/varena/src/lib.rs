@@ -1,4 +1,5 @@
-//! Process-local weight residency. TensorFS supplies bytes; this crate owns only CUDA memory.
+//! Process-local CUDA memory. TensorFS supplies weight bytes; [`working`] supplies ordinary
+//! allocations and prepared graph pools alongside stable-address weight residency.
 //!
 //! Every foreign storage must retain its [`Pin`] until the final alias is destroyed. Raw addresses
 //! are not ownership. Kernels may finish after the final storage disappears, so reclamation joins

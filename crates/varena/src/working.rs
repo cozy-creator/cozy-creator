@@ -13,16 +13,22 @@ pub type PoolId = (u64, u64);
 pub struct WorkingStats {
     pub allocated_bytes: usize,
     pub allocated_peak: usize,
+    pub allocated_capacity: usize,
     pub mapped_bytes: usize,
     pub mapped_peak: usize,
     pub pending_bytes: usize,
+    pub free_bytes: usize,
+    pub unassigned_bytes: usize,
     pub pools_bytes: usize,
+    pub pools: usize,
+    pub event_handles: usize,
     pub allocations: u64,
     pub frees: u64,
     pub ooms: u64,
     pub driver_memory_calls: u64,
     pub event_queries: u64,
     pub event_records: u64,
+    pub event_waits: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -432,7 +438,80 @@ impl Working {
             slots.retain(|ptr| state.blocks.contains_key(ptr));
             !slots.is_empty()
         });
+        let mut retired = Vec::new();
+        for (id, pool) in &state.pools {
+            if !pool.prepared
+                && pool.references == 0
+                && pool.capture.is_none()
+                && !state
+                    .segments
+                    .values()
+                    .any(|segment| segment.pool == Some(*id))
+                && self.completed(&pool.events)?
+            {
+                retired.push(*id);
+            }
+        }
+        for id in retired {
+            for event in state.pools[&id].events.values() {
+                self.driver.destroy_event(*event)?;
+            }
+            state.pools.remove(&id);
+        }
         Ok(released)
+    }
+
+    fn wait_reclaimable(
+        &self,
+        state: &mut State,
+        limit: usize,
+        exclude: Option<PoolId>,
+    ) -> Result<usize> {
+        self.poll(state)?;
+        let mut candidates = Vec::new();
+        let mut bytes = 0usize;
+        for (base, segment) in &state.segments {
+            if exclude.is_some() && segment.pool == exclude {
+                continue;
+            }
+            if let Some(id) = segment.pool {
+                let pool = &state.pools[&id];
+                if pool.prepared || pool.references != 0 || pool.capture.is_some() {
+                    continue;
+                }
+            }
+            if state
+                .blocks
+                .range(*base..*base + segment.bytes as u64)
+                .all(|(_, block)| matches!(block.life, Life::Ready | Life::Pending))
+            {
+                candidates.push(*base);
+                bytes = bytes.saturating_add(segment.bytes);
+                if bytes >= limit {
+                    break;
+                }
+            }
+        }
+        // Every event below has already been submitted. No live allocation, graph reference,
+        // callback or future owner action is waited on. Only the allocation slow path calls this.
+        for base in candidates {
+            let segment = &state.segments[&base];
+            if let Some(id) = segment.pool {
+                for event in state.pools[&id].events.values() {
+                    if !self.driver.query(*event)? {
+                        self.driver.wait_event(*event)?;
+                    }
+                }
+            }
+            for (_, block) in state.blocks.range(base..base + segment.bytes as u64) {
+                for event in block.events.values() {
+                    if !self.driver.query(*event)? {
+                        self.driver.wait_event(*event)?;
+                    }
+                }
+            }
+        }
+        self.trim(state, limit, exclude)
     }
 }
 
@@ -520,7 +599,7 @@ pub fn alloc(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> Re
         }
     }
     // Never hold working state while asking the weight pager to reclaim: it has its own lock.
-    for attempt in 0..2 {
+    for attempt in 0..3 {
         let result = {
             let captures = crate::capture_counts()?;
             crate::ensure_recovery_allowed(&captures, device)?;
@@ -532,7 +611,9 @@ pub fn alloc(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> Re
                     return Ok(Working::activate(&mut state, ptr, bytes));
                 }
                 let mapped = if class <= 1 << 20 { owner.page } else { class };
-                if attempt != 0 {
+                if attempt == 2 {
+                    owner.wait_reclaimable(&mut state, mapped, None)?;
+                } else if attempt != 0 {
                     owner.trim(&mut state, mapped, None)?;
                 }
                 owner.map(&mut state, mapped, None, class)?;
@@ -548,6 +629,7 @@ pub fn alloc(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> Re
                 trim(device)?;
                 crate::reclaim(device, class)?;
             }
+            Err(Error::OutOfMemory { .. }) if attempt == 1 => continue,
             Err(error @ Error::OutOfMemory { .. }) => {
                 owner.lock()?.stats.ooms += 1;
                 return Err(error);
@@ -685,22 +767,48 @@ pub fn stats(device: i32) -> Result<WorkingStats> {
     };
     let state = owner.lock()?;
     let mut stats = state.stats;
+    stats.allocated_capacity = state
+        .blocks
+        .values()
+        .filter(|b| b.life == Life::Live)
+        .map(|b| b.capacity)
+        .sum();
     stats.pending_bytes = state
         .blocks
         .values()
         .filter(|b| b.life != Life::Live && (b.life != Life::Ready || b.reusable_on.is_some()))
         .map(|b| b.capacity)
         .sum();
+    stats.free_bytes = state
+        .blocks
+        .values()
+        .filter(|b| b.life == Life::Ready && b.reusable_on.is_none())
+        .map(|b| b.capacity)
+        .sum();
+    stats.unassigned_bytes =
+        stats.mapped_bytes - stats.allocated_capacity - stats.pending_bytes - stats.free_bytes;
     stats.pools_bytes = state
         .segments
         .values()
         .filter(|s| s.pool.is_some())
         .map(|s| s.bytes)
         .sum();
+    stats.pools = state.pools.len();
+    stats.event_handles = state
+        .blocks
+        .values()
+        .map(|block| block.events.len())
+        .sum::<usize>()
+        + state
+            .pools
+            .values()
+            .map(|pool| pool.events.len())
+            .sum::<usize>();
     (
         stats.driver_memory_calls,
         stats.event_queries,
         stats.event_records,
+        stats.event_waits,
     ) = owner.driver.calls();
     Ok(stats)
 }
@@ -719,7 +827,7 @@ pub fn pool_reserve(device: i32, pool: PoolId, bytes: usize) -> Result<usize> {
     initialize(device)?;
     let owner = owner(device)?;
     let wanted = rounded(bytes, owner.page)?;
-    for attempt in 0..2 {
+    for attempt in 0..3 {
         let result = {
             let captures = crate::capture_counts()?;
             crate::ensure_recovery_allowed(&captures, device)?;
@@ -739,7 +847,11 @@ pub fn pool_reserve(device: i32, pool: PoolId, bytes: usize) -> Result<usize> {
             }
             let _context = owner.driver.enter()?;
             let result = (|| {
-                owner.trim(&mut state, wanted - have, Some(pool))?;
+                if attempt == 2 {
+                    owner.wait_reclaimable(&mut state, wanted - have, Some(pool))?;
+                } else {
+                    owner.trim(&mut state, wanted - have, Some(pool))?;
+                }
                 owner.map(&mut state, wanted - have, Some(pool), 0)?;
                 Ok(wanted)
             })();
@@ -749,6 +861,7 @@ pub fn pool_reserve(device: i32, pool: PoolId, bytes: usize) -> Result<usize> {
             Err(Error::OutOfMemory { .. }) if attempt == 0 => {
                 crate::reclaim(device, wanted)?;
             }
+            Err(Error::OutOfMemory { .. }) if attempt == 1 => continue,
             other => return other,
         }
     }
