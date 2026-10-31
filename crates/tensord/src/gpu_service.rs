@@ -907,10 +907,11 @@ struct Pressure {
     sampled: Option<Instant>,
     /// Executors (by pid) holding less than they would because of a `room` give.
     asked: std::collections::BTreeSet<u32>,
-    /// The foreign and own bytes when the last give went out, while still short: another is
-    /// sent only once either has grown since, so a deficit is spent once per new reading and an
-    /// executor at its floor is not asked again for nothing.
-    gave: Option<(u64, u64)>,
+    /// The foreign and own bytes when the last give went out while still short, and whether it
+    /// reached the running calls: idle executors give first; the running ones are asked at the
+    /// next reading if that was not enough; another round needs either figure to have grown, so
+    /// a deficit is spent once per new reading and an executor at its floor is not asked again.
+    gave: Option<(u64, u64, bool)>,
 }
 
 impl Pressure {
@@ -1351,37 +1352,45 @@ impl Pool {
         let headroom = Pressure::headroom(now.total);
         let shared = self.config.host.mode == HostMode::Shared;
         // Idle executors by their session, running ones by their call: each one's GPUs.
-        let mut degrees: BTreeMap<u32, u32> = self.sessions.lock().unwrap().values()
-            .map(|session| (session.executor.birth.pid, session.degree)).collect();
+        let mut degrees: BTreeMap<u32, (u32, bool)> = self.sessions.lock().unwrap().values()
+            .map(|session| (session.executor.birth.pid, (session.degree, false))).collect();
         degrees.extend(engine.active(usize::MAX).unwrap_or_default().into_iter()
-            .filter_map(|record| Some((record.process.as_ref()?.pid, record.invocation.degree))));
-        let leaders: Vec<(u32, u32, device_executor::Line)> = self.leaders.lock().unwrap().iter()
+            .filter_map(|record| Some((record.process.as_ref()?.pid, (record.invocation.degree, true)))));
+        let leaders: Vec<(u32, u32, device_executor::Line, bool)> = self.leaders.lock().unwrap().iter()
             .filter_map(|(pid, leader)| {
-                let degree = degrees.get(pid).copied()?.max(1) as usize;
-                if index < leader.start || index >= leader.start + degree { return None }
-                Some((*pid, (index - leader.start) as u32, leader.room.clone()?))
+                let (degree, running) = degrees.get(pid).copied()?;
+                if index < leader.start || index >= leader.start + degree.max(1) as usize { return None }
+                Some((*pid, (index - leader.start) as u32, leader.room.clone()?, running))
             }).collect();
         let mut pressure = self.pressure.lock().unwrap();
         let state = &mut pressure[index];
         let short = now.free < headroom && (blocked || shared);
-        let grown = |(foreign, own): (u64, u64)| now.foreign > foreign + (64 << 20) || now.own > own + (64 << 20);
+        let grown = |(foreign, own, _): (u64, u64, bool)| now.foreign > foreign + (64 << 20) || now.own > own + (64 << 20);
         if !short {
             state.gave = None;
         }
-        if short && !leaders.is_empty() && state.gave.is_none_or(grown) {
+        let idle = leaders.iter().any(|leader| !leader.3);
+        // This reading's round: the idle executors, else (none, or they gave last time) the running.
+        let running = match state.gave {
+            Some(gave) if !grown(gave) => (!gave.2).then_some(true),
+            _ => Some(!idle),
+        };
+        if let Some(running) = running.filter(|_| short && !leaders.is_empty()) {
             let give = 2 * headroom - now.free;
-            state.gave = Some((now.foreign, now.own));
-            for (pid, ordinal, line) in &leaders {
+            state.gave = Some((now.foreign, now.own, running));
+            let mut told = vec![];
+            for (pid, ordinal, line, _) in leaders.iter().filter(|leader| leader.3 == running) {
                 if line.send(&Command::Room(Room { device: *ordinal, give, ..Default::default() })) {
                     state.asked.insert(*pid);
+                    told.push(*pid);
                 }
             }
             self.notes.note(serde_json::json!({"event": "room", "gpu": device.entry, "give": give,
-                "free_bytes": now.free, "foreign_bytes": now.foreign, "own_bytes": now.own,
-                "headroom_bytes": headroom, "blocked": blocked, "executors": leaders.iter().map(|l| l.0).collect::<Vec<_>>()}));
+                "running": running, "free_bytes": now.free, "foreign_bytes": now.foreign, "own_bytes": now.own,
+                "headroom_bytes": headroom, "blocked": blocked, "executors": told}));
         } else if !state.asked.is_empty() && !blocked && now.free >= 3 * headroom {
             let mut told = vec![];
-            for (pid, ordinal, line) in &leaders {
+            for (pid, ordinal, line, _) in &leaders {
                 if state.asked.contains(pid) && line.send(&Command::Room(Room { device: *ordinal, lift: true, ..Default::default() })) {
                     told.push(*pid);
                 }
