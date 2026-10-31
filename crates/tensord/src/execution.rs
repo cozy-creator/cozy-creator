@@ -83,6 +83,18 @@ impl Stoppable {
         PreparationHalt { engine: self.engine.clone(), id: self.id.clone(), halt }
     }
 
+    /// Stop it from inside the machine (a prefetch whose owner ended): its bound executor is
+    /// killed now, or at bind when none is bound yet.
+    pub fn halt(&self) {
+        let halt = {
+            let mut preparations = self.engine.preparations.lock().unwrap();
+            let Some(preparation) = preparations.get_mut(&self.id) else { return };
+            preparation.stop.cancel();
+            preparation.halt.clone()
+        };
+        if let Some(halt) = halt { let _ = halt(); }
+    }
+
     /// From here on the run cannot stop (an upload finalizing at its Hub): it refuses
     /// cancellation. False when it was canceled first.
     pub fn commit(&self) -> bool {
@@ -553,6 +565,13 @@ impl Engine {
         let mut epoch = self.activity.lock().unwrap();
         *epoch = epoch.saturating_add(1); // never wrap or reuse a wake cursor
         self.activity_changed.notify_all();
+    }
+
+    /// Whether a managed attempt of root `root` (the root or a call of it) still runs its thread.
+    /// Each lane hold and call slot such an attempt takes ends before its thread does.
+    pub(crate) fn root_in_flight(&self, root: u64) -> bool {
+        let owned: Vec<String> = self.owned.lock().unwrap().iter().cloned().collect();
+        owned.iter().any(|id| self.get(id).is_ok_and(|record| record.root_seq() == root))
     }
 
     /// Trusted adapters share one claim, supervisor reservation and journal. They

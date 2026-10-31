@@ -949,6 +949,12 @@ impl Drop for RootAllocation {
         engine.notify_activity();
     }
 }
+impl Permit {
+    /// A prefetch's prewarm holds this call slot (`gpu_allocation::Permit::hint`).
+    fn hint(&mut self) {
+        if let Some(token) = self.token.as_mut() { token.hint(); }
+    }
+}
 impl Drop for Permit {
     fn drop(&mut self) {
         drop(self.token.take());
@@ -2264,10 +2270,13 @@ impl Pool {
             self.note_gpus(engine, root, "release", lane, None);
         }
     }
-    /// `root`'s lane, bound now when free; None while it waits. Each transition is logged on
-    /// the root run as a `gpu` entry: a grant, a wait naming its current blocker, and a lane
-    /// that ended for it as its younger holder's release behind it.
-    pub(crate) fn root_lane(&self, engine: &Engine, root: u64, claims: &mut Claims) -> Option<std::ops::Range<usize>> {
+    /// `root`'s lane, bound now when free; `Err(None)` while it waits, `Err(Some(why))` when its
+    /// holder is a request that has ended with no thread of it left (`Engine::root_in_flight`)
+    /// and still holds it: nothing will release that. A holder in teardown still has its thread,
+    /// so it is waited for; a prefetch's prewarm is stopped with its owner instead. Each
+    /// transition is logged on the root run as a `gpu` entry: a grant, a wait naming its current
+    /// blocker, and a lane that ended for it as its younger holder's release behind it.
+    pub(crate) fn root_lane(&self, engine: &Engine, root: u64, claims: &mut Claims) -> Result<std::ops::Range<usize>, Option<String>> {
         let (lane, yielded) = self.allocations.lane(root, claims);
         for (holder, lane) in yielded {
             self.note_gpus(engine, holder, "release", lane, Some(root));
@@ -2277,14 +2286,27 @@ impl Pool {
                 if new {
                     self.note_gpus(engine, root, "grant", lane.clone(), None);
                 }
-                Some(lane)
+                Ok(lane)
             }
-            crate::gpu_allocation::Lane::Waiting { behind, new } => {
+            crate::gpu_allocation::Lane::Waiting { behind, blocker, new } => {
+                // Ended, with no thread of it left to drop what it holds, and still holding it: an
+                // attempt's slots end before its thread does, so this order rules out its teardown.
+                if let crate::gpu_allocation::Blocker::Request { seq, hint: false } = blocker {
+                    let holder = engine.get(&seq.to_string()).ok();
+                    if holder.as_ref().is_none_or(|record| record.state.terminal())
+                        && !engine.root_in_flight(seq) && self.allocations.holds(seq)
+                    {
+                        let name = holder.and_then(|record| record.submission.map(|s| s.request_id))
+                            .filter(|id| !id.is_empty()).unwrap_or_else(|| format!("request {seq}"));
+                        return Err(Some(format!("its GPU lane is held by {name}, which has ended, and nothing \
+                            will release it; this call fails instead of waiting")));
+                    }
+                }
                 // A root not started yet just stays queued.
                 if new && engine.get(&root.to_string()).is_ok_and(|record| matches!(record.state, State::Starting | State::Running)) {
                     self.note_gpus(engine, root, "wait", 0..0, behind);
                 }
-                None
+                Err(None)
             }
         }
     }
@@ -2426,8 +2448,12 @@ impl Pool {
         }
         let lane = match self.allocations.registered(root) {
             true => match self.root_lane(engine, root, claims) {
-                Some(lane) => Some(lane),
-                None => return Ok(false),
+                Ok(lane) => Some(lane),
+                Err(None) => return Ok(false),
+                Err(Some(why)) => {
+                    engine.fail_unstarted(&record.id, "gpu_holder_ended", why)?;
+                    return Ok(false);
+                }
             },
             false => None,
         };
@@ -2564,7 +2590,7 @@ impl Pool {
                 }
                 // Queued requests of its root and older roots go first; a released lane ends
                 // the hint.
-                let (start, _permit) = loop {
+                let (start, mut permit) = loop {
                     let epoch = engine.activity_epoch();
                     if !active() { return; }
                     match pool.allocations.bound(root) {
@@ -2580,8 +2606,29 @@ impl Pool {
                     engine.wait_activity(epoch, None);
                 };
                 if !active() { return; }
+                // The hint lives no longer than its owner: once the owner's run ends or its root
+                // releases, its executor is killed, so the GPU's call slot and memory go back. A
+                // prewarm that outlived its shot held a 4090 for 3 h 50 min (0.2.0 gate 41159884913).
+                permit.hint();
+                pool.notes.note(serde_json::json!({"event": "prefetch_prewarm", "plan": key, "owner": owner, "gpu": start}));
+                let stop = engine.stoppable(&format!("prefetch:{owner}:{key}"));
+                let done = std::sync::atomic::AtomicBool::new(false);
                 let waited = asked.elapsed();
-                let result = pool.prewarm(&engine, &held, plan, start, Some(fetch), None);
+                let result = std::thread::scope(|scope| {
+                    scope.spawn(|| loop {
+                        let epoch = engine.activity_epoch();
+                        if done.load(std::sync::atomic::Ordering::Acquire) { return; }
+                        if !active() || pool.allocations.bound(root).is_some_and(|lane| lane.is_none()) {
+                            pool.notes.note(serde_json::json!({"event": "prefetch_halted", "plan": key, "owner": owner}));
+                            return stop.halt();
+                        }
+                        engine.wait_activity(epoch, None);
+                    });
+                    let result = pool.prewarm(&engine, &held, plan, start, Some(fetch), Some(&stop));
+                    done.store(true, std::sync::atomic::Ordering::Release);
+                    engine.notify_activity();
+                    result
+                });
                 pool.note_prewarm(&key, waited, asked.elapsed() - waited, &result);
             });
         if let Err(error) = started {
