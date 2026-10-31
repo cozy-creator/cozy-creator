@@ -233,12 +233,18 @@ fn _varena_working_stats(
         ("mapped_peak", stats.mapped_peak as u64),
         ("pending_bytes", stats.pending_bytes as u64),
         ("pools_bytes", stats.pools_bytes as u64),
+        ("allocated_capacity", stats.allocated_capacity as u64),
+        ("free_bytes", stats.free_bytes as u64),
+        ("unassigned_bytes", stats.unassigned_bytes as u64),
+        ("pools", stats.pools as u64),
+        ("event_handles", stats.event_handles as u64),
         ("allocations", stats.allocations),
         ("frees", stats.frees),
         ("ooms", stats.ooms),
         ("driver_memory_calls", stats.driver_memory_calls),
         ("event_queries", stats.event_queries),
         ("event_records", stats.event_records),
+        ("event_waits", stats.event_waits),
     ]
     .into())
 }
@@ -289,6 +295,19 @@ fn _varena_working_capture_complete(py: Python<'_>, device: i32, pool: (u64, u64
     .map_err(|e| super::raise(py, e))
 }
 
+#[pyfunction]
+fn _varena_working_pool_cancel_preparation(
+    py: Python<'_>,
+    device: i32,
+    pool: (u64, u64),
+) -> PyResult<()> {
+    py.detach(|| {
+        check()?;
+        varena::working::pool_cancel_preparation(device, pool)
+    })
+    .map_err(|e| super::raise(py, e))
+}
+
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_working_bindings, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_initialize, module)?)?;
@@ -301,5 +320,9 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
         module
     )?)?;
     module.add_function(wrap_pyfunction!(_varena_working_capture_complete, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        _varena_working_pool_cancel_preparation,
+        module
+    )?)?;
     Ok(())
 }

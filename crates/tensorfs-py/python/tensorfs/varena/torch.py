@@ -122,6 +122,12 @@ def prepare_pool(pool: tuple[int, int], bytes: int, device: int = 0) -> int:
     return _ext._varena_working_pool_reserve(_device(device), tuple(pool), bytes)
 
 
+def cancel_preparation(pool: tuple[int, int], device: int = 0) -> None:
+    """Return an unused reservation to reclaimability without releasing a graph owner."""
+    _installed()
+    _ext._varena_working_pool_cancel_preparation(_device(device), tuple(pool))
+
+
 def capture_complete(pool: tuple[int, int], *, stream, device: int | None = None) -> None:
     """Release capture exclusion after the owner actually ended this stream's capture."""
     _installed()
@@ -181,6 +187,8 @@ def graph(cuda_graph, *, pool=None, stream=None, reserve_bytes: int | None = Non
                     capture_complete(pool, stream=stream, device=device)
                     if error is not None:
                         cuda_graph.reset()
+                elif error is not None:
+                    cancel_preparation(pool, device)
     if error is not None:
         raise error.with_traceback(error.__traceback__)
     cuda_graph._varena_owner = (_owner, device, tuple(pool))
