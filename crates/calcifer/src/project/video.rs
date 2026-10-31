@@ -798,10 +798,24 @@ impl Video {
                 (payload, Some(call))
             }
             Item::Upscale(k) => {
-                // The text the shot was made from (its style too), for an upscaler that re-renders it.
+                // The text the shot was made from, for an upscaler that re-renders it (Paul, 10-31: the
+                // upscaler gets the details of the original): its prompt and beats, the descriptions of
+                // what it reads, and the style.
                 let shot = &self.project.shots[k];
                 let beats = shot.beats.iter().map(|beat| format!("Then, {}", beat.prompt.trim()));
-                let text = std::iter::once(shot.prompt.trim().to_owned()).chain(beats).collect::<Vec<_>>().join(" ");
+                let mut text = std::iter::once(shot.prompt.trim().to_owned()).chain(beats).collect::<Vec<_>>().join(" ");
+                let read = self.graph.find(&shot.name).map(|s| &self.graph.upstream[s]).into_iter().flatten();
+                for edge in read {
+                    let (name, description) = match (self.items[edge.node], &edge.state) {
+                        (Item::Entity(a), _) => (&self.project.entities[a].name, self.project.entities[a].description.as_str()),
+                        (Item::Setup(a, _), _) => (&self.project.entities[a].name, self.project.entities[a].description.as_str()),
+                        (Item::State(w), _) => (&self.project.world_states[w].name, self.project.world_states[w].blocking.as_str()),
+                        _ => continue,
+                    };
+                    if !description.trim().is_empty() {
+                        let _ = write!(text, "\n{name}: {}", description.trim());
+                    }
+                }
                 let mut payload = json!({"video": reads[0].input(&mut files, "video".into(), None), "prompt": styled(text.replace(['<', '>'], ""))});
                 if let Some(resolution) = &self.project.resolution {
                     payload["resolution"] = Value::String(resolution.clone());
