@@ -628,6 +628,106 @@ def external_stream_retirement():
     return {"destroy_before_tensor_free": True, "arms": arms}
 
 
+def cudnn_capture_shortfall():
+    """A real cuDNN workspace refusal must abort capture before engine fallback/cache mutation."""
+    import torch.nn.functional as functional
+
+    assert torch.backends.cudnn.is_available() and torch.backends.cudnn.enabled
+    assert not torch.backends.cudnn.benchmark
+    stream = torch.cuda.Stream()
+    generator = torch.Generator(device="cpu").manual_seed(1380214)
+    trials = []
+    chosen = None
+    # All outputs occupy exactly one2MiB VMM page; inputs+weights stay below5MiB.
+    for incoming, outgoing, edge in ((8, 32, 128), (32, 32, 128),
+                                     (64, 32, 128), (32, 128, 64)):
+        host_x = torch.randn((1, incoming, edge, edge), generator=generator) * 0.25
+        host_w = torch.randn((outgoing, incoming, 3, 3), generator=generator) * 0.125
+        with torch.cuda.stream(stream):
+            x, weight = host_x.cuda(), host_w.cuda()
+            warm = functional.conv2d(x, weight, padding=1)
+            reference = warm.cpu()
+        del warm
+        clean()
+        torch.cuda.reset_peak_memory_stats(0)
+        before = figures()
+        with torch.cuda.stream(stream):
+            baseline = functional.conv2d(x, weight, padding=1)
+            expected = baseline.cpu()
+        measured = figures()
+        assert measured["mapped_peak"] <= MAX_MAPPED, measured
+        output_bytes = baseline.numel() * baseline.element_size()
+        workspace_bytes = measured["allocated_peak"] - before["allocated_bytes"] - output_bytes
+        assert output_bytes == 2 * MIB, output_bytes
+        assert torch.equal(expected, reference), "baseline conv is not bitwise repeatable"
+        trials.append({"shape": [1, incoming, edge, edge], "out_channels": outgoing,
+                       "output_bytes": output_bytes, "workspace_peak": workspace_bytes,
+                       "mapped_peak": measured["mapped_peak"]})
+        del baseline, reference, host_x, host_w
+        clean()
+        if workspace_bytes > 0:
+            chosen = (trials[-1], expected)
+            break
+        del x, weight, expected
+        clean()
+    assert chosen is not None, {"no_nonzero_workspace_candidate": trials}
+    geometry, expected = chosen
+    token = torch.cuda.graph_pool_handle()
+    mapped = vt.prepare_pool(token, geometry["output_bytes"], device=0)
+    assert mapped == geometry["output_bytes"], (mapped, geometry)
+    graph = torch.cuda.CUDAGraph()
+    captured = None
+    capture_error = None
+    translated_oom = False
+    body_before = body_after = None
+    try:
+        with vt.graph(graph, pool=token, stream=stream, reserve_bytes=mapped):
+            body_before = figures()
+            try:
+                captured = functional.conv2d(x, weight, padding=1)
+            finally:
+                body_after = figures()
+                assert all(body_after[key] == body_before[key] for key in DRIVER), (body_before, body_after)
+    except Exception as error:
+        capture_error = f"{type(error).__name__}: {error}"
+        translated_oom = isinstance(error, torch.OutOfMemoryError)
+    # Exercise the eager successor even when old code wrongly caught OOM inside cuDNN.
+    # Cleanup synchronizes first; a sticky device error aborts instead of proceeding.
+    graph.reset()
+    del graph, captured
+    clean()
+    cleanup = figures()
+    torch.cuda.reset_peak_memory_stats(0)
+    before = figures()
+    with torch.cuda.stream(stream):
+        eager = functional.conv2d(x, weight, padding=1)
+        actual = eager.cpu()
+    after = figures()
+    assert after["mapped_peak"] <= MAX_MAPPED, after
+    subsequent_workspace = after["allocated_peak"] - before["allocated_bytes"] - geometry["output_bytes"]
+    parity = torch.equal(actual, expected)
+    refusals = None if body_before is None or body_after is None else body_after["ooms"] - body_before["ooms"]
+    report = {
+        "trials": trials, "selected": geometry, "capture_error": capture_error,
+        "translated_oom_after_cleanup": translated_oom, "capture_refusals": refusals,
+        "capture_pool_bytes": mapped, "cleanup": cleanup,
+        "eager_after_workspace_peak": subsequent_workspace, "eager_after_bitwise_equal": parity,
+        "cudnn_version": torch.backends.cudnn.version(),
+        "deterministic": torch.backends.cudnn.deterministic,
+        "allow_tf32": torch.backends.cudnn.allow_tf32,
+    }
+    emit({"cudnn_capture_shortfall": report})
+    del eager, actual, expected, chosen, x, weight
+    clean()
+    assert translated_oom, "capture must surface Torch OOM only after aborting, not finish with a fallback engine"
+    assert refusals == 1, f"cuDNN retried workspace allocations inside capture: {refusals}"
+    assert cleanup["pools"] == cleanup["pools_bytes"] == 0, cleanup
+    assert parity, "failed capture changed the eager conv's exact output"
+    assert subsequent_workspace == geometry["workspace_peak"], "failed capture changed the cached engine workspace"
+    report["stats"] = figures()
+    return report
+
+
 CASES = {
     "empty-capture": empty_capture,
     "allocator-reuse": allocator_reuse,
@@ -644,6 +744,7 @@ CASES = {
     "replay-hook-failure": replay_hook_failure,
     "dlpack-record-stream": dlpack_record_stream,
     "external-stream-retirement": external_stream_retirement,
+    "cudnn-capture-shortfall": cudnn_capture_shortfall,
 }
 
 
