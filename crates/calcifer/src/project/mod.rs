@@ -11,7 +11,7 @@ mod host;
 mod video;
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     convert::Infallible,
     path::{Path as FsPath, PathBuf},
     sync::{Arc, Mutex},
@@ -45,7 +45,7 @@ use tokio::sync::{Notify, broadcast};
 use tracing::warn;
 
 use crate::api::{Api, Refusal, parse};
-use folder::{Folder, Lock, Made, MadeBy, Pending, Take, Target, Then};
+use folder::{Call, Folder, Lock, Made, MadeBy, Pending, Take, Target, Then};
 use graph::{Status, name_key};
 use host::Host;
 use video::{ALL, Canvas, Render, Video};
@@ -370,6 +370,16 @@ enum Landed {
         approve: bool,
         hub: String,
     },
+    /// One of a shot's calls, its video kept: its write frames to cut, then its next call or the
+    /// shot's version.
+    Call {
+        made: Box<Made>,
+        call: Call,
+        latents: Option<String>,
+        approve: bool,
+        hub: String,
+        on: Vec<On>,
+    },
 }
 
 /// A version to send now: entity `i`'s for `all` (take None), or a take's.
@@ -492,7 +502,9 @@ impl Walk {
                 let picture = (self.folder().path(&file), digest);
                 return self.clean(&key, &target.hub, &video.clean_render(), picture, made, Then::Attached, &settle).await;
             }
-            let request = video.request(self.folder(), lock, i)?;
+            let renderer = self.host.renderer(&target.hub, video.render(i).target()).await?;
+            let request = video.request(self.folder(), lock, i, &renderer)?;
+            request.warnings.iter().for_each(|message| self.say(Event::Warning { message: message.clone() }));
             let then = if video.cleans(i) { Then::Clean { approve } } else { Then::List { approve } };
             let (mut payload, mut files, mut frames) = (request.payload, vec![], vec![]);
             for input in request.files {
@@ -509,9 +521,9 @@ impl Walk {
                 };
                 files.push((input.field, path, digest));
             }
-            let (made, field, writes, hub) =
-                (request.made.clone(), request.field.into(), request.writes.clone(), target.hub.clone());
-            let pending = Pending { made, hub, field, writes, then };
+            let (made, field, call, hub) =
+                (request.made.clone(), request.field.into(), request.call.clone(), target.hub.clone());
+            let pending = Pending { made, hub, field, on: vec![], call, then };
             self.submit(&key, &payload, files, &request.render, &target.on, pending, &settle).await
         };
         let sent = sent.await;
@@ -566,7 +578,13 @@ impl Walk {
             let Some(run) = self.host.sent(&key)? else { return Ok(None) };
             let run = self.host.wait(&run.id).await?;
             let node = self.folder().lock()?.pending.get(&key).map(|pending| pending.made.node.clone());
-            let Landed::Clean { made, picture, approve, hub } = self.land(&key, &run)? else { return Ok(node) };
+            let (made, picture, approve, hub) = match self.land(&key, &run)? {
+                Landed::Done => return Ok(node),
+                Landed::Call { made, call, latents, approve, hub, on } => {
+                    return self.called(&key, *made, call, latents, approve, &hub, &on).await;
+                }
+                Landed::Clean { made, picture, approve, hub } => (made, picture, approve, hub),
+            };
             let cleaner = Video::load(self.folder())?.clean_render();
             let picture = (picture.clone(), folder::hash(&picture)?);
             let settle = |lock: &mut Lock| drop(lock.pending.remove(&key));
@@ -588,6 +606,69 @@ impl Walk {
         (key, Ok(cut))
     }
 
+    /// A shot's call that landed (its video kept as `made.file`): the frames its writes take from
+    /// it, cut here; then its next call, which continues it, or (its last) the shot's version, with
+    /// its latents and every call's run. What the walk follows is pending under the next call's key in
+    /// the same write that drops this one's.
+    #[allow(clippy::too_many_arguments)]
+    async fn called(
+        &self,
+        key: &str,
+        mut made: Made,
+        call: Call,
+        latents: Option<String>,
+        approve: bool,
+        hub: &str,
+        on: &[On],
+    ) -> Result<Option<String>, Error> {
+        let folder = self.folder();
+        let node = made.node.clone();
+        for (state, at) in &call.writes {
+            // Half a frame early: a write at the shot's end is its last frame.
+            let frame = self.frame(&node, &folder.path(&made.file), (at - 1.0 / 48.0).max(0.0)).await?;
+            made.outputs.insert(state.clone(), folder.keep(frame.path())?.1);
+        }
+        let video = Video::load(folder)?;
+        let i = find(&video, &node)?;
+        if call.index + 1 < call.ends.len() {
+            made.runs.push(made.run);
+            let next = Call {
+                index: call.index + 1,
+                ends: call.ends.clone(),
+                writes: vec![],
+                from: Some((made.file.clone(), latents)),
+            };
+            let renderer = self.host.renderer(hub, video.render(i).target()).await?;
+            let own = (made.outputs.iter())
+                .map(|(state, digest)| Ok((state.clone(), folder.find(digest)?)))
+                .collect::<Result<BTreeMap<_, _>, Error>>()?;
+            let request = video.next_call(folder, &folder.lock()?, i, &renderer, next, &own)?;
+            request.warnings.iter().for_each(|message| self.say(Event::Warning { message: message.clone() }));
+            let carried = Made {
+                node: node.clone(),
+                upstream: made.upstream.clone(),
+                outputs: made.outputs.clone(),
+                runs: made.runs.clone(),
+                ..Default::default()
+            };
+            let then = Then::List { approve };
+            let pending =
+                Pending { made: carried, hub: hub.into(), field: "video".into(), on: vec![], call: request.call, then };
+            let files = request.files.into_iter().map(|input| (input.field, input.path, input.digest)).collect();
+            let settle = |lock: &mut Lock| drop(lock.pending.remove(key));
+            self.submit(&new_key(), &request.payload, files, &request.render, on, pending, &settle).await?;
+            return Ok(None);
+        }
+        made.latents = latents;
+        let approve = approve || video.graph.nodes[i].file.is_none();
+        folder.update_lock(|lock| {
+            lock.pending.remove(key);
+            lock.record(made.clone(), approve);
+        })?;
+        self.say(Event::Landed { name: node.clone(), file: made.file.clone() });
+        Ok(Some(node))
+    }
+
     /// The clean of a picture (its path and digest), keeping the record `made` of what it was made
     /// from: one run under `key` on this computer's machine, landed as `then` says and marked as a
     /// clean.
@@ -603,7 +684,7 @@ impl Walk {
         settle: &impl Fn(&mut Lock),
     ) -> Result<(), Error> {
         let made = Made { cleaned: true, outputs: Default::default(), ..made };
-        let pending = Pending { made, hub: hub.into(), field: "image".into(), writes: vec![], then };
+        let pending = Pending { made, hub: hub.into(), field: "image".into(), on: vec![], call: None, then };
         let payload = serde_json::json!({ "image": picture.1 });
         let files = vec![("image".into(), picture.0, picture.1)];
         self.submit(key, &payload, files, cleaner, &[On::Machine("local".into())], pending, settle).await
@@ -648,6 +729,7 @@ impl Walk {
         }
         let mut choices = Choices::new(target, &renderer.function, &renderer.slots, renderer.calls.iter().collect());
         choices.take(fields).map_err(named)?;
+        pending.on = on.to_vec();
         // A clean keeps what made the picture it cleans.
         pending.made.made_by.get_or_insert(MadeBy {
             with: format!("{}/{}@{}", renderer.package, renderer.function, renderer.release),
@@ -760,13 +842,16 @@ impl Walk {
             return Ok(Landed::Done);
         };
         let (file, _) = folder.keep(&picture)?;
-        let mut made = Made { file: file.clone(), ..pending.made.clone() };
+        let mut made = Made { file: file.clone(), run: run.number, ..pending.made.clone() };
         if pending.field == "video" {
             let (_, ffprobe) = self.host.ffmpeg()?;
             made.size = video::size(&ffprobe, &folder.path(&file));
         }
-        for (k, state) in pending.writes.iter().enumerate() {
-            made.outputs.insert(state.clone(), folder.keep(&saved("frames", k + 1)?)?.1);
+        let approve = matches!(pending.then, Then::List { approve: true } | Then::Clean { approve: true });
+        if let Some(call) = pending.call.clone() {
+            let latents = saved("latents", 0).ok().map(|path| folder.keep(&path)).transpose()?.map(|(file, _)| file);
+            let (hub, on) = (pending.hub.clone(), pending.on.clone());
+            return Ok(Landed::Call { made: Box::new(made), call, latents, approve, hub, on });
         }
         let approve = match pending.then {
             Then::List { approve } | Then::Clean { approve } => approve || video.graph.nodes[i].file.is_none(),
@@ -865,7 +950,7 @@ async fn beatless(host: &Host, hub: &str, video: &Video) -> Result<Vec<String>, 
     for (i, shot, seconds) in video.beatless() {
         let render = video.render(i);
         let target = render.target();
-        if let Some(max) = host.renderer(hub, target).await?.max_piece_s.filter(|max| seconds > *max) {
+        if let Some(max) = host.renderer(hub, target).await?.accepts.max_piece_s.filter(|max| seconds > *max) {
             lines.push(format!("{shot} needs beats: {seconds} s, and {target} renders pieces of at most {max} s"));
         }
     }

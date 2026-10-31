@@ -2,7 +2,7 @@
 //! sending and following runs, the machines' load, and ffmpeg. A walk hosted elsewhere (the Hub)
 //! answers these same calls.
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::PathBuf,
     sync::{Arc, Mutex},
     time::Duration,
@@ -26,10 +26,42 @@ pub struct Renderer {
     pub package: String,
     pub function: String,
     pub release: String,
-    pub max_piece_s: Option<f64>,
+    /// What its request takes, read from its schema.
+    pub accepts: Accepts,
     /// Its model slots and those of the calls it makes, for a request's `models:` and `lora:`.
     pub slots: Vec<Slot>,
     pub calls: Vec<Slot>,
+}
+
+/// What a function's request takes, as its schema says: a project sends only these fields, and a
+/// shot's references only of these kinds, with these fields each.
+#[derive(Clone, Debug, Default)]
+pub struct Accepts {
+    pub fields: BTreeSet<String>,
+    /// `references`' kinds (its union's tags), each with its fields.
+    pub kinds: BTreeMap<String, BTreeSet<String>>,
+    /// A shot renderer's longest and shortest piece (its `duration_s` schema extras).
+    pub max_piece_s: Option<f64>,
+    pub min_piece_s: Option<f64>,
+}
+
+impl Accepts {
+    pub fn read(request: &Value) -> Self {
+        let fields = |doc: &Value| -> Vec<Value> { doc["fields"].as_array().cloned().unwrap_or_default() };
+        let named = |doc: &Value| fields(doc).iter().filter_map(|f| f["name"].as_str().map(str::to_owned)).collect();
+        let field = |name: &str| fields(request).into_iter().find(|f| f["name"] == name);
+        let extra = |key: &str| field("duration_s").and_then(|f| f["extra"][key].as_f64());
+        let union = field("references").map(|f| f["type"]["list"]["union"].clone()).unwrap_or_default();
+        let kinds = (union.as_array().into_iter().flatten())
+            .filter_map(|member| Some((member["tag"].as_str()?.to_owned(), named(member))))
+            .collect();
+        Self {
+            fields: named(request),
+            kinds,
+            max_piece_s: extra("max_piece_s"),
+            min_piece_s: extra("min_piece_s"),
+        }
+    }
 }
 
 pub struct Host {
@@ -75,10 +107,7 @@ impl Host {
                     format!("{org}/{name}@{release} has no function {function}"),
                 )
             })?;
-        // A shot renderer states its longest piece on its own `duration_s` (a schema `extra`).
-        let fields = entry["request"]["fields"].as_array().into_iter().flatten();
-        let duration = fields.into_iter().find(|field| field["name"] == "duration_s");
-        let max_piece_s = duration.and_then(|field| field["extra"]["max_piece_s"].as_f64());
+        let accepts = Accepts::read(&entry["request"]);
         let read = |slots: Vec<&Value>| slots.into_iter().filter_map(|slot| Slot::read(slot).ok()).collect();
         let slots = read(interface::models(entry).iter().collect());
         let calls = read(interface::call_slots(&card["package_interface"], entry));
@@ -86,7 +115,7 @@ impl Host {
             package: format!("{org}/{name}"),
             function: function.into(),
             release,
-            max_piece_s,
+            accepts,
             slots,
             calls,
         };

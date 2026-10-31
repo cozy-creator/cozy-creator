@@ -63,7 +63,7 @@ project_cell() {
   cat > "$P/project.yaml" <<YAML
 type: video
 defaults: {entity: {with: $(pkg qwen-image-2 generate)}, setup: {with: $(pkg qwen-image-2 generate)},
-           world_state: {with: $(pkg qwen-image-2 generate)}, shot: {with: $(pkg minimax-h3 shot)},
+           world_state: {with: $(pkg qwen-image-2 generate)}, shot: {with: $(pkg minimax-h3 generate)},
            clean: {with: $(pkg birefnet remove_background)}}
 entities:
   - {name: lead, kind: character, description: "$CHAR"}
@@ -74,7 +74,7 @@ entities:
 world_states:
   - {name: start, init: "<lead> stands in <place>.", blocking: "lead in the middle, facing the camera."}
 shots:
-  - {name: one, setup: place.a, prompt: "<lead> in <place>. $MOTION", duration_s: 5, writes: [start]}
+  - {name: one, setup: place.a, prompt: "<lead> in <place>. $MOTION", duration_s: 5, writes: [{state: start}]}
   - {name: two, prompt: "<lead> looks back over one shoulder, after <start>.", duration_s: 5}
 edit: [{shot: one, end: 4}, {shot: two, start: 1}]
 YAML

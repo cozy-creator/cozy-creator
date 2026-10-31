@@ -43,6 +43,13 @@ pub struct Made {
     /// The run that made it.
     #[serde(default)]
     pub run: u64,
+    /// The runs of the calls before it, for a shot made in consecutive calls.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runs: Vec<u64>,
+    /// A shot's latents (`files/…`), in its renderer's own format: its upscaler of the same package
+    /// starts from them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latents: Option<String>,
     /// A picture's clean, which is never cleaned again.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cleaned: bool,
@@ -86,10 +93,26 @@ pub struct Pending {
     pub hub: String,
     /// The result field holding the version (`image`, `video`).
     pub field: String,
-    /// The states its `frames` are revisions of, in order.
+    /// The machines it may go to, which a shot's next call goes to too.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub writes: Vec<String>,
+    pub on: Vec<On>,
+    /// For a shot: which of its consecutive calls this is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call: Option<Call>,
     pub then: Then,
+}
+
+/// One of a shot's consecutive calls (one when it reads nothing it wrote itself): which, where each
+/// ends on the shot's timeline, the states whose frames this one's video gives (at seconds into the
+/// shot), and the video and latents of the call before it, which this one continues.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Call {
+    pub index: usize,
+    pub ends: Vec<f64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub writes: Vec<(String, f64)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<(String, Option<String>)>,
 }
 
 /// What becomes of a run's file once it lands.
@@ -293,9 +316,15 @@ impl Folder {
         self.update_lock(|lock| lock.nodes.retain(|key, _| nodes.contains(key)))?;
         let lock = self.lock()?;
         let mut keep = attached.clone();
-        for made in lock.nodes.values().flat_map(|node| &node.versions) {
+        let pending = lock.pending.values().map(|pending| &pending.made);
+        for made in lock.nodes.values().flat_map(|node| &node.versions).chain(pending) {
             keep.insert(digest_of(&made.file));
             keep.extend(made.outputs.values().cloned());
+            keep.extend(made.latents.iter().map(|file| digest_of(file)));
+        }
+        for (video, latents) in lock.pending.values().filter_map(|pending| pending.call.as_ref()?.from.as_ref()) {
+            keep.insert(digest_of(video));
+            keep.extend(latents.iter().map(|file| digest_of(file)));
         }
         let entries = std::fs::read_dir(self.dir.join(FILES)).into_iter().flatten().flatten();
         for entry in entries {

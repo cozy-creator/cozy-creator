@@ -13,8 +13,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use super::{
-    folder::{self, Folder, Lock, Made, Upstream, digest_of},
+    folder::{self, Call, Folder, Lock, Made, Upstream, digest_of},
     graph::{Edge, Graph, Node, mentions, name_key},
+    host::{Accepts, Renderer},
 };
 
 pub const TYPE: &str = "video";
@@ -26,7 +27,7 @@ const RENDERERS: [(&str, &str); 6] = [
     ("entity", "qwen-image-2/generate"),
     ("setup", "qwen-image-2/generate"),
     ("world_state", "qwen-image-2/generate"),
-    ("shot", "minimax-h3/shot"),
+    ("shot", "minimax-h3/generate"),
     ("upscale", "minimax-h3/upscale"),
     // Characters' and props' pictures before any use: the subject on white, so a shot renderer
     // never paints their backgrounds into the set.
@@ -42,7 +43,7 @@ pub fn skeleton() -> String {
 type: video
 style: \"\"   # the look, added to every picture and shot
 # defaults:   # each node kind's render block; a node's own render: wins
-#   shot: {with: minimax-h3/shot, lora: [{ref: org/lora, strength: 0.8}], options: {turbo: true}}
+#   shot: {with: minimax-h3/generate, lora: [{ref: org/lora, strength: 0.8}], options: {turbo: true}}
 entities:   # characters, props, and environments with camera setups (camera text in screen terms)
   # - {name: theo, kind: character, description: \"A tall man in a green raincoat.\"}
   # - {name: dock, kind: environment, description: \"a foggy harbour at dawn\",
@@ -50,8 +51,9 @@ entities:   # characters, props, and environments with camera setups (camera tex
 world_states:   # how a set stands; a shot that writes one changes it for the shots after
   # - {name: stage, init: \"<theo> stands on <dock>.\", blocking: \"theo by the hut.\"}
 shots:   # in order; past its renderer's longest piece (15 s for minimax-h3) a shot needs beats
-  # - {name: walk, setup: dock.a, prompt: \"<theo> crosses <dock>.\", duration_s: 8, writes: [stage],
-  #    beats: [{at: 0, prompt: \"He walks to the edge.\"}, {at: 4, prompt: \"He looks out to sea.\"}]}
+  # - {name: walk, setup: dock.a, prompt: \"<theo> crosses <dock>.\", duration_s: 8, writes: [{state: stage}],
+  #    beats: [{at: 0, prompt: \"He walks to the edge.\"}, {at: 4, prompt: \"He looks out to sea.\"}],
+  #    references: [{name: stride, kind: video, video: refs/walk.mp4}]}   # also plate: {video: …}, first_frame, last_frame
 # a node's render: {with: <function>, models: {...}, lora: [...], options: {...}} renders it another way
 # image: (or a shot's video:) attaches your own file, used until you approve a version cozy made
 # resolution: 1440p   # the edit's short edge: shots below it are upscaled (their approved version), and
@@ -70,6 +72,9 @@ struct Project {
     defaults: BTreeMap<String, Render>,
     #[serde(default)]
     style: String,
+    /// The sound bed under every shot, for a renderer that makes sound.
+    #[serde(default)]
+    soundscape: String,
     /// The edit's short edge (`1440p`): a shot whose approved version is below it is upscaled.
     resolution: Option<String>,
     /// The canvas every still of a place and every shot fills (`16:9`, `9:16`, `2.39:1`).
@@ -115,6 +120,8 @@ struct Entity {
     setups: Vec<Setup>,
     /// A picture attached by hand: its version until one cozy made is approved.
     image: Option<String>,
+    /// A character's voice, a sound file attached by hand.
+    voice: Option<String>,
     render: Option<Render>,
 }
 
@@ -176,14 +183,32 @@ struct Shot {
     duration_s: f64,
     #[serde(default)]
     beats: Vec<Beat>,
-    /// World states its last frame becomes the next revision of.
+    /// World states its frame at `at` seconds (default: its end) becomes the next revision of.
     #[serde(default)]
-    writes: Vec<String>,
+    writes: Vec<Write>,
+    /// Files that guide it, as its renderer's `references` list: `{name, kind, …}`, `kind` one of
+    /// `character`, `prop`, `environment` (`image`), `video`, `audio`. After the ones the project
+    /// compiles from what it reads.
+    #[serde(default)]
+    references: Vec<Map<String, Value>>,
+    /// The video it edits: `{video, use_audio?}`.
+    plate: Option<Map<String, Value>>,
+    first_frame: Option<String>,
+    last_frame: Option<String>,
     video: Option<String>,
     render: Option<Render>,
     #[serde(default)]
     upscale: Upscale,
 }
+
+#[derive(Clone, Deserialize)]
+struct Write {
+    state: String,
+    at: Option<f64>,
+}
+
+/// The fields of a shot's reference that are files here.
+const FILE_FIELDS: [&str; 4] = ["image", "video", "audio", "voice"];
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Beat {
@@ -288,10 +313,13 @@ pub struct Request {
     pub made: Made,
     /// The result field holding the version.
     pub field: &'static str,
-    pub writes: Vec<String>,
+    /// A shot's call.
+    pub call: Option<Call>,
     pub files: Vec<Input>,
     /// The function it goes to, and the run's model choices and options.
     pub render: Render,
+    /// What it left out because its function does not take it.
+    pub warnings: Vec<String>,
 }
 
 /// A file a request reads: its payload field (`assets.0.image`), its path here, and its digest; or
@@ -365,6 +393,13 @@ impl Video {
             }
             let cleans = entity.kind != EntityKind::Environment;
             let (file, made) = versions(&entity.name, "image", &entity.image, cleans)?;
+            let mut inputs = vec![];
+            if let Some(voice) = &entity.voice {
+                if entity.kind != EntityKind::Character {
+                    return Err(invalid("voice_owner", format!("{} is a {kind}: only a character has a voice", entity.name)));
+                }
+                inputs.push(input_file(folder, &entity.name, "voice", voice)?);
+            }
             nodes.push(Node {
                 id: entity.name.clone(),
                 kind,
@@ -374,6 +409,7 @@ impl Video {
                 texts: vec![entity.description.clone()],
                 needs: vec![],
                 writes: vec![],
+                inputs,
                 file,
                 versions: made,
             });
@@ -390,6 +426,7 @@ impl Video {
                     texts: vec![setup.camera.clone()],
                     needs: vec![setup.frame.as_ref().map_or_else(|| entity.name.clone(), |frame| frame.shot.clone())],
                     writes: vec![],
+                    inputs: vec![],
                     file,
                     versions: made,
                 });
@@ -426,6 +463,7 @@ impl Video {
                 texts: vec![state.init.clone(), state.blocking.clone()],
                 needs: vec![],
                 writes: vec![],
+                inputs: vec![],
                 file,
                 versions: made,
             });
@@ -464,7 +502,8 @@ impl Video {
                 order: Some(k),
                 texts,
                 needs,
-                writes: shot.writes.clone(),
+                writes: shot.writes.iter().map(|write| write.state.clone()).collect(),
+                inputs: shot_inputs(folder, shot)?,
                 file,
                 versions: made,
             });
@@ -480,6 +519,7 @@ impl Video {
                 texts: vec![],
                 needs: vec![shot.name.clone()],
                 writes: vec![],
+                inputs: vec![],
                 file,
                 versions: made,
             });
@@ -496,6 +536,27 @@ impl Video {
                 graph.nodes[*i].id
             )
         }));
+        for shot in &project.shots {
+            let mut written = BTreeSet::new();
+            for write in &shot.writes {
+                let at = write.at.unwrap_or(shot.duration_s);
+                if !(at > 0.0 && at <= shot.duration_s) {
+                    let said = format!("{} writes {} at {at} s, outside its 0–{} s", shot.name, write.state, shot.duration_s);
+                    return Err(invalid("write_outside", said));
+                }
+                if !written.insert(name_key(&write.state)) {
+                    return Err(invalid("write_twice", format!("{} writes {} twice", shot.name, write.state)));
+                }
+            }
+            let mut named = BTreeSet::new();
+            for entry in &shot.references {
+                let name = entry.get("name").and_then(Value::as_str).unwrap_or_default();
+                if graph.find(name).is_some() || !named.insert(name_key(name)) {
+                    let said = format!("{}'s reference {name} has a name already taken", shot.name);
+                    return Err(invalid("reference_name", said).remedy("each reference's name is its own: rename it"));
+                }
+            }
+        }
         let canvas = Canvas::read(project.resolution.as_deref(), project.aspect_ratio.as_deref())?;
         let sizes = (graph.nodes.iter())
             .map(|node| {
@@ -608,8 +669,39 @@ impl Video {
         files.into_iter().filter(|file| folder.path(file).is_file()).map(|file| folder.digest(file)).collect()
     }
 
-    /// The request that makes a version of node `i`, from what it reads now.
-    pub fn request(&self, folder: &Folder, lock: &Lock, i: usize) -> Result<Request, Error> {
+    /// The request that makes a version of node `i`, from what it reads now, as its function
+    /// (`renderer`) takes it; a shot's is its first call.
+    pub fn request(&self, folder: &Folder, lock: &Lock, i: usize, renderer: &Renderer) -> Result<Request, Error> {
+        let call = match self.items[i] {
+            Item::Shot(k) => Some(Call { ends: self.ends(k), ..Default::default() }),
+            _ => None,
+        };
+        self.compile(folder, lock, i, renderer, call, &BTreeMap::new())
+    }
+
+    /// Shot `i`'s next call (`call`, which continues `call.from`), with the frames the shot wrote
+    /// in the calls before it (`own`: state → file).
+    pub fn next_call(
+        &self,
+        folder: &Folder,
+        lock: &Lock,
+        i: usize,
+        renderer: &Renderer,
+        call: Call,
+        own: &BTreeMap<String, String>,
+    ) -> Result<Request, Error> {
+        self.compile(folder, lock, i, renderer, Some(call), own)
+    }
+
+    fn compile(
+        &self,
+        folder: &Folder,
+        lock: &Lock,
+        i: usize,
+        renderer: &Renderer,
+        call: Option<Call>,
+        own: &BTreeMap<String, String>,
+    ) -> Result<Request, Error> {
         let graph = &self.graph;
         let node = &graph.nodes[i];
         let mut upstream = vec![];
@@ -631,6 +723,7 @@ impl Video {
             upstream.push(Upstream { node: up.id.clone(), state: edge.state.clone(), file: digest.clone() });
             reads.push(Read { edge, path, digest });
         }
+        upstream.extend(node.inputs.iter().map(|(key, file)| Upstream { node: key.clone(), state: None, file: file.clone() }));
         let made = Made { node: node.id.clone(), upstream: Some(upstream), ..Default::default() };
         let styled = |text: String| match self.project.style.trim() {
             "" => text,
@@ -646,7 +739,8 @@ impl Video {
                 })
                 .collect()
         };
-        let (payload, writes) = match self.items[i] {
+        let mut warnings = vec![];
+        let (mut payload, call) = match self.items[i] {
             Item::Entity(a) => {
                 let entity = &self.project.entities[a];
                 // Only the entity itself, once: a picture it mentions is for likeness, never drawn beside it.
@@ -663,7 +757,7 @@ impl Video {
                     EntityKind::Environment => ("An establishing view of the empty set, no people.".to_owned(), self.canvas.aspect.as_str()),
                 };
                 let prompt = styled(format!("{}\n\n{shown}", entity.description.trim()));
-                (json!({"prompt": prompt, "pictures": pictures(&mut files), "aspect_ratio": ratio}), vec![])
+                (json!({"prompt": prompt, "pictures": pictures(&mut files), "aspect_ratio": ratio}), None)
             }
             Item::Setup(a, s) => {
                 // The environment's picture (or a shot's frame) first, and the camera in screen terms
@@ -690,14 +784,19 @@ impl Video {
                         json!({"name": name, "image": read.input(&mut files, format!("pictures.{n}.image"), at)})
                     })
                     .collect();
-                (json!({"prompt": prompt, "pictures": pictures, "aspect_ratio": self.canvas.aspect}), vec![])
+                (json!({"prompt": prompt, "pictures": pictures, "aspect_ratio": self.canvas.aspect}), None)
             }
             Item::State(w) => {
                 let state = &self.project.world_states[w];
                 let prompt = styled([state.init.trim(), state.blocking.trim()].join("\n\n").trim().to_owned());
-                (json!({"prompt": prompt, "pictures": pictures(&mut files), "aspect_ratio": self.canvas.aspect}), vec![])
+                (json!({"prompt": prompt, "pictures": pictures(&mut files), "aspect_ratio": self.canvas.aspect}), None)
             }
-            Item::Shot(k) => self.shot(k, &reads, &mut files),
+            Item::Shot(k) => {
+                let call = call.expect("a shot is made in calls");
+                let (payload, call) =
+                    self.shot(folder, k, &reads, &mut files, call, own, &renderer.accepts, &mut warnings)?;
+                (payload, Some(call))
+            }
             Item::Upscale(k) => {
                 // The text the shot was made from (its style too), for an upscaler that re-renders it.
                 let shot = &self.project.shots[k];
@@ -707,54 +806,236 @@ impl Video {
                 if let Some(resolution) = &self.project.resolution {
                     payload["resolution"] = Value::String(resolution.clone());
                 }
-                (payload, vec![])
+                // The shot's latents, for an upscaler of its package (one that reads its format).
+                let made = lock.made(&shot.name, &reads[0].digest);
+                let same = made.and_then(|made| made.made_by.as_ref())
+                    .is_some_and(|by| by.with.starts_with(&format!("{}/", renderer.package)));
+                if let Some(latents) = made.and_then(|made| made.latents.as_ref()).filter(|_| same) {
+                    let digest = digest_of(latents);
+                    files.push(Input { field: "latents".into(), path: folder.path(latents), digest: digest.clone(), at: None });
+                    payload["latents"] = Value::String(digest);
+                }
+                (payload, None)
             }
         };
-        Ok(Request { payload, made, field: self.field(i), writes, files, render: self.render(i) })
+        // What the function does not take is left out, said, and so are its files.
+        let accepts = &renderer.accepts;
+        let fields = payload.as_object_mut().expect("a request is an object");
+        let left: Vec<String> = fields.keys().filter(|key| !accepts.fields.contains(*key)).cloned().collect();
+        for key in &left {
+            fields.remove(key);
+            files.retain(|input| input.field.split('.').next() != Some(key.as_str()));
+            warnings.push(format!("{} takes no {key}: {}'s is left out", renderer.function, node.id));
+        }
+        Ok(Request { payload, made, field: self.field(i), call, files, render: self.render(i), warnings })
     }
 
-    /// A shot's `video/shot` request: its breakdown (an environment's picture is its setup's
-    /// plate), the world states it reads, and a last frame for each state it writes.
-    fn shot(&self, k: usize, reads: &[Read], files: &mut Vec<Input>) -> (Value, Vec<String>) {
+    /// Where shot `k`'s consecutive calls end: at each time it writes a state a later beat of it
+    /// mentions (that read is of its own write, so the call after it reads the frame), and at its
+    /// end.
+    fn ends(&self, k: usize) -> Vec<f64> {
         let shot = &self.project.shots[k];
+        let read_after = |state: &str, at: f64| {
+            (shot.beats.iter()).any(|beat| beat.at > at && mentions(&beat.prompt).iter().any(|m| name_key(m) == name_key(state)))
+        };
+        let mut ends: Vec<f64> = (shot.writes.iter())
+            .map(|write| (write.state.as_str(), write.at.unwrap_or(shot.duration_s)))
+            .filter(|&(state, at)| at < shot.duration_s && read_after(state, at))
+            .map(|(_, at)| at)
+            .collect();
+        ends.sort_by(f64::total_cmp);
+        ends.dedup();
+        ends.push(shot.duration_s);
+        ends
+    }
+
+    /// Shot `k`'s call `call` as its function takes it (`accepts`), on the shot's one timeline:
+    /// - its text up to the call's end: `prompt`, the beats before it, the project's style,
+    ///   soundscape and aspect ratio;
+    /// - `references`: each entity it reads (its description, a character's voice), its setup's
+    ///   picture as its environment's, each world state as a loose environment picture with its
+    ///   blocking (the version current at the call's start: the shot's own frame once it wrote it,
+    ///   `own`), then the shot's own references;
+    /// - its plate, its first frame (first call), its last frame (last call), and the call before
+    ///   it as `continue_from`.
+    ///
+    /// What the function does not take is left out and said (`said`), or refused where leaving it
+    /// out would make another shot: a plate, or the calls a read of its own write needs.
+    #[allow(clippy::too_many_arguments)]
+    fn shot(
+        &self,
+        folder: &Folder,
+        k: usize,
+        reads: &[Read],
+        files: &mut Vec<Input>,
+        mut call: Call,
+        own: &BTreeMap<String, String>,
+        accepts: &Accepts,
+        said: &mut Vec<String>,
+    ) -> Result<(Value, Call), Error> {
+        let shot = &self.project.shots[k];
+        let (index, last) = (call.index, call.index + 1 == call.ends.len());
+        let (start, end) = (if index == 0 { 0.0 } else { call.ends[index - 1] }, call.ends[index]);
+        let takes = |field: &str| accepts.fields.contains(field);
+        let refuse = |what: String| invalid("shot_unrenderable", format!("{}: {what}", shot.name));
+        if call.ends.len() > 1 {
+            if !takes("continue_from") {
+                return Err(refuse("it reads a state it wrote itself, which needs its renderer to continue a video \
+                                   (continue_from), and it takes none".into()));
+            }
+            let spans = call.ends.iter().scan(0.0, |from, &to| Some((std::mem::replace(from, to), to)));
+            if let Some(min) = accepts.min_piece_s
+                && let Some((from, to)) = spans.take(call.ends.len() - 1).find(|(from, to)| to - from < min)
+            {
+                return Err(refuse(format!("its call from {from} s to {to} s is under its renderer's {min} s")));
+            }
+        }
         let framed: BTreeSet<usize> = (reads.iter())
             .filter_map(|read| match self.items[read.edge.node] {
                 Item::Setup(a, _) => Some(a),
                 _ => None,
             })
             .collect();
-        let layout = |name: &str| {
+        let blocking = |name: &str| {
             let state = self.project.world_states.iter().find(|s| name_key(&s.name) == name_key(name));
             state.map(|s| s.blocking.clone()).unwrap_or_default()
         };
-        let (mut assets, mut states) = (vec![], vec![]);
+        // Each reference the function takes, its fields cut to its kind's; its files listed.
+        let mut references: Vec<Value> = vec![];
+        let mut add = |mut entry: Map<String, Value>, sources: Vec<(&str, PathBuf, String)>, files: &mut Vec<Input>| {
+            let kind = entry.get("kind").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let name = entry.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let Some(fields) = accepts.kinds.get(&kind) else {
+                said.push(format!("{}'s renderer takes no {kind} reference: {name} is left out", shot.name));
+                return;
+            };
+            let dropped: Vec<String> = entry.keys().filter(|key| *key != "kind" && !fields.contains(*key)).cloned().collect();
+            for key in dropped {
+                entry.remove(&key);
+                said.push(format!("{}'s renderer takes no {key} on a {kind} reference: {name}'s is left out", shot.name));
+            }
+            let n = references.len();
+            let kept: Vec<_> = sources.into_iter().filter(|(field, ..)| entry.contains_key(*field)).collect();
+            for (field, path, digest) in kept {
+                files.push(Input { field: format!("references.{n}.{field}"), path, digest: digest.clone(), at: None });
+                entry.insert(field.into(), Value::String(digest));
+            }
+            references.push(Value::Object(entry));
+        };
+        let file = |path: &str| -> Result<(PathBuf, String), Error> { Ok((folder.path(path), folder.digest(path)?)) };
         for read in reads {
-            let (n, m) = (assets.len(), states.len());
-            let state = |name: &str, files: &mut Vec<Input>| json!({"name": name, "image": read.input(files, format!("world_state.{m}.image"), None), "layout": layout(name)});
+            let source = |field: &'static str| vec![(field, read.path.clone(), read.digest.clone())];
             match (self.items[read.edge.node], &read.edge.state) {
                 (Item::Entity(a), _) if !framed.contains(&a) => {
                     let entity = &self.project.entities[a];
-                    let image = read.input(files, format!("assets.{n}.image"), None);
-                    assets.push(json!({"name": entity.name, "kind": entity.kind.name(), "image": image, "description": entity.description}));
+                    let mut entry = Map::new();
+                    entry.insert("name".into(), json!(entity.name));
+                    entry.insert("kind".into(), json!(entity.kind.name()));
+                    entry.insert("image".into(), Value::Null);
+                    entry.insert("description".into(), json!(entity.description));
+                    let mut sources = source("image");
+                    if let Some(voice) = &entity.voice {
+                        let (path, digest) = file(voice)?;
+                        entry.insert("voice".into(), Value::Null);
+                        sources.push(("voice", path, digest));
+                    }
+                    add(entry, sources, files);
                 }
                 (Item::Setup(a, _), _) => {
                     let env = &self.project.entities[a];
-                    let image = read.input(files, format!("assets.{n}.image"), None);
-                    assets.push(json!({"name": env.name, "kind": "environment", "image": image, "description": env.description}));
+                    let entry = json!({"name": env.name, "kind": "environment", "image": null, "description": env.description});
+                    add(entry.as_object().expect("an object").clone(), source("image"), files);
                 }
-                (Item::State(w), _) => states.push(state(&self.project.world_states[w].name, files)),
-                (Item::Shot(_), Some(name)) => states.push(state(name, files)),
+                (Item::State(_), _) | (Item::Shot(_), Some(_)) => {
+                    let name = read.edge.state.clone().unwrap_or_else(|| self.graph.nodes[read.edge.node].id.clone());
+                    let entry = json!({"name": name, "kind": "environment", "follow": "loose", "image": null, "description": blocking(&name)});
+                    // Once this shot wrote it, its own frame.
+                    let sources = match own.iter().find(|(state, _)| name_key(state) == name_key(&name)) {
+                        Some((_, frame)) => vec![("image", folder.path(frame), digest_of(frame))],
+                        None => source("image"),
+                    };
+                    add(entry.as_object().expect("an object").clone(), sources, files);
+                }
                 _ => {}
             }
         }
-        let writes: Vec<String> = (shot.writes.iter())
-            .filter_map(|name| self.graph.find(name).map(|s| self.graph.nodes[s].id.clone()))
+        for entry in &shot.references {
+            let mut sources = vec![];
+            for field in FILE_FIELDS {
+                if let Some(path) = entry.get(field).and_then(Value::as_str) {
+                    let (path, digest) = file(path)?;
+                    sources.push((field, path, digest));
+                }
+            }
+            add(entry.clone(), sources, files);
+        }
+        let mut payload = Map::new();
+        let mut text = shot.prompt.clone();
+        let beats: Vec<&Beat> = shot.beats.iter().filter(|beat| beat.at < end).collect();
+        match takes("beats") {
+            true => drop(payload.insert("beats".into(), json!(beats))),
+            false => (beats.iter()).for_each(|beat| text = format!("{text} Then, {}", beat.prompt.trim())),
+        }
+        let style = self.project.style.trim();
+        match (takes("style"), style.is_empty()) {
+            (true, false) => drop(payload.insert("style".into(), json!(style))),
+            (false, false) => text = format!("{text}\n\nStyle: {style}."),
+            _ => {}
+        }
+        if !self.project.soundscape.trim().is_empty() {
+            match takes("soundscape") {
+                true => drop(payload.insert("soundscape".into(), json!(self.project.soundscape.trim()))),
+                false => said.push(format!("{}'s renderer takes no soundscape: it is left out", shot.name)),
+            }
+        }
+        if takes("references") {
+            payload.insert("references".into(), Value::Array(references));
+        } else {
+            // With no references, a mention is the name itself.
+            text = text.replace(['<', '>'], "");
+        }
+        payload.insert("prompt".into(), json!(text));
+        payload.insert("duration_s".into(), json!(end));
+        if takes("aspect_ratio") {
+            payload.insert("aspect_ratio".into(), json!(self.canvas.aspect));
+        }
+        if let Some(plate) = &shot.plate {
+            if !takes("plate") {
+                return Err(refuse("its renderer takes no plate, the video it edits".into()));
+            }
+            let mut plate = plate.clone();
+            if let Some(path) = plate.get("video").and_then(Value::as_str) {
+                let (path, digest) = file(path)?;
+                files.push(Input { field: "plate.video".into(), path, digest: digest.clone(), at: None });
+                plate.insert("video".into(), Value::String(digest));
+            }
+            payload.insert("plate".into(), Value::Object(plate));
+        }
+        for (field, path, here) in [("first_frame", &shot.first_frame, index == 0), ("last_frame", &shot.last_frame, last)] {
+            let Some(path) = path.as_ref().filter(|_| here) else { continue };
+            if !takes(field) {
+                said.push(format!("{}'s renderer takes no {field}: it is left out", shot.name));
+                continue;
+            }
+            let (path, digest) = file(path)?;
+            files.push(Input { field: field.into(), path, digest: digest.clone(), at: None });
+            payload.insert(field.into(), Value::String(digest));
+        }
+        if let Some((video, latents)) = call.from.as_ref().filter(|_| index > 0) {
+            let mut from = Map::new();
+            for (field, file) in std::iter::once(("video", Some(video))).chain([("latents", latents.as_ref())]) {
+                let Some(file) = file else { continue };
+                let digest = digest_of(file);
+                files.push(Input { field: format!("continue_from.{field}"), path: folder.path(file), digest: digest.clone(), at: None });
+                from.insert(field.into(), Value::String(digest));
+            }
+            payload.insert("continue_from".into(), Value::Object(from));
+        }
+        call.writes = (shot.writes.iter())
+            .map(|write| (write.state.clone(), write.at.unwrap_or(shot.duration_s)))
+            .filter(|(_, at)| *at >= start && (*at < end || last))
             .collect();
-        let payload = json!({
-            "prompt": shot.prompt, "duration_s": shot.duration_s, "beats": shot.beats, "style": self.project.style,
-            "assets": assets, "world_state": states, "writes": vec!["last"; writes.len()],
-        });
-        (payload, writes)
+        Ok((Value::Object(payload), call))
     }
 
     /// The pieces of the edit (`preview`: of its native cut): each cut's shot file and span, by
@@ -1085,6 +1366,36 @@ fn run(ffmpeg: &Path, args: &[&std::ffi::OsStr]) -> Result<(), Error> {
             Err(failed(format!("ffmpeg could not cut the edit: {}", String::from_utf8_lossy(&done.stderr).trim())))
         }
     }
+}
+
+/// A file a node reads that is no node's, as its key (`<node>.<field>`) and digest; it must be there.
+fn input_file(folder: &Folder, id: &str, field: &str, path: &str) -> Result<(String, String), Error> {
+    if !folder.path(path).is_file() {
+        return Err(invalid("file_missing", format!("{id}'s {field}: {path} is not there")).remedy("fix the path"));
+    }
+    Ok((format!("{id}.{field}"), folder.digest(path)?))
+}
+
+/// A shot's own files: its references', its plate's, its first and last frames.
+fn shot_inputs(folder: &Folder, shot: &Shot) -> Result<Vec<(String, String)>, Error> {
+    let mut found = vec![];
+    for entry in &shot.references {
+        let name = entry.get("name").and_then(Value::as_str).unwrap_or_default();
+        for field in FILE_FIELDS {
+            if let Some(path) = entry.get(field).and_then(Value::as_str) {
+                found.push(input_file(folder, &shot.name, &format!("{name}.{field}"), path)?);
+            }
+        }
+    }
+    if let Some(path) = shot.plate.as_ref().and_then(|plate| plate.get("video")).and_then(Value::as_str) {
+        found.push(input_file(folder, &shot.name, "plate", path)?);
+    }
+    for (field, path) in [("first_frame", &shot.first_frame), ("last_frame", &shot.last_frame)] {
+        if let Some(path) = path {
+            found.push(input_file(folder, &shot.name, field, path)?);
+        }
+    }
+    Ok(found)
 }
 
 /// A node's current file (path and digest) and its versions' files.

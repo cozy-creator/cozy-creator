@@ -85,7 +85,8 @@ commented `project.yaml`; fill it in:
 type: video
 style: soft watercolor
 resolution: 1440p
-defaults: {shot: {with: minimax-h3/shot, options: {turbo: true}}}
+soundscape: gulls, surf, wind
+defaults: {shot: {with: minimax-h3/generate, options: {turbo: true}}}
 entities:
   - {name: theo, kind: character, description: "A tall man in a green raincoat."}
   - {name: juno, kind: character, description: "<theo>'s sister, in a red coat.", render: {with: flux-2/generate}}
@@ -94,7 +95,8 @@ entities:
 world_states:
   - {name: stage, init: "<juno> and <theo> face off on <dock>.", blocking: "juno by the crates."}
 shots:
-  - {name: fight, setup: dock.a, prompt: "<theo> and <juno> spar.", duration_s: 20, writes: [stage],
+  - {name: fight, setup: dock.a, prompt: "<theo> and <juno> spar.", duration_s: 20, writes: [{state: stage, at: 12}],
+     references: [{name: kata, kind: video, video: refs/kata.mp4}],
      beats: [{at: 0, prompt: "They circle."}, {at: 10, prompt: "<juno> sweeps his legs."}]}
   - {name: reaction, prompt: "Close on <theo>, wincing, after <stage>.", duration_s: 4}
 edit: [{shot: fight, end: 8}, {shot: reaction}, {shot: fight, start: 10}]
@@ -113,7 +115,11 @@ the models first), and a `cozy render` asked while another goes joins it.
 
 `<name>` in a text names another node, which it is then made from; a setup's camera is written in
 screen terms (what is near or far, left or right). A shot reads a world state it
-names and changes the ones it `writes`. Character and prop pictures are cleaned on this computer before
+names and changes the ones it `writes` (`{state, at}`, at its end by default); a beat that mentions a state
+reads it as it stands then, so a shot that writes one and reads it later renders as consecutive calls
+(`continue_from`). A shot's `references:` (`{name, kind: character|prop|environment|video|audio, …}`),
+`plate:` (the video it edits), `first_frame:` and `last_frame:` go to its function after the references the
+project compiles from what it reads; what that function does not take is left out and said. Character and prop pictures are cleaned on this computer before
 use. Only a changed upstream file puts something out of date, never a text edit or a render block:
 `cozy render <name>` when you want a new take. A node renders by its `render: {with, models, lora,
 options}`: `with` a function, `models: {base_model: {ref: org/checkpoint}}` and `lora: [{ref: org/lora,
