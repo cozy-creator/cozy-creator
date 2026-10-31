@@ -6,8 +6,9 @@
 #   models     cells.toml models, in order (["sdxl", "anima", "moss", "qwen", "h3_turbo", "h3_full"])
 #   tiers      scout (one warm-up, one timed request per engine) or full (cold, warm x3)
 #   arms       ComfyUI arms, comma-separated ("matched")
-#   free_mib   leave only this much VRAM free, the rest held by a separate process (0: the whole card); an object
-#              {"<model>": MiB} sets it per model (a model it omits gets the whole card)
+#   free_mib   VRAM left free, the rest held by a separate process (0: the whole card): a level for every model, or
+#              {"<model>": MiB} (a model it omits gets the whole card); a list of levels runs each in turn on the
+#              same pod, its weights downloaded once, and there an object level runs only the models it names
 #   ram_free_gib  leave only this much host RAM available (0: all of it)
 #   traffic_gb GB the provider bills: the image, both engines' weights, the results (250)
 #   need_s     seconds the guard must buy (10800); a hosted job ends at 6 h, so size a session below that
@@ -23,8 +24,10 @@ MODELS=$(param models '["sdxl", "anima", "moss", "qwen", "h3_turbo", "h3_full"]'
 FREE=$(param free_mib 0) RAM=$(param ram_free_gib 0) STALL=$(param stall_s 1800)
 [ -f "${BENCH:-}/bench.py" ] || fail "no benchmarks checkout at ${BENCH:-}"
 mapfile -t models < <(jq -r '.[]' <<<"$MODELS")
-free_of() { jq -r --arg m "$1" 'if type == "object" then (.[$m] // 0) else . end' <<<"$FREE"; }
-for m in "${models[@]}"; do [[ $(free_of "$m") =~ ^[0-9]+$ ]] || fail "free_mib for $m"; done
+mapfile -t LEVELS < <(jq -c 'if type == "array" then .[] else . end' <<<"$FREE")
+LIST=$(jq -r 'type == "array"' <<<"$FREE")
+free_at() { jq -r --arg m "$2" --argjson list "$LIST" 'if type == "object" then (.[$m] // (if $list then "-" else 0 end)) else . end' <<<"$1"; }
+for lv in "${LEVELS[@]}"; do for m in "${models[@]}"; do [[ $(free_at "$lv" "$m") =~ ^([0-9]+|-)$ ]] || fail "free_mib for $m"; done; done
 [[ $TIERS == scout || $TIERS == full ]] && [[ $RAM =~ ^[0-9.]+$ ]] && [[ $ARMS =~ ^[a-z0-9,]+$ ]] || fail "tiers, arms or ram_free_gib"
 # The candidate's wheels, fetched before renting, so a missing one costs nothing.
 mapfile -t update < <(param update '[]' | jq -r '.[]')
@@ -65,7 +68,7 @@ if [ "${#update[@]}" -gt 0 ]; then
   step update machine update "$NAME" "${update[@]}" -y || fail "the candidate's update"
   cozy machine show "$NAME" > "$OUT/show-update.txt" 2>&1; grep -E '^(version|runtime|tensorfs) ' "$OUT/show-update.txt" | tee -a "$R"
 fi
-S=$(date -u +%Y%m%dT%H%MZ)-$SKU; [[ $FREE == 0 || $FREE == {* ]] || S=$S-$FREE; [ "$RAM" = 0 ] || S=$S-ram$RAM
+S=$(date -u +%Y%m%dT%H%MZ)-$SKU; [[ $FREE =~ ^[1-9][0-9]*$ ]] && S=$S-$FREE; [ "$RAM" = 0 ] || S=$S-ram$RAM
 [ "${#update[@]}" = 0 ] && [ "${#candidates[@]}" = 0 ] || S=$S-candidate
 pod() { timeout "${T:-120}" cozy machine ssh "$NAME" "$@"; }
 for i in $(seq 1 20); do pod true < /dev/null > /dev/null 2>&1 && break; [ "$i" = 20 ] && fail "no SSH into $NAME"; sleep 15; done
@@ -77,11 +80,23 @@ for c in "${candidates[@]}"; do
 done
 T=900 pod "command -v ffprobe >/dev/null || { apt-get update -qq && apt-get install -y -qq ffmpeg; } >/dev/null 2>&1; ffprobe -version | head -1" \
   < /dev/null >> "$R" 2>&1 || fail "no ffmpeg on the pod"
+# ComfyUI, its environment and its weight files come from this runner (the runner's `ship`), so the pod's setup
+# downloads only Cozy's models: five 3060 hosts in a row could not reach PyPI, pytorch.org or Hugging Face. The
+# environment (about 10 GB) is built here; the weights stream through. A keepalive holds the rental meanwhile.
+( while sleep 240; do cozy machine keepalive "$NAME" > /dev/null 2>&1; done ) & KA=$!
+if ! python3 "$BENCH/bench.py" ship --models "$(IFS=,; echo "${models[*]}")" --arms "$ARMS" --pod "timeout 3600 cozy machine ssh $NAME" \
+    < /dev/null > "$OUT/ship.log" 2>&1; then
+  kill "$KA"; fail "ship: $(tail -3 "$OUT/ship.log")"
+fi
+kill "$KA"; say "$(tail -1 "$OUT/ship.log")"
 # One detached plan on the pod: a dropped SSH connection or a lost runner leaves it running, and the rental ends itself
 # 15 min after the plan stops making progress.
 plan="cd /root/bench && { python3 bench.py setup --models $(IFS=,; echo "${models[*]}") --arms $ARMS --sku $SKU --session $S && {"
-for m in "${models[@]}"; do
-  plan="$plan python3 bench.py cell --model $m --tiers $TIERS --arms $ARMS --free-mib $(free_of "$m") --ram-free-gib $RAM --sku $SKU --session $S ${there[*]};"
+for lv in "${LEVELS[@]}"; do
+  for m in "${models[@]}"; do
+    f=$(free_at "$lv" "$m"); [ "$f" = - ] && continue
+    plan="$plan python3 bench.py cell --model $m --tiers $TIERS --arms $ARMS --free-mib $f --ram-free-gib $RAM --sku $SKU --session $S ${there[*]};"
+  done
 done
 plan="$plan }; echo \$? > done; } > run.log 2>&1"
 pod "nohup bash -c '$plan' > /dev/null 2>&1 &" < /dev/null || fail "start the runner"
