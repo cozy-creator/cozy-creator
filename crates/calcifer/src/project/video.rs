@@ -583,6 +583,15 @@ impl Video {
                 let beats = shot.beats.iter().map(|beat| format!("Then, {}", beat.prompt.trim()));
                 let text = std::iter::once(shot.prompt.trim().to_owned()).chain(beats).collect::<Vec<_>>().join(" ");
                 let mut payload = json!({"video": reads[0].input(&mut files, "video".into(), None), "prompt": styled(text.replace(['<', '>'], ""))});
+                // The shot's own latents, for an upscaler of its package (one that reads its format).
+                let made = lock.made(&graph.entities[reads[0].edge.entity].id, &reads[0].digest);
+                let shot_package = package(renderer(&self.project, "shot"));
+                let latents = (made.and_then(|made| made.latents.clone()))
+                    .filter(|_| shot_package.is_some() && shot_package == package(renderer(&self.project, "upscale")));
+                if let Some((digest, file)) = latents.and_then(|d| folder.find(&d).ok().map(|f| (d, f))) {
+                    files.push(Input { field: "latents".into(), path: folder.path(&file), digest: digest.clone(), at: None });
+                    payload["latents"] = Value::String(digest);
+                }
                 payload.as_object_mut().expect("an object").extend(shot.upscale.settings.clone());
                 (payload, vec![])
             }
@@ -986,6 +995,15 @@ fn run(ffmpeg: &Path, args: &[&std::ffi::OsStr]) -> Result<(), Error> {
         false => {
             Err(failed(format!("ffmpeg could not cut the edit: {}", String::from_utf8_lossy(&done.stderr).trim())))
         }
+    }
+}
+
+/// A renderer's package, `(org, name)`, as `[org/]package/function` resolves on the Hub.
+fn package(target: &str) -> Option<(String, String)> {
+    match target.to_ascii_lowercase().split('/').collect::<Vec<_>>()[..] {
+        [name, _] => Some((protocol::names::ROOT.to_owned(), name.to_owned())),
+        [org, name, _] => Some((org.to_owned(), name.to_owned())),
+        _ => None,
     }
 }
 
