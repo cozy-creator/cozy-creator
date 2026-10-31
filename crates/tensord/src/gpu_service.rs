@@ -1537,12 +1537,16 @@ impl Pool {
             self.offload_idle(engine, &key, "room", Some(deficit));
         }
         if let Some((key, why)) = end {
-            // Read before it ends: what each of its threads waited on, so a stall explains itself.
+            // Read before it ends: what each of its threads waited on, and what its last room kept
+            // and why (`room.json` in its root, the Runtime's), so a stall explains itself.
             let pid = idle.iter().find(|i| i.1 == key).map(|i| i.2);
             let threads = pid.map(platform::process::threads).unwrap_or_default();
+            let kept = self.sessions.lock().unwrap().get(&key)
+                .and_then(|session| fs::read(session.executor.root_path().join("room.json")).ok())
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
             if self.end_session(&key) {
-                self.notes.note(serde_json::json!({"event": "ended_for_room", "ended": key,
-                    "for": "room", "why": why, "pid": pid, "threads": threads, "need": deficit, "free": now.free}));
+                self.notes.note(serde_json::json!({"event": "ended_for_room", "ended": key, "for": "room",
+                    "why": why, "pid": pid, "threads": threads, "kept": kept, "need": deficit, "free": now.free}));
             }
         }
     }
