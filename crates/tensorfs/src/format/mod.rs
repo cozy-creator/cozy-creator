@@ -3,6 +3,7 @@
 //! sha2 only, so it builds without the `store` feature.
 
 mod cbor;
+pub mod compose;
 pub mod decode;
 mod doc;
 mod dtype;

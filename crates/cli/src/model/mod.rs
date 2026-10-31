@@ -31,7 +31,8 @@ enum Verb {
     /// Make a model present in a machine's store. Follows it to its end; Ctrl-C stops following, never the work.
     Download(Download),
     /// Make a model on a machine, or take a run's weights output (run:N), and upload it as a new
-    /// private commit in a lane: its id. Follows it to its end; Ctrl-C stops following, never the work.
+    /// private commit in a lane: its id. `--base` makes it another model with the source's
+    /// components in place of its own. Follows it to its end; Ctrl-C stops following, never the work.
     Upload(Upload),
     /// Write a new commit in a lane from a commit or release, by the recipe a named package
     /// declares for that lane. Follows it to its end; Ctrl-C stops following, never the work.
@@ -88,7 +89,7 @@ pub(crate) struct Download {
     alias: Option<String>,
     /// The source file's convention: a reviewed TensorFS format, e.g. h3.lora; usually detected.
     #[arg(long = "source-format", value_name = "FORMAT")]
-    profiles: Vec<String>,
+    format: Option<String>,
     #[command(flatten)]
     placement: crate::run::Placement,
 }
@@ -109,7 +110,7 @@ pub(crate) struct Upload {
     lane: String,
     /// The source file's convention: a reviewed TensorFS format, e.g. h3.lora; usually detected.
     #[arg(long = "source-format", value_name = "FORMAT")]
-    profiles: Vec<String>,
+    format: Option<String>,
     /// It mirrors its author's model (admins): the destination org is parked for the author to
     /// claim. Bare, the hf:// or civitai:// source is the upstream page; else name it.
     #[arg(long, value_name = "URL", num_args = 0..=1, default_missing_value = "")]
@@ -125,6 +126,13 @@ pub(crate) struct Upload {
     /// The LoRA's recommended strength, shown by `cozy model info`; --lora still defaults to 1.0.
     #[arg(long, allow_hyphen_values = true)]
     strength: Option<f64>,
+    /// Start from this model (org/name@release in the commit's --lane, or org/name@sha256:<commit>):
+    /// its header with the source's components in place of its own, the rest its objects as the
+    /// Hub holds them. `:<component>[,…]` replaces only those: the source's of each name, or its
+    /// one component under every name (a hybrid DiT under transformer,transformer_ref), stored and
+    /// uploaded once. A Hub source is referenced too: nothing is downloaded.
+    #[arg(long, value_name = "MODEL[:COMPONENT,…]")]
+    base: Option<String>,
     #[command(flatten)]
     placement: crate::run::Placement,
 }
