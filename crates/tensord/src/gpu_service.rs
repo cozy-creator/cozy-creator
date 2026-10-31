@@ -905,14 +905,10 @@ struct Pressure {
     blocked: bool,
     observable: Option<bool>,
     sampled: Option<Instant>,
-    /// Executors (by pid) holding less than they would because of a `room` give, and whether
-    /// one gave for another program's use (only then is a running call lifted mid-call).
-    asked: std::collections::BTreeMap<u32, bool>,
-    /// The foreign and own bytes when the last give went out while still short, and whether it
-    /// reached the running calls: idle executors give first; the running ones are asked at the
-    /// next reading if that was not enough; another round needs either figure to have grown, so
-    /// a deficit is spent once per new reading and an executor at its floor is not asked again.
-    gave: Option<(u64, u64, bool)>,
+    /// Executors (by pid) held to a target, the last one each was sent.
+    limited: BTreeMap<u32, u64>,
+    /// The room loop's round over the current deficit and our use when it was asked.
+    round: Option<(usize, u64)>,
 }
 
 impl Pressure {
@@ -1251,49 +1247,22 @@ impl Pool {
         }
     }
 
-    /// A running call owns its GPUs ahead of idle neighbours. A measured peak is a hint a call
-    /// can outgrow (bigger activations than any sample), so `make_room`'s one-time offload can
-    /// fall short mid-call. While a call holds GPU `index` and the driver's free bytes are under
-    /// the pressure headroom, offload idle neighbours there (weights only, LRU and warm sets
-    /// last), so the active call pages its own weights only after every idle neighbour has given
-    /// its back. Sibling Cozy executors are never foreign pressure, so ending idle processes and
-    /// cancelling stay the foreign path's rungs below. Runs on the existing 500 ms reclaim loop.
-    fn yield_to_call(&self, engine: &Arc<Engine>, index: usize, device: &Device) {
-        let calling = || self.lanes.lock().unwrap().values().any(|lane| lane.contains(&index));
-        let (Some(gpu), Some(row)) = (device.memory.as_ref(), memory::row(&device.entry, &self.config.inventory)) else { return };
-        let headroom = Pressure::headroom(row.memory_bytes);
-        if !calling() { return }
-        for key in self.idle_on_lane(&(index..index + 1), Level::Gpu) {
-            if gpu.free().is_none_or(|free| free >= headroom) || !calling() { return }
-            // An executor that refuses its offload keeps its weights where the running call
-            // needs room, and asking again every tick never changes that: end it, as placement
-            // does (0.36.0 gate 41034222864: Klein's refusal, 13 asks, then Qwen out of memory).
-            if !self.offload_idle(engine, &key, "running_call", Some(headroom))
-                && gpu.free().is_some_and(|free| free < headroom) && calling() && self.end_session(&key)
-            {
-                self.notes.note(serde_json::json!({"event": "ended_for_room", "ended": key,
-                    "for": "running_call", "need": headroom, "free": gpu.free()}));
-            }
-        }
-    }
-
-    /// Sampled by the existing machine reclaim loop. Sampling schedules observation only;
-    /// neither elapsed time nor an unavailable driver reading authorizes cancellation.
+    /// The one room loop (design/vram-yield.md §3), on the machine's 500 ms reclaim loop: each GPU
+    /// read once, another program's use observed (`gpu_pressure`), then `room`.
     pub(crate) fn relieve_pressure(&self, engine: &Arc<Engine>) {
         for (index, device) in self.devices.iter().enumerate() {
-            self.yield_to_call(engine, index, device);
-            let usage = device.memory.as_ref().and_then(|gpu| gpu.usage(&self.tenants));
+            let reading = device.memory.as_ref().and_then(|gpu| gpu.usage_by(&self.tenants));
             let blocked = {
                 let mut pressure = self.pressure.lock().unwrap();
                 let state = &mut pressure[index];
                 let now = Instant::now();
                 let gap = state.sampled.replace(now).map(|was| (now - was).as_secs_f64() * 1e3);
-                if state.observable != Some(usage.is_some()) {
+                if state.observable != Some(reading.is_some()) {
                     self.notes.note(serde_json::json!({"event": "gpu_pressure_observation", "gpu": device.entry,
-                        "known": usage.is_some(), "sample_gap_ms": gap, "scope": "driver_attributed_process_bytes"}));
-                    state.observable = Some(usage.is_some());
+                        "known": reading.is_some(), "sample_gap_ms": gap, "scope": "driver_attributed_process_bytes"}));
+                    state.observable = Some(reading.is_some());
                 }
-                let Some(usage) = usage.as_ref() else { continue };
+                let Some((usage, _)) = reading.as_ref() else { continue };
                 let was = state.blocked;
                 state.observe(usage);
                 if was != state.blocked {
@@ -1306,105 +1275,121 @@ impl Pool {
                 }
                 state.blocked
             };
-            if let Some(before) = usage.filter(|usage| blocked && usage.free < Pressure::headroom(usage.total)) {
-                let headroom = Pressure::headroom(before.total);
-                let read = || device.memory.as_ref()?.usage(&self.tenants);
-                let short = || read().is_some_and(|usage| usage.free < headroom);
-                let idle = || {
-                    let mut sessions: Vec<_> = self.sessions.lock().unwrap().iter()
-                        .filter(|(_, session)| session.start <= index && index < session.start + session.degree as usize)
-                        .map(|(key, session)| (session.used, key.clone(), session.level())).collect();
-                    sessions.sort_by_key(|(used, _, _)| *used);
-                    sessions
-                };
-                let mut reclaimed = false;
-                for (_, key, level) in idle() {
-                    if !short() { break }
-                    if level == Level::Gpu {
-                        self.offload_idle(engine, &key, "external_gpu_pressure", Some(headroom));
-                        reclaimed = true;
-                    }
-                }
-                // A returned Torch cache is not a released CUDA context or package global. Only
-                // now-idle executors may end, and exact exit is observed by the existing lifecycle.
-                for (_, key, _) in idle() {
-                    if !short() { break }
-                    reclaimed |= self.end_session(&key);
-                }
-                let after = read();
-                if reclaimed {
-                    self.notes.note(serde_json::json!({"event": "gpu_pressure_reclaim", "gpu": device.entry,
-                        "free_before": before.free, "free_after": after.as_ref().map(|usage| usage.free),
-                        "own_bytes_before": before.own, "own_bytes_after": after.as_ref().map(|usage| usage.own)}));
-                }
+            if let Some((usage, by)) = reading {
+                self.room(engine, index, device, &usage, &by, blocked);
             }
-            self.room(engine, index, device, blocked);
         }
     }
 
-    /// The running set's own room (design/vram-yield.md §3.3–3.5), after the idle rungs above.
-    /// Short (free under H, from another program's use, or in shared mode at all), each executor
-    /// on the GPU is asked once per reading to give back 2H − free: Torch's cache, then its weight
-    /// pages, never what its call needs to go on. A run is never ended for another program. Free
-    /// past 3H again (the other program gave it back), those asked hold no limit: they grow at
-    /// their next fills, and the H..2H band keeps that from asking again until it is used.
-    fn room(&self, engine: &Arc<Engine>, index: usize, device: &Device, blocked: bool) {
-        let Some(now) = device.memory.as_ref().and_then(|gpu| gpu.usage(&self.tenants)) else { return };
+    /// What our executors may hold of GPU `index`. Shared mode, or another program pressing, keeps
+    /// H free: our room is the card less H less every other program's use. Dedicated with none, a
+    /// running call may still need its idle neighbours' room, never its own. Over it, in rounds,
+    /// each a reading (§3.3): idle executors give, least recently used first, the deficit split
+    /// among them; an idle executor that gave short ends; then the running calls give. A round
+    /// that lowered our use is asked again; one that did not passes to the next. Every ask is a
+    /// target for what the driver charges that executor, so it never compounds; a running call
+    /// never goes below what it needs to go on, and is never ended for another program. Under
+    /// the room again by more than H, those held may grow back to it at their next pass; with no
+    /// other program pressing (dedicated), the limit lifts. `room` reaches an executor's first GPU
+    /// only (a group's other GPUs are not yielded).
+    fn room(&self, engine: &Arc<Engine>, index: usize, device: &Device, now: &memory::DeviceUse,
+        by: &BTreeMap<u32, u64>, blocked: bool) {
+        const SLACK: u64 = 64 << 20;
         let headroom = Pressure::headroom(now.total);
         let shared = self.config.host.mode == HostMode::Shared;
-        // Idle executors by their session, running ones by their call: each one's GPUs.
-        let mut degrees: BTreeMap<u32, (u32, bool)> = self.sessions.lock().unwrap().values()
-            .map(|session| (session.executor.birth.pid, (session.degree, false))).collect();
-        degrees.extend(engine.active(usize::MAX).unwrap_or_default().into_iter()
-            .filter_map(|record| Some((record.process.as_ref()?.pid, (record.invocation.degree, true)))));
-        let leaders: Vec<(u32, u32, device_executor::Line, bool)> = self.leaders.lock().unwrap().iter()
-            .filter_map(|(pid, leader)| {
-                let (degree, running) = degrees.get(pid).copied()?;
-                if index < leader.start || index >= leader.start + degree.max(1) as usize { return None }
-                Some((*pid, (index - leader.start) as u32, leader.room.clone()?, running))
-            }).collect();
+        let running: std::collections::BTreeSet<u32> = engine.active(usize::MAX).unwrap_or_default().into_iter()
+            .filter_map(|record| Some(record.process.as_ref()?.pid)).collect();
+        let mut idle: Vec<(Instant, String, u32)> = self.sessions.lock().unwrap().iter()
+            .filter(|(_, session)| session.start == index && session.degree > 0)
+            .map(|(key, session)| (session.used, key.clone(), session.executor.birth.pid)).collect();
+        idle.sort();
+        let lines: BTreeMap<u32, device_executor::Line> = self.leaders.lock().unwrap().iter()
+            .filter(|(_, leader)| leader.start == index)
+            .filter_map(|(pid, leader)| Some((*pid, leader.room.clone()?))).collect();
+        let calls: Vec<u32> = running.iter().copied().filter(|pid| lines.contains_key(pid)).collect();
+        let room = (shared || blocked).then(|| now.total.saturating_sub(headroom).saturating_sub(now.foreign));
+        let deficit = match room {
+            Some(room) => now.own.saturating_sub(room),
+            None if !running.is_empty() => headroom.saturating_sub(now.free),
+            None => 0,
+        };
         let mut pressure = self.pressure.lock().unwrap();
         let state = &mut pressure[index];
-        let short = now.free < headroom && (blocked || shared);
-        let grown = |(foreign, own, _): (u64, u64, bool)| now.foreign > foreign + (64 << 20) || now.own > own + (64 << 20);
-        if !short {
-            state.gave = None;
-        }
-        let idle = leaders.iter().any(|leader| !leader.3);
-        // This reading's round: the idle executors, else (none, or they gave last time) the running.
-        let running = match state.gave {
-            Some(gave) if !grown(gave) => (!gave.2).then_some(true),
-            _ => Some(!idle),
+        let ask = |pid: u32, target: Option<u64>, state: &mut Pressure| -> bool {
+            let (Some(line), Some(&held)) = (lines.get(&pid), by.get(&pid)) else { return false };
+            if target.is_some() && state.limited.get(&pid).is_some_and(|sent| sent.abs_diff(target.unwrap_or(0)) < SLACK) {
+                return true;
+            }
+            if !line.send(&Command::Room(Room { device: 0, target, held })) { return false }
+            match target {
+                Some(target) => { state.limited.insert(pid, target); }
+                None => { state.limited.remove(&pid); }
+            }
+            true
         };
-        if let Some(running) = running.filter(|_| short && !leaders.is_empty()) {
-            let give = 2 * headroom - now.free;
-            state.gave = Some((now.foreign, now.own, running));
+        if deficit > SLACK {
+            // This reading's round: 0 idle give, 1 end an idle executor, 2 the running give.
+            let progressed = state.round.is_some_and(|(_, own)| own.saturating_sub(now.own) >= SLACK);
+            let mut round = match state.round {
+                None => 0,
+                Some((round, _)) if progressed => round,
+                Some((round, _)) => round + 1,
+            };
+            let idle_asked: Vec<u32> = idle.iter().map(|i| i.2).filter(|pid| by.get(pid).is_some_and(|b| *b > 0)).collect();
+            if round == 0 && idle_asked.is_empty() { round = 1 }
+            if round == 1 && idle.is_empty() { round = 2 }
+            // Past the last round the running calls are asked again as the deficit moves (a target
+            // within SLACK of the last is not re-sent); a call at its floor gives nothing more.
+            if round >= 2 { round = if room.is_some() && !calls.is_empty() { 2 } else { 3 } }
             let mut told = vec![];
-            for (pid, ordinal, line, _) in leaders.iter().filter(|leader| leader.3 == running) {
-                if line.send(&Command::Room(Room { device: *ordinal, give, ..Default::default() })) {
-                    *state.asked.entry(*pid).or_default() |= blocked;
-                    told.push(*pid);
+            match round {
+                0 | 2 => {
+                    let members = if round == 0 { idle_asked } else { calls.clone() };
+                    let mut left = deficit;
+                    for pid in members {
+                        if left == 0 { break }
+                        let held = by.get(&pid).copied().unwrap_or(0);
+                        let give = left.min(held);
+                        if ask(pid, Some(held - give), state) {
+                            left -= give;
+                            told.push(pid);
+                        }
+                    }
                 }
-            }
-            self.notes.note(serde_json::json!({"event": "room", "gpu": device.entry, "give": give,
-                "running": running, "free_bytes": now.free, "foreign_bytes": now.foreign, "own_bytes": now.own,
-                "headroom_bytes": headroom, "blocked": blocked, "executors": told}));
-        } else if !state.asked.is_empty() && !blocked && now.free >= 3 * headroom {
-            // A call held to H by its own growth (shared mode, no other program) keeps that room
-            // to its end: its phases free and retake memory, and lifting mid-call made it give
-            // and refill again each time. One held for another program is lifted once it left.
-            let mut told = vec![];
-            for (pid, ordinal, line, running) in &leaders {
-                if state.asked.get(pid).is_some_and(|&foreign| foreign || !*running)
-                    && line.send(&Command::Room(Room { device: *ordinal, lift: true, ..Default::default() }))
-                {
-                    told.push(*pid);
+                1 => {
+                    let (_, key, pid) = idle[0].clone();
+                    if self.end_session(&key) {
+                        told.push(pid);
+                        self.notes.note(serde_json::json!({"event": "ended_for_room", "ended": key,
+                            "for": "room", "need": deficit, "free": now.free}));
+                    }
                 }
+                _ => {}
             }
-            let live: Vec<u32> = leaders.iter().map(|leader| leader.0).collect();
-            state.asked.retain(|pid, _| live.contains(pid) && !told.contains(pid));
-            self.notes.note(serde_json::json!({"event": "room", "gpu": device.entry, "lift": true,
-                "free_bytes": now.free, "foreign_bytes": now.foreign, "executors": told}));
+            state.round = Some((round.min(3), now.own));
+            if !told.is_empty() {
+                self.notes.note(serde_json::json!({"event": "room", "gpu": device.entry, "round": round,
+                    "deficit": deficit, "free_bytes": now.free, "foreign_bytes": now.foreign, "own_bytes": now.own,
+                    "headroom_bytes": headroom, "blocked": blocked, "executors": told}));
+            }
+            return;
+        }
+        state.round = None;
+        let surplus = room.map(|room| room.saturating_sub(now.own));
+        if state.limited.is_empty() || surplus.is_some_and(|surplus| surplus <= headroom) {
+            return;
+        }
+        // Room again: those held grow back to it at their next pass, or lift with no other program.
+        let limited: Vec<u32> = state.limited.keys().copied().collect();
+        let mut told = vec![];
+        for pid in limited {
+            if !lines.contains_key(&pid) { state.limited.remove(&pid); continue }
+            let target = surplus.map(|surplus| by.get(&pid).copied().unwrap_or(0) + surplus);
+            if ask(pid, target, state) { told.push(pid) }
+        }
+        if !told.is_empty() {
+            self.notes.note(serde_json::json!({"event": "room", "gpu": device.entry, "grow": surplus,
+                "lift": surplus.is_none(), "free_bytes": now.free, "foreign_bytes": now.foreign, "executors": told}));
         }
     }
 
@@ -3455,7 +3440,8 @@ impl Pool {
         executor.keep_memo(self.memo.clone());
         if plan.degree > 0 {
             let exact = Exact::open(&executor.birth)?.ok_or_else(|| io::Error::other("executor exited before its start"))?;
-            let tenant = Tenant { plan: plan.executor.clone(), start, exact };
+            let gpus = self.lane(start, plan.degree)?.iter().filter_map(|device| Some(device.memory.as_ref()?.uuid.clone())).collect();
+            let tenant = Tenant { plan: plan.executor.clone(), start, exact, gpus };
             self.tenants.lock().unwrap().insert(executor.birth.pid, tenant);
             self.leaders.lock().unwrap().insert(executor.birth.pid, Leader {
                 birth: executor.birth.clone(), env: plan.executor.clone(), constructions: Default::default(), start,
@@ -3541,6 +3527,9 @@ impl Pool {
                 leader: session.executor.birth.clone(),
                 plan: session.env.clone(),
                 start,
+                gpus: gpus.iter().filter_map(|device| device.memory.clone()).collect(),
+                opening: None,
+                notes: self.notes.clone(),
             }),
             host: self.host.as_deref(),
         };
@@ -3549,12 +3538,6 @@ impl Pool {
             // and owns no allocator-specific protocol or backend-name admission gate.
             let interface_path = self.interface_file(&session.executor, held)?;
             let starting = Instant::now();
-            // Its CUDA contexts come up during Start: where the driver names other pids than
-            // ours (a container), those are how its GPU bytes are told from another program's.
-            let learning = self.tenants.starting(gpus.iter().filter_map(|device| {
-                let gpu = device.memory.as_ref()?;
-                Some((gpu.uuid.clone(), gpu.pids()?))
-            }).collect());
             // Each executor owns its GPU allocations. The existing GPU permits schedule
             // calls; no page manager, CUDA handle transport or second admission loop runs here.
             let started = command_ok(session.executor.command(
@@ -3572,13 +3555,6 @@ impl Pool {
                 }),
                 &mut callbacks,
             )?)?;
-            let pids: Vec<u32> = std::iter::once(session.executor.birth.pid).chain(started.follower_pids.iter().copied()).collect();
-            for (gpu, ours, foreign) in self.tenants.started(learning, &pids, |uuid| {
-                gpus.iter().filter_map(|device| device.memory.as_ref()).find(|gpu| gpu.uuid == uuid)?.pids()
-            }) {
-                self.notes.note(serde_json::json!({"event": "driver_pids", "gpu": gpu, "executors": pids,
-                    "ours": ours, "foreign": foreign}));
-            }
             session.launch.start_ms = starting.elapsed().as_secs_f64() * 1e3;
             session.launch.start =
                 serde_json::from_value(started.stages.clone()).unwrap_or_default();
@@ -4549,6 +4525,10 @@ struct Formation {
     leader: Birth,
     plan: String,
     start: usize,
+    /// Its lane's GPUs, and the leader's CUDA context opening on the first (`Frame.cuda`).
+    gpus: Vec<Arc<memory::Gpu>>,
+    opening: Option<memory::Opening>,
+    notes: MemoryLog,
 }
 
 impl Formation {
@@ -4561,11 +4541,29 @@ impl Formation {
             .filter_map(|birth| Exact::open(birth).ok().flatten())
             .collect();
         let tenant = |follower: &Exact| -> io::Result<(u32, Tenant)> {
-            let tenant = Tenant { plan: self.plan.clone(), start: self.start, exact: follower.try_clone()? };
+            let tenant = Tenant { plan: self.plan.clone(), start: self.start, exact: follower.try_clone()?,
+                gpus: self.gpus.iter().map(|gpu| gpu.uuid.clone()).collect() };
             Ok((follower.birth().pid, tenant))
         };
         self.tenants.register(followers.iter().map(tenant).collect::<io::Result<Vec<_>>>()?);
         Ok(followers)
+    }
+
+    /// A single-GPU leader's CUDA context `opening`, then `open`: the window its driver pid is
+    /// learned in (`memory::Registry::opened`).
+    fn cuda(&mut self, phase: &str) {
+        let [gpu] = self.gpus.as_slice() else { return };
+        match phase {
+            "opening" => self.opening = Some(self.tenants.opening(&gpu.uuid, gpu.pids(), vec![self.leader.pid])),
+            "open" => {
+                let Some(opening) = self.opening.take() else { return };
+                if let Some(learned) = self.tenants.opened(opening, gpu.pids()) {
+                    self.notes.note(serde_json::json!({"event": "driver_pids", "gpu": learned.gpu,
+                        "executors": [self.leader.pid], "ours": learned.ours, "unattributed": learned.unattributed}));
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -4589,6 +4587,9 @@ struct Callbacks<'a> {
 }
 impl Services for Callbacks<'_> {
     fn progress(&mut self, frame: &Frame) {
+        if let (Some(formation), false) = (&mut self.formation, frame.cuda.is_empty()) {
+            formation.cuda(&frame.cuda);
+        }
         if let (Some(formation), false) = (&self.formation, frame.follower_pids.is_empty()) {
             if let Err(error) = formation.register(&frame.follower_pids) {
                 tracing::warn!("run {}: followers {:?} unregistered: {error}", self.id, frame.follower_pids);

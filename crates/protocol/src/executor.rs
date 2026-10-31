@@ -187,19 +187,20 @@ pub struct Cancel {
     pub request_id: String,
 }
 
-/// Another program needs this GPU, or has given it back (design/vram-yield.md). `give`: hold
-/// that many bytes less than now, at once (Torch's cache, then weight pages; never below what the
-/// running call needs to go on). `lift`: no limit; it grows back at its next fills.
+/// What the executor may hold of one of its GPUs (design/vram-yield.md): `target` bytes of what
+/// the driver charges it, which charged it `held` at the machine's reading; none: no limit. Lower
+/// than it holds, it gives at once (Torch's cache, then weight pages, never below what its call
+/// needs to go on); higher, its running call takes it at its next pass. Re-sent, the same limit.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct Room {
     /// The device's ordinal in the executor (its first GPU is 0).
     #[serde(default)]
     pub device: u32,
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub give: u64,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub lift: bool,
+    #[serde(default)]
+    pub target: Option<u64>,
+    #[serde(default)]
+    pub held: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -671,6 +672,9 @@ pub struct Frame {
     #[serde(skip)]
     pub request: Option<Request>,
     pub reply: String,
+    /// A single-GPU executor's CUDA context `opening`, then `open`: the window the machine learns
+    /// its driver pid in (where the driver names other pids, a container).
+    pub cuda: String,
     pub ok: bool,
     pub code: String,
     pub detail: String,

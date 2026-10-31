@@ -179,8 +179,8 @@ class Capability(_Wire):
 
 class Room(_Wire):
     device: int
-    give: int
-    lift: bool
+    target: int | None
+    held: int
 
 class ByteGrant(_Wire):
     output_id: str

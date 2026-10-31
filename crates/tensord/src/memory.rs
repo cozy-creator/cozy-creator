@@ -59,36 +59,51 @@ impl Gpu {
     }
 
     pub fn usage(&self, tenants: &Tenants) -> Option<DeviceUse> {
+        self.usage_by(tenants).map(|(usage, _)| usage)
+    }
+
+    /// `usage`, with what the driver charges each executor (by its pid here) on this GPU.
+    pub fn usage_by(&self, tenants: &Tenants) -> Option<(DeviceUse, BTreeMap<u32, u64>)> {
         let read = platform::gpu::Device::open(&self.uuid).and_then(|gpu| gpu.read()).ok()?;
         if read.total == 0 { return None }
         let processes = read.processes?;
         let book = tenants.lock().unwrap_or_else(|e| e.into_inner());
-        let (mut own, mut foreign) = (0u64, 0u64);
+        let (mut own, mut foreign, mut by) = (0u64, 0u64, BTreeMap::<u32, u64>::new());
         if book.is_empty() || book.keys().any(|pid| processes.contains_key(pid)) {
             for (pid, bytes) in processes {
                 // A package's spawned CUDA worker or a kernel build is also ours. Follow current
                 // parentage rather than calling every unregistered PID a foreign application.
                 // An unreadable/disappearing process makes this sample unknown.
-                let (mut ancestor, mut ours) = (pid, false);
+                let (mut ancestor, mut ours) = (pid, None);
                 let mut seen = BTreeSet::new();
                 while ancestor > 0 && seen.insert(ancestor) {
-                    if book.contains_key(&ancestor) || ancestor == std::process::id() { ours = true; break }
+                    if book.contains_key(&ancestor) { ours = Some(Some(ancestor)); break }
+                    if ancestor == std::process::id() { ours = Some(None); break }
                     ancestor = platform::process::parent_of(ancestor).ok()?;
                 }
-                if ours { own = own.saturating_add(bytes) }
-                else { foreign = foreign.saturating_add(bytes) }
+                match ours {
+                    Some(executor) => {
+                        own = own.saturating_add(bytes);
+                        if let Some(executor) = executor { *by.entry(executor).or_default() += bytes; }
+                    }
+                    None => foreign = foreign.saturating_add(bytes),
+                }
             }
         } else {
-            // A container: the driver names host pids, ours by what each executor's start
-            // brought up on this GPU (`Registry::started`).
+            // A container: the driver names host pids, ours as learned (`Registry::opened`).
             drop(book);
-            let drivers = tenants.drivers(&self.uuid, &processes);
+            let drivers = tenants.drivers(&self.uuid, &processes)?;
             for (pid, bytes) in processes {
-                if drivers.contains(&pid) { own = own.saturating_add(bytes) }
-                else { foreign = foreign.saturating_add(bytes) }
+                match drivers.get(&pid) {
+                    Some(executors) => {
+                        own = own.saturating_add(bytes);
+                        if let [executor] = executors.as_slice() { *by.entry(*executor).or_default() += bytes; }
+                    }
+                    None => foreign = foreign.saturating_add(bytes),
+                }
             }
         }
-        Some(DeviceUse { total: read.total, free: read.free, own, foreign })
+        Some((DeviceUse { total: read.total, free: read.free, own, foreign }, by))
     }
 
     /// Driver-attributed process usage. Missing pid accounting is unknown, not zero.
@@ -121,13 +136,17 @@ pub struct Tenant {
     pub plan: String,
     pub start: usize,
     pub exact: Exact,
+    /// Its lane's GPUs (their uuids): where its driver pids are learned (`Registry::opening`).
+    pub gpus: Vec<String>,
 }
 
 pub type Tenants = Arc<Registry>;
-/// Executors by their pid here, and, where the driver names other pids (a container), which
-/// driver pids are theirs: a driver pid is ours when it first appears on a GPU during one of our
-/// executors' starts there, and only then; an ambiguous one (more new pids than the start
-/// brought up processes) is foreign.
+/// Executors by their pid here and, where the driver names other pids (a container), which
+/// driver pids are theirs. A single-GPU executor reports its CUDA context `opening` and `open`
+/// (`Frame.cuda`); a driver pid that appears on its GPU in that window is its when exactly as many
+/// appeared as executors opened there. Otherwise (more, or the driver unreadable) they stay
+/// unattributed and that GPU's readings are unknown until the extra pids exit; so are they while
+/// any executor on it has not been learned (a group, a Runtime without the window).
 #[derive(Default)]
 pub struct Registry {
     tenants: Mutex<BTreeMap<u32, Tenant>>,
@@ -135,22 +154,38 @@ pub struct Registry {
 }
 #[derive(Default)]
 struct Drivers {
-    /// Per GPU: our driver pids, each with the executor pids whose start brought it up.
+    /// Per GPU: our driver pids, each with the executors it was learned for.
     ours: BTreeMap<String, BTreeMap<u32, Vec<u32>>>,
-    /// Per GPU and start: the driver pids present before it began.
-    starting: BTreeMap<u64, (String, BTreeSet<u32>)>,
+    /// Per GPU: windows open, and those closed while another there was still open (settled
+    /// together when the last closes).
+    open: BTreeMap<String, Vec<Window>>,
+    closed: BTreeMap<String, Vec<Window>>,
+    /// Per GPU: executors whose driver pids could not be told, with the candidates (None: the
+    /// driver could not be read).
+    unattributed: BTreeMap<String, Vec<(Vec<u32>, Option<BTreeSet<u32>>)>>,
     next: u64,
 }
-/// One executor start in flight on its GPUs (`Registry::starting`); dropped unsettled, it claims
-/// nothing.
-pub struct Starting(Arc<Registry>, Vec<u64>);
-impl Drop for Starting {
+struct Window {
+    id: u64,
+    before: Option<BTreeSet<u32>>,
+    executors: Vec<u32>,
+}
+/// An executor's CUDA context opening on one GPU (`Registry::opening`); dropped before it opened,
+/// its executors stay unlearned (that GPU's readings unknown while they live).
+pub struct Opening(Arc<Registry>, String, u64);
+impl Drop for Opening {
     fn drop(&mut self) {
         let mut drivers = self.0.drivers.lock().unwrap_or_else(|e| e.into_inner());
-        for id in self.1.drain(..) {
-            drivers.starting.remove(&id);
+        if let Some(open) = drivers.open.get_mut(&self.1) {
+            open.retain(|window| window.id != self.2);
         }
     }
+}
+/// What a settled window learned on its GPU: the pids taken as ours, or those left unattributed.
+pub struct Learned {
+    pub gpu: String,
+    pub ours: Vec<u32>,
+    pub unattributed: Option<Vec<u32>>,
 }
 impl Registry {
     pub fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, BTreeMap<u32, Tenant>>> { self.tenants.lock() }
@@ -158,60 +193,87 @@ impl Registry {
         self.tenants.lock().unwrap_or_else(|e| e.into_inner()).extend(tenants);
     }
 
-    /// An executor start begins on these GPUs (uuid, the driver's pids there now).
-    pub fn starting(self: &Arc<Self>, gpus: Vec<(String, BTreeSet<u32>)>) -> Starting {
+    /// `executors` open their CUDA context on GPU `gpu`, whose driver pids are `now`.
+    pub fn opening(self: &Arc<Self>, gpu: &str, now: Option<BTreeSet<u32>>, executors: Vec<u32>) -> Opening {
         let mut drivers = self.drivers.lock().unwrap_or_else(|e| e.into_inner());
-        let ids = gpus.into_iter().map(|gpu| {
-            drivers.next += 1;
-            let id = drivers.next;
-            drivers.starting.insert(id, gpu);
-            id
-        }).collect();
-        Starting(self.clone(), ids)
+        drivers.next += 1;
+        let id = drivers.next;
+        drivers.open.entry(gpu.into()).or_default().push(Window { id, before: now, executors });
+        Opening(self.clone(), gpu.into(), id)
     }
 
-    /// The start ended (`pids`: its executor and followers, empty if it failed). On each GPU the
-    /// driver pids that appeared since it began (`now`) and nothing else claims are theirs when
-    /// they are no more than its processes; else they stay foreign. Returns, per GPU, the pids
-    /// taken as ours and those judged foreign.
-    pub fn started(&self, mut starting: Starting, pids: &[u32], now: impl Fn(&str) -> Option<BTreeSet<u32>>)
-        -> Vec<(String, Vec<u32>, Vec<u32>)> {
+    /// The context opened; `now`: the driver's pids there. Settled once no window there is open:
+    /// the pids that appeared since the first of them opened are ours when exactly as many as the
+    /// executors that opened, else unattributed.
+    pub fn opened(&self, opening: Opening, now: Option<BTreeSet<u32>>) -> Option<Learned> {
         let mut drivers = self.drivers.lock().unwrap_or_else(|e| e.into_inner());
-        let mut out = vec![];
-        for id in std::mem::take(&mut starting.1) {
-            let Some((gpu, before)) = drivers.starting.remove(&id) else { continue };
-            let Some(after) = now(&gpu) else { continue };
-            let claimed: BTreeSet<u32> = drivers.ours.get(&gpu).map(|ours| ours.keys().copied().collect()).unwrap_or_default();
-            let new: Vec<u32> = after.iter().filter(|pid| !before.contains(pid) && !claimed.contains(pid)).copied().collect();
-            if pids.is_empty() || new.is_empty() { continue }
-            if new.len() <= pids.len() {
+        let gpu = opening.1.clone();
+        let open = drivers.open.entry(gpu.clone()).or_default();
+        let at = open.iter().position(|window| window.id == opening.2)?;
+        let window = open.remove(at);
+        let still = !open.is_empty();
+        drivers.closed.entry(gpu.clone()).or_default().push(window);
+        if still {
+            return None;
+        }
+        let batch = drivers.closed.remove(&gpu).unwrap_or_default();
+        let executors: Vec<u32> = batch.iter().flat_map(|window| window.executors.clone()).collect();
+        let claimed: BTreeSet<u32> = drivers.ours.get(&gpu).map(|ours| ours.keys().copied().collect()).unwrap_or_default();
+        let before = batch.iter().map(|window| window.before.clone()).collect::<Option<Vec<_>>>();
+        let new = before.zip(now).map(|(before, now)| {
+            now.into_iter().filter(|pid| !claimed.contains(pid) && before.iter().all(|b| !b.contains(pid))).collect::<BTreeSet<u32>>()
+        });
+        match new {
+            Some(new) if new.len() == executors.len() => {
                 let ours = drivers.ours.entry(gpu.clone()).or_default();
-                for pid in &new { ours.insert(*pid, pids.to_vec()); }
-                out.push((gpu, new, vec![]));
-            } else {
-                out.push((gpu, vec![], new));
+                for pid in &new { ours.insert(*pid, executors.clone()); }
+                Some(Learned { gpu, ours: new.into_iter().collect(), unattributed: None })
+            }
+            new => {
+                drivers.unattributed.entry(gpu.clone()).or_default().push((executors, new.clone()));
+                Some(Learned { gpu, ours: vec![], unattributed: Some(new.map(|n| n.into_iter().collect()).unwrap_or_default()) })
             }
         }
-        out
     }
 
-    /// Our driver pids on GPU `uuid` among `processes`: learned ones whose executors still live,
-    /// and, while a start is in flight there, any pid that appeared since it began (it is
-    /// claimed or judged foreign when the start ends).
-    fn drivers(&self, uuid: &str, processes: &BTreeMap<u32, u64>) -> BTreeSet<u32> {
-        let live: BTreeSet<u32> = self.tenants.lock().unwrap_or_else(|e| e.into_inner()).keys().copied().collect();
+    /// Our driver pids on GPU `uuid` among `processes`, each with its executors; None when a
+    /// live executor there is not learned or not told apart (the reading is unknown). An
+    /// unattributed set is learned once its extra pids exited: as many alive as its executors.
+    fn drivers(&self, uuid: &str, processes: &BTreeMap<u32, u64>) -> Option<BTreeMap<u32, Vec<u32>>> {
+        let live: BTreeMap<u32, bool> = self.tenants.lock().unwrap_or_else(|e| e.into_inner()).iter()
+            .map(|(pid, tenant)| (*pid, tenant.gpus.iter().any(|gpu| gpu == uuid))).collect();
         let mut drivers = self.drivers.lock().unwrap_or_else(|e| e.into_inner());
-        let mut ours = BTreeSet::new();
-        if let Some(learned) = drivers.ours.get_mut(uuid) {
-            learned.retain(|pid, starts| processes.contains_key(pid) && starts.iter().any(|start| live.contains(start)));
-            ours.extend(learned.keys().copied());
-        }
-        for (gpu, before) in drivers.starting.values() {
-            if gpu == uuid {
-                ours.extend(processes.keys().filter(|pid| !before.contains(pid)));
+        let drivers = &mut *drivers;
+        if let Some(unresolved) = drivers.unattributed.get_mut(uuid) {
+            unresolved.retain(|(executors, _)| executors.iter().any(|pid| live.contains_key(pid)));
+            let mut learned = vec![];
+            unresolved.retain(|(executors, candidates)| {
+                let alive: Vec<u32> = candidates.iter().flatten().copied().filter(|pid| processes.contains_key(pid)).collect();
+                if candidates.is_some() && alive.len() == executors.len() {
+                    learned.extend(alive.into_iter().map(|pid| (pid, executors.clone())));
+                    return false;
+                }
+                true
+            });
+            drivers.ours.entry(uuid.into()).or_default().extend(learned);
+            if !unresolved.is_empty() {
+                return None;
             }
         }
-        ours
+        let ours = drivers.ours.entry(uuid.into()).or_default();
+        ours.retain(|pid, executors| processes.contains_key(pid) && executors.iter().any(|e| live.contains_key(e)));
+        let mut known: BTreeMap<u32, Vec<u32>> = ours.clone();
+        let opening: BTreeSet<u32> = drivers.open.get(uuid).into_iter().flatten().chain(drivers.closed.get(uuid).into_iter().flatten())
+            .flat_map(|window| window.executors.clone()).collect();
+        for window in drivers.open.get(uuid).into_iter().flatten() {
+            // Still opening: what appeared since counts as its until the window settles.
+            for pid in processes.keys().filter(|pid| window.before.as_ref().is_none_or(|before| !before.contains(pid))) {
+                known.entry(*pid).or_insert_with(|| window.executors.clone());
+            }
+        }
+        let learned: BTreeSet<u32> = known.values().flatten().copied().collect();
+        let unlearned = live.iter().any(|(pid, here)| *here && !learned.contains(pid) && !opening.contains(pid));
+        (!unlearned).then_some(known)
     }
 }
 
