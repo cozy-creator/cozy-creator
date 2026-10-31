@@ -1,0 +1,121 @@
+"""The ordinary Cozy call owns a fresh candidate child; the installed Runtime remains visible."""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+import msgspec
+from cozy_runtime.author import App, Telemetry
+
+app = App()
+
+
+class Probe(msgspec.Struct, forbid_unknown_fields=True):
+    tensorfs_version: str
+    extension_sha256: str
+    shim_sha256: str
+    seed: int = 138
+    case: str = "all"
+
+
+class Report(msgspec.Struct):
+    passed: bool
+    detail: str
+
+
+@app.entrypoint(accelerator=True)
+def gpu(payload: Probe, tel: Telemetry) -> Report:
+    config = msgspec.json.encode(payload).decode()
+    child = Path(__file__).with_name("probe.py")
+    result = None
+    with tel.stage("varena-p0"):
+        process = subprocess.Popen(
+            [sys.executable, "-I", str(child), config],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        assert process.stdout is not None
+        try:
+            for line in process.stdout:
+                tel.log(line.rstrip())
+                tel.progress(0.0)
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(record, dict) and "result" in record:
+                    result = record["result"]
+            code = process.wait()
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.wait()
+    if code or not isinstance(result, dict) or not result.get("passed"):
+        raise RuntimeError(f"varena P0 child failed ({code}): {result}")
+    return Report(True, json.dumps(result, sort_keys=True))
+
+
+class Benchmark(msgspec.Struct, forbid_unknown_fields=True):
+    tensorfs_version: str
+    extension_sha256: str
+    shim_sha256: str
+    samples: int = 7
+    rounds: int = 50_000
+
+
+@app.entrypoint(accelerator=True)
+def benchmark(payload: Benchmark, tel: Telemetry) -> Report:
+    if payload.samples < 5 or payload.rounds < 10_000:
+        raise ValueError("allocator benchmark needs at least five samples and 10,000 rounds")
+    child = Path(__file__).with_name("benchmark.py")
+    results = {}
+    for mode in ("native", "varena"):
+        config = msgspec.to_builtins(payload)
+        config["mode"] = mode
+        result = None
+        with tel.stage(f"allocator-{mode}"):
+            process = subprocess.Popen(
+                [sys.executable, "-I", str(child), json.dumps(config)],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            )
+            assert process.stdout is not None
+            try:
+                for line in process.stdout:
+                    tel.log(line.rstrip())
+                    tel.progress(0.0)
+                    try:
+                        record = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(record, dict) and "result" in record:
+                        result = record["result"]
+                code = process.wait()
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait()
+        if code or not isinstance(result, dict) or not result.get("passed"):
+            raise RuntimeError(f"allocator {mode} child failed ({code}): {result}")
+        results[mode] = result
+    native, candidate = results["native"], results["varena"]
+    for key in ("tensorfs_version", "extension_sha256", "shim_sha256", "torch", "torch_git",
+                "python", "executable", "gpu", "gpu_uuid", "capability", "visible_devices",
+                "allocator_conf", "cuda_allocator_conf"):
+        if native["provenance"][key] != candidate["provenance"][key]:
+            raise RuntimeError(f"allocator benchmark provenance differs: {key}")
+    for key in ("sizes", "stream", "sample_count", "pairs_per_sample", "warmup_pairs"):
+        if native[key] != candidate[key]:
+            raise RuntimeError(f"allocator benchmark settings differ: {key}")
+    ratio = candidate["median_host_ns_per_pair"] / native["median_host_ns_per_pair"]
+    completion_ratio = candidate["median_completion_ns_per_pair"] / native["median_completion_ns_per_pair"]
+    report = {
+        "passed": ratio <= 2.0, "host_pair_ratio": ratio,
+        "completion_pair_ratio": completion_ratio, "host_pair_ratio_limit": 2.0,
+        "comparison": "two fresh sequential children, native then Varena, same interpreter/device and identical raw alloc/free loop",
+        "qualification": "allocator host-pair microbenchmark only; Python dispatch included; not model latency",
+        "results": results,
+    }
+    tel.log(json.dumps({"allocator_benchmark": report}, sort_keys=True))
+    # Preserve every failed sample in the result artifact; successful delivery is not a pass.
+    return Report(report["passed"], json.dumps(report, sort_keys=True))
