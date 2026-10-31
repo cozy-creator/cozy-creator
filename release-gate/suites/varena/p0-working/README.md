@@ -15,7 +15,7 @@ cozy run ./release-gate/suites/varena/p0-working/gpu --on "$NAME" --gpus=1 \
 
 Get expected version and the two binary hashes from the exact candidate wheel, before installing it. The fixture
 checks the installed extension (which contains Rust Varena) and shim, then records paths, Python, Torch commit,
-GPU and per-case results. `case=<name>` selects one case; default `all` requires all ten. Candidate build/installation
+GPU and per-case results. `case=<name>` selects one case; default `all` requires every registered case. Candidate build/installation
 identity is separate from a source checkout. Never install this candidate into a shared local generation.
 
 Cases cover empty capture initialization, 512-byte alignment, same-stream reuse, cross-stream retirement, reuse
@@ -55,3 +55,8 @@ P0 currently supports legacy-default and Torch-pooled process-lifetime streams. 
 are not qualified: CUDA stream destruction can return with work pending, and raw handle reuse can defeat same-stream
 ordering checks. Supporting them requires explicit lifetime/generation or retirement integration. Do not infer
 arbitrary native CUstream safety from this default-stream benchmark.
+
+The `replay-hook-failure` case launches real graph work on a different replay stream, then throws from Torch’s
+per-graph replay-end hook. It checks that the original exception survives and the pool completion fence is still
+recorded. A second arm resets the graph and requests trim inside that hook, requiring transient replay ownership
+to retain the pool through completion recording. Both arms copy and validate the GPU result, then verify retirement.
