@@ -743,6 +743,7 @@ impl Shared {
                 "native refill worker panicked".into(),
             ))),
         };
+        let mut aborted = vec![false; work.inputs.len()];
         if result.is_err() {
             if let Some(execution) = &work.continuation {
                 execution.cancel();
@@ -840,9 +841,16 @@ impl Shared {
                         .poison(format!("native refill device failure: {error}"));
                 }
             }
-            // Checked drain succeeded. Abort the unpublished fill before reporting failure.
-            for input in &mut work.inputs {
-                drop(input.fill.take());
+            // Checked drain succeeded. Abort the unpublished fill before reporting failure; its
+            // pages go back below, not at the next context join (a canceled prefetch kept
+            // 618 MiB per SDXL cold request on any card until pressure came).
+            for (input, aborted) in work.inputs.iter_mut().zip(&mut aborted) {
+                if let Some(fill) = input.fill.take() {
+                    // SAFETY: the checked drain, continuation abort and decoder finish above
+                    // completed every writer; an escaped view keeps its own Pin.
+                    drop(unsafe { fill.abort_completed() });
+                    *aborted = true;
+                }
             }
         }
         if let Err(error) = work.release_private_gpu() {
@@ -852,7 +860,7 @@ impl Shared {
             self.finish(Err(Failure::Native(varena::Error::Poisoned(detail))));
             return;
         }
-        for input in &mut work.inputs {
+        for (index, input) in work.inputs.iter_mut().enumerate() {
             if let Some(pin) = input.pin.take() {
                 if result.is_ok() {
                     // SAFETY: successful read/decode completion and, when composed, the
@@ -860,12 +868,18 @@ impl Shared {
                     // Work submits nothing after this point. Exported capture/storage
                     // aliases own independent Pins and keep their conservative fence.
                     drop(unsafe { pin.into_completed_region() });
+                } else if aborted[index] {
+                    // SAFETY: this aborted fill's own reader pin; its writers are checked
+                    // complete above and its unpublished contents had no other reader.
+                    drop(unsafe { pin.into_completed_region() });
                 } else {
-                    // Keep the generic fence for failure paths even after a checked drain.
-                    // A failed Fill or foreign alias is never certified by a sibling Pin.
+                    // Keep the generic fence for a ready input's pin after a failure.
                     drop(pin);
                 }
             }
+        }
+        for (input, _) in work.inputs.iter().zip(&aborted).filter(|(_, aborted)| **aborted) {
+            Unready::release(Arc::clone(&input.region));
         }
         drop(work.producer.take());
         crate::cleanup::defer(work);
@@ -1430,12 +1444,37 @@ impl Work {
         if self.continuation.is_some() || self.decode.is_some() || self.prepared_decode.is_some() {
             crate::cleanup::defer(Abandoned(Some(self)));
         } else {
+            let mut aborted = Vec::new();
             for input in &mut self.inputs {
-                drop(input.fill.take());
+                if let Some(fill) = input.fill.take() {
+                    // SAFETY: never submitted: no source read was issued, and initialization's
+                    // read is checked complete; an escaped capture view keeps its own Pin.
+                    drop(unsafe { fill.abort_completed() });
+                    aborted.push(Arc::clone(&input.region));
+                }
                 drop(input.pin.take());
             }
             drop(self.producer.take());
+            aborted.into_iter().for_each(Unready::release);
             crate::cleanup::defer(self);
+        }
+    }
+}
+/// An aborted fill's pages, released as soon as no capture or replay is in progress.
+struct Unready(Arc<varena::Region>);
+impl Unready {
+    fn release(region: Arc<varena::Region>) {
+        if let Err(varena::Error::CaptureActive) = region.release_unready() {
+            crate::cleanup::defer(Self(region));
+        }
+    }
+}
+impl Drop for Unready {
+    fn drop(&mut self) {
+        if let Err(varena::Error::CaptureActive) = self.0.release_unready() {
+            // Capture must not wait for this destructor; nothing here holds a lock.
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            crate::cleanup::defer(Self(Arc::clone(&self.0)));
         }
     }
 }
