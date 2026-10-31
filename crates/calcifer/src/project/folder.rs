@@ -30,6 +30,9 @@ pub struct Made {
     /// Files the version wrote besides itself, by the state each is a revision of.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub outputs: BTreeMap<String, String>,
+    /// A shot's latents (`ShotResult.latents`), handed to its upscale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latents: Option<String>,
     /// The run that made it.
     #[serde(default)]
     pub run: u64,
@@ -240,7 +243,7 @@ impl Folder {
         })?;
         let lock = self.lock()?;
         let mut keep = listed.clone();
-        keep.extend(lock.versions.values().flat_map(BTreeMap::values).flat_map(|made| made.outputs.values().cloned()));
+        keep.extend(lock.versions.values().flat_map(BTreeMap::values).flat_map(|made| made.outputs.values().chain(&made.latents).cloned()));
         let entries = std::fs::read_dir(self.dir.join(FILES)).into_iter().flatten().flatten();
         for entry in entries {
             let name = format!("{FILES}/{}", entry.file_name().to_string_lossy());

@@ -659,6 +659,9 @@ impl Walk {
         for (k, state) in pending.writes.iter().enumerate() {
             made.outputs.insert(state.clone(), folder.keep(&saved("frames", k + 1)?)?.1);
         }
+        if let Ok(latents) = saved("latents", 0) {
+            made.latents = Some(folder.keep(&latents)?.1);
+        }
         folder.update_lock(|lock| {
             lock.pending.remove(id);
             lock.record(digest.clone(), made.clone());
