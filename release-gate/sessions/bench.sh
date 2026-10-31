@@ -16,6 +16,8 @@
 #   traffic_gb GB the provider bills: the image, both engines' weights, the results (250)
 #   need_s     seconds the guard must buy (10800); a hosted job ends at 6 h, so size a session below that
 #   stall_s    no runner progress for this long ends the session (1800)
+#   after      a command this driver runs once the cells are in, with NAME the pod, before the rental ends: more work on
+#              the same pod (`cozy run --on "$NAME"`), its weights already there; its log is after.log ("": none)
 #   update     `cozy machine update` flags run on the pod before the runner: a candidate's Cozy side (["--runtime",
 #              "url:https://…#sha256=<hex>", "--tensorfs", "artifact:<cozy-creator run id>:<artifact>"], or a
 #              dev-build cozy as "--tensord", "artifact:<run id>:cozy-<sha>"); each url:
@@ -24,7 +26,7 @@
 #              not its Hub release: a package fix's proof ({}: the Hub's)
 . "$(dirname "$0")/lib.sh"
 MODELS=$(param models '["sdxl", "anima", "moss", "qwen", "h3_turbo", "h3_full"]') TIERS=$(param tiers scout) ARMS=$(param arms matched)
-FREE=$(param free_mib 0) RAM=$(param ram_free_gib 0) STALL=$(param stall_s 1800) SHIP=$(param ship all)
+FREE=$(param free_mib 0) RAM=$(param ram_free_gib 0) STALL=$(param stall_s 1800) SHIP=$(param ship all) AFTER=$(param after '')
 [ -f "${BENCH:-}/bench.py" ] || fail "no benchmarks checkout at ${BENCH:-}"
 mapfile -t models < <(jq -r '.[]' <<<"$MODELS")
 mapfile -t LEVELS < <(jq -c 'if type == "array" then .[] else . end' <<<"$FREE")
@@ -130,3 +132,9 @@ cp -r "$OUT/results/results/." "$BENCH/results/" 2>/dev/null && (cd "$BENCH" && 
 cp "$BENCH/results/cells.csv" "$BENCH/results/profile.md" "$BENCH/chart.svg" "$OUT/" 2>/dev/null
 [ -s "$OUT/results/results/$S.jsonl" ] || fail "no results"
 say "PASS: $(wc -l < "$OUT/results/results/$S.jsonl") requests in results/$S.jsonl"
+if [ -n "$AFTER" ]; then  # the rental stays held while it runs; its failure is reported, the cells stand
+  ( while sleep 240; do cozy machine keepalive "$NAME" > /dev/null 2>&1; done ) & KA=$!
+  NAME=$NAME bash -c "$AFTER" < /dev/null > "$OUT/after.log" 2>&1 && say "after: done ($(tail -1 "$OUT/after.log"))" ||
+    say "after: failed ($(tail -1 "$OUT/after.log"))"
+  kill "$KA"
+fi
