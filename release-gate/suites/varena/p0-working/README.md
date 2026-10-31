@@ -116,8 +116,12 @@ only until its real GPU receipt is recorded; no pass is inferred from its constr
 Use Compute Sanitizer 2025.4.1 for this Python proof: NVIDIA's [release notes](https://docs.nvidia.com/compute-sanitizer/ReleaseNotes/index.html#updates-in-2025-4-1)
 document a Python-launch memory-leak fix. The unchanged fixture on 2025.3.1 retained a live tensor after graph teardown (run 23954); changing only
 the tool to 2025.4.1 retired all managed bytes/pools/events in all 16 cases (23987). That second run still failed
-full leak checking because Torch retained unused pinned-host scalar staging buffers.
+full leak checking: 9 bytes were unused Torch pinned-host scalar staging buffers, and another 5,384 bytes
+were attributed to cuDNN handle creation. The latter remain under investigation and are not suppressed.
 
 After all cases retire, the child now calls public `torch.accelerator.empty_host_cache()` and records host
 statistics before/after. Both active and allocated host bytes must reach zero. Device ownership assertions,
 full memcheck/leak checking and the error exit code remain unchanged. This does not qualify full-model memcheck.
+Instrumented runs return the complete report with `passed=false` on tool/teardown failure, avoiding exception
+message truncation. As with the benchmark, successful CLI delivery is not qualification: require `result.passed`
+and the instrumented report's zero exit code and zero error summaries.

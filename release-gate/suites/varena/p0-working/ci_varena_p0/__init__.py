@@ -97,14 +97,16 @@ def gpu(payload: Probe, tel: Telemetry) -> Report:
             if process.poll() is None:
                 process.terminate()
                 process.wait()
-    if code or not isinstance(result, dict) or not result.get("passed"):
-        raise RuntimeError(f"varena P0 child failed ({code}): {result}")
-    if payload.compute_sanitizer:
-        if not summaries or any(summaries):
-            raise RuntimeError(f"compute-sanitizer did not report a clean instrumented run: {summaries}")
+    if payload.compute_sanitizer and isinstance(result, dict):
+        # Error messages are size-limited. Keep the complete instrumented report even
+        # when the tool rejects process teardown after all device cases have passed.
+        result["passed"] = bool(not code and result.get("passed") and summaries and not any(summaries))
         result["compute_sanitizer"] = {
             "path": payload.compute_sanitizer, "exit_code": code, "error_summaries": summaries,
         }
+        return Report(result["passed"], json.dumps(result, sort_keys=True))
+    if code or not isinstance(result, dict) or not result.get("passed"):
+        raise RuntimeError(f"varena P0 child failed ({code}): {result}")
     return Report(True, json.dumps(result, sort_keys=True))
 
 
