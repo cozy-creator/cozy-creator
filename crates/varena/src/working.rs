@@ -823,6 +823,17 @@ pub fn reset_peak(device: i32) -> Result<()> {
     Ok(())
 }
 
+/// Abandon unused preparation without dropping any graph's reference to a shared pool.
+pub fn pool_cancel_preparation(device: i32, pool: PoolId) -> Result<()> {
+    let Some(owner) = existing(device)? else {
+        return Ok(());
+    };
+    let mut state = owner.lock()?;
+    if let Some(pool) = state.pools.get_mut(&pool) {
+        pool.prepared = false;
+    }
+    Ok(())
+}
 pub fn pool_reserve(device: i32, pool: PoolId, bytes: usize) -> Result<usize> {
     initialize(device)?;
     let owner = owner(device)?;
