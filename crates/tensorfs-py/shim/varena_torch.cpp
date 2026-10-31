@@ -80,19 +80,32 @@ VR_EXPORT void* varena_torch_malloc(size_t bytes, int device, Stream stream) {
     bool routed = false;
     if (routing.load(std::memory_order_acquire)) {
         std::lock_guard<std::mutex> lock(mutex);
+        Route* selected = nullptr;
         for (auto& route : routes) {
-            if (route.device != device || !route.filter(stream)) {
-                continue;
+            if (route.device == device && route.filter(stream)) {
+                selected = &route;
+                break;
             }
-            pool = route.pool;
+        }
+        // Torch lazily creates RNG seed/offset tensors on an auxiliary default stream.
+        // The capture owner may use prepared capacity there too; never open eager recovery.
+        if (!selected) {
+            for (auto& route : routes) {
+                if (route.device == device && route.thread == std::this_thread::get_id()) {
+                    TORCH_CHECK(!selected, "varena: ambiguous capture owner routing");
+                    selected = &route;
+                }
+            }
+        }
+        if (selected) {
+            pool = selected->pool;
             routed = true;
-            if (std::find(route.streams.begin(), route.streams.end(), stream) == route.streams.end()) {
+            if (std::find(selected->streams.begin(), selected->streams.end(), stream) == selected->streams.end()) {
                 Failure error{};
                 core.pool_begin(device, pool.first, pool.second, id, &error);
                 check(error);
-                route.streams.push_back(stream);
+                selected->streams.push_back(stream);
             }
-            break;
         }
     }
     Failure error{};
@@ -123,8 +136,9 @@ VR_EXPORT void varena_torch_reset() {
 VR_EXPORT void varena_torch_begin_pool(int device, Pool pool, Filter filter) {
     std::lock_guard<std::mutex> lock(mutex);
     for (const auto& route : routes) {
-        TORCH_CHECK(route.device != device || route.pool != pool,
-                    "varena: overlapping captures cannot share one pool");
+        TORCH_CHECK(route.device != device ||
+                    (route.pool != pool && route.thread != std::this_thread::get_id()),
+                    "varena: captures cannot overlap on one pool or one device/thread");
     }
     // Reserve routing storage before the native transition so bad_alloc cannot strand a capture.
     routes.reserve(routes.size() + 1);
