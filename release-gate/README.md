@@ -123,6 +123,10 @@ more than one pod calls `order` per pod, then `ready` per pod; the guard and the
 mid-call: it must have its memory within 2 s, and the call must complete, never ended for it. The game must start
 outside cozy's process tree (the session rents with SSH; a root shell starts it over `cozy machine ssh`): started by
 a cozy run, it is counted as ours wherever the driver names the container's pids.
+`dedicated-room` (xs-088 review) holds dedicated mode to master's on one 16 GB card (rtx-a4000), in three phases: the
+pod's stack, the session's cozy as TensorD alone, then `params.runtime` and `params.tensorfs` too. Each phase has
+Qwen beside an idle Klein bf16, and a deviceless root (`fixtures/pause-twice`) calling SDXL twice with a 30 s pause.
+The bar: every call completes; nothing moves in the pause; no `room` is sent; the second call replays when production's did.
 `hunyuan-48gb` (cr-225) pages Hunyuan-Image-3's 82 GB int8 lane through one 48 GB card (a40 or l40s): a text-only
 warm-up, then `runs` more, each completed with a 3:4 image that is not flat. Runtime 0.35.6 failed the warm-up.
 `bench` runs the Cozy-vs-ComfyUI benchmark, which lives in cozy-creator/benchmarks (`params.bench_ref`, read with
