@@ -66,7 +66,6 @@ struct Segment {
     bytes: usize,
     handle: u64,
     pool: Option<PoolId>,
-    cursor: usize,
 }
 
 #[derive(Default)]
@@ -77,6 +76,8 @@ struct Pool {
     capture: Option<GlobalCaptureGuard>,
     streams: BTreeSet<u64>,
     events: BTreeMap<u64, usize>,
+    // Free-block resizing transfers its event owners here; CUDA destruction waits for poll.
+    retired_events: Vec<usize>,
 }
 
 #[derive(Default)]
@@ -211,7 +212,31 @@ impl Working {
         Ok(true)
     }
 
+    fn pool_completed(&self, pool: &Pool) -> Result<bool> {
+        if !self.completed(&pool.events)? {
+            return Ok(false);
+        }
+        for event in &pool.retired_events {
+            if !self.driver.query(*event)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     fn poll(&self, state: &mut State) -> Result<()> {
+        for pool in state.pools.values_mut() {
+            let mut index = 0;
+            while index < pool.retired_events.len() {
+                let event = pool.retired_events[index];
+                if self.driver.query(event)? {
+                    self.driver.destroy_event(event)?;
+                    pool.retired_events.swap_remove(index);
+                } else {
+                    index += 1;
+                }
+            }
+        }
         let mut ready = Vec::new();
         for (ptr, block) in &mut state.blocks {
             if block.life == Life::Deferred {
@@ -339,13 +364,32 @@ impl Working {
                 bytes,
                 handle,
                 pool,
-                cursor: 0,
             },
         );
         state.stats.mapped_bytes += bytes;
         state.stats.mapped_peak = state.stats.mapped_peak.max(state.stats.mapped_bytes);
         self.driver.map(ptr, bytes, handle)?;
-        if pool.is_none() {
+        if let Some(pool) = pool {
+            state.blocks.insert(
+                ptr,
+                Block {
+                    segment: ptr,
+                    capacity: bytes,
+                    requested: 0,
+                    stream: 0,
+                    origin_retired: false,
+                    streams: BTreeSet::new(),
+                    events: BTreeMap::new(),
+                    life: Life::Ready,
+                    reusable_on: None,
+                },
+            );
+            state
+                .free
+                .entry((Some(pool), bytes, None))
+                .or_default()
+                .push(ptr);
+        } else {
             for offset in (0..bytes).step_by(class) {
                 if bytes - offset < class {
                     break;
@@ -375,7 +419,7 @@ impl Working {
         Ok(ptr)
     }
 
-    fn carve_pool(
+    fn fit_pool(
         &self,
         state: &mut State,
         pool: PoolId,
@@ -383,19 +427,100 @@ impl Working {
         requested: usize,
         stream: u64,
     ) -> Option<u64> {
-        let (base, segment) = state
-            .segments
-            .iter_mut()
-            .filter(|(_, segment)| {
-                segment.pool == Some(pool) && segment.bytes - segment.cursor >= bytes
-            })
-            .min_by_key(|(_, segment)| segment.bytes - segment.cursor)?;
-        let ptr = *base + segment.cursor as u64;
-        segment.cursor += bytes;
+        // Only free ranges whose ordering permits this stream can be joined. Live blocks,
+        // other-stream pending frees and segment boundaries always end a candidate run.
+        let mut best: Option<(u64, usize, u64, bool)> = None;
+        let mut consider = |ptr, capacity, segment, complete| {
+            if capacity >= bytes && best.is_none_or(|(_, n, _, _)| capacity < n) {
+                best = Some((ptr, capacity, segment, complete));
+            }
+        };
+        for (base, segment) in &state.segments {
+            if segment.pool != Some(pool) {
+                continue;
+            }
+            let (mut start, mut length, mut complete) = (*base, 0usize, true);
+            for (ptr, block) in state.blocks.range(*base..*base + segment.bytes as u64) {
+                let ready = block.life == Life::Ready && block.reusable_on.is_none();
+                let ordered = block.reusable_on == Some(stream)
+                    && (matches!(block.life, Life::Ready | Life::Captured)
+                        || block.deferred_default());
+                if !ready && !ordered {
+                    consider(start, length, *base, complete);
+                    length = 0;
+                    continue;
+                }
+                if length != 0 && *ptr != start + length as u64 {
+                    consider(start, length, *base, complete);
+                    length = 0;
+                }
+                if length == 0 {
+                    start = *ptr;
+                    complete = true;
+                }
+                length += block.capacity;
+                complete &= ready;
+            }
+            consider(start, length, *base, complete);
+        }
+        let (ptr, capacity, segment, complete) = best?;
+        let end = ptr + capacity as u64;
+        let parts: Vec<_> = state.blocks.range(ptr..end).map(|(p, _)| *p).collect();
+        let mut events = Vec::new();
+        for part in parts {
+            let block = state
+                .blocks
+                .remove(&part)
+                .expect("selected free pool block");
+            events.extend(block.events.into_values());
+        }
+        state
+            .pools
+            .get_mut(&pool)
+            .expect("owned pool")
+            .retired_events
+            .extend(events);
+        state.free.retain(|(id, _, _), slots| {
+            if *id == Some(pool) {
+                slots.retain(|p| *p < ptr || *p >= end);
+            }
+            !slots.is_empty()
+        });
+        if capacity > bytes {
+            let tail = ptr + bytes as u64;
+            let order = if complete { None } else { Some(stream) };
+            state.blocks.insert(
+                tail,
+                Block {
+                    segment,
+                    capacity: capacity - bytes,
+                    requested: 0,
+                    stream,
+                    origin_retired: false,
+                    streams: if complete {
+                        BTreeSet::new()
+                    } else {
+                        BTreeSet::from([stream])
+                    },
+                    events: BTreeMap::new(),
+                    life: if complete {
+                        Life::Ready
+                    } else {
+                        Life::Captured
+                    },
+                    reusable_on: order,
+                },
+            );
+            state
+                .free
+                .entry((Some(pool), capacity - bytes, order))
+                .or_default()
+                .push(tail);
+        }
         state.blocks.insert(
             ptr,
             Block {
-                segment: *base,
+                segment,
                 capacity: bytes,
                 requested,
                 stream,
@@ -422,7 +547,7 @@ impl Working {
                 if pool.prepared
                     || pool.references != 0
                     || pool.capture.is_some()
-                    || !self.completed(&pool.events)?
+                    || !self.pool_completed(pool)?
                 {
                     continue;
                 }
@@ -472,13 +597,14 @@ impl Working {
                     .segments
                     .values()
                     .any(|segment| segment.pool == Some(*id))
-                && self.completed(&pool.events)?
+                && self.pool_completed(pool)?
             {
                 retired.push(*id);
             }
         }
         for id in retired {
-            for event in state.pools[&id].events.values() {
+            let pool = &state.pools[&id];
+            for event in pool.events.values().chain(&pool.retired_events) {
                 self.driver.destroy_event(*event)?;
             }
             state.pools.remove(&id);
@@ -522,7 +648,8 @@ impl Working {
         for base in candidates {
             let segment = &state.segments[&base];
             if let Some(id) = segment.pool {
-                for event in state.pools[&id].events.values() {
+                let pool = &state.pools[&id];
+                for event in pool.events.values().chain(&pool.retired_events) {
                     if !self.driver.query(*event)? {
                         self.driver.wait_event(*event)?;
                     }
@@ -618,7 +745,7 @@ pub fn alloc(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> Re
             return Ok(Working::activate(&mut state, ptr, bytes));
         }
         if let Some(id) = pool {
-            if let Some(ptr) = owner.carve_pool(&mut state, id, class, bytes, stream) {
+            if let Some(ptr) = owner.fit_pool(&mut state, id, class, bytes, stream) {
                 return Ok(Working::activate(&mut state, ptr, bytes));
             }
             state.stats.ooms += 1;
@@ -965,7 +1092,7 @@ pub fn stats(device: i32) -> Result<WorkingStats> {
         + state
             .pools
             .values()
-            .map(|pool| pool.events.len())
+            .map(|pool| pool.events.len() + pool.retired_events.len())
             .sum::<usize>();
     (
         stats.driver_memory_calls,

@@ -26,6 +26,11 @@ capture session. `pool_end` only closes routing; the owner calls `pool_capture_c
 has actually ended capture, including on an abandoned capture. During capture allocation/free are
 metadata operations on prepared backing; a short pool returns OOM without allocator driver work.
 Multi-stream frees cannot be reused until the capture session completes.
+Prepared pool segments begin as whole free ranges. On a size-class miss, allocation selects the
+smallest compatible contiguous free run within one segment, splits its head and keeps the tail.
+Only completed ranges or ranges ordered on the requesting capture stream can coalesce; live
+addresses never move. Resizing transfers old block event handles to the pool, which retains them
+until outside-capture polling confirms completion and destroys them. `event_handles` includes them.
 
 Before dropping a graph, its owner records every replay/consumer stream with `pool_record_stream`.
 `pool_release` drops one graph reference. Backing is reclaimed only after references, live output
