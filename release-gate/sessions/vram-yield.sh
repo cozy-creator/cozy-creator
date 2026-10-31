@@ -6,6 +6,8 @@
 # `cozy machine ssh`: started under cozy (a run), cozy's process tree holds it and it is counted as ours wherever the
 # driver names the container's pids (driver 610). Cells:
 #   idle    SDXL and Qwen warm and idle; an idle_gb game starts: all of it within 2 s; a Qwen call beside it completes
+#   busy    the same game as an SDXL call returns, its executor still at work: waited for while it progresses (its
+#           bytes fall or its process works), never ended for it, the game has its memory once the give lands
 #   midjob  a Qwen call; a midjob_gb game starts once the GPU is busy and exits 8 s later: all of it within 2 s; the
 #           call completes, never cancelled, with its image
 #   big     the same with a big_gb game that cannot fit beside the call: it keeps the floor it runs on (a ratchet
@@ -67,6 +69,19 @@ run idle-qwen qwen-image-2/generate prompt="a tea house in rain, photo" seed:=$R
 [ "$(status idle-qwen)" = completed ] || fail "idle: the Qwen call beside the game is $(status idle-qwen)"
 run idle-stop ./game.py op=stop cfg='{"name": "idle"}'
 
+# busy: the game presses as an SDXL call returns, while its executor still works (it records the call's loop at idle):
+# the executor told to give is waited for while it makes progress, never ended for that, and its give lands
+memlines() { cozy machine logs "$NAME" memory -n 0 2>/dev/null | wc -l; }
+run busy-sdxl sdxl/generate prompt="a copper kettle on a stove, photo" seed:=$RANDOM
+m0=$(memlines)
+game busy-game "{\"name\": \"busy\", \"gb\": $(param idle_gb 5), \"trigger\": \"now\", \"give_up_s\": 120, \"hold_s\": 900, \"wait_s\": 120}"
+run busy-status ./game.py op=status cfg='{"name": "busy"}'
+w=$(cozy machine logs "$NAME" memory -n 0 2>/dev/null | tail -n +$((m0 + 1)))
+say "busy game: $(jq -c '{phase, alloc_s, fails}' "$OUT/busy-status.value"); gives: $(grep -o '"gave":[0-9]*,"gpu":"[^"]*","ms":[0-9.]*' <<<"$w" | tr '\n' ' '); ends: $(grep -o '"why":"[^"]*"' <<<"$w" | sort | uniq -c | tr '\n' ' ')"
+[ "$(jq -r '.reached // false' "$OUT/busy-status.value")" = true ] || fail "busy: the game never had its memory"
+! grep -q '"why":"no progress' <<<"$w" || fail "busy: an executor making progress was ended for room"
+run busy-stop ./game.py op=stop cfg='{"name": "busy"}'
+
 game mid-arm "{\"name\": \"mid\", \"gb\": $(param midjob_gb 3), \"trigger\": \"util\", \"util_pct\": 80, \"util_s\": 3, \"delay_s\": 1, \"give_up_s\": 60, \"hold_s\": 8}"
 run mid-qwen qwen-image-2/generate prompt="a fox reading a newspaper in a cafe, photo" seed:=$RANDOM megapixels:=1
 run mid-game ./game.py op=status cfg='{"name": "mid"}'
@@ -80,7 +95,6 @@ sleep 25; run big-game ./game.py op=status cfg='{"name": "big"}'
 say "big game: $(jq -c '{phase, gb: .cfg.gb, alloc_s, held_mib}' "$OUT/big-game.value")"  # both do not fit: the call is the bar
 [ "$(status big-qwen)" = completed ] || fail "big: the Qwen call is $(status big-qwen): $(jq -c .reason "$OUT/big-qwen.json")"
 
-memlines() { cozy machine logs "$NAME" memory -n 0 2>/dev/null | wc -l; }
 m0=$(memlines)
 game shrink-arm '{"name": "shrink", "gb": 4, "trigger": "util", "util_pct": 80, "util_s": 3, "delay_s": 1, "give_up_s": 60, "shrink_to_gb": 1.5, "shrink_after_s": 8, "hold_s": 900}'
 run shrink-job qwen-image-2/generate prompt="a red tram on a rainy street, photo" seed:=$RANDOM megapixels:=1
