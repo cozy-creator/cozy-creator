@@ -101,6 +101,11 @@ static DEVICES: OnceLock<Mutex<BTreeMap<i32, Arc<Working>>>> = OnceLock::new();
 
 fn devices() -> Result<MutexGuard<'static, BTreeMap<i32, Arc<Working>>>> {
     crate::check_process()?;
+    lock_devices()
+}
+
+// Only after check_process, directly or through capture_counts, on this call's thread.
+fn lock_devices() -> Result<MutexGuard<'static, BTreeMap<i32, Arc<Working>>>> {
     DEVICES
         .get_or_init(Mutex::default)
         .lock()
@@ -232,6 +237,7 @@ impl Working {
         &self,
         state: &mut State,
         bytes: usize,
+        requested: usize,
         stream: u64,
         pool: Option<PoolId>,
     ) -> Option<u64> {
@@ -251,8 +257,11 @@ impl Working {
                     block.life = Life::Live;
                     block.stream = stream;
                     block.origin_retired = false;
-                    block.streams.clear();
-                    block.streams.insert(stream);
+                    block.requested = requested;
+                    if block.streams.len() != 1 || !block.streams.contains(&stream) {
+                        block.streams.clear();
+                        block.streams.insert(stream);
+                    }
                     return Some(ptr);
                 }
             }
@@ -261,11 +270,6 @@ impl Working {
     }
 
     fn activate(state: &mut State, ptr: u64, requested: usize) -> u64 {
-        state
-            .blocks
-            .get_mut(&ptr)
-            .expect("allocated block")
-            .requested = requested;
         state.stats.allocated_bytes += requested;
         state.stats.allocated_peak = state.stats.allocated_peak.max(state.stats.allocated_bytes);
         state.stats.allocations += 1;
@@ -370,6 +374,7 @@ impl Working {
         state: &mut State,
         pool: PoolId,
         bytes: usize,
+        requested: usize,
         stream: u64,
     ) -> Option<u64> {
         let (base, segment) = state
@@ -386,7 +391,7 @@ impl Working {
             Block {
                 segment: *base,
                 capacity: bytes,
-                requested: 0,
+                requested,
                 stream,
                 origin_retired: false,
                 streams: BTreeSet::from([stream]),
@@ -531,14 +536,18 @@ impl Working {
 
 /// Open native device state before any graph capture. Repeated initialization is harmless.
 pub fn initialize(device: i32) -> Result<()> {
-    if existing(device)?.is_some() {
-        return Ok(());
+    initialize_owner(device).map(|_| ())
+}
+
+fn initialize_owner(device: i32) -> Result<Arc<Working>> {
+    if let Some(owner) = existing(device)? {
+        return Ok(owner);
     }
     let captures = crate::capture_counts()?;
     crate::ensure_recovery_allowed(&captures, device)?;
-    let mut devices = devices()?;
-    if devices.contains_key(&device) {
-        return Ok(());
+    let mut devices = lock_devices()?;
+    if let Some(owner) = devices.get(&device) {
+        return Ok(Arc::clone(owner));
     }
     let driver = cuda::Driver::open(device)?;
     let page = rounded(2 << 20, driver.granularity)?;
@@ -555,15 +564,13 @@ pub fn initialize(device: i32) -> Result<()> {
     };
     let mut state = State::default();
     state.addresses.insert(base, bytes);
-    devices.insert(
-        device,
-        Arc::new(Working {
-            driver,
-            page,
-            state: Mutex::new(state),
-        }),
-    );
-    Ok(())
+    let owner = Arc::new(Working {
+        driver,
+        page,
+        state: Mutex::new(state),
+    });
+    devices.insert(device, Arc::clone(&owner));
+    Ok(owner)
 }
 
 fn valid_stream(stream: u64) -> Result<()> {
@@ -581,10 +588,11 @@ pub fn alloc(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> Re
     if bytes == 0 {
         return Ok(0);
     }
-    if pool.is_none() {
-        initialize(device)?;
-    }
-    let owner = owner(device)?;
+    let owner = if pool.is_none() {
+        initialize_owner(device)?
+    } else {
+        owner(device)?
+    };
     let class = size_class(bytes, owner.page)?;
     {
         let mut state = owner.lock()?;
@@ -599,11 +607,11 @@ pub fn alloc(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> Re
                 ));
             }
         }
-        if let Some(ptr) = owner.take(&mut state, class, stream, pool) {
+        if let Some(ptr) = owner.take(&mut state, class, bytes, stream, pool) {
             return Ok(Working::activate(&mut state, ptr, bytes));
         }
         if let Some(id) = pool {
-            if let Some(ptr) = owner.carve_pool(&mut state, id, class, stream) {
+            if let Some(ptr) = owner.carve_pool(&mut state, id, class, bytes, stream) {
                 return Ok(Working::activate(&mut state, ptr, bytes));
             }
             state.stats.ooms += 1;
@@ -621,7 +629,7 @@ pub fn alloc(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> Re
             let _context = owner.driver.enter()?;
             let result = (|| {
                 owner.poll(&mut state)?;
-                if let Some(ptr) = owner.take(&mut state, class, stream, None) {
+                if let Some(ptr) = owner.take(&mut state, class, bytes, stream, None) {
                     return Ok(Working::activate(&mut state, ptr, bytes));
                 }
                 let mapped = if class <= 1 << 20 { owner.page } else { class };
@@ -632,7 +640,7 @@ pub fn alloc(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> Re
                 }
                 owner.map(&mut state, mapped, None, class)?;
                 let ptr = owner
-                    .take(&mut state, class, stream, None)
+                    .take(&mut state, class, bytes, stream, None)
                     .expect("new slab has a block");
                 Ok(Working::activate(&mut state, ptr, bytes))
             })();
@@ -659,54 +667,61 @@ pub fn free(device: i32, ptr: u64, stream: u64) -> Result<()> {
         return Ok(());
     }
     valid_stream(stream)?;
-    let owner = owner(device)?;
+    // capture_counts checks process identity before either inherited registry mutex is touched.
     let captures = crate::capture_counts()?;
+    let owner = lock_devices()?.get(&device).cloned().ok_or(Error::Invalid(
+        "working allocator is not initialized on this device",
+    ))?;
     let capturing = crate::ensure_not_capturing(&captures, device).is_err();
     let mut state = owner.lock()?;
-    let block = state
-        .blocks
-        .get(&ptr)
-        .ok_or(Error::Invalid("unknown working allocation"))?;
-    if block.life != Life::Live {
-        return Err(Error::Invalid("working allocation already freed"));
-    }
-    let pool = state.segments[&block.segment].pool;
-    let in_pool_capture = pool.is_some_and(|id| state.pools[&id].routing);
-    let block = state.blocks.get_mut(&ptr).expect("live block");
-    // Torch's deleter passes the original allocation stream, even after its owner drained
-    // and destroyed that stream. An explicit later record_stream still tracks new consumers.
-    if !block.origin_retired || stream != block.stream {
-        block.streams.insert(stream);
-    }
-    let requested = block.requested;
-    block.requested = 0;
-    let class = block.capacity;
-    if in_pool_capture {
-        block.life = Life::Captured;
-        block.reusable_on = if block.streams.len() == 1 {
-            block.streams.first().copied()
-        } else {
-            None
-        };
-    } else if block.streams.len() == 1 && block.streams.contains(&0) {
-        // The legacy default stream cannot be destroyed. Reuse there is ordered without
-        // a fence; poll records completion before any other stream or physical trim uses it.
-        block.life = Life::Deferred;
-        block.reusable_on = Some(0);
-    } else if capturing {
-        block.life = Life::Deferred;
-        block.reusable_on = None;
-    } else {
-        let _context = owner.driver.enter()?;
-        if let Err(error) = owner.record_free(block) {
-            return Err(owner.fail(&mut state, error));
+    let transition = (|| {
+        let State {
+            blocks,
+            segments,
+            pools,
+            ..
+        } = &mut *state;
+        let block = blocks
+            .get_mut(&ptr)
+            .ok_or(Error::Invalid("unknown working allocation"))?;
+        if block.life != Life::Live {
+            return Err(Error::Invalid("working allocation already freed"));
         }
-    }
-    if state.blocks[&ptr].life == Life::Ready
-        || (state.blocks[&ptr].life == Life::Captured && state.blocks[&ptr].reusable_on.is_some())
-        || state.blocks[&ptr].deferred_default()
-    {
-        let reusable_on = state.blocks[&ptr].reusable_on;
+        let pool = segments[&block.segment].pool;
+        let in_pool_capture = pool.is_some_and(|id| pools[&id].routing);
+        // The original stream is already tracked unless explicitly retired. Torch supplies
+        // that original handle again on free; never reintroduce it after retirement.
+        if stream != block.stream {
+            block.streams.insert(stream);
+        }
+        let requested = block.requested;
+        block.requested = 0;
+        if in_pool_capture {
+            block.life = Life::Captured;
+            block.reusable_on = if block.streams.len() == 1 {
+                block.streams.first().copied()
+            } else {
+                None
+            };
+        } else if block.streams.len() == 1 && block.streams.contains(&0) {
+            // The legacy default stream cannot be destroyed. poll seals its deferred frees.
+            block.life = Life::Deferred;
+            block.reusable_on = Some(0);
+        } else if capturing {
+            block.life = Life::Deferred;
+            block.reusable_on = None;
+        } else {
+            let _context = owner.driver.enter()?;
+            owner.record_free(block)?;
+        }
+        let reusable = block.life == Life::Ready
+            || (block.life == Life::Captured && block.reusable_on.is_some())
+            || block.deferred_default();
+        Ok((requested, pool, block.capacity, block.reusable_on, reusable))
+    })();
+    let (requested, pool, class, reusable_on, reusable) =
+        transition.map_err(|error| owner.fail(&mut state, error))?;
+    if reusable {
         state
             .free
             .entry((pool, class, reusable_on))

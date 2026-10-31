@@ -281,9 +281,12 @@ static PROCESS: AtomicU32 = AtomicU32::new(0);
 
 fn check_process() -> Result<()> {
     let pid = std::process::id();
-    let owner = PROCESS
-        .compare_exchange(0, pid, Ordering::Relaxed, Ordering::Relaxed)
-        .unwrap_or_else(|owner| owner);
+    let owner = match PROCESS.load(Ordering::Relaxed) {
+        0 => PROCESS
+            .compare_exchange(0, pid, Ordering::Relaxed, Ordering::Relaxed)
+            .unwrap_or_else(|owner| owner),
+        owner => owner,
+    };
     if owner != 0 && owner != pid {
         return Err(Error::Invalid("CUDA residency cannot be used after fork"));
     }
