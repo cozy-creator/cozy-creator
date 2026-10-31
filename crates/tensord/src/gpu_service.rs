@@ -1364,7 +1364,10 @@ impl Pool {
                 Some(target) => { state.limited.insert(pid, target); }
                 None => { state.limited.remove(&pid); }
             }
-            self.notes.note(serde_json::json!({"event": "room", "gpu": index, "call": pid, "target": target}));
+            self.notes.note(serde_json::json!({"event": "room", "gpu": index, "call": pid, "target": target,
+                "held": reading.as_ref().map(|(_, by)| by), "own_bytes": reading.as_ref().map(|(now, _)| now.own),
+                "free_bytes": reading.as_ref().map(|(now, _)| now.free),
+                "headroom_bytes": reading.as_ref().map(|(now, _)| if state.pressing { 2 } else { 1 } * Pressure::headroom(now.total))}));
         }
     }
 
@@ -1486,14 +1489,16 @@ impl Pool {
                 let held: Vec<u32> = calls.iter().copied().filter(|pid| state.limited.contains_key(pid)).collect();
                 if surplus > headroom && !held.is_empty() {
                     let share = surplus / held.len() as u64;
-                    let told: Vec<u32> = held.into_iter().filter(|&pid| {
+                    let told: BTreeMap<u32, u64> = held.into_iter().filter_map(|pid| {
                         let target = by.get(&pid).copied().unwrap_or(0) + share;
                         // A raise smaller than H is not worth a message: the call is not short of it.
-                        state.limited.get(&pid).is_some_and(|&sent| target >= sent + headroom) && ask(pid, Some(target), state)
+                        (state.limited.get(&pid).is_some_and(|&sent| target >= sent + headroom) && ask(pid, Some(target), state))
+                            .then_some((pid, target))
                     }).collect();
                     if !told.is_empty() {
                         self.notes.note(serde_json::json!({"event": "room", "gpu": device.entry, "grow": surplus,
-                            "free_bytes": now.free, "foreign_bytes": now.foreign, "executors": told}));
+                            "free_bytes": now.free, "foreign_bytes": now.foreign, "own_bytes": now.own,
+                            "executors": told.keys().collect::<Vec<_>>(), "targets": told, "held": by, "headroom_bytes": headroom}));
                     }
                 }
             }
