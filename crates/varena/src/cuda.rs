@@ -83,6 +83,7 @@ pub(crate) struct Driver {
     memory_calls: AtomicU64,
     event_queries: AtomicU64,
     event_records: AtomicU64,
+    event_waits: AtomicU64,
     pub(crate) granularity: usize,
 }
 
@@ -131,6 +132,7 @@ impl Driver {
             memory_calls: AtomicU64::new(0),
             event_queries: AtomicU64::new(0),
             event_records: AtomicU64::new(0),
+            event_waits: AtomicU64::new(0),
             granularity: 0,
         };
         // CUDA registers process exit handlers; unloading its library after init is unsafe.
@@ -284,6 +286,7 @@ impl Driver {
     }
 
     pub(crate) fn wait_event(&self, event: usize) -> Result<()> {
+        self.event_waits.fetch_add(1, Ordering::Relaxed);
         // SAFETY: an owned live event; callers exclude CUDA graph capture.
         status("cuEventSynchronize", unsafe {
             (self.event_synchronize)(event as Object)
@@ -313,11 +316,12 @@ impl Driver {
         })
     }
 
-    pub(crate) fn calls(&self) -> (u64, u64, u64) {
+    pub(crate) fn calls(&self) -> (u64, u64, u64, u64) {
         (
             self.memory_calls.load(Ordering::Relaxed),
             self.event_queries.load(Ordering::Relaxed),
             self.event_records.load(Ordering::Relaxed),
+            self.event_waits.load(Ordering::Relaxed),
         )
     }
 }
