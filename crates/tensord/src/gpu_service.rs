@@ -1537,9 +1537,12 @@ impl Pool {
             self.offload_idle(engine, &key, "room", Some(deficit));
         }
         if let Some((key, why)) = end {
+            // Read before it ends: what each of its threads waited on, so a stall explains itself.
+            let pid = idle.iter().find(|i| i.1 == key).map(|i| i.2);
+            let threads = pid.map(platform::process::threads).unwrap_or_default();
             if self.end_session(&key) {
                 self.notes.note(serde_json::json!({"event": "ended_for_room", "ended": key,
-                    "for": "room", "why": why, "need": deficit, "free": now.free}));
+                    "for": "room", "why": why, "pid": pid, "threads": threads, "need": deficit, "free": now.free}));
             }
         }
     }
