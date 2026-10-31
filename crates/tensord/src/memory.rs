@@ -52,10 +52,9 @@ impl Gpu {
         platform::gpu::Device::open(&self.uuid).ok()?.read().ok()?.processes?.get(&pid).copied()
     }
 
-    /// The driver's pids with memory on this GPU now.
-    pub fn pids(&self) -> Option<BTreeSet<u32>> {
-        let read = platform::gpu::Device::open(&self.uuid).and_then(|gpu| gpu.read()).ok()?;
-        Some(read.processes?.into_keys().collect())
+    /// The driver's pids with memory on this GPU now, with their bytes.
+    pub fn processes(&self) -> Option<BTreeMap<u32, u64>> {
+        platform::gpu::Device::open(&self.uuid).and_then(|gpu| gpu.read()).ok()?.processes
     }
 
     pub fn usage(&self, tenants: &Tenants) -> Option<DeviceUse> {
@@ -162,9 +161,14 @@ struct Drivers {
     closed: BTreeMap<String, Vec<Window>>,
     /// Per GPU: executors whose driver pids could not be told, with the candidates (None: the
     /// driver could not be read).
-    unattributed: BTreeMap<String, Vec<(Vec<u32>, Option<BTreeSet<u32>>)>>,
+    unattributed: BTreeMap<String, Vec<Unattributed>>,
+    /// Per GPU: what the driver charged our last executor whose pid was told at its context's
+    /// opening (its context alone): how ours is told from another program's in a later window.
+    context: BTreeMap<String, u64>,
     next: u64,
 }
+/// Executors whose driver pids could not be told, and the candidates (None: driver unreadable).
+type Unattributed = (Vec<u32>, Option<BTreeSet<u32>>);
 struct Window {
     id: u64,
     before: Option<BTreeSet<u32>>,
@@ -202,10 +206,12 @@ impl Registry {
         Opening(self.clone(), gpu.into(), id)
     }
 
-    /// The context opened; `now`: the driver's pids there. Settled once no window there is open:
-    /// the pids that appeared since the first of them opened are ours when exactly as many as the
-    /// executors that opened, else unattributed.
-    pub fn opened(&self, opening: Opening, now: Option<BTreeSet<u32>>) -> Option<Learned> {
+    /// The context opened; `now`: the driver's pids there with their bytes. Settled once no window
+    /// there is open: the pids that appeared since the first of them opened are ours when exactly
+    /// as many as the executors that opened. With more (another program started meanwhile), ours
+    /// are those charged a context alone (as our last told one was) when exactly as many; else
+    /// they stay unattributed.
+    pub fn opened(&self, opening: Opening, now: Option<BTreeMap<u32, u64>>) -> Option<Learned> {
         let mut drivers = self.drivers.lock().unwrap_or_else(|e| e.into_inner());
         let gpu = opening.1.clone();
         let open = drivers.open.entry(gpu.clone()).or_default();
@@ -219,28 +225,49 @@ impl Registry {
         let batch = drivers.closed.remove(&gpu).unwrap_or_default();
         let executors: Vec<u32> = batch.iter().flat_map(|window| window.executors.clone()).collect();
         let claimed: BTreeSet<u32> = drivers.ours.get(&gpu).map(|ours| ours.keys().copied().collect()).unwrap_or_default();
-        let before = batch.iter().map(|window| window.before.clone()).collect::<Option<Vec<_>>>();
+        // Only the first window's snapshot: a later one's holds the pids of those opened before it.
+        let before = batch.iter().min_by_key(|window| window.id).and_then(|window| window.before.clone());
         let new = before.zip(now).map(|(before, now)| {
-            now.into_iter().filter(|pid| !claimed.contains(pid) && before.iter().all(|b| !b.contains(pid))).collect::<BTreeSet<u32>>()
+            now.into_iter().filter(|(pid, _)| !claimed.contains(pid) && !before.contains(pid)).collect::<BTreeMap<u32, u64>>()
         });
-        match new {
-            Some(new) if new.len() == executors.len() => {
-                let ours = drivers.ours.entry(gpu.clone()).or_default();
-                for pid in &new { ours.insert(*pid, executors.clone()); }
-                Some(Learned { gpu, ours: new.into_iter().collect(), unattributed: None })
+        let context = drivers.context.get(&gpu).copied();
+        let ours = new.as_ref().and_then(|new| match new.len().cmp(&executors.len()) {
+            std::cmp::Ordering::Equal => Some(new.clone()),
+            std::cmp::Ordering::Greater => {
+                let alone: BTreeMap<u32, u64> = new.iter().filter(|(_, bytes)| context.is_some_and(|c| bytes.abs_diff(c) <= 64 << 20))
+                    .map(|(pid, bytes)| (*pid, *bytes)).collect();
+                (alone.len() == executors.len()).then_some(alone)
             }
-            new => {
+            std::cmp::Ordering::Less => None,
+        });
+        match ours {
+            Some(new) => {
+                if let Some(&bytes) = new.values().max() { drivers.context.insert(gpu.clone(), bytes); }
+                let ours = drivers.ours.entry(gpu.clone()).or_default();
+                for pid in new.keys() { ours.insert(*pid, executors.clone()); }
+                Some(Learned { gpu, ours: new.into_keys().collect(), unattributed: None })
+            }
+            None => {
+                let new = new.map(|new| new.into_keys().collect::<BTreeSet<u32>>());
                 drivers.unattributed.entry(gpu.clone()).or_default().push((executors, new.clone()));
                 Some(Learned { gpu, ours: vec![], unattributed: Some(new.map(|n| n.into_iter().collect()).unwrap_or_default()) })
             }
         }
     }
 
+    /// What the driver charged our last executor told at its context's opening on GPU `uuid`.
+    pub fn context(&self, uuid: &str) -> Option<u64> {
+        self.drivers.lock().unwrap_or_else(|e| e.into_inner()).context.get(uuid).copied()
+    }
+
     /// Our driver pids on GPU `uuid` among `processes`, each with its executors; None when a
     /// live executor there is not learned or not told apart (the reading is unknown). An
     /// unattributed set is learned once its extra pids exited: as many alive as its executors.
     fn drivers(&self, uuid: &str, processes: &BTreeMap<u32, u64>) -> Option<BTreeMap<u32, Vec<u32>>> {
+        // An executor that ended is not live though its tenant is not yet retired: its candidates
+        // left alive are another program's, never learned as ours.
         let live: BTreeMap<u32, bool> = self.tenants.lock().unwrap_or_else(|e| e.into_inner()).iter()
+            .filter(|(_, tenant)| !tenant.exact.ended())
             .map(|(pid, tenant)| (*pid, tenant.gpus.iter().any(|gpu| gpu == uuid))).collect();
         let mut drivers = self.drivers.lock().unwrap_or_else(|e| e.into_inner());
         let drivers = &mut *drivers;

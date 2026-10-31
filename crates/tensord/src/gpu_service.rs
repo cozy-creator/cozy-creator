@@ -917,6 +917,8 @@ struct Pressure {
 impl Pressure {
     /// H, what another program finds free (design/vram-yield.md §3.1).
     fn headroom(total: u64) -> u64 { (total / 16).max(512 << 20) }
+    /// The free bytes a running call keeps before its idle neighbours offload (`yield_to_call`).
+    fn call_headroom(total: u64) -> u64 { (total / 10).max(512 << 20) }
 
     fn observe(&mut self, usage: &memory::DeviceUse) {
         let baseline = *self.baseline.get_or_insert(usage.foreign);
@@ -1252,12 +1254,40 @@ impl Pool {
         }
     }
 
+    /// A running call owns its GPUs ahead of idle neighbours (dedicated mode, as before the room
+    /// loop). A measured peak is a hint a call can outgrow, so `make_room`'s one-time offload can
+    /// fall short mid-call. While a call's lane holds GPU `index` and the driver's free bytes are
+    /// under `call_headroom`, offload idle neighbours there (weights only, LRU and warm sets last),
+    /// so the active call pages its own weights only after every idle neighbour has given its back.
+    /// No driver attribution is needed: driver free bytes and the sessions.
+    fn yield_to_call(&self, engine: &Arc<Engine>, index: usize, device: &Device) {
+        let calling = || self.lanes.lock().unwrap().values().any(|lane| lane.contains(&index));
+        let (Some(gpu), Some(row)) = (device.memory.as_ref(), memory::row(&device.entry, &self.config.inventory)) else { return };
+        let headroom = Pressure::call_headroom(row.memory_bytes);
+        if !calling() { return }
+        for key in self.idle_on_lane(&(index..index + 1), Level::Gpu) {
+            if gpu.free().is_none_or(|free| free >= headroom) || !calling() { return }
+            // An executor that refuses its offload keeps its weights where the running call
+            // needs room, and asking again every tick never changes that: end it, as placement
+            // does (0.36.0 gate 41034222864: Klein's refusal, 13 asks, then Qwen out of memory).
+            if !self.offload_idle(engine, &key, "running_call", Some(headroom))
+                && gpu.free().is_some_and(|free| free < headroom) && calling() && self.end_session(&key)
+            {
+                self.notes.note(serde_json::json!({"event": "ended_for_room", "ended": key,
+                    "for": "running_call", "need": headroom, "free": gpu.free()}));
+            }
+        }
+    }
+
     /// The one room loop (design/vram-yield.md §3), on the machine's 500 ms reclaim loop: each GPU
-    /// read once, another program's use observed (`gpu_pressure`), then `room`.
+    /// read once, another program's use observed (`gpu_pressure`). In shared mode, or with another
+    /// program pressing, `room`; dedicated with none, or a reading that cannot tell our processes
+    /// apart, the running call's yield (`yield_to_call`), and dedicated with none a room left lifts.
     pub(crate) fn relieve_pressure(&self, engine: &Arc<Engine>) {
+        let shared = self.config.host.mode == HostMode::Shared;
         for (index, device) in self.devices.iter().enumerate() {
             let reading = device.memory.as_ref().and_then(|gpu| gpu.usage_by(&self.tenants));
-            let (blocked, pressing) = {
+            let observed = {
                 let mut pressure = self.pressure.lock().unwrap();
                 let state = &mut pressure[index];
                 let now = Instant::now();
@@ -1267,47 +1297,98 @@ impl Pool {
                         "known": reading.is_some(), "sample_gap_ms": gap, "scope": "driver_attributed_process_bytes"}));
                     state.observable = Some(reading.is_some());
                 }
-                let Some((usage, _)) = reading.as_ref() else { continue };
-                let was = state.blocked;
-                state.observe(usage);
-                if was != state.blocked {
-                    self.allocations.pressure(index, state.blocked);
-                    self.notes.note(serde_json::json!({"event": "gpu_pressure", "gpu": device.entry,
-                        "blocked": state.blocked, "baseline_foreign_bytes": state.baseline,
-                        "foreign_bytes": usage.foreign, "own_bytes": usage.own, "free_bytes": usage.free,
-                        "headroom_bytes": Pressure::headroom(usage.total), "sample_gap_ms": gap}));
-                    engine.notify_activity();
-                }
-                (state.blocked, state.pressing)
+                reading.as_ref().map(|(usage, _)| {
+                    let was = state.blocked;
+                    state.observe(usage);
+                    if was != state.blocked {
+                        self.allocations.pressure(index, state.blocked);
+                        self.notes.note(serde_json::json!({"event": "gpu_pressure", "gpu": device.entry,
+                            "blocked": state.blocked, "baseline_foreign_bytes": state.baseline,
+                            "foreign_bytes": usage.foreign, "own_bytes": usage.own, "free_bytes": usage.free,
+                            "headroom_bytes": Pressure::headroom(usage.total), "sample_gap_ms": gap}));
+                        engine.notify_activity();
+                    }
+                    (state.blocked, state.pressing)
+                })
             };
-            if let Some((usage, by)) = reading {
-                self.room(engine, index, device, &usage, &by, blocked, pressing);
+            match (reading, observed) {
+                (Some((usage, by)), Some((blocked, pressing))) if shared || blocked => {
+                    self.room(engine, index, device, &usage, &by, (blocked, pressing));
+                }
+                (_, observed) => {
+                    if !shared && observed.is_some() { self.lift(index, device) }
+                    self.yield_to_call(engine, index, device);
+                }
             }
         }
     }
 
-    /// What our executors may hold of GPU `index`. Shared mode, or another program pressing, keeps
-    /// H free: our room is what we hold plus what is free, less H. Dedicated with none, a
-    /// running call may still need its idle neighbours' room, never its own. Over it, in rounds,
-    /// each a reading (§3.3): idle executors give, least recently used first, the deficit split
-    /// among them; an idle executor that gave short ends; then the running calls give. A round
-    /// that lowered our use is asked again; one that did not passes to the next. Every ask is a
-    /// target for what the driver charges that executor, so it never compounds; a running call
-    /// never goes below what it needs to go on, and is never ended for another program. Under
-    /// the room again by more than H, those held may grow back to it at their next pass; with no
-    /// other program pressing (dedicated), the limit lifts. `room` reaches an executor's first GPU
-    /// only (a group's other GPUs are not yielded).
+    /// Dedicated with no other program: every room left on GPU `index` lifts.
+    fn lift(&self, index: usize, device: &Device) {
+        let lines: BTreeMap<u32, device_executor::Line> = self.leaders.lock().unwrap().iter()
+            .filter_map(|(pid, leader)| Some((*pid, leader.room.clone()?))).collect();
+        let mut pressure = self.pressure.lock().unwrap();
+        let state = &mut pressure[index];
+        state.round = None;
+        let limited: Vec<u32> = std::mem::take(&mut state.limited).into_keys().collect();
+        let told: Vec<u32> = limited.into_iter()
+            .filter(|pid| lines.get(pid).is_some_and(|line| line.send(&Command::Room(Room { device: 0, target: None, held: 0 }))))
+            .collect();
+        if !told.is_empty() {
+            self.notes.note(serde_json::json!({"event": "room", "gpu": device.entry, "lift": true, "executors": told}));
+        }
+    }
+
+    /// A call is going to executor `pid` on GPU `index`: a room it was left while idle no longer
+    /// binds it, so its first fills are not refused. Dedicated with no other program it lifts;
+    /// otherwise it may hold what it holds plus what is free, less the band.
+    fn open_room(&self, index: usize, pid: u32) {
+        let Some(line) = self.leaders.lock().unwrap().get(&pid).and_then(|leader| leader.room.clone()) else { return };
+        let reading = self.devices.get(index).and_then(|d| d.memory.as_ref()).and_then(|gpu| gpu.usage_by(&self.tenants));
+        let shared = self.config.host.mode == HostMode::Shared;
+        let mut pressure = self.pressure.lock().unwrap();
+        let Some(state) = pressure.get_mut(index) else { return };
+        let Some(&sent) = state.limited.get(&pid) else { return };
+        let held = reading.as_ref().and_then(|(_, by)| by.get(&pid).copied()).unwrap_or(0);
+        let target = match &reading {
+            _ if !shared && !state.blocked => None,
+            Some((now, _)) => {
+                let band = if state.pressing { 2 } else { 1 } * Pressure::headroom(now.total);
+                Some(held + (now.own + now.free).saturating_sub(band).saturating_sub(now.own))
+            }
+            None => return, // the room loop's next known reading sets it
+        };
+        if target.is_some_and(|target| target <= sent) { return }
+        if line.send(&Command::Room(Room { device: 0, target, held })) {
+            match target {
+                Some(target) => { state.limited.insert(pid, target); }
+                None => { state.limited.remove(&pid); }
+            }
+            self.notes.note(serde_json::json!({"event": "room", "gpu": index, "call": pid, "target": target}));
+        }
+    }
+
+    /// What our executors may hold of GPU `index` in shared mode, or with another program
+    /// pressing: what we hold plus what is free, less the band (H; 2H while that program is still
+    /// taking what we give). Over it, in rounds, each a reading (§3.3): idle executors give, least
+    /// recently used first (whole while another program presses; one with no `room` is offloaded,
+    /// its weights to RAM); with another program pressing, an idle executor ends; then the running
+    /// calls give. A round that lowered our use is asked again; one that did not passes to the
+    /// next. Every ask is a target for what the driver charges that executor, so it never
+    /// compounds; a running call never goes below what it needs to go on, and is never ended for
+    /// another program. Under the room again by more than H, the running calls held grow back,
+    /// sharing it (an idle executor is raised when a call goes to it, `open_room`). `room` reaches
+    /// an executor's first GPU only (a group's other GPUs are not yielded).
     fn room(&self, engine: &Arc<Engine>, index: usize, device: &Device, now: &memory::DeviceUse,
-        by: &BTreeMap<u32, u64>, blocked: bool, pressing: bool) {
+        by: &BTreeMap<u32, u64>, (blocked, pressing): (bool, bool)) {
         const SLACK: u64 = 64 << 20;
         let headroom = Pressure::headroom(now.total);
-        let shared = self.config.host.mode == HostMode::Shared;
         let running: std::collections::BTreeSet<u32> = engine.active(usize::MAX).unwrap_or_default().into_iter()
             .filter_map(|record| Some(record.process.as_ref()?.pid)).collect();
-        let mut idle: Vec<(Instant, String, u32)> = self.sessions.lock().unwrap().iter()
+        let mut idle: Vec<(Instant, String, u32, Level)> = self.sessions.lock().unwrap().iter()
             .filter(|(_, session)| session.start == index && session.degree > 0)
-            .map(|(key, session)| (session.used, key.clone(), session.executor.birth.pid)).collect();
-        idle.sort();
+            .map(|(key, session)| (session.used, key.clone(), session.executor.birth.pid, session.level())).collect();
+        idle.sort_by_key(|i| i.0);
         let lines: BTreeMap<u32, device_executor::Line> = self.leaders.lock().unwrap().iter()
             .filter(|(_, leader)| leader.start == index)
             .filter_map(|(pid, leader)| Some((*pid, leader.room.clone()?))).collect();
@@ -1319,93 +1400,112 @@ impl Pool {
         // with none, H (option B), so a call beside it runs in all the rest (sieg s2: a 2H band
         // held for the game's life left Qwen 1.3 GB beside 5 GB, short of its 1.2 GB embedding).
         let band = if pressing { 2 * headroom } else { headroom };
-        let room = (shared || blocked).then(|| (now.own + now.free).saturating_sub(band));
-        let deficit = match room {
-            Some(room) => now.own.saturating_sub(room),
-            None if !running.is_empty() => headroom.saturating_sub(now.free),
-            None => 0,
-        };
-        let mut pressure = self.pressure.lock().unwrap();
-        let state = &mut pressure[index];
-        let ask = |pid: u32, target: Option<u64>, state: &mut Pressure| -> bool {
-            let (Some(line), Some(&held)) = (lines.get(&pid), by.get(&pid)) else { return false };
-            if target.is_some() && state.limited.get(&pid).is_some_and(|sent| sent.abs_diff(target.unwrap_or(0)) < SLACK) {
-                return true;
-            }
-            if !line.send(&Command::Room(Room { device: 0, target, held })) { return false }
-            match target {
-                Some(target) => { state.limited.insert(pid, target); }
-                None => { state.limited.remove(&pid); }
-            }
-            true
-        };
-        if deficit > SLACK {
-            // This reading's round: 0 idle give, 1 end an idle executor, 2 the running give.
-            let progressed = state.round.is_some_and(|(_, own)| own.saturating_sub(now.own) >= SLACK);
-            let mut round = match state.round {
-                None => 0,
-                Some((round, _)) if progressed => round,
-                Some((round, _)) => round + 1,
+        let room = (now.own + now.free).saturating_sub(band);
+        let deficit = now.own.saturating_sub(room);
+        let (mut offload, mut end) = (vec![], None);
+        {
+            let mut pressure = self.pressure.lock().unwrap();
+            let state = &mut pressure[index];
+            let ask = |pid: u32, target: Option<u64>, state: &mut Pressure| -> bool {
+                let (Some(line), Some(&held)) = (lines.get(&pid), by.get(&pid)) else { return false };
+                if target.is_some() && state.limited.get(&pid).is_some_and(|sent| sent.abs_diff(target.unwrap_or(0)) < SLACK) {
+                    return true;
+                }
+                if !line.send(&Command::Room(Room { device: 0, target, held })) { return false }
+                match target {
+                    Some(target) => { state.limited.insert(pid, target); }
+                    None => { state.limited.remove(&pid); }
+                }
+                true
             };
-            let idle_asked: Vec<u32> = idle.iter().map(|i| i.2).filter(|pid| by.get(pid).is_some_and(|b| *b > 0)).collect();
-            if round == 0 && idle_asked.is_empty() { round = 1 }
-            if round == 1 && idle.is_empty() { round = 2 }
-            // Past the last round the running calls are asked again as the deficit moves (a target
-            // within SLACK of the last is not re-sent); a call at its floor gives nothing more.
-            if round >= 2 { round = if room.is_some() && !calls.is_empty() { 2 } else { 3 } }
-            let mut told = vec![];
-            match round {
-                0 | 2 => {
-                    let members = if round == 0 { idle_asked } else { calls.clone() };
-                    let mut left = deficit;
-                    for pid in members {
-                        if left == 0 { break }
-                        let held = by.get(&pid).copied().unwrap_or(0);
-                        // Idle pages nobody uses go whole when another program presses (§3.3
-                        // step 2); otherwise the deficit is split, least recently used first.
-                        let give = if round == 0 && blocked { held } else { left.min(held) };
-                        if ask(pid, Some(held - give), state) {
-                            left = left.saturating_sub(give);
-                            told.push(pid);
+            if deficit > SLACK {
+                // This reading's round: 0 idle give, 1 end an idle executor, 2 the running give.
+                let progressed = state.round.is_some_and(|(_, own)| own.saturating_sub(now.own) >= SLACK);
+                let mut round = match state.round {
+                    None => 0,
+                    Some((round, _)) if progressed => round,
+                    Some((round, _)) => round + 1,
+                };
+                // With no `room` (an older Runtime) only weights still on the GPU can go (to RAM).
+                let idle_held: Vec<(String, u32)> = idle.iter()
+                    .filter(|i| by.get(&i.2).is_some_and(|b| *b > 0) && (lines.contains_key(&i.2) || i.3 == Level::Gpu))
+                    .map(|i| (i.1.clone(), i.2)).collect();
+                if round == 0 && idle_held.is_empty() { round = 1 }
+                // Only another program's demand ends a model: shared mode's own H never cold-starts
+                // one (a running call refilling, or a give still queued, reads as no progress).
+                if round == 1 && (idle.is_empty() || !blocked) { round = 2 }
+                // Past the last round the running calls are asked again as the deficit moves (a target
+                // within SLACK of the last is not re-sent); a call at its floor gives nothing more.
+                if round >= 2 { round = if calls.is_empty() { 3 } else { 2 } }
+                let mut told = vec![];
+                match round {
+                    0 => {
+                        let mut left = deficit;
+                        for (key, pid) in idle_held {
+                            if left == 0 { break }
+                            let held = by.get(&pid).copied().unwrap_or(0);
+                            if !lines.contains_key(&pid) {
+                                offload.push(key);
+                                left = left.saturating_sub(held);
+                                continue;
+                            }
+                            // Idle pages nobody uses go whole when another program presses (§3.3
+                            // step 2); otherwise the deficit is split, least recently used first.
+                            let give = if blocked { held } else { left.min(held) };
+                            if ask(pid, Some(held - give), state) {
+                                left = left.saturating_sub(give);
+                                told.push(pid);
+                            }
                         }
                     }
+                    1 => end = Some(idle[0].1.clone()),
+                    2 => {
+                        let mut left = deficit;
+                        for &pid in &calls {
+                            if left == 0 { break }
+                            let held = by.get(&pid).copied().unwrap_or(0);
+                            let give = left.min(held);
+                            if ask(pid, Some(held - give), state) {
+                                left = left.saturating_sub(give);
+                                told.push(pid);
+                            }
+                        }
+                    }
+                    _ => {}
                 }
-                1 => {
-                    let (_, key, pid) = idle[0].clone();
-                    if self.end_session(&key) {
-                        told.push(pid);
-                        self.notes.note(serde_json::json!({"event": "ended_for_room", "ended": key,
-                            "for": "room", "need": deficit, "free": now.free}));
+                state.round = Some((round.min(3), now.own));
+                if !told.is_empty() || !offload.is_empty() {
+                    self.notes.note(serde_json::json!({"event": "room", "gpu": device.entry, "round": round,
+                        "deficit": deficit, "free_bytes": now.free, "foreign_bytes": now.foreign, "own_bytes": now.own,
+                        "headroom_bytes": headroom, "blocked": blocked, "executors": told, "offloaded": offload}));
+                }
+            } else {
+                state.round = None;
+                let surplus = room.saturating_sub(now.own);
+                // Room again: the running calls held grow back to it at their next pass, sharing it.
+                let held: Vec<u32> = calls.iter().copied().filter(|pid| state.limited.contains_key(pid)).collect();
+                if surplus > headroom && !held.is_empty() {
+                    let share = surplus / held.len() as u64;
+                    let told: Vec<u32> = held.into_iter().filter(|&pid| {
+                        let target = by.get(&pid).copied().unwrap_or(0) + share;
+                        // A raise smaller than H is not worth a message: the call is not short of it.
+                        state.limited.get(&pid).is_some_and(|&sent| target >= sent + headroom) && ask(pid, Some(target), state)
+                    }).collect();
+                    if !told.is_empty() {
+                        self.notes.note(serde_json::json!({"event": "room", "gpu": device.entry, "grow": surplus,
+                            "free_bytes": now.free, "foreign_bytes": now.foreign, "executors": told}));
                     }
                 }
-                _ => {}
             }
-            state.round = Some((round.min(3), now.own));
-            if !told.is_empty() {
-                self.notes.note(serde_json::json!({"event": "room", "gpu": device.entry, "round": round,
-                    "deficit": deficit, "free_bytes": now.free, "foreign_bytes": now.foreign, "own_bytes": now.own,
-                    "headroom_bytes": headroom, "blocked": blocked, "executors": told}));
+        }
+        for key in offload {
+            self.offload_idle(engine, &key, "room", Some(deficit));
+        }
+        if let Some(key) = end {
+            if self.end_session(&key) {
+                self.notes.note(serde_json::json!({"event": "ended_for_room", "ended": key,
+                    "for": "room", "need": deficit, "free": now.free}));
             }
-            return;
-        }
-        state.round = None;
-        let surplus = room.map(|room| room.saturating_sub(now.own));
-        if state.limited.is_empty() || surplus.is_some_and(|surplus| surplus <= headroom) {
-            return;
-        }
-        // Room again: those held grow back to it at their next pass, or lift with no other program.
-        let limited: Vec<u32> = state.limited.keys().copied().collect();
-        let mut told = vec![];
-        for pid in limited {
-            if !lines.contains_key(&pid) { state.limited.remove(&pid); continue }
-            let target = surplus.map(|surplus| by.get(&pid).copied().unwrap_or(0) + surplus);
-            // A raise smaller than H is not worth a message: the call is not short of it.
-            if target.is_some_and(|target| state.limited.get(&pid).is_some_and(|&sent| target < sent + headroom)) { continue }
-            if ask(pid, target, state) { told.push(pid) }
-        }
-        if !told.is_empty() {
-            self.notes.note(serde_json::json!({"event": "room", "gpu": device.entry, "grow": surplus,
-                "lift": surplus.is_none(), "free_bytes": now.free, "foreign_bytes": now.foreign, "executors": told}));
         }
     }
 
@@ -1472,20 +1572,25 @@ impl Pool {
         crate::precision::Gpus::of(&ccs)
     }
     /// The first `degree` GPUs as the Hub resolves a model for them: each one's capability, and
-    /// what a call can have on the one with the least: free bytes plus what idle executors hold
-    /// there, which the call's `make_room` takes back (none read: no fit check). No GPU: the CPU.
-    /// (pawoo 22998: SeedVR2 resolved at 0.3 GiB free beside an idle H3 its call then offloaded,
-    /// and streamed int8 in a card it had to itself.)
+    /// what a call can have on the one with the least: free bytes plus the weights idle executors
+    /// hold there (their bytes less a context), which the call's `make_room` takes back (none read:
+    /// no fit check). No GPU: the CPU. (pawoo 22998: SeedVR2 resolved at 0.3 GiB free beside an
+    /// idle H3 its call then offloaded, and streamed int8 on a card it had to itself.)
     pub fn hardware(&self, degree: u32) -> tensorfs::fetch::Hardware {
         let devices: Vec<&Device> = self.devices.iter().take(degree as usize).collect();
         let gpus = devices.iter().filter_map(|d| self.inventory(&d.entry)).map(|g| g.compute_cap.clone()).filter(|cc| !cc.is_empty()).collect();
-        let mut idle = vec![0u64; devices.len()];
-        for session in self.sessions.lock().unwrap().values() {
-            for (rank, bytes) in self.held(session).unwrap_or_default().into_iter().enumerate() {
-                if let Some(slot) = idle.get_mut(session.start + rank) { *slot += bytes }
-            }
-        }
-        let free_vram = devices.iter().zip(idle).filter_map(|(d, idle)| Some(d.memory.as_ref()?.free()? + idle)).min();
+        let idle: Vec<(usize, u32)> = self.sessions.lock().unwrap().values()
+            .map(|session| (session.start, session.executor.birth.pid)).collect();
+        let free_vram = devices.iter().enumerate().filter_map(|(index, d)| {
+            let gpu = d.memory.as_ref()?;
+            let free = gpu.free()?;
+            // Attribution unknown: the driver's free bytes alone, as before.
+            let Some((_, by)) = gpu.usage_by(&self.tenants) else { return Some(free) };
+            let context = self.tenants.context(&gpu.uuid).unwrap_or(0);
+            let weights: u64 = idle.iter().filter(|(start, _)| *start == index)
+                .filter_map(|(_, pid)| by.get(pid)).map(|bytes| bytes.saturating_sub(context)).sum();
+            Some(free + weights)
+        }).min();
         tensorfs::fetch::Hardware { gpus, free_vram, plain: false }
     }
     fn inventory(&self, entry: &str) -> Option<&crate::machine::receipt::Gpu> {
@@ -2760,6 +2865,7 @@ impl Pool {
                 if plan.degree > 0 {
                     let held = match session.level() { Level::Gpu => self.held(&session), _ => Some(vec![]) };
                     self.make_room(engine, &plan.construction, session.lane(), held);
+                    self.open_room(session.start, session.executor.birth.pid);
                 }
                 serve(&session.executor.cancellation());
                 session
@@ -3301,6 +3407,7 @@ impl Pool {
                     // for this one, so TensorD never offloads the calling process.
                     let held = match session.level() { Level::Gpu => self.held(&session), _ => Some(vec![]) };
                     self.make_room(engine, &plan.construction, start..start + degree as usize, held);
+                    self.open_room(start, session.executor.birth.pid);
                 }
                 *disposition = Disposition::Unknown(executor_births(&session.executor.birth, &session.followers));
                 engine.register_managed(
@@ -4579,10 +4686,13 @@ impl Formation {
     fn cuda(&mut self, phase: &str) {
         let [gpu] = self.gpus.as_slice() else { return };
         match phase {
-            "opening" => self.opening = Some(self.tenants.opening(&gpu.uuid, gpu.pids(), vec![self.leader.pid])),
+            "opening" => {
+                let pids = gpu.processes().map(|processes| processes.into_keys().collect());
+                self.opening = Some(self.tenants.opening(&gpu.uuid, pids, vec![self.leader.pid]));
+            }
             "open" => {
                 let Some(opening) = self.opening.take() else { return };
-                if let Some(learned) = self.tenants.opened(opening, gpu.pids()) {
+                if let Some(learned) = self.tenants.opened(opening, gpu.processes()) {
                     self.notes.note(serde_json::json!({"event": "driver_pids", "gpu": learned.gpu,
                         "executors": [self.leader.pid], "ours": learned.ours, "unattributed": learned.unattributed}));
                 }
