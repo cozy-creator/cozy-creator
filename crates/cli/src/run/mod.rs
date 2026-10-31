@@ -650,7 +650,7 @@ fn functions(ctx: &Context, package: &str, resolved: &Resolved) {
     functions_of(ctx, package, (&card.release, card.summary()), Some(&from), &card.interface);
 }
 
-/// A package's functions, and where each runs. Its recipes are not functions: `cozy model
+/// A package's functions, and what each does. Its recipes are not functions: `cozy model
 /// quantize` runs them.
 fn functions_of(
     ctx: &Context,
@@ -660,15 +660,12 @@ fn functions_of(
     interface: &Interface,
 ) {
     let public = interface.public();
-    let callable = |name: &str| interface.callables.iter().find(|c| c.name == name);
-    let runs_on = |name: &str| match callable(name) {
-        Some(c) if interface.orchestrates(c) => "GPU, through its calls",
-        Some(c) if c.accelerator == Some(false) => "CPU",
-        _ => "GPU",
+    let description = |name: &str| {
+        (interface.callables.iter().find(|c| c.name == name)).map_or("", |c| c.description.as_str())
     };
     if ctx.json {
         let rows: Vec<_> = (public.iter())
-            .map(|name| serde_json::json!({"function": name, "runs_on": runs_on(name)}))
+            .map(|name| serde_json::json!({"function": name, "description": description(name)}))
             .collect();
         output::json(&serde_json::json!({
             "package": package, "release": release, "release_from": from, "summary": summary,
@@ -676,9 +673,9 @@ fn functions_of(
         }));
         return;
     }
-    let mut table = output::Table::new(ctx, ["FUNCTION", "RUNS ON"]);
+    let mut table = output::Table::new(ctx, ["FUNCTION", "DESCRIPTION"]);
     for name in &public {
-        table = table.row([*name, runs_on(name)]);
+        table = table.row([*name, description(name)]);
     }
     if public.is_empty() {
         table = table.note(format!("{package} has no functions: its recipes run through cozy model quantize"));
