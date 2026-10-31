@@ -1405,12 +1405,14 @@ impl Pool {
         {
             let mut pressure = self.pressure.lock().unwrap();
             let state = &mut pressure[index];
-            let ask = |pid: u32, target: Option<u64>, state: &mut Pressure| -> bool {
-                let (Some(line), Some(&held)) = (lines.get(&pid), by.get(&pid)) else { return false };
+            // Whether it holds that target now, and whether this reading sent it (an ask within SLACK
+            // of the last is not re-sent, nor logged).
+            let ask = |pid: u32, target: Option<u64>, state: &mut Pressure| -> (bool, bool) {
+                let (Some(line), Some(&held)) = (lines.get(&pid), by.get(&pid)) else { return (false, false) };
                 if target.is_some() && state.limited.get(&pid).is_some_and(|sent| sent.abs_diff(target.unwrap_or(0)) < SLACK) {
-                    return true;
+                    return (true, false);
                 }
-                if !line.send(&Command::Room(Room { device: 0, target, held })) { return false }
+                if !line.send(&Command::Room(Room { device: 0, target, held })) { return (false, false) }
                 match target {
                     Some(target) => {
                         if target + SLACK < held { state.asked.insert(pid, Instant::now()); }
@@ -1418,7 +1420,7 @@ impl Pool {
                     }
                     None => { state.limited.remove(&pid); }
                 }
-                true
+                (true, true)
             };
             let gave: Vec<(u32, f64)> = state.asked.iter()
                 .filter(|(pid, _)| state.limited.get(pid).is_none_or(|&target| by.get(pid).copied().unwrap_or(0) <= target + SLACK))
@@ -1481,10 +1483,9 @@ impl Pool {
                             // Idle pages nobody uses go whole when another program presses (§3.3
                             // step 2); otherwise the deficit is split, least recently used first.
                             let give = if blocked { held } else { left.min(held) };
-                            if ask(pid, Some(held - give), state) {
-                                left = left.saturating_sub(give);
-                                told.push(pid);
-                            }
+                            let (held_to, sent) = ask(pid, Some(held - give), state);
+                            if held_to { left = left.saturating_sub(give) }
+                            if sent { told.push(pid) }
                         }
                     }
                     1 => end = Some(match stalled {
@@ -1497,10 +1498,9 @@ impl Pool {
                             if left == 0 { break }
                             let held = by.get(&pid).copied().unwrap_or(0);
                             let give = left.min(held);
-                            if ask(pid, Some(held - give), state) {
-                                left = left.saturating_sub(give);
-                                told.push(pid);
-                            }
+                            let (held_to, sent) = ask(pid, Some(held - give), state);
+                            if held_to { left = left.saturating_sub(give) }
+                            if sent { told.push(pid) }
                         }
                     }
                     _ => {}
@@ -1526,7 +1526,7 @@ impl Pool {
                     let told: BTreeMap<u32, u64> = held.into_iter().filter_map(|pid| {
                         let target = by.get(&pid).copied().unwrap_or(0) + share;
                         // A raise smaller than H is not worth a message: the call is not short of it.
-                        (state.limited.get(&pid).is_some_and(|&sent| target >= sent + headroom) && ask(pid, Some(target), state))
+                        (state.limited.get(&pid).is_some_and(|&sent| target >= sent + headroom) && ask(pid, Some(target), state).1)
                             .then_some((pid, target))
                     }).collect();
                     if !told.is_empty() {
