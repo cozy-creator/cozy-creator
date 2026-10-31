@@ -22,7 +22,7 @@ futures-util = { workspace = true, features = ["alloc"] }
 getrandom.workspace = true
 hex.workspace = true
 hub-client.workspace = true
-jiff.workspace = true
+jiff = { workspace = true, features = ["serde"] }
 indicatif.workspace = true
 infer.workspace = true
 ratatui.workspace = true
