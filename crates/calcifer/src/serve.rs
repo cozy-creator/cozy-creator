@@ -7,7 +7,7 @@
 use std::{
     net::{Ipv4Addr, SocketAddr},
     process::ExitCode,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use platform::{
@@ -23,7 +23,8 @@ use protocol::{
     error::{Envelope, Error, Kind},
 };
 use tokio::net::TcpListener;
-use tracing::{error, info, warn};
+use hub_client::{Client, Credential};
+use tracing::{debug, error, info, warn};
 
 use crate::{
     Calcifer,
@@ -148,6 +149,7 @@ pub async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     let token = hex::encode(token);
     let machines = Machines::start(calcifer.clone(), home.clone(), &loaded.user_home, &loaded.config);
     steps.done("machines");
+    tokio::spawn(newest_releases(home.clone(), loaded.config.hub_url.clone()));
     let api = Api::new(calcifer.clone(), machines.clone(), address.port(), &token);
     // A service manager's stop (SIGTERM) is `down`, as graceful: the machine runs on.
     #[cfg(unix)]
@@ -212,5 +214,31 @@ impl Steps {
     fn done(&mut self, step: &str) {
         info!(step, ms = self.0.elapsed().as_millis() as u64, "started");
         self.0 = Instant::now();
+    }
+}
+
+/// How often [`newest_releases`] reads them again.
+const NEWEST: Duration = Duration::from_secs(300);
+
+/// The newest release of every package this computer installed or ran, read again from its Hub
+/// now and each [`NEWEST`] after (`hub_client::latest`): an unversioned run names the kept one and
+/// asks the Hub nothing, and a release published elsewhere reaches it one read late at most.
+/// Signed in when this computer is, for an owner's private packages.
+async fn newest_releases(home: Home, hub: config::Origin) {
+    let http = reqwest::Client::new();
+    let mut every = tokio::time::interval(NEWEST);
+    loop {
+        every.tick().await;
+        let client = match hub.device_key(&home).exists() {
+            true => Client::signed_in(&hub, &home, http.clone(), || hub.to_string()),
+            false => Ok(Client::connect(&hub, http.clone(), Credential::Anonymous)),
+        };
+        match client {
+            Ok(client) => {
+                let read = hub_client::latest::refresh_all(&client, home.root(), &hub).await;
+                debug!(read, "newest releases read again");
+            }
+            Err(e) => debug!("newest releases: {e}"),
+        }
     }
 }

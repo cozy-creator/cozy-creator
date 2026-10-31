@@ -97,7 +97,7 @@ pub async fn install(
     let name = package.package();
     let chosen = match &package.release {
         Some(chosen) => chosen.clone(),
-        None => run::latest(ctx, &hub, &name).await?,
+        None => run::fresh(ctx, hub, &name).await?,
     };
     let warm = spec(v1::RunKind::Warm, release(&name, &chosen), String::new());
     let target = format!("{name}@{chosen}");
