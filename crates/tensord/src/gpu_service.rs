@@ -912,6 +912,8 @@ struct Pressure {
     limited: BTreeMap<u32, u64>,
     /// The room loop's round over the current deficit and our use when it was asked.
     round: Option<(usize, u64)>,
+    /// Executors asked to give, and when: how long a give takes reaches the memory log.
+    asked: BTreeMap<u32, Instant>,
 }
 
 impl Pressure {
@@ -1418,11 +1420,21 @@ impl Pool {
                 }
                 if !line.send(&Command::Room(Room { device: 0, target, held })) { return false }
                 match target {
-                    Some(target) => { state.limited.insert(pid, target); }
+                    Some(target) => {
+                        if target + SLACK < held { state.asked.insert(pid, Instant::now()); }
+                        state.limited.insert(pid, target);
+                    }
                     None => { state.limited.remove(&pid); }
                 }
                 true
             };
+            let gave: Vec<(u32, f64)> = state.asked.iter()
+                .filter(|(pid, _)| state.limited.get(pid).is_none_or(|&target| by.get(pid).copied().unwrap_or(0) <= target + SLACK))
+                .map(|(pid, at)| (*pid, at.elapsed().as_secs_f64() * 1e3)).collect();
+            for (pid, ms) in gave {
+                state.asked.remove(&pid);
+                self.notes.note(serde_json::json!({"event": "room", "gpu": device.entry, "gave": pid, "ms": ms}));
+            }
             if deficit > SLACK {
                 // This reading's round: 0 idle give, 1 end an idle executor, 2 the running give.
                 let progressed = state.round.is_some_and(|(_, own)| own.saturating_sub(now.own) >= SLACK);
@@ -1436,6 +1448,13 @@ impl Pool {
                     .filter(|i| by.get(&i.2).is_some_and(|b| *b > 0) && (lines.contains_key(&i.2) || i.3 == Level::Gpu))
                     .map(|i| (i.1.clone(), i.2)).collect();
                 if round == 0 && idle_held.is_empty() { round = 1 }
+                // An idle executor told to give and still above its target is giving: its turn can
+                // come after the command it is finishing, and a reading is no deadline. Nothing is
+                // ended while one is (riful, 0.15.1: the Qwen asked whole 4 s after its call, ended
+                // one reading later, the game waited 2.2 s for the process to exit).
+                let giving = idle.iter().any(|i| lines.contains_key(&i.2)
+                    && state.limited.get(&i.2).is_some_and(|&target| by.get(&i.2).copied().unwrap_or(0) > target + SLACK));
+                if round == 1 && giving { round = 0 }
                 // Only another program's demand ends a model: shared mode's own H never cold-starts
                 // one (a running call refilling, or a give still queued, reads as no progress).
                 if round == 1 && (idle.is_empty() || !blocked) { round = 2 }
