@@ -69,10 +69,12 @@ run idle-qwen qwen-image-2/generate prompt="a tea house in rain, photo" seed:=$R
 [ "$(status idle-qwen)" = completed ] || fail "idle: the Qwen call beside the game is $(status idle-qwen)"
 run idle-stop ./game.py op=stop cfg='{"name": "idle"}'
 
-# busy: the game presses as an SDXL call returns, while its executor still works (it records the call's loop at idle):
-# the executor told to give is waited for while it makes progress, never ended for that, and its give lands
+# busy: the game presses as an SDXL call returns, while its executor records the call's loop at idle (an idle request
+# open): its pages go at once though a recording is open, nothing working is ended, the recording stops or moves
+# aside, and the same call twice after replays (reused) with the image bytes of the first
 memlines() { cozy machine logs "$NAME" memory -n 0 2>/dev/null | wc -l; }
-run busy-sdxl sdxl/generate prompt="a copper kettle on a stove, photo" seed:=$RANDOM
+bseed=$RANDOM bprompt="a copper kettle on a stove, photo"
+run busy-sdxl sdxl/generate prompt="$bprompt" seed:=$bseed
 m0=$(memlines)
 game busy-game "{\"name\": \"busy\", \"gb\": $(param idle_gb 5), \"trigger\": \"now\", \"give_up_s\": 120, \"hold_s\": 900, \"wait_s\": 120}"
 run busy-status ./game.py op=status cfg='{"name": "busy"}'
@@ -81,6 +83,14 @@ say "busy game: $(jq -c '{phase, alloc_s, fails}' "$OUT/busy-status.value"); giv
 [ "$(jq -r '.reached // false' "$OUT/busy-status.value")" = true ] || fail "busy: the game never had its memory"
 ! grep -q '"why":"no progress' <<<"$w" || fail "busy: an executor making progress was ended for room"
 run busy-stop ./game.py op=stop cfg='{"name": "busy"}'
+run busy-again1 sdxl/generate prompt="$bprompt" seed:=$bseed
+run busy-again2 sdxl/generate prompt="$bprompt" seed:=$bseed
+loops() { jq -c '[.measurements.execution.loops[]? | {mode, reused, native_steps}]' "$OUT/$1.json"; }
+sha() { jq -r '.output[0].sha256 // empty' "$OUT/$1.json"; }
+say "busy after: first $(loops busy-sdxl) $(sha busy-sdxl); again1 $(loops busy-again1) $(sha busy-again1); again2 $(loops busy-again2) $(sha busy-again2)"
+[ "$(status busy-again1)" = completed ] && [ "$(status busy-again2)" = completed ] || fail "busy: SDXL after the game did not complete"
+jq -e '[.measurements.execution.loops[]? | .reused] | any' "$OUT/busy-again2.json" > /dev/null || fail "busy: the recording did not come back (no replay two calls after)"
+[ "$(sha busy-again2)" = "$(sha busy-sdxl)" ] || fail "busy: the replay's image differs from the first call's"
 
 game mid-arm "{\"name\": \"mid\", \"gb\": $(param midjob_gb 3), \"trigger\": \"util\", \"util_pct\": 80, \"util_s\": 3, \"delay_s\": 1, \"give_up_s\": 60, \"hold_s\": 8}"
 run mid-qwen qwen-image-2/generate prompt="a fox reading a newspaper in a cafe, photo" seed:=$RANDOM megapixels:=1
