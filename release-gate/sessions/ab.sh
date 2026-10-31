@@ -13,6 +13,8 @@
 #              run id, and "gpu_memory_limit" (`10GiB`, `off`: the development VRAM cap); the pod's `machine update`
 #              before this cell, so cells before and after compare two pairs)}];
 #              "expect" (optional: the status the cell must end in, `completed` by default; `failed` for a refusal it proves);
+#              "download" (optional: [[model ref, `cozy model download` flags…], …] made present on the pod first, so
+#              the cell's run starts with its weights on disk, as a machine whose package was installed earlier does);
 #              in args, `{ref}` is release-gate/ref and `{out:<cell>}` an earlier cell's image or video;
 #              two failed cells stop the session
 #   compare    [["A", "B"], …]: the result digests, else the decoded frames of every stream, and the video's PSNR
@@ -99,6 +101,11 @@ for k in "${names[@]}"; do
     step "update-$k" machine update "$NAME" ${UPDATE[$k]} -y || fail "$k: the update"
     say "$k: pod Runtime $(cozy machine show "$NAME" --json | jq -r .status.runtime), TensorFS $(cozy machine show "$NAME" --json | jq -r .status.tensorfs)"
   fi
+  mapfile -t downloads < <(jq -c '.download // [] | .[]' <<<"$c")
+  for i in "${!downloads[@]}"; do
+    mapfile -t dl < <(jq -r '.[]' <<<"${downloads[$i]}")
+    step "download-$k-$i" model download "${dl[@]}" --on "$NAME" < /dev/null || fail "$k: the download of ${dl[0]}"
+  done
   echo "$k" > "$OUT/current"
   tree=$(jq -r '.tree // empty' <<<"$c") target=$(jq -r .target <<<"$c")
   cd "$PACKAGES/$tree" || fail "no tree for $k"
