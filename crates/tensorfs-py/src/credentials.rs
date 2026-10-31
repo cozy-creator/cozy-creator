@@ -165,7 +165,7 @@ impl PyEndpoint {
         gpus: Option<Vec<String>>,
         plain: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let hardware = tensorfs::fetch::Hardware { gpus: gpus.unwrap_or_default(), free_vram: None, plain };
+        let hardware = tensorfs::fetch::Hardware { gpus: gpus.unwrap_or_default(), free_vram: None, plain, components: vec![] };
         let resolved = py
             .detach(|| block_on(self.endpoint.resolve(repo_id, release.as_deref(), lane.as_deref(), &hardware)))
             .or_raise(py)?;
