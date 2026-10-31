@@ -147,6 +147,13 @@ def record_pool_stream(pool: tuple[int, int], stream, device: int | None = None)
     _ext._varena_working_pool_record_stream(index, tuple(pool), stream.cuda_stream)
 
 
+def retire_stream(stream, device: int | None = None) -> None:
+    """Forget a drained stream before its owner destroys it; the caller stops submissions first."""
+    _installed()
+    index = _device(stream.device if device is None else device)
+    _ext._varena_working_retire_stream(index, stream.cuda_stream)
+
+
 @contextmanager
 def graph(cuda_graph, *, pool=None, stream=None, reserve_bytes: int | None = None) -> Iterator[object]:
     """Prepare, capture and finish one graph. Shared-pool replay order remains the owner's contract."""

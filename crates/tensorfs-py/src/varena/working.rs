@@ -318,6 +318,15 @@ fn _varena_working_pool_retain(py: Python<'_>, device: i32, pool: (u64, u64)) ->
 }
 
 #[pyfunction]
+fn _varena_working_retire_stream(py: Python<'_>, device: i32, stream: u64) -> PyResult<()> {
+    py.detach(|| {
+        check()?;
+        varena::working::retire_stream(device, stream)
+    })
+    .map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
 fn _varena_working_pool_release(py: Python<'_>, device: i32, pool: (u64, u64)) -> PyResult<()> {
     py.detach(|| {
         check()?;
@@ -327,6 +336,7 @@ fn _varena_working_pool_release(py: Python<'_>, device: i32, pool: (u64, u64)) -
 }
 
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(_varena_working_retire_stream, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_pool_retain, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_pool_release, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_bindings, module)?)?;

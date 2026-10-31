@@ -16,6 +16,9 @@ Empty captures can use `reserve_bytes=0`. `record_pool_stream(pool, stream)` dec
 consumers. Graphs sharing a pool must follow their declared serial order, and output aliases retain
 their own allocation ownership. Raw Torch capture/replay requires the same explicit completion hooks;
 ordinary allocator hooks cannot observe replay launches.
+Owners of native streams call `retire_stream(stream)` after draining submissions and before
+destroying the CUDA stream. A freed tensor may outlive its original stream; the allocator must
+not record new events on that destroyed handle.
 Capture-thread auxiliary allocations, including Torch's lazy default-stream RNG seed/offset tensors,
 also use the prepared pool. Other threads route only through Torch's capture filter. Nested captures
 on the same device/thread are rejected; preparation cannot silently grow during capture.
