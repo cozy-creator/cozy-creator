@@ -795,7 +795,18 @@ def main(config):
         result["seconds"] = time.perf_counter() - started
         results[name] = result
         emit({"case": name, "state": "passed", "detail": result})
-    emit({"result": {"passed": True, "provenance": actual, "cases": results, "final": figures()}})
+    # Scalar reads cache pinned host staging buffers in Torch, outside Varena's device
+    # allocator. Release only unused host cache after every case's owners have retired.
+    clean()
+    host_before = torch.cuda.host_memory_stats()
+    torch.accelerator.empty_host_cache()
+    host_after = torch.cuda.host_memory_stats()
+    assert host_after["active_bytes.current"] == 0, host_after
+    assert host_after["allocated_bytes.current"] == 0, host_after
+    emit({"result": {
+        "passed": True, "provenance": actual, "cases": results, "final": figures(),
+        "host_cache": {"before": host_before, "after": host_after},
+    }})
 
 
 if __name__ == "__main__":

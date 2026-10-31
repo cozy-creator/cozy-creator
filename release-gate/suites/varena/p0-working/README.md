@@ -110,3 +110,14 @@ actual capture has ended and cleanup completes. The subsequent eager convolution
 workspace demand. Diagnostics are emitted before assertions, so old cuDNN retries/cache mutation remain visible.
 Existing cases and allocator microbenchmark settings/bars are unchanged. This new case has source/syntax checks
 only until its real GPU receipt is recorded; no pass is inferred from its construction.
+
+## Compute Sanitizer cleanup
+
+Use Compute Sanitizer 2025.4.1 for this Python proof: NVIDIA's [release notes](https://docs.nvidia.com/compute-sanitizer/ReleaseNotes/index.html#updates-in-2025-4-1)
+document a Python-launch memory-leak fix. The unchanged fixture on 2025.3.1 retained a live tensor after graph teardown (run 23954); changing only
+the tool to 2025.4.1 retired all managed bytes/pools/events in all 16 cases (23987). That second run still failed
+full leak checking because Torch retained unused pinned-host scalar staging buffers.
+
+After all cases retire, the child now calls public `torch.accelerator.empty_host_cache()` and records host
+statistics before/after. Both active and allocated host bytes must reach zero. Device ownership assertions,
+full memcheck/leak checking and the error exit code remain unchanged. This does not qualify full-model memcheck.
