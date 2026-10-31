@@ -156,9 +156,13 @@ def graph(cuda_graph, *, pool=None, stream=None, reserve_bytes: int | None = Non
     device = _device(stream.device if stream is not None else None)
     stream = torch.cuda.Stream(device=device) if stream is None else stream
     pool = torch.cuda.graph_pool_handle() if pool is None else pool
-    prepare_pool(pool, stats(device)["allocated_peak"] if reserve_bytes is None else reserve_bytes, device)
-    # Preparation is outside capture; native allocations during capture use this pool only.
-    torch.cuda.synchronize(device)
+    try:
+        prepare_pool(pool, stats(device)["allocated_peak"] if reserve_bytes is None else reserve_bytes, device)
+        # Preparation is outside capture; native allocations during capture use this pool only.
+        torch.cuda.synchronize(device)
+    except BaseException:
+        cancel_preparation(pool, device)
+        raise
     started = False
     error = None
     with torch.cuda.device(device), torch.cuda.stream(stream):
