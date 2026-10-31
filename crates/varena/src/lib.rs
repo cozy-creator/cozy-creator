@@ -9,6 +9,7 @@
 #![deny(unsafe_code)]
 
 mod cuda;
+pub mod working;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering};
@@ -1195,7 +1196,14 @@ impl Region {
                     });
                 }
             }
-            let handle = match self.arena.driver.create(self.rounded) {
+            let allocation = match self.arena.driver.create(self.rounded) {
+                Err(Error::OutOfMemory { .. }) if admission != Admission::None => {
+                    working::reclaim_for_weights(self.arena.device, self.rounded)?;
+                    self.arena.driver.create(self.rounded)
+                }
+                result => result,
+            };
+            let handle = match allocation {
                 Ok(handle) => handle,
                 Err(Error::OutOfMemory { .. }) => {
                     match admission {

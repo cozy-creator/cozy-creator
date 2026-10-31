@@ -4,6 +4,7 @@
 use crate::{Error, Result};
 use libloading::Library;
 use std::ffi::{c_int, c_uint, c_void};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 type Status = c_int;
 type Context = *mut c_void;
@@ -55,6 +56,7 @@ type EventCreate = unsafe extern "system" fn(*mut Object, c_uint) -> Status;
 type EventRecord = unsafe extern "system" fn(Object, Object) -> Status;
 type EventOp = unsafe extern "system" fn(Object) -> Status;
 type IsCapturing = unsafe extern "system" fn(Object, *mut c_int) -> Status;
+type MemoryInfo = unsafe extern "system" fn(*mut usize, *mut usize) -> Status;
 
 pub(crate) struct Driver {
     // Keep a primary-context retain for the process lifetime. CUDA reset/fork is unsupported.
@@ -77,6 +79,10 @@ pub(crate) struct Driver {
     event_synchronize: EventOp,
     event_destroy: EventOp,
     is_capturing: IsCapturing,
+    memory_info: MemoryInfo,
+    memory_calls: AtomicU64,
+    event_queries: AtomicU64,
+    event_records: AtomicU64,
     pub(crate) granularity: usize,
 }
 
@@ -121,6 +127,10 @@ impl Driver {
             event_synchronize: symbol!("cuEventSynchronize", EventOp),
             event_destroy: symbol!("cuEventDestroy_v2", EventOp),
             is_capturing: symbol!("cuStreamIsCapturing", IsCapturing),
+            memory_info: symbol!("cuMemGetInfo_v2", MemoryInfo),
+            memory_calls: AtomicU64::new(0),
+            event_queries: AtomicU64::new(0),
+            event_records: AtomicU64::new(0),
             granularity: 0,
         };
         // CUDA registers process exit handlers; unloading its library after init is unsafe.
@@ -175,8 +185,18 @@ impl Driver {
         status("cuCtxSynchronize", unsafe { (self.synchronize)() })
     }
 
+    pub(crate) fn memory_info(&self) -> Result<(usize, usize)> {
+        let (mut free, mut total) = (0, 0);
+        // SAFETY: valid output storage; the caller entered this driver's primary context.
+        status("cuMemGetInfo", unsafe {
+            (self.memory_info)(&mut free, &mut total)
+        })?;
+        Ok((free, total))
+    }
+
     pub(crate) fn reserve(&self, bytes: usize) -> Result<u64> {
         let mut ptr = 0;
+        self.memory_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: valid output pointer; size is rounded to this driver's allocation granularity.
         status("cuMemAddressReserve", unsafe {
             (self.reserve)(&mut ptr, bytes, 0, 0, 0)
@@ -185,6 +205,7 @@ impl Driver {
     }
 
     pub(crate) fn free_address(&self, ptr: u64, bytes: usize) -> Result<()> {
+        self.memory_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: only a successfully unmapped owned reservation reaches here.
         status("cuMemAddressFree", unsafe {
             (self.address_free)(ptr, bytes)
@@ -193,6 +214,7 @@ impl Driver {
 
     pub(crate) fn create(&self, bytes: usize) -> Result<u64> {
         let mut handle = 0;
+        self.memory_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: valid output pointer and properties; bytes satisfy granularity.
         let code = unsafe { (self.create)(&mut handle, bytes, &self.properties(), 0) };
         if code == 2 {
@@ -205,6 +227,7 @@ impl Driver {
     }
 
     pub(crate) fn map(&self, ptr: u64, bytes: usize, handle: u64) -> Result<()> {
+        self.memory_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: an owned, unoccupied reservation and equally-sized owned allocation.
         status("cuMemMap", unsafe { (self.map)(ptr, bytes, 0, handle, 0) })?;
         let access = Access {
@@ -214,6 +237,7 @@ impl Driver {
             },
             flags: 3, // CU_MEM_ACCESS_FLAGS_PROT_READWRITE
         };
+        self.memory_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: the entire range just mapped above; one descriptor grants local device access.
         status("cuMemSetAccess", unsafe {
             (self.set_access)(ptr, bytes, &access, 1)
@@ -221,11 +245,13 @@ impl Driver {
     }
 
     pub(crate) fn unmap(&self, ptr: u64, bytes: usize) -> Result<()> {
+        self.memory_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: owned whole mapping, no pins, and checked completion of all uses before call.
         status("cuMemUnmap", unsafe { (self.unmap)(ptr, bytes) })
     }
 
     pub(crate) fn release(&self, handle: u64) -> Result<()> {
+        self.memory_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: owned allocation handle; caller has confirmed unmap before releasing.
         status("cuMemRelease", unsafe { (self.release)(handle) })
     }
@@ -240,6 +266,7 @@ impl Driver {
     }
 
     pub(crate) fn record(&self, event: usize, stream: usize) -> Result<()> {
+        self.event_records.fetch_add(1, Ordering::Relaxed);
         // SAFETY: an owned live event; the caller vouches for a live stream of this context.
         status("cuEventRecord", unsafe {
             (self.event_record)(event as Object, stream as Object)
@@ -248,6 +275,7 @@ impl Driver {
 
     /// Whether all work captured by the event's latest record has completed.
     pub(crate) fn query(&self, event: usize) -> Result<bool> {
+        self.event_queries.fetch_add(1, Ordering::Relaxed);
         // SAFETY: an owned live event; callers exclude CUDA graph capture.
         match unsafe { (self.event_query)(event as Object) } {
             600 => Ok(false), // CUDA_ERROR_NOT_READY
@@ -283,6 +311,14 @@ impl Driver {
         status("cuMemcpyHtoD", unsafe {
             (self.copy_host)(ptr, bytes.as_ptr().cast(), bytes.len())
         })
+    }
+
+    pub(crate) fn calls(&self) -> (u64, u64, u64) {
+        (
+            self.memory_calls.load(Ordering::Relaxed),
+            self.event_queries.load(Ordering::Relaxed),
+            self.event_records.load(Ordering::Relaxed),
+        )
     }
 }
 
