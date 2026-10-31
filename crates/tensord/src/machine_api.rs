@@ -1029,6 +1029,8 @@ fn rewrite_assets(
     if value.is_null() {
         return Ok(());
     }
+    // A present optional (`T | None`) is a `T`.
+    let schema = crate::products::present(schema);
     // A returned tree (`{"input": "tree"}`) is an output like an asset: its manifest's bytes.
     if schema.get("asset").is_some() || schema["input"] == "tree" {
         let object = value
