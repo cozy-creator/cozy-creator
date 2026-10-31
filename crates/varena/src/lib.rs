@@ -267,7 +267,7 @@ pub struct Arena {
     pid: u32,
     // Lock-free view of this device's capture guards, for release paths that never wait.
     captures: Arc<AtomicUsize>,
-    segments: Arc<Segments>,
+    segments: &'static Segments,
     state: Mutex<State>,
 }
 
@@ -277,7 +277,6 @@ struct DeviceActivity {
     captures: Arc<AtomicUsize>,
     replays: Arc<AtomicUsize>,
     producers: Arc<AtomicUsize>,
-    segments: Arc<Segments>,
 }
 
 /// Torch's hooked segments on one device (`note_torch_reserved`) and their high-water since the
@@ -300,9 +299,21 @@ impl Segments {
     }
 }
 
+/// Each device's `Segments`, reached without a lock: Torch's allocation hook writes them on every
+/// segment malloc and free, while a fill may hold the capture registry across cuMemCreate.
+static SEGMENTS: [OnceLock<Segments>; 64] = [const { OnceLock::new() }; 64];
+
+fn segments(device: i32) -> Result<&'static Segments> {
+    usize::try_from(device)
+        .ok()
+        .and_then(|index| SEGMENTS.get(index))
+        .map(|slot| slot.get_or_init(Segments::default))
+        .ok_or(Error::Invalid("device ordinal out of range"))
+}
+
 /// Torch's hooked segment bytes on `device`, after each change (the allocation hook).
 pub fn note_torch_reserved(device: i32, bytes: usize) -> Result<()> {
-    let segments = Arc::clone(&capture_counts()?.entry(device).or_default().segments);
+    let segments = segments(device)?;
     segments.reserved.store(bytes, Ordering::Release);
     segments.high.fetch_max(bytes, Ordering::AcqRel);
     Ok(())
@@ -456,10 +467,9 @@ impl Arena {
         let mut captures = capture_counts()?;
         ensure_recovery_allowed(&captures, device)?;
         let driver = cuda::Driver::open(device)?;
-        let activity = captures.entry(device).or_default();
-        let capturing = Arc::clone(&activity.captures);
-        let segments = Arc::clone(&activity.segments);
+        let capturing = Arc::clone(&captures.entry(device).or_default().captures);
         drop(captures);
+        let segments = segments(device)?;
         let arena = Arc::new(Self {
             driver,
             device,
