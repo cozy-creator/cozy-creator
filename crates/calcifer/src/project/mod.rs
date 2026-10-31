@@ -773,8 +773,9 @@ impl Walk {
 
 /// What can be sent now, in project order. What `all` owes (a version out of date or missing, or
 /// a picture's clean) once everything it reads is made, cleaned and settled: nothing upstream,
-/// however far, still owed or being made. A take once nothing upstream is still owed or being
-/// made; the take of a picture not cleaned yet is its clean, one at a time.
+/// however far, still owed or being made into its chosen file (a take that will not be chosen
+/// holds nothing up). A take once nothing upstream is unsettled; the take of a picture not cleaned
+/// yet is its clean, one at a time.
 fn plan(video: &Video, lock: &Lock) -> Vec<Next> {
     let (graph, walk) = (&video.graph, &lock.walk);
     let status = graph.status(lock);
@@ -783,7 +784,13 @@ fn plan(video: &Video, lock: &Lock) -> Vec<Next> {
     let mut next = vec![];
     for &i in &graph.order {
         let id = name_key(&graph.entities[i].id);
-        let busy = lock.pending.values().any(|pending| name_key(&pending.made.entity) == id);
+        let busy = lock.pending.values().any(|pending| {
+            let chosen = match pending.then {
+                Then::Choose => true,
+                Then::List { choose } | Then::Clean { choose } => choose,
+            };
+            name_key(&pending.made.entity) == id && (chosen || graph.entities[i].file.is_none())
+        });
         let owed = walk.all.is_some()
             && video.wanted(i)
             && (status[i] != Status::Current || !clean(i))
