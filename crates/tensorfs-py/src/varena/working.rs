@@ -44,7 +44,7 @@ pub(super) fn installed() -> bool {
 }
 
 fn check() -> varena::Result<()> {
-    if OWNER.load(Ordering::Acquire) != std::process::id() {
+    if !installed() {
         return Err(varena::Error::Invalid(
             "Torch allocator is not installed in this process",
         ));
@@ -86,6 +86,8 @@ fn retire(failure: *mut Failure, operation: impl FnOnce() -> varena::Result<()>)
         });
         if let Err(error) = result {
             // Destructor callbacks cannot throw. Preserve the first failure for the next boundary.
+            // A fork rejection must not wait on an inherited OnceLock initializer.
+            varena::working::bind_process()?;
             let _ = CALLBACK_ERROR.set(error.clone());
             return Err(error);
         }
@@ -170,6 +172,8 @@ static BINDINGS: Bindings = Bindings {
 
 #[pyfunction]
 fn _varena_working_bindings() -> PyResult<usize> {
+    varena::working::bind_process()
+        .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?;
     let pid = std::process::id();
     let owner = OWNER.load(Ordering::Acquire);
     if owner != 0 && owner != pid {
@@ -207,7 +211,9 @@ fn _varena_working_initialize(py: Python<'_>, device: i32) -> PyResult<()> {
 
 #[pyfunction]
 fn _varena_working_check(py: Python<'_>) -> PyResult<()> {
-    check().map_err(|e| super::raise(py, e))
+    varena::working::bind_process()
+        .and_then(|()| check())
+        .map_err(|e| super::raise(py, e))
 }
 
 #[pyfunction]
