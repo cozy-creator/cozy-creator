@@ -914,6 +914,8 @@ struct Pressure {
     round: Option<(usize, u64)>,
     /// Executors asked to give, and when: how long a give takes reaches the memory log.
     asked: BTreeMap<u32, Instant>,
+    /// Idle executors still above their target at the last reading: their bytes and CPU then.
+    samples: BTreeMap<u32, (u64, u64)>,
 }
 
 impl Pressure {
@@ -1438,12 +1440,25 @@ impl Pool {
                     .filter(|i| by.get(&i.2).is_some_and(|b| *b > 0) && (lines.contains_key(&i.2) || i.3 == Level::Gpu))
                     .map(|i| (i.1.clone(), i.2)).collect();
                 if round == 0 && idle_held.is_empty() { round = 1 }
-                // An idle executor told to give and still above its target is giving: its turn can
-                // come after the command it is finishing, and a reading is no deadline. Nothing is
-                // ended while one is (riful, 0.15.1: the Qwen asked whole 4 s after its call, ended
-                // one reading later, the game waited 2.2 s for the process to exit).
-                let giving = idle.iter().any(|i| lines.contains_key(&i.2)
-                    && state.limited.get(&i.2).is_some_and(|&target| by.get(&i.2).copied().unwrap_or(0) > target + SLACK));
+                // An idle executor told to give and still above its target is giving while it makes
+                // progress between readings: its bytes fall, or its process works (CPU, or a thread
+                // running or on a disk), as when its turn waits behind the command it is finishing.
+                // Nothing is ended while one is (riful, 0.15.1: the Qwen asked whole 4 s after its
+                // call was ended one reading later; the game waited 2.2 s for the exit). One that made
+                // none since the last reading is stalled, and goes first when one must end.
+                let (mut giving, mut stalled) = (false, None);
+                for i in &idle {
+                    let (Some(&target), true) = (state.limited.get(&i.2), lines.contains_key(&i.2)) else { continue };
+                    let bytes = by.get(&i.2).copied().unwrap_or(0);
+                    if bytes <= target + SLACK { state.samples.remove(&i.2); continue }
+                    let usage = platform::process::usage(i.2).ok();
+                    let sample = (bytes, usage.map_or(0, |u| u.cpu));
+                    let moved = match state.samples.insert(i.2, sample) {
+                        None => true,
+                        Some((was, cpu)) => bytes + SLACK <= was || sample.1 > cpu || usage.is_some_and(|u| u.running),
+                    };
+                    if moved { giving = true } else if stalled.is_none() { stalled = Some(i.1.clone()) }
+                }
                 if round == 1 && giving { round = 0 }
                 // Only another program's demand ends a model: shared mode's own H never cold-starts
                 // one (a running call refilling, or a give still queued, reads as no progress).
@@ -1472,7 +1487,10 @@ impl Pool {
                             }
                         }
                     }
-                    1 => end = Some(idle[0].1.clone()),
+                    1 => end = Some(match stalled {
+                        Some(key) => (key, "no progress toward its target since the last reading"),
+                        None => (idle[0].1.clone(), "least recently used, with nothing left to give but its process"),
+                    }),
                     2 => {
                         let mut left = deficit;
                         for &pid in &calls {
@@ -1495,6 +1513,7 @@ impl Pool {
                 }
             } else {
                 state.round = None;
+                state.samples.clear();
                 let surplus = room.saturating_sub(now.own);
                 // Room again: the running calls held grow back to it at their next pass, sharing it.
                 let held: Vec<u32> = calls.iter().copied().filter(|pid| state.limited.contains_key(pid)).collect();
@@ -1517,10 +1536,10 @@ impl Pool {
         for key in offload {
             self.offload_idle(engine, &key, "room", Some(deficit));
         }
-        if let Some(key) = end {
+        if let Some((key, why)) = end {
             if self.end_session(&key) {
                 self.notes.note(serde_json::json!({"event": "ended_for_room", "ended": key,
-                    "for": "room", "need": deficit, "free": now.free}));
+                    "for": "room", "why": why, "need": deficit, "free": now.free}));
             }
         }
     }
