@@ -1012,7 +1012,12 @@ pub fn pool_record_stream(device: i32, id: PoolId, stream: u64) -> Result<()> {
         return Err(Error::Invalid("graph pool has no owner"));
     }
     let result = owner.record(&mut pool.events, stream);
-    result.map_err(|error| owner.fail(&mut state, error))
+    result.map_err(|error| {
+        // A replay may already be running. Even event-allocation OOM cannot release backing
+        // without a completion fence; retain the arena until its process is retired.
+        state.poison = Some(format!("graph completion fence failed: {error}"));
+        error
+    })
 }
 
 /// Release one graph reference. Physical reclamation is deferred to trim/pressure.
