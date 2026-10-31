@@ -1282,7 +1282,7 @@ impl Pool {
     }
 
     /// What our executors may hold of GPU `index`. Shared mode, or another program pressing, keeps
-    /// H free: our room is the card less H less every other program's use. Dedicated with none, a
+    /// H free: our room is what we hold plus what is free, less H. Dedicated with none, a
     /// running call may still need its idle neighbours' room, never its own. Over it, in rounds,
     /// each a reading (§3.3): idle executors give, least recently used first, the deficit split
     /// among them; an idle executor that gave short ends; then the running calls give. A round
@@ -1307,7 +1307,9 @@ impl Pool {
             .filter(|(_, leader)| leader.start == index)
             .filter_map(|(pid, leader)| Some((*pid, leader.room.clone()?))).collect();
         let calls: Vec<u32> = running.iter().copied().filter(|pid| lines.contains_key(pid)).collect();
-        let room = (shared || blocked).then(|| now.total.saturating_sub(headroom).saturating_sub(now.foreign));
+        // Read from the driver's free bytes, not the card less what processes hold: the driver's
+        // own reserve (about 0.5 GB once any process has the device open) is in neither.
+        let room = (shared || blocked).then(|| (now.own + now.free).saturating_sub(headroom));
         let deficit = match room {
             Some(room) => now.own.saturating_sub(room),
             None if !running.is_empty() => headroom.saturating_sub(now.free),
