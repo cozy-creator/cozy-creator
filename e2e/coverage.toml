@@ -37,6 +37,8 @@ test = "pr: update, the candidate to the newest release"
 
 ["machine ls"]
 test = "pr: machines"
+"--history" = "release: the rental in its history, ended, with its cost"
+"--since" = "release: the rental in its history (--since 1h, alone and with --history)"
 ["machine show"]
 test = "pr: machines"
 ["machine logs"]
