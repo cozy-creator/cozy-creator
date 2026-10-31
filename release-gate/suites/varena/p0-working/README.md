@@ -51,12 +51,17 @@ sample duration and final drain are separately reported. Every sample, size, pai
 GPU identity is retained. The P0 microbenchmark passes when the median host nanoseconds per pair is no more than
 2× native. It is not a C++-only measurement or a model-latency result; Python dispatch overhead remains in both arms.
 
-P0 currently supports legacy-default and Torch-pooled process-lifetime streams. Externally destroyable raw streams
-are not qualified: CUDA stream destruction can return with work pending, and raw handle reuse can defeat same-stream
-ordering checks. Supporting them requires explicit lifetime/generation or retirement integration. Do not infer
-arbitrary native CUstream safety from this default-stream benchmark.
+Default and Torch-pooled streams live for the process. An owner of a destroyable stream must stop submissions,
+synchronize after its final graph/tensor teardown, call `vt.retire_stream(stream)`, then destroy the handle. CUDA
+stream destruction alone can return with work pending. Arbitrary external destruction without this retirement
+contract remains unsupported; the default-stream benchmark does not qualify it.
 
 The `replay-hook-failure` case launches real graph work on a different replay stream, then throws from Torch’s
 per-graph replay-end hook. It checks that the original exception survives and the pool completion fence is still
 recorded. A second arm resets the graph and requests trim inside that hook, requiring transient replay ownership
 to retain the pool through completion recording. Both arms copy and validate the GPU result, then verify retirement.
+
+`dlpack-record-stream` covers an interior-pointer DLPack view of working storage and a foreign TensorFS Region
+alias. `external-stream-retirement` creates actual CUDA runtime streams, drains and retires each, destroys it,
+then frees a retained tensor. Its three arms cover no remaining consumer, an already-declared consumer and a new
+consumer declared after retirement. Both cases validate GPU output and final allocation/event retirement.

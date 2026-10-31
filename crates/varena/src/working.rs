@@ -45,6 +45,7 @@ struct Block {
     capacity: usize,
     requested: usize,
     stream: u64,
+    origin_retired: bool,
     streams: BTreeSet<u64>,
     events: BTreeMap<u64, usize>,
     life: Life,
@@ -172,12 +173,12 @@ impl Working {
         for stream in &block.streams {
             self.record(&mut block.events, *stream)?;
         }
-        block.life = if block.streams.len() == 1 {
+        block.life = if block.streams.len() <= 1 {
             Life::Ready
         } else {
             Life::Pending
         };
-        block.reusable_on = Some(block.stream);
+        block.reusable_on = block.streams.first().copied();
         Ok(())
     }
 
@@ -196,7 +197,7 @@ impl Working {
             if block.life == Life::Deferred {
                 self.record_free(block)?;
                 if block.life == Life::Ready {
-                    ready.push((*ptr, block.capacity, Some(block.stream), block.segment));
+                    ready.push((*ptr, block.capacity, block.reusable_on, block.segment));
                 }
             }
             if matches!(block.life, Life::Ready | Life::Pending)
@@ -239,6 +240,7 @@ impl Working {
                     }
                     block.life = Life::Live;
                     block.stream = stream;
+                    block.origin_retired = false;
                     block.streams.clear();
                     block.streams.insert(stream);
                     return Some(ptr);
@@ -336,6 +338,7 @@ impl Working {
                         capacity: class,
                         requested: 0,
                         stream: 0,
+                        origin_retired: false,
                         streams: BTreeSet::new(),
                         events: BTreeMap::new(),
                         life: Life::Ready,
@@ -375,6 +378,7 @@ impl Working {
                 capacity: bytes,
                 requested: 0,
                 stream,
+                origin_retired: false,
                 streams: BTreeSet::from([stream]),
                 events: BTreeMap::new(),
                 life: Life::Live,
@@ -659,15 +663,18 @@ pub fn free(device: i32, ptr: u64, stream: u64) -> Result<()> {
     let pool = state.segments[&block.segment].pool;
     let in_pool_capture = pool.is_some_and(|id| state.pools[&id].routing);
     let block = state.blocks.get_mut(&ptr).expect("live block");
-    block.streams.insert(stream);
+    // Torch's deleter passes the original allocation stream, even after its owner drained
+    // and destroyed that stream. An explicit later record_stream still tracks new consumers.
+    if !block.origin_retired || stream != block.stream {
+        block.streams.insert(stream);
+    }
     let requested = block.requested;
     block.requested = 0;
     let class = block.capacity;
-    let allocation_stream = block.stream;
     if in_pool_capture {
         block.life = Life::Captured;
         block.reusable_on = if block.streams.len() == 1 {
-            Some(allocation_stream)
+            block.streams.first().copied()
         } else {
             None
         };
@@ -682,9 +689,10 @@ pub fn free(device: i32, ptr: u64, stream: u64) -> Result<()> {
     if state.blocks[&ptr].life == Life::Ready
         || (state.blocks[&ptr].life == Life::Captured && state.blocks[&ptr].reusable_on.is_some())
     {
+        let reusable_on = state.blocks[&ptr].reusable_on;
         state
             .free
-            .entry((pool, class, Some(allocation_stream)))
+            .entry((pool, class, reusable_on))
             .or_default()
             .push(ptr);
     }
@@ -715,16 +723,123 @@ pub fn record_stream_any(ptr: u64, stream: u64) -> Result<()> {
     if ptr == 0 {
         return Ok(());
     }
-    let candidates: Vec<_> = devices()?
-        .iter()
-        .map(|(d, a)| (*d, Arc::clone(a)))
-        .collect();
-    for (device, owner) in candidates {
-        if owner.lock()?.blocks.contains_key(&ptr) {
-            return record_stream(device, ptr, stream);
+    valid_stream(stream)?;
+    let candidates: Vec<_> = devices()?.values().cloned().collect();
+    for owner in candidates {
+        let mut state = owner.lock()?;
+        if let Some((base, block)) = state.blocks.range_mut(..=ptr).next_back()
+            && ptr - *base < block.capacity as u64
+        {
+            if block.life != Life::Live || ptr - *base >= block.requested as u64 {
+                return Err(Error::Invalid(
+                    "record_stream outside a live working allocation",
+                ));
+            }
+            block.streams.insert(stream);
+            return Ok(());
+        }
+        let mapped = state
+            .segments
+            .range(..=ptr)
+            .next_back()
+            .is_some_and(|(base, segment)| ptr - *base < segment.bytes as u64);
+        let reserved = state
+            .addresses
+            .range(..=ptr)
+            .next_back()
+            .is_some_and(|(base, bytes)| ptr - *base < *bytes as u64);
+        if mapped || reserved {
+            return Err(Error::Invalid(
+                "record_stream on unallocated working address space",
+            ));
         }
     }
-    Err(Error::Invalid("unknown working allocation"))
+    // Native Torch ignores foreign DataPtr deleters. Their storage owner (for example a
+    // TensorFS Region Pin) retains its own consumer/lifetime contract.
+    Ok(())
+}
+
+/// Forget a stream only after its owner stopped submissions and synchronized it, before
+/// destroying its handle. Live tensors may outlive the stream; new uses need record_stream.
+pub fn retire_stream(device: i32, stream: u64) -> Result<()> {
+    valid_stream(stream)?;
+    if stream == 0 || stream == 1 {
+        return Err(Error::Invalid(
+            "the legacy default stream cannot be retired",
+        ));
+    }
+    let Some(owner) = existing(device)? else {
+        return Ok(());
+    };
+    let captures = crate::capture_counts()?;
+    crate::ensure_not_capturing(&captures, device)?;
+    let mut state = owner.lock()?;
+    let _context = owner.driver.enter()?;
+    if owner.driver.is_capturing(stream as usize)? {
+        return Err(Error::CaptureActive);
+    }
+    if !owner.driver.query_stream(stream as usize)? {
+        return Err(Error::Busy);
+    }
+    let result = (|| {
+        for block in state.blocks.values_mut() {
+            let origin = block.stream == stream && !block.origin_retired;
+            if !origin
+                && !block.streams.contains(&stream)
+                && !block.events.contains_key(&stream)
+                && block.reusable_on != Some(stream)
+            {
+                continue;
+            }
+            if origin {
+                block.origin_retired = true;
+            }
+            block.streams.remove(&stream);
+            if let Some(event) = block.events.remove(&stream) {
+                owner.driver.destroy_event(event)?;
+            }
+            if block.life == Life::Live || block.life == Life::Captured {
+                continue;
+            }
+            if block.life == Life::Deferred {
+                owner.record_free(block)?;
+            }
+            if owner.completed(&block.events)? {
+                block.life = Life::Ready;
+                block.reusable_on = None;
+            } else {
+                block.life = if block.streams.len() == 1 {
+                    Life::Ready
+                } else {
+                    Life::Pending
+                };
+                block.reusable_on = Some(block.streams.first().copied().unwrap_or(block.stream));
+            }
+        }
+        for pool in state.pools.values_mut() {
+            pool.streams.remove(&stream);
+            if let Some(event) = pool.events.remove(&stream) {
+                owner.driver.destroy_event(event)?;
+            }
+        }
+        state.free.clear();
+        let ready: Vec<_> = state
+            .blocks
+            .iter()
+            .filter(|(_, block)| block.life == Life::Ready)
+            .map(|(ptr, block)| (*ptr, block.capacity, block.reusable_on, block.segment))
+            .collect();
+        for (ptr, bytes, stream, segment) in ready {
+            let pool = state.segments[&segment].pool;
+            state
+                .free
+                .entry((pool, bytes, stream))
+                .or_default()
+                .push(ptr);
+        }
+        Ok(())
+    })();
+    result.map_err(|error| owner.fail(&mut state, error))
 }
 
 pub fn trim(device: i32) -> Result<usize> {
