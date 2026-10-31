@@ -1,7 +1,7 @@
 # Suite `h3`: minimax-h3's shot and upscale at their edges, from the package users get (or its --pins release).
 # - Regenerate-2K (`upscale.model: regenerate-2k`) at 1080p, 1440p and 2160p, each against the 768p shot it starts from: its
 #   layout at 112x64 (frames.py), since regenerated texture rightly differs.
-# - SeedVR2, the default model, at 2160p on the same shot.
+# - SeedVR2, the default model, at 2160p on the same shot, its lane the one an empty card gives.
 # - A plate (a synthetic, people-free test pattern) as long as the shot, shorter, longer, at 30 fps and at 9:16: the
 #   output must follow it frame by frame.
 # - First and last keyframes: the shot opens and ends on them without a cut.
@@ -39,6 +39,13 @@ for r in 1080 1440 2160; do
 done
 cell seedvr2-2160p "$UP" --file video="$(video_of regen-768p)" resolution=2160p seed:=$((R + 71))
 av seedvr2-2160p 2160
+# After the shot and Regenerate-2K, SeedVR2's lane is the one it gets on an empty card: the idle models leave for its
+# call, so it never resolves for the free bytes beside them (pawoo 22998, TensorD 0.14.3: "no lane ... fits 0.3 GiB
+# free ... streaming the rest" on a 24 GB card it then had to itself; holds from #2319's TensorD).
+if [ -f seedvr2-2160p.number ]; then
+  w=$(grep -o 'no lane of [^"]*' "$OUT/seedvr2-2160p.ndjson" 2>/dev/null | head -1)
+  expect seedvr2-lane "$([ -z "$w" ] && echo PASS || echo FAIL)" "${w:-resolved for the card, nothing streamed}"
+fi
 if [[ $ONLY == *",regen-2160p-15s,"* ]]; then
   P15="$SCENE at night, rain on the windows, a neon sign reads CAFE, rain and footsteps"
   SAVED=$ONLY; ONLY="$ONLY,regen-768p-15s,"
