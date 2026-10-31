@@ -327,7 +327,9 @@ fn decode_failure(error: tensorfs::Failure) -> Failure {
         // decoder erases CUresult, so an I/O-family driver error cannot prove healthy
         // ownership even if a subsequent drain succeeds. Retain the same actual Work.
         tensorfs::Kind::Io => Failure::Native(varena::Error::Poisoned(error.detail)),
-        tensorfs::Kind::Full => Failure::Native(varena::Error::OutOfMemory { requested_bytes: 0 }),
+        tensorfs::Kind::Full | tensorfs::Kind::DeviceMemory => {
+            Failure::Native(varena::Error::OutOfMemory { requested_bytes: 0 })
+        }
         _ => Failure::Storage(error),
     }
 }
@@ -1006,7 +1008,9 @@ pub(super) fn prepare_encoded(
         &metadata,
     )
     .map_err(|error| match error.kind {
-        tensorfs::Kind::Full => Failure::Native(varena::Error::OutOfMemory { requested_bytes: 0 }),
+        tensorfs::Kind::Full | tensorfs::Kind::DeviceMemory => {
+            Failure::Native(varena::Error::OutOfMemory { requested_bytes: 0 })
+        }
         _ => Failure::Storage(error), // Preflight has submitted no GPU work.
     })?;
     let (offsets, packed) = io::pack(lengths.iter().copied(), io::DEVICE_ALIGN)

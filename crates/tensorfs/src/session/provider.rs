@@ -53,7 +53,7 @@ fn native_error(error: Failure) -> crate::err::Refusal {
         Kind::UnknownScheme => Code::UNKNOWN_ENCODING,
         Kind::Decode => Code::ENCODING_MISMATCH,
         Kind::Io => Code::IO_FAILED,
-        Kind::Full => Code::CAPACITY_EXHAUSTED,
+        Kind::Full | Kind::DeviceMemory => Code::CAPACITY_EXHAUSTED,
         Kind::Network => Code::TRANSFER_FAILED,
         Kind::Denied => Code::CREDENTIAL_REQUIRED,
         Kind::Unsupported => Code::ADAPTER_TARGET_UNSUPPORTED,

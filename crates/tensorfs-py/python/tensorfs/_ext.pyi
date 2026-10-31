@@ -53,6 +53,9 @@ class StorageError(Error):
 class DiskFullError(Error):
     """The disk or a quota is full (`full`)."""
 
+class DeviceMemoryError(Error):
+    """The GPU's memory is full; the detail names the CUDA call (`device_memory`)."""
+
 class NetworkError(Error):
     """A transfer failed or stalled (`network`)."""
 
