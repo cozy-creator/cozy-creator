@@ -269,6 +269,8 @@ pub(super) fn stats(device: i32) -> Result<BTreeMap<&'static str, u64>, String> 
         ("reclaimed_bytes", row.reclaimed as u64),
         ("budget_refusals", row.refusals),
         ("cache_refusals", row.cache_refusals),
+        // TensorFS decode streams the process has created (`io::decode::streams_created`).
+        ("decode_streams", tensorfs::io::decode::streams_created()),
         ("activation_admission_limit", row.limit.unwrap_or(0) as u64),
     ]))
 }
