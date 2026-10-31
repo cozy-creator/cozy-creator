@@ -59,6 +59,13 @@ def leftover(memory):
     return new or _num(_stats(memory).get('leftover'))
 
 
+def unowned(memory):
+    """Varena backing that holds no page at the request's end (resident - ready): a canceled or failed fill's pages,
+    a dropped region's. 0.17.15 kept 384 MiB (RTX 3070) to 618 MiB (RTX 4090) of SDXL's canceled cold prefetches."""
+    return sum(max(0, _num(w.get('resident_bytes')) - _num(w.get('ready_bytes')))
+               for s in rows(memory) if isinstance(w := s.get('weight_residency'), dict))
+
+
 def host(memory):
     """The process's anonymous host high-water (0.32), None where not recorded."""
     return max((_num(s.get('host')) for s in rows(memory)), default=0) or None

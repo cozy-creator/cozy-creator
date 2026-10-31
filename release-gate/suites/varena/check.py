@@ -7,7 +7,8 @@ kernels, time and VRAM against the last pass.
     no bytes left behind; the third alternation costs at most CHURN more than the second;
   - host (`host-*`, a CPU rental): `host-cap` measured a cgroup cap below the RAM; each run kept its anonymous host
     high-water under the cap (its page/spill bytes are noted: a model that fits pages nothing);
-  - every H3 cell produced its whole video.
+  - every H3 cell produced its whole video;
+  - no cell ends with varena backing that holds no page (resident - ready): a canceled prefetch's pages go back with it.
     check.py <gate dir> <SKU>     the same verdict alone"""
 import json, os, re, subprocess, sys
 
@@ -145,10 +146,20 @@ def videos(recs):
     return fails, notes
 
 
+def unowned(recs):
+    fails = []
+    for name, run in recs.items():
+        left = sum(record.unowned(m) for m in memories(run))
+        if left:
+            fails.append(f'{name}: {left / 2**20:.0f} MiB of varena backing holds no page at its end (resident - ready)')
+    return fails, []
+
+
 def check(gate):
     recs, sku = gate['runs'], gate.get('sku', '')
     fails, notes = [], []
-    for f, n in (bandwidth(recs, gate.setdefault('baseline', {})), caps(gate['out'], recs), host(recs), videos(recs)):
+    for f, n in (bandwidth(recs, gate.setdefault('baseline', {})), caps(gate['out'], recs), host(recs), videos(recs),
+                 unowned(recs)):
         fails += f; notes += n
     parked = [c for k in json.load(open(os.path.join(HERE, '..', '..', 'known-failing.json')))
               if k['sku'] in (sku, '*') for c in k.get('cells', [])]
