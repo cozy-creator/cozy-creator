@@ -756,9 +756,15 @@ pub(crate) fn reclaim_for_weights(device: i32, bytes: usize) -> Result<usize> {
     };
     let mut state = owner.lock()?;
     let _context = owner.driver.enter()?;
-    owner
-        .trim(&mut state, bytes, None)
-        .map_err(|error| owner.fail(&mut state, error))
+    let reclaimed = (|| {
+        let completed = owner.trim(&mut state, bytes, None)?;
+        if completed >= bytes {
+            return Ok(completed);
+        }
+        let pending = owner.wait_reclaimable(&mut state, bytes - completed, None)?;
+        Ok(completed.saturating_add(pending))
+    })();
+    reclaimed.map_err(|error| owner.fail(&mut state, error))
 }
 
 pub fn stats(device: i32) -> Result<WorkingStats> {
