@@ -6,7 +6,8 @@
 #   idle    SDXL and Qwen warm and idle; an idle_gb game starts: all of it within 2 s; a Qwen call beside it completes
 #   midjob  a Qwen call; a midjob_gb game starts once the GPU is busy and exits 8 s later: all of it within 2 s; the
 #           call completes, never cancelled, with its image
-#   big     the same with a big_gb game: the call keeps the floor it runs on (a ratchet below it failed it) and completes
+#   big     the same with a big_gb game that cannot fit beside the call: it keeps the floor it runs on (a ratchet
+#           below it failed it) and completes; the game has what is left
 #   shrink  a 4 GB game mid-call settles to 1.5 GB and stays: the room grows back (`room` grow) and the next Qwen call
 #           runs within 15% of one with no game
 #   start   a game starts as an executor opens its CUDA context: the call completes, nothing is ended for it, and the
@@ -57,7 +58,7 @@ jq -e '.output[] | select(.status == "completed")' "$OUT/mid-qwen.json" > /dev/n
 run big-arm ./game.py op=start cfg="{\"name\": \"big\", \"gb\": $(param big_gb 5), \"trigger\": \"util\", \"util_pct\": 80, \"util_s\": 3, \"delay_s\": 1, \"give_up_s\": 60, \"hold_s\": 20}"
 run big-qwen qwen-image-2/generate prompt="a lantern-lit tea house in the snow, photo" seed:=$RANDOM megapixels:=1
 sleep 25; run big-game ./game.py op=status cfg='{"name": "big"}'
-judge big "$OUT/big-game.value"
+say "big game: $(jq -c '{phase, gb: .cfg.gb, alloc_s, held_mib}' "$OUT/big-game.value")"  # both do not fit: the call is the bar
 [ "$(status big-qwen)" = completed ] || fail "big: the Qwen call is $(status big-qwen): $(jq -c .reason "$OUT/big-qwen.json")"
 
 memlines() { cozy machine logs "$NAME" memory -n 0 2>/dev/null | wc -l; }
