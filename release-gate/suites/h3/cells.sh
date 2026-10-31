@@ -110,3 +110,14 @@ named() {
 }
 named h3-lora-named h3-lora 1
 named h3-lora-20s-named h3-lora-20s 2
+
+# A reference shot, then a text-only render on the next call: the second must get the GPU, never waiting behind the
+# first's prefetch (TensorD 0.14.6: lily run 22344 then 22363 waited until cancelled; fixed by cozy 0.14.8, #2316). On
+# 0.1.x's functions, pinned, as production served them before 0.2.x.
+cell h3-lease-ref minimax-h3/ref2va_turbo@0.1.19 references:="[{\"name\": \"Skater\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
+  seed:=$((R + 90)) duration_s:=15 resolution=768p prompt="<Skater> carves a long turn across an empty plaza at dusk, wheels on concrete"
+cell h3-lease-next minimax-h3/fl2va_turbo@0.1.19 prompt="$SCENE, slow push-in, ambient sound" seed:=$((R + 91)) duration_s:=5 resolution=1080p
+if [ -f h3-lease-next.number ]; then
+  w=$(grep -c 'held by another run' "$OUT/h3-lease-next.ndjson" 2>/dev/null); s=$(run_get "$OUT" h3-lease-next .status)
+  expect h3-lease "$([ "$s" = completed ] && [ "${w:-0}" = 0 ] && echo PASS || echo FAIL)" "next call $s, ${w:-0} waits behind another run"
+fi
