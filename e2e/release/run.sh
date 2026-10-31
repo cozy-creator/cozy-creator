@@ -155,6 +155,8 @@ watched download-private model download "$model@$commit" --on "$M" \
   || check "model download $model@$commit --on $M: the rental did not read the private commit: $(run_get "$OUT" download-private '.reason.message' | head -c 300)"
 cozy --json model family "$model" e2e-family > /dev/null && cozy --json model info "$model" | J '.family == "e2e-family"' || check "model family: not set"
 cozy --json model family --clear "$model" > /dev/null && cozy --json model info "$model" | J '.family == null' || check "model family --clear: not cleared"
+cozy --json model trigger "$model" e2e trigger: > /dev/null && cozy --json model info "$model" | J '.trigger == "e2e trigger:"' || check "model trigger: not set"
+cozy --json model trigger --clear "$model" > /dev/null && cozy --json model info "$model" | J '.trigger == null' || check "model trigger --clear: not cleared"
 cozy --json model publish "$model" 0.1.0 "$commit" "$commit_b" > "$OUT/model-publish.json" || check "model publish failed"
 cozy --json model info "$model" > "$OUT/model-info.json" \
   && J '.releases | any(.version == "0.1.0" and ([.lanes[].lane] | sort) == ["f16", "f32"])' "$OUT/model-info.json" \

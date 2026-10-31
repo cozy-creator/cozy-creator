@@ -111,6 +111,9 @@ test = "pr: models"
 ["model family"]
 test = "release: throwaway model, family set and cleared"
 "--clear" = "release: throwaway model, family set and cleared"
+["model trigger"]
+test = "release: throwaway model, trigger set and cleared"
+"--clear" = "release: throwaway model, trigger set and cleared"
 ["model upload"]
 test = "release: throwaway model, uploaded from a file and from a run's output"
 "--on" = "release: throwaway model"

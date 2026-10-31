@@ -1,4 +1,4 @@
-//! `cozy model ls|info|family`: the Hub's model catalog. Signed in, `ls` also lists the user's own
+//! `cozy model ls|info|family|trigger`: the Hub's model catalog. Signed in, `ls` also lists the user's own
 //! unreleased (private) models and `info` lists the commits of a model of the user's org.
 use std::collections::BTreeMap;
 use std::process::ExitCode;
@@ -8,7 +8,7 @@ use hub_client::types::{ModelAuthor, ModelCard, ModelLaneProvenance};
 use serde::Serialize;
 
 use protocol::model_ref::{ModelRef, Repo};
-use super::{Family, Info, Ls};
+use super::{Family, Info, Ls, Trigger};
 use crate::Context;
 use crate::context::hub_answer;
 use crate::output::{self, Record, Table};
@@ -278,6 +278,29 @@ pub(crate) async fn family(ctx: &Context, args: Family) -> Result<ExitCode, Erro
     let view = FamilySet {
         model: repo.to_string(),
         family: answer.model.family.filter(|f| !f.is_empty()),
+    };
+    if ctx.json {
+        output::json(&view);
+    } else {
+        Record::of(&view).print(ctx);
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+#[derive(Serialize)]
+struct TriggerSet {
+    model: String,
+    trigger: Option<String>,
+}
+
+pub(crate) async fn trigger(ctx: &Context, args: Trigger) -> Result<ExitCode, Error> {
+    let repo = Repo::hub(&args.model)?;
+    let words = if args.clear { String::new() } else { args.words.join(" ") };
+    let client = ctx.hub_signed_in(ctx.hub())?;
+    let answer = hub_answer(client.set_model_display(&repo.org, &repo.name, Some(&words), None).await)?;
+    let view = TriggerSet {
+        model: repo.to_string(),
+        trigger: answer.model.trigger.filter(|t| !t.is_empty()),
     };
     if ctx.json {
         output::json(&view);

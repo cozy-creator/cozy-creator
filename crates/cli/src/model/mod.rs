@@ -28,6 +28,8 @@ enum Verb {
     Info(Info),
     /// Set or clear a model's discovery family.
     Family(Family),
+    /// Set or clear the words a LoRA's prompt uses, shown by `cozy model info`.
+    Trigger(Trigger),
     /// Make a model present in a machine's store. Follows it to its end; Ctrl-C stops following, never the work.
     Download(Download),
     /// Make a model on a machine, or take a run's weights output (run:N), and upload it as a new
@@ -73,6 +75,18 @@ pub(crate) struct Family {
     /// The family to set.
     family: Option<String>,
     /// Clear the family.
+    #[arg(long)]
+    clear: bool,
+}
+
+#[derive(clap::Args, Debug)]
+#[command(group(ArgGroup::new("change").required(true).args(["words", "clear"])))]
+pub(crate) struct Trigger {
+    /// org/name.
+    model: String,
+    /// The trigger words, joined by spaces.
+    words: Vec<String>,
+    /// Clear the trigger.
     #[arg(long)]
     clear: bool,
 }
@@ -185,6 +199,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         },
         Verb::Info(args) => catalog::info(ctx, args).await,
         Verb::Family(args) => catalog::family(ctx, args).await,
+        Verb::Trigger(args) => catalog::trigger(ctx, args).await,
         Verb::Publish(args) => releases::publish(ctx, args).await,
         Verb::Delete(args) => releases::delete(ctx, args).await,
         Verb::Download(args) => machine::download(ctx, args).await,
