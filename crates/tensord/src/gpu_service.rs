@@ -10,7 +10,7 @@ use crate::{
     device_executor::{
         self, channel_lost, Activate, Answer, Binding, Cancellation, Command, Construction,
         DeviceExecutor, ExecutorConfig, Forked, Frame, Invoke, Load, Map, ModelLoad,
-        InputFile, InputMetadata, PrepareRequest, Request, Services, Start,
+        InputFile, InputMetadata, PrepareRequest, Request, Room, Services, Start,
     },
     execution::{Engine, Stoppable},
     gpu_allocation::Claims,
@@ -535,6 +535,8 @@ struct Leader {
     constructions: std::collections::BTreeSet<String>,
     start: usize,
     lookahead: Option<device_executor::Lookahead>,
+    /// Its seam for `room`, where its hello says it takes one.
+    room: Option<device_executor::Line>,
 }
 
 /// What this call proved about the executor it returned. A cache handoff is never inferred
@@ -903,10 +905,13 @@ struct Pressure {
     blocked: bool,
     observable: Option<bool>,
     sampled: Option<Instant>,
+    /// Executors (by pid) holding less than they would because of a `room` give.
+    asked: std::collections::BTreeSet<u32>,
 }
 
 impl Pressure {
-    fn headroom(total: u64) -> u64 { (total / 10).max(512 << 20) }
+    /// H, what another program finds free (design/vram-yield.md §3.1).
+    fn headroom(total: u64) -> u64 { (total / 16).max(512 << 20) }
 
     fn observe(&mut self, usage: &memory::DeviceUse) {
         let baseline = *self.baseline.get_or_insert(usage.foreign);
@@ -1295,57 +1300,89 @@ impl Pool {
                 }
                 state.blocked
             };
-            let Some(before) = usage.filter(|usage| blocked && usage.free < Pressure::headroom(usage.total)) else { continue };
-            let headroom = Pressure::headroom(before.total);
-            let read = || device.memory.as_ref()?.usage(&self.tenants);
-            let short = || read().is_some_and(|usage| usage.free < headroom);
-            let idle = || {
-                let mut sessions: Vec<_> = self.sessions.lock().unwrap().iter()
-                    .filter(|(_, session)| session.start <= index && index < session.start + session.degree as usize)
-                    .map(|(key, session)| (session.used, key.clone(), session.level())).collect();
-                sessions.sort_by_key(|(used, _, _)| *used);
-                sessions
-            };
-            let mut reclaimed = false;
-            for (_, key, level) in idle() {
-                if !short() { break }
-                if level == Level::Gpu {
-                    self.offload_idle(engine, &key, "external_gpu_pressure", Some(headroom));
-                    reclaimed = true;
+            if let Some(before) = usage.filter(|usage| blocked && usage.free < Pressure::headroom(usage.total)) {
+                let headroom = Pressure::headroom(before.total);
+                let read = || device.memory.as_ref()?.usage(&self.tenants);
+                let short = || read().is_some_and(|usage| usage.free < headroom);
+                let idle = || {
+                    let mut sessions: Vec<_> = self.sessions.lock().unwrap().iter()
+                        .filter(|(_, session)| session.start <= index && index < session.start + session.degree as usize)
+                        .map(|(key, session)| (session.used, key.clone(), session.level())).collect();
+                    sessions.sort_by_key(|(used, _, _)| *used);
+                    sessions
+                };
+                let mut reclaimed = false;
+                for (_, key, level) in idle() {
+                    if !short() { break }
+                    if level == Level::Gpu {
+                        self.offload_idle(engine, &key, "external_gpu_pressure", Some(headroom));
+                        reclaimed = true;
+                    }
+                }
+                // A returned Torch cache is not a released CUDA context or package global. Only
+                // now-idle executors may end, and exact exit is observed by the existing lifecycle.
+                for (_, key, _) in idle() {
+                    if !short() { break }
+                    reclaimed |= self.end_session(&key);
+                }
+                let after = read();
+                if reclaimed {
+                    self.notes.note(serde_json::json!({"event": "gpu_pressure_reclaim", "gpu": device.entry,
+                        "free_before": before.free, "free_after": after.as_ref().map(|usage| usage.free),
+                        "own_bytes_before": before.own, "own_bytes_after": after.as_ref().map(|usage| usage.own)}));
                 }
             }
-            // A returned Torch cache is not a released CUDA context or package global. Only
-            // now-idle executors may end, and exact exit is observed by the existing lifecycle.
-            for (_, key, _) in idle() {
-                if !short() { break }
-                reclaimed |= self.end_session(&key);
-            }
-            let after = read();
-            if reclaimed {
-                self.notes.note(serde_json::json!({"event": "gpu_pressure_reclaim", "gpu": device.entry,
-                    "free_before": before.free, "free_after": after.as_ref().map(|usage| usage.free),
-                    "own_bytes_before": before.own, "own_bytes_after": after.as_ref().map(|usage| usage.own)}));
-            }
-            if !short() { continue }
-            let active = match engine.active(usize::MAX) { Ok(active) => active, Err(_) => continue };
-            let leaders = self.leaders.lock().unwrap().clone();
-            let mut roots = std::collections::BTreeSet::new();
-            for record in active {
-                if record.invocation.degree == 0 || record.cancel_actor.is_some() { continue }
-                let Some(leader) = record.process.as_ref().and_then(|birth| leaders.get(&birth.pid)) else { continue };
-                if record.process.as_ref() != Some(&leader.birth) || leader.start > index || index >= leader.start + record.invocation.degree as usize { continue }
-                roots.insert(if record.invocation.root.is_empty() { record.id } else { record.invocation.root });
-            }
-            for root in roots {
-                if engine.get(&root).is_ok_and(|record| record.cancel_actor.is_some()) { continue }
-                let detail = format!("GPU {} yielded to observed external memory pressure; the interrupted run will not restart automatically", device.entry);
-                let _ = engine.append_log(&root, "warning", &detail);
-                match engine.cancel(&root, "machine:gpu_pressure") {
-                    Ok(_) => self.notes.note(serde_json::json!({"event": "gpu_pressure_cancel", "gpu": device.entry,
-                        "root": root, "free_bytes": read().map(|usage| usage.free), "headroom_bytes": headroom})),
-                    Err(error) => tracing::warn!("GPU pressure could not cancel {root}: {error}"),
+            self.room(engine, index, device, blocked);
+        }
+    }
+
+    /// The running set's own room (design/vram-yield.md §3.3–3.5), after the idle rungs above.
+    /// Short (free under H, from another program's use, or in shared mode at all), each executor
+    /// on the GPU is asked once per reading to give back 2H − free: Torch's cache, then its weight
+    /// pages, never what its call needs to go on. A run is never ended for another program. Free
+    /// past 3H again, those asked may grow into free − 2H (shared) or hold no limit (dedicated).
+    fn room(&self, engine: &Arc<Engine>, index: usize, device: &Device, blocked: bool) {
+        let Some(now) = device.memory.as_ref().and_then(|gpu| gpu.usage(&self.tenants)) else { return };
+        let headroom = Pressure::headroom(now.total);
+        let shared = self.config.host.mode == HostMode::Shared;
+        // Idle executors by their session, running ones by their call: each one's GPUs.
+        let mut degrees: BTreeMap<u32, u32> = self.sessions.lock().unwrap().values()
+            .map(|session| (session.executor.birth.pid, session.degree)).collect();
+        degrees.extend(engine.active(usize::MAX).unwrap_or_default().into_iter()
+            .filter_map(|record| Some((record.process.as_ref()?.pid, record.invocation.degree))));
+        let leaders: Vec<(u32, u32, device_executor::Line)> = self.leaders.lock().unwrap().iter()
+            .filter_map(|(pid, leader)| {
+                let degree = degrees.get(pid).copied()?.max(1) as usize;
+                if index < leader.start || index >= leader.start + degree { return None }
+                Some((*pid, (index - leader.start) as u32, leader.room.clone()?))
+            }).collect();
+        let mut pressure = self.pressure.lock().unwrap();
+        let state = &mut pressure[index];
+        if now.free < headroom && (blocked || shared) && !leaders.is_empty() {
+            let give = 2 * headroom - now.free;
+            for (pid, ordinal, line) in &leaders {
+                if line.send(&Command::Room(Room { device: *ordinal, give, ..Default::default() })) {
+                    state.asked.insert(*pid);
                 }
             }
+            self.notes.note(serde_json::json!({"event": "room", "gpu": device.entry, "give": give,
+                "free_bytes": now.free, "foreign_bytes": now.foreign, "own_bytes": now.own,
+                "headroom_bytes": headroom, "blocked": blocked, "executors": leaders.iter().map(|l| l.0).collect::<Vec<_>>()}));
+        } else if !state.asked.is_empty() && !blocked && now.free >= 3 * headroom {
+            let grow = now.free - 2 * headroom;
+            let mut told = vec![];
+            for (pid, ordinal, line) in &leaders {
+                if !state.asked.contains(pid) { continue }
+                let room = if shared { Room { device: *ordinal, grow, ..Default::default() } }
+                    else { Room { device: *ordinal, lift: true, ..Default::default() } };
+                line.send(&Command::Room(room));
+                told.push(*pid);
+            }
+            let live: Vec<u32> = leaders.iter().map(|l| l.0).collect();
+            state.asked.retain(|pid| shared && live.contains(pid));
+            self.notes.note(serde_json::json!({"event": "room", "gpu": device.entry,
+                "grow": if shared { Some(grow) } else { None }, "lift": !shared,
+                "free_bytes": now.free, "foreign_bytes": now.foreign, "executors": told}));
         }
     }
 
@@ -3401,6 +3438,7 @@ impl Pool {
             self.leaders.lock().unwrap().insert(executor.birth.pid, Leader {
                 birth: executor.birth.clone(), env: plan.executor.clone(), constructions: Default::default(), start,
                 lookahead: (plan.degree == 1 && executor.hello.request_lookahead).then(|| executor.lookahead()),
+                room: executor.hello.room.then(|| executor.line()),
             });
         }
         let selections = plan.selections();
@@ -3489,6 +3527,12 @@ impl Pool {
             // and owns no allocator-specific protocol or backend-name admission gate.
             let interface_path = self.interface_file(&session.executor, held)?;
             let starting = Instant::now();
+            // Its CUDA contexts come up during Start: where the driver names other pids than
+            // ours (a container), those are how its GPU bytes are told from another program's.
+            let learning = self.tenants.starting(gpus.iter().filter_map(|device| {
+                let gpu = device.memory.as_ref()?;
+                Some((gpu.uuid.clone(), gpu.pids()?))
+            }).collect());
             // Each executor owns its GPU allocations. The existing GPU permits schedule
             // calls; no page manager, CUDA handle transport or second admission loop runs here.
             let started = command_ok(session.executor.command(
@@ -3506,6 +3550,13 @@ impl Pool {
                 }),
                 &mut callbacks,
             )?)?;
+            let pids: Vec<u32> = std::iter::once(session.executor.birth.pid).chain(started.follower_pids.iter().copied()).collect();
+            for (gpu, ours, foreign) in self.tenants.started(learning, &pids, |uuid| {
+                gpus.iter().filter_map(|device| device.memory.as_ref()).find(|gpu| gpu.uuid == uuid)?.pids()
+            }) {
+                self.notes.note(serde_json::json!({"event": "driver_pids", "gpu": gpu, "executors": pids,
+                    "ours": ours, "foreign": foreign}));
+            }
             session.launch.start_ms = starting.elapsed().as_secs_f64() * 1e3;
             session.launch.start =
                 serde_json::from_value(started.stages.clone()).unwrap_or_default();

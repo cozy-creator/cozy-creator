@@ -78,6 +78,13 @@ def allocator_stats(device: int = 0) -> dict[str, int]:
     return _ext._varena_allocator_stats(device)
 
 
+def make_room(device: int, limit: int | None) -> int:
+    """Hold this process's GPU bytes on `device` (weight pages plus Torch's hooked segments) to
+    `limit`, None for no limit; returns the pages taken back now. Fills and hooked allocations stay
+    inside it until it changes: what the machine asks when another program needs the GPU."""
+    return _ext._varena_make_room(device, limit)
+
+
 class Arena:
     def __init__(self, device: int) -> None:
         self._native = _ext._VarenaArena(device)
@@ -305,6 +312,17 @@ def replay(device: int) -> Iterator[None]:
     protects the host replay call; it does not replace those owners.
     """
     guard = _ext._VarenaAllocatorCapture(device, replay=True)
+    try:
+        yield
+    finally:
+        guard.close()
+
+
+@contextmanager
+def no_capture(device: int) -> Iterator[None]:
+    """No CUDA capture is in progress on `device`, and none begins until it exits (one that
+    tries is refused). Raises if one is in progress."""
+    guard = _ext._VarenaNoCapture(device)
     try:
         yield
     finally:

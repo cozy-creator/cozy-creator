@@ -98,7 +98,12 @@ fn allocate(output: *mut *mut c_void, bytes: usize) -> i32 {
     // more for the same size, and raises OOM only if that fails too. So a first refusal goes back
     // to Torch untouched, and only its retry may evict weights.
     let retry = row.refused.take() == Some(bytes);
-    if let Some(limit) = row.limit {
+    // The development cap and the room the machine left this process (`varena::make_room`).
+    let room = match varena::room_limit(device) {
+        Ok(room) => room,
+        Err(error) => return error_code(error),
+    };
+    if let Some(limit) = row.limit.into_iter().chain(room).min() {
         let resident = match varena::resident_bytes(device) {
             Ok(n) => n,
             Err(e) => return error_code(e),
@@ -169,6 +174,7 @@ fn allocate(output: *mut *mut c_void, bytes: usize) -> i32 {
         let pointer = unsafe { *output } as usize;
         if pointer != 0 {
             row.reserved = row.reserved.saturating_add(bytes);
+            let _ = varena::note_torch_reserved(device, row.reserved);
             book.pointers.insert(pointer, (device, bytes));
         }
     }
@@ -195,6 +201,7 @@ unsafe extern "C" fn free(pointer: *mut c_void) -> i32 {
             if let Some((device, bytes)) = book.pointers.remove(&(pointer as usize)) {
                 let row = book.devices.entry(device).or_default();
                 row.reserved = row.reserved.saturating_sub(bytes);
+                let _ = varena::note_torch_reserved(device, row.reserved);
             }
         }
         status

@@ -45,6 +45,11 @@ fills, CUDA contexts, and allocations outside the hooked imports can exceed it. 
 before Torch reserves memory. `allocator_stats()` reports actual hooked reservations, calls,
 reclaims, refusals and retries; it is not a GPU ownership authority.
 
+`make_room(device, limit)` holds the process's GPU bytes on that device (weight pages plus hooked
+Torch segments) to `limit` (None lifts it) and takes pages above it back at once, in reclaim order.
+From then on a fill or a hooked allocation over it is handled as the driver's out of memory: a
+smaller room is a smaller card. A machine sets it when another program needs the GPU.
+
 `capture(device)` forbids residency changes and allocation recovery across the entire process
 on that device. Prepare and pin every dependency before capture/replay, and retain those pins
 for graph lifetime. Raw Torch/CUDA captures outside Runtime must also enter this guard; the

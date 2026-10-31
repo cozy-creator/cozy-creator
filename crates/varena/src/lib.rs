@@ -65,6 +65,7 @@ pub struct ReclaimedBytes {
     pub streaming_limit: u64,
     pub weight_allocation: u64,
     pub allocator: u64,
+    pub room: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -73,6 +74,7 @@ enum ReclaimReason {
     StreamingLimit,
     WeightAllocation,
     Allocator,
+    Room,
 }
 
 impl ReclaimedBytes {
@@ -82,6 +84,7 @@ impl ReclaimedBytes {
             ReclaimReason::StreamingLimit => &mut self.streaming_limit,
             ReclaimReason::WeightAllocation => &mut self.weight_allocation,
             ReclaimReason::Allocator => &mut self.allocator,
+            ReclaimReason::Room => &mut self.room,
         };
         *counter = counter.saturating_add(bytes as u64);
     }
@@ -263,7 +266,35 @@ pub struct Arena {
     pid: u32,
     // Lock-free view of this device's capture guards, for release paths that never wait.
     captures: Arc<AtomicUsize>,
+    room: Arc<Room>,
     state: Mutex<State>,
+}
+
+/// This process's GPU bytes on one device against the room it may hold (`make_room`): its mapped
+/// weight pages and Torch's segments through the allocation hook. A smaller room reads as a
+/// smaller card to every fill and every hooked allocation.
+struct Room {
+    /// usize::MAX: no limit.
+    limit: AtomicUsize,
+    pages: AtomicUsize,
+    torch: AtomicUsize,
+}
+
+impl Default for Room {
+    fn default() -> Self {
+        Self { limit: AtomicUsize::new(usize::MAX), pages: AtomicUsize::new(0), torch: AtomicUsize::new(0) }
+    }
+}
+
+impl Room {
+    /// Bytes `more` would put over the limit.
+    fn over(&self, more: usize) -> usize {
+        self.pages
+            .load(Ordering::Acquire)
+            .saturating_add(self.torch.load(Ordering::Acquire))
+            .saturating_add(more)
+            .saturating_sub(self.limit.load(Ordering::Acquire))
+    }
 }
 
 static ARENAS: OnceLock<Mutex<Vec<Weak<Arena>>>> = OnceLock::new();
@@ -272,6 +303,7 @@ struct DeviceActivity {
     captures: Arc<AtomicUsize>,
     replays: Arc<AtomicUsize>,
     producers: Arc<AtomicUsize>,
+    room: Arc<Room>,
 }
 
 static CAPTURES: OnceLock<Mutex<BTreeMap<i32, DeviceActivity>>> = OnceLock::new();
@@ -422,13 +454,15 @@ impl Arena {
         let mut captures = capture_counts()?;
         ensure_recovery_allowed(&captures, device)?;
         let driver = cuda::Driver::open(device)?;
-        let capturing = Arc::clone(&captures.entry(device).or_default().captures);
+        let activity = captures.entry(device).or_default();
+        let (capturing, room) = (Arc::clone(&activity.captures), Arc::clone(&activity.room));
         drop(captures);
         let arena = Arc::new(Self {
             driver,
             device,
             pid: std::process::id(),
             captures: capturing,
+            room,
             state: Mutex::new(State {
                 entries: BTreeMap::new(),
                 next_id: 1,
@@ -458,6 +492,19 @@ impl Arena {
     pub fn device(&self) -> i32 {
         self.device
     }
+
+    /// Physical pages for one region, inside this process's room on the device: over the room
+    /// reads as the driver's out of memory, so each admission treats a smaller room as a smaller
+    /// card (reclaims what it may, else refuses).
+    fn create(&self, bytes: usize) -> Result<u64> {
+        if self.room.over(bytes) != 0 {
+            return Err(Error::OutOfMemory { requested_bytes: bytes });
+        }
+        let handle = self.driver.create(bytes)?;
+        self.room.pages.fetch_add(bytes, Ordering::AcqRel);
+        Ok(handle)
+    }
+
     pub fn granularity(&self) -> usize {
         self.driver.granularity
     }
@@ -907,6 +954,7 @@ impl Arena {
         if let Err(error) = self.driver.release(handle) {
             return Err(poison(state, error));
         }
+        self.room.pages.fetch_sub(size, Ordering::AcqRel);
         let entry = state.entries.get_mut(&id).expect("locked candidate");
         // Every event is complete here; a destroy failure only leaks the event.
         for fence in entry.uses.fences().drain(..) {
@@ -1195,7 +1243,7 @@ impl Region {
                     });
                 }
             }
-            let handle = match self.arena.driver.create(self.rounded) {
+            let handle = match self.arena.create(self.rounded) {
                 Ok(handle) => handle,
                 Err(Error::OutOfMemory { .. }) => {
                     match admission {
@@ -1222,7 +1270,7 @@ impl Region {
                             )?;
                         }
                     }
-                    match self.arena.driver.create(self.rounded) {
+                    match self.arena.create(self.rounded) {
                         Ok(handle) => handle,
                         Err(error @ Error::OutOfMemory { .. }) => return Err(error),
                         Err(error) => return Err(poison(&mut state, error)),
@@ -1616,12 +1664,68 @@ impl Drop for Arena {
                 if self.driver.release(handle).is_err() {
                     return;
                 }
+                self.room.pages.fetch_sub(entry.bytes, Ordering::AcqRel);
             }
             if self.driver.free_address(entry.ptr, entry.bytes).is_err() {
                 return;
             }
         }
     }
+}
+
+fn room(device: i32) -> Result<Arc<Room>> {
+    Ok(Arc::clone(&capture_counts()?.entry(device).or_default().room))
+}
+
+/// The room this process may hold on `device` (its weight pages plus Torch's hooked segments),
+/// None for no limit, and at once its pages above it back, in reclaim order (pins are never
+/// overridden; under a capture or replay they wait for the next fill or allocation, which the
+/// room bounds from now on). What a machine asks of an executor when another program needs the
+/// GPU (design/vram-yield.md): the one make_room for foreign pressure.
+pub fn make_room(device: i32, limit: Option<usize>) -> Result<ReclaimReport> {
+    check_process()?;
+    let room = room(device)?;
+    room.limit.store(limit.unwrap_or(usize::MAX), Ordering::Release);
+    let over = room.over(0);
+    let mut report = ReclaimReport {
+        requested_bytes: over,
+        ..ReclaimReport::default()
+    };
+    if over == 0 || is_recovery_blocked(device)? {
+        return Ok(report);
+    }
+    let Some(registry) = ARENAS.get() else {
+        return Ok(report);
+    };
+    let arenas: Vec<_> = registry
+        .lock()
+        .map_err(|_| Error::Poisoned("arena registry mutex".into()))?
+        .iter()
+        .filter_map(Weak::upgrade)
+        .filter(|arena| arena.device == device)
+        .collect();
+    for arena in arenas {
+        let need = room.over(0);
+        if need == 0 {
+            break;
+        }
+        let next = arena.reclaim_with_preference(need, true, ReclaimReason::Room)?;
+        report.reclaimed_bytes += next.reclaimed_bytes;
+        report.evicted_regions += next.evicted_regions;
+    }
+    Ok(report)
+}
+
+/// `make_room`'s current limit on `device`, None for none.
+pub fn room_limit(device: i32) -> Result<Option<usize>> {
+    let limit = room(device)?.limit.load(Ordering::Acquire);
+    Ok((limit != usize::MAX).then_some(limit))
+}
+
+/// Torch's segments on `device` through the allocation hook, which the room counts beside pages.
+pub fn note_torch_reserved(device: i32, bytes: usize) -> Result<()> {
+    room(device)?.torch.store(bytes, Ordering::Release);
+    Ok(())
 }
 
 /// Allocator-pressure entry point: native-only, one finite pass, no callbacks or external waits.
