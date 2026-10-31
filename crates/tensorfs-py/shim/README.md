@@ -22,6 +22,12 @@ not record new events on that destroyed handle.
 Capture-thread auxiliary allocations, including Torch's lazy default-stream RNG seed/offset tensors,
 also use the prepared pool. Other threads route only through Torch's capture filter. Nested captures
 on the same device/thread are rejected; preparation cannot silently grow during capture.
+If prepared capacity runs short, the shim throws a private `c10::Error` with the exact prefix
+`[tensorfs.varena.capture_capacity.v1] `. cuDNN's workspace fallback catches `OutOfMemoryError`
+and can cache a different engine; that is inappropriate for an undersized capture reservation.
+`vt.graph` translates only this marked `RuntimeError` to public `torch.OutOfMemoryError` after
+the actual capture ends and the failed graph is reset. Cleanup errors take precedence, and eager
+physical OOM keeps its normal type. Unwrapped native capture owners receive the private refusal.
 
 The supported Python statistics are `memory_allocated`, `memory_reserved`, their peak readers,
 `reset_peak_memory_stats`, and the documented subset returned by `memory_stats`. They report

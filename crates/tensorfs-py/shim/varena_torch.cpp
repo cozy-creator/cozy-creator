@@ -110,6 +110,11 @@ VR_EXPORT void* varena_torch_malloc(size_t bytes, int device, Stream stream) {
     }
     Failure error{};
     const uint64_t ptr = core.alloc(bytes, device, id, routed, pool.first, pool.second, &error);
+    // cuDNN catches OutOfMemoryError and can switch and cache engines. A short prepared
+    // pool must abort capture instead; the owning Python scope translates only after cleanup.
+    if (routed && error.kind == 1) {
+        TORCH_CHECK(false, "[tensorfs.varena.capture_capacity.v1] ", error.message);
+    }
     check(error);
     TORCH_CHECK(ptr != 0 || bytes == 0, "varena: allocator returned a null pointer without an error");
     return reinterpret_cast<void*>(ptr);

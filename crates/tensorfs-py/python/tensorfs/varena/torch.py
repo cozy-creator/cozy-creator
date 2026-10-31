@@ -20,6 +20,7 @@ _lock = threading.Lock()
 _owner = 0
 _library = None
 _allocator = None
+_CAPTURE_CAPACITY_PREFIX = "[tensorfs.varena.capture_capacity.v1] "
 
 
 def _installed() -> None:
@@ -202,6 +203,16 @@ def graph(cuda_graph, *, pool=None, stream=None, reserve_bytes: int | None = Non
                 elif error is not None:
                     cancel_preparation(pool, device)
     if error is not None:
+        # This private c10::Error escapes cuDNN's engine-fallback catches. Publish OOM only
+        # after actual capture completion and graph reset; cleanup failures take precedence.
+        if (
+            type(error) is RuntimeError
+            and len(error.args) == 1
+            and isinstance(error.args[0], str)
+            and error.args[0].startswith(_CAPTURE_CAPACITY_PREFIX)
+        ):
+            detail = error.args[0][len(_CAPTURE_CAPACITY_PREFIX):]
+            raise torch.OutOfMemoryError(detail) from error
         raise error.with_traceback(error.__traceback__)
     cuda_graph._varena_owner = (_owner, device, tuple(pool))
 
