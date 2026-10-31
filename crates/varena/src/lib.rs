@@ -1,4 +1,5 @@
-//! Process-local weight residency. TensorFS supplies bytes; this crate owns only CUDA memory.
+//! Process-local CUDA memory. TensorFS supplies weight bytes; [`working`] supplies ordinary
+//! allocations and prepared graph pools alongside stable-address weight residency.
 //!
 //! Every foreign storage must retain its [`Pin`] until the final alias is destroyed. Raw addresses
 //! are not ownership. Kernels may finish after the final storage disappears, so reclamation joins
@@ -9,6 +10,7 @@
 #![deny(unsafe_code)]
 
 mod cuda;
+pub mod working;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering};
@@ -279,9 +281,12 @@ static PROCESS: AtomicU32 = AtomicU32::new(0);
 
 fn check_process() -> Result<()> {
     let pid = std::process::id();
-    let owner = PROCESS
-        .compare_exchange(0, pid, Ordering::Relaxed, Ordering::Relaxed)
-        .unwrap_or_else(|owner| owner);
+    let owner = match PROCESS.load(Ordering::Relaxed) {
+        0 => PROCESS
+            .compare_exchange(0, pid, Ordering::Relaxed, Ordering::Relaxed)
+            .unwrap_or_else(|owner| owner),
+        owner => owner,
+    };
     if owner != 0 && owner != pid {
         return Err(Error::Invalid("CUDA residency cannot be used after fork"));
     }
@@ -547,8 +552,13 @@ impl Arena {
     pub fn enter_phase(&self, incoming: &[Arc<Region>]) -> Result<()> {
         let captures = capture_counts()?;
         ensure_recovery_allowed(&captures, self.device)?;
-        if incoming.iter().any(|region| !std::ptr::eq(self, Arc::as_ptr(&region.arena))) {
-            return Err(Error::Invalid("phase regions must belong to the same arena"));
+        if incoming
+            .iter()
+            .any(|region| !std::ptr::eq(self, Arc::as_ptr(&region.arena)))
+        {
+            return Err(Error::Invalid(
+                "phase regions must belong to the same arena",
+            ));
         }
         let mut state = self.lock()?;
         state.preferred_end = None;
@@ -557,7 +567,10 @@ impl Arena {
             entry.preferred = false;
         }
         for region in incoming {
-            let entry = state.entries.get_mut(&region.id).ok_or(Error::Invalid("phase region is retired"))?;
+            let entry = state
+                .entries
+                .get_mut(&region.id)
+                .ok_or(Error::Invalid("phase region is retired"))?;
             entry.preferred = entry.handle.is_some() && entry.uses.state() == Contents::Ready;
         }
         Ok(())
@@ -1068,7 +1081,13 @@ impl Region {
     /// Native capture detachment uses this only to refuse surviving foreign storage.
     pub fn has_live_pins(&self) -> Result<bool> {
         let state = self.arena.lock()?;
-        Ok(state.entries.get(&self.id).expect("live region").uses.pins() != 0)
+        Ok(state
+            .entries
+            .get(&self.id)
+            .expect("live region")
+            .uses
+            .pins()
+            != 0)
     }
 
     pub fn is_resident(&self) -> Result<bool> {
@@ -1195,7 +1214,14 @@ impl Region {
                     });
                 }
             }
-            let handle = match self.arena.driver.create(self.rounded) {
+            let allocation = match self.arena.driver.create(self.rounded) {
+                Err(Error::OutOfMemory { .. }) if admission != Admission::None => {
+                    working::reclaim_for_weights(self.arena.device, self.rounded)?;
+                    self.arena.driver.create(self.rounded)
+                }
+                result => result,
+            };
+            let handle = match allocation {
                 Ok(handle) => handle,
                 Err(Error::OutOfMemory { .. }) => {
                     match admission {

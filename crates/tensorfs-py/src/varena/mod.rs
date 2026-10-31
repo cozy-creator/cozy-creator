@@ -1,5 +1,6 @@
 //! Process-local weight residency bindings. CUDA ownership remains in the Rust core.
 mod allocator;
+mod working;
 #[cfg(feature = "store")]
 mod continuation;
 #[cfg(feature = "store")]
@@ -625,6 +626,7 @@ fn _varena_allocator_stats(
 }
 
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    working::install(module)?;
     let poisoned = module.py().get_type::<VarenaPoisonedError>();
     poisoned.setattr("__module__", "tensorfs._ext")?;
     poisoned.setattr("sticky", true)?;
