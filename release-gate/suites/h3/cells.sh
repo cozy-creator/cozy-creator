@@ -62,9 +62,11 @@ guide_cell() {  # guide_cell <cell> <clip> <picture> <seed>
 }
 guide_cell guide-equal guide-5s.mp4 guide-5s.png $((R + 73))
 judge guide-equal guide-equal '.within_1 >= 0.8' guide "$OUT/guide-5s.mp4"
-# Shorter: the guided 3 s follow the clip, the rest holds together.
+# Shorter: the guided 3 s follow the clip, the rest holds together. Production's spread over 72 guided frames is 0.792-0.833
+# within 1 frame (gates 40991023097, 41012561523, 41153513878; seed 696197123 gives 0.792 on Runtime 0.36.7 and 0.36.8 alike,
+# session 41162474167), so the bar sits 3 frames under it.
 guide_cell guide-short guide-3s.mp4 guide-5s.png $((R + 74))
-judge guide-short guide-short '.within_1 >= 0.8 and .coherence_after >= 0.5' guide "$OUT/guide-3s.mp4" --guided 3
+judge guide-short guide-short '.within_1 >= 0.75 and .coherence_after >= 0.5' guide "$OUT/guide-3s.mp4" --guided 3
 # Longer: cut to the render's length, which a clip as long as the render gives (else a 5 s render's 124 frames).
 guide_cell guide-long guide-8s.mp4 guide-5s.png $((R + 75))
 EQ=$(ffprobe -v error -select_streams v:0 -count_frames -show_entries stream=nb_read_frames -of csv=p=0 "$(video_of guide-equal)" 2>/dev/null || true)
