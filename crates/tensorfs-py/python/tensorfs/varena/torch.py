@@ -209,12 +209,16 @@ def replay(cuda_graph, *, stream=None) -> None:
     stream = torch.cuda.current_stream(device) if stream is None else stream
     if _device(stream.device) != device:
         raise ValueError("replay stream belongs to a different device")
-    with torch.cuda.device(device), torch.cuda.stream(stream):
-        try:
-            cuda_graph.replay()
-        finally:
-            # A Torch replay-end hook may raise after the graph was already launched.
-            record_pool_stream(pool, stream, device)
+    _ext._varena_working_pool_retain(device, pool)
+    try:
+        with torch.cuda.device(device), torch.cuda.stream(stream):
+            try:
+                cuda_graph.replay()
+            finally:
+                # End hooks may raise or reset the graph after launch. Our reference survives both.
+                record_pool_stream(pool, stream, device)
+    finally:
+        _ext._varena_working_pool_release(device, pool)
 
 
 def _bind_stats(torch) -> None:
