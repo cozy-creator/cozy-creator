@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::ffi::{c_void, CString};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use super::cuda::{self, CtxGuard};
@@ -401,6 +402,47 @@ fn upload(device: i32, bytes: &[u8]) -> Result<DeviceBuffer> {
     Ok(hold.0.take().expect("completed upload buffer"))
 }
 
+/// Each device's idle decode streams. A decode takes one (`take_stream`) and gives it back only
+/// once its work is checked complete (`give_back`): a decode whose completion is unknown retires
+/// its stream with its buffers (`retain_decode`), so no stream with queued work is reused. A
+/// stream per decode was a `cuStreamCreate` on every encoded read, which a full card refuses
+/// (H3 Turbo 15 s on an 8 GB RTX 3070, run 22723).
+fn idle_streams() -> &'static Mutex<BTreeMap<i32, Vec<cuda::Stream>>> {
+    static IDLE: OnceLock<Mutex<BTreeMap<i32, Vec<cuda::Stream>>>> = OnceLock::new();
+    IDLE.get_or_init(Mutex::default)
+}
+
+static STREAMS_CREATED: AtomicU64 = AtomicU64::new(0);
+
+/// Decode streams this process has created: flat once each concurrent decode has one.
+pub fn streams_created() -> u64 {
+    STREAMS_CREATED.load(Ordering::Relaxed)
+}
+
+fn take_stream(device: i32) -> Result<cuda::Stream> {
+    let idle = idle_streams()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_mut(&device)
+        .and_then(Vec::pop);
+    if let Some(stream) = idle {
+        return Ok(stream);
+    }
+    let stream = cuda::Stream::new(device)?;
+    STREAMS_CREATED.fetch_add(1, Ordering::Relaxed);
+    Ok(stream)
+}
+
+/// A stream whose ordered work is checked complete, or that never had any.
+fn give_back(stream: cuda::Stream) {
+    idle_streams()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(stream.device())
+        .or_default()
+        .push(stream);
+}
+
 struct DecodeHold {
     output: Option<DeviceBuffer>,
     inputs: Vec<DeviceBuffer>,
@@ -410,18 +452,22 @@ struct DecodeHold {
 }
 impl Drop for DecodeHold {
     fn drop(&mut self) {
-        if !self.complete {
-            let mut buffers = std::mem::take(&mut self.inputs);
-            buffers.append(&mut self.scratch);
-            buffers.extend(self.output.take());
-            // An external output has no owned allocation until its first argument upload.
-            // No private work can precede that registration: casts register their output
-            // scratch before launch, and every decode kernel needs the owned slots buffer.
-            // Early catalog/context/producer errors therefore have nothing to quarantine.
-            // The caller still retains external owners when a producer drain failed.
-            if !buffers.is_empty() {
-                super::device::retain_decode(self.stream.take(), buffers);
+        if self.complete {
+            if let Some(stream) = self.stream.take() {
+                give_back(stream); // `finish` drained it
             }
+            return;
+        }
+        let mut buffers = std::mem::take(&mut self.inputs);
+        buffers.append(&mut self.scratch);
+        buffers.extend(self.output.take());
+        // An external output has no owned allocation until its first argument upload.
+        // No private work can precede that registration: casts register their output
+        // scratch before launch, and every decode kernel needs the owned slots buffer.
+        // Early catalog/context/producer errors therefore have nothing to quarantine.
+        // The caller still retains external owners when a producer drain failed.
+        if !buffers.is_empty() {
+            super::device::retain_decode(self.stream.take(), buffers);
         }
     }
 }
@@ -656,9 +702,13 @@ fn execute_into(
         if destination.is_none() {
             return Ok(Some(DeviceBuffer::new(device, 0)?));
         }
-        let stream = cuda::Stream::new(device)?;
-        let _context = CtxGuard::enter(stream.context())?;
-        join_producers(parts, destination)?;
+        let stream = take_stream(device)?;
+        let joined = (|| -> Result<()> {
+            let _context = CtxGuard::enter(stream.context())?;
+            join_producers(parts, destination)
+        })();
+        give_back(stream); // only its context was used: nothing was ordered onto it
+        joined?;
         return Ok(None);
     }
     let mut prepared = prepare_execute(device, launch, parts, destination)?;
@@ -780,9 +830,8 @@ impl DeviceDecode {
             // SAFETY: decoder and consumer completion are proven and this owns each allocation.
             unsafe { buffer.release_completed() }?;
         }
-        if let Some(stream) = &mut self.hold.stream {
-            // SAFETY: finish checked this private stream and all consumers are complete.
-            unsafe { stream.release_completed() }?;
+        if let Some(stream) = self.hold.stream.take() {
+            give_back(stream); // finish checked it and every consumer is complete
         }
         self.release_failed = false;
         Ok(())
@@ -842,7 +891,7 @@ fn prepare_execute(
         output,
         inputs: Vec::new(),
         scratch: Vec::new(),
-        stream: Some(cuda::Stream::new(device)?),
+        stream: Some(take_stream(device)?),
         complete: false,
     };
     let context = hold.stream.as_ref().expect("decode stream").context();

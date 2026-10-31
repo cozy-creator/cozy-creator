@@ -43,7 +43,7 @@ resident weight pages. A deficit is refused the same way first; on Torch's retry
 inactive weight groups before attempting the real allocation. This is an **activation admission limit**, not a hard GPU/process cap: later weight
 fills, CUDA contexts, and allocations outside the hooked imports can exceed it. Configure it
 before Torch reserves memory. `allocator_stats()` reports actual hooked reservations, calls,
-reclaims, refusals (`cache_refusals`: first refusals Torch answered by freeing its cache) and retries; it is not a GPU ownership authority.
+reclaims, refusals (`cache_refusals`: first refusals Torch answered by freeing its cache) and retries, and the decode streams TensorFS has created (`decode_streams`); it is not a GPU ownership authority.
 
 `capture(device)` forbids residency changes and allocation recovery across the entire process
 on that device. Prepare and pin every dependency before capture/replay, and retain those pins
