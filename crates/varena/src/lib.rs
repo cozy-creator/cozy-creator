@@ -1301,7 +1301,11 @@ impl Region {
             })
             .map_err(|_| Error::Invalid("pin count overflow"))?;
         entry.last_use = state.clock;
-        entry.awaiting = false;
+        // A pin of ready contents is a consumer's; a fill's own pins (its export) come while
+        // it loads and leave the region awaiting its first use.
+        if entry.uses.state() == Contents::Ready {
+            entry.awaiting = false;
+        }
         Ok(Pin {
             region: Some(Arc::clone(self)),
         })
