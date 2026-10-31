@@ -2610,6 +2610,7 @@ impl Pool {
                 // releases, its executor is killed, so the GPU's call slot and memory go back. A
                 // prewarm that outlived its shot held a 4090 for 3 h 50 min (0.2.0 gate 41159884913).
                 permit.hint();
+                pool.notes.note(serde_json::json!({"event": "prefetch_prewarm", "plan": key, "owner": owner, "gpu": start}));
                 let stop = engine.stoppable(&format!("prefetch:{owner}:{key}"));
                 let done = std::sync::atomic::AtomicBool::new(false);
                 let waited = asked.elapsed();
@@ -2618,6 +2619,7 @@ impl Pool {
                         let epoch = engine.activity_epoch();
                         if done.load(std::sync::atomic::Ordering::Acquire) { return; }
                         if !active() || pool.allocations.bound(root).is_some_and(|lane| lane.is_none()) {
+                            pool.notes.note(serde_json::json!({"event": "prefetch_halted", "plan": key, "owner": owner}));
                             return stop.halt();
                         }
                         engine.wait_activity(epoch, None);
