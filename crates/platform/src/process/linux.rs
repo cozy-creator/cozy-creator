@@ -249,10 +249,17 @@ pub(super) fn in_kernel(pid: u32) -> Option<String> {
 
 pub(super) fn usage(pid: u32) -> io::Result<super::Usage> {
     let stat = stat(pid)?;
-    Ok(super::Usage {
-        cpu: stat.cpu,
-        running: matches!(stat.state, 'R' | 'D'),
-    })
+    // Any thread of it: the leader can sit in a read while another works (an executor's idle
+    // thread reading pages from the store).
+    let thread = |tid: &str| {
+        let record = fs::read_to_string(format!("/proc/{pid}/task/{tid}/stat")).ok()?;
+        record.rsplit_once(") ").and_then(|(_, rest)| rest.chars().next())
+    };
+    let running = matches!(stat.state, 'R' | 'D')
+        || fs::read_dir(format!("/proc/{pid}/task"))?.filter_map(Result::ok).any(|entry| {
+            entry.file_name().to_str().and_then(thread).is_some_and(|state| matches!(state, 'R' | 'D'))
+        });
+    Ok(super::Usage { cpu: stat.cpu, running })
 }
 
 /// `VmHWM`, this image's own peak: `ru_maxrss` keeps the peak of the image this process exec'd
