@@ -84,3 +84,29 @@ cell keyframes "$SHOT" prompt="A synthetic broadcast test pattern: colour bars, 
   duration_s:=5 seed:=$((R + 78)) keyframes:="{\"first\": \"$OUT/guide-5s.png\", \"last\": \"$OUT/guide-5s-last.png\"}"
 judge keyframes-first keyframes '.ssim >= 0.9 and .ssim > .other' still "$OUT/guide-5s.png" first
 judge keyframes-last keyframes '.ssim >= 0.9 and .ssim > .other' still "$OUT/guide-5s-last.png" last
+
+# A fine-tune and a LoRA through shot (0.2.x: `model.base_model` and `--lora` serve every piece), each against a same-seed
+# control on the official base: coherent (not grey: the old converter bug; not falling apart) and visibly different.
+# The 20 s pair is two pieces: the LoRA must reach both halves, its record must name it on every piece, and no seam.
+VP="$CHAR $MOTION at golden hour, a slow orbit, ambient sound" LORA=alissonerdx/minimax-h3-style-transfer
+SAVED=$ONLY; [[ $ONLY == *",h3-checkpoint,"* || $ONLY == *",h3-lora,"* ]] && ONLY="$ONLY,h3-base,"
+[[ $ONLY == *",h3-lora-20s,"* ]] && ONLY="$ONLY,h3-base-20s,"
+cell h3-base "$SHOT" prompt="$VP" seed:=$((R + 80)) duration_s:=5
+cell h3-base-20s "$SHOT" prompt="$VP" seed:=$((R + 81)) duration_s:=20
+ONLY=$SAVED
+cell h3-checkpoint "$SHOT" prompt="$VP" seed:=$((R + 80)) duration_s:=5 model.base_model=warmbloodaban/minimax-h3-singularity@0.1.1
+judge h3-checkpoint-frames h3-checkpoint '.contrast >= 0.5 * .control_contrast and .coherence >= 0.6 and .ssim < 0.9' \
+  variant "$(video_of h3-base)"
+cell h3-lora "$SHOT" prompt="$VP" seed:=$((R + 80)) duration_s:=5 --lora "$LORA"
+judge h3-lora-frames h3-lora '.contrast >= 0.5 * .control_contrast and .coherence >= 0.6 and .ssim < 0.9' variant "$(video_of h3-base)"
+cell h3-lora-20s "$SHOT" prompt="$VP" seed:=$((R + 81)) duration_s:=20 --lora "$LORA"
+judge h3-lora-20s-frames h3-lora-20s '.contrast >= 0.5 * .control_contrast and .seam >= 0.5 and .ssim_first < 0.9 and .ssim_second < 0.9' \
+  variant "$(video_of h3-base-20s)"
+# named <check> <cell> <min calls>: the run record names the LoRA in at least that many of its generate calls.
+named() {
+  [ -f "$2.number" ] || return 0
+  local k; k=$(jq --arg l "$LORA" '[.calls[]? | select(.function | startswith("generate")) | select(tostring | contains($l))] | length' "$OUT/$2.json" 2>/dev/null)
+  expect "$1" "$([ "${k:-0}" -ge "$3" ] && echo PASS || echo FAIL)" "$LORA named in ${k:-0} generate call(s), want >= $3"
+}
+named h3-lora-named h3-lora 1
+named h3-lora-20s-named h3-lora-20s 2
