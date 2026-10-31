@@ -1015,8 +1015,9 @@ pub fn pool_record_stream(device: i32, id: PoolId, stream: u64) -> Result<()> {
     result.map_err(|error| {
         // A replay may already be running. Even event-allocation OOM cannot release backing
         // without a completion fence; retain the arena until its process is retired.
-        state.poison = Some(format!("graph completion fence failed: {error}"));
-        error
+        let reason = format!("graph completion fence failed: {error}");
+        state.poison = Some(reason.clone());
+        Error::Poisoned(reason)
     })
 }
 
