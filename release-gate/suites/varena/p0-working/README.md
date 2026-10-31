@@ -142,6 +142,11 @@ Torch2.14.0's cuDNN handle destroy callback intentionally omits cudnnDestroy bec
 thread exit returns handles to the process pool. The5,384bytes reported through cudnnCreate in run23987 are
 therefore a distinct ownership hypothesis from the1+8bytes of scalar pinned-host cache. This control tests
 whether the same cuDNN allocations persist with the native allocator after legitimate cache cleanup.
-Source: https://raw.githubusercontent.com/pytorch/pytorch/v2.14.0/aten/src/ATen/cudnn/Handle.cpp
+Source: https://raw.githubusercontent.com/pytorch/pytorch/08187d9e0fba026dc8217405802ab5381dc88d90/aten/src/ATen/cudnn/Handle.cpp
 No borrowed handle is manually destroyed; no context reset or suppression is used. All16 Varena cases and the
 allocator microbenchmark remain unchanged.
+
+Native control **24009** and Varena **24010** both finish with zero managed device and host-cache bytes, then
+report the same three cuDNN allocations (5,376 + 4 + 4 bytes) under full leak checking. All 16 Varena cases pass
+their device/pool/event assertions. Both instrumented reports remain `passed=false`, exit 99 / three errors;
+the matching native lifetime behavior is recorded separately from the tool's strict process-exit verdict.
