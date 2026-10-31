@@ -21,7 +21,7 @@ from pathlib import Path
 
 import msgspec
 
-from cozy_runtime.author import App, Context, FileAsset, Outputs, Telemetry
+from cozy_runtime.author import App, Context, File, Outputs, Telemetry
 from cozy_runtime.internal.proctree import available_host_bytes
 
 app = App()
@@ -92,7 +92,7 @@ class ToolRequest(msgspec.Struct):
 
 class ToolResult(msgspec.Struct):
     value: str
-    files: list[FileAsset] = msgspec.field(default_factory=list)
+    files: list[File] = msgspec.field(default_factory=list)
 
 
 def alive(pid: int) -> bool:

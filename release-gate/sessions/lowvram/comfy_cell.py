@@ -15,7 +15,7 @@ from pathlib import Path
 
 import msgspec
 
-from cozy_runtime.author import App, Context, FileAsset, Outputs, Telemetry
+from cozy_runtime.author import App, Context, File, Outputs, Telemetry
 
 app = App()
 B = Path("/var/tmp/lowvram")
@@ -162,7 +162,7 @@ class CellRequest(msgspec.Struct):
 
 class CellResult(msgspec.Struct):
     session: str
-    images: list[FileAsset] = msgspec.field(default_factory=list)
+    images: list[File] = msgspec.field(default_factory=list)
 
 
 def nvml_rows() -> list[list[float]]:
