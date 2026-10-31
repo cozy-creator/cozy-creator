@@ -109,7 +109,8 @@ screen terms (what is near or far, left or right). A shot reads a world state it
 names and changes the ones it `writes`. Character and prop pictures are cleaned on this computer before
 use. Only a changed upstream file puts something out of date, never a text edit: `cozy render <name>`
 when you want a new take. Each kind's package is in `renderers:` (`cozy project --help`); a shot's
-`settings:` are its package's own fields. `cozy render fight.upscale` makes a shot's upscale, with its own
+`settings:` are its package's own fields, plus `lora: [{ref: org/lora, strength: 0.8}]` and
+`models: {base_model: {ref: org/checkpoint}}` as `cozy run --input` takes them. `cozy render fight.upscale` makes a shot's upscale, with its own
 `upscale: {settings: {resolution: 1080p, upscale: {model: regenerate-2k}}}`; `edit_uses: upscaled` cuts
 the edit from the upscales, and `render all` then makes them.
 

@@ -3,6 +3,8 @@
 //! rest of the package still runs. Members it does not know are ignored, so newer Runtimes' cards load.
 use std::collections::BTreeMap;
 
+pub use protocol::interface::Slot;
+use protocol::interface::or_default;
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value};
 
@@ -63,31 +65,13 @@ pub struct Callable {
     pub accelerator: Option<bool>,
     #[serde(default, deserialize_with = "or_default")]
     pub invocable: Invocable,
-}
-
-/// One declared model slot: `<callable>.models.<param>`.
-#[derive(Debug, Deserialize)]
-pub struct Slot {
-    pub path: String,
+    /// A CPU function that loads no model and calls its package's GPU functions
+    /// (`protocol::interface::orchestrates`).
     #[serde(skip)]
-    pub param: String,
-    #[serde(default, deserialize_with = "or_default")]
-    pub class: String,
-    /// A `Weights[M]` argument: the raw checkpoint, read and never constructed.
-    #[serde(default, deserialize_with = "or_default")]
-    pub weights: bool,
-    /// The release a run that names none loads: `[org/]model@release`.
-    #[serde(default, deserialize_with = "or_default")]
-    pub default: Option<String>,
-    /// The lane its default loads in; absent: the Hub's pick for the machine.
-    #[serde(default, deserialize_with = "or_default")]
-    pub lane: Option<String>,
-    /// `decode` for an LM token loop; absent is compute.
-    #[serde(default, deserialize_with = "or_default")]
-    pub phase: Option<String>,
-    /// Built, and its weights fetched, when the function first reads it.
-    #[serde(default, deserialize_with = "or_default")]
-    pub on_demand: bool,
+    pub orchestrates: bool,
+    /// The model slots of the calls it makes (`protocol::interface::call_slots`).
+    #[serde(skip)]
+    pub calls: Vec<Slot>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -226,7 +210,12 @@ impl Interface {
             let name = protocol::interface::name(raw).unwrap_or_default().to_owned();
             match Callable::deserialize(raw).map_err(|e| e.to_string()) {
                 Ok(callable) => match callable.checked() {
-                    Ok(callable) => out.callables.push(callable),
+                    Ok(mut callable) => {
+                        callable.orchestrates = protocol::interface::orchestrates(document, raw);
+                        let calls = protocol::interface::call_slots(document, raw).into_iter();
+                        callable.calls = calls.filter_map(|slot| Slot::read(slot).ok()).collect();
+                        out.callables.push(callable)
+                    }
                     Err(why) => out.unavailable.push((name, why)),
                 },
                 Err(why) => out.unavailable.push((name, why)),
@@ -263,23 +252,12 @@ impl Interface {
 
     /// A CPU function that loads no model, in a package with internal GPU functions: it calls them.
     pub fn orchestrates(&self, callable: &Callable) -> bool {
-        callable.accelerator == Some(false)
-            && callable.models.is_empty()
-            && (self.callables.iter())
-                .any(|c| c.internal && c.accelerator != Some(false) && !c.models.is_empty())
+        callable.orchestrates
     }
 
     /// The model slots of the calls an orchestrator makes: its package's internal GPU functions'.
-    /// A run names one by its parameter, and the machine gives that choice to every call
-    /// declaring it.
-    pub fn call_slots(&self, callable: &Callable) -> Vec<&Slot> {
-        if !self.orchestrates(callable) {
-            return vec![];
-        }
-        (self.callables.iter())
-            .filter(|c| c.internal && c.accelerator != Some(false))
-            .flat_map(|c| &c.models)
-            .collect()
+    pub fn call_slots<'a>(&self, callable: &'a Callable) -> Vec<&'a Slot> {
+        callable.calls.iter().collect()
     }
 }
 
@@ -309,12 +287,6 @@ impl Callable {
 
     pub fn field(&self, name: &str) -> Option<&Field> {
         self.request.fields.iter().find(|f| f.name == name)
-    }
-
-    pub fn slot(&self, asked: &str) -> Option<&Slot> {
-        self.models
-            .iter()
-            .find(|s| s.param == asked || s.path == asked)
     }
 
     /// Whether `field` is the declared Assets collection.
@@ -407,9 +379,3 @@ fn present<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Value>, D::Error> {
     Value::deserialize(d).map(Some)
 }
 
-/// A member written as `null` reads as absent: a Go writer spells an empty list that way.
-fn or_default<'de, D: Deserializer<'de>, T: Default + Deserialize<'de>>(
-    d: D,
-) -> Result<T, D::Error> {
-    Option::<T>::deserialize(d).map(Option::unwrap_or_default)
-}

@@ -28,10 +28,12 @@ use axum::{
 };
 use futures_util::Stream;
 use protocol::{
-    calcifer::{Kind as RunKind, On, Run, StagedInput, Status as RunStatus, SubmitRun},
+    calcifer::{Kind as RunKind, On, Run, StagedInput, Status as RunStatus, SubmitRun, Warning},
+    choices::{self, Choices},
     config::Origin,
     error::{Error, Kind},
     ids::{Digest, RunId},
+    interface::{self, Slot},
     machine as v1,
     project::{Approve, Approved, Edit, Entity as Row, Event, Open, Opened, Runs, State as ProjectState},
 };
@@ -278,6 +280,9 @@ struct Renderer {
     function: String,
     release: String,
     max_piece_s: Option<f64>,
+    /// Its model slots and those of the calls it makes, for a request's `models:` and `lora:`.
+    slots: Vec<Slot>,
+    calls: Vec<Slot>,
 }
 
 /// What landing a run left to do.
@@ -475,7 +480,9 @@ impl Walk {
     }
 
     /// Sends `payload` (its `files` as field, path and digest) to `target` `on` its machine as an
-    /// ordinary run, records it as pending, and waits for it to end with its outputs here.
+    /// ordinary run, records it as pending, and waits for it to end with its outputs here. Its
+    /// `models:` and `lora:` (a shot's `settings:`) are the run's model choices, as `cozy run
+    /// --input` takes them.
     async fn send(
         &self,
         payload: &Value,
@@ -485,6 +492,19 @@ impl Walk {
         mut pending: Pending,
     ) -> Result<(String, Run), Error> {
         let renderer = self.renderer(target).await?;
+        let mut payload = payload.clone();
+        let mut choices = Choices::new(target, &renderer.function, &renderer.slots, renderer.calls.iter().collect());
+        let entity = &pending.made.entity;
+        let named = |e: Error| Error { message: format!("{entity}'s settings: {}", e.message), ..e };
+        payload.as_object_mut().map_or(Ok(()), |fields| choices.take(fields)).map_err(named)?;
+        let warnings = match choices.dropped.is_empty() {
+            true => vec![],
+            false => vec![Warning {
+                code: "request_fields_ignored".into(),
+                message: format!("{entity}'s settings: ignored {}", choices.dropped.join(", ")),
+            }],
+        };
+        let models = choices::wire(&choices.into_choices()).map_err(named)?;
         let mut inputs = vec![];
         let mut staged = vec![];
         for (field, path, digest) in files {
@@ -506,6 +526,7 @@ impl Walk {
             entrypoint: renderer.function.clone(),
             payload: Some(v1::Json::parse(payload.to_string()).expect("a payload is JSON")),
             inputs,
+            models,
             ..Default::default()
         };
         let hub = self.hub.as_ref().map(ToString::to_string).unwrap_or_default();
@@ -517,7 +538,7 @@ impl Walk {
             spec,
             inputs: staged,
             out: None,
-            warnings: vec![],
+            warnings,
             agreed: None,
         };
         let mut key = [0u8; 16];
@@ -710,8 +731,8 @@ impl Walk {
         })?;
         let card = client.get_package_release(&org, &name, &release).await.map_err(hub_refusal)?;
         let card = serde_json::to_value(&card).expect("a card serializes");
-        let entry = protocol::interface::entrypoints(&card["package_interface"])
-            .find(|entry| protocol::interface::name(entry) == Some(function))
+        let entry = interface::entrypoints(&card["package_interface"])
+            .find(|entry| interface::name(entry) == Some(function))
             .ok_or_else(|| {
                 Error::new(
                     Kind::NotFound,
@@ -722,7 +743,11 @@ impl Walk {
         let implements = &entry["implements"];
         let max_piece_s =
             (implements["interface"] == "video/shot").then(|| implements["max_piece_s"].as_f64()).flatten();
-        let found = Renderer { package: format!("{org}/{name}"), function: function.into(), release, max_piece_s };
+        let read = |slots: Vec<&Value>| slots.into_iter().filter_map(|slot| Slot::read(slot).ok()).collect();
+        let slots = read(interface::models(entry).iter().collect());
+        let calls = read(interface::call_slots(&card["package_interface"], entry));
+        let found =
+            Renderer { package: format!("{org}/{name}"), function: function.into(), release, max_piece_s, slots, calls };
         self.renderers.lock().expect("renderers lock").insert(target.into(), found.clone());
         Ok(found)
     }

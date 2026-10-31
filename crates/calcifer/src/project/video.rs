@@ -52,6 +52,7 @@ world_states:   # how a set stands; a shot that writes one changes it for the sh
 shots:   # in order; past its renderer's longest piece (15 s for minimax-h3) a shot needs beats
   # - {name: walk, setup: dock.a, prompt: \"<theo> crosses <dock>.\", duration_s: 8, writes: [stage],
   #    beats: [{at: 0, prompt: \"He walks to the edge.\"}, {at: 4, prompt: \"He looks out to sea.\"}]}
+# a shot's settings: are its renderer's fields, plus lora: [{ref: org/lora, strength: 0.8}] and models: as in cozy run --input
 # edit: [{shot: walk, end: 6}]   # which shots and spans the edit cuts; absent: every shot, whole
 # edit_uses: upscaled   # cut each shot's upscale (a shot's upscale: {settings: {resolution: 1080p}})
 "

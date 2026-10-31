@@ -3,6 +3,7 @@
 
 pub mod calcifer;
 pub mod capability;
+pub mod choices;
 pub mod config;
 pub mod error;
 pub mod interface;

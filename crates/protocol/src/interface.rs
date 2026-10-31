@@ -1,6 +1,7 @@
 //! A package's interface (`cozy.package.interface/1`), as the Runtime describes it: the one place
 //! every Rust reader spells its paths. Each accessor is tolerant: a member absent, null or of
 //! another shape reads as absent, so no reader refuses a member it does not use.
+use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
 /// The member that lists the entrypoints, for a reader that rewrites the document.
@@ -54,6 +55,73 @@ pub fn models(entry: &Value) -> &[Value] {
 /// A model slot's path, `<entrypoint>.models.<param>`.
 pub fn slot_path(slot: &Value) -> Option<&str> {
     slot["path"].as_str()
+}
+
+/// Whether it never opens a GPU (`accelerator: false`).
+pub fn cpu(entry: &Value) -> bool {
+    entry["accelerator"].as_bool() == Some(false)
+}
+
+/// Whether `entry` is a CPU function that loads no model, in a package with internal GPU functions:
+/// it calls them (H3's shot). Tensorhub's placement (`runplacement`) reads a function the same way.
+pub fn orchestrates(document: &Value, entry: &Value) -> bool {
+    cpu(entry)
+        && models(entry).is_empty()
+        && entrypoints(document).any(|e| internal(e) && !cpu(e) && !models(e).is_empty())
+}
+
+/// The model slots of the calls an orchestrator makes: its package's internal GPU functions'. A
+/// run names one by its parameter, and the machine gives that choice to every call declaring it.
+pub fn call_slots<'a>(document: &'a Value, entry: &Value) -> Vec<&'a Value> {
+    if !orchestrates(document, entry) {
+        return vec![];
+    }
+    entrypoints(document).filter(|e| internal(e) && !cpu(e)).flat_map(models).collect()
+}
+
+/// One declared model slot: `<callable>.models.<param>`.
+#[derive(Clone, Debug, Deserialize)]
+pub struct Slot {
+    pub path: String,
+    #[serde(skip)]
+    pub param: String,
+    #[serde(default, deserialize_with = "or_default")]
+    pub class: String,
+    /// A `Weights[M]` argument: the raw checkpoint, read and never constructed.
+    #[serde(default, deserialize_with = "or_default")]
+    pub weights: bool,
+    /// The release a run that names none loads: `[org/]model@release`.
+    #[serde(default, deserialize_with = "or_default")]
+    pub default: Option<String>,
+    /// The lane its default loads in; absent: the Hub's pick for the machine.
+    #[serde(default, deserialize_with = "or_default")]
+    pub lane: Option<String>,
+    /// `decode` for an LM token loop; absent is compute.
+    #[serde(default, deserialize_with = "or_default")]
+    pub phase: Option<String>,
+    /// Built, and its weights fetched, when the function first reads it.
+    #[serde(default, deserialize_with = "or_default")]
+    pub on_demand: bool,
+}
+
+impl Slot {
+    /// A declared slot, its parameter read from its path; why when it is not
+    /// `<callable>.models.<param>`.
+    pub fn read(raw: &Value) -> Result<Self, String> {
+        let mut slot = Self::deserialize(raw).map_err(|e| e.to_string())?;
+        match slot.path.split_once(".models.") {
+            Some((callable, param)) if !callable.is_empty() && !param.is_empty() && !param.contains('.') => {
+                slot.param = param.to_owned();
+                Ok(slot)
+            }
+            _ => Err(format!("model path {:?} is not <callable>.models.<parameter>", slot.path)),
+        }
+    }
+}
+
+/// A member written as `null` reads as absent: a Go writer spells an empty list that way.
+pub fn or_default<'de, D: Deserializer<'de>, T: Default + Deserialize<'de>>(d: D) -> Result<T, D::Error> {
+    Option::<T>::deserialize(d).map(Option::unwrap_or_default)
 }
 
 /// Its invocable declaration (module, export, defaults, …); null when it declares none.
