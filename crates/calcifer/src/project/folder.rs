@@ -13,6 +13,8 @@ use saphyr::{LoadableYamlNode, MappingOwned, ScalarOwned, YamlOwned};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use super::graph::name_key;
+
 pub const PROJECT: &str = "project.yaml";
 const LOCK: &str = "versions.lock";
 const FILES: &str = "files";
@@ -71,11 +73,24 @@ pub enum Then {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Lock {
+    /// By entity, then file digest: two entities may make the same file.
     #[serde(default)]
-    pub versions: BTreeMap<String, Made>,
+    pub versions: BTreeMap<String, BTreeMap<String, Made>>,
     /// By run id.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pending: BTreeMap<String, Pending>,
+}
+
+impl Lock {
+    /// `entity`'s version whose file has `digest`.
+    pub fn made(&self, entity: &str, digest: &str) -> Option<&Made> {
+        self.versions.get(&name_key(entity))?.get(digest)
+    }
+
+    /// Records `made` as its entity's version whose file has `digest`.
+    pub fn record(&mut self, digest: String, made: Made) {
+        self.versions.entry(name_key(&made.entity)).or_default().insert(digest, made);
+    }
 }
 
 /// Finds an entity's mapping in a project document.
@@ -219,10 +234,13 @@ impl Folder {
     /// Deletes each file under `files/` no version names (`listed`) and none of their records
     /// does, and the records of versions no longer listed.
     pub fn collect_garbage(&self, listed: &BTreeSet<String>) -> Result<(), Error> {
-        self.update_lock(|lock| lock.versions.retain(|digest, _| listed.contains(digest)))?;
+        self.update_lock(|lock| {
+            lock.versions.values_mut().for_each(|made| made.retain(|digest, _| listed.contains(digest)));
+            lock.versions.retain(|_, made| !made.is_empty());
+        })?;
         let lock = self.lock()?;
         let mut keep = listed.clone();
-        keep.extend(lock.versions.values().flat_map(|made| made.outputs.values().cloned()));
+        keep.extend(lock.versions.values().flat_map(BTreeMap::values).flat_map(|made| made.outputs.values().cloned()));
         let entries = std::fs::read_dir(self.dir.join(FILES)).into_iter().flatten().flatten();
         for entry in entries {
             let name = format!("{FILES}/{}", entry.file_name().to_string_lossy());

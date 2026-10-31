@@ -142,7 +142,7 @@ impl Graph {
         let (_, digest) = self.entities[edge.entity].file.as_ref()?;
         match &edge.state {
             None => Some(digest.clone()),
-            Some(state) => lock.versions.get(digest)?.outputs.get(state).cloned(),
+            Some(state) => lock.made(&self.entities[edge.entity].id, digest)?.outputs.get(state).cloned(),
         }
     }
 
@@ -156,7 +156,7 @@ impl Graph {
             let Some((_, digest)) = &entity.file else {
                 continue;
             };
-            let Some(upstream) = lock.versions.get(digest).and_then(|made| made.upstream.as_ref()) else {
+            let Some(upstream) = lock.made(&entity.id, digest).and_then(|made| made.upstream.as_ref()) else {
                 status[i] = Status::Current;
                 continue;
             };

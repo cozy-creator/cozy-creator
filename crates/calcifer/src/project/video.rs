@@ -459,7 +459,7 @@ impl Video {
     /// prop's that versions.lock does not mark as a clean.
     pub fn unclean(&self, lock: &Lock, i: usize) -> Option<(String, String)> {
         let file = self.graph.entities[i].file.as_ref().filter(|_| self.cleans(i))?;
-        (!lock.versions.get(&file.1).is_some_and(|made| made.cleaned)).then(|| file.clone())
+        (!lock.made(&self.graph.entities[i].id, &file.1).is_some_and(|made| made.cleaned)).then(|| file.clone())
     }
 
     pub fn clean_renderer(&self) -> &str {
@@ -528,12 +528,18 @@ impl Video {
         let (payload, writes) = match self.items[i] {
             Item::Asset(a) => {
                 let asset = &self.project.assets[a];
+                // Only the entity itself, once: a picture it mentions is for likeness, never drawn beside it.
+                let name = &asset.name;
                 let (shown, ratio) = match asset.kind {
-                    AssetKind::Character => {
-                        ("Character reference: the whole figure, front view, on a plain white background.", "3:4")
-                    }
-                    AssetKind::Prop => ("Prop reference: the object alone, on a plain white background.", "1:1"),
-                    AssetKind::Environment => ("An establishing view of the empty set, no people.", "16:9"),
+                    AssetKind::Character => (
+                        format!("Character reference of {name} alone: a single front view of one whole figure, on a plain white background. Any other picture is for likeness only; draw no one else."),
+                        "3:4",
+                    ),
+                    AssetKind::Prop => (
+                        format!("Prop reference of {name} alone: one view of the object, on a plain white background. Any other picture is for likeness only; draw nothing else."),
+                        "1:1",
+                    ),
+                    AssetKind::Environment => ("An establishing view of the empty set, no people.".to_owned(), "16:9"),
                 };
                 let prompt = styled(format!("{}\n\n{shown}", asset.description.trim()));
                 (json!({"prompt": prompt, "assets": pictures(&mut files), "aspect_ratio": ratio}), vec![])

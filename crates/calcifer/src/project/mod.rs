@@ -420,7 +420,7 @@ impl Walk {
         let id = &video.graph.entities[i].id;
         if !remake {
             let Some((file, digest)) = video.unclean(&lock, i) else { return Ok(()) };
-            let made = lock.versions.get(&digest).cloned().unwrap_or(Made { entity: id.clone(), ..Default::default() });
+            let made = lock.made(id, &digest).cloned().unwrap_or(Made { entity: id.clone(), ..Default::default() });
             return self.clean(video.clean_renderer(), (self.folder().path(&file), digest), made, Then::Choose).await;
         }
         let request = video.request(self.folder(), &lock, i)?;
@@ -661,7 +661,7 @@ impl Walk {
         }
         folder.update_lock(|lock| {
             lock.pending.remove(id);
-            lock.versions.insert(digest.clone(), made.clone());
+            lock.record(digest.clone(), made.clone());
         })?;
         let (entity, field, then) = (&made.entity, &pending.field, pending.then);
         let placed = folder.edit(video::locate, entity, |map| match then {
