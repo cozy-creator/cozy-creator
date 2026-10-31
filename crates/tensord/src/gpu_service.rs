@@ -1387,6 +1387,8 @@ impl Pool {
         for pid in limited {
             if !lines.contains_key(&pid) { state.limited.remove(&pid); continue }
             let target = surplus.map(|surplus| by.get(&pid).copied().unwrap_or(0) + surplus);
+            // A raise smaller than H is not worth a message: the call is not short of it.
+            if target.is_some_and(|target| state.limited.get(&pid).is_some_and(|&sent| target < sent + headroom)) { continue }
             if ask(pid, target, state) { told.push(pid) }
         }
         if !told.is_empty() {
