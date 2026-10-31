@@ -117,6 +117,5 @@ def benchmark(payload: Benchmark, tel: Telemetry) -> Report:
         "results": results,
     }
     tel.log(json.dumps({"allocator_benchmark": report}, sort_keys=True))
-    if not report["passed"]:
-        raise RuntimeError(f"allocator microbench exceeds 2x: {json.dumps(report, sort_keys=True)}")
-    return Report(True, json.dumps(report, sort_keys=True))
+    # Preserve every failed sample in the result artifact; successful delivery is not a pass.
+    return Report(report["passed"], json.dumps(report, sort_keys=True))
