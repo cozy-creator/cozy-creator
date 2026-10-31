@@ -912,6 +912,20 @@ struct Pressure {
     limited: BTreeMap<u32, u64>,
     /// The room loop's round over the current deficit and our use when it was asked.
     round: Option<(usize, u64)>,
+    /// Executors asked to give, and when: how long a give takes reaches the memory log.
+    asked: BTreeMap<u32, Instant>,
+    /// Idle executors still above their target at the last reading: their bytes and CPU then.
+    samples: BTreeMap<u32, (u64, u64)>,
+}
+
+/// Whether the executor rooted at `root` answered a room ask made `ago`: its Runtime wrote `room.json`
+/// since (an older Runtime writes none, and its gives are judged by progress alone).
+fn answered(root: Option<&PathBuf>, ago: std::time::Duration) -> bool {
+    let Some(at) = root.and_then(|root| fs::read(root.join("room.json")).ok())
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|reading| reading.get("at")?.as_f64()) else { return false };
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+    at >= now - ago.as_secs_f64()
 }
 
 impl Pressure {
@@ -1342,13 +1356,18 @@ impl Pool {
         let Some(state) = pressure.get_mut(index) else { return };
         let Some(&sent) = state.limited.get(&pid) else { return };
         let held = reading.as_ref().and_then(|(_, by)| by.get(&pid).copied()).unwrap_or(0);
-        let target = match &reading {
+        // The band from this reading: 2H only while that program is still taking (its use rose
+        // since the loop's last reading). The loop's `pressing` lags it by up to a reading, and
+        // a call dispatched just after a game reached its size was left 2H short (erich s2:
+        // 1.58 GB beside 5 GB where H leaves 2.1 GB).
+        let band = reading.as_ref().map(|(now, _)| {
+            let pressing = state.blocked && now.foreign >= state.foreign.saturating_add(64 << 20);
+            (if pressing { 2 } else { 1 }) * Pressure::headroom(now.total)
+        });
+        let target = match (&reading, band) {
             _ if !shared && !state.blocked => None,
-            Some((now, _)) => {
-                let band = if state.pressing { 2 } else { 1 } * Pressure::headroom(now.total);
-                Some(held + (now.own + now.free).saturating_sub(band).saturating_sub(now.own))
-            }
-            None => return, // the room loop's next known reading sets it
+            (Some((now, _)), Some(band)) => Some(held + (now.own + now.free).saturating_sub(band).saturating_sub(now.own)),
+            _ => return, // the room loop's next known reading sets it
         };
         if target.is_some_and(|target| target <= sent) { return }
         if line.send(&Command::Room(Room { device: 0, target, held })) {
@@ -1359,7 +1378,7 @@ impl Pool {
             self.notes.note(serde_json::json!({"event": "room", "gpu": index, "call": pid, "target": target,
                 "held": reading.as_ref().map(|(_, by)| by), "own_bytes": reading.as_ref().map(|(now, _)| now.own),
                 "free_bytes": reading.as_ref().map(|(now, _)| now.free),
-                "headroom_bytes": reading.as_ref().map(|(now, _)| if state.pressing { 2 } else { 1 } * Pressure::headroom(now.total))}));
+                "headroom_bytes": band}));
         }
     }
 
@@ -1380,9 +1399,11 @@ impl Pool {
         let headroom = Pressure::headroom(now.total);
         let running: std::collections::BTreeSet<u32> = engine.active(usize::MAX).unwrap_or_default().into_iter()
             .filter_map(|record| Some(record.process.as_ref()?.pid)).collect();
-        let mut idle: Vec<(Instant, String, u32, Level)> = self.sessions.lock().unwrap().iter()
+        let (mut idle, roots): (Vec<(Instant, String, u32, Level)>, BTreeMap<u32, PathBuf>) = self.sessions.lock().unwrap().iter()
             .filter(|(_, session)| session.start == index && session.degree > 0)
-            .map(|(key, session)| (session.used, key.clone(), session.executor.birth.pid, session.level())).collect();
+            .map(|(key, session)| ((session.used, key.clone(), session.executor.birth.pid, session.level()),
+                (session.executor.birth.pid, session.executor.root_path().to_path_buf())))
+            .unzip();
         idle.sort_by_key(|i| i.0);
         let lines: BTreeMap<u32, device_executor::Line> = self.leaders.lock().unwrap().iter()
             .filter(|(_, leader)| leader.start == index)
@@ -1401,18 +1422,30 @@ impl Pool {
         {
             let mut pressure = self.pressure.lock().unwrap();
             let state = &mut pressure[index];
-            let ask = |pid: u32, target: Option<u64>, state: &mut Pressure| -> bool {
-                let (Some(line), Some(&held)) = (lines.get(&pid), by.get(&pid)) else { return false };
+            // Whether it holds that target now, and whether this reading sent it (an ask within SLACK
+            // of the last is not re-sent, nor logged).
+            let ask = |pid: u32, target: Option<u64>, state: &mut Pressure| -> (bool, bool) {
+                let (Some(line), Some(&held)) = (lines.get(&pid), by.get(&pid)) else { return (false, false) };
                 if target.is_some() && state.limited.get(&pid).is_some_and(|sent| sent.abs_diff(target.unwrap_or(0)) < SLACK) {
-                    return true;
+                    return (true, false);
                 }
-                if !line.send(&Command::Room(Room { device: 0, target, held })) { return false }
+                if !line.send(&Command::Room(Room { device: 0, target, held })) { return (false, false) }
                 match target {
-                    Some(target) => { state.limited.insert(pid, target); }
+                    Some(target) => {
+                        if target + SLACK < held { state.asked.insert(pid, Instant::now()); }
+                        state.limited.insert(pid, target);
+                    }
                     None => { state.limited.remove(&pid); }
                 }
-                true
+                (true, true)
             };
+            let gave: Vec<(u32, f64)> = state.asked.iter()
+                .filter(|(pid, _)| state.limited.get(pid).is_none_or(|&target| by.get(pid).copied().unwrap_or(0) <= target + SLACK))
+                .map(|(pid, at)| (*pid, at.elapsed().as_secs_f64() * 1e3)).collect();
+            for (pid, ms) in gave {
+                state.asked.remove(&pid);
+                self.notes.note(serde_json::json!({"event": "room", "gpu": device.entry, "gave": pid, "ms": ms}));
+            }
             if deficit > SLACK {
                 // This reading's round: 0 idle give, 1 end an idle executor, 2 the running give.
                 let progressed = state.round.is_some_and(|(_, own)| own.saturating_sub(now.own) >= SLACK);
@@ -1426,6 +1459,36 @@ impl Pool {
                     .filter(|i| by.get(&i.2).is_some_and(|b| *b > 0) && (lines.contains_key(&i.2) || i.3 == Level::Gpu))
                     .map(|i| (i.1.clone(), i.2)).collect();
                 if round == 0 && idle_held.is_empty() { round = 1 }
+                // An idle executor told to give and still above its target is giving while it makes
+                // progress between readings: its bytes fall, or its process works (CPU, or a thread
+                // running or on a disk), as when its turn waits behind the command it is finishing.
+                // Nothing is ended while one is (riful, 0.15.1: the Qwen asked whole 4 s after its
+                // call was ended one reading later; the game waited 2.2 s for the exit). One that made
+                // none since the last reading is stalled, and goes first when one must end. One that
+                // answered the ask (its Runtime's `room.json` written since) gave what it could: what
+                // it holds is its process, which only ending frees, however that process works
+                // (sousaku midjob: a whole-given SDXL's threads kept the running Qwen from being asked
+                // and a 3 GB game waited 2.96 s).
+                let (mut giving, mut stalled) = (false, None);
+                for i in &idle {
+                    let (Some(&target), true) = (state.limited.get(&i.2), lines.contains_key(&i.2)) else { continue };
+                    let bytes = by.get(&i.2).copied().unwrap_or(0);
+                    if bytes <= target + SLACK { state.samples.remove(&i.2); continue }
+                    if state.asked.get(&i.2).is_some_and(|at| answered(roots.get(&i.2), at.elapsed())) {
+                        if stalled.is_none() { stalled = Some((i.1.clone(), "it gave what it could; the rest is its process")) }
+                        continue;
+                    }
+                    let usage = platform::process::usage(i.2).ok();
+                    let sample = (bytes, usage.map_or(0, |u| u.cpu));
+                    let moved = match state.samples.insert(i.2, sample) {
+                        None => true,
+                        Some((was, cpu)) => bytes + SLACK <= was || sample.1 > cpu || usage.is_some_and(|u| u.running),
+                    };
+                    if moved { giving = true } else if stalled.is_none() {
+                        stalled = Some((i.1.clone(), "no progress toward its target since the last reading"))
+                    }
+                }
+                if round == 1 && giving { round = 0 }
                 // Only another program's demand ends a model: shared mode's own H never cold-starts
                 // one (a running call refilling, or a give still queued, reads as no progress).
                 if round == 1 && (idle.is_empty() || !blocked) { round = 2 }
@@ -1447,28 +1510,30 @@ impl Pool {
                             // Idle pages nobody uses go whole when another program presses (§3.3
                             // step 2); otherwise the deficit is split, least recently used first.
                             let give = if blocked { held } else { left.min(held) };
-                            if ask(pid, Some(held - give), state) {
-                                left = left.saturating_sub(give);
-                                told.push(pid);
-                            }
+                            let (held_to, sent) = ask(pid, Some(held - give), state);
+                            if held_to { left = left.saturating_sub(give) }
+                            if sent { told.push(pid) }
                         }
                     }
-                    1 => end = Some(idle[0].1.clone()),
+                    1 => end = Some(stalled.unwrap_or_else(|| (idle[0].1.clone(), "least recently used, with nothing left to give but its process"))),
                     2 => {
                         let mut left = deficit;
                         for &pid in &calls {
                             if left == 0 { break }
                             let held = by.get(&pid).copied().unwrap_or(0);
                             let give = left.min(held);
-                            if ask(pid, Some(held - give), state) {
-                                left = left.saturating_sub(give);
-                                told.push(pid);
-                            }
+                            let (held_to, sent) = ask(pid, Some(held - give), state);
+                            if held_to { left = left.saturating_sub(give) }
+                            if sent { told.push(pid) }
                         }
                     }
                     _ => {}
                 }
-                state.round = Some((round.min(3), now.own));
+                // Past the last round nothing is left to ask this reading; the next starts over, so a
+                // deficit that never clears (a Runtime that cannot give) still reaches idle executors
+                // when another program arrives (kefla, Runtime 0.36.13: stuck past the last round, a
+                // 5 GB game waited 60 s and gave up).
+                state.round = (round < 3).then_some((round, now.own));
                 if !told.is_empty() || !offload.is_empty() {
                     self.notes.note(serde_json::json!({"event": "room", "gpu": device.entry, "round": round,
                         "deficit": deficit, "free_bytes": now.free, "foreign_bytes": now.foreign, "own_bytes": now.own,
@@ -1476,6 +1541,7 @@ impl Pool {
                 }
             } else {
                 state.round = None;
+                state.samples.clear();
                 let surplus = room.saturating_sub(now.own);
                 // Room again: the running calls held grow back to it at their next pass, sharing it.
                 let held: Vec<u32> = calls.iter().copied().filter(|pid| state.limited.contains_key(pid)).collect();
@@ -1484,7 +1550,7 @@ impl Pool {
                     let told: BTreeMap<u32, u64> = held.into_iter().filter_map(|pid| {
                         let target = by.get(&pid).copied().unwrap_or(0) + share;
                         // A raise smaller than H is not worth a message: the call is not short of it.
-                        (state.limited.get(&pid).is_some_and(|&sent| target >= sent + headroom) && ask(pid, Some(target), state))
+                        (state.limited.get(&pid).is_some_and(|&sent| target >= sent + headroom) && ask(pid, Some(target), state).1)
                             .then_some((pid, target))
                     }).collect();
                     if !told.is_empty() {
@@ -1498,10 +1564,17 @@ impl Pool {
         for key in offload {
             self.offload_idle(engine, &key, "room", Some(deficit));
         }
-        if let Some(key) = end {
+        if let Some((key, why)) = end {
+            // Read before it ends: what each of its threads waited on, and what its last room kept
+            // and why (`room.json` in its root, the Runtime's), so a stall explains itself.
+            let pid = idle.iter().find(|i| i.1 == key).map(|i| i.2);
+            let threads = pid.map(platform::process::threads).unwrap_or_default();
+            let root = self.sessions.lock().unwrap().get(&key).map(|session| session.executor.root_path().to_path_buf());
+            let kept = root.as_ref().and_then(|root| fs::read(root.join("room.json")).ok())
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
             if self.end_session(&key) {
-                self.notes.note(serde_json::json!({"event": "ended_for_room", "ended": key,
-                    "for": "room", "need": deficit, "free": now.free}));
+                self.notes.note(serde_json::json!({"event": "ended_for_room", "ended": key, "for": "room",
+                    "why": why, "pid": pid, "root": root, "threads": threads, "kept": kept, "need": deficit, "free": now.free}));
             }
         }
     }
