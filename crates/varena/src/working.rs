@@ -53,6 +53,15 @@ struct Block {
     reusable_on: Option<u64>,
 }
 
+impl Block {
+    fn deferred_default(&self) -> bool {
+        self.life == Life::Deferred
+            && self.reusable_on == Some(0)
+            && self.streams.len() == 1
+            && self.streams.contains(&0)
+    }
+}
+
 struct Segment {
     bytes: usize,
     handle: u64,
@@ -234,7 +243,8 @@ impl Working {
                         continue;
                     };
                     let reusable = block.life == Life::Ready
-                        || (block.life == Life::Captured && origin.is_some());
+                        || (block.life == Life::Captured && origin.is_some())
+                        || (block.deferred_default() && origin == Some(0));
                     if !reusable || block.capacity != bytes || block.reusable_on != origin {
                         continue;
                     }
@@ -678,8 +688,14 @@ pub fn free(device: i32, ptr: u64, stream: u64) -> Result<()> {
         } else {
             None
         };
+    } else if block.streams.len() == 1 && block.streams.contains(&0) {
+        // The legacy default stream cannot be destroyed. Reuse there is ordered without
+        // a fence; poll records completion before any other stream or physical trim uses it.
+        block.life = Life::Deferred;
+        block.reusable_on = Some(0);
     } else if capturing {
         block.life = Life::Deferred;
+        block.reusable_on = None;
     } else {
         let _context = owner.driver.enter()?;
         if let Err(error) = owner.record_free(block) {
@@ -688,6 +704,7 @@ pub fn free(device: i32, ptr: u64, stream: u64) -> Result<()> {
     }
     if state.blocks[&ptr].life == Life::Ready
         || (state.blocks[&ptr].life == Life::Captured && state.blocks[&ptr].reusable_on.is_some())
+        || state.blocks[&ptr].deferred_default()
     {
         let reusable_on = state.blocks[&ptr].reusable_on;
         state

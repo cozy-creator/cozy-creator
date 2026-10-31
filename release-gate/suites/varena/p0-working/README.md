@@ -23,6 +23,8 @@ inside capture, retained outputs after graph destruction, changed replay stream,
 clean capture exhaustion, and three graph replays after managed weight-region eviction/refill at the same address.
 Driver memory/event counters are compared inside capture, outside setup and teardown. Each physical-byte
 partition must balance; after every case all fixture allocations, graph pools and allocator event handles retire.
+Cleanup seals deferred frees, synchronizes their completion and trims again. The `default-deferred-free` case
+checks metadata-only default-stream reuse, then switches streams and verifies pending memory is not reused early.
 The RNG case starts with no retained eager blocks, compares default and custom generators with eager byte-exact
 references across two replays, reseeds and reproduces the first result, then verifies retained-output and final
 teardown lifetimes. Its auxiliary default-stream allocations must also use pre-mapped capacity. No mock allocator/driver,
@@ -50,6 +52,9 @@ telemetry, kernel launch or copy occurs inside the pair loop. Setup and warmup a
 sample duration and final drain are separately reported. Every sample, size, pair count, range, binary identity and
 GPU identity is retained. The P0 microbenchmark passes when the median host nanoseconds per pair is no more than
 2× native. It is not a C++-only measurement or a model-latency result; Python dispatch overhead remains in both arms.
+The benchmark returns `Report(passed=false, detail=<full JSON>)` on a ratio failure so every failed sample survives
+in the result artifact. A successfully delivered Cozy call is not qualification: inspect `result.passed` and the
+unchanged 2× ratio limit. Child execution/provenance failures still fail the call.
 
 Default and Torch-pooled streams live for the process. An owner of a destroyable stream must stop submissions,
 synchronize after its final graph/tensor teardown, call `vt.retire_stream(stream)`, then destroy the handle. CUDA

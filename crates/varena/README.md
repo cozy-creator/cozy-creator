@@ -11,9 +11,13 @@ memory. No source from aimdo or another external allocator was used.
 `varena::working` adds VMM working slabs and prepared graph pools beside the existing weight pager.
 It is a source-build spike, not GPU-qualified or enabled in the shipped Runtime. Small size classes
 are 512-byte aligned; large blocks own whole VMM pages. Own-stream allocation reuse does no driver
-work. Eager frees record completion events; physical trim and cross-stream reuse require completed
-consumers. The allocation slow path reclaims idle weights and can wait for already submitted work
+work. Single-consumer legacy-default frees also do no driver work; cross-stream reuse and trim
+first seal those deferred frees with completion events. Other eager streams retain immediate free
+fences. Physical trim and cross-stream reuse require completed consumers. The allocation slow path
+reclaims idle weights and can wait for already submitted work
 on wholly free working segments. Weight allocation pressure first offers free working pages back.
+`trim` remains nonblocking: sealing a deferred free may leave a pending event; a later trim can
+return its pages after completion. Explicit cleanup seals, synchronizes, then trims again.
 
 Initialize the device outside capture, then `pool_reserve` the measured capacity before recording.
 The reservation remains owned until the first `pool_begin` or explicit `pool_release` without a
@@ -32,7 +36,7 @@ nonconcurrent replay. Ordinary weight `Region`/`Pin` ownership below remains unc
 attempted working-driver memory/event operations. Counters cover this working allocator, not all
 CUDA library/context allocations. Stats on an unopened device do not initialize CUDA. Read/write
 after fork is rejected. No Python callback, background daemon or cross-process policy is added here.
-The event-recording free path and size-class fragmentation still need the P0 performance proof.
+The default-stream optimization and size-class fragmentation still need the matched P0 performance proof.
 
 Default and Torch-pooled streams live for the process. A caller owning a destroyable stream must
 stop submissions, synchronize it, call `working::retire_stream(device, stream)`, then destroy it.

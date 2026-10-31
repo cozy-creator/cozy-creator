@@ -35,6 +35,7 @@ def emit(value):
 
 def clean():
     gc.collect()
+    torch.cuda.empty_cache()  # seal deferred frees; completion remains stream ordered
     torch.cuda.synchronize()
     torch.cuda.empty_cache()
 
@@ -81,6 +82,39 @@ def allocator_reuse():
     assert row["allocated_bytes"] == 0, row
     assert row["mapped_bytes"] == 0, row
     return {"aligned_sizes": 8, "same_stream_reused": True, "stats": row}
+
+
+def default_deferred_free():
+    with torch.cuda.stream(torch.cuda.default_stream()):
+        data = torch.empty(8 * MIB, dtype=torch.uint8, device="cuda")
+        original = data.data_ptr()
+        torch.cuda._sleep(10_000_000)
+        data.fill_(7)
+        total = data.sum(dtype=torch.int64)
+        before = figures()
+        del data
+        replacement = torch.empty(8 * MIB, dtype=torch.uint8, device="cuda")
+        assert replacement.data_ptr() == original
+        replacement.fill_(23)
+        done = torch.cuda.Event()
+        done.record()
+        del replacement
+        deferred = figures()
+        assert all(deferred[key] == before[key] for key in DRIVER), (before, deferred)
+    consumer = torch.cuda.Stream()
+    with torch.cuda.stream(consumer):
+        other = torch.full((8 * MIB,), 99, dtype=torch.uint8, device="cuda")
+    if not done.query():
+        assert other.data_ptr() != original, "unfenced default-stream block crossed streams"
+    torch.cuda.synchronize()
+    assert int(total) == 7 * 8 * MIB
+    assert int(other[0]) == int(other[-1]) == 99
+    del total, other, done, consumer
+    clean()
+    retired = figures()
+    assert retired["allocated_bytes"] == retired["mapped_bytes"] == 0, retired
+    assert retired["event_handles"] == 0, retired
+    return {"metadata_only_default_reuse": True, "cross_stream_fenced": True, "stats": retired}
 
 
 def side_stream():
@@ -534,6 +568,7 @@ def external_stream_retirement():
 CASES = {
     "empty-capture": empty_capture,
     "allocator-reuse": allocator_reuse,
+    "default-deferred-free": default_deferred_free,
     "side-stream": side_stream,
     "captured-reuse": captured_reuse,
     "retained-output": retained_output,
