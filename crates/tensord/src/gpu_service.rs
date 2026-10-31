@@ -1346,13 +1346,18 @@ impl Pool {
         let Some(state) = pressure.get_mut(index) else { return };
         let Some(&sent) = state.limited.get(&pid) else { return };
         let held = reading.as_ref().and_then(|(_, by)| by.get(&pid).copied()).unwrap_or(0);
-        let target = match &reading {
+        // The band from this reading: 2H only while that program is still taking (its use rose
+        // since the loop's last reading). The loop's `pressing` lags it by up to a reading, and
+        // a call dispatched just after a game reached its size was left 2H short (erich s2:
+        // 1.58 GB beside 5 GB where H leaves 2.1 GB).
+        let band = reading.as_ref().map(|(now, _)| {
+            let pressing = state.blocked && now.foreign >= state.foreign.saturating_add(64 << 20);
+            (if pressing { 2 } else { 1 }) * Pressure::headroom(now.total)
+        });
+        let target = match (&reading, band) {
             _ if !shared && !state.blocked => None,
-            Some((now, _)) => {
-                let band = if state.pressing { 2 } else { 1 } * Pressure::headroom(now.total);
-                Some(held + (now.own + now.free).saturating_sub(band).saturating_sub(now.own))
-            }
-            None => return, // the room loop's next known reading sets it
+            (Some((now, _)), Some(band)) => Some(held + (now.own + now.free).saturating_sub(band).saturating_sub(now.own)),
+            _ => return, // the room loop's next known reading sets it
         };
         if target.is_some_and(|target| target <= sent) { return }
         if line.send(&Command::Room(Room { device: 0, target, held })) {
@@ -1363,7 +1368,7 @@ impl Pool {
             self.notes.note(serde_json::json!({"event": "room", "gpu": index, "call": pid, "target": target,
                 "held": reading.as_ref().map(|(_, by)| by), "own_bytes": reading.as_ref().map(|(now, _)| now.own),
                 "free_bytes": reading.as_ref().map(|(now, _)| now.free),
-                "headroom_bytes": reading.as_ref().map(|(now, _)| if state.pressing { 2 } else { 1 } * Pressure::headroom(now.total))}));
+                "headroom_bytes": band}));
         }
     }
 
