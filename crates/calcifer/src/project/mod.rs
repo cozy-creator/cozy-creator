@@ -48,7 +48,7 @@ use crate::api::{Api, Refusal, parse};
 use folder::{Folder, Lock, Made, MadeBy, Pending, Take, Target, Then};
 use graph::{Status, name_key};
 use host::Host;
-use video::{ALL, Render, Video};
+use video::{ALL, Canvas, Render, Video};
 
 /// The projects opened since Calcifer started, by id; one path is always one project.
 #[derive(Default)]
@@ -210,7 +210,7 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
                 (runs @ [_, ..], ..) => format!("making (runs {})", runs.join(", ")),
                 ([], Some(line), _) => line.clone(),
                 ([], None, Status::Current) if video.unclean(&lock, i).is_some() => "picture not cleaned yet".into(),
-                ([], None, Status::Empty) if !video.wanted(i) => "not used by the edit (edit_uses: native)".into(),
+                ([], None, Status::Empty) if !video.wanted(i) => "not needed: no resolution, or its shot meets it".into(),
                 ([], None, status) => shown(status),
             };
             Row {
@@ -229,7 +229,7 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
         .and_then(|m| m.modified())
         .ok()
         .map(|at| at.duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_millis() as i64));
-    let skips = match video.cuts(&project.folder) {
+    let skips = match video.cuts(&project.folder, false) {
         Ok((_, skips)) => skips,
         Err(error) => {
             warnings.push(error.message);
@@ -281,6 +281,7 @@ async fn runs(
     (project.folder.update_lock(|lock| {
         if all {
             lock.walk.all = Some(target.clone());
+            lock.walk.preview = asked.preview;
         }
         lock.walk.takes.extend(takes.iter().cloned());
     }))
@@ -426,6 +427,7 @@ impl Walk {
                     }
                     self.folder().update_lock(|lock| {
                         lock.walk.all = None;
+                        lock.walk.preview = false;
                         lock.walk.sent.clear();
                     })?;
                 } else if self.over()? {
@@ -518,27 +520,39 @@ impl Walk {
         sent
     }
 
-    /// The edit cut again here from the chosen shots' files (fast join: only what changed is
-    /// encoded); shots with no file yet are skipped, and said.
+    /// The cuts again here from the approved files (fast join: only what changed is encoded), each
+    /// filling the project's canvas: with `resolution:`, `preview.mp4` from the shots and, unless a
+    /// preview walk is going, `edit.mp4` from their upscales; without it, `edit.mp4` from the shots.
+    /// What has no file yet is skipped, and said.
     async fn recut(&self) -> Result<(), Error> {
         let video = Video::load(self.folder())?;
-        let (pieces, skipped) = video.cuts(self.folder())?;
-        if !skipped.is_empty() {
-            self.say(Event::Said { message: format!("the edit skips {}: no version yet", skipped.join(", ")) });
+        let mut cuts = vec![];
+        if video.canvas.short.is_some() {
+            cuts.push(("preview.mp4", true));
         }
-        if pieces.is_empty() {
-            return Ok(());
+        if video.canvas.short.is_none() || !self.folder().lock()?.walk.preview {
+            cuts.push(("edit.mp4", video.canvas.short.is_none()));
         }
-        let (ffmpeg, ffprobe) = self.host.ffmpeg()?;
-        let (folder, cutting, began) =
-            (Folder::open(&self.folder().dir)?, self.project.cutting.clone(), Instant::now());
-        let path = tokio::task::spawn_blocking(move || {
-            let _held = cutting.lock().expect("cutting lock");
-            video::cut(&ffmpeg, &ffprobe, &folder, &pieces)
-        })
-        .await
-        .map_err(|e| Error::new(Kind::Internal, "edit_cut", e.to_string()))??;
-        self.say(Event::Cut { path, seconds: began.elapsed().as_secs_f64() });
+        for (name, preview) in cuts {
+            let (pieces, skipped) = video.cuts(self.folder(), preview)?;
+            if !skipped.is_empty() {
+                self.say(Event::Said { message: format!("{name} skips {}: no version yet", skipped.join(", ")) });
+            }
+            if pieces.is_empty() {
+                continue;
+            }
+            let (ffmpeg, ffprobe) = self.host.ffmpeg()?;
+            let (folder, cutting, began) =
+                (Folder::open(&self.folder().dir)?, self.project.cutting.clone(), Instant::now());
+            let canvas = Canvas { short: if preview { None } else { video.canvas.short }, ..video.canvas.clone() };
+            let path = tokio::task::spawn_blocking(move || {
+                let _held = cutting.lock().expect("cutting lock");
+                video::cut(&ffmpeg, &ffprobe, &folder, &pieces, &canvas, name)
+            })
+            .await
+            .map_err(|e| Error::new(Kind::Internal, "edit_cut", e.to_string()))??;
+            self.say(Event::Cut { path, seconds: began.elapsed().as_secs_f64() });
+        }
         Ok(())
     }
 
@@ -617,6 +631,10 @@ impl Walk {
         let named = |e: Error| Error { message: format!("{node}'s render: {}", e.message), ..e };
         let mut payload = payload.clone();
         let fields = payload.as_object_mut().expect("a request is an object");
+        if let Some(field) = render.options.keys().find(|key| matches!(key.as_str(), "resolution" | "aspect_ratio")) {
+            let said = format!("{node}'s render options set `{field}`: {field} is set by the project");
+            return Err(Error::new(Kind::Validation, "option_project", said).remedy(format!("set {field}: in project.yaml")));
+        }
         if let Some(field) = render.options.keys().find(|key| fields.contains_key(*key) || matches!(key.as_str(), "models" | "lora")) {
             let said = format!("{node}'s render options set `{field}`, which the project sends");
             return Err(Error::new(Kind::Validation, "option_compiled", said).remedy("remove it from options"));
@@ -742,6 +760,10 @@ impl Walk {
         };
         let (file, _) = folder.keep(&picture)?;
         let mut made = Made { file: file.clone(), ..pending.made.clone() };
+        if pending.field == "video" {
+            let (_, ffprobe) = self.host.ffmpeg()?;
+            made.size = video::size(&ffprobe, &folder.path(&file));
+        }
         for (k, state) in pending.writes.iter().enumerate() {
             made.outputs.insert(state.clone(), folder.keep(&saved("frames", k + 1)?)?.1);
         }
@@ -809,6 +831,7 @@ fn plan(video: &Video, lock: &Lock) -> Vec<Next> {
         });
         let owed = walk.all.is_some()
             && video.wanted(i)
+            && !(walk.preview && video.is_upscale(i))
             && (status[i] != Status::Current || !clean(i))
             && !walk.sent.contains(&id);
         let up = graph.upstream[i].iter().any(|edge| unsettled[edge.node]);

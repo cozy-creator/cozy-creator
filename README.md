@@ -84,6 +84,7 @@ commented `project.yaml`; fill it in:
 ```yaml
 type: video
 style: soft watercolor
+resolution: 1440p
 defaults: {shot: {with: minimax-h3/shot, options: {turbo: true}}}
 entities:
   - {name: theo, kind: character, description: "A tall man in a green raincoat."}
@@ -119,9 +120,14 @@ options}`: `with` a function, `models: {base_model: {ref: org/checkpoint}}` and 
 strength: 0.8}]` as `cozy run --input` takes them, and `options`, the function's own fields. A block that
 names no function adjusts its kind's `defaults:` (entity, setup, world_state, shot, upscale, clean).
 `cozy project status` shows what made each approved version. A file you attach (`image:`, or a shot's
-`video:`) is used until you approve one cozy made. `cozy render fight.upscale` makes a shot's upscale,
-with its own `upscale: {render: {options: {resolution: 1080p, upscale: {model: regenerate-2k}}}}`;
-`edit_uses: upscaled` cuts the edit from the upscales, and `render all` then makes them.
+`video:`) is used until you approve one cozy made.
+
+`resolution: 1440p` and `aspect_ratio: 16:9` (the default; `9:16` and `2.39:1` work alike) fix the
+project's canvas: pictures of places are made at its aspect, and every shot fills it, center-cropped,
+never letterboxed or stretched. A shot whose approved version is below the resolution is upscaled
+(`defaults: {upscale: …}`, or a shot's own `upscale: {render: …}`, which can change the function, models,
+LoRAs and options but never the canvas). `render all` makes the upscales and cuts `edit.mp4` at the
+canvas; `preview.mp4`, the native cut, is redone as shots land, and `render all --preview` stops there.
 
 ## Remove cozy
 

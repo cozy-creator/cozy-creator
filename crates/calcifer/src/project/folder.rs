@@ -49,6 +49,9 @@ pub struct Made {
     /// The digest of the picture attached in project.yaml that this cleans.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clean_of: Option<String>,
+    /// A video's width and height, which decide whether its shot is upscaled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<[u64; 2]>,
 }
 
 /// What made a version: `with` as `org/package/function@release`, and its run's model choices and
@@ -128,6 +131,9 @@ pub struct Owed {
     /// `render all`: every node up to date, then the edit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub all: Option<Target>,
+    /// `render all --preview`: no upscales, and only the native cut.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub preview: bool,
     /// What `all` sent this walk, made or failed, by name key: each is sent once.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub sent: BTreeSet<String>,

@@ -54,8 +54,9 @@ shots:   # in order; past its renderer's longest piece (15 s for minimax-h3) a s
   #    beats: [{at: 0, prompt: \"He walks to the edge.\"}, {at: 4, prompt: \"He looks out to sea.\"}]}
 # a node's render: {with: <function>, models: {...}, lora: [...], options: {...}} renders it another way
 # image: (or a shot's video:) attaches your own file, used until you approve a version cozy made
+# resolution: 1440p   # the edit's short edge: shots below it are upscaled (their approved version), and
+# aspect_ratio: \"16:9\"   # the canvas every shot fills; both are the project's alone
 # edit: [{shot: walk, end: 6}]   # which shots and spans the edit cuts; absent: every shot, whole
-# edit_uses: upscaled   # cut each shot's upscale
 "
     .into()
 }
@@ -69,8 +70,10 @@ struct Project {
     defaults: BTreeMap<String, Render>,
     #[serde(default)]
     style: String,
-    #[serde(default)]
-    edit_uses: Uses,
+    /// The edit's short edge (`1440p`): a shot whose approved version is below it is upscaled.
+    resolution: Option<String>,
+    /// The canvas every still of a place and every shot fills (`16:9`, `9:16`, `2.39:1`).
+    aspect_ratio: Option<String>,
     #[serde(default, deserialize_with = "listed")]
     entities: Vec<Entity>,
     #[serde(default, deserialize_with = "listed")]
@@ -99,14 +102,6 @@ impl Render {
     pub fn target(&self) -> &str {
         self.with.as_deref().unwrap_or_default()
     }
-}
-
-#[derive(Clone, Copy, Default, PartialEq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum Uses {
-    #[default]
-    Native,
-    Upscaled,
 }
 
 /// A thing in the film's world.
@@ -233,6 +228,57 @@ pub struct Video {
     items: Vec<Item>,
     pub graph: Graph,
     pub warnings: Vec<String>,
+    /// The project's canvas.
+    pub canvas: Canvas,
+    /// Each node's current video's width and height, when project.lock records them.
+    sizes: Vec<Option<[u64; 2]>>,
+}
+
+/// The canvas the edit fills: its aspect, as W:H in whole numbers for a request and as a ratio,
+/// and its short edge when `resolution:` sets one.
+#[derive(Clone, Debug)]
+pub struct Canvas {
+    pub aspect: String,
+    pub ratio: f64,
+    pub short: Option<u64>,
+}
+
+impl Canvas {
+    fn read(resolution: Option<&str>, aspect: Option<&str>) -> Result<Self, Error> {
+        let short = match resolution {
+            None => None,
+            Some(text) => Some(
+                (text.strip_suffix('p').and_then(|n| n.parse::<u64>().ok()).filter(|n| *n >= 16)).ok_or_else(|| {
+                    invalid("resolution", format!("resolution {text} is not a short edge such as 1080p or 1440p"))
+                })?,
+            ),
+        };
+        let aspect = aspect.unwrap_or("16:9");
+        let side = |text: &str| text.trim().parse::<f64>().ok().filter(|v| v.is_finite() && *v > 0.0);
+        let Some((w, h)) = aspect.split_once(':').and_then(|(w, h)| Some((side(w)?, side(h)?))) else {
+            return Err(invalid("aspect_ratio", format!("aspect_ratio {aspect} is not W:H, such as 16:9 or 2.39:1")));
+        };
+        // Whole numbers for an image request's W:H: 2.39:1 is 239:100.
+        let (mut a, mut b) = ((w * 100.0).round() as u64, (h * 100.0).round() as u64);
+        let gcd = |mut x: u64, mut y: u64| {
+            while y != 0 {
+                (x, y) = (y, x % y);
+            }
+            x
+        };
+        let g = gcd(a, b).max(1);
+        (a, b) = (a / g, b / g);
+        Ok(Self { aspect: format!("{a}:{b}"), ratio: w / h, short })
+    }
+
+    /// Width and height on this aspect for `short` as its short edge, each even.
+    pub fn size(&self, short: u64) -> (u64, u64) {
+        let long = |s: f64| ((s / 2.0).round() as u64) * 2;
+        match self.ratio >= 1.0 {
+            true => (long(short as f64 * self.ratio), short),
+            false => (short, long(short as f64 / self.ratio)),
+        }
+    }
 }
 
 /// A version's request, and what to record of it.
@@ -450,7 +496,14 @@ impl Video {
                 graph.nodes[*i].id
             )
         }));
-        Ok(Self { project, items, graph, warnings })
+        let canvas = Canvas::read(project.resolution.as_deref(), project.aspect_ratio.as_deref())?;
+        let sizes = (graph.nodes.iter())
+            .map(|node| {
+                let (_, digest) = node.file.as_ref()?;
+                lock.made(&node.id, digest)?.size
+            })
+            .collect();
+        Ok(Self { project, items, graph, warnings, canvas, sizes })
     }
 
     /// Node `i`'s render block (`resolve`).
@@ -498,9 +551,14 @@ impl Video {
         }
     }
 
-    /// Whether `render` makes the node: everything but upscales the edit does not use.
+    /// Whether `render all` makes the node: every node but an upscale the edit does not need. A
+    /// shot is upscaled when `resolution:` is set and its current version's short edge is below it
+    /// (a video attached by hand, whose size project.lock does not record, is upscaled).
     pub fn wanted(&self, i: usize) -> bool {
-        !matches!(self.items[i], Item::Upscale(_)) || self.project.edit_uses == Uses::Upscaled
+        let Item::Upscale(k) = self.items[i] else { return true };
+        let Some(short) = self.canvas.short else { return false };
+        let shot = self.graph.find(&self.project.shots[k].name).expect("a shot is a node");
+        self.sizes[shot].is_none_or(|[w, h]| w.min(h) < short)
     }
 
     /// Whether node `i`'s pictures are cleaned before use: a character's or a prop's.
@@ -583,9 +641,8 @@ impl Video {
             (reads.iter().enumerate())
                 .map(|(n, read)| {
                     let up = &graph.nodes[read.edge.node];
-                    let (name, kind) =
-                        read.edge.state.as_ref().map_or((up.id.as_str(), up.kind), |s| (s.as_str(), "world_state"));
-                    json!({"name": name, "kind": kind, "image": read.input(files, format!("assets.{n}.image"), None)})
+                    let name = read.edge.state.as_deref().unwrap_or(&up.id);
+                    json!({"name": name, "image": read.input(files, format!("pictures.{n}.image"), None)})
                 })
                 .collect()
         };
@@ -603,10 +660,10 @@ impl Video {
                         format!("Prop reference of {name} alone: one view of the object, on a plain white background. Any other picture is for likeness only; draw nothing else."),
                         "1:1",
                     ),
-                    EntityKind::Environment => ("An establishing view of the empty set, no people.".to_owned(), "16:9"),
+                    EntityKind::Environment => ("An establishing view of the empty set, no people.".to_owned(), self.canvas.aspect.as_str()),
                 };
                 let prompt = styled(format!("{}\n\n{shown}", entity.description.trim()));
-                (json!({"prompt": prompt, "assets": pictures(&mut files), "aspect_ratio": ratio}), vec![])
+                (json!({"prompt": prompt, "pictures": pictures(&mut files), "aspect_ratio": ratio}), vec![])
             }
             Item::Setup(a, s) => {
                 // The environment's picture (or a shot's frame) first, and the camera in screen terms
@@ -623,22 +680,22 @@ impl Video {
                         env.name
                     ),
                 };
-                let assets: Vec<Value> = (reads.iter().enumerate())
+                let pictures: Vec<Value> = (reads.iter().enumerate())
                     .map(|(n, read)| {
                         let up = &graph.nodes[read.edge.node];
-                        let (name, kind, at) = match n {
-                            0 => (env.name.as_str(), "environment", setup.frame.as_ref().map(|frame| frame.at)),
-                            _ => (up.id.as_str(), up.kind, None),
+                        let (name, at) = match n {
+                            0 => (env.name.as_str(), setup.frame.as_ref().map(|frame| frame.at)),
+                            _ => (up.id.as_str(), None),
                         };
-                        json!({"name": name, "kind": kind, "image": read.input(&mut files, format!("assets.{n}.image"), at)})
+                        json!({"name": name, "image": read.input(&mut files, format!("pictures.{n}.image"), at)})
                     })
                     .collect();
-                (json!({"prompt": prompt, "assets": assets, "aspect_ratio": "16:9"}), vec![])
+                (json!({"prompt": prompt, "pictures": pictures, "aspect_ratio": self.canvas.aspect}), vec![])
             }
             Item::State(w) => {
                 let state = &self.project.world_states[w];
                 let prompt = styled([state.init.trim(), state.blocking.trim()].join("\n\n").trim().to_owned());
-                (json!({"prompt": prompt, "assets": pictures(&mut files), "aspect_ratio": "16:9"}), vec![])
+                (json!({"prompt": prompt, "pictures": pictures(&mut files), "aspect_ratio": self.canvas.aspect}), vec![])
             }
             Item::Shot(k) => self.shot(k, &reads, &mut files),
             Item::Upscale(k) => {
@@ -646,7 +703,10 @@ impl Video {
                 let shot = &self.project.shots[k];
                 let beats = shot.beats.iter().map(|beat| format!("Then, {}", beat.prompt.trim()));
                 let text = std::iter::once(shot.prompt.trim().to_owned()).chain(beats).collect::<Vec<_>>().join(" ");
-                let payload = json!({"video": reads[0].input(&mut files, "video".into(), None), "prompt": styled(text.replace(['<', '>'], ""))});
+                let mut payload = json!({"video": reads[0].input(&mut files, "video".into(), None), "prompt": styled(text.replace(['<', '>'], ""))});
+                if let Some(resolution) = &self.project.resolution {
+                    payload["resolution"] = Value::String(resolution.clone());
+                }
                 (payload, vec![])
             }
         };
@@ -697,9 +757,11 @@ impl Video {
         (payload, writes)
     }
 
-    /// The edit's pieces: each cut's shot file (its upscale's with `edit_uses: upscaled`) and range;
-    /// and the shots it cuts that have no file yet, skipped.
-    pub fn cuts(&self, folder: &Folder) -> Result<(Vec<Piece>, Vec<String>), Error> {
+    /// The pieces of the edit (`preview`: of its native cut): each cut's shot file and span, by
+    /// default the shot's `duration_s` (a renderer may run past it). The edit takes each shot's
+    /// upscale where it has one to make (`wanted`), else the shot; the preview takes the shot. And
+    /// the nodes it would cut that have no file yet, skipped.
+    pub fn cuts(&self, folder: &Folder, preview: bool) -> Result<(Vec<Piece>, Vec<String>), Error> {
         let cuts: Vec<(&str, Option<f64>, Option<f64>)> = match &self.project.edit {
             Some(cuts) => cuts.iter().map(|cut| (cut.shot.as_str(), cut.start, cut.end)).collect(),
             None => self.project.shots.iter().map(|shot| (shot.name.as_str(), None, None)).collect(),
@@ -710,37 +772,51 @@ impl Video {
                 invalid("cut_unknown", format!("the edit cuts {name}, which is no shot"))
                     .remedy("each edit entry is {shot: <a shot's name>, start?, end?}")
             })?;
-            let id = match self.project.edit_uses {
-                Uses::Native => self.project.shots[k].name.clone(),
-                Uses::Upscaled => format!("{}.upscale", self.project.shots[k].name),
+            let shot = &self.project.shots[k];
+            let upscale = self.graph.find(&format!("{}.upscale", shot.name)).expect("a shot's upscale is a node");
+            let i = match !preview && self.wanted(upscale) {
+                true => upscale,
+                false => self.graph.find(&shot.name).expect("a shot is a node"),
             };
-            let entity = self.graph.find(&id).map(|i| &self.graph.nodes[i]);
-            match entity.and_then(|entity| entity.file.as_ref()) {
+            let node = &self.graph.nodes[i];
+            let end = end.or(Some(shot.duration_s));
+            match &node.file {
                 Some((file, digest)) => {
                     pieces.push(Piece { path: folder.path(file), digest: digest.clone(), start, end })
                 }
-                None if !skipped.contains(&id) => skipped.push(id),
+                None if !skipped.contains(&node.id) => skipped.push(node.id.clone()),
                 None => {}
             }
         }
         Ok((pieces, skipped))
     }
 
-    /// Whether the edit cuts entity `i`'s file: a shot's, or with `edit_uses: upscaled` its upscale's.
+    pub fn is_upscale(&self, i: usize) -> bool {
+        matches!(self.items[i], Item::Upscale(_))
+    }
+
+    /// Whether a cut reads node `i`'s file: a shot's, or its upscale's.
     pub fn cut_reads(&self, i: usize) -> bool {
-        matches!(
-            (self.items[i], self.project.edit_uses),
-            (Item::Shot(_), Uses::Native) | (Item::Upscale(_), Uses::Upscaled)
-        )
+        matches!(self.items[i], Item::Shot(_) | Item::Upscale(_))
     }
 }
 
-/// Cuts `pieces` into `<project>/edit.mp4` with cozy's ffmpeg, here, by fast join: each piece's
-/// span between keyframes is copied, only the GOPs at its ends are encoded (kept in
-/// `<project>/.cuts` by file and span, so a re-cut encodes only what changed), and the sound is
-/// encoded once. Pieces whose files differ in codec, size or frame rate are encoded whole.
-pub fn cut(ffmpeg: &Path, ffprobe: &Path, folder: &Folder, pieces: &[Piece]) -> Result<PathBuf, Error> {
+/// Cuts `pieces` into `<project>/<name>` with cozy's ffmpeg, here, on `canvas` (its short edge, or
+/// the first piece's): every piece fills it and is center-cropped, never letterboxed or stretched.
+/// By fast join when every piece is already that size: each piece's span between keyframes is
+/// copied, only the GOPs at its ends are encoded (kept in `<project>/.cuts` by file and span, so a
+/// re-cut encodes only what changed), and the sound is encoded once. Pieces that differ in codec,
+/// size or frame rate are encoded whole.
+pub fn cut(
+    ffmpeg: &Path,
+    ffprobe: &Path,
+    folder: &Folder,
+    pieces: &[Piece],
+    canvas: &Canvas,
+    name: &str,
+) -> Result<PathBuf, Error> {
     let probes = pieces.iter().map(|piece| probe(ffprobe, &piece.path)).collect::<Result<Vec<_>, _>>()?;
+    let (width, height) = canvas.size(canvas.short.unwrap_or_else(|| probes[0].size.0.min(probes[0].size.1)));
     let ranges: Vec<(f64, f64)> = pieces
         .iter()
         .zip(&probes)
@@ -751,7 +827,8 @@ pub fn cut(ffmpeg: &Path, ffprobe: &Path, folder: &Folder, pieces: &[Piece]) -> 
     let (cache, video) = (folder.dir.join(".cuts"), work.path().join("video.mp4"));
     std::fs::create_dir_all(&cache).map_err(io)?;
     let mut kept = BTreeSet::new();
-    if probes.iter().all(|probe| probe.video == probes[0].video && probe.video.starts_with("h264 ")) {
+    let fits = |probe: &Probe| probe.size == (width, height);
+    if probes.iter().all(|probe| probe.video == probes[0].video && probe.video.starts_with("h264 ") && fits(probe)) {
         let mut list = String::new();
         for (k, ((piece, probe), &(start, end))) in pieces.iter().zip(&probes).zip(&ranges).enumerate() {
             for (n, (from, to, copy)) in spans(start, end, &probe.keys, probe.rate).into_iter().enumerate() {
@@ -836,13 +913,13 @@ pub fn cut(ffmpeg: &Path, ffprobe: &Path, folder: &Folder, pieces: &[Piece]) -> 
             ],
         )?;
     } else {
-        let (width, height) = probes[0].size;
         let (mut filter, mut joined, mut inputs) = (String::new(), String::new(), vec![]);
         for (k, (piece, (start, end))) in pieces.iter().zip(&ranges).enumerate() {
             inputs.extend(["-i".into(), piece.path.clone().into_os_string()]);
             let _ = write!(
                 filter,
-                "[{k}:v]trim=start={start}:end={end},setpts=PTS-STARTPTS,scale={width}:{height},setsar=1[v{k}];"
+                "[{k}:v]trim=start={start}:end={end},setpts=PTS-STARTPTS,\
+                 scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1[v{k}];"
             );
             let _ = write!(joined, "[v{k}]");
         }
@@ -887,11 +964,11 @@ pub fn cut(ffmpeg: &Path, ffprobe: &Path, folder: &Folder, pieces: &[Piece]) -> 
         run(ffmpeg, &args.iter().map(|a| a.as_os_str()).collect::<Vec<_>>())?;
         mux.extend(["-i".into(), sound.into_os_string(), "-map".into(), "1:a".into()]);
     }
-    let part = work.path().join("edit.mp4");
+    let part = work.path().join(name);
     mux.extend(["-map", "0:v", "-c", "copy", "-movflags", "+faststart", "-f", "mp4"].map(Into::into));
     mux.push(part.clone().into_os_string());
     run(ffmpeg, &mux.iter().map(|a| a.as_os_str()).collect::<Vec<_>>())?;
-    let out = folder.dir.join("edit.mp4");
+    let out = folder.dir.join(name);
     std::fs::rename(&part, &out).map_err(io)?;
     // The cache keeps what this edit used.
     for entry in std::fs::read_dir(&cache).map_err(io)?.flatten() {
@@ -934,6 +1011,11 @@ struct Probe {
     sound: bool,
     seconds: f64,
     keys: Vec<f64>,
+}
+
+/// A video's width and height, when ffprobe reads them.
+pub fn size(ffprobe: &Path, path: &Path) -> Option<[u64; 2]> {
+    probe(ffprobe, path).ok().map(|probe| [probe.size.0, probe.size.1])
 }
 
 fn probe(ffprobe: &Path, path: &Path) -> Result<Probe, Error> {

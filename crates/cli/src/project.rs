@@ -36,6 +36,7 @@ const RENDER_EXAMPLES: &str = "Examples:
   cozy render theo dock.b --project garden --on kiyui
                                                 a new version of each (a first one is approved)
   cozy render fight -n 3 --on kiyui             three takes of fight, from inside the project's folder
+  cozy render all --preview --on kiyui          everything but upscales, and the native preview.mp4
 
 Each version is sent as soon as what it reads is made, so independent ones run at once; with
 several machines each goes to the least busy, one that holds its models first. A render asked
@@ -102,6 +103,9 @@ pub struct Render {
     /// New versions of each.
     #[arg(short = 'n', value_name = "N", default_value_t = 1)]
     n: u32,
+    /// With `all`: no upscales; cut only the native preview (`preview.mp4`).
+    #[arg(long)]
+    preview: bool,
 }
 
 pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
@@ -166,7 +170,7 @@ pub async fn render(ctx: &Context, args: Render) -> Result<ExitCode, Error> {
     let calcifer = ctx.calcifer().await?;
     let mut events = calcifer.watch::<Event>(&format!("/v1/projects/{}/events", opened.id)).await?;
     let on = args.on.into_iter().map(|on| local_usable(&on).map(|()| On::from(on))).collect::<Result<_, _>>()?;
-    let runs = Runs { names: args.names, n: args.n, on, hub: ctx.hub().to_string() };
+    let runs = Runs { names: args.names, n: args.n, on, hub: ctx.hub().to_string(), preview: args.preview };
     let _: Opened = calcifer.post(&format!("/v1/projects/{}/runs", opened.id), &runs, None).await?;
     while let Some(event) = events.next().await {
         match event {

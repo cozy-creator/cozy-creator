@@ -78,6 +78,9 @@ pub struct Runs {
     pub on: Vec<On>,
     /// The Hub its renderers are read from and its runs belong to.
     pub hub: String,
+    /// With `all`: no upscales, and only the native cut (`preview.mp4`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub preview: bool,
 }
 
 fn one() -> u32 {
