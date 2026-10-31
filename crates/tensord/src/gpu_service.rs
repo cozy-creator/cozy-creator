@@ -1309,7 +1309,10 @@ impl Pool {
         let calls: Vec<u32> = running.iter().copied().filter(|pid| lines.contains_key(pid)).collect();
         // Read from the driver's free bytes, not the card less what processes hold: the driver's
         // own reserve (about 0.5 GB once any process has the device open) is in neither.
-        let room = (shared || blocked).then(|| (now.own + now.free).saturating_sub(headroom));
+        // With another program pressing, a give keeps 2H free (the band, §3.5) so it is not met
+        // again at the next block it takes; shared mode with none keeps H (option B).
+        let band = if blocked { 2 * headroom } else { headroom };
+        let room = (shared || blocked).then(|| (now.own + now.free).saturating_sub(band));
         let deficit = match room {
             Some(room) => now.own.saturating_sub(room),
             None if !running.is_empty() => headroom.saturating_sub(now.free),
@@ -1351,9 +1354,11 @@ impl Pool {
                     for pid in members {
                         if left == 0 { break }
                         let held = by.get(&pid).copied().unwrap_or(0);
-                        let give = left.min(held);
+                        // Idle pages nobody uses go whole when another program presses (§3.3
+                        // step 2); otherwise the deficit is split, least recently used first.
+                        let give = if round == 0 && blocked { held } else { left.min(held) };
                         if ask(pid, Some(held - give), state) {
-                            left -= give;
+                            left = left.saturating_sub(give);
                             told.push(pid);
                         }
                     }
