@@ -11,7 +11,9 @@ pub mod ids;
 pub mod machine;
 pub mod model_ref;
 pub mod names;
+pub mod project;
 pub mod tree;
+pub mod yaml;
 
 /// The commit this build is from (`build.rs`).
 pub const COMMIT: &str = env!("COZY_COMMIT");

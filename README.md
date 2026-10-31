@@ -74,6 +74,42 @@ rent a Linux GPU, or `--on <machine>` for one you have. Outputs land in `~/.cozy
 `cozy doctor` diagnoses this computer's cozy (Calcifer, its service, the machine, tools, GPUs) and
 restarts a Calcifer that is stuck or runs an older cozy.
 
+## Projects
+
+A video project is a folder: `project.yaml` (yours to edit), `files/` (every version, by content) and
+`edit.mp4`, cut on this computer as shots land. `cozy project new --project garden` writes a commented
+`project.yaml`; fill it in:
+
+```yaml
+type: video
+style: soft watercolor
+assets:
+  - {name: theo, kind: character, description: "A tall man in a green raincoat."}
+  - {name: juno, kind: character, description: "<theo>'s sister, in a red coat."}
+  - {name: dock, kind: environment, description: "a foggy harbour at dawn",
+     setups: [{name: a, camera: "wide: the red hut near on the left, the crates far on the right"}]}
+world_states:
+  - {name: stage, init: "<juno> and <theo> face off on <dock>.", blocking: "juno by the crates."}
+shots:
+  - {name: fight, setup: dock.a, prompt: "<theo> and <juno> spar.", duration_s: 20, writes: [stage],
+     beats: [{at: 0, prompt: "They circle."}, {at: 10, prompt: "<juno> sweeps his legs."}]}
+  - {name: reaction, prompt: "Close on <theo>, wincing, after <stage>.", duration_s: 4}
+edit: [{shot: fight, end: 8}, {shot: reaction}, {shot: fight, start: 10}]
+```
+
+```sh
+cozy render all --project garden --on <machine>   # everything missing or out of date, then the edit
+cozy render theo --project garden --on <machine>  # another take of theo
+cozy project approve theo 2 --project garden      # choose it: what is made from theo goes out of date
+cozy project status --project garden              # what is missing, out of date and why, and the edit
+```
+
+`<name>` in a text names another entity, which it is then made from; a setup's camera is written in
+screen terms (what is near or far, left or right). A shot reads a world state it
+names and changes the ones it `writes`. Character and prop pictures are cleaned on this computer before
+use. Only a changed upstream file puts something out of date, never a text edit: `cozy render <name>`
+when you want a new take. Each kind's package is in `renderers:` (`cozy project --help`).
+
 ## Remove cozy
 
 End your rentals first (`cozy machine ls`, `cozy machine end <name>`). Then:

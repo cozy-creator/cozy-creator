@@ -124,3 +124,12 @@ if [ -f h3-lease-next.number ]; then
   w=$(grep -c 'held by another run' "$OUT/h3-lease-next.ndjson" 2>/dev/null); s=$(run_get "$OUT" h3-lease-next .status)
   expect h3-lease "$([ "$s" = completed ] && [ "${w:-0}" = 0 ] && echo PASS || echo FAIL)" "next call $s, ${w:-0} waits behind another run"
 fi
+
+# h3-shot (xs-136): one 40 s `video/shot` with beats, which renders in pieces split on them: as long as asked, with sound.
+printf 'prompt: "%s"\nduration_s: 40\nbeats:\n  - {at: 0, prompt: "%s"}\n  - {at: 14, prompt: "The camera slowly circles to the side."}\n  - {at: 28, prompt: "Everything settles; a last look at the camera."}\n' \
+  "$CHAR in $SCENE." "$MOTION" > h3-shot.yaml
+printf 'h3-shot\t%s in %s.\n' "$CHAR" "$SCENE" >> prompts.tsv
+cell h3-shot "$SHOT" --input "$PWD/h3-shot.yaml" seed:=$((R + 79))
+av h3-shot 768
+[ ! -f h3-shot.number ] || expect h3-shot-length "$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$(video_of h3-shot)" \
+  | awk '{ print ($1 >= 39.5 && $1 <= 41) ? "PASS" : "FAIL" }')" "40 s asked"

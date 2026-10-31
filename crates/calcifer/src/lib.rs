@@ -17,6 +17,7 @@ mod local;
 pub mod machines;
 pub mod outputs;
 pub mod play;
+pub mod project;
 mod rentals;
 pub mod serve;
 pub mod store;
