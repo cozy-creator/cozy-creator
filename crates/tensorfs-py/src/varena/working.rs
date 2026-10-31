@@ -1,12 +1,12 @@
 //! Torch callbacks contain no Python; Rust owns allocation and completion state.
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Mutex;
+use std::sync::OnceLock;
 
 use pyo3::prelude::*;
 
 static OWNER: AtomicU32 = AtomicU32::new(0);
-static CALLBACK_ERROR: Mutex<Option<varena::Error>> = Mutex::new(None);
+static CALLBACK_ERROR: OnceLock<varena::Error> = OnceLock::new();
 
 #[repr(C)]
 struct Failure {
@@ -49,10 +49,7 @@ fn check() -> varena::Result<()> {
             "Torch allocator is not installed in this process",
         ));
     }
-    let failure = CALLBACK_ERROR
-        .lock()
-        .map_err(|_| varena::Error::Poisoned("allocator callback status".into()))?;
-    if let Some(error) = failure.as_ref() {
+    if let Some(error) = CALLBACK_ERROR.get() {
         return Err(error.clone());
     }
     Ok(())
@@ -89,9 +86,7 @@ fn retire(failure: *mut Failure, operation: impl FnOnce() -> varena::Result<()>)
         });
         if let Err(error) = result {
             // Destructor callbacks cannot throw. Preserve the first failure for the next boundary.
-            if let Ok(mut recorded) = CALLBACK_ERROR.lock() {
-                recorded.get_or_insert_with(|| error.clone());
-            }
+            let _ = CALLBACK_ERROR.set(error.clone());
             return Err(error);
         }
         Ok(1)
