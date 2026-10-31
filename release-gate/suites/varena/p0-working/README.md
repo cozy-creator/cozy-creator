@@ -91,3 +91,16 @@ model's PyPI distribution may spell its version `2.14.0` while `torch.__version_
 `cozy machine update` still selects the candidate Runtime/TensorFS pair. The fixture verifies their installed
 extension and shim hashes. Do not replace that path with an untracked interpreter or install a different Torch
 into an active generation. Preserve existing Torch2.14.1 receipts as evidence for their own cohort.
+
+## cuDNN capture shortfall
+
+`case=cudnn-capture-shortfall` uses real float32 NCHW convolutions. It selects a fixed small shape whose repeated
+eager execution has a measured nonzero workspace and bitwise-stable output. All proposed shapes have2MiB output
+and under5MiB of inputs/weights; the case requires peak managed backing below256MiB. No driver or library is mocked.
+
+It reserves exactly2MiB for capture: the output fits, but the measured workspace cannot. The required contract is
+one native preparation refusal escaping cuDNN immediately; `vt.graph` may translate it to Torch OOM only after
+actual capture has ended and cleanup completes. The subsequent eager convolution must preserve exact output and
+workspace demand. Diagnostics are emitted before assertions, so old cuDNN retries/cache mutation remain visible.
+Existing cases and allocator microbenchmark settings/bars are unchanged. This new case has source/syntax checks
+only until its real GPU receipt is recorded; no pass is inferred from its construction.
