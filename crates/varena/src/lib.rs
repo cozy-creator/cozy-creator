@@ -273,18 +273,24 @@ pub struct Arena {
 }
 
 /// This process's GPU bytes on one device against the room it may hold (`make_room`): its mapped
-/// weight pages and Torch's segments through the allocation hook. A smaller room reads as a
-/// smaller card to every fill and every hooked allocation.
+/// weight pages and working allocations. A smaller room reads as a
+/// smaller card to every fill and every working mapping.
 struct Room {
     /// usize::MAX: no limit.
     limit: AtomicUsize,
     pages: AtomicUsize,
-    torch: AtomicUsize,
+    working: AtomicUsize,
+    ceiling: AtomicUsize,
 }
 
 impl Default for Room {
     fn default() -> Self {
-        Self { limit: AtomicUsize::new(usize::MAX), pages: AtomicUsize::new(0), torch: AtomicUsize::new(0) }
+        Self {
+            limit: AtomicUsize::new(usize::MAX),
+            pages: AtomicUsize::new(0),
+            working: AtomicUsize::new(0),
+            ceiling: AtomicUsize::new(usize::MAX),
+        }
     }
 }
 
@@ -293,9 +299,11 @@ impl Room {
     fn over(&self, more: usize) -> usize {
         self.pages
             .load(Ordering::Acquire)
-            .saturating_add(self.torch.load(Ordering::Acquire))
+            .saturating_add(self.working.load(Ordering::Acquire))
             .saturating_add(more)
-            .saturating_sub(self.limit.load(Ordering::Acquire))
+            .saturating_sub(
+                self.limit.load(Ordering::Acquire).min(self.ceiling.load(Ordering::Acquire)),
+            )
     }
 }
 
@@ -1703,7 +1711,7 @@ fn room(device: i32) -> Result<Arc<Room>> {
     Ok(Arc::clone(&capture_counts()?.entry(device).or_default().room))
 }
 
-/// The room this process may hold on `device` (its weight pages plus Torch's hooked segments),
+/// The room this process may hold on `device` (weight pages plus mapped working allocations),
 /// None for no limit, and at once its pages above it back, in reclaim order (pins are never
 /// overridden; under a capture or replay they wait for the next fill or allocation, which the
 /// room bounds from now on). What a machine asks of an executor when another program needs the
@@ -1712,6 +1720,19 @@ pub fn make_room(device: i32, limit: Option<usize>) -> Result<ReclaimReport> {
     check_process()?;
     let room = room(device)?;
     room.limit.store(limit.unwrap_or(usize::MAX), Ordering::Release);
+    reclaim_room(device, &room)
+}
+
+/// Bound managed physical memory, independently of the temporary room requested by a peer.
+/// Native decode, Torch working allocations and resident weight pages all count.
+/// Contexts and allocations made by other CUDA libraries are outside this ceiling.
+pub fn set_limit(device: i32, limit: Option<usize>) -> Result<ReclaimReport> {
+    let room = room(device)?;
+    room.ceiling.store(limit.unwrap_or(usize::MAX), Ordering::Release);
+    reclaim_room(device, &room)
+}
+
+fn reclaim_room(device: i32, room: &Room) -> Result<ReclaimReport> {
     let over = room.over(0);
     let mut report = ReclaimReport {
         requested_bytes: over,
@@ -1720,6 +1741,7 @@ pub fn make_room(device: i32, limit: Option<usize>) -> Result<ReclaimReport> {
     if over == 0 || is_recovery_blocked(device)? {
         return Ok(report);
     }
+    report.reclaimed_bytes += working::trim(device)?;
     let Some(registry) = ARENAS.get() else {
         return Ok(report);
     };
@@ -1746,12 +1768,6 @@ pub fn make_room(device: i32, limit: Option<usize>) -> Result<ReclaimReport> {
 pub fn room_limit(device: i32) -> Result<Option<usize>> {
     let limit = room(device)?.limit.load(Ordering::Acquire);
     Ok((limit != usize::MAX).then_some(limit))
-}
-
-/// Torch's segments on `device` through the allocation hook, which the room counts beside pages.
-pub fn note_torch_reserved(device: i32, bytes: usize) -> Result<()> {
-    room(device)?.torch.store(bytes, Ordering::Release);
-    Ok(())
 }
 
 /// Allocator-pressure entry point: native-only, one finite pass, no callbacks or external waits.

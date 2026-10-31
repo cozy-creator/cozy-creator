@@ -1,79 +1,51 @@
-# Process-local CUDA weights
+# Process-local CUDA memory
 
-`tensorfs.varena` owns stable virtual addresses and reclaimable physical weight pages through
-Rust. TensorFS remains the byte reader. A `Use.tensor` is an ordinary `torch.uint8` CUDA tensor;
-its DLPack storage owns a native physical pin until its last alias dies. Runtime must fill all
-logical bytes before `Use.commit()`. Commit joins the primary context before publishing ready
-contents. An abandoned fill cannot be overwritten while an escaped tensor still pins it.
+`tensorfs.varena` owns stable weight addresses and reclaimable physical backing. Torch and
+native TensorFS decode buffers use the same Rust working allocator; Torch keeps no second cache.
+The wheel supplies a small C++ Torch adapter built against its declared Torch/CUDA ABI cohort.
+Nothing compiles while serving, and there is no cudaMalloc import hook.
 
 ```python
 from tensorfs import varena
-varena.install_allocator()  # after importing Torch, before it reserves CUDA memory
+from tensorfs.varena import torch as vt
+vt.install(0)  # before Torch initializes CUDA
 arena = varena.Arena(0)
 region = arena.reserve(byte_count)
 use = region.prepare()
 if use.needs_fill:
     checkpoint.components[component].tensors.read_into(key, out=use.tensor)
     use.commit()
-# Keep use.tensor or a derived view alive for every kernel or graph that uses these bytes.
 ```
 
-The compiled bridge ships inside `tensorfs._ext`; it has no Torch C++ dependency and does not
-compile anything while serving. The Linux implementation changes verified `cudaMalloc` and
-`cudaFree` data-import slots in loaded `libc10_cuda.so` and `libtorch_cuda.so`. The Windows x86_64
-implementation uses the corresponding PE import tables in `c10_cuda.dll` and `torch_cuda.dll`.
-It validates module layouts and original function pointers, temporarily enables writes on those
-data pages, and restores their permissions. It does not change executable instructions.
-Installation retains both original CUDA libraries and the hook extension for process lifetime.
-It must precede concurrent CUDA work and other allocator/profiler hook installation.
+A `Use.tensor` is an ordinary CUDA tensor whose DLPack storage owns its physical Pin until its
+last alias dies. Prepare every weight dependency before graph capture. Use `vt.graph` and
+`vt.replay` for working-pool capture/replay ownership; an actual capture performs no allocator
+mapping, release, event query or event record. A short prepared pool refuses capture and is
+reported as Torch OOM after safe capture cleanup, without triggering cuDNN workspace fallback.
 
-Torch's native caching allocator still owns activation segments, splitting, caching, graph
-pools and stream records. Every thread using the verified imports reaches the same native hook.
-A real CUDA allocation OOM goes back to Torch first, which frees its cached blocks and asks
-again for the same size. Only on that retry does the hook reclaim inactive groups in its
-process/device, then retry that one `cudaMalloc` call once if pages were released. Native errors return through
-Torch's normal CUDA exception path. Direct native calls preserve CUDA codes on
-`torch.AcceleratorError`; an unusable arena raises `PoisonedError`, whose `sticky` attribute is true, for executor
-retirement, without inventing a driver error code. It never enters Python, acquires the GIL, reads bytes,
-contacts another process, or reruns package operations. Reclamation may join the local primary
-CUDA context; it has no bounded latency guarantee for opaque kernels.
+`vt.stats(device)` reports live requested working bytes, physical mappings, peaks, pool ownership
+and pending frees. Native decode scratch is included. `reclaimable_bytes` counts only completed,
+fully free eager segments; partially live slabs, pending work and graph pools are excluded.
+It is conservative and performs no driver query. `vt.reset_peak` resets measured peaks.
+`vt.trim` returns completed unused backing without waiting; explicit complete cleanup calls
+trim, synchronizes, then trims again to seal and retire deferred default-stream frees.
 
-`set_activation_limit(device, bytes)` optionally checks new hooked Torch segments plus current
-resident weight pages. A deficit is refused the same way first; on Torch's retry it reclaims
-inactive weight groups before attempting the real allocation. This is an **activation admission limit**, not a hard GPU/process cap: later weight
-fills, CUDA contexts, and allocations outside the hooked imports can exceed it. Configure it
-before Torch reserves memory. `allocator_stats()` reports actual hooked reservations, calls,
-reclaims, refusals (`cache_refusals`: first refusals Torch answered by freeing its cache) and retries, and the decode streams TensorFS has created (`decode_streams`); it is not a GPU ownership authority.
+`vt.set_limit(device, bytes)` sets a managed physical ceiling over resident weights plus mapped
+Torch/native working memory. `varena.make_room(device, bytes)` remains the temporary peer/game
+room request; the smaller constraint wins. Clearing either leaves the other intact. Lowering
+one never invalidates live owners; new physical admissions fail until capacity is available.
+CUDA contexts and allocations owned by other CUDA libraries are outside this managed total.
 
-`make_room(device, limit)` holds the process's GPU bytes on that device (weight pages plus hooked
-Torch segments) to `limit` (None lifts it) and takes pages above it back at once, in reclaim order.
-From then on a fill or a hooked allocation over it is handled as the driver's out of memory: a
-smaller room is a smaller card. A machine sets it when another program needs the GPU.
+Native decode owners retain private streams and scratch until checked producer/consumer
+completion, then return buffers to the same working free lists. An unannotated DLPack final
+owner retires without CUDA calls, even during capture. The next allocator poll outside capture
+joins the primary context before that backing can be reused or unmapped.
+A destroyed external stream must first stop submissions, synchronize and call `vt.retire_stream`.
+Default/Torch pooled streams live for the process; raw unretired destroyable handles are unsupported.
 
-`capture(device)` forbids residency changes and allocation recovery across the entire process
-on that device. Prepare and pin every dependency before capture/replay, and retain those pins
-for graph lifetime. Raw Torch/CUDA captures outside Runtime must also enter this guard; the
-streamless cudaMalloc hook does not infer arbitrary third-party captures. Reclamation synchronizes the primary context before unmapping, including
-work on unknown side streams in that context. A `Use` whose consumer streams are declared with
-`use.consume_on(stream.cuda_stream)` instead records a Varena event on each of them when it or
-its tensor's last alias is released; reclaim then waits only on those events. Every stream that
-touches the storage must be declared. `Arena.stats()` reports `context_joins` and `event_waits`.
-Private foreign CUDA contexts and IPC are not supported.
-
-Coverage excludes `cudaMallocAsync`, expandable segments, other CUDA libraries, static or
-unknown Torch linkage, Torch modules loaded after installation, and runtime allocator changes.
-Unsupported layouts/backends fail explicitly. Linux x86_64 Torch 2.14.1+cu130 is GPU-proven by
-the stock-memory/native release-gate cell. Linux aarch64 and Windows x86_64 have implementation
-only; the Windows hook has been cross-typechecked, not run on a Windows GPU. Neither is claimed
-qualified until the same cell runs there. macOS and Windows ARM CUDA hooks are unsupported.
-
-Implementation references: PyTorch documents that [`use_mem_pool`](https://docs.pytorch.org/docs/stable/cuda.html#torch.cuda.use_mem_pool)
-routes only the current thread, so it cannot provide this process-wide allocation path.
-The loader bindings follow [Linux dlopen](https://man7.org/linux/man-pages/man3/dlopen.3.html),
-[Microsoft PE/COFF](https://learn.microsoft.com/en-us/windows/win32/debug/pe-format),
-[VirtualQuery's memory layout](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-memory_basic_information),
-and [GetModuleHandleEx module pinning](https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-getmodulehandleexa).
-No GPL allocator implementation or source was used.
+This P1 integration requires its matching Runtime branch and real CUDA/model qualification.
+The implementation removes the old `install_allocator`, `allocator_stats` and
+`set_activation_limit` APIs; callers use the explicit `tensorfs.varena.torch` interface above.
 
 ## Owned native refill
 

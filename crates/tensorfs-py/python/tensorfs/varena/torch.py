@@ -1,4 +1,4 @@
-"""P0 whole-process allocator. Install before CUDA initialization in the executor child.
+"""Whole-process Torch working allocator. Install before CUDA initialization in the executor child.
 
 Use this module's graph/replay owners, or explicitly complete capture and record every replay
 and output consumer stream. Raw Torch graph calls alone do not supply these lifetime signals.
@@ -47,7 +47,7 @@ def install(device: int | None = None) -> None:
     """Select Varena once per process. An explicit device is initialized outside capture.
 
     The wheel must list this Torch patch cohort and match its CUDA/C++ ABI and platform.
-    This never compiles at runtime and cannot coexist with the old cudaMalloc hook.
+    This never compiles at runtime and uses no cudaMalloc import hook.
     """
     global _owner, _library, _allocator
     import torch
@@ -61,12 +61,12 @@ def install(device: int | None = None) -> None:
             if torch.cuda.is_initialized():
                 raise RuntimeError("install Varena before Torch CUDA lazy initialization")
             if torch.backends.cudnn.benchmark:
-                raise RuntimeError("Varena P0 requires cudnn.benchmark=False")
+                raise RuntimeError("Varena requires cudnn.benchmark=False")
             directory = Path(__file__).resolve().parents[1]
             library = directory / "_varena_torch.so"
             metadata = library.with_suffix(".json")
             if not library.is_file() or not metadata.is_file():
-                raise RuntimeError("this TensorFS wheel has no P0 Torch shim; build with scripts/build-wheel.sh --torch-python <python-with-torch>")
+                raise RuntimeError("this TensorFS wheel has no Torch shim; build with scripts/build-wheel.sh --torch-python <python-with-torch>")
             actual = json.loads(metadata.read_text())
             runtime_torch = str(torch.__version__)
             expected = {
@@ -116,6 +116,29 @@ def initialize(device: int = 0) -> None:
 def stats(device: int = 0) -> dict[str, int]:
     _installed()
     return _ext._varena_working_stats(_device(device))
+
+
+def reset_peak(device: int = 0) -> None:
+    """Reset measured working peaks to current live and mapped bytes."""
+    _installed()
+    _ext._varena_working_reset_peak(_device(device))
+
+
+def trim(device: int = 0) -> int:
+    """Return completed unused pages; pending work and graph owners remain retained."""
+    _installed()
+    return _ext._varena_working_trim(_device(device))
+
+
+def set_limit(device: int, bytes: int | None = None) -> int:
+    """Bound resident weights plus mapped Torch/native working memory.
+
+    This static ceiling is independent of temporary make_room limits; the smaller wins.
+    Contexts and allocations owned by other CUDA libraries are outside this managed total.
+    Live owners are retained when lowering the limit. Returns unused bytes reclaimed now.
+    """
+    _installed()
+    return _ext._varena_working_set_limit(_device(device), bytes)
 
 
 def prepare_pool(pool: tuple[int, int], bytes: int, device: int = 0) -> int:
@@ -253,7 +276,7 @@ def _bind_stats(torch) -> None:
         }
 
     def reset_peak_memory_stats(device=None):
-        _ext._varena_working_reset_peak(_device(device))
+        reset_peak(_device(device))
 
     readers = {
         "memory_stats": memory_stats,

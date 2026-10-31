@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import platform
 import sys
+import tempfile
 import time
 
 import tensorfs
@@ -20,7 +21,7 @@ import tensorfs.varena.torch as vt
 import torch
 
 MIB = 1 << 20
-DRIVER = ("driver_memory_calls", "event_queries", "event_records", "event_waits")
+DRIVER = ("driver_memory_calls", "event_queries", "event_records", "event_waits", "context_joins")
 MAX_MAPPED = 256 * MIB
 
 
@@ -728,7 +729,103 @@ def cudnn_capture_shortfall():
     return report
 
 
+def native_working_ownership():
+    """Real TensorFS IO reuses completed working backing and retains unknown DLPack consumers."""
+    with tempfile.TemporaryDirectory(prefix="varena-native-working-") as directory:
+        writer = tensorfs.Writer(Path(directory) / "native.cozytensors")
+        source = torch.full((8 * MIB,), 29, dtype=torch.uint8)
+        writer.component("net").put("bytes", source)
+        checkpoint = writer.commit()
+        old = torch.empty(8 * MIB, dtype=torch.uint8, device="cuda")
+        pointer = old.data_ptr()
+        torch.cuda._sleep(2_000_000)
+        old.fill_(77)
+        del old  # default-stream metadata free, with writes still queued
+        before = figures()
+        array = checkpoint.components["net"].tensors.read("bytes", device="cuda")
+        live = figures()
+        assert live["allocated_bytes"] == before["allocated_bytes"] + source.nbytes, (before, live)
+        tensor = torch.from_dlpack(array)
+        assert tensor.data_ptr() == pointer, "native IO did not exercise ordered default-stream reuse"
+        assert torch.equal(tensor.cpu(), source), "native IO raced the previous default-stream owner"
+        stream = torch.cuda.Stream()
+        with torch.cuda.stream(stream):
+            torch.cuda._sleep(2_000_000)
+            output = tensor + 1
+        del tensor, array  # no record_stream: native DLPack's last owner must join unknown consumers
+        replacement = torch.empty(8 * MIB, dtype=torch.uint8, device="cuda")
+        replacement.fill_(3)
+        stream.synchronize()
+        assert torch.equal(output.cpu(), source + 1)
+        del output, replacement
+        clean()
+        array = checkpoint.components["net"].tensors.read("bytes", device="cuda")
+        graph = torch.cuda.CUDAGraph()
+        stream = torch.cuda.Stream()
+        with vt.graph(graph, stream=stream, reserve_bytes=2 * MIB):
+            capture_before = figures()
+            del array
+            gc.collect()
+            deadline = time.monotonic() + 10
+            while figures()["allocated_bytes"] > capture_before["allocated_bytes"] - source.nbytes and time.monotonic() < deadline:
+                time.sleep(0.001)
+            capture_after = figures()
+            assert capture_after["allocated_bytes"] == capture_before["allocated_bytes"] - source.nbytes
+            assert all(capture_after[key] == capture_before[key] for key in DRIVER), (capture_before, capture_after)
+        graph.reset()
+        del graph
+        checkpoint.close()
+        # The ordinary native cleanup worker owns final DLPack destruction. Wait for its
+        # explicit small-fixture completion deadline rather than assuming gc drains that queue.
+        deadline = time.monotonic() + 10
+        while figures()["allocated_bytes"] and time.monotonic() < deadline:
+            clean()
+            time.sleep(0.01)
+        assert figures()["allocated_bytes"] == 0, figures()
+        return {"native_bytes": source.nbytes, "ordered_reuse": True,
+                "unknown_dlpack_consumer": True, "retired_during_capture": True, "live": live}
+
+
+def shared_managed_limit():
+    """A caller ceiling and temporary room are independent and include live weight pages."""
+    vt.set_limit(0, 32 * MIB)
+    arena = varena.Arena(0)
+    region = arena.reserve(16 * MIB)
+    use = region.prepare()
+    use.tensor.fill_(7)
+    use.commit()
+    live = torch.empty(8 * MIB, dtype=torch.uint8, device="cuda")
+    live.fill_(11)
+    failures = 0
+    try:
+        varena.make_room(0, 24 * MIB)
+        vt.set_limit(0, None)  # dynamic room still applies
+        try:
+            torch.empty(16 * MIB, dtype=torch.uint8, device="cuda")
+        except torch.OutOfMemoryError:
+            failures += 1
+        vt.set_limit(0, 32 * MIB)
+        varena.make_room(0, None)  # static ceiling still applies
+        try:
+            torch.empty(16 * MIB, dtype=torch.uint8, device="cuda")
+        except torch.OutOfMemoryError:
+            failures += 1
+        assert failures == 2, "clearing one constraint lifted the other or omitted weight backing"
+        assert live[-1].item() == 11 and use.tensor[-1].item() == 7
+        row = figures()
+        assert row["mapped_bytes"] + arena.stats()["resident_bytes"] <= 32 * MIB
+        return {"typed_refusals": failures, "working": row, "weights": arena.stats()}
+    finally:
+        del live, use
+        gc.collect()
+        arena.reclaim(1 << 30)
+        vt.set_limit(0, None)
+        varena.make_room(0, None)
+
+
 CASES = {
+    "native-working-ownership": native_working_ownership,
+    "shared-managed-limit": shared_managed_limit,
     "empty-capture": empty_capture,
     "allocator-reuse": allocator_reuse,
     "default-deferred-free": default_deferred_free,

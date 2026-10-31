@@ -1,7 +1,7 @@
 //! Torch callbacks contain no Python; Rust owns allocation and completion state.
-use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use pyo3::prelude::*;
 
@@ -181,14 +181,6 @@ fn _varena_working_bindings() -> PyResult<usize> {
             "Torch allocator cannot be installed after fork",
         ));
     }
-    let _install = super::allocator::INSTALL.lock().map_err(|_| {
-        pyo3::exceptions::PyRuntimeError::new_err("allocator installation lock poisoned")
-    })?;
-    if super::allocator::installed() {
-        return Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "the legacy CUDA allocation hook is already installed",
-        ));
-    }
     let owner = OWNER
         .compare_exchange(0, pid, Ordering::AcqRel, Ordering::Acquire)
         .unwrap_or_else(|v| v);
@@ -236,6 +228,7 @@ fn _varena_working_stats(
         ("pools_bytes", stats.pools_bytes as u64),
         ("allocated_capacity", stats.allocated_capacity as u64),
         ("free_bytes", stats.free_bytes as u64),
+        ("reclaimable_bytes", stats.reclaimable_bytes as u64),
         ("unassigned_bytes", stats.unassigned_bytes as u64),
         ("pools", stats.pools as u64),
         ("event_handles", stats.event_handles as u64),
@@ -246,6 +239,7 @@ fn _varena_working_stats(
         ("event_queries", stats.event_queries),
         ("event_records", stats.event_records),
         ("event_waits", stats.event_waits),
+        ("context_joins", stats.context_joins),
     ]
     .into())
 }
@@ -256,6 +250,26 @@ fn _varena_working_reset_peak(py: Python<'_>, device: i32) -> PyResult<()> {
         check()?;
         varena::working::reset_peak(device)
     })
+    .map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
+fn _varena_working_trim(py: Python<'_>, device: i32) -> PyResult<usize> {
+    py.detach(|| {
+        check()?;
+        varena::working::trim(device)
+    })
+    .map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
+#[pyo3(signature = (device, limit = None))]
+fn _varena_working_set_limit(py: Python<'_>, device: i32, limit: Option<usize>) -> PyResult<usize> {
+    py.detach(|| {
+        check()?;
+        varena::set_limit(device, limit)
+    })
+    .map(|report| report.reclaimed_bytes)
     .map_err(|e| super::raise(py, e))
 }
 
@@ -337,6 +351,8 @@ fn _varena_working_pool_release(py: Python<'_>, device: i32, pool: (u64, u64)) -
 }
 
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(_varena_working_trim, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_working_set_limit, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_retire_stream, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_pool_retain, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_pool_release, module)?)?;

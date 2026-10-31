@@ -18,6 +18,8 @@ pub struct WorkingStats {
     pub mapped_peak: usize,
     pub pending_bytes: usize,
     pub free_bytes: usize,
+    /// Completed, fully free eager segments only; graph pools and pending work are excluded.
+    pub reclaimable_bytes: usize,
     pub unassigned_bytes: usize,
     pub pools_bytes: usize,
     pub pools: usize,
@@ -29,6 +31,7 @@ pub struct WorkingStats {
     pub event_queries: u64,
     pub event_records: u64,
     pub event_waits: u64,
+    pub context_joins: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -38,6 +41,8 @@ enum Life {
     Pending,
     Deferred,
     Captured,
+    // An unannotated native/DLPack final owner: join the context before reuse.
+    Unjoined,
 }
 
 struct Block {
@@ -95,6 +100,7 @@ struct State {
 struct Working {
     driver: cuda::Driver,
     page: usize,
+    room: Arc<crate::Room>,
     state: Mutex<State>,
 }
 
@@ -225,6 +231,28 @@ impl Working {
     }
 
     fn poll(&self, state: &mut State) -> Result<()> {
+        // The caller holds capture exclusion. Unknown foreign consumers require a context
+        // completion proof, but their last-owner retirement itself never calls CUDA.
+        if state
+            .blocks
+            .values()
+            .any(|block| block.life == Life::Unjoined)
+        {
+            state.stats.context_joins += 1;
+            self.driver.synchronize()?;
+            let mut ready = Vec::new();
+            for (ptr, block) in &mut state.blocks {
+                if block.life == Life::Unjoined {
+                    block.life = Life::Ready;
+                    block.reusable_on = None;
+                    block.streams.clear();
+                    ready.push((*ptr, block.capacity));
+                }
+            }
+            for (ptr, bytes) in ready {
+                state.free.entry((None, bytes, None)).or_default().push(ptr);
+            }
+        }
         for pool in state.pools.values_mut() {
             let mut index = 0;
             while index < pool.retired_events.len() {
@@ -349,6 +377,11 @@ impl Working {
         pool: Option<PoolId>,
         class: usize,
     ) -> Result<u64> {
+        if self.room.over(bytes) != 0 {
+            return Err(Error::OutOfMemory {
+                requested_bytes: bytes,
+            });
+        }
         let ptr = Self::address(state, bytes)?;
         let handle = match self.driver.create(bytes) {
             Ok(handle) => handle,
@@ -366,6 +399,9 @@ impl Working {
                 pool,
             },
         );
+        self.room
+            .working
+            .fetch_add(bytes, std::sync::atomic::Ordering::AcqRel);
         state.stats.mapped_bytes += bytes;
         state.stats.mapped_peak = state.stats.mapped_peak.max(state.stats.mapped_bytes);
         self.driver.map(ptr, bytes, handle)?;
@@ -568,6 +604,9 @@ impl Working {
             self.driver.unmap(base, segment.bytes)?;
             self.driver.release(segment.handle)?;
             let bytes = segment.bytes;
+            self.room
+                .working
+                .fetch_sub(bytes, std::sync::atomic::Ordering::AcqRel);
             let blocks: Vec<_> = state
                 .blocks
                 .range(base..base + bytes as u64)
@@ -676,8 +715,9 @@ fn initialize_owner(device: i32) -> Result<Arc<Working>> {
     if let Some(owner) = existing(device)? {
         return Ok(owner);
     }
-    let captures = crate::capture_counts()?;
+    let mut captures = crate::capture_counts()?;
     crate::ensure_recovery_allowed(&captures, device)?;
+    let room = Arc::clone(&captures.entry(device).or_default().room);
     let mut devices = lock_devices()?;
     if let Some(owner) = devices.get(&device) {
         return Ok(Arc::clone(owner));
@@ -700,6 +740,7 @@ fn initialize_owner(device: i32) -> Result<Arc<Working>> {
     let owner = Arc::new(Working {
         driver,
         page,
+        room,
         state: Mutex::new(state),
     });
     devices.insert(device, Arc::clone(&owner));
@@ -860,6 +901,66 @@ pub fn free(device: i32, ptr: u64, stream: u64) -> Result<()> {
         state
             .free
             .entry((pool, class, reusable_on))
+            .or_default()
+            .push(ptr);
+    }
+    state.stats.allocated_bytes -= requested;
+    state.stats.frees += 1;
+    Ok(())
+}
+
+/// Return an eager native allocation after every producer and consumer has completed.
+/// No CUDA calls: completed native scratch immediately joins the same working free lists.
+///
+/// # Safety
+/// The caller owns the allocation exclusively and has checked completion of every GPU use.
+/// The pointer must not belong to a graph pool, whose replay lifetime is separately owned.
+#[allow(unsafe_code)]
+pub unsafe fn free_completed(device: i32, ptr: u64) -> Result<()> {
+    retire_native(device, ptr, true)
+}
+
+/// Retire the last native owner when consumer streams are unknown. The next outside-capture
+/// poll joins the primary context before reuse. This call itself performs no CUDA operation.
+///
+/// # Safety
+/// No owner may submit further uses of this pointer; already submitted GPU work may remain.
+/// The pointer must be a live eager allocation, never storage retained by a future graph replay.
+#[allow(unsafe_code)]
+pub unsafe fn free_untracked(device: i32, ptr: u64) -> Result<()> {
+    retire_native(device, ptr, false)
+}
+
+fn retire_native(device: i32, ptr: u64, completed: bool) -> Result<()> {
+    if ptr == 0 {
+        return crate::check_process();
+    }
+    let owner = owner(device)?;
+    let mut state = owner.lock()?;
+    let block = state
+        .blocks
+        .get(&ptr)
+        .ok_or(Error::Invalid("unknown working allocation"))?;
+    if block.life != Life::Live || state.segments[&block.segment].pool.is_some() {
+        return Err(Error::Invalid(
+            "native retirement requires a live eager allocation",
+        ));
+    }
+    let block = state.blocks.get_mut(&ptr).expect("checked live allocation");
+    let requested = block.requested;
+    let capacity = block.capacity;
+    block.requested = 0;
+    block.life = if completed {
+        Life::Ready
+    } else {
+        Life::Unjoined
+    };
+    block.reusable_on = None;
+    block.streams.clear();
+    if completed {
+        state
+            .free
+            .entry((None, capacity, None))
             .or_default()
             .push(ptr);
     }
@@ -1074,6 +1175,18 @@ pub fn stats(device: i32) -> Result<WorkingStats> {
         .values()
         .filter(|b| b.life == Life::Ready && b.reusable_on.is_none())
         .map(|b| b.capacity)
+        .sum();
+    stats.reclaimable_bytes = state
+        .segments
+        .iter()
+        .filter(|(base, segment)| {
+            segment.pool.is_none()
+                && state
+                    .blocks
+                    .range(**base..**base + segment.bytes as u64)
+                    .all(|(_, block)| block.life == Life::Ready && block.reusable_on.is_none())
+        })
+        .map(|(_, segment)| segment.bytes)
         .sum();
     stats.unassigned_bytes =
         stats.mapped_bytes - stats.allocated_capacity - stats.pending_bytes - stats.free_bytes;

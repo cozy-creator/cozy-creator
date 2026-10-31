@@ -1,13 +1,13 @@
-# P0 Torch allocator adapter
+# Torch allocator adapter
 
 Build the candidate wheel with `scripts/build-wheel.sh --torch-python <python-with-torch>`.
 The interpreter supplies headers and libc10; it is not modified. The shim is built ahead of time,
 and `tensorfs.varena.torch.install()` refuses a missing shim or an unlisted Torch/CUDA/C++ ABI.
-The P0 builder supports Linux. Public release packaging and other platforms remain P1/P4 work.
+The builder supports Linux. Other platforms remain unqualified.
 
 In a fresh executor child, call `vt.install(device=0)` before Torch CUDA lazy initialization.
-This selects the whole-process allocator; the old recovery hook cannot be installed alongside it.
-P0 leaves the old entry point available for the current release until the replacement is qualified.
+This selects the whole-process allocator. P1 removes the old cudaMalloc import hook and its entry
+points; native TensorFS buffers use the same working allocator.
 
 Use `vt.graph(g, pool=pool, stream=stream, reserve_bytes=n)` to prepare and capture, then
 `vt.replay(g, stream=stream)`. The default reservation is the observed eager allocation peak,
@@ -33,7 +33,7 @@ The supported Python statistics are `memory_allocated`, `memory_reserved`, their
 `reset_peak_memory_stats`, and the documented subset returned by `memory_stats`. They report
 working allocations, including graph pools, separately from weight-region statistics. C++ readers,
 snapshots/profilers, `MemPool`, CUDA IPC, cuDNN benchmark mode and Inductor graph trees are not supported
-by this P0 adapter. Rebinding does not repair aliases imported before installation.
+by this adapter. Rebinding does not repair aliases imported before installation.
 
 ## Reviewed Torch ABI cohorts
 

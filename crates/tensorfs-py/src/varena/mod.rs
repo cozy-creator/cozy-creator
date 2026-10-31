@@ -1,5 +1,4 @@
 //! Process-local weight residency bindings. CUDA ownership remains in the Rust core.
-mod allocator;
 mod working;
 #[cfg(feature = "store")]
 mod continuation;
@@ -624,17 +623,6 @@ impl PyNoCapture {
     }
 }
 
-#[pyfunction]
-fn _varena_install_allocator(py: Python<'_>) -> PyResult<usize> {
-    py.detach(allocator::install)
-        .map_err(PyRuntimeError::new_err)
-}
-#[pyfunction]
-#[pyo3(signature = (device, limit = None))]
-fn _varena_set_activation_limit(py: Python<'_>, device: i32, limit: Option<usize>) -> PyResult<()> {
-    py.detach(|| allocator::set_limit(device, limit))
-        .map_err(PyRuntimeError::new_err)
-}
 /// Sets this process's room on `device` (None lifts it) and returns the pages it took back.
 #[pyfunction]
 #[pyo3(signature = (device, limit = None))]
@@ -643,15 +631,6 @@ fn _varena_make_room(py: Python<'_>, device: i32, limit: Option<usize>) -> PyRes
         .map(|report| report.reclaimed_bytes)
         .map_err(|e| raise(py, e))
 }
-#[pyfunction]
-fn _varena_allocator_stats(
-    py: Python<'_>,
-    device: i32,
-) -> PyResult<std::collections::BTreeMap<&'static str, u64>> {
-    py.detach(|| allocator::stats(device))
-        .map_err(PyRuntimeError::new_err)
-}
-
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     working::install(module)?;
     let poisoned = module.py().get_type::<VarenaPoisonedError>();
@@ -676,9 +655,6 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<stage_continuation::StageJob>()?;
     #[cfg(feature = "store")]
     module.add_class::<phase::PhaseController>()?;
-    module.add_function(wrap_pyfunction!(_varena_install_allocator, module)?)?;
-    module.add_function(wrap_pyfunction!(_varena_set_activation_limit, module)?)?;
-    module.add_function(wrap_pyfunction!(_varena_allocator_stats, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_make_room, module)?)?;
     Ok(())
 }

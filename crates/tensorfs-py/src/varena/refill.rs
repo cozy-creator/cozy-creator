@@ -134,6 +134,7 @@ fn io_failure(error: tensorfs::io::source::Error) -> Failure {
 
 fn cuda_failure(error: io::cuda::Error) -> Failure {
     match error {
+        io::cuda::Error::Allocation(error) => Failure::Native(error),
         io::cuda::Error::Cuda { op, code, .. } => Failure::Native(varena::Error::Cuda {
             operation: op,
             code,

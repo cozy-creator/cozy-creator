@@ -150,3 +150,12 @@ Native control **24009** and Varena **24010** both finish with zero managed devi
 report the same three cuDNN allocations (5,376 + 4 + 4 bytes) under full leak checking. All 16 Varena cases pass
 their device/pool/event assertions. Both instrumented reports remain `passed=false`, exit 99 / three errors;
 the matching native lifetime behavior is recorded separately from the tool's strict process-exit verdict.
+
+## P1 additions (source only until rerun)
+
+The original 16 CUDA cases remain. `native-working-ownership` adds actual TensorFS IO into
+Varena backing, including reuse after pending default-stream writes and destruction while an
+unreported DLPack side-stream consumer runs. `shared-managed-limit` checks that both weight
+backing and working mappings count, and clearing a static ceiling or temporary room does not
+lift the other. These cases use the same fresh-child binary provenance and <=256 MiB bound.
+Capture diagnostics additionally include attempted unknown-owner `context_joins`.
