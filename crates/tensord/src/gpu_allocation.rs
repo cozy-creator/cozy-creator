@@ -12,7 +12,7 @@
 use std::{
     collections::BTreeMap,
     ops::Range,
-    sync::{Arc, Condvar, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 /// Per GPU, the oldest request waiting for it in this dispatch pass.
@@ -20,7 +20,10 @@ pub(crate) type Claims = [Option<u64>];
 
 pub(crate) struct Allocations {
     table: Mutex<Table>,
-    freed: Condvar,
+    /// Dispatch's wake, run once the table is unlocked after every change that can let a waiting
+    /// call place: a call slot, lane or root ended, or pressure changed. A pass that found a GPU
+    /// busy is always followed by one that sees it free.
+    wake: OnceLock<Box<dyn Fn() + Send + Sync>>,
 }
 struct Table {
     gpus: Vec<Gpu>,
@@ -132,11 +135,17 @@ impl Table {
 impl Allocations {
     pub(crate) fn new(width: usize) -> Arc<Self> {
         let gpus = (0..width).map(|_| Gpu::default()).collect();
-        Arc::new(Self { table: Mutex::new(Table { gpus, roots: BTreeMap::new() }), freed: Condvar::new() })
+        Arc::new(Self { table: Mutex::new(Table { gpus, roots: BTreeMap::new() }), wake: OnceLock::new() })
+    }
+    pub(crate) fn wake_with(&self, wake: impl Fn() + Send + Sync + 'static) {
+        let _ = self.wake.set(Box::new(wake));
+    }
+    fn freed(&self) {
+        if let Some(wake) = self.wake.get() { wake() }
     }
     pub(crate) fn pressure(&self, device: usize, blocked: bool) {
         self.table.lock().unwrap().gpus[device].external_pressure = blocked;
-        self.freed.notify_all();
+        self.freed();
     }
     /// `root` holds an allocation `width` GPUs wide, unbound until its first step, for as long
     /// as the hold lives.
@@ -224,7 +233,7 @@ impl Allocations {
             if lane.clone().all(|d| table.free(d, root, claims)) {
                 table.bind(root, lane.clone());
                 drop(table);
-                self.freed.notify_all();
+                self.freed();
                 return (Lane::Held { lane, new: true }, yielded);
             }
         }
@@ -239,7 +248,7 @@ impl Allocations {
         let new = entry.reported.replace(behind) != Some(behind);
         drop(table);
         if !yielded.is_empty() {
-            self.freed.notify_all();
+            self.freed();
         }
         (Lane::Waiting { behind, blocker, new }, yielded)
     }
@@ -259,7 +268,7 @@ impl Allocations {
         let lane = entry.lane.take()?;
         lane.clone().for_each(|d| table.gpus[d].root = None);
         drop(table);
-        self.freed.notify_all();
+        self.freed();
         Some(lane)
     }
     /// A call on `devices`: inside `root`'s lane when it is registered, else on GPUs no root
@@ -316,7 +325,7 @@ impl Drop for Permit {
             }
         }
         drop(table);
-        self.table.freed.notify_all();
+        self.table.freed();
     }
 }
 impl Permit {
@@ -346,6 +355,6 @@ impl Drop for Hold {
             table.gpus.iter_mut().filter(|gpu| gpu.root == Some(self.root)).for_each(|gpu| gpu.root = None);
         }
         drop(table);
-        self.table.freed.notify_all();
+        self.table.freed();
     }
 }
