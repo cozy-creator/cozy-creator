@@ -905,8 +905,9 @@ struct Pressure {
     blocked: bool,
     observable: Option<bool>,
     sampled: Option<Instant>,
-    /// Executors (by pid) holding less than they would because of a `room` give.
-    asked: std::collections::BTreeSet<u32>,
+    /// Executors (by pid) holding less than they would because of a `room` give, and whether
+    /// one gave for another program's use (only then is a running call lifted mid-call).
+    asked: std::collections::BTreeMap<u32, bool>,
     /// The foreign and own bytes when the last give went out while still short, and whether it
     /// reached the running calls: idle executors give first; the running ones are asked at the
     /// next reading if that was not enough; another round needs either figure to have grown, so
@@ -1381,7 +1382,7 @@ impl Pool {
             let mut told = vec![];
             for (pid, ordinal, line, _) in leaders.iter().filter(|leader| leader.3 == running) {
                 if line.send(&Command::Room(Room { device: *ordinal, give, ..Default::default() })) {
-                    state.asked.insert(*pid);
+                    *state.asked.entry(*pid).or_default() |= blocked;
                     told.push(*pid);
                 }
             }
@@ -1389,13 +1390,19 @@ impl Pool {
                 "running": running, "free_bytes": now.free, "foreign_bytes": now.foreign, "own_bytes": now.own,
                 "headroom_bytes": headroom, "blocked": blocked, "executors": told}));
         } else if !state.asked.is_empty() && !blocked && now.free >= 3 * headroom {
+            // A call held to H by its own growth (shared mode, no other program) keeps that room
+            // to its end: its phases free and retake memory, and lifting mid-call made it give
+            // and refill again each time. One held for another program is lifted once it left.
             let mut told = vec![];
-            for (pid, ordinal, line, _) in &leaders {
-                if state.asked.contains(pid) && line.send(&Command::Room(Room { device: *ordinal, lift: true, ..Default::default() })) {
+            for (pid, ordinal, line, running) in &leaders {
+                if state.asked.get(pid).is_some_and(|&foreign| foreign || !*running)
+                    && line.send(&Command::Room(Room { device: *ordinal, lift: true, ..Default::default() }))
+                {
                     told.push(*pid);
                 }
             }
-            state.asked.clear();
+            let live: Vec<u32> = leaders.iter().map(|leader| leader.0).collect();
+            state.asked.retain(|pid, _| live.contains(pid) && !told.contains(pid));
             self.notes.note(serde_json::json!({"event": "room", "gpu": device.entry, "lift": true,
                 "free_bytes": now.free, "foreign_bytes": now.foreign, "executors": told}));
         }
