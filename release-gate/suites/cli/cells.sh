@@ -52,3 +52,53 @@ if "$CLI" --json model upload "local/ci-e2e-q8-$R" "$q" --lane bf16 --on "$M" > 
   cli_fail "model upload of int8 weights as lane bf16 was not refused commit_lane_mismatch: $(tail -c 300 cli-mislabel.ndjson)"
 fi
 "$CLI" --json model delete "$q" -y > /dev/null 2>&1 || cli_fail "model delete $q failed: delete it by hand"
+
+# cli-project (xs-136): a project through every verb (`cozy project new|status|approve`, `cozy render`), its renders on $M
+# and its pictures' cleans and the edit on this computer. A cycle is refused before anything runs; a re-rolled character,
+# once chosen, puts what reads it out of date and nothing else; a person's save during a render stands; the re-cut is timed.
+project_cell() {
+  local P=$PWD/project ok
+  rm -rf "$P"; "$CLI" project new --project "$P" > project-new.log 2>&1 || { cli_fail "project new: $(tail -c 300 project-new.log)"; return; }
+  cat > "$P/project.yaml" <<YAML
+type: video
+renderers: {character: $(pkg qwen-image-2 generate), environment: $(pkg qwen-image-2 generate), setup: $(pkg qwen-image-2 generate),
+            world_state: $(pkg qwen-image-2 generate), shot: $(pkg minimax-h3 shot), clean: $(pkg birefnet remove_background)}
+assets:
+  - {name: lead, kind: character, description: "$CHAR"}
+  - name: place
+    kind: environment
+    description: "$SCENE"
+    setups: [{name: a, camera: "wide from one end: the nearest objects large on the left, the far end small on the right"}]
+world_states:
+  - {name: start, init: "<lead> stands in <place>.", blocking: "lead in the middle, facing the camera."}
+shots:
+  - {name: one, setup: place.a, prompt: "<lead> in <place>. $MOTION", duration_s: 5, writes: [start]}
+  - {name: two, prompt: "<lead> looks back over one shoulder, after <start>.", duration_s: 5}
+edit: [{shot: one, end: 4}, {shot: two, start: 1}]
+YAML
+  cp "$P/project.yaml" project-ok.yaml
+  # lead's description naming <start>, whose init names <lead>, is a cycle.
+  sed -i "0,/description: \"/s//description: \"After <start>, /" "$P/project.yaml"
+  if "$CLI" project status --project "$P" > project-cycle.log 2>&1 || ! grep -q "a cycle: " project-cycle.log; then
+    cli_fail "project status did not refuse a cycle: $(tail -c 300 project-cycle.log)"
+  fi
+  cp project-ok.yaml "$P/project.yaml"
+  "$CLI" render all --project "$P" --on "$M" > project-render.log 2>&1 || cli_fail "render all: $(tail -c 400 project-render.log)"
+  "$CLI" --json project status --project "$P" > project-status.json 2>&1
+  ok=$(jq -r '[.entities[] | select(.kind != "upscale" and .status != "current")] | length' project-status.json 2>/dev/null)
+  [ "$ok" = 0 ] || cli_fail "after render all, $ok entities are not current: $(tail -c 400 project-status.json)"
+  [ -s "$P/edit.mp4" ] || cli_fail "render all cut no edit.mp4"
+  "$CLI" render lead --project "$P" --on "$M" > project-run.log 2>&1 || cli_fail "render lead: $(tail -c 400 project-run.log)"
+  "$CLI" project approve lead 2 --project "$P" > project-approve.log 2>&1 || cli_fail "project approve lead 2: $(tail -c 300 project-approve.log)"
+  grep -q "out of date now: one, start, two$" project-approve.log \
+    || cli_fail "approving lead put out of date other than one, start, two: $(tail -c 300 project-approve.log)"
+  # A person's save while a run is in flight: the render's writes merge with it, and it stands.
+  ( "$CLI" render all --project "$P" --on "$M" > project-race.log 2>&1; echo $? > project-race.exit ) &
+  for _ in $(seq 1 1800); do grep -q '"pending"' "$P/versions.lock" 2>/dev/null && break; sleep 1; done
+  sed -i 's/lead in the middle, facing the camera./lead in the middle, facing the camera, hands in pockets./' "$P/project.yaml"
+  wait
+  [ "$(cat project-race.exit)" = 0 ] || cli_fail "render all during a save: $(tail -c 400 project-race.log)"
+  grep -q "hands in pockets" "$P/project.yaml" || cli_fail "a save made during render all was lost"
+  grep -o "cut .* in [0-9.]* s" project-race.log | tail -1 >> project-recut.txt
+}
+[ -z "$ONLY" ] || [[ $ONLY == *",cli-project,"* ]] && project_cell

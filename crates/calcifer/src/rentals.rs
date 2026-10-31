@@ -62,6 +62,25 @@ impl Hubs {
         }
     }
 
+    /// This computer's Hub, as its config names it.
+    pub(crate) fn default_origin(&self) -> String {
+        self.hub.to_string()
+    }
+
+    /// This computer's `~/.cozy`.
+    pub(crate) fn home(&self) -> &Home {
+        &self.home
+    }
+
+    /// A client for public reads: signed in when this computer is, else anonymous.
+    pub(crate) fn reader(&self, origin: &str) -> Result<Client, Error> {
+        let hub = config::Origin::parse(origin)?;
+        match hub.device_key(&self.home).exists() {
+            true => self.client(origin),
+            false => Ok(Client::connect(origin, self.http.clone(), hub_client::Credential::Anonymous)),
+        }
+    }
+
     /// A client speaking as this computer's device key at the Hub.
     pub(crate) fn client(&self, origin: &str) -> Result<Client, Error> {
         Client::signed_in(&config::Origin::parse(origin)?, &self.home, self.http.clone(), || login(origin))

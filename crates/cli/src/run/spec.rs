@@ -4,15 +4,15 @@ use std::path::PathBuf;
 use protocol::{
     calcifer::{Kind as RunKind, On, StagedInput, SubmitRun, Warning},
     error::{Error, Kind},
-    machine::{self as v1, ModelChoice},
+    choices::{self, Choice},
+    machine as v1,
 };
 
 use super::{
     Warm,
-    bind::{Bound, Choice},
+    bind::Bound,
     interface::Callable,
 };
-use protocol::model_ref::ModelRef;
 
 /// A function as a run names it: a published release's, or local code's.
 pub struct Call<'a> {
@@ -71,7 +71,7 @@ impl Call<'_> {
                     order: f.order,
                 })
                 .collect(),
-            models: choices(&bound.models)?,
+            models: choices::wire(&bound.models)?,
             weights_destination: bound.destination.clone().unwrap_or_default(),
             attention_kernel: self.attention_kernel.to_owned(),
             gpus: self.gpus,
@@ -111,7 +111,7 @@ impl Call<'_> {
         let item = v1::WarmItem {
             source: Some(source),
             entrypoint: self.callable.name.clone(),
-            models: choices(models)?,
+            models: choices::wire(models)?,
             level,
             lane: self.lane.clone(),
             payload,
@@ -180,24 +180,4 @@ impl Call<'_> {
             release: release.to_owned(),
         }
     }
-}
-
-/// Each slot's choice as the machine takes it, its adapters by the same reference grammar.
-fn choices(models: &[Choice]) -> Result<Vec<ModelChoice>, Error> {
-    models
-        .iter()
-        .map(|choice| {
-            let mut out = match &choice.reference {
-                Some(reference) => ModelRef::parse(reference)?.choice(&choice.slot),
-                None => ModelChoice {
-                    parameter: choice.slot.clone(),
-                    ..Default::default()
-                },
-            };
-            for adapter in &choice.adapters {
-                out.adapters.push(ModelRef::parse(&adapter.reference)?.adapter(&adapter.scale));
-            }
-            Ok(out)
-        })
-        .collect()
 }
