@@ -37,6 +37,8 @@ struct Gpu {
     /// The family of the calls running there, if any, and their root.
     caller: Option<String>,
     running: Option<u64>,
+    /// Its call is a prefetch's prewarm, which ends with its owner (`GpuPool::prefetch`).
+    hint: bool,
 }
 struct Root {
     width: usize,
@@ -48,10 +50,21 @@ struct Root {
     reported: Option<Option<u64>>,
     holders: usize,
 }
-/// A root's lane, or the request it waits behind. `new`: the first answer since it changed.
+/// A root's lane, or the request it waits behind and what holds it. `new`: the first answer
+/// since it changed.
 pub(crate) enum Lane {
     Held { lane: Range<usize>, new: bool },
-    Waiting { behind: Option<u64>, new: bool },
+    Waiting { behind: Option<u64>, blocker: Blocker, new: bool },
+}
+/// What a waiting root's lane is held by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Blocker {
+    /// Another request's lane, claim or call (`hint`: a prefetch's prewarm).
+    Request { seq: u64, hint: bool },
+    /// Machine work of no request: warming, or an idle executor ending.
+    Machine,
+    /// Memory another process uses on the GPU.
+    Pressure,
 }
 /// What a released root's executor holds: none of its lane, until its next step binds one.
 pub(crate) struct Hold {
@@ -80,6 +93,16 @@ impl Table {
     fn other(&self, lane: Range<usize>, root: u64, claims: &Claims) -> Option<u64> {
         lane.flat_map(|d| [claims.get(d).copied().flatten(), self.gpus[d].root, self.gpus[d].running])
             .flatten().filter(|other| *other != root).min()
+    }
+    /// What holds `lane` from `root`: the request `other` names, else the machine's own work.
+    fn blocker(&self, lane: Range<usize>, root: u64, claims: &Claims) -> Blocker {
+        match self.other(lane.clone(), root, claims) {
+            Some(seq) => Blocker::Request {
+                seq, hint: lane.clone().any(|d| self.gpus[d].running == Some(seq) && self.gpus[d].hint),
+            },
+            None if lane.clone().any(|d| self.gpus[d].external_pressure) => Blocker::Pressure,
+            None => Blocker::Machine,
+        }
     }
     /// No call runs on `root`'s lane.
     fn between_steps(&self, root: u64) -> bool {
@@ -163,7 +186,7 @@ impl Allocations {
     pub(crate) fn lane(&self, root: u64, claims: &mut Claims) -> (Lane, Vec<(u64, Range<usize>)>) {
         let mut table = self.table.lock().unwrap();
         let Some(entry) = table.roots.get(&root) else {
-            return (Lane::Waiting { behind: None, new: false }, vec![]);
+            return (Lane::Waiting { behind: None, blocker: Blocker::Machine, new: false }, vec![]);
         };
         if let Some(lane) = &entry.lane {
             return (Lane::Held { lane: lane.clone(), new: false }, vec![]);
@@ -202,6 +225,7 @@ impl Allocations {
             }
         }
         let behind = table.other(lane.clone(), root, claims);
+        let blocker = table.blocker(lane.clone(), root, claims);
         for d in lane {
             if obtainable || table.gpus[d].root.is_none_or(|holder| holder < root) {
                 claims[d].get_or_insert(root);
@@ -213,7 +237,7 @@ impl Allocations {
         if !yielded.is_empty() {
             self.freed.notify_all();
         }
-        (Lane::Waiting { behind, new }, yielded)
+        (Lane::Waiting { behind, blocker, new }, yielded)
     }
     /// End `root`'s lane now; a call in flight keeps its GPUs until it returns. The lane ended.
     pub(crate) fn release(&self, root: u64) -> Option<Range<usize>> {
@@ -263,6 +287,11 @@ impl Allocations {
         }
         Some(Permit { table: self.clone(), devices })
     }
+    /// The call holding `devices` is a prefetch's prewarm, which ends with its owner.
+    pub(crate) fn hint(&self, devices: Range<usize>) {
+        let mut table = self.table.lock().unwrap();
+        devices.for_each(|d| table.gpus[d].hint = true);
+    }
     /// Machine upkeep on `devices` (ending idle executors): no call there.
     pub(crate) fn upkeep(self: &Arc<Self>, devices: Range<usize>) -> Option<Permit> {
         let mut table = self.table.lock().unwrap();
@@ -279,7 +308,7 @@ impl Drop for Permit {
         for gpu in &mut table.gpus[self.devices.clone()] {
             gpu.calling -= 1;
             if gpu.calling == 0 {
-                (gpu.caller, gpu.running) = (None, None);
+                (gpu.caller, gpu.running, gpu.hint) = (None, None, false);
             }
         }
         drop(table);

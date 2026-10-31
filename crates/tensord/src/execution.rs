@@ -83,6 +83,18 @@ impl Stoppable {
         PreparationHalt { engine: self.engine.clone(), id: self.id.clone(), halt }
     }
 
+    /// Stop it from inside the machine (a prefetch whose owner ended): its bound executor is
+    /// killed now, or at bind when none is bound yet.
+    pub fn halt(&self) {
+        let halt = {
+            let mut preparations = self.engine.preparations.lock().unwrap();
+            let Some(preparation) = preparations.get_mut(&self.id) else { return };
+            preparation.stop.cancel();
+            preparation.halt.clone()
+        };
+        if let Some(halt) = halt { let _ = halt(); }
+    }
+
     /// From here on the run cannot stop (an upload finalizing at its Hub): it refuses
     /// cancellation. False when it was canceled first.
     pub fn commit(&self) -> bool {
