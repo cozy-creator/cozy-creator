@@ -944,8 +944,7 @@ impl Pressure {
 
 pub(crate) struct Permit {
     pool: Arc<Pool>,
-    engine: Weak<Engine>,
-    token: Option<crate::gpu_allocation::Permit>,
+    token: crate::gpu_allocation::Permit,
 }
 /// A deviceless root's allocation (Slurm-style), held while its call runs: its children's GPU
 /// steps run in its lane.
@@ -960,21 +959,12 @@ impl Drop for RootAllocation {
         if let Some(Some(lane)) = self.pool.allocations.bound(self.hold.root()) {
             self.pool.note_gpus(&engine, self.hold.root(), "release", lane, None);
         }
-        engine.notify_activity();
     }
 }
 impl Permit {
     /// A prefetch's prewarm holds this call slot (`gpu_allocation::Permit::hint`).
     fn hint(&mut self) {
-        if let Some(token) = self.token.as_mut() { token.hint(); }
-    }
-}
-impl Drop for Permit {
-    fn drop(&mut self) {
-        drop(self.token.take());
-        if let Some(engine) = self.engine.upgrade() {
-            engine.notify_activity();
-        }
+        self.token.hint();
     }
 }
 pub(crate) struct WakeOnExit(pub(crate) Weak<Engine>);
@@ -1650,9 +1640,11 @@ impl Pool {
         self.tenants.lock().unwrap().retain(|_, t|
             !(t.plan == env && t.start == start && gone.contains(t.exact.birth())));
     }
-    /// Wake the engine on memory events as well as GPU permit changes.
+    /// Wake the engine on memory events and after every GPU allocation change that frees.
     pub fn wake_on_freed(&self, engine: &Arc<Engine>) {
         let _ = self.engine.set(Arc::downgrade(engine));
+        let engine = Arc::downgrade(engine);
+        self.allocations.wake_with(move || if let Some(engine) = engine.upgrade() { engine.notify_activity() });
     }
 
     /// A driver fault on one of its GPUs fails every run with an executor there at once.
@@ -1841,7 +1833,7 @@ impl Pool {
         } else if self.level(&plan.construction).is_some_and(|holds| holds >= level) {
             return "";
         }
-        let Some((start, _permit)) = self.place(engine, plan, (None, None), None, &mut vec![None; self.width()]) else {
+        let Some((start, _permit)) = self.place(plan, (None, None), None, &mut vec![None; self.width()]) else {
             return "a request holds the GPU; it loads when that ends";
         };
         // A request queued for the GPU goes first; the member comes back after it.
@@ -2417,16 +2409,9 @@ impl Pool {
         }
         Ok(plan)
     }
-    fn permit(
-        self: &Arc<Self>,
-        engine: &Arc<Engine>,
-        root: Option<u64>,
-        family: Option<&str>,
-        devices: std::ops::Range<usize>,
-        claims: &Claims,
-    ) -> Option<Permit> {
+    fn permit(self: &Arc<Self>, root: Option<u64>, family: Option<&str>, devices: std::ops::Range<usize>, claims: &Claims) -> Option<Permit> {
         let token = self.allocations.call(root, family, devices, claims)?;
-        Some(Permit { pool: self.clone(), engine: Arc::downgrade(engine), token: Some(token) })
+        Some(Permit { pool: self.clone(), token })
     }
     /// A deviceless root's allocation, `width` GPUs, held while its call runs. None for a
     /// root with no GPU work.
@@ -2557,7 +2542,6 @@ impl Pool {
     /// Actual allocations decide capacity; measured peaks never block a permitted family call.
     fn place(
         self: &Arc<Self>,
-        engine: &Arc<Engine>,
         plan: &Plan,
         (root, family): (Option<u64>, Option<&str>),
         lane: Option<std::ops::Range<usize>>,
@@ -2567,7 +2551,7 @@ impl Pool {
         let degree = plan.degree as usize;
         let starts = range.start..(range.end + 1).saturating_sub(degree);
         let take = |start: usize, claims: &Claims| {
-            self.permit(engine, root, family, start..start + degree, claims).map(|permit| (start, permit))
+            self.permit(root, family, start..start + degree, claims).map(|permit| (start, permit))
         };
         let hosts: Vec<usize> = self.hosting(plan).into_iter().map(|(start, _)| start).filter(|s| starts.contains(s)).collect();
         let placed = hosts
@@ -2638,7 +2622,7 @@ impl Pool {
             },
             false => None,
         };
-        let Some((start, permit)) = self.place(engine, &plan, (Some(root), record.family()), lane, claims) else {
+        let Some((start, permit)) = self.place(&plan, (Some(root), record.family()), lane, claims) else {
             return Ok(false);
         };
         // Count CPU output owners after this GPU slot is held. A prior call can return while
@@ -2778,7 +2762,7 @@ impl Pool {
                         Some(None) => return,
                         Some(Some(lane)) if !gpu_request_queued(&engine, Some(root)) => {
                             let mut claims = vec![None; pool.width()];
-                            if let Some(placed) = pool.place(&engine, &plan, (Some(root), family.as_deref()), Some(lane), &mut claims) {
+                            if let Some(placed) = pool.place(&plan, (Some(root), family.as_deref()), Some(lane), &mut claims) {
                                 break placed;
                             }
                         }

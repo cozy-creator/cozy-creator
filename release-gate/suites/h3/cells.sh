@@ -132,6 +132,32 @@ if [ -f h3-lease-next.number ]; then
   expect h3-lease "$([ "$s" = completed ] && [ "${w:-0}" = 0 ] && echo PASS || echo FAIL)" "next call $s, ${w:-0} waits behind another run"
 fi
 
+# A reference shot, then at once a text-only one, three times (cl-697). After H3 the host rule finds the host short as
+# the next call starts and ends the idle executor (memory log `end_idle`, then `host_short ended gpu`) while that call's
+# GPU child is placed: on 0.15.0 the child waited behind nothing until cancelled (jitae 23697 and 23759, 2 of 3 such
+# transitions). Each executor the host rule ends during a text-only call must be followed by a placement within 30 s;
+# the verdict counts how many transitions did that. An SDXL pod cannot stand in: its calls' host growth never reaches
+# the host rule, so no squeeze makes it end an idle executor.
+SWITCH=("carves a long turn across an empty plaza at dusk, wheels on concrete" "rolls down a ramp into a sunlit car park"
+  "glides past shuttered shops under a light rain")
+for i in 1 2 3; do
+  cell "h3-switch-ref-$i" "$SHOT" assets:="[{\"name\": \"Skater\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
+    prompt="<Skater> ${SWITCH[$((i - 1))]}" seed:=$((R + 100 + i)) duration_s:=5
+  cell "h3-switch-text-$i" "$SHOT" prompt="$SCENE, take $i, slow push-in, ambient sound" seed:=$((R + 110 + i)) duration_s:=5
+done
+if [ -f h3-switch-text-1.number ]; then
+  "$CLI" machine logs "$M" memory -n 0 > h3-switch.memory.log 2>&1
+  calls=$(for i in 1 2 3; do [ -f "h3-switch-text-$i.number" ] && jq -r '"\(.status) \((.accepted_at_ms // 0) / 1000) \((.settled_at_ms // .finished_at_ms // 0) / 1000)"' "$OUT/h3-switch-text-$i.json"; done | paste -sd';')
+  r=$(awk -v calls="$calls" '
+    BEGIN { n = split(calls, c, ";"); for (i = 1; i <= n; i++) { split(c[i], f, " "); if (f[1] != "completed") bad++; a[i] = f[2]; s[i] = f[3] } }
+    /"event":"end_idle"/ { e = $1 }
+    /"event":"host_short"/ && /"ended":"gpu"/ && e && $1 - e < 10 { for (i = 1; i <= n; i++) if ($1 >= a[i] - 2 && $1 <= s[i]) { t[++k] = $1; break } }
+    /"event":"place"/ { for (j = 1; j <= k; j++) if (!p[j] && $1 >= t[j]) p[j] = $1 }
+    END { for (j = 1; j <= k; j++) { d = p[j] ? p[j] - t[j] : 999; if (d > 30) late++; if (d > w) w = d }
+      printf "%d not completed, %d host_short-ended transitions, %d placed later than 30 s (worst %.1f s)", bad, k, late, w }' h3-switch.memory.log)
+  expect h3-switch "$(grep -q '^0 not completed, [0-9]* host_short-ended transitions, 0 placed' <<< "$r" && echo PASS || echo FAIL)" "$r"
+fi
+
 # The long shot projects depend on (xs-136; it replaces the RC's h3-shot, folding in its length and A/V checks): 40 s in three pieces (beats at 0/13/27), one character picture, Turbo. Its timing
 # is recorded: per piece, s/step, the whole-shot decode, render seconds per output second (baseline run 22816, 0.2.1 on
 # Runtime 0.36.7: 1406.6 s, 35.2 s per output second). Each piece boundary (its record's `boundaries_s`) is judged with
