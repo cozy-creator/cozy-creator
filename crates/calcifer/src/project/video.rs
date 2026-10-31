@@ -53,6 +53,7 @@ shots:   # in order; past its renderer's longest piece (15 s for minimax-h3) a s
   # - {name: walk, setup: dock.a, prompt: \"<theo> crosses <dock>.\", duration_s: 8, writes: [stage],
   #    beats: [{at: 0, prompt: \"He walks to the edge.\"}, {at: 4, prompt: \"He looks out to sea.\"}]}
 # edit: [{shot: walk, end: 6}]   # which shots and spans the edit cuts; absent: every shot, whole
+# edit_uses: upscaled   # cut each shot's upscale (a shot's upscale: {settings: {resolution: 1080p}})
 "
     .into()
 }
