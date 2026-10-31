@@ -907,6 +907,10 @@ struct Pressure {
     sampled: Option<Instant>,
     /// Executors (by pid) holding less than they would because of a `room` give.
     asked: std::collections::BTreeSet<u32>,
+    /// The foreign and own bytes when the last give went out, while still short: another is
+    /// sent only once either has grown since, so a deficit is spent once per new reading and an
+    /// executor at its floor is not asked again for nothing.
+    gave: Option<(u64, u64)>,
 }
 
 impl Pressure {
@@ -1358,8 +1362,14 @@ impl Pool {
             }).collect();
         let mut pressure = self.pressure.lock().unwrap();
         let state = &mut pressure[index];
-        if now.free < headroom && (blocked || shared) && !leaders.is_empty() {
+        let short = now.free < headroom && (blocked || shared);
+        let grown = |(foreign, own): (u64, u64)| now.foreign > foreign + (64 << 20) || now.own > own + (64 << 20);
+        if !short {
+            state.gave = None;
+        }
+        if short && !leaders.is_empty() && state.gave.is_none_or(grown) {
             let give = 2 * headroom - now.free;
+            state.gave = Some((now.foreign, now.own));
             for (pid, ordinal, line) in &leaders {
                 if line.send(&Command::Room(Room { device: *ordinal, give, ..Default::default() })) {
                     state.asked.insert(*pid);
