@@ -34,6 +34,18 @@ CUDA library/context allocations. Stats on an unopened device do not initialize 
 after fork is rejected. No Python callback, background daemon or cross-process policy is added here.
 The event-recording free path and size-class fragmentation still need the P0 performance proof.
 
+Default and Torch-pooled streams live for the process. A caller owning a destroyable stream must
+stop submissions, synchronize it, call `working::retire_stream(device, stream)`, then destroy it.
+Retirement checks completion without waiting, removes its consumer/fence references and marks each
+allocation's original stream retired. A tensor may be freed afterward without touching the dead
+handle; new uses must still declare their live consumer streams. No global tombstone rejects a new
+stream that reuses the raw handle. Capture-time retirement is rejected.
+
+Torch `record_stream` accepts interior pointers within live working allocations. Freed blocks,
+padding, uncarved mappings and retired addresses still inside Varena's reserved VA are rejected.
+Only addresses outside every working reservation are treated as foreign storage and ignored, as
+by Torch's native allocator. TensorFS Region aliases still require their own Pin/`consume_on` contract.
+
 ## Weight residency
 
 ```text

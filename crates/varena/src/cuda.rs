@@ -79,6 +79,7 @@ pub(crate) struct Driver {
     event_synchronize: EventOp,
     event_destroy: EventOp,
     is_capturing: IsCapturing,
+    stream_query: EventOp,
     memory_info: MemoryInfo,
     memory_calls: AtomicU64,
     event_queries: AtomicU64,
@@ -128,6 +129,7 @@ impl Driver {
             event_synchronize: symbol!("cuEventSynchronize", EventOp),
             event_destroy: symbol!("cuEventDestroy_v2", EventOp),
             is_capturing: symbol!("cuStreamIsCapturing", IsCapturing),
+            stream_query: symbol!("cuStreamQuery", EventOp),
             memory_info: symbol!("cuMemGetInfo_v2", MemoryInfo),
             memory_calls: AtomicU64::new(0),
             event_queries: AtomicU64::new(0),
@@ -307,6 +309,14 @@ impl Driver {
             (self.is_capturing)(stream as Object, &mut capture)
         })?;
         Ok(capture != 0)
+    }
+
+    pub(crate) fn query_stream(&self, stream: usize) -> Result<bool> {
+        // SAFETY: retirement's caller still owns this live stream and has stopped submissions.
+        match unsafe { (self.stream_query)(stream as Object) } {
+            600 => Ok(false),
+            code => status("cuStreamQuery", code).map(|()| true),
+        }
     }
 
     pub(crate) fn copy_from_host(&self, ptr: u64, bytes: &[u8]) -> Result<()> {

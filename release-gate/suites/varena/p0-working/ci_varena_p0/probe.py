@@ -5,6 +5,7 @@ Run through the adjacent Cozy App. This fresh process installs the allocator bef
 from __future__ import annotations
 
 import gc
+import ctypes
 import hashlib
 from importlib.metadata import version
 import json
@@ -352,6 +353,184 @@ def rng_capture():
             "eager_replay_sha256": digests, "stats": retired}
 
 
+def replay_hook_failure():
+    arms = []
+    for reset_in_hook in (False, True):
+        source = torch.full((MIB,), 11, dtype=torch.uint8, device="cuda")
+        destination = torch.zeros_like(source)
+        torch.cuda.synchronize()
+        graph = torch.cuda.CUDAGraph()
+
+        def body():
+            temporary = source + 17
+            torch.cuda._sleep(100_000_000)
+            destination.copy_(temporary)
+            del temporary
+
+        _, pool, capture_stream = capture(graph, body, reserve=8 * MIB)
+        replay_stream = torch.cuda.Stream()
+        assert replay_stream.cuda_stream != capture_stream.cuda_stream
+        marker = torch.cuda.Event()
+        fault = RuntimeError("P0 replay-end hook failed after launch")
+        hook_state = {}
+
+        def after_launch(active_graph):
+            # This marker is ordered before the wrapper's required finally fence.
+            marker.record(replay_stream)
+            if reset_in_hook:
+                active_graph.reset()
+                torch.cuda.empty_cache()
+                hook_state["retained_during_hook"] = figures()["pools_bytes"]
+            raise fault
+
+        registration = graph.register_replay_end_hook(after_launch)
+        before = figures()
+        caught = None
+        try:
+            vt.replay(graph, stream=replay_stream)
+        except BaseException as error:
+            caught = error
+        finally:
+            registration.remove()
+        after = figures()
+        # Drain before diagnosing a missing fence, so the failing fixture does not create a
+        # second device fault by releasing a graph whose real work is still in flight.
+        if caught is not fault or after["event_records"] <= before["event_records"]:
+            replay_stream.synchronize()
+            assert caught is fault, (type(caught).__name__, str(caught))
+            raise AssertionError("replay-end hook error skipped the pool completion fence")
+        if reset_in_hook and not hook_state.get("retained_during_hook"):
+            replay_stream.synchronize()
+            raise AssertionError("reset inside replay hook released the active replay's pool")
+        graph.reset()
+        del graph
+        torch.cuda.empty_cache()
+        held = figures()
+        observed_pending = not marker.query()
+        if observed_pending:
+            assert held["pools_bytes"] > 0, "trim released an in-flight failed-hook replay"
+        with torch.cuda.stream(replay_stream):
+            copied = destination.clone()
+        source.record_stream(replay_stream)
+        destination.record_stream(replay_stream)
+        replay_stream.synchronize()
+        assert int(copied[0]) == int(copied[-1]) == 28
+        del source, destination, copied, marker, registration
+        clean()
+        retired = figures()
+        assert retired["pools"] == retired["event_handles"] == 0, retired
+        assert retired["allocated_bytes"] == retired["mapped_bytes"] == 0, retired
+        arms.append({
+            "reset_in_hook": reset_in_hook, "original_error_preserved": True,
+            "replay_fence_records": after["event_records"] - before["event_records"],
+            "retained_during_hook": hook_state.get("retained_during_hook"),
+            "observed_pending_after_trim": observed_pending,
+            "held_pool_bytes": held["pools_bytes"], "output_value": 28, "stats": retired,
+        })
+    return {"different_replay_stream": True, "arms": arms}
+
+
+def dlpack_record_stream():
+    consumer = torch.cuda.Stream()
+    data = torch.full((MIB,), 3, dtype=torch.uint8, device="cuda")
+    original = data.data_ptr()
+    alias = torch.utils.dlpack.from_dlpack(data[17:])
+    assert alias.untyped_storage().data_ptr() == original + 17
+    consumer.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(consumer):
+        torch.cuda._sleep(10_000_000)
+        total = alias.sum(dtype=torch.int64)
+    alias.record_stream(consumer)
+    done = torch.cuda.Event()
+    done.record(consumer)
+    del data, alias
+    replacement = torch.full((MIB,), 99, dtype=torch.uint8, device="cuda")
+    if not done.query():
+        assert replacement.data_ptr() != original, "interior DLPack consumer was not recorded"
+    consumer.synchronize()
+    assert int(total) == 3 * (MIB - 17)
+    del replacement, total, done
+    clean()
+
+    arena = varena.Arena(0)
+    region = arena.reserve(MIB)
+    use = region.prepare()
+    use.tensor.fill_(29)
+    use.commit()
+    alias = use.tensor[17:]
+    consumer.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(consumer):
+        total = alias.sum(dtype=torch.int64)
+    # This storage is outside the working allocator's reservation. Torch's callback is a
+    # compatibility no-op; the Region's own consumer declaration retains its physical backing.
+    alias.record_stream(consumer)
+    use.consume_on(consumer.cuda_stream)
+    consumer.synchronize()
+    assert int(total) == 29 * (MIB - 17)
+    del alias, use, total
+    gc.collect()
+    assert arena.reclaim(region.allocated_bytes) >= region.allocated_bytes
+    del region, arena, consumer
+    clean()
+    return {"interior_offset": 17, "working_sum": 3 * (MIB - 17),
+            "foreign_region_sum": 29 * (MIB - 17), "stats": figures()}
+
+
+def external_stream_retirement():
+    arms = []
+    for mode in ("none", "existing-consumer", "new-consumer"):
+        handle = ctypes.c_void_p()
+        status = torch.cuda.cudart().cudaStreamCreate(ctypes.addressof(handle))
+        assert int(getattr(status, "value", status)) == 0, status
+        external = torch.cuda.ExternalStream(handle.value, device=0)
+        consumer = torch.cuda.Stream()
+        with torch.cuda.stream(external):
+            retained = torch.full((MIB,), 37, dtype=torch.uint8, device="cuda")
+            temporary = torch.empty(8192, dtype=torch.uint8, device="cuda")
+            temporary.fill_(1)
+            del temporary
+        original = retained.data_ptr()
+        observed = None
+        if mode == "existing-consumer":
+            consumer.wait_stream(external)
+            with torch.cuda.stream(consumer):
+                torch.cuda._sleep(10_000_000)
+                observed = retained.sum(dtype=torch.int64)
+            retained.record_stream(consumer)
+        external.synchronize()
+        vt.retire_stream(external)
+        status = torch.cuda.cudart().cudaStreamDestroy(handle.value)
+        assert int(getattr(status, "value", status)) == 0, status
+        if mode == "new-consumer":
+            with torch.cuda.stream(consumer):
+                torch.cuda._sleep(10_000_000)
+                observed = retained.sum(dtype=torch.int64)
+            retained.record_stream(consumer)
+        if mode == "none":
+            assert int(retained[0]) == 37
+        done = torch.cuda.Event()
+        done.record(consumer)
+        before = figures()
+        del retained
+        after = figures()  # surfaces any destructor attempt to record the destroyed origin
+        if mode == "none":
+            assert after["event_records"] == before["event_records"], (before, after)
+        replacement = torch.full((MIB,), 99, dtype=torch.uint8, device="cuda")
+        if mode != "none" and not done.query():
+            assert replacement.data_ptr() != original, "retirement erased a surviving consumer"
+        consumer.synchronize()
+        if observed is not None:
+            assert int(observed) == 37 * MIB
+        del observed, replacement, done, external, consumer
+        clean()
+        retired = figures()
+        assert retired["allocated_bytes"] == retired["mapped_bytes"] == 0, retired
+        assert retired["event_handles"] == 0, retired
+        arms.append({"mode": mode, "free_event_records": after["event_records"] - before["event_records"],
+                     "stats": retired})
+    return {"destroy_before_tensor_free": True, "arms": arms}
+
+
 CASES = {
     "empty-capture": empty_capture,
     "allocator-reuse": allocator_reuse,
@@ -363,6 +542,9 @@ CASES = {
     "capture-exhaustion": capture_exhaustion,
     "replay-after-remap": replay_after_remap,
     "rng-capture": rng_capture,
+    "replay-hook-failure": replay_hook_failure,
+    "dlpack-record-stream": dlpack_record_stream,
+    "external-stream-retirement": external_stream_retirement,
 }
 
 
