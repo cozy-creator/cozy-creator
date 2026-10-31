@@ -570,11 +570,11 @@ impl Video {
             }
             Item::Shot(k) => self.shot(k, &reads, &mut files),
             Item::Upscale(k) => {
-                // The text the shot was made from, for an upscaler that re-renders it.
+                // The text the shot was made from (its style too), for an upscaler that re-renders it.
                 let shot = &self.project.shots[k];
                 let beats = shot.beats.iter().map(|beat| format!("Then, {}", beat.prompt.trim()));
                 let text = std::iter::once(shot.prompt.trim().to_owned()).chain(beats).collect::<Vec<_>>().join(" ");
-                let mut payload = json!({"video": reads[0].input(&mut files, "video".into(), None), "prompt": text.replace(['<', '>'], "")});
+                let mut payload = json!({"video": reads[0].input(&mut files, "video".into(), None), "prompt": styled(text.replace(['<', '>'], ""))});
                 payload.as_object_mut().expect("an object").extend(shot.upscale.settings.clone());
                 (payload, vec![])
             }
