@@ -6,9 +6,14 @@
 #   idle    SDXL and Qwen warm and idle; an idle_gb game starts: all of it within 2 s; a Qwen call beside it completes
 #   midjob  a Qwen call; a midjob_gb game starts once the GPU is busy and exits 8 s later: all of it within 2 s; the
 #           call completes, never cancelled, with its image
+#   big     the same with a big_gb game: the call keeps the floor it runs on (a ratchet below it failed it) and completes
+#   shrink  a 4 GB game mid-call settles to 1.5 GB and stays: the room grows back (`room` grow) and the next Qwen call
+#           runs within 15% of one with no game
+#   start   a game starts as an executor opens its CUDA context: the call completes, nothing is ended for it, and the
+#           GPU's reading is known again once the game exits (an ambiguous start is never taken as foreign for life)
 # params:
 #   runtime, tensorfs  `machine update` versions (default: the pod's own)
-#   idle_gb, midjob_gb the games (default 5 and 3, of an 8 GB card)
+#   idle_gb, midjob_gb, big_gb  the games (default 5, 3 and 5, of an 8 GB card)
 #   traffic_gb         GB the provider bills: the image, SDXL, Qwen and the fixture's environment (default 45)
 . "$(dirname "$0")/lib.sh"
 FIX=$(cd "$(dirname "$0")/fixtures" && pwd)
@@ -47,4 +52,35 @@ run mid-game ./game.py op=status cfg='{"name": "mid"}'
 judge midjob "$OUT/mid-game.value"
 [ "$(status mid-qwen)" = completed ] || fail "midjob: the Qwen call is $(status mid-qwen): $(jq -c .reason "$OUT/mid-qwen.json")"
 jq -e '.output[] | select(.status == "completed")' "$OUT/mid-qwen.json" > /dev/null || fail "midjob: the Qwen call left no image"
-say "PASS: the game had its memory within 2 s idle and mid-job; every call completed, none ended for it"
+
+run big-arm ./game.py op=start cfg="{\"name\": \"big\", \"gb\": $(param big_gb 5), \"trigger\": \"util\", \"util_pct\": 80, \"util_s\": 3, \"delay_s\": 1, \"give_up_s\": 60, \"hold_s\": 20}"
+run big-qwen qwen-image-2/generate prompt="a lantern-lit tea house in the snow, photo" seed:=$RANDOM megapixels:=1
+sleep 25; run big-game ./game.py op=status cfg='{"name": "big"}'
+judge big "$OUT/big-game.value"
+[ "$(status big-qwen)" = completed ] || fail "big: the Qwen call is $(status big-qwen): $(jq -c .reason "$OUT/big-qwen.json")"
+
+memlines() { cozy machine logs "$NAME" memory -n 0 2>/dev/null | wc -l; }
+run shrink-base qwen-image-2/generate prompt="a heron in reeds at dawn, photo" seed:=$RANDOM megapixels:=1
+m0=$(memlines)
+run shrink-arm ./game.py op=start cfg='{"name": "shrink", "gb": 4, "trigger": "util", "util_pct": 80, "util_s": 3, "delay_s": 1, "give_up_s": 60, "shrink_to_gb": 1.5, "shrink_after_s": 8, "hold_s": 900}'
+run shrink-job qwen-image-2/generate prompt="a red tram on a rainy street, photo" seed:=$RANDOM megapixels:=1
+run shrink-next qwen-image-2/generate prompt="a glass teapot of blooming tea, photo" seed:=$RANDOM megapixels:=1
+grew=$(cozy machine logs "$NAME" memory -n 0 2>/dev/null | tail -n +$((m0 + 1)) | grep '"event":"room"' | grep -c '"grow":[0-9]')
+run shrink-stop ./game.py op=stop cfg='{"name": "shrink"}'
+base=$(jq -r .execution_ms "$OUT/shrink-base.json"); next=$(jq -r .execution_ms "$OUT/shrink-next.json")
+say "shrink: $grew grow records; next Qwen $next ms, $base ms with no game"
+{ [ "$(status shrink-next)" = completed ] && [ "$grew" -gt 0 ] && [ "$next" -le $((base * 115 / 100)) ]; } ||
+  fail "shrink: the room did not grow back while the game stayed smaller"
+
+step restart2 machine update "$NAME" --gpu-memory-limit off -y || fail "restart"
+m0=$(memlines)
+run start-arm ./game.py op=start cfg='{"name": "start", "gb": 2, "trigger": "executor", "delay_s": 0, "give_up_s": 60, "hold_s": 40}'
+run start-sdxl sdxl/generate prompt="a copper kettle on a stove, photo" seed:=$RANDOM
+sleep 45
+w=$(cozy machine logs "$NAME" memory -n 0 2>/dev/null | tail -n +$((m0 + 1)))
+say "start: $(grep '"event":"driver_pids"' <<<"$w" | cut -d' ' -f2- | head -2 | tr '\n' ' ')"
+[ "$(status start-sdxl)" = completed ] || fail "start: the SDXL call is $(status start-sdxl)"
+! grep -q '"event":"ended_for_room"' <<<"$w" || fail "start: an executor was ended for a game that started beside its start"
+last=$(grep '"event":"gpu_pressure_observation"' <<<"$w" | tail -1)
+[ -z "$last" ] || grep -q '"known":true' <<<"$last" || fail "start: the GPU's reading stayed unknown after the game exited"
+say "PASS: the game had its memory within 2 s idle and mid-job (also $(param big_gb 5) GB); the room grew back when it shrank; a game beside a start was never taken for ours or theirs for life"

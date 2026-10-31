@@ -5,8 +5,10 @@
 """A stand-in game for the vram-yield session: raw driver allocations from a process that is not cozy's, the way a
 game takes the GPU (sessions/vram-yield.sh). One op per run (`op=<name> cfg=<json>`):
   mode    machine.mode in TensorD's config.toml (`shared`: a desktop's default), read at its next start
-  start   a detached game: `gb` GiB in 256 MiB blocks, now or once the GPU is busy (`trigger: util`), each refused
-          block asked again every 50 ms up to `give_up_s`, held `hold_s`; waits `wait_s` for its allocation to end
+  start   a detached game: `gb` GiB in 256 MiB blocks, now, once the GPU is busy (`trigger: util`) or once a new
+          executor opens its CUDA context (`trigger: executor`), each refused block asked again every 50 ms up to
+          `give_up_s`, held `hold_s` (`shrink_to_gb` after `shrink_after_s`: it settles smaller and stays); waits
+          `wait_s` for its allocation to end
   status  its record: `alloc_s` (trigger to all of it), `reached`, `fails`, NVML at trigger and at done
   stop    ends it
 The game has a scrubbed environment (no executor scope token, so no executor end reaps it), a stop file and a hard
@@ -158,6 +160,12 @@ if cfg.get("trigger") == "util":
     r = wait_util(nv, cfg["util_pct"], cfg["util_s"], stop, time.time() + cfg.get("trigger_timeout_s", 1200))
     if r != "fired":
         S["phase"] = "trigger_" + r; write(st, S); sys.exit(0)
+elif cfg.get("trigger") == "executor":  # a new GPU executor appears: its CUDA context is opening
+    base, deadline = set(executors()), time.time() + cfg.get("trigger_timeout_s", 1200)
+    while not [p for p in executors() if p not in base]:
+        if os.path.exists(stop) or time.time() > deadline:
+            S["phase"] = "trigger_timeout"; write(st, S); sys.exit(0)
+        time.sleep(0.02)
 time.sleep(cfg.get("delay_s", 0))
 m = nv.mem()
 t0 = time.time()
@@ -205,7 +213,7 @@ while True:
     rc = cu.cuMemAlloc_v2(ctypes.byref(p), size)
     if rc == 0:
         cu.cuMemsetD8_v2(p.value, 0x5A, size)
-        held.append(p.value); total += size
+        held.append((p.value, size)); total += size
         if total >= mark:
             S["marks"].append([round(time.time() - t0, 3), total >> 20, fails]); mark += GiB; write(st, S)
     elif rc == 2:
@@ -222,9 +230,20 @@ S.update(held_mib=total >> 20, fails=fails, t_done=time.time(), alloc_s=round(ti
          nvml_at_done={"used_mib": m.used >> 20, "free_mib": m.free >> 20})
 write(st, S)
 end = time.time() + cfg.get("hold_s", 1800)
+if cfg.get("shrink_to_gb") is not None:  # it settles smaller and stays
+    shrink_at = time.time() + cfg.get("shrink_after_s", 10)
+    while not os.path.exists(stop) and time.time() < shrink_at:
+        time.sleep(0.2)
+    keep = int(cfg["shrink_to_gb"] * GiB)
+    while held and total > keep:
+        p, size = held.pop(); cu.cuMemFree_v2(p); total -= size
+    cu.cuCtxSynchronize()
+    m = nv.mem()
+    S.update(phase="shrunk", held_mib=total >> 20, t_shrunk=time.time(), nvml_at_shrunk={"used_mib": m.used >> 20, "free_mib": m.free >> 20})
+    write(st, S)
 while not os.path.exists(stop) and time.time() < end:
     time.sleep(0.2)
-for p in held:
+for p, _ in held:
     cu.cuMemFree_v2(p)
 cu.cuDevicePrimaryCtxRelease(dev)
 S.update(phase="released", t_released=time.time(), released_by="stop" if os.path.exists(stop) else "hold_s")
