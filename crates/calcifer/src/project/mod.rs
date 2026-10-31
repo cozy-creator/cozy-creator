@@ -198,8 +198,9 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
         .map(|&i| {
             let node = &video.graph.nodes[i];
             let file = node.file.as_ref().map(|(file, _)| file.clone());
-            let chosen =
-                file.as_ref().and_then(|file| node.versions.iter().position(|v| v == file)).map(|n| n as u32 + 1);
+            // The version project.lock approves; a picture attached by hand (or its clean) is none.
+            let approved = lock.node(&node.id).and_then(|n| n.approved.as_ref());
+            let chosen = approved.and_then(|file| node.versions.iter().position(|v| v == file)).map(|n| n as u32 + 1);
             let flagged = beatless.iter().find(|line| line.starts_with(&format!("{} ", node.id)));
             let made_by = (file.as_ref())
                 .and_then(|file| lock.made(&node.id, &folder::digest_of(file)))
