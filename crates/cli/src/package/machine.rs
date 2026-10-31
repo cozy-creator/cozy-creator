@@ -1,5 +1,6 @@
 //! `cozy package install|remove|ls --on`: runs on a machine through Calcifer. The machine resolves
-//! releases from the Hub and owns its environments; the CLI reads nothing from the Hub.
+//! releases from the Hub and owns its environments; the CLI reads only the release it names and
+//! that release's card, which the next `cozy run` binds against.
 use std::{path::Path, process::ExitCode};
 
 use protocol::{
@@ -100,8 +101,15 @@ pub async fn install(
     };
     let warm = spec(v1::RunKind::Warm, release(&name, &chosen), String::new());
     let target = format!("{name}@{chosen}");
-    let submitted = submit(ctx, on, hub, calcifer::Kind::Warm, target, warm).await?;
-    installed(ctx, submitted, &name).await
+    let install = async {
+        let submitted = submit(ctx, on, hub, calcifer::Kind::Warm, target, warm).await?;
+        installed(ctx, submitted, &name).await
+    };
+    // The release's card, kept while its machine installs: the first run after an install binds
+    // against it with no Hub read on its path (an RTX 4090's cold SDXL run waited 0.55 s on it).
+    // A failed read is the run's to repeat.
+    let (installed, _) = tokio::join!(install, run::card(ctx, hub, &name, &chosen));
+    installed
 }
 
 /// A package directory or a script, installed live: the next run reads its files as they are
