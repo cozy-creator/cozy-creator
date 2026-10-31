@@ -272,7 +272,7 @@ impl Calcifer {
             ))
         );
         let mut named = None;
-        if !self.store.recorded(key)?
+        if self.store.keyed(key)?.is_none()
             && let Some(machines) = self.machines()
         {
             named = machines.admit(&submit).await.map_err(Error::Refused)?;

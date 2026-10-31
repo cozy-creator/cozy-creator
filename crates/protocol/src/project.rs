@@ -28,7 +28,7 @@ pub struct State {
     pub id: String,
     pub path: PathBuf,
     pub entities: Vec<Entity>,
-    /// Whether runs are being made now (`POST …/runs`).
+    /// Whether its walk is going: runs being made, or asked and not yet sent.
     pub busy: bool,
     pub edit: Edit,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -61,15 +61,16 @@ pub struct Entity {
     pub status: String,
 }
 
-/// `POST /v1/projects/{id}/runs`: `n` new versions of each of `names`, in order; no names brings
-/// every entity up to date in order, choosing each new version, then cuts the edit.
+/// `POST /v1/projects/{id}/runs`: `n` new versions of each of `names`, or with `all` every entity
+/// brought up to date, each new version chosen, then the edit cut. It joins the project's walk,
+/// which sends each version once what it reads is settled; `on` lists the machines they may go to.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Runs {
     #[serde(default)]
     pub names: Vec<String>,
     #[serde(default = "one")]
     pub n: u32,
-    pub on: On,
+    pub on: Vec<On>,
     /// The Hub its renderers are read from and its runs belong to.
     pub hub: String,
 }
@@ -120,7 +121,8 @@ pub enum Event {
         path: PathBuf,
         seconds: f64,
     },
-    /// The runs asked for are over; `error` says why they stopped short.
+    /// The walk is over: nothing it was asked is left to send or follow; `error` is the first thing
+    /// that failed.
     Ended {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<Error>,
