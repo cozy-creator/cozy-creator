@@ -1,6 +1,6 @@
 [package]
 name = "tensorfs"
-version = "0.17.15"
+version = "0.17.16"
 edition = "2021"
 license.workspace = true
 publish.workspace = true
