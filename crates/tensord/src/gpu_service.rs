@@ -1472,11 +1472,20 @@ impl Pool {
         crate::precision::Gpus::of(&ccs)
     }
     /// The first `degree` GPUs as the Hub resolves a model for them: each one's capability, and
-    /// the free bytes on the one with the fewest (none read: no fit check). No GPU: the CPU.
+    /// what a call can have on the one with the least: free bytes plus what idle executors hold
+    /// there, which the call's `make_room` takes back (none read: no fit check). No GPU: the CPU.
+    /// (pawoo 22998: SeedVR2 resolved at 0.3 GiB free beside an idle H3 its call then offloaded,
+    /// and streamed int8 in a card it had to itself.)
     pub fn hardware(&self, degree: u32) -> tensorfs::fetch::Hardware {
         let devices: Vec<&Device> = self.devices.iter().take(degree as usize).collect();
         let gpus = devices.iter().filter_map(|d| self.inventory(&d.entry)).map(|g| g.compute_cap.clone()).filter(|cc| !cc.is_empty()).collect();
-        let free_vram = devices.iter().filter_map(|d| d.memory.as_ref()?.free()).min();
+        let mut idle = vec![0u64; devices.len()];
+        for session in self.sessions.lock().unwrap().values() {
+            for (rank, bytes) in self.held(session).unwrap_or_default().into_iter().enumerate() {
+                if let Some(slot) = idle.get_mut(session.start + rank) { *slot += bytes }
+            }
+        }
+        let free_vram = devices.iter().zip(idle).filter_map(|(d, idle)| Some(d.memory.as_ref()?.free()? + idle)).min();
         tensorfs::fetch::Hardware { gpus, free_vram, plain: false }
     }
     fn inventory(&self, entry: &str) -> Option<&crate::machine::receipt::Gpu> {
