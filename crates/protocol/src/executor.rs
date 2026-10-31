@@ -189,7 +189,7 @@ pub struct Cancel {
 
 /// Another program needs this GPU, or has given it back (design/vram-yield.md). `give`: hold
 /// that many bytes less than now, at once (Torch's cache, then weight pages; never below what the
-/// running call needs to go on). `grow`: that many more, taken at the next fill. `lift`: no limit.
+/// running call needs to go on). `lift`: no limit; it grows back at its next fills.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct Room {
@@ -198,8 +198,6 @@ pub struct Room {
     pub device: u32,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub give: u64,
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub grow: u64,
     #[serde(default, skip_serializing_if = "is_false")]
     pub lift: bool,
 }

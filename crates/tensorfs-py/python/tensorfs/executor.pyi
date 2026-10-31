@@ -180,7 +180,6 @@ class Capability(_Wire):
 class Room(_Wire):
     device: int
     give: int
-    grow: int
     lift: bool
 
 class ByteGrant(_Wire):

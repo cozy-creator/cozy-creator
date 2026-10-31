@@ -1344,7 +1344,8 @@ impl Pool {
     /// Short (free under H, from another program's use, or in shared mode at all), each executor
     /// on the GPU is asked once per reading to give back 2H − free: Torch's cache, then its weight
     /// pages, never what its call needs to go on. A run is never ended for another program. Free
-    /// past 3H again, those asked may grow into free − 2H (shared) or hold no limit (dedicated).
+    /// past 3H again (the other program gave it back), those asked hold no limit: they grow at
+    /// their next fills, and the H..2H band keeps that from asking again until it is used.
     fn room(&self, engine: &Arc<Engine>, index: usize, device: &Device, blocked: bool) {
         let Some(now) = device.memory.as_ref().and_then(|gpu| gpu.usage(&self.tenants)) else { return };
         let headroom = Pressure::headroom(now.total);
@@ -1379,19 +1380,14 @@ impl Pool {
                 "free_bytes": now.free, "foreign_bytes": now.foreign, "own_bytes": now.own,
                 "headroom_bytes": headroom, "blocked": blocked, "executors": leaders.iter().map(|l| l.0).collect::<Vec<_>>()}));
         } else if !state.asked.is_empty() && !blocked && now.free >= 3 * headroom {
-            let grow = now.free - 2 * headroom;
             let mut told = vec![];
             for (pid, ordinal, line) in &leaders {
-                if !state.asked.contains(pid) { continue }
-                let room = if shared { Room { device: *ordinal, grow, ..Default::default() } }
-                    else { Room { device: *ordinal, lift: true, ..Default::default() } };
-                line.send(&Command::Room(room));
-                told.push(*pid);
+                if state.asked.contains(pid) && line.send(&Command::Room(Room { device: *ordinal, lift: true, ..Default::default() })) {
+                    told.push(*pid);
+                }
             }
-            let live: Vec<u32> = leaders.iter().map(|l| l.0).collect();
-            state.asked.retain(|pid| shared && live.contains(pid));
-            self.notes.note(serde_json::json!({"event": "room", "gpu": device.entry,
-                "grow": if shared { Some(grow) } else { None }, "lift": !shared,
+            state.asked.clear();
+            self.notes.note(serde_json::json!({"event": "room", "gpu": device.entry, "lift": true,
                 "free_bytes": now.free, "foreign_bytes": now.foreign, "executors": told}));
         }
     }
