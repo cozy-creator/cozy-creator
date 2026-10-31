@@ -1505,7 +1505,11 @@ impl Pool {
                     }
                     _ => {}
                 }
-                state.round = Some((round.min(3), now.own));
+                // Past the last round nothing is left to ask this reading; the next starts over, so a
+                // deficit that never clears (a Runtime that cannot give) still reaches idle executors
+                // when another program arrives (kefla, Runtime 0.36.13: stuck past the last round, a
+                // 5 GB game waited 60 s and gave up).
+                state.round = (round < 3).then_some((round, now.own));
                 if !told.is_empty() || !offload.is_empty() {
                     self.notes.note(serde_json::json!({"event": "room", "gpu": device.entry, "round": round,
                         "deficit": deficit, "free_bytes": now.free, "foreign_bytes": now.foreign, "own_bytes": now.own,
