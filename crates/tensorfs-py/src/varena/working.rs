@@ -308,7 +308,27 @@ fn _varena_working_pool_cancel_preparation(
     .map_err(|e| super::raise(py, e))
 }
 
+#[pyfunction]
+fn _varena_working_pool_retain(py: Python<'_>, device: i32, pool: (u64, u64)) -> PyResult<()> {
+    py.detach(|| {
+        check()?;
+        varena::working::pool_retain(device, pool)
+    })
+    .map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
+fn _varena_working_pool_release(py: Python<'_>, device: i32, pool: (u64, u64)) -> PyResult<()> {
+    py.detach(|| {
+        check()?;
+        varena::working::pool_release(device, pool)
+    })
+    .map_err(|e| super::raise(py, e))
+}
+
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(_varena_working_pool_retain, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_working_pool_release, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_bindings, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_initialize, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_check, module)?)?;
