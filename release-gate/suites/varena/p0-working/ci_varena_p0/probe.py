@@ -179,6 +179,69 @@ def captured_reuse():
     return {"cumulative_bytes": 24 * MIB, "reservation_bytes": 8 * MIB, "stats": row}
 
 
+def pool_variable_reuse():
+    results = []
+    for mode, output_bytes, expected in (("split", 8 * MIB, 29), ("coalesce", 16 * MIB, 43)):
+        destination = torch.zeros(output_bytes, dtype=torch.uint8, device="cuda")
+        graph = torch.cuda.CUDAGraph()
+        body_facts = {}
+
+        def body():
+            before = figures()
+            live = []
+
+            def observe():
+                live.append(figures()["allocated_capacity"] - before["allocated_capacity"])
+
+            try:
+                if mode == "split":
+                    temporary = torch.empty(16 * MIB, dtype=torch.uint8, device="cuda")
+                    temporary.fill_(13)
+                    observe()
+                    del temporary
+                else:
+                    first = torch.empty(8 * MIB, dtype=torch.uint8, device="cuda")
+                    second = torch.empty(8 * MIB, dtype=torch.uint8, device="cuda")
+                    first.fill_(11)
+                    second.fill_(17)
+                    observe()
+                    del first, second
+                temporary = torch.empty(output_bytes, dtype=torch.uint8, device="cuda")
+                temporary.fill_(expected)
+                destination.copy_(temporary)
+                observe()
+                del temporary
+            finally:
+                after = figures()
+                body_facts["driver_delta"] = {key: after[key] - before[key] for key in DRIVER}
+                body_facts["pool_live_peak_bytes"] = max(live, default=0)
+                assert not any(body_facts["driver_delta"].values()), (before, after)
+
+        result = {"mode": mode, "reservation_bytes": 16 * MIB}
+        try:
+            capture(graph, body, reserve=16 * MIB)
+            vt.replay(graph)
+            torch.cuda.synchronize()
+            assert int(destination[0]) == int(destination[-1]) == expected
+            result.update(passed=True, output_value=expected)
+        except torch.OutOfMemoryError as error:
+            # Record both independent arms without retrying either at a larger reservation.
+            result.update(passed=False, error=str(error))
+        finally:
+            graph.reset()
+            del graph, destination
+            clean()
+        retired = figures()
+        assert retired["allocated_bytes"] == retired["mapped_bytes"] == 0, retired
+        assert retired["pools"] == retired["event_handles"] == 0, retired
+        assert body_facts.get("pool_live_peak_bytes") == 16 * MIB, (result, body_facts)
+        result.update(body_facts, retired=retired)
+        results.append(result)
+        emit({"pool_variable_reuse_arm": result})
+    assert all(result["passed"] for result in results), json.dumps(results, sort_keys=True)
+    return {"arms": results, "fixed_reservation_bytes": 16 * MIB}
+
+
 def retained_output():
     g = torch.cuda.CUDAGraph()
     source = torch.full((MIB,), 4, dtype=torch.uint8, device="cuda")
@@ -571,6 +634,7 @@ CASES = {
     "default-deferred-free": default_deferred_free,
     "side-stream": side_stream,
     "captured-reuse": captured_reuse,
+    "pool-variable-reuse": pool_variable_reuse,
     "retained-output": retained_output,
     "shared-pool": shared_pool,
     "distinct-pools": distinct_pools,
