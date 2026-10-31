@@ -37,6 +37,7 @@ def main() -> None:
     metadata = {
         "abi": 1, "torch": torch.__version__, "cxx11_abi": abi,
         "system": platform.system(), "machine": platform.machine(),
+        "torch_git": torch.version.git_version,
     }
     output.with_suffix(".json").write_text(json.dumps(metadata, sort_keys=True) + "\n")
     print(f"built {output} against Torch {torch.__version__}; no CUDA context initialized")

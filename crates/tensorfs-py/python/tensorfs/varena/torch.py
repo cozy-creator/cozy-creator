@@ -45,12 +45,14 @@ def _device(device=None) -> int:
 def install(device: int | None = None) -> None:
     """Select Varena once per process. An explicit device is initialized outside capture.
 
-    The wheel must contain the ahead-of-time shim for this exact Torch build/C++ ABI.
+    The wheel must contain the ahead-of-time shim for this Torch version/C++ ABI.
     This never compiles at runtime and cannot coexist with the old cudaMalloc hook.
     """
     global _owner, _library, _allocator
     import torch
 
+    if _owner and _owner != os.getpid():
+        _installed()  # Reject before touching a potentially inherited installation lock.
     with _lock:
         if _owner:
             _installed()
@@ -70,7 +72,7 @@ def install(device: int | None = None) -> None:
                 "cxx11_abi": int(torch._C._GLIBCXX_USE_CXX11_ABI),
                 "system": platform.system(), "machine": platform.machine(),
             }
-            if actual != expected:
+            if any(actual.get(key) != value for key, value in expected.items()):
                 raise RuntimeError(f"Varena Torch shim ABI mismatch: built {actual}, running {expected}")
             native = ctypes.CDLL(str(library))
             native.varena_torch_bind.argtypes = [ctypes.c_void_p]
