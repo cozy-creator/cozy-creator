@@ -12,14 +12,22 @@ import os
 from pathlib import Path
 import platform
 import threading
-from typing import Iterator
+from types import ModuleType
+from typing import TYPE_CHECKING, Any, Iterator, TypeAlias, cast
 
 from .. import _ext
 
+if TYPE_CHECKING:
+    from torch import device as TorchDevice
+    from torch.cuda import Stream
+
+DeviceLike: TypeAlias = "int | str | TorchDevice | None"
+PoolId: TypeAlias = tuple[int, int]
+
 _lock = threading.Lock()
 _owner = 0
-_library = None
-_allocator = None
+_library: ctypes.CDLL | None = None
+_allocator: Any = None
 _CAPTURE_CAPACITY_PREFIX = "[tensorfs.varena.capture_capacity.v1] "
 
 
@@ -28,11 +36,11 @@ def _installed() -> None:
         raise RuntimeError("install tensorfs.varena.torch in this child before using its allocator")
 
 
-def _device(device=None) -> int:
+def _device(device: DeviceLike = None) -> int:
     import torch
 
     if device is None:
-        return torch.cuda.current_device()
+        return cast(int, torch.cuda.current_device())
     if isinstance(device, int):
         if device < 0:
             raise ValueError("device must be nonnegative")
@@ -40,10 +48,10 @@ def _device(device=None) -> int:
     parsed = torch.device(device)
     if parsed.type != "cuda":
         raise ValueError("Varena requires a CUDA device")
-    return torch.cuda.current_device() if parsed.index is None else parsed.index
+    return cast(int, torch.cuda.current_device() if parsed.index is None else parsed.index)
 
 
-def install(device: int | None = None) -> None:
+def install(device: DeviceLike = None) -> None:
     """Select Varena once per process. An explicit device is initialized outside capture.
 
     The wheel must list this Torch patch cohort and match its CUDA/C++ ABI and platform.
@@ -86,7 +94,7 @@ def install(device: int | None = None) -> None:
                 raise RuntimeError("Varena Torch shim refused its native function table")
 
             def address(name: str) -> int:
-                return ctypes.cast(getattr(native, name), ctypes.c_void_p).value
+                return cast(int, ctypes.cast(getattr(native, name), ctypes.c_void_p).value)
 
             allocator = torch.cuda.memory.CUDAPluggableAllocator(
                 str(library), "varena_torch_malloc", "varena_torch_free"
@@ -107,30 +115,30 @@ def install(device: int | None = None) -> None:
         initialize(device)
 
 
-def initialize(device: int = 0) -> None:
+def initialize(device: DeviceLike = 0) -> None:
     """Prepare a device outside capture, including an allocation-free first graph."""
     _installed()
     _ext._varena_working_initialize(_device(device))
 
 
-def stats(device: int = 0) -> dict[str, int]:
+def stats(device: DeviceLike = 0) -> dict[str, int]:
     _installed()
     return _ext._varena_working_stats(_device(device))
 
 
-def reset_peak(device: int = 0) -> None:
+def reset_peak(device: DeviceLike = 0) -> None:
     """Reset measured working peaks to current live and mapped bytes."""
     _installed()
     _ext._varena_working_reset_peak(_device(device))
 
 
-def trim(device: int = 0) -> int:
+def trim(device: DeviceLike = 0) -> int:
     """Return completed unused pages; pending work and graph owners remain retained."""
     _installed()
     return _ext._varena_working_trim(_device(device))
 
 
-def set_limit(device: int, bytes: int | None = None) -> int:
+def set_limit(device: DeviceLike, bytes: int | None = None) -> int:
     """Bound resident weights plus mapped Torch/native working memory.
 
     This static ceiling is independent of temporary make_room limits; the smaller wins.
@@ -141,19 +149,19 @@ def set_limit(device: int, bytes: int | None = None) -> int:
     return _ext._varena_working_set_limit(_device(device), bytes)
 
 
-def prepare_pool(pool: tuple[int, int], bytes: int, device: int = 0) -> int:
+def prepare_pool(pool: PoolId, bytes: int, device: DeviceLike = 0) -> int:
     """Map at least this capacity before capture; the previous pool survives failure."""
     initialize(device)
-    return _ext._varena_working_pool_reserve(_device(device), tuple(pool), bytes)
+    return _ext._varena_working_pool_reserve(_device(device), cast(PoolId, tuple(pool)), bytes)
 
 
-def cancel_preparation(pool: tuple[int, int], device: int = 0) -> None:
+def cancel_preparation(pool: PoolId, device: DeviceLike = 0) -> None:
     """Return an unused reservation to reclaimability without releasing a graph owner."""
     _installed()
-    _ext._varena_working_pool_cancel_preparation(_device(device), tuple(pool))
+    _ext._varena_working_pool_cancel_preparation(_device(device), cast(PoolId, tuple(pool)))
 
 
-def capture_complete(pool: tuple[int, int], *, stream, device: int | None = None) -> None:
+def capture_complete(pool: PoolId, *, stream: Stream, device: DeviceLike = None) -> None:
     """Release capture exclusion after the owner actually ended this stream's capture."""
     _installed()
     import torch
@@ -162,17 +170,17 @@ def capture_complete(pool: tuple[int, int], *, stream, device: int | None = None
     with torch.cuda.device(index), torch.cuda.stream(stream):
         if torch.cuda.is_current_stream_capturing():
             raise RuntimeError("end CUDA stream capture before completing its Varena pool")
-        _ext._varena_working_capture_complete(index, tuple(pool))
+        _ext._varena_working_capture_complete(index, cast(PoolId, tuple(pool)))
 
 
-def record_pool_stream(pool: tuple[int, int], stream, device: int | None = None) -> None:
+def record_pool_stream(pool: PoolId, stream: Stream, device: DeviceLike = None) -> None:
     """Record after replay or output use has been submitted on this stream."""
     _installed()
     index = _device(stream.device if device is None else device)
-    _ext._varena_working_pool_record_stream(index, tuple(pool), stream.cuda_stream)
+    _ext._varena_working_pool_record_stream(index, cast(PoolId, tuple(pool)), stream.cuda_stream)
 
 
-def retire_stream(stream, device: int | None = None) -> None:
+def retire_stream(stream: Stream, device: DeviceLike = None) -> None:
     """Forget a drained stream before its owner destroys it; the caller stops submissions first."""
     _installed()
     index = _device(stream.device if device is None else device)
@@ -180,14 +188,14 @@ def retire_stream(stream, device: int | None = None) -> None:
 
 
 @contextmanager
-def graph(cuda_graph, *, pool=None, stream=None, reserve_bytes: int | None = None) -> Iterator[object]:
+def graph(cuda_graph: Any, *, pool: PoolId | None = None, stream: Stream | None = None, reserve_bytes: int | None = None) -> Iterator[Any]:
     """Prepare, capture and finish one graph. Shared-pool replay order remains the owner's contract."""
     _installed()
     import torch
 
     device = _device(stream.device if stream is not None else None)
     stream = torch.cuda.Stream(device=device) if stream is None else stream
-    pool = torch.cuda.graph_pool_handle() if pool is None else pool
+    pool = cast(PoolId, torch.cuda.graph_pool_handle()) if pool is None else pool
     try:
         prepare_pool(pool, stats(device)["allocated_peak"] if reserve_bytes is None else reserve_bytes, device)
         # Preparation is outside capture; native allocations during capture use this pool only.
@@ -216,7 +224,7 @@ def graph(cuda_graph, *, pool=None, stream=None, reserve_bytes: int | None = Non
                             error = caught
                 if torch.cuda.is_current_stream_capturing():
                     raise RuntimeError("CUDA capture did not end; Varena capture exclusion is retained") from error
-                routed = _library.varena_torch_abort_routing(device, *pool)
+                routed = cast(ctypes.CDLL, _library).varena_torch_abort_routing(device, *pool)
                 if routed < 0:
                     raise RuntimeError("failed to end Varena capture routing") from error
                 if ending or routed:
@@ -237,10 +245,10 @@ def graph(cuda_graph, *, pool=None, stream=None, reserve_bytes: int | None = Non
             detail = error.args[0][len(_CAPTURE_CAPACITY_PREFIX):]
             raise torch.OutOfMemoryError(detail) from error
         raise error.with_traceback(error.__traceback__)
-    cuda_graph._varena_owner = (_owner, device, tuple(pool))
+    cuda_graph._varena_owner = (_owner, device, cast(PoolId, tuple(pool)))
 
 
-def replay(cuda_graph, *, stream=None) -> None:
+def replay(cuda_graph: Any, *, stream: Stream | None = None) -> None:
     """Replay an owned graph and retain its pool through completion on the selected stream."""
     _installed()
     import torch
@@ -263,8 +271,8 @@ def replay(cuda_graph, *, stream=None) -> None:
         _ext._varena_working_pool_release(device, pool)
 
 
-def _bind_stats(torch) -> None:
-    def memory_stats(device=None):
+def _bind_stats(torch: ModuleType) -> None:
+    def memory_stats(device: DeviceLike = None) -> dict[str, int]:
         row = stats(_device(device))
         return {
             "allocated_bytes.all.current": row["allocated_bytes"],
@@ -275,7 +283,7 @@ def _bind_stats(torch) -> None:
             "num_ooms": row["ooms"],
         }
 
-    def reset_peak_memory_stats(device=None):
+    def reset_peak_memory_stats(device: DeviceLike = None) -> None:
         reset_peak(_device(device))
 
     readers = {
