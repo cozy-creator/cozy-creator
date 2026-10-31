@@ -29,6 +29,7 @@ cd "$FIX" || fail "no fixtures"
 value() { cozy run show "$(runno "$1")" --once --json > "$OUT/$1.json" 2>&1; jq -r '.result.value // empty' "$OUT/$1.json"; }
 status() { jq -r '.status // empty' "$OUT/$1.json"; }
 run() { local n=$1; shift; step "$n" run "$@" --on "$NAME" || fail "$n"; value "$n" > "$OUT/$n.value"; }
+step restart0 machine update "$NAME" --gpu-memory-limit off -y || fail "restart"  # writes TensorD's config.toml
 step mode run ./game.py --on "$NAME" op=mode cfg='{"mode": "shared"}' || fail "mode"
 step restart machine update "$NAME" --gpu-memory-limit off -y || fail "restart"
 [ "$(cozy machine show "$NAME" --json | jq -r .status.mode)" = shared ] || fail "the machine is not in shared mode"

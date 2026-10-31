@@ -302,6 +302,7 @@ def mode(cfg: dict) -> dict:
         home = Path(env.get("COZY_HOME") or Path(env.get("HOME", str(Path.home()))) / ".cozy")
         break
     path = home / "config.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
     text = path.read_text() if path.exists() else ""
     out, section, done = [], "", False
     for line in text.splitlines():
