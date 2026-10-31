@@ -1,7 +1,7 @@
-//! The `video` project type: characters, props and environments (an environment's camera setups
-//! are entities of their own), world states that shots write and read, shots of any length with beats,
-//! an upscale per shot, and the edit, cut here with ffmpeg. Stills render through the `image`
-//! interface (xs-135); shots and upscales through `video/shot` and `video/upscale`.
+//! The `video` project type: entities (characters, props and environments; an environment's camera
+//! setups are nodes of their own), world states that shots write and read, shots of any length with
+//! beats, an upscale per shot, and the edit, cut here with ffmpeg. Each node renders through its
+//! render block: a function, cozy run's model choices and the function's options.
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
@@ -9,24 +9,21 @@ use std::{
 };
 
 use protocol::error::{Error, Kind};
-use saphyr::{MappingOwned, ScalarOwned, YamlOwned};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use super::{
-    folder::{self, Folder, Lock, Made, Upstream},
-    graph::{Edge, Entity, Graph, mentions, name_key},
+    folder::{self, Folder, Lock, Made, Upstream, digest_of},
+    graph::{Edge, Graph, Node, mentions, name_key},
 };
 
 pub const TYPE: &str = "video";
-/// The name `cozy run all` means: every entity, brought up to date.
+/// The name `cozy run all` means: every node, brought up to date.
 pub const ALL: &str = "all";
 
-/// Each kind's renderer unless `renderers:` names another.
-const RENDERERS: [(&str, &str); 8] = [
-    ("character", "qwen-image-2/generate"),
-    ("prop", "qwen-image-2/generate"),
-    ("environment", "qwen-image-2/generate"),
+/// Each node kind's function unless `defaults:` or the node's `render:` names another.
+const RENDERERS: [(&str, &str); 6] = [
+    ("entity", "qwen-image-2/generate"),
     ("setup", "qwen-image-2/generate"),
     ("world_state", "qwen-image-2/generate"),
     ("shot", "minimax-h3/shot"),
@@ -36,14 +33,17 @@ const RENDERERS: [(&str, &str); 8] = [
     ("clean", "birefnet/remove_background"),
 ];
 
-/// A new project's project.yaml: each kind shown, commented out (cozy's writes keep comments).
+/// A new project's project.yaml: each kind shown, commented out. Cozy never writes it again: each
+/// node's versions, and which is approved, are in project.lock.
 pub fn skeleton() -> String {
     "# A video project (`cozy project --help`). Fill in the lists, then
 #   cozy render all --project <this folder> --on <machine>
 # makes everything missing or out of date, in order, and cuts edit.mp4 here.
 type: video
 style: \"\"   # the look, added to every picture and shot
-assets:   # characters, props, and environments with camera setups (camera text in screen terms)
+# defaults:   # each node kind's render block; a node's own render: wins
+#   shot: {with: minimax-h3/shot, lora: [{ref: org/lora, strength: 0.8}], options: {turbo: true}}
+entities:   # characters, props, and environments with camera setups (camera text in screen terms)
   # - {name: theo, kind: character, description: \"A tall man in a green raincoat.\"}
   # - {name: dock, kind: environment, description: \"a foggy harbour at dawn\",
   #    setups: [{name: a, camera: \"wide: the red hut near on the left, the crates far on the right\"}]}
@@ -52,9 +52,10 @@ world_states:   # how a set stands; a shot that writes one changes it for the sh
 shots:   # in order; past its renderer's longest piece (15 s for minimax-h3) a shot needs beats
   # - {name: walk, setup: dock.a, prompt: \"<theo> crosses <dock>.\", duration_s: 8, writes: [stage],
   #    beats: [{at: 0, prompt: \"He walks to the edge.\"}, {at: 4, prompt: \"He looks out to sea.\"}]}
-# a shot's settings: are its renderer's fields, plus lora: [{ref: org/lora, strength: 0.8}] and models: as in cozy run --input
+# a node's render: {with: <function>, models: {...}, lora: [...], options: {...}} renders it another way
+# image: (or a shot's video:) attaches your own file, used until you approve a version cozy made
 # edit: [{shot: walk, end: 6}]   # which shots and spans the edit cuts; absent: every shot, whole
-# edit_uses: upscaled   # cut each shot's upscale (a shot's upscale: {settings: {resolution: 1080p}})
+# edit_uses: upscaled   # cut each shot's upscale
 "
     .into()
 }
@@ -63,20 +64,41 @@ shots:   # in order; past its renderer's longest piece (15 s for minimax-h3) a s
 struct Project {
     #[serde(rename = "type")]
     kind: String,
+    /// Each node kind's render block, by `RENDERERS`' kinds.
     #[serde(default)]
-    renderers: BTreeMap<String, String>,
+    defaults: BTreeMap<String, Render>,
     #[serde(default)]
     style: String,
     #[serde(default)]
     edit_uses: Uses,
     #[serde(default, deserialize_with = "listed")]
-    assets: Vec<Asset>,
+    entities: Vec<Entity>,
     #[serde(default, deserialize_with = "listed")]
     world_states: Vec<WorldState>,
     #[serde(default, deserialize_with = "listed")]
     shots: Vec<Shot>,
     /// None: every shot, in order, whole.
     edit: Option<Vec<Cut>>,
+}
+
+/// How a node is rendered: `with` a function (`[org/]package/function`), cozy run's model choices
+/// (`models`, `lora`, as `cozy run --input` takes them) and the function's own `options`.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct Render {
+    pub with: Option<String>,
+    #[serde(default)]
+    pub models: Value,
+    #[serde(default)]
+    pub lora: Value,
+    #[serde(default)]
+    pub options: Map<String, Value>,
+}
+
+impl Render {
+    /// The function it names.
+    pub fn target(&self) -> &str {
+        self.with.as_deref().unwrap_or_default()
+    }
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Deserialize)]
@@ -87,33 +109,34 @@ enum Uses {
     Upscaled,
 }
 
+/// A thing in the film's world.
 #[derive(Deserialize)]
-struct Asset {
+struct Entity {
     name: String,
-    kind: AssetKind,
+    kind: EntityKind,
     #[serde(default)]
     description: String,
     #[serde(default)]
     setups: Vec<Setup>,
+    /// A picture attached by hand: its version until one cozy made is approved.
     image: Option<String>,
-    #[serde(default)]
-    versions: Vec<String>,
+    render: Option<Render>,
 }
 
 #[derive(Clone, Copy, PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum AssetKind {
+enum EntityKind {
     Character,
     Prop,
     Environment,
 }
 
-impl AssetKind {
+impl EntityKind {
     fn name(self) -> &'static str {
         match self {
-            AssetKind::Character => "character",
-            AssetKind::Prop => "prop",
-            AssetKind::Environment => "environment",
+            EntityKind::Character => "character",
+            EntityKind::Prop => "prop",
+            EntityKind::Environment => "environment",
         }
     }
 }
@@ -128,8 +151,7 @@ struct Setup {
     /// like shot N"): the place in it, with nobody, seen from this camera.
     frame: Option<FrameAt>,
     image: Option<String>,
-    #[serde(default)]
-    versions: Vec<String>,
+    render: Option<Render>,
 }
 
 #[derive(Deserialize)]
@@ -147,8 +169,7 @@ struct WorldState {
     #[serde(default)]
     blocking: String,
     image: Option<String>,
-    #[serde(default)]
-    versions: Vec<String>,
+    render: Option<Render>,
 }
 
 #[derive(Deserialize)]
@@ -164,13 +185,9 @@ struct Shot {
     #[serde(default)]
     writes: Vec<String>,
     video: Option<String>,
-    #[serde(default)]
-    versions: Vec<String>,
+    render: Option<Render>,
     #[serde(default)]
     upscale: Upscale,
-    /// The renderer's own fields (minimax-h3's `turbo`, …), added to the request.
-    #[serde(default)]
-    settings: serde_json::Map<String, Value>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -182,11 +199,7 @@ struct Beat {
 #[derive(Default, Deserialize)]
 struct Upscale {
     video: Option<String>,
-    #[serde(default)]
-    versions: Vec<String>,
-    /// The upscaler's own fields (minimax-h3's `resolution`, `upscale: {model: regenerate-2k}`, …).
-    #[serde(default)]
-    settings: serde_json::Map<String, Value>,
+    render: Option<Render>,
 }
 
 /// A piece of a shot in the edit; `start`/`end` in seconds (names pending Paul).
@@ -197,10 +210,10 @@ struct Cut {
     end: Option<f64>,
 }
 
-/// Where an entity is in project.yaml.
+/// Where a node is in project.yaml.
 #[derive(Clone, Copy)]
 enum Item {
-    Asset(usize),
+    Entity(usize),
     Setup(usize, usize),
     State(usize),
     Shot(usize),
@@ -231,6 +244,8 @@ pub struct Request {
     pub field: &'static str,
     pub writes: Vec<String>,
     pub files: Vec<Input>,
+    /// The function it goes to, and the run's model choices and options.
+    pub render: Render,
 }
 
 /// A file a request reads: its payload field (`assets.0.image`), its path here, and its digest; or
@@ -281,57 +296,63 @@ impl Video {
                 format!("{} is a {} project; this cozy makes {TYPE} projects", folder::PROJECT, project.kind),
             ));
         }
-        // A chosen file is there, or the entity is named with the fix.
-        let chosen = |id: &str, field: &str, file: &Option<String>| -> Result<Option<(String, String)>, Error> {
-            let Some(file) = file else { return Ok(None) };
-            if !folder.path(file).is_file() {
-                return Err(invalid("file_missing", format!("{id}'s {field}: {file} is not there"))
-                    .remedy(format!("fix the path, or remove `{field}:` and `cozy render {id}` makes one")));
-            }
-            Ok(Some((file.clone(), folder.digest(file)?)))
+        warnings.extend(
+            (project.defaults.keys())
+                .filter(|kind| !RENDERERS.iter().any(|(k, _)| k == kind))
+                .map(|kind| format!("{}: defaults.{kind} is no node kind; it is ignored", folder::PROJECT)),
+        );
+        let lock = folder.lock()?;
+        // Its current file and its versions' files: the approved version, else the file attached by
+        // hand (there, or the node is named with the fix), or that picture's clean.
+        let versions = |id: &str, field: &str, attached: &Option<String>, cleans: bool| {
+            current(folder, &lock, id, field, attached, cleans)
         };
-        let mut entities = vec![];
+        let mut nodes = vec![];
         let mut items = vec![];
-        for (a, asset) in project.assets.iter().enumerate() {
-            let kind = asset.kind.name();
-            if !asset.setups.is_empty() && asset.kind != AssetKind::Environment {
+        for (a, entity) in project.entities.iter().enumerate() {
+            let kind = entity.kind.name();
+            if !entity.setups.is_empty() && entity.kind != EntityKind::Environment {
                 return Err(invalid(
                     "setup_owner",
-                    format!("{} is a {kind}: only an environment has setups", asset.name),
+                    format!("{} is a {kind}: only an environment has setups", entity.name),
                 ));
             }
-            entities.push(Entity {
-                id: asset.name.clone(),
+            let cleans = entity.kind != EntityKind::Environment;
+            let (file, made) = versions(&entity.name, "image", &entity.image, cleans)?;
+            nodes.push(Node {
+                id: entity.name.clone(),
                 kind,
                 mentionable: true,
                 state: false,
                 order: None,
-                texts: vec![asset.description.clone()],
+                texts: vec![entity.description.clone()],
                 needs: vec![],
                 writes: vec![],
-                file: chosen(&asset.name, "image", &asset.image)?,
-                versions: asset.versions.clone(),
+                file,
+                versions: made,
             });
-            items.push(Item::Asset(a));
-            for (s, setup) in asset.setups.iter().enumerate() {
-                entities.push(Entity {
-                    id: format!("{}.{}", asset.name, setup.name),
+            items.push(Item::Entity(a));
+            for (s, setup) in entity.setups.iter().enumerate() {
+                let id = format!("{}.{}", entity.name, setup.name);
+                let (file, made) = versions(&id, "image", &setup.image, false)?;
+                nodes.push(Node {
+                    id,
                     kind: "setup",
                     mentionable: false,
                     state: false,
                     order: None,
                     texts: vec![setup.camera.clone()],
-                    needs: vec![setup.frame.as_ref().map_or_else(|| asset.name.clone(), |frame| frame.shot.clone())],
+                    needs: vec![setup.frame.as_ref().map_or_else(|| entity.name.clone(), |frame| frame.shot.clone())],
                     writes: vec![],
-                    file: chosen(&format!("{}.{}", asset.name, setup.name), "image", &setup.image)?,
-                    versions: setup.versions.clone(),
+                    file,
+                    versions: made,
                 });
                 items.push(Item::Setup(a, s));
             }
         }
-        for asset in &project.assets {
-            for (setup, frame) in asset.setups.iter().filter_map(|s| s.frame.as_ref().map(|f| (s, f))) {
-                let id = format!("{}.{}", asset.name, setup.name);
+        for entity in &project.entities {
+            for (setup, frame) in entity.setups.iter().filter_map(|s| s.frame.as_ref().map(|f| (s, f))) {
+                let id = format!("{}.{}", entity.name, setup.name);
                 let fix = "write frame: {shot: <a shot's name>, at: <seconds into it>}";
                 let shot = project.shots.iter().find(|shot| name_key(&shot.name) == name_key(&frame.shot));
                 let Some(shot) = shot else {
@@ -349,7 +370,8 @@ impl Video {
             }
         }
         for (w, state) in project.world_states.iter().enumerate() {
-            entities.push(Entity {
+            let (file, made) = versions(&state.name, "image", &state.image, false)?;
+            nodes.push(Node {
                 id: state.name.clone(),
                 kind: "world_state",
                 mentionable: true,
@@ -358,8 +380,8 @@ impl Video {
                 texts: vec![state.init.clone(), state.blocking.clone()],
                 needs: vec![],
                 writes: vec![],
-                file: chosen(&state.name, "image", &state.image)?,
-                versions: state.versions.clone(),
+                file,
+                versions: made,
             });
             items.push(Item::State(w));
         }
@@ -368,7 +390,7 @@ impl Video {
                 std::iter::once(shot.prompt.clone()).chain(shot.beats.iter().map(|b| b.prompt.clone())).collect();
             let mut needs = vec![];
             if let Some(setup) = &shot.setup {
-                if !entities.iter().any(|n| n.kind == "setup" && name_key(&n.id) == name_key(setup)) {
+                if !nodes.iter().any(|n| n.kind == "setup" && name_key(&n.id) == name_key(setup)) {
                     return Err(invalid(
                         "setup_unknown",
                         format!("{}'s setup {setup} is no setup (write Environment.Setup)", shot.name),
@@ -379,15 +401,16 @@ impl Video {
             // An environment named with no setup of it is shot from its first setup.
             let framed = shot.setup.as_deref().and_then(|s| s.rsplit_once('.')).map(|(env, _)| name_key(env));
             for mention in texts.iter().flat_map(|text| mentions(text)) {
-                let env = (project.assets.iter())
-                    .find(|a| a.kind == AssetKind::Environment && name_key(&a.name) == name_key(mention));
+                let env = (project.entities.iter())
+                    .find(|e| e.kind == EntityKind::Environment && name_key(&e.name) == name_key(mention));
                 if let Some(env) = env.filter(|env| framed.as_deref() != Some(&name_key(&env.name)))
                     && let Some(first) = env.setups.first()
                 {
                     needs.push(format!("{}.{}", env.name, first.name));
                 }
             }
-            entities.push(Entity {
+            let (file, made) = versions(&shot.name, "video", &shot.video, false)?;
+            nodes.push(Node {
                 id: shot.name.clone(),
                 kind: "shot",
                 mentionable: false,
@@ -396,12 +419,14 @@ impl Video {
                 texts,
                 needs,
                 writes: shot.writes.clone(),
-                file: chosen(&shot.name, "video", &shot.video)?,
-                versions: shot.versions.clone(),
+                file,
+                versions: made,
             });
             items.push(Item::Shot(k));
-            entities.push(Entity {
-                id: format!("{}.upscale", shot.name),
+            let id = format!("{}.upscale", shot.name);
+            let (file, made) = versions(&id, "video", &shot.upscale.video, false)?;
+            nodes.push(Node {
+                id,
                 kind: "upscale",
                 mentionable: false,
                 state: false,
@@ -409,35 +434,63 @@ impl Video {
                 texts: vec![],
                 needs: vec![shot.name.clone()],
                 writes: vec![],
-                file: chosen(&format!("{}.upscale", shot.name), "video", &shot.upscale.video)?,
-                versions: shot.upscale.versions.clone(),
+                file,
+                versions: made,
             });
             items.push(Item::Upscale(k));
         }
-        if let Some(all) = entities.iter().find(|entity| name_key(&entity.id) == name_key(ALL)) {
+        if let Some(all) = nodes.iter().find(|node| name_key(&node.id) == name_key(ALL)) {
             let said = format!("{} is named `{ALL}`, which `cozy render {ALL}` means", all.id);
             return Err(invalid("name_reserved", said).remedy("rename it"));
         }
-        let graph = Graph::new(entities)?;
+        let graph = Graph::new(nodes)?;
         warnings.extend(graph.unknown.iter().map(|(i, mention)| {
             format!(
                 "{} mentions {mention}, which is nothing in the project: it reaches the renderer as written",
-                graph.entities[*i].id
+                graph.nodes[*i].id
             )
         }));
         Ok(Self { project, items, graph, warnings })
     }
 
-    pub fn renderer(&self, i: usize) -> &str {
-        renderer(&self.project, self.graph.entities[i].kind)
+    /// Node `i`'s render block (`resolve`).
+    pub fn render(&self, i: usize) -> Render {
+        let (kind, own) = match self.items[i] {
+            Item::Entity(a) => ("entity", self.project.entities[a].render.as_ref()),
+            Item::Setup(a, s) => ("setup", self.project.entities[a].setups[s].render.as_ref()),
+            Item::State(w) => ("world_state", self.project.world_states[w].render.as_ref()),
+            Item::Shot(k) => ("shot", self.project.shots[k].render.as_ref()),
+            Item::Upscale(k) => ("upscale", self.project.shots[k].upscale.render.as_ref()),
+        };
+        self.resolve(kind, own)
     }
 
-    /// The renderer of shots.
-    pub fn shot_renderer(&self) -> Option<&str> {
-        (!self.project.shots.is_empty()).then(|| renderer(&self.project, "shot"))
+    /// The render block that cleans a character's or prop's picture.
+    pub fn clean_render(&self) -> Render {
+        self.resolve("clean", None)
     }
 
-    /// The field that holds the entity's chosen file.
+    /// A node's own render block when it names a function; else its kind's default (`defaults:`)
+    /// with the node's own fields over it. The function is the built-in one when neither names one.
+    fn resolve(&self, kind: &str, own: Option<&Render>) -> Render {
+        let default = self.project.defaults.get(kind).cloned().unwrap_or_default();
+        let mut render = match own {
+            Some(own) if own.with.is_some() => own.clone(),
+            Some(own) => {
+                let pick = |mine: &Value, theirs: Value| if mine.is_null() { theirs } else { mine.clone() };
+                let mut options = default.options;
+                options.extend(own.options.clone());
+                Render { with: default.with, models: pick(&own.models, default.models), lora: pick(&own.lora, default.lora), options }
+            }
+            None => default,
+        };
+        if render.with.is_none() {
+            render.with = RENDERERS.iter().find(|(k, _)| *k == kind).map(|(_, target)| (*target).to_owned());
+        }
+        render
+    }
+
+    /// The field that holds the node's file.
     pub fn field(&self, i: usize) -> &'static str {
         match self.items[i] {
             Item::Shot(_) | Item::Upscale(_) => "video",
@@ -445,60 +498,71 @@ impl Video {
         }
     }
 
-    /// Whether `render` makes the entity: everything but upscales the edit does not use.
+    /// Whether `render` makes the node: everything but upscales the edit does not use.
     pub fn wanted(&self, i: usize) -> bool {
         !matches!(self.items[i], Item::Upscale(_)) || self.project.edit_uses == Uses::Upscaled
     }
 
-    /// Whether entity `i`'s pictures are cleaned before use: a character's or a prop's.
+    /// Whether node `i`'s pictures are cleaned before use: a character's or a prop's.
     pub fn cleans(&self, i: usize) -> bool {
-        matches!(self.graph.entities[i].kind, "character" | "prop")
+        matches!(self.graph.nodes[i].kind, "character" | "prop")
     }
 
-    /// Entity `i`'s chosen picture and its digest when it still needs its clean: a character's or
-    /// prop's that versions.lock does not mark as a clean.
+    /// Node `i`'s current picture and its digest when it still needs its clean: a character's or
+    /// prop's attached by hand, with no clean in project.lock yet (every version cozy makes of one
+    /// is its clean).
     pub fn unclean(&self, lock: &Lock, i: usize) -> Option<(String, String)> {
-        let file = self.graph.entities[i].file.as_ref().filter(|_| self.cleans(i))?;
-        (!lock.made(&self.graph.entities[i].id, &file.1).is_some_and(|made| made.cleaned)).then(|| file.clone())
+        let node = &self.graph.nodes[i];
+        let file = node.file.as_ref().filter(|_| self.cleans(i))?;
+        lock.made(&node.id, &file.1).is_none().then(|| file.clone())
     }
 
-    pub fn clean_renderer(&self) -> &str {
-        renderer(&self.project, "clean")
-    }
-
-    /// Shots longer than `max_piece_s` with no beats.
-    pub fn beatless(&self, max_piece_s: f64) -> Vec<(&str, f64)> {
-        (self.project.shots.iter())
-            .filter(|shot| shot.duration_s > max_piece_s && shot.beats.is_empty())
-            .map(|shot| (shot.name.as_str(), shot.duration_s))
+    /// Shots longer than their renderer's longest piece with no beats, as node index, name and
+    /// length: each one's renderer decides.
+    pub fn beatless(&self) -> Vec<(usize, &str, f64)> {
+        (self.items.iter().enumerate())
+            .filter_map(|(i, item)| match item {
+                Item::Shot(k) if self.project.shots[*k].beats.is_empty() => {
+                    Some((i, self.project.shots[*k].name.as_str(), self.project.shots[*k].duration_s))
+                }
+                _ => None,
+            })
             .collect()
     }
 
-    /// The digest of every file an entity lists or chose.
-    pub fn listed(&self, folder: &Folder) -> Result<BTreeSet<String>, Error> {
-        let mut listed = BTreeSet::new();
-        for entity in &self.graph.entities {
-            listed.extend(entity.file.iter().map(|(_, digest)| digest.clone()));
-            for version in &entity.versions {
-                listed.insert(folder.digest(version)?);
-            }
-        }
-        Ok(listed)
+    /// Every node's name key, which project.lock keeps versions for.
+    pub fn keys(&self) -> BTreeSet<String> {
+        self.graph.nodes.iter().map(|node| name_key(&node.id)).collect()
     }
 
-    /// The request that makes a version of entity `i`, from what it reads now.
+    /// The digest of every file attached in project.yaml.
+    pub fn attached(&self, folder: &Folder) -> Result<BTreeSet<String>, Error> {
+        let mut files: Vec<&String> = vec![];
+        for entity in &self.project.entities {
+            files.extend(&entity.image);
+            files.extend(entity.setups.iter().flat_map(|setup| &setup.image));
+        }
+        files.extend(self.project.world_states.iter().flat_map(|state| &state.image));
+        for shot in &self.project.shots {
+            files.extend(&shot.video);
+            files.extend(&shot.upscale.video);
+        }
+        files.into_iter().filter(|file| folder.path(file).is_file()).map(|file| folder.digest(file)).collect()
+    }
+
+    /// The request that makes a version of node `i`, from what it reads now.
     pub fn request(&self, folder: &Folder, lock: &Lock, i: usize) -> Result<Request, Error> {
         let graph = &self.graph;
-        let entity = &graph.entities[i];
+        let node = &graph.nodes[i];
         let mut upstream = vec![];
         let mut reads = vec![];
         for edge in &graph.upstream[i] {
-            let up = &graph.entities[edge.entity];
+            let up = &graph.nodes[edge.node];
             let digest = graph.read(lock, edge).ok_or_else(|| {
                 Error::new(
                     Kind::Usage,
                     "upstream_empty",
-                    format!("{} reads {}, which has no version yet", entity.id, up.id),
+                    format!("{} reads {}, which has no version yet", node.id, up.id),
                 )
                 .next(format!("cozy render {} --project …", up.id))
             })?;
@@ -506,10 +570,10 @@ impl Video {
                 (None, Some((file, _))) => folder.path(file),
                 _ => folder.path(&folder.find(&digest)?),
             };
-            upstream.push(Upstream { entity: up.id.clone(), state: edge.state.clone(), file: digest.clone() });
+            upstream.push(Upstream { node: up.id.clone(), state: edge.state.clone(), file: digest.clone() });
             reads.push(Read { edge, path, digest });
         }
-        let made = Made { entity: entity.id.clone(), upstream: Some(upstream), ..Default::default() };
+        let made = Made { node: node.id.clone(), upstream: Some(upstream), ..Default::default() };
         let styled = |text: String| match self.project.style.trim() {
             "" => text,
             style => format!("{text}\n\nStyle: {style}."),
@@ -518,7 +582,7 @@ impl Video {
         let pictures = |files: &mut Vec<Input>| -> Vec<Value> {
             (reads.iter().enumerate())
                 .map(|(n, read)| {
-                    let up = &graph.entities[read.edge.entity];
+                    let up = &graph.nodes[read.edge.node];
                     let (name, kind) =
                         read.edge.state.as_ref().map_or((up.id.as_str(), up.kind), |s| (s.as_str(), "world_state"));
                     json!({"name": name, "kind": kind, "image": read.input(files, format!("assets.{n}.image"), None)})
@@ -526,28 +590,28 @@ impl Video {
                 .collect()
         };
         let (payload, writes) = match self.items[i] {
-            Item::Asset(a) => {
-                let asset = &self.project.assets[a];
+            Item::Entity(a) => {
+                let entity = &self.project.entities[a];
                 // Only the entity itself, once: a picture it mentions is for likeness, never drawn beside it.
-                let name = &asset.name;
-                let (shown, ratio) = match asset.kind {
-                    AssetKind::Character => (
+                let name = &entity.name;
+                let (shown, ratio) = match entity.kind {
+                    EntityKind::Character => (
                         format!("Character reference of {name} alone: a single front view of one whole figure, on a plain white background. Any other picture is for likeness only; draw no one else."),
                         "3:4",
                     ),
-                    AssetKind::Prop => (
+                    EntityKind::Prop => (
                         format!("Prop reference of {name} alone: one view of the object, on a plain white background. Any other picture is for likeness only; draw nothing else."),
                         "1:1",
                     ),
-                    AssetKind::Environment => ("An establishing view of the empty set, no people.".to_owned(), "16:9"),
+                    EntityKind::Environment => ("An establishing view of the empty set, no people.".to_owned(), "16:9"),
                 };
-                let prompt = styled(format!("{}\n\n{shown}", asset.description.trim()));
+                let prompt = styled(format!("{}\n\n{shown}", entity.description.trim()));
                 (json!({"prompt": prompt, "assets": pictures(&mut files), "aspect_ratio": ratio}), vec![])
             }
             Item::Setup(a, s) => {
                 // The environment's picture (or a shot's frame) first, and the camera in screen terms
                 // as written (environment-angles REPORT.md): bare camera words return a mirror.
-                let (env, setup) = (&self.project.assets[a], &self.project.assets[a].setups[s]);
+                let (env, setup) = (&self.project.entities[a], &self.project.entities[a].setups[s]);
                 let camera = setup.camera.trim().trim_end_matches('.');
                 let prompt = match setup.frame {
                     None => format!(
@@ -561,7 +625,7 @@ impl Video {
                 };
                 let assets: Vec<Value> = (reads.iter().enumerate())
                     .map(|(n, read)| {
-                        let up = &graph.entities[read.edge.entity];
+                        let up = &graph.nodes[read.edge.node];
                         let (name, kind, at) = match n {
                             0 => (env.name.as_str(), "environment", setup.frame.as_ref().map(|frame| frame.at)),
                             _ => (up.id.as_str(), up.kind, None),
@@ -582,12 +646,11 @@ impl Video {
                 let shot = &self.project.shots[k];
                 let beats = shot.beats.iter().map(|beat| format!("Then, {}", beat.prompt.trim()));
                 let text = std::iter::once(shot.prompt.trim().to_owned()).chain(beats).collect::<Vec<_>>().join(" ");
-                let mut payload = json!({"video": reads[0].input(&mut files, "video".into(), None), "prompt": styled(text.replace(['<', '>'], ""))});
-                payload.as_object_mut().expect("an object").extend(shot.upscale.settings.clone());
+                let payload = json!({"video": reads[0].input(&mut files, "video".into(), None), "prompt": styled(text.replace(['<', '>'], ""))});
                 (payload, vec![])
             }
         };
-        Ok(Request { payload, made, field: self.field(i), writes, files })
+        Ok(Request { payload, made, field: self.field(i), writes, files, render: self.render(i) })
     }
 
     /// A shot's `video/shot` request: its breakdown (an environment's picture is its setup's
@@ -595,7 +658,7 @@ impl Video {
     fn shot(&self, k: usize, reads: &[Read], files: &mut Vec<Input>) -> (Value, Vec<String>) {
         let shot = &self.project.shots[k];
         let framed: BTreeSet<usize> = (reads.iter())
-            .filter_map(|read| match self.items[read.edge.entity] {
+            .filter_map(|read| match self.items[read.edge.node] {
                 Item::Setup(a, _) => Some(a),
                 _ => None,
             })
@@ -608,14 +671,14 @@ impl Video {
         for read in reads {
             let (n, m) = (assets.len(), states.len());
             let state = |name: &str, files: &mut Vec<Input>| json!({"name": name, "image": read.input(files, format!("world_state.{m}.image"), None), "layout": layout(name)});
-            match (self.items[read.edge.entity], &read.edge.state) {
-                (Item::Asset(a), _) if !framed.contains(&a) => {
-                    let asset = &self.project.assets[a];
+            match (self.items[read.edge.node], &read.edge.state) {
+                (Item::Entity(a), _) if !framed.contains(&a) => {
+                    let entity = &self.project.entities[a];
                     let image = read.input(files, format!("assets.{n}.image"), None);
-                    assets.push(json!({"name": asset.name, "kind": asset.kind.name(), "image": image, "description": asset.description}));
+                    assets.push(json!({"name": entity.name, "kind": entity.kind.name(), "image": image, "description": entity.description}));
                 }
                 (Item::Setup(a, _), _) => {
-                    let env = &self.project.assets[a];
+                    let env = &self.project.entities[a];
                     let image = read.input(files, format!("assets.{n}.image"), None);
                     assets.push(json!({"name": env.name, "kind": "environment", "image": image, "description": env.description}));
                 }
@@ -625,13 +688,12 @@ impl Video {
             }
         }
         let writes: Vec<String> = (shot.writes.iter())
-            .filter_map(|name| self.graph.find(name).map(|s| self.graph.entities[s].id.clone()))
+            .filter_map(|name| self.graph.find(name).map(|s| self.graph.nodes[s].id.clone()))
             .collect();
-        let mut payload = json!({
+        let payload = json!({
             "prompt": shot.prompt, "duration_s": shot.duration_s, "beats": shot.beats, "style": self.project.style,
             "assets": assets, "world_state": states, "writes": vec!["last"; writes.len()],
         });
-        payload.as_object_mut().expect("an object").extend(shot.settings.clone());
         (payload, writes)
     }
 
@@ -652,7 +714,7 @@ impl Video {
                 Uses::Native => self.project.shots[k].name.clone(),
                 Uses::Upscaled => format!("{}.upscale", self.project.shots[k].name),
             };
-            let entity = self.graph.find(&id).map(|i| &self.graph.entities[i]);
+            let entity = self.graph.find(&id).map(|i| &self.graph.nodes[i]);
             match entity.and_then(|entity| entity.file.as_ref()) {
                 Some((file, digest)) => {
                     pieces.push(Piece { path: folder.path(file), digest: digest.clone(), start, end })
@@ -671,52 +733,6 @@ impl Video {
             (Item::Shot(_), Uses::Native) | (Item::Upscale(_), Uses::Upscaled)
         )
     }
-}
-
-/// Entity `id`'s mapping in a project document: an asset, world state or shot by name, a setup as
-/// `Environment.Setup`, or a shot's `upscale` (made when absent) as `shot.upscale`.
-pub fn locate<'a>(doc: &'a mut YamlOwned, id: &str) -> Option<&'a mut MappingOwned> {
-    for section in ["assets", "world_states", "shots"] {
-        if let Some(i) = position(doc.as_mapping_get(section), id) {
-            return doc.as_mapping_get_mut(section)?.as_vec_mut()?.get_mut(i)?.as_mapping_mut();
-        }
-    }
-    let (owner, part) = id.rsplit_once('.')?;
-    if name_key(part) == "upscale"
-        && let Some(i) = position(doc.as_mapping_get("shots"), owner)
-    {
-        let shot = doc.as_mapping_get_mut("shots")?.as_vec_mut()?.get_mut(i)?.as_mapping_mut()?;
-        let key = YamlOwned::Value(ScalarOwned::String("upscale".into()));
-        if !matches!(shot.get(&key), Some(YamlOwned::Mapping(_))) {
-            shot.insert(key.clone(), YamlOwned::Mapping(MappingOwned::new()));
-        }
-        return shot.get_mut(&key)?.as_mapping_mut();
-    }
-    let a = position(doc.as_mapping_get("assets"), owner)?;
-    let asset = doc.as_mapping_get_mut("assets")?.as_vec_mut()?.get_mut(a)?;
-    let s = position(asset.as_mapping_get("setups"), part)?;
-    asset.as_mapping_get_mut("setups")?.as_vec_mut()?.get_mut(s)?.as_mapping_mut()
-}
-
-/// The entry of a list of named mappings that `name` names.
-fn position(list: Option<&YamlOwned>, name: &str) -> Option<usize> {
-    let named = |item: &YamlOwned| {
-        item.as_mapping_get("name").and_then(YamlOwned::as_str).is_some_and(|n| name_key(n) == name_key(name))
-    };
-    list?.as_vec()?.iter().position(named)
-}
-
-/// `file` listed in an entity's `versions`, and chosen as its `field` when `choose` or it has none.
-pub fn add_version(map: &mut MappingOwned, field: &str, file: &str, choose: bool) {
-    let get = |map: &MappingOwned, key: &str| map.get(&YamlOwned::Value(ScalarOwned::String(key.to_owned()))).cloned();
-    if choose || get(map, field).as_ref().and_then(YamlOwned::as_str).is_none() {
-        folder::put(map, field, folder::text(file));
-    }
-    let mut versions = get(map, "versions").as_ref().and_then(YamlOwned::as_vec).cloned().unwrap_or_default();
-    if !versions.iter().any(|v| v.as_str() == Some(file)) {
-        versions.push(folder::text(file));
-    }
-    folder::put(map, "versions", YamlOwned::Sequence(versions));
 }
 
 /// Cuts `pieces` into `<project>/edit.mp4` with cozy's ffmpeg, here, by fast join: each piece's
@@ -989,11 +1005,35 @@ fn run(ffmpeg: &Path, args: &[&std::ffi::OsStr]) -> Result<(), Error> {
     }
 }
 
-fn renderer<'a>(project: &'a Project, kind: &str) -> &'a str {
-    match project.renderers.get(kind) {
-        Some(target) => target,
-        None => RENDERERS.iter().find(|(k, _)| *k == kind).map_or("", |(_, target)| *target),
+/// A node's current file (path and digest) and its versions' files.
+type Versions = (Option<(String, String)>, Vec<String>);
+
+/// A node's current file and its versions' files (`Node::file`, `Node::versions`): the version
+/// project.lock approves; else the file attached in project.yaml as `field` (refused, with the fix,
+/// when it is not there), or that picture's clean when the node `cleans`.
+fn current(
+    folder: &Folder,
+    lock: &Lock,
+    id: &str,
+    field: &str,
+    attached: &Option<String>,
+    cleans: bool,
+) -> Result<Versions, Error> {
+    let node = lock.node(id);
+    let versions: Vec<String> = node.map(|node| node.versions.iter().map(|made| made.file.clone()).collect()).unwrap_or_default();
+    if let Some(approved) = node.and_then(|node| node.approved.clone()) {
+        let digest = digest_of(&approved);
+        return Ok((Some((approved, digest)), versions));
     }
+    let Some(file) = attached else { return Ok((None, versions)) };
+    if !folder.path(file).is_file() {
+        return Err(invalid("file_missing", format!("{id}'s {field}: {file} is not there"))
+            .remedy(format!("fix the path, or remove `{field}:` and `cozy render {id}` makes one")));
+    }
+    let digest = folder.digest(file)?;
+    let clean = (node.into_iter().flat_map(|node| &node.versions))
+        .find(|made| cleans && made.clean_of.as_deref() == Some(digest.as_str()));
+    Ok((Some(clean.map_or((file.clone(), digest), |made| (made.file.clone(), digest_of(&made.file)))), versions))
 }
 
 /// A list a person may leave empty as `key:` alone (a null).

@@ -1,4 +1,4 @@
-//! Calcifer's project API (xs-136): a project folder opened by its path, its entities as they stand,
+//! Calcifer's project API (xs-136, xs-139): a project folder opened by its path, its nodes as they stand,
 //! the runs that make their versions, and what happens as they go. The CLI's `cozy project` verbs
 //! and the web UI are its clients.
 use std::path::PathBuf;
@@ -22,12 +22,12 @@ pub struct Opened {
     pub path: PathBuf,
 }
 
-/// `GET /v1/projects/{id}`: its entities in order, and what reading the project said.
+/// `GET /v1/projects/{id}`: its nodes in order, and what reading the project said.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct State {
     pub id: String,
     pub path: PathBuf,
-    pub entities: Vec<Entity>,
+    pub nodes: Vec<Node>,
     /// Whether its walk is going: runs being made, or asked and not yet sent.
     pub busy: bool,
     pub edit: Edit,
@@ -46,23 +46,28 @@ pub struct Edit {
     pub skips: Vec<String>,
 }
 
+/// A node: an entity (character, prop, environment), a setup, a world state, a shot or a shot's
+/// upscale.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Entity {
+pub struct Node {
     pub name: String,
     pub kind: String,
     pub versions: u32,
-    /// Its chosen file, relative to the project.
+    /// The file it reads as now, relative to the project.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
-    /// Which version is chosen, 1 first; None for a file attached by hand, or none yet.
+    /// Which version is approved, 1 first; None for a file attached by hand, or none yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chosen: Option<u32>,
+    /// The function that made that version, `org/package/function@release`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub made_by: Option<String>,
     /// For people: current, no version yet, out of date and why, making (run N), …
     pub status: String,
 }
 
-/// `POST /v1/projects/{id}/runs`: `n` new versions of each of `names`, or with `all` every entity
-/// brought up to date, each new version chosen, then the edit cut. It joins the project's walk,
+/// `POST /v1/projects/{id}/runs`: `n` new versions of each of `names`, or with `all` every node
+/// brought up to date, each new version approved, then the edit cut. It joins the project's walk,
 /// which sends each version once what it reads is settled; `on` lists the machines they may go to.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Runs {
@@ -79,7 +84,7 @@ fn one() -> u32 {
     1
 }
 
-/// `POST /v1/projects/{id}/approve`: version `version` (1 first) chosen for `name`.
+/// `POST /v1/projects/{id}/approve`: version `version` (1 first) approved for `name`, in project.lock.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Approve {
     pub name: String,
@@ -105,7 +110,7 @@ pub enum Event {
         run: String,
         number: u64,
     },
-    /// `file` became one of `name`'s versions, or its chosen picture.
+    /// `file` became one of `name`'s versions.
     Landed {
         name: String,
         file: String,

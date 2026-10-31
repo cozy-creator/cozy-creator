@@ -19,8 +19,8 @@ use serde_json::Value;
 
 use crate::api::{Api, Refusal};
 
-/// A renderer as the Hub has it: its package's newest release, and the longest piece its
-/// `video/shot` makes.
+/// A renderer as the Hub has it: its package's newest release, and the longest piece it makes when
+/// it renders shots.
 #[derive(Clone)]
 pub struct Renderer {
     pub package: String,
@@ -75,9 +75,10 @@ impl Host {
                     format!("{org}/{name}@{release} has no function {function}"),
                 )
             })?;
-        let implements = &entry["implements"];
-        let max_piece_s =
-            (implements["interface"] == "video/shot").then(|| implements["max_piece_s"].as_f64()).flatten();
+        // A shot renderer states its longest piece on its own `duration_s` (a schema `extra`).
+        let fields = entry["request"]["fields"].as_array().into_iter().flatten();
+        let duration = fields.into_iter().find(|field| field["name"] == "duration_s");
+        let max_piece_s = duration.and_then(|field| field["extra"]["max_piece_s"].as_f64());
         let read = |slots: Vec<&Value>| slots.into_iter().filter_map(|slot| Slot::read(slot).ok()).collect();
         let slots = read(interface::models(entry).iter().collect());
         let calls = read(interface::call_slots(&card["package_interface"], entry));

@@ -357,7 +357,6 @@ dependencies = [
  "protocol",
  "reqwest",
  "rusqlite",
- "saphyr",
  "serde",
  "serde_ignored",
  "serde_json",

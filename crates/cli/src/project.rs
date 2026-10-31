@@ -20,18 +20,21 @@ const PROJECT_EXAMPLES: &str = "Examples:
                                              everything missing or out of date, then the edit
   cozy project status --project garden       what is missing, out of date and why, and the edit
   cozy render theo --project garden --on kiyui && cozy project approve theo 2 --project garden
-                                             a second take of theo, then choose it
+                                             a second take of theo, then approve it
 
-project.yaml lists assets (characters, props, environments with camera setups), world states
-and shots; each version is a file under files/, and the chosen one is the entity's image: or
-video:. Names match in any case. The edit is <project>/edit.mp4, cut on this computer.";
+project.yaml lists entities (characters, props, environments with camera setups), world states
+and shots, and people write it; cozy never does. Each version is a file under files/, and
+project.lock records each node's versions, what made each, and which is approved. A file you
+attach (image:, or a shot's video:) is used until you approve a version cozy made. A node's
+render: {with, models, lora, options} (or defaults: per kind) says how it is made. Names match
+in any case. The edit is <project>/edit.mp4, cut on this computer.";
 
 const RENDER_EXAMPLES: &str = "Examples:
   cozy render all --project garden --on kiyui   everything missing or out of date, then the edit
   cozy render all --project garden --on kiyui,jitae
                                                 the same, spread over two machines
   cozy render theo dock.b --project garden --on kiyui
-                                                a new version of each (a first one is chosen)
+                                                a new version of each (a first one is approved)
   cozy render fight -n 3 --on kiyui             three takes of fight, from inside the project's folder
 
 Each version is sent as soon as what it reads is made, so independent ones run at once; with
@@ -39,7 +42,7 @@ several machines each goes to the least busy, one that holds its models first. A
 while others go joins them. Character and prop pictures are cleaned on this computer, and the
 edit is cut here. Ctrl-C stops following, never the runs: `cozy project status` shows them.";
 
-/// A video project: a folder of entities (characters, props, environments and their camera setups,
+/// A video project: a folder of nodes (characters, props, environments and their camera setups,
 /// world states, shots) whose versions `cozy render` makes.
 #[derive(clap::Args, Debug)]
 #[command(after_help = PROJECT_EXAMPLES)]
@@ -56,12 +59,12 @@ enum Verb {
         #[command(flatten)]
         at: At,
     },
-    /// Choose version N of an entity: what is made from it goes out of date.
+    /// Approve version N of a node: what is made from it goes out of date.
     #[command(
         after_help = "Example:\n  cozy project approve theo 2 --project garden   (versions are numbered as `cozy project status` lists them)"
     )]
     Approve {
-        /// The entity: `theo`, `dock.b` (a setup), `fight.upscale`, …
+        /// The node: `theo`, `dock.b` (a setup), `fight.upscale`, …
         name: String,
         /// Its version, 1 first.
         version: u32,
@@ -83,12 +86,12 @@ struct At {
     project: PathBuf,
 }
 
-/// New versions of a project's entities, made on a machine; `all` brings everything up to date.
+/// New versions of a project's nodes, made on a machine; `all` brings everything up to date.
 #[derive(clap::Args, Debug)]
 #[command(after_help = RENDER_EXAMPLES)]
 pub struct Render {
-    /// The entities (`theo`, `dock.b`, `fight`, `fight.upscale`, …) to make new versions of, or
-    /// `all`: everything missing or out of date, in order, each new version chosen, then the edit.
+    /// The nodes (`theo`, `dock.b`, `fight`, `fight.upscale`, …) to make new versions of, or
+    /// `all`: everything missing or out of date, in order, each new version approved, then the edit.
     #[arg(required = true, value_name = "NAME")]
     names: Vec<String>,
     #[command(flatten)]
@@ -121,7 +124,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             if ctx.json {
                 output::json(&approved);
             } else {
-                output::say(ctx, &format!("{name}: version {version} chosen ({})", approved.file));
+                output::say(ctx, &format!("{name}: version {version} approved ({})", approved.file));
                 if !approved.stale.is_empty() {
                     output::say(ctx, &format!("out of date now: {}", approved.stale.join(", ")));
                 }
@@ -135,16 +138,16 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                 output::json(&state);
                 return Ok(ExitCode::SUCCESS);
             }
-            let chosen = |e: &protocol::project::Entity| match (e.chosen, &e.file) {
-                (Some(n), _) => n.to_string(),
+            let chosen = |n: &protocol::project::Node| match (n.chosen, &n.file) {
+                (Some(v), _) => v.to_string(),
                 (None, Some(_)) => "attached".into(),
                 (None, None) => "-".into(),
             };
-            let table = output::Table::new(ctx, ["NAME", "KIND", "VERSIONS", "CHOSEN", "STATUS"]);
-            let rows = state
-                .entities
-                .iter()
-                .map(|e| [e.name.clone(), e.kind.clone(), e.versions.to_string(), chosen(e), e.status.clone()]);
+            let table = output::Table::new(ctx, ["NAME", "KIND", "VERSIONS", "APPROVED", "MADE BY", "STATUS"]);
+            let rows = state.nodes.iter().map(|n| {
+                let made_by = n.made_by.clone().unwrap_or_else(|| "-".into());
+                [n.name.clone(), n.kind.clone(), n.versions.to_string(), chosen(n), made_by, n.status.clone()]
+            });
             rows.fold(table, output::Table::row).print();
             summary(ctx, &state);
         }
@@ -193,10 +196,10 @@ pub async fn render(ctx: &Context, args: Render) -> Result<ExitCode, Error> {
 fn summary(ctx: &Context, state: &State) {
     let at = state.path.display();
     let named = |test: &dyn Fn(&str) -> bool| -> Vec<String> {
-        state.entities.iter().filter(|e| test(&e.status)).map(|e| e.name.clone()).collect()
+        state.nodes.iter().filter(|n| test(&n.status)).map(|n| n.name.clone()).collect()
     };
     let missing = named(&|s| s == "no version yet" || s == "picture not cleaned yet");
-    let stale: Vec<String> = (state.entities.iter())
+    let stale: Vec<String> = (state.nodes.iter())
         .filter_map(|e| e.status.strip_prefix("out of date: ").map(|why| format!("{} ({why})", e.name)))
         .collect();
     let render = format!("cozy render all --project {at} --on <machine>");

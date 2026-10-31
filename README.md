@@ -76,16 +76,18 @@ restarts a Calcifer that is stuck or runs an older cozy.
 
 ## Projects
 
-A video project is a folder: `project.yaml` (yours to edit), `files/` (every version, by content) and
-`edit.mp4`, cut on this computer as shots land. `cozy project new --project garden` writes a commented
-`project.yaml`; fill it in:
+A video project is a folder: `project.yaml` (yours; cozy never writes it after `new`), `project.lock`
+(cozy's: each node's versions, what made each, and which is approved), `files/` (every version, by
+content) and `edit.mp4`, cut on this computer as shots land. `cozy project new --project garden` writes a
+commented `project.yaml`; fill it in:
 
 ```yaml
 type: video
 style: soft watercolor
-assets:
+defaults: {shot: {with: minimax-h3/shot, options: {turbo: true}}}
+entities:
   - {name: theo, kind: character, description: "A tall man in a green raincoat."}
-  - {name: juno, kind: character, description: "<theo>'s sister, in a red coat."}
+  - {name: juno, kind: character, description: "<theo>'s sister, in a red coat.", render: {with: flux-2/generate}}
   - {name: dock, kind: environment, description: "a foggy harbour at dawn",
      setups: [{name: a, camera: "wide: the red hut near on the left, the crates far on the right"}]}
 world_states:
@@ -100,7 +102,7 @@ edit: [{shot: fight, end: 8}, {shot: reaction}, {shot: fight, start: 10}]
 ```sh
 cozy render all --project garden --on <machine>   # everything missing or out of date, then the edit
 cozy render theo --project garden --on <machine>  # another take of theo
-cozy project approve theo 2 --project garden      # choose it: what is made from theo goes out of date
+cozy project approve theo 2 --project garden      # approve it: what is made from theo goes out of date
 cozy project status --project garden              # what is missing, out of date and why, and the edit
 ```
 
@@ -108,15 +110,18 @@ Each version is sent as soon as what it reads is made, so independent ones rende
 machine's scheduler places them; `--on a,b` spreads them over machines (the least busy, one that holds
 the models first), and a `cozy render` asked while another goes joins it.
 
-`<name>` in a text names another entity, which it is then made from; a setup's camera is written in
+`<name>` in a text names another node, which it is then made from; a setup's camera is written in
 screen terms (what is near or far, left or right). A shot reads a world state it
 names and changes the ones it `writes`. Character and prop pictures are cleaned on this computer before
-use. Only a changed upstream file puts something out of date, never a text edit: `cozy render <name>`
-when you want a new take. Each kind's package is in `renderers:` (`cozy project --help`); a shot's
-`settings:` are its package's own fields, plus `lora: [{ref: org/lora, strength: 0.8}]` and
-`models: {base_model: {ref: org/checkpoint}}` as `cozy run --input` takes them. `cozy render fight.upscale` makes a shot's upscale, with its own
-`upscale: {settings: {resolution: 1080p, upscale: {model: regenerate-2k}}}`; `edit_uses: upscaled` cuts
-the edit from the upscales, and `render all` then makes them.
+use. Only a changed upstream file puts something out of date, never a text edit or a render block:
+`cozy render <name>` when you want a new take. A node renders by its `render: {with, models, lora,
+options}`: `with` a function, `models: {base_model: {ref: org/checkpoint}}` and `lora: [{ref: org/lora,
+strength: 0.8}]` as `cozy run --input` takes them, and `options`, the function's own fields. A block that
+names no function adjusts its kind's `defaults:` (entity, setup, world_state, shot, upscale, clean).
+`cozy project status` shows what made each approved version. A file you attach (`image:`, or a shot's
+`video:`) is used until you approve one cozy made. `cozy render fight.upscale` makes a shot's upscale,
+with its own `upscale: {render: {options: {resolution: 1080p, upscale: {model: regenerate-2k}}}}`;
+`edit_uses: upscaled` cuts the edit from the upscales, and `render all` then makes them.
 
 ## Remove cozy
 

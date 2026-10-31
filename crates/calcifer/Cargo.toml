@@ -19,7 +19,6 @@ hex.workspace = true
 hub-client.workspace = true
 reqwest.workspace = true
 rusqlite.workspace = true
-saphyr.workspace = true
 serde.workspace = true
 serde_ignored.workspace = true
 serde_path_to_error.workspace = true

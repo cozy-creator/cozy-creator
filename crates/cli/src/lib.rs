@@ -54,9 +54,9 @@ enum Command {
     Package(package::Args),
     /// Find, download, upload and publish models.
     Model(model::Args),
-    /// A video project: make one, choose versions, see what is missing or out of date (`cozy render` makes them).
+    /// A video project: make one, approve versions, see what is missing or out of date (`cozy render` makes them).
     Project(project::Args),
-    /// New versions of a project's entities, made on a machine; `all` brings everything up to date.
+    /// New versions of a project's nodes, made on a machine; `all` brings everything up to date.
     Render(project::Render),
     /// Claim an organization parked under your name.
     Org(org::Args),
