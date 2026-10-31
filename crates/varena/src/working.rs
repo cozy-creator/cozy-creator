@@ -997,6 +997,26 @@ pub fn pool_capture_complete(device: i32, id: PoolId) -> Result<()> {
     Ok(())
 }
 
+/// Hold backing across a replay call whose end hooks may reset the original graph owner.
+pub fn pool_retain(device: i32, id: PoolId) -> Result<()> {
+    let owner = owner(device)?;
+    let captures = crate::capture_counts()?;
+    crate::ensure_not_capturing(&captures, device)?;
+    let mut state = owner.lock()?;
+    let pool = state
+        .pools
+        .get_mut(&id)
+        .ok_or(Error::Invalid("unknown graph pool"))?;
+    if pool.references == 0 {
+        return Err(Error::Invalid("graph pool has no owner"));
+    }
+    pool.references = pool
+        .references
+        .checked_add(1)
+        .ok_or(Error::Invalid("graph reference overflow"))?;
+    Ok(())
+}
+
 pub fn pool_record_stream(device: i32, id: PoolId, stream: u64) -> Result<()> {
     valid_stream(stream)?;
     let owner = owner(device)?;
