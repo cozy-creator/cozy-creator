@@ -55,6 +55,7 @@ type EventCreate = unsafe extern "system" fn(*mut Object, c_uint) -> Status;
 type EventRecord = unsafe extern "system" fn(Object, Object) -> Status;
 type EventOp = unsafe extern "system" fn(Object) -> Status;
 type IsCapturing = unsafe extern "system" fn(Object, *mut c_int) -> Status;
+type MemInfo = unsafe extern "system" fn(*mut usize, *mut usize) -> Status;
 
 pub(crate) struct Driver {
     // Keep a primary-context retain for the process lifetime. CUDA reset/fork is unsupported.
@@ -77,6 +78,7 @@ pub(crate) struct Driver {
     event_synchronize: EventOp,
     event_destroy: EventOp,
     is_capturing: IsCapturing,
+    mem_info: MemInfo,
     pub(crate) granularity: usize,
 }
 
@@ -121,6 +123,7 @@ impl Driver {
             event_synchronize: symbol!("cuEventSynchronize", EventOp),
             event_destroy: symbol!("cuEventDestroy_v2", EventOp),
             is_capturing: symbol!("cuStreamIsCapturing", IsCapturing),
+            mem_info: symbol!("cuMemGetInfo_v2", MemInfo),
             granularity: 0,
         };
         // CUDA registers process exit handlers; unloading its library after init is unsafe.
@@ -168,6 +171,16 @@ impl Driver {
             (self.push)(self.context as Context)
         })?;
         Ok(ContextGuard { driver: self })
+    }
+
+    /// The device's free bytes, from the driver. The caller has entered this context.
+    pub(crate) fn free_bytes(&self) -> Result<usize> {
+        let (mut free, mut total) = (0usize, 0usize);
+        // SAFETY: valid output pointers; every caller enters this driver's primary context first.
+        status("cuMemGetInfo", unsafe {
+            (self.mem_info)(&mut free, &mut total)
+        })?;
+        Ok(free)
     }
 
     pub(crate) fn synchronize(&self) -> Result<()> {

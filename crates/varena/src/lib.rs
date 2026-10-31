@@ -46,6 +46,8 @@ pub struct Stats {
     pub regions: usize,
     pub fills: u64,
     pub hits: u64,
+    /// Speculative fills refused because they would take Torch's phase high-water.
+    pub reserve_refusals: u64,
     pub evictions: u64,
     pub reclaimed_bytes: u64,
     pub reclaimed_by_reason: ReclaimedBytes,
@@ -210,6 +212,8 @@ struct State {
     poison: Option<String>,
     fills: u64,
     hits: u64,
+    /// Speculative fills refused because they would take Torch's phase high-water.
+    reserve_refusals: u64,
     evictions: u64,
     reclaimed_bytes: u64,
     reclaimed_by_reason: ReclaimedBytes,
@@ -263,6 +267,7 @@ pub struct Arena {
     pid: u32,
     // Lock-free view of this device's capture guards, for release paths that never wait.
     captures: Arc<AtomicUsize>,
+    segments: Arc<Segments>,
     state: Mutex<State>,
 }
 
@@ -272,6 +277,35 @@ struct DeviceActivity {
     captures: Arc<AtomicUsize>,
     replays: Arc<AtomicUsize>,
     producers: Arc<AtomicUsize>,
+    segments: Arc<Segments>,
+}
+
+/// Torch's hooked segments on one device (`note_torch_reserved`) and their high-water since the
+/// running phase began. Torch holds that much again within the phase, so a speculative fill
+/// leaves the difference free (`Region::prepare_with_reclaim`). Taken, the next larger call
+/// refuses, Torch frees every cached segment and mallocs them back on an empty GPU queue (H3
+/// 30-step on an RTX 4090: 4 times a sparse step at the always-dense blocks, 443 ms idle).
+#[derive(Default)]
+struct Segments {
+    reserved: AtomicUsize,
+    high: AtomicUsize,
+}
+
+impl Segments {
+    /// What Torch will take back within the phase beyond what it holds now.
+    fn shortfall(&self) -> usize {
+        self.high
+            .load(Ordering::Acquire)
+            .saturating_sub(self.reserved.load(Ordering::Acquire))
+    }
+}
+
+/// Torch's hooked segment bytes on `device`, after each change (the allocation hook).
+pub fn note_torch_reserved(device: i32, bytes: usize) -> Result<()> {
+    let segments = Arc::clone(&capture_counts()?.entry(device).or_default().segments);
+    segments.reserved.store(bytes, Ordering::Release);
+    segments.high.fetch_max(bytes, Ordering::AcqRel);
+    Ok(())
 }
 
 static CAPTURES: OnceLock<Mutex<BTreeMap<i32, DeviceActivity>>> = OnceLock::new();
@@ -422,13 +456,16 @@ impl Arena {
         let mut captures = capture_counts()?;
         ensure_recovery_allowed(&captures, device)?;
         let driver = cuda::Driver::open(device)?;
-        let capturing = Arc::clone(&captures.entry(device).or_default().captures);
+        let activity = captures.entry(device).or_default();
+        let capturing = Arc::clone(&activity.captures);
+        let segments = Arc::clone(&activity.segments);
         drop(captures);
         let arena = Arc::new(Self {
             driver,
             device,
             pid: std::process::id(),
             captures: capturing,
+            segments,
             state: Mutex::new(State {
                 entries: BTreeMap::new(),
                 next_id: 1,
@@ -439,6 +476,7 @@ impl Arena {
                 poison: None,
                 fills: 0,
                 hits: 0,
+                reserve_refusals: 0,
                 evictions: 0,
                 reclaimed_bytes: 0,
                 reclaimed_by_reason: ReclaimedBytes::default(),
@@ -560,6 +598,7 @@ impl Arena {
             let entry = state.entries.get_mut(&region.id).ok_or(Error::Invalid("phase region is retired"))?;
             entry.preferred = entry.handle.is_some() && entry.uses.state() == Contents::Ready;
         }
+        self.segments.high.store(0, Ordering::Release); // the new phase's own high-water
         Ok(())
     }
 
@@ -595,6 +634,7 @@ impl Arena {
         for entry in state.entries.values_mut() {
             entry.preferred = false;
         }
+        self.segments.high.store(0, Ordering::Release); // the new phase's own high-water
         Ok(())
     }
 
@@ -936,6 +976,7 @@ impl Arena {
             regions: state.entries.len(),
             fills: state.fills,
             hits: state.hits,
+            reserve_refusals: state.reserve_refusals,
             evictions: state.evictions,
             reclaimed_bytes: state.reclaimed_bytes,
             reclaimed_by_reason: state.reclaimed_by_reason,
@@ -1190,6 +1231,19 @@ impl Region {
                 }
                 let remaining = state.streaming_bytes();
                 if remaining.saturating_add(self.rounded) > limit {
+                    return Err(Error::OutOfMemory {
+                        requested_bytes: self.rounded,
+                    });
+                }
+            }
+            // Speculation leaves what Torch takes back within the phase free: a speculative fill
+            // that would eat it is refused, and demand reads the block when the step reaches it.
+            if admission != Admission::Any {
+                let shortfall = self.arena.segments.shortfall();
+                if shortfall != 0
+                    && self.arena.driver.free_bytes()? < self.rounded.saturating_add(shortfall)
+                {
+                    state.reserve_refusals = state.reserve_refusals.saturating_add(1);
                     return Err(Error::OutOfMemory {
                         requested_bytes: self.rounded,
                     });

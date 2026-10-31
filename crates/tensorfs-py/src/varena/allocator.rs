@@ -173,7 +173,11 @@ fn allocate(output: *mut *mut c_void, bytes: usize) -> i32 {
         let pointer = unsafe { *output } as usize;
         if pointer != 0 {
             row.reserved = row.reserved.saturating_add(bytes);
+            let reserved = row.reserved;
             book.pointers.insert(pointer, (device, bytes));
+            // Speculative weight fills leave Torch's phase high-water free (varena's Segments).
+            // Accounting never fails an allocation CUDA made.
+            let _ = varena::note_torch_reserved(device, reserved);
         }
     }
     status
@@ -199,6 +203,8 @@ unsafe extern "C" fn free(pointer: *mut c_void) -> i32 {
             if let Some((device, bytes)) = book.pointers.remove(&(pointer as usize)) {
                 let row = book.devices.entry(device).or_default();
                 row.reserved = row.reserved.saturating_sub(bytes);
+                // The allocation was freed; its accounting cannot fail the free.
+                let _ = varena::note_torch_reserved(device, row.reserved);
             }
         }
         status

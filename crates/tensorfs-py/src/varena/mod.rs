@@ -178,6 +178,7 @@ impl PyArena {
             ("reclaimed_bytes", stats.reclaimed_bytes),
             ("context_joins", stats.context_joins),
             ("event_waits", stats.event_waits),
+            ("reserve_refusals", stats.reserve_refusals),
         ] {
             output.set_item(name, value)?;
         }
