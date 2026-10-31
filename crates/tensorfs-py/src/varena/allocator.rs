@@ -39,6 +39,8 @@ struct Device {
     retries: u64,
     reclaimed: usize,
     refusals: u64,
+    /// First refusals returned to Torch, each of which frees its whole cache before its retry.
+    cache_refusals: u64,
 }
 #[derive(Default)]
 struct Book {
@@ -115,6 +117,7 @@ fn allocate(output: *mut *mut c_void, bytes: usize) -> i32 {
             }
             if !retry {
                 row.refused = Some(bytes);
+                row.cache_refusals += 1;
                 return 2;
             }
             match varena::reclaim(device, need) {
@@ -144,6 +147,7 @@ fn allocate(output: *mut *mut c_void, bytes: usize) -> i32 {
         if !retry {
             // Torch clears CUDA's OOM error itself before it frees its cache.
             row.refused = Some(bytes);
+            row.cache_refusals += 1;
             return status;
         }
         // Torch normally consumes a failed cudaMalloc's error before recovery. The hook
@@ -264,6 +268,7 @@ pub(super) fn stats(device: i32) -> Result<BTreeMap<&'static str, u64>, String> 
         ("oom_retries", row.retries),
         ("reclaimed_bytes", row.reclaimed as u64),
         ("budget_refusals", row.refusals),
+        ("cache_refusals", row.cache_refusals),
         ("activation_admission_limit", row.limit.unwrap_or(0) as u64),
     ]))
 }

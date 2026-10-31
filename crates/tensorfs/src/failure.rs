@@ -1,4 +1,4 @@
-//! The error families every v2 surface reports (the `tfs` CLI's `--json`, Python): twelve, each
+//! The error families every v2 surface reports (the `tfs` CLI's `--json`, Python): thirteen, each
 //! with a stable code. The cause stays in the detail.
 
 use crate::err::{Code, Refusal};
@@ -21,8 +21,10 @@ pub enum Kind {
     /// A known scheme whose parts or params break its definition.
     Decode,
     Io,
-    /// Storage, device memory or a quota is full.
+    /// Storage or a quota is full.
     Full,
+    /// The GPU's memory is full: a CUDA call named in the detail ran out of it.
+    DeviceMemory,
     /// A transfer failed or stalled.
     Network,
     /// Refused: egress policy, credentials, TLS trust or the server.
@@ -34,7 +36,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 12] = [
+    pub const ALL: [Kind; 13] = [
         Kind::Invalid,
         Kind::Format,
         Kind::NotFound,
@@ -43,6 +45,7 @@ impl Kind {
         Kind::Decode,
         Kind::Io,
         Kind::Full,
+        Kind::DeviceMemory,
         Kind::Network,
         Kind::Denied,
         Kind::Unsupported,
@@ -59,6 +62,7 @@ impl Kind {
             Kind::Decode => "decode",
             Kind::Io => "io",
             Kind::Full => "full",
+            Kind::DeviceMemory => "device_memory",
             Kind::Network => "network",
             Kind::Denied => "denied",
             Kind::Unsupported => "unsupported",
@@ -148,7 +152,7 @@ impl From<crate::io::cuda::Error> for Failure {
         use crate::io::cuda;
         let kind = match &error {
             cuda::Error::CudaUnavailable(_) => Kind::Unsupported,
-            cuda::Error::Cuda { code, .. } if *code == cuda::ERROR_OUT_OF_MEMORY => Kind::Full,
+            cuda::Error::Cuda { code, .. } if *code == cuda::ERROR_OUT_OF_MEMORY => Kind::DeviceMemory,
             _ => Kind::Io,
         };
         Failure { kind, detail: error.to_string() }

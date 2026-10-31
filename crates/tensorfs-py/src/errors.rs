@@ -1,4 +1,4 @@
-//! Every TensorFS failure crosses Python through the same twelve error families.
+//! Every TensorFS failure crosses Python through the same thirteen error families.
 
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
@@ -19,6 +19,7 @@ create_exception!(tensorfs, UnknownSchemeError, Error);
 create_exception!(tensorfs, DecodeError, Error);
 create_exception!(tensorfs, StorageError, Error);
 create_exception!(tensorfs, DiskFullError, Error);
+create_exception!(tensorfs, DeviceMemoryError, Error);
 create_exception!(tensorfs, NetworkError, Error);
 create_exception!(tensorfs, DeniedError, Error);
 create_exception!(tensorfs, UnsupportedError, Error);
@@ -34,6 +35,7 @@ fn family(py: Python<'_>, kind: Kind) -> Bound<'_, pyo3::types::PyType> {
         Kind::Decode => py.get_type::<DecodeError>(),
         Kind::Io => py.get_type::<StorageError>(),
         Kind::Full => py.get_type::<DiskFullError>(),
+        Kind::DeviceMemory => py.get_type::<DeviceMemoryError>(),
         Kind::Network => py.get_type::<NetworkError>(),
         Kind::Denied => py.get_type::<DeniedError>(),
         Kind::Unsupported => py.get_type::<UnsupportedError>(),

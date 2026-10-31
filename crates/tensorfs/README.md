@@ -393,7 +393,7 @@ not grant access to private data or managed executions.
 
 The [Rust](docs/rust-api.md) and [Python](../tensorfs-py/API.md) guides summarize the target public calls. The
 [native type declarations](../tensorfs-py/python/tensorfs/_ext.pyi) describe the checked-in implementation while the 0.13 bindings are integrated. Every format, storage and transport failure derives from `tensorfs.Error`; `.code` identifies one of
-twelve families, including `denied` and `conflict`. Unknown encodings remain inspectable and transferable; decoding
+thirteen families, including `denied` and `conflict`. Unknown encodings remain inspectable and transferable; decoding
 requires that scheme's implementation.
 
 ## Format and development

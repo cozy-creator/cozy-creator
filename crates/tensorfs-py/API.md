@@ -725,6 +725,7 @@ More specific Python exception classes are:
 | Decode failure | `DecodeError` |
 | Storage I/O | `StorageError` |
 | Insufficient storage | `DiskFullError` |
+| GPU memory full (the detail names the CUDA call) | `DeviceMemoryError` |
 | Network | `NetworkError` |
 | Permission | `DeniedError` |
 | Unsupported operation | `UnsupportedError` |
