@@ -12,8 +12,11 @@ if [ -z "$ONLY" ] || [[ $ONLY == *",sdxl-12gb,"* || $ONLY == *",sdxl,"* ]]; then
       prompt="$OBJECT in $SCENE, $t, photo" seed:=$((R + 600 + i))
     [ -f "sdxl-12gb-$t.json" ] || { bad+=("$t: no record"); continue; }
     s=$(run_get "$OUT" "sdxl-12gb-$t" .status)
-    ran+=("$t run $(cat "sdxl-12gb-$t.number") $s")
-    [ "$s" = completed ] || bad+=("$t $s $(run_get "$OUT" "sdxl-12gb-$t" '.reason.message // .reason.code // ""' | head -c 200)")
+    loop=$(run_get "$OUT" "sdxl-12gb-$t" '.measurements.execution.loops[0] | .mode + (if .reused then "+reused" else "" end) + (if .whole_call then "+recorded" else "" end)')
+    ran+=("$t run $(cat "sdxl-12gb-$t.number") $s ${loop:-no-loop}")
+    [ "$s" = completed ] || { bad+=("$t $s $(run_get "$OUT" "sdxl-12gb-$t" '.reason.message // .reason.code // ""' | head -c 200)"); continue; }
+    # A warm call replays the program the cold one recorded (cozy-runtime #1959: the cold call records its whole call).
+    [ "$t" = cold ] || [ "$loop" = resident+reused ] || bad+=("$t loop ${loop:-none}: not a native replay")
   done
-  expect sdxl-12gb-warm "$([ ${#bad[@]} -eq 0 ] && echo PASS || echo FAIL)" "${bad[*]:-cold and four warm calls completed}; ${ran[*]}"
+  expect sdxl-12gb-warm "$([ ${#bad[@]} -eq 0 ] && echo PASS || echo FAIL)" "${bad[*]:-cold and four warm calls completed, each warm call a native replay}; ${ran[*]}"
 fi
