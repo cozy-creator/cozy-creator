@@ -20,7 +20,7 @@ v=$(cozy machine show "$NAME" --json | jq -r .status.version)
 say "pod TensorD $v"
 
 REFS="[{\"name\": \"Mara\", \"kind\": \"character\", \"image\": \"$REF/seed.jpg\"}]"
-step h3 run minimax-h3/ref2va_turbo --on "$NAME" references:="$REFS" seed:=$RANDOM duration_s:=15 resolution=768p \
+step h3 run minimax-h3/shot --on "$NAME" assets:="$REFS" seed:=$RANDOM duration_s:=15 \
   prompt="<Mara> walks along a rain-wet pier at dusk, gulls overhead, the camera tracking beside her." || fail "h3"
 [ "$(status h3)" = completed ] || fail "h3 $(jq -r '.status' "$OUT/h3.json"): $(jq -r '.reason.message // empty' "$OUT/h3.json" | cut -c1-300)"
 step sdxl run sdxl/generate --on "$NAME" prompt="a copper kettle on a stove, morning light, photo" seed:=$RANDOM || fail "sdxl"

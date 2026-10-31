@@ -8,7 +8,7 @@
 # idle_entrypoints.py judges:
 #   idle-klein-b, -a2, -b2, idle-h3-t  on the previous cell's processes, none of them offloaded or ended between the two
 #                      calls; Klein's with none of its own weights read twice (each fits alone, two never)
-#   idle-h3-lf         long_form's segment on ref2va_turbo's processes: one construction serves both
+#   idle-h3-lf         a two-piece shot's pieces on idle-h3-t's processes: one construction serves both
 #   idle-after-cancel, idle-h3-after-cancel  the other construction's call after idle-cancel (idle-h3-cancel) was
 #                      canceled mid-call, which ends every construction of its process: completed, on new processes
 KA=$(pkg flux-3-klein generate) KB=$(pkg flux-3-klein generate_turbo)
@@ -35,29 +35,29 @@ canceled() {
 }
 canceled idle-cancel klein idle-cancel "$KA" "$SCENE at dusk, wide shot" 407
 klein idle-after-cancel "$KB" "$OBJECT in $SCENE, macro photo" 408
-# One supplied image reference, neither cleaned nor described: no model but H3's runs.
+# One character picture, as a project sends it: no model but H3's runs.
 ln -sfn "$REF" "idle-ref.${REF##*.}"
-lead="references: [{name: Lead, kind: character, image: ./idle-ref.${REF##*.}}]
-clean_references: false
-describe_references: false"
-# The pair's clips are 5 s: what is measured is the executor the second runs on, not the clip (the standard
+lead="assets: [{name: Lead, kind: character, image: ./idle-ref.${REF##*.}}]"
+# The pair's shots are 5 s: what is measured is the executor the second runs on, not the clip (the standard
 # construction's fewest steps, 30, cost a 15 s clip about an hour on a 4090).
-printf '%s\nprompt: "<Lead> %s The camera holds, then pans right."\nduration_s: 5\nresolution: 768p\nseed: %d\n' \
-  "$lead" "$MOTION" $((R + 409)) > idle-ref2va.yaml
-printf '%s\nprompt: "<Lead> %s The camera drifts left."\nduration_s: 5\nresolution: 768p\nseed: %d\n' \
-  "$lead" "$MOTION" $((R + 404)) > idle-ref2va-turbo.yaml
-printf '%s\nsegments: [{prompt: "<Lead> %s A slow push in.", duration_s: 15, seed: %d}]\n' \
-  "$lead" "$MOTION" $((R + 405)) > idle-long-form.yaml
-cell idle-h3-s "$(pkg minimax-h3 ref2va)" --input idle-ref2va.yaml --gpus="${GPUS:-1}"
-cell idle-h3-t "$(pkg minimax-h3 ref2va_turbo)" --input idle-ref2va-turbo.yaml --gpus="${GPUS:-1}"
-cell idle-h3-lf "$(pkg minimax-h3 long_form)" --input idle-long-form.yaml --gpus="${GPUS:-1}"
+H3=$(pkg minimax-h3 shot)
+h3_shot() {  # h3_shot <file> <prompt> <seed> [yaml lines]
+  printf '%s\nprompt: "<Lead> %s %s"\nduration_s: 5\nseed: %d\n%s' "$lead" "$MOTION" "$2" "$3" "${4:-}" > "$1"
+}
+h3_shot idle-h3-standard.yaml "The camera holds, then pans right." $((R + 409)) $'turbo: false\nsteps: 30\n'
+h3_shot idle-h3-turbo.yaml "The camera drifts left." $((R + 404))
+# Two pieces (16 s: 10 s, then 6 s cut between its beats), both on idle-h3-t's Turbo Ref2VA construction.
+h3_shot idle-h3-pieces.yaml "A slow push in." $((R + 405)) \
+  $'beats: [{at: 0, prompt: "<Lead> walks toward the camera."}, {at: 8, prompt: "<Lead> turns to the camera."}]\n'
+sed -i 's/^duration_s: 5$/duration_s: 16/' idle-h3-pieces.yaml
+cell idle-h3-s "$H3" --input idle-h3-standard.yaml --gpus="${GPUS:-1}"
+cell idle-h3-t "$H3" --input idle-h3-turbo.yaml --gpus="${GPUS:-1}"
+cell idle-h3-lf "$H3" --input idle-h3-pieces.yaml --gpus="${GPUS:-1}"
 # The same in a group: the standard construction canceled in its denoise, then Turbo on whatever comes back.
-printf '%s\nprompt: "<Lead> %s A crane shot rises over the scene."\nduration_s: 5\nresolution: 768p\nseed: %d\n' \
-  "$lead" "$MOTION" $((R + 410)) > idle-h3-cancel.yaml
-printf '%s\nprompt: "<Lead> %s The camera circles slowly."\nduration_s: 5\nresolution: 768p\nseed: %d\n' \
-  "$lead" "$MOTION" $((R + 411)) > idle-h3-after-cancel.yaml
-canceled idle-h3-cancel cell idle-h3-cancel "$(pkg minimax-h3 ref2va)" --input idle-h3-cancel.yaml --gpus="${GPUS:-1}"
-cell idle-h3-after-cancel "$(pkg minimax-h3 ref2va_turbo)" --input idle-h3-after-cancel.yaml --gpus="${GPUS:-1}"
+h3_shot idle-h3-cancel.yaml "A crane shot rises over the scene." $((R + 410)) $'turbo: false\nsteps: 30\n'
+h3_shot idle-h3-after-cancel.yaml "The camera circles slowly." $((R + 411))
+canceled idle-h3-cancel cell idle-h3-cancel "$H3" --input idle-h3-cancel.yaml --gpus="${GPUS:-1}"
+cell idle-h3-after-cancel "$H3" --input idle-h3-after-cancel.yaml --gpus="${GPUS:-1}"
 "$CLI" machine logs "$M" memory -n 5000 > idle-memory.log 2>&1
 cap=$("$CLI" --json machine show "$M" 2>/dev/null | jq '.status.gpus[0].memory_bytes // 0')
 python3 -I "$HERE/suites/tensord/idle_entrypoints.py" . idle-memory.log "$cap" > idle-entrypoints.tsv

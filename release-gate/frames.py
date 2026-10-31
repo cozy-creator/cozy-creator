@@ -2,6 +2,8 @@
 
     frames.py regen ORIGINAL OUTPUT                        # an upscale against its 768p original
     frames.py guide SOURCE OUTPUT [--guided S] [--fps24]   # a guided render against its guide clip
+    frames.py still IMAGE OUTPUT first|last                # a keyframe against the output's first or last frame
+    frames.py variant CONTROL OUTPUT                       # a fine-tune's or LoRA's render against a same-seed control
 
 regen: both in the original's 1344x768 frame (a 16:9 output un-stretched), over every 4th frame: mean luma PSNR and
 SSIM at full size (reported: regenerated texture, dense foliage most, rightly moves them), and at 112x64, where texture
@@ -11,6 +13,13 @@ guide: gray frames at 192x108 over the first S seconds (all of them by default);
 the 24-fps clock by timestamp. Same-index SSIM, the share of every 3rd frame whose best-matching source frame within
 +-12 is within +-1 (an output that follows its source frame by frame scores 1), and after S seconds the mean SSIM of
 consecutive output frames (coherence: a render that falls apart scores low). Plus the output's size and frame count.
+still: gray at 192x108, the image cropped to the output's aspect: SSIM of the keyframe against the output's frame at
+that end (`ssim`) and at the other end (`other`, a control), and the least SSIM of consecutive frames over the last
+(or first) half second (`seam`: a keyframe pasted on as a cut scores low).
+variant: gray at 192x108 over every 4th frame: SSIM against the control (`ssim`, and over each half: `ssim_first`,
+`ssim_second`, so a LoRA that reaches only one piece of a two-piece shot shows), the mean per-frame luma deviation of
+the output and of the control (`contrast`, `control_contrast`: a grey render scores near 0), and over consecutive output
+frames the mean SSIM (`coherence`) and the least one with its time (`seam`, `seam_at_s`: a cut between pieces scores low).
 """
 
 import json
@@ -95,10 +104,38 @@ def guide(source: str, output: str, guided: float | None, fps24: bool) -> dict:
             "coherence_after": round(float(np.mean(after)), 3) if after else None}
 
 
+def still(image: str, output: str, at: str) -> dict:
+    info = probe(output)
+    w, h = info["width"], info["height"]
+    crop = f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}"
+    key = gray(image, 192, 108, crop)[0]
+    out = gray(output, 192, 108)
+    end, other = (out[0], out[-1]) if at == "first" else (out[-1], out[0])
+    edge = out[: FPS // 2 + 1] if at == "first" else out[-(FPS // 2 + 1):]
+    return {**info, "ssim": round(ssim(key, end), 3), "other": round(ssim(key, other), 3),
+            "seam": round(min(ssim(edge[i], edge[i + 1]) for i in range(len(edge) - 1)), 3)}
+
+
+def variant(control: str, output: str) -> dict:
+    a, b = gray(control, 192, 108), gray(output, 192, 108)
+    n = min(len(a), len(b))
+    pair = lambda r: round(float(np.mean([ssim(a[i], b[i]) for i in r])), 3)
+    cons = [ssim(b[i], b[i + 1]) for i in range(len(b) - 1)]
+    k = int(np.argmin(cons))
+    return {**probe(output), "ssim": pair(range(0, n, 4)), "ssim_first": pair(range(0, n // 2, 4)),
+            "ssim_second": pair(range(n // 2, n, 4)), "contrast": round(float(np.mean([b[i].std() for i in range(0, n, 4)])), 1),
+            "control_contrast": round(float(np.mean([a[i].std() for i in range(0, n, 4)])), 1),
+            "coherence": round(float(np.mean(cons)), 3), "seam": round(cons[k], 3), "seam_at_s": round((k + 1) / FPS, 2)}
+
+
 if __name__ == "__main__":
     mode, first, second, *rest = sys.argv[1:]
     if mode == "regen":
         print(json.dumps(regen(first, second)))
+    elif mode == "still":
+        print(json.dumps(still(first, second, rest[0])))
+    elif mode == "variant":
+        print(json.dumps(variant(first, second)))
     else:
         guided = float(rest[rest.index("--guided") + 1]) if "--guided" in rest else None
         print(json.dumps(guide(first, second, guided, "--fps24" in rest)))
