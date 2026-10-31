@@ -166,6 +166,9 @@ struct Shot {
     versions: Vec<String>,
     #[serde(default)]
     upscale: Upscale,
+    /// The renderer's own fields (minimax-h3's `turbo`, …), added to the request.
+    #[serde(default)]
+    settings: serde_json::Map<String, Value>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -179,6 +182,9 @@ struct Upscale {
     video: Option<String>,
     #[serde(default)]
     versions: Vec<String>,
+    /// The upscaler's own fields (minimax-h3's `resolution`, `upscale: {model: regenerate-2k}`, …).
+    #[serde(default)]
+    settings: serde_json::Map<String, Value>,
 }
 
 /// A piece of a shot in the edit; `start`/`end` in seconds (names pending Paul).
@@ -196,7 +202,7 @@ enum Item {
     Setup(usize, usize),
     State(usize),
     Shot(usize),
-    Upscale,
+    Upscale(usize),
 }
 
 /// A piece of the edit: a shot's file and its digest, and from and to where in it, in seconds.
@@ -404,7 +410,7 @@ impl Video {
                 file: chosen(&format!("{}.upscale", shot.name), "video", &shot.upscale.video)?,
                 versions: shot.upscale.versions.clone(),
             });
-            items.push(Item::Upscale);
+            items.push(Item::Upscale(k));
         }
         if let Some(all) = entities.iter().find(|entity| name_key(&entity.id) == name_key(ALL)) {
             let said = format!("{} is named `{ALL}`, which `cozy render {ALL}` means", all.id);
@@ -432,14 +438,14 @@ impl Video {
     /// The field that holds the entity's chosen file.
     pub fn field(&self, i: usize) -> &'static str {
         match self.items[i] {
-            Item::Shot(_) | Item::Upscale => "video",
+            Item::Shot(_) | Item::Upscale(_) => "video",
             _ => "image",
         }
     }
 
     /// Whether `render` makes the entity: everything but upscales the edit does not use.
     pub fn wanted(&self, i: usize) -> bool {
-        !matches!(self.items[i], Item::Upscale) || self.project.edit_uses == Uses::Upscaled
+        !matches!(self.items[i], Item::Upscale(_)) || self.project.edit_uses == Uses::Upscaled
     }
 
     /// Whether entity `i`'s pictures are cleaned before use: a character's or a prop's.
@@ -563,7 +569,15 @@ impl Video {
                 (json!({"prompt": prompt, "assets": pictures(&mut files), "aspect_ratio": "16:9"}), vec![])
             }
             Item::Shot(k) => self.shot(k, &reads, &mut files),
-            Item::Upscale => (json!({"video": reads[0].input(&mut files, "video".into(), None)}), vec![]),
+            Item::Upscale(k) => {
+                // The text the shot was made from, for an upscaler that re-renders it.
+                let shot = &self.project.shots[k];
+                let beats = shot.beats.iter().map(|beat| format!("Then, {}", beat.prompt.trim()));
+                let text = std::iter::once(shot.prompt.trim().to_owned()).chain(beats).collect::<Vec<_>>().join(" ");
+                let mut payload = json!({"video": reads[0].input(&mut files, "video".into(), None), "prompt": text.replace(['<', '>'], "")});
+                payload.as_object_mut().expect("an object").extend(shot.upscale.settings.clone());
+                (payload, vec![])
+            }
         };
         Ok(Request { payload, made, field: self.field(i), writes, files })
     }
@@ -605,10 +619,11 @@ impl Video {
         let writes: Vec<String> = (shot.writes.iter())
             .filter_map(|name| self.graph.find(name).map(|s| self.graph.entities[s].id.clone()))
             .collect();
-        let payload = json!({
+        let mut payload = json!({
             "prompt": shot.prompt, "duration_s": shot.duration_s, "beats": shot.beats, "style": self.project.style,
             "assets": assets, "world_state": states, "writes": vec!["last"; writes.len()],
         });
+        payload.as_object_mut().expect("an object").extend(shot.settings.clone());
         (payload, writes)
     }
 
@@ -645,7 +660,7 @@ impl Video {
     pub fn cut_reads(&self, i: usize) -> bool {
         matches!(
             (self.items[i], self.project.edit_uses),
-            (Item::Shot(_), Uses::Native) | (Item::Upscale, Uses::Upscaled)
+            (Item::Shot(_), Uses::Native) | (Item::Upscale(_), Uses::Upscaled)
         )
     }
 }
