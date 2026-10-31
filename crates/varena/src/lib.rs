@@ -192,9 +192,6 @@ struct Entry {
     uses: Arc<Uses>,
     preferred: bool,
     last_use: u64,
-    /// Filled ahead of its use (a non-reclaiming admission) and not pinned by a consumer since:
-    /// the loop reaches it next, so it is the last idle region to go (`State::eviction_key`).
-    awaiting: bool,
 }
 
 impl Entry {
@@ -236,11 +233,6 @@ impl State {
     /// newest-first keeps the ones the loop reaches next (Qwen-Image int8 on 8 GB: 3 of 3
     /// streamed blocks refilled every step). Without a phase there is no loop: oldest first.
     fn eviction_key(&self, entry: &Entry) -> (bool, u64) {
-        if entry.awaiting {
-            // Its fill's own pin made it the newest: newest-first evicted every prefetched
-            // block before its use (H3 Turbo 15 s on 8 GB: each DiT block read twice a step).
-            return (true, u64::MAX);
-        }
         match self.phase_boundary {
             Some(boundary) if self.clock != u64::MAX && entry.last_use > boundary => {
                 (true, u64::MAX - entry.last_use)
@@ -522,7 +514,6 @@ impl Arena {
                 uses: Arc::clone(&uses),
                 preferred: false,
                 last_use: 0,
-                awaiting: false,
             },
         );
         Ok(Arc::new(Region {
@@ -603,7 +594,6 @@ impl Arena {
         state.phase_boundary = (state.clock != u64::MAX).then_some(state.clock);
         for entry in state.entries.values_mut() {
             entry.preferred = false;
-            entry.awaiting = false;
         }
         Ok(())
     }
@@ -1265,8 +1255,6 @@ impl Region {
             }
         }
         let pin = self.pin_locked(&mut state)?;
-        let entry = state.entries.get_mut(&self.id).expect("live region");
-        entry.awaiting = admission != Admission::Any;
         self.uses.set(Contents::Loading);
         Ok(Preparation::Fill(Fill {
             pin: Some(pin),
@@ -1301,11 +1289,6 @@ impl Region {
             })
             .map_err(|_| Error::Invalid("pin count overflow"))?;
         entry.last_use = state.clock;
-        // A pin of ready contents is a consumer's; a fill's own pins (its export) come while
-        // it loads and leave the region awaiting its first use.
-        if entry.uses.state() == Contents::Ready {
-            entry.awaiting = false;
-        }
         Ok(Pin {
             region: Some(Arc::clone(self)),
         })
