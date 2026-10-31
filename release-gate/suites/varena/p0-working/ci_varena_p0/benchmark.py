@@ -47,11 +47,17 @@ def main(config):
         "shim_sha256": digest(installed / "_varena_torch.so"),
         "extension_path": str(Path(_ext.__file__).resolve()),
         "torch": torch.__version__, "torch_git": torch.version.git_version,
+        "torch_distribution": version("torch"), "torch_cuda": torch.version.cuda,
+        "torch_cxx11_abi": bool(torch._C._GLIBCXX_USE_CXX11_ABI),
         "python": sys.version, "executable": sys.executable, "platform": platform.platform(),
         "visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
         "allocator_conf": os.environ.get("PYTORCH_ALLOC_CONF"),
         "cuda_allocator_conf": os.environ.get("PYTORCH_CUDA_ALLOC_CONF"),
     }
+    assert actual["torch"] == config["torch_version"], (config["torch_version"], actual["torch"])
+    assert actual["torch_cuda"] == "13.0", actual
+    assert actual["torch_distribution"] == "2.14.0", actual
+    assert actual["torch_git"] == config["torch_git"], (config["torch_git"], actual["torch_git"])
     for key in ("tensorfs_version", "extension_sha256", "shim_sha256"):
         assert config[key] and actual[key] == config[key], (key, config[key], actual[key])
     assert not torch.cuda.is_initialized(), "child initialized CUDA before allocator selection"
