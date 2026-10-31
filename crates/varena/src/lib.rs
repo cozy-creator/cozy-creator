@@ -48,6 +48,9 @@ pub struct Stats {
     pub hits: u64,
     /// Speculative fills refused because they would take Torch's phase high-water.
     pub reserve_refusals: u64,
+    /// Torch's hooked segment bytes now and their high-water in the running phase.
+    pub torch_reserved_bytes: usize,
+    pub torch_high_bytes: usize,
     pub evictions: u64,
     pub reclaimed_bytes: u64,
     pub reclaimed_by_reason: ReclaimedBytes,
@@ -311,11 +314,14 @@ fn segments(device: i32) -> Result<&'static Segments> {
         .ok_or(Error::Invalid("device ordinal out of range"))
 }
 
-/// Torch's hooked segment bytes on `device`, after each change (the allocation hook).
+/// Torch's hooked segment bytes on `device`, after each change (the allocation hook). Only growth
+/// raises the high-water: the frees of a cache returned at a phase's entry, after the reset,
+/// are the last phase's segments, not this one's.
 pub fn note_torch_reserved(device: i32, bytes: usize) -> Result<()> {
     let segments = segments(device)?;
-    segments.reserved.store(bytes, Ordering::Release);
-    segments.high.fetch_max(bytes, Ordering::AcqRel);
+    if segments.reserved.swap(bytes, Ordering::AcqRel) < bytes {
+        segments.high.fetch_max(bytes, Ordering::AcqRel);
+    }
     Ok(())
 }
 
@@ -987,6 +993,8 @@ impl Arena {
             fills: state.fills,
             hits: state.hits,
             reserve_refusals: state.reserve_refusals,
+            torch_reserved_bytes: self.segments.reserved.load(Ordering::Acquire),
+            torch_high_bytes: self.segments.high.load(Ordering::Acquire),
             evictions: state.evictions,
             reclaimed_bytes: state.reclaimed_bytes,
             reclaimed_by_reason: state.reclaimed_by_reason,
@@ -1246,17 +1254,29 @@ impl Region {
                     });
                 }
             }
-            // Speculation leaves what Torch takes back within the phase free: a speculative fill
-            // that would eat it is refused, and demand reads the block when the step reaches it.
+            // Speculation leaves what Torch takes back within the phase free. A fill that may
+            // evict completed streamed pages takes that room from them, never from Torch; one that
+            // still cannot is refused, and demand reads the block when the step reaches it.
             if admission != Admission::Any {
                 let shortfall = self.arena.segments.shortfall();
-                if shortfall != 0
-                    && self.arena.driver.free_bytes()? < self.rounded.saturating_add(shortfall)
-                {
-                    state.reserve_refusals = state.reserve_refusals.saturating_add(1);
-                    return Err(Error::OutOfMemory {
-                        requested_bytes: self.rounded,
-                    });
+                let need = self.rounded.saturating_add(shortfall);
+                if shortfall != 0 {
+                    let mut free = self.arena.driver.free_bytes()?;
+                    if free < need && admission == Admission::Completed {
+                        self.arena.reclaim_completed_locked(
+                            &mut state,
+                            need - free,
+                            self.id,
+                            ReclaimReason::WeightAllocation,
+                        )?;
+                        free = self.arena.driver.free_bytes()?;
+                    }
+                    if free < need {
+                        state.reserve_refusals = state.reserve_refusals.saturating_add(1);
+                        return Err(Error::OutOfMemory {
+                            requested_bytes: self.rounded,
+                        });
+                    }
                 }
             }
             let handle = match self.arena.driver.create(self.rounded) {

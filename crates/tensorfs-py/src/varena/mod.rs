@@ -179,6 +179,8 @@ impl PyArena {
             ("context_joins", stats.context_joins),
             ("event_waits", stats.event_waits),
             ("reserve_refusals", stats.reserve_refusals),
+            ("torch_reserved_bytes", stats.torch_reserved_bytes as u64),
+            ("torch_high_bytes", stats.torch_high_bytes as u64),
         ] {
             output.set_item(name, value)?;
         }
