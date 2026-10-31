@@ -124,7 +124,17 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             });
         }
     };
-    let machine = crate::machine::adopt(ctx)?;
+    let machine = match crate::machine::adopt(ctx)? {
+        Adopted::MovesWhenIdle => match crate::machine::activate(ctx).await {
+            Ok(Some(run)) => Adopted::Moves { run },
+            Ok(None) => Adopted::MovesWhenIdle,
+            Err(e) => {
+                crate::output::warn(&format!("local did not take the update to cozy {version}: {}", e.message));
+                Adopted::MovesWhenIdle
+            }
+        },
+        adopted => adopted,
+    };
     let updated = Updated {
         from: current,
         to: version,
@@ -153,6 +163,9 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         );
         println!("  calcifer: {}", step(&updated.calcifer));
         println!("  machine: {}", adopted(&updated.machine));
+        if let Adopted::Moves { run } = updated.machine {
+            crate::output::next(ctx, &[&format!("cozy run show {run}")]);
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -225,10 +238,13 @@ fn newer(version: &str, current: &str) -> bool {
     }
 }
 
-fn adopted(adopted: &Adopted) -> &'static str {
+fn adopted(adopted: &Adopted) -> String {
     match adopted {
-        Adopted::NotRunning => "not running; it starts on the new binary when used",
-        Adopted::MovesWhenIdle => "running; it moves to the new binary once idle",
+        Adopted::NotRunning => "not running; it starts on the new binary when used".into(),
+        Adopted::MovesWhenIdle => {
+            "running; it moves to the new binary after 15 minutes idle, or at `cozy machine update local`".into()
+        }
+        Adopted::Moves { run } => format!("running; it moves to the new binary once its runs end (run {run})"),
     }
 }
 
