@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -16,6 +17,9 @@ class Probe(msgspec.Struct, forbid_unknown_fields=True):
     tensorfs_version: str
     extension_sha256: str
     shim_sha256: str
+    torch_version: str = "2.14.0+cu130"
+    torch_git: str = "08187d9e0fba026dc8217405802ab5381dc88d90"
+    compute_sanitizer: str = ""
     seed: int = 138
     case: str = "all"
 
@@ -30,9 +34,17 @@ def gpu(payload: Probe, tel: Telemetry) -> Report:
     config = msgspec.json.encode(payload).decode()
     child = Path(__file__).with_name("probe.py")
     result = None
+    command = [sys.executable, "-I", str(child), config]
+    summaries = []
+    if payload.compute_sanitizer:
+        tool = Path(payload.compute_sanitizer)
+        if not tool.is_absolute() or not tool.is_file():
+            raise ValueError("compute_sanitizer must name an installed absolute executable")
+        command = [str(tool), "--tool", "memcheck", "--leak-check", "full",
+                   "--error-exitcode", "99", "--target-processes", "all", *command]
     with tel.stage("varena-p0"):
         process = subprocess.Popen(
-            [sys.executable, "-I", str(child), config],
+            command,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         )
         assert process.stdout is not None
@@ -40,6 +52,8 @@ def gpu(payload: Probe, tel: Telemetry) -> Report:
             for line in process.stdout:
                 tel.log(line.rstrip())
                 tel.progress(0.0)
+                if match := re.search(r"ERROR SUMMARY:\s+(\d+) errors", line):
+                    summaries.append(int(match.group(1)))
                 try:
                     record = json.loads(line)
                 except ValueError:
@@ -53,6 +67,12 @@ def gpu(payload: Probe, tel: Telemetry) -> Report:
                 process.wait()
     if code or not isinstance(result, dict) or not result.get("passed"):
         raise RuntimeError(f"varena P0 child failed ({code}): {result}")
+    if payload.compute_sanitizer:
+        if not summaries or any(summaries):
+            raise RuntimeError(f"compute-sanitizer did not report a clean instrumented run: {summaries}")
+        result["compute_sanitizer"] = {
+            "path": payload.compute_sanitizer, "exit_code": code, "error_summaries": summaries,
+        }
     return Report(True, json.dumps(result, sort_keys=True))
 
 
@@ -60,6 +80,8 @@ class Benchmark(msgspec.Struct, forbid_unknown_fields=True):
     tensorfs_version: str
     extension_sha256: str
     shim_sha256: str
+    torch_version: str = "2.14.0+cu130"
+    torch_git: str = "08187d9e0fba026dc8217405802ab5381dc88d90"
     samples: int = 7
     rounds: int = 50_000
 
@@ -99,7 +121,7 @@ def benchmark(payload: Benchmark, tel: Telemetry) -> Report:
             raise RuntimeError(f"allocator {mode} child failed ({code}): {result}")
         results[mode] = result
     native, candidate = results["native"], results["varena"]
-    for key in ("tensorfs_version", "extension_sha256", "shim_sha256", "torch", "torch_git",
+    for key in ("tensorfs_version", "extension_sha256", "shim_sha256", "torch", "torch_git", "torch_distribution", "torch_cuda", "torch_cxx11_abi",
                 "python", "executable", "gpu", "gpu_uuid", "capability", "visible_devices",
                 "allocator_conf", "cuda_allocator_conf"):
         if native["provenance"][key] != candidate["provenance"][key]:

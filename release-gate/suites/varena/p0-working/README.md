@@ -70,3 +70,16 @@ to retain the pool through completion recording. Both arms copy and validate the
 alias. `external-stream-retirement` creates actual CUDA runtime streams, drains and retires each, destroys it,
 then frees a retained tensor. Its three arms cover no remaining consumer, an already-declared consumer and a new
 consumer declared after retirement. Both cases validate GPU output and final allocation/event retirement.
+
+## Torch 2.14.0 production cohort
+
+The fixture's project and lock select SDXL's exact Linux `torch==2.14.0` PyPI distribution. The CPython3.12
+x86_64 wheel URL and SHA256 match `packages/sdxl/uv.lock` (SHA256 starts `fecffb58f51fd643`).
+The fourteen case bodies and allocator timing loop are unchanged. Both entrypoints default their expected
+`torch_version` to `2.14.0+cu130` and fail before execution on another build. Receipts also record distribution
+version, Torch source commit, CUDA version and C++ ABI; compare these with the actual model receipt because the
+model's PyPI distribution may spell its version `2.14.0` while `torch.__version__` includes `+cu130`.
+
+`cozy machine update` still selects the candidate Runtime/TensorFS pair. The fixture verifies their installed
+extension and shim hashes. Do not replace that path with an untracked interpreter or install a different Torch
+into an active generation. Preserve existing Torch2.14.1 receipts as evidence for their own cohort.
