@@ -1541,12 +1541,12 @@ impl Pool {
             // and why (`room.json` in its root, the Runtime's), so a stall explains itself.
             let pid = idle.iter().find(|i| i.1 == key).map(|i| i.2);
             let threads = pid.map(platform::process::threads).unwrap_or_default();
-            let kept = self.sessions.lock().unwrap().get(&key)
-                .and_then(|session| fs::read(session.executor.root_path().join("room.json")).ok())
+            let root = self.sessions.lock().unwrap().get(&key).map(|session| session.executor.root_path().to_path_buf());
+            let kept = root.as_ref().and_then(|root| fs::read(root.join("room.json")).ok())
                 .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
             if self.end_session(&key) {
                 self.notes.note(serde_json::json!({"event": "ended_for_room", "ended": key, "for": "room",
-                    "why": why, "pid": pid, "threads": threads, "kept": kept, "need": deficit, "free": now.free}));
+                    "why": why, "pid": pid, "root": root, "threads": threads, "kept": kept, "need": deficit, "free": now.free}));
             }
         }
     }
