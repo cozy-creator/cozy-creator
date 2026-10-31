@@ -29,6 +29,38 @@ class Report(msgspec.Struct):
     detail: str
 
 
+@app.entrypoint(accelerator=False)
+def fork(payload: Probe, tel: Telemetry) -> Report:
+    """A fresh CPU-only process installs callbacks, then proves inherited calls reject before CUDA."""
+    if payload.compute_sanitizer:
+        raise ValueError("fork proof initializes no CUDA and is not a sanitizer target")
+    child = Path(__file__).with_name("fork_probe.py")
+    result = None
+    with tel.stage("varena-fork-before-cuda"):
+        process = subprocess.Popen(
+            [sys.executable, "-I", str(child), msgspec.json.encode(payload).decode()],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        assert process.stdout is not None
+        try:
+            for line in process.stdout:
+                tel.log(line.rstrip())
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(record, dict) and "result" in record:
+                    result = record["result"]
+            code = process.wait()
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.wait()
+    if code or not isinstance(result, dict) or not result.get("passed"):
+        raise RuntimeError(f"fork-before-CUDA proof failed ({code}): {result}")
+    return Report(True, json.dumps(result, sort_keys=True))
+
+
 @app.entrypoint(accelerator=True)
 def gpu(payload: Probe, tel: Telemetry) -> Report:
     config = msgspec.json.encode(payload).decode()

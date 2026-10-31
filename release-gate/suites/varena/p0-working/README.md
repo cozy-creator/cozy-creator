@@ -71,6 +71,14 @@ alias. `external-stream-retirement` creates actual CUDA runtime streams, drains 
 then frees a retained tensor. Its three arms cover no remaining consumer, an already-declared consumer and a new
 consumer declared after retirement. Both cases validate GPU output and final allocation/event retirement.
 
+## Fork rejection before CUDA
+
+The separate CPU-only `/fork` entrypoint uses the same candidate version/hash payload. Its fresh child calls
+`vt.install()` without opening a device, then makes six actual forks to check explicit status, empty-registry
+stats, null alloc/free/record-stream callbacks and empty-registry trim. Each must reject the inherited process
+before CUDA initialization. Separate forks prevent an earlier error latch from masking a later missing check;
+the parent must remain usable with zero allocator/driver counters. This does not replace any GPU case or benchmark.
+
 ## Torch 2.14.0 production cohort
 
 The fixture's project and lock select SDXL's exact Linux `torch==2.14.0` PyPI distribution. The CPython3.12

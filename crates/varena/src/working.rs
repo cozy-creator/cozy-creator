@@ -99,6 +99,12 @@ struct Working {
 
 static DEVICES: OnceLock<Mutex<BTreeMap<i32, Arc<Working>>>> = OnceLock::new();
 
+/// Bind integration registration to this process without initializing CUDA or taking a lock.
+/// Every later operation still checks the actual PID before accessing inherited state.
+pub fn bind_process() -> Result<()> {
+    crate::check_process()
+}
+
 fn devices() -> Result<MutexGuard<'static, BTreeMap<i32, Arc<Working>>>> {
     crate::check_process()?;
     lock_devices()
@@ -586,6 +592,7 @@ fn valid_stream(stream: u64) -> Result<()> {
 pub fn alloc(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> Result<u64> {
     valid_stream(stream)?;
     if bytes == 0 {
+        crate::check_process()?;
         return Ok(0);
     }
     let owner = if pool.is_none() {
@@ -664,6 +671,7 @@ pub fn alloc(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> Re
 
 pub fn free(device: i32, ptr: u64, stream: u64) -> Result<()> {
     if ptr == 0 {
+        crate::check_process()?;
         return Ok(());
     }
     valid_stream(stream)?;
@@ -735,6 +743,7 @@ pub fn free(device: i32, ptr: u64, stream: u64) -> Result<()> {
 
 pub fn record_stream(device: i32, ptr: u64, stream: u64) -> Result<()> {
     if ptr == 0 {
+        crate::check_process()?;
         return Ok(());
     }
     valid_stream(stream)?;
@@ -753,6 +762,7 @@ pub fn record_stream(device: i32, ptr: u64, stream: u64) -> Result<()> {
 
 pub fn record_stream_any(ptr: u64, stream: u64) -> Result<()> {
     if ptr == 0 {
+        crate::check_process()?;
         return Ok(());
     }
     valid_stream(stream)?;

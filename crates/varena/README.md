@@ -37,6 +37,9 @@ attempted working-driver memory/event operations. Counters cover this working al
 CUDA library/context allocations. Stats on an unopened device do not initialize CUDA. Read/write
 after fork is rejected. No Python callback, background daemon or cross-process policy is added here.
 The default-stream optimization and size-class fragmentation still need the matched P0 performance proof.
+Integrations call `working::bind_process` when registering callbacks, before CUDA initialization.
+Every core operation still checks the actual PID before inherited locks, including null alloc/free
+and record-stream callbacks; the integration need not repeat that syscall on the healthy hot path.
 
 Default and Torch-pooled streams live for the process. A caller owning a destroyable stream must
 stop submissions, synchronize it, call `working::retire_stream(device, stream)`, then destroy it.
