@@ -1,6 +1,7 @@
 # Suite `h3`: minimax-h3's shot and upscale at their edges, from the package users get (or its --pins release).
 # - Regenerate-2K (`upscale.model: regenerate-2k`) at 1080p, 1440p and 2160p, each against the 768p shot it starts from: its
-#   layout at 112x64 (frames.py), since regenerated texture rightly differs.
+#   layout at 112x64 (frames.py), since regenerated texture rightly differs, and that it moves as the original does (no
+#   flicker: a refine window off the latent chunk grid flickers at every chunk, run 22567).
 # - SeedVR2, the default model, at 2160p on the same shot, its lane the one an empty card gives.
 # - A plate (a synthetic, people-free test pattern) as long as the shot, shorter, longer, at 30 fps and at 9:16: the
 #   output must follow it frame by frame.
@@ -34,7 +35,7 @@ for r in 1080 1440 2160; do
   cell "regen-${r}p" "$UP" --file video="$(video_of regen-768p)" resolution=${r}p prompt="$P" seed:=$((R + 70)) \
     'upscale:={"model": "regenerate-2k"}'
   av "regen-${r}p" $r
-  judge "regen-${r}p-frames" "regen-${r}p" ".structure_psnr >= 18 and .structure_ssim >= 0.5 and .lag_ms != null and (.lag_ms | $ABS) <= 10 and .corr >= 0.95" \
+  judge "regen-${r}p-frames" "regen-${r}p" ".structure_psnr >= 18 and .structure_ssim >= 0.5 and .flicker <= 2 and .lag_ms != null and (.lag_ms | $ABS) <= 10 and .corr >= 0.95" \
     regen "$(video_of regen-768p)"
 done
 cell seedvr2-2160p "$UP" --file video="$(video_of regen-768p)" resolution=2160p seed:=$((R + 71))
@@ -54,7 +55,7 @@ if [[ $ONLY == *",regen-2160p-15s,"* ]]; then
   cell regen-2160p-15s "$UP" --file video="$(video_of regen-768p-15s)" resolution=2160p prompt="$P15" seed:=$((R + 72)) \
     'upscale:={"model": "regenerate-2k"}'
   av regen-2160p-15s 2160
-  judge regen-2160p-15s-frames regen-2160p-15s ".structure_psnr >= 18 and .structure_ssim >= 0.5 and (.lag_ms | $ABS) <= 10 and .corr >= 0.95" \
+  judge regen-2160p-15s-frames regen-2160p-15s ".structure_psnr >= 18 and .structure_ssim >= 0.5 and .flicker <= 2 and (.lag_ms | $ABS) <= 10 and .corr >= 0.95" \
     regen "$(video_of regen-768p-15s)"
 fi
 
