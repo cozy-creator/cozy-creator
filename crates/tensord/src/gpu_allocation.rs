@@ -37,8 +37,8 @@ struct Gpu {
     /// The family of the calls running there, if any, and their root.
     caller: Option<String>,
     running: Option<u64>,
-    /// Its call is a prefetch's prewarm, which ends with its owner (`GpuPool::prefetch`).
-    hint: bool,
+    /// How many of its calls are prefetch prewarms, which end with their owner (`GpuPool::prefetch`).
+    hints: usize,
 }
 struct Root {
     width: usize,
@@ -74,6 +74,7 @@ pub(crate) struct Hold {
 pub(crate) struct Permit {
     table: Arc<Allocations>,
     devices: Range<usize>,
+    hint: bool,
 }
 
 impl Table {
@@ -98,7 +99,10 @@ impl Table {
     fn blocker(&self, lane: Range<usize>, root: u64, claims: &Claims) -> Blocker {
         match self.other(lane.clone(), root, claims) {
             Some(seq) => Blocker::Request {
-                seq, hint: lane.clone().any(|d| self.gpus[d].running == Some(seq) && self.gpus[d].hint),
+                seq, hint: lane.clone().any(|d| {
+                    let gpu = &self.gpus[d];
+                    gpu.running == Some(seq) && gpu.hints > 0 && gpu.hints == gpu.calling
+                }),
             },
             None if lane.clone().any(|d| self.gpus[d].external_pressure) => Blocker::Pressure,
             None => Blocker::Machine,
@@ -285,12 +289,11 @@ impl Allocations {
             let gpu = &mut table.gpus[d];
             (gpu.calling, gpu.caller, gpu.running) = (gpu.calling + 1, family.map(String::from), root);
         }
-        Some(Permit { table: self.clone(), devices })
+        Some(Permit { table: self.clone(), devices, hint: false })
     }
-    /// The call holding `devices` is a prefetch's prewarm, which ends with its owner.
-    pub(crate) fn hint(&self, devices: Range<usize>) {
-        let mut table = self.table.lock().unwrap();
-        devices.for_each(|d| table.gpus[d].hint = true);
+    /// Whether request `seq` still holds a lane or a call slot anywhere.
+    pub(crate) fn holds(&self, seq: u64) -> bool {
+        self.table.lock().unwrap().gpus.iter().any(|gpu| gpu.root == Some(seq) || gpu.running == Some(seq))
     }
     /// Machine upkeep on `devices` (ending idle executors): no call there.
     pub(crate) fn upkeep(self: &Arc<Self>, devices: Range<usize>) -> Option<Permit> {
@@ -299,7 +302,7 @@ impl Allocations {
             return None;
         }
         devices.clone().for_each(|d| table.gpus[d].calling += 1);
-        Some(Permit { table: self.clone(), devices })
+        Some(Permit { table: self.clone(), devices, hint: false })
     }
 }
 impl Drop for Permit {
@@ -307,12 +310,23 @@ impl Drop for Permit {
         let mut table = self.table.table.lock().unwrap();
         for gpu in &mut table.gpus[self.devices.clone()] {
             gpu.calling -= 1;
+            gpu.hints -= usize::from(self.hint);
             if gpu.calling == 0 {
-                (gpu.caller, gpu.running, gpu.hint) = (None, None, false);
+                (gpu.caller, gpu.running) = (None, None);
             }
         }
         drop(table);
         self.table.freed.notify_all();
+    }
+}
+impl Permit {
+    /// This call is a prefetch's prewarm, which ends with its owner: a root waiting behind it
+    /// keeps waiting (`Blocker::Request { hint }`).
+    pub(crate) fn hint(&mut self) {
+        if self.hint { return }
+        self.hint = true;
+        let mut table = self.table.table.lock().unwrap();
+        self.devices.clone().for_each(|d| table.gpus[d].hints += 1);
     }
 }
 impl Hold {

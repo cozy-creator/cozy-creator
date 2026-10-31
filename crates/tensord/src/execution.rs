@@ -567,6 +567,13 @@ impl Engine {
         self.activity_changed.notify_all();
     }
 
+    /// Whether a managed attempt of root `root` (the root or a call of it) still runs its thread.
+    /// Each lane hold and call slot such an attempt takes ends before its thread does.
+    pub(crate) fn root_in_flight(&self, root: u64) -> bool {
+        let owned: Vec<String> = self.owned.lock().unwrap().iter().cloned().collect();
+        owned.iter().any(|id| self.get(id).is_ok_and(|record| record.root_seq() == root))
+    }
+
     /// Trusted adapters share one claim, supervisor reservation and journal. They
     /// register the exact process birth before authorizing any authored code.
     pub(crate) fn dispatch_managed<F>(self: &Arc<Self>, id: &str, run: F) -> io::Result<bool>
