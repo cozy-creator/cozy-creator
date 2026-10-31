@@ -11,7 +11,7 @@ use protocol::{
 
 use crate::{Context, output};
 use bind::Terms;
-pub(crate) use catalog::{Card, card, latest};
+pub(crate) use catalog::{Card, card, fresh};
 pub(crate) use follow::{exit_code, follow, follow_until, settled, submit};
 use interface::{Callable, Interface};
 use target::Target;
@@ -284,9 +284,10 @@ impl std::fmt::Display for From {
     }
 }
 
-/// Resolves a run's release once, before binding: the one asked, else the Hub's newest published
-/// release, wherever the run goes (a machine holding an older one installs it first). The run is
-/// pinned to it, so the machine runs exactly the release its inputs were bound against.
+/// Resolves a run's release once, before binding: the one asked, else the newest release this
+/// computer keeps of the package (`catalog::latest`, refreshed in the background), wherever the
+/// run goes (a machine holding an older one installs it first). The run is pinned to it, so the
+/// machine runs exactly the release its inputs were bound against.
 pub(crate) async fn resolve(
     ctx: &Context,
     hub: &Origin,

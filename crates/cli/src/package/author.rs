@@ -757,6 +757,8 @@ pub async fn publish(ctx: &Context, root: bool) -> Result<ExitCode, Error> {
     result.status = "published";
     result.changed = true;
     result.warnings = state.warnings;
+    // This computer's next unversioned run takes the release just published, not one refresh later.
+    let _ = crate::run::fresh(ctx, hub, &result.package).await;
     result.print(ctx);
     Ok(ExitCode::SUCCESS)
 }

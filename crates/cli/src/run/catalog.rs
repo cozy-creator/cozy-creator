@@ -1,12 +1,11 @@
 //! Release cards this computer keeps. A release never changes, so its card is read from the Hub
-//! once and kept forever, by release; which release a run binds and runs is resolved before
-//! (`super::resolve`), never guessed from what was read last.
+//! once and kept forever, by release. Which release a run binds and runs is resolved before
+//! (`super::resolve`): the one asked, else the package's newest as this computer keeps it.
 use std::path::{Path, PathBuf};
 
 use platform::{durable, paths::Home};
 use protocol::config::Origin;
 use protocol::error::{Error, Kind};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::interface::Interface;
@@ -37,24 +36,9 @@ impl Card {
     }
 }
 
-/// Where `(hub, package)`'s cards live: one file per release, and `latest.json`, the Hub's latest
-/// release as last read with its ETag.
+/// Where `(hub, package)`'s cards live, beside its newest release (`hub_client::latest`).
 fn dir(home: &Home, hub: &str, package: &str) -> PathBuf {
-    let host = hub.split_once("://").map_or(hub, |(_, rest)| rest);
-    let host: String = host
-        .trim_end_matches('/')
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let mut dir = home.root().join("packages").join(host);
-    dir.extend(package.split('/'));
-    dir
+    hub_client::latest::dir(home.root(), hub, package)
 }
 
 /// The card of `release`: the kept one, else the Hub's, which is then kept.
@@ -72,57 +56,30 @@ pub async fn card(ctx: &Context, hub: &Origin, package: &str, release: &str) -> 
     keep(&ctx.home, hub, package, &document)
 }
 
-/// The Hub's newest published release of `package`: one small read of its package, conditional
-/// on the ETag kept from the last one when the Hub sent one (304: unchanged).
+/// The newest release of `package` this computer keeps, which Calcifer refreshes in the background:
+/// a run makes no Hub read for a package it knows. One it never knew is read once ([`fresh`]).
 pub async fn latest(ctx: &Context, hub: &Origin, package: &str) -> Result<String, Error> {
+    match hub_client::latest::kept(&dir(&ctx.home, hub, package)) {
+        Some(release) => Ok(release),
+        None => fresh(ctx, hub, package).await,
+    }
+}
+
+/// The Hub's newest published release of `package` now, and kept: what an install names.
+pub async fn fresh(ctx: &Context, hub: &Origin, package: &str) -> Result<String, Error> {
     let (org, name) = package.split_once('/').expect("a package is org/name");
-    let pointer = dir(&ctx.home, hub, package).join("latest.json");
-    let kept: Option<Latest> = std::fs::read(&pointer)
-        .ok()
-        .and_then(|raw| serde_json::from_slice(&raw).ok());
     let client = ctx.hub_client(hub)?;
-    let answer = client
-        .get_package_if_changed(org, name, kept.as_ref().map(|kept| kept.etag.as_str()))
+    let release = hub_client::latest::read(&client, &dir(&ctx.home, hub, package), org, name)
         .await
         .map_err(|e| absent(hub_error(e), package))?;
-    let (card, etag) = match (answer, kept) {
-        (Some(answer), _) => answer,
-        (None, Some(kept)) => return Ok(kept.release),
-        (None, None) => {
-            let unasked = hub_client::Error::Answer("304 to a read that kept no ETag".into());
-            return Err(hub_error(unasked));
-        }
-    };
-    let release = card.package.latest_release.ok_or_else(|| {
+    release.ok_or_else(|| {
         Error::new(
             Kind::NotFound,
             "package_unreleased",
             format!("{package} has no release to run"),
         )
         .remedy("its owner publishes one with `cozy package publish`")
-    })?;
-    // Kept only with the Hub's ETag: without one there is nothing to ask conditionally.
-    match etag {
-        Some(etag) => {
-            let latest = Latest {
-                release: release.clone(),
-                etag,
-            };
-            let latest = serde_json::to_vec(&latest).expect("serializes");
-            let dir = pointer.parent().expect("a package dir");
-            let _ =
-                durable::private_dir(dir).and_then(|()| durable::replace(&pointer, &latest, 0o600));
-        }
-        None => drop(std::fs::remove_file(&pointer)),
-    }
-    Ok(release)
-}
-
-/// The Hub's latest release as last read, with the ETag it came with.
-#[derive(Deserialize, Serialize)]
-struct Latest {
-    release: String,
-    etag: String,
+    })
 }
 
 /// The Hub's 404 names what it lacks, and where to look.

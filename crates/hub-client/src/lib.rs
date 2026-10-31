@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 mod client;
 mod device;
+pub mod latest;
 pub mod types;
 pub mod workload;
 
