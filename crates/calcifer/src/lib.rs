@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 mod access;
 pub mod api;
+mod authorized;
 mod files;
 mod kept;
 mod lanes;
@@ -24,6 +25,7 @@ pub mod project;
 mod rentals;
 pub mod serve;
 pub mod store;
+mod update;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -1004,6 +1006,11 @@ impl Calcifer {
                     tracing::info!(run = %id, phase = "outcome_received", sequence = durable,
                         machine_at_ms = frame.at_ms);
                     self.record_batch(id, &mut batch)?;
+                    // An update succeeds only when its machine runs what it asked for.
+                    let outcome = match (self.machines(), self.store.run(id.as_str())?) {
+                        (Some(machines), Some(row)) => machines.verified(&row, outcome).await,
+                        _ => outcome,
+                    };
                     let prior_batch_ms = received.elapsed().as_secs_f64() * 1000.0;
                     let store_began = Instant::now();
                     let events = self.store.settle(id.as_str(), &outcome, durable)?;

@@ -64,7 +64,8 @@ enum Verb {
     /// when it is ready, or `rental.unfollowed`.
     Rent(rent::Rent),
     /// End a rental (billing stops once its Hub confirms), or remove an added machine, once
-    /// its runs' outputs have landed here.
+    /// its runs' outputs have landed here. Calcifer carries the end out: Ctrl-C stops following,
+    /// never the end.
     End {
         name: String,
         /// End it now, giving up outputs that have not landed.

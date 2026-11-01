@@ -14,7 +14,8 @@ use platform::paths::Home;
 use protocol::{
     calcifer::{
         Agreed, Attempt, Ended, HubListing, HubProblem, Machine, MachineKind, MachineState, On,
-        Quote, Alternative, Reason, Rental, Rented, Replaced, RunQuote, SubmitRun, Warning,
+        Quote, Alternative, Reason, Rental, RentalHistory, RentalRow, RentalSku, RentalSkus,
+        RentalSum, Rented, Replaced, RunQuote, SubmitRun, Warning,
     },
     config,
     error::{Error, Kind},
@@ -198,6 +199,72 @@ impl Machines {
         let origin = config::Origin::parse(hub)?;
         let (request, ..) = request(sku, shape);
         Ok(quote_of(&self.quoted(&origin, &request).await?))
+    }
+
+    /// What `hub` has for rent now, cheapest first by its fewest GPUs.
+    pub async fn rental_skus(&self, hub: &str) -> Result<RentalSkus, Error> {
+        let reader = self.hubs.reader(hub)?;
+        let mut skus = reader.list_rental_skus().await.map_err(|e| hub_refusal(hub, e))?;
+        skus.retain(|sku| !sku.widths.is_empty());
+        let hourly = |sku: &RentalSku| sku.widths[0].price_usd_micros_per_hour;
+        skus.sort_by(|a, b| hourly(a).cmp(&hourly(b)).then_with(|| a.name.cmp(&b.name)));
+        Ok(RentalSkus { rental_skus: skus })
+    }
+
+    /// An explicit ask for `gpus` of `sku` is honoured or refused, never widened to another card
+    /// or count; the refusal names which absence it hit. A product the Hub cannot sell, for
+    /// whatever reason, reads as out of stock.
+    pub async fn admit_sku(&self, hub: &str, sku: &str, gpus: u32) -> Result<(), Error> {
+        let reader = self.hubs.reader(hub)?;
+        let status = reader.get_rental_sku_status(sku, gpus).await.map_err(|e| hub_refusal(hub, e))?;
+        match status.known && status.offered {
+            true => Ok(()),
+            false => Err(sku_refusal(sku, gpus, &status)),
+        }
+    }
+
+    /// Every rental of this account at `hub` started at or after `since_ms`, newest first, with
+    /// what each cost and the sums per UTC day and in all. An operator's Hub also says what the
+    /// providers billed; a renter's never does.
+    pub async fn history(&self, hub: &str, since_ms: Option<i64>) -> Result<RentalHistory, Error> {
+        let listing = self.hubs.client(hub)?.list_rentals("all").await.map_err(|e| hub_refusal(hub, e))?;
+        let now = crate::store::now_ms();
+        let instant = |at: &str| {
+            ms(at).ok_or_else(|| {
+                let message = format!("{hub}: the Hub's rental time {at:?} is not RFC 3339");
+                Error::new(Kind::Unavailable, "hub.rental_time_invalid", message)
+            })
+        };
+        let mut rentals = vec![];
+        for r in listing.rentals {
+            let started_at_ms = instant(&r.created_at)?;
+            if since_ms.is_some_and(|since| started_at_ms < since) {
+                continue;
+            }
+            let ended_at_ms = r.ended_at.as_deref().map(instant).transpose()?;
+            rentals.push(RentalRow {
+                ran_s: (ended_at_ms.unwrap_or(now) - started_at_ms) / 1000,
+                sku: r.sku.unwrap_or(r.requested_accelerator_model),
+                gpus: u32::try_from(r.accelerator_count).unwrap_or_default(),
+                rental_id: r.rental_id,
+                name: r.name,
+                state: r.state,
+                started_at_ms,
+                ended_at_ms,
+                spend_usd_micros: r.spend_usd_micros,
+                spend_basis: r.spend_basis,
+                provider_cost_basis: r.provider_cost_basis.filter(|b| !b.is_empty()),
+                provider_cost_usd_micros: r.provider_cost_usd_micros,
+            });
+        }
+        rentals.sort_by(|a, b| b.started_at_ms.cmp(&a.started_at_ms));
+        let (mut days, mut total) = (std::collections::BTreeMap::<String, RentalSum>::new(), RentalSum::default());
+        for row in &rentals {
+            let day = utc_day(row.started_at_ms);
+            days.entry(day.clone()).or_insert_with(|| RentalSum { day: Some(day), ..RentalSum::default() }).add(row);
+            total.add(row);
+        }
+        Ok(RentalHistory { since_ms, days: days.into_values().rev().collect(), total, rentals })
     }
 
     /// Rents a machine at `hub` under `key`: the same key again answers the same rental.
@@ -408,7 +475,7 @@ impl Machines {
                         self.store()
                             .settle_ask(&ask.key, Err(&reason))
                             .map_err(internal)?;
-                        self.ask_end(&row.hub, &id, Some(row.name.clone()))?;
+                        self.ask_end(&format!("end-{id}"), &row.hub, &id, Some(row.name.clone()), false)?;
                         if let Some(run) = &ask.run {
                             let reason = Reason {
                                 code: "rental_refused".into(),
@@ -629,6 +696,10 @@ impl Machines {
             (sku, _) => self.place(&submit.hub, &submit.spec, sku.as_deref()).await?,
         };
         let gpus = placed.gpus.or(gpus);
+        // A product the run names is honoured or refused, as `cozy machine rent` names it.
+        if sku.is_some() {
+            self.admit_sku(&submit.hub, &placed.sku, gpus.unwrap_or(1)).await?;
+        }
         let shape = Shape { gpus, disk_gb: placed.disk_gb, ..Shape::default() };
         let quote = self.quote(&submit.hub, &placed.sku, shape).await?;
         Ok(RunQuote {
@@ -858,21 +929,45 @@ impl Machines {
         }
     }
 
-    /// Asks the rental's Hub to end it; it is `ending` until the Hub affirms the pod gone.
-    pub(crate) async fn end_rental(self: &Arc<Self>, row: MachineRow) -> Result<Ended, Error> {
-        let id = row.rental_id.clone().unwrap_or_default();
-        self.ask_end(&row.hub, &id, Some(row.name.clone()))?;
+    /// Ends one of this controller's machines: a rental at its Hub, `ending` until the Hub affirms
+    /// the pod gone, or an added machine. The end is an ask recorded now and carried out once the
+    /// outputs of its runs have landed here, unless `force`; asked again, it is the same end (and
+    /// `force` stops its wait). Its runs' outputs not landed when `force` ends it are given up.
+    pub(crate) fn end_here(self: &Arc<Self>, row: MachineRow, force: bool) -> Result<Ended, Error> {
+        let owed = self.calcifer.owed_on(&row.name).map_err(internal)?;
+        let abandoned = match force {
+            true => owed.iter().map(ToString::to_string).collect(),
+            false => vec![],
+        };
+        let pending = self.pending_end(&row.name)?;
+        // An added machine nothing holds is removed now: no Hub is asked.
+        if row.kind == MachineKind::Added && pending.is_none() && (force || owed.is_empty()) {
+            self.ended(&row.name, "removed from this controller");
+            let machine = self.picture(&self.row(&row.name)?)?;
+            return Ok(Ended { machine, changed: true, abandoned });
+        }
+        let key = match pending {
+            Some(ask) => ask.key,
+            None => match &row.rental_id {
+                Some(id) => format!("end-{id}"),
+                // An added machine's name is given again once it is removed.
+                None => format!("remove-{}-{}", row.name, crate::store::now_ms()),
+            },
+        };
+        let wait = !force && !owed.is_empty();
+        self.ask_end(&key, &row.hub, row.rental_id.as_deref().unwrap_or_default(), Some(row.name.clone()), wait)?;
         Ok(Ended {
             machine: self.picture(&row)?,
             changed: true,
-            abandoned: vec![],
+            abandoned,
         })
     }
 
-    /// Ends a live rental of this account that this controller did not rent.
+    /// Ends a live rental of this account that this controller did not rent: no output of it is
+    /// owed here.
     pub(crate) fn end_other(self: &Arc<Self>, mut machine: Machine) -> Result<Ended, Error> {
         let id = machine.rental_id.clone().unwrap_or_default();
-        self.ask_end(&machine.hub, &id, None)?;
+        self.ask_end(&format!("end-{id}"), &machine.hub, &id, None, false)?;
         machine.state = MachineState::Ending;
         Ok(Ended {
             machine,
@@ -881,38 +976,95 @@ impl Machines {
         })
     }
 
+    /// The end asked of `name` and not yet carried out.
+    pub(crate) fn pending_end(&self, name: &str) -> Result<Option<Ask>, Error> {
+        let asks = self.store().pending_asks().map_err(internal)?;
+        Ok(asks.into_iter().find(|ask| ask.kind == AskKind::End && ask.machine.as_deref() == Some(name)))
+    }
+
+    /// Records the end under `key` (`wait`: once its runs' outputs land) and carries it out; one
+    /// recorded already keeps its course, unless this one stops its wait.
     fn ask_end(
         self: &Arc<Self>,
+        key: &str,
         hub: &str,
         id: &str,
         machine: Option<String>,
+        wait: bool,
     ) -> Result<(), Error> {
+        let body = serde_json::to_vec(&EndBody { wait }).expect("serializes");
         let ask = Ask {
-            key: format!("end-{id}"),
+            key: key.to_owned(),
             kind: AskKind::End,
             hub: hub.to_owned(),
             digest: id.to_owned(),
-            body: vec![],
+            body: body.clone(),
             machine,
             run: None,
             state: AskState::Pending,
             reason: None,
         };
-        let (ask, _) = self.store().begin_ask(&ask).map_err(internal)?;
-        if ask.state == AskState::Failed {
+        let (ask, fresh) = self.store().begin_ask(&ask).map_err(internal)?;
+        let reopened = ask.state == AskState::Failed;
+        if reopened {
             self.store().reopen_ask(&ask.key).map_err(internal)?;
+        }
+        if !fresh && ask.state != AskState::Done && EndBody::of(&ask).wait && !wait {
+            self.store().rewrite_ask(&ask.key, &body).map_err(internal)?;
+            self.end_waits.notify_waiters();
         }
         // A pending end shows the machine `ending`.
         self.calcifer.machine_changed();
-        let me = self.clone();
-        self.spawn(async move { me.finish_end(ask).await });
+        if fresh || reopened {
+            let me = self.clone();
+            self.spawn(async move { me.finish_end(ask).await });
+        }
         Ok(())
+    }
+
+    /// While the end asked under `key` waits for them, the outputs `name`'s runs owe this
+    /// computer; none once it no longer waits.
+    pub(crate) fn end_owes(&self, key: &str, name: &str) -> Vec<crate::outputs::Owed> {
+        let waits = self.store().ask(key).ok().flatten().is_some_and(|ask| EndBody::of(&ask).wait);
+        match waits {
+            true => self.calcifer.owed_on(name).unwrap_or_default(),
+            false => vec![],
+        }
+    }
+
+    /// Waits until the outputs of `name`'s runs have landed (or failed to), or its end is told to
+    /// stop waiting. Each landing is said to whoever watches the machines.
+    async fn outputs_landed(&self, key: &str, name: &str) {
+        let mut events = self.calcifer.subscribe();
+        loop {
+            let stopped = self.end_waits.notified();
+            if self.end_owes(key, name).is_empty() {
+                return;
+            }
+            self.calcifer.machine_changed();
+            tokio::select! {
+                _ = stopped => {}
+                _ = async {
+                    loop {
+                        match events.recv().await {
+                            Ok((_, event)) if exports(&event) => return,
+                            Ok(_) => {}
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => return,
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => std::future::pending::<()>().await,
+                        }
+                    }
+                } => {}
+            }
+        }
     }
 
     /// Releases the rental at its Hub, then reads it until the Hub says it ended. A Hub that
     /// does not know the rental proves nothing: the ask fails `release_unconfirmed` and the
     /// machine stays, as it does when the Hub refuses this computer's credential.
     async fn finish_end(self: Arc<Self>, ask: Ask) {
+        if let Some(name) = &ask.machine {
+            self.outputs_landed(&ask.key, name).await;
+        }
         let id = ask.digest.clone();
         let mut pause = Duration::ZERO;
         let settle = |outcome: Result<(), String>| {
@@ -925,6 +1077,13 @@ impl Machines {
             }
             self.calcifer.machine_changed();
         };
+        // An added machine is removed from this controller: no Hub is asked.
+        if ask.hub.is_empty() {
+            if let Some(name) = &ask.machine {
+                self.ended(name, "removed from this controller");
+            }
+            return settle(Ok(()));
+        }
         let mut released = false;
         loop {
             let client = match self.hubs.client(&ask.hub) {
@@ -980,6 +1139,29 @@ impl Hubs {
         self.seen(origin, rental.clone());
         Ok(rental)
     }
+}
+
+/// An end ask as recorded: whether it waits for its machine's runs' outputs to land first. One
+/// recorded before ends waited (an empty body) does not.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct EndBody {
+    wait: bool,
+}
+
+impl EndBody {
+    fn of(ask: &Ask) -> Self {
+        serde_json::from_slice(&ask.body).unwrap_or(EndBody { wait: false })
+    }
+}
+
+/// An event that may change what a machine's runs owe this computer: an output added, done or
+/// landed, or a run settled.
+fn exports(event: &protocol::calcifer::Event) -> bool {
+    use protocol::calcifer::Event;
+    !matches!(
+        event,
+        Event::Log { .. } | Event::Call { .. } | Event::Progress { .. } | Event::Waiting { .. } | Event::OutputDelta { .. }
+    )
 }
 
 /// Where a Hub places a run: the product, its GPU count, why in words, and other machines.
@@ -1285,6 +1467,66 @@ fn rate(price: &Agreed) -> String {
     )
 }
 
+/// The UTC day of a unix-ms instant, `2026-10-30`.
+fn utc_day(ms: i64) -> String {
+    let at = time::OffsetDateTime::from_unix_timestamp_nanos(ms as i128 * 1_000_000);
+    at.map_or_else(|_| "?".into(), |at| at.date().to_string())
+}
+
+fn sku_refusal(sku: &str, gpus: u32, status: &types::RentalSkuStatus) -> Error {
+    let (ask, retry) = match gpus {
+        1 => (sku.to_string(), format!("cozy machine rent {sku}")),
+        _ => (format!("{sku} ×{gpus}"), format!("cozy machine rent {sku} --gpus {gpus}")),
+    };
+    if !status.known {
+        return Error::new(
+            Kind::Validation,
+            "sku_unknown",
+            format!("the Hub sells no machine named {sku:?}; nothing was rented"),
+        )
+        .next("cozy machine rent");
+    }
+    // The Hub's reason, of the offer that frees first; an older Hub gives none.
+    let why = match status.held_for.as_deref() {
+        Some("no_capacity") => "has no capacity in the offers we can buy",
+        Some("failed_boot") => "is held back after a recent boot failure",
+        _ => "is held back",
+    };
+    let held = match status.unavailable_reason.as_deref() {
+        Some("cooldown") => Some((
+            "sku_cooldown",
+            match &status.retry_after {
+                Some(at) => format!("{ask} {why}; retry after {at}"),
+                None => format!("{ask} {why}; retry shortly"),
+            },
+        )),
+        Some("retry_in_progress") => Some((
+            "sku_retry_in_progress",
+            format!("{ask} {why} while another rental retries it; try again once that ends"),
+        )),
+        _ => None,
+    };
+    if let Some((code, message)) = held {
+        return Error::new(Kind::Capacity, code, message).next(retry).next("cozy machine rent");
+    }
+    let mut message = format!("no provider has {ask} right now; nothing else was rented in its place.");
+    if let Some(at) = &status.last_seen_at {
+        message += &format!(" It was last offered at {at}.");
+    }
+    let offered: Vec<String> = (status.sku.iter())
+        .flat_map(|s| &s.widths)
+        .map(|w| w.accelerator_count.to_string())
+        .collect();
+    let error = match offered.first() {
+        Some(first) => {
+            message += &format!(" {sku} is offered now with {} GPU(s).", offered.join(", "));
+            Error::new(Kind::Capacity, "sku_out_of_stock", message).next(format!("cozy machine rent {sku} --gpus {first}"))
+        }
+        None => Error::new(Kind::Capacity, "sku_out_of_stock", message).next(retry),
+    };
+    error.next("cozy machine rent")
+}
+
 /// An RFC 3339 time of the Hub's, in unix milliseconds.
 fn ms(at: &str) -> Option<i64> {
     let at = time::OffsetDateTime::parse(at, &time::format_description::well_known::Rfc3339);
@@ -1325,6 +1567,7 @@ fn other(origin: &str, rental: &types::Rental, unverified: bool) -> Machine {
         unverified,
         controller_key: None,
         reach: None,
+        ending: None,
     }
 }
 
