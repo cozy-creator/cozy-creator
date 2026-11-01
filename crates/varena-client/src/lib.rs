@@ -64,6 +64,27 @@ fn string(value: &str) -> Result<CString> {
     CString::new(value).map_err(|_| invalid("string contains NUL"))
 }
 
+fn defer(handle: &mut u64) {
+    if *handle != 0 && unsafe { ffi::vr_v1_defer_close(*handle) } == 0 {
+        *handle = 0;
+    }
+}
+#[repr(C)]
+#[derive(Default, Debug)]
+pub struct RetirementStats {
+    pub queued: u64,
+    pub retired: u64,
+    pub quarantined: u64,
+    pub abandoned_cache_bytes: u64,
+}
+pub fn retirement_stats() -> Result<RetirementStats> {
+    let mut stats = RetirementStats::default();
+    check(unsafe {
+        ffi::vr_v1_retirement_stats(&mut stats, std::mem::size_of::<RetirementStats>())
+    })?;
+    Ok(stats)
+}
+
 pub fn core_identity() -> u64 {
     unsafe { ffi::vr_v1_core_identity() }
 }
@@ -77,9 +98,7 @@ struct GpuInner {
 }
 impl Drop for GpuInner {
     fn drop(&mut self) {
-        unsafe {
-            ffi::vr_v1_gpu_close(self.handle);
-        }
+        defer(&mut self.handle);
     }
 }
 #[derive(Clone)]
@@ -105,6 +124,8 @@ impl Gpu {
     /// # Safety
     /// Stream must belong to this GPU's primary context and remain live until all
     /// clones and resources retaining it are dropped. It must not be capturing.
+    /// This includes native deferred retirement after a Rust finalizer: use checked
+    /// close/retry or wait for retirement to drain before destroying the CUDA stream.
     pub unsafe fn borrow_stream(&self, raw: u64) -> Stream {
         Stream {
             gpu: self.clone(),
@@ -253,9 +274,7 @@ struct RegionInner {
 }
 impl Drop for RegionInner {
     fn drop(&mut self) {
-        unsafe {
-            ffi::vr_v1_region_close(self.handle);
-        }
+        defer(&mut self.handle);
     }
 }
 #[derive(Clone)]
@@ -276,7 +295,7 @@ impl Use {
         check(unsafe { ffi::vr_v1_use_ptr(self.handle, index, &mut pointer) })?;
         Ok(pointer)
     }
-    pub fn done(mut self) -> Result<()> {
+    pub fn done(&mut self) -> Result<()> {
         check(unsafe { ffi::vr_v1_done(self.handle) })?;
         self.handle = 0;
         Ok(())
@@ -284,11 +303,7 @@ impl Use {
 }
 impl Drop for Use {
     fn drop(&mut self) {
-        if self.handle != 0 {
-            unsafe {
-                ffi::vr_v1_done(self.handle);
-            }
-        }
+        defer(&mut self.handle);
     }
 }
 pub struct Allocation {
@@ -305,7 +320,7 @@ impl Allocation {
         self.stream.gpu.stream(stream)?;
         check(unsafe { ffi::vr_v1_record_stream(self.handle, stream.raw) })
     }
-    pub fn free(mut self) -> Result<()> {
+    pub fn free(&mut self) -> Result<()> {
         check(unsafe { ffi::vr_v1_free(self.handle) })?;
         self.handle = 0;
         Ok(())
@@ -313,11 +328,7 @@ impl Allocation {
 }
 impl Drop for Allocation {
     fn drop(&mut self) {
-        if self.handle != 0 {
-            unsafe {
-                ffi::vr_v1_free(self.handle);
-            }
-        }
+        defer(&mut self.handle);
     }
 }
 
@@ -369,7 +380,7 @@ impl Cache {
 }
 impl Drop for Cache {
     fn drop(&mut self) {
-        let _ = self.close();
+        defer(&mut self.handle);
     }
 }
 type ShrinkCallback = dyn FnMut(&CacheView, u64) -> Result<bool> + Send;
@@ -420,9 +431,7 @@ impl Plan {
 }
 impl Drop for Plan {
     fn drop(&mut self) {
-        unsafe {
-            ffi::vr_v1_plan_close(self.handle);
-        }
+        defer(&mut self.handle);
     }
 }
 pub struct Pass<'a> {
@@ -430,7 +439,14 @@ pub struct Pass<'a> {
     active: bool,
 }
 impl Pass<'_> {
-    pub fn complete(mut self) -> Result<()> {
+    pub fn abort(&mut self) -> Result<()> {
+        if self.active {
+            check(unsafe { ffi::vr_v1_phase_leave(self.plan.handle, 0) })?;
+            self.active = false;
+        }
+        Ok(())
+    }
+    pub fn complete(&mut self) -> Result<()> {
         check(unsafe { ffi::vr_v1_phase_leave(self.plan.handle, 1) })?;
         self.active = false;
         Ok(())
@@ -438,10 +454,10 @@ impl Pass<'_> {
 }
 impl Drop for Pass<'_> {
     fn drop(&mut self) {
-        if self.active {
-            unsafe {
-                ffi::vr_v1_phase_leave(self.plan.handle, 0);
-            }
+        if self.active && self.abort().is_err() {
+            // An abandoned pass cannot leave an unreachable phase token. Closing
+            // the whole Plan asynchronously retains its regions and exact token.
+            defer(&mut self.plan.handle);
         }
     }
 }
@@ -494,15 +510,15 @@ mod ffi {
     }
     #[link(name = "varena")]
     unsafe extern "C" {
+        pub fn vr_v1_defer_close(handle: u64) -> i32;
+        pub fn vr_v1_retirement_stats(out: *mut RetirementStats, size: usize) -> i32;
         pub fn vr_v1_abi_version() -> u32;
         pub fn vr_v1_core_identity() -> u64;
         pub fn vr_v1_last_error() -> *const c_char;
         pub fn vr_v1_error_requested_bytes() -> u64;
         pub fn vr_v1_gpu_open(device: i32, out: *mut u64) -> i32;
-        pub fn vr_v1_gpu_close(gpu: u64) -> i32;
         pub fn vr_v1_region_from_host(gpu: u64, bytes: *const u8, n: usize, out: *mut u64) -> i32;
         pub fn vr_v1_use_ptr(used: u64, index: usize, out: *mut u64) -> i32;
-        pub fn vr_v1_region_close(region: u64) -> i32;
         pub fn vr_v1_use(
             gpu: u64,
             regions: *const u64,
@@ -523,7 +539,6 @@ mod ffi {
         pub fn vr_v1_plan_new(gpu: u64, phases: *const Phase, n: usize, out: *mut u64) -> i32;
         pub fn vr_v1_phase_enter(plan: u64, name: *const c_char, key: *const c_char) -> i32;
         pub fn vr_v1_phase_leave(plan: u64, completed: i32) -> i32;
-        pub fn vr_v1_plan_close(plan: u64) -> i32;
         pub fn vr_v1_stats(gpu: u64, out: *mut Stats, size: usize) -> i32;
         pub fn vr_v1_trim(gpu: u64, out: *mut u64) -> i32;
     }

@@ -39,30 +39,9 @@ if [ "$(uname -s)" != Darwin ]; then
 fi
 
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
-nice -n 19 cargo build --release --locked -p tensorfs --bin tfs
-# The cozy workspace's target directory, not this tree's.
-target=$(cargo metadata --format-version 1 --no-deps | "$py" -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
-
-if [ "$(uname -s)" = Linux ]; then
-    # The executable and extension depend on one shared Varena core and the matching
-    # Rust std. The bundle step makes the installed wheel independent of this path.
-    export LD_LIBRARY_PATH="$target/release/deps:$(rustc --print target-libdir)${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-fi
-
-version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
-said=$("$target"/release/tfs version)
-case "$said" in
-    "tfs $version sha256:"*) ;;
-    *) echo "built tfs says \"$said\", not version $version — refusing to stage" >&2; exit 1 ;;
-esac
-
-mkdir -p wheel-data/scripts
-install -m 755 "$target"/release/tfs wheel-data/scripts/tfs
+nice -n 19 "$py" backend/stage_cli.py --release ${args[@]+"${args[@]}"}
 
 nice -n 19 maturin build --release --locked --out "$out" ${args[@]+"${args[@]}"}
 
-if [ "$(uname -s)" = Linux ]; then
-    for wheel in "$out"/tensorfs-"$version"-*.whl; do
-        uv run --no-project --with patchelf python ../varena/bundle.py --target "$target/release" --wheel "$wheel"
-    done
-fi
+# build.rs and pyproject include the private libraries directly, also for PEP 517
+# and direct maturin. There is no post-build wheel repair that can swap the core.

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Bundle one Linux core for external SDK clients or an already built TensorFS wheel.
+"""Bundle a Linux external SDK from the completed TensorFS dependency cohort.
+Wheels now carry native dependencies directly through maturin/build.rs.
 
 Run with uv run --no-project --with patchelf python crates/varena/bundle.py ...
 No builds, installs or GPU access are performed by this file.
@@ -8,16 +9,10 @@ No builds, installs or GPU access are performed by this file.
 from __future__ import annotations
 
 import argparse
-import base64
-import csv
-import hashlib
-import io
 import json
 import shutil
 import subprocess
 import sys
-import tempfile
-import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -67,89 +62,6 @@ def sdk(target: Path, output: Path) -> None:
     print(json.dumps({"sdk": str(output), "native": str(native)}))
 
 
-def wheel(target: Path, path: Path) -> None:
-    # Preserve the wheel's platform/ABI tags and all unrelated repaired libraries.
-    # auditwheel may rename core libraries; normalize only our two owned dependencies
-    # so a simultaneously loaded C/Rust client finds the exact same SONAME.
-    sources = native_files(target)
-    with tempfile.TemporaryDirectory(prefix="varena-wheel-", dir=path.parent) as temp:
-        tree = Path(temp)
-        with zipfile.ZipFile(path) as archive:
-            archive.extractall(tree)
-            for item in archive.infolist():
-                mode = (item.external_attr >> 16) & 0o777
-                if mode and not item.is_dir():
-                    (tree / item.filename).chmod(mode)
-        metadata = list(tree.glob("*.dist-info"))
-        if len(metadata) != 1:
-            raise RuntimeError("expected one wheel distribution")
-        data = tree / (metadata[0].name.removesuffix(".dist-info") + ".data")
-        library = data / "data" / "lib" / "varena-v1"
-        library.mkdir(parents=True, exist_ok=True)
-        include = data / "data" / "include" / "varena" / "v1"
-        include.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(ROOT / "crates/varena/include/varena.h", include / "varena.h")
-        replacements = {}
-        for candidate in list(tree.rglob("*.so")):
-            if candidate.name.startswith(("libvarena", "libstd-")):
-                replacement = (
-                    "libvarena.so"
-                    if candidate.name.startswith("libvarena")
-                    else sources[1].name
-                )
-                replacements[candidate.name] = replacement
-                candidate.unlink()
-        for source in sources:
-            shutil.copy2(source, library / source.name)
-            patch(library / source.name, {}, "$ORIGIN")
-        for extension in (tree / "tensorfs").glob("_ext*.so"):
-            # _native.load preloads these by SONAME before _ext. Other repaired
-            # dependencies keep their existing wheel-relative loader search paths.
-            old_rpath = run("patchelf", "--print-rpath", str(extension))
-            patch(extension, replacements, old_rpath)
-        binary = data / "scripts" / "tfs"
-        if not binary.is_file():
-            raise RuntimeError(
-                "the full TensorFS wheel must include its native tfs executable"
-            )
-        patch(binary, replacements, "$ORIGIN/../lib/varena-v1")
-        record = metadata[0] / "RECORD"
-        rows = []
-        for file in sorted(tree.rglob("*")):
-            if file.is_file() and file != record:
-                blob = file.read_bytes()
-                digest = (
-                    base64.urlsafe_b64encode(hashlib.sha256(blob).digest())
-                    .rstrip(b"=")
-                    .decode()
-                )
-                rows.append(
-                    [
-                        file.relative_to(tree).as_posix(),
-                        "sha256=" + digest,
-                        str(len(blob)),
-                    ]
-                )
-        rows.append([record.relative_to(tree).as_posix(), "", ""])
-        content = io.StringIO(newline="")
-        csv.writer(content, lineterminator="\n").writerows(rows)
-        record.write_text(content.getvalue())
-        replacement = path.with_suffix(".shared.whl")
-        with zipfile.ZipFile(replacement, "w", zipfile.ZIP_DEFLATED) as archive:
-            for file in sorted(tree.rglob("*")):
-                if file.is_file():
-                    archive.write(file, file.relative_to(tree))
-        replacement.replace(path)
-    print(
-        json.dumps(
-            {
-                "wheel": str(path),
-                "core_sha256": hashlib.sha256(sources[0].read_bytes()).hexdigest(),
-            }
-        )
-    )
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -158,15 +70,11 @@ def main() -> None:
         required=True,
         help="exact Cargo target/profile directory",
     )
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--sdk", type=Path)
-    group.add_argument("--wheel", type=Path)
+    parser.add_argument("--sdk", type=Path, required=True)
     args = parser.parse_args()
     if sys.platform != "linux":
         parser.error("shared-core bundling is implemented for Linux only")
-    (sdk if args.sdk else wheel)(
-        args.target.resolve(), (args.sdk or args.wheel).resolve()
-    )
+    sdk(args.target.resolve(), args.sdk.resolve())
 
 
 if __name__ == "__main__":

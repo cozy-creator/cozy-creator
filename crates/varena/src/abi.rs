@@ -1,6 +1,8 @@
 //! Public C ABI v1. This module adapts ownership, not allocation policy.
 #![allow(unsafe_code)]
 
+mod retirement;
+
 use crate::{Arena, Error, Pin, Preparation, Region, cache_owner, working};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -99,6 +101,13 @@ pub extern "C" fn vr_v1_error_requested_bytes() -> u64 {
 struct Gpu {
     arena: Arc<Arena>,
 }
+impl Drop for Gpu {
+    fn drop(&mut self) {
+        if self.arena.pid == std::process::id() {
+            retirement::arena(self.arena.clone());
+        }
+    }
+}
 impl Gpu {
     fn device(&self) -> i32 {
         self.arena.device()
@@ -119,7 +128,7 @@ impl Gpu {
     }
 }
 static GPUS: OnceLock<Mutex<BTreeMap<i32, Weak<Gpu>>>> = OnceLock::new();
-static HANDLES: OnceLock<Mutex<BTreeMap<u64, Handle>>> = OnceLock::new();
+static HANDLES: OnceLock<Mutex<BTreeMap<u64, Entry>>> = OnceLock::new();
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
@@ -131,38 +140,128 @@ enum Handle {
     Cache(Arc<Cache>),
     Plan(Arc<Plan>),
 }
-fn registry() -> Result<std::sync::MutexGuard<'static, BTreeMap<u64, Handle>>> {
-    process()?;
+#[derive(Clone, Copy, PartialEq)]
+enum Disposition {
+    Owned,
+    Queued,
+    Quarantined,
+}
+struct Entry {
+    value: Handle,
+    disposition: Disposition,
+    failure: i32,
+}
+impl Handle {
+    fn device(&self) -> i32 {
+        match self {
+            Self::Gpu(g) => g.device(),
+            Self::Region(w) => w.gpu.device(),
+            Self::Use(u) => u._weights[0].gpu.device(),
+            Self::Allocation(a) => a.gpu.device(),
+            Self::Cache(c) => c._gpu.device(),
+            Self::Plan(p) => p.gpu.device(),
+        }
+    }
+}
+fn registry_unchecked() -> Result<std::sync::MutexGuard<'static, BTreeMap<u64, Entry>>> {
+    crate::check_process()?;
     HANDLES
         .get_or_init(Mutex::default)
         .lock()
         .map_err(|_| Failure(FAULT, "ABI registry poisoned".into(), 0))
 }
 fn insert(value: Handle) -> Result<u64> {
+    retirement::start()?;
     let id = NEXT
         .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_add(1))
         .map_err(|_| invalid("handle space exhausted"))?;
-    registry()?.insert(id, value);
+    registry_unchecked()?.insert(
+        id,
+        Entry {
+            value,
+            disposition: Disposition::Owned,
+            failure: 0,
+        },
+    );
     Ok(id)
 }
-fn get(id: u64) -> Result<Handle> {
-    registry()?
+// Field order keeps retirement exclusion alive through every possibly-final Arc drop,
+// including an operation racing a checked close from another caller.
+struct HandleLease {
+    value: Handle,
+    guard: Arc<crate::GlobalCaptureGuard>,
+}
+struct Lease<T> {
+    value: Arc<T>,
+    _guard: Arc<crate::GlobalCaptureGuard>,
+}
+impl<T> std::ops::Deref for Lease<T> {
+    type Target = Arc<T>;
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+#[derive(Clone, Copy)]
+enum Access {
+    Owned,
+    Retirement,
+    CallbackBorrow,
+}
+fn get_access(id: u64, access: Access) -> Result<HandleLease> {
+    process()?;
+    let handles = registry_unchecked()?;
+    let entry = handles
         .get(&id)
-        .cloned()
-        .ok_or_else(|| invalid("invalid or closed handle"))
+        .ok_or_else(|| invalid("invalid or closed handle"))?;
+    let allowed = match access {
+        Access::Owned => entry.disposition == Disposition::Owned,
+        Access::Retirement => entry.disposition == Disposition::Queued,
+        Access::CallbackBorrow => {
+            entry.disposition == Disposition::Owned
+                || (entry.disposition == Disposition::Queued
+                    && match &entry.value {
+                        Handle::Cache(cache) => lock(&cache.owner)?
+                            .as_ref()
+                            .is_some_and(|owner| cache_owner::in_callback(owner)),
+                        _ => false,
+                    })
+        }
+    };
+    if !allowed {
+        return Err(invalid("handle ownership has transferred"));
+    }
+    let guard = Arc::new(crate::enter_retirement(entry.value.device())?);
+    Ok(HandleLease {
+        value: entry.value.clone(),
+        guard,
+    })
+}
+fn get(id: u64, deferred: bool) -> Result<HandleLease> {
+    get_access(
+        id,
+        if deferred {
+            Access::Retirement
+        } else {
+            Access::Owned
+        },
+    )
 }
 fn remove(id: u64) -> Result<()> {
-    let removed = registry()?
+    let removed = registry_unchecked()?
         .remove(&id)
         .ok_or_else(|| invalid("invalid or closed handle"))?;
-    drop(removed); // Never destroy CUDA/source/callback owners while holding the registry.
+    drop(removed); // Never destroy GPU/source/callback owners while holding the registry.
     Ok(())
 }
 macro_rules! getter {
     ($fn:ident, $variant:ident, $ty:ty) => {
-        fn $fn(id: u64) -> Result<Arc<$ty>> {
-            match get(id)? {
-                Handle::$variant(v) => Ok(v),
+        fn $fn(id: u64) -> Result<Lease<$ty>> {
+            let held = get(id, false)?;
+            match &held.value {
+                Handle::$variant(v) => Ok(Lease {
+                    value: v.clone(),
+                    _guard: held.guard.clone(),
+                }),
                 _ => Err(invalid("wrong handle type")),
             }
         }
@@ -174,6 +273,41 @@ getter!(usage, Use, Use);
 getter!(allocation, Allocation, Allocation);
 getter!(cache, Cache, Cache);
 getter!(plan, Plan, Plan);
+fn cache_borrow(id: u64) -> Result<Lease<Cache>> {
+    let held = get_access(id, Access::CallbackBorrow)?;
+    match &held.value {
+        Handle::Cache(cache) => Ok(Lease {
+            value: cache.clone(),
+            _guard: held.guard.clone(),
+        }),
+        _ => Err(invalid("wrong handle type")),
+    }
+}
+
+/// Private same-cohort bridge: attach Python's weak callback owner to the ABI's
+/// actual Cache. Public C allocation/layout compatibility does not use this symbol.
+#[doc(hidden)]
+pub fn attach_cache_owner(id: u64, owner: Arc<crate::CacheOwner>) -> crate::Result<()> {
+    let native_error = |failure: Failure| match failure.0 {
+        CAPTURING => Error::CaptureActive,
+        BUSY => Error::Busy,
+        FAULT => Error::Poisoned(failure.1),
+        _ => Error::Invalid("invalid public Cache handle"),
+    };
+    let cache = cache(id).map_err(native_error)?;
+    if owner.device() != cache._gpu.device() {
+        return Err(Error::Invalid("callback owner belongs to another device"));
+    }
+    let mut slot = cache
+        .owner
+        .lock()
+        .map_err(|_| Error::Poisoned("public Cache owner mutex".into()))?;
+    if slot.is_some() {
+        return Err(Error::Invalid("public Cache already has a callback owner"));
+    }
+    *slot = Some(owner);
+    Ok(())
+}
 fn lock<T>(v: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>> {
     v.lock()
         .map_err(|_| Failure(FAULT, "ABI owner mutex poisoned".into(), 0))
@@ -219,6 +353,8 @@ pub unsafe extern "C" fn vr_v1_gpu_open(device: i32, out: *mut u64) -> i32 {
             return Err(invalid("device must be nonnegative"));
         }
         process()?;
+        retirement::start()?;
+        let _retirement = crate::enter_retirement(device)?;
         let mut devices = lock(GPUS.get_or_init(Mutex::default))?;
         let owner = match devices.get(&device).and_then(Weak::upgrade) {
             Some(owner) => owner,
@@ -241,8 +377,12 @@ pub unsafe extern "C" fn vr_v1_gpu_open(device: i32, out: *mut u64) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn vr_v1_gpu_close(id: u64) -> i32 {
     boundary(|| {
-        gpu(id)?;
-        remove(id)
+        let held = get(id, false)?;
+        if !matches!(held.value, Handle::Gpu(_)) {
+            return Err(invalid("wrong handle type"));
+        }
+        drop(held);
+        close_handle(id, false)
     })
 }
 
@@ -318,7 +458,7 @@ pub unsafe extern "C" fn vr_v1_region_from_host(
         let region = gpu.arena.reserve(len)?;
         unsafe {
             out.write(insert(Handle::Region(Arc::new(Weight {
-                gpu,
+                gpu: gpu.clone(),
                 region,
                 bytes: Bytes::Host(bytes),
                 fill: Mutex::new(()),
@@ -343,7 +483,7 @@ pub unsafe extern "C" fn vr_v1_region_new(g: u64, len: u64, source: Source, out:
             owned: AtomicBool::new(false),
         });
         let id = insert(Handle::Region(Arc::new(Weight {
-            gpu,
+            gpu: gpu.clone(),
             region,
             bytes: Bytes::Foreign(source.clone()),
             fill: Mutex::new(()),
@@ -358,8 +498,12 @@ pub unsafe extern "C" fn vr_v1_region_new(g: u64, len: u64, source: Source, out:
 #[unsafe(no_mangle)]
 pub extern "C" fn vr_v1_region_close(id: u64) -> i32 {
     boundary(|| {
-        weight(id)?;
-        remove(id)
+        let held = get(id, false)?;
+        if !matches!(held.value, Handle::Region(_)) {
+            return Err(invalid("wrong handle type"));
+        }
+        drop(held);
+        close_handle(id, false)
     })
 }
 #[unsafe(no_mangle)]
@@ -444,7 +588,7 @@ pub unsafe extern "C" fn vr_v1_use(
         }
         unsafe {
             out.write(insert(Handle::Use(Arc::new(Use {
-                _weights: weights,
+                _weights: weights.iter().map(|w| Arc::clone(w)).collect(),
                 pins: Mutex::new(Some(pins)),
                 stream,
             })))?);
@@ -473,17 +617,12 @@ pub unsafe extern "C" fn vr_v1_use_ptr(id: u64, index: usize, out: *mut u64) -> 
 #[unsafe(no_mangle)]
 pub extern "C" fn vr_v1_done(id: u64) -> i32 {
     boundary(|| {
-        let used = usage(id)?;
-        used._weights[0].gpu.eager(used.stream)?;
-        let pins = lock(&used.pins)?
-            .take()
-            .ok_or_else(|| invalid("use already ended"))?;
-        for pin in pins {
-            unsafe {
-                pin.into_fenced_region(&[used.stream]);
-            }
+        let held = get(id, false)?;
+        if !matches!(held.value, Handle::Use(_)) {
+            return Err(invalid("wrong handle type"));
         }
-        remove(id)
+        drop(held);
+        close_handle(id, false)
     })
 }
 
@@ -516,7 +655,7 @@ pub unsafe extern "C" fn vr_v1_alloc(g: u64, bytes: u64, stream: u64, out: *mut 
         let pointer = working::alloc(gpu.device(), size(bytes)?, stream, None)?;
         unsafe {
             out.write(insert(Handle::Allocation(Arc::new(Allocation {
-                gpu,
+                gpu: gpu.clone(),
                 pointer,
                 stream,
                 live: Mutex::new(true),
@@ -557,16 +696,12 @@ pub extern "C" fn vr_v1_record_stream(id: u64, stream: u64) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn vr_v1_free(id: u64) -> i32 {
     boundary(|| {
-        let a = allocation(id)?;
-        let mut live = lock(&a.live)?;
-        if !*live {
-            return Err(invalid("allocation freed"));
+        let held = get(id, false)?;
+        if !matches!(held.value, Handle::Allocation(_)) {
+            return Err(invalid("wrong handle type"));
         }
-        a.gpu.eager(a.stream)?;
-        working::free(a.gpu.device(), a.pointer, a.stream)?;
-        *live = false;
-        drop(live);
-        remove(id)
+        drop(held);
+        close_handle(id, false)
     })
 }
 
@@ -648,7 +783,7 @@ pub unsafe extern "C" fn vr_v1_cache_new(
         let device = gpu.device();
         let value = Arc::new(Cache {
             storage: working::Cache::new(device, size(reserve)?)?,
-            _gpu: gpu,
+            _gpu: gpu.clone(),
             owner: Mutex::new(None),
         });
         let id = insert(Handle::Cache(value.clone()))?;
@@ -698,7 +833,7 @@ pub unsafe extern "C" fn vr_v1_cache_info(id: u64, out: *mut CacheInfo, out_size
         unsafe {
             output(out)?;
         }
-        let c = cache(id)?;
+        let c = cache_borrow(id)?;
         let s = c.storage.poll()?;
         unsafe {
             out.write(CacheInfo {
@@ -724,7 +859,7 @@ pub extern "C" fn vr_v1_cache_commit(id: u64, offset: u64, bytes: u64) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn vr_v1_cache_release(id: u64, offset: u64, bytes: u64, stream: u64) -> i32 {
     boundary(|| {
-        let c = cache(id)?;
+        let c = cache_borrow(id)?;
         c._gpu.eager(stream)?;
         c.storage.release(size(offset)?, size(bytes)?, stream)?;
         Ok(())
@@ -733,14 +868,12 @@ pub extern "C" fn vr_v1_cache_release(id: u64, offset: u64, bytes: u64, stream: 
 #[unsafe(no_mangle)]
 pub extern "C" fn vr_v1_cache_close(id: u64) -> i32 {
     boundary(|| {
-        let c = cache(id)?;
-        let owner = lock(&c.owner)?.clone();
-        // No binding lock is held while a foreign callback may run or acquire its GIL.
-        if let Some(owner) = owner {
-            owner.close()?;
+        let held = get(id, false)?;
+        if !matches!(held.value, Handle::Cache(_)) {
+            return Err(invalid("wrong handle type"));
         }
-        c.storage.close()?;
-        remove(id)
+        drop(held);
+        close_handle(id, false)
     })
 }
 
@@ -790,14 +923,14 @@ pub unsafe extern "C" fn vr_v1_plan_new(
                 return Err(invalid("plan regions belong to another GPU"));
             }
             definitions.push((name, uses.iter().map(|w| w.region.clone()).collect()));
-            weights.extend(uses);
+            weights.extend(uses.iter().map(|w| Arc::clone(w)));
         }
         let native = crate::plan::Plan::new(gpu.arena.clone(), definitions)?;
         unsafe {
             out.write(insert(Handle::Plan(Arc::new(Plan {
-                gpu,
+                gpu: gpu.clone(),
                 native,
-                _weights: weights,
+                _weights: weights.iter().map(|w| Arc::clone(w)).collect(),
                 phase: Mutex::new(None),
             })))?);
         }
@@ -847,8 +980,12 @@ pub extern "C" fn vr_v1_phase_leave(id: u64, completed: i32) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn vr_v1_plan_close(id: u64) -> i32 {
     boundary(|| {
-        plan(id)?;
-        remove(id)
+        let held = get(id, false)?;
+        if !matches!(held.value, Handle::Plan(_)) {
+            return Err(invalid("wrong handle type"));
+        }
+        drop(held);
+        close_handle(id, false)
     })
 }
 
@@ -917,6 +1054,83 @@ pub unsafe extern "C" fn vr_v1_trim(g: u64, out: *mut u64) -> i32 {
         let weights = crate::reclaim(device, usize::MAX)?.reclaimed_bytes as u64;
         unsafe {
             out.write(working.saturating_add(weights));
+        }
+        Ok(())
+    })
+}
+
+fn close_handle(id: u64, deferred: bool) -> Result<()> {
+    let held = get(id, deferred)?;
+    match &held.value {
+        Handle::Gpu(_) | Handle::Region(_) => {}
+        Handle::Use(used) => {
+            used._weights[0].gpu.eager(used.stream)?;
+            let pins = lock(&used.pins)?
+                .take()
+                .ok_or_else(|| invalid("use already ended"))?;
+            for pin in pins {
+                unsafe {
+                    pin.into_fenced_region(&[used.stream]);
+                }
+            }
+        }
+        Handle::Allocation(a) => {
+            let mut live = lock(&a.live)?;
+            if *live {
+                a.gpu.eager(a.stream)?;
+                working::free(a.gpu.device(), a.pointer, a.stream)?;
+                *live = false;
+            }
+        }
+        Handle::Cache(c) => {
+            let owner = lock(&c.owner)?.clone();
+            if let Some(owner) = owner {
+                if deferred {
+                    owner.defer_close()?;
+                    let facts = owner.facts()?;
+                    if let Some(reason) = facts.retirement_failed {
+                        return Err(Error::Poisoned(reason).into());
+                    }
+                    if !facts.retired {
+                        return Err(Error::Busy.into());
+                    }
+                } else {
+                    owner.close()?;
+                }
+            }
+            // Live Cache pages have no completion proof. Invalid quarantines them;
+            // only submitted pending events may be retried by the deferred worker.
+            c.storage.close()?;
+        }
+        Handle::Plan(p) => {
+            let mut phase = lock(&p.phase)?;
+            if let Some(token) = *phase {
+                working::phase_leave(p.gpu.device(), token, false, None)?;
+                *phase = None;
+            }
+            p.native.deactivate()?;
+        }
+    }
+    remove(id)
+}
+
+/// Transfer a handle to native retirement. Success invalidates the caller's handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn vr_v1_defer_close(id: u64) -> i32 {
+    boundary(|| retirement::defer(id))
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vr_v1_retirement_stats(
+    out: *mut retirement::Stats,
+    out_size: usize,
+) -> i32 {
+    boundary(|| {
+        if out_size != std::mem::size_of::<retirement::Stats>() {
+            return Err(invalid("retirement stats size mismatch"));
+        }
+        unsafe {
+            output(out)?;
+            out.write(retirement::stats()?);
         }
         Ok(())
     })

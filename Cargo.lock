@@ -4595,6 +4595,7 @@ version = "0.1.0"
 name = "varena-mixed-client"
 version = "0.0.0"
 dependencies = [
+ "platform",
  "varena",
  "varena-client",
 ]

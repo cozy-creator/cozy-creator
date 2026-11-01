@@ -53,7 +53,23 @@ Sources may be called again after eviction. C callbacks must initialize every lo
 byte, retain staging through completion even on failure, and never unwind or recursively
 use their own Region. The ABI takes Source ownership only after construction succeeds.
 Final Region retirement uses the existing core's completion rules and can wait; fully
-asynchronous final teardown is not claimed.
+asynchronous Source publication is not claimed. Checked closes retain the same handle
+on refusal. Rust `Use::done`, `Allocation::free` and `Pass::complete` borrow `&mut self`
+so errors remain retryable. Rust/Python finalizers transfer handles to the native
+retirement worker; they do not repeat a refused close and forget its owner.
+
+The worker retries capture/busy and already submitted completion fences. Live Cache
+pages with no release proof and permanent faults enter observable quarantine;
+`retirement_stats()` reports queued/in-flight jobs, completed jobs, quarantine and
+abandoned live Cache bytes. These job counts are not physical-reclamation credits.
+An abandoned Rust Pass whose abort is refused transfers its entire Plan for retirement.
+Use an explicit complete/abort retry if the caller needs to retain that Plan.
+
+Final Arena teardown keeps retirement exclusion through destruction, without holding
+the capture mutex across context synchronization. The complete Arena stays owned on
+failure. Persistent observer references held by Peer and the callback worker still
+require the coordinator's pending native retirement interface; P4 neither forces
+reference counts nor stops a surviving shared service to bypass that requirement.
 
 Streams must belong to the GPU's primary context and remain live through every retained
 Use/allocation. Stream 0 means the legacy default stream, not an arbitrary current Torch
@@ -61,6 +77,9 @@ stream. Public operations reject observed capture/replay; direct raw CUDA captur
 Varena's registered graph integration is unsupported. No raw pointer or escaped tensor
 may outlive its owning Use/allocation/cache pages. GPU mutation of immutable weights,
 training, arbitrary escaped storage aliases, reset, fork and private contexts are unsupported.
+Borrowed streams must survive deferred retirement too. Use checked close/retry or wait
+for retirement to drain before destroying a foreign stream. This is part of the unsafe
+Rust stream-import and raw C/Python stream contracts.
 
 Working frees retain their original stream and record every declared side consumer.
 Free does not mean physical release has completed. Cache releases require the owner to
@@ -69,9 +88,13 @@ unmapped, page-aligned ranges. Release/poll/recommit supports interior holes. A 
 callback runs on the native worker without allocator/ledger locks; returning Busy/false
 declines. Requested bytes and callbacks returning do not count as reclaimed bytes.
 Close first excludes/drains callbacks, then refuses live or pending pages, keeping the
-handle retryable. Do not close from inside your own callback. Python CDLL calls release
-the GIL while draining; CFUNCTYPE acquires it on the callback worker. Use explicit close
+handle retryable. Do not close from inside your own callback. Python calls release
+the GIL while draining; the native weak adapter acquires it on the callback worker. Use explicit close
 before interpreter shutdown; closures should not strongly capture their own Cache.
+Python now uses the existing weak PyO3 callback adapter, attached to the same native ABI
+Cache owner; no raw Python CFUNCTYPE callback survives interpreter shutdown. Both checked
+and deferred close stop admission and drain that owner. Only its already-running callback
+may use the release/read borrow during queued retirement; new commits remain rejected.
 
 Statuses preserve `Exhausted` (requested bytes available), `Capturing`, `SourceError`,
 `Fault`, `Invalid`, `Unsupported` and `Busy`. Python has matching exception classes;
@@ -96,6 +119,13 @@ allocator copy. Native-first and Python-first load orders are covered by the mix
 The public C ABI does not depend on a Rust compiler. The internal Rust link used by
 TensorFS is built as one cohort with its exact dependency and matching `libstd`.
 
+Before extension import, Python compares the bundled and loaded native image identities
+(ELF build ID, Mach-O UUID or PE CodeView identity). It retains a loader reference and
+validates the canonical object again after acquisition, including concurrent package/native
+loads. An incompatible private dependency is refused before importing `_ext`; a second
+allocator is not a recovery path. This is local private Rust binary compatibility, not
+Runtime/Cozy commit lockstep. An older compiled C client can still bind a compatible C ABI.
+
 Do not build the core separately as a primary Cargo target and then package it with an
 existing extension: Cargo selects a different Rust dependency-linkage mode. The bundle
 uses `target/<profile>/deps/libvarena.so`, the actual extension dependency. Rust internals
@@ -115,18 +145,33 @@ orders, checks one mapped core, shared error state, per-thread error isolation a
 native request sequence. It also executes the C/Rust host paths and `tfs version`.
 This is real host execution, **not allocation, CUDA or model qualification**.
 
-For a production-shaped Linux wheel, use the existing `crates/tensorfs-py/scripts/build-wheel.sh`
+For a production-shaped wheel, use `crates/tensorfs-py/scripts/build-wheel.sh`
 and `--torch-python` when a Torch shim is needed. The final bundle preserves the
 `libvarena.so` SONAME instead of an auditwheel hash rename. It installs shared libraries
 at `<prefix>/lib/varena-v1` and the header at `<prefix>/include/varena/v1/varena.h`;
 both native `tfs` and Python load those files. No compiler/toolchain is required after
 installation. macOS/Windows packaging, ABI cohorts and GPU execution remain unqualified.
 
-Release integration is still required: the `cozy` CLI/TensorD also depend transitively
-on Varena and their archives now need the shared core/runtime. This task does not modify
-the coordinator's release workflow. Existing CI/PEP 517 paths that call maturin directly
-must adopt the same bundling before publishing; a raw maturin wheel is not the supported
-P4 artifact. The documented SDK and bundled Linux wheel are the current install paths.
+Native dependencies are now included by build.rs/maturin, without post-build core
+replacement. PEP 517 builds stage the CLI automatically. Direct maturin builds use the
+existing CLI prebuild step (`python backend/stage_cli.py <matching build options>`);
+the CI paths now build the complete cohort and audit the completed Linux wheel's floor.
+Target/profile/features, including equals-form options and `-F`, are forwarded to the
+CLI prebuild. Windows source builders need file-symlink capability; the unsafe stale
+hard-link fallback is rejected. Windows/macOS execution qualification remains separate.
+
+`scripts/bundle-native.py` packages native cozy/TensorD archives with immutable private
+library names and final dependency receipts before signing. Installers, native release
+extraction and machine update staging carry those libraries before replacing the binary.
+Old library files remain for running owners and rollback. A raw installed private-linked
+binary is automatically packed with its verified adjacent dependencies for a dev update.
+No live installation/update or publication is performed by the P4 qualification scripts.
+
+Rollout must first deliver the library-aware updater changes to an existing static cozy
+cohort, or use the updated installer. Older deployed updaters extract only the executable
+and will refuse a new dynamic binary before replacement; this source change cannot add
+dependency support to an already-running older updater. The updater patch is kept separate
+for coordinator integration. No Runtime version or source SHA equality is required.
 
 ## Runnable GPU examples
 

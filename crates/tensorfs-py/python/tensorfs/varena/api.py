@@ -12,7 +12,6 @@ import ctypes as C
 import operator
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
-from itertools import count
 
 from .. import _ext
 
@@ -85,6 +84,13 @@ class _CacheInfo(C.Structure):
     ]
 
 
+class _RetirementStats(C.Structure):
+    _fields_ = [
+        (name, _u)
+        for name in ("queued", "retired", "quarantined", "abandoned_cache_bytes")
+    ]
+
+
 class _Stats(C.Structure):
     _fields_ = [
         (name, _u)
@@ -129,7 +135,9 @@ _declare("abi_version", [], C.c_uint32)
 _declare("core_identity", [], _u)
 _declare("last_error", [], C.c_char_p)
 _declare("error_requested_bytes", [], _u)
+_declare("retirement_stats", [C.POINTER(_RetirementStats), C.c_size_t])
 for _name, _args in {
+    "defer_close": [_u],
     "gpu_open": [C.c_int32, _h],
     "gpu_close": [_u],
     "region_from_host": [_u, C.c_void_p, C.c_size_t, _h],
@@ -167,6 +175,13 @@ if (
 
 def core_identity() -> int:
     return _lib.vr_v1_core_identity()
+
+
+def retirement_stats() -> dict[str, int]:
+    """Deferred work includes in-flight jobs; live Cache abandonment is explicit."""
+    value = _RetirementStats()
+    _call("retirement_stats", C.byref(value), C.sizeof(value))
+    return _fields(value)
 
 
 def _call(name: str, *args) -> None:
@@ -210,6 +225,11 @@ class _Owned:
             _call(self._close, self._handle)
             self._handle = 0
 
+    def defer_close(self) -> None:
+        if self._handle:
+            _call("defer_close", self._handle)
+            self._handle = 0
+
     def __enter__(self):
         if not self._handle:
             raise Invalid("handle is closed")
@@ -219,9 +239,9 @@ class _Owned:
         self.close()
 
     def __del__(self) -> None:
-        # Native failure retains the exact owner/backing, never invents completion.
+        # Nonblocking ownership transfer, including temporary capture/event refusal.
         with suppress(Error, AttributeError):
-            self.close()
+            self.defer_close()
 
 
 class Gpu(_Owned):
@@ -257,20 +277,24 @@ class Gpu(_Owned):
         self, reserve: int, shrink: Callable[[CacheView, int], bool] | None = None
     ) -> Cache:
         reserve = _uint(reserve)
-        if shrink is None:
-            descriptor = _Shrinker()
-            return Cache(_new("cache_new", self._handle, reserve, descriptor), self)
-        # C owns this callback until its native retirement calls _drop. No bound
-        # method of Cache is retained here; closures should not capture their Cache.
-        context = next(_callback_ids)
-        _callbacks[context] = (shrink, self)
-        descriptor = _Shrinker(_shrink, _drop, context)
-        try:
-            handle = _new("cache_new", self._handle, reserve, descriptor)
-        except BaseException:
-            _callbacks.pop(context, None)
-            raise
-        return Cache(handle, self)
+        handle = _new("cache_new", self._handle, reserve, _Shrinker())
+        cache = Cache(handle, self)
+        if shrink is not None:
+            # Reuse the native weak PyO3 callback adapter. It uses try_attach during
+            # interpreter shutdown; no raw CFUNCTYPE callback can outlive Python.
+            cache._callback = lambda requested: shrink(
+                CacheView(handle, self), requested
+            )
+            try:
+                cache._owner = _ext._varena_public_cache_owner(
+                    handle, self.device, cache._callback
+                )
+            except _ext.CacheOwnerDeferredError as error:
+                exception = (
+                    Capturing if getattr(error, "reason", "") == "capture" else Busy
+                )
+                raise exception(str(error)) from error
+        return cache
 
     def plan(self, phases: Mapping[str, Sequence[Region]]) -> Plan:
         names = [_text(name) for name in phases]
@@ -353,6 +377,15 @@ class Cache(_Owned, CacheView):
     def __init__(self, handle: int, gpu: Gpu) -> None:
         _Owned.__init__(self, handle)
         self.gpu = gpu
+        self._callback = None
+        self._owner = None
+
+    def close(self) -> None:
+        # The ABI Cache retains/drains the same native weak callback owner, including
+        # deferred finalization. Explicit close refusal keeps all Python owners here.
+        super().close()
+        self._owner = None
+        self._callback = None
 
     def commit(self, offset: int, bytes: int) -> None:
         _call("cache_commit", self._handle, _uint(offset), _uint(bytes))
@@ -375,21 +408,3 @@ class Plan(_Owned):
             raise
         else:
             _call("phase_leave", self._handle, 1)
-
-
-_callback_ids = count(1)
-_callbacks: dict[int, tuple[Callable[[CacheView, int], bool], Gpu]] = {}
-
-
-@_shrink_type
-def _shrink(context: int, handle: int, bytes: int) -> int:
-    try:
-        callback, gpu = _callbacks[context]
-        return 0 if callback(CacheView(handle, gpu), bytes) else 7
-    except BaseException:  # noqa: BLE001 - exceptions must never escape a C callback
-        return 3
-
-
-@_drop_type
-def _drop(context: int) -> None:
-    _callbacks.pop(context, None)

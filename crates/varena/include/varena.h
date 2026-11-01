@@ -14,7 +14,8 @@ extern "C" {
 /* ABI 1: fixed-width statuses and non-reused opaque handles. No CUDA SDK needed.
  * Streams/pointers are CUDA primary-context handles represented as uint64_t.
  * Zero is the legacy default stream. Handles are process-local; fork is unsupported.
- * Functions are thread-safe; close must not race use of a raw device pointer.
+ * Calls on live handles are thread-safe. Each handle has one owning caller: serialize
+ * its close/ownership-transfer calls; close must not race use of a raw device pointer.
  * Caller buffers/UTF-8 strings must be valid for the call. Callbacks must not unwind.
  * ABI 1 layouts never grow: a different layout/symbol requires a new ABI version.
  */
@@ -35,6 +36,15 @@ VR_API uint64_t vr_v1_core_identity(void);
  * the next failing call. Requested bytes are meaningful for VR_EXHAUSTED only. */
 VR_API const char *vr_v1_last_error(void);
 VR_API uint64_t vr_v1_error_requested_bytes(void);
+/* Finalizers transfer, never silently discard a refused handle. Success invalidates
+ * the caller's handle. Native retirement retries Capture/Busy/submitted fences off
+ * the allocator stack. Live Cache pages and permanent faults are quarantined, not
+ * freed or retried forever. Checked closes retain the same handle on every refusal. */
+VR_API vr_status vr_v1_defer_close(vr_handle);
+typedef struct {
+    uint64_t queued, retired, quarantined, abandoned_cache_bytes;
+} vr_retirement_stats_v1;
+VR_API vr_status vr_v1_retirement_stats(vr_retirement_stats_v1 *out, size_t out_size);
 /* Constructors zero their output first; failed constructors retain caller ownership. */
 VR_API vr_status vr_v1_gpu_open(int32_t device, vr_handle *out);
 VR_API vr_status vr_v1_gpu_close(vr_handle gpu); /* children retain GPU ownership */
@@ -61,7 +71,9 @@ VR_API vr_status vr_v1_use_ptr(vr_handle use, size_t index, uint64_t *out);
 VR_API vr_status vr_v1_done(vr_handle use);
 
 /* Working memory: free consumes the allocation handle on success. Its allocation
- * stream must remain alive through free; side streams require record_stream first.
+ * stream must remain alive through free and any deferred retirement; side streams
+ * require record_stream first. Use checked close/retry, or drain retirement before
+ * destroying a borrowed stream.
  * Free is stream ordered, not proof of physical reclamation. */
 VR_API vr_status vr_v1_alloc(vr_handle gpu, uint64_t bytes, uint64_t stream, vr_handle *out);
 VR_API vr_status vr_v1_allocation_ptr(vr_handle, uint64_t *out);

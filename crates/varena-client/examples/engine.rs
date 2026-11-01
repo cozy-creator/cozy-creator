@@ -23,9 +23,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         regions: &[&weights],
     }])?;
     for _ in 0..2 {
-        let pass = plan.phase("decode", "bytes/4/copy/eager")?;
-        let used = gpu.use_regions(&[&weights], &stream)?;
-        let scratch = gpu.alloc(4096, &stream)?;
+        let mut pass = plan.phase("decode", "bytes/4/copy/eager")?;
+        let mut used = gpu.use_regions(&[&weights], &stream)?;
+        let mut scratch = gpu.alloc(4096, &stream)?;
         println!("weights={:#x} scratch={:#x}", used.ptr(0)?, scratch.ptr()?);
         scratch.free()?;
         used.done()?;
