@@ -238,12 +238,13 @@ async fn open(State(api): State<Arc<Api>>, body: Result<Bytes, BytesRejection>) 
         }
         false => holding(&open.path).map_err(Refusal)?,
     };
-    let id = api.projects.open(&api, &dir).map_err(Refusal)?;
-    let entry = Entry { path: dir.clone(), used_at_ms: now_ms(), walking: false };
+    // Indexed first: a walk this open starts records itself there.
+    let (id, used_at_ms) = (project_id(&dir), now_ms());
     indexed(&api, true, |index| {
         let walking = index.projects.get(&id).is_some_and(|known| known.walking);
-        index.projects.insert(id.clone(), Entry { walking, ..entry });
+        index.projects.insert(id.clone(), Entry { path: dir.clone(), used_at_ms, walking });
     });
+    api.projects.open(&api, &dir).map_err(Refusal)?;
     Ok(Json(Opened { id, path: dir }))
 }
 
@@ -324,10 +325,10 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
         ),
     };
     warnings.dedup();
-    let (mut missing, mut stale) = (vec![], vec![]);
+    let (mut missing, mut stale, status) = (vec![], vec![], video.graph.status(&lock));
     let nodes = (video.graph.order.iter())
         .map(|&i| {
-            let (row, standing) = row(&video, &lock, i, &beatless);
+            let (row, standing) = row(&video, &lock, &status, i, &beatless);
             match standing {
                 Standing::Missing => missing.push(row.name.clone()),
                 Standing::Stale(why) => stale.push(Stale { name: row.name.clone(), why }),
@@ -366,10 +367,9 @@ enum Standing {
 }
 
 /// Node `i` as `GET /v1/projects/{id}` lists it: its approved version, assets and status in its own
-/// noun (`beatless`: the lines naming shots that need beats).
-fn row(video: &Video, lock: &Lock, i: usize, beatless: &[String]) -> (Row, Standing) {
-    let node = &video.graph.nodes[i];
-    let status = &video.graph.status(lock)[i];
+/// noun (`status`: every node's; `beatless`: the lines naming shots that need beats).
+fn row(video: &Video, lock: &Lock, status: &[Status], i: usize, beatless: &[String]) -> (Row, Standing) {
+    let (node, status) = (&video.graph.nodes[i], &status[i]);
     let making: Vec<String> = (lock.pending.values())
         .filter(|p| name_key(&p.made.node) == name_key(&node.id) && p.run > 0)
         .map(|p| p.run.to_string())
@@ -430,7 +430,7 @@ async fn node(
     let project = api.projects.get(&api, &id)?;
     let (video, lock) = (Video::load(&project.folder).map_err(Refusal)?, project.folder.lock().map_err(Refusal)?);
     let i = find(&video, &name).map_err(Refusal)?;
-    let (node, _) = row(&video, &lock, i, &[]);
+    let (node, _) = row(&video, &lock, &video.graph.status(&lock), i, &[]);
     let approved = lock.node(&node.name).and_then(|n| n.approved.clone());
     let versions = (lock.node(&node.name).into_iter().flat_map(|n| &n.versions).enumerate())
         .map(|(n, made)| Version {
