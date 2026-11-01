@@ -191,7 +191,7 @@ impl Client {
         loop {
             let answer = self.send(&build).await?;
             let ignored = answer.headers().get(IGNORED_FIELDS).and_then(|v| v.to_str().ok()).map(str::to_owned);
-            let lacks = match lacks(answer).await? {
+            let lacks = match self.lacks(answer).await? {
                 Ok(body) => match serde_json::from_slice::<T>(&body) {
                     Ok(value) => {
                         if let Some(fields) = ignored {
@@ -221,7 +221,7 @@ impl Client {
             if answer.status() != StatusCode::NOT_FOUND {
                 return ok(answer).await;
             }
-            let lacks = match lacks(answer).await? {
+            let lacks = match self.lacks(answer).await? {
                 Ok(_) => unreachable!("a 404 is never an answer"),
                 Err(lacks) => lacks,
             };
@@ -229,6 +229,22 @@ impl Client {
                 return Err(self.outdated(&lacks));
             }
             restarted = true;
+        }
+    }
+
+    /// An answer's body when it succeeded; `Err(lacks)` when it shows Calcifer is older than this
+    /// cozy: a route it does not serve, or (from a Calcifer of another version) a request body it
+    /// cannot read, which is this cozy's newer shape. Any other refusal is the outer error.
+    async fn lacks(&self, answer: Response) -> Result<Result<Vec<u8>, String>, Error> {
+        if answer.status().is_success() {
+            return Ok(Ok(answer.bytes().await.map_err(unreachable)?.to_vec()));
+        }
+        let refusal = envelope(answer).await;
+        let other = self.holder().is_some_and(|h| h.version != env!("CARGO_PKG_VERSION"));
+        match refusal.code.as_str() {
+            "unknown_route" => Ok(Err(refusal.message.replacen("Calcifer serves", "serves", 1))),
+            "body_invalid" if other => Ok(Err(format!("cannot read this request ({})", refusal.message))),
+            _ => Err(refusal),
         }
     }
 
@@ -963,18 +979,6 @@ async fn ok(answer: Response) -> Result<Response, Error> {
     }
 }
 
-/// An answer's body when it succeeded; `Err(lacks)` when it shows Calcifer is older than this cozy
-/// (a route it does not serve); any other refusal as the outer error.
-async fn lacks(answer: Response) -> Result<Result<Vec<u8>, String>, Error> {
-    if answer.status().is_success() {
-        return Ok(Ok(answer.bytes().await.map_err(unreachable)?.to_vec()));
-    }
-    let refusal = envelope(answer).await;
-    match refusal.code.as_str() {
-        "unknown_route" => Ok(Err(refusal.message.replacen("Calcifer serves", "serves", 1))),
-        _ => Err(refusal),
-    }
-}
 
 async fn decode<T: DeserializeOwned>(answer: Response) -> Result<T, Error> {
     let answer = ok(answer).await?;
