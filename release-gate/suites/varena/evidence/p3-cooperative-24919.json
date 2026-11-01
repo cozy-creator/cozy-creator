@@ -1,0 +1,988 @@
+{
+  "cases": {
+    "capture": {
+      "ask": {
+        "aborted": false,
+        "completed": 0,
+        "donations": [
+          {
+            "answer": "Waiting",
+            "completed": 0,
+            "held_at_ask": 67108864,
+            "owner": {
+              "incarnation": 1,
+              "slot": 0
+            },
+            "pending": 0,
+            "requested": 50331648
+          }
+        ],
+        "finished": false,
+        "generation": 35,
+        "requested": 50331648,
+        "requester": {
+          "incarnation": 2,
+          "slot": 1
+        },
+        "sample_generation": 34
+      },
+      "result": {
+        "accounting": {
+          "pending_release": 0,
+          "physical": {
+            "caches": {
+              "idle": 0,
+              "live": 0,
+              "pending": 0
+            },
+            "graph_pools": {
+              "idle": 2097152,
+              "live": 0,
+              "pending": 0
+            },
+            "total": 35651584,
+            "weights": {
+              "idle": 16777216,
+              "live": 8388608,
+              "pending": 0
+            },
+            "working": {
+              "idle": 0,
+              "live": 8388608,
+              "pending": 0
+            }
+          },
+          "reclaimable": 16777216,
+          "refreshed": false
+        },
+        "after_guard_or_owner_completion": {
+          "accounting": {
+            "pending_release": 0,
+            "physical": {
+              "caches": {
+                "idle": 0,
+                "live": 0,
+                "pending": 0
+              },
+              "graph_pools": {
+                "idle": 0,
+                "live": 0,
+                "pending": 0
+              },
+              "total": 16777216,
+              "weights": {
+                "idle": 0,
+                "live": 8388608,
+                "pending": 0
+              },
+              "working": {
+                "idle": 0,
+                "live": 8388608,
+                "pending": 0
+              }
+            },
+            "reclaimable": 0,
+            "refreshed": true
+          },
+          "completed": 18874368,
+          "deferred": false,
+          "native_after": {
+            "allocated_bytes": 8388608,
+            "allocated_capacity": 8388608,
+            "allocated_peak": 92274688,
+            "allocations": 13,
+            "context_joins": 1,
+            "driver_memory_calls": 59,
+            "event_handles": 0,
+            "event_queries": 20,
+            "event_records": 15,
+            "event_waits": 0,
+            "free_bytes": 0,
+            "frees": 12,
+            "mapped_bytes": 8388608,
+            "mapped_peak": 92274688,
+            "ooms": 0,
+            "pending_bytes": 0,
+            "pools": 0,
+            "pools_bytes": 0,
+            "prefetch_admissions": 0,
+            "prefetch_attempts": 0,
+            "prefetch_declines": 0,
+            "reclaimable_bytes": 0,
+            "unassigned_bytes": 0
+          },
+          "native_before": {
+            "allocated_bytes": 8388608,
+            "allocated_capacity": 8388608,
+            "allocated_peak": 92274688,
+            "allocations": 13,
+            "context_joins": 1,
+            "driver_memory_calls": 57,
+            "event_handles": 3,
+            "event_queries": 15,
+            "event_records": 15,
+            "event_waits": 0,
+            "free_bytes": 1048576,
+            "frees": 12,
+            "mapped_bytes": 10485760,
+            "mapped_peak": 92274688,
+            "ooms": 0,
+            "pending_bytes": 1048576,
+            "pools": 1,
+            "pools_bytes": 2097152,
+            "prefetch_admissions": 0,
+            "prefetch_attempts": 0,
+            "prefetch_declines": 0,
+            "reclaimable_bytes": 0,
+            "unassigned_bytes": 0
+          },
+          "pending": 0,
+          "released": 18874368,
+          "round": 35
+        },
+        "capture_and_replay_guard_cuda_calls": 0,
+        "completed": 0,
+        "deferred": true,
+        "pending": 0,
+        "released": 0,
+        "round": 35
+      }
+    },
+    "completed_exchange": {
+      "before": {
+        "pending_release": 0,
+        "physical": {
+          "caches": {
+            "idle": 0,
+            "live": 0,
+            "pending": 0
+          },
+          "graph_pools": {
+            "idle": 0,
+            "live": 0,
+            "pending": 0
+          },
+          "total": 67108864,
+          "weights": {
+            "idle": 16777216,
+            "live": 8388608,
+            "pending": 0
+          },
+          "working": {
+            "idle": 33554432,
+            "live": 8388608,
+            "pending": 0
+          }
+        },
+        "reclaimable": 50331648,
+        "refreshed": true
+      },
+      "duplicate": {
+        "accounting": null,
+        "completed": 50331648,
+        "deferred": false,
+        "native_after": {
+          "allocated_bytes": 8388608,
+          "allocated_capacity": 8388608,
+          "allocated_peak": 41943040,
+          "allocations": 3,
+          "context_joins": 0,
+          "driver_memory_calls": 14,
+          "event_handles": 0,
+          "event_queries": 2,
+          "event_records": 2,
+          "event_waits": 0,
+          "free_bytes": 0,
+          "frees": 2,
+          "mapped_bytes": 8388608,
+          "mapped_peak": 41943040,
+          "ooms": 0,
+          "pending_bytes": 0,
+          "pools": 0,
+          "pools_bytes": 0,
+          "prefetch_admissions": 0,
+          "prefetch_attempts": 0,
+          "prefetch_declines": 0,
+          "reclaimable_bytes": 0,
+          "unassigned_bytes": 0
+        },
+        "native_before": {
+          "allocated_bytes": 8388608,
+          "allocated_capacity": 8388608,
+          "allocated_peak": 41943040,
+          "allocations": 3,
+          "context_joins": 0,
+          "driver_memory_calls": 14,
+          "event_handles": 0,
+          "event_queries": 2,
+          "event_records": 2,
+          "event_waits": 0,
+          "free_bytes": 0,
+          "frees": 2,
+          "mapped_bytes": 8388608,
+          "mapped_peak": 41943040,
+          "ooms": 0,
+          "pending_bytes": 0,
+          "pools": 0,
+          "pools_bytes": 0,
+          "prefetch_admissions": 0,
+          "prefetch_attempts": 0,
+          "prefetch_declines": 0,
+          "reclaimable_bytes": 0,
+          "unassigned_bytes": 0
+        },
+        "pending": 0,
+        "released": 0,
+        "round": 9
+      },
+      "given": {
+        "accounting": {
+          "pending_release": 0,
+          "physical": {
+            "caches": {
+              "idle": 0,
+              "live": 0,
+              "pending": 0
+            },
+            "graph_pools": {
+              "idle": 0,
+              "live": 0,
+              "pending": 0
+            },
+            "total": 16777216,
+            "weights": {
+              "idle": 0,
+              "live": 8388608,
+              "pending": 0
+            },
+            "working": {
+              "idle": 0,
+              "live": 8388608,
+              "pending": 0
+            }
+          },
+          "reclaimable": 0,
+          "refreshed": true
+        },
+        "completed": 50331648,
+        "deferred": false,
+        "native_after": {
+          "allocated_bytes": 8388608,
+          "allocated_capacity": 8388608,
+          "allocated_peak": 41943040,
+          "allocations": 3,
+          "context_joins": 0,
+          "driver_memory_calls": 14,
+          "event_handles": 0,
+          "event_queries": 2,
+          "event_records": 2,
+          "event_waits": 0,
+          "free_bytes": 0,
+          "frees": 2,
+          "mapped_bytes": 8388608,
+          "mapped_peak": 41943040,
+          "ooms": 0,
+          "pending_bytes": 0,
+          "pools": 0,
+          "pools_bytes": 0,
+          "prefetch_admissions": 0,
+          "prefetch_attempts": 0,
+          "prefetch_declines": 0,
+          "reclaimable_bytes": 0,
+          "unassigned_bytes": 0
+        },
+        "native_before": {
+          "allocated_bytes": 8388608,
+          "allocated_capacity": 8388608,
+          "allocated_peak": 41943040,
+          "allocations": 3,
+          "context_joins": 0,
+          "driver_memory_calls": 12,
+          "event_handles": 1,
+          "event_queries": 2,
+          "event_records": 2,
+          "event_waits": 0,
+          "free_bytes": 33554432,
+          "frees": 2,
+          "mapped_bytes": 41943040,
+          "mapped_peak": 41943040,
+          "ooms": 0,
+          "pending_bytes": 0,
+          "pools": 0,
+          "pools_bytes": 0,
+          "prefetch_admissions": 0,
+          "prefetch_attempts": 0,
+          "prefetch_declines": 0,
+          "reclaimable_bytes": 33554432,
+          "unassigned_bytes": 0
+        },
+        "pending": 0,
+        "released": 50331648,
+        "round": 9
+      },
+      "requester": {
+        "actual_driver_before": {
+          "attributable": false,
+          "capacity_epoch": 9,
+          "driver_used": 1604124672,
+          "generation": 13,
+          "observed_at": 1152923226090410,
+          "reserve": null,
+          "total": 25252724736
+        },
+        "actual_driver_during": {
+          "attributable": false,
+          "capacity_epoch": 9,
+          "driver_used": 1637679104,
+          "generation": 14,
+          "observed_at": 1152923256322344,
+          "reserve": null,
+          "total": 25252724736
+        },
+        "allocated_and_checked": 33554432
+      },
+      "round": {
+        "aborted": false,
+        "completed": 0,
+        "donations": [
+          {
+            "answer": "Waiting",
+            "completed": 0,
+            "held_at_ask": 67108864,
+            "owner": {
+              "incarnation": 1,
+              "slot": 0
+            },
+            "pending": 0,
+            "requested": 50331648
+          }
+        ],
+        "finished": false,
+        "generation": 9,
+        "requested": 50331648,
+        "requester": {
+          "incarnation": 2,
+          "slot": 1
+        },
+        "sample_generation": 8
+      },
+      "sample": {
+        "attributable": false,
+        "capacity_epoch": 7,
+        "driver_used": 1654456320,
+        "generation": 8,
+        "observed_at": 1152923209458292,
+        "reserve": null,
+        "total": 25252724736
+      }
+    },
+    "explicit_close": {
+      "new_owner": {
+        "incarnation": 3,
+        "slot": 0
+      },
+      "pending_release": 0,
+      "physical": {
+        "caches": {
+          "idle": 0,
+          "live": 0,
+          "pending": 0
+        },
+        "graph_pools": {
+          "idle": 0,
+          "live": 0,
+          "pending": 0
+        },
+        "total": 0,
+        "weights": {
+          "idle": 0,
+          "live": 0,
+          "pending": 0
+        },
+        "working": {
+          "idle": 0,
+          "live": 0,
+          "pending": 0
+        }
+      },
+      "previous_owner": {
+        "incarnation": 1,
+        "slot": 0
+      },
+      "reclaimable": 0,
+      "refreshed": true
+    },
+    "gc_during_capture": {
+      "active": {
+        "gc_active": true,
+        "later_cleanup_task_completed": true,
+        "owner": {
+          "incarnation": 3,
+          "slot": 0
+        }
+      },
+      "retired": {
+        "gc_retained_through_capture_then_released": true,
+        "new_owner": {
+          "incarnation": 4,
+          "slot": 0
+        },
+        "pending_release": 0,
+        "physical": {
+          "caches": {
+            "idle": 0,
+            "live": 0,
+            "pending": 0
+          },
+          "graph_pools": {
+            "idle": 0,
+            "live": 0,
+            "pending": 0
+          },
+          "total": 0,
+          "weights": {
+            "idle": 0,
+            "live": 0,
+            "pending": 0
+          },
+          "working": {
+            "idle": 0,
+            "live": 0,
+            "pending": 0
+          }
+        },
+        "previous_owner": {
+          "incarnation": 3,
+          "slot": 0
+        },
+        "reclaimable": 0,
+        "refreshed": true
+      },
+      "table_during_capture": {
+        "backing_device": 111,
+        "backing_inode": 30,
+        "capacity_epoch": 41,
+        "generation": 57,
+        "owner": {
+          "incarnation": 2,
+          "slot": 1
+        },
+        "round": {
+          "aborted": false,
+          "completed": 8388608,
+          "donations": [
+            {
+              "answer": "OwnerGone",
+              "completed": 8388608,
+              "held_at_ask": 8388608,
+              "owner": {
+                "incarnation": 1,
+                "slot": 0
+              },
+              "pending": 0,
+              "requested": 8388608
+            }
+          ],
+          "finished": true,
+          "generation": 49,
+          "requested": 8388608,
+          "requester": {
+            "incarnation": 2,
+            "slot": 1
+          },
+          "sample_generation": 48
+        },
+        "rows": [
+          {
+            "id": {
+              "incarnation": 3,
+              "slot": 0
+            },
+            "last_use": 1152924010521276,
+            "physical": {
+              "caches": {
+                "idle": 0,
+                "live": 0,
+                "pending": 0
+              },
+              "graph_pools": {
+                "idle": 0,
+                "live": 0,
+                "pending": 0
+              },
+              "total": 67108864,
+              "weights": {
+                "idle": 16777216,
+                "live": 8388608,
+                "pending": 0
+              },
+              "working": {
+                "idle": 33554432,
+                "live": 8388608,
+                "pending": 0
+              }
+            },
+            "pid": 1183,
+            "priority": -10,
+            "reclaimable": 50331648,
+            "sharing": "Shared",
+            "start_ticks": 115292120
+          },
+          {
+            "id": {
+              "incarnation": 2,
+              "slot": 1
+            },
+            "last_use": 0,
+            "physical": {
+              "caches": {
+                "idle": 0,
+                "live": 0,
+                "pending": 0
+              },
+              "graph_pools": {
+                "idle": 0,
+                "live": 0,
+                "pending": 0
+              },
+              "total": 0,
+              "weights": {
+                "idle": 0,
+                "live": 0,
+                "pending": 0
+              },
+              "working": {
+                "idle": 0,
+                "live": 0,
+                "pending": 0
+              }
+            },
+            "pid": 1192,
+            "priority": 10,
+            "reclaimable": 0,
+            "sharing": "Shared",
+            "start_ticks": 115292219
+          }
+        ],
+        "sample": {
+          "attributable": false,
+          "capacity_epoch": 33,
+          "driver_used": 1616707584,
+          "generation": 48,
+          "observed_at": 1152924001319953,
+          "reserve": null,
+          "total": 25252724736
+        },
+        "scope": {
+          "boot": [
+            191,
+            171,
+            181,
+            100,
+            88,
+            25,
+            75,
+            252,
+            149,
+            217,
+            174,
+            89,
+            149,
+            156,
+            150,
+            212
+          ],
+          "mount_namespace": 4026534090,
+          "pid_namespace": 4026534093,
+          "uid": 0,
+          "user_namespace": 4026533603
+        }
+      }
+    },
+    "owner-drop": {
+      "ask": {
+        "aborted": false,
+        "completed": 0,
+        "donations": [
+          {
+            "answer": "Waiting",
+            "completed": 0,
+            "held_at_ask": 67108864,
+            "owner": {
+              "incarnation": 1,
+              "slot": 0
+            },
+            "pending": 0,
+            "requested": 50331648
+          }
+        ],
+        "finished": false,
+        "generation": 44,
+        "requested": 50331648,
+        "requester": {
+          "incarnation": 2,
+          "slot": 1
+        },
+        "sample_generation": 43
+      },
+      "result": {
+        "accounting": {
+          "pending_release": 0,
+          "physical": {
+            "caches": {
+              "idle": 0,
+              "live": 0,
+              "pending": 0
+            },
+            "graph_pools": {
+              "idle": 0,
+              "live": 0,
+              "pending": 0
+            },
+            "total": 16777216,
+            "weights": {
+              "idle": 8388608,
+              "live": 0,
+              "pending": 0
+            },
+            "working": {
+              "idle": 0,
+              "live": 8388608,
+              "pending": 0
+            }
+          },
+          "reclaimable": 8388608,
+          "refreshed": true
+        },
+        "after_guard_or_owner_completion": {
+          "accounting": null,
+          "completed": 50331648,
+          "deferred": false,
+          "native_after": {
+            "allocated_bytes": 8388608,
+            "allocated_capacity": 8388608,
+            "allocated_peak": 92274688,
+            "allocations": 15,
+            "context_joins": 1,
+            "driver_memory_calls": 69,
+            "event_handles": 0,
+            "event_queries": 22,
+            "event_records": 17,
+            "event_waits": 0,
+            "free_bytes": 0,
+            "frees": 14,
+            "mapped_bytes": 8388608,
+            "mapped_peak": 92274688,
+            "ooms": 0,
+            "pending_bytes": 0,
+            "pools": 0,
+            "pools_bytes": 0,
+            "prefetch_admissions": 0,
+            "prefetch_attempts": 0,
+            "prefetch_declines": 0,
+            "reclaimable_bytes": 0,
+            "unassigned_bytes": 0
+          },
+          "native_before": {
+            "allocated_bytes": 8388608,
+            "allocated_capacity": 8388608,
+            "allocated_peak": 92274688,
+            "allocations": 15,
+            "context_joins": 1,
+            "driver_memory_calls": 69,
+            "event_handles": 0,
+            "event_queries": 22,
+            "event_records": 17,
+            "event_waits": 0,
+            "free_bytes": 0,
+            "frees": 14,
+            "mapped_bytes": 8388608,
+            "mapped_peak": 92274688,
+            "ooms": 0,
+            "pending_bytes": 0,
+            "pools": 0,
+            "pools_bytes": 0,
+            "prefetch_admissions": 0,
+            "prefetch_attempts": 0,
+            "prefetch_declines": 0,
+            "reclaimable_bytes": 0,
+            "unassigned_bytes": 0
+          },
+          "pending": 0,
+          "released": 0,
+          "round": 44
+        },
+        "completed": 50331648,
+        "deferred": false,
+        "drop_ns": {
+          "end": 1152923802765566,
+          "start": 1152923770935557
+        },
+        "external_owner_drop_overlapped_service": true,
+        "pending": 0,
+        "released": 50331648,
+        "round": 44,
+        "service_ns": [
+          1152923770917774,
+          1152923802821711
+        ],
+        "unrelated_gpu_work_remained_pending": true
+      }
+    },
+    "owner_death": {
+      "actual_allocation": {
+        "actual_driver_before": {
+          "attributable": false,
+          "capacity_epoch": 54,
+          "driver_used": 1112014848,
+          "generation": 74,
+          "observed_at": 1152924449174432,
+          "reserve": null,
+          "total": 25252724736
+        },
+        "actual_driver_during": {
+          "attributable": false,
+          "capacity_epoch": 54,
+          "driver_used": 1145569280,
+          "generation": 75,
+          "observed_at": 1152924478187191,
+          "reserve": null,
+          "total": 25252724736
+        },
+        "allocated_and_checked": 33554432
+      },
+      "reaping_credited_zero": true,
+      "round": {
+        "aborted": false,
+        "completed": 0,
+        "donations": [
+          {
+            "answer": "OwnerGone",
+            "completed": 0,
+            "held_at_ask": 67108864,
+            "owner": {
+              "incarnation": 5,
+              "slot": 0
+            },
+            "pending": 0,
+            "requested": 50331648
+          }
+        ],
+        "finished": true,
+        "generation": 71,
+        "requested": 50331648,
+        "requester": {
+          "incarnation": 2,
+          "slot": 1
+        },
+        "sample_generation": 70
+      },
+      "subsequent_driver_observation": {
+        "attributable": false,
+        "capacity_epoch": 54,
+        "driver_used": 1112014848,
+        "generation": 73,
+        "observed_at": 1152924448766978,
+        "reserve": null,
+        "total": 25252724736
+      }
+    },
+    "pending": {
+      "ask": {
+        "aborted": false,
+        "completed": 0,
+        "donations": [
+          {
+            "answer": "Waiting",
+            "completed": 0,
+            "held_at_ask": 67108864,
+            "owner": {
+              "incarnation": 1,
+              "slot": 0
+            },
+            "pending": 0,
+            "requested": 50331648
+          }
+        ],
+        "finished": false,
+        "generation": 19,
+        "requested": 50331648,
+        "requester": {
+          "incarnation": 2,
+          "slot": 1
+        },
+        "sample_generation": 18
+      },
+      "result": {
+        "accounting": {
+          "pending_release": 50331648,
+          "physical": {
+            "caches": {
+              "idle": 0,
+              "live": 0,
+              "pending": 0
+            },
+            "graph_pools": {
+              "idle": 0,
+              "live": 0,
+              "pending": 0
+            },
+            "total": 117440512,
+            "weights": {
+              "idle": 0,
+              "live": 8388608,
+              "pending": 16777216
+            },
+            "working": {
+              "idle": 0,
+              "live": 58720256,
+              "pending": 33554432
+            }
+          },
+          "reclaimable": 0,
+          "refreshed": true
+        },
+        "after_consumer_completion": {
+          "accounting": {
+            "pending_release": 0,
+            "physical": {
+              "caches": {
+                "idle": 0,
+                "live": 0,
+                "pending": 0
+              },
+              "graph_pools": {
+                "idle": 0,
+                "live": 0,
+                "pending": 0
+              },
+              "total": 67108864,
+              "weights": {
+                "idle": 0,
+                "live": 8388608,
+                "pending": 0
+              },
+              "working": {
+                "idle": 0,
+                "live": 58720256,
+                "pending": 0
+              }
+            },
+            "reclaimable": 0,
+            "refreshed": true
+          },
+          "completed": 50331648,
+          "deferred": false,
+          "pending": 0,
+          "real_consumer_output_valid": true,
+          "released": 50331648,
+          "round": 19
+        },
+        "completed": 0,
+        "deferred": false,
+        "event_pending_before_and_after": true,
+        "pending": 50331648,
+        "released": 0,
+        "round": 19,
+        "service_seconds": 0.00019776099361479282
+      }
+    },
+    "retirement_capture_exclusion": {
+      "capture_race_boundary": "actual refusal observed",
+      "capture_refused_while_actual_retirement_in_progress": true,
+      "pending_release": 0,
+      "physical": {
+        "caches": {
+          "idle": 0,
+          "live": 0,
+          "pending": 0
+        },
+        "graph_pools": {
+          "idle": 0,
+          "live": 0,
+          "pending": 0
+        },
+        "total": 0,
+        "weights": {
+          "idle": 0,
+          "live": 0,
+          "pending": 0
+        },
+        "working": {
+          "idle": 0,
+          "live": 0,
+          "pending": 0
+        }
+      },
+      "reclaimable": 0,
+      "refreshed": true
+    },
+    "unknown": {
+      "ask": {
+        "aborted": false,
+        "completed": 0,
+        "donations": [
+          {
+            "answer": "Waiting",
+            "completed": 0,
+            "held_at_ask": 67108864,
+            "owner": {
+              "incarnation": 1,
+              "slot": 0
+            },
+            "pending": 0,
+            "requested": 50331648
+          }
+        ],
+        "finished": false,
+        "generation": 28,
+        "requested": 50331648,
+        "requester": {
+          "incarnation": 2,
+          "slot": 1
+        },
+        "sample_generation": 27
+      },
+      "result": {
+        "accounting": {
+          "pending_release": 0,
+          "physical": {
+            "caches": {
+              "idle": 0,
+              "live": 0,
+              "pending": 0
+            },
+            "graph_pools": {
+              "idle": 0,
+              "live": 0,
+              "pending": 0
+            },
+            "total": 33554432,
+            "weights": {
+              "idle": 0,
+              "live": 8388608,
+              "pending": 0
+            },
+            "working": {
+              "idle": 0,
+              "live": 8388608,
+              "pending": 16777216
+            }
+          },
+          "reclaimable": 0,
+          "refreshed": true
+        },
+        "completed": 50331648,
+        "deferred": false,
+        "pending": 0,
+        "released": 50331648,
+        "round": 28,
+        "unjoined_held_without_context_join": true
+      }
+    }
+  },
+  "child_exit_code": 0,
+  "gpu_uuid": "GPU-2eb9e2ca-fca5-d50d-4344-7d0127c4ec68",
+  "passed": true,
+  "scope": "same-domain real GPU mechanism; no foreign-pressure latency or model claim"
+}
