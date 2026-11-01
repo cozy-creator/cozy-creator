@@ -176,19 +176,16 @@ def gpu(payload: Probe, ctx: Context) -> Report:
         for chunk in (ROWS, (ROWS + 1) // 2, ((ROWS + 1) // 2 + 1) // 2, None):
             held.clear()
             prior = len(request.working_phases)
+            capacity_key = f'fixture.linear-capacity/{chunk}'
 
-            def step(index, marker, x, *, chunk=chunk, leaf=leaf):
+            def step(index, marker, x, *, chunk=chunk, leaf=leaf, capacity_key=capacity_key):
                 del index, marker
                 trim(vt, device)
                 before = vt.stats(device)
                 allocations, _ = queries[chunk or 1]
-                key = f'fixture.linear-capacity/{chunk}'
-                try:
-                    exact = vt.split_select(device, key, [('target', allocations)],
-                                            preferred='target',
-                                            stream=int(torch.cuda.current_stream(device).cuda_stream))
-                finally:
-                    vt.phase_forget(device, key)
+                exact = vt.split_select(device, capacity_key, [('target', allocations)],
+                                        preferred='target',
+                                        stream=int(torch.cuda.current_stream(device).cuda_stream))
                 headroom = exact['required_bytes'] - (1 if chunk is None else 0)
                 vt.set_limit(device, before['mapped_bytes'] + headroom)
                 try:
@@ -206,8 +203,13 @@ def gpu(payload: Probe, ctx: Context) -> Report:
                 finally:
                     vt.set_limit(device, None)
 
-            denoise_loop(step, range(1), state=(marker,), inputs=(x,),
-                         key=('actual-int8-projection', ROWS, CHANNELS, WIDTH))
+            try:
+                denoise_loop(step, range(1), state=(marker,), inputs=(x,),
+                             key=('actual-int8-projection', ROWS, CHANNELS, WIDTH))
+            finally:
+                # An active unknown-key phase owns its records until its real completion.
+                # Retire this fixture-only capacity menu after that owner closes.
+                vt.phase_forget(device, capacity_key)
             assert len(request.working_phases) == prior + 1
             phase = request.working_phases[-1]
             if chunk is None:
