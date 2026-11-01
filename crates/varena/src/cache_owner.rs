@@ -601,12 +601,10 @@ fn worker_tick(
                 control.lock()?.owners.remove(&id);
             }
             Err(error) if deferred(&error) => {}
-            Err(error) => failed(
-                control,
-                &mut registration.owner.lock()?,
-                error.to_string(),
-                true,
-            ),
+            Err(error) => {
+                let mut owner = registration.owner.lock()?;
+                failed(control, &mut owner, error.to_string(), true);
+            }
         }
         control.changed.notify_all();
     }
@@ -701,10 +699,20 @@ fn worker_tick(
                 held.waiting_service = job.key.cause != Cause::Allocation;
                 held.collect_pending = job.key.cause == Cause::Allocation;
             }
-            Err(error) if deferred(&error) => {
+            Err(Error::CaptureActive) => {
                 owner.facts.deferred += 1;
                 held.owners.push_front(id);
                 held.facts.queued = held.owners.len();
+            }
+            Err(Error::Busy) => {
+                // This owner's lock/admission is unavailable. It is not a device-wide
+                // capture exclusion and must not starve later owners in the same request.
+                owner.facts.returned += 1;
+                owner.facts.declined += 1;
+                held.facts.returned += 1;
+                held.facts.declined += 1;
+                held.waiting_service = job.key.cause != Cause::Allocation;
+                held.collect_pending = job.key.cause == Cause::Allocation;
             }
             Err(error) => {
                 failed(control, &mut owner, error.to_string(), false);

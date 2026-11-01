@@ -248,5 +248,10 @@ def split_choice(payload: Probe, ctx: Context) -> Report:
 
 
 @app.entrypoint(accelerator=True)
+def native_owners(payload: Probe, ctx: Context) -> Report:
+    return native(payload, ctx, 'owners')
+
+
+@app.entrypoint(accelerator=True)
 def python_binding(payload: Probe, ctx: Context) -> Report:
     return binding(payload, ctx)

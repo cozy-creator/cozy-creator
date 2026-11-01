@@ -522,3 +522,103 @@ pub(super) fn choice(cuda: &Cuda, peer: &cooperative::Peer, device: i32) -> Resu
         "phase":{"published":phase.published,"peak":phase.peak_bytes,"backing_peak":phase.backing_peak_bytes}}),
     )
 }
+
+pub(super) fn owners(cuda: &Cuda, peer: &cooperative::Peer, device: i32) -> Result<Value> {
+    use std::sync::{Arc, Mutex};
+    use varena::cache_owner::{CallbackResult, Cause, RequestKey};
+    let first = Cache::new(device, 1)?;
+    let page = first.granularity();
+    let second = Cache::new(device, page)?;
+    first.commit(0, page)?;
+    second.commit(0, page)?;
+    sentinel(cuda, first.base()?, page, 137)?;
+    sentinel(cuda, second.base()?, page, 149)?;
+    let lock = Arc::new(Mutex::new(()));
+    let held = lock
+        .lock()
+        .map_err(|_| io::Error::other("fixture owner lock"))?;
+    let first_lock = Arc::clone(&lock);
+    let first_cache = Arc::clone(&first);
+    let first_owner = varena::CacheOwner::new(device, move |_| {
+        let _owner = first_lock.try_lock().map_err(|_| varena::Error::Busy)?;
+        first_cache.release(0, page, 0)?;
+        Ok(CallbackResult::Returned)
+    })?;
+    let second_cache = Arc::clone(&second);
+    let second_owner = varena::CacheOwner::new(device, move |_| {
+        second_cache.release(0, page, 0)?;
+        Ok(CallbackResult::Returned)
+    })?;
+    let key = RequestKey {
+        cause: Cause::Allocation,
+        generation: varena::cache_owner::next_generation()?,
+    };
+    let before = working_stats(device)?;
+    let request = varena::cache_owner::request_shrink(device, key, page)?
+        .ok_or_else(|| io::Error::other("registered native cache owners unavailable"))?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let progress = loop {
+        let facts = request.facts()?;
+        if facts.finished {
+            break facts;
+        }
+        require(
+            Instant::now() < deadline,
+            "two-owner completion protocol deadline; no release inferred",
+        )?;
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let first_facts = first_owner.facts()?;
+    let second_facts = second_owner.facts()?;
+    require(
+        first_facts.callbacks == 1 && first_facts.declined == 1 && first_facts.failed.is_none(),
+        "busy first owner was retried or treated as a device-wide deferral",
+    )?;
+    require(
+        second_facts.callbacks == 1 && second_facts.returned == 1 && second_facts.failed.is_none(),
+        "second available owner was starved",
+    )?;
+    require(
+        progress.returned == 2
+            && progress.declined == 1
+            && progress.failed == 0
+            && progress.observed_release_bytes >= page as u64,
+        "owner return was confused with physical progress",
+    )?;
+    require(
+        first.stats()?.live_bytes == page && second.stats()?.mapped_bytes == 0,
+        "wrong native owner backing was reclaimed",
+    )?;
+    read(cuda, first.base()?, page, 137)?;
+    let observed = caches_only(peer, page, 0, 0)?;
+    let after = working_stats(device)?;
+    require(
+        before["cache_mapped"].as_u64().unwrap() - after["cache_mapped"].as_u64().unwrap()
+            == page as u64,
+        "actual mapped Cache reduction differs from the successful owner",
+    )?;
+    drop(held);
+    first_owner.close()?;
+    second_owner.close()?;
+    require(
+        first_owner.facts()?.retired
+            && second_owner.facts()?.retired
+            && varena::cache_owner::requestable(device)? == 0,
+        "explicit native callback retirement incomplete",
+    )?;
+    first.release(0, page, 0)?;
+    cuda.synchronize()?;
+    first.poll()?;
+    first.close()?;
+    second.close()?;
+    Ok(
+        json!({"page":page,"request_generation":key.generation,"real_owner_lock_held":true,
+        "first":{"callbacks":first_facts.callbacks,"declined":first_facts.declined},
+        "second":{"callbacks":second_facts.callbacks,"returned":second_facts.returned},
+        "request":{"returned":progress.returned,"declined":progress.declined,"failed":progress.failed,
+            "observed_physical_release":progress.observed_release_bytes},
+        "before":before,"after":after,"accounting":observed,"first_full_readback":true,
+        "both_callback_owners_retired":true,
+        "scope":"actual native owner requests and physical release; allocator trigger and Python/GIL integration are separate"}),
+    )
+}
