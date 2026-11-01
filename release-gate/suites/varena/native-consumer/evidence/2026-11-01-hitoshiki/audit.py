@@ -1,4 +1,6 @@
-import hashlib,json,sys
+import hashlib
+import json
+import sys
 from pathlib import Path
 
 ROOT=Path(__file__).parent
