@@ -1,0 +1,27 @@
+{
+  "command": [
+    "cozy",
+    "run",
+    "/home/fidika/cozy_v2/outputs/xs138-p3-native-service/cleanup-fixture/release-gate/suites/varena/owner-runtime/cleanup_failure",
+    "--on",
+    "columbina",
+    "--gpus=1",
+    "--input",
+    "/home/fidika/cozy_v2/outputs/xs138-p3-native-service/owner-payload-columbina.json",
+    "--json",
+    "--out",
+    "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p2-fork-guard-leg12-plan/attempt-003/native-owner-cleanup-retry-artifacts"
+  ],
+  "input_sha256": "67404e73fb14a7d0e7f871fac8964a29234e7f61f547b80f2968724b07b48882",
+  "input": {
+    "runtime_version": "0.36.21+dev.g4d5844f0",
+    "runtime_owner_sha256": "4f1d334af5173b88c4874bcac36bd31604e5b8bf4e5fe87326e067a9fda7fcbc",
+    "tensorfs_version": "0.17.16+dev.g1fec2950",
+    "extension_sha256": "c433512548b70e44342260b45d04ac1986eb61c1dee2e632ea23580cc94ac345",
+    "shim_sha256": "09684b61d0b909c39d56c7d129432e906ddb0a57f1b4b916b20bb2c4c8d7716e",
+    "gpu_uuid": "GPU-74f2ac0a-1c52-2e52-a7a6-b207f1db7a89"
+  },
+  "started_at": "2026-11-01T12:08:18.468507+00:00",
+  "returncode": 1,
+  "finished_at": "2026-11-01T12:08:28.246757+00:00"
+}

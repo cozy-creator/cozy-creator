@@ -1,0 +1,8 @@
+{
+  "runtime_version": "0.36.21+dev.g4d5844f0",
+  "runtime_owner_sha256": "4f1d334af5173b88c4874bcac36bd31604e5b8bf4e5fe87326e067a9fda7fcbc",
+  "tensorfs_version": "0.17.16+dev.g1fec2950",
+  "extension_sha256": "c433512548b70e44342260b45d04ac1986eb61c1dee2e632ea23580cc94ac345",
+  "shim_sha256": "09684b61d0b909c39d56c7d129432e906ddb0a57f1b4b916b20bb2c4c8d7716e",
+  "gpu_uuid": "GPU-74f2ac0a-1c52-2e52-a7a6-b207f1db7a89"
+}

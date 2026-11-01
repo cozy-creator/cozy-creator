@@ -1,0 +1,18 @@
+{
+  "id": "run-a59132978493b2398865eeb4",
+  "number": 25192,
+  "kind": "warm",
+  "target": "sync local/ci-varena-owner (source changed)",
+  "hub": "https://tensorhub.com",
+  "machine": "columbina",
+  "status": "failed",
+  "cancel_requested": false,
+  "reason": {
+    "code": "invalid_range",
+    "message": "a part is `Content-Range: bytes a-b/length`",
+    "origin": ""
+  },
+  "output": [],
+  "created_at_ms": 1793534821159,
+  "settled_at_ms": 1793534821376
+}

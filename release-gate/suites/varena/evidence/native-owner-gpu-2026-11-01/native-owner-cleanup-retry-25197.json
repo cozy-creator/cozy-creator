@@ -1,0 +1,250 @@
+{
+  "id": "run-6b0248cdc7855fb32cd61081",
+  "number": 25197,
+  "kind": "call",
+  "target": "local/ci-varena-owner/cleanup_failure",
+  "hub": "https://tensorhub.com",
+  "machine": "columbina",
+  "status": "failed",
+  "cancel_requested": false,
+  "machine_state": "running",
+  "reason": {
+    "code": "unhandled_exception",
+    "message": "RuntimeError: xs138_cleanup_original_error; the executor did not settle quiescent (poisoned: native memory cooperation failed: native memory cooperation failed: invalid residency operation: native cooperation owner is closed)",
+    "origin": "runtime",
+    "detail": "native memory cooperation failed: native memory cooperation failed: invalid residency operation: native cooperation owner is closed; the last 50 lines of its stderr, which every rank writes:\n[executor] prepare startup: {\"cuda_initialized\": false, \"device_kind\": \"cuda\", \"dumpable\": 1, \"egid\": 0, \"environment\": {\"CUDA_VISIBLE_DEVICES\": \"0\", \"NCCL_NVLS_ENABLE\": null, \"NCCL_P2P_LEVEL\": null, \"PYTORCH_ALLOC_CONF\": null, \"PYTORCH_CUDA_ALLOC_CONF\": null}, \"euid\": 0, \"gid\": 0, \"no_new_privs\": 1, \"pid\": 440031, \"rank\": 0, \"uid\": 0, \"world\": 1}\n[kernels] cozy int8 op verified on sm89: int8 rel L2 1.68e-03 at bf16 linear M=3 (budget 0.01, 24 cases); fp8 rel L2 2.01e-03 at bf16 linear M=3 (budget 0.01, 10 cases)\ncozy_runtime.internal.cooperation.Failure: native memory cooperation failed: invalid residency operation: native cooperation owner is closed"
+  },
+  "output": [],
+  "created_at_ms": 1793534903170,
+  "accepted_at_ms": 1793534903320,
+  "started_at_ms": 1793534906064,
+  "settled_at_ms": 1793534908221,
+  "execution_ms": 2142,
+  "measurements": {
+    "attribution": {
+      "folded_names": 0,
+      "method": "perf_counter deltas accumulated in place: count/total/min/max/first/last and wall bounds per named span; step tracks keep up to 512 [end_unix_ms, ms] points",
+      "stages": {},
+      "steps": {}
+    },
+    "execution": {
+      "construction": {
+        "fill_ms": 0.0,
+        "legs_ms": {},
+        "prepare_ms": 0.01,
+        "prepared_unix_ms": 0,
+        "warm_ms": 0.0
+      },
+      "cuts": {
+        "levels": {},
+        "oom_floor": 0,
+        "sites": []
+      },
+      "degree": 1,
+      "executor": {
+        "legs_ms": {
+          "cuda_init": 1312.0,
+          "package_import": 6.7,
+          "package_warmup": 0.0,
+          "torch_import": 0.0
+        },
+        "ms": 1318.7,
+        "started_unix_ms": 1793534906112
+      },
+      "gpus": [
+        {
+          "arch": "sm_89",
+          "attention": {
+            "impl": "",
+            "observed": "",
+            "requested": ""
+          },
+          "end_us": 1793534907861291,
+          "gpu": 0,
+          "pid": 440031,
+          "start_us": 1793534907482347,
+          "uuid": "GPU-74f2ac0a-1c52-2e52-a7a6-b207f1db7a89"
+        }
+      ],
+      "loops": [],
+      "on_demand": {},
+      "plan": {},
+      "plan_reports": {},
+      "reply_built_unix_ms": 1793534907879.3,
+      "reply_sent_unix_ms": 1793534907880.2,
+      "spread": {}
+    },
+    "memory": {
+      "driver": [
+        {
+          "before_bytes": 3997696,
+          "gpu": 0,
+          "peak_bytes": 619839488,
+          "power_max_w": 63,
+          "sm_mhz_limit": 3105,
+          "sm_mhz_low": 2520,
+          "sm_mhz_mean": 2520,
+          "temperature_max_c": 44,
+          "throttled_share": 0.0,
+          "throttles": []
+        }
+      ],
+      "peak_allocated_bytes": 33223216,
+      "peak_reserved_bytes": 117440512,
+      "stats": {
+        "varena": [
+          {
+            "ceiling": {
+              "disk_gbps": 6.494588356276638,
+              "h2d_gbps": 26.07814170956751
+            },
+            "gpu": 0,
+            "stats": {
+              "allocated": 17039360,
+              "allocator": {
+                "allocations": 1715,
+                "context_joins": 0,
+                "driver_memory_calls": 96,
+                "event_queries": 237,
+                "event_records": 219,
+                "event_waits": 0,
+                "frees": 1714,
+                "ooms": 0
+              },
+              "allocator_scope": "process",
+              "baked_pages": {
+                "bytes": 0,
+                "cap": 270323621888,
+                "pages": 0,
+                "pinned": true,
+                "room": -1,
+                "scope": "the host tier: every streamed page's bytes, pinned",
+                "wanted": 0
+              },
+              "cooperation": {
+                "active": false,
+                "deferred": 0,
+                "failed": null,
+                "last_donation": null,
+                "physical_bytes": 14680064,
+                "published": 5,
+                "retired": true,
+                "serviced": 5,
+                "stopping": true
+              },
+              "final_bindings": {
+                "fallback_blocks": 0,
+                "fills": 0,
+                "final_resident_bytes": 0,
+                "hits": 0,
+                "native_prefetch": true,
+                "raw_resident_bytes": 0,
+                "resident_scope": "process"
+              },
+              "gathered": 0,
+              "host": null,
+              "moved": {
+                "baked": {
+                  "bytes": 0,
+                  "fills": 0,
+                  "ns": 0
+                },
+                "store": {
+                  "bytes": 0,
+                  "ns": 0
+                }
+              },
+              "overlapping": false,
+              "peak": 33223216,
+              "peak_window": "Working high-water plus sampled native backing, carried across resets; other constructions' resident sets left out",
+              "phase_policy_supported": true,
+              "phases": [],
+              "prefetch": {
+                "canceled": 0,
+                "completed": 0,
+                "failed": 0,
+                "queued": [],
+                "released_cache": 0,
+                "scope": "one exact raw block; current demand precedes queued speculation",
+                "skipped_capacity": 0,
+                "started": 0,
+                "wait_ns": 0
+              },
+              "request": "45",
+              "reserved": 117440512,
+              "room_first_pass": null,
+              "sets": {},
+              "trace": [],
+              "trace_scope": "fills",
+              "weight_residency": {
+                "context_joins": 0,
+                "event_waits": 0,
+                "evictions": 0,
+                "fills": 0,
+                "hits": 0,
+                "pinned_bytes": 0,
+                "poisoned": false,
+                "preferred_bytes": 0,
+                "ready_bytes": 0,
+                "reclaimable_bytes": 0,
+                "reclaimed_by_reason": {
+                  "allocator": 0,
+                  "requested": 0,
+                  "room": 0,
+                  "streaming_limit": 0,
+                  "weight_allocation": 0
+                },
+                "reclaimed_bytes": 0,
+                "regions": 0,
+                "reserved_bytes": 0,
+                "resident_bytes": 0,
+                "streaming_limit_bytes": 18446744073709551615
+              },
+              "working_allocator": {
+                "allocated_bytes": 17039360,
+                "allocated_capacity": 20971520,
+                "allocated_peak": 33223216,
+                "allocations": 1735,
+                "context_joins": 0,
+                "driver_memory_calls": 106,
+                "event_handles": 83,
+                "event_queries": 242,
+                "event_records": 224,
+                "event_waits": 0,
+                "free_bytes": 57561600,
+                "frees": 1733,
+                "mapped_bytes": 117440512,
+                "mapped_peak": 117440512,
+                "ooms": 0,
+                "pending_bytes": 37018624,
+                "pools": 0,
+                "pools_bytes": 0,
+                "prefetch_admissions": 0,
+                "prefetch_attempts": 0,
+                "prefetch_declines": 0,
+                "reclaimable_bytes": 23068672,
+                "unassigned_bytes": 1888768
+              },
+              "working_phases": [],
+              "working_splits": []
+            },
+            "torch_peak": 33223216
+          }
+        ]
+      }
+    },
+    "models": [],
+    "observations": [],
+    "residency": {
+      "graphs": {},
+      "notes": {}
+    },
+    "software": {
+      "attempt_ordinal": 1,
+      "runtime": "0.36.21+dev.g4d5844f0",
+      "tensord": "0.15.4+dev.gafa6f922",
+      "tensord_commit": "afa6f9229153d1a7e93bbf72fc86f5543a4ac21c",
+      "tensorfs": "0.17.16+dev.g1fec2950"
+    }
+  }
+}

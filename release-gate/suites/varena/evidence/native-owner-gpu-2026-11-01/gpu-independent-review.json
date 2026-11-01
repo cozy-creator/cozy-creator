@@ -1,0 +1,67 @@
+{
+  "passed": true,
+  "scope": "native automatic owner parity and intentional cleanup error preservation; not physical-OOM/GIL-held/game/full-P3 qualification",
+  "native_source": "1fec2950bb807bd6c46cccd49ed633e15a3e7649",
+  "runtime_source": "4d5844f0ffb0af23dbb4f19a9e143c1d179203d6",
+  "worker_source": "afa6f9229153d1a7e93bbf72fc86f5543a4ac21c",
+  "gpu_run": 25190,
+  "observe_run": 25191,
+  "pid": 439849,
+  "row": {
+    "incarnation": 3,
+    "slot": 0
+  },
+  "released_bytes": 50331648,
+  "actual_driver_drop": 50331648,
+  "requester_bytes": 33554432,
+  "baseline_live": 17039360,
+  "baseline_mapped": 20971520,
+  "capture_replay_driver_deltas": [
+    0,
+    0
+  ],
+  "same_pid_incarnation": true,
+  "sample_interval_ms": 506.252082,
+  "latency_boundary": "includes requester polling; not exact release latency or a general SLO",
+  "sharing_scope": "Start dedicated/priority0; fixture temporary Shared/priority-10 then restored; not machine Shared propagation",
+  "log_window_ms": [
+    1793534815363,
+    1793534820752.8
+  ],
+  "log_coverage": {
+    "claim": "bounded logged-action coverage only; missing/ambiguous anchor is inconclusive",
+    "covered": true,
+    "matches": [
+      154
+    ],
+    "method": "exact pre-run suffix retained in post-run all-lines read",
+    "records": 32
+  },
+  "legacy_actions": [],
+  "cleanup": {
+    "run": 25197,
+    "pid": 440031,
+    "expected_failure": true,
+    "original_handler_error_preserved": true,
+    "checked_refusal": "sentinel is reachable only after the immutable fixture catches Failure from the real checked Memory boundary; stdout marker is not in the saved NDJSON",
+    "fault_latched": true,
+    "clean_quiescence": false,
+    "native_owner": {
+      "active": false,
+      "deferred": 0,
+      "failed": null,
+      "last_donation": null,
+      "physical_bytes": 14680064,
+      "published": 5,
+      "retired": true,
+      "serviced": 5,
+      "stopping": true
+    },
+    "exact_message": "RuntimeError: xs138_cleanup_original_error; the executor did not settle quiescent (poisoned: native memory cooperation failed: native memory cooperation failed: invalid residency operation: native cooperation owner is closed)"
+  },
+  "upload_failure": {
+    "install_run": 25192,
+    "app_execution": false,
+    "separate_from_cleanup_behavior": true
+  }
+}

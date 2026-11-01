@@ -1,0 +1,221 @@
+{
+  "raw_sources": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p2-fork-guard-leg12-plan/attempt-003",
+  "files": {
+    "native-owner-after/capture.json": {
+      "sha256": "39d1b6e58e7d9ac37087e20cded60e52935f2baae976a783fe56241a8f3010f2",
+      "bytes": 94123
+    },
+    "native-owner-after/gpu-run.command.json": {
+      "sha256": "fb26a1c2b4d1626407eabc20998dded1d9e50dd67a0fba7341cc1aeb039a343f",
+      "bytes": 323
+    },
+    "native-owner-after/gpu-run.json": {
+      "sha256": "b36ddc6aa98ba1167478c18ed9c04fd915a8b30099585d7153120759f5b0f408",
+      "bytes": 14444
+    },
+    "native-owner-after/gpu-run.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "native-owner-after/gpu-run.stdout": {
+      "sha256": "9f688b4a8f7e31d5521701e470c7251e57261ba1ee8f05f23a49cc2c5ecf32ee",
+      "bytes": 14444
+    },
+    "native-owner-after/machine.command.json": {
+      "sha256": "749bd5b87751d1eec8c963871903463fd9f04179344ee173251824e151d1b9ca",
+      "bytes": 340
+    },
+    "native-owner-after/machine.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "native-owner-after/machine.stdout": {
+      "sha256": "3deb0466744e6d77e36b1b167d6fa797a7d807f5d7cb64ca794775a4fbbe58bf",
+      "bytes": 4012
+    },
+    "native-owner-after/memory.command.json": {
+      "sha256": "320284a446d184e5e5529e3f6627eef548c85cd35d787e3d64ff5340b651ae4a",
+      "bytes": 379
+    },
+    "native-owner-after/memory.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "native-owner-after/memory.stdout": {
+      "sha256": "0996f79720ccb6827e4076273ee27e45143833da498185c08f656dedf3ff1f31",
+      "bytes": 39566
+    },
+    "native-owner-after/observe-run.command.json": {
+      "sha256": "b5bd47d41143cc949751dbebf5c0a88f33a275ff6bf99e44a57a285896421f37",
+      "bytes": 322
+    },
+    "native-owner-after/observe-run.json": {
+      "sha256": "073a2f4ec14c19ba031656e94468e72e9a592ff6d5bb63bbea5481fb79cbb078",
+      "bytes": 9875
+    },
+    "native-owner-after/observe-run.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "native-owner-after/observe-run.stdout": {
+      "sha256": "cdd90077c1b3c78ec809ae7db33f543871fee436f5987a6436a9e5703465c47e",
+      "bytes": 9875
+    },
+    "native-owner-after/qualification.json": {
+      "sha256": "820174e5d1ac58380af99efd0de85c94b357437d0900ae22f656f27f4b7de9ca",
+      "bytes": 2863
+    },
+    "native-owner-before/capture.json": {
+      "sha256": "ab140096f5a16506a568b841a00a03a8df8a0b6a48e575809a77f9b20d708d64",
+      "bytes": 88352
+    },
+    "native-owner-before/machine.command.json": {
+      "sha256": "bd9ccd289258b90a6e03e15f7ea5a5baa48974554f552b08a17b17144e7eaa48",
+      "bytes": 340
+    },
+    "native-owner-before/machine.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "native-owner-before/machine.stdout": {
+      "sha256": "46bbc344836e196781e6c8cb89a097fe465965d94580ac29a291f18587b6868b",
+      "bytes": 4020
+    },
+    "native-owner-before/memory.command.json": {
+      "sha256": "61ff4f0992b7d26b8a3107f06a384ce692400f5a2363028c96d2f69909223a06",
+      "bytes": 379
+    },
+    "native-owner-before/memory.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "native-owner-before/memory.stdout": {
+      "sha256": "58de5765df3e6eb340a1ac88926d1b95c0080b455a83fb966bfc58ada3e8f898",
+      "bytes": 36978
+    },
+    "native-owner-cleanup-install-25192.err": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "native-owner-cleanup-install-25192.json": {
+      "sha256": "acc664aca90a9a488792e7301540c4b9756f8b27828af2951db0de59833db8c1",
+      "bytes": 461
+    },
+    "native-owner-cleanup-invocation.json": {
+      "sha256": "e308bf7148e49daa21139d241782650fe2180500153458cc87df2fbc9b85174b",
+      "bytes": 1139
+    },
+    "native-owner-cleanup-retry-25197.json": {
+      "sha256": "86a363139b5897287ecfb699ac4862b5aae075559832056da8abde2016e79c6d",
+      "bytes": 8666
+    },
+    "native-owner-cleanup-retry-invocation.json": {
+      "sha256": "a4c252317f77897b73d380e0c40a90204f26b5d49853d3a2d6beac8b0ac0ab8e",
+      "bytes": 1145
+    },
+    "native-owner-cleanup-retry.err": {
+      "sha256": "2e8af703f2ae7ac41f9a4d3ed9d52ca6c8de0394a60056fc0db92a0c2688308c",
+      "bytes": 76
+    },
+    "native-owner-cleanup-retry.ndjson": {
+      "sha256": "22471941e63050cd17f5c159099e2fa77e7ce17f492fb2617c98bb381db6572f",
+      "bytes": 4677
+    },
+    "native-owner-cleanup.err": {
+      "sha256": "229f5884baf0c65fafda7d6d98660e97ccb0a071cd57e688c27aabb22f4c4774",
+      "bytes": 38
+    },
+    "native-owner-cleanup.ndjson": {
+      "sha256": "e09cb08bff7f2379fa321e8cbbe8a1f8093320d714cec120e17ea718101a656b",
+      "bytes": 263
+    },
+    "native-owner-gpu-25190.json": {
+      "sha256": "9f688b4a8f7e31d5521701e470c7251e57261ba1ee8f05f23a49cc2c5ecf32ee",
+      "bytes": 14444
+    },
+    "native-owner-gpu-invocation.json": {
+      "sha256": "b4495468ff717706f7c0d8dddb24bd593d7a545da7ecb2fec3828b3308c8e637",
+      "bytes": 1099
+    },
+    "native-owner-gpu-result.json": {
+      "sha256": "8547469ddbd0b7246fee9f8c2645111e78ac147ce71397dbe579a8f0e6b4ad05",
+      "bytes": 7151
+    },
+    "native-owner-gpu.err": {
+      "sha256": "229f5884baf0c65fafda7d6d98660e97ccb0a071cd57e688c27aabb22f4c4774",
+      "bytes": 38
+    },
+    "native-owner-gpu.ndjson": {
+      "sha256": "2c4dda64abb3884a18901964e8e4514652c3ae8d96001d935fd19356f3b5ada2",
+      "bytes": 10190
+    },
+    "native-owner-observe-25191.json": {
+      "sha256": "cdd90077c1b3c78ec809ae7db33f543871fee436f5987a6436a9e5703465c47e",
+      "bytes": 9875
+    },
+    "native-owner-observe-input/gpu-run.command.json": {
+      "sha256": "f5b47a47227e50e24f0def69c95bcfa817b7ba06331f10237f6c89adc3994a96",
+      "bytes": 323
+    },
+    "native-owner-observe-input/gpu-run.json": {
+      "sha256": "b36ddc6aa98ba1167478c18ed9c04fd915a8b30099585d7153120759f5b0f408",
+      "bytes": 14444
+    },
+    "native-owner-observe-input/gpu-run.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "native-owner-observe-input/gpu-run.stdout": {
+      "sha256": "9f688b4a8f7e31d5521701e470c7251e57261ba1ee8f05f23a49cc2c5ecf32ee",
+      "bytes": 14444
+    },
+    "native-owner-observe-input/observe-input.json": {
+      "sha256": "1ea7a59d35971c233d39c0fa00b269a9226c0a27d7245eb74c24fd20be8dfe15",
+      "bytes": 507
+    },
+    "native-owner-observe-input/validation.json": {
+      "sha256": "b1c520a694db3c0ec535b2dd4aa1bf6f78ec5356bc4d24cd76993ee7b54cfe64",
+      "bytes": 37
+    },
+    "native-owner-observe-invocation.json": {
+      "sha256": "9488bc90771e80e3febd611156f16caa97bf047c0cb948bd17eef871860fbff9",
+      "bytes": 1253
+    },
+    "native-owner-observe-result.json": {
+      "sha256": "cb56a97250d7c5688d40bba6093f05649c0bbcd2f6cf4868446c5e525da7f01c",
+      "bytes": 1610
+    },
+    "native-owner-observe.err": {
+      "sha256": "229f5884baf0c65fafda7d6d98660e97ccb0a071cd57e688c27aabb22f4c4774",
+      "bytes": 38
+    },
+    "native-owner-observe.ndjson": {
+      "sha256": "98137588f11fdc87dbc46b08d46a16e7d480f9a8c2c8ea1601c764407a3daea6",
+      "bytes": 3772
+    },
+    "native-owner-parity-result.json": {
+      "sha256": "663bbe9a8abf4a9af8fd0c529f73479fa13b0d74f115873c4bb922b326c47c4f",
+      "bytes": 835
+    },
+    "ready.json": {
+      "sha256": "0b1707712412c6e536b0b10398c737ee9fea374247ac301d6fdfbcf96c71394b",
+      "bytes": 1654
+    },
+    "cohort.json": {
+      "sha256": "a1aac63b6b851c630cd7174dd071f79043967460f4a6601b14ce82520e6f9f68",
+      "bytes": 12552
+    },
+    "owner-payload-columbina.json": {
+      "sha256": "67404e73fb14a7d0e7f871fac8964a29234e7f61f547b80f2968724b07b48882",
+      "bytes": 423
+    },
+    "cleanup-fixture.json": {
+      "sha256": "f7e985346a2dba39f0c801afc36d29800aaf3c3ebd8dca6a7f40b9265dc80bf7",
+      "bytes": 1009
+    },
+    "gpu-independent-review.json": {
+      "sha256": "d7619698df1d2617759abab8e804acf7bdee53d44d2414141001490d006fff70",
+      "bytes": 2313
+    }
+  }
+}

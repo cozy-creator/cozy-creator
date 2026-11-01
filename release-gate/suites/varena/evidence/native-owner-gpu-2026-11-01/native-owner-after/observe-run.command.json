@@ -1,0 +1,16 @@
+{
+  "command": [
+    "cozy",
+    "run",
+    "show",
+    "25191",
+    "--once",
+    "--json"
+  ],
+  "finished_unix_ms": 1793534821092,
+  "returncode": 0,
+  "started_unix_ms": 1793534821082,
+  "stderr_bytes": 0,
+  "stdout_bytes": 9875,
+  "stdout_sha256": "cdd90077c1b3c78ec809ae7db33f543871fee436f5987a6436a9e5703465c47e"
+}

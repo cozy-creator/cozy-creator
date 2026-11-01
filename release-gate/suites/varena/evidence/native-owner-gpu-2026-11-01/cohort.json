@@ -1,0 +1,285 @@
+{
+  "creator_commit": "afa6f9229153d1a7e93bbf72fc86f5543a4ac21c",
+  "runtime_commit": "4d5844f0ffb0af23dbb4f19a9e143c1d179203d6",
+  "tensorfs": {
+    "source_commit": "1fec2950bb807bd6c46cccd49ed633e15a3e7649",
+    "tensorfs_version": "0.17.16+dev.g1fec2950",
+    "wheel_path": "/home/fidika/cozy_v2/outputs/xs138-p3-native-owner-candidate-1fec2950b/tensorfs-0.17.16+dev.g1fec2950-cp311-abi3-manylinux_2_28_x86_64.whl",
+    "wheel_sha256": "d5f8e6b2cf1e2a1f92673871c237590bb528e570d6442796d29501e729339c04",
+    "source_archive_sha256": "e966c8547c85342dfdf1994c1f5878a9879b709c616225629fa4154986d351e0",
+    "installed_path": "/home/fidika/cozy_v2/outputs/xs138-p3-native-owner-candidate-1fec2950b/installed",
+    "elf": {
+      "extension": {
+        "required_versions": [
+          "GLIBC_2.10",
+          "GLIBC_2.12",
+          "GLIBC_2.14",
+          "GLIBC_2.15",
+          "GLIBC_2.16",
+          "GLIBC_2.17",
+          "GLIBC_2.18",
+          "GLIBC_2.2.5",
+          "GLIBC_2.25",
+          "GLIBC_2.27",
+          "GLIBC_2.28",
+          "GLIBC_2.3",
+          "GLIBC_2.3.2",
+          "GLIBC_2.3.4",
+          "GLIBC_2.4",
+          "GLIBC_2.5",
+          "GLIBC_2.6",
+          "GLIBC_2.7",
+          "GLIBC_2.9"
+        ],
+        "needed": [
+          "libdl.so.2",
+          "libgcc_s.so.1",
+          "libpthread.so.0",
+          "libm.so.6",
+          "libc.so.6",
+          "ld-linux-x86-64.so.2"
+        ]
+      },
+      "shim": {
+        "required_versions": [
+          "CXXABI_1.3",
+          "CXXABI_1.3.9",
+          "GLIBCXX_3.4",
+          "GLIBCXX_3.4.11",
+          "GLIBCXX_3.4.14",
+          "GLIBCXX_3.4.21",
+          "GLIBCXX_3.4.9",
+          "GLIBC_2.14",
+          "GLIBC_2.2.5"
+        ],
+        "needed": [
+          "libc10.so",
+          "libstdc++.so.6",
+          "libm.so.6",
+          "libgcc_s.so.1",
+          "libc.so.6"
+        ]
+      },
+      "cli": {
+        "required_versions": [
+          "GLIBC_2.12",
+          "GLIBC_2.14",
+          "GLIBC_2.16",
+          "GLIBC_2.17",
+          "GLIBC_2.18",
+          "GLIBC_2.2.5",
+          "GLIBC_2.25",
+          "GLIBC_2.27",
+          "GLIBC_2.28",
+          "GLIBC_2.3",
+          "GLIBC_2.3.2",
+          "GLIBC_2.3.4",
+          "GLIBC_2.4",
+          "GLIBC_2.5",
+          "GLIBC_2.6",
+          "GLIBC_2.7",
+          "GLIBC_2.9"
+        ],
+        "needed": [
+          "libdl.so.2",
+          "libgcc_s.so.1",
+          "libpthread.so.0",
+          "libm.so.6",
+          "libc.so.6",
+          "ld-linux-x86-64.so.2"
+        ]
+      }
+    },
+    "build_image": "quay.io/pypa/manylinux_2_28_x86_64:2026.10.10-1",
+    "cuda_execution": "not performed",
+    "auditwheel": "canonical manylinux_2_28 check passed; no repair/bundling",
+    "aot_provenance_receipt": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p0-torch/.task/aot-control-01716/final-receipt.json",
+    "extension_member": "tensorfs/_ext.abi3.so",
+    "extension_sha256": "c433512548b70e44342260b45d04ac1986eb61c1dee2e632ea23580cc94ac345",
+    "shim_sha256": "09684b61d0b909c39d56c7d129432e906ddb0a57f1b4b916b20bb2c4c8d7716e",
+    "cli_member": "tensorfs-0.17.16+dev.g1fec2950.data/scripts/tfs",
+    "tfs_sha256": "ab1a4060e86f24af7422a27fdf372f48d6f87600dac3bd0f73f8335b28a26290",
+    "torch_build": {
+      "abi": 1,
+      "cuda": "13.0",
+      "cxx11_abi": 1,
+      "machine": "x86_64",
+      "supported_torch": [
+        "2.14.0+cu130",
+        "2.14.1+cu130"
+      ],
+      "system": "Linux",
+      "torch": "2.14.0+cu130",
+      "torch_git": "08187d9e0fba026dc8217405802ab5381dc88d90"
+    },
+    "wheel_members": 22,
+    "python_members_verified": {
+      "tensorfs/__init__.py": "09b8e50414292f1079e3e391f7729936b4ec005f017db0e733104c7a0c193e2c",
+      "tensorfs/_ext.pyi": "92560b6ed7ae6c6810ad44fdc574b98d989486a9a936c2d54830482288b9cc8b",
+      "tensorfs/api.py": "e88867188a416ea01f68f7187409b4bfe6773489508eccad66bffe3f49e956a6",
+      "tensorfs/api.pyi": "6f3f5d61f5f2691cf80ee53a37c70bfa880e7567600ef98a0ff4fd392ad38b44",
+      "tensorfs/executor.py": "fdbabcd5f1c03352535d9bb8aa62dbbd0abaead62ddc3128420d3658f3b0df5f",
+      "tensorfs/executor.pyi": "0676578975e330ad04e85b62da7fa8ab8848c2414dd5c75603fdafc0f6fb34b3",
+      "tensorfs/raw.py": "18b14e08fe920dea12e6856d53425f86e391c9e6c1406fe3bbb6d0e2d301d9cc",
+      "tensorfs/raw.pyi": "acf2c62ab4db6e931e0ce265307ab8df13c58a89ea8ded4da9640aa024b371bd",
+      "tensorfs/varena/__init__.py": "34882ec476256b08663275732701b786e8d1a009f486fc34523b5b401a327c70",
+      "tensorfs/varena/cooperative.py": "3015eab30702991cd8d201eb0ad759689b9d1ca83ac49f85f25ca0159d4ba1f6",
+      "tensorfs/varena/torch.py": "1f29955dbf69d1c54fab3b96482795ea030589e58c308f23b5f63046161554bb"
+    },
+    "aot_binaries": 378,
+    "aot_unique_full_images_verified_in_extension": 330,
+    "aot_full_images_in_cli": 0,
+    "cli_aot_reference_comparison": {
+      "qualified_p0": {
+        "wheel_sha256": "acc8d121b69be8b87a8e4fa5da02c88e910dfa2e1c7e5c91b380fad6cfe76c8c",
+        "cli_sha256": "99d5d5dbb345a179f5324828005df9ca58713d8c622bfc95e2c2d5e7a3718f35",
+        "full_aot_images_in_cli": 0,
+        "p1_retirement_marker": false
+      },
+      "fast_p0": {
+        "wheel_sha256": "0d9b7ecfd7be9d709ae42fcb0a5b9c3e75be30338797d6280f736bfac407f6e2",
+        "cli_sha256": "db8fd91ab44aab898f11605c6bf96844edb50b6fbdf14c8093f5dfe0ef7e8f7a",
+        "full_aot_images_in_cli": 0,
+        "p1_retirement_marker": false
+      },
+      "p1": {
+        "wheel_sha256": "7eeb10bda0e11a46e84fd65169d137d9f66f08013b3a7afc496158a7b5b8a73e",
+        "cli_sha256": "51f0772b3b0df71e0b0d03abf26bf5121f8a0678a76b4a334735515f522ac459",
+        "full_aot_images_in_cli": 0,
+        "p1_retirement_marker": true
+      }
+    }
+  },
+  "runtime": {
+    "source": "4d5844f0ffb0af23dbb4f19a9e143c1d179203d6",
+    "source_version": "0.36.21",
+    "version": "0.36.21+dev.g4d5844f0",
+    "wheel": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/runtime-build-4d5844f0f/dist/cozy_runtime-0.36.21+dev.g4d5844f0-cp312-abi3-manylinux_2_28_x86_64.whl",
+    "source_worktree": "/home/fidika/cozy/.worktrees/cozy-runtime/xs138-p3-native-service",
+    "changed_from_native_base": [
+      "README.md",
+      "changelog.d/cl705-code-closures.md",
+      "changelog.d/xs138-cooperative-owner.md",
+      "changelog.d/xs138-native-owner.md",
+      "changelog.d/xs141-rows-peft.md",
+      "docs/varena-automatic-owner.md",
+      "docs/varena-native-linear-split.md",
+      "pyproject.toml",
+      "src/cozy_runtime/author/_signature.py",
+      "src/cozy_runtime/cli/machine.py",
+      "src/cozy_runtime/internal/cooperation.py",
+      "src/cozy_runtime/internal/execution/native_linear_split.py",
+      "src/cozy_runtime/internal/execution/native_split.py",
+      "src/cozy_runtime/internal/executor.py",
+      "src/cozy_runtime/internal/executor_commands.py",
+      "src/cozy_runtime/internal/package_interface.py",
+      "src/cozy_runtime/internal/residency.py",
+      "src/cozy_runtime/internal/static_interface.py",
+      "src/cozy_runtime/rows.py",
+      "uv.lock"
+    ],
+    "sha256": "b395f5187175aa3834cceceab45fdaf23cadb20fd2ac1483c0466aff39e3ad14",
+    "native_base": "ebc25419a449743c7a14000dace97edda3b76a69",
+    "unchanged_native_members": 580,
+    "native_reuse_receipt": "/home/fidika/cozy_v2/outputs/xs138-p2-linear-kernels/ebc25419a449743c7a14000dace97edda3b76a69/native-build-receipt.json",
+    "qualification": "source and packaging only; real model execution pending"
+  },
+  "tensord": {
+    "source_commit": "afa6f9229153d1a7e93bbf72fc86f5543a4ac21c",
+    "version": "0.15.4+dev.gafa6f922",
+    "path": "/home/fidika/cozy_v2/outputs/xs138-p3-owner-candidate-afa6f9229/cozy/cozy-linux-x86_64",
+    "sha256": "fe567ecb1f4dbced642696239b75a191af04b1140b63a5269130cd44fd5c2a00",
+    "reported_version": "cozy 0.15.4+dev.gafa6f922",
+    "embedded_full_commit_verified": true,
+    "elf_required_versions": [
+      "GLIBC_2.10",
+      "GLIBC_2.12",
+      "GLIBC_2.14",
+      "GLIBC_2.15",
+      "GLIBC_2.16",
+      "GLIBC_2.17",
+      "GLIBC_2.18",
+      "GLIBC_2.2.5",
+      "GLIBC_2.25",
+      "GLIBC_2.27",
+      "GLIBC_2.28",
+      "GLIBC_2.3",
+      "GLIBC_2.3.2",
+      "GLIBC_2.3.4",
+      "GLIBC_2.4",
+      "GLIBC_2.5",
+      "GLIBC_2.6",
+      "GLIBC_2.7",
+      "GLIBC_2.9"
+    ],
+    "max_glibc": "2.28",
+    "elf_needed": [
+      "libdl.so.2",
+      "libgcc_s.so.1",
+      "libpthread.so.0",
+      "libm.so.6",
+      "libc.so.6",
+      "ld-linux-x86-64.so.2"
+    ],
+    "build_seconds": 1477.0273723120335,
+    "source_preparation": "/home/fidika/cozy_v2/outputs/xs138-p3-owner-candidate-afa6f9229/cozy/source-preparation.json",
+    "build_timing": "/home/fidika/cozy_v2/outputs/xs138-p3-owner-candidate-afa6f9229/cozy/build-timing.json",
+    "gpu_execution": false,
+    "sdk_installed": false,
+    "worker_role_boundary": {
+      "role": "canonical dev cozy worker/controller binary",
+      "generated_aot_added": false,
+      "native_quantization_gpu_coverage_claimed": false,
+      "checks": "ELF floor, exact dev version, embedded full commit and immutable-source/stamp verification",
+      "tensorfs_cuda_decode_owner": "separate paired TensorFS wheel, with330unique AOT images verified",
+      "recipe": ".github/workflows/dev-build.yaml Build the dev cozy; default features, no generated AOT build step"
+    }
+  },
+  "runtime_owner_sha256": "4f1d334af5173b88c4874bcac36bd31604e5b8bf4e5fe87326e067a9fda7fcbc",
+  "gpu_qualification": false,
+  "sdk_install": false,
+  "source_cpu_receipt": "/home/fidika/cozy_v2/outputs/xs138-p3-native-service/source-checkpoint.json",
+  "requirement": "Use the listed qualified afa TensorD owner-protocol worker plus the new TensorFS/Runtime pair. The wire is unchanged. Normal parity and same-PID observe precede collector-after; destructive cleanup_failure runs last.",
+  "packaged_cpu_hello": "/home/fidika/cozy_v2/outputs/xs138-p3-native-service/hello-portable/report.json",
+  "tensorfs_cpu_load": "/home/fidika/cozy_v2/outputs/xs138-p3-native-service/portable-api-fork.json",
+  "triton_cpu_keys": {
+    "cuda_initialized": false,
+    "matched_entries": 285,
+    "missing": [],
+    "triton": "3.8.0",
+    "unique_keys": 285
+  },
+  "fixture_provenance": "/home/fidika/cozy_v2/outputs/xs138-p3-owner-candidate-afa6f9229/fixture-provenance.json",
+  "root_has_portable_target_ownership_after": "2026-11-01T10:41:58Z",
+  "startup_fix": "actual Runtime msgspec Start decoder now preserves typed cooperation; strict active acknowledgement unchanged",
+  "original_startup_failure": 25090,
+  "runtime_decoder_proof": {
+    "red": "/home/fidika/cozy_v2/outputs/xs138-p3-owner-start-decode/red.json",
+    "green": "/home/fidika/cozy_v2/outputs/xs138-p3-owner-start-decode/green.json"
+  },
+  "native_owner_creator_commit": "1fec2950bb807bd6c46cccd49ed633e15a3e7649",
+  "creator_commit_scope": "Legacy collector field: TensorD worker source only; TensorFS native-owner source is tensorfs.source_commit.",
+  "native_service_lifecycle_cpu": "/home/fidika/cozy_v2/outputs/xs138-p3-native-service/lifecycle-close-fork/report.json",
+  "cleanup_fixture": {
+    "source_commit": "a5290c7e44cd232da242ffdadafc38950f72c8e9",
+    "fixture": "/home/fidika/cozy_v2/outputs/xs138-p3-native-service/cleanup-fixture/release-gate/suites/varena/owner-runtime",
+    "files": {
+      "README.md": "92e6ea35adfe0be3ad452826ab20beda9ad306b04a73cb8c1313604fb6d31c0f",
+      "package.toml": "f0a13d43196e20b8d99417cda48cd010c6096a68d78692d7f2022a5fd407e9ce",
+      "uv.lock": "7945f10235ecaad3c1bc55683853cfe7199b14bbedabcab822890bb59bd90e25",
+      "pyproject.toml": "10d577fe05fe27602294f518b86e7b38acf9390e3caae80737a0b3b2f9545979",
+      "make-payload.py": "c6a18f25f5a5643dc5efc1eee48ca6ff19795d00e478d9ca7c03cbb7ca268f2a",
+      "ci_varena_owner/requester.py": "f3d3effc499a99df6f03daba10ea5dc165a1af796b4f313c0e0dff2a54f91c3e",
+      "ci_varena_owner/__init__.py": "47970cb383b91a644ab7e107447df8eb8e8ac46acb78db2d689f28d63a17c665"
+    },
+    "order": "destructive last cell, after parity/observe/collector-after",
+    "expected_error": "xs138_cleanup_original_error",
+    "gpu_qualification": false
+  },
+  "scope": "Native automatic donor service parity candidate only; no physical-shortage asks, GIL-held or full P3 coexistence qualification yet.",
+  "superseded_runtime": {
+    "source": "01aac7b651c48f78753999b1767fb835ebcd852c",
+    "reason": "Unchecked cleanup wake must preserve the original execution error",
+    "receipt": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/runtime-candidate-01aac7b6.json"
+  }
+}

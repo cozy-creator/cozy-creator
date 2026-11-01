@@ -1,0 +1,19 @@
+{
+  "passed": true,
+  "native_source": "1fec2950bb807bd6c46cccd49ed633e15a3e7649",
+  "runtime_source": "4d5844f0ffb0af23dbb4f19a9e143c1d179203d6",
+  "worker_source": "afa6f9229153d1a7e93bbf72fc86f5543a4ac21c",
+  "normal_run": 25190,
+  "observe_run": 25191,
+  "pid": 439849,
+  "owner_row": {
+    "incarnation": 3,
+    "slot": 0
+  },
+  "cleanup_run": 25197,
+  "cleanup_expected_failure": "xs138_cleanup_original_error",
+  "cleanup_quiescent": false,
+  "cleanup_scope": "original error preserved; deliberately closed owner remains a reported secondary coordination fault, with poisoned executor retirement",
+  "prior_install_failure": 25192,
+  "scope": "native donor service parity, capture/replay deferral, same-PID lifetime and original-error preservation; no physical-shortage, held-GIL allocation, game, Cache or complete P3 claim"
+}
