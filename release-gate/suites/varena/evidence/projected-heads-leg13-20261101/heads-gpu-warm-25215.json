@@ -1,0 +1,1086 @@
+{
+  "id": "run-f1a8679838dede169eb58786",
+  "number": 25215,
+  "kind": "call",
+  "target": "local/ci-varena-projected-heads/gpu",
+  "hub": "https://tensorhub.com",
+  "machine": "leopold",
+  "status": "failed",
+  "cancel_requested": false,
+  "machine_state": "running",
+  "reason": {
+    "code": "unhandled_exception",
+    "message": "RuntimeError: shape '[-1, 4, 4, 4, 4]' is invalid for input of size 3611520",
+    "origin": "author",
+    "detail": "  File \"/var/lib/cozy/tensord/generations/fa43c4ede21defc425cec9faa9d628a2/env/lib/python3.12/site-packages/cozy_runtime/author/_invoke.py\", line 493, in invoke\n    result = _call(surface, kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/generations/fa43c4ede21defc425cec9faa9d628a2/env/lib/python3.12/site-packages/cozy_runtime/author/_invoke.py\", line 1042, in _call\n    return surface.fn(**kwargs)\n           ^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/editable/3a5261caf7bdd639/ci-varena-projected-heads/source-1a68210722501ad741a8ac2c314396599edbac7c337dac4380dcea2da1a00638/tree/ci_varena_projected_heads/__init__.py\", line 401, in gpu\n    expected_owner = attn.to_out[1](attn.to_out[0](attended.flatten(2, 3))).cpu()\n                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/generations/fa43c4ede21defc425cec9faa9d628a2/env/lib/python3.12/site-packages/torch/nn/modules/module.py\", line 1783, in _wrapped_call_impl\n    return self._call_impl(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/generations/fa43c4ede21defc425cec9faa9d628a2/env/lib/python3.12/site-packages/torch/nn/modules/module.py\", line 1889, in _call_impl\n    return inner()\n           ^^^^^^^\n  File \"/var/lib/cozy/tensord/generations/fa43c4ede21defc425cec9faa9d628a2/env/lib/python3.12/site-packages/torch/nn/modules/module.py\", line 1837, in inner\n    result = forward_call(*args, **kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/generations/fa43c4ede21defc425cec9faa9d628a2/env/lib/python3.12/site-packages/cozy_runtime/internal/encoding/leaves.py\", line 193, in forward\n    return self.linear(x, prequantized)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/generations/fa43c4ede21defc425cec9faa9d628a2/env/lib/python3.12/site-packages/cozy_runtime/internal/encoding/leaves.py\", line 278, in linear\n    return int8_linear.landed(ops.linear(torch, cast, data, scale, bias, out_dtype), out)\n                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/generations/fa43c4ede21defc425cec9faa9d628a2/env/lib/python3.12/site-packages/cozy_runtime/internal/int8_linear.py\", line 273, in linear\n    out = eager(torch, x, data, scale, out_dtype)\n          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/generations/fa43c4ede21defc425cec9faa9d628a2/env/lib/python3.12/site-packages/cozy_runtime/internal/int8_linear.py\", line 404, in eager\n    quantized, row_scale = quantize_rows(torch, x)\n                           ^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/generations/fa43c4ede21defc425cec9faa9d628a2/env/lib/python3.12/site-packages/cozy_runtime/internal/int8_linear.py\", line 412, in quantize_rows\n    rotated = hadamard256(torch, x.reshape(-1, x.shape[-1]).float()).mul_(1.0 / 16)\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/generations/fa43c4ede21defc425cec9faa9d628a2/env/lib/python3.12/site-packages/cozy_runtime/internal/encoding/formats.py\", line 631, in hadamard256\n    return hadamard(torch, values, CONVROT_GROUP)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/generations/fa43c4ede21defc425cec9faa9d628a2/env/lib/python3.12/site-packages/cozy_runtime/internal/encoding/formats.py\", line 623, in hadamard\n    work = values.reshape(-1, *([4] * digits))\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nRuntimeError: shape '[-1, 4, 4, 4, 4]' is invalid for input of size 3611520"
+  },
+  "output": [],
+  "created_at_ms": 1793536833256,
+  "accepted_at_ms": 1793536833664,
+  "started_at_ms": 1793536835186,
+  "settled_at_ms": 1793536847985,
+  "execution_ms": 12668,
+  "measurements": {
+    "attribution": {
+      "folded_names": 0,
+      "method": "perf_counter deltas accumulated in place: count/total/min/max/first/last and wall bounds per named span; step tracks keep up to 512 [end_unix_ms, ms] points",
+      "stages": {},
+      "steps": {}
+    },
+    "execution": {
+      "construction": {
+        "fill_ms": 0.0,
+        "legs_ms": {},
+        "prepare_ms": 0.0,
+        "prepared_unix_ms": 0,
+        "warm_ms": 0.0
+      },
+      "cuts": {
+        "levels": {},
+        "oom_floor": 0,
+        "sites": []
+      },
+      "degree": 1,
+      "executor": {
+        "legs_ms": {
+          "cuda_init": 777.9,
+          "package_import": 2918.3,
+          "package_warmup": 0.0,
+          "torch_import": 0.0
+        },
+        "ms": 3696.2,
+        "started_unix_ms": 1793536835191
+      },
+      "gpus": [
+        {
+          "arch": "sm_89",
+          "attention": {
+            "impl": "cozy _attn4 (int4 Q·Kᵀ, Kitchen int8 P·V)",
+            "observed": "",
+            "requested": ""
+          },
+          "end_us": 1793536847814353,
+          "gpu": 0,
+          "pid": 1099,
+          "start_us": 1793536838914604,
+          "uuid": "GPU-001d94d1-0a24-f46e-9917-aeacf408c95f"
+        }
+      ],
+      "loops": [
+        {
+          "at_ms": {
+            "entered": 1793536839879.1,
+            "returned": 1793536840037.2
+          },
+          "mode": "eager",
+          "native_steps": 0,
+          "refusals": [
+            "one step"
+          ],
+          "reused": false,
+          "steps": 1
+        },
+        {
+          "at_ms": {
+            "entered": 1793536841115.0,
+            "returned": 1793536841270.6
+          },
+          "mode": "eager",
+          "native_steps": 0,
+          "refusals": [
+            "one step"
+          ],
+          "reused": false,
+          "steps": 1
+        },
+        {
+          "at_ms": {
+            "entered": 1793536842360.8,
+            "returned": 1793536842535.1
+          },
+          "mode": "eager",
+          "native_steps": 0,
+          "refusals": [
+            "one step"
+          ],
+          "reused": false,
+          "steps": 1
+        },
+        {
+          "at_ms": {
+            "entered": 1793536843621.0,
+            "returned": 1793536843999.2
+          },
+          "mode": "eager",
+          "native_steps": 0,
+          "refusals": [
+            "one step"
+          ],
+          "reused": false,
+          "steps": 1
+        },
+        {
+          "at_ms": {
+            "entered": 1793536845182.3,
+            "returned": 1793536845327.5
+          },
+          "mode": "eager",
+          "native_steps": 0,
+          "refusals": [
+            "one step"
+          ],
+          "reused": false,
+          "steps": 1
+        },
+        {
+          "at_ms": {
+            "entered": 1793536845327.7,
+            "returned": 1793536845564.8
+          },
+          "mode": "eager",
+          "native_steps": 0,
+          "refusals": [
+            "one step"
+          ],
+          "reused": false,
+          "steps": 1
+        },
+        {
+          "at_ms": {
+            "entered": 1793536845779.9,
+            "returned": 1793536845809.6
+          },
+          "mode": "eager",
+          "native_steps": 0,
+          "refusals": [
+            "one step"
+          ],
+          "reused": false,
+          "steps": 1
+        },
+        {
+          "at_ms": {
+            "entered": 1793536847184.6,
+            "returned": 1793536847371.9
+          },
+          "mode": "eager",
+          "native_steps": 0,
+          "refusals": [
+            "one step"
+          ],
+          "reused": false,
+          "steps": 1
+        },
+        {
+          "at_ms": {
+            "entered": 1793536847441.1,
+            "returned": 1793536847614.6
+          },
+          "mode": "eager",
+          "native_steps": 0,
+          "refusals": [
+            "one step"
+          ],
+          "reused": false,
+          "steps": 1
+        },
+        {
+          "at_ms": {
+            "entered": 1793536847655.9,
+            "returned": 1793536847808.3
+          },
+          "mode": "eager",
+          "native_steps": 0,
+          "refusals": [
+            "one step"
+          ],
+          "reused": false,
+          "steps": 1
+        }
+      ],
+      "on_demand": {},
+      "plan": {},
+      "plan_reports": {},
+      "reply_built_unix_ms": 1793536847828.7,
+      "reply_sent_unix_ms": 1793536847829.1,
+      "spread": {}
+    },
+    "memory": {
+      "driver": [
+        {
+          "before_bytes": 3997696,
+          "gpu": 0,
+          "peak_bytes": 1811021824,
+          "power_max_w": 59,
+          "sm_mhz_limit": 3135,
+          "sm_mhz_low": 2550,
+          "sm_mhz_mean": 2550,
+          "temperature_max_c": 33,
+          "throttled_share": 0.0,
+          "throttles": []
+        }
+      ],
+      "peak_allocated_bytes": 932319652,
+      "peak_reserved_bytes": 218103808,
+      "stats": {
+        "varena": [
+          {
+            "ceiling": {
+              "disk_gbps": 0.009925759462459778,
+              "h2d_gbps": 13.352106847313458
+            },
+            "gpu": 0,
+            "stats": {
+              "allocated": 17039360,
+              "allocator": {
+                "allocations": 226,
+                "context_joins": 0,
+                "driver_memory_calls": 664,
+                "event_queries": 261,
+                "event_records": 210,
+                "event_waits": 0,
+                "frees": 226,
+                "ooms": 1
+              },
+              "allocator_scope": "process",
+              "baked_pages": {
+                "bytes": 0,
+                "cap": 67061553152,
+                "pages": 0,
+                "pinned": true,
+                "room": -1,
+                "scope": "the host tier: every streamed page's bytes, pinned",
+                "wanted": 0
+              },
+              "final_bindings": {
+                "fallback_blocks": 0,
+                "fills": 0,
+                "final_resident_bytes": 0,
+                "hits": 0,
+                "native_prefetch": true,
+                "raw_resident_bytes": 0,
+                "resident_scope": "process"
+              },
+              "gathered": 0,
+              "host": null,
+              "moved": {
+                "baked": {
+                  "bytes": 0,
+                  "fills": 0,
+                  "ns": 0
+                },
+                "store": {
+                  "bytes": 0,
+                  "ns": 0
+                }
+              },
+              "overlapping": false,
+              "peak": 932319652,
+              "peak_window": "Working high-water plus sampled native backing, carried across resets; other constructions' resident sets left out",
+              "phase_policy_supported": true,
+              "phases": [],
+              "prefetch": {
+                "canceled": 0,
+                "completed": 0,
+                "declined_native": 0,
+                "failed": 0,
+                "queued": [],
+                "scope": "immutable stored RAW; native measured admission; unknown keys decline",
+                "started": 0,
+                "unsupported_sources": {},
+                "wait_ns": 0
+              },
+              "request": "12",
+              "reserved": 218103808,
+              "room_first_pass": null,
+              "sets": {},
+              "trace": [],
+              "trace_scope": "fills",
+              "weight_residency": {
+                "context_joins": 0,
+                "event_waits": 0,
+                "evictions": 0,
+                "fills": 0,
+                "hits": 0,
+                "pinned_bytes": 0,
+                "poisoned": false,
+                "preferred_bytes": 0,
+                "ready_bytes": 0,
+                "reclaimable_bytes": 0,
+                "reclaimed_by_reason": {
+                  "allocator": 0,
+                  "requested": 0,
+                  "room": 0,
+                  "streaming_limit": 0,
+                  "weight_allocation": 0
+                },
+                "reclaimed_bytes": 0,
+                "regions": 0,
+                "reserved_bytes": 0,
+                "resident_bytes": 0,
+                "streaming_limit_bytes": 18446744073709551615
+              },
+              "working_allocator": {
+                "allocated_bytes": 17039360,
+                "allocated_capacity": 20971520,
+                "allocated_peak": 932319652,
+                "allocations": 1961,
+                "context_joins": 0,
+                "driver_memory_calls": 770,
+                "event_handles": 13,
+                "event_queries": 507,
+                "event_records": 433,
+                "event_waits": 0,
+                "free_bytes": 7698944,
+                "frees": 1959,
+                "mapped_bytes": 218103808,
+                "mapped_peak": 1291845632,
+                "ooms": 1,
+                "pending_bytes": 189425152,
+                "pools": 0,
+                "pools_bytes": 0,
+                "prefetch_admissions": 0,
+                "prefetch_attempts": 0,
+                "prefetch_declines": 0,
+                "reclaimable_bytes": 0,
+                "unassigned_bytes": 8192
+              },
+              "working_phases": [
+                {
+                  "backing_peak_bytes": 694157312,
+                  "cut_choices": 1,
+                  "definitions": [],
+                  "invalidated": false,
+                  "key": null,
+                  "mode": "eager",
+                  "observation_id": 1,
+                  "peak_bytes": 684409344,
+                  "published": false,
+                  "reason": "execution_key_unknown",
+                  "split_observations": [
+                    {
+                      "backing_peak_bytes": 692060160,
+                      "choice_id": "heads:56/full:0:5/tail:0:5",
+                      "key": "runtime.split.projected_heads/1:f447fd46099c31fb079f413d25d5937280e98aeff06607ecd92e18ff2c6979cf",
+                      "observation_id": 1,
+                      "observed": true,
+                      "peak_bytes": 684408832,
+                      "pending": false,
+                      "published": true,
+                      "reason": "",
+                      "successful_passes": 1
+                    }
+                  ],
+                  "successful_backing_peak_bytes": 0,
+                  "successful_passes": 0,
+                  "successful_peak_bytes": 0,
+                  "total_peak_bytes": 963521024
+                },
+                {
+                  "backing_peak_bytes": 459276288,
+                  "cut_choices": 1,
+                  "definitions": [],
+                  "invalidated": false,
+                  "key": null,
+                  "mode": "eager",
+                  "observation_id": 2,
+                  "peak_bytes": 449184256,
+                  "published": false,
+                  "reason": "execution_key_unknown",
+                  "split_observations": [
+                    {
+                      "backing_peak_bytes": 457179136,
+                      "choice_id": "heads:28/full:0:5/tail:0:5",
+                      "key": "runtime.split.projected_heads/1:f447fd46099c31fb079f413d25d5937280e98aeff06607ecd92e18ff2c6979cf",
+                      "observation_id": 2,
+                      "observed": true,
+                      "peak_bytes": 449183744,
+                      "pending": false,
+                      "published": true,
+                      "reason": "",
+                      "successful_passes": 1
+                    }
+                  ],
+                  "successful_backing_peak_bytes": 0,
+                  "successful_passes": 0,
+                  "successful_peak_bytes": 0,
+                  "total_peak_bytes": 963521024
+                },
+                {
+                  "backing_peak_bytes": 262144000,
+                  "cut_choices": 1,
+                  "definitions": [],
+                  "invalidated": false,
+                  "key": null,
+                  "mode": "eager",
+                  "observation_id": 3,
+                  "peak_bytes": 251793920,
+                  "published": false,
+                  "reason": "execution_key_unknown",
+                  "split_observations": [
+                    {
+                      "backing_peak_bytes": 260046848,
+                      "choice_id": "heads:7/full:0:4/tail:0:4",
+                      "key": "runtime.split.projected_heads/1:f447fd46099c31fb079f413d25d5937280e98aeff06607ecd92e18ff2c6979cf",
+                      "observation_id": 3,
+                      "observed": true,
+                      "peak_bytes": 251793408,
+                      "pending": false,
+                      "published": true,
+                      "reason": "",
+                      "successful_passes": 1
+                    }
+                  ],
+                  "successful_backing_peak_bytes": 0,
+                  "successful_passes": 0,
+                  "successful_peak_bytes": 0,
+                  "total_peak_bytes": 728295936
+                },
+                {
+                  "backing_peak_bytes": 190840832,
+                  "cut_choices": 1,
+                  "definitions": [],
+                  "invalidated": false,
+                  "key": null,
+                  "mode": "eager",
+                  "observation_id": 4,
+                  "peak_bytes": 181992960,
+                  "published": false,
+                  "reason": "execution_key_unknown",
+                  "split_observations": [
+                    {
+                      "backing_peak_bytes": 190840832,
+                      "choice_id": "heads:1/full:0:2/tail:0:2",
+                      "key": "runtime.split.projected_heads/1:f447fd46099c31fb079f413d25d5937280e98aeff06607ecd92e18ff2c6979cf",
+                      "observation_id": 4,
+                      "observed": true,
+                      "peak_bytes": 181992448,
+                      "pending": false,
+                      "published": true,
+                      "reason": "",
+                      "successful_passes": 1
+                    }
+                  ],
+                  "successful_backing_peak_bytes": 0,
+                  "successful_passes": 0,
+                  "successful_peak_bytes": 0,
+                  "total_peak_bytes": 530905600
+                },
+                {
+                  "backing_peak_bytes": 2097152,
+                  "cut_choices": 0,
+                  "definitions": [],
+                  "invalidated": true,
+                  "key": null,
+                  "mode": "eager",
+                  "observation_id": 5,
+                  "peak_bytes": 512,
+                  "published": false,
+                  "reason": "split_select_error",
+                  "split_observations": [],
+                  "successful_backing_peak_bytes": 0,
+                  "successful_passes": 0,
+                  "successful_peak_bytes": 0,
+                  "total_peak_bytes": 461104640
+                },
+                {
+                  "backing_peak_bytes": 459276288,
+                  "cut_choices": 1,
+                  "definitions": [],
+                  "invalidated": true,
+                  "key": null,
+                  "mode": "eager",
+                  "observation_id": 6,
+                  "peak_bytes": 449184256,
+                  "published": false,
+                  "reason": "allocation_error",
+                  "split_observations": [
+                    {
+                      "backing_peak_bytes": 457179136,
+                      "choice_id": "heads:28/full:0:5/tail:0:5",
+                      "key": "runtime.split.projected_heads/1:f447fd46099c31fb079f413d25d5937280e98aeff06607ecd92e18ff2c6979cf",
+                      "observation_id": 5,
+                      "observed": true,
+                      "peak_bytes": 449183744,
+                      "pending": false,
+                      "published": false,
+                      "reason": "allocation_error",
+                      "successful_passes": 1
+                    }
+                  ],
+                  "successful_backing_peak_bytes": 0,
+                  "successful_passes": 0,
+                  "successful_peak_bytes": 0,
+                  "total_peak_bytes": 728295936
+                },
+                {
+                  "backing_peak_bytes": 784334848,
+                  "cut_choices": 2,
+                  "definitions": [],
+                  "invalidated": false,
+                  "key": null,
+                  "mode": "eager",
+                  "observation_id": 7,
+                  "peak_bytes": 774586880,
+                  "published": false,
+                  "reason": "execution_key_unknown",
+                  "split_observations": [
+                    {
+                      "backing_peak_bytes": 692060160,
+                      "choice_id": "heads:56/full:0:5/tail:0:5",
+                      "key": "runtime.split.projected_heads/1:f447fd46099c31fb079f413d25d5937280e98aeff06607ecd92e18ff2c6979cf",
+                      "observation_id": 6,
+                      "observed": true,
+                      "peak_bytes": 684408832,
+                      "pending": false,
+                      "published": true,
+                      "reason": "",
+                      "successful_passes": 2
+                    },
+                    {
+                      "backing_peak_bytes": 188743680,
+                      "choice_id": "rows:8195/full:0:5/tail:8195:0:5",
+                      "key": "runtime.split.int8_linear/1:b73e73e44dddecb1ab66e5a12326684345bb79ca8b6f0fc41b53d9190e2790e2",
+                      "observation_id": 7,
+                      "observed": true,
+                      "peak_bytes": 186695680,
+                      "pending": false,
+                      "published": true,
+                      "reason": "",
+                      "successful_passes": 1
+                    }
+                  ],
+                  "successful_backing_peak_bytes": 0,
+                  "successful_passes": 0,
+                  "successful_peak_bytes": 0,
+                  "total_peak_bytes": 1053698560
+                },
+                {
+                  "backing_peak_bytes": 75497472,
+                  "cut_choices": 1,
+                  "definitions": [],
+                  "invalidated": false,
+                  "key": null,
+                  "mode": "eager",
+                  "observation_id": 8,
+                  "peak_bytes": 65170944,
+                  "published": false,
+                  "reason": "execution_key_unknown",
+                  "split_observations": [
+                    {
+                      "backing_peak_bytes": 73400320,
+                      "choice_id": "heads:55/full:0:4/tail:0:4",
+                      "key": "runtime.split.projected_heads/1:f1e87e9f12eb2eefa494887411770193cec8af799b78c8d97798bc286b19d28f",
+                      "observation_id": 8,
+                      "observed": true,
+                      "peak_bytes": 65170432,
+                      "pending": false,
+                      "published": true,
+                      "reason": "",
+                      "successful_passes": 1
+                    }
+                  ],
+                  "successful_backing_peak_bytes": 0,
+                  "successful_passes": 0,
+                  "successful_peak_bytes": 0,
+                  "total_peak_bytes": 252532224
+                },
+                {
+                  "backing_peak_bytes": 58720256,
+                  "cut_choices": 1,
+                  "definitions": [],
+                  "invalidated": false,
+                  "key": null,
+                  "mode": "eager",
+                  "observation_id": 9,
+                  "peak_bytes": 48315904,
+                  "published": false,
+                  "reason": "execution_key_unknown",
+                  "split_observations": [
+                    {
+                      "backing_peak_bytes": 56623104,
+                      "choice_id": "heads:28/full:0:4/tail:0:4",
+                      "key": "runtime.split.projected_heads/1:f1e87e9f12eb2eefa494887411770193cec8af799b78c8d97798bc286b19d28f",
+                      "observation_id": 9,
+                      "observed": true,
+                      "peak_bytes": 48315392,
+                      "pending": false,
+                      "published": true,
+                      "reason": "",
+                      "successful_passes": 1
+                    }
+                  ],
+                  "successful_backing_peak_bytes": 0,
+                  "successful_passes": 0,
+                  "successful_peak_bytes": 0,
+                  "total_peak_bytes": 252532224
+                },
+                {
+                  "backing_peak_bytes": 2097152,
+                  "cut_choices": 0,
+                  "definitions": [],
+                  "invalidated": true,
+                  "key": null,
+                  "mode": "eager",
+                  "observation_id": 10,
+                  "peak_bytes": 512,
+                  "published": false,
+                  "reason": "split_select_error",
+                  "split_observations": [],
+                  "successful_backing_peak_bytes": 0,
+                  "successful_passes": 0,
+                  "successful_peak_bytes": 0,
+                  "total_peak_bytes": 235677184
+                }
+              ],
+              "working_splits": [
+                {
+                  "backend": "_cozy_kitchen_int4qk",
+                  "choices": [
+                    [
+                      "heads:56/full:0:5/tail:0:5",
+                      [
+                        117483520,
+                        117483520,
+                        117483520,
+                        117483520,
+                        44056320,
+                        32780,
+                        33554944,
+                        29370880,
+                        29370880,
+                        59637760,
+                        465920,
+                        58240,
+                        28672,
+                        28672,
+                        28672
+                      ]
+                    ],
+                    [
+                      "heads:28/full:0:5/tail:0:5",
+                      [
+                        117483520,
+                        58741760,
+                        58741760,
+                        58741760,
+                        44056320,
+                        32780,
+                        33554944,
+                        14685440,
+                        14685440,
+                        29818880,
+                        232960,
+                        29120,
+                        14336,
+                        14336,
+                        14336
+                      ]
+                    ],
+                    [
+                      "heads:14/full:0:5/tail:0:5",
+                      [
+                        117483520,
+                        29370880,
+                        29370880,
+                        29370880,
+                        44056320,
+                        32780,
+                        33554944,
+                        7342720,
+                        7342720,
+                        14909440,
+                        116480,
+                        14560,
+                        7168,
+                        7168,
+                        7168
+                      ]
+                    ],
+                    [
+                      "heads:7/full:0:4/tail:0:4",
+                      [
+                        117483520,
+                        14685440,
+                        14685440,
+                        14685440,
+                        44056320,
+                        32780,
+                        16777728,
+                        3671360,
+                        3671360,
+                        7454720,
+                        58240,
+                        7280,
+                        3584,
+                        3584,
+                        3584
+                      ]
+                    ],
+                    [
+                      "heads:4/full:0:5/tail:0:5",
+                      [
+                        117483520,
+                        8391680,
+                        8391680,
+                        8391680,
+                        44056320,
+                        32780,
+                        33554944,
+                        2097920,
+                        2097920,
+                        4259840,
+                        33280,
+                        4160,
+                        2048,
+                        2048,
+                        2048
+                      ]
+                    ],
+                    [
+                      "heads:2/full:0:0/tail:0:0",
+                      [
+                        117483520,
+                        4195840,
+                        4195840,
+                        4195840,
+                        44056320,
+                        32780,
+                        1048960,
+                        1048960,
+                        2129920,
+                        16640,
+                        2080,
+                        1024,
+                        1024,
+                        1024
+                      ]
+                    ],
+                    [
+                      "heads:1/full:0:2/tail:0:2",
+                      [
+                        117483520,
+                        2097920,
+                        2097920,
+                        2097920,
+                        44056320,
+                        32780,
+                        524480,
+                        524480,
+                        1064960,
+                        8320,
+                        1040,
+                        512,
+                        512,
+                        512
+                      ]
+                    ]
+                  ],
+                  "head_chunk": 56,
+                  "implementation": "kitchen-int4qk",
+                  "key": "runtime.split.projected_heads/1:f447fd46099c31fb079f413d25d5937280e98aeff06607ecd92e18ff2c6979cf",
+                  "selection": {
+                    "allocation_backing_bytes": 692060160,
+                    "available_bytes": 23903076352,
+                    "basis": "measured",
+                    "choice_id": "heads:56/full:0:5/tail:0:5",
+                    "eligible": [
+                      "heads:56/full:0:5/tail:0:5",
+                      "heads:28/full:0:5/tail:0:5",
+                      "heads:14/full:0:5/tail:0:5",
+                      "heads:7/full:0:4/tail:0:4",
+                      "heads:4/full:0:5/tail:0:5",
+                      "heads:2/full:0:0/tail:0:0",
+                      "heads:1/full:0:2/tail:0:2"
+                    ],
+                    "measured_backing_peak_bytes": 692060160,
+                    "preserved_backing_bytes": 297795584,
+                    "reclaimable_working_bytes": 0,
+                    "reclaimed_weight_bytes": 0,
+                    "reclaimed_working_bytes": 0,
+                    "required_bytes": 394264576,
+                    "reused_capacity_bytes": 293748736,
+                    "stream": 0
+                  },
+                  "selections": 6,
+                  "site": "projected-heads",
+                  "submission": {
+                    "backing_peak_bytes": 692060160,
+                    "choice_id": "heads:56/full:0:5/tail:0:5",
+                    "key": "runtime.split.projected_heads/1:f447fd46099c31fb079f413d25d5937280e98aeff06607ecd92e18ff2c6979cf",
+                    "observation_id": 6,
+                    "observed": true,
+                    "peak_bytes": 684408832,
+                    "pending": true,
+                    "published": false,
+                    "reason": "",
+                    "successful_passes": 0
+                  },
+                  "workspace_bytes": 33554944
+                },
+                {
+                  "dispatch": {
+                    "full": {
+                      "config": 5,
+                      "kind": 0,
+                      "rows": 8195,
+                      "workspace": 33554944
+                    },
+                    "tail": {
+                      "config": 5,
+                      "kind": 0,
+                      "rows": 8195,
+                      "workspace": 33554944
+                    }
+                  },
+                  "key": "runtime.split.int8_linear/1:b73e73e44dddecb1ab66e5a12326684345bb79ca8b6f0fc41b53d9190e2790e2",
+                  "row_chunk": 8195,
+                  "selection": {
+                    "allocation_backing_bytes": 188743680,
+                    "available_bytes": 23668195328,
+                    "basis": "declared",
+                    "choice_id": "rows:8195/full:0:5/tail:8195:0:5",
+                    "eligible": [
+                      "rows:8195/full:0:5/tail:8195:0:5",
+                      "rows:4098/full:0:1/tail:4097:0:1",
+                      "rows:2049/full:0:0/tail:2048:0:0",
+                      "rows:1025/full:0:1/tail:1020:0:1",
+                      "rows:513/full:0:4/tail:500:0:4",
+                      "rows:257/full:0:4/tail:228:0:4",
+                      "rows:129/full:0:4/tail:68:0:6",
+                      "rows:65/full:0:6/tail:5:0:3",
+                      "rows:33/full:0:6/tail:11:0:3",
+                      "rows:17/full:0:6/tail:1:1:-1",
+                      "rows:9/full:0:3/tail:5:0:3",
+                      "rows:5/full:0:3/tail:5:0:3",
+                      "rows:3/full:1:-1/tail:2:1:-1",
+                      "rows:2/full:1:-1/tail:1:1:-1",
+                      "rows:1/full:1:-1/tail:1:1:-1"
+                    ],
+                    "measured_backing_peak_bytes": null,
+                    "preserved_backing_bytes": 188743680,
+                    "reclaimable_working_bytes": 159383552,
+                    "reclaimed_weight_bytes": 0,
+                    "reclaimed_working_bytes": 0,
+                    "required_bytes": 0,
+                    "reused_capacity_bytes": 186695680,
+                    "stream": 0
+                  },
+                  "selections": 1,
+                  "site": "int8-linear-rows",
+                  "submission": {
+                    "backing_peak_bytes": 188743680,
+                    "choice_id": "rows:8195/full:0:5/tail:8195:0:5",
+                    "key": "runtime.split.int8_linear/1:b73e73e44dddecb1ab66e5a12326684345bb79ca8b6f0fc41b53d9190e2790e2",
+                    "observation_id": 7,
+                    "observed": true,
+                    "peak_bytes": 186695680,
+                    "pending": true,
+                    "published": false,
+                    "reason": "",
+                    "successful_passes": 0
+                  },
+                  "workspace_bytes": 33554944
+                },
+                {
+                  "backend": "_cozy_kitchen_int4qk",
+                  "choices": [
+                    [
+                      "heads:55/full:0:4/tail:0:4",
+                      [
+                        7223040,
+                        7223040,
+                        7223040,
+                        7223040,
+                        2757888,
+                        2052,
+                        16777728,
+                        1805760,
+                        1805760,
+                        4055040,
+                        35200,
+                        7920,
+                        28160,
+                        28160,
+                        28160
+                      ]
+                    ],
+                    [
+                      "heads:28/full:0:4/tail:0:4",
+                      [
+                        7223040,
+                        3677184,
+                        3677184,
+                        3677184,
+                        2757888,
+                        2052,
+                        16777728,
+                        919296,
+                        919296,
+                        2064384,
+                        17920,
+                        4032,
+                        14336,
+                        14336,
+                        14336
+                      ]
+                    ],
+                    [
+                      "heads:14/full:0:2/tail:0:2",
+                      [
+                        7223040,
+                        1838592,
+                        1838592,
+                        1838592,
+                        2757888,
+                        2052,
+                        459648,
+                        459648,
+                        1032192,
+                        8960,
+                        2016,
+                        7168,
+                        7168,
+                        7168
+                      ]
+                    ],
+                    [
+                      "heads:7/full:0:2/tail:0:2",
+                      [
+                        7223040,
+                        919296,
+                        919296,
+                        919296,
+                        2757888,
+                        2052,
+                        229824,
+                        229824,
+                        516096,
+                        4480,
+                        1008,
+                        3584,
+                        3584,
+                        3584
+                      ]
+                    ],
+                    [
+                      "heads:4/full:0:2/tail:0:3",
+                      [
+                        7223040,
+                        525312,
+                        525312,
+                        525312,
+                        2757888,
+                        2052,
+                        131328,
+                        131328,
+                        294912,
+                        2560,
+                        576,
+                        2048,
+                        2048,
+                        2048
+                      ]
+                    ],
+                    [
+                      "heads:2/full:0:3/tail:0:3",
+                      [
+                        7223040,
+                        262656,
+                        262656,
+                        262656,
+                        2757888,
+                        2052,
+                        65664,
+                        65664,
+                        147456,
+                        1280,
+                        288,
+                        1024,
+                        1024,
+                        1024
+                      ]
+                    ],
+                    [
+                      "heads:1/full:0:3/tail:0:3",
+                      [
+                        7223040,
+                        131328,
+                        131328,
+                        131328,
+                        2757888,
+                        2052,
+                        32832,
+                        32832,
+                        73728,
+                        640,
+                        144,
+                        512,
+                        512,
+                        512
+                      ]
+                    ]
+                  ],
+                  "head_chunk": 28,
+                  "implementation": "kitchen-int4qk",
+                  "key": "runtime.split.projected_heads/1:f1e87e9f12eb2eefa494887411770193cec8af799b78c8d97798bc286b19d28f",
+                  "selection": {
+                    "allocation_backing_bytes": 56623104,
+                    "available_bytes": 54525952,
+                    "basis": "declared",
+                    "choice_id": "heads:28/full:0:4/tail:0:4",
+                    "eligible": [
+                      "heads:28/full:0:4/tail:0:4",
+                      "heads:14/full:0:2/tail:0:2",
+                      "heads:7/full:0:2/tail:0:2",
+                      "heads:4/full:0:2/tail:0:3",
+                      "heads:2/full:0:3/tail:0:3",
+                      "heads:1/full:0:3/tail:0:3"
+                    ],
+                    "measured_backing_peak_bytes": null,
+                    "preserved_backing_bytes": 2097152,
+                    "reclaimable_working_bytes": 0,
+                    "reclaimed_weight_bytes": 0,
+                    "reclaimed_working_bytes": 0,
+                    "required_bytes": 54525952,
+                    "reused_capacity_bytes": 24576,
+                    "stream": 0
+                  },
+                  "selections": 2,
+                  "site": "projected-heads",
+                  "submission": {
+                    "backing_peak_bytes": 56623104,
+                    "choice_id": "heads:28/full:0:4/tail:0:4",
+                    "key": "runtime.split.projected_heads/1:f1e87e9f12eb2eefa494887411770193cec8af799b78c8d97798bc286b19d28f",
+                    "observation_id": 9,
+                    "observed": true,
+                    "peak_bytes": 48315392,
+                    "pending": true,
+                    "published": false,
+                    "reason": "",
+                    "successful_passes": 0
+                  },
+                  "workspace_bytes": 16777728
+                }
+              ]
+            },
+            "torch_peak": 932319652
+          }
+        ]
+      }
+    },
+    "models": [],
+    "observations": [],
+    "residency": {
+      "graphs": {},
+      "notes": {}
+    },
+    "software": {
+      "attempt_ordinal": 1,
+      "runtime": "0.36.21+dev.gdae97328",
+      "tensord": "0.15.4+dev.gafa6f922",
+      "tensord_commit": "afa6f9229153d1a7e93bbf72fc86f5543a4ac21c",
+      "tensorfs": "0.17.16+dev.gb20f699c"
+    }
+  }
+}

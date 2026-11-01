@@ -1,0 +1,734 @@
+{
+  "id": "run-68fc996cb85edfa0d248d42d",
+  "number": 25213,
+  "kind": "call",
+  "target": "local/ci-varena-projected-heads/gpu",
+  "hub": "https://tensorhub.com",
+  "machine": "leopold",
+  "status": "failed",
+  "cancel_requested": false,
+  "machine_state": "running",
+  "reason": {
+    "code": "unhandled_exception",
+    "message": "AssertionError: ",
+    "origin": "author",
+    "detail": "Traceback (most recent call last):\n  File \"/var/lib/cozy/tensord/generations/d18b233111860d5df56d4e8c754a3175/env/lib/python3.12/site-packages/cozy_runtime/author/_invoke.py\", line 564, in run_prepared\n    return invoke(prepared, inv, record), SUCCEEDED, record\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/generations/d18b233111860d5df56d4e8c754a3175/env/lib/python3.12/site-packages/cozy_runtime/author/_invoke.py\", line 493, in invoke\n    result = _call(surface, kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/generations/d18b233111860d5df56d4e8c754a3175/env/lib/python3.12/site-packages/cozy_runtime/author/_invoke.py\", line 1042, in _call\n    return surface.fn(**kwargs)\n           ^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/editable/3a5261caf7bdd639/ci-varena-projected-heads/source-b2f1ae2a7265e999e8e8b8bc2362c0a80757a11fe84a94023e500e53ec4f987f/tree/ci_varena_projected_heads/__init__.py\", line 416, in gpu\n    assert owner_result['seeded_heads'] == heads and len(phase['split_observations']) == 2\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError"
+  },
+  "output": [],
+  "created_at_ms": 1793536608387,
+  "accepted_at_ms": 1793536608737,
+  "started_at_ms": 1793536610571,
+  "settled_at_ms": 1793536621488,
+  "execution_ms": 10808,
+  "measurements": {
+    "attribution": {
+      "folded_names": 0,
+      "method": "perf_counter deltas accumulated in place: count/total/min/max/first/last and wall bounds per named span; step tracks keep up to 512 [end_unix_ms, ms] points",
+      "stages": {},
+      "steps": {}
+    },
+    "execution": {
+      "construction": {
+        "fill_ms": 0.0,
+        "legs_ms": {},
+        "prepare_ms": 0.0,
+        "prepared_unix_ms": 0,
+        "warm_ms": 0.0
+      },
+      "cuts": {
+        "levels": {
+          "split:_native_leaf_class.<locals>.NativeLinear(1, -1, 7168):torch.bfloat16": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "oom_floor": 0,
+        "sites": [
+          {
+            "descent": 0,
+            "level": 7,
+            "need": 0,
+            "retries": 0,
+            "site": "split:_native_leaf_class.<locals>.NativeLinear(1, -1, 7168):torch.bfloat16",
+            "tier": "cold"
+          }
+        ]
+      },
+      "degree": 1,
+      "executor": {
+        "legs_ms": {
+          "cuda_init": 812.2,
+          "package_import": 3185.4,
+          "package_warmup": 0.0,
+          "torch_import": 0.0
+        },
+        "ms": 3997.6,
+        "started_unix_ms": 1793536610580
+      },
+      "gpus": [
+        {
+          "arch": "sm_89",
+          "attention": {
+            "impl": "cozy _attn4 (int4 Q·Kᵀ, Kitchen int8 P·V)",
+            "observed": "",
+            "requested": ""
+          },
+          "end_us": 1793536621350571,
+          "gpu": 0,
+          "pid": 958,
+          "start_us": 1793536614604976,
+          "uuid": "GPU-001d94d1-0a24-f46e-9917-aeacf408c95f"
+        }
+      ],
+      "loops": [
+        {
+          "at_ms": {
+            "entered": 1793536615608.5,
+            "returned": 1793536615774.4
+          },
+          "mode": "eager",
+          "native_steps": 0,
+          "refusals": [
+            "one step"
+          ],
+          "reused": false,
+          "steps": 1
+        },
+        {
+          "at_ms": {
+            "entered": 1793536616893.0,
+            "returned": 1793536617072.0
+          },
+          "mode": "eager",
+          "native_steps": 0,
+          "refusals": [
+            "one step"
+          ],
+          "reused": false,
+          "steps": 1
+        },
+        {
+          "at_ms": {
+            "entered": 1793536618178.9,
+            "returned": 1793536618354.3
+          },
+          "mode": "eager",
+          "native_steps": 0,
+          "refusals": [
+            "one step"
+          ],
+          "reused": false,
+          "steps": 1
+        },
+        {
+          "at_ms": {
+            "entered": 1793536619433.2,
+            "returned": 1793536619808.7
+          },
+          "mode": "eager",
+          "native_steps": 0,
+          "refusals": [
+            "one step"
+          ],
+          "reused": false,
+          "steps": 1
+        },
+        {
+          "at_ms": {
+            "entered": 1793536620894.4,
+            "returned": 1793536621037.4
+          },
+          "mode": "eager",
+          "native_steps": 0,
+          "refusals": [
+            "one step"
+          ],
+          "reused": false,
+          "steps": 1
+        },
+        {
+          "at_ms": {
+            "entered": 1793536621037.7,
+            "returned": 1793536621247.0
+          },
+          "mode": "eager",
+          "native_steps": 0,
+          "refusals": [
+            "one step"
+          ],
+          "reused": false,
+          "steps": 1
+        },
+        {
+          "at_ms": {
+            "entered": 1793536621309.0,
+            "returned": 1793536621339.2
+          },
+          "mode": "eager",
+          "native_steps": 0,
+          "refusals": [
+            "one step"
+          ],
+          "reused": false,
+          "steps": 1
+        }
+      ],
+      "on_demand": {},
+      "plan": {},
+      "plan_reports": {},
+      "reply_built_unix_ms": 1793536621363.9,
+      "reply_sent_unix_ms": 1793536621364.4,
+      "spread": {}
+    },
+    "memory": {
+      "driver": [
+        {
+          "before_bytes": 3997696,
+          "gpu": 0,
+          "peak_bytes": 1498546176,
+          "power_max_w": 58,
+          "sm_mhz_limit": 3135,
+          "sm_mhz_low": 2550,
+          "sm_mhz_mean": 2550,
+          "temperature_max_c": 33,
+          "throttled_share": 0.0,
+          "throttles": []
+        }
+      ],
+      "peak_allocated_bytes": 932319652,
+      "peak_reserved_bytes": 1228931072,
+      "stats": {
+        "varena": [
+          {
+            "ceiling": {
+              "disk_gbps": 0.007062883167243726,
+              "h2d_gbps": 13.352106847313458
+            },
+            "gpu": 0,
+            "stats": {
+              "allocated": 17039360,
+              "allocator": {
+                "allocations": 535,
+                "context_joins": 0,
+                "driver_memory_calls": 459,
+                "event_queries": 215,
+                "event_records": 151,
+                "event_waits": 0,
+                "frees": 535,
+                "ooms": 1
+              },
+              "allocator_scope": "process",
+              "baked_pages": {
+                "bytes": 0,
+                "cap": 67061553152,
+                "pages": 0,
+                "pinned": true,
+                "room": -1,
+                "scope": "the host tier: every streamed page's bytes, pinned",
+                "wanted": 0
+              },
+              "final_bindings": {
+                "fallback_blocks": 0,
+                "fills": 0,
+                "final_resident_bytes": 0,
+                "hits": 0,
+                "native_prefetch": true,
+                "raw_resident_bytes": 0,
+                "resident_scope": "process"
+              },
+              "gathered": 0,
+              "host": null,
+              "moved": {
+                "baked": {
+                  "bytes": 0,
+                  "fills": 0,
+                  "ns": 0
+                },
+                "store": {
+                  "bytes": 0,
+                  "ns": 0
+                }
+              },
+              "overlapping": false,
+              "peak": 932319652,
+              "peak_window": "Working high-water plus sampled native backing, carried across resets; other constructions' resident sets left out",
+              "phase_policy_supported": true,
+              "phases": [],
+              "prefetch": {
+                "canceled": 0,
+                "completed": 0,
+                "declined_native": 0,
+                "failed": 0,
+                "queued": [],
+                "scope": "immutable stored RAW; native measured admission; unknown keys decline",
+                "started": 0,
+                "unsupported_sources": {},
+                "wait_ns": 0
+              },
+              "request": "10",
+              "reserved": 1228931072,
+              "room_first_pass": null,
+              "sets": {},
+              "trace": [],
+              "trace_scope": "fills",
+              "weight_residency": {
+                "context_joins": 0,
+                "event_waits": 0,
+                "evictions": 0,
+                "fills": 0,
+                "hits": 0,
+                "pinned_bytes": 0,
+                "poisoned": false,
+                "preferred_bytes": 0,
+                "ready_bytes": 0,
+                "reclaimable_bytes": 0,
+                "reclaimed_by_reason": {
+                  "allocator": 0,
+                  "requested": 0,
+                  "room": 0,
+                  "streaming_limit": 0,
+                  "weight_allocation": 0
+                },
+                "reclaimed_bytes": 0,
+                "regions": 0,
+                "reserved_bytes": 0,
+                "resident_bytes": 0,
+                "streaming_limit_bytes": 18446744073709551615
+              },
+              "working_allocator": {
+                "allocated_bytes": 17039360,
+                "allocated_capacity": 20971520,
+                "allocated_peak": 471347992,
+                "allocations": 2270,
+                "context_joins": 0,
+                "driver_memory_calls": 565,
+                "event_handles": 29,
+                "event_queries": 455,
+                "event_records": 374,
+                "event_waits": 0,
+                "free_bytes": 170996736,
+                "frees": 2268,
+                "mapped_bytes": 1228931072,
+                "mapped_peak": 1228931072,
+                "ooms": 1,
+                "pending_bytes": 1036397568,
+                "pools": 0,
+                "pools_bytes": 0,
+                "prefetch_admissions": 0,
+                "prefetch_attempts": 0,
+                "prefetch_declines": 0,
+                "reclaimable_bytes": 159383552,
+                "unassigned_bytes": 565248
+              },
+              "working_phases": [
+                {
+                  "backing_peak_bytes": 694157312,
+                  "cut_choices": 1,
+                  "definitions": [],
+                  "invalidated": false,
+                  "key": null,
+                  "mode": "eager",
+                  "observation_id": 1,
+                  "peak_bytes": 684409344,
+                  "published": false,
+                  "reason": "execution_key_unknown",
+                  "split_observations": [
+                    {
+                      "backing_peak_bytes": 692060160,
+                      "choice_id": "heads:56/full:0:5/tail:0:5",
+                      "key": "runtime.split.projected_heads/1:f447fd46099c31fb079f413d25d5937280e98aeff06607ecd92e18ff2c6979cf",
+                      "observation_id": 1,
+                      "observed": true,
+                      "peak_bytes": 684408832,
+                      "pending": false,
+                      "published": true,
+                      "reason": "",
+                      "successful_passes": 1
+                    }
+                  ],
+                  "successful_backing_peak_bytes": 0,
+                  "successful_passes": 0,
+                  "successful_peak_bytes": 0,
+                  "total_peak_bytes": 963521024
+                },
+                {
+                  "backing_peak_bytes": 459276288,
+                  "cut_choices": 1,
+                  "definitions": [],
+                  "invalidated": false,
+                  "key": null,
+                  "mode": "eager",
+                  "observation_id": 2,
+                  "peak_bytes": 449184256,
+                  "published": false,
+                  "reason": "execution_key_unknown",
+                  "split_observations": [
+                    {
+                      "backing_peak_bytes": 457179136,
+                      "choice_id": "heads:28/full:0:5/tail:0:5",
+                      "key": "runtime.split.projected_heads/1:f447fd46099c31fb079f413d25d5937280e98aeff06607ecd92e18ff2c6979cf",
+                      "observation_id": 2,
+                      "observed": true,
+                      "peak_bytes": 449183744,
+                      "pending": false,
+                      "published": true,
+                      "reason": "",
+                      "successful_passes": 1
+                    }
+                  ],
+                  "successful_backing_peak_bytes": 0,
+                  "successful_passes": 0,
+                  "successful_peak_bytes": 0,
+                  "total_peak_bytes": 963521024
+                },
+                {
+                  "backing_peak_bytes": 262144000,
+                  "cut_choices": 1,
+                  "definitions": [],
+                  "invalidated": false,
+                  "key": null,
+                  "mode": "eager",
+                  "observation_id": 3,
+                  "peak_bytes": 251793920,
+                  "published": false,
+                  "reason": "execution_key_unknown",
+                  "split_observations": [
+                    {
+                      "backing_peak_bytes": 260046848,
+                      "choice_id": "heads:7/full:0:4/tail:0:4",
+                      "key": "runtime.split.projected_heads/1:f447fd46099c31fb079f413d25d5937280e98aeff06607ecd92e18ff2c6979cf",
+                      "observation_id": 3,
+                      "observed": true,
+                      "peak_bytes": 251793408,
+                      "pending": false,
+                      "published": true,
+                      "reason": "",
+                      "successful_passes": 1
+                    }
+                  ],
+                  "successful_backing_peak_bytes": 0,
+                  "successful_passes": 0,
+                  "successful_peak_bytes": 0,
+                  "total_peak_bytes": 728295936
+                },
+                {
+                  "backing_peak_bytes": 190840832,
+                  "cut_choices": 1,
+                  "definitions": [],
+                  "invalidated": false,
+                  "key": null,
+                  "mode": "eager",
+                  "observation_id": 4,
+                  "peak_bytes": 181992960,
+                  "published": false,
+                  "reason": "execution_key_unknown",
+                  "split_observations": [
+                    {
+                      "backing_peak_bytes": 190840832,
+                      "choice_id": "heads:1/full:0:2/tail:0:2",
+                      "key": "runtime.split.projected_heads/1:f447fd46099c31fb079f413d25d5937280e98aeff06607ecd92e18ff2c6979cf",
+                      "observation_id": 4,
+                      "observed": true,
+                      "peak_bytes": 181992448,
+                      "pending": false,
+                      "published": true,
+                      "reason": "",
+                      "successful_passes": 1
+                    }
+                  ],
+                  "successful_backing_peak_bytes": 0,
+                  "successful_passes": 0,
+                  "successful_peak_bytes": 0,
+                  "total_peak_bytes": 530905600
+                },
+                {
+                  "backing_peak_bytes": 2097152,
+                  "cut_choices": 0,
+                  "definitions": [],
+                  "invalidated": true,
+                  "key": null,
+                  "mode": "eager",
+                  "observation_id": 5,
+                  "peak_bytes": 512,
+                  "published": false,
+                  "reason": "split_select_error",
+                  "split_observations": [],
+                  "successful_backing_peak_bytes": 0,
+                  "successful_passes": 0,
+                  "successful_peak_bytes": 0,
+                  "total_peak_bytes": 461104640
+                },
+                {
+                  "backing_peak_bytes": 459276288,
+                  "cut_choices": 1,
+                  "definitions": [],
+                  "invalidated": true,
+                  "key": null,
+                  "mode": "eager",
+                  "observation_id": 6,
+                  "peak_bytes": 449184256,
+                  "published": false,
+                  "reason": "allocation_error",
+                  "split_observations": [
+                    {
+                      "backing_peak_bytes": 457179136,
+                      "choice_id": "heads:28/full:0:5/tail:0:5",
+                      "key": "runtime.split.projected_heads/1:f447fd46099c31fb079f413d25d5937280e98aeff06607ecd92e18ff2c6979cf",
+                      "observation_id": 5,
+                      "observed": true,
+                      "peak_bytes": 449183744,
+                      "pending": false,
+                      "published": false,
+                      "reason": "allocation_error",
+                      "successful_passes": 1
+                    }
+                  ],
+                  "successful_backing_peak_bytes": 0,
+                  "successful_passes": 0,
+                  "successful_peak_bytes": 0,
+                  "total_peak_bytes": 728295936
+                },
+                {
+                  "backing_peak_bytes": 788529152,
+                  "cut_choices": 2,
+                  "definitions": [],
+                  "invalidated": false,
+                  "key": null,
+                  "mode": "eager",
+                  "observation_id": 7,
+                  "peak_bytes": 778257408,
+                  "published": false,
+                  "reason": "execution_key_unknown",
+                  "split_observations": [
+                    {
+                      "backing_peak_bytes": 692060160,
+                      "choice_id": "heads:56/full:0:5/tail:0:5",
+                      "key": "runtime.split.projected_heads/1:f447fd46099c31fb079f413d25d5937280e98aeff06607ecd92e18ff2c6979cf",
+                      "observation_id": 6,
+                      "observed": true,
+                      "peak_bytes": 684408832,
+                      "pending": false,
+                      "published": true,
+                      "reason": "",
+                      "successful_passes": 2
+                    }
+                  ],
+                  "successful_backing_peak_bytes": 0,
+                  "successful_passes": 0,
+                  "successful_peak_bytes": 0,
+                  "total_peak_bytes": 1057369088
+                }
+              ],
+              "working_splits": [
+                {
+                  "backend": "_cozy_kitchen_int4qk",
+                  "choices": [
+                    [
+                      "heads:56/full:0:5/tail:0:5",
+                      [
+                        117483520,
+                        117483520,
+                        117483520,
+                        117483520,
+                        44056320,
+                        32780,
+                        33554944,
+                        29370880,
+                        29370880,
+                        59637760,
+                        465920,
+                        58240,
+                        28672,
+                        28672,
+                        28672
+                      ]
+                    ],
+                    [
+                      "heads:28/full:0:5/tail:0:5",
+                      [
+                        117483520,
+                        58741760,
+                        58741760,
+                        58741760,
+                        44056320,
+                        32780,
+                        33554944,
+                        14685440,
+                        14685440,
+                        29818880,
+                        232960,
+                        29120,
+                        14336,
+                        14336,
+                        14336
+                      ]
+                    ],
+                    [
+                      "heads:14/full:0:5/tail:0:5",
+                      [
+                        117483520,
+                        29370880,
+                        29370880,
+                        29370880,
+                        44056320,
+                        32780,
+                        33554944,
+                        7342720,
+                        7342720,
+                        14909440,
+                        116480,
+                        14560,
+                        7168,
+                        7168,
+                        7168
+                      ]
+                    ],
+                    [
+                      "heads:7/full:0:4/tail:0:4",
+                      [
+                        117483520,
+                        14685440,
+                        14685440,
+                        14685440,
+                        44056320,
+                        32780,
+                        16777728,
+                        3671360,
+                        3671360,
+                        7454720,
+                        58240,
+                        7280,
+                        3584,
+                        3584,
+                        3584
+                      ]
+                    ],
+                    [
+                      "heads:4/full:0:5/tail:0:5",
+                      [
+                        117483520,
+                        8391680,
+                        8391680,
+                        8391680,
+                        44056320,
+                        32780,
+                        33554944,
+                        2097920,
+                        2097920,
+                        4259840,
+                        33280,
+                        4160,
+                        2048,
+                        2048,
+                        2048
+                      ]
+                    ],
+                    [
+                      "heads:2/full:0:0/tail:0:0",
+                      [
+                        117483520,
+                        4195840,
+                        4195840,
+                        4195840,
+                        44056320,
+                        32780,
+                        1048960,
+                        1048960,
+                        2129920,
+                        16640,
+                        2080,
+                        1024,
+                        1024,
+                        1024
+                      ]
+                    ],
+                    [
+                      "heads:1/full:0:2/tail:0:2",
+                      [
+                        117483520,
+                        2097920,
+                        2097920,
+                        2097920,
+                        44056320,
+                        32780,
+                        524480,
+                        524480,
+                        1064960,
+                        8320,
+                        1040,
+                        512,
+                        512,
+                        512
+                      ]
+                    ]
+                  ],
+                  "head_chunk": 56,
+                  "implementation": "kitchen-int4qk",
+                  "key": "runtime.split.projected_heads/1:f447fd46099c31fb079f413d25d5937280e98aeff06607ecd92e18ff2c6979cf",
+                  "selection": {
+                    "allocation_backing_bytes": 692060160,
+                    "available_bytes": 23903076352,
+                    "basis": "measured",
+                    "choice_id": "heads:56/full:0:5/tail:0:5",
+                    "eligible": [
+                      "heads:56/full:0:5/tail:0:5",
+                      "heads:28/full:0:5/tail:0:5",
+                      "heads:14/full:0:5/tail:0:5",
+                      "heads:7/full:0:4/tail:0:4",
+                      "heads:4/full:0:5/tail:0:5",
+                      "heads:2/full:0:0/tail:0:0",
+                      "heads:1/full:0:2/tail:0:2"
+                    ],
+                    "measured_backing_peak_bytes": 692060160,
+                    "preserved_backing_bytes": 297795584,
+                    "reclaimable_working_bytes": 0,
+                    "reclaimed_weight_bytes": 0,
+                    "reclaimed_working_bytes": 0,
+                    "required_bytes": 394264576,
+                    "reused_capacity_bytes": 293748736,
+                    "stream": 0
+                  },
+                  "selections": 6,
+                  "site": "projected-heads",
+                  "submission": {
+                    "backing_peak_bytes": 692060160,
+                    "choice_id": "heads:56/full:0:5/tail:0:5",
+                    "key": "runtime.split.projected_heads/1:f447fd46099c31fb079f413d25d5937280e98aeff06607ecd92e18ff2c6979cf",
+                    "observation_id": 6,
+                    "observed": true,
+                    "peak_bytes": 684408832,
+                    "pending": true,
+                    "published": false,
+                    "reason": "",
+                    "successful_passes": 0
+                  },
+                  "workspace_bytes": 33554944
+                }
+              ]
+            },
+            "torch_peak": 932319652
+          }
+        ]
+      }
+    },
+    "models": [],
+    "observations": [],
+    "residency": {
+      "graphs": {},
+      "notes": {}
+    },
+    "software": {
+      "attempt_ordinal": 1,
+      "runtime": "0.36.21+dev.gdae97328",
+      "tensord": "0.15.4+dev.gafa6f922",
+      "tensord_commit": "afa6f9229153d1a7e93bbf72fc86f5543a4ac21c",
+      "tensorfs": "0.17.16+dev.gb20f699c"
+    }
+  }
+}

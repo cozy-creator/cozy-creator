@@ -1,0 +1,37 @@
+{
+  "passed": true,
+  "cuda_initialized": false,
+  "provider": "cozy.int8-convrot256.native-leaf/1",
+  "cases": [
+    {
+      "heads": 56,
+      "tokens": 8195,
+      "chunk": 28,
+      "tail_heads": 28,
+      "qkv_native_supported": true,
+      "out_native_supported": true,
+      "out_refusal": "",
+      "full_processor_two_native_required": true
+    },
+    {
+      "heads": 56,
+      "tokens": 513,
+      "chunk": 56,
+      "tail_heads": 56,
+      "qkv_native_supported": true,
+      "out_native_supported": true,
+      "out_refusal": "",
+      "full_processor_two_native_required": true
+    },
+    {
+      "heads": 55,
+      "tokens": 513,
+      "chunk": 28,
+      "tail_heads": 27,
+      "qkv_native_supported": true,
+      "out_native_supported": false,
+      "out_refusal": "int8.convrot rotates whole 256-column groups; this tensor has 7040 columns",
+      "full_processor_two_native_required": false
+    }
+  ]
+}
