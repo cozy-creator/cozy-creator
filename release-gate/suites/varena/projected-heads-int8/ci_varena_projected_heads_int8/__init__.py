@@ -281,6 +281,7 @@ def gpu(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
     generator = torch.Generator().manual_seed(payload.seed)
     trim(vt, device)
     initial = vt.stats(device)
+    initial_weights = request.memory.native.stats()
     cases, keys, declined = [], [], []
     with torch.inference_mode():
         for tokens, heads, variants in (
@@ -455,6 +456,7 @@ def gpu(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
                     for mode in modes:
                         layout = None
                         phase_plan = phase_region = None
+                        phase_weights_before = request.memory.native.stats()
                         attn.processor._attention_backend = selected
                         if mode in ('exact-path', 'prefix-heavy'):
                             sol, = attention.pinned('kitchen-sol-int4qk', measure_device(torch, device, 'cuda'))
@@ -535,6 +537,20 @@ def gpu(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
                                       'seed': output_equal(seed.cpu(), seed_reference)})
                         owner_result.clear()
                         del owner, owner_result, phase_plan, phase_region
+                        if mode == 'planned':
+                            # Region Drop retires ownership; the arena deliberately keeps
+                            # physical backing until explicit reclaim or real pressure.
+                            gc.collect()
+                            torch.cuda.synchronize(device)
+                            resident = request.memory.native.stats()['resident_bytes']
+                            reclaimed = request.memory.native.reclaim(
+                                max(0, resident - phase_weights_before['resident_bytes']))
+                            after_weights = request.memory.native.stats()
+                            for field in ('resident_bytes', 'reserved_bytes', 'pinned_bytes'):
+                                assert after_weights[field] == phase_weights_before[field], (field, phase_weights_before, after_weights)
+                            cases[-1]['region_cleanup'] = {
+                                'before': phase_weights_before, 'after': after_weights,
+                                'explicitly_reclaimed_bytes': reclaimed}
                     attention_sol.remove_site(attn, 'fixture', 'attention')
                     attn.processor._attention_backend = selected
                     del expected_owner
@@ -556,13 +572,18 @@ def gpu(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
     gc.collect()
     trim(vt, device)
     final = vt.stats(device)
+    final_weights = request.memory.native.stats()
     assert final['allocated_bytes'] == initial['allocated_bytes'], (initial, final)
     assert final['pending_bytes'] == 0 and final['pools'] == initial['pools']
+    for field in ('resident_bytes', 'reserved_bytes', 'pinned_bytes'):
+        assert final_weights[field] == initial_weights[field], (field, initial_weights, final_weights)
     keys = sorted(request.working_phase_keys)
     return Report(True, json.dumps({'passed': True, 'scope': 'instrumented real mechanism; not a timing benchmark',
                                    'provenance': provenance, 'cases': cases, 'declined': declined,
                                    'hook_factor_reads': 0,
-                                   'initial': initial, 'final': final, 'request_owned_keys': keys}, sort_keys=True))
+                                   'initial': initial, 'final': final,
+                                   'initial_weights': initial_weights, 'final_weights': final_weights,
+                                   'request_owned_keys': keys}, sort_keys=True))
 
 
 @app.entrypoint(accelerator=True)
