@@ -201,7 +201,11 @@ impl Client {
                         }
                         return Ok(value);
                     }
-                    Err(e) => format!("answers without what this cozy reads ({e})"),
+                    Err(e) if self.other_version() => format!("answers without what this cozy reads ({e})"),
+                    Err(e) => {
+                        let said = format!("Calcifer answered without what this cozy reads: {e}");
+                        return Err(Error::new(Kind::Internal, "answer_unreadable", said));
+                    }
                 },
                 Err(lacks) => lacks,
             };
@@ -240,12 +244,17 @@ impl Client {
             return Ok(Ok(answer.bytes().await.map_err(unreachable)?.to_vec()));
         }
         let refusal = envelope(answer).await;
-        let other = self.holder().is_some_and(|h| h.version != env!("CARGO_PKG_VERSION"));
-        match refusal.code.as_str() {
-            "unknown_route" => Ok(Err(refusal.message.replacen("Calcifer serves", "serves", 1))),
-            "body_invalid" if other => Ok(Err(format!("cannot read this request ({})", refusal.message))),
+        // A Calcifer of this very version lacks nothing this cozy has: restarting it cannot help.
+        match (refusal.code.as_str(), self.other_version()) {
+            ("unknown_route", true) => Ok(Err(refusal.message.replacen("Calcifer serves", "serves", 1))),
+            ("body_invalid", true) => Ok(Err(format!("cannot read this request ({})", refusal.message))),
             _ => Err(refusal),
         }
+    }
+
+    /// Whether the Calcifer this talks to runs another cozy version than this one.
+    fn other_version(&self) -> bool {
+        self.holder().is_some_and(|h| h.version != env!("CARGO_PKG_VERSION"))
     }
 
     /// "Calcifer runs cozy X, which <lacks>".
