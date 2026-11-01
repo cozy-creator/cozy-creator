@@ -78,8 +78,14 @@ impl Hubs {
         let hub = config::Origin::parse(origin)?;
         match hub.device_key(&self.home).exists() {
             true => self.client(origin),
-            false => Ok(Client::connect(origin, self.http.clone(), hub_client::Credential::Anonymous)),
+            false => self.anonymous(origin),
         }
+    }
+
+    /// A client for what the Hub tells anyone: its catalog, its stock, its software target.
+    pub(crate) fn anonymous(&self, origin: &str) -> Result<Client, Error> {
+        config::Origin::parse(origin)?;
+        Ok(Client::connect(origin, self.http.clone(), hub_client::Credential::Anonymous))
     }
 
     /// A client speaking as this computer's device key at the Hub.
@@ -203,7 +209,7 @@ impl Machines {
 
     /// What `hub` has for rent now, cheapest first by its fewest GPUs.
     pub async fn rental_skus(&self, hub: &str) -> Result<RentalSkus, Error> {
-        let reader = self.hubs.reader(hub)?;
+        let reader = self.hubs.anonymous(hub)?;
         let mut skus = reader.list_rental_skus().await.map_err(|e| hub_refusal(hub, e))?;
         skus.retain(|sku| !sku.widths.is_empty());
         let hourly = |sku: &RentalSku| sku.widths[0].price_usd_micros_per_hour;
@@ -215,7 +221,7 @@ impl Machines {
     /// or count; the refusal names which absence it hit. A product the Hub cannot sell, for
     /// whatever reason, reads as out of stock.
     pub async fn admit_sku(&self, hub: &str, sku: &str, gpus: u32) -> Result<(), Error> {
-        let reader = self.hubs.reader(hub)?;
+        let reader = self.hubs.anonymous(hub)?;
         let status = reader.get_rental_sku_status(sku, gpus).await.map_err(|e| hub_refusal(hub, e))?;
         match status.known && status.offered {
             true => Ok(()),

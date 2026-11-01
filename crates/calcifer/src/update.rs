@@ -68,7 +68,7 @@ impl Machines {
                 return Err(Error::new(Kind::Unavailable, "machine_unanswered", format!("{} has not reported the software it runs", m.name))
                     .next(format!("cozy machine show {}", m.name)));
             };
-            let target = self.hubs.reader(&hub)?.get_software().await.map_err(|e| hub_refusal(&hub, e))?;
+            let target = self.hubs.anonymous(&hub)?.get_software().await.map_err(|e| hub_refusal(&hub, e))?;
             // An unpinned target older than the machine's software is no reason to go back.
             let moves = |running: &str, wanted: &str| running != wanted && (target.pinned || newer(wanted, running));
             let cozy = target.cozy.as_deref().filter(|cozy| moves(&status.version, cozy) && placed.is_none());
