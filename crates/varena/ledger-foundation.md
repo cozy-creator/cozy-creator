@@ -17,6 +17,15 @@ OFD description or running Python/allocating. Descriptor state is invalidated be
 so a reused numeric descriptor cannot be closed twice. CLOEXEC handles exec. Exact process birth supplements
 lock ownership; elapsed time and an unchanged heartbeat never mean death. Reaping metadata credits no GPU bytes.
 
+Call metadata-only `ledger::initialize()` before concurrent fork producers start. The first initialization
+(including an implicit first `open`) must not race a fork already in progress: that fork may already have read
+the old libc handler list. This checkpoint deliberately supplies no general fork interposer. After initialization,
+concurrent ledger open/close and libc/Python fork are supported and exercised. A raw syscall fork/clone that
+bypasses registered libc handlers remains outside this inheritance contract; it must not be claimed qualified.
+The installed native hook lives for the process lifetime; an embedding must keep this library loaded afterward.
+Snapshots are last committed metadata, not a promise that each owner is still alive. Reaping and ask creation
+perform the exact row-lock/birth checks; neither operation adds dead owners' holdings to available GPU bytes.
+
 The table uses two metadata banks with an atomic committed-bank generation. A writer finishes the inactive
 bank before publishing its index; a process killed while writing leaves the last committed bank readable.
 Snapshots are taken under the short publication lock. No user callback, CUDA operation or wait for a donor

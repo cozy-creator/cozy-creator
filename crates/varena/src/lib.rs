@@ -6,11 +6,14 @@
 //! the primary CUDA context before unmapping unless every pin was released by a native integration
 //! after checked completion, or with last-consumer events on its declared streams, which reclaim
 //! waits on instead. Capture/replay roots retain pins for their lifetime by default.
-//! No imported memory, IPC, background work, file I/O, or Python callbacks occur here.
+//! Allocation paths import no GPU memory and invoke no Python callbacks. The optional Linux
+//! `ledger` module coordinates host metadata only; it performs no CUDA or allocator work.
 #![deny(unsafe_code)]
 
 mod cuda;
 pub mod working;
+#[cfg(all(target_os = "linux", target_has_atomic = "64"))]
+pub mod ledger;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering};
