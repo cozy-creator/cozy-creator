@@ -55,3 +55,12 @@ A held-publication-lock Start refusal also remains a GPU fault-injection gate:
 Start must fail closed without exposing partial `host.memory`; the failed
 executor is retired by its existing lifecycle. CPU-only Hello does not claim to
 prove a later CUDA Start failure.
+
+`cleanup_failure` is a deliberately destructive **last** cell. Run it only after
+the normal `gpu`/same-PID `observe` pair and its collector-after snapshot. It closes
+the actual native participant, proves a checked Memory boundary refuses execution,
+then unwinds `xs138_cleanup_original_error` through the real unchecked cleanup seam.
+The expected run result is failure carrying that original sentinel; native cooperation
+failure must also be reported/latched. A replacement cooperation exception is a red
+result. This worker must not serve another qualification cell afterward. The normal
+parity interval must not include this intentional owner closure.

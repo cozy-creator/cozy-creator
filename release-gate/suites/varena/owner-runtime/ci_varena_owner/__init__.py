@@ -223,3 +223,28 @@ def observe(payload: Observe, ctx: Context) -> Report:
     assert owner.facts()['active']
     return Report(True, json.dumps({'passed': True, 'provenance': provenance,
                                    'owner_row': table['owner'], 'facts': owner.facts()}, sort_keys=True))
+
+
+@app.entrypoint(accelerator=True)
+def cleanup_failure(payload: Probe, ctx: Context) -> Report:
+    """Destructive last cell: a real closed native owner must not replace a handler error."""
+    from cozy_runtime.internal.cooperation import Failure
+
+    _, _, memory, owner, provenance = current(payload, ctx)
+    owner._peer.close()  # Actual native lifetime ends; Runtime still owns its adapter.
+    assert not owner.facts()['active']
+    try:
+        memory.cooperation_boundary()
+    except Failure:
+        checked_refused = True
+    else:
+        raise AssertionError('a checked boundary admitted the closed native owner')
+    print(json.dumps({'native_owner_cleanup_proof': provenance,
+                      'checked_boundary_refused': checked_refused,
+                      'expected_error': 'xs138_cleanup_original_error'}, sort_keys=True), flush=True)
+    try:
+        raise RuntimeError('xs138_cleanup_original_error')
+    finally:
+        # The real Memory cleanup seam must latch/report the native coordination fault
+        # without replacing the exception already unwinding through it.
+        memory.cooperation_boundary(check=False)
