@@ -652,7 +652,13 @@ fn _varena_make_room(py: Python<'_>, device: i32, limit: Option<usize>) -> PyRes
         .map(|report| report.reclaimed_bytes)
         .map_err(|e| raise(py, e))
 }
+#[pyfunction]
+fn _varena_core_identity() -> u64 {
+    varena::abi::vr_v1_core_identity()
+}
+
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(_varena_core_identity, module)?)?;
     cache_owner::install(module)?;
     module.add_class::<cache::PyCache>()?;
     working::install(module)?;

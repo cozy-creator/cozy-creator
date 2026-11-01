@@ -395,3 +395,9 @@ TensorFS wheel SHA256:
 `01758fae75767a216fdf5157a1f78ef445b210d61434e438ada16218a9eec8f6`.
 Receipts: `outputs/stock-torch-20261025/codex-resume-20261026/native-phase-cells/RESULTS.json`;
 independent review: `outputs/stock-torch-20261025/native-streaming-resume-20261026/native-phase-entry/GPU-REVIEW.json`.
+
+## External developer API
+
+See [the ABI 1 development contract and standalone examples](PUBLIC-API.md).
+The public C/Rust/Python interfaces share one native library. Host execution and
+GPU qualification are recorded separately; general Torch offload remains planned.

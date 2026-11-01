@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 from .. import _ext
+from .api import Gpu as Gpu, open as open
 from .cooperative import Cooperation as Cooperation
 from .cooperative import CooperationDeferredError as CooperationDeferredError
 from .cooperative import CooperationOwner as CooperationOwner
