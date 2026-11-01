@@ -18,6 +18,20 @@ checks the installed extension (which contains Rust Varena) and shim, then recor
 GPU and per-case results. `case=<name>` selects one case; default `all` requires every registered case. Candidate build/installation
 identity is separate from a source checkout. Never install this candidate into a shared local generation.
 
+P1 adds `failed-source-fill`: prepare a real 8 MiB raw TensorFS read, prove its destination is admitted and
+pinned but unpublished with zero issued bytes, then replace one chunk in the fixture's own temporary cache
+with a one-byte-short file. The native worker must return its typed integrity error after releasing the failed
+fill's backing, without poisoning the device or changing an independent live working allocation. Repeated
+observations preserve the original error even after the file is restored. A new read into the same region must
+then produce the exact healthy CUDA bytes; final region and working allocations/pools/events retire to zero.
+This is a real source-length failure **after admission**, not descriptor validation or a mocked read. Raw IO has
+zero decode scratch; the case does not claim an encoded-decoder failure. The source is generated locally and
+its bytes hashed before replacement. No shared cache, model artifact, source implementation or driver is changed.
+
+The full P1 set now contains 19 cases. The earlier qualified 18-case receipts remain valid for that earlier set;
+this fixture-only addition requires a new `case=failed-source-fill` or full-set GPU receipt. Its source can run
+against the unchanged, qualified `cbfc677c7` native wheel; no product/native rebuild is needed.
+
 Cases cover empty capture initialization, 512-byte alignment, same-stream reuse, cross-stream retirement, reuse
 inside capture, retained outputs after graph destruction, changed replay stream, shared and distinct graph pools,
 clean capture exhaustion, and three graph replays after managed weight-region eviction/refill at the same address.

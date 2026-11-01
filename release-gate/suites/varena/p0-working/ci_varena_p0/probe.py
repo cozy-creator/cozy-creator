@@ -9,6 +9,7 @@ import ctypes
 import hashlib
 from importlib.metadata import version
 import json
+import os
 from pathlib import Path
 import platform
 import sys
@@ -823,9 +824,120 @@ def shared_managed_limit():
         varena.make_room(0, None)
 
 
+def failed_source_fill():
+    """A real source error after admission retires an unpublished fill and preserves live work."""
+    with tempfile.TemporaryDirectory(prefix="varena-failed-source-") as directory:
+        root = Path(directory)
+        cache = root / "cache"
+        source = torch.full((8 * MIB,), 29, dtype=torch.uint8)
+        # Every file touched below belongs to this fixture, not the machine's model cache.
+        writer = tensorfs.Writer(root / "native.cozytensors", cache_dir=cache)
+        writer.component("net").put("bytes", source)
+        checkpoint = writer.commit()
+        assert len(checkpoint.chunks) == 1, checkpoint.chunks
+        chunk_hash, chunk_bytes = checkpoint.chunks[0]
+        chunk = cache / "blobs" / chunk_hash[:2] / chunk_hash[2:4] / chunk_hash
+        owned = root.resolve()
+        assert cache.resolve().is_relative_to(owned)
+        assert not chunk.is_symlink() and chunk.resolve().is_relative_to(owned)
+        assert chunk.is_file() and chunk.stat().st_nlink == 1, "fixture chunk must not alias a shared store"
+        assert chunk.stat().st_size == chunk_bytes == source.nbytes
+        original = chunk.read_bytes()
+        assert hashlib.sha256(original).hexdigest() == chunk_hash
+        replacement = chunk.with_name(chunk.name + ".fixture-replacement")
+
+        arena = varena.Arena(0)
+        region = arena.reserve(source.nbytes)
+        pointer = region.ptr
+        sentinel = torch.full((2 * MIB,), 43, dtype=torch.uint8, device="cuda")
+        torch.cuda.synchronize()
+        working_before = figures()
+        before = arena.stats()
+        failed = region.prepare_read(checkpoint, [("net/bytes#value", 0, source.nbytes)], threads=1)
+        prepared = failed.poll()
+        admitted = arena.stats()
+        assert prepared["started"] is False and prepared["done"] is False and prepared["issued_bytes"] == 0
+        assert admitted["resident_bytes"] == admitted["pinned_bytes"] == source.nbytes, admitted
+        assert admitted["ready_bytes"] == 0 and admitted["fills"] == before["fills"], admitted
+        assert region.pin() is None, "an admitted but unstarted fill became readable"
+        assert figures()["allocated_bytes"] == working_before["allocated_bytes"]
+
+        # A real damaged object is introduced only AFTER the destination Fill is admitted.
+        # Store blobs are read-only; replace only this private fixture's directory entry.
+        try:
+            replacement.write_bytes(original[:-1])
+            os.replace(replacement, chunk)
+            failed.start()
+            try:
+                failed.wait()
+            except tensorfs.IntegrityError as error:
+                failure = {"type": type(error).__name__, "code": error.code, "detail": error.detail}
+            else:
+                raise AssertionError("the admitted native source read accepted a truncated chunk")
+            assert failure["code"] == "integrity" and chunk_hash in failure["detail"], failure
+            assert str(chunk_bytes - 1) in failure["detail"], failure
+            # wait() reports the terminal source error only after its worker drains and releases
+            # the unpublished Fill. No later allocation or explicit arena reclaim may repair it.
+            retired_failure = arena.stats()
+            assert retired_failure["resident_bytes"] == retired_failure["pinned_bytes"] == retired_failure["ready_bytes"] == 0, retired_failure
+            assert retired_failure["fills"] == before["fills"] and not retired_failure["poisoned"], retired_failure
+            assert region.pin() is None and region.ptr == pointer
+            working_after_failure = figures()
+            assert working_after_failure["allocated_bytes"] == working_before["allocated_bytes"], working_after_failure
+            assert working_after_failure["allocated_capacity"] == working_before["allocated_capacity"], working_after_failure
+            assert working_after_failure["pending_bytes"] == 0, working_after_failure
+            assert int(sentinel[0]) == int(sentinel[-1]) == 43
+        finally:
+            # Even a failed assertion restores the fixture object before its owners unwind.
+            restoration = chunk.with_name(chunk.name + ".fixture-restore")
+            assert not restoration.exists()
+            restoration.write_bytes(original)
+            os.replace(restoration, chunk)
+        assert digest(chunk) == chunk_hash
+        # Restoring a file must not turn the old failed operation into success or cancellation.
+        for observe in (failed.poll, failed.wait):
+            try:
+                observe()
+            except tensorfs.IntegrityError as error:
+                assert {"type": type(error).__name__, "code": error.code, "detail": error.detail} == failure
+            else:
+                raise AssertionError("the failed read lost its original source error")
+        del observe  # A bound observer would otherwise keep its read alive during teardown.
+
+        healthy = region.prepare_read(checkpoint, [("net/bytes#value", 0, source.nbytes)], threads=1)
+        healthy.start()
+        completed = healthy.wait()
+        assert completed["done"] and not completed["canceled"] and completed["bytes"] == source.nbytes, completed
+        use = region.pin()
+        assert use is not None and not use.needs_fill
+        assert use.tensor.data_ptr() == pointer and torch.equal(use.tensor.cpu(), source)
+        assert arena.stats()["fills"] == before["fills"] + 1
+        del use, healthy, failed, sentinel
+        clean()
+        arena.reclaim(1 << 30)
+        clean()
+        final_region = arena.stats()
+        final_working = figures()
+        assert final_region["resident_bytes"] == final_region["pinned_bytes"] == final_region["ready_bytes"] == 0, final_region
+        assert not final_region["poisoned"]
+        assert all(final_working[key] == 0 for key in (
+            "allocated_bytes", "allocated_capacity", "mapped_bytes", "pending_bytes", "pools", "event_handles"
+        )), final_working
+        checkpoint.close()
+        return {"source_bytes": source.nbytes, "source_sha256": chunk_hash,
+                "prepared": prepared, "admitted": admitted, "error": failure,
+                "retired_failure": retired_failure, "working_before": working_before,
+                "working_after_failure": working_after_failure, "healthy_read": completed,
+                "healthy_same_pointer": True, "healthy_cuda_bytes_equal": True,
+                "final_region": final_region, "final_working": final_working,
+                "decode_scratch_bytes": 0,
+                "scope": "actual raw source-length failure after native Fill admission; checked source cleanup, not an encoded decoder failure"}
+
+
 CASES = {
     "native-working-ownership": native_working_ownership,
     "shared-managed-limit": shared_managed_limit,
+    "failed-source-fill": failed_source_fill,
     "empty-capture": empty_capture,
     "allocator-reuse": allocator_reuse,
     "default-deferred-free": default_deferred_free,
