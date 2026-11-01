@@ -219,3 +219,37 @@ if [ -f h3-shot-40s.number ] && [ "$(run_get "$OUT" h3-shot-40s .status)" = comp
     pieces denoise \([$p[].d | floor]) s, s/step \([$p[] | select(.s | length > 0) | (.s | add) / (.s | length) | . * 10 | floor / 10]), decode_video \([$p[].v | floor]) s"' "$OUT/h3-shot-40s.json" | tr -s ' \n' ' ')"
   span_seams h3-shot-40s-seams h3-shot-40s
 fi
+
+# Regenerate from a shot's latents (#762): a shot delivers its latents beside its video, and an upscale given both, with
+# no prompt, reads the shot's own text back at strength 0.7 and never encodes the video (no encode_video stage).
+cell latents-shot "$SHOT" prompt="A lighthouse keeper in a yellow oilskin climbs the spiral stair of a stone lighthouse, lantern in hand." \
+  style="soft watercolor, muted greens" beats:='[{"at": 2, "prompt": "He reaches the lamp room and opens the shutters to the sea."}]' \
+  duration_s:=5 resolution=768p seed:=$((R + 98))
+if [ -f latents-shot.number ] && [ "$(run_get "$OUT" latents-shot .status)" = completed ]; then
+  lv=$(video_of latents-shot); lt=$(run_get "$OUT" latents-shot '.output[]? | select(.name == "latents") | .path')
+  expect latents-delivered "$([ -n "$lt" ] && [ -e "$lt" ] && echo PASS || echo FAIL)" "latents ${lt:-none}"
+  if [ -n "$lt" ]; then
+    cell latents-upscale "$UP" --file video="$lv" --file latents="$lt" resolution=1080p 'upscale:={"model": "regenerate-2k"}' \
+      preset=balanced seed:=$((R + 99))
+    if [ -f latents-upscale.number ] && [ "$(run_get "$OUT" latents-upscale .status)" = completed ]; then
+      enc=$(jq '[.. | objects | select(has("stages")) | .stages | keys[]] | map(select(. == "encode_video")) | length' "$OUT/latents-upscale.json" 2>/dev/null)
+      log=$("$CLI" run show "$(cat latents-upscale.number)" --once 2>/dev/null | grep -m1 'h3 regenerate')
+      expect latents-upscale-path "$([ "${enc:-1}" = 0 ] && [[ $log == *strength=0.7* ]] && echo PASS || echo FAIL)" "encode_video stages ${enc:-?}; ${log:-no h3 regenerate line}"
+      judge latents-upscale-frames latents-upscale ".structure_psnr >= 18 and .structure_ssim >= 0.5 and .flicker <= 2 and (.lag_ms | $ABS) <= 10 and .corr >= 0.95" regen "$lv"
+    fi
+  fi
+fi
+
+# shot.preset (#751): the h3 cell's own request with `preset: fast` runs one dense step, then sparse ones, and denoises in
+# at most 0.85x the h3 cell's (balanced) time; its frames hold against the h3 cell's.
+IFS=$'\t' read -r PN _ PM _ _ <<< "$(grep -m1 $'^Skater\t' "$HERE/scenarios.tsv")"
+cell h3-preset-fast "$SHOT" assets:="[{\"name\": \"$PN\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
+  prompt="<$PN> $PM" seed:=$H3_SEED duration_s:=15 preset=fast
+if [ -f h3-preset-fast.number ] && [ -f h3.number ] && [ "$(run_get "$OUT" h3-preset-fast .status)" = completed ]; then
+  steps=$(jq -c '[.calls[]? | .measurements.attribution.steps.denoise.series[]?[1]]' "$OUT/h3-preset-fast.json")
+  df=$(jq '[.calls[]? | .measurements.attribution.stages.denoise.total_ms // 0] | add' "$OUT/h3-preset-fast.json")
+  db=$(jq '[.calls[]? | .measurements.attribution.stages.denoise.total_ms // 0] | add' "$OUT/h3.json")
+  expect h3-preset-fast-steps "$(jq -r 'if length == 8 then (.[1:] | sort | .[length/2|floor]) as $m | ([.[] | select(. >= 1.6 * $m)] | length) as $k | if $k == 1 and .[0] >= 1.6 * $m then "PASS" else "FAIL" end else "FAIL" end' <<< "$steps")" "steps ${steps}"
+  expect h3-preset-fast-time "$(awk -v f="$df" -v b="$db" 'BEGIN { print (b > 0 && f <= 0.85 * b) ? "PASS" : "FAIL" }')" "denoise fast ${df} ms vs balanced ${db} ms"
+  judge h3-preset-fast-frames h3-preset-fast '.contrast >= 0.5 * .control_contrast and .coherence >= 0.6' variant "$(video_of h3)"
+fi
