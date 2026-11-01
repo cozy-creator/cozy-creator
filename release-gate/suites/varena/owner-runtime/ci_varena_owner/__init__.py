@@ -154,6 +154,16 @@ def steady_foreign(payload: Probe, ctx: Context) -> Report:
             'error': f'{type(error).__name__}: {error}', 'traceback': traceback.format_exc()}, sort_keys=True))
 
 
+@app.entrypoint(accelerator=True)
+def owner_actions(payload: Probe, ctx: Context) -> Report:
+    from .owner_actions import exercise as exercise_owner_actions
+    try:
+        return exercise_owner_actions(payload, ctx)
+    except Exception as error:  # noqa: BLE001 - Preserve the first actual qualification failure.
+        return Report(False, json.dumps({'passed': False,
+            'error': f'{type(error).__name__}: {error}', 'traceback': traceback.format_exc()}, sort_keys=True))
+
+
 def exercise(payload: Probe, ctx: Context) -> Report:
     from tensorfs import varena
 
