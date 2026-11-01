@@ -84,10 +84,26 @@ try:
         after = a.call('snapshot')
         assert ordinary['round'] != first['round']
         assert [d['slot'] for d in after['round']['donors']] == [b.ready['slot']]
+        # Declared measured metadata only: this proves native aggregation/validation,
+        # not NVML attribution or the empirical value of H.
+        assert 'sample' in a.call('sample-reserve 512 224 3 64 1')
+        assert 'sample' in b.call('sample 512 224 4')
+        preserved = b.call('snapshot')
+        assert preserved['sample']['reserve'] == 64 and preserved['sample']['attributable']
+        assert 'sample' in b.call('sample-reserve 512 224 5 32 1')
+        assert a.call('snapshot')['sample']['reserve'] == 64
+        assert 'sample' in b.call('sample-reserve 512 224 6 96 1')
+        assert a.call('snapshot')['sample']['reserve'] == 96
+        rejected_h = a.call('sample-reserve 512 224 7 128 0')
+        assert rejected_h.get('error') == 'invalid ledger operation: reserve requires an attributable observation'
+        assert a.call('snapshot')['sample']['reserve'] == 96
         report = {'passed': True, 'device_round': snapshot, 'completed_metadata': completed,
                   'ordinary_allocation_round': after, 'dedicated_refusal': rejected,
                   'same_round_for_two_processes': True, 'self_included_without_double_deficit': True,
                   'unknown_headroom_preserved': True, 'driver_capacity_not_credited': True,
+                  'unknown_sampler_preserves_qualified_device_max': preserved,
+                  'lower_reserve_does_not_lower_device_max': True,
+                  'unattributable_reserve_rejected': rejected_h,
                   'gpu_execution': False, 'scope': 'real processes, OFD row/publication locks and native ledger; supplied byte metadata only'}
 finally:
     for actor in actors:

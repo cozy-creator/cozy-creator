@@ -17,6 +17,28 @@ pub(crate) fn cuda_calls(device: i32) -> Result<u64> {
     Ok(owner(device)?.driver.activity_calls())
 }
 
+pub(crate) fn memory_calls(device: i32) -> Result<u64> {
+    Ok(owner(device)?.driver.calls().0)
+}
+
+/// Pressure can lower speculation immediately. A calm observation merely permits the next
+/// real phase entry to raise it; no sampler tick raises retention in an active pass.
+pub(crate) fn pressure(device: i32, active: bool, calm: bool) -> Result<bool> {
+    let owner = owner(device)?;
+    let mut state = owner.lock()?;
+    if active {
+        state.pressure_pending = true;
+        state.prefetch_suppressed = true;
+    } else if calm {
+        state.pressure_pending = false;
+    }
+    Ok(state.prefetch_suppressed)
+}
+
+pub(crate) fn prefetch_suppressed(device: i32) -> Result<Option<bool>> {
+    existing(device)?.map(|owner| Ok(owner.lock()?.prefetch_suppressed)).transpose()
+}
+
 /// Keep working ownership frozen while the caller also snapshots its weight arenas.
 /// Refresh only queries/records already submitted consumers; it never joins unknown ones.
 pub(crate) fn with_snapshot<T>(

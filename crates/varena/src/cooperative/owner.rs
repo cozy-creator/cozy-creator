@@ -1,5 +1,6 @@
 //! Native donor service. Only this thread owns Peer and its retained GPU resources.
 //! Allocator lookup references contain host metadata only, never a GPU destructor or join.
+use super::pressure::{Boundary, Pressure};
 use super::{Peer, Result, Service, deferred};
 use crate::ledger;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -113,12 +114,14 @@ pub struct Facts {
     pub withdrawn_rounds: u64,
     pub last_withdrawn_round: Option<u64>,
     pub demand_clear_pending: bool,
+    pub pressure: super::PressureFacts,
 }
 
 enum Command {
     Configure(ledger::Sharing, i32, mpsc::SyncSender<Result<()>>),
     Snapshot(mpsc::SyncSender<Result<ledger::Snapshot>>),
     CudaCalls(mpsc::SyncSender<Result<u64>>),
+    Boundary(Boundary, mpsc::SyncSender<Result<()>>),
 }
 
 #[derive(Default)]
@@ -136,6 +139,9 @@ struct State {
     withdrawals: BTreeSet<u64>,
     want_published: bool,
     clear_want: bool,
+    // Pressure yields ownership before any physical-allocation recovery starts. It never
+    // withdraws a round used by an allocator, or borrows that allocator's latency budget.
+    pressure_round: Option<u64>,
 }
 
 fn queue_withdrawal(state: &mut State, round: u64) {
@@ -288,6 +294,9 @@ pub(crate) fn recover(
     'attempt: loop {
         let mut state = control.lock().map_err(native)?;
         check(&state).map_err(native)?;
+        if let Some(round) = state.pressure_round.take() {
+            queue_withdrawal(&mut state, round);
+        }
         // Expired/finished demand cannot be revived by a new allocation arriving before
         // the worker has committed the queued withdrawal.
         retire_unused_round(&mut state);
@@ -438,7 +447,7 @@ impl Owner {
                         if ready.send(Ok(peer.id())).is_err() {
                             worker.stop(); // The opening caller no longer owns this service.
                         }
-                        run(peer, worker);
+                        run(peer, worker, descriptor);
                     }
                     Err(error) => {
                         let _ = ready.send(Err(error));
@@ -481,7 +490,18 @@ impl Owner {
             .count();
         facts.pending_withdrawals = state.withdrawals.len();
         facts.demand_clear_pending = state.clear_want;
+        drop(state);
+        if let Some(suppressed) = crate::working::peer::prefetch_suppressed(self.device)? {
+            facts.pressure.suppressed = suppressed;
+        }
         Ok(facts)
+    }
+
+    /// Real request lifecycle, carrying no byte target. Calls detach/complete before
+    /// application work; overlapping or VMM-changing windows cannot train opaque reserve.
+    pub fn boundary(&self, boundary: Boundary) -> Result<()> {
+        self.control
+            .call(|reply| Command::Boundary(boundary, reply))
     }
 
     pub fn configure(&self, sharing: ledger::Sharing, priority: i32) -> Result<()> {
@@ -532,16 +552,43 @@ impl Drop for Owner {
     }
 }
 
-fn command(peer: &Peer, command: Command) {
+fn command(peer: &Peer, control: &Control, pressure: &mut Pressure, command: Command) {
     match command {
         Command::Configure(sharing, priority, reply) => {
-            let _ = reply.send(peer.configure(sharing, priority));
+            let result = peer.configure(sharing, priority).and_then(|()| {
+                if sharing == ledger::Sharing::Dedicated {
+                    crate::working::peer::pressure(peer.device, false, true)?;
+                    let mut state = control.lock()?;
+                    if let Some(round) = state.pressure_round.take() {
+                        queue_withdrawal(&mut state, round);
+                        control.changed.notify_all();
+                    }
+                }
+                Ok(())
+            });
+            let _ = reply.send(result);
         }
         Command::Snapshot(reply) => {
             let _ = reply.send(peer.snapshot());
         }
         Command::CudaCalls(reply) => {
             let _ = reply.send(peer.cuda_calls());
+        }
+        Command::Boundary(kind, reply) => {
+            let result = (|| {
+                // A capture/deferred sample cannot block lifecycle cleanup or supply an H
+                // observation. Unknown accounting simply makes this window unqualified.
+                match pressure.observe(peer) {
+                    Err(error) if deferred(&error) => pressure.invalidate_observation(),
+                    result => {
+                        result?;
+                    }
+                }
+                pressure.boundary(kind)?;
+                control.lock()?.facts.pressure = pressure.facts.clone();
+                Ok(())
+            })();
+            let _ = reply.send(result);
         }
     }
 }
@@ -735,8 +782,132 @@ fn recover_tick(peer: &Peer, control: &Control) -> Result<()> {
     Ok(())
 }
 
-fn serve(peer: &Peer, control: &Control) -> Result<()> {
+fn pressure_tick(
+    peer: &Peer,
+    control: &Control,
+    pressure: &mut Pressure,
+    deadline: &mut Option<Instant>,
+    joined: &mut Option<(u64, Instant)>,
+) -> Result<()> {
+    let table = peer.snapshot()?;
+    let shared = table
+        .rows
+        .iter()
+        .find(|row| row.id == peer.id())
+        .is_some_and(|row| row.sharing == ledger::Sharing::Shared);
+    let (owned, busy) = {
+        let state = control.lock()?;
+        (
+            state.pressure_round,
+            !state.demands.is_empty() || !state.withdrawals.is_empty() || state.clear_want,
+        )
+    };
+    if let Some((generation, limit)) = *joined {
+        if let Some(round) = table
+            .round
+            .as_ref()
+            .filter(|round| round.generation == generation)
+        {
+            pressure.facts.completed = round.completed()?;
+        }
+        let finished = table
+            .round
+            .as_ref()
+            .is_none_or(|round| round.generation != generation || round.finished());
+        let expired = Instant::now() >= limit;
+        if finished || expired || !shared || busy {
+            // Only the requesting owner can withdraw this generation. A local pressure
+            // observer can stop waiting, never cancel another process's allocation round.
+            pressure.facts.budget_exhausted += u64::from(expired && !finished);
+            *joined = None;
+        }
+    }
+    if let Some(round) = owned {
+        if let Some(value) = table
+            .round
+            .as_ref()
+            .filter(|value| value.generation == round)
+        {
+            pressure.facts.completed = value.completed()?;
+        }
+        let finished = table
+            .round
+            .as_ref()
+            .is_none_or(|value| value.generation != round || value.finished());
+        let expired = deadline.is_some_and(|limit| Instant::now() >= limit);
+        if finished || expired || !shared || busy {
+            let mut state = control.lock()?;
+            state.pressure_round = None;
+            queue_withdrawal(&mut state, round);
+            pressure.facts.budget_exhausted += u64::from(expired && !finished);
+            state.facts.pressure = pressure.facts.clone();
+            *deadline = None;
+            control.changed.notify_all();
+            return Ok(());
+        }
+    }
+    if !shared || busy {
+        return Ok(());
+    }
+    let sample = pressure.observe(peer)?;
+    let capacity = peer.snapshot()?;
+    let reclaimable = capacity
+        .rows
+        .iter()
+        .filter(|row| row.sharing == ledger::Sharing::Shared)
+        .try_fold(0u64, |sum, row| {
+            sum.checked_add(row.reclaimable)
+                .ok_or(ledger::Error::Overflow)
+        })?;
+    let wanted = pressure.wanted(reclaimable);
+    pressure.facts.suppressed = crate::working::peer::pressure(
+        peer.device,
+        wanted != 0
+            || !pressure.facts.new_processes.is_empty()
+            || owned.is_some()
+            || joined.is_some(),
+        owned.is_none() && joined.is_none() && pressure.calm(),
+    )?;
+    if wanted != 0 && owned.is_none() && joined.is_none() {
+        let round = peer.ask_device(sample.generation, wanted)?;
+        pressure.consume_process_signals();
+        let mut state = control.lock()?;
+        pressure.facts.round = Some(round.generation);
+        pressure.facts.completed = round.completed()?;
+        if round.requester == peer.id() {
+            if state.demands.is_empty()
+                && state.withdrawals.is_empty()
+                && !state.clear_want
+                && !state.stopping
+            {
+                state.pressure_round = Some(round.generation);
+                *deadline = Some(Instant::now() + COORDINATION_BUDGET);
+            } else {
+                // An allocator may arrive while ask_device is outside Control. Retire this
+                // exact pressure generation before that caller starts its own ask.
+                queue_withdrawal(&mut state, round.generation);
+            }
+        } else {
+            // Joining another owner never gives us cancellation authority. Clearing our
+            // advisory want is also performed before a subsequent allocator asks.
+            state.clear_want = true;
+            *joined = Some((round.generation, Instant::now() + COORDINATION_BUDGET));
+        }
+        control.changed.notify_all();
+    } else if wanted == 0 && !pressure.facts.new_processes.is_empty() {
+        // No completed idle pages were present at this signal. Do not make future
+        // newly idle pages an unbounded obligation to a steady foreign process.
+        pressure.consume_process_signals();
+    }
+    control.lock()?.facts.pressure = pressure.facts.clone();
+    Ok(())
+}
+
+fn serve(peer: &Peer, control: &Control, pressure: &mut Pressure) -> Result<()> {
     let mut generation = u64::MAX;
+    let mut pressure_deadline = None;
+    let mut pressure_joined = None;
+    let mut next_sample = Instant::now();
     loop {
         let (used, commands) = {
             let state = control.lock()?;
@@ -762,7 +933,7 @@ fn serve(peer: &Peer, control: &Control) -> Result<()> {
                 state.commands.pop_front()
             };
             match next {
-                Some(value) => command(peer, value),
+                Some(value) => command(peer, control, pressure, value),
                 None => break,
             }
         }
@@ -785,12 +956,31 @@ fn serve(peer: &Peer, control: &Control) -> Result<()> {
             }
             result => result?,
         }
+        if Instant::now() >= next_sample {
+            next_sample = Instant::now() + CADENCE;
+            match pressure_tick(
+                peer,
+                control,
+                pressure,
+                &mut pressure_deadline,
+                &mut pressure_joined,
+            ) {
+                Err(error) if deferred(&error) => {
+                    pressure.invalidate_observation();
+                    control.lock()?.facts.deferred += 1;
+                }
+                result => result?,
+            }
+        }
     }
 }
 
-fn run(mut peer: Peer, control: Arc<Control>) {
+fn run(mut peer: Peer, control: Arc<Control>, descriptor: ledger::Device) {
+    let mut pressure = Pressure::new(descriptor);
     // Keep Peer outside the unwind scope: even an unexpected worker panic retires it safely.
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| serve(&peer, &control)));
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        serve(&peer, &control, &mut pressure)
+    }));
     let error = match outcome {
         Ok(Ok(())) => None,
         Ok(Err(error)) => Some(error.to_string()),

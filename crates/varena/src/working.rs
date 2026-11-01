@@ -498,6 +498,8 @@ struct State {
     trace: Option<CaptureTrace>,
     poison: Option<String>,
     splits: split::Splits,
+    pressure_pending: bool,
+    prefetch_suppressed: bool,
 }
 
 impl State {
@@ -1851,6 +1853,9 @@ pub fn phase_enter(device: i32, key: Option<String>, mode: PhaseMode) -> Result<
             "execution phases cannot overlap on one device",
         ));
     }
+    if !state.pressure_pending {
+        state.prefetch_suppressed = false;
+    }
     let token = state
         .phases
         .next
@@ -2259,6 +2264,10 @@ fn admit_with_gap<T>(
     gap: Option<usize>,
     admit: impl FnOnce() -> Result<T>,
 ) -> Result<Option<T>> {
+    if state.prefetch_suppressed {
+        state.stats.prefetch_declines += 1;
+        return Ok(None);
+    }
     let Some(gap) = gap else {
         state.stats.prefetch_declines += 1;
         return Ok(None);

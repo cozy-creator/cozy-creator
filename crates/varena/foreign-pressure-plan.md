@@ -159,5 +159,78 @@ application-specific usage/budget and only a hint, not a guaranteed reservation.
    regrowth only at pass boundaries. Record mapped bytes, real transfer traffic and
    timing boundaries. A development cap is not physical small-card coexistence.
 
-Root owns rentals, SDK changes and GPU execution. No paid action or new foreign-
-pressure implementation has been performed by this audit checkpoint.
+Root owns rentals, SDK changes and GPU execution. This lane has performed no paid
+action or new GPU qualification.
+
+## Implemented sampler checkpoint
+
+`cooperative/pressure.rs` now runs on the existing native owner thread. Shared
+owners sample actual driver free/total on the 500 ms cadence; real request begin/end
+also bracket an observation. Runtime supplies only these lifecycle notifications.
+CPU Hello does not instantiate the sampler, load NVML/CUDA, or start an owner thread.
+
+Direct NVML PID attribution is limited to Linux's initial PID namespace. The check
+uses the named `PID_NS_INIT_INO` value from the [Linux v7.0 UAPI](https://github.com/torvalds/linux/blob/v7.0/include/uapi/linux/nsfs.h).
+Nested/unreadable namespaces remain `pid_namespace_unknown`; partial compute or
+graphics lists and unavailable memory values remain `process_accounting_unavailable`.
+Duplicate compute/graphics rows use their maximum. Neither PID coincidence inside a
+container nor TensorD's context-size heuristic can qualify a local observation.
+
+Own opaque bytes require exact host PID attribution and a native physical-call epoch
+that brackets the native physical snapshot and NVML observation without changing.
+A request window with any native physical-call change, overlap or unavailable
+observation is rejected. Otherwise its largest sampled own-process opaque growth
+supplies the documented 2×/32 MiB measurement. This still relies on NVML's sampled
+accounting: an unchanged native epoch alone does not prove accounting freshness.
+The VMM-only negative GPU arm must detect delayed managed accounting; if it fails,
+leave H unknown rather than add a guessed settling delay. Overflow and a rounded
+reserve above device capacity report explicit rejection reasons and preserve the
+older measurement.
+
+Facts separate `local_reserve` from committed device `reserve`. The existing Sample
+header merges qualified values by maximum. An unknown or smaller sampler cannot
+erase a prior measurement. This historical maximum lasts for the scoped ledger file
+and unchanged device total, including periods with no registered rows; it is not
+current opaque usage, available capacity, or release credit. A pre-checkpoint writer
+still implements the old overwrite semantics, so mixed old/new sampler cohorts are
+not qualified for monotone device H. Settle the supported writer contract before
+release; the schema has not been silently changed or forked into another ledger.
+
+A newly observed foreign PID crossing 256 MiB produces one idle-release episode.
+It is consumed when the coordinated ask is admitted, or when no completed idle pages
+exist. The PID remaining alive is not another signal. A steady foreign process must
+not drain every later model page or permanently prevent regrowth. Actual free/H
+observations govern subsequent response. Until H is known, no reserve-based deficit
+is invented; the threshold signal can still operate with reliable process identity.
+
+Device pressure asks use the same round and include the requester. Owned pressure
+rounds have a two-second coordination lifetime; joined rounds can be observed for
+the same interval but never canceled by that observer. Allocator registration queues
+an exact pressure-owned withdrawal before its demand ask; it cannot abort an
+allocation-owned generation. No ack, requested bytes, dead row or pending event
+changes driver capacity. Completed releases remain bounded by the donor snapshot.
+Switching an owner to Dedicated queues only its own pressure-round withdrawal.
+An existing donor assignment is refused before any further release once the current
+row is Dedicated; previously completed bytes remain recorded. Actual machine-mode
+propagation and switching during an unfinished GPU donation remain execution gates.
+
+Pressure latches native speculative prefetch off immediately. A calm observation
+only permits a raise: `working::phase_enter` clears that latch under the actual phase
+lock, after rejecting overlap. Ordinary free, a sampler tick and request cleanup
+cannot raise it mid-pass. Required Region/working allocations retain their normal
+driver/reclaim path and are never capped by this retention latch.
+
+This checkpoint reclaims already completed native idle bytes. The typed asynchronous
+Cache/graph owner requestability bridge remains separate work; live owner-held pages
+are not presented as reclaimable. TensorD's guarded Legacy byte controller, Windows
+budget events and the real machine-mode lifecycle route are not retired by this
+checkpoint.
+
+CPU evidence covers native host-control cancellation, pressure/allocation round
+ownership, real three-process include-self/duplicate requests, and monotone H metadata
+among updated writers. Declared CPU sample values do not qualify NVML attribution or
+GPU release. The real host namespace probe passes without loading NVIDIA libraries;
+this box denies the nested namespace probe at `/proc/self/uid_map`, preserved as
+unqualified. GPU gates additionally require a steady foreign PID kept alive after its
+first release, newly idle model pages retained thereafter, and regrowth only at a
+real native phase entry, beside the opaque-only/VMM-only/foreign-only arms above.

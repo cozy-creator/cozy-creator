@@ -13,6 +13,7 @@ thiserror.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
+nvml-wrapper.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

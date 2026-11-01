@@ -134,6 +134,26 @@ def gpu(payload: Probe, ctx: Context) -> Report:
             'error': f'{type(error).__name__}: {error}', 'traceback': traceback.format_exc()}, sort_keys=True))
 
 
+@app.entrypoint(accelerator=True)
+def mode_switch(payload: Probe, ctx: Context) -> Report:
+    from .foreign import mode_switch as exercise_mode_switch
+    try:
+        return exercise_mode_switch(payload, ctx)
+    except Exception as error:  # noqa: BLE001 - Preserve the real failed cell; never replay it.
+        return Report(False, json.dumps({'passed': False,
+            'error': f'{type(error).__name__}: {error}', 'traceback': traceback.format_exc()}, sort_keys=True))
+
+
+@app.entrypoint(accelerator=True)
+def steady_foreign(payload: Probe, ctx: Context) -> Report:
+    from .foreign import steady_foreign as exercise_steady_foreign
+    try:
+        return exercise_steady_foreign(payload, ctx)
+    except Exception as error:  # noqa: BLE001 - Preserve unsupported attribution and real failure.
+        return Report(False, json.dumps({'passed': False,
+            'error': f'{type(error).__name__}: {error}', 'traceback': traceback.format_exc()}, sort_keys=True))
+
+
 def exercise(payload: Probe, ctx: Context) -> Report:
     from tensorfs import varena
 

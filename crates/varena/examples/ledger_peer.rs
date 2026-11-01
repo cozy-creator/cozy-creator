@@ -99,6 +99,12 @@ mod proof {
                 let s = peer.sample(n(1), n(2), n(3), n(4), None, false)?;
                 Ok(json!({"sample":s.generation}))
             }
+            "sample-reserve" => {
+                ledger.reap_dead()?;
+                let expected = ledger.snapshot()?.generation;
+                let s = peer.sample(expected, n(1), n(2), n(3), Some(n(4)), n(5) != 0)?;
+                Ok(json!({"sample":s.generation}))
+            }
             "ask" => {
                 let r = peer.ask(n(1), n(2))?;
                 Ok(json!({"round":r.generation,"requested":r.requested,"donors":r.donations.len()}))
