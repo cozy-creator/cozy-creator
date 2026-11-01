@@ -83,6 +83,7 @@ def full_tensor_value(tensor, value):
 
 def allocator_progress(payload, ctx):
     request, _, provenance = actual(payload, ctx)
+    on = torch.device('cuda', ctx.device.index or 0)
     assert request.memory.cooperation is not None and request.memory.cooperation.facts()['active']
     cache = varena.Cache(0, 256 * MIB)
     cache.commit(0, cache.reserved_bytes)
@@ -101,7 +102,7 @@ def allocator_progress(payload, ctx):
         margin = 128 * MIB
         filler_bytes = (free - margin) // (2 * MIB) * (2 * MIB)
         assert filler_bytes > 0
-        filler = torch.empty(filler_bytes, dtype=torch.uint8, device=ctx.device)
+        filler = torch.empty(filler_bytes, dtype=torch.uint8, device=on)
         filler.fill_(53)
         full_tensor_value(filler, 53)
         available, _ = torch.cuda.mem_get_info(0)
@@ -109,7 +110,7 @@ def allocator_progress(payload, ctx):
         before = {'working': vt.stats(0), 'owner': owner.facts(),
                   'cooperation': request.memory.cooperation.facts(), 'cache': cache.stats()}
         began = time.monotonic_ns()
-        output = torch.empty(192 * MIB, dtype=torch.uint8, device=ctx.device)
+        output = torch.empty(192 * MIB, dtype=torch.uint8, device=on)
         output.fill_(71)
         full_tensor_value(output, 71)
         ended = time.monotonic_ns()
@@ -146,6 +147,7 @@ class ResizeResult(ctypes.Structure):
 
 def held_gil(payload, ctx):
     request, _, provenance = actual(payload, ctx)
+    on = torch.device('cuda', ctx.device.index or 0)
     path = Path(__file__).parent / 'bin/gil_resize.so'
     assert digest(path) == payload.gil_gate_sha256
     gate = ctypes.PyDLL(str(path))
@@ -157,8 +159,8 @@ def held_gil(payload, ctx):
     cache = varena.Cache(0, 16 * MIB)
     cache.commit(0, cache.reserved_bytes)
     raw_cache_value(cache, 83)
-    storage = torch.UntypedStorage(2 * MIB, device=ctx.device)
-    view = torch.empty(0, dtype=torch.uint8, device=ctx.device).set_(storage, 0, (2 * MIB,), (1,))
+    storage = torch.UntypedStorage(2 * MIB, device=on)
+    view = torch.empty(0, dtype=torch.uint8, device=on).set_(storage, 0, (2 * MIB,), (1,))
     view.fill_(7)
     settle()
 
@@ -207,6 +209,7 @@ def held_gil(payload, ctx):
 
 def capture_close(payload, ctx):
     _, _, provenance = actual(payload, ctx)
+    on = torch.device('cuda', ctx.device.index or 0)
     settle()
     baseline = vt.stats(0)
     cache = varena.Cache(0, 2 * MIB)
@@ -220,7 +223,7 @@ def capture_close(payload, ctx):
 
     owner = varena.CacheOwner(0, shrink)
     graph = torch.cuda.CUDAGraph()
-    value = torch.zeros(1, dtype=torch.uint8, device=ctx.device)
+    value = torch.zeros(1, dtype=torch.uint8, device=on)
     value.add_(1)  # warm the actual in-place kernel before capture
     torch.cuda.synchronize()
     try:
@@ -286,16 +289,17 @@ def prepared_sequence(ctx, *, stages, captured_state=False, sleep=0):
     from cozy_runtime.author._model import LANDED
     from cozy_runtime.internal.prepared import PreparedRepeat, PreparedSequence
 
-    pool, stream = torch.cuda.graph_pool_handle(), torch.cuda.Stream(device=ctx.device)
-    state = None if captured_state else torch.zeros(4 * MIB, dtype=torch.uint8, device=ctx.device)
+    on = torch.device('cuda', ctx.device.index or 0)
+    pool, stream = torch.cuda.graph_pool_handle(), torch.cuda.Stream(device=on)
+    state = None if captured_state else torch.zeros(4 * MIB, dtype=torch.uint8, device=on)
     definitions, footprints = [], []
     for _ in range(stages):
-        index = torch.zeros((), dtype=torch.int64, device=ctx.device)
+        index = torch.zeros((), dtype=torch.int64, device=on)
         graph = torch.cuda.CUDAGraph(keep_graph=True)
         footprint = vt.capture_footprint(0, pool)
         with vt.graph(graph, pool=pool, stream=stream, reserve_bytes=24 * MIB, footprint=footprint):
             if state is None:
-                state = torch.empty(4 * MIB, dtype=torch.uint8, device=ctx.device)
+                state = torch.empty(4 * MIB, dtype=torch.uint8, device=on)
             if captured_state:
                 state.fill_(7)
             else:
