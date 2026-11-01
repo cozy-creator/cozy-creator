@@ -57,6 +57,8 @@ type Release = unsafe extern "system" fn(Handle) -> Status;
 type CopyHost = unsafe extern "system" fn(Pointer, *const c_void, usize) -> Status;
 type EventCreate = unsafe extern "system" fn(*mut Object, c_uint) -> Status;
 type EventRecord = unsafe extern "system" fn(Object, Object) -> Status;
+type StreamWaitEvent = unsafe extern "system" fn(Object, Object, c_uint) -> Status;
+type StreamContext = unsafe extern "system" fn(Object, *mut Context) -> Status;
 type EventOp = unsafe extern "system" fn(Object) -> Status;
 type IsCapturing = unsafe extern "system" fn(Object, *mut c_int) -> Status;
 type MemoryInfo = unsafe extern "system" fn(*mut usize, *mut usize) -> Status;
@@ -85,6 +87,8 @@ pub(crate) struct Driver {
     event_destroy: EventOp,
     is_capturing: IsCapturing,
     stream_query: EventOp,
+    stream_wait_event: StreamWaitEvent,
+    stream_context: StreamContext,
     memory_info: MemoryInfo,
     memory_calls: AtomicU64,
     physical_ooms: AtomicU64,
@@ -138,6 +142,8 @@ impl Driver {
             event_destroy: symbol!("cuEventDestroy_v2", EventOp),
             is_capturing: symbol!("cuStreamIsCapturing", IsCapturing),
             stream_query: symbol!("cuStreamQuery", EventOp),
+            stream_wait_event: symbol!("cuStreamWaitEvent", StreamWaitEvent),
+            stream_context: symbol!("cuStreamGetCtx", StreamContext),
             memory_info: symbol!("cuMemGetInfo_v2", MemoryInfo),
             memory_calls: AtomicU64::new(0),
             physical_ooms: AtomicU64::new(0),
@@ -342,6 +348,27 @@ impl Driver {
             600 => Ok(false),
             code => status("cuStreamQuery", code).map(|()| true),
         }
+    }
+
+    pub(crate) fn validate_stream(&self, stream: usize) -> Result<()> {
+        self.activity_calls.fetch_add(1, Ordering::Relaxed);
+        let mut context = std::ptr::null_mut();
+        // SAFETY: writable output and caller-owned stream; this primary context is entered.
+        status("cuStreamGetCtx", unsafe {
+            (self.stream_context)(stream as Object, &mut context)
+        })?;
+        if context as usize != self.context {
+            return Err(Error::Invalid("fill stream is not in the arena primary context"));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn order_event(&self, stream: usize, event: usize) -> Result<()> {
+        self.activity_calls.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: live same-context consumer and recorded event, retained across this call.
+        status("cuStreamWaitEvent", unsafe {
+            (self.stream_wait_event)(stream as Object, event as Object, 0)
+        })
     }
 
     pub(crate) fn copy_from_host(&self, ptr: u64, bytes: &[u8]) -> Result<()> {

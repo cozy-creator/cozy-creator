@@ -2,7 +2,8 @@
 
 Owner: /root/retention_restart. Base: coordinator106581cb66f161a218672032ebcbc0b59b89dd01
 on freshly fetched master1b77958bdfb3f699db8340951c9b5cc1805d4243.
-This is an interface proposal for root/P4 agreement, not implemented capability.
+Root approved the ownership/state machine with demand-only prepare_on, metadata Session
+facts and worker startup before exposure. Native implementation is in progress, unqualified.
 The external P4 worktree is unchanged. Existing synchronous APIs stay in place.
 
 ## Current ownership
@@ -56,6 +57,7 @@ impl FillSession {
     // Retains everything on refusal. Acquire ProducerGuard, validate all streams,
     // precreate all completion events and ensure the completion worker exists, then
     // expose a destination for submissions. OS worker-start failure retains custody.
+    pub fn facts(&self) -> Result<FillFacts>; // host-only, also after partial failure
     pub fn begin(&mut self) -> Result<FillDestination>;
 
     // Seal all future producer submissions, record one completion event per actual
@@ -90,7 +92,7 @@ impl Region {
     // Existing prepare variants remain completed-only. This explicit new route also
     // accepts a published/in-flight fill after ordering the declared consumer stream.
     pub unsafe fn prepare_on(
-        self: &Arc<Self>, consumer_stream: u64, admission: Admission,
+        self: &Arc<Self>, consumer_stream: u64,
     ) -> Result<StreamPreparation>;
 }
 impl Pin {
@@ -195,7 +197,7 @@ pins retain existing capture behavior; no new asynchronous fill is admitted duri
    and real tests are reviewed. Existing fill callback, checked context join and private
    library/version contract stay intact. No Python/ABI local resident-state or byte policy.
 
-Decisions for root before implementation: approve the fixed producer inventory and opaque
-owned-resource envelope; approve Published as a distinct native Contents state with the new
-prepare_on/Pin.order_on route; approve unsealed-Writing quarantine rather than inferred
-producer closure. The public C spelling/version remains P4-owned after native agreement.
+Approved scope: fixed producer inventory and native owned-resource envelope, Published
+separate from Ready, explicit prepare_on/Pin.order_on, and unsealed-Writing quarantine.
+prepare_on uses ordinary demand admission; no public Admission/Prefetch mode is added.
+The public C spelling/version remains P4-owned after native implementation and qualification.

@@ -11,6 +11,8 @@
 #![deny(unsafe_code)]
 
 mod cuda;
+mod async_fill;
+pub use async_fill::{FillDestination, FillFacts, FillOwners, FillSession, FillState, FillTicket, StreamPreparation};
 /// Versioned public ABI. All frontends resolve this shared library.
 pub mod abi;
 pub mod plan;
@@ -211,6 +213,7 @@ enum Contents {
     Loading,
     Ready,
     Retired,
+    Published,
 }
 
 struct Uses {
@@ -222,6 +225,8 @@ struct Uses {
     // One reusable last-consumer event per declared stream. A release records it before its
     // pin decrement, so a zero-pin reclaim candidate's events cannot be re-recorded under it.
     fences: Mutex<Vec<Fence>>,
+    generation: AtomicU64,
+    submission: Mutex<Option<Arc<async_fill::Control>>>,
 }
 
 #[derive(Clone, Copy)]
@@ -254,6 +259,8 @@ impl Uses {
             contents: AtomicU8::new(Contents::Cold as u8),
             unjoined: AtomicBool::new(false),
             fences: Mutex::new(Vec::new()),
+            generation: AtomicU64::new(0),
+            submission: Mutex::new(None),
         }
     }
     fn fences(&self) -> MutexGuard<'_, Vec<Fence>> {
@@ -265,6 +272,7 @@ impl Uses {
             1 => Contents::Loading,
             2 => Contents::Ready,
             3 => Contents::Retired,
+            4 => Contents::Published,
             _ => unreachable!("native contents state"),
         }
     }
@@ -360,7 +368,7 @@ impl State {
             .filter(|(id, entry)| {
                 Some(**id) != exclude
                     && entry.uses.pins() == 0
-                    && entry.uses.state() != Contents::Loading
+                    && !matches!(entry.uses.state(), Contents::Loading | Contents::Published)
                     && entry.handle.is_some()
                     && (preferred || !entry.preferred())
                     && (!matches!(reason, ReclaimReason::StreamingLimit) || !self.standby(entry))
@@ -403,7 +411,7 @@ impl State {
                 !entry.preferred()
                     && entry.handle.is_some()
                     && entry.uses.pins() == 0
-                    && entry.uses.state() != Contents::Loading
+                    && !matches!(entry.uses.state(), Contents::Loading | Contents::Published)
                     && !self.standby(entry)
             })
             .map(|entry| entry.bytes)
@@ -1055,7 +1063,7 @@ impl Arena {
             .filter(|(id, entry)| {
                 **id != exclude
                     && entry.uses.pins() == 0
-                    && entry.uses.state() != Contents::Loading
+                    && !matches!(entry.uses.state(), Contents::Loading | Contents::Published)
                     && entry.handle.is_some()
                     && !entry.preferred()
                     && (!matches!(reason, ReclaimReason::StreamingLimit) || !state.standby(entry))
@@ -1332,9 +1340,15 @@ impl Region {
     }
 
     /// Record this region's reusable last-consumer event on each stream. Never waits.
-    fn record_fences(&self, streams: &[u64]) -> Result<()> {
+    fn record_fences(&self, streams: &[u64], submission: Option<&async_fill::Control>) -> Result<()> {
+        let captures = capture_counts()?;
+        ensure_not_capturing(&captures, self.device())?;
+        let ordered = submission.is_some_and(|control| {
+            control.generation == self.uses.generation.load(Ordering::Acquire)
+                && self.uses.state() == Contents::Published
+        });
         if streams.is_empty()
-            || self.uses.state() != Contents::Ready
+            || (self.uses.state() != Contents::Ready && !ordered)
             || self.arena.captures.load(Ordering::Acquire) != 0
         {
             return Err(Error::Invalid("release has no recordable consumer event"));
@@ -1528,7 +1542,7 @@ impl Region {
             if entry.uses.state() == Contents::Ready {
                 continue;
             }
-            if entry.uses.state() == Contents::Loading || entry.uses.pins() != 0 {
+            if matches!(entry.uses.state(), Contents::Loading | Contents::Published) || entry.uses.pins() != 0 {
                 return Ok(None);
             }
             cold = true;
@@ -1622,7 +1636,7 @@ impl Region {
     ) -> Result<Preparation> {
         let reclaim = admission == Admission::Any;
         let entry = state.entries.get(&self.id).expect("live region");
-        if entry.uses.state() == Contents::Loading {
+        if matches!(entry.uses.state(), Contents::Loading | Contents::Published) {
             return Err(Error::Busy);
         }
         if entry.uses.state() == Contents::Ready {
@@ -1746,6 +1760,10 @@ impl Region {
                 }
             }
         }
+        self.uses.generation.try_update(Ordering::AcqRel, Ordering::Acquire,
+            |generation| generation.checked_add(1))
+            .map_err(|_| Error::Invalid("fill generation overflow"))?;
+        *self.uses.submission.lock().map_err(|_| Error::Poisoned("fill submission mutex".into()))? = None;
         let pin = self.pin_locked(state)?;
         self.uses.set(Contents::Loading);
         Ok(Preparation::Fill(Fill {
@@ -1783,6 +1801,7 @@ impl Region {
         entry.last_use = state.clock;
         Ok(Pin {
             region: Some(Arc::clone(self)),
+            submission: None,
         })
     }
 }
@@ -1933,6 +1952,7 @@ impl Drop for Fill {
 /// Physical pin + reservation ownership. The deleter of foreign storage must own this value.
 pub struct Pin {
     region: Option<Arc<Region>>,
+    submission: Option<Arc<async_fill::Control>>,
 }
 
 impl Pin {
@@ -1954,7 +1974,9 @@ impl Pin {
 
     pub fn try_clone(&self) -> Result<Self> {
         let mut state = self.region().arena.lock()?;
-        self.region().pin_locked(&mut state)
+        let mut pin = self.region().pin_locked(&mut state)?;
+        pin.submission = self.submission.clone();
+        Ok(pin)
     }
 
     /// End physical ownership immediately, retaining the actual VA owner for deferred drop.
@@ -1999,7 +2021,7 @@ impl Pin {
     pub unsafe fn into_fenced_region(mut self, streams: &[u64]) -> Arc<Region> {
         let region = self.region.take().expect("live pin");
         if region.arena.pid == std::process::id() {
-            if region.record_fences(streams).is_err() {
+            if region.record_fences(streams, self.submission.as_deref()).is_err() {
                 region.uses.unjoined.store(true, Ordering::Release);
             }
             decrement(&region.uses.pins);
