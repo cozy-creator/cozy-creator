@@ -10,6 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 use varena::{cooperative, ledger, working};
+mod lifetime;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 type Ctx = *mut c_void;
@@ -198,7 +199,7 @@ fn facts(service: &Service) -> Result<Value> {
         Service::Auto(owner) => {
             let f = owner.facts()?;
             Ok(
-                json!({"active":f.active,"recoveries":f.recoveries,"failed":f.failed,
+                json!({"active":f.active,"stopping":f.stopping,"retired":f.retired,"recoveries":f.recoveries,"failed":f.failed,
                 "published":f.published,"serviced":f.serviced,"physical_bytes":f.physical_bytes,
                 "active_recoveries":f.active_recoveries,"pending_withdrawals":f.pending_withdrawals,
                 "withdrawn_rounds":f.withdrawn_rounds,"last_withdrawn_round":f.last_withdrawn_round,
@@ -220,6 +221,8 @@ fn command(
     cuda: &Cuda,
     service: &Service,
     blocks: &mut BTreeMap<String, Block>,
+    directory: &std::path::Path,
+    descriptor: ledger::Device,
 ) -> Result<Value> {
     let name = value["name"].as_str().unwrap_or("block");
     match value["op"].as_str().unwrap_or("") {
@@ -325,6 +328,16 @@ fn command(
             )
         }
         "stats" => Ok(Value::Null),
+        "fork_inherited" => match service {
+            Service::Auto(owner) => lifetime::inherited(owner),
+            _ => Err(io::Error::other("fork probe requires the automatic owner").into()),
+        },
+        "capture_close" => match service {
+            Service::Auto(owner) => {
+                lifetime::capture_close(owner, cuda, directory, descriptor, device)
+            }
+            _ => Err(io::Error::other("capture-close probe requires the automatic owner").into()),
+        },
         _ => Err(io::Error::other("unknown native fixture operation").into()),
     }
 }
@@ -381,7 +394,15 @@ fn consumer(
             }
         }
         let start = Instant::now();
-        let result = command(&value, device, &cuda, &service, &mut blocks);
+        let result = command(
+            &value,
+            device,
+            &cuda,
+            &service,
+            &mut blocks,
+            directory,
+            descriptor,
+        );
         let (ok, result, error, error_class) = match result {
             Ok(x) => (true, x, Value::Null, ""),
             Err(e) => {

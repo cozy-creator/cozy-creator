@@ -13,7 +13,7 @@ The controller has three ordinary Cozy entrypoints: `smoke`, `donor_death` and
 `simultaneous_auto`. It verifies the executed ELF hash, PID/start_ticks/pidfd and no
 Python/Torch maps for every native child. Readback covers every requested byte using
 bounded host windows. Watchers also prove that CUDA is not loaded.
-Private ledgers are created explicitly under `/dev/shm` with0700; default `/tmp`
+Private ledgers are created explicitly under `/dev/shm` with mode 0700; default `/tmp`
 is not assumed to satisfy the ledger's tmpfs requirement.
 
 `donor_death` warms all contexts and small read/write paths, publishes real completed
@@ -50,3 +50,21 @@ pending withdrawals and unfinished owned rounds return to idle without issuing a
 withdraw/clear_want/ask/service command. GPU qualification is still pending. Native
 product code is imported unchanged from that checkpoint; this fixture introduces no
 allocator, daemon or published tool behavior. Source/build success is not GPU proof.
+
+`native_lifetime` is a separate optional entrypoint, independent of the three pressure
+and progress cells. After real CUDA initialization and full canary readback it forks
+the native process. The child requires exact `Inherited` refusals from Owner facts
+and close, writes one fixed pipe byte, and calls `_exit`; it performs no CUDA calls,
+heap formatting, stdio or Rust teardown. The parent owns the child PID/start ticks
+and pidfd and preserves its exit result, then verifies the parent canary again.
+
+The capture check opens a real manual instrumentation Peer before capture and retains
+it until after all capture/close guards. It uses the exact two-argument CUDA
+`cuStreamBeginCapture_v2` ABI. During real capture, Owner close must refuse and remain
+stopping but not retired. For a defined 600ms interval, live/mapped working bytes and
+the product working-driver counter must remain unchanged. Capture then ends, Owner
+retirement completes, and full canary readback still passes. There are no Arena
+weights: this measures Owner close deferral and product working-driver calls only,
+not last-Arena teardown or absence of all external CUDA calls. An error ending CUDA
+capture emits a failure receipt and exits the isolated helper without Rust teardown;
+uncertain capture state never permits silent native retirement.

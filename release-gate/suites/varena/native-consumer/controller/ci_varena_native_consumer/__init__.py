@@ -484,6 +484,29 @@ def simultaneous_case(h):
             'boundary': 'Both real automatic consumers hold idle cache then demand concurrently. Actual recovery/donation facts are recorded; equal success or donation by both is not inferred.'}
 
 
+def lifetime_case(h):
+    child = h.spawn('lifetime', 'auto')
+    warmed = warm(child)
+    fork = child.call('fork_inherited')
+    assert fork['result']['facts_inherited_rejected'] and fork['result']['close_inherited_rejected']
+    assert fork['result']['child_exit'] == 0 and fork['result']['parent_owner_active']
+    after_fork = child.call('verify', name='canary')
+    assert after_fork['result']['bytes_verified'] == 2 * MIB
+    capture = child.call('capture_close')
+    detail = capture['result']
+    assert detail['actual_cuda_capture'] and detail['close_refused']
+    assert not detail['active'] and detail['stopping'] and not detail['retired_during_capture']
+    assert detail['retired_after_capture'] and detail['product_working_driver_call_delta'] == 0
+    assert detail['working_driver_calls_before'] == detail['working_driver_calls_after']
+    assert detail['live_before'] == detail['live_after'] and detail['mapped_before'] == detail['mapped_after']
+    after_capture = child.call('verify', name='canary')
+    assert after_capture['result']['bytes_verified'] == 2 * MIB
+    return {'warm': warmed, 'post_cuda_fork': fork, 'after_fork_readback': after_fork,
+            'capture_close': capture, 'after_capture_readback': after_capture,
+            'qualified': True,
+            'boundary': 'Optional lifetime checks only: inherited Owner rejection after real CUDA initialization; Owner close deferral and zero product working-driver calls during actual capture. No Arena weights, last-Arena teardown or all external CUDA-call claim.'}
+
+
 def execute(payload, ctx, case):
     h = None
     result = {'passed': False, 'case': case.__name__}
@@ -533,3 +556,8 @@ def donor_death(payload: Probe, ctx: Context) -> Report:
 @app.entrypoint(accelerator=True)
 def simultaneous_auto(payload: Probe, ctx: Context) -> Report:
     return execute(payload, ctx, simultaneous_case)
+
+
+@app.entrypoint(accelerator=True)
+def native_lifetime(payload: Probe, ctx: Context) -> Report:
+    return execute(payload, ctx, lifetime_case)
