@@ -1,5 +1,6 @@
 //! A segment of a local video, named by a media fragment on its path (`clip.mp4#t=3:19,3:32`):
 //! cut once with ffmpeg into `~/.cozy/cache/clips`, frame-accurate, and sent in its source's place.
+//! Calcifer cuts it, with cozy's ffmpeg (`crate::tools::ffmpeg`, fetched on first need).
 use std::{
     fmt,
     fs::{self, FileTimes},
@@ -8,10 +9,11 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use protocol::error::{Error, Kind};
+use protocol::{
+    calcifer::{Note, NoteLevel},
+    error::{Error, Kind},
+};
 use sha2::{Digest as _, Sha256};
-
-use crate::{Context, output, tools::Ffmpeg};
 
 /// What follows a path to name a segment of it (W3C media fragments' temporal dimension).
 const FRAGMENT: &str = "#t=";
@@ -27,11 +29,11 @@ const ENCODE: &[&str] = &[
 /// A clip not sent for this long goes the next time one is cut.
 const UNUSED: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
-/// Where clips are kept, and the command whose ffmpeg cuts them.
+/// Where clips are kept, and the cozy home whose ffmpeg cuts them.
 #[derive(Debug)]
-pub struct Clips<'a> {
-    pub ctx: &'a Context,
+pub struct Clips {
     pub dir: PathBuf,
+    pub home: platform::paths::Home,
 }
 
 /// Seconds into the source; no end: the source's.
@@ -127,9 +129,11 @@ impl fmt::Display for Cut {
     }
 }
 
-impl Clips<'_> {
-    /// `range` of `source` as a clip: the one cut before for this version of the file, else cut now.
-    pub async fn cut(&self, field: &str, source: &Path, range: Range) -> Result<Cut, Error> {
+impl Clips {
+    /// `range` of `source` as a clip: the one cut before for this version of the file, else cut
+    /// now. What it did is said in `notes`.
+    pub async fn cut(&self, field: &str, source: &Path, range: Range, notes: &mut Vec<Note>) -> Result<Cut, Error> {
+        let mut say = |message: String| notes.push(Note { level: NoteLevel::Info, message });
         let key = key(source, range).ok_or_else(|| {
             Error::new(
                 Kind::NotFound,
@@ -149,22 +153,12 @@ impl Clips<'_> {
                 .write(true)
                 .open(&clip)
                 .and_then(|f| f.set_times(FileTimes::new().set_accessed(SystemTime::now())));
-            output::say(
-                self.ctx,
-                &format!(
-                    "{field}: {range} of {}, cut before: {}",
-                    source.display(),
-                    clip.display()
-                ),
-            );
+            say(format!("{field}: {range} of {}, cut before: {}", source.display(), clip.display()));
             return Ok(cut);
         }
-        let ffmpeg = crate::tools::ffmpeg(self.ctx).await?;
+        let ffmpeg = crate::tools::ffmpeg(&self.home, &|line| tracing::info!("{line}")).await?;
         let end = within(&ffmpeg, field, source, range)?;
-        output::say(
-            self.ctx,
-            &format!("{field}: cutting {range} of {}", source.display()),
-        );
+        say(format!("{field}: cutting {range} of {}", source.display()));
         let began = Instant::now();
         let (source, dir) = (source.to_owned(), self.dir.clone());
         tokio::task::spawn_blocking(move || {
@@ -172,20 +166,13 @@ impl Clips<'_> {
         })
         .await
         .map_err(|e| Error::new(Kind::Internal, "clip_cut", e.to_string()))??;
-        output::say(
-            self.ctx,
-            &format!(
-                "{field}: cut in {:.1} s: {}",
-                began.elapsed().as_secs_f64(),
-                cut.clip.display()
-            ),
-        );
+        say(format!("{field}: cut in {:.1} s: {}", began.elapsed().as_secs_f64(), cut.clip.display()));
         Ok(cut)
     }
 }
 
 /// The range's end, once it is checked against the source's duration.
-fn within(ffmpeg: &Ffmpeg, at: &str, source: &Path, range: Range) -> Result<f64, Error> {
+fn within(ffmpeg: &crate::tools::Ffmpeg, at: &str, source: &Path, range: Range) -> Result<f64, Error> {
     let duration = probe(&ffmpeg.ffprobe, source)?;
     let past = |what: &str, t: f64| {
         invalid(format!(
@@ -208,7 +195,7 @@ fn within(ffmpeg: &Ffmpeg, at: &str, source: &Path, range: Range) -> Result<f64,
 
 /// `start..end` of `source`, encoded into `clip` whole or not at all.
 fn encode(
-    ffmpeg: &Ffmpeg,
+    ffmpeg: &crate::tools::Ffmpeg,
     source: &Path,
     start: f64,
     end: f64,

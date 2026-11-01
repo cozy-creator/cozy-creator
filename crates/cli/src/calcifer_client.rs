@@ -20,7 +20,7 @@ use platform::{
     tools,
 };
 use protocol::{
-    calcifer::{Down, Event, Holder, MachineList, REFUSED, Run, RunList, SubmitRun, Submitted},
+    calcifer::{Down, Event, Holder, MachineList, REFUSED, Run, RunList},
     error::{Envelope, Error, Kind},
     machine::LogLines,
 };
@@ -284,10 +284,6 @@ impl Client {
             format!("{}; this is cozy {}", self.lacking(lacks), env!("CARGO_PKG_VERSION")),
         )
         .remedy("update the installed cozy to this one (`cozy update`), or run the installed one")
-    }
-
-    pub async fn submit(&self, key: &str, run: &SubmitRun) -> Result<Submitted, Error> {
-        self.post("/v1/runs", run, Some(key)).await
     }
 
     /// A run by its id or number.

@@ -87,30 +87,7 @@ fn keep_manifest(home: &Home, digest: &Digest, document: &[u8]) -> Result<PathBu
     Ok(path)
 }
 
-/// Whether `text` is written as a path on this computer, never a name: `.`, `..` or `~`, alone or
-/// before a separator (`./dir`, `..\dir` on Windows), or a rooted or absolute path (`/dir`,
-/// `C:\dir`). The CLI's one test, for code and for input files.
-pub fn written_as_path(text: &str) -> bool {
-    let text = text.trim();
-    let led = |lead: &str| text.strip_prefix(lead).is_some_and(|rest| rest.is_empty() || rest.starts_with(std::path::is_separator));
-    led(".") || led("..") || led("~") || text.starts_with(std::path::is_separator) || Path::new(text).is_absolute()
-}
-
-/// The path `text` spells: `~` is `home`, and a relative one is under `cwd`.
-pub fn spelled(text: &str, cwd: &Path, home: &Path) -> PathBuf {
-    let path = Path::new(text.trim());
-    match path.strip_prefix("~") {
-        Ok(rest) => home.join(rest),
-        Err(_) => cwd.join(path),
-    }
-}
-
-/// Local code `text` names, when it is written as a path or names a script here (`x.py`).
-pub fn local(text: &str, cwd: &Path, home: &Path) -> Option<PathBuf> {
-    let text = text.trim();
-    let script = text.ends_with(".py") && cwd.join(text).is_file();
-    (written_as_path(text) || script).then(|| spelled(text, cwd, home))
-}
+pub use protocol::target::{local, spelled, written_as_path};
 
 /// Local code `text` names (`./dir[/fn]`, `./script.py[/fn]`, from `cwd`): its package directory or
 /// script and the function it names. None: `text` is not written as a path (a published name).
@@ -865,6 +842,7 @@ pub async fn prepare(
     hub: &str,
     warm: bool,
     key: &str,
+    agreed: Option<protocol::calcifer::Agreed>,
 ) -> Result<Prepared, Error> {
     let hubs = &api.machines.hubs;
     let home = hubs.home().clone();
@@ -895,7 +873,7 @@ pub async fn prepare(
     if let Some(interface) = runtime.as_deref().filter(|_| !warm).and_then(|runtime| kept(&home, &code, runtime)) {
         return Ok(prepared(Some(interface), None, None, None));
     }
-    let install = install_run(&home, origin.as_str(), on.clone(), &code);
+    let install = SubmitRun { agreed, ..install_run(&home, origin.as_str(), on.clone(), &code) };
     let run = api.calcifer.submit(&key, install).await.map_err(|e| crate::api::Refusal::from(e).0)?.run;
     Ok(prepared(None, None, None, Some(run)))
 }
@@ -904,7 +882,7 @@ pub async fn prepare(
 /// blocks) use.
 pub async fn ready(api: &Arc<Api>, path: &Path, on: &On, hub: &str, key: &str) -> Result<Prepared, Error> {
     loop {
-        let prepared = prepare(api, path, on, hub, false, key).await?;
+        let prepared = prepare(api, path, on, hub, false, key, None).await?;
         let Some(run) = &prepared.install else { return Ok(prepared) };
         crate::project::host::Host::new(api).wait(&run.id).await?;
     }
