@@ -1,0 +1,16 @@
+{
+  "source": "6c4f0e53a2a6324cff002d9ce558d8313c2f2904",
+  "worktree": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-native-integrated",
+  "canonical_driver_sha256": "dfedd98f4d98b97410711affb0029e17fc716375b18421ea02784dfa8f721e96",
+  "task_driver_sha256": "230aaf639e2d885de0045f27f8b631c1466edc3fbdbb35d15a442dca6824486d",
+  "changes": "one CPU/job and explicit durable task target/output paths; source/build options/proof assertions unchanged",
+  "native_inputs": [
+    "0657802458dfbf4fb7e66613e30c9baef1308e68",
+    "b6fdd9ba67837f315db2f640972522e03ec892f3"
+  ],
+  "p4_inputs": [
+    "bf5637f10a9dc623f796b6700a8cfbf31a8bf21f",
+    "5472eeb9dfd15bb5dd920d43c890d222b9a768a3"
+  ],
+  "limitations": "P4 close/retry/cohort/bundle findings remain open; no GPU proof for this combined source"
+}

@@ -1,0 +1,282 @@
+   Compiling syn v2.0.119
+   Compiling libc v0.2.190
+   Compiling zeroize_derive v1.5.0
+    Checking zeroize v1.9.1
+   Compiling jobserver v0.1.35
+   Compiling serde_core v1.0.229
+   Compiling cc v1.8.0
+   Compiling cmake v0.1.58
+   Compiling aws-lc-sys v0.46.0
+    Checking serde v1.0.229
+   Compiling aws-lc-rs v1.18.2
+    Checking rustls-pki-types v1.15.1
+    Checking untrusted v0.7.1
+    Checking base64ct v1.8.3
+    Checking pem-rfc7468 v0.7.0
+   Compiling der_derive v0.7.3
+    Checking const-oid v0.9.6
+    Checking flagset v0.4.7
+    Checking der v0.7.10
+    Checking spki v0.7.3
+    Checking subtle v2.6.1
+    Checking futures-io v0.3.34
+    Checking pem v4.0.0
+   Compiling tls_codec_derive v0.4.2
+    Checking tls_codec v0.4.2
+    Checking serde_json v1.0.154
+    Checking x509-cert v0.2.5
+   Compiling tracing-attributes v0.1.31
+   Compiling getrandom v0.3.4
+    Checking tracing v0.1.44
+    Checking socket2 v0.6.5
+    Checking mio v1.2.4
+    Checking tokio v1.53.3
+    Checking jiff-core v0.1.1
+    Checking jiff v0.2.38
+    Checking rand_core v0.9.5
+    Checking futures-util v0.3.34
+    Checking sigstore-types v0.15.0
+    Checking rustls-webpki v0.103.16
+    Checking rand_chacha v0.9.0
+    Checking rand v0.9.5
+   Compiling rustix v1.1.5
+    Checking sigstore-crypto v0.15.0
+    Checking tokio-util v0.7.20
+    Checking pkcs8 v0.10.2
+    Checking inout v0.1.4
+    Checking powerfmt v0.2.1
+    Checking time-core v0.1.9
+    Checking num-conv v0.2.2
+    Checking deranged v0.5.9
+    Checking time v0.3.55
+    Checking h2 v0.4.20
+   Compiling darling_core v0.20.11
+   Compiling rustls v0.23.46
+    Checking digest v0.10.7
+    Checking cipher v0.4.4
+   Compiling crc32fast v1.5.2
+    Checking httpdate v1.0.3
+    Checking hyper v1.12.0
+   Compiling darling_macro v0.20.11
+    Checking adler2 v2.0.1
+    Checking simd-adler32 v0.3.10
+    Checking miniz_oxide v0.9.1
+    Checking hyper-util v0.1.21
+   Compiling darling v0.20.11
+    Checking ctr v0.9.2
+    Checking yasna v0.6.0
+    Checking sigstore-merkle v0.15.0
+    Checking cms v0.2.3
+    Checking aead v0.5.2
+   Compiling thiserror-impl v1.0.69
+   Compiling equator-macro v0.2.1
+    Checking fastrand v2.5.0
+    Checking base16ct v0.2.0
+    Checking ryu-js v1.0.3
+    Checking zlib-rs v0.6.8
+    Checking flate2 v1.1.10
+    Checking serde_json_canonicalizer v0.4.1
+    Checking sec1 v0.7.3
+    Checking equator v0.2.2
+    Checking thiserror v1.0.69
+    Checking ccm v0.5.0
+    Checking sigstore-tsa v0.15.0
+    Checking sigstore-rekor v0.15.0
+    Checking rcgen v0.14.10
+   Compiling wrapcenum-derive v0.4.1
+    Checking tower v0.5.3
+    Checking tokio-rustls v0.26.6
+    Checking aes v0.8.4
+    Checking sha2 v0.10.9
+    Checking xattr v1.6.1
+    Checking sigstore-trust-root v0.15.0
+    Checking sigstore-bundle v0.15.0
+    Checking nom v8.0.0
+    Checking num_cpus v1.17.0
+    Checking filetime v0.2.29
+    Checking arrayvec v0.7.8
+    Checking typed-path v0.12.3
+   Compiling getrandom v0.4.3
+    Checking serde_urlencoded v0.7.1
+    Checking nvml-wrapper v0.13.0
+    Checking rustls-native-certs v0.8.5
+    Checking zip v9.0.4
+    Checking dimpl v0.7.6
+    Checking tar v0.4.46
+    Checking private-gemm-x86 v0.1.22
+    Checking sigstore-verify v0.15.0
+    Checking nano-gemm v0.2.2
+    Checking url v2.5.8
+    Checking futures-executor v0.3.34
+    Checking toml_datetime v0.6.11
+    Checking serde_spanned v0.6.9
+   Compiling curve25519-dalek-derive v0.1.1
+    Checking crc-catalog v2.5.0
+   Compiling tensorfs v0.17.16 (/home/fidika/cozy/.worktrees/cozy-creator/xs138-p3-idle-lifecycle/crates/tensorfs)
+   Compiling vcpkg v0.2.15
+    Checking utf8parse v0.2.2
+    Checking pep440_rs v0.7.3
+    Checking anstyle-parse v1.0.0
+   Compiling libsqlite3-sys v0.38.2
+    Checking toml_edit v0.22.27
+    Checking crc v3.4.0
+    Checking curve25519-dalek v4.1.3
+    Checking futures v0.3.34
+    Checking tower-http v0.6.11
+    Checking faer v0.24.4 (/home/fidika/cozy/.worktrees/cozy-creator/xs138-p3-idle-lifecycle/vendor/faer)
+warning: unused import: `core::num::NonZeroUsize`
+   --> vendor/faer/src/lib.rs:190:5
+    |
+190 | use core::num::NonZeroUsize;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `crate::mat::matmut::SyncCell`
+ --> vendor/faer/src/col/colmut.rs:2:5
+  |
+2 | use crate::mat::matmut::SyncCell;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::prelude::*`
+ --> vendor/faer/src/io.rs:1:5
+  |
+1 | use crate::prelude::*;
+  |     ^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::utils::thread::par_split_indices`
+ --> vendor/faer/src/linalg/lu/full_pivoting/factor.rs:3:5
+  |
+3 | use crate::utils::thread::par_split_indices;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `super::temp_mat_scratch`
+ --> vendor/faer/src/linalg/matmul/mod.rs:2:5
+  |
+2 | use super::temp_mat_scratch;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `MemBuffer`
+  --> vendor/faer/src/linalg/matmul/mod.rs:11:17
+   |
+11 | use dyn_stack::{MemBuffer, MemStack};
+   |                 ^^^^^^^^^
+
+warning: unused import: `crate::utils::bound::IdxInc`
+   --> vendor/faer/src/linalg/matmul/mod.rs:877:6
+    |
+877 |     use crate::utils::bound::IdxInc;
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: variable does not need to be mutable
+   --> vendor/faer/src/linalg/householder.rs:510:7
+    |
+510 |         let mut tmp = tmp.as_mat_mut();
+    |             ----^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `as_type` is never used
+   --> vendor/faer/src/col/colmut.rs:656:23
+    |
+451 | impl<'a, T, Rows: Shape, RStride: Stride> ColMut<'a, T, Rows, RStride> {
+    | ---------------------------------------------------------------------- method in this implementation
+...
+656 |     pub(crate) unsafe fn as_type<U>(self) -> ColMut<'a, U, Rows, RStride> {
+    |                          ^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `SyncCell` is never constructed
+  --> vendor/faer/src/mat/matmut.rs:23:19
+   |
+23 | pub(crate) struct SyncCell<T>(T);
+   |                   ^^^^^^^^
+
+warning: method `as_type` is never used
+    --> vendor/faer/src/mat/matmut.rs:1301:23
+     |
+ 987 | / impl<'a, T, Rows: Shape, Cols: Shape, RStride: Stride, CStride: Stride>
+ 988 | |     MatMut<'a, T, Rows, Cols, RStride, CStride>
+     | |_______________________________________________- method in this implementation
+...
+1301 |       pub(crate) unsafe fn as_type<U>(
+     |                            ^^^^^^^
+
+warning: method `as_type` is never used
+   --> vendor/faer/src/row/rowmut.rs:574:23
+    |
+361 | impl<'a, T, Cols: Shape, CStride: Stride> RowMut<'a, T, Cols, CStride> {
+    | ---------------------------------------------------------------------- method in this implementation
+...
+574 |     pub(crate) unsafe fn as_type<U>(self) -> RowMut<'a, U, Cols, CStride> {
+    |                          ^^^^^^^
+
+warning: fields `re` and `im` are never read
+  --> vendor/faer/src/stats/mod.rs:19:2
+   |
+18 | pub struct ComplexDistribution<Re, Im = Re> {
+   |            ------------------- fields in this struct
+19 |     re: Re,
+   |     ^^
+20 |     im: Im,
+   |     ^^
+   |
+   = note: `ComplexDistribution` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: `faer` (lib) generated 13 warnings (run `cargo fix --lib -p faer` to apply 8 suggestions)
+    Checking platform v0.15.7 (/home/fidika/cozy/.worktrees/cozy-creator/xs138-p3-idle-lifecycle/crates/platform)
+    Checking str0m-proto v0.7.0
+    Checking rustls-platform-verifier v0.7.1
+    Checking varena v0.17.16 (/home/fidika/cozy/.worktrees/cozy-creator/xs138-p3-idle-lifecycle/crates/varena)
+    Checking hyper-rustls v0.27.10
+    Checking hmac v0.12.1
+    Checking ed25519 v2.2.3
+    Checking rand_distr v0.5.1
+    Checking webpki-roots v1.0.10
+   Compiling memoffset v0.9.1
+    Checking serde_path_to_error v0.1.20
+    Checking anstyle-query v1.1.5
+    Checking is_terminal_polyfill v1.70.2
+    Checking colorchoice v1.0.5
+   Compiling cfg_aliases v0.2.2
+   Compiling protocol v0.15.7 (/home/fidika/cozy/.worktrees/cozy-creator/xs138-p3-idle-lifecycle/crates/protocol)
+    Checking anstyle v1.0.14
+    Checking anstream v1.0.0
+   Compiling nix v0.31.3
+    Checking ed25519-dalek v2.2.0
+    Checking reqwest v0.13.5
+    Checking toml v0.8.23
+    Checking serde_ignored v0.1.14
+    Checking strsim v0.11.1
+    Checking rustc-hash v2.1.3
+    Checking mime v0.3.17
+    Checking clap_lex v1.1.1
+    Checking base64 v0.22.1
+    Checking jsonwebtoken v11.1.0
+    Checking clap_builder v4.6.7
+    Checking axum-core v0.5.6
+   Compiling clap_derive v4.6.7
+    Checking sctp-proto v0.10.6
+    Checking tempfile v3.27.0
+    Checking str0m-aws-lc-rs v0.6.0
+    Checking is v0.11.1
+    Checking crossbeam-channel v0.5.17
+    Checking combine v4.6.9
+    Checking fallible-iterator v0.3.0
+    Checking matchit v0.8.4
+    Checking fallible-streaming-iterator v0.1.9
+    Checking symlink v0.1.0
+    Checking tracing-appender v0.2.5
+    Checking rusqlite v0.40.2
+    Checking axum v0.8.9
+    Checking str0m v0.24.1
+    Checking self-replace v1.5.0
+    Checking hub-client v0.15.7 (/home/fidika/cozy/.worktrees/cozy-creator/xs138-p3-idle-lifecycle/crates/hub-client)
+    Checking clap v4.6.7
+    Checking uuid v1.28.0
+    Checking tokio-stream v0.1.19
+    Checking tensord v0.15.7 (/home/fidika/cozy/.worktrees/cozy-creator/xs138-p3-idle-lifecycle/crates/tensord)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 56s

@@ -1,0 +1,204 @@
+{
+  "passed": true,
+  "reviewer": "/root/retention_restart",
+  "native_and_helper_source": "dfb912042f60fd99a0bbe404b9927665e9b39715",
+  "binary_sha256": "562ce61b8e6c2fd12e140c8e200e84053d22b90ba17514ecec53fb5f39695b03",
+  "parent_runtime": "2626e3f48bc147f1f3d46b19bd385356e628680c",
+  "records": [
+    {
+      "run": 25550,
+      "mode": "choice_plan",
+      "execution_ms": 1927,
+      "pid": 120296,
+      "detail": {
+        "cache_after_begin": {
+          "live": 0,
+          "mapped": 0,
+          "pending": 0,
+          "ready": 0,
+          "reserved": 4194304
+        },
+        "full_readback_bytes": 8388608,
+        "full_weight_readback_bytes": 2097152,
+        "phase": {
+          "backing_peak": 8388608,
+          "peak": 8388608,
+          "published": true
+        },
+        "selection": {
+          "declared_phase_weight_bytes": 2097152,
+          "event": "choices",
+          "live": {
+            "available": 4194304,
+            "choice": "half",
+            "required": 4194304
+          },
+          "managed_limit": 10485760,
+          "page": 2097152,
+          "pending": {
+            "available": 4194304,
+            "choice": "half",
+            "required": 4194304
+          },
+          "pending_accounting": {
+            "cache_idle": 0,
+            "cache_live": 0,
+            "cache_pending": 4194304,
+            "pending_release": 4194304,
+            "physical": 6291456,
+            "reclaimable": 0,
+            "refreshed": true,
+            "weight_idle": 0,
+            "weight_live": 2097152,
+            "weight_pending": 0
+          },
+          "plan": {
+            "generation": 1,
+            "live_preserves": true,
+            "pending_preserves": true,
+            "ready_preserves": true,
+            "weight_bytes": 2097152
+          },
+          "ready": {
+            "available": 8388608,
+            "choice": "whole",
+            "required": 8388608
+          },
+          "ready_accounting": {
+            "cache_idle": 4194304,
+            "cache_live": 0,
+            "cache_pending": 0,
+            "pending_release": 0,
+            "physical": 6291456,
+            "reclaimable": 4194304,
+            "refreshed": true,
+            "weight_idle": 0,
+            "weight_live": 2097152,
+            "weight_pending": 0
+          }
+        }
+      },
+      "parent_driver_free_delta": -90177536
+    },
+    {
+      "run": 25552,
+      "mode": "owners",
+      "execution_ms": 300,
+      "pid": 120316,
+      "detail": {
+        "accounting": {
+          "cache_idle": 0,
+          "cache_live": 2097152,
+          "cache_pending": 0,
+          "pending_release": 2097152,
+          "physical": 8388608,
+          "reclaimable": 0,
+          "refreshed": true,
+          "weight_idle": 0,
+          "weight_live": 0,
+          "weight_pending": 6291456
+        },
+        "after": {
+          "cache_live": 2097152,
+          "cache_mapped": 2097152,
+          "cache_pending": 0,
+          "cache_ready": 0,
+          "cache_reserved": 4194304,
+          "caches": 2,
+          "capacity": 0,
+          "events": 0,
+          "live": 0,
+          "mapped": 0,
+          "memory_calls": 9,
+          "pending": 0,
+          "physical_ooms": 0,
+          "pools": 0
+        },
+        "before": {
+          "cache_live": 4194304,
+          "cache_mapped": 4194304,
+          "cache_pending": 0,
+          "cache_ready": 0,
+          "cache_reserved": 4194304,
+          "caches": 2,
+          "capacity": 0,
+          "events": 0,
+          "live": 0,
+          "mapped": 0,
+          "memory_calls": 7,
+          "pending": 0,
+          "physical_ooms": 0,
+          "pools": 0
+        },
+        "both_callback_owners_retired": true,
+        "first": {
+          "callbacks": 1,
+          "declined": 1
+        },
+        "first_full_readback": true,
+        "page": 2097152,
+        "real_owner_lock_held": true,
+        "request": {
+          "declined": 1,
+          "failed": 0,
+          "observed_physical_release": 2097152,
+          "returned": 2
+        },
+        "request_generation": 1,
+        "scope": "actual native owner requests and physical release; allocator trigger and Python/GIL integration are separate",
+        "second": {
+          "callbacks": 1,
+          "returned": 1
+        },
+        "weights": {
+          "context_joins_after": 0,
+          "context_joins_before": 0,
+          "event_waits_after": 0,
+          "event_waits_before": 0,
+          "pending_and_unjoined_full_readback": true,
+          "resident_after": 6291456,
+          "resident_before": 6291456
+        }
+      },
+      "parent_driver_free_delta": 0
+    },
+    {
+      "run": 25553,
+      "mode": "arena_concurrency",
+      "execution_ms": 406,
+      "pid": 120327,
+      "detail": {
+        "actual_creation_fill_readback_drop_passes": 128,
+        "actual_peer_publications": 1255,
+        "actual_reclaim_and_resident_snapshot_passes": 2026,
+        "production_probe_hooks": false,
+        "publication_passes_while_creating": 1255,
+        "reclaim_passes_while_creating": 2026,
+        "simultaneous_start_barrier": true,
+        "typed_deferred_publications": 0
+      },
+      "parent_driver_free_delta": 0
+    }
+  ],
+  "boundary": "Statically linked child primitive/native owner/concurrency proof; no inference of Python allocator/GIL/graph-retirement success from these child cases",
+  "files": {
+    "arena_concurrency-25553.json": "148e948f1136c6786ae9af92de5b427cb384d5201d2590f6c309f35cd286c4b6",
+    "arena_concurrency-invocation.json": "79e7e91d7f4b3cee097d543ec9cb5fb416bfcb919197026b176ea38399601293",
+    "arena_concurrency-result.json": "c95f08ab8593e34c464962cc52a14630916ca4bceb9e0fb699b3a0afad7be679",
+    "arena_concurrency.err": "0bc8588b737eb9e11efa333f1e9341388fdef2959e703f84267e3908125ac63c",
+    "arena_concurrency.ndjson": "e5d5e38b51c446f1c94305450ae1d68ebe3c3e56d20ce9e0ce672f971901b393",
+    "coherent-parent.json": "2ee2db123ef87ab7e99b4f05d9c1b0f08abf137e543ed65e969997a2ccb8e377",
+    "input-template.json": "45bed9ba699e927d7ea0caff2261e849572a3d413d967d6a2905600bab84f9ea",
+    "native_owners-25552.json": "dd846a1de448b2cc6fc8123dd2a0af5643fb7f6cca190f87618716179b2b1777",
+    "native_owners-invocation.json": "fea4c8c4cebe33cdb2e972b9609262483a97dcd749810914f249893be79b7617",
+    "native_owners-result.json": "e8baed7b40d0c5d8fd047fb44a0d1dff33938ed3aa59e891e20ab7863a24ab93",
+    "native_owners.err": "0bc8588b737eb9e11efa333f1e9341388fdef2959e703f84267e3908125ac63c",
+    "native_owners.ndjson": "d417fd3a476d72e718aa7595dda48687494eb7df6563038cd4a82fbf39ca42f6",
+    "planned_split_choice-25550.json": "3883fe85aa99010b00fd506f4cd247cfbd50db27c0f689d9c73e86ef2793ff40",
+    "planned_split_choice-invocation.json": "18c00a14577a66c509603a626096bf6bc7f77a1cb1fe60306618cef4da36ab85",
+    "planned_split_choice-result.json": "c709c9233f633f8c03a78f590ee1b9d6f631ece93996871bdd5b952e469f8125",
+    "planned_split_choice.err": "fa8d53827dd9cf35ab0302a2188d9cdfc5fcc09ef0221b2d3f88e3c05dad3e11",
+    "planned_split_choice.ndjson": "d3bd60e826215e98f02a45ca889236b45eb3d1d2a3325f6cffd3a2c15a5bc299",
+    "ready.json": "1330b92f50d4c918c285dd1e001177910b2b26627cb24f357c06605dfb62c302"
+  }
+}
