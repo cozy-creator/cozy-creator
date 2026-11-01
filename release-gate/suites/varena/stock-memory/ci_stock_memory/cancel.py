@@ -11,11 +11,12 @@ import threading
 
 import torch
 from tensorfs import varena
+from tensorfs.varena import torch as vt
 
 
 def exercise() -> None:
     torch.set_num_threads(1)
-    varena.install_allocator()
+    vt.install(0)
     arena = varena.Arena(0)
     region = arena.reserve(16 << 20)
     use = region.prepare()

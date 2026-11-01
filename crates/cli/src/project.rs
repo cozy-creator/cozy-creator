@@ -4,13 +4,14 @@
 use std::{path::PathBuf, process::ExitCode};
 
 use protocol::{
+    calcifer::{On, local_usable},
     error::{Error, Kind},
     project::{Approve, Approved, Event, Open, Opened, Runs, State},
 };
 
 use crate::{
     Context, output,
-    run::{Placement, follow, settled},
+    run::{follow, settled},
 };
 
 const PROJECT_EXAMPLES: &str = "Examples:
@@ -26,12 +27,16 @@ and shots; each version is a file under files/, and the chosen one is the entity
 video:. Names match in any case. The edit is <project>/edit.mp4, cut on this computer.";
 
 const RENDER_EXAMPLES: &str = "Examples:
-  cozy render all --project garden --on kiyui   everything missing or out of date, in order, then the edit
+  cozy render all --project garden --on kiyui   everything missing or out of date, then the edit
+  cozy render all --project garden --on kiyui,jitae
+                                                the same, spread over two machines
   cozy render theo dock.b --project garden --on kiyui
                                                 a new version of each (a first one is chosen)
   cozy render fight -n 3 --on kiyui             three takes of fight, from inside the project's folder
 
-Renders run on --on's machine; character and prop pictures are cleaned on this computer, and the
+Each version is sent as soon as what it reads is made, so independent ones run at once; with
+several machines each goes to the least busy, one that holds its models first. A render asked
+while others go joins them. Character and prop pictures are cleaned on this computer, and the
 edit is cut here. Ctrl-C stops following, never the runs: `cozy project status` shows them.";
 
 /// A video project: a folder of entities (characters, props, environments and their camera setups,
@@ -88,8 +93,9 @@ pub struct Render {
     names: Vec<String>,
     #[command(flatten)]
     at: At,
-    #[command(flatten)]
-    placement: Placement,
+    /// The machines the renders go to: `local`, machine names, or `any`, comma-separated.
+    #[arg(long = "on", value_name = "MACHINE", value_delimiter = ',', default_value = "local")]
+    on: Vec<String>,
     /// New versions of each.
     #[arg(short = 'n', value_name = "N", default_value_t = 1)]
     n: u32,
@@ -156,7 +162,8 @@ pub async fn render(ctx: &Context, args: Render) -> Result<ExitCode, Error> {
     }
     let calcifer = ctx.calcifer().await?;
     let mut events = calcifer.watch::<Event>(&format!("/v1/projects/{}/events", opened.id)).await?;
-    let runs = Runs { names: args.names, n: args.n, on: args.placement.on()?, hub: ctx.hub().to_string() };
+    let on = args.on.into_iter().map(|on| local_usable(&on).map(|()| On::from(on))).collect::<Result<_, _>>()?;
+    let runs = Runs { names: args.names, n: args.n, on, hub: ctx.hub().to_string() };
     let _: Opened = calcifer.post(&format!("/v1/projects/{}/runs", opened.id), &runs, None).await?;
     while let Some(event) = events.next().await {
         match event {

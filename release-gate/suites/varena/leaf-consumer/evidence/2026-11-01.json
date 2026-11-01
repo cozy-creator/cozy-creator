@@ -1,0 +1,391 @@
+{
+  "fixture_head": "6706b06bd687399ce56a72b3e59f080dd0ae7517",
+  "runtime_head": "97706e71ad487cdb02ffb7d4f8ce15d5a6c00952",
+  "tensorfs_head": "e5418c212fa8f0c4e572d343dbb05ef8c62c7a43",
+  "run_numbers": {
+    "gpu": 24899,
+    "cleanup": 24900
+  },
+  "gpu_result": {
+    "cases": [
+      {
+        "choice_id": "batch:4",
+        "dtype": "torch.bfloat16",
+        "exact": true,
+        "headroom_mib": 64,
+        "max_absolute_delta": 0.0,
+        "output_sha256": "ad2ffb4ac7aa282e63db3e5d1f1b6d587b3ae255ec10085b921f59549935a8f2",
+        "phase": {
+          "backing_peak_bytes": 69206016,
+          "cut_choices": 0,
+          "definitions": [],
+          "invalidated": false,
+          "key": null,
+          "mode": "eager",
+          "observation_id": 1,
+          "peak_bytes": 67109376,
+          "published": false,
+          "reason": "execution_key_unknown",
+          "split_observations": [
+            {
+              "backing_peak_bytes": 67108864,
+              "choice_id": "batch:4",
+              "key": "runtime.split.channel_norm/1:cdb8c79c0ffb49a14bbde5f18999221baa0e633ccbe9cd8b638f8c7a78fc1bd7",
+              "observation_id": 1,
+              "observed": true,
+              "peak_bytes": 67108864,
+              "pending": false,
+              "published": true,
+              "reason": "",
+              "successful_passes": 1
+            }
+          ],
+          "successful_backing_peak_bytes": 0,
+          "successful_passes": 0,
+          "successful_peak_bytes": 0,
+          "total_peak_bytes": 121636864
+        },
+        "selection": {
+          "allocation_backing_bytes": 67108864,
+          "available_bytes": 67108864,
+          "basis": "declared",
+          "choice_id": "batch:4",
+          "eligible": [
+            "batch:4",
+            "batch:2",
+            "batch:1"
+          ],
+          "measured_backing_peak_bytes": null,
+          "preserved_backing_bytes": 0,
+          "reclaimable_working_bytes": 0,
+          "reclaimed_weight_bytes": 0,
+          "reclaimed_working_bytes": 0,
+          "required_bytes": 67108864,
+          "reused_capacity_bytes": 0,
+          "stream": 0
+        },
+        "shape": [
+          4,
+          64,
+          256,
+          256
+        ]
+      },
+      {
+        "choice_id": "batch:2",
+        "dtype": "torch.bfloat16",
+        "exact": true,
+        "headroom_mib": 48,
+        "max_absolute_delta": 0.0,
+        "output_sha256": "ad2ffb4ac7aa282e63db3e5d1f1b6d587b3ae255ec10085b921f59549935a8f2",
+        "phase": {
+          "backing_peak_bytes": 52428800,
+          "cut_choices": 0,
+          "definitions": [],
+          "invalidated": false,
+          "key": null,
+          "mode": "eager",
+          "observation_id": 2,
+          "peak_bytes": 50332160,
+          "published": false,
+          "reason": "execution_key_unknown",
+          "split_observations": [
+            {
+              "backing_peak_bytes": 50331648,
+              "choice_id": "batch:2",
+              "key": "runtime.split.channel_norm/1:cdb8c79c0ffb49a14bbde5f18999221baa0e633ccbe9cd8b638f8c7a78fc1bd7",
+              "observation_id": 2,
+              "observed": true,
+              "peak_bytes": 50331648,
+              "pending": false,
+              "published": true,
+              "reason": "",
+              "successful_passes": 1
+            }
+          ],
+          "successful_backing_peak_bytes": 0,
+          "successful_passes": 0,
+          "successful_peak_bytes": 0,
+          "total_peak_bytes": 121636864
+        },
+        "selection": {
+          "allocation_backing_bytes": 50331648,
+          "available_bytes": 50331648,
+          "basis": "declared",
+          "choice_id": "batch:2",
+          "eligible": [
+            "batch:2",
+            "batch:1"
+          ],
+          "measured_backing_peak_bytes": null,
+          "preserved_backing_bytes": 0,
+          "reclaimable_working_bytes": 0,
+          "reclaimed_weight_bytes": 0,
+          "reclaimed_working_bytes": 0,
+          "required_bytes": 50331648,
+          "reused_capacity_bytes": 0,
+          "stream": 0
+        },
+        "shape": [
+          4,
+          64,
+          256,
+          256
+        ]
+      },
+      {
+        "choice_id": "batch:1",
+        "dtype": "torch.bfloat16",
+        "exact": true,
+        "headroom_mib": 40,
+        "max_absolute_delta": 0.0,
+        "output_sha256": "ad2ffb4ac7aa282e63db3e5d1f1b6d587b3ae255ec10085b921f59549935a8f2",
+        "phase": {
+          "backing_peak_bytes": 44040192,
+          "cut_choices": 0,
+          "definitions": [],
+          "invalidated": false,
+          "key": null,
+          "mode": "eager",
+          "observation_id": 3,
+          "peak_bytes": 41943552,
+          "published": false,
+          "reason": "execution_key_unknown",
+          "split_observations": [
+            {
+              "backing_peak_bytes": 41943040,
+              "choice_id": "batch:1",
+              "key": "runtime.split.channel_norm/1:cdb8c79c0ffb49a14bbde5f18999221baa0e633ccbe9cd8b638f8c7a78fc1bd7",
+              "observation_id": 3,
+              "observed": true,
+              "peak_bytes": 41943040,
+              "pending": false,
+              "published": true,
+              "reason": "",
+              "successful_passes": 1
+            }
+          ],
+          "successful_backing_peak_bytes": 0,
+          "successful_passes": 0,
+          "successful_peak_bytes": 0,
+          "total_peak_bytes": 104859648
+        },
+        "selection": {
+          "allocation_backing_bytes": 41943040,
+          "available_bytes": 41943040,
+          "basis": "declared",
+          "choice_id": "batch:1",
+          "eligible": [
+            "batch:1"
+          ],
+          "measured_backing_peak_bytes": null,
+          "preserved_backing_bytes": 0,
+          "reclaimable_working_bytes": 0,
+          "reclaimed_weight_bytes": 0,
+          "reclaimed_working_bytes": 0,
+          "required_bytes": 41943040,
+          "reused_capacity_bytes": 0,
+          "stream": 0
+        },
+        "shape": [
+          4,
+          64,
+          256,
+          256
+        ]
+      },
+      {
+        "headroom_mib": 39,
+        "phase": {
+          "backing_peak_bytes": 2097152,
+          "cut_choices": 0,
+          "definitions": [],
+          "invalidated": false,
+          "key": null,
+          "mode": "eager",
+          "observation_id": 4,
+          "peak_bytes": 512,
+          "published": false,
+          "reason": "execution_key_unknown",
+          "split_observations": [],
+          "successful_backing_peak_bytes": 0,
+          "successful_passes": 0,
+          "successful_peak_bytes": 0,
+          "total_peak_bytes": 96471040
+        },
+        "refusal": {
+          "allocation_delta": 0,
+          "available_bytes": 40894464,
+          "no_retry": true,
+          "required_bytes": 41943040
+        }
+      }
+    ],
+    "cleanup_scope": "owned tensor allocations return to pre-fixture live baseline; follow cleanup entrypoint in same PID to verify request-owned keys retired",
+    "final": {
+      "allocated_bytes": 17039360,
+      "allocated_capacity": 20971520,
+      "allocated_peak": 117702808,
+      "allocations": 1756,
+      "context_joins": 0,
+      "driver_memory_calls": 212,
+      "event_handles": 0,
+      "event_queries": 326,
+      "event_records": 275,
+      "event_waits": 0,
+      "free_bytes": 0,
+      "frees": 1754,
+      "mapped_bytes": 20971520,
+      "mapped_peak": 123731968,
+      "ooms": 0,
+      "pending_bytes": 0,
+      "pools": 0,
+      "pools_bytes": 0,
+      "prefetch_admissions": 0,
+      "prefetch_attempts": 0,
+      "prefetch_declines": 0,
+      "reclaimable_bytes": 0,
+      "unassigned_bytes": 0
+    },
+    "initial": {
+      "allocated_bytes": 17039360,
+      "allocated_capacity": 20971520,
+      "allocated_peak": 33223216,
+      "allocations": 1735,
+      "context_joins": 0,
+      "driver_memory_calls": 172,
+      "event_handles": 0,
+      "event_queries": 315,
+      "event_records": 264,
+      "event_waits": 0,
+      "free_bytes": 0,
+      "frees": 1733,
+      "mapped_bytes": 20971520,
+      "mapped_peak": 117440512,
+      "ooms": 0,
+      "pending_bytes": 0,
+      "pools": 0,
+      "pools_bytes": 0,
+      "prefetch_admissions": 0,
+      "prefetch_attempts": 0,
+      "prefetch_declines": 0,
+      "reclaimable_bytes": 0,
+      "unassigned_bytes": 0
+    },
+    "numeric_policy": "Torch dtype-default assert_close; exact bytes reported descriptively",
+    "passed": true,
+    "plan_reports": [
+      {
+        "applied": true,
+        "name": "fused.fixturechannelnorm.bf16",
+        "norm": "FixtureChannelNorm",
+        "norms": 1,
+        "with_silu": 0
+      }
+    ],
+    "provenance": {
+      "allocator_backend": "pluggable",
+      "executor_readiness": {
+        "after_join": {
+          "allocated_bytes": 17039360,
+          "allocated_capacity": 20971520,
+          "allocated_peak": 33223216,
+          "allocations": 1735,
+          "context_joins": 0,
+          "driver_memory_calls": 106,
+          "event_handles": 83,
+          "event_queries": 245,
+          "event_records": 223,
+          "event_waits": 0,
+          "free_bytes": 57561600,
+          "frees": 1733,
+          "mapped_bytes": 117440512,
+          "mapped_peak": 117440512,
+          "ooms": 0,
+          "pending_bytes": 37018624,
+          "pools": 0,
+          "pools_bytes": 0,
+          "prefetch_admissions": 0,
+          "prefetch_attempts": 0,
+          "prefetch_declines": 0,
+          "reclaimable_bytes": 23068672,
+          "unassigned_bytes": 1888768
+        },
+        "before_join": {
+          "allocated_bytes": 9077760,
+          "allocated_capacity": 11043840,
+          "allocated_peak": 9077760,
+          "allocations": 30,
+          "context_joins": 0,
+          "driver_memory_calls": 28,
+          "event_handles": 8,
+          "event_queries": 8,
+          "event_records": 8,
+          "event_waits": 0,
+          "free_bytes": 16198656,
+          "frees": 24,
+          "mapped_bytes": 27262976,
+          "mapped_peak": 27262976,
+          "ooms": 0,
+          "pending_bytes": 0,
+          "pools": 0,
+          "pools_bytes": 0,
+          "prefetch_admissions": 0,
+          "prefetch_attempts": 0,
+          "prefetch_declines": 0,
+          "reclaimable_bytes": 6291456,
+          "unassigned_bytes": 20480
+        },
+        "native_int8_available": true
+      },
+      "extension_sha256": "d36ca3f204810f0e8342ad3f718dfe57d92e82361731a08ade88699cc87f80ab",
+      "fusion_identity": "sha256:d310d57a75b2f9ac61dd15aa8ee95ddda7706113fe61c503f4607deeae9ad55c",
+      "gpu_uuid": "0990e3e9-d5d9-e642-f505-f15c4c549cd0",
+      "kernel_source": "78cd1d56da459ead708abf497c6830f5a590c6e3aadf7a0555beab28b2bab1bd",
+      "launcher_key": "75abd6f2e908602be88e8897663cd8f3a3a2847cc0029670a5d000170279e0d5",
+      "launcher_type": "cozy_runtime.internal.triton_kernels._Launcher",
+      "pid": 41605,
+      "request_id": "19",
+      "request_type": "cozy_runtime.internal.residency.Request",
+      "runtime_split_sha256": "60167c47d2fd5b2a5182fcc90749e53ec547b42f024e49d645efe182ec00ee73",
+      "runtime_version": "0.36.18+dev.g97706e71",
+      "seed": 13817,
+      "shim_sha256": "09684b61d0b909c39d56c7d129432e906ddb0a57f1b4b916b20bb2c4c8d7716e",
+      "tensorfs_version": "0.17.16+dev.ge5418c21",
+      "torch": "2.14.0+cu130",
+      "torch_git": "08187d9e0fba026dc8217405802ab5381dc88d90",
+      "triton": "3.8.0"
+    },
+    "request_owned_keys": [
+      "runtime.split.channel_norm/1:cdb8c79c0ffb49a14bbde5f18999221baa0e633ccbe9cd8b638f8c7a78fc1bd7"
+    ],
+    "scope": "real componentless Request/denoise_loop phase and actual compiled fused norm; no mocked context or model package bypass"
+  },
+  "cleanup_result": {
+    "passed": true,
+    "prior_request_keys_already_retired": {
+      "runtime.split.channel_norm/1:cdb8c79c0ffb49a14bbde5f18999221baa0e633ccbe9cd8b638f8c7a78fc1bd7": false
+    },
+    "provenance": {
+      "allocator_backend": "pluggable",
+      "expected_pid": 41605,
+      "extension_sha256": "d36ca3f204810f0e8342ad3f718dfe57d92e82361731a08ade88699cc87f80ab",
+      "gpu_uuid": "0990e3e9-d5d9-e642-f505-f15c4c549cd0",
+      "keys": [
+        "runtime.split.channel_norm/1:cdb8c79c0ffb49a14bbde5f18999221baa0e633ccbe9cd8b638f8c7a78fc1bd7"
+      ],
+      "pid": 41605,
+      "request_id": "20",
+      "request_type": "cozy_runtime.internal.residency.Request",
+      "runtime_split_sha256": "60167c47d2fd5b2a5182fcc90749e53ec547b42f024e49d645efe182ec00ee73",
+      "runtime_version": "0.36.18+dev.g97706e71",
+      "seed": 13817,
+      "shim_sha256": "09684b61d0b909c39d56c7d129432e906ddb0a57f1b4b916b20bb2c4c8d7716e",
+      "tensorfs_version": "0.17.16+dev.ge5418c21",
+      "torch": "2.14.0+cu130",
+      "torch_git": "08187d9e0fba026dc8217405802ab5381dc88d90",
+      "triton": "3.8.0"
+    }
+  },
+  "scope": "Actual fused norm consumer only; no full-model or complete policy claim."
+}
