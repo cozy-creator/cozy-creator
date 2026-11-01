@@ -56,11 +56,12 @@ enum Verb {
         #[command(flatten)]
         query: crate::daemon::LogQuery,
     },
-    /// Rent a machine; with no SKU, list what is for rent. Follows the order to its end: exit 0 and
-    /// `<name>: ready` last once its machine is ready, 1 once the order ended without one (nothing
-    /// bills). Ctrl-C stops following, never the order: exit 3, naming it. With --json: NDJSON
-    /// lines, the quote and then `rental.accepted` (its rental id and name) once the Hub accepts,
-    /// then the machine's document when it is ready, or `rental.unfollowed`.
+    /// Rent a machine; with no SKU, list what is for rent. Follows the order to its end; the exit
+    /// code and the last line are the verdict, never a progress line: 0 and `<name>: ready` once its
+    /// machine is ready, 1 once the order ended without one (nothing bills). Ctrl-C stops following,
+    /// never the order: 3 and `<name>: still live …`. With --json: NDJSON lines, the quote and then
+    /// `rental.accepted` (its rental id and name) once the Hub accepts, then the machine's document
+    /// when it is ready, or `rental.unfollowed`.
     Rent(rent::Rent),
     /// End a rental (billing stops once its Hub confirms), or remove an added machine, once
     /// its runs' outputs have landed here.

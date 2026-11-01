@@ -340,9 +340,10 @@ pub(crate) enum Followed {
 const UNFOLLOWED: u8 = 3;
 
 /// Follows an order over Calcifer's machine events until it ends: its machine ready, or the order
-/// ended, which its Hub says only once nothing of it bills. Everything between is progress, said
-/// as it changes: an attempt that found no capacity, the order placed again elsewhere, its rename.
-/// Ctrl-C or SIGTERM stops following only, and says the order goes on.
+/// ended, which its Hub says only once nothing of it bills. Everything between is progress, said on
+/// stderr as it changes (an attempt that found no capacity, the order placed again elsewhere, its
+/// rename) and never a verdict: the exit code and the last line are. Ctrl-C or SIGTERM stops
+/// following only, and says the order goes on.
 pub(crate) async fn follow(
     ctx: &Context,
     booting: Machine,
@@ -430,25 +431,22 @@ fn unfollowed(ctx: &Context, machine: &Machine, lost: Option<Error>) -> Followed
         }));
         return Followed::Unfollowed;
     }
-    let stopped = why.map_or_else(|| "stopped following".to_owned(), |why| format!("lost Calcifer ({why})"));
-    output::say(
-        ctx,
-        &format!("{stopped}: {name}'s order is still live, and bills once its machine is ready"),
-    );
+    let stopped = why.map_or_else(|| "stopped following".to_owned(), |why| format!("lost Calcifer: {why}"));
     output::next(ctx, &["cozy machine ls", &format!("cozy machine end {name}")]);
+    // The last line is the verdict, as a ready machine's is.
+    anstream::println!("{name}: still live, bills once its machine is ready ({stopped})");
     Followed::Unfollowed
 }
 
-/// The order ended without a machine. Its Hub says an order ended only once nothing of it bills.
+/// The order ended without a machine: its Hub says so only once nothing of it bills. One line, the
+/// verdict, last.
 fn ended(m: &Machine) -> Error {
     let why = m.reason.as_deref().unwrap_or("its Hub ended it");
-    let sku = m.rental.as_ref().map_or("<sku>", |r| r.sku.as_str());
     Error::new(
         Kind::Unavailable,
         "rental_ended",
-        format!("{}: ended without a machine ({why}); nothing bills", m.name),
+        format!("{}: ended without a machine, nothing bills ({why})", m.name),
     )
-    .next(format!("cozy machine rent {sku}"))
 }
 
 fn mint_key() -> String {

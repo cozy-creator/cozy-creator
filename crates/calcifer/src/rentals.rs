@@ -1158,16 +1158,17 @@ fn endpoint(rental: &types::Rental) -> Option<Endpoint> {
 }
 
 /// A booting rental's phase, for people: a pending one's is why it is not bought yet (`waiting for
-/// capacity: …`), as its Hub says. Between attempts the Hub places the order again: the attempt
-/// it replaces failed, not the order, so its code is said as that attempt's.
+/// capacity: …`), as its Hub says. Between attempts the Hub places the order again: the attempt it
+/// replaced failed, not the order, so a phase never carries that failure's code (cl-714: a renter's
+/// retry loop read `provider.no_capacity` here as the order's end); `attempt.replaced` keeps it.
 fn boot_phase(rental: &types::Rental) -> Option<String> {
     let boot = rental.boot.as_ref();
     let replaced = boot.filter(|b| b.state == "replanning").and_then(|b| b.replanned_from.as_ref());
     let pending = rental.detail.as_deref().filter(|d| {
         rental.state == "pending_acquisition" && !d.is_empty() && replaced.is_none_or(|r| r.failure_code != *d)
     });
-    if let Some(r) = replaced {
-        let again = format!("placing it again after attempt {} ({})", r.attempt, r.failure_code);
+    if let Some(boot) = boot.filter(|_| replaced.is_some()) {
+        let again = format!("placing it again (attempt {})", boot.attempt);
         return Some(match pending {
             Some(why) => format!("{again}: {why}"),
             None => again,
