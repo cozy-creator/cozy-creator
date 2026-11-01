@@ -202,7 +202,7 @@ def reductions(payload: Probe, ctx: Context) -> Report:
     assert digest(source.__file__) == '23447a19aa113722f9b0e9a3b1fcc30cec59c438fe652535b870922f50d0543a'
     assert all(callable(getattr(kitchen._C, name, None)) for name in
                ('sol_attn_plan', 'sol_producer_begin', 'sol_producer_chunk'))
-    launch = triton_kernels.load(producer_kernels.STATS, device=ctx.device)
+    launch = triton_kernels.load(producer_kernels.STATS, device=torch.device('cuda', device))
     provenance.update(launcher_key=launch.key, kitchen_artifact=ready.artifact,
                       kitchen_extension_sha256=digest(kitchen._C.__file__))
     generator = torch.Generator().manual_seed(payload.seed)
