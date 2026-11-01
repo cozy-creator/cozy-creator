@@ -1,0 +1,63 @@
+# Native asynchronous Fill fixture
+
+Implementation and fixture are source-only until the build/GPU operator records results.
+Build the example from the exact same source as its private native core; preserve both
+binary and dylib dependencies and hashes. No Python or Torch is loaded by the child.
+Root owns builds, installation, GPU identity and rental/termination.
+
+```sh
+cargo build --locked --offline -p varena --example async_fill -j 1
+# Invoke each mode in its own child process with the observed GPU UUID:
+async_fill ordering GPU-... 0
+async_fill abort GPU-... 0
+async_fill capture GPU-... 0
+async_fill abandoned GPU-... 0
+async_fill retirement_pending GPU-... 0
+```
+
+`ordering` keeps one of two actual producer streams behind a CUDA memory-value gate,
+queues real H2D copies, publishes while the gate is closed, and refuses every legacy
+completed-only read route. Two independent consumers obtain native producer waits and
+copy the full region. Their Pins release early with separate consumer fences; backing
+must remain pinned by the producer. Opening the real device gate allows both outputs to
+be read completely (first half41, second half73). Actual source destructor counters must
+remain zero while pending and become exactly one only after checked completion. The same
+VA remains ready until explicit reclamation, with no context join used for these Pins.
+
+`abort` submits only the first half, declares failure/closed submissions and checks that
+neither publication nor completion is invented. An escaped Fill Pin prevents reuse after
+producer completion; its actual initialized half is read. After checked alias release,
+the cold backing releases and an ordinary synchronous refill succeeds at the same VA.
+
+`capture` brackets a real cuStreamBeginCapture/cuStreamEndCapture with Varena's capture
+scope. begin refuses before destination exposure and retains resources/Prepared facts.
+After capture ends, the same Session begins, excludes new capture while open, and performs
+a declared no-copy abort. Producer completion and native resource retirement must finish.
+
+`abandoned` is a separate process: real writes are made but the application never reports
+submission closure. Dropping that Session must quarantine its actual source resources and
+backing even though the fixture privately synchronized its own producers. The full bytes
+remain readable and no resource destructor runs. This is intentional retention until child
+exit, not a cleanup pass or recovered-capacity claim.
+
+`retirement_pending` is the checked-contract successor's real resource test. A private
+native Working allocation has actual gated CUDA work after the fill producers complete.
+Its checked retirement returns Pending from cuStreamQuery, while the second source
+resource really retires. The ticket must report completed data, one remaining resource
+and unfinished retirement; the private bytes and capture exclusion remain owned. Opening
+the device gate permits checked stream destruction/Working retirement and final readback.
+No fabricated Busy flag or Python/GIL action supplies this result.
+
+Still separate/unexecuted gates: real driver failure during partial event recording, source
+worker-start refusal, inherited post-CUDA Session refusal, last-Arena retirement concurrent
+with another ticket, multiple-GPU isolation, and the TensorFS/public asynchronous Source
+adapters. No error injection hooks or mocked CUDA completion exist in this fixture. Existing
+synchronous API, checked joins and Source ABI remain unchanged by this native slice.
+
+Integration boundary: the coordinator base's existing Arena::drop still holds the global
+capture mutex during its context join. The async queues are per device and separate event
+polling from resource retirement, but that existing finalizer can still block another GPU's
+capture-mutex access. The observer-retirement lane owns the shared native finalization seam;
+its exclusion-token/no-held-capture-mutex implementation must be composed and qualified
+before claiming last-Arena or cross-device progress. Async producer/Region/Pin leases are
+genuine ownership and must not be detached as observers or inferred from Arc strong counts.
