@@ -111,8 +111,13 @@ Python and cozy-runtime its project locks; nothing runs to describe it.
 
 ### Projects
 A project is a folder holding `project.yaml` (people's), `project.lock` (Calcifer's), `assets/` (everything
-made, `<sha256>.<ext>`), `references/` and `plates/` (people's own files), and its cuts (`edit.mp4`, with
-`resolution:` also `preview.mp4`). Its id is fixed by its folder. A shot's and an upscale's alternatives are
+made), `references/` and `plates/` (people's own files), and its cuts (`edit.mp4`, with `resolution:` also
+`preview.mp4`). Its id is fixed by its folder. Assets are kept by content in `assets/.store/<sha256>.<ext>`,
+which project.lock and every record name. Beside the store, Calcifer keeps a tree of links for people, made again
+after every landing, approval and collection: `assets/<node>/<node>_take###.<ext>` (shots' and upscales'
+takes) or `<node>_v###.<ext>`, a cleaned picture's clean as `<node>_v###_clean.<ext>`, and
+`<node>_approved.<ext>`. They are symlinks into `.store` on Linux and macOS, and hard links on Windows (one
+volume), where a symlink needs a privilege. A shot's and an upscale's alternatives are
 takes, every other node's versions: records carry one generic field (`versions`, `version`) and a `noun`.
 
 - `POST /v1/projects` `{path, create?}`: the project holding `path` (the nearest folder up from it with a
@@ -132,13 +137,14 @@ takes, every other node's versions: records carry one generic field (`versions`,
   or versions of each name, or `names: ["all"]`, everything missing or out of date, each approved, then the
   cuts. `approve` approves the new one when it lands (`400 approve_one` with `n` > 1). `202 {id, path}`; the
   work goes on in the project's walk and is followed on its events.
-- `POST /v1/projects/{id}/approve` `{name, version}`: `{name, noun, number, assets, stale, warnings}`. `stale`
+- `POST /v1/projects/{id}/approve` `{name, version}`: `{name, noun, number, assets, link, stale, warnings}`. `stale`
   names what this put out of date; the cuts are made again when a shot's take changed.
 - `GET /v1/projects/{id}/events`: `started {name, run, number}` (follow the run on `GET /v1/runs/{id}/events`),
-  `landed {name, noun, number, assets}`, `said {message}`, `warning {message}`, `cut {cut, seconds}` and
+  `landed {name, noun, number, assets, link}`, `said {message}`, `warning {message}`, `cut {cut, seconds}` and
   `ended {error?}` when the walk owes nothing more. Not resumable: a client reads `GET /v1/projects/{id}`
   after reconnecting.
-- `GET|HEAD /v1/projects/{id}/assets/{asset}` (`<sha256>.<ext>`): the asset (Files). Its ETag is its digest.
+- `GET|HEAD /v1/projects/{id}/assets/{asset}` (`<sha256>.<ext>`, its name in the store): the asset (Files).
+  Its ETag is its digest.
 - `GET|HEAD /v1/projects/{id}/cuts/{cut}` (`edit.mp4`, `preview.mp4`): the cut as last made (Files), so a
   `<video>` seeks it; `404 file_missing` before the first cut.
 
