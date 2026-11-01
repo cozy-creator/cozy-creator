@@ -36,6 +36,13 @@ hash. It does not qualify an asynchronous owner callback or Runtime graph retire
   slots. The helper emits the real before-selection comparison even on a failing
   pre-fix core; a smaller successful operation cannot satisfy the larger-choice gate.
 
+`planned_split_choice` repeats that real live/pending/Ready sequence alongside one filled,
+pinned Region in an actual active Plan, increasing the managed limit by exactly its page.
+Every choice must preserve the declared phase weight; Ready Cache must permit the whole
+choice under the phase-aware alternative as well. The selected generation reaches begin,
+and the weight sentinel is fully read before checked cleanup. This checks the coherent
+Plan/Cache merge separately from the earlier unplanned red/green receipts.
+
 Native Capture tests cover only the product Working driver's counters. The fixture's
 own CUDA capture/stream calls are explicit and outside that counter boundary. Error
 ending actual capture terminates the isolated helper without GPU-owning Rust unwind.

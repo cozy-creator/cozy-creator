@@ -452,13 +452,42 @@ pub(super) fn abandoned(cuda: &Cuda, peer: &cooperative::Peer, device: i32) -> R
 }
 
 pub(super) fn choice(cuda: &Cuda, peer: &cooperative::Peer, device: i32) -> Result<Value> {
+    choice_with_plan(cuda, peer, device, false)
+}
+
+pub(super) fn choice_plan(cuda: &Cuda, peer: &cooperative::Peer, device: i32) -> Result<Value> {
+    choice_with_plan(cuda, peer, device, true)
+}
+
+fn choice_with_plan(
+    cuda: &Cuda,
+    peer: &cooperative::Peer,
+    device: i32,
+    planned: bool,
+) -> Result<Value> {
     let seed = Cache::new(device, 1)?;
     let page = seed.granularity();
     seed.close()?;
+    let weight = if planned {
+        let arena = varena::Arena::new(device)?;
+        let (region, pin) = filled(&arena, page, 173)?;
+        let plan = varena::plan::Plan::new(
+            std::sync::Arc::clone(&arena),
+            vec![(
+                "cache-choice-weight".into(),
+                vec![std::sync::Arc::clone(&region)],
+            )],
+        )?;
+        plan.activate("cache-choice-weight")?;
+        Some((arena, region, pin, plan))
+    } else {
+        None
+    };
     let cache = Cache::new(device, 2 * page)?;
     cache.commit(0, 2 * page)?;
     sentinel(cuda, cache.base()?, 2 * page, 113)?;
-    varena::set_limit(device, Some(4 * page))?;
+    let limit = (4 + usize::from(planned)) * page;
+    varena::set_limit(device, Some(limit))?;
     let key = "cache-ready-choice";
     let select = || {
         working::split_select(
@@ -494,7 +523,11 @@ pub(super) fn choice(cuda: &Cuda, peer: &cooperative::Peer, device: i32) -> Resu
         "choice comparison requires physically mapped, completed owner releases",
     )?;
     let ready = select()?;
-    let selections = json!({"event":"choices","page":page,"managed_limit":4 * page,
+    let selections = json!({"event":"choices","page":page,"managed_limit":limit,
+        "declared_phase_weight_bytes":if planned { page } else { 0 },
+        "plan":{"generation":ready.plan_generation,"weight_bytes":ready.phase_weight_bytes,
+                "live_preserves":live.preserves_phase_weights,"pending_preserves":pending.preserves_phase_weights,
+                "ready_preserves":ready.preserves_phase_weights},
         "live":{"choice":live.choice_id,"required":live.required_bytes,"available":live.available_bytes},
         "pending":{"choice":pending.choice_id,"required":pending.required_bytes,"available":pending.available_bytes},
         "ready":{"choice":ready.choice_id,"required":ready.required_bytes,"available":ready.available_bytes},
@@ -504,6 +537,16 @@ pub(super) fn choice(cuda: &Cuda, peer: &cooperative::Peer, device: i32) -> Resu
         ready.choice_id == "whole" && ready.available_bytes == 4 * page,
         "completed Cache pages did not admit the larger declared choice",
     )?;
+    if planned {
+        require(
+            ready.plan_generation != 0
+                && ready.phase_weight_bytes == page
+                && ready.preserves_phase_weights
+                && live.preserves_phase_weights
+                && pending.preserves_phase_weights,
+            "Cache choice did not preserve the declared real phase weight",
+        )?;
+    }
     let token = working::phase_enter(device, Some(key.into()), working::PhaseMode::Eager)?;
     let site = working::split_begin(
         device,
@@ -539,8 +582,17 @@ pub(super) fn choice(cuda: &Cuda, peer: &cooperative::Peer, device: i32) -> Resu
     working::trim(device)?;
     cache.close()?;
     varena::set_limit(device, None)?;
+    if let Some((arena, region, pin, plan)) = weight {
+        read(cuda, region.ptr(), page, 173)?;
+        cuda.synchronize()?;
+        plan.deactivate()?;
+        drop(unsafe { pin.into_completed_region() });
+        arena.reclaim(page)?;
+        require(arena.stats()?.resident_bytes == 0, "planned weight cleanup")?;
+    }
     Ok(
         json!({"selection":selections,"cache_after_begin":after_begin,"full_readback_bytes":4 * page,
+        "full_weight_readback_bytes":if planned { page } else { 0 },
         "phase":{"published":phase.published,"peak":phase.peak_bytes,"backing_peak":phase.backing_peak_bytes}}),
     )
 }

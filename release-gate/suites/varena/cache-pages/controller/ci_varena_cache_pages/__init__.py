@@ -251,6 +251,11 @@ def split_choice(payload: Probe, ctx: Context) -> Report:
 
 
 @app.entrypoint(accelerator=True)
+def planned_split_choice(payload: Probe, ctx: Context) -> Report:
+    return native(payload, ctx, 'choice_plan')
+
+
+@app.entrypoint(accelerator=True)
 def native_owners(payload: Probe, ctx: Context) -> Report:
     return native(payload, ctx, 'owners')
 

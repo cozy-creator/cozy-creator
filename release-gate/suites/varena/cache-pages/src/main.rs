@@ -218,6 +218,7 @@ fn run() -> Result<Value> {
         "rollback" => probes::rollback(&cuda, &peer, device)?,
         "abandoned" => probes::abandoned(&cuda, &peer, device)?,
         "choice" => probes::choice(&cuda, &peer, device)?,
+        "choice_plan" => probes::choice_plan(&cuda, &peer, device)?,
         "owners" => probes::owners(&cuda, &peer, device)?,
         "arena_concurrency" => probes::arena_concurrency(&peer, device)?,
         _ => return Err(io::Error::other("unknown Cache proof mode").into()),
