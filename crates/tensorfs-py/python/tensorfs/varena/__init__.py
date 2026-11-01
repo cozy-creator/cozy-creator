@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .. import _ext
 
@@ -72,6 +72,33 @@ class Arena:
         """Exclude native producers and recovery during actual CUDA capture."""
         with capture(self.device):
             yield
+
+
+def supports_phase_plans() -> bool:
+    """Whether copied native phase-region intent is available in this extension."""
+    return hasattr(_ext, "_VarenaPlan")
+
+
+class Plan:
+    """Copied native region intent for one arena; no fills, pins or prefetch promise.
+
+    Keep this owner while its phase can be used. deactivate retires active intent
+    synchronously; dropping the owner then releases its reservation references safely.
+    """
+
+    def __init__(self, arena: Arena, phases: Sequence[tuple[str, Sequence[Region]]]) -> None:
+        self._native = _ext._VarenaPlan(
+            arena._native, [(name, [region._native for region in regions]) for name, regions in phases],
+        )
+
+    def activate(self, phase: str) -> None:
+        self._native.activate(phase)
+
+    def deactivate(self) -> None:
+        self._native.deactivate()
+
+    def facts(self) -> dict[str, Any]:
+        return self._native.facts()
 
 
 class PhaseController:

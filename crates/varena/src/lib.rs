@@ -10,6 +10,7 @@
 #![deny(unsafe_code)]
 
 mod cuda;
+pub mod plan;
 pub mod working;
 
 use std::collections::BTreeMap;
@@ -510,12 +511,17 @@ impl Arena {
                 event_waits: 0,
             }),
         });
+        // Registration changes the bounded phase-plan arena inventory. This guard
+        // is declared after `arena`: every error drops it before the owning Arc.
+        let captures = capture_counts()?;
+        ensure_recovery_allowed(&captures, device)?;
         let mut registry = ARENAS
             .get_or_init(Mutex::default)
             .lock()
             .map_err(|_| Error::Poisoned("arena registry mutex".into()))?;
         registry.retain(|entry| entry.strong_count() != 0);
         registry.push(Arc::downgrade(&arena));
+        plan::arena_changed(device)?;
         Ok(arena)
     }
 
@@ -1826,6 +1832,7 @@ impl Drop for Arena {
         let Ok(captures) = capture_counts() else {
             return;
         };
+        let _ = plan::arena_changed(self.device);
         if ensure_recovery_allowed(&captures, self.device).is_err() {
             return;
         }

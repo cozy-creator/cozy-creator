@@ -1,5 +1,6 @@
 //! Process-local weight residency bindings. CUDA ownership remains in the Rust core.
 mod working;
+mod plan;
 #[cfg(feature = "store")]
 mod continuation;
 #[cfg(feature = "store")]
@@ -648,6 +649,7 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     poisoned.setattr("sticky", true)?;
     module.add("VarenaPoisonedError", poisoned)?;
     module.add_class::<PyArena>()?;
+    module.add_class::<plan::PyPlan>()?;
     module.add_class::<PyRegion>()?;
     module.add_class::<PyUse>()?;
     module.add_class::<PyCapture>()?;

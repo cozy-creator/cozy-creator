@@ -418,11 +418,17 @@ fn _varena_split_select<'py>(
     row.set_item("basis", selected.basis)?;
     row.set_item("reclaimed_working_bytes", selected.reclaimed_working_bytes)?;
     row.set_item("reclaimed_weight_bytes", selected.reclaimed_weight_bytes)?;
+    row.set_item("plan_generation", selected.plan_generation)?;
+    row.set_item("phase", selected.phase)?;
+    row.set_item("phase_weight_bytes", selected.phase_weight_bytes)?;
+    row.set_item("phase_missing_bytes", selected.phase_missing_bytes)?;
+    row.set_item("phase_outside_reclaimable_bytes", selected.phase_outside_reclaimable_bytes)?;
+    row.set_item("preserves_phase_weights", selected.preserves_phase_weights)?;
     Ok(row)
 }
 
 #[pyfunction]
-#[pyo3(signature = (device, key, choice_id, *, stream, completion_owner = None))]
+#[pyo3(signature = (device, key, choice_id, *, stream, completion_owner = None, plan_generation = None))]
 fn _varena_split_begin(
     py: Python<'_>,
     device: i32,
@@ -430,10 +436,11 @@ fn _varena_split_begin(
     choice_id: &str,
     stream: u64,
     completion_owner: Option<u64>,
+    plan_generation: Option<u64>,
 ) -> PyResult<u64> {
     py.detach(|| {
         check()?;
-        varena::working::split_begin(device, key, choice_id, completion_owner, stream)
+        varena::working::split_begin(device, key, choice_id, completion_owner, stream, plan_generation)
     })
     .map_err(|error| split_error(py, error))
 }
