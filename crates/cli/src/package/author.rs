@@ -6,7 +6,6 @@
 //! writes back only `uv.lock`.
 use std::{
     collections::BTreeMap,
-    fmt::Display,
     fs,
     path::{Path, PathBuf},
     process::{Command, ExitCode},
@@ -24,14 +23,9 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
 use super::{PackageRef, carried};
+use calcifer::local_code::{INDEX, Project, account, index_url, refuse, source_files};
+
 use crate::{Context, context::hub_error, output, run::interface::Interface};
-
-/// The uv index name a project's sources use for its own account's packages.
-pub(super) const INDEX: &str = "tensorhub";
-
-pub(super) fn refuse(code: &str, detail: impl Display) -> Error {
-    Error::new(Kind::Validation, code, detail.to_string())
-}
 
 /// `uv` (cozy's pinned uv, else PATH's: `tools::uv`) in `dir`, quiet and colorless.
 pub(super) fn uv(uv: &Path, dir: &Path) -> Command {
@@ -64,117 +58,23 @@ pub(super) fn run(command: &mut Command, code: &str) -> Result<String, Error> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// A package project, as its pyproject.toml says.
-pub(super) struct Project {
-    pub root: PathBuf,
-    pub name: String,
-    pub version: String,
-    pub requires_python: String,
-    pub account_index: bool,
-    /// A dependency or uv source fetched with git: locking and publishing need git.
-    pub git: bool,
-}
-
-impl Project {
-    /// The project in the current directory.
-    fn here() -> Result<Self, Error> {
-        Self::read(std::env::current_dir().map_err(|e| refuse("project_unreadable", e))?)
-    }
-
-    pub(super) fn read(root: PathBuf) -> Result<Self, Error> {
-        let table = |file: &str| -> Result<toml::Table, Error> {
-            let text = fs::read_to_string(root.join(file)).map_err(|e| {
-                Error::new(
-                    Kind::NotFound,
-                    "project_file_missing",
-                    format!("{file}: {e}"),
-                )
-                .remedy("run this in a package's directory (`cozy-runtime new <name>` makes one)")
-            })?;
-            toml::from_str(&text)
-                .map_err(|e| refuse("project_file_invalid", format!("{file}: {e}")))
-        };
-        let pyproject = table("pyproject.toml")?;
-        let field = |path: &[&str]| -> Option<&toml::Value> {
-            let (first, rest) = path.split_first()?;
-            rest.iter()
-                .try_fold(pyproject.get(*first)?, |at, key| at.get(*key))
-        };
-        let text = |path: &[&str]| field(path).and_then(toml::Value::as_str).map(str::to_owned);
-        let (Some(name), Some(version)) =
-            (text(&["project", "name"]), text(&["project", "version"]))
-        else {
-            return Err(refuse(
-                "project_identity_missing",
-                "pyproject.toml's [project] needs a literal name and version",
-            ));
-        };
-        let indexes = field(&["tool", "uv", "index"]).and_then(toml::Value::as_array);
-        if indexes
-            .into_iter()
-            .flatten()
-            .any(|i| i.get("name").and_then(|n| n.as_str()) == Some(INDEX))
-        {
-            return Err(refuse(
-                "account_index_declared",
-                "pyproject.toml declares the `tensorhub` index; cozy writes it for the Hub and account",
-            )
-            .remedy("delete that [[tool.uv.index]] table and keep `{ index = \"tensorhub\" }` in [tool.uv.sources]"));
-        }
-        let sources = field(&["tool", "uv", "sources"]).and_then(toml::Value::as_table);
-        let names_index =
-            |source: &toml::Value| source.get("index").and_then(|i| i.as_str()) == Some(INDEX);
-        let account_index =
-            sources
-                .into_iter()
-                .flat_map(|s| s.values())
-                .any(|source| match source {
-                    toml::Value::Array(alternatives) => alternatives.iter().any(names_index),
-                    source => names_index(source),
-                });
-        let requirements = field(&["project", "dependencies"])
-            .and_then(toml::Value::as_array)
-            .into_iter()
-            .flatten();
-        let git_source = |source: &toml::Value| source.get("git").is_some();
-        let git = requirements
-            .filter_map(toml::Value::as_str)
-            .any(|r| r.contains("git+"))
-            || sources
-                .into_iter()
-                .flat_map(|s| s.values())
-                .any(|source| match source {
-                    toml::Value::Array(alternatives) => alternatives.iter().any(git_source),
-                    source => git_source(source),
-                });
-        Ok(Self {
-            root,
-            // The package keeps its name as written (`qwen3.5`); the Hub resolves PEP 503 spellings.
-            name: name.trim().to_ascii_lowercase(),
-            version,
-            requires_python: text(&["project", "requires-python"]).unwrap_or_default(),
-            account_index,
-            git,
-        })
-    }
-
-    /// The tools locking and publishing it need: git when it depends on a git source (refused
-    /// with its install named, before uv runs and fails on it), and uv (fetched, pinned).
-    async fn tools(&self, ctx: &Context) -> Result<PathBuf, Error> {
+/// The tools locking and publishing `project` need: git when it depends on a git source (refused
+/// with its install named, before uv runs and fails on it), and uv (fetched, pinned).
+async fn tools(project: &Project, ctx: &Context) -> Result<PathBuf, Error> {
         let path: Vec<PathBuf> = std::env::var_os("PATH")
             .map(|path| std::env::split_paths(&path).collect())
             .unwrap_or_default();
-        if self.git && platform::tools::on_path("git", &path).is_none() {
+        if project.git && platform::tools::on_path("git", &path).is_none() {
             return Err(crate::tools::missing(ctx, "git"));
         }
         crate::tools::uv(ctx).await
     }
 
-    /// The Python a release runs on: `.python-version`, else requires-python's floor; its exact
-    /// version as uv finds it (installing a managed one when none is here).
-    fn python(&self, uv: &Path) -> Result<Python, Error> {
-        let pinned = fs::read_to_string(self.root.join(".python-version")).ok();
-        let floor = self.requires_python.split(',').find_map(|clause| {
+/// The Python a release of `project` runs on: `.python-version`, else requires-python's floor;
+/// its exact version as uv finds it (installing a managed one when none is here).
+fn python(project: &Project, uv: &Path) -> Result<Python, Error> {
+        let pinned = fs::read_to_string(project.root.join(".python-version")).ok();
+        let floor = project.requires_python.split(',').find_map(|clause| {
             let version = clause
                 .trim()
                 .strip_prefix(">=")
@@ -198,7 +98,7 @@ impl Project {
             .unwrap_or_else(|| "3.12".into());
         let find = || {
             run(
-                self::uv(uv, &self.root).args([
+                self::uv(uv, &project.root).args([
                     "python",
                     "find",
                     "--show-version",
@@ -211,7 +111,7 @@ impl Project {
             Ok(version) => version,
             Err(_) => {
                 run(
-                    self::uv(uv, &self.root).args(["python", "install", request.as_str()]),
+                    self::uv(uv, &project.root).args(["python", "install", request.as_str()]),
                     "python_install_failed",
                 )?;
                 find()?
@@ -223,17 +123,16 @@ impl Project {
         })
     }
 
-    /// Its interface, read where it is as a publish reads it, with the Runtime release its lock
-    /// holds (else the newest). Nothing installs, and none of it runs.
-    pub(super) async fn describe(&self, ctx: &Context) -> Result<Described, Error> {
+/// `project`'s interface, read where it is as a publish reads it, with the Runtime release its lock
+/// holds (else the newest). Nothing installs, and none of it runs.
+pub(super) async fn described(project: &Project, ctx: &Context) -> Result<Described, Error> {
         let uv = crate::tools::uv(ctx).await?;
-        let python = self.python(&uv)?;
-        let lock = fs::read_to_string(self.root.join("uv.lock")).unwrap_or_default();
+        let python = python(project, &uv)?;
+        let lock = fs::read_to_string(project.root.join("uv.lock")).unwrap_or_default();
         let runtime = (toml::from_str::<Lock>(&lock).ok())
             .and_then(|lock| lock.package.into_iter().find(|p| p.name == "cozy-runtime"))
             .map(|p| p.version);
-        describe(&uv, &self.root, &python.request, runtime.as_deref())
-    }
+        describe(&uv, &project.root, &python.request, runtime.as_deref())
 }
 
 struct Python {
@@ -339,70 +238,6 @@ impl Stage {
 
 /// The project's source files, relative to `root`: what is never source is skipped, and what must
 /// never ship (credentials, keys, bytecode, model weights) is refused.
-pub(super) fn source_files(root: &Path) -> Result<Vec<PathBuf>, Error> {
-    let mut files = vec![];
-    walk(root, Path::new(""), &mut files)?;
-    files.sort();
-    Ok(files)
-}
-
-fn walk(root: &Path, rel: &Path, files: &mut Vec<PathBuf>) -> Result<(), Error> {
-    const SKIP: &str = ".git .hg .svn .jj __pycache__ .mypy_cache .ruff_cache .pytest_cache .tox";
-    const SKIP_AT_ROOT: &str = ".venv venv node_modules .idea .vscode build dist";
-    const SECRET_DIRS: &str = ".aws .ssh credentials secrets";
-    const SECRET_FILES: &str =
-        ".netrc .npmrc .pypirc credentials.json service-account.json id_ed25519";
-    const REFUSED: &str =
-        ".pyc .pyo .pem .key .p12 .pfx .jks .pickle .pkl .pt .ckpt .safetensors .onnx .gguf";
-    let listed = |list: &str, name: &str| list.split(' ').any(|item| item == name);
-    let entries = fs::read_dir(root.join(rel)).map_err(|e| refuse("project_unreadable", e))?;
-    for entry in entries {
-        let entry = entry.map_err(|e| refuse("project_unreadable", e))?;
-        let name = entry.file_name().to_string_lossy().to_lowercase();
-        let path = rel.join(entry.file_name());
-        let kind = entry
-            .file_type()
-            .map_err(|e| refuse("project_unreadable", e))?;
-        let refused = |why: &str| {
-            refuse(
-                "package_source_refused",
-                format!("{} {why}", path.display()),
-            )
-            .remedy(
-                "move credentials, keys, bytecode and model weights out of the package directory",
-            )
-        };
-        if kind.is_symlink() {
-            return Err(refused("is a symlink"));
-        }
-        if kind.is_dir() {
-            if listed(SECRET_DIRS, &name) {
-                return Err(refused("holds credentials"));
-            }
-            let at_root = rel.as_os_str().is_empty() && listed(SKIP_AT_ROOT, &name);
-            if !listed(SKIP, &name) && !name.ends_with(".egg-info") && !at_root {
-                walk(root, &path, files)?;
-            }
-            continue;
-        }
-        let secret = name == ".env"
-            || name.starts_with(".env.")
-            || name.starts_with("id_rsa")
-            || listed(SECRET_FILES, &name);
-        if secret || REFUSED.split(' ').any(|suffix| name.ends_with(suffix)) {
-            return Err(refused("must never ship in a package"));
-        }
-        let scratch = name.ends_with(".swp")
-            || name.ends_with('~')
-            || name.starts_with(".#")
-            || name == ".ds_store";
-        if !scratch && name != "package-interface.json" {
-            files.push(path);
-        }
-    }
-    Ok(())
-}
-
 /// The packages a lock takes from a Tensorhub account index, by exact version.
 fn index_pins(lock: &str) -> Result<BTreeMap<String, String>, Error> {
     let lock: Lock = toml::from_str(lock).map_err(|e| refuse("lock_invalid", e))?;
@@ -460,27 +295,6 @@ fn versions(lock: &str) -> Result<BTreeMap<String, String>, Error> {
     Ok(out)
 }
 
-/// The account's index on `hub` at the origin the Hub advertises (RFC 9728 `resource`): the one
-/// its publish check holds a uv.lock to, wherever this computer reaches the Hub. A Hub that
-/// advertises none takes no publication, and its configured origin stands.
-pub(super) async fn index_url(
-    client: &hub_client::Client,
-    hub: &Origin,
-    account: &str,
-) -> Result<String, Error> {
-    let origin = match client.get_protected_resource_metadata().await {
-        Ok(metadata) => metadata.resource,
-        Err(e) => match hub_error(e) {
-            e if e.code == "capability.not_served" => hub.to_string(),
-            e => return Err(e),
-        },
-    };
-    Ok(format!(
-        "{}/v1/index/{account}/simple/",
-        origin.trim_end_matches('/')
-    ))
-}
-
 /// Whose name a publication takes: the signed-in account's, or with `root` the root namespace's
 /// (first-party; the Hub admits only its admins there).
 pub(super) async fn publisher(client: &hub_client::Client, root: bool) -> Result<String, Error> {
@@ -490,9 +304,7 @@ pub(super) async fn publisher(client: &hub_client::Client, root: bool) -> Result
     }
 }
 
-pub(super) async fn account(client: &hub_client::Client) -> Result<String, Error> {
-    Ok(client.get_current_account().await.map_err(hub_error)?.name)
-}
+
 
 #[derive(Serialize)]
 struct Locked {
@@ -503,7 +315,7 @@ struct Locked {
 
 pub async fn lock(ctx: &Context, upgrade: &[String], root: bool) -> Result<ExitCode, Error> {
     let project = Project::here()?;
-    let stage = Stage::new(&project, project.tools(ctx).await?)?;
+    let stage = Stage::new(&project, tools(&project, ctx).await?)?;
     let account_index = match project.account_index {
         false => None,
         true => {
@@ -515,7 +327,7 @@ pub async fn lock(ctx: &Context, upgrade: &[String], root: bool) -> Result<ExitC
             Some(url)
         }
     };
-    let python = project.python(&stage.uv)?;
+    let python = python(&project, &stage.uv)?;
     let mut command = uv(&stage.uv, &stage.src);
     command.args(["lock", "--no-progress", "--python", python.request.as_str()]);
     for package in upgrade {
@@ -631,7 +443,7 @@ pub async fn publish(ctx: &Context, root: bool) -> Result<ExitCode, Error> {
         },
     }
 
-    let stage = Stage::new(&project, project.tools(ctx).await?)?;
+    let stage = Stage::new(&project, tools(&project, ctx).await?)?;
     let committed = fs::read_to_string(project.root.join("uv.lock")).map_err(|_| {
         Error::new(
             Kind::Validation,
@@ -643,7 +455,7 @@ pub async fn publish(ctx: &Context, root: bool) -> Result<ExitCode, Error> {
     // Locking the copy is a no-op for a lock made for this Hub and account. For another, it moves
     // the account's packages to this index pinned to the versions the lock holds: a pin this Hub
     // cannot meet is refused by name, never re-resolved to a newer release.
-    let python = project.python(&stage.uv)?;
+    let python = python(&project, &stage.uv)?;
     if project.account_index {
         let url = index_url(&client, &hub, &account).await?;
         stage.bind(&url)?;

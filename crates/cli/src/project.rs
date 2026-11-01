@@ -1,25 +1,17 @@
 //! `cozy project` and `cozy render`: the CLI's side of Calcifer's projects (xs-136). Calcifer makes
 //! a project's versions and keeps its files; these ask it and follow each run as `cozy run` does.
 //! Ctrl-C stops following, never the runs.
-use std::{
-    collections::BTreeSet,
-    path::{Path, PathBuf},
-    process::ExitCode,
-};
+use std::{path::PathBuf, process::ExitCode};
 
 use protocol::{
     calcifer::{On, local_usable},
     error::{Error, Kind},
-    project::{Approve, Approved, Event, LocalCode, Open, Opened, Runs, State},
+    project::{Approve, Approved, Event, Open, Opened, Runs, State},
 };
-use serde_json::Value;
 
 use crate::{
     Context, output,
-    run::{
-        follow, settled,
-        target::{self, Target},
-    },
+    run::{follow, settled},
 };
 
 const PROJECT_EXAMPLES: &str = "Examples:
@@ -179,8 +171,7 @@ pub async fn render(ctx: &Context, args: Render) -> Result<ExitCode, Error> {
     let mut events = calcifer.watch::<Event>(&format!("/v1/projects/{}/events", opened.id)).await?;
     let on: Vec<On> =
         args.on.into_iter().map(|on| local_usable(&on).map(|()| On::from(on))).collect::<Result<_, _>>()?;
-    let local = local_code(ctx, &opened.path, &on).await?;
-    let runs = Runs { names: args.names, n: args.n, on, hub: ctx.hub().to_string(), preview: args.preview, local };
+    let runs = Runs { names: args.names, n: args.n, on, hub: ctx.hub().to_string(), preview: args.preview };
     let _: Opened = calcifer.post(&format!("/v1/projects/{}/runs", opened.id), &runs, None).await?;
     while let Some(event) = events.next().await {
         match event {
@@ -204,37 +195,6 @@ pub async fn render(ctx: &Context, args: Render) -> Result<ExitCode, Error> {
     }
     Err(Error::new(Kind::Unavailable, "project_events_ended", "Calcifer stopped telling how the runs go")
         .next(format!("cozy project status --project {}", opened.path.display())))
-}
-
-/// The local code project.yaml's render blocks name (`with: ./dir/function`, from the project's
-/// folder), made ready on each of `on` as `cozy run` makes it. A project.yaml that does not read is
-/// Calcifer's to refuse.
-async fn local_code(ctx: &Context, dir: &Path, on: &[On]) -> Result<Vec<LocalCode>, Error> {
-    fn withs(value: &Value, out: &mut BTreeSet<String>) {
-        match value {
-            Value::Object(fields) => {
-                out.extend(fields.get("with").and_then(Value::as_str).map(str::to_owned));
-                fields.values().for_each(|value| withs(value, out));
-            }
-            Value::Array(items) => items.iter().for_each(|value| withs(value, out)),
-            _ => {}
-        }
-    }
-    let text = std::fs::read_to_string(dir.join("project.yaml")).unwrap_or_default();
-    let mut named = BTreeSet::new();
-    withs(&protocol::yaml::to_json(&text).unwrap_or_default(), &mut named);
-    let mut code = vec![];
-    for with in named.iter().filter(|with| target::local(with, dir, &ctx.user_home).is_some()) {
-        let Target::Local { path, function } = Target::parse(with, dir, &ctx.user_home)? else { continue };
-        let function = function.ok_or_else(|| {
-            Error::new(Kind::Usage, "with_unnamed", format!("with: {with} names no function"))
-                .remedy(format!("{with}/<function>"))
-        })?;
-        for on in on {
-            code.push(crate::run::local::prepare(ctx, &path, on.clone(), false).await?.code(with, &function)?);
-        }
-    }
-    Ok(code)
 }
 
 /// Under the table: what is missing, what is out of date and why, and where the edit is.

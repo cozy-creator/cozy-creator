@@ -14,6 +14,7 @@ mod kept;
 mod lanes;
 pub mod link;
 mod local;
+pub mod local_code;
 pub mod machines;
 pub mod outputs;
 pub mod play;
