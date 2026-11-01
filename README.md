@@ -78,21 +78,21 @@ restarts a Calcifer that is stuck or runs an older cozy.
 
 A video project is a folder:
 - `project.yaml`: yours. cozy writes it only at `new`.
-- `references/`: your pictures, voices and videos that guide, and the versions cozy makes of characters,
-  props, places and world states, one folder per node (`references/theo/theo_v001.png`, `theo_v001_clean.png`).
-- `plates/`: your footage to edit.
-- `renders/`: the takes cozy makes of shots and upscales (`renders/fight/fight_take002.mp4`,
-  `fight_take002.latents`).
-- `project.lock`: cozy's record of each node's takes or versions, what made each (and each file's sha256), and
-  which is approved. No file says which is approved.
-
-Paths in `project.yaml` are relative to the folder. cozy never copies or changes your files: it writes and
-removes only the `<node>_take###` and `<node>_v###` files it made, and refuses to overwrite one of yours.
+- `project.lock`: cozy's record of each node's takes or versions, what made each, which is approved, and the
+  files `project.yaml` names.
+- `assets/`: every file the project uses, kept by content as `assets/<sha256>.<ext>`. What cozy makes is kept
+  there as real files; a file you name in `project.yaml` (relative to the folder, absolute, or `~/…`) is linked
+  there on first use, and stays where you keep it.
 - `edit.mp4`: the film, cut on this computer as shots land.
 
+Names live in `project.yaml` and `project.lock` only; `cozy project status` prints each node's file. Edit a
+file you named and what reads it goes out of date; move it and `status` says to relink it (fix its path).
+Rename a node in `project.yaml` (and its `<mentions>`), then `cozy project rename <old> <new>` keeps its
+versions; `status` suggests it.
+
 A shot's alternatives (and its upscale's) are takes; every other node's are versions. Each one is a set
-of assets, numbered from 1 and never renumbered: a shot's take is its video and latents. `cozy project new garden` makes the folder with a
-commented `project.yaml`; fill it in:
+of assets, numbered from 1 and never renumbered: a shot's take is its video and latents. `cozy project new garden`
+makes the folder with a commented `project.yaml`; fill it in:
 
 ```yaml
 type: video
@@ -109,7 +109,7 @@ world_states:
   - {name: stage, init: "<juno> and <theo> face off on <dock>.", blocking: "juno by the crates."}
 shots:
   - {name: fight, setup: dock.a, prompt: "<theo> and <juno> spar.", duration_s: 20, writes: [{state: stage, at: 12}],
-     references: [{name: kata, kind: video, video: references/kata.mp4}],
+     references: [{name: kata, kind: video, video: ~/footage/kata.mp4}],
      beats: [{at: 0, prompt: "They circle."}, {at: 10, prompt: "<juno> sweeps his legs."}]}
   - {name: reaction, prompt: "Close on <theo>, wincing, after <stage>.", duration_s: 4}
 edit: [{shot: fight, end: 8}, {shot: reaction}, {shot: fight, start: 10}]

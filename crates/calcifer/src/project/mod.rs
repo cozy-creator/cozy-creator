@@ -39,8 +39,8 @@ use protocol::{
     ids::Digest,
     machine as v1,
     project::{
-        Approve, Approved, Cut, Event, Known, Node as Row, NodeVersions, Open, Opened, Projects as Listed, Runs,
-        Stale, State as ProjectState, Version,
+        Approve, Approved, Asset as Listing, Cut, Event, Known, Node as Row, NodeVersions, Open, Opened, Orphan,
+        Projects as Listed, Rename, Renamed, Runs, Stale, State as ProjectState, Version,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -51,7 +51,6 @@ use tracing::warn;
 
 use crate::api::{Api, Refusal, parse};
 use folder::{Call, Folder, Lock, Made, MadeBy, Pending, Take, Target, Then};
-use std::collections::BTreeSet;
 use graph::{Status, name_key};
 use host::{Host, Install};
 use video::{ALL, Canvas, Render, Video};
@@ -100,9 +99,10 @@ pub fn routes() -> Router<Arc<Api>> {
         .route("/v1/projects/{id}", get(state).delete(forget))
         .route("/v1/projects/{id}/runs", post(runs))
         .route("/v1/projects/{id}/approve", post(approve))
+        .route("/v1/projects/{id}/rename", post(rename))
         .route("/v1/projects/{id}/events", get(events))
         .route("/v1/projects/{id}/nodes/{name}", get(node))
-        .route("/v1/projects/{id}/assets/{*path}", get(asset))
+        .route("/v1/projects/{id}/assets/{asset}", get(asset))
         .route("/v1/projects/{id}/cuts/{cut}", get(cut))
 }
 
@@ -216,8 +216,8 @@ fn remember(api: &Api) {
 }
 
 /// Opens the project holding `path` (the nearest folder up from it with a project.yaml), or makes
-/// one there (`create`: the folder, its project.yaml, references/, plates/ and renders/); either way
-/// it is recorded in the index as used now.
+/// one there (`create`: the folder and its project.yaml); either way it is recorded in the index as
+/// used now.
 async fn open(State(api): State<Arc<Api>>, body: Result<Bytes, BytesRejection>) -> Result<Json<Opened>, Refusal> {
     let open: Open = parse(&body?)?;
     if !open.path.is_absolute() {
@@ -231,9 +231,7 @@ async fn open(State(api): State<Arc<Api>>, body: Result<Bytes, BytesRejection>) 
                 let said = format!("{} is a project already", open.path.display());
                 return Err(Refusal(Error::new(Kind::Conflict, "project_exists", said)));
             }
-            for made in folder::FOLDERS {
-                std::fs::create_dir_all(open.path.join(made)).map_err(io)?;
-            }
+            std::fs::create_dir_all(&open.path).map_err(io)?;
             platform::durable::replace(&project, video::skeleton().as_bytes(), 0o644)
                 .map_err(|e| io(std::io::Error::other(e)))?;
             std::fs::canonicalize(&open.path).map_err(io)?
@@ -357,7 +355,8 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
     }
     warnings.dedup();
     let busy = *project.walking.lock().expect("walking lock");
-    Ok(Json(ProjectState { id, path: project.folder.dir.clone(), nodes, missing, stale, busy, cuts, warnings }))
+    let orphans = orphans(&video, &lock);
+    Ok(Json(ProjectState { id, path: project.folder.dir.clone(), nodes, missing, stale, orphans, busy, cuts, warnings }))
 }
 
 /// Where a node stands, for the lists under a project's table.
@@ -383,12 +382,17 @@ fn row(video: &Video, lock: &Lock, status: &[Status], i: usize, beatless: &[Stri
         .and_then(|path| lock.made(&node.id, path))
         .map(|made| made.number);
     let assets = match (made, &node.file) {
-        (Some(made), _) => paths(made),
-        (None, Some((file, _))) => BTreeMap::from([(video.field(i).to_owned(), file.clone())]),
+        (Some(made), _) => listed(made),
+        (None, Some((path, sha256))) => {
+            let original = lock.inputs.iter().find(|(_, input)| input.asset.path == *path).map(|(file, _)| file.clone());
+            BTreeMap::from([(video.field(i).to_owned(), Listing { path: path.clone(), sha256: sha256.clone(), original })])
+        }
         (None, None) => BTreeMap::new(),
     };
+    let gone = video.missing(i);
     let (status, standing) = match (making.as_slice(), flagged, status) {
         ([run], ..) => (format!("making (run {run})"), Standing::Other),
+        ([], _, _) if !gone.is_empty() => (format!("reference missing: {}: relink", gone.join(", ")), Standing::Missing),
         (runs @ [_, ..], ..) => (format!("making (runs {})", runs.join(", ")), Standing::Other),
         ([], Some(line), _) => (line.clone(), Standing::Other),
         ([], None, Status::Current) if video.unclean(lock, i).is_some() => {
@@ -408,6 +412,7 @@ fn row(video: &Video, lock: &Lock, status: &[Status], i: usize, beatless: &[Stri
         versions: node.versions.len() as u32,
         approved,
         assets,
+        path: node.file.as_ref().map(|(path, _)| path.clone()),
         made_by: made.and_then(|made| made.made_by.as_ref()).map(|made_by| made_by.with.clone()),
         status,
     };
@@ -437,7 +442,7 @@ async fn node(
     let versions = (lock.node(&node.name).into_iter().flat_map(|n| &n.versions))
         .map(|made| Version {
             number: made.number,
-            assets: paths(made),
+            assets: listed(made),
             made_by: made.made_by.as_ref().map(|by| by.with.clone()),
             runs: made.runs.clone(),
             approved: made.primary().is_some_and(|asset| Some(&asset.path) == approved.as_ref()),
@@ -446,9 +451,105 @@ async fn node(
     Ok(Json(NodeVersions { node, versions }))
 }
 
-/// A version's assets as the API names them: by output name, each one's path in the project.
-fn paths(made: &Made) -> BTreeMap<String, String> {
-    made.assets.iter().map(|(name, asset)| (name.clone(), asset.path.clone())).collect()
+/// A version's assets as the API lists them: by output name, each one's path and sha256.
+fn listed(made: &Made) -> BTreeMap<String, Listing> {
+    (made.assets.iter())
+        .map(|(name, asset)| (name.clone(), Listing { path: asset.path.clone(), sha256: asset.sha256.clone(), original: None }))
+        .collect()
+}
+
+/// The nodes project.lock keeps versions of that project.yaml no longer names, each with the one new
+/// node of its kind with no versions, if there is exactly one: what a rename in project.yaml left.
+fn orphans(video: &Video, lock: &Lock) -> Vec<Orphan> {
+    let named: Vec<String> = video.graph.nodes.iter().map(|node| name_key(&node.id)).collect();
+    let empty = |kind: &str| -> Vec<&str> {
+        (video.graph.nodes.iter())
+            .filter(|node| node.kind == kind && lock.node(&node.id).is_none_or(|n| n.versions.is_empty()))
+            .map(|node| node.id.as_str())
+            .collect()
+    };
+    (lock.nodes.iter())
+        .filter(|(key, node)| !named.contains(key) && !node.versions.is_empty())
+        .map(|(key, node)| Orphan {
+            name: node.versions.first().map_or_else(|| key.clone(), |made| made.node.clone()),
+            kind: node.kind.clone(),
+            versions: node.versions.len() as u32,
+            renamed_to: match empty(&node.kind).as_slice() {
+                [only] => Some((*only).to_owned()),
+                _ => None,
+            },
+        })
+        .collect()
+}
+
+/// Keeps what project.lock has of `from` as `to`, a node project.yaml names now of the same kind with
+/// no versions: its versions and approval, what other versions read of it, and what is owed of it.
+/// Refused while the project renders. Nothing on disk moves.
+async fn rename(
+    State(api): State<Arc<Api>>,
+    Path(id): Path<String>,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<Json<Renamed>, Refusal> {
+    let asked: Rename = parse(&body?)?;
+    let project = api.projects.get(&api, &id)?;
+    let folder = &project.folder;
+    let refuse = |kind, code, said: String| Refusal(Error::new(kind, code, said));
+    if *project.walking.lock().expect("walking lock") {
+        return Err(refuse(Kind::Conflict, "project_busy", "the project is rendering: rename once its runs land".into()));
+    }
+    let (video, lock) = (Video::load(folder).map_err(Refusal)?, folder.lock().map_err(Refusal)?);
+    let Some(old) = lock.node(&asked.from).filter(|node| !node.versions.is_empty()) else {
+        return Err(refuse(Kind::NotFound, "node_unknown", format!("project.lock keeps no version of {}", asked.from)));
+    };
+    let Some(i) = video.graph.find(&asked.to) else {
+        let said = format!("{} names no {}: rename the node (and its <mentions>) there first", folder::PROJECT, asked.to);
+        return Err(refuse(Kind::NotFound, "node_unknown", said));
+    };
+    let new = &video.graph.nodes[i];
+    if lock.node(&new.id).is_some_and(|node| !node.versions.is_empty()) {
+        let said = format!("{} has {}s of its own already", new.id, new.noun);
+        return Err(refuse(Kind::Conflict, "rename_taken", said));
+    }
+    if !old.kind.is_empty() && old.kind != new.kind {
+        let said = format!("{} is a {} and {} a {}: a rename keeps its kind", asked.from, old.kind, new.id, new.kind);
+        return Err(refuse(Kind::Usage, "rename_kind", said));
+    }
+    let (from, to, versions) = (asked.from.clone(), new.id.clone(), old.versions.len() as u32);
+    folder.update_lock(|lock| renamed(lock, &from, &to)).map_err(Refusal)?;
+    Ok(Json(Renamed { from, to, versions }))
+}
+
+/// project.lock with node `from` called `to`: its entry, its versions' names, what other versions
+/// read of it (`<from>` and its files `<from>.<field>`), and what is pending or owed of it.
+fn renamed(lock: &mut Lock, from: &str, to: &str) {
+    let key = name_key(from);
+    // `name` with `from` (or `<from>.<field>`) called `to`.
+    let called = |name: &str| -> Option<String> {
+        if name_key(name) == key {
+            return Some(to.to_owned());
+        }
+        (name.match_indices('.')).find(|(at, _)| name_key(&name[..*at]) == key).map(|(at, _)| format!("{to}{}", &name[at..]))
+    };
+    if let Some(mut node) = lock.nodes.remove(&key) {
+        node.versions.iter_mut().for_each(|made| made.node = to.into());
+        lock.nodes.insert(name_key(to), node);
+    }
+    for made in lock.nodes.values_mut().flat_map(|node| &mut node.versions) {
+        for read in made.upstream.iter_mut().flatten() {
+            if let Some(name) = called(&read.node) {
+                read.node = name;
+            }
+        }
+    }
+    for pending in lock.pending.values_mut().filter(|pending| name_key(&pending.made.node) == key) {
+        pending.made.node = to.into();
+    }
+    for take in lock.walk.takes.iter_mut().filter(|take| name_key(&take.node) == key) {
+        take.node = to.into();
+    }
+    if lock.walk.sent.remove(&key) {
+        lock.walk.sent.insert(name_key(to));
+    }
 }
 
 /// Adds what `Runs` asks to the project's walk, answered at once (`202`; `200` when its
@@ -557,7 +658,7 @@ async fn approve(
     if video.cut_reads(i) {
         Walk { host: Host::new(&api), project: project.clone() }.recut().await.map_err(Refusal)?;
     }
-    let assets = lock.made(&node.id, &file).map(paths).unwrap_or_default();
+    let assets = lock.made(&node.id, &file).map(listed).unwrap_or_default();
     let (name, noun) = (node.id.clone(), node.noun.to_owned());
     Ok(Json(Approved { name, noun, number: asked.version, assets, path: file, stale, warnings: vec![] }))
 }
@@ -587,35 +688,21 @@ async fn events(
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
-/// A file of the project's by its path in it, under references/, plates/ or renders/: an asset cozy
-/// made (its ETag its sha256, from project.lock), or one of people's own.
+/// One of the project's assets by its name in assets/ (`<sha256>.<ext>`): content-addressed, so its
+/// sha256 is its ETag.
 async fn asset(
     State(api): State<Arc<Api>>,
-    Path((id, path)): Path<(String, String)>,
+    Path((id, asset)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, Refusal> {
     let project = api.projects.get(&api, &id)?;
-    let inside = (FsPath::new(&path).components())
-        .all(|part| matches!(part, std::path::Component::Normal(_)))
-        && folder::FOLDERS.iter().any(|top| path.starts_with(&format!("{top}/")));
-    if !inside {
-        let said = format!("{path} is not a file of the project's: assets are under references/, plates/ or renders/");
-        return Err(Refusal(Error::new(Kind::Usage, "asset_path", said)));
+    let (hex, ext) = asset.split_once('.').unwrap_or((&asset, ""));
+    let named = hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()) && ext.bytes().all(|b| b.is_ascii_alphanumeric());
+    if !named {
+        let said = format!("{asset} is no asset: assets are named <sha256>.<ext>");
+        return Err(Refusal(Error::new(Kind::Usage, "asset_name", said)));
     }
-    let lock = project.folder.lock().map_err(Refusal)?;
-    let made = (lock.nodes.values().flat_map(|node| &node.versions))
-        .flat_map(|made| made.assets.values().chain(made.writes.values()))
-        .find(|asset| asset.path == path);
-    let at = project.folder.path(&path);
-    let etag = match made {
-        Some(asset) => format!("\"{}\"", asset.sha256.trim_start_matches("sha256:")),
-        None => {
-            let meta = std::fs::metadata(&at).ok();
-            let modified = meta.as_ref().and_then(|m| m.modified().ok()).and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok());
-            format!("\"{:x}-{:x}\"", meta.map_or(0, |m| m.len()), modified.map_or(0, |at| at.as_nanos()))
-        }
-    };
-    send(&at, &etag, &headers)
+    send(&project.folder.path(&format!("{}/{asset}", folder::ASSETS)), &format!("\"{hex}\""), &headers)
 }
 
 /// One of the project's cuts (`edit.mp4`, `preview.mp4`), as last made: its ETag names that cut.
@@ -706,6 +793,14 @@ impl Walk {
             for take in lock.walk.takes.iter().filter(|take| video.graph.find(&take.node).is_none()) {
                 let said = format!("{} is no longer in {}: its version is not made", take.node, folder::PROJECT);
                 self.failed(Error::new(Kind::NotFound, "node_unknown", said), &mut first);
+                self.folder().update_lock(|lock| lock.walk.takes.retain(|t| t.key != take.key))?;
+            }
+            for take in &lock.walk.takes {
+                let Some(gone) = video.graph.find(&take.node).map(|i| video.missing(i)).filter(|gone| !gone.is_empty()) else {
+                    continue;
+                };
+                let said = format!("{} cannot render: reference missing: {}: relink", take.node, gone.join(", "));
+                self.failed(Error::new(Kind::NotFound, "reference_missing", said), &mut first);
                 self.folder().update_lock(|lock| lock.walk.takes.retain(|t| t.key != take.key))?;
             }
             for next in plan(&video, &lock) {
@@ -915,14 +1010,8 @@ impl Walk {
         for (state, at) in &call.writes {
             // Half a frame early: a write at the shot's end is its last frame.
             let frame = self.frame(&node, &folder.path(&video_asset.path), (at - 1.0 / 48.0).max(0.0)).await?;
-            let path = folder::asset_path(&node, noun, made.number, &format!(".{state}"), frame.path());
-            made.writes.insert(state.clone(), folder.keep(frame.path(), path)?);
+            made.writes.insert(state.clone(), folder.keep(frame.path())?);
         }
-        // The call before this one is continued: its files are needed no more once this one's are kept.
-        let continued: Vec<String> = (call.from.iter())
-            .flat_map(|(video, latents)| std::iter::once(&video.path).chain(latents.iter().map(|asset| &asset.path)))
-            .cloned()
-            .collect();
         if call.index + 1 < call.ends.len() {
             let next = Call {
                 index: call.index + 1,
@@ -948,12 +1037,10 @@ impl Walk {
             let files = request.files.into_iter().map(|input| (input.field, input.path, input.digest)).collect();
             let settle = |lock: &mut Lock| drop(lock.pending.remove(key));
             self.submit(&new_key(), &request.payload, files, &request.render, on, pending, &settle).await?;
-            folder.drop_files(&continued, &video.attached(folder))?;
             return Ok(None);
         }
         let approve = approve || video.graph.nodes[i].file.is_none();
-        self.record(Some(key), &made, approve, noun)?;
-        folder.drop_files(&continued, &video.attached(folder))?;
+        self.record(Some(key), &made, approve, video.graph.nodes[i].kind, noun)?;
         Ok(Some(node))
     }
 
@@ -1111,11 +1198,6 @@ impl Walk {
         let Some(pending) = folder.lock()?.pending.remove(key) else { return Ok(Landed::Done) };
         let node = pending.made.node.clone();
         if run.status != RunStatus::Completed {
-            // What it carried (a picture to clean, a call to continue) goes with it.
-            folder.update_lock(|lock| drop(lock.pending.remove(key)))?;
-            let from = pending.call.as_ref().and_then(|call| call.from.as_ref());
-            let carried = from.into_iter().flat_map(|(video, latents)| std::iter::once(&video.path).chain(latents.iter().map(|a| &a.path)));
-            folder.drop_files(pending.made.paths().chain(carried), &BTreeSet::new())?;
             let why =
                 run.reason.as_ref().map_or_else(|| format!("{:?}", run.status).to_lowercase(), |r| r.message.clone());
             let said = format!("{node}'s run {} did not complete: {why}; it is not run again", run.number);
@@ -1159,18 +1241,14 @@ impl Walk {
         };
         let mut made = Made { number, ..pending.made.clone() };
         made.runs.push(run.number);
-        let keep = |source: &FsPath, part: &str| folder.keep(source, folder::asset_path(&node, noun, number, part, source));
         if let Then::Clean { approve } = pending.then {
             // Listed once cleaned, made by both runs: the render as its `image`, and its `clean`.
-            made.assets.insert(pending.field.clone(), keep(&picture, "")?);
+            made.assets.insert(pending.field.clone(), folder.keep(&picture)?);
             return Ok(Landed::Clean { made: Box::new(made), picture, approve, hub: pending.hub });
         }
         if made.cleaned {
-            made.assets.insert("clean".into(), keep(&picture, "_clean")?);
+            made.assets.insert("clean".into(), folder.keep(&picture)?);
         } else {
-            // A shot's call before its last is named for its call; the last is the take.
-            let call = pending.call.as_ref().filter(|call| call.index + 1 < call.ends.len());
-            let prefix = call.map(|call| format!(".call{}", call.index + 1)).unwrap_or_default();
             // Every file the run saved, by its output's name (a list's items as `<name>-<n>`).
             for output in &run.output {
                 let Some(path) = output.path.as_ref().filter(|path| path.is_file()) else { continue };
@@ -1178,11 +1256,9 @@ impl Walk {
                     0 => output.name.clone(),
                     n => format!("{}-{n}", output.name),
                 };
-                if name != pending.field {
-                    made.assets.insert(name.clone(), keep(path, &format!("{prefix}.{name}"))?);
-                }
+                made.assets.insert(name, folder.keep(path)?);
             }
-            made.assets.insert(pending.field.clone(), keep(&picture, &prefix)?);
+            made.assets.insert(pending.field.clone(), folder.keep(&picture)?);
         }
         if pending.field == "video" {
             let (_, ffprobe) = self.host.ffmpeg().await?;
@@ -1197,20 +1273,20 @@ impl Walk {
             Then::List { approve } | Then::Clean { approve } => approve || video.graph.nodes[i].file.is_none(),
             Then::Attached => false,
         };
-        self.record(Some(key), &made, approve, noun)?;
+        self.record(Some(key), &made, approve, video.graph.nodes[i].kind, noun)?;
         Ok(Landed::Done)
     }
 
     /// Lists `made` as its node's newest version (dropping the pending run under `key` in the same
     /// write), approved when `approve`, and says it landed.
-    fn record(&self, key: Option<&str>, made: &Made, approve: bool, noun: &str) -> Result<(), Error> {
+    fn record(&self, key: Option<&str>, made: &Made, approve: bool, kind: &str, noun: &str) -> Result<(), Error> {
         self.folder().update_lock(|lock| {
             if let Some(key) = key {
                 lock.pending.remove(key);
             }
-            lock.record(made.clone(), approve);
+            lock.record(made.clone(), kind, approve);
         })?;
-        let (name, number, assets) = (made.node.clone(), made.number, paths(made));
+        let (name, number, assets) = (made.node.clone(), made.number, listed(made));
         let path = made.primary().map(|asset| asset.path.clone()).unwrap_or_default();
         self.say(Event::Landed { name, noun: noun.into(), number, assets, path });
         Ok(())
@@ -1272,8 +1348,10 @@ fn plan(video: &Video, lock: &Lock) -> Vec<Next> {
             && (status[i] != Status::Current || !clean(i))
             && !walk.sent.contains(&id);
         let up = graph.upstream[i].iter().any(|edge| unsettled[edge.node]);
-        unsettled[i] = busy || owed || up;
-        if up {
+        // A node reading a reference that is gone is not made, and nor is what reads it.
+        let gone = !video.missing(i).is_empty();
+        unsettled[i] = busy || owed || up || gone;
+        if up || gone {
             continue;
         }
         let made = graph.upstream[i].iter().all(|edge| status[edge.node] == Status::Current && clean(edge.node));
@@ -1321,10 +1399,9 @@ fn set(payload: &mut Value, field: &str, value: Value) {
     *at = value;
 }
 
-/// Forgets the versions of nodes the project no longer has, and removes their files.
+/// Deletes the assets project.lock no longer names.
 fn garbage(folder: &Folder) -> Result<(), Error> {
-    let video = Video::load(folder)?;
-    folder.collect_garbage(&video.keys(), &video.attached(folder))
+    folder.collect_garbage()
 }
 
 fn find(video: &Video, name: &str) -> Result<usize, Error> {

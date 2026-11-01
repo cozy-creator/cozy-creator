@@ -1,11 +1,9 @@
 //! A project folder (Paul, 11-01): `project.yaml` (people's; cozy writes it only at `cozy project
-//! new`), `project.lock` (cozy's: each node's versions, what made each, which is approved, the runs
-//! still making one, and what its walk still owes), and the cut, `edit.mp4` and `edit.otio`. What cozy
-//! makes is kept in one folder per node, its files named for people: a shot's or upscale's takes in
-//! `renders/` (`renders/fight/fight_take002.mp4`, `fight_take002.latents`), every other node's
-//! versions in `references/` beside people's own files there (`references/theo/theo_v001.png`,
-//! `theo_v001_clean.png`). No file says which is approved: project.lock does. `plates/` holds only
-//! people's footage. cozy writes and removes only the files it names, and never another.
+//! new`), `project.lock` (cozy's: each node's versions, what made each, which is approved, the files
+//! the project reads, the runs still making one, and what its walk still owes), `assets/`, and the
+//! cut (`edit.mp4`). Every file the project uses is in `assets/<sha256>.<ext>`, flat: each take and
+//! version, clean and latents cozy makes (real files), and each file project.yaml names, linked there
+//! on first use (a symlink to the original). Names live only in project.yaml and the lock.
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::Read,
@@ -26,16 +24,13 @@ use super::graph::name_key;
 
 pub const PROJECT: &str = "project.yaml";
 pub const LOCK: &str = "project.lock";
-/// The folders `cozy project new` makes: references/ (people's, and cozy's versions), plates/
-/// (people's footage) and renders/ (cozy's takes). Where people keep a file is a convention, never
-/// enforced.
-pub const FOLDERS: [&str; 3] = ["references", "plates", "renders"];
+/// Where every file the project uses is kept, by content: `assets/<sha256>.<ext>`.
+pub const ASSETS: &str = "assets";
 /// A version's primary asset, the one its node reads as: its video, else its clean (a cleaned
 /// picture's), else its image.
 const PRIMARY: [&str; 3] = ["video", "clean", "image"];
 
-/// A file cozy made: its path in the project (`renders/<node>/<file>`, `references/<node>/<file>`)
-/// and its sha256.
+/// A file the project uses: its path in the project (`assets/<sha256>.<ext>`) and its sha256.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Asset {
     pub path: String,
@@ -160,10 +155,12 @@ pub enum Then {
     Attached,
 }
 
-/// A node's versions by number, the approved one's primary asset's path, and the last number
-/// given (numbers are never given again).
+/// A node's kind, its versions by number, the approved one's primary asset's path, and the last
+/// number given (numbers are never given again).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Node {
+    #[serde(default)]
+    pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved: Option<String>,
     #[serde(default)]
@@ -174,14 +171,29 @@ pub struct Node {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Lock {
-    /// By name key.
+    /// By name key. A node project.yaml no longer names is kept, its versions with it, until it is
+    /// renamed (`cozy project rename`).
     #[serde(default)]
     pub nodes: BTreeMap<String, Node>,
+    /// The files project.yaml names, by the path written there: each one's asset as last read.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub inputs: BTreeMap<String, Input>,
     /// By idempotency key.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pending: BTreeMap<String, Pending>,
     #[serde(default, skip_serializing_if = "Owed::is_empty")]
     pub walk: Owed,
+}
+
+/// A file project.yaml names, as last taken in: its asset (a link to it), where it is (`original`,
+/// absolute), and the size and time it had then, which spare hashing it again while they hold.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Input {
+    #[serde(flatten)]
+    pub asset: Asset,
+    pub original: PathBuf,
+    pub size: u64,
+    pub modified_ms: i64,
 }
 
 /// What a render asked that the project's walk has not sent yet.
@@ -248,10 +260,11 @@ impl Lock {
         node.numbered
     }
 
-    /// Lists `made` (its assets kept, its number given) as its node's newest version, approved when
-    /// `approve`.
-    pub fn record(&mut self, made: Made, approve: bool) {
+    /// Lists `made` (its assets kept, its number given) as its node's (of `kind`) newest version,
+    /// approved when `approve`.
+    pub fn record(&mut self, made: Made, kind: &str, approve: bool) {
         let node = self.nodes.entry(name_key(&made.node)).or_default();
+        node.kind = kind.into();
         if approve {
             node.approved = made.primary().map(|asset| asset.path.clone());
         }
@@ -259,36 +272,6 @@ impl Lock {
         node.versions.push(made);
         node.versions.sort_by_key(|made| made.number);
     }
-}
-
-/// Where version `number` of `node` keeps an asset made from the file `from`: in renders/ for a
-/// take (`noun`), else in references/, in the node's folder, named `<node>_take###` or `<node>_v###`
-/// and then `part`: `""` for the primary asset, `_clean` for a cleaned picture's clean, or
-/// `.<name>` for any other (`.latents`, a state's frame `.wall`, a call's `.call1`). A picture, video
-/// or sound keeps its extension; another file is named by its part alone (`fight_take001.latents`).
-pub fn asset_path(node: &str, noun: &str, number: u32, part: &str, from: &Path) -> String {
-    let tag = match noun {
-        "take" => format!("take{number:03}"),
-        _ => format!("v{number:03}"),
-    };
-    let ext = from.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-    let media = MEDIA.contains(&ext.as_str());
-    let ext = if part.starts_with('.') && !media || ext.is_empty() { String::new() } else { format!(".{ext}") };
-    format!("{}/{}_{tag}{part}{ext}", folder_of(node, noun), node_dir(node))
-}
-
-/// The extensions a picture, video or sound keeps.
-const MEDIA: [&str; 11] = ["png", "jpg", "jpeg", "webp", "mp4", "webm", "mov", "wav", "mp3", "flac", "m4a"];
-
-/// A node's folder: `renders/<node>` for a node with takes, else `references/<node>`.
-fn folder_of(node: &str, noun: &str) -> String {
-    let base = if noun == "take" { "renders" } else { "references" };
-    format!("{base}/{}", node_dir(node))
-}
-
-/// A node's folder's name: its name, without path separators.
-fn node_dir(node: &str) -> String {
-    node.replace(['/', '\\'], "_")
 }
 
 pub struct Folder {
@@ -341,68 +324,102 @@ impl Folder {
         })
     }
 
-    /// `source` kept at `path` (`asset_path`), copied there whole before it is named: its asset. A
-    /// file already there is never overwritten: the same bytes are this asset kept before (a landing
-    /// done again), and other bytes are people's, refused.
-    pub fn keep(&self, source: &Path, path: String) -> Result<Asset, Error> {
-        let (at, sha256) = (self.dir.join(&path), hash(source)?);
-        if at.exists() {
-            return match hash(&at)? == sha256 {
-                true => Ok(Asset { path, sha256 }),
-                false => Err(Error::new(Kind::Conflict, "asset_name_taken", format!("{path} is there and is not what cozy made"))
-                    .remedy("rename or move that file: cozy names its own files <node>_v### and <node>_take###, and never overwrites another")),
-            };
-        }
-        let dir = at.parent().expect("an asset is in its node's folder");
-        std::fs::create_dir_all(dir).map_err(|e| io_at(dir, e))?;
-        let part = dir.join(format!(".{}.part", at.file_name().expect("a name").to_string_lossy()));
-        std::fs::copy(source, &part).map_err(|e| io_at(source, e))?;
-        std::fs::rename(&part, &at).map_err(|e| io_at(&at, e))?;
+    /// `source`, a file a run saved, kept as an asset: copied whole before it is named, once per
+    /// content.
+    pub fn keep(&self, source: &Path) -> Result<Asset, Error> {
+        let sha256 = hash(source)?;
+        let path = asset_of(&sha256, source);
+        self.store(&path, |part| std::fs::copy(source, part).map(drop))?;
         Ok(Asset { path, sha256 })
     }
 
-    /// Removes the files cozy made at `paths` that project.lock no longer names (and project.yaml
-    /// does not attach, `attached`): a version forgotten, a call continued, a run that failed.
-    pub fn drop_files<'a>(&self, paths: impl IntoIterator<Item = &'a String>, attached: &BTreeSet<String>) -> Result<(), Error> {
+    /// The file project.yaml names as `file` (relative to the folder, or absolute), taken in as an
+    /// asset: hashed (unless `known`, as last taken in, still has its size and time), and linked as
+    /// `assets/<sha256>.<ext>` to the original, made absolute: a symlink; on Windows, where a symlink
+    /// needs a privilege, else a hard link on the same volume, else a copy (`copied`). None when the
+    /// original is not there.
+    pub fn take_in(&self, file: &str, known: Option<&Input>) -> Result<Option<(Input, bool)>, Error> {
+        let original = std::path::absolute(self.path(file)).map_err(|e| io_at(&self.path(file), e))?;
+        let Ok(meta) = std::fs::metadata(&original) else { return Ok(None) };
+        let modified_ms = (meta.modified().ok().and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok()))
+            .map_or(0, |at| at.as_millis() as i64);
+        let same = known.filter(|known| known.original == original && known.size == meta.len() && known.modified_ms == modified_ms);
+        if let Some(known) = same.filter(|known| self.dir.join(&known.asset.path).is_file()) {
+            return Ok(Some((known.clone(), false)));
+        }
+        let sha256 = hash(&original)?;
+        let path = asset_of(&sha256, &original);
+        let at = self.dir.join(&path);
+        let linked = std::fs::read_link(&at).ok().as_deref() == Some(original.as_path()) || (at.is_file() && !at.is_symlink());
+        let copied = match linked {
+            true => false,
+            false => {
+                let dir = self.dir.join(ASSETS);
+                std::fs::create_dir_all(&dir).map_err(|e| io_at(&dir, e))?;
+                let part = dir.join(format!(".{}.part", at.file_name().expect("a name").to_string_lossy()));
+                let _ = std::fs::remove_file(&part);
+                #[cfg(unix)]
+                let made = std::os::unix::fs::symlink(&original, &part).map(|()| false);
+                #[cfg(windows)]
+                let made = (std::os::windows::fs::symlink_file(&original, &part))
+                    .or_else(|_| std::fs::hard_link(&original, &part))
+                    .map(|()| false)
+                    .or_else(|_| std::fs::copy(&original, &part).map(|_| true));
+                made.and_then(|copied| std::fs::rename(&part, &at).map(|()| copied)).map_err(|e| io_at(&at, e))?
+            }
+        };
+        let input = Input { asset: Asset { path, sha256 }, original, size: meta.len(), modified_ms };
+        Ok(Some((input, copied)))
+    }
+
+    /// `path` (an asset's) made by `write` at a part beside it and then named, unless it is there.
+    fn store(&self, path: &str, write: impl Fn(&Path) -> std::io::Result<()>) -> Result<(), Error> {
+        let at = self.dir.join(path);
+        if at.is_file() {
+            return Ok(());
+        }
+        let dir = self.dir.join(ASSETS);
+        std::fs::create_dir_all(&dir).map_err(|e| io_at(&dir, e))?;
+        let part = dir.join(format!(".{}.part", at.file_name().expect("a name").to_string_lossy()));
+        let _ = std::fs::remove_file(&part);
+        write(&part).and_then(|()| std::fs::rename(&part, &at)).map_err(|e| io_at(&at, e))
+    }
+
+    /// A file as project.yaml or the lock writes it: relative to the folder, absolute, or `~/…`.
+    pub fn path(&self, file: &str) -> PathBuf {
+        match file.strip_prefix("~/").zip(platform::paths::login_home()) {
+            Some((rest, home)) => home.join(rest),
+            None => self.dir.join(file),
+        }
+    }
+
+    /// Deletes each asset nothing in project.lock names: no version (of a node project.yaml names or
+    /// not), no pending run or call, no input.
+    pub fn collect_garbage(&self) -> Result<(), Error> {
         let lock = self.lock()?;
         let pending = lock.pending.values().map(|pending| &pending.made);
-        let mut named: BTreeSet<&String> = attached.iter().collect();
+        let mut named: BTreeSet<&String> = lock.inputs.values().map(|input| &input.asset.path).collect();
         for made in lock.nodes.values().flat_map(|node| &node.versions).chain(pending) {
             named.extend(made.paths());
         }
         for (video, latents) in lock.pending.values().filter_map(|pending| pending.call.as_ref()?.from.as_ref()) {
             named.extend(std::iter::once(&video.path).chain(latents.iter().map(|asset| &asset.path)));
         }
-        for path in paths.into_iter().filter(|path| !named.contains(path)) {
-            match std::fs::remove_file(self.dir.join(path)) {
-                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(io_at(&self.dir.join(path), e)),
-                _ => {}
+        for entry in std::fs::read_dir(self.dir.join(ASSETS)).into_iter().flatten().flatten() {
+            let path = format!("{ASSETS}/{}", entry.file_name().to_string_lossy());
+            let ours = entry.file_type().is_ok_and(|kind| kind.is_file() || kind.is_symlink());
+            if ours && !path.contains("/.") && !named.contains(&path) {
+                std::fs::remove_file(entry.path()).map_err(|e| io_at(&entry.path(), e))?;
             }
         }
         Ok(())
     }
+}
 
-    /// A file's sha256 (`sha256:<hex>`), from its bytes.
-    pub fn digest(&self, file: &str) -> Result<String, Error> {
-        hash(&self.dir.join(file))
-    }
-
-    pub fn path(&self, file: &str) -> PathBuf {
-        self.dir.join(file)
-    }
-
-    /// Forgets the lock's nodes the project no longer has (`nodes`, by name key), removing the files
-    /// their versions were.
-    pub fn collect_garbage(&self, nodes: &BTreeSet<String>, attached: &BTreeSet<String>) -> Result<(), Error> {
-        let lock = self.lock()?;
-        let gone: Vec<String> = (lock.nodes.iter())
-            .filter(|(key, _)| !nodes.contains(*key))
-            .flat_map(|(_, node)| node.versions.iter().flat_map(Made::paths))
-            .cloned()
-            .collect();
-        self.update_lock(|lock| lock.nodes.retain(|key, _| nodes.contains(key)))?;
-        self.drop_files(&gone, attached)
-    }
+/// An asset's path: `assets/<hex of sha256>.<the source's extension>`.
+fn asset_of(sha256: &str, source: &Path) -> String {
+    let ext = source.extension().map(|e| format!(".{}", e.to_string_lossy().to_ascii_lowercase())).unwrap_or_default();
+    format!("{ASSETS}/{}{ext}", sha256.trim_start_matches("sha256:"))
 }
 
 impl Folder {

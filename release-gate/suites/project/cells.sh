@@ -117,7 +117,7 @@ shots:
 YAML
 )
   # The voice: 4 s of the split shot's soundtrack (its "Done."), else of the gate's H3 clip, else a tone.
-  src=$(ls "$OUT"/project-split/renders/mural/*.mp4 2>/dev/null | head -1); src=${src:-$CLIP}
+  src=$(lockq "$OUT/project-split" "next(v for v in lock['nodes']['mural']['versions'])['assets']['video']['path']"); src=${src:+$OUT/project-split/$src}; src=${src:-$CLIP}
   if [ -n "$src" ]; then nice -n 19 ffmpeg -v error -y -ss 5 -i "$src" -t 4 -vn -ac 1 -ar 24000 "$P/voice.wav"
   else nice -n 19 ffmpeg -v error -y -f lavfi -i sine=frequency=220:duration=4 -ac 1 -ar 24000 "$P/voice.wav"; fi
   render project-voice "$P" hello
