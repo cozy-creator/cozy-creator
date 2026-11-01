@@ -297,15 +297,21 @@ code=0; cozy --json machine add e2e-self "$addr" --fingerprint "$fp" > "$OUT/add
 J '.controller_key | test("^[A-Za-z0-9_-]{43}$")' "$OUT/local.json" || check "machine show local: no controller key: $(head -c 300 "$OUT/local.json")"
 code=0; cozy --json machine ssh local > "$OUT/ssh-local.json" 2> "$OUT/ssh-local.err" || code=$?
 [ "$code" = 2 ] && J '.error.code == "machine_ssh_none"' "$OUT/ssh-local.json" || check "machine ssh local: exit $code, not refused as no rental: $(head -c 300 "$OUT/ssh-local.json")"
-openssl genpkey -algorithm ed25519 -out "$OUT/controller.pem" 2> /dev/null || check "openssl could not make an Ed25519 key"
-key=$(openssl pkey -in "$OUT/controller.pem" -pubout -outform DER | tail -c 32 | base64 | tr '+/' '-_' | tr -d '=\n') || true
+# One base64url key in 64 begins with `-`, which cozy and grep once read as an option (runs 41245693908, 41266489312):
+# this cell always takes such a key.
+for _ in $(seq 1000); do
+  openssl genpkey -algorithm ed25519 -out "$OUT/controller.pem" 2> /dev/null || check "openssl could not make an Ed25519 key"
+  key=$(openssl pkey -in "$OUT/controller.pem" -pubout -outform DER | tail -c 32 | base64 | tr '+/' '-_' | tr -d '=\n') || true
+  [[ $key == -* ]] && break
+done
+[[ $key == -* ]] || check "no Ed25519 key beginning with - in 1000"
 cozy --json machine authorize "$key" > "$OUT/authorize.json" && J '.changed == true' "$OUT/authorize.json" || check "machine authorize: the key was not added"
-grep -qx "$key" "$HOME/.cozy/keys/authorized" || check "machine authorize: the key is not in keys/authorized"
+grep -qx -- "$key" "$HOME/.cozy/keys/authorized" || check "machine authorize: the key is not in keys/authorized"
 # Authorized, it listens on every interface and says where other computers add it.
 J '.machine.reach | test(":[0-9]+$")' "$OUT/authorize.json" || check "machine authorize: no address to add it at: $(jq -c .machine.reach "$OUT/authorize.json")"
 cozy --json machine authorize "$key" | J '.changed == false' || check "machine authorize twice: added it again"
 cozy --json machine authorize "$key" --remove > "$OUT/unauthorize.json" && J '.changed == true' "$OUT/unauthorize.json" || check "machine authorize --remove: the key was not removed"
-! grep -qx "$key" "$HOME/.cozy/keys/authorized" || check "machine authorize --remove: the key is still in keys/authorized"
+! grep -qx -- "$key" "$HOME/.cozy/keys/authorized" || check "machine authorize --remove: the key is still in keys/authorized"
 code=0; cozy --json machine end local > "$OUT/end-local.json" 2> "$OUT/end-local.err" || code=$?
 [ "$code" = 1 ] && J '.error.code == "machine_local"' "$OUT/end-local.json" || check "machine end local: exit $code, not refused: $(head -c 300 "$OUT/end-local.json")"
 
