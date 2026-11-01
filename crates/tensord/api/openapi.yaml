@@ -321,6 +321,7 @@ components:
         measurements:
           description: Its executor's, as `Outcome::measurements`.
           oneOf: [{$ref: '#/components/schemas/Json'}, {type: 'null'}]
+        memo_basis: {type: string, description: 'As `Outcome::memo_basis`.'}
         memoized: {type: boolean, description: Answered from a result this machine held; nothing ran.}
         reason:
           description: Why it did not succeed.
@@ -646,6 +647,12 @@ components:
             (degree, ranks with the GPU and attention each served, executor boot, construction load and warm)
             and `observations` (attention rows). None for a run that ran on no device.
           oneOf: [{$ref: '#/components/schemas/Json'}, {type: 'null'}]
+        memo_basis:
+          type: string
+          description: >-
+            What keyed a memoizable callable's code: `closure` (its module and the modules of its package it
+            imports), `package` (its package's whole source) or `identity` (another package's declared operation
+            identity). Empty from a machine that predates it.
         memoized: {type: boolean, description: 'Answered from a result this machine held: nothing ran.'}
         outputs: {type: array, items: {$ref: '#/components/schemas/Product'}}
         reason: {oneOf: [{$ref: '#/components/schemas/Reason'}, {type: 'null'}]}

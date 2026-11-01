@@ -389,6 +389,7 @@ impl Log {
                 memoized: body["memoized"].as_bool().unwrap_or_default(),
                 computation_digest: body["computation_digest"].as_str().unwrap_or_default().into(),
                 unmemoized: body["unmemoized"].as_str().unwrap_or_default().into(),
+                memo_basis: body["memo_basis"].as_str().unwrap_or_default().into(),
                 reason: (!body["error_code"].as_str().unwrap_or_default().is_empty()
                     || matches!(
                         body["status"].as_str(),
@@ -625,8 +626,8 @@ async fn log<B: MachineBackend>(
                 .await?;
                 outcome.measurements = measurements.and_then(raw);
                 outcome.execution_ms = execution_ms;
-                (outcome.computation_digest, outcome.memoized, outcome.unmemoized) =
-                    (memo.computation, memo.memoized, memo.unmemoized);
+                (outcome.computation_digest, outcome.memoized, outcome.unmemoized, outcome.memo_basis) =
+                    (memo.computation, memo.memoized, memo.unmemoized, memo.basis);
             }
             if sender.send(Ok(converted)).await.is_err() {
                 return Ok(());

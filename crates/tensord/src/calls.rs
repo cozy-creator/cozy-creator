@@ -981,6 +981,7 @@ fn record_call(
         "called_unix_ms": record.accepted_at_ms, "finished_unix_ms": record.finished_at_ms,
         "measurements": measurements, "computation_digest": record.memo.computation,
         "memoized": record.memo.memoized, "unmemoized": record.memo.unmemoized,
+        "memo_basis": record.memo.basis,
     });
     match engine.append_call(&parent.id, &record.id, &crate::boundary_json::exact(&body)) {
         Ok(_) => true,

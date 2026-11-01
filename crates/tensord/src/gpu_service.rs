@@ -3946,6 +3946,7 @@ impl Pool {
             .filter_map(|(output, max_bytes)| Some((output.to_owned(), max_bytes?)))
             .collect();
         let operation = crate::call_memo::operation(&held.record, &record.invocation.module, protocol::interface::invocable(&entry))
+            .map(|(operation, _)| operation)
             .unwrap_or_default();
         session.executor.codec().prestart();
         let invoked = Instant::now();

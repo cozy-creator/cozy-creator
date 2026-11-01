@@ -279,6 +279,16 @@ fn checkpoint(reference: &protocol::machine::CheckpointRef) -> String {
     shown
 }
 
+/// What keyed a memoizable run's code (`Memo::basis`), for a person.
+pub(super) fn keyed(basis: &str) -> &'static str {
+    match basis {
+        "closure" => ", keyed on its code closure",
+        "package" => ", keyed on its whole package",
+        "identity" => ", keyed on its declared operation identity",
+        _ => "",
+    }
+}
+
 /// The record's fields, for a person.
 pub(super) fn fields(ctx: &Context, run: &Run) -> output::Record {
     let mut record = output::Record::new()
@@ -294,6 +304,13 @@ pub(super) fn fields(ctx: &Context, run: &Run) -> output::Record {
     }
     if let Some(ms) = run.execution_ms {
         record = record.field("execution", format!("{:.1}s", ms as f64 / 1000.0));
+    }
+    if let Some(memo) = &run.memo {
+        let done = match memo.memoized {
+            true => format!("served from {}'s memo", run.machine.as_deref().unwrap_or("its machine")),
+            false => "computed".to_owned(),
+        };
+        record = record.field("memo", format!("{done}{}", keyed(&memo.basis)));
     }
     if let Some(reason) = &run.reason {
         record = record.field("reason", format!("{} ({})", reason.message, reason.code));

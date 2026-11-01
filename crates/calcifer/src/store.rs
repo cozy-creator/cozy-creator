@@ -9,7 +9,7 @@ use std::{
 
 use protocol::{
     calcifer::{
-        Agreed, Call, Event, ItemStatus, Kind, Machine, MachineKind, MachineState, OutputItem,
+        Agreed, Call, Event, ItemStatus, Kind, Machine, MachineKind, MachineState, Memo, OutputItem,
         Reason, Run, Status, Warning,
     },
     config::Origin,
@@ -1781,6 +1781,13 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
             .as_ref()
             .map(|outcome| outcome.execution_ms)
             .filter(|ms| *ms > 0),
+        memo: (row.outcome.as_ref())
+            .filter(|outcome| !outcome.computation_digest.is_empty())
+            .map(|outcome| Memo {
+                computation: outcome.computation_digest.clone(),
+                memoized: outcome.memoized,
+                basis: outcome.memo_basis.clone(),
+            }),
         measurements: None,
         calls: vec![],
     })

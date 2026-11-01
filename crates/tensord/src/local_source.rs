@@ -383,10 +383,11 @@ impl LocalSources {
                 platform::durable::symlink(&environment, &dir.join("env")).map_err(|e| published::io_failure(e.into()))?;
                 let (env, distribution) = (dir.join("env"), published::distribution(&pyproject)?);
                 let python = platform::paths::venv_python(&env);
-                let interface = environment::describe_project(&python, &project)?;
-                let (_, callees) = environment::describe_environment(&python, &distribution, &manifest.callees)?;
+                let (interface, closures) = environment::describe_project(&python, &project)?;
+                let callees = environment::describe_environment(&python, &distribution, &manifest.callees, false)?.callees;
+                let described = environment::Described { source_digest: manifest.source_digest(), callees, closures };
                 let record = built.record((&identity, &built_from), (&distribution, &manifest.release), &env, &interface,
-                    &self.publisher.sdk.runtime_build, (manifest.source_digest(), callees))?;
+                    &self.publisher.sdk.runtime_build, described)?;
                 environment::publish(&dir, &record)
             };
             if let Err(failure) = published() {

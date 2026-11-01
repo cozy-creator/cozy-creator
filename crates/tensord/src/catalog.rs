@@ -33,6 +33,10 @@ pub struct Generation {
     /// Other packages' Apps this environment holds as dependencies: a call calls them here.
     #[serde(default)]
     pub callees: Vec<Callee>,
+    /// Its own App's memoized functions' code closures (`module:export` -> identity), as this
+    /// machine's Runtime read them: what keys their memo; one without keys on `source_digest`.
+    #[serde(default)]
+    pub closures: std::collections::BTreeMap<String, String>,
     /// Empty when this machine's own Runtime and TensorFS installed; else why the release's
     /// locked SDK runs instead, and which, or the package's bounds the machine's development
     /// Runtime overrides (every run of it says so).
@@ -213,6 +217,7 @@ impl HeldGeneration {
         held.record.application = callee.application.clone();
         held.record.interface = callee.interface.clone();
         held.record.source_digest = callee.source_digest.clone();
+        held.record.closures.clear();
         Ok(held)
     }
     pub fn retention(&self) -> Arc<File> {

@@ -81,7 +81,9 @@ warning each). A model-only upload's lane labels the commit it makes.
   held per signer and answers the same computation (its code, environment with its Runtime build,
   request with files by content, attention choice and models) while the machine holds every file it
   names, so a Runtime update runs it again; the answered run starts
-  nothing and its Outcome says `memoized`. An author's `memo_requires` names parameters a request
+  nothing and its Outcome says `memoized`. A package's own function's code is its closure (its module
+  and the modules of its package it imports, as the machine's Runtime reads them), else the
+  package's whole source; another package's is its declared operation identity (`memo_basis`). An author's `memo_requires` names parameters a request
   must give to be memoizable; one that omits them runs, is not held, and says why (`unmemoized`).
   The client carries no results; a memo answers where its results are (measured 2026-10-06: no
   cross-machine hit ever in the owner's runs).
