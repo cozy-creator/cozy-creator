@@ -35,6 +35,7 @@ pub(crate) fn with_snapshot<T>(
             refreshed: refresh,
             ..Accounting::default()
         };
+        cache::accounting(&state, owner.page, &mut reading);
         for (base, segment) in &state.segments {
             let (pool_held, pool_pending) = match segment.pool {
                 None => (false, false),

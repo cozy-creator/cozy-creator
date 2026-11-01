@@ -1,6 +1,7 @@
 # P3 owner-controlled cache reclamation
 
-Status: source/design audit; no implementation or new GPU qualification yet.
+Status: first native paged Cache implementation checkpoint; build and real GPU proof
+pending. The asynchronous owner bridge and Runtime adoption are not implemented yet.
 Owner: /root/retention_restart. Root owns builds, SDK installation, rentals and GPU runs.
 
 ## Existing mechanism and missing link

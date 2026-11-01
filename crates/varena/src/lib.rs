@@ -12,6 +12,7 @@
 
 mod cuda;
 pub mod working;
+pub use working::{Cache, CacheStats};
 #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
 pub mod ledger;
 #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
