@@ -1,18 +1,20 @@
-"""Process-local CUDA weight reservations with ordinary owned Torch tensor views.
+"""CUDA weight regions and shared process memory constraints.
 
-Installation preserves Torch's native caching allocator. Recovery covers its synchronous
-cudaMalloc imports on supported Linux ELF builds, from all threads. cudaMallocAsync,
-expandable segments, other CUDA libraries, and CUDA graph recovery are outside this contract.
+Install tensorfs.varena.torch for Torch working allocations; native TensorFS device buffers
+always use the same Varena working allocator.
 """
 
 from __future__ import annotations
 
-import os
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .. import _ext
+from .cooperative import Cooperation as Cooperation
+from .cooperative import CooperationDeferredError as CooperationDeferredError
+from .cooperative import CooperationOwner as CooperationOwner
+from .cooperative import CooperationStaleSampleError as CooperationStaleSampleError
 
 if TYPE_CHECKING:
     from torch import Tensor
@@ -25,64 +27,55 @@ except AttributeError as error:
         "TensorFS native Varena capability is missing: VarenaPoisonedError"
     ) from error
 
-_installed = False
-
-
-def install_allocator() -> None:
-    """Install native allocation recovery before Torch reserves CUDA memory."""
-    global _installed
-    if _installed:
-        return
-    required = (
-        "_VarenaArena",
-        "_VarenaAllocatorCapture",
-        "_varena_install_allocator",
-        "_varena_set_activation_limit",
-        "_varena_allocator_stats",
-    )
-    missing = [name for name in required if not hasattr(_ext, name)]
-    if missing:
-        raise RuntimeError(
-            "TensorFS native Varena capability is missing: " + ", ".join(missing)
-        )
-    import torch
-
-    if torch.cuda.get_allocator_backend() != "native":
-        raise RuntimeError("Varena requires Torch's native CUDA caching allocator")
-    config = os.environ.get(
-        "PYTORCH_ALLOC_CONF", os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
-    )
-    if "expandable_segments:true" in config.lower().replace(" ", ""):
-        raise RuntimeError(
-            "Varena's allocation hook does not cover expandable segments"
-        )
-    if torch.cuda.is_initialized() and any(
-        torch.cuda.memory_reserved(i) for i in range(torch.cuda.device_count())
-    ):
-        raise RuntimeError("install Varena before Torch reserves CUDA memory")
-    _ext._varena_install_allocator()
-    _installed = True
-
-
-def set_activation_limit(device: int, bytes: int | None = None) -> None:
-    """Bound admission of hooked Torch segments plus current resident weights.
-
-    Configure before Torch reserves memory. This is an activation-allocation admission
-    limit, not a hard process/device cap: later weight fills, contexts, and unhooked CUDA
-    allocations are not governed by it.
-    """
-    _ext._varena_set_activation_limit(device, bytes)
-
-
-def allocator_stats(device: int = 0) -> dict[str, int]:
-    return _ext._varena_allocator_stats(device)
-
-
 def make_room(device: int, limit: int | None) -> int:
-    """Hold this process's GPU bytes on `device` (weight pages plus Torch's hooked segments) to
-    `limit`, None for no limit; returns the pages taken back now. Fills and hooked allocations stay
+    """Hold this process's GPU bytes on `device` (resident weight pages plus mapped working allocations) to
+    `limit`, None for no limit; returns the pages taken back now. Fills and working allocations stay
     inside it until it changes: what the machine asks when another program needs the GPU."""
     return _ext._varena_make_room(device, limit)
+
+
+class Cache:
+    """Owner-addressed CUDA pages; raw addresses are not tensor or graph lifetime leases.
+
+    Retain this owner while any consumer may use its reservation. Before release, stop
+    new use of the exact range and join every consumer into the supplied stream. Poll
+    collects completed releases without waiting. No shrink callback is installed here.
+    """
+
+    def __init__(self, device: int, reserve_bytes: int) -> None:
+        self._native = _ext._VarenaCache(device, reserve_bytes)
+        self.device = device
+
+    @property
+    def base(self) -> int:
+        return self._native.base
+
+    @property
+    def granularity(self) -> int:
+        return self._native.granularity
+
+    @property
+    def reserved_bytes(self) -> int:
+        return self._native.reserved_bytes
+
+    def commit(self, offset: int, bytes: int) -> None:
+        """Map an entirely free, page-aligned range; capacity failure rolls it back."""
+        self._native.commit(offset, bytes)
+
+    def release(self, offset: int, bytes: int, stream: int = 0) -> None:
+        """Release only the owner's joined pages after this CUstream completes."""
+        self._native.release(offset, bytes, stream)
+
+    def poll(self) -> dict[str, int]:
+        """Collect completed releases without waiting on future work."""
+        return self._native.poll()
+
+    def stats(self) -> dict[str, int]:
+        return self._native.stats()
+
+    def close(self) -> None:
+        """Refuse live/pending pages; return the reservation after release completes."""
+        self._native.close()
 
 
 class Arena:
@@ -99,6 +92,10 @@ class Arena:
 
     def set_streaming_limit(self, bytes: int) -> None:
         self._native.set_streaming_limit(bytes)
+
+    def clear_streaming_limit(self) -> None:
+        """Clear the legacy idle-cache window without reclaim or changing capacity limits."""
+        self._native.clear_streaming_limit()
 
     @property
     def streaming_limit_bytes(self) -> int:
@@ -125,14 +122,44 @@ class Arena:
             yield
 
 
+def supports_phase_plans() -> bool:
+    """Whether copied native phase-region intent is available in this extension."""
+    return hasattr(_ext, "_VarenaPlan")
+
+
+class Plan:
+    """Copied native region intent for one arena; no fills, pins or prefetch promise.
+
+    Keep this owner while its phase can be used. deactivate retires active intent
+    synchronously; dropping the owner then releases its reservation references safely.
+    """
+
+    def __init__(self, arena: Arena, phases: Sequence[tuple[str, Sequence[Region]]]) -> None:
+        self._native = _ext._VarenaPlan(
+            arena._native, [(name, [region._native for region in regions]) for name, regions in phases],
+        )
+
+    def activate(self, phase: str) -> None:
+        self._native.activate(phase)
+
+    def deactivate(self) -> None:
+        self._native.deactivate()
+
+    def facts(self) -> dict[str, Any]:
+        return self._native.facts()
+
+
 class PhaseController:
     """Internal per-submission phase decoration using native continuation ownership."""
 
     def __init__(self, arena: Arena) -> None:
         self._native = _ext._VarenaPhaseController(arena._native)
 
-    def wrap(self, capsule, key: str, regions: Sequence[Region]):
-        return self._native.wrap(capsule, key, [region._native for region in regions])
+    def wrap(self, capsule, key: str | None, regions: Sequence[Region], *,
+             footprints: Sequence[_ext._VarenaGraphFootprint] | None = None, execution_key: str | None = None):
+        """Decorate native completion; key=None observes without changing weight preferences."""
+        return self._native.wrap(capsule, key, [region._native for region in regions],
+                                 footprints=None if footprints is None else list(footprints), execution_key=execution_key)
 
     def facts(self) -> dict[str, object]:
         return self._native.facts()
@@ -177,6 +204,23 @@ class Region:
         """
         native = self._native.pin()
         return None if native is None else Use(native)
+
+    def prepare_prefetch(
+        self,
+        checkpoint: _ext.Checkpoint,
+        parts: Sequence[tuple[str, int, int]],
+        *,
+        threads: int = 2,
+    ) -> PreparedRead | None:
+        """Opt into native no-reclaim admission for an immutable raw source.
+
+        None means no fill was admitted (unknown/unqualified key, insufficient room, or
+        already resident). An admitted read retains its source and Fill but starts no IO.
+        Existing production prefetch callers remain on prepare_read until a committed
+        execution key is available. Encoded decode/scratch is outside this first slice.
+        """
+        native = _ext._VarenaPreparedRead.prefetch(self._native, checkpoint, list(parts), threads)
+        return None if native is None else PreparedRead(native)
 
     def prepare_read(
         self,
