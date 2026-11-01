@@ -60,13 +60,14 @@ def until(ctx, predicate, description, seconds=10):
         time.sleep(.001)
 
 
-def raw_cache_value(cache, value):
+def raw_cache_value(cache, value, *, write=True):
     driver = ctypes.CDLL('libcuda.so.1')
     fill = driver.cuMemsetD8_v2
     fill.argtypes, fill.restype = [ctypes.c_uint64, ctypes.c_ubyte, ctypes.c_size_t], ctypes.c_int
     read = driver.cuMemcpyDtoH_v2
     read.argtypes, read.restype = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_size_t], ctypes.c_int
-    assert fill(cache.base, value, cache.reserved_bytes) == 0
+    if write:
+        assert fill(cache.base, value, cache.reserved_bytes) == 0
     for offset in range(0, cache.reserved_bytes, 8 * MIB):
         count = min(8 * MIB, cache.reserved_bytes - offset)
         block = (ctypes.c_ubyte * count)()
@@ -202,6 +203,76 @@ def held_gil(payload, ctx):
     finally:
         vt.set_limit(0, None)
         owner.defer_close()
+
+
+def capture_close(payload, ctx):
+    _, _, provenance = actual(payload, ctx)
+    settle()
+    baseline = vt.stats(0)
+    cache = varena.Cache(0, 2 * MIB)
+    cache.commit(0, cache.reserved_bytes)
+    raw_cache_value(cache, 109)
+    calls = []
+
+    def shrink(wanted):
+        calls.append(wanted)
+        cache.release(0, cache.reserved_bytes, 0)
+
+    owner = varena.CacheOwner(0, shrink)
+    graph = torch.cuda.CUDAGraph()
+    value = torch.zeros(1, dtype=torch.uint8, device=ctx.device)
+    value.add_(1)  # warm the actual in-place kernel before capture
+    torch.cuda.synchronize()
+    try:
+        with vt.graph(graph, reserve_bytes=0):
+            value.add_(1)
+            before = vt.stats(0)
+            queued = varena.request_cache_shrink(0, cache.reserved_bytes)
+            assert queued is not None
+            until(ctx, lambda: owner.facts()['deferred'] > 0,
+                  'actual capture did not defer the queued owner')
+            failure = None
+            try:
+                owner.close()
+            except varena.CacheOwnerDeferredError as error:
+                failure = {'type': type(error).__name__, 'reason': error.reason, 'message': str(error)}
+            during = owner.facts()
+            after = vt.stats(0)
+            assert failure is not None and failure['reason'] == 'capture'
+            assert during['closing'] and not during['retired'] and not during['requestable']
+            assert not calls
+            assert before['driver_memory_calls'] == after['driver_memory_calls']
+            assert before['cache_live_bytes'] == after['cache_live_bytes'] == cache.reserved_bytes
+        until(ctx, lambda: owner.facts()['retired'], 'owner did not retire after actual capture ended')
+        owner.close()
+        # Retiring a weak callback cannot invent a release contract for its live Cache.
+        assert not calls and cache.stats()['live_bytes'] == cache.reserved_bytes
+        raw_cache_value(cache, 109, write=False)
+        vt.replay(graph)
+        torch.cuda.synchronize()
+        full_tensor_value(value, 2)
+        retired = owner.facts()
+        graph.reset()
+        graph = value = None
+        cache.release(0, cache.reserved_bytes, 0)
+        torch.cuda.synchronize()
+        cache.poll()
+        cache.close()
+        settle()
+        final = vt.stats(0)
+        for name in ('allocated_bytes', 'mapped_bytes', 'pending_bytes', 'pools_bytes',
+                     'cache_mapped_bytes', 'cache_reserved_bytes', 'caches'):
+            assert final[name] == baseline[name], (name, baseline, final)
+        return Report(True, json.dumps({'passed': True, 'case': 'python_owner_capture_close',
+                                       'provenance': provenance, 'refusal': failure,
+                                       'during': during, 'retired': retired, 'callback_calls': calls,
+                                       'before': before, 'after': after, 'baseline': baseline,
+                                       'final': final, 'live_cache_full_readback': True,
+                                       'boundary': 'product working-driver calls only; fixture graph capture/replay calls are outside this counter'}, sort_keys=True))
+    finally:
+        owner.defer_close()
+        if graph is not None:
+            graph.reset()
 
 
 def prepared_sequence(ctx, *, stages, captured_state=False, sleep=0):

@@ -71,7 +71,7 @@ submitted CUDA host gate. `arena_concurrency` overlaps real Arena creation, fill
 full readbacks and destruction with native global reclaim/resident snapshots and Peer
 publication. It checks the registry/capture lock correction without a product probe.
 
-Three separate parent-extension cells require the new weak Python bridge and the exact
+Four separate parent-extension cells require the new weak Python bridge and the exact
 Runtime wheel. Preparation records the wheel hash, version and all eight participating
 Runtime modules; it does not infer the loaded implementation from a helper build.
 
@@ -92,6 +92,11 @@ Runtime modules; it does not infer the loaded implementation from a helper build
   capture-only exclusion. A real escaped view retains captured pool storage both
   during that other replay and after replay completion; only dropping that view may
   free the retired pool. Complete outputs and final working/pool baseline are checked.
+- `owner_capture_close` queues a real owner during an actual CUDA graph capture, observes
+  its capture deferral, and closes admission with a typed capture refusal. It requires
+  zero product working-driver calls in that interval and retirement only after capture
+  ends. The untouched live Cache remains fully readable until an explicit owner release;
+  callback retirement itself is not a release contract. The recorded graph also replays.
 
 Build `gil_resize.c` from the frozen source with the pinned manylinux compiler, for
 example `cc -shared -fPIC -O2 -Wall -Wextra -Werror -o gil_resize.so gil_resize.c`.
