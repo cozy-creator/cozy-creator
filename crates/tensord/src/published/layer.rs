@@ -10,6 +10,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs, io,
     path::{Path, PathBuf},
+    sync::{Arc, OnceLock},
 };
 
 /// What the layer is built from: what these require, transitively, as the base holds it.
@@ -21,9 +22,9 @@ pub enum Torch {
     /// An image's base interpreter, which moves with its image.
     Image(PathBuf),
     /// The machine's own bases beside its engine's state (`torch-<version>`), each a venv. The
-    /// active one is at the version `machine.torch` names, else the newest held; the others go
-    /// once no environment links them (`reclaim`).
-    Own { engine: PathBuf, wanted: Option<String> },
+    /// active one is at the version its Hub names (`wanted`, asked once per start), else the
+    /// newest held; the others go once no environment links them (`reclaim`).
+    Own { engine: PathBuf, wanted: Arc<OnceLock<Option<String>>> },
 }
 
 impl Torch {
@@ -32,24 +33,24 @@ impl Torch {
         let order = |v: &str| public(v).split('.').map(|part| part.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
         match self {
             Torch::Image(base) => Some(base.clone()),
-            Torch::Own { engine, wanted } => bases(engine).into_iter()
-                .filter(|(_, version)| wanted.as_deref().is_none_or(|wanted| public(version) == wanted))
+            Torch::Own { engine, .. } => bases(engine).into_iter()
+                .filter(|(_, version)| self.wanted().is_none_or(|wanted| public(version) == wanted))
                 .max_by_key(|(_, version)| order(version))
                 .map(|(base, _)| base),
         }
     }
 
-    /// Its version: the base's, else the one a machine installs at its first package.
-    pub fn version(&self) -> String {
-        match (self.base().and_then(|base| torch_version(&base)), self) {
-            (Some(version), _) => version,
-            (None, Torch::Own { wanted: Some(wanted), .. }) => wanted.clone(),
-            _ => String::new(),
+    /// The version a machine's Hub names for its own base; none from an older Hub, or not asked yet.
+    pub fn wanted(&self) -> Option<&str> {
+        match self {
+            Torch::Own { wanted, .. } => wanted.get()?.as_deref(),
+            Torch::Image(_) => None,
         }
     }
 
-    pub fn own(&self) -> bool {
-        matches!(self, Torch::Own { .. })
+    /// Its version: the base's, else the one a machine installs at its next package.
+    pub fn version(&self) -> String {
+        self.base().and_then(|base| torch_version(&base)).or_else(|| self.wanted().map(String::from)).unwrap_or_default()
     }
 }
 

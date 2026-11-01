@@ -55,8 +55,6 @@ pub struct Config {
     pub gpu_memory_limit: Option<u64>,
     /// How it shares its computer: `machine.mode`, else a rental dedicated and anything else shared.
     pub mode: MachineMode,
-    /// The PyTorch a machine with no image installs packages on (`machine.torch`).
-    pub torch: Option<String>,
     /// The provider's public mapping of this pod's ports, told to the Hub at boot.
     pub endpoint: Option<Endpoint>,
     /// The provider's names, for [`crate::machine::provider::ProviderSelf::take`].
@@ -73,13 +71,12 @@ pub fn load(lifetime: Lifetime) -> io::Result<Config> {
     from_loaded(lifetime, loaded, shared::environment())
 }
 
-/// `machine.gpu_memory_limit`, `machine.torch` and `machine.mode` as config.toml says them now.
-/// The service reads them at each start: it is forked from a parent that loaded the config before
-/// an update wrote the limit or PyTorch, or a hand edit the mode.
+/// `machine.gpu_memory_limit` and `machine.mode` as config.toml says them now. The service reads
+/// them at each start: it is forked from a parent that loaded the config before an update wrote
+/// the limit or a hand edit the mode.
 pub fn reread(config: &mut Config) -> io::Result<()> {
     let loaded = shared::load().map_err(|e| invalid(&named(&e.message)))?;
     config.gpu_memory_limit = loaded.config.machine.gpu_memory_limit;
-    config.torch = loaded.config.machine.torch.clone();
     config.mode = mode(config.grant.lifetime, &loaded.config.machine);
     Ok(())
 }
@@ -127,7 +124,6 @@ fn from_loaded(lifetime: Lifetime, loaded: Loaded, environment: &BTreeMap<String
         logs: grant.layout.state.join("logs"),
         visible_devices: machine.visible_devices.clone(),
         gpu_memory_limit: machine.gpu_memory_limit,
-        torch: machine.torch.clone(),
         mode: mode(lifetime, machine),
         endpoint: rental.then(|| crate::machine::endpoint::from_env(provider.clone())).flatten(),
         provider,

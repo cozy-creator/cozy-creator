@@ -55,8 +55,6 @@ struct Cohort {
     cozy: Option<String>,
     /// The most memory each GPU offers, in bytes; 0 lifts it (`--gpu-memory-limit`).
     gpu_memory_limit: Option<u64>,
-    /// The PyTorch a machine with no image installs packages on (`--torch 2.15.0`).
-    torch: Option<String>,
     #[serde(flatten)]
     unknown: BTreeMap<String, serde_json::Value>,
 }
@@ -155,8 +153,7 @@ pub(super) async fn submit<B: MachineBackend>(
             return Ok((false, state(&id, &update)));
         }
         // A machine still starting queues it, as an update in progress does: never refused.
-        let own_torch = identity.torch.as_ref().is_some_and(|torch| torch.own());
-        stage(&updates, &*backend, actor, &id, request.spec, (&identity.gpus, own_torch), identity.readiness.proved())?;
+        stage(&updates, &*backend, actor, &id, request.spec, &identity.gpus, identity.readiness.proved())?;
         let update = updates.update(&id).ok_or_else(|| Error::internal("update_unrecorded", "the update was not recorded"))?;
         Ok((true, state(&id, &update)))
     })
@@ -210,7 +207,7 @@ fn stage(
     actor: VerifiedActor,
     id: &str,
     spec: v1::RunSpec,
-    (gpus, own_torch): (&[crate::machine::receipt::Gpu], bool),
+    gpus: &[crate::machine::receipt::Gpu],
     ready: bool,
 ) -> Result<(), Error> {
     let payload = spec.payload.as_ref().map_or("{}", |payload| payload.get());
@@ -272,15 +269,6 @@ fn stage(
             "a {} limit exceeds GPU {}'s {}; it only lowers a card", gib(limit.unwrap_or(0)), gpu.device_index, gib(gpu.memory_bytes)
         )));
     }
-    // An image's PyTorch moves with its image; a version is digits and dots (`2.15.0`).
-    if let Some(torch) = &cohort.torch {
-        if !own_torch {
-            return Err(Error::validation("torch_from_image", "this machine's PyTorch is its image's: a newer one comes with a newer image"));
-        }
-        if !torch.split('.').all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit())) {
-            return Err(Error::validation("torch_version_invalid", format!("{torch:?} is not a PyTorch release version (2.15.0)")));
-        }
-    }
     let request = Request {
         operation: id.into(),
         pin: None,
@@ -290,7 +278,6 @@ fn stage(
         gpu_memory_limit: limit,
         binary,
         toolchain,
-        torch: cohort.torch,
     };
     updates
         .request(request, ready, |code| std::process::exit(code))

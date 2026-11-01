@@ -319,15 +319,16 @@ impl Publisher {
     }
 
     /// This machine's PyTorch layer: its base's, read once. A machine with no image installs its
-    /// own base the first time a package needs one, at the version `machine.torch` names, else
+    /// own base the first time a package needs one, at the version `hub` names (`follow`), else
     /// the newest for its accelerator; none when it cannot (offline), and packages then install
     /// their own.
-    pub(crate) fn layer(&self, job: &Job) -> Result<Option<Arc<layer::Layer>>, Failure> {
+    pub(crate) fn layer(&self, job: &Job, hub: Option<&hub::Source>) -> Result<Option<Arc<layer::Layer>>, Failure> {
+        self.follow(hub);
         let mut held = self.layer.lock().unwrap();
         if held.is_none() {
             let base = match (self.sdk.torch.base(), &self.sdk.torch) {
                 (Some(base), _) => base,
-                (None, layer::Torch::Own { engine, wanted }) => match self.install_torch(engine, wanted.as_deref(), job) {
+                (None, layer::Torch::Own { engine, .. }) => match self.install_torch(engine, self.sdk.torch.wanted(), job) {
                     Ok(base) => base,
                     Err((code, why)) => {
                         tracing::warn!("this machine's PyTorch could not be installed ({code}): packages install their own: {why}");
@@ -370,14 +371,39 @@ impl Publisher {
         made
     }
 
-    /// The layer's pins an environment is built from: what an installation's identity names.
-    pub(crate) fn torch_pins(&self) -> Vec<String> {
+    /// A machine with no image takes the PyTorch its Hub names (`/v1/software`), asked once per
+    /// start, at its first package: one built on another goes to it at its next use, so a moved
+    /// Hub moves every machine as it restarts. An older Hub, or none answering, names none.
+    fn follow(&self, hub: Option<&hub::Source>) {
+        let (layer::Torch::Own { wanted, .. }, Some(hub)) = (&self.sdk.torch, hub) else {
+            return;
+        };
+        wanted.get_or_init(|| match hub::Catalog::new(hub).map_err(|e| e.0).and_then(|c| c.software().map_err(|e| e.to_string())) {
+            Ok(software) => {
+                tracing::info!("{} names PyTorch {}", hub.origin, software.torch.as_deref().unwrap_or("none: the newest held is used"));
+                software.torch
+            }
+            Err(error) => {
+                tracing::warn!("{} did not name its PyTorch ({error}): the newest held is used", hub.origin);
+                None
+            }
+        });
+    }
+
+    /// The layer's pins an environment is built from: what an installation's identity names. A
+    /// version the Hub names that no base holds yet names an environment none holds either.
+    pub(crate) fn torch_pins(&self, hub: Option<&hub::Source>) -> Vec<String> {
+        self.follow(hub);
         let read = || layer::Layer::read(&self.sdk.torch.base()?).ok().flatten().map(Arc::new);
         let mut held = self.layer.lock().unwrap();
         if held.is_none() {
             *held = read();
         }
-        held.as_ref().map(|layer| layer.pins()).unwrap_or_default()
+        match (held.as_ref(), self.sdk.torch.wanted()) {
+            (Some(layer), _) => layer.pins(),
+            (None, Some(wanted)) => vec![format!("torch=={wanted}")],
+            (None, None) => vec![],
+        }
     }
 
     /// One run's preparation on the calling thread, reported through `observe`: a held
@@ -767,7 +793,7 @@ impl Publisher {
     /// The installation of `release` of the request's package at its Hub, by this machine's SDK.
     fn release_alias(&self, request: &Request, release: &str) -> String {
         let origin = request.origin();
-        let sdk = format!("{:?}{:?}{:?}", self.sdk.requirements, self.sdk.find_links, self.torch_pins());
+        let sdk = format!("{:?}{:?}{:?}", self.sdk.requirements, self.sdk.find_links, self.torch_pins(request.source.as_ref()));
         let key = format!("{origin}\0{}\0{release}\0{sdk}", request.package);
         format!("hub-{}", &sha256::hex_digest(key.as_bytes())[..32])
     }
@@ -940,7 +966,7 @@ impl Publisher {
             false => request.release.clone(),
         };
         // The layer first: the alias names its pins.
-        let torch = self.layer(job)?.map(|layer| layer.pins()).unwrap_or_default();
+        let torch = self.layer(job, Some(source))?.map(|layer| layer.pins()).unwrap_or_default();
         let alias = self.release_alias(request, &release);
         if let Some(held) = service.engine.installation(actor, &alias).map_err(io_failure)? {
             if service.catalog.resolve(&held.generation).is_ok() {

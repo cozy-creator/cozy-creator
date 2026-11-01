@@ -58,7 +58,7 @@ impl Publisher {
     /// declares a Torch range the layer misses does it install its own, with a warning: rare by
     /// design, since packages declare a minimum and machines run the newest Torch.
     pub(crate) fn build(&self, env: &Path, project: &Project, job: &Job) -> Result<Built, Failure> {
-        let layer = self.layer(job)?;
+        let layer = self.layer(job, None)?;
         let missed = match self.build_on(env, project, job, layer.as_deref(), &[]) {
             Err((TORCH_MISSED, missed)) => missed,
             built => return built,
@@ -288,7 +288,6 @@ impl Publisher {
             gpu_memory_limit: None,
             binary: None,
             toolchain: false,
-            torch: None,
         };
         let stop = job.stop.clone().unwrap_or_default();
         let pause = || {
