@@ -57,7 +57,8 @@ pub struct CallbackScope {
 /// Counter leases only: no capture/allocator/ledger mutex is held across a callback.
 pub struct CallbackGuard {
     _callback: GlobalCaptureGuard,
-    _retirement: GlobalCaptureGuard,
+    _retirement: Option<GlobalCaptureGuard>,
+    _producer: Option<crate::ProducerGuard>,
 }
 
 impl CallbackScope {
@@ -68,7 +69,7 @@ impl CallbackScope {
     pub fn current(&self) -> Result<bool> {
         let owner = self.owner.lock()?;
         Ok(if let Some(job) = &self.job {
-            !owner.closing && !job.lock()?.cancelled
+            !owner.closing && owner.facts.requestable && !job.lock()?.cancelled
         } else {
             owner.closing
         })
@@ -83,7 +84,24 @@ impl CallbackScope {
         let callback = crate::enter_external_callback(self.control.device)?;
         Ok(CallbackGuard {
             _callback: callback,
-            _retirement: retirement,
+            _retirement: Some(retirement),
+            _producer: None,
+        })
+    }
+
+    /// Logical owner retirement with actual per-owner locks/pins, allowing other graph
+    /// sequences to replay. The worker retains observed Arena leases separately; physical
+    /// unmapping remains in the ready-only pass after this scope and defers during replay.
+    pub fn producing(&self) -> Result<CallbackGuard> {
+        if !self.current()? {
+            return Err(Error::Busy);
+        }
+        let producer = crate::enter_producer(self.control.device)?;
+        let callback = crate::enter_external_callback(self.control.device)?;
+        Ok(CallbackGuard {
+            _callback: callback,
+            _retirement: None,
+            _producer: Some(producer),
         })
     }
 }
@@ -336,6 +354,23 @@ impl CacheOwner {
             return Err(Error::Invalid("cache owner is closed"));
         }
         owner.last_use = self.control.clock.fetch_add(1, Ordering::AcqRel);
+        if owner.facts.registered
+            && !owner.facts.requestable
+            && owner.facts.failed.is_none()
+            && owner.facts.retirement_failed.is_none()
+        {
+            owner.facts.requestable = true;
+            self.control.requestable.fetch_add(1, Ordering::AcqRel);
+        }
+        Ok(())
+    }
+    /// The owner has no disposable contents until its next actual use/rebuild.
+    pub fn suspend(&self) -> Result<()> {
+        let mut owner = self.owner.lock()?;
+        if owner.facts.requestable {
+            owner.facts.requestable = false;
+            self.control.requestable.fetch_sub(1, Ordering::AcqRel);
+        }
         Ok(())
     }
     pub fn id(&self) -> u64 {
@@ -346,8 +381,13 @@ impl CacheOwner {
     }
     pub fn check(&self) -> Result<()> {
         let owner = self.owner.lock()?;
-        if owner.facts.failed.is_some() || owner.facts.retirement_failed.is_some() {
-            return Err(Error::Invalid("cache owner callback failed"));
+        if let Some(reason) = owner
+            .facts
+            .failed
+            .as_ref()
+            .or(owner.facts.retirement_failed.as_ref())
+        {
+            return Err(Error::Callback(reason.clone()));
         }
         if owner.closing {
             return Err(Error::Invalid("cache owner is closed"));
@@ -514,7 +554,7 @@ pub fn request_shrink(device: i32, key: RequestKey, bytes: usize) -> Result<Opti
         let mut owners = Vec::new();
         for (id, owner) in &state.owners {
             let held = owner.lock()?;
-            if held.facts.registered && !held.closing && held.facts.failed.is_none() {
+            if held.facts.requestable && !held.closing && held.facts.failed.is_none() {
                 owners.push((held.last_use, *id));
             }
         }
@@ -581,6 +621,7 @@ fn worker(control: Arc<Control>, registrations: mpsc::Receiver<Registration>) {
         let Ok(state) = control.lock() else {
             std::mem::forget(callbacks);
             std::mem::forget(arenas);
+            std::mem::forget(registrations); // queued callback data remains owned too
             return;
         };
         let _ = control
@@ -612,6 +653,7 @@ fn worker_tick(
         })
         .collect::<Vec<_>>();
     for id in retiring {
+        crate::retain_arenas(control.device, arenas)?;
         let registration = callbacks.get_mut(&id).expect("worker-owned callback");
         let scope = CallbackScope {
             control: Arc::clone(control),
@@ -691,6 +733,7 @@ fn worker_tick(
             held.facts.running = true;
             (id, held.wanted.saturating_sub(observed as usize))
         };
+        crate::retain_arenas(control.device, arenas)?;
         let Some(registration) = callbacks.get_mut(&id) else {
             // Constructor publication can race this tick's registration-channel drain.
             // Keep the accepted request until the already-transferred callback arrives.
@@ -705,7 +748,7 @@ fn worker_tick(
         };
         {
             let mut owner = registration.owner.lock()?;
-            if owner.closing || owner.facts.failed.is_some() {
+            if owner.closing || !owner.facts.requestable || owner.facts.failed.is_some() {
                 job.lock()?.facts.running = false;
                 continue;
             }
