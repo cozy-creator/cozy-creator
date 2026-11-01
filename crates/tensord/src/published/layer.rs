@@ -71,6 +71,8 @@ impl Layer {
         if !layer.contains("torch") {
             return Ok(None);
         }
+        // The CUDA wheels torch asks for through extras (`cuda-toolkit[cufft,…]`) are its too.
+        layer.extend(found.keys().filter(|name| name.starts_with("nvidia-") || name.starts_with("cuda-")).cloned());
         let dists = layer.into_iter().map(|name| {
             let (version, info, files, _) = found.remove(&name).expect("found");
             let alone = |dir: &str| under.get(dir).is_some_and(|owners| owners.len() == 1 && owners.contains(name.as_str()));

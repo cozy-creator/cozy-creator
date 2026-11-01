@@ -64,8 +64,8 @@ impl Publisher {
             built => return built,
         };
         let torch = layer.as_ref().and_then(|l| l.version("torch")).unwrap_or_default();
-        let warning = format!("{} requires {missed}; this machine's torch is {torch}: its environment installs its own", project.label);
-        tracing::warn!("package {warning}");
+        let warning = format!("requires {missed}; this machine's torch is {torch}: its environment installs its own");
+        tracing::warn!("package {} {warning}", project.label);
         job.stage(format!("warning: {warning}"));
         let own: Vec<String> = missed.split(", ").filter(|r| on_root(r)).map(String::from).collect();
         let mut built = self.build_on(env, project, job, None, &own)?;
