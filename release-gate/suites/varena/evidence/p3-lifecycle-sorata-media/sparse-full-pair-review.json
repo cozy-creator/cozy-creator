@@ -1,0 +1,20 @@
+{
+  "script": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/sparse-full-pair.py",
+  "sha256": "ce4d58aa31c446ffc53108fae313d01f089d44811be6794f65bf0c2d282a7c68",
+  "executed_by_reviewer": false,
+  "findings": [],
+  "verified": [
+    "requires passed sparse26-and-same-pid-cleanup proof and hashes each referenced record",
+    "requires standalone-linear and complete-tail plus their cleanup passes",
+    "checks frozen no-piece-memo source files and actual source AST comparison fact",
+    "pins unchanged full request and immutable base/LoRA model refs",
+    "uses actual control ee247 and candidate9b820 wheels with identical nativea96 and package source",
+    "requires50minutes before control and25minutes before candidate; checks guard.done/end.requested",
+    "requires completed model run, denoise progress and output artifact hashes; preserves commands and run-show"
+  ],
+  "boundaries": [
+    "The aggregate bounded-proof builder owns the exact26-case/count/identity assertions; the runner trusts that signed-by-hash local evidence object.",
+    "Execution/output custody only: later numerical, perceptual and performance audit remains required.",
+    "No run should start with less than the explicit guard time; current rental deadline is not extended by this script."
+  ]
+}
