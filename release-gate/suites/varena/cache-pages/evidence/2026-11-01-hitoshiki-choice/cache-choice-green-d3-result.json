@@ -1,0 +1,399 @@
+{
+  "child_exited": true,
+  "command": [
+    "/var/lib/cozy/tensord/editable/ccfc2b9296e5e470/ci-varena-cache-pages/source-7dbbfd2ffa8bf9a8769e00ded2dd1465f4a98e3cf9a51ec58f83990b0d4d50a7/tree/ci_varena_cache_pages/bin/varena-cache-pages",
+    "choice",
+    "/dev/shm/varena-cache-pages-_kgdawl2",
+    "GPU-18d960a8-2283-19c9-c060-ef8a22fabe35",
+    "0"
+  ],
+  "driver_after_child": {
+    "free": 22377070592,
+    "total": 25252724736
+  },
+  "mode": "choice",
+  "passed": true,
+  "pid": 157099,
+  "pidfd_exit_observed": true,
+  "provenance": {
+    "controller_pid": 157082,
+    "driver_before": {
+      "free": 22467248128,
+      "total": 25252724736
+    },
+    "input": {
+      "gpu_uuid": "GPU-18d960a8-2283-19c9-c060-ef8a22fabe35",
+      "helper_sha256": "d71ab02e57f814d8237ff72817e0f38401ca2e62b62c250268c8a19a47490478",
+      "native_extension_sha256": "070d70182056a6d202b28a92db49b078ec9f0239ee7337f829d894e7cafff5e6",
+      "source_sha": "c7f1b214a67a3f400e176bbb717a3fcc32b1bf24",
+      "timeout_s": 60.0
+    },
+    "manifest": {
+      "archive_sha256": "1cf5e3c43b5be67d3f9e466dd125405037bd585686e536c6f7f27be9e2311d47",
+      "binary_sha256": "d71ab02e57f814d8237ff72817e0f38401ca2e62b62c250268c8a19a47490478",
+      "elf": {
+        "class": "ELF64",
+        "glibc_max": [
+          2,
+          28
+        ],
+        "glibc_versions": [
+          [
+            2,
+            2
+          ],
+          [
+            2,
+            3
+          ],
+          [
+            2,
+            10
+          ],
+          [
+            2,
+            14
+          ],
+          [
+            2,
+            16
+          ],
+          [
+            2,
+            17
+          ],
+          [
+            2,
+            18
+          ],
+          [
+            2,
+            28
+          ]
+        ],
+        "machine": "x86_64",
+        "needed": [
+          "libdl.so.2",
+          "libgcc_s.so.1",
+          "libpthread.so.0",
+          "libc.so.6",
+          "ld-linux-x86-64.so.2"
+        ]
+      },
+      "mixed_sources": {
+        "crates/varena": "d3a91fe8a160edb47e7fca9d766d4d0b7bb4e3fc",
+        "release-gate/suites/varena/cache-pages": "c7f1b214a67a3f400e176bbb717a3fcc32b1bf24",
+        "repository_base": "e54525838aabe5ab3491cba5c03d50884198c0e4"
+      },
+      "native_base": "c3bf579ae82b42b254aa30fe54c609fc8e89afcb",
+      "native_source": "d3a91fe8a160edb47e7fca9d766d4d0b7bb4e3fc",
+      "native_tree": "09425c1ea8d69ae215e0e24101779e126289505d",
+      "scope": "green-d3: identical actual Cache split-choice fixture; only native core differs; no callback bridge or GPU proof yet",
+      "source_receipt_sha256": "104ee1b2917fcdb08acab1ac27d4ce6b859fc76745c1742512c50b2ef51e9eaf",
+      "source_sha": "c7f1b214a67a3f400e176bbb717a3fcc32b1bf24"
+    },
+    "native_extension": "/var/lib/cozy/tensord/generations/405cc8a283cf6fe9f4906e19a0e64ac3/env/lib/python3.12/site-packages/tensorfs/_ext.abi3.so",
+    "parent_cache_binding_available": true,
+    "request_id": "75",
+    "versions": {
+      "cozy-runtime": "0.36.22+dev.g7adc1e82",
+      "tensorfs": "0.17.16+dev.ga96c7c3e",
+      "torch": "2.14.0"
+    }
+  },
+  "report": {
+    "baseline": {
+      "cache_live": 0,
+      "cache_mapped": 0,
+      "cache_pending": 0,
+      "cache_ready": 0,
+      "cache_reserved": 0,
+      "caches": 0,
+      "capacity": 0,
+      "events": 0,
+      "live": 0,
+      "mapped": 0,
+      "memory_calls": 1,
+      "pending": 0,
+      "physical_ooms": 0,
+      "pools": 0
+    },
+    "detail": {
+      "cache_after_begin": {
+        "live": 0,
+        "mapped": 0,
+        "pending": 0,
+        "ready": 0,
+        "reserved": 4194304
+      },
+      "full_readback_bytes": 8388608,
+      "phase": {
+        "backing_peak": 8388608,
+        "peak": 8388608,
+        "published": true
+      },
+      "selection": {
+        "event": "choices",
+        "live": {
+          "available": 4194304,
+          "choice": "half",
+          "required": 4194304
+        },
+        "managed_limit": 8388608,
+        "page": 2097152,
+        "pending": {
+          "available": 4194304,
+          "choice": "half",
+          "required": 4194304
+        },
+        "pending_accounting": {
+          "cache_idle": 0,
+          "cache_live": 0,
+          "cache_pending": 4194304,
+          "pending_release": 4194304,
+          "physical": 4194304,
+          "reclaimable": 0,
+          "refreshed": true
+        },
+        "ready": {
+          "available": 8388608,
+          "choice": "whole",
+          "required": 8388608
+        },
+        "ready_accounting": {
+          "cache_idle": 4194304,
+          "cache_live": 0,
+          "cache_pending": 0,
+          "pending_release": 0,
+          "physical": 4194304,
+          "reclaimable": 4194304,
+          "refreshed": true
+        }
+      }
+    },
+    "driver": {
+      "free": 22021275648,
+      "total": 25252724736
+    },
+    "event": "result",
+    "final": {
+      "cache_live": 0,
+      "cache_mapped": 0,
+      "cache_pending": 0,
+      "cache_ready": 0,
+      "cache_reserved": 0,
+      "caches": 0,
+      "capacity": 0,
+      "events": 0,
+      "live": 0,
+      "mapped": 0,
+      "memory_calls": 16,
+      "pending": 0,
+      "physical_ooms": 0,
+      "pools": 0
+    },
+    "final_accounting": {
+      "cache_idle": 0,
+      "cache_live": 0,
+      "cache_pending": 0,
+      "pending_release": 0,
+      "physical": 0,
+      "reclaimable": 0,
+      "refreshed": true
+    },
+    "gpu_uuid": "GPU-18d960a8-2283-19c9-c060-ef8a22fabe35",
+    "libraries": {
+      "cuda_loaded": true,
+      "python_loaded": false,
+      "torch_loaded": false
+    },
+    "mode": "choice",
+    "passed": true,
+    "pid": 157099
+  },
+  "returncode": 0,
+  "start_ticks": 80435695,
+  "stderr": "",
+  "stdout": [
+    {
+      "baseline": {
+        "cache_live": 0,
+        "cache_mapped": 0,
+        "cache_pending": 0,
+        "cache_ready": 0,
+        "cache_reserved": 0,
+        "caches": 0,
+        "capacity": 0,
+        "events": 0,
+        "live": 0,
+        "mapped": 0,
+        "memory_calls": 1,
+        "pending": 0,
+        "physical_ooms": 0,
+        "pools": 0
+      },
+      "driver": {
+        "free": 22021275648,
+        "total": 25252724736
+      },
+      "event": "ready",
+      "gpu_uuid": "GPU-18d960a8-2283-19c9-c060-ef8a22fabe35",
+      "libraries": {
+        "cuda_loaded": true,
+        "python_loaded": false,
+        "torch_loaded": false
+      },
+      "mode": "choice",
+      "pid": 157099,
+      "start_ticks": 80435695
+    },
+    {
+      "event": "choices",
+      "live": {
+        "available": 4194304,
+        "choice": "half",
+        "required": 4194304
+      },
+      "managed_limit": 8388608,
+      "page": 2097152,
+      "pending": {
+        "available": 4194304,
+        "choice": "half",
+        "required": 4194304
+      },
+      "pending_accounting": {
+        "cache_idle": 0,
+        "cache_live": 0,
+        "cache_pending": 4194304,
+        "pending_release": 4194304,
+        "physical": 4194304,
+        "reclaimable": 0,
+        "refreshed": true
+      },
+      "ready": {
+        "available": 8388608,
+        "choice": "whole",
+        "required": 8388608
+      },
+      "ready_accounting": {
+        "cache_idle": 4194304,
+        "cache_live": 0,
+        "cache_pending": 0,
+        "pending_release": 0,
+        "physical": 4194304,
+        "reclaimable": 4194304,
+        "refreshed": true
+      }
+    },
+    {
+      "baseline": {
+        "cache_live": 0,
+        "cache_mapped": 0,
+        "cache_pending": 0,
+        "cache_ready": 0,
+        "cache_reserved": 0,
+        "caches": 0,
+        "capacity": 0,
+        "events": 0,
+        "live": 0,
+        "mapped": 0,
+        "memory_calls": 1,
+        "pending": 0,
+        "physical_ooms": 0,
+        "pools": 0
+      },
+      "detail": {
+        "cache_after_begin": {
+          "live": 0,
+          "mapped": 0,
+          "pending": 0,
+          "ready": 0,
+          "reserved": 4194304
+        },
+        "full_readback_bytes": 8388608,
+        "phase": {
+          "backing_peak": 8388608,
+          "peak": 8388608,
+          "published": true
+        },
+        "selection": {
+          "event": "choices",
+          "live": {
+            "available": 4194304,
+            "choice": "half",
+            "required": 4194304
+          },
+          "managed_limit": 8388608,
+          "page": 2097152,
+          "pending": {
+            "available": 4194304,
+            "choice": "half",
+            "required": 4194304
+          },
+          "pending_accounting": {
+            "cache_idle": 0,
+            "cache_live": 0,
+            "cache_pending": 4194304,
+            "pending_release": 4194304,
+            "physical": 4194304,
+            "reclaimable": 0,
+            "refreshed": true
+          },
+          "ready": {
+            "available": 8388608,
+            "choice": "whole",
+            "required": 8388608
+          },
+          "ready_accounting": {
+            "cache_idle": 4194304,
+            "cache_live": 0,
+            "cache_pending": 0,
+            "pending_release": 0,
+            "physical": 4194304,
+            "reclaimable": 4194304,
+            "refreshed": true
+          }
+        }
+      },
+      "driver": {
+        "free": 22021275648,
+        "total": 25252724736
+      },
+      "event": "result",
+      "final": {
+        "cache_live": 0,
+        "cache_mapped": 0,
+        "cache_pending": 0,
+        "cache_ready": 0,
+        "cache_reserved": 0,
+        "caches": 0,
+        "capacity": 0,
+        "events": 0,
+        "live": 0,
+        "mapped": 0,
+        "memory_calls": 16,
+        "pending": 0,
+        "physical_ooms": 0,
+        "pools": 0
+      },
+      "final_accounting": {
+        "cache_idle": 0,
+        "cache_live": 0,
+        "cache_pending": 0,
+        "pending_release": 0,
+        "physical": 0,
+        "reclaimable": 0,
+        "refreshed": true
+      },
+      "gpu_uuid": "GPU-18d960a8-2283-19c9-c060-ef8a22fabe35",
+      "libraries": {
+        "cuda_loaded": true,
+        "python_loaded": false,
+        "torch_loaded": false
+      },
+      "mode": "choice",
+      "passed": true,
+      "pid": 157099
+    }
+  ]
+}
