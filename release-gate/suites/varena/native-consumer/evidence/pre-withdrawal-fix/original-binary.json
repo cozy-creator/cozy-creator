@@ -1,0 +1,7 @@
+{
+  "helper_source": "2b31ee637ac42eb131219576d886d5523d60b4e4",
+  "native_source": "fa7318fdd02e4e6bd73ced86ff052c24fd6e6c0d",
+  "binary_sha256": "5f2f33dfd64aa155e99d4667c214530a640d54016c77e0f3ceb837a021c01e75",
+  "binary": "/home/fidika/cozy_v2/outputs/xs138-p3-native-consumer/baseline-2b31ee637/varena-native-consumer",
+  "preserved_before_new_build": true
+}
