@@ -4,6 +4,7 @@
 //! requirements with uv; each model's commit as the Hub resolves it for the machine's hardware,
 //! then a TensorFS download) with its `release_root_preparing` progress answers.
 pub(crate) mod environment;
+pub mod layer;
 use crate::{
     api::domain,
     gpu_service::{Plan, Pool, ModelGrant},
@@ -47,12 +48,16 @@ pub struct PackageSdk {
     /// The development Runtime an update named by its wheel file (`0.24.6+e9baf7a4`): the
     /// operator's choice, which runs every package whatever its own bounds on the pair.
     pub runtime_build: String,
+    /// The base environment holding this machine's PyTorch layer (`layer`): an image's, else the
+    /// machine's own (`own_torch`), which it installs at the newest Torch when it first needs it.
+    pub torch: PathBuf,
+    pub own_torch: bool,
 }
 
 impl PackageSdk {
     /// Executors use the selected Runtime/TensorFS pair (an update's, else the image's), so they
     /// speak this machine's protocol; without a complete pair, each release's locked SDK.
-    pub fn selected(wheels: &Path, uv: crate::machine::uv::Uv) -> Self {
+    pub fn selected(wheels: &Path, uv: crate::machine::uv::Uv, (torch, own_torch): (PathBuf, bool)) -> Self {
         // An activation replaces sdk/current, not the immutable candidate directory. Freeze
         // that selection once: both cache identity and the installer's actual wheel inputs
         // must name the same build even when filenames/version labels repeat.
@@ -79,6 +84,8 @@ impl PackageSdk {
             },
             find_links: complete.then_some(wheels),
             requirements: if complete { pair } else { vec![] },
+            torch,
+            own_torch,
         }
     }
 }
@@ -287,6 +294,8 @@ pub struct Publisher {
     making: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     /// The run building each environment identity, which a second run waits for.
     building: Mutex<HashMap<String, String>>,
+    /// This machine's PyTorch layer once read (`layer`).
+    layer: Mutex<Option<Arc<layer::Layer>>>,
     /// The machine's software updates: a package needing a newer Runtime gets one (`environment`).
     updates: Option<Arc<crate::machine::update::Updates>>,
 }
@@ -307,8 +316,48 @@ impl Publisher {
             machine,
             making: Mutex::new(HashMap::new()),
             building: Mutex::new(HashMap::new()),
+            layer: Mutex::default(),
             updates,
         })
+    }
+
+    /// This machine's PyTorch layer: its base's, read once. A machine with no image installs its
+    /// own base at the newest Torch for its accelerator the first time a package needs one; none
+    /// when it cannot (offline), and packages then install their own.
+    pub(crate) fn layer(&self, job: &Job) -> Result<Option<Arc<layer::Layer>>, Failure> {
+        let mut held = self.layer.lock().unwrap();
+        if held.is_none() {
+            let base = &self.sdk.torch;
+            let python = platform::paths::venv_python(base);
+            if !python.is_file() && self.sdk.own_torch {
+                job.stage("installing this machine's PyTorch".into());
+                let (dir, py) = (base.to_string_lossy(), python.to_string_lossy());
+                let made = self.uv(&["venv", "--no-project", "--python", &self.sdk.python, &dir], &[], job)
+                    .and_then(|()| self.uv(&["pip", "install", "--python", &py, "--torch-backend", "auto", "torch", "torchvision", "torchaudio"], &[], job));
+                if let Err((code, why)) = made {
+                    let _ = fs::remove_dir_all(base);
+                    tracing::warn!("this machine's PyTorch could not be installed ({code}): packages install their own: {why}");
+                    return Ok(None);
+                }
+            }
+            *held = layer::Layer::read(base).map_err(io_failure)?.map(Arc::new);
+            if let Some(layer) = held.as_ref() {
+                tracing::info!("this machine's PyTorch layer: {}", layer.pins().join(" "));
+                // Compiled once here, so an environment's imports write nothing into the base.
+                environment::compile_bytecode(&python);
+            }
+        }
+        Ok(held.clone())
+    }
+
+    /// The layer's pins an environment is built from: what an installation's identity names.
+    pub(crate) fn torch_pins(&self) -> Vec<String> {
+        let read = || layer::Layer::read(&self.sdk.torch).ok().flatten().map(Arc::new);
+        let mut held = self.layer.lock().unwrap();
+        if held.is_none() {
+            *held = read();
+        }
+        held.as_ref().map(|layer| layer.pins()).unwrap_or_default()
     }
 
     /// One run's preparation on the calling thread, reported through `observe`: a held
@@ -698,7 +747,7 @@ impl Publisher {
     /// The installation of `release` of the request's package at its Hub, by this machine's SDK.
     fn release_alias(&self, request: &Request, release: &str) -> String {
         let origin = request.origin();
-        let sdk = format!("{:?}{:?}", self.sdk.requirements, self.sdk.find_links);
+        let sdk = format!("{:?}{:?}{:?}", self.sdk.requirements, self.sdk.find_links, self.torch_pins());
         let key = format!("{origin}\0{}\0{release}\0{sdk}", request.package);
         format!("hub-{}", &sha256::hex_digest(key.as_bytes())[..32])
     }
@@ -891,7 +940,8 @@ impl Publisher {
             .map(|record| record.dependencies.into_iter().map(|d| (normalized(&d.name), d.version)).collect());
         let stage = install_stage(&request.package, &release, before.as_ref(), &self.planned_pair(&locked));
         let wheels: Vec<&str> = card.wheels.iter().map(|wheel| wheel.sha256.as_str()).collect();
-        let identity = sha256::hex_digest(json!({"package":request.package,"release":release,"pyproject":card.pyproject,"lock":card.lock,"wheels":wheels,"python":card.python,"hub":hub::origin_key(&source.origin),"sdk":self.sdk.requirements,"links":self.sdk.find_links}).to_string().as_bytes())[..32].to_string();
+        let torch = self.layer(job)?.map(|layer| layer.pins()).unwrap_or_default();
+        let identity = sha256::hex_digest(json!({"package":request.package,"release":release,"pyproject":card.pyproject,"lock":card.lock,"wheels":wheels,"python":card.python,"hub":hub::origin_key(&source.origin),"sdk":self.sdk.requirements,"links":self.sdk.find_links,"torch":torch}).to_string().as_bytes())[..32].to_string();
         let wanted = Environment {
             card: &card,
             locked: &locked,

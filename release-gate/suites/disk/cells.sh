@@ -3,6 +3,8 @@
 #   disk-envs  sdxl, qwen-image-2 and minimax-h3, each its previous release and then its newest (an update removes the
 #              previous environment, logged with its bytes): `machine show` says what fills the disk (models, package
 #              environments, Runtime, other)
+#   torch-layer  none of those installs, nor seedvr2's (its lock pins torch 2.14.1), brings its own Torch (cl-715): no
+#              "installs its own" warning, and no install takes 1 GiB of disk
 #   disk-held  a CPU SDXL call running while H3 int8 (68 GiB) and Qwen-Image int8 (17 GiB) land: none of SDXL is evicted,
 #              and each download holds its own commit (canceled after: a CPU step takes minutes)
 #   disk-lru   H3, Qwen, SDXL and H3 again all land on 100 GB: each eviction logged (lane, bytes, idle); the uv cache
@@ -15,7 +17,7 @@ released() { "$CLI" package info "$1" --json 2>/dev/null | jq -r '[.releases[] |
 logs() { "$CLI" machine logs "$M" tensord -n 0 > "$T/tensord.log" 2>&1; grep -c -- "$1" "$T/tensord.log"; }
 
 use start; bad=()
-for p in sdxl qwen-image-2 minimax-h3; do
+for p in sdxl qwen-image-2 minimax-h3 seedvr2; do
   for r in $(released "$p"); do
     "$CLI" package install "$p@$r" --on "$M" -y > "$T/install-$p-$r.log" 2>&1 || bad+=("$p@$r install failed"); use "$p@$r"
   done
@@ -26,6 +28,12 @@ shown=$([ -n "$envs" ] && echo "models $models, environments $envs, Runtime $run
 [ ${#bad[@]} -eq 0 ] && [ "$removed" -gt 0 ] && { [ -z "$envs" ] || [ "$envs" -gt 0 ]; } \
   && expect disk-envs PASS "installs and updates done, $removed previous environments removed (logged with bytes); $shown; free $free" \
   || expect disk-envs FAIL "${bad[*]:-}; $removed environments removed; $shown"
+
+own=$(cat "$T"/install-*.log | grep -c 'installs its own'); own=$((own + $(logs 'installs its own')))
+most=$(awk -F'\t' 'NR > 1 && p - $2 > m {m = p - $2; w = $1} {p = $2} END {printf "%d %s", m, w}' "$T/use.tsv")
+[ "$own" = 0 ] && [ "${most%% *}" -lt $((1 << 30)) ] \
+  && expect torch-layer PASS "every install took the machine's Torch; the largest took $(( ${most%% *} >> 20 )) MiB (${most#* })" \
+  || expect torch-layer FAIL "$own installs brought their own Torch; the largest took $(( ${most%% *} >> 20 )) MiB (${most#* }); $(grep -h -m2 'installs its own' "$T"/install-*.log "$T/tensord.log" | tr '\n' ' ')"
 
 held=$(basename "$(mktemp -u "$T/run-XXXXXX")")
 run_submit "$T" "$held" run "$(pkg sdxl generate)" --on "$M" prompt="$OBJECT, held through a full disk" steps:=8 seed:=$((R + 700)) > /dev/null

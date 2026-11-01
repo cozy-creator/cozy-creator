@@ -209,7 +209,13 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     let (holding, executions) = (lifecycle.clone(), service.engine.clone());
     service.hold_while(move || holding.holding());
     lifecycle.on_change(move || executions.notify_activity());
-    let sdk = crate::published::PackageSdk::selected(&paths.sdk(), crate::machine::uv::Uv::of(&layout.root, &engine, rental));
+    // An image's base interpreter holds this machine's PyTorch layer; elsewhere the machine owns one.
+    let image_torch = layout.root.join("opt/cozy/python");
+    let torch = match platform::paths::venv_python(&image_torch).is_file() {
+        true => (image_torch, false),
+        false => (engine.join("torch"), true),
+    };
+    let sdk = crate::published::PackageSdk::selected(&paths.sdk(), crate::machine::uv::Uv::of(&layout.root, &engine, rental), torch);
     boot.at("updates");
     let running = {
         let engine = service.engine.clone();

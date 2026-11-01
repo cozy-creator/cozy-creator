@@ -1,9 +1,9 @@
 //! Package environments, built one way for a release (`published`) and for local code
 //! (`local_source`): uv's Python, the locked (or resolved) dependencies, wheels from files, the
-//! project, this machine's Runtime/TensorFS pair over them, then the environment's description by
-//! its own Runtime and its record; its bytecode compiles once it is installed. uv runs under one
-//! environment.
-use super::{canceled, io_failure, Failure, Job, Locked, Publisher, SDK};
+//! project, this machine's Runtime/TensorFS pair over them, then this machine's PyTorch layer
+//! (`layer`), then the environment's description by its own Runtime and its record; its bytecode
+//! compiles once it is installed. uv runs under one environment.
+use super::{canceled, io_failure, layer::Layer, Failure, Job, Locked, Publisher, SDK};
 use crate::{catalog::normalized, machine::update, process::Supervised};
 use serde_json::{json, Value};
 use std::{
@@ -54,8 +54,27 @@ enum Pair {
 
 impl Publisher {
     /// Builds `env` for `project` (an interrupted build there is gone first), holding the uv
-    /// cache throughout.
+    /// cache throughout, on this machine's PyTorch layer. Only when the package (or a dependency)
+    /// declares a Torch range the layer misses does it install its own, with a warning: rare by
+    /// design, since packages declare a minimum and machines run the newest Torch.
     pub(crate) fn build(&self, env: &Path, project: &Project, job: &Job) -> Result<Built, Failure> {
+        let layer = self.layer(job)?;
+        let missed = match self.build_on(env, project, job, layer.as_deref(), &[]) {
+            Err((TORCH_MISSED, missed)) => missed,
+            built => return built,
+        };
+        let torch = layer.as_ref().and_then(|l| l.version("torch")).unwrap_or_default();
+        let warning = format!("{} requires {missed}; this machine's torch is {torch}: its environment installs its own", project.label);
+        tracing::warn!("package {warning}");
+        job.stage(format!("warning: {warning}"));
+        let own: Vec<String> = missed.split(", ").filter(|r| on_root(r)).map(String::from).collect();
+        let mut built = self.build_on(env, project, job, None, &own)?;
+        built.fallback = [built.fallback, warning].into_iter().filter(|w| !w.is_empty()).collect::<Vec<_>>().join("; ");
+        Ok(built)
+    }
+
+    /// `build` on `layer`, or with no layer and the Torch requirements `own` installed for itself.
+    fn build_on(&self, env: &Path, project: &Project, job: &Job, layer: Option<&Layer>, own: &[String]) -> Result<Built, Failure> {
         let _cache = self.uv_cache_hold().map_err(io_failure)?;
         let own_sdk = !self.sdk.requirements.is_empty();
         let editable_after = project.editable && project.locked.is_some();
@@ -78,6 +97,10 @@ impl Publisher {
         let py = py.to_string_lossy();
         next();
         self.uv(&["venv", "--no-project", "--python", project.python, &envs], &[], job)?;
+        // uv never installs what the layer provides: a lock's Torch rows stay out (`provided`).
+        let provided: Vec<&str> = layer.map(|l| l.provided().collect()).unwrap_or_default();
+        let excludes = env.join("cozy-excludes.txt");
+        fs::write(&excludes, provided.iter().map(|name| format!("{name}\n")).collect::<String>()).map_err(io_failure)?;
         next();
         let pair: Vec<&str> = SDK.into_iter().filter(|_| own_sdk).collect();
         match project.locked {
@@ -85,7 +108,8 @@ impl Publisher {
                 let mut args = vec!["sync", "--frozen", "--inexact", "--no-dev", "--no-editable", "--no-install-project",
                     "--project", &dir, "--python", &py];
                 let held = carried.iter().map(|(name, _)| name.as_str()).chain(project.skip.iter().map(String::as_str))
-                    .chain(pair.iter().copied().filter(|name| locked.packages.contains_key(*name)));
+                    .chain(pair.iter().copied().filter(|name| locked.packages.contains_key(*name)))
+                    .chain(provided.iter().copied().filter(|name| locked.packages.contains_key(*name)));
                 for name in held {
                     args.extend(["--no-install-package", name]);
                 }
@@ -107,7 +131,7 @@ impl Publisher {
                 }
             }
             None => {
-                let mut args = vec!["pip", "install", "--python", &py];
+                let mut args = vec!["pip", "install", "--python", &py, "--excludes", excludes.to_str().unwrap_or_default()];
                 if let Some(wheels) = project.wheels {
                     args.extend(["--find-links", wheels.to_str().unwrap_or_default()]);
                 }
@@ -138,6 +162,13 @@ impl Publisher {
         if project.editable {
             live_paths(env).map_err(io_failure)?;
         }
+        // Torch for itself, the rare fallback: at what the package requires, from the index for
+        // this machine's accelerator.
+        if !own.is_empty() && !installed(env).contains_key("torch") {
+            let mut args = vec!["pip", "install", "--python", &py, "--torch-backend", "auto"];
+            args.extend(own.iter().map(String::as_str));
+            self.uv(&args, &[], job)?;
+        }
         let mut fallback = String::new();
         if own_sdk {
             next();
@@ -159,6 +190,16 @@ impl Publisher {
                 job.stage(format!("warning: {fallback}"));
             }
         }
+        // The layer last, once uv has nothing left to install here; what uv's check finds against
+        // it (a range on Torch it misses, or a Torch requirement the lock's copy misses) is a miss.
+        if let Some(layer) = layer {
+            layer.link(env).map_err(io_failure)?;
+            let missed: Vec<String> = self.check(&py, job)?.iter().filter_map(|line| torch_miss(line, layer)).collect();
+            if !missed.is_empty() {
+                let _ = fs::remove_dir_all(env);
+                return Err((TORCH_MISSED, missed.join(", ")));
+            }
+        }
         Ok(Built { sdk: if own_sdk { "machine" } else { "locked" }.into(), fallback })
     }
 
@@ -176,8 +217,9 @@ impl Publisher {
         fs::write(&constraints, pins).map_err(|e| failed(io_failure(e)))?;
         let constraints = constraints.to_string_lossy();
         let links = self.sdk.find_links.as_ref().map(|p| p.to_string_lossy().to_string());
+        let excludes = env.join("cozy-excludes.txt");
         let install = |how: &[&str]| {
-            let mut args = vec!["pip", "install", "--python", py];
+            let mut args = vec!["pip", "install", "--python", py, "--excludes", excludes.to_str().unwrap_or_default()];
             args.extend(how);
             if let Some(links) = &links {
                 args.extend(["--find-links", links]);
@@ -495,6 +537,25 @@ fn floor(line: &str) -> Option<&str> {
     let name = normalized(requirement[..end].split('[').next()?);
     let below = |clause: &str| [">=", "~=", "==", ">"].iter().find_map(|op| clause.trim().strip_prefix(op)).is_some_and(|v| older(installed, v.trim()));
     (SDK.contains(&name.as_str()) && requirement[end..].split(';').next()?.split(',').any(below)).then_some(requirement)
+}
+
+/// A build the layer cannot serve: the requirements it misses (`Publisher::build`).
+const TORCH_MISSED: &str = "torch_range_missed";
+
+/// Whether requirement `spec` names one of the layer's roots (torch, torchvision, …).
+fn on_root(spec: &str) -> bool {
+    let name = normalized(spec.split(|c: char| " ;<>=!~[(".contains(c)).next().unwrap_or_default());
+    super::layer::ROOTS.contains(&name.as_str())
+}
+
+/// The requirement uv's finding `line` (`The package `x` requires `torch>=2.15`, but `2.14.0` is
+/// installed`) says the layer misses: one on a layer distribution, or one a layer distribution
+/// puts on the package's own copy of a dependency.
+fn torch_miss(line: &str, layer: &Layer) -> Option<String> {
+    let parts: Vec<&str> = line.split('`').collect();
+    let (requirer, requirement) = (normalized(parts.get(1)?), *parts.get(3)?);
+    let required = normalized(requirement.split(|c: char| " ;<>=!~[(".contains(c)).next()?);
+    (layer.holds(&required) || layer.holds(&requirer)).then(|| requirement.to_string())
 }
 
 /// Whether release `running` is older than `wanted`, by their numeric release parts.
