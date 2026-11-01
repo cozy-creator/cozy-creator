@@ -14,6 +14,37 @@ fn proof_queued(control: &Control, count: usize) {
     }
 }
 
+#[allow(unsafe_code)]
+fn proof_inherited_control() {
+    let control = proof_control();
+    let owner = Owner { device: 0, id: ledger::RowId { slot: 0, incarnation: 1 }, control: Arc::clone(&control) };
+    let held = control.lock().unwrap();
+    // The child inherits a locked mutex. Every public control operation must reject by PID
+    // before touching it. This is a real private-VM fork, with no CUDA or GPU participant.
+    let child = unsafe { libc::fork() };
+    assert!(child >= 0);
+    if child == 0 {
+        let inherited = |result: Result<()>| matches!(result, Err(super::Error::Ledger(ledger::Error::Inherited)));
+        let passed = inherited(owner.facts().map(|_| ())) && inherited(owner.wake(0)) && inherited(owner.close());
+        unsafe { libc::_exit(if passed { 0 } else { 1 }); }
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let mut status = 0;
+    loop {
+        let result = unsafe { libc::waitpid(child, &mut status, libc::WNOHANG) };
+        if result == child { break; }
+        assert!(result >= 0);
+        if std::time::Instant::now() >= deadline {
+            unsafe { libc::kill(child, libc::SIGKILL); libc::waitpid(child, &mut status, 0); }
+            panic!("inherited control touched its locked parent mutex");
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    drop(held);
+    assert!(libc::WIFEXITED(status));
+    assert_eq!(libc::WEXITSTATUS(status), 0);
+}
+
 pub fn lifecycle_proof() -> String {
     let rounds = 256;
     for _ in 0..rounds {
@@ -76,5 +107,25 @@ pub fn lifecycle_proof() -> String {
     }).join().is_err());
     control.stop();
     assert!(receive.recv_timeout(Duration::from_secs(1)).is_err());
-    format!("{{\"passed\":true,\"native_thread_cancellations\":{},\"admitted_vs_queued\":true,\"drop_did_not_join\":true,\"poison_cancellation\":true,\"gpu_qualified\":false}}", rounds * 2)
+
+    // An actual close caller must return a permanent metadata fault even though no GPU
+    // retirement was authorized. Do not manufacture a successful release or retired flag.
+    let control = proof_control();
+    let closing = Arc::clone(&control);
+    let (done, result) = mpsc::sync_channel(1);
+    let caller = std::thread::spawn(move || {
+        let owner = Owner { device: 0, id: ledger::RowId { slot: 0, incarnation: 1 }, control: closing };
+        done.send(owner.close().map_err(|error| error.to_string())).unwrap();
+    });
+    {
+        let mut state = control.lock().unwrap();
+        state.facts.failed = Some("permanent_retirement_fault".into());
+        control.changed.notify_all();
+    }
+    let error = result.recv_timeout(Duration::from_secs(2)).unwrap().unwrap_err();
+    assert!(error.contains("permanent_retirement_fault"), "{error}");
+    assert!(!control.lock().unwrap().retired);
+    caller.join().unwrap();
+    proof_inherited_control();
+    format!("{{\"passed\":true,\"native_thread_cancellations\":{},\"admitted_vs_queued\":true,\"drop_did_not_join\":true,\"poison_cancellation\":true,\"permanent_fault_close_returned\":true,\"fault_not_marked_retired\":true,\"fork_rejected_before_inherited_mutex\":true,\"gpu_qualified\":false}}", rounds * 2)
 }

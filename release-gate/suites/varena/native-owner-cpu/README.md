@@ -16,3 +16,11 @@ Actual CPU Hello/Shutdown remains `../owner-cpu/hello.py`. It additionally recor
 Linux native task names so a hidden Rust thread cannot evade its CPU-parent check.
 GPU owner parity, GIL independence, fork and capture-aware retirement remain real
 release-gate runs through the ordinary Cozy CLI.
+
+The harness also requires permanent retirement metadata faults to return from actual
+`Owner::close` with `retired=false`, and forks with the actual control mutex held to
+prove inherited operations refuse before touching it. These authorize no GPU release.
+
+`portable.py OVERLAY OUTPUT_JSON`, run under isolated Python, checks the actual
+portable native Owner API and metadata-only CPU-parent fork. It never constructs a
+CUDA owner. Initialized GPU-owner fork/retirement remains a separate GPU gate.
