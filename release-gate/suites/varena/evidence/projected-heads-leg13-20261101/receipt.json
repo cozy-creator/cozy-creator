@@ -1,0 +1,22 @@
+{
+  "passed": true,
+  "fixture_source_check": "actual provider eligibility and CPU constructors; revised14-case cohort has not run",
+  "runtime": "dae973282c1938bb15cf542798a0208eebefee1d",
+  "package": "3476cb1deaf57f6893d4723b86695d088d28556e",
+  "native": "b20f699cab2416c6ff3d6e458376c29efbcf448a",
+  "product_unchanged": true,
+  "files": {
+    "heads-gpu-readback-25213.json": "3f80fdc5a35afb8449f6f77857188301f04af2b3eacbf9e56bd62ae9a930cec4",
+    "cpu-reproduction.json": "dac1688d358b5f2b9869a05b9bc1ebc9121c05d1c4c5dba32e179bd877b4846b",
+    "cpu-output-eligibility.json": "3609f4542f35756608ab22f07f46eded1436cc896ae37bb1e279b77bd2c7f9e1",
+    "regression-audit-leg13.json": "f5e7f49d7656b184287030144c474f84750f61cf3fa6499071c0e073bd0ff9bc",
+    "heads-linear-regression-result.json": "075cbe722b9dab04b35df50a2716cd0314c7bb5fbe7221c344a18fdb21769258",
+    "heads-gpu-carried-25211.json": "c2ab3d06ed1fe59b737bb3da4cf2a29cbbb417f631ff097025fb3dc37cd1ae2a",
+    "heads-gpu-warm-25215.json": "47a9f409edef9e1a462755bd8a57d2f0045cba44a13f287ebae0a3d8c1fcd41b",
+    "heads-linear-cleanup-result.json": "876c5aaa372c68f09db73bf47c713db179e5803b01ec071d07808505560ece99",
+    "runtime-owned-reproduction.json": "ae15a5b6114da82bb15676c77920cf0dce215efb81be4c2c0d29b6621e199a10",
+    "heads-gpu-25203.json": "427c979c8ca717cdb51ebf052b8d4de7e61e871fe567053e3c0ad170febd8a1f",
+    "heads-tail-cleanup-result.json": "46bc0320852b5c89349b6fe0345ba247abbe5d7382490fd78221e36e460260fc",
+    "heads-tail-regression-result.json": "5c8d11a1259ecf33823877dd134690c294b2b95071d719d89b9d31a51051bcf6"
+  }
+}

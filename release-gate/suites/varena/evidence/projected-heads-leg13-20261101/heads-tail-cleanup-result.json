@@ -1,0 +1,45 @@
+{
+  "passed": true,
+  "prior_request_keys_already_retired": {
+    "runtime.split.residual_ffn/1:2fa10e6e3912e66f0304b9633e750c26da22961d3216d6057188902016845e64": false,
+    "runtime.split.residual_ffn/1:da9253a038f8c994f22da7fbead085a0fc58938f2f3d247773aa672acbcb2e0a": false
+  },
+  "provenance": {
+    "expected_pid": 667,
+    "extension_sha256": "ea131006d23325bee34be91d64bb6b92c5947738e967d6f3d91a0d7ccbc449b6",
+    "glue_identities": {
+      "minimax-h3-glue": "sha256:5296525747c8fa82b137f4a4425c1460e20b3f8a208b88ee4fd6c8cfac5a8314",
+      "minimax-h3-glue-fp8": "sha256:059472e0f4b204f848f178644281da6759fdd6c2691b1e3cbf4d99c40b48f573"
+    },
+    "gpu_uuid": "001d94d1-0a24-f46e-9917-aeacf408c95f",
+    "keys": [
+      "runtime.split.residual_ffn/1:2fa10e6e3912e66f0304b9633e750c26da22961d3216d6057188902016845e64",
+      "runtime.split.residual_ffn/1:da9253a038f8c994f22da7fbead085a0fc58938f2f3d247773aa672acbcb2e0a"
+    ],
+    "package_modules": {
+      "__init__.py": "3d32fa69e16131aecce5b7422db4119f25d8a64c52b17001e1cecd88266ac925",
+      "adaln_pruned.py": "de3f09deea1af42b6e63635ac7c2a1be2004b6c16a8ed8690966c986b3c557d5",
+      "glue.py": "3d07e63c5ac68f11daa5d97984145d49fac54311c8111dc3d4f7e8858f8dd130",
+      "overlay.py": "1964cd5304648c204f09c4d01eff171e9aca1ac20b31b6a9c2ea6206cf5ffb44"
+    },
+    "pid": 667,
+    "request_id": "6",
+    "runtime_modules": {
+      "_kernels/_gemm.abi3.so": "9523c5070bd1646f43b505e0ce0bb05670d7b39f8d7e4be3a52846e2b7a81d3e",
+      "author/_split.py": "60870cce6b43ec9c75755b3ab4a38b3ec974da4a3eaa163c08cdb3f193153fec",
+      "author/kernels.py": "b63c5e57df0f76fcb88304ed1a7f8cb3d17646838f7bff92a278bc21287df262",
+      "internal/encoding/leaves.py": "c0aa697b9baa0f232b036783516790e75c85847559971ce3278507bd232e53f6",
+      "internal/execution/__init__.py": "c512e78d7e391136fdefdc87dbe21023f8fd311e1bebd0c52cdc9a23ecadae94",
+      "internal/execution/native_linear_split.py": "def2d5a1836bbc59d6492a88c0ce6925f7d6f680c84997a6f3c0b2665aa3f9bf",
+      "internal/execution/native_residual_ffn.py": "c0e8eb7c8a25f4eb1b2bbe1225e1fb8c3ca1736dd9db0c13d425997f92109702",
+      "internal/execution/native_split.py": "368cc0944ec6429a45f999c6646b97f943187b02593fc8f4dfcd3f441e59d4aa",
+      "internal/prebuilt.py": "3f5d32d9214de115049ee5a8016bf6f5ae1c909b2570327b9cb4e64edfa75eab",
+      "internal/triton_kernels.py": "81ba6fb73430d035c47b05bcb9caa132c1457af61fd0c0ef2dbd86bfc5236935",
+      "lora.py": "2908f3b3717a2b8565a256b0ba3d78ff70ac85038cd2e902ef23c860dc986a46"
+    },
+    "runtime_version": "0.36.21+dev.gdae97328",
+    "seed": 463587906274190,
+    "shim_sha256": "09684b61d0b909c39d56c7d129432e906ddb0a57f1b4b916b20bb2c4c8d7716e",
+    "tensorfs_version": "0.17.16+dev.gb20f699c"
+  }
+}

@@ -1,0 +1,869 @@
+{
+  "matched_scope": true,
+  "runs": [
+    25324,
+    25347
+  ],
+  "source_files_verified": 41,
+  "metrics": {
+    "execution_ms": {
+      "control": 1073070,
+      "candidate": 973692,
+      "delta": -99378,
+      "percent": -9.261092007045201
+    },
+    "denoise_host_ms": {
+      "control": 981415.601,
+      "candidate": 942973.486,
+      "delta": -38442.11499999999,
+      "percent": -3.9170067156900634
+    },
+    "denoise_step_host_ms": {
+      "control": 981385.159,
+      "candidate": 942954.338,
+      "delta": -38430.820999999996,
+      "percent": -3.9159773965972478
+    },
+    "denoise_device_ms": {
+      "control": 981391.087,
+      "candidate": 942949.952,
+      "delta": -38441.13500000001,
+      "percent": -3.9170046996768737
+    },
+    "store_source_bytes": {
+      "control": 478375762244,
+      "candidate": 375267335492,
+      "delta": -103108426752,
+      "percent": -21.553856798331804
+    },
+    "baked_source_bytes": {
+      "control": 0,
+      "candidate": 0,
+      "delta": 0,
+      "percent": null
+    },
+    "request_allocations": {
+      "control": 360956,
+      "candidate": 320536,
+      "delta": -40420,
+      "percent": -11.198040758430395
+    },
+    "request_context_joins": {
+      "control": 0,
+      "candidate": 0,
+      "delta": 0,
+      "percent": null
+    },
+    "request_driver_memory_calls": {
+      "control": 46160,
+      "candidate": 44183,
+      "delta": -1977,
+      "percent": -4.282928942807629
+    },
+    "request_event_queries": {
+      "control": 167401,
+      "candidate": 145814,
+      "delta": -21587,
+      "percent": -12.89538294275423
+    },
+    "request_event_records": {
+      "control": 34011,
+      "candidate": 31248,
+      "delta": -2763,
+      "percent": -8.123842286319128
+    },
+    "request_event_waits": {
+      "control": 831,
+      "candidate": 498,
+      "delta": -333,
+      "percent": -40.07220216606498
+    },
+    "request_frees": {
+      "control": 360956,
+      "candidate": 320536,
+      "delta": -40420,
+      "percent": -11.198040758430395
+    },
+    "request_ooms": {
+      "control": 0,
+      "candidate": 0,
+      "delta": 0,
+      "percent": null
+    },
+    "weight_fills": {
+      "control": 1218,
+      "candidate": 964,
+      "delta": -254,
+      "percent": -20.853858784893266
+    },
+    "weight_hits": {
+      "control": 1154,
+      "candidate": 1408,
+      "delta": 254,
+      "percent": 22.01039861351819
+    },
+    "weight_evictions": {
+      "control": 1136,
+      "candidate": 884,
+      "delta": -252,
+      "percent": -22.1830985915493
+    },
+    "weight_reclaimed_bytes": {
+      "control": 467379683328,
+      "candidate": 364854116352,
+      "delta": -102525566976,
+      "percent": -21.936248115442602
+    },
+    "weight_ready_bytes": {
+      "control": 12144607232,
+      "candidate": 11330912256,
+      "delta": -813694976,
+      "percent": -6.700051804524265
+    },
+    "weight_resident_bytes": {
+      "control": 12144607232,
+      "candidate": 11330912256,
+      "delta": -813694976,
+      "percent": -6.700051804524265
+    },
+    "weight_reclaimed_allocator": {
+      "control": 262884294656,
+      "candidate": 361343483904,
+      "delta": 98459189248,
+      "percent": 37.4534315094174
+    },
+    "weight_reclaimed_requested": {
+      "control": 200984756224,
+      "candidate": 0,
+      "delta": -200984756224,
+      "percent": -100.0
+    },
+    "weight_reclaimed_room": {
+      "control": 0,
+      "candidate": 0,
+      "delta": 0,
+      "percent": null
+    },
+    "weight_reclaimed_streaming_limit": {
+      "control": 0,
+      "candidate": 0,
+      "delta": 0,
+      "percent": null
+    },
+    "weight_reclaimed_weight_allocation": {
+      "control": 3510632448,
+      "candidate": 3510632448,
+      "delta": 0,
+      "percent": 0.0
+    }
+  },
+  "by_model_transfers": {
+    "text_encoder": {
+      "store_bytes": {
+        "control": 26318202624,
+        "candidate": 26318202624,
+        "delta": 0,
+        "percent": 0.0
+      },
+      "fills": {
+        "control": 52,
+        "candidate": 52,
+        "delta": 0,
+        "percent": 0.0
+      }
+    },
+    "transformer": {
+      "store_bytes": {
+        "control": 448965125120,
+        "candidate": 345856698368,
+        "delta": -103108426752,
+        "percent": -22.965798674104377
+      },
+      "fills": {
+        "control": 1107,
+        "candidate": 853,
+        "delta": -254,
+        "percent": -22.94489611562782
+      }
+    },
+    "audio_vae": {
+      "store_bytes": {
+        "control": 605306340,
+        "candidate": 605306340,
+        "delta": 0,
+        "percent": 0.0
+      },
+      "fills": {
+        "control": 22,
+        "candidate": 22,
+        "delta": 0,
+        "percent": 0.0
+      }
+    },
+    "vae": {
+      "store_bytes": {
+        "control": 2487128160,
+        "candidate": 2487128160,
+        "delta": 0,
+        "percent": 0.0
+      },
+      "fills": {
+        "control": 37,
+        "candidate": 37,
+        "delta": 0,
+        "percent": 0.0
+      }
+    }
+  },
+  "native_selection_counts": {
+    "control": {
+      "projected-heads": 480,
+      "residual-ffn-tail": 1500,
+      "int8-linear-rows": 1450
+    },
+    "candidate": {
+      "projected-heads": 600,
+      "residual-ffn-tail": 1500,
+      "int8-linear-rows": 1450
+    }
+  },
+  "heads_implementations": {
+    "control": {
+      "kitchen-int4qk": 480
+    },
+    "candidate": {
+      "kitchen-int4qk": 480,
+      "kitchen-int8": 120
+    }
+  },
+  "region_phases": {
+    "control": [
+      {
+        "models": [
+          "local/minimax-h3@0.2.6/sha256:b80c5e41b487e5e8ede4638c4b00688c1763b48c8141d955845dd26268b865be/text_encoder"
+        ],
+        "retention": "native_demand"
+      },
+      {
+        "models": [
+          "local/minimax-h3@0.2.6/sha256:b80c5e41b487e5e8ede4638c4b00688c1763b48c8141d955845dd26268b865be/text_encoder"
+        ],
+        "region_plan": {
+          "reason": "representation_regions_incomplete",
+          "status": "unplanned"
+        },
+        "retention": "native_demand"
+      },
+      {
+        "models": [
+          "local/minimax-h3@0.2.6/sha256:b80c5e41b487e5e8ede4638c4b00688c1763b48c8141d955845dd26268b865be/transformer"
+        ],
+        "retention": "native_demand"
+      },
+      {
+        "models": [
+          "local/minimax-h3@0.2.6/sha256:b80c5e41b487e5e8ede4638c4b00688c1763b48c8141d955845dd26268b865be/transformer"
+        ],
+        "region_plan": {
+          "reason": "representation_regions_incomplete",
+          "status": "unplanned"
+        },
+        "retention": "native_demand"
+      },
+      {
+        "models": [
+          "local/minimax-h3@0.2.6/sha256:b80c5e41b487e5e8ede4638c4b00688c1763b48c8141d955845dd26268b865be/transformer"
+        ],
+        "region_plan": {
+          "native": {
+            "device": 0,
+            "phases": [
+              {
+                "bytes": 21151875072,
+                "name": "runtime.phase.regions/1:5e472bd8576770962841177ecb533665e15d27c45bfc263ae177c3164d3ee999",
+                "regions": 53
+              }
+            ],
+            "scope": "one_arena"
+          },
+          "phase": "runtime.phase.regions/1:5e472bd8576770962841177ecb533665e15d27c45bfc263ae177c3164d3ee999",
+          "reason": "",
+          "status": "active"
+        },
+        "retention": "native_demand"
+      },
+      {
+        "models": [
+          "local/minimax-h3@0.2.6/sha256:b80c5e41b487e5e8ede4638c4b00688c1763b48c8141d955845dd26268b865be/transformer"
+        ],
+        "region_plan": {
+          "reason": "phase_boundary",
+          "status": "unplanned"
+        },
+        "retention": "native_demand"
+      },
+      {
+        "models": [
+          "local/minimax-h3@0.2.6/sha256:b80c5e41b487e5e8ede4638c4b00688c1763b48c8141d955845dd26268b865be/audio_vae"
+        ],
+        "retention": "native_demand"
+      },
+      {
+        "models": [
+          "local/minimax-h3@0.2.6/sha256:b80c5e41b487e5e8ede4638c4b00688c1763b48c8141d955845dd26268b865be/audio_vae"
+        ],
+        "region_plan": {
+          "reason": "representation_regions_incomplete",
+          "status": "unplanned"
+        },
+        "retention": "native_demand"
+      },
+      {
+        "models": [
+          "local/minimax-h3@0.2.6/sha256:b80c5e41b487e5e8ede4638c4b00688c1763b48c8141d955845dd26268b865be/vae"
+        ],
+        "retention": "native_demand"
+      },
+      {
+        "models": [
+          "local/minimax-h3@0.2.6/sha256:b80c5e41b487e5e8ede4638c4b00688c1763b48c8141d955845dd26268b865be/vae"
+        ],
+        "region_plan": {
+          "reason": "representation_regions_incomplete",
+          "status": "unplanned"
+        },
+        "retention": "native_demand"
+      }
+    ],
+    "candidate": [
+      {
+        "models": [
+          "local/minimax-h3@0.2.6/sha256:b80c5e41b487e5e8ede4638c4b00688c1763b48c8141d955845dd26268b865be/text_encoder"
+        ],
+        "retention": "native_demand"
+      },
+      {
+        "models": [
+          "local/minimax-h3@0.2.6/sha256:b80c5e41b487e5e8ede4638c4b00688c1763b48c8141d955845dd26268b865be/text_encoder"
+        ],
+        "region_plan": {
+          "reason": "representation_regions_incomplete",
+          "status": "unplanned"
+        },
+        "retention": "native_demand"
+      },
+      {
+        "models": [
+          "local/minimax-h3@0.2.6/sha256:b80c5e41b487e5e8ede4638c4b00688c1763b48c8141d955845dd26268b865be/transformer"
+        ],
+        "retention": "native_demand"
+      },
+      {
+        "models": [
+          "local/minimax-h3@0.2.6/sha256:b80c5e41b487e5e8ede4638c4b00688c1763b48c8141d955845dd26268b865be/transformer"
+        ],
+        "region_plan": {
+          "reason": "representation_regions_incomplete",
+          "status": "unplanned"
+        },
+        "retention": "native_demand"
+      },
+      {
+        "models": [
+          "local/minimax-h3@0.2.6/sha256:b80c5e41b487e5e8ede4638c4b00688c1763b48c8141d955845dd26268b865be/transformer"
+        ],
+        "region_plan": {
+          "native": {
+            "device": 0,
+            "phases": [
+              {
+                "bytes": 21151875072,
+                "name": "runtime.phase.regions/1:5e472bd8576770962841177ecb533665e15d27c45bfc263ae177c3164d3ee999",
+                "regions": 53
+              }
+            ],
+            "scope": "one_arena"
+          },
+          "phase": "runtime.phase.regions/1:5e472bd8576770962841177ecb533665e15d27c45bfc263ae177c3164d3ee999",
+          "reason": "",
+          "status": "active"
+        },
+        "retention": "native_demand"
+      },
+      {
+        "models": [
+          "local/minimax-h3@0.2.6/sha256:b80c5e41b487e5e8ede4638c4b00688c1763b48c8141d955845dd26268b865be/transformer"
+        ],
+        "region_plan": {
+          "reason": "phase_boundary",
+          "status": "unplanned"
+        },
+        "retention": "native_demand"
+      },
+      {
+        "models": [
+          "local/minimax-h3@0.2.6/sha256:b80c5e41b487e5e8ede4638c4b00688c1763b48c8141d955845dd26268b865be/audio_vae"
+        ],
+        "retention": "native_demand"
+      },
+      {
+        "models": [
+          "local/minimax-h3@0.2.6/sha256:b80c5e41b487e5e8ede4638c4b00688c1763b48c8141d955845dd26268b865be/audio_vae"
+        ],
+        "region_plan": {
+          "reason": "representation_regions_incomplete",
+          "status": "unplanned"
+        },
+        "retention": "native_demand"
+      },
+      {
+        "models": [
+          "local/minimax-h3@0.2.6/sha256:b80c5e41b487e5e8ede4638c4b00688c1763b48c8141d955845dd26268b865be/vae"
+        ],
+        "retention": "native_demand"
+      },
+      {
+        "models": [
+          "local/minimax-h3@0.2.6/sha256:b80c5e41b487e5e8ede4638c4b00688c1763b48c8141d955845dd26268b865be/vae"
+        ],
+        "region_plan": {
+          "reason": "representation_regions_incomplete",
+          "status": "unplanned"
+        },
+        "retention": "native_demand"
+      }
+    ]
+  },
+  "native_scope_choices": {
+    "control": [
+      {
+        "site": "projected-heads",
+        "choice": "heads:56/full:0:5/tail:0:5",
+        "count": 314,
+        "published": 314,
+        "peak_bytes_max": 8457125888,
+        "backing_peak_min": 8462008320,
+        "backing_peak_max": 8462008320
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:54562/54562:0:5/54561:0:5/54562:0:5/54561:0:5",
+        "count": 764,
+        "published": 764,
+        "peak_bytes_max": 6685982720,
+        "backing_peak_min": 6687817728,
+        "backing_peak_max": 6687817728
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:27280/27280:0:5/3:1:-1/27280:0:5/3:1:-1",
+        "count": 415,
+        "published": 415,
+        "peak_bytes_max": 3361865728,
+        "backing_peak_min": 3363831808,
+        "backing_peak_max": 3363831808
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:13640/13640:0:5/3:1:-1/13640:0:5/3:1:-1",
+        "count": 28,
+        "published": 28,
+        "peak_bytes_max": 1700855808,
+        "backing_peak_min": 1702887424,
+        "backing_peak_max": 1702887424
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:852/852:0:0/67:0:6/852:0:1/67:0:6",
+        "count": 10,
+        "published": 10,
+        "peak_bytes_max": 109056000,
+        "backing_peak_min": 111149056,
+        "backing_peak_max": 111149056
+      },
+      {
+        "site": "projected-heads",
+        "choice": "heads:28/full:0:5/tail:0:5",
+        "count": 85,
+        "published": 85,
+        "peak_bytes_max": 5325635584,
+        "backing_peak_min": 5330960384,
+        "backing_peak_max": 5330960384
+      },
+      {
+        "site": "int8-linear-rows",
+        "choice": "rows:109123/full:0:5/tail:109123:0:5",
+        "count": 1369,
+        "published": 1369,
+        "peak_bytes_max": 1992818688,
+        "backing_peak_min": 1994391552,
+        "backing_peak_max": 1994391552
+      },
+      {
+        "site": "int8-linear-rows",
+        "choice": "rows:54562/full:0:5/tail:54561:0:5",
+        "count": 55,
+        "published": 55,
+        "peak_bytes_max": 1602486272,
+        "backing_peak_min": 1604321280,
+        "backing_peak_max": 1604321280
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:6820/6820:0:5/3:1:-1/6820:0:5/3:1:-1",
+        "count": 48,
+        "published": 48,
+        "peak_bytes_max": 870350848,
+        "backing_peak_min": 872415232,
+        "backing_peak_max": 872415232
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:426/426:0:1/67:0:6/426:0:4/67:0:6",
+        "count": 9,
+        "published": 9,
+        "peak_bytes_max": 75499520,
+        "backing_peak_min": 77594624,
+        "backing_peak_max": 77594624
+      },
+      {
+        "site": "projected-heads",
+        "choice": "heads:14/full:0:5/tail:0:5",
+        "count": 38,
+        "published": 38,
+        "peak_bytes_max": 3760939008,
+        "backing_peak_min": 3766484992,
+        "backing_peak_max": 3766484992
+      },
+      {
+        "site": "projected-heads",
+        "choice": "heads:7/full:0:4/tail:0:4",
+        "count": 34,
+        "published": 34,
+        "peak_bytes_max": 2962599936,
+        "backing_peak_min": 2969567232,
+        "backing_peak_max": 2969567232
+      },
+      {
+        "site": "int8-linear-rows",
+        "choice": "rows:27281/full:0:5/tail:27280:0:5",
+        "count": 26,
+        "published": 26,
+        "peak_bytes_max": 1407320064,
+        "backing_peak_min": 1409286144,
+        "backing_peak_max": 1409286144
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:3410/3410:0:0/3:1:-1/3410:0:5/3:1:-1",
+        "count": 208,
+        "published": 208,
+        "peak_bytes_max": 457195520,
+        "backing_peak_min": 459276288,
+        "backing_peak_max": 459276288
+      },
+      {
+        "site": "projected-heads",
+        "choice": "heads:4/full:0:5/tail:0:5",
+        "count": 9,
+        "published": 9,
+        "peak_bytes_max": 2643531776,
+        "backing_peak_min": 2648702976,
+        "backing_peak_max": 2648702976
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:52/52:0:6/27:0:6/52:0:6/27:0:6",
+        "count": 9,
+        "published": 9,
+        "peak_bytes_max": 8651264,
+        "backing_peak_min": 14680064,
+        "backing_peak_max": 14680064
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:212/212:0:0/155:0:0/212:0:4/155:0:4",
+        "count": 8,
+        "published": 8,
+        "peak_bytes_max": 50332672,
+        "backing_peak_min": 52428800,
+        "backing_peak_max": 52428800
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:1704/1704:0:0/67:0:6/1704:0:1/67:0:6",
+        "count": 1,
+        "published": 1,
+        "peak_bytes_max": 211820544,
+        "backing_peak_min": 213909504,
+        "backing_peak_max": 213909504
+      }
+    ],
+    "candidate": [
+      {
+        "site": "projected-heads",
+        "choice": "heads:56/full:0:5/tail:0:5",
+        "count": 90,
+        "published": 90,
+        "peak_bytes_max": 9237201408,
+        "backing_peak_min": 8462008320,
+        "backing_peak_max": 9244246016
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:54562/54562:0:5/54561:0:5/54562:0:5/54561:0:5",
+        "count": 557,
+        "published": 557,
+        "peak_bytes_max": 6685982720,
+        "backing_peak_min": 6687817728,
+        "backing_peak_max": 6687817728
+      },
+      {
+        "site": "projected-heads",
+        "choice": "heads:7/full:0:4/tail:0:4",
+        "count": 29,
+        "published": 29,
+        "peak_bytes_max": 3059061248,
+        "backing_peak_min": 2969567232,
+        "backing_peak_max": 3068133376
+      },
+      {
+        "site": "projected-heads",
+        "choice": "heads:28/full:0:5/tail:0:5",
+        "count": 337,
+        "published": 337,
+        "peak_bytes_max": 5715673600,
+        "backing_peak_min": 5330960384,
+        "backing_peak_max": 5723127808
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:27280/27280:0:5/3:1:-1/27280:0:5/3:1:-1",
+        "count": 615,
+        "published": 615,
+        "peak_bytes_max": 3361865728,
+        "backing_peak_min": 3363831808,
+        "backing_peak_max": 3363831808
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:13640/13640:0:5/3:1:-1/13640:0:5/3:1:-1",
+        "count": 19,
+        "published": 19,
+        "peak_bytes_max": 1700855808,
+        "backing_peak_min": 1702887424,
+        "backing_peak_max": 1702887424
+      },
+      {
+        "site": "projected-heads",
+        "choice": "heads:14/full:0:5/tail:0:5",
+        "count": 114,
+        "published": 114,
+        "peak_bytes_max": 3958055424,
+        "backing_peak_min": 3766484992,
+        "backing_peak_max": 3965714432
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:426/426:0:1/67:0:6/426:0:4/67:0:6",
+        "count": 11,
+        "published": 11,
+        "peak_bytes_max": 75499520,
+        "backing_peak_min": 77594624,
+        "backing_peak_max": 77594624
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:106/106:0:6/49:0:6/106:0:6/49:0:6",
+        "count": 1,
+        "published": 1,
+        "peak_bytes_max": 16777728,
+        "backing_peak_min": 18874368,
+        "backing_peak_max": 18874368
+      },
+      {
+        "site": "projected-heads",
+        "choice": "heads:4/full:0:5/tail:0:5",
+        "count": 17,
+        "published": 17,
+        "peak_bytes_max": 2698054144,
+        "backing_peak_min": 2648702976,
+        "backing_peak_max": 2705326080
+      },
+      {
+        "site": "projected-heads",
+        "choice": "heads:2/full:0:5/tail:0:5",
+        "count": 11,
+        "published": 11,
+        "peak_bytes_max": 2416741376,
+        "backing_peak_min": 2424307712,
+        "backing_peak_max": 2424307712
+      },
+      {
+        "site": "projected-heads",
+        "choice": "heads:1/full:0:4/tail:0:4",
+        "count": 2,
+        "published": 2,
+        "peak_bytes_max": 2303345664,
+        "backing_peak_min": 2298478592,
+        "backing_peak_max": 2311061504
+      },
+      {
+        "site": "int8-linear-rows",
+        "choice": "rows:109123/full:0:5/tail:109123:0:5",
+        "count": 1205,
+        "published": 1205,
+        "peak_bytes_max": 1992818688,
+        "backing_peak_min": 1994391552,
+        "backing_peak_max": 1994391552
+      },
+      {
+        "site": "int8-linear-rows",
+        "choice": "rows:54562/full:0:5/tail:54561:0:5",
+        "count": 138,
+        "published": 138,
+        "peak_bytes_max": 1602486272,
+        "backing_peak_min": 1604321280,
+        "backing_peak_max": 1604321280
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:6820/6820:0:5/3:1:-1/6820:0:5/3:1:-1",
+        "count": 28,
+        "published": 28,
+        "peak_bytes_max": 870350848,
+        "backing_peak_min": 872415232,
+        "backing_peak_max": 872415232
+      },
+      {
+        "site": "int8-linear-rows",
+        "choice": "rows:27281/full:0:5/tail:27280:0:5",
+        "count": 79,
+        "published": 79,
+        "peak_bytes_max": 1407320064,
+        "backing_peak_min": 1409286144,
+        "backing_peak_max": 1409286144
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:3410/3410:0:0/3:1:-1/3410:0:5/3:1:-1",
+        "count": 29,
+        "published": 29,
+        "peak_bytes_max": 457195520,
+        "backing_peak_min": 459276288,
+        "backing_peak_max": 459276288
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:52/52:0:6/27:0:6/52:0:6/27:0:6",
+        "count": 9,
+        "published": 9,
+        "peak_bytes_max": 8651264,
+        "backing_peak_min": 14680064,
+        "backing_peak_max": 14680064
+      },
+      {
+        "site": "int8-linear-rows",
+        "choice": "rows:3411/full:0:1/tail:3382:0:1",
+        "count": 9,
+        "published": 9,
+        "peak_bytes_max": 1199587328,
+        "backing_peak_min": 1201668096,
+        "backing_peak_max": 1201668096
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:26/26:0:6/1:1:-1/26:0:6/1:1:-1",
+        "count": 9,
+        "published": 9,
+        "peak_bytes_max": 4063744,
+        "backing_peak_min": 8388608,
+        "backing_peak_max": 8388608
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:852/852:0:0/67:0:6/852:0:1/67:0:6",
+        "count": 58,
+        "published": 58,
+        "peak_bytes_max": 109056000,
+        "backing_peak_min": 111149056,
+        "backing_peak_max": 111149056
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:1704/1704:0:0/67:0:6/1704:0:1/67:0:6",
+        "count": 3,
+        "published": 3,
+        "peak_bytes_max": 211820544,
+        "backing_peak_min": 213909504,
+        "backing_peak_max": 213909504
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:212/212:0:0/155:0:0/212:0:4/155:0:4",
+        "count": 161,
+        "published": 161,
+        "peak_bytes_max": 50332672,
+        "backing_peak_min": 52428800,
+        "backing_peak_max": 52428800
+      },
+      {
+        "site": "int8-linear-rows",
+        "choice": "rows:13641/full:0:5/tail:13636:0:5",
+        "count": 19,
+        "published": 19,
+        "peak_bytes_max": 1308688384,
+        "backing_peak_min": 1310720000,
+        "backing_peak_max": 1310720000
+      }
+    ]
+  },
+  "kernel_routes_matched": true,
+  "selected_attention": "audio_vae=sdpa,transformer=kitchen-sol-producer-int4qk-shared-qkv,vae=kitchen-int8",
+  "observed_no_worse": {
+    "denoise": true,
+    "store_source_bytes": true
+  },
+  "gpu_driver": {
+    "control": [
+      {
+        "before_bytes": 3997696,
+        "gpu": 0,
+        "peak_bytes": 25250889728,
+        "power_max_w": 458,
+        "sm_mhz_limit": 3120,
+        "sm_mhz_low": 2265,
+        "sm_mhz_mean": 2574,
+        "temperature_max_c": 65,
+        "throttled_share": 0.859661340713501,
+        "throttles": [
+          "power_cap"
+        ]
+      }
+    ],
+    "candidate": [
+      {
+        "before_bytes": 3997696,
+        "gpu": 0,
+        "peak_bytes": 25250889728,
+        "power_max_w": 462,
+        "sm_mhz_limit": 3120,
+        "sm_mhz_low": 2265,
+        "sm_mhz_mean": 2554,
+        "temperature_max_c": 66,
+        "throttled_share": 0.9045059680938721,
+        "throttles": [
+          "power_cap"
+        ]
+      }
+    ]
+  },
+  "scope_limits": [
+    "one sequential sample per arm, no statistical confidence interval",
+    "whole-request driver counters do not identify individual head-kernel costs",
+    "store/kept-host counters are not full hardware PCIe/H2D traffic",
+    "same source and processes do not establish equal OS/storage cache state",
+    "this pair uses old-capability allocator ownership, not cooperative P3 proof",
+    "quality requires media/latent review separately; no byte-equality gate"
+  ]
+}

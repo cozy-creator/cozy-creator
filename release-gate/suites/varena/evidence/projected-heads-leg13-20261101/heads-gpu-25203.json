@@ -1,0 +1,482 @@
+{
+  "id": "run-f78745c5bf8a434c44c692a0",
+  "number": 25203,
+  "kind": "call",
+  "target": "local/ci-varena-projected-heads/gpu",
+  "hub": "https://tensorhub.com",
+  "machine": "leopold",
+  "status": "failed",
+  "cancel_requested": false,
+  "machine_state": "running",
+  "reason": {
+    "code": "unhandled_exception",
+    "message": "RuntimeError: Inplace update to inference tensor outside InferenceMode is not allowed.You can make a clone to get a normal tensor before doing inplace update.See https://github.com/pytorch/rfcs/pull/17 for more details.",
+    "origin": "author",
+    "detail": "Traceback (most recent call last):\n  File \"/var/lib/cozy/tensord/generations/c2511fad6f8da53c4ec664cd42c97e84/env/lib/python3.12/site-packages/cozy_runtime/author/_invoke.py\", line 564, in run_prepared\n    return invoke(prepared, inv, record), SUCCEEDED, record\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/generations/c2511fad6f8da53c4ec664cd42c97e84/env/lib/python3.12/site-packages/cozy_runtime/author/_invoke.py\", line 493, in invoke\n    result = _call(surface, kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/generations/c2511fad6f8da53c4ec664cd42c97e84/env/lib/python3.12/site-packages/cozy_runtime/author/_invoke.py\", line 1042, in _call\n    return surface.fn(**kwargs)\n           ^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/editable/3a5261caf7bdd639/ci-varena-projected-heads/source-77a341b69a8735c2bc1a72a46f546ff046b9c5e9b25d542d3f810ff0b2bc670c/tree/ci_varena_projected_heads/__init__.py\", line 305, in gpu\n    denoise_loop(step, range(1), state=(marker,), inputs=(hidden, *rotary, seed),\n  File \"/var/lib/cozy/tensord/generations/c2511fad6f8da53c4ec664cd42c97e84/env/lib/python3.12/site-packages/cozy_runtime/author/_loop.py\", line 99, in denoise_loop\n    runtime.run(step, steps, state, carried, inputs, phases, key, on_step, before, after, cache)\n  File \"/var/lib/cozy/tensord/generations/c2511fad6f8da53c4ec664cd42c97e84/env/lib/python3.12/site-packages/cozy_runtime/internal/loop.py\", line 253, in run\n    self._run(loop, state, carried, inputs, key, row)\n  File \"/var/lib/cozy/tensord/generations/c2511fad6f8da53c4ec664cd42c97e84/env/lib/python3.12/site-packages/cozy_runtime/internal/loop.py\", line 298, in _run\n    loop.eager_all(tensors, ctx)\n  File \"/var/lib/cozy/tensord/generations/c2511fad6f8da53c4ec664cd42c97e84/env/lib/python3.12/site-packages/cozy_runtime/internal/loop.py\", line 629, in eager_all\n    self.eager(self.steps, tensors, ctx)\n  File \"/var/lib/cozy/tensord/generations/c2511fad6f8da53c4ec664cd42c97e84/env/lib/python3.12/site-packages/cozy_runtime/internal/loop.py\", line 594, in eager\n    _call(self.step, index, tensors, self.phase(i))\n  File \"/var/lib/cozy/tensord/generations/c2511fad6f8da53c4ec664cd42c97e84/env/lib/python3.12/site-packages/cozy_runtime/internal/loop.py\", line 111, in _call\n    step(index, *tensors)\n  File \"/var/lib/cozy/tensord/editable/3a5261caf7bdd639/ci-varena-projected-heads/source-77a341b69a8735c2bc1a72a46f546ff046b9c5e9b25d542d3f810ff0b2bc670c/tree/ci_varena_projected_heads/__init__.py\", line 292, in step\n    held['output'] = split(actual_original, current_operator, Cut(2), intent=current_operator.intent())\n                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/generations/c2511fad6f8da53c4ec664cd42c97e84/env/lib/python3.12/site-packages/cozy_runtime/author/_split.py\", line 85, in split\n    result = declared_intent(intent, out, cuts)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/generations/c2511fad6f8da53c4ec664cd42c97e84/env/lib/python3.12/site-packages/cozy_runtime/internal/execution/native_heads.py\", line 677, in split_projected_heads\n    return None if plan is None else plan.run()\n                                     ^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/generations/c2511fad6f8da53c4ec664cd42c97e84/env/lib/python3.12/site-packages/cozy_runtime/internal/execution/native_heads.py\", line 327, in run\n    result = self.execute(geometry)\n             ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/generations/c2511fad6f8da53c4ec664cd42c97e84/env/lib/python3.12/site-packages/cozy_runtime/internal/execution/native_heads.py\", line 424, in execute\n    self.seed[first : first + heads].copy_(means)\nRuntimeError: Inplace update to inference tensor outside InferenceMode is not allowed.You can make a clone to get a normal tensor before doing inplace update.See https://github.com/pytorch/rfcs/pull/17 for more details."
+  },
+  "output": [],
+  "created_at_ms": 1793536018132,
+  "accepted_at_ms": 1793536018497,
+  "started_at_ms": 1793536020653,
+  "settled_at_ms": 1793536030349,
+  "execution_ms": 9539,
+  "measurements": {
+    "attribution": {
+      "folded_names": 0,
+      "method": "perf_counter deltas accumulated in place: count/total/min/max/first/last and wall bounds per named span; step tracks keep up to 512 [end_unix_ms, ms] points",
+      "stages": {},
+      "steps": {}
+    },
+    "execution": {
+      "construction": {
+        "fill_ms": 0.0,
+        "legs_ms": {},
+        "prepare_ms": 0.0,
+        "prepared_unix_ms": 0,
+        "warm_ms": 0.0
+      },
+      "cuts": {
+        "levels": {},
+        "oom_floor": 0,
+        "sites": []
+      },
+      "degree": 1,
+      "executor": {
+        "legs_ms": {
+          "cuda_init": 805.6,
+          "package_import": 2333.6,
+          "package_warmup": 0.0,
+          "torch_import": 0.0
+        },
+        "ms": 3139.3,
+        "started_unix_ms": 1793536020680
+      },
+      "gpus": [
+        {
+          "arch": "sm_89",
+          "attention": {
+            "impl": "cozy _attn4 (int4 Q·Kᵀ, Kitchen int8 P·V)",
+            "observed": "",
+            "requested": ""
+          },
+          "end_us": 1793536030143688,
+          "gpu": 0,
+          "pid": 401,
+          "start_us": 1793536023846833,
+          "uuid": "GPU-001d94d1-0a24-f46e-9917-aeacf408c95f"
+        }
+      ],
+      "loops": [
+        {
+          "at_ms": {
+            "entered": 1793536029828.7,
+            "returned": 1793536029976.6
+          },
+          "mode": "eager",
+          "native_steps": 0,
+          "refusals": [
+            "one step"
+          ],
+          "reused": false,
+          "steps": 1
+        }
+      ],
+      "on_demand": {},
+      "plan": {},
+      "plan_reports": {},
+      "reply_built_unix_ms": 1793536030157.7,
+      "reply_sent_unix_ms": 1793536030158.3,
+      "spread": {}
+    },
+    "memory": {
+      "driver": [
+        {
+          "before_bytes": 3997696,
+          "gpu": 0,
+          "peak_bytes": 1628569600,
+          "power_max_w": 52,
+          "sm_mhz_limit": 3135,
+          "sm_mhz_low": 2550,
+          "sm_mhz_mean": 2550,
+          "temperature_max_c": 33,
+          "throttled_share": 0.0,
+          "throttles": []
+        }
+      ],
+      "peak_allocated_bytes": 932290980,
+      "peak_reserved_bytes": 1109393408,
+      "stats": {
+        "varena": [
+          {
+            "ceiling": {
+              "disk_gbps": 0.0012775811823480432,
+              "h2d_gbps": 13.352106847313458
+            },
+            "gpu": 0,
+            "stats": {
+              "allocated": 17039360,
+              "allocator": {
+                "allocations": 50,
+                "context_joins": 0,
+                "driver_memory_calls": 197,
+                "event_queries": 99,
+                "event_records": 59,
+                "event_waits": 0,
+                "frees": 50,
+                "ooms": 0
+              },
+              "allocator_scope": "process",
+              "baked_pages": {
+                "bytes": 0,
+                "cap": 67061553152,
+                "pages": 0,
+                "pinned": true,
+                "room": -1,
+                "scope": "the host tier: every streamed page's bytes, pinned",
+                "wanted": 0
+              },
+              "final_bindings": {
+                "fallback_blocks": 0,
+                "fills": 0,
+                "final_resident_bytes": 0,
+                "hits": 0,
+                "native_prefetch": true,
+                "raw_resident_bytes": 0,
+                "resident_scope": "process"
+              },
+              "gathered": 0,
+              "host": null,
+              "moved": {
+                "baked": {
+                  "bytes": 0,
+                  "fills": 0,
+                  "ns": 0
+                },
+                "store": {
+                  "bytes": 0,
+                  "ns": 0
+                }
+              },
+              "overlapping": false,
+              "peak": 932290980,
+              "peak_window": "Working high-water plus sampled native backing, carried across resets; other constructions' resident sets left out",
+              "phase_policy_supported": true,
+              "phases": [],
+              "prefetch": {
+                "canceled": 0,
+                "completed": 0,
+                "declined_native": 0,
+                "failed": 0,
+                "queued": [],
+                "scope": "immutable stored RAW; native measured admission; unknown keys decline",
+                "started": 0,
+                "unsupported_sources": {},
+                "wait_ns": 0
+              },
+              "request": "2",
+              "reserved": 975175680,
+              "room_first_pass": null,
+              "sets": {},
+              "trace": [],
+              "trace_scope": "fills",
+              "weight_residency": {
+                "context_joins": 0,
+                "event_waits": 0,
+                "evictions": 0,
+                "fills": 0,
+                "hits": 0,
+                "pinned_bytes": 0,
+                "poisoned": false,
+                "preferred_bytes": 0,
+                "ready_bytes": 0,
+                "reclaimable_bytes": 0,
+                "reclaimed_by_reason": {
+                  "allocator": 0,
+                  "requested": 0,
+                  "room": 0,
+                  "streaming_limit": 0,
+                  "weight_allocation": 0
+                },
+                "reclaimed_bytes": 0,
+                "regions": 0,
+                "reserved_bytes": 0,
+                "resident_bytes": 0,
+                "streaming_limit_bytes": 18446744073709551615
+              },
+              "working_allocator": {
+                "allocated_bytes": 17039360,
+                "allocated_capacity": 20971520,
+                "allocated_peak": 932290980,
+                "allocations": 1785,
+                "context_joins": 0,
+                "driver_memory_calls": 303,
+                "event_handles": 2,
+                "event_queries": 345,
+                "event_records": 282,
+                "event_waits": 0,
+                "free_bytes": 11646464,
+                "frees": 1783,
+                "mapped_bytes": 975175680,
+                "mapped_peak": 979369984,
+                "ooms": 0,
+                "pending_bytes": 942516736,
+                "pools": 0,
+                "pools_bytes": 0,
+                "prefetch_admissions": 0,
+                "prefetch_attempts": 0,
+                "prefetch_declines": 0,
+                "reclaimable_bytes": 0,
+                "unassigned_bytes": 40960
+              },
+              "working_phases": [
+                {
+                  "backing_peak_bytes": 694157312,
+                  "cut_choices": 1,
+                  "definitions": [],
+                  "invalidated": true,
+                  "key": null,
+                  "mode": "eager",
+                  "observation_id": 1,
+                  "peak_bytes": 684409344,
+                  "published": false,
+                  "reason": "split_operation_failed",
+                  "split_observations": [
+                    {
+                      "backing_peak_bytes": 692060160,
+                      "choice_id": "heads:56/full:0:5/tail:0:5",
+                      "key": "runtime.split.projected_heads/1:f447fd46099c31fb079f413d25d5937280e98aeff06607ecd92e18ff2c6979cf",
+                      "observation_id": 1,
+                      "observed": true,
+                      "peak_bytes": 684408832,
+                      "pending": false,
+                      "published": false,
+                      "reason": "operation_not_submitted",
+                      "successful_passes": 0
+                    }
+                  ],
+                  "successful_backing_peak_bytes": 0,
+                  "successful_passes": 0,
+                  "successful_peak_bytes": 0,
+                  "total_peak_bytes": 963488256
+                }
+              ],
+              "working_splits": [
+                {
+                  "backend": "_cozy_kitchen_int4qk",
+                  "choices": [
+                    [
+                      "heads:56/full:0:5/tail:0:5",
+                      [
+                        117483520,
+                        117483520,
+                        117483520,
+                        117483520,
+                        44056320,
+                        32780,
+                        33554944,
+                        29370880,
+                        29370880,
+                        59637760,
+                        465920,
+                        58240,
+                        28672,
+                        28672,
+                        28672
+                      ]
+                    ],
+                    [
+                      "heads:28/full:0:5/tail:0:5",
+                      [
+                        117483520,
+                        58741760,
+                        58741760,
+                        58741760,
+                        44056320,
+                        32780,
+                        33554944,
+                        14685440,
+                        14685440,
+                        29818880,
+                        232960,
+                        29120,
+                        14336,
+                        14336,
+                        14336
+                      ]
+                    ],
+                    [
+                      "heads:14/full:0:5/tail:0:5",
+                      [
+                        117483520,
+                        29370880,
+                        29370880,
+                        29370880,
+                        44056320,
+                        32780,
+                        33554944,
+                        7342720,
+                        7342720,
+                        14909440,
+                        116480,
+                        14560,
+                        7168,
+                        7168,
+                        7168
+                      ]
+                    ],
+                    [
+                      "heads:7/full:0:4/tail:0:4",
+                      [
+                        117483520,
+                        14685440,
+                        14685440,
+                        14685440,
+                        44056320,
+                        32780,
+                        16777728,
+                        3671360,
+                        3671360,
+                        7454720,
+                        58240,
+                        7280,
+                        3584,
+                        3584,
+                        3584
+                      ]
+                    ],
+                    [
+                      "heads:4/full:0:5/tail:0:5",
+                      [
+                        117483520,
+                        8391680,
+                        8391680,
+                        8391680,
+                        44056320,
+                        32780,
+                        33554944,
+                        2097920,
+                        2097920,
+                        4259840,
+                        33280,
+                        4160,
+                        2048,
+                        2048,
+                        2048
+                      ]
+                    ],
+                    [
+                      "heads:2/full:0:0/tail:0:0",
+                      [
+                        117483520,
+                        4195840,
+                        4195840,
+                        4195840,
+                        44056320,
+                        32780,
+                        1048960,
+                        1048960,
+                        2129920,
+                        16640,
+                        2080,
+                        1024,
+                        1024,
+                        1024
+                      ]
+                    ],
+                    [
+                      "heads:1/full:0:2/tail:0:2",
+                      [
+                        117483520,
+                        2097920,
+                        2097920,
+                        2097920,
+                        44056320,
+                        32780,
+                        524480,
+                        524480,
+                        1064960,
+                        8320,
+                        1040,
+                        512,
+                        512,
+                        512
+                      ]
+                    ]
+                  ],
+                  "head_chunk": 56,
+                  "implementation": "kitchen-int4qk",
+                  "key": "runtime.split.projected_heads/1:f447fd46099c31fb079f413d25d5937280e98aeff06607ecd92e18ff2c6979cf",
+                  "selection": {
+                    "allocation_backing_bytes": 692060160,
+                    "available_bytes": 689963008,
+                    "basis": "declared",
+                    "choice_id": "heads:56/full:0:5/tail:0:5",
+                    "eligible": [
+                      "heads:56/full:0:5/tail:0:5",
+                      "heads:28/full:0:5/tail:0:5",
+                      "heads:14/full:0:5/tail:0:5",
+                      "heads:7/full:0:4/tail:0:4",
+                      "heads:4/full:0:5/tail:0:5",
+                      "heads:2/full:0:0/tail:0:0",
+                      "heads:1/full:0:2/tail:0:2"
+                    ],
+                    "measured_backing_peak_bytes": null,
+                    "preserved_backing_bytes": 2097152,
+                    "reclaimable_working_bytes": 0,
+                    "reclaimed_weight_bytes": 0,
+                    "reclaimed_working_bytes": 0,
+                    "required_bytes": 689963008,
+                    "reused_capacity_bytes": 98304,
+                    "stream": 0
+                  },
+                  "selections": 1,
+                  "site": "projected-heads",
+                  "submission": {
+                    "backing_peak_bytes": 692060160,
+                    "choice_id": "heads:56/full:0:5/tail:0:5",
+                    "key": "runtime.split.projected_heads/1:f447fd46099c31fb079f413d25d5937280e98aeff06607ecd92e18ff2c6979cf",
+                    "observation_id": 1,
+                    "observed": true,
+                    "peak_bytes": 684408832,
+                    "pending": true,
+                    "published": false,
+                    "reason": "operation_not_submitted",
+                    "successful_passes": 0
+                  },
+                  "workspace_bytes": 33554944
+                }
+              ]
+            },
+            "torch_peak": 932290980
+          }
+        ]
+      }
+    },
+    "models": [],
+    "observations": [
+      {
+        "at_unix_ms": 1793536030143,
+        "attempt_key": "2",
+        "fields": {
+          "ms": 5001.2,
+          "times": 1
+        },
+        "kind": "confession",
+        "name": "request_path.blocking",
+        "seq": 1,
+        "value": "kernel build wait: minimax-h3-glue-fp8"
+      }
+    ],
+    "residency": {
+      "graphs": {},
+      "notes": {}
+    },
+    "software": {
+      "attempt_ordinal": 1,
+      "runtime": "0.36.21+dev.gdae97328",
+      "tensord": "0.15.4+dev.gafa6f922",
+      "tensord_commit": "afa6f9229153d1a7e93bbf72fc86f5543a4ac21c",
+      "tensorfs": "0.17.16+dev.gb20f699c"
+    }
+  }
+}

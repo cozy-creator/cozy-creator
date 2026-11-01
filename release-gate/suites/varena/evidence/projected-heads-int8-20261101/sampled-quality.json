@@ -1,0 +1,49 @@
+{
+  "matched_full_scope": true,
+  "arms": {
+    "control": {
+      "pcm_sha256": "1bf36ae04bbbbae373e9efa91657670c113f3baf36ba8c650b579b7b61cd8a69",
+      "interleaved_samples": 966656,
+      "rms_s16": 56.1337878215605,
+      "rms_dbfs": -55.32451172456793,
+      "peak_absolute_s16": 363,
+      "clip_samples": 0,
+      "frames": 362,
+      "video_duration_s": 15.083333,
+      "audio_duration_s": 15.075,
+      "width": 1344,
+      "height": 768,
+      "rate": "24/1",
+      "sample_rate": 32000,
+      "channels": 2
+    },
+    "candidate": {
+      "pcm_sha256": "3ddc70aa84d6090ef807ffcff5a0daec4c8b4863b574a4d4dc4f5203f1904753",
+      "interleaved_samples": 966656,
+      "rms_s16": 41.2072893422002,
+      "rms_dbfs": -58.009517756648926,
+      "peak_absolute_s16": 387,
+      "clip_samples": 0,
+      "frames": 362,
+      "video_duration_s": 15.083333,
+      "audio_duration_s": 15.075,
+      "width": 1344,
+      "height": 768,
+      "rate": "24/1",
+      "sample_rate": 32000,
+      "channels": 2
+    }
+  },
+  "audio_listening": "not performed; numeric full-stream evidence only",
+  "visual_sample_times_s": [
+    0,
+    2,
+    4,
+    6,
+    8,
+    10,
+    12,
+    14
+  ],
+  "visual_observation": "Eight paired samples at 0, 2, 4, 6, 8, 10, 12 and 14 seconds show coherent golden-hour workbenches, mechanical instruments and tools with comparable detail and lighting. Composition, object placement and framing differ. No obvious candidate-only blackout, tiling or gross corruption appears. The samples do not establish continuous motion quality or rule out defects between samples."
+}

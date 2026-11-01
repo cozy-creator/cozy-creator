@@ -1,0 +1,18 @@
+{
+  "passed": true,
+  "cuda_initialized": false,
+  "cases": [
+    {
+      "instrumented": false,
+      "actual_runtime_owned_and_call": true,
+      "mutable_copy_is_normal": true,
+      "original_copyback_correct": true
+    },
+    {
+      "instrumented": true,
+      "actual_runtime_owned_and_call": true,
+      "mutable_copy_is_normal": true,
+      "original_copyback_correct": true
+    }
+  ]
+}
