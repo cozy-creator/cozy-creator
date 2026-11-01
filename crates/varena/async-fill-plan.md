@@ -54,7 +54,8 @@ impl Fill {
 }
 impl FillSession {
     // Retains everything on refusal. Acquire ProducerGuard, validate all streams,
-    // precreate all completion events, then expose a destination for submissions.
+    // precreate all completion events and ensure the completion worker exists, then
+    // expose a destination for submissions. OS worker-start failure retains custody.
     pub fn begin(&mut self) -> Result<FillDestination>;
 
     // Seal all future producer submissions, record one completion event per actual
@@ -114,7 +115,8 @@ supply a `completed=true` flag or an arbitrary completion callback.
 
 1. Prepared owns Fill and all resources before CUDA submission. `begin(&mut self)` checks
    PID/capture first and creates events under producer exclusion. Capture/validation refusal
-   keeps the same reachable Session and all resources; no by-value error loses its owner.
+   keeps the same reachable Session and all resources; no by-value error loses its owner. Worker startup is also checked before Writing,
+   so OS thread-creation failure cannot strand a newly submitted producer.
 2. Writing begins before the destination is handed to source code. The Session owns a real
    ProducerGuard. Its existing contract remains: capture is excluded until actual producer
    completion, while unrelated resident graph replay remains allowed.
@@ -127,7 +129,10 @@ supply a `completed=true` flag or an arbitrary completion callback.
    `prepare_on` obtains a physical Pin and installs waits for every producer event before
    returning Ordered. Each new stream must go through this operation or Pin.order_on.
    Consumer release remains the existing checked/fenced/unjoined Pin contract. Releasing
-   a consumer Pin does not release the producer's own Pin.
+   a consumer Pin does not release the producer's own Pin. The ordered-Pin path must
+   also preserve last-consumer fences while Contents is Published: the current
+   `record_fences` Ready-only test needs a generation-checked extension, not a silent
+   fallback to treating producer completion as consumer completion.
 5. A native completion worker owns the submitted Fill, ProducerGuard, event set and all
    source/staging/stream resources. It queries real events; successful completion of the
    entire set changes Published to Ready, or an aborted fill to Cold. Only then can source
