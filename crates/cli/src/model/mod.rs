@@ -7,7 +7,6 @@ use protocol::error::{Error, Kind};
 use crate::Context;
 
 mod catalog;
-mod from_run;
 mod machine;
 mod quantize;
 mod releases;

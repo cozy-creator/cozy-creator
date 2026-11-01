@@ -42,12 +42,17 @@ impl DeviceKey {
     pub fn load(path: &Path) -> Result<Self, Error> {
         let raw = std::fs::read(path)
             .map_err(|e| Error::Credential(format!("{}: {e}", path.display())))?;
-        let kept: Kept = serde_json::from_slice(&raw)
-            .map_err(|e| Error::Credential(format!("{}: {e}", path.display())))?;
+        Self::read(&raw, &path.display().to_string())
+    }
+
+    /// A key from its file's bytes (`document`); `what` names them in a refusal.
+    pub fn read(raw: &[u8], what: &str) -> Result<Self, Error> {
+        let kept: Kept = serde_json::from_slice(raw)
+            .map_err(|e| Error::Credential(format!("{what}: {e}")))?;
         let seed: [u8; 32] = unb64(&kept.private_key)
             .and_then(|seed| seed.try_into().ok())
             .filter(|_| kept.version == 1 && !kept.device_key_id.is_empty())
-            .ok_or_else(|| Error::Credential(format!("{}: not a device key", path.display())))?;
+            .ok_or_else(|| Error::Credential(format!("{what}: not a device key")))?;
         Ok(Self {
             hub: kept.hub,
             email: kept.email,
@@ -58,6 +63,11 @@ impl DeviceKey {
 
     /// Writes the key to `path`, owner-only, replacing any key there.
     pub fn save(&self, path: &Path) -> Result<(), Error> {
+        write_private(path, &self.document())
+    }
+
+    /// The key's file as bytes: what `save` writes and `read` reads.
+    pub fn document(&self) -> Vec<u8> {
         let kept = Kept {
             version: 1,
             hub: self.hub.clone(),
@@ -65,7 +75,7 @@ impl DeviceKey {
             device_key_id: self.id.clone(),
             private_key: b64(self.key.to_bytes()),
         };
-        write_private(path, &serde_json::to_vec(&kept).expect("a key serializes"))
+        serde_json::to_vec(&kept).expect("a key serializes")
     }
 
     /// The public key, unpadded base64url: what a rental's `creator_public_key` names.
@@ -275,6 +285,11 @@ impl Enrollment {
             email: email.to_string(),
             hub: hub.origin().to_string(),
         })
+    }
+
+    /// The mailbox the code went to.
+    pub fn email(&self) -> &str {
+        &self.email
     }
 
     /// Completes enrollment with the emailed `code`: the key, and its first Bearer.

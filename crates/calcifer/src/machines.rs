@@ -1202,7 +1202,7 @@ pub(crate) async fn show(
 
 /// One of Calcifer's machines with the Status frame it answered now, recorded as its latest:
 /// one that cannot answer is `machine_unavailable`, never its last picture.
-async fn fresh(machines: &Arc<Machines>, text: &str) -> Result<Machine, Error> {
+pub(crate) async fn fresh(machines: &Arc<Machines>, text: &str) -> Result<Machine, Error> {
     let Named::Here(row) = machines.named_now(text).await? else {
         return Err(not_found(text));
     };
