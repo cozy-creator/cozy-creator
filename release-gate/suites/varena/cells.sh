@@ -31,10 +31,10 @@ cap() {
   done
   log "cap $1 on $M: $(grep -E '^status' "cap-$1.log")"
 }
-SDXL=$(pkg sdxl generate) KLEIN=$(pkg flux-3-klein generate_turbo) H3=$(pkg minimax-h3 shot)
+SDXL=$(pkg sdxl generate) KLEIN=$(pkg flux-3-klein generate_turbo) H3=$(pkg minimax-h3 generate)
 # One character picture, as a project sends it: no model but H3's.
 H3REF="[{\"name\": \"Lead\", \"kind\": \"character\", \"image\": \"$REF\"}]"
-h3() { vcell "$1" "$H3" assets:="$H3REF" prompt="<Lead> $MOTION $4" seed:=$((R + $2)) duration_s:="$3"; }
+h3() { vcell "$1" "$H3" references:="$H3REF" prompt="<Lead> $MOTION $4" seed:=$((R + $2)) duration_s:="$3"; }
 ln -sfn "$V/ceiling.py" ceiling.py; ln -sfn "$V/host-cap.py" host-cap.py
 
 if ! grep -q '^GPU 0' machine.txt; then

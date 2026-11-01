@@ -16,7 +16,7 @@ STEP_RATIO, STEP_EXTRA_MS = 2, 5_000
 # about 2x a sparse one (minimax-h3 docs/attention-defaults.md: turbo 4 of 8, regular sampling the first 10). Against
 # one median, a healthy turbo call with dense steps 2.07x its sparse ones failed (gate 40834197815).
 def dense_steps(target, steps):
-    return (4 if steps <= 8 else 10) if target == 'minimax-h3/shot' else 1
+    return (4 if steps <= 8 else 10) if target == 'minimax-h3/generate' else 1
 # The step tracks the step rule judges: a sampler's steps (`tel.step_callback` stages). Not an autoregressive stage
 # (HunyuanImage-3's `thinking`: token 1 is the prompt's prefill, gate 40907841888) and not per-item work (`decode_video`
 # frames, `scan`, `assemble`, `calibrating`).
