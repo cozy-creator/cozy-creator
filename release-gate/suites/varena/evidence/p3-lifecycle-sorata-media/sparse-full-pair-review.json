@@ -13,7 +13,7 @@
     "requires completed model run, denoise progress and output artifact hashes; preserves commands and run-show"
   ],
   "boundaries": [
-    "The aggregate bounded-proof builder owns the exact26-case/count/identity assertions; the runner trusts that signed-by-hash local evidence object.",
+    "The aggregate bounded-proof builder owns the exact26-case/count/identity assertions; the runner trusts that hash-pinned local evidence object.",
     "Execution/output custody only: later numerical, perceptual and performance audit remains required.",
     "No run should start with less than the explicit guard time; current rental deadline is not extended by this script."
   ]
