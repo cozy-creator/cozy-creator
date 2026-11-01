@@ -1,0 +1,27 @@
+{
+  "passed": true,
+  "original_failure": "step must be a nonnegative integer",
+  "actual_runtime_loop_rows": [
+    {
+      "index_type": "Tensor",
+      "index_shape": [
+        1
+      ],
+      "step": 0,
+      "seed_step": true,
+      "rolling": false
+    },
+    {
+      "index_type": "Tensor",
+      "index_shape": [
+        1
+      ],
+      "step": 1,
+      "seed_step": false,
+      "rolling": true
+    }
+  ],
+  "cuda_initialized": false,
+  "tensor_scalar_reads": 0,
+  "scope": "actual Runtime _Loop.eager host-phase dispatch and actual AttentionLayout constructor; no GPU claim"
+}
