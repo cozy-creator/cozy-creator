@@ -335,6 +335,13 @@ pub fn recover_activation(paths: &Paths) -> io::Result<Recovered> {
     }
 }
 
+/// The Runtime pairs under `engine`'s `sdk/` the machine may run again: the selected one and,
+/// while an activation is pending, the one it rolls back to. Any other is never used again.
+pub fn kept_pairs(engine: &Path) -> Vec<PathBuf> {
+    let pending: Option<Pending> = fs::read(engine.join("update/pending.json")).ok().and_then(|raw| serde_json::from_slice(&raw).ok());
+    fs::read_link(engine.join("sdk/current")).ok().into_iter().chain(pending.and_then(|p| p.sdk_before)).collect()
+}
+
 fn read_pending(paths: &Paths) -> io::Result<Option<Pending>> {
     match fs::read(paths.update("pending.json")) {
         Ok(raw) => Ok(Some(serde_json::from_slice(&raw)?)),

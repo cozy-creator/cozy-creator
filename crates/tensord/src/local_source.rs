@@ -342,6 +342,9 @@ impl LocalSources {
         let ready = environment.join(".ready");
         let label = format!("{} {}", manifest.package, manifest.release);
         let pyproject = fs::read_to_string(project.join("pyproject.toml"))?;
+        // Reused, it is in use again: reclaim drops only an environment no generation names that
+        // has been left alone a while (`reclaim::IDLE`).
+        let _ = platform::durable::set_times(&environment, fs::FileTimes::new().set_modified(std::time::SystemTime::now()));
         if !ready.is_file() {
             let stage = format!("installing {} on this machine", manifest.package);
             job.stage(stage.clone());

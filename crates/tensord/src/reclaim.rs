@@ -3,8 +3,10 @@
 //! evicts on its own: orphans, then idle model lanes, least recently used first.
 //! On a low disk a sweep drops, least recently used first until it is not low: uv cache
 //! entries no environment links, collected result copies, settled logs, memoized stages,
-//! unused generations (then the uv entries only they linked), and compiled kernels last, only
-//! when they alone lift it. Only bytes an unlink frees on the measured filesystem count:
+//! update downloads, unused generations (then the uv entries only they linked), and compiled
+//! kernels last, only when they alone lift it. Garbage goes every sweep once idle: a generation
+//! whose build failed, an editable environment no generation names, a Runtime pair neither
+//! selected nor kept to roll back to. Only bytes an unlink frees on the measured filesystem count:
 //! single-link files this process does not hold open, on that filesystem. Optional cache
 //! writes are skipped on a low disk. Never evicted: uncollected results (durable outputs),
 //! journal rows, a generation a run holds or an installation names, a uv entry an environment
@@ -154,9 +156,12 @@ pub(crate) enum Kind {
     Staging,
     Object,
     UvCache,
+    Editable,
+    Pair,
     Result,
     Log,
     Memo,
+    Update,
     Generation,
     Kernel,
 }
@@ -170,6 +175,9 @@ impl Kind {
             Kind::Result => "result copies",
             Kind::Log => "logs",
             Kind::Memo => "memoized stages",
+            Kind::Editable => "editable environments no generation names",
+            Kind::Pair => "Runtime pairs no longer selected",
+            Kind::Update => "update downloads",
             Kind::Generation => "package environments",
             Kind::Kernel => "kernel caches",
         }
@@ -565,18 +573,64 @@ pub fn sweep(caches: &Caches) -> io::Result<Swept> {
             add(Kind::Memo, home, used, None);
         }
     }
+    // Garbage once idle, each sweep: a generation whose build failed or was cut short (no
+    // record, its build lock free), an editable environment no generation names, a Runtime pair
+    // neither selected nor kept to roll back to.
+    let mut garbage = |kind, path: &Path, used| {
+        let bytes = releasable(path, filesystem, &open).unwrap_or(0);
+        if unused_for(used, IDLE) && remove(path) {
+            swept.add(kind, 1, bytes);
+        }
+    };
+    let generations = caches.catalog.root();
+    let engine_dir = generations.parent().unwrap_or(generations);
+    let mut named = HashSet::new();
     // Generations unbound by any installation, unfinished run or configured package: a
     // resolve touches `.hold`, and a holder's shared lock on it refuses collection.
-    for entry in fs::read_dir(caches.catalog.root())?.flatten() {
+    for entry in fs::read_dir(generations)?.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
+        named.extend(fs::read_link(entry.path().join("env")).ok().and_then(|env| durable::canonical(&env).ok()));
         if name.starts_with(".collect-") {
             remove(&entry.path()); // an interrupted collection
         } else if name.len() == 32
             && name.bytes().all(|b| b.is_ascii_hexdigit())
             && !caches.bound.contains(&name)
         {
-            let used = modified(&entry.path().join(".hold"));
-            add(Kind::Generation, entry.path(), used, None);
+            if entry.path().join("generation.json").is_file() {
+                let used = modified(&entry.path().join(".hold"));
+                add(Kind::Generation, entry.path(), used, None);
+                continue;
+            }
+            let lock = File::open(generations.join(".locks").join(format!("{name}.lock")));
+            let _building = match lock {
+                Ok(lock) if lock.try_lock().is_err() => continue,
+                lock => lock,
+            };
+            garbage(Kind::Generation, &entry.path(), modified(&entry.path()));
+        }
+    }
+    let homes = fs::read_dir(engine_dir.join("editable")).into_iter().flatten().flatten();
+    let homes = homes.flat_map(|actor| fs::read_dir(actor.path()).into_iter().flatten().flatten());
+    for env in homes.flat_map(|home| fs::read_dir(home.path()).into_iter().flatten().flatten()) {
+        let unnamed = durable::canonical(&env.path()).is_ok_and(|path| !named.contains(&path));
+        if env.file_name().to_string_lossy().starts_with("env-") && unnamed {
+            garbage(Kind::Editable, &env.path(), modified(&env.path()));
+            remove(&env.path().with_extension("wheels"));
+        }
+    }
+    let kept = crate::machine::update::kept_pairs(engine_dir);
+    for pair in fs::read_dir(engine_dir.join("sdk")).into_iter().flatten().flatten() {
+        let name = pair.file_name();
+        if name.to_string_lossy().starts_with("candidate-") && !kept.iter().any(|k| k.file_name() == Some(&name)) {
+            // A pair being staged is written to throughout.
+            garbage(Kind::Pair, &pair.path(), last_use(&pair.path()));
+        }
+    }
+    // An update's staged and downloaded files: a dev build sent again, a release fetched again.
+    for dir in ["staged", "downloads"] {
+        for entry in fs::read_dir(engine_dir.join("update").join(dir)).into_iter().flatten().flatten() {
+            let used = last_use(&entry.path());
+            add(Kind::Update, entry.path(), used, None);
         }
     }
     // No lock is held across the sweep: each kernel entry takes its users' lock around its own
@@ -605,6 +659,9 @@ pub fn sweep(caches: &Caches) -> io::Result<Swept> {
         // Droppable now, each kind least recently used first; a generation once idle and unheld.
         let mut plan = vec![];
         for mut entry in kept {
+            if entry.kind == Kind::Update && !unused_for(entry.used, IDLE) {
+                continue;
+            }
             if entry.kind == Kind::Generation {
                 let hold = File::open(entry.path.join(".hold")).ok().filter(|hold| hold.try_lock().is_ok());
                 if !unused_for(entry.used, IDLE) || hold.is_none() {
