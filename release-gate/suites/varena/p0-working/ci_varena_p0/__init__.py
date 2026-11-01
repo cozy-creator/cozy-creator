@@ -92,7 +92,7 @@ def split_policy(payload: Probe, tel: Telemetry) -> Report:
 
 @app.entrypoint(accelerator=True)
 def retention_policy(payload: Probe, tel: Telemetry) -> Report:
-    """Real cache-window clearing, roomy retention and unchanged managed/peer capacity."""
+    """Real cache-window clearing, roomy retention and unchanged managed/Room capacity."""
     return _cuda_child(payload, tel, "retention_policy.py", "varena-p2-retention-policy")
 
 

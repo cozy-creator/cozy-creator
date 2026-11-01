@@ -1,4 +1,4 @@
-"""Real native cache retention at two managed capacities, including a peer-room bound."""
+"""Real native cache retention at two managed capacities, including the existing temporary Room bound."""
 from __future__ import annotations
 
 import gc
@@ -43,9 +43,9 @@ def without_window(stats):
     return {key: value for key, value in stats.items() if key != "streaming_limit_bytes"}
 
 
-def capacity_case(capacity, *, peer_limit=None, legacy_first=False):
+def capacity_case(capacity, *, room_limit=None, legacy_first=False):
     vt.set_limit(0, capacity)
-    varena.make_room(0, peer_limit)
+    varena.make_room(0, room_limit)
     arena = varena.Arena(0)
     assert BYTES % arena.granularity == 0, arena.granularity
     first, second = arena.reserve(BYTES), arena.reserve(BYTES)
@@ -89,7 +89,7 @@ def capacity_case(capacity, *, peer_limit=None, legacy_first=False):
             assert final["fills"] == 2 and final["evictions"] == 1, final
             assert final["reclaimed_by_reason"]["streaming_limit"] == 0, final
             assert final["reclaimed_bytes"] == BYTES, final
-        return {"managed_limit": capacity, "peer_limit": peer_limit, "legacy": legacy,
+        return {"managed_limit": capacity, "temporary_room_limit": room_limit, "legacy": legacy,
                 "before_clear": before, "after_clear": after, "final": final,
                 "scope": "actual managed-capacity/retention mechanism; not a smaller-GPU hardware result"}
     finally:
@@ -104,7 +104,7 @@ def capacity_case(capacity, *, peer_limit=None, legacy_first=False):
 CASES = {
     "roomy-retains-after-clear": lambda: capacity_case(2 * BYTES, legacy_first=True),
     "managed-capacity-still-reclaims": lambda: capacity_case(BYTES),
-    "peer-capacity-still-reclaims": lambda: capacity_case(2 * BYTES, peer_limit=BYTES),
+    "temporary-room-capacity-still-reclaims": lambda: capacity_case(2 * BYTES, room_limit=BYTES),
 }
 
 
