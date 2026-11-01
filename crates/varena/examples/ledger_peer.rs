@@ -49,7 +49,8 @@ mod proof {
             json!({"generation":snapshot.generation,"capacity_epoch":snapshot.capacity_epoch,
         "device":snapshot.backing_device,"inode":snapshot.backing_inode,
         "rows":rows,"round":round,"sample":snapshot.sample.map(|s|json!({"id":s.generation,
-            "capacity_epoch":s.capacity_epoch,"used":s.driver_used,"total":s.total}))}),
+            "capacity_epoch":s.capacity_epoch,"used":s.driver_used,"total":s.total,
+            "reserve":s.reserve,"attributable":s.attributable}))}),
         )
     }
     fn published(
@@ -100,6 +101,10 @@ mod proof {
             }
             "ask" => {
                 let r = peer.ask(n(1), n(2))?;
+                Ok(json!({"round":r.generation,"requested":r.requested,"donors":r.donations.len()}))
+            }
+            "ask-device" => {
+                let r = peer.ask_device(n(1), n(2))?;
                 Ok(json!({"round":r.generation,"requested":r.requested,"donors":r.donations.len()}))
             }
             "ack" => {

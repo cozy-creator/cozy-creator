@@ -202,6 +202,12 @@ impl Peer {
         Ok(self.participant.ask(sample_generation, wanted)?)
     }
 
+    /// Coordinated device pressure, including this Shared owner's completed idle backing.
+    pub fn ask_device(&self, sample_generation: u64, wanted: u64) -> Result<ledger::Round> {
+        self.check()?;
+        Ok(self.participant.ask_device(sample_generation, wanted)?)
+    }
+
     pub fn withdraw(&self, round: u64) -> Result<bool> {
         self.check()?;
         Ok(self.participant.withdraw(round)?)
