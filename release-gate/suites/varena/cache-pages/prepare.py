@@ -61,7 +61,8 @@ def main():
     if args.runtime_wheel:
         names = ('internal/cache_owners.py', 'internal/loop.py', 'internal/prepared.py',
                  'internal/residency.py', 'internal/weights.py', 'graphs/__init__.py',
-                 'graphs/domain.py', 'lm/__init__.py')
+                 'graphs/domain.py', 'lm/__init__.py', 'internal/int8_linear.py',
+                 'internal/kernel_ready.py', 'internal/prebuilt.py')
         with zipfile.ZipFile(args.runtime_wheel) as wheel:
             metadata = [name for name in wheel.namelist() if name.endswith('.dist-info/METADATA')]
             assert len(metadata) == 1

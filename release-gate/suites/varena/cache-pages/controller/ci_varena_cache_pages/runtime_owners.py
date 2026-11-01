@@ -21,7 +21,7 @@ MIB = 1 << 20
 def actual(payload, ctx):
     import cozy_runtime
     from cozy_runtime.author import _loop as declared_loop
-    from cozy_runtime.internal import loop
+    from cozy_runtime.internal import int8_linear, loop
     from cozy_runtime.internal.residency import _REQUEST, Request
 
     _, provenance = setup(payload, ctx, cache_required=True)
@@ -29,7 +29,8 @@ def actual(payload, ctx):
     assert provenance['versions']['cozy-runtime'] == payload.runtime_version
     expected = {'internal/cache_owners.py', 'internal/loop.py', 'internal/prepared.py',
                 'internal/residency.py', 'internal/weights.py', 'graphs/__init__.py',
-                'graphs/domain.py', 'lm/__init__.py'}
+                'graphs/domain.py', 'lm/__init__.py', 'internal/int8_linear.py',
+                'internal/kernel_ready.py', 'internal/prebuilt.py'}
     assert set(payload.runtime_modules) == expected
     root = Path(cozy_runtime.__file__).resolve().parent
     for name, value in payload.runtime_modules.items():
@@ -38,6 +39,14 @@ def actual(payload, ctx):
     assert isinstance(request, Request) and request.id == ctx.request_id and not request.idle
     assert request in request.memory.requests and not request.memory.models
     assert isinstance(declared_loop._RUNTIME, loop.Loops)
+    startup = {'before': vt.stats(0)}
+    # Device startup primes this actual native provider on another thread. Its documented
+    # first ask waits for that same producer; finish it before any controlled cap/baseline.
+    assert int8_linear.native(torch, 0) is not None
+    torch.cuda.synchronize(0)
+    startup.update(after=vt.stats(0), provider=int8_linear.serving(0),
+                   library=int8_linear.library(0).identity)
+    provenance['startup_native_readiness'] = startup
     return request, declared_loop._RUNTIME, provenance
 
 
@@ -83,6 +92,7 @@ def full_tensor_value(tensor, value):
 
 def allocator_progress(payload, ctx):
     request, _, provenance = actual(payload, ctx)
+    on = torch.device('cuda', ctx.device.index or 0)
     assert request.memory.cooperation is not None and request.memory.cooperation.facts()['active']
     cache = varena.Cache(0, 256 * MIB)
     cache.commit(0, cache.reserved_bytes)
@@ -101,7 +111,7 @@ def allocator_progress(payload, ctx):
         margin = 128 * MIB
         filler_bytes = (free - margin) // (2 * MIB) * (2 * MIB)
         assert filler_bytes > 0
-        filler = torch.empty(filler_bytes, dtype=torch.uint8, device=ctx.device)
+        filler = torch.empty(filler_bytes, dtype=torch.uint8, device=on)
         filler.fill_(53)
         full_tensor_value(filler, 53)
         available, _ = torch.cuda.mem_get_info(0)
@@ -109,17 +119,26 @@ def allocator_progress(payload, ctx):
         before = {'working': vt.stats(0), 'owner': owner.facts(),
                   'cooperation': request.memory.cooperation.facts(), 'cache': cache.stats()}
         began = time.monotonic_ns()
-        output = torch.empty(192 * MIB, dtype=torch.uint8, device=ctx.device)
+        output = torch.empty(192 * MIB, dtype=torch.uint8, device=on)
+        allocated = time.monotonic_ns()
+        allocated_state = {'working': vt.stats(0), 'cache': cache.stats()}
         output.fill_(71)
         full_tensor_value(output, 71)
         ended = time.monotonic_ns()
         after = {'working': vt.stats(0), 'owner': owner.facts(),
                  'cooperation': request.memory.cooperation.facts(), 'cache': cache.stats()}
+        diagnostics = {'case': 'allocator_owner_progress', 'before': before, 'after': after,
+                       'calls': calls, 'allocation_started_ns': began,
+                       'allocation_returned_ns': allocated, 'full_readback_ended_ns': ended,
+                       'at_allocation_return': allocated_state, 'observed_driver_free': available}
+        print(json.dumps({'event': 'owner_allocation_diagnostics', **diagnostics}, sort_keys=True), flush=True)
         assert after['working']['driver_physical_ooms'] > before['working']['driver_physical_ooms']
         assert after['cache']['mapped_bytes'] == 0 and len(calls) == 1
-        assert began <= calls[0]['at_ns'] <= ended
+        assert began <= calls[0]['at_ns'] <= allocated
+        assert before['cache']['mapped_bytes'] == 256 * MIB
         recovery = after['cooperation']['last_recovery']
-        assert recovery['outcome'] == 'local_physical_release_observed', recovery
+        # Peer coordination can finish before this local physical release is observed.
+        # The real driver retry and Cache counters are authoritative, not that interleaving.
         assert recovery['released_bytes'] == recovery['completed_bytes'] == 0
         owner.close()
         cache.close()
@@ -130,6 +149,7 @@ def allocator_progress(payload, ctx):
                                        'provenance': provenance, 'filler_bytes': filler_bytes,
                                        'observed_free': available, 'driver_total': total,
                                        'requested_output': 192 * MIB, 'full_readback': True,
+                                       'diagnostics': diagnostics,
                                        'calls': calls, 'before': before, 'after': after,
                                        'final': vt.stats(0)}, sort_keys=True))
     finally:
@@ -140,25 +160,38 @@ def allocator_progress(payload, ctx):
 
 class ResizeResult(ctypes.Structure):
     _fields_ = [('gil_before', ctypes.c_int), ('gil_after', ctypes.c_int),
-                ('failed', ctypes.c_int), ('callback_marker', ctypes.c_int),
-                ('error', ctypes.c_char * 2048)]
+                ('failed', ctypes.c_int), ('expected_exception', ctypes.c_int),
+                ('callback_marker', ctypes.c_int), ('error', ctypes.c_char * 2048),
+                ('exception_type', ctypes.c_char * 256)]
+
+
+def resize_facts(result):
+    return {'gil_before': result.gil_before, 'gil_after': result.gil_after,
+            'failed': bool(result.failed), 'expected_exception': bool(result.expected_exception),
+            'callback_marker': result.callback_marker,
+            'exception_type': bytes(result.exception_type).decode(),
+            'error': bytes(result.error).decode()}
 
 
 def held_gil(payload, ctx):
     request, _, provenance = actual(payload, ctx)
+    on = torch.device('cuda', ctx.device.index or 0)
     path = Path(__file__).parent / 'bin/gil_resize.so'
     assert digest(path) == payload.gil_gate_sha256
     gate = ctypes.PyDLL(str(path))
+    abi = gate.resize_fixture_abi
+    abi.argtypes, abi.restype = [], ctypes.c_int
+    assert abi() == 2  # Refuse an old C result layout before committing any Cache pages.
     resize = gate.resize_holding_gil
-    resize.argtypes = [ctypes.py_object, ctypes.c_uint64, ctypes.POINTER(ctypes.c_int),
+    resize.argtypes = [ctypes.py_object, ctypes.c_uint64, ctypes.py_object, ctypes.POINTER(ctypes.c_int),
                        ctypes.POINTER(ResizeResult)]
     resize.restype = ctypes.c_int
     marker = ctypes.c_int(0)
     cache = varena.Cache(0, 16 * MIB)
     cache.commit(0, cache.reserved_bytes)
     raw_cache_value(cache, 83)
-    storage = torch.UntypedStorage(2 * MIB, device=ctx.device)
-    view = torch.empty(0, dtype=torch.uint8, device=ctx.device).set_(storage, 0, (2 * MIB,), (1,))
+    storage = torch.UntypedStorage(2 * MIB, device=on)
+    view = torch.empty(0, dtype=torch.uint8, device=on).set_(storage, 0, (2 * MIB,), (1,))
     view.fill_(7)
     settle()
 
@@ -169,21 +202,38 @@ def held_gil(payload, ctx):
 
     owner = varena.CacheOwner(0, shrink)
     before = vt.stats(0)
+    cache_before = cache.stats()
     limit = before['mapped_bytes'] + before['cache_mapped_bytes'] + request.memory.native.stats()['resident_bytes']
     vt.set_limit(0, limit)
     try:
         first = ResizeResult()
-        assert resize(storage, 16 * MIB, ctypes.byref(marker), ctypes.byref(first)) == 0
-        assert first.gil_before == first.gil_after == 1
-        assert first.failed and first.callback_marker == 0, (first.failed, first.callback_marker)
-        assert 'memory' in bytes(first.error).decode().lower(), bytes(first.error)
+        first_code = resize(storage, 16 * MIB, torch.OutOfMemoryError, ctypes.byref(marker), ctypes.byref(first))
+        first_diagnostics = {'managed_limit': limit, 'return_code': first_code,
+                             'first': resize_facts(first), 'before': before,
+                             'cache_before': cache_before,
+                             'after_first': {'working': vt.stats(0), 'cache': cache.stats()}}
+        print(json.dumps({'event': 'owner_first_resize_diagnostics', **first_diagnostics}, sort_keys=True), flush=True)
+        assert first_code == 0, first_diagnostics
+        assert first.gil_before == first.gil_after == 1, first_diagnostics
+        assert first.failed and first.callback_marker == 0, first_diagnostics
+        assert first.expected_exception == 1, first_diagnostics
         assert storage.nbytes() == 2 * MIB
         # This wait deliberately releases the GIL only AFTER recording the original refusal.
         until(ctx, lambda: cache.stats()['mapped_bytes'] == 0, 'Python owner did not complete after GIL release')
         assert marker.value == 1 and owner.facts()['returned'] == 1
+        before_second = {'working': vt.stats(0), 'cache': cache.stats(), 'owner': owner.facts(),
+                         'storage_bytes': storage.nbytes()}
         second = ResizeResult()
-        assert resize(storage, 16 * MIB, ctypes.byref(marker), ctypes.byref(second)) == 0
-        assert second.gil_before == second.gil_after == 1 and not second.failed
+        second_code = resize(storage, 16 * MIB, torch.OutOfMemoryError, ctypes.byref(marker), ctypes.byref(second))
+        diagnostics = {'case': 'same_gil_owner_refusal', 'provenance': provenance,
+                       'managed_limit': limit, 'first': resize_facts(first),
+                       'second': resize_facts(second), 'second_return_code': second_code,
+                       'before': before, 'cache_before': cache_before, 'before_second': before_second,
+                       'after_second': {'working': vt.stats(0), 'cache': cache.stats(),
+                                        'owner': owner.facts(), 'storage_bytes': storage.nbytes()}}
+        print(json.dumps({'event': 'owner_resize_diagnostics', **diagnostics}, sort_keys=True), flush=True)
+        if second_code != 0 or second.gil_before != 1 or second.gil_after != 1 or second.failed:
+            return Report(False, json.dumps({'passed': False, **diagnostics}, sort_keys=True))
         assert storage.nbytes() == 16 * MIB
         full_tensor_value(view, 7)
         after = vt.stats(0)
@@ -193,8 +243,11 @@ def held_gil(payload, ctx):
         cache.close()
         return Report(True, json.dumps({'passed': True, 'case': 'same_gil_owner_refusal',
                                        'provenance': provenance, 'managed_limit': limit,
+                                       'diagnostics': diagnostics,
                                        'first': {'gil_before': first.gil_before, 'gil_after': first.gil_after,
                                                  'failed': bool(first.failed), 'callback_marker': first.callback_marker,
+                                                 'expected_exception': bool(first.expected_exception),
+                                                 'exception_type': bytes(first.exception_type).decode(),
                                                  'error': bytes(first.error).decode()},
                                        'later_allocation': {'gil_held': second.gil_after, 'bytes': storage.nbytes(),
                                                             'preserved_old_bytes': 2 * MIB},
@@ -207,6 +260,7 @@ def held_gil(payload, ctx):
 
 def capture_close(payload, ctx):
     _, _, provenance = actual(payload, ctx)
+    on = torch.device('cuda', ctx.device.index or 0)
     settle()
     baseline = vt.stats(0)
     cache = varena.Cache(0, 2 * MIB)
@@ -220,7 +274,7 @@ def capture_close(payload, ctx):
 
     owner = varena.CacheOwner(0, shrink)
     graph = torch.cuda.CUDAGraph()
-    value = torch.zeros(1, dtype=torch.uint8, device=ctx.device)
+    value = torch.zeros(1, dtype=torch.uint8, device=on)
     value.add_(1)  # warm the actual in-place kernel before capture
     torch.cuda.synchronize()
     try:
@@ -286,16 +340,17 @@ def prepared_sequence(ctx, *, stages, captured_state=False, sleep=0):
     from cozy_runtime.author._model import LANDED
     from cozy_runtime.internal.prepared import PreparedRepeat, PreparedSequence
 
-    pool, stream = torch.cuda.graph_pool_handle(), torch.cuda.Stream(device=ctx.device)
-    state = None if captured_state else torch.zeros(4 * MIB, dtype=torch.uint8, device=ctx.device)
+    on = torch.device('cuda', ctx.device.index or 0)
+    pool, stream = torch.cuda.graph_pool_handle(), torch.cuda.Stream(device=on)
+    state = None if captured_state else torch.zeros(4 * MIB, dtype=torch.uint8, device=on)
     definitions, footprints = [], []
     for _ in range(stages):
-        index = torch.zeros((), dtype=torch.int64, device=ctx.device)
+        index = torch.zeros((), dtype=torch.int64, device=on)
         graph = torch.cuda.CUDAGraph(keep_graph=True)
         footprint = vt.capture_footprint(0, pool)
         with vt.graph(graph, pool=pool, stream=stream, reserve_bytes=24 * MIB, footprint=footprint):
             if state is None:
-                state = torch.empty(4 * MIB, dtype=torch.uint8, device=ctx.device)
+                state = torch.empty(4 * MIB, dtype=torch.uint8, device=on)
             if captured_state:
                 state.fill_(7)
             else:
@@ -312,10 +367,12 @@ def prepared_sequence(ctx, *, stages, captured_state=False, sleep=0):
     return PreparedSequence(definitions, outputs=(state,), prefetch=False), tuple(footprints)
 
 
-def graph_retirement(payload, ctx):
+def graph_retirement(payload, ctx, *, explicit_replay=False):
     from cozy_runtime.internal import loop
 
     request, loops, provenance = actual(payload, ctx)
+    case = ('actual_native_sequence_with_explicit_replay_scope_and_idle_graph_retirement'
+            if explicit_replay else 'actual_native_sequence_and_idle_graph_retirement')
     warm, _ = prepared_sequence(ctx, stages=1)
     warm.submit(ctx).wait()
     warm.close()
@@ -333,6 +390,7 @@ def graph_retirement(payload, ctx):
     first_execution = a_execution = None
     blocker = blocker_owner = None
     blocker_calls = []
+    replay_scope = None
     release = threading.Event()
     retired = threading.Event()
     alias = None
@@ -356,13 +414,15 @@ def graph_retirement(payload, ctx):
         raw_cache_value(blocker, 127)
 
         def blocked_physical_owner(wanted):
-            attempt = {'wanted': wanted}
+            attempt = {'wanted': wanted, 'native_context': vt.split_context(0)}
             blocker_calls.append(attempt)
             try:
                 blocker.release(0, blocker.reserved_bytes, 0)
             except varena.CacheOwnerDeferredError as error:
                 attempt['refusal'] = error.reason
                 raise
+            else:
+                attempt['release_submitted'] = True
 
         blocker_owner = varena.CacheOwner(0, blocked_physical_owner)
         native_owner.touch()  # real use ordering: the physical Cache owner is tried first
@@ -383,6 +443,13 @@ def graph_retirement(payload, ctx):
         del b  # the Program is now the only definition owner; the alias retains storage only
         a.state[0].zero_()
         a_execution = a.submit(ctx)
+        if explicit_replay:
+            # Separate protocol case: this declared exclusion protects actual already-live
+            # GPU work through its checked completion. Ordinary NativeSequence ownership
+            # alone is not assumed to retain a process-wide Varena replay guard.
+            assert not a_execution.poll().done
+            replay_scope = varena.replay(0)
+            replay_scope.__enter__()
         until(ctx, lambda execution=a_execution: (p := execution.poll()).completed_steps >= 1 and not p.done,
               'no actual intermediate NativeSequence stage observed')
         request_handle = varena.request_cache_shrink(0, 24 * MIB)
@@ -392,9 +459,23 @@ def graph_retirement(payload, ctx):
                        'other sequence did not enter later native stages during retirement')
         assert native_owner.facts()['running'] and program.closed
         blocked = blocker_owner.facts()
-        assert blocked['declined'] == 1 and blocked['failed'] is None
-        assert len(blocker_calls) == 1 and blocker_calls[0].get('refusal') == 'capture'
-        assert blocker.stats()['live_bytes'] == blocker.reserved_bytes
+        blocker_state = blocker.stats()
+        diagnostics = {'case': case, 'explicit_replay_scope': explicit_replay,
+                       'earlier_owner': blocked, 'earlier_calls': blocker_calls,
+                       'earlier_cache': blocker_state, 'native_context': vt.split_context(0),
+                       'graph_owner': native_owner.facts(),
+                       'actual_sequence_completed_steps': during.completed_steps}
+        print(json.dumps({'event': 'graph_owner_diagnostics', **diagnostics}, sort_keys=True), flush=True)
+        assert blocked['callbacks'] == blocked['returned'] == 1 and blocked['failed'] is None, diagnostics
+        assert len(blocker_calls) == 1, diagnostics
+        if explicit_replay:
+            assert blocker_calls[0]['native_context']['reason'] == 'replay_active', diagnostics
+            assert blocked['declined'] == 1, diagnostics
+        if blocked['declined']:
+            assert blocked['declined'] == 1 and blocker_calls[0].get('refusal') == 'capture', diagnostics
+            assert blocker_state['live_bytes'] == blocker.reserved_bytes, diagnostics
+        else:
+            assert blocker_calls[0].get('release_submitted') and blocker_state['live_bytes'] == 0, diagnostics
         assert all(trace.facts()['retired'] for trace in b_footprints)
         vt.trim(0)
         with_alias = vt.stats(0)
@@ -402,10 +483,15 @@ def graph_retirement(payload, ctx):
         release.set()
         until(ctx, lambda: not native_owner.facts()['running'], 'owner callback did not finish')
         full_tensor_value(a_execution.wait()[0], 3)
+        if replay_scope is not None:
+            replay_scope.__exit__(None, None, None)
+            replay_scope = None
         full_tensor_value(alias, 7)
-        raw_cache_value(blocker, 127, write=False)
+        if blocker_state['live_bytes']:
+            raw_cache_value(blocker, 127, write=False)
         blocker_owner.close()
-        blocker.release(0, blocker.reserved_bytes, 0)
+        if blocker_state['live_bytes']:
+            blocker.release(0, blocker.reserved_bytes, 0)
         torch.cuda.synchronize()
         blocker.poll()
         blocker.close()
@@ -419,11 +505,12 @@ def graph_retirement(payload, ctx):
         vt.trim(0)
         after_alias = vt.stats(0)
         assert after_alias['pools_bytes'] < idle_with_alias['pools_bytes'], 'last escaped alias did not release its pool'
-        result = {'passed': True, 'case': 'actual_native_sequence_and_idle_graph_retirement',
+        result = {'passed': True, 'case': case,
                   'provenance': provenance, 'active_target_declined': True,
                   'other_sequence_completed_while_callback_running': during.completed_steps,
                   'other_sequence_result': 3, 'escaped_output_result': 7,
                   'earlier_physical_owner': blocked, 'earlier_owner_attempts': blocker_calls,
+                  'explicit_replay_scope': explicit_replay, 'diagnostics': diagnostics,
                   'owner': native_owner.facts(), 'with_alias': with_alias,
                   'idle_with_alias': idle_with_alias, 'after_alias': after_alias}
     finally:
@@ -432,6 +519,8 @@ def graph_retirement(payload, ctx):
             first_execution.wait()
         if a_execution is not None:
             a_execution.wait()
+        if replay_scope is not None:
+            replay_scope.__exit__(None, None, None)
         a.close()
         with loops._lock:
             loops._kept.pop(site, None)

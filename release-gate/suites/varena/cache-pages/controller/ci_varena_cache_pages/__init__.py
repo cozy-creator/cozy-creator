@@ -292,3 +292,9 @@ def owner_capture_close(payload: Probe, ctx: Context) -> Report:
 def graph_owner_retirement(payload: Probe, ctx: Context) -> Report:
     from .runtime_owners import graph_retirement
     return graph_retirement(payload, ctx)
+
+
+@app.entrypoint(accelerator=True)
+def graph_owner_replay_exclusion(payload: Probe, ctx: Context) -> Report:
+    from .runtime_owners import graph_retirement
+    return graph_retirement(payload, ctx, explicit_replay=True)

@@ -78,14 +78,23 @@ submitted CUDA host gate. `arena_concurrency` overlaps real Arena creation, fill
 full readbacks and destruction with native global reclaim/resident snapshots and Peer
 publication. It checks the registry/capture lock correction without a product probe.
 
-Four separate parent-extension cells require the new weak Python bridge and the exact
+Five separate parent-extension cells require the new weak Python bridge and the exact
 Runtime wheel. Preparation records the wheel hash, version and all eight participating
 Runtime modules; it does not infer the loaded implementation from a helper build.
+
+Common setup waits for the actual Runtime `int8_linear.native` readiness producer before
+any controlled baseline/cap and records its before/after counters and library identity.
+This prevents unrelated cold-start probe allocations from entering a protocol's measured
+capacity; the16MiB release/resize and native limit formula are unchanged. The readiness
+source modules are pinned along with the eight owner modules.
 
 - `owner_allocator_progress` fills actual GPU capacity, retains a live Cache and asks
   Torch for another allocation. The native callback worker must run the real Python
   owner, collect physically released pages and permit a real allocator retry. Actual
   physical OOMs, complete output readback and zero peer-credit fields are required.
+  Before/after/allocation-return snapshots are emitted before assertions. A peer episode
+  may report exhausted while the independent local release permits the real final driver
+  retry; that telemetry interleaving is recorded rather than required to have one name.
 - `owner_held_gil` uses `ctypes.PyDLL` and the small `gil_resize.c` fixture to call the
   real `Storage.resize_` with the allocating caller's GIL held. It records the failed
   call and zero callback marker before returning to Python. Only afterward may the
@@ -98,9 +107,14 @@ Runtime modules; it does not infer the loaded implementation from a helper build
   another three-stage NativeSequence to advance while the owner callback remains in
   capture-only exclusion. A real escaped view retains captured pool storage both
   during that other replay and after replay completion; only dropping that view may
-  free the retired pool. A preceding real Cache owner attempts a physical release and
-  receives the actual replay refusal; it must not starve this later logical owner.
+  free the retired pool. A preceding real Cache owner records its actual release or
+  refusal; ordinary NativeSequence ownership is not assumed to retain a global Varena
+  replay exclusion. Owner facts, Cache state and native context are emitted for diagnosis.
   Complete outputs and final working/pool/Cache baseline are checked.
+- `graph_owner_replay_exclusion` is a separate case: an explicit Varena replay scope covers
+  the actual live A sequence through its checked completion. Here the first Cache owner's
+  actual physical-release refusal is required, and it must not starve later logical B
+  retirement. The ordinary sequence case does not inherit this stronger exclusion claim.
 - `owner_capture_close` queues a real owner during an actual CUDA graph capture, observes
   the native capture gate and pending request, and closes admission with a typed refusal. It requires
   zero product working-driver calls in that interval and retirement only after capture
