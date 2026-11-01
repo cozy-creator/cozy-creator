@@ -115,10 +115,10 @@ def exercise(
     # never promotes it while one runs); this cell must bake now. The load's background build is
     # left to end, then `wait` takes what it landed, as a request that names its kernel does. A
     # failed build bakes eagerly (`lora_bake.serving`).
+    # The bake kernels' slot on this GPU and its opener, as `lora_bake.serving` names them (Runtime #1882: `KERNELS`).
+    kernel = f"{lora_bake.KERNELS.name} cuda:{gpu}"
     began = time.monotonic()
-    while (
-        slot := kernel_ready._SLOTS.get(lora_bake.KERNEL)
-    ) is not None and slot.state == "opening":
+    while (slot := kernel_ready._SLOTS.get(kernel)) is not None and slot.state == "opening":
         ctx.raise_if_cancelled()
         waited = int(time.monotonic() - began)
         if waited > 900:
@@ -127,7 +127,10 @@ def exercise(
             tel.log("waiting for the LoRA bake kernels", seconds=str(waited))
         time.sleep(1)
     try:
-        kernel_ready.wait(lora_bake.KERNEL, partial(lora_bake._built, gpu))
+        if not kernel_ready.TRITON:
+            raise RuntimeError("no Triton here")
+        opener = partial(kernel_ready.TRITON[0], lora_bake.KERNELS, partial(lora_bake.probe, torch, device), device=device)
+        kernel_ready.wait(kernel, opener)
     except Exception as error:
         tel.log("the LoRA bake kernels failed; baking eagerly", reason=str(error)[:300])
     held = placement.models[name]

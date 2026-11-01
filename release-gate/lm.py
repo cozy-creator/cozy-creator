@@ -16,9 +16,10 @@ def check(gate):
         else:
             fails.append(f'{name}: its prompt upsampler did not run (no `upsampling prompt` stage)')
     run = gate['runs'].get('h3')
-    if run is not None and '/shot' in str(run.record.get('target', '')):
-        # 0.2.x's shot takes its character as given: a project's story layer describes it, not the shot.
-        notes.append('lm: h3 is a shot, which takes its character reference as given (no describer in 0.2.x)')
+    target = str(run.record.get('target', '')) if run is not None else ''
+    if run is not None and ('/shot' in target or '/generate' in target):
+        # 0.2.x's shot and 0.3.x's generate take a character as given: a project describes it, not the function.
+        notes.append(f'lm: h3 is {target}, which takes its character reference as given (no describer since 0.2.0)')
     elif run is not None:
         # The describer is a Qwen3.5 call or stage of the H3 run; its trace names it.
         text = json.dumps({k: run.record.get(k) for k in ('calls', 'measurements')}).lower()
