@@ -9,22 +9,38 @@ use crate::{
     ensure_not_capturing, enter_producer, enter_retirement,
 };
 
+/// Outcome of checked native fill-resource retirement. Neither variant grants capacity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FillRetirement {
+    Complete,
+    Pending,
+}
+
+/// An actual producer resource whose cleanup can be checked independently of GPU completion.
+///
+/// # Safety
+/// retire runs only after the fixed producers are checked complete and under retirement
+/// exclusion. It must not wait for Python/the GIL. Complete leaves this wrapper inert or
+/// transfers every owner with equivalent completion/exclusion custody. Pending or Err must
+/// retain every unreleased owner. Err is permanent: the core quarantines instead of retrying.
+#[allow(unsafe_code)]
+pub unsafe trait FillResource: Send + 'static {
+    fn retire(&mut self) -> Result<FillRetirement>;
+}
+
 /// Native resources retained until every fixed producer is checked complete.
 pub struct FillOwners {
     streams: Vec<u64>,
-    _resources: Vec<Box<dyn Send + 'static>>,
+    resources: Vec<Box<dyn FillResource>>,
 }
 impl FillOwners {
     /// # Safety
     /// All streams are live in the fill device's primary context. Resources retain those
-    /// streams, direct inputs, staging and libraries. Their destructors must not wait for
-    /// Python/the GIL; a frontend finalizer may only be enqueued. No unlisted writer exists.
+    /// streams, direct inputs, staging and libraries. Their checked retirement obeys
+    /// FillResource's ownership/exclusion contract. No unlisted writer exists.
     #[allow(unsafe_code)]
-    pub unsafe fn new(streams: Vec<u64>, resources: Vec<Box<dyn Send + 'static>>) -> Self {
-        Self {
-            streams,
-            _resources: resources,
-        }
+    pub unsafe fn new(streams: Vec<u64>, resources: Vec<Box<dyn FillResource>>) -> Self {
+        Self { streams, resources }
     }
 }
 
@@ -50,6 +66,8 @@ pub struct FillFacts {
     pub recorded_count: usize,
     pub completed_count: usize,
     pub failure: Option<Error>,
+    pub retirement_failure: Option<Error>,
+    pub resources_remaining: usize,
 }
 struct Observed {
     facts: FillFacts,
@@ -127,6 +145,8 @@ impl Fill {
                     recorded_count: 0,
                     completed_count: 0,
                     failure: None,
+                    retirement_failure: None,
+                    resources_remaining: owners.resources.len(),
                 },
                 events: Vec::new(),
             }),
@@ -393,11 +413,27 @@ impl Payload {
         Arc::clone(self.region.as_ref().expect("worker region custody"))
     }
     fn quarantine(&mut self, error: Error) {
+        self.quarantine_at(error, false);
+    }
+    fn quarantine_retirement(&mut self, error: Error) {
+        self.quarantine_at(error, true);
+    }
+    fn quarantine_at(&mut self, error: Error, retirement: bool) {
         // Called only after every operation guard has left the stack.
-        self.region().poison(format!("asynchronous fill: {error}"));
+        let phase = if retirement {
+            "resource retirement"
+        } else {
+            "producer"
+        };
+        self.region()
+            .poison(format!("asynchronous fill {phase}: {error}"));
         if let Ok(mut observed) = self.control.lock() {
             observed.facts.state = FillState::Quarantined;
-            observed.facts.failure = Some(error);
+            if retirement {
+                observed.facts.retirement_failure = Some(error);
+            } else {
+                observed.facts.failure = Some(error);
+            }
         }
     }
     fn tick(&mut self) -> Result<bool> {
@@ -461,6 +497,23 @@ impl Payload {
         while let Some(event) = self.events.last().copied() {
             region.arena.driver.destroy_event(event)?;
             self.events.pop();
+        }
+        let resources = &mut self.owners.as_mut().expect("retirement owners").resources;
+        let mut index = 0;
+        while index < resources.len() {
+            match resources[index].retire()? {
+                FillRetirement::Complete => {
+                    // Safety contract: the successful wrapper is now inert (or custody was
+                    // transferred), so its destructor cannot release an unproved resource.
+                    let inert = resources.remove(index);
+                    self.control.lock()?.facts.resources_remaining = resources.len();
+                    drop(inert);
+                }
+                FillRetirement::Pending => index += 1,
+            }
+        }
+        if !resources.is_empty() {
+            return Ok(false);
         }
         drop(self.owners.take());
         if let Some(pin) = self.completed_pin.take() {
@@ -577,7 +630,7 @@ fn run_worker(receiver: mpsc::Receiver<Payload>, retirement: Option<mpsc::Sender
                     if let Some(retirement) = &retirement {
                         if let Err(error) = retirement.send(payload) {
                             let mut payload = error.0;
-                            payload.quarantine(Error::Poisoned(
+                            payload.quarantine_retirement(Error::Poisoned(
                                 "fill retirement worker stopped".into(),
                             ));
                             std::mem::forget(payload);
@@ -590,7 +643,11 @@ fn run_worker(receiver: mpsc::Receiver<Payload>, retirement: Option<mpsc::Sender
                         _ => Error::Poisoned("fill worker panicked".into()),
                     };
                     let mut payload = pending.swap_remove(index);
-                    payload.quarantine(error);
+                    if retirement.is_some() {
+                        payload.quarantine(error);
+                    } else {
+                        payload.quarantine_retirement(error);
+                    }
                     std::mem::forget(payload);
                 }
             }
@@ -670,6 +727,7 @@ fn order(region: &Region, control: &Control, stream: u64) -> Result<()> {
             .facts
             .failure
             .clone()
+            .or_else(|| observed.facts.retirement_failure.clone())
             .unwrap_or(Error::Poisoned("fill quarantined".into())));
     }
     if !observed.facts.published {

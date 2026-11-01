@@ -60,15 +60,17 @@ reclassified as asynchronous GPU completion.
 is `Vec<Box<dyn Send>>`; Drop cannot return this checked result. Calling the old release in
 Drop and declaring full cleanup would hide an existing native failure boundary.
 
-Proposed narrow native contract for root agreement:
+Root approved the narrow native contract; the successor replaces the provisional envelope:
 
 ```rust
 // This is native fill-resource lifetime only, not a callback registry or allocator policy.
 pub unsafe trait FillResource: Send + 'static {
     // Called after every producer is checked complete, under retirement exclusion and
     // outside capture/arena/working/ledger/ABI registry locks. No GIL wait.
-    // Err preserves every still-owned resource and forbids further submission/retry.
-    fn retire(&mut self) -> Result<()>;
+    // Pending retains actual unfinished ownership; Err preserves every still-owned
+    // resource and forbids further submission/retry. Complete leaves the wrapper inert
+    // or proves an equivalent ownership/exclusion transfer. None grants physical bytes.
+    fn retire(&mut self) -> Result<FillRetirement>; // Complete | Pending
 }
 // FillOwners owns the actual boxed objects until retire succeeds. A failed resource and
 // every unprocessed resource remain with the producer guard in the quarantined payload.
@@ -77,8 +79,10 @@ pub unsafe trait FillResource: Send + 'static {
 A simple native owned value can use an internal wrapper whose retire drops it only after
 completion. TensorFS implements checked release for its real owned read state. No public
 completion boolean or arbitrary completion predicate is accepted. If this contract is not
-chosen, the Source adapter must explicitly keep its current independent ProducerGuard and
-surface checked cleanup failure separately; it may not suppress that failure in Drop.
+chosen, the Source adapter would need its current independent ProducerGuard and separate
+cleanup failure. Root instead chose the checked contract; no dual Box<dyn Send> compatibility
+API is retained. FillFacts exposes producer failure, retirement_failure, resources_remaining
+and retirement_finished separately. Permanent failures quarantine the exact remaining owners.
 
 The shared native retirement queue is being implemented by the observer-retirement owner:
 `retirement::enqueue(device, Job) -> Result<(), (Error, Job)>`. After that source freezes,

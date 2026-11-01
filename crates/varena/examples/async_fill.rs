@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use std::{
     ffi::c_void,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
@@ -134,7 +134,15 @@ impl Cuda {
         )
     }
 }
+#[derive(Default)]
+struct ResourceState {
+    streams_released: usize,
+    host_released: bool,
+    failed: bool,
+    retired: bool,
+}
 struct Resources {
+    state: Mutex<ResourceState>,
     cuda: Arc<Cuda>,
     streams: Vec<u64>,
     host: usize,
@@ -152,6 +160,7 @@ impl Resources {
             bytes[BYTES / 2..].fill(73);
         }
         Ok(Arc::new(Self {
+            state: Mutex::new(ResourceState::default()),
             cuda,
             streams,
             host: host as usize,
@@ -160,35 +169,83 @@ impl Resources {
         }))
     }
 }
-impl Drop for Resources {
-    fn drop(&mut self) {
-        // Varena invokes the last native resource drop only after checked completion and
-        // under retirement exclusion; no Python/GIL or borrowed source resources exist.
-        unsafe {
-            if (self.cuda.push)(self.cuda.context as Obj) != 0 {
-                self.errors.fetch_add(1, Ordering::SeqCst);
-                return;
-            }
-            for &stream in &self.streams {
-                if (self.cuda.stream_destroy)(stream as Obj) != 0 {
-                    self.errors.fetch_add(1, Ordering::SeqCst);
-                }
-            }
-            if (self.cuda.host_free)(self.host as Obj) != 0 {
-                self.errors.fetch_add(1, Ordering::SeqCst);
-            }
-            let mut old = std::ptr::null_mut();
-            if (self.cuda.pop)(&mut old) != 0 {
-                self.errors.fetch_add(1, Ordering::SeqCst);
-            }
+impl Resources {
+    fn retire_checked(&self) -> varena::Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| varena::Error::Poisoned("fixture resource lock".into()))?;
+        if state.retired {
+            return Ok(());
         }
+        if state.failed {
+            return Err(varena::Error::Poisoned(
+                "fixture resource release was unproven".into(),
+            ));
+        }
+        state.failed = true; // a failing driver call must never be repeated by Drop
+        let status = |operation, code| {
+            if code == 0 {
+                Ok(())
+            } else {
+                self.errors.fetch_add(1, Ordering::SeqCst);
+                Err(varena::Error::Cuda { operation, code })
+            }
+        };
+        // SAFETY: this wrapper retains every exact native handle. Varena calls this only
+        // after all producers complete under retirement exclusion; setup failure has no work.
+        unsafe {
+            status(
+                "fixture cuCtxPushCurrent",
+                (self.cuda.push)(self.cuda.context as Obj),
+            )?;
+            let released: varena::Result<()> = (|| {
+                while state.streams_released < self.streams.len() {
+                    status(
+                        "fixture cuStreamDestroy",
+                        (self.cuda.stream_destroy)(self.streams[state.streams_released] as Obj),
+                    )?;
+                    state.streams_released += 1;
+                }
+                if !state.host_released {
+                    status(
+                        "fixture cuMemFreeHost",
+                        (self.cuda.host_free)(self.host as Obj),
+                    )?;
+                    state.host_released = true;
+                }
+                Ok(())
+            })();
+            let mut old = std::ptr::null_mut();
+            let popped = status("fixture cuCtxPopCurrent", (self.cuda.pop)(&mut old));
+            released?;
+            popped?;
+        }
+        state.retired = true;
+        state.failed = false;
         self.dropped.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 }
+impl Drop for Resources {
+    fn drop(&mut self) {
+        // Only an unsubmitted setup failure can reach a non-inert normal destructor.
+        // A checked failure leaves its remaining handles quarantined, never retried.
+        let state = self
+            .state
+            .get_mut()
+            .unwrap_or_else(|error| error.into_inner());
+        if !state.retired && !state.failed {
+            let _ = self.retire_checked();
+        }
+    }
+}
+
 fn facts(f: FillFacts) -> Value {
     json!({"state":format!("{:?}",f.state),"submission_closed":f.submission_closed,
     "published":f.published,"completed":f.completed,"retirement_finished":f.retirement_finished,"producers":f.producer_count,
-    "recorded":f.recorded_count,"completed_producers":f.completed_count,"failure":f.failure.map(|e|e.to_string())})
+    "recorded":f.recorded_count,"completed_producers":f.completed_count,"failure":f.failure.map(|e|e.to_string()),
+    "retirement_failure":f.retirement_failure.map(|e|e.to_string()),"resources_remaining":f.resources_remaining})
 }
 fn stats(arena: &Arena) -> Result<Value> {
     let s = arena.stats()?;
@@ -215,14 +272,29 @@ fn fill(region: &Arc<varena::Region>) -> Result<varena::Fill> {
         _ => Err("expected fresh fill".into()),
     }
 }
+struct NativeResources(Option<Arc<Resources>>);
+// SAFETY: only checked producer completion reaches retire. Taking the Arc leaves the
+// wrapper inert; Resources releases its native stream/host handles without Python/GIL.
+unsafe impl varena::FillResource for NativeResources {
+    fn retire(&mut self) -> varena::Result<varena::FillRetirement> {
+        if let Some(resources) = &self.0 {
+            resources.retire_checked()?;
+        }
+        drop(self.0.take()); // successful checked retirement leaves this wrapper inert
+        Ok(varena::FillRetirement::Complete)
+    }
+}
 fn owned(fill: varena::Fill, resources: &Arc<Resources>) -> varena::FillSession {
+    // SAFETY: the fixed same-context streams and pinned host page remain owned by this
+    // native checked-retirement wrapper through all copies and their actual completion.
     unsafe {
         fill.into_async(FillOwners::new(
             resources.streams.clone(),
-            vec![Box::new(Arc::clone(resources))],
+            vec![Box::new(NativeResources(Some(Arc::clone(resources))))],
         ))
     }
 }
+
 fn submit(cuda: &Cuda, resources: &Resources, ptr: u64, gate: u64, partial: bool) -> Result<()> {
     unsafe {
         // Actual device dependency keeps one writer pending, independent of host timing.

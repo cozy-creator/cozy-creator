@@ -12,7 +12,7 @@
 
 mod cuda;
 mod async_fill;
-pub use async_fill::{FillDestination, FillFacts, FillOwners, FillSession, FillState, FillTicket, StreamPreparation};
+pub use async_fill::{FillDestination, FillFacts, FillOwners, FillResource, FillRetirement, FillSession, FillState, FillTicket, StreamPreparation};
 /// Versioned public ABI. All frontends resolve this shared library.
 pub mod abi;
 pub mod plan;
