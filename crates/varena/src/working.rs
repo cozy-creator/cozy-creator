@@ -5,9 +5,259 @@
 
 use crate::{Error, GlobalCaptureGuard, Result, cuda};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 
 pub type PoolId = (u64, u64);
+
+/// Allocation ranges retained by one actual graph definition. This owns metadata only.
+pub struct GraphFootprint {
+    id: u64,
+    device: i32,
+    pool: PoolId,
+    pid: u32,
+    begun: AtomicBool,
+    retired: AtomicBool,
+    sealed: Mutex<Option<SealedFootprint>>,
+}
+
+#[derive(Clone, Default)]
+struct Ranges(BTreeMap<u64, u64>);
+impl Ranges {
+    fn add(&mut self, mut start: u64, mut end: u64) {
+        if let Some((&left, &right)) = self.0.range(..=start).next_back()
+            && right >= start
+        {
+            start = left;
+            end = end.max(right);
+            self.0.remove(&left);
+        }
+        while let Some((&left, &right)) = self.0.range(start..).next() {
+            if left > end {
+                break;
+            }
+            end = end.max(right);
+            self.0.remove(&left);
+        }
+        self.0.insert(start, end);
+    }
+    fn extend(&mut self, other: &Self) {
+        for (&start, &end) in &other.0 {
+            self.add(start, end);
+        }
+    }
+    fn bytes(&self) -> usize {
+        self.0
+            .iter()
+            .map(|(&start, &end)| (end - start) as usize)
+            .sum()
+    }
+    fn pages(&self, page: usize) -> Self {
+        let page = page as u64;
+        let mut result = Self::default();
+        for (&start, &end) in &self.0 {
+            result.add(start / page * page, end.div_ceil(page) * page);
+        }
+        result
+    }
+}
+
+struct SealedFootprint {
+    pool_identity: Weak<()>,
+    ranges: Ranges,
+    pages: Ranges,
+    allocations: u64,
+}
+struct CaptureTrace {
+    footprint: Arc<GraphFootprint>,
+    pool_identity: Weak<()>,
+    ranges: Ranges,
+    allocations: u64,
+    invalid: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct FootprintStats {
+    pub definition: u64,
+    pub device: i32,
+    pub pool: PoolId,
+    pub sealed: bool,
+    pub retired: bool,
+    pub traced_bytes: usize,
+    pub backing_bytes: usize,
+    pub allocations: u64,
+}
+
+static NEXT_FOOTPRINT: AtomicU64 = AtomicU64::new(0);
+
+impl GraphFootprint {
+    pub fn new(device: i32, pool: PoolId) -> Result<Arc<Self>> {
+        crate::check_process()?;
+        let id = NEXT_FOOTPRINT
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                value.checked_add(1)
+            })
+            .map_err(|_| Error::Invalid("graph definition identity overflow"))?
+            + 1;
+        Ok(Arc::new(Self {
+            id,
+            device,
+            pool,
+            pid: std::process::id(),
+            begun: AtomicBool::new(false),
+            retired: AtomicBool::new(false),
+            sealed: Mutex::new(None),
+        }))
+    }
+    fn check(&self) -> Result<()> {
+        crate::check_process()?;
+        if self.pid != std::process::id() {
+            return Err(Error::Invalid("graph footprint used after fork"));
+        }
+        Ok(())
+    }
+    pub fn device(&self) -> i32 {
+        self.device
+    }
+    pub fn begin(self: &Arc<Self>, device: i32, pool: PoolId) -> Result<()> {
+        self.check()?;
+        if device != self.device || pool != self.pool {
+            return Err(Error::Invalid("graph footprint device or pool changed"));
+        }
+        let owner = owner(device)?;
+        let captures = crate::capture_counts()?;
+        crate::ensure_not_capturing(&captures, device)?;
+        let mut state = owner.lock()?;
+        if state.trace.is_some() {
+            return Err(Error::Invalid("graph footprint recordings cannot overlap"));
+        }
+        let identity = state
+            .pools
+            .get(&pool)
+            .ok_or(Error::Invalid("prepare the graph pool before tracing"))?
+            .identity
+            .clone();
+        if self.retired.load(Ordering::Acquire) || self.begun.swap(true, Ordering::AcqRel) {
+            return Err(Error::Invalid("graph footprint is one capture definition"));
+        }
+        state.trace = Some(CaptureTrace {
+            footprint: self.clone(),
+            pool_identity: Arc::downgrade(&identity),
+            ranges: Ranges::default(),
+            allocations: 0,
+            invalid: false,
+        });
+        Ok(())
+    }
+    pub fn finish(self: &Arc<Self>, completed: bool) -> Result<()> {
+        self.check()?;
+        let owner = owner(self.device)?;
+        let captures = crate::capture_counts()?;
+        if completed {
+            crate::ensure_not_capturing(&captures, self.device)?;
+        }
+        let mut state = owner
+            .state
+            .lock()
+            .map_err(|_| Error::Poisoned("working allocator mutex".into()))?;
+        if !state
+            .trace
+            .as_ref()
+            .is_some_and(|trace| Arc::ptr_eq(&trace.footprint, self))
+        {
+            return Err(Error::Invalid("graph footprint is not recording"));
+        }
+        let trace = state.trace.take().expect("checked footprint");
+        if completed
+            && !trace.invalid
+            && state.poison.is_none()
+            && !self.retired.load(Ordering::Acquire)
+        {
+            let pages = trace.ranges.pages(owner.driver.granularity);
+            *self
+                .sealed
+                .lock()
+                .map_err(|_| Error::Poisoned("graph footprint mutex".into()))? =
+                Some(SealedFootprint {
+                    pool_identity: trace.pool_identity,
+                    ranges: trace.ranges,
+                    pages,
+                    allocations: trace.allocations,
+                });
+        } else {
+            self.retired.store(true, Ordering::Release);
+            state
+                .phases
+                .replay_samples
+                .retain(|key, _| !key.definitions.contains(&self.id));
+        }
+        Ok(())
+    }
+    /// Called by the owning graph's reset/destroy hook. Metadata only, never a CUDA call.
+    pub fn retire(&self) {
+        self.retired.store(true, Ordering::Release);
+        if let Ok(Some(owner)) = existing(self.device)
+            && let Ok(mut state) = owner.state.lock()
+        {
+            state
+                .phases
+                .replay_samples
+                .retain(|key, _| !key.definitions.contains(&self.id));
+        }
+    }
+    pub fn facts(&self) -> Result<FootprintStats> {
+        self.check()?;
+        let data = self
+            .sealed
+            .lock()
+            .map_err(|_| Error::Poisoned("graph footprint mutex".into()))?;
+        Ok(FootprintStats {
+            definition: self.id,
+            device: self.device,
+            pool: self.pool,
+            sealed: data.is_some(),
+            retired: self.retired.load(Ordering::Acquire),
+            traced_bytes: data.as_ref().map_or(0, |data| data.ranges.bytes()),
+            backing_bytes: data.as_ref().map_or(0, |data| data.pages.bytes()),
+            allocations: data.as_ref().map_or(0, |data| data.allocations),
+        })
+    }
+    fn ranges(&self, state: &State) -> Result<(Ranges, Ranges)> {
+        self.check()?;
+        if self.retired.load(Ordering::Acquire) {
+            return Err(Error::Invalid("graph definition is retired"));
+        }
+        let data = self
+            .sealed
+            .lock()
+            .map_err(|_| Error::Poisoned("graph footprint mutex".into()))?;
+        let data = data
+            .as_ref()
+            .ok_or(Error::Invalid("graph footprint is not sealed"))?;
+        let pool = state
+            .pools
+            .get(&self.pool)
+            .ok_or(Error::Invalid("graph footprint pool retired"))?;
+        if !Weak::ptr_eq(&data.pool_identity, &Arc::downgrade(&pool.identity))
+            || pool.references == 0
+        {
+            return Err(Error::Invalid("graph footprint pool incarnation changed"));
+        }
+        Ok((data.ranges.clone(), data.pages.clone()))
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ReplayKey {
+    semantic: String,
+    definitions: Vec<u64>,
+}
+
+struct ReplayTrace {
+    footprints: Vec<Arc<GraphFootprint>>,
+    bytes: usize,
+    backing: usize,
+}
 
 /// Execution classification is explicit: recording/preparation/replay are not eager samples.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +296,7 @@ pub struct PhaseStats {
 
 #[derive(Clone, Debug)]
 pub struct PhaseObservation {
+    pub definitions: Vec<u64>,
     pub token: u64,
     pub mode: PhaseMode,
     pub key: Option<String>,
@@ -72,6 +323,7 @@ struct ActivePhase {
     backing: usize,
     backing_peak: usize,
     invalid: Option<String>,
+    replay: Option<ReplayTrace>,
 }
 
 #[derive(Default)]
@@ -79,6 +331,7 @@ struct Phases {
     next: u64,
     active: Option<ActivePhase>,
     samples: BTreeMap<String, PhaseStats>,
+    replay_samples: BTreeMap<ReplayKey, PhaseStats>,
 }
 
 impl Phases {
@@ -171,6 +424,7 @@ struct Segment {
 
 #[derive(Default)]
 struct Pool {
+    identity: Arc<()>,
     prepared: bool,
     references: usize,
     routing: bool,
@@ -191,6 +445,7 @@ struct State {
     pools: BTreeMap<PoolId, Pool>,
     stats: WorkingStats,
     phases: Phases,
+    trace: Option<CaptureTrace>,
     poison: Option<String>,
 }
 
@@ -305,6 +560,7 @@ struct Working {
     driver: cuda::Driver,
     page: usize,
     room: Arc<crate::Room>,
+    external_callbacks: Arc<std::sync::atomic::AtomicUsize>,
     state: Mutex<State>,
 }
 
@@ -376,6 +632,13 @@ impl Working {
             return Err(Error::Poisoned(reason.clone()));
         }
         Ok(state)
+    }
+
+    fn callback_mutation(&self, state: &mut State) {
+        // The inactive measurement path does not even load the callback counter.
+        if state.phases.active.is_some() && self.external_callbacks.load(Ordering::Acquire) != 0 {
+            state.phases.invalidate("external_callback_memory");
+        }
     }
 
     fn fail(&self, state: &mut State, error: Error) -> Error {
@@ -540,6 +803,15 @@ impl Working {
     }
 
     fn activate(state: &mut State, ptr: u64, requested: usize) -> u64 {
+        if let Some(trace) = &mut state.trace {
+            let block = &state.blocks[&ptr];
+            if state.segments[&block.segment].pool == Some(trace.footprint.pool) {
+                trace.ranges.add(ptr, ptr + block.capacity as u64);
+                trace.allocations += 1;
+            } else {
+                trace.invalid = true;
+            }
+        }
         state.stats.allocated_bytes += requested;
         state.stats.allocated_peak = state.stats.allocated_peak.max(state.stats.allocated_bytes);
         state.stats.allocations += 1;
@@ -936,7 +1208,9 @@ fn initialize_owner(device: i32) -> Result<Arc<Working>> {
     }
     let mut captures = crate::capture_counts()?;
     crate::ensure_recovery_allowed(&captures, device)?;
-    let room = Arc::clone(&captures.entry(device).or_default().room);
+    let activity = captures.entry(device).or_default();
+    let room = Arc::clone(&activity.room);
+    let external_callbacks = Arc::clone(&activity.external_callbacks);
     let mut devices = lock_devices()?;
     if let Some(owner) = devices.get(&device) {
         return Ok(Arc::clone(owner));
@@ -960,6 +1234,7 @@ fn initialize_owner(device: i32) -> Result<Arc<Working>> {
         driver,
         page,
         room,
+        external_callbacks,
         state: Mutex::new(state),
     });
     devices.insert(device, Arc::clone(&owner));
@@ -998,6 +1273,7 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> 
     let class = size_class(bytes, owner.page)?;
     {
         let mut state = owner.lock()?;
+        owner.callback_mutation(&mut state);
         if let Some(pool) = pool {
             let session = state
                 .pools
@@ -1028,6 +1304,7 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> 
             let captures = crate::capture_counts()?;
             crate::ensure_recovery_allowed(&captures, device)?;
             let mut state = owner.lock()?;
+            owner.callback_mutation(&mut state);
             let _context = owner.driver.enter()?;
             let result = (|| {
                 owner.poll(&mut state)?;
@@ -1085,6 +1362,7 @@ fn free_inner(device: i32, ptr: u64, stream: u64) -> Result<()> {
     ))?;
     let capturing = crate::ensure_not_capturing(&captures, device).is_err();
     let mut state = owner.lock()?;
+    owner.callback_mutation(&mut state);
     let transition = (|| {
         let State {
             blocks,
@@ -1190,6 +1468,7 @@ fn retire_native_inner(device: i32, ptr: u64, completed: bool) -> Result<()> {
     }
     let owner = owner(device)?;
     let mut state = owner.lock()?;
+    owner.callback_mutation(&mut state);
     let block = state
         .blocks
         .get(&ptr)
@@ -1477,8 +1756,51 @@ pub fn phase_enter(device: i32, key: Option<String>, mode: PhaseMode) -> Result<
         backing: 0,
         backing_peak: 0,
         invalid,
+        replay: None,
     });
     state.refresh_phase();
+    Ok(token)
+}
+
+/// One native continuation owns this observation until checked terminal completion.
+/// Definition metadata adds no physical pin; current graph/output/event owners remain authoritative.
+pub fn phase_enter_replay(
+    device: i32,
+    key: Option<String>,
+    footprints: Vec<Arc<GraphFootprint>>,
+) -> Result<u64> {
+    let token = phase_enter(device, key, PhaseMode::Replay)?;
+    let owner = owner(device)?;
+    let mut state = owner.lock()?;
+    let mut ranges = Ranges::default();
+    let mut pages = Ranges::default();
+    let mut invalid = footprints.is_empty();
+    for footprint in &footprints {
+        if footprint.device != device {
+            invalid = true;
+            break;
+        }
+        match footprint.ranges(&state) {
+            Ok((used, mapped)) => {
+                ranges.extend(&used);
+                pages.extend(&mapped);
+            }
+            Err(_) => {
+                invalid = true;
+                break;
+            }
+        }
+    }
+    let active = state.phases.active.as_mut().expect("entered replay phase");
+    if invalid {
+        active.invalid = Some("graph_footprint_unqualified".into());
+    } else {
+        active.replay = Some(ReplayTrace {
+            footprints,
+            bytes: ranges.bytes(),
+            backing: pages.bytes(),
+        });
+    }
     Ok(token)
 }
 
@@ -1511,6 +1833,9 @@ pub(crate) fn invalidate_current_phase(device: i32, reason: &str) -> Result<()> 
         .lock()
         .map_err(|_| Error::Poisoned("working allocator mutex".into()))?;
     state.phases.invalidate(reason);
+    if let Some(trace) = &mut state.trace {
+        trace.invalid = true;
+    }
     Ok(())
 }
 
@@ -1557,6 +1882,21 @@ pub fn phase_leave(
             .invalid
             .get_or_insert_with(|| "capture_or_replay_attempt".to_owned());
     }
+    if let Some(trace) = &active.replay {
+        if trace
+            .footprints
+            .iter()
+            .any(|footprint| footprint.ranges(&state).is_err())
+        {
+            active
+                .invalid
+                .get_or_insert_with(|| "graph_definition_retired".to_owned());
+        }
+        // Trace pages stay backed for the full stage. Any separately allocated native working
+        // storage is disjoint eager backing; its observed peak therefore coexists with this set.
+        active.owned_peak += trace.bytes;
+        active.backing_peak += trace.backing;
+    }
     let mismatch = active
         .key
         .as_ref()
@@ -1573,7 +1913,7 @@ pub fn phase_leave(
         key.or_else(|| active.key.clone())
     };
     let reason = active.invalid.clone().unwrap_or_else(|| {
-        if active.mode != PhaseMode::Eager {
+        if active.mode != PhaseMode::Eager && active.replay.is_none() {
             format!("{}_unqualified", active.mode.name())
         } else if !completed {
             "aborted".to_owned()
@@ -1584,11 +1924,43 @@ pub fn phase_leave(
         }
     });
     let published = reason.is_empty();
+    let definitions: Vec<_> = active.replay.as_ref().map_or_else(Vec::new, |trace| {
+        trace
+            .footprints
+            .iter()
+            .map(|footprint| footprint.id)
+            .collect()
+    });
     let mut sample = PhaseStats::default();
-    if active.mode == PhaseMode::Eager
-        && let Some(key) = &observed
-    {
-        let record = state.phases.samples.entry(key.clone()).or_default();
+    let record = if let Some(key) = &observed {
+        if active.mode == PhaseMode::Eager {
+            Some(state.phases.samples.entry(key.clone()).or_default())
+        } else if active.mode == PhaseMode::Replay
+            && !definitions.is_empty()
+            && active.replay.as_ref().is_some_and(|trace| {
+                trace
+                    .footprints
+                    .iter()
+                    .all(|f| !f.retired.load(Ordering::Acquire))
+            })
+        {
+            Some(
+                state
+                    .phases
+                    .replay_samples
+                    .entry(ReplayKey {
+                        semantic: key.clone(),
+                        definitions: definitions.clone(),
+                    })
+                    .or_default(),
+            )
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    if let Some(record) = record {
         if published {
             record.known = true;
             record.peak_bytes = active.owned_peak;
@@ -1604,6 +1976,7 @@ pub fn phase_leave(
         sample = record.clone();
     }
     Ok(PhaseObservation {
+        definitions,
         token,
         mode: active.mode,
         key: observed,
@@ -1641,7 +2014,13 @@ pub fn phase_forget(device: i32, key: &str) -> Result<bool> {
     {
         return Err(Error::Busy);
     }
-    Ok(state.phases.samples.remove(key).is_some())
+    let removed = state.phases.samples.remove(key).is_some();
+    let previous = state.phases.replay_samples.len();
+    state
+        .phases
+        .replay_samples
+        .retain(|record, _| record.semantic != key);
+    Ok(removed || previous != state.phases.replay_samples.len())
 }
 
 /// Caller holds the capture registry and region state. Hold working metadata through physical

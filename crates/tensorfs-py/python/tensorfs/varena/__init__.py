@@ -76,8 +76,11 @@ class PhaseController:
     def __init__(self, arena: Arena) -> None:
         self._native = _ext._VarenaPhaseController(arena._native)
 
-    def wrap(self, capsule, key: str, regions: Sequence[Region]):
-        return self._native.wrap(capsule, key, [region._native for region in regions])
+    def wrap(self, capsule, key: str | None, regions: Sequence[Region], *,
+             footprints: Sequence[_ext._VarenaGraphFootprint] | None = None, execution_key: str | None = None):
+        """Decorate native completion; key=None observes without changing weight preferences."""
+        return self._native.wrap(capsule, key, [region._native for region in regions],
+                                 footprints=None if footprints is None else list(footprints), execution_key=execution_key)
 
     def facts(self) -> dict[str, object]:
         return self._native.facts()

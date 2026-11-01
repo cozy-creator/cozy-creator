@@ -1,7 +1,7 @@
 //! Torch callbacks contain no Python; Rust owns allocation and completion state.
-use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::OnceLock;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use pyo3::{prelude::*, types::PyDict};
 
@@ -353,6 +353,75 @@ fn _varena_working_pool_release(py: Python<'_>, device: i32, pool: (u64, u64)) -
     .map_err(|e| super::raise(py, e))
 }
 
+#[pyclass(name = "_VarenaCallbackScope", module = "tensorfs._ext", frozen)]
+struct CallbackScope {
+    guard: Mutex<Option<varena::GlobalCaptureGuard>>,
+}
+#[pymethods]
+impl CallbackScope {
+    #[new]
+    fn new(py: Python<'_>, device: i32) -> PyResult<Self> {
+        let guard =
+            varena::enter_external_callback(device).map_err(|error| super::raise(py, error))?;
+        Ok(Self {
+            guard: Mutex::new(Some(guard)),
+        })
+    }
+    fn close(&self) {
+        self.guard.lock().unwrap_or_else(|e| e.into_inner()).take();
+    }
+}
+
+#[pyclass(name = "_VarenaGraphFootprint", module = "tensorfs._ext", frozen)]
+pub(super) struct PyGraphFootprint {
+    pub(super) footprint: Arc<varena::working::GraphFootprint>,
+}
+#[pymethods]
+impl PyGraphFootprint {
+    #[new]
+    fn new(py: Python<'_>, device: i32, pool: (u64, u64)) -> PyResult<Self> {
+        check().map_err(|error| super::raise(py, error))?;
+        Ok(Self {
+            footprint: varena::working::GraphFootprint::new(device, pool)
+                .map_err(|error| super::raise(py, error))?,
+        })
+    }
+    fn _begin(&self, py: Python<'_>, device: i32, pool: (u64, u64)) -> PyResult<()> {
+        py.detach(|| self.footprint.begin(device, pool))
+            .map_err(|error| super::raise(py, error))
+    }
+    fn _finish(&self, py: Python<'_>, completed: bool) -> PyResult<()> {
+        py.detach(|| self.footprint.finish(completed))
+            .map_err(|error| super::raise(py, error))
+    }
+    fn retire(&self) {
+        self.footprint.retire();
+    }
+    fn facts<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let facts = self
+            .footprint
+            .facts()
+            .map_err(|error| super::raise(py, error))?;
+        let row = PyDict::new(py);
+        row.set_item("definition", facts.definition)?;
+        row.set_item("device", facts.device)?;
+        row.set_item("pool", facts.pool)?;
+        row.set_item("sealed", facts.sealed)?;
+        row.set_item("retired", facts.retired)?;
+        row.set_item("traced_bytes", facts.traced_bytes)?;
+        row.set_item("backing_bytes", facts.backing_bytes)?;
+        row.set_item("allocations", facts.allocations)?;
+        Ok(row)
+    }
+}
+impl Drop for PyGraphFootprint {
+    fn drop(&mut self) {
+        self.footprint.retire();
+        // An abandoned recorder owns metadata only. Cleanup must not issue CUDA operations.
+        let _ = self.footprint.finish(false);
+    }
+}
+
 #[pyfunction]
 #[pyo3(signature = (device, key = None, *, mode = "eager"))]
 fn _varena_phase_enter(
@@ -393,16 +462,24 @@ fn _varena_phase_leave<'py>(
     let observed = py
         .detach(|| varena::working::phase_leave(device, token, completed, key))
         .map_err(|e| super::raise(py, e))?;
+    observation(py, &observed)
+}
+
+pub(super) fn observation<'py>(
+    py: Python<'py>,
+    observed: &varena::working::PhaseObservation,
+) -> PyResult<Bound<'py, PyDict>> {
     let row = PyDict::new(py);
+    row.set_item("definitions", &observed.definitions)?;
     row.set_item("token", observed.token)?;
     row.set_item("mode", observed.mode.name())?;
-    row.set_item("key", observed.key)?;
+    row.set_item("key", observed.key.as_deref())?;
     row.set_item("peak_bytes", observed.peak_bytes)?;
     row.set_item("total_peak_bytes", observed.total_peak_bytes)?;
     row.set_item("backing_peak_bytes", observed.backing_peak_bytes)?;
     row.set_item("published", observed.published)?;
     row.set_item("invalidated", observed.invalidated)?;
-    row.set_item("reason", observed.reason)?;
+    row.set_item("reason", &observed.reason)?;
     row.set_item("successful_peak_bytes", observed.successful_peak_bytes)?;
     row.set_item(
         "successful_backing_peak_bytes",
@@ -454,6 +531,8 @@ fn _varena_phase_forget(py: Python<'_>, device: i32, key: &str) -> PyResult<bool
 }
 
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_class::<PyGraphFootprint>()?;
+    module.add_class::<CallbackScope>()?;
     module.add_function(wrap_pyfunction!(_varena_phase_enter, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_phase_leave, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_phase_invalidate, module)?)?;

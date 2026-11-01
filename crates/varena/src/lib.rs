@@ -312,6 +312,7 @@ static ARENAS: OnceLock<Mutex<Vec<Weak<Arena>>>> = OnceLock::new();
 #[derive(Default)]
 struct DeviceActivity {
     activity_epoch: u64,
+    external_callbacks: Arc<AtomicUsize>,
     captures: Arc<AtomicUsize>,
     replays: Arc<AtomicUsize>,
     producers: Arc<AtomicUsize>,
@@ -391,6 +392,16 @@ pub fn enter_capture(device: i32) -> Result<GlobalCaptureGuard> {
 
 /// Suppress allocation recovery during a resident graph launch without excluding producers.
 /// The graph's retained Pins, rather than this short host guard, own its device dependencies.
+/// Bound a user callback's host interval. Only actual working alloc/free invalidates a
+/// measurement; CPU-only callbacks add no failure and this guard performs no CUDA work.
+pub fn enter_external_callback(device: i32) -> Result<GlobalCaptureGuard> {
+    let mut counts = capture_counts()?;
+    let activity = counts.entry(device).or_default();
+    activity.external_callbacks.try_update(Ordering::AcqRel, Ordering::Acquire,
+        |value| value.checked_add(1)).map_err(|_| Error::Invalid("callback scope overflow"))?;
+    Ok(GlobalCaptureGuard { count: activity.external_callbacks.clone(), pid: std::process::id() })
+}
+
 pub fn enter_replay(device: i32) -> Result<GlobalCaptureGuard> {
     let mut counts = capture_counts()?;
     ensure_not_capturing(&counts, device)?;

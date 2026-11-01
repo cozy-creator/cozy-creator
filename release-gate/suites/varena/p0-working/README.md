@@ -198,3 +198,29 @@ These are explicit API proofs. The current model prefetch and split policy remai
 known configuration commitment and native replay-demand integration are still required
 before replacing those production decisions. A successful delivery is not a passed proof:
 inspect the result and every case. No P2 GPU receipt exists at this source checkpoint.
+
+## P2 graph-definition replay observations (source only until run)
+
+`/replay_policy` uses the same exact candidate payload and fresh-process harness. It records
+real `keep_graph=True` CUDA graphs with temporary allocations that are freed during recording,
+then uses Runtime's actual ResidentRepeat/NativeSequence continuation ABI. No mock capsule,
+Python replay loop or direct model-internal invocation supplies the completion evidence.
+
+The source fixture checks: capture itself publishes nothing; a reusable native stage records
+three successful completions; prefix/body traces union shared scratch instead of summing a
+whole pool; a graph's reset retires its token while another graph retains the same pool; an
+unrelated graph cannot qualify using that stale token; fresh graph definitions with the same
+semantic key start separate samples; unknown keys and failed capture do not publish. A
+measurement-only wrapper must leave weight-preference transitions at zero.
+
+The callback arm holds one bounded callback interval across native observe/rearm. A real GPU
+sleep gives the host time to observe the first successful iteration and the active second
+observation. A subsequent actual allocation/free must invalidate only the current stage and
+preserve the first successful sample. The test verifies this interleave in the returned native
+facts; if the required interleave was missed it fails instead of assuming a timing-based pass.
+All graphs, native continuations, tensors and events are retired through their real owners.
+Exact native execution module path/hash is included alongside TensorFS/Torch provenance.
+
+Run only on the owned rental after installing the paired candidate; this source checkpoint has
+not executed these CUDA cells. The existing 18 allocator cases, P2 eager/admission fixture and
+unchanged allocation-overhead gate remain independent required checks.

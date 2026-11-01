@@ -73,6 +73,12 @@ def phase_policy(payload: Probe, tel: Telemetry) -> Report:
 
 
 @app.entrypoint(accelerator=True)
+def replay_policy(payload: Probe, tel: Telemetry) -> Report:
+    """P2 graph-definition traces validated by actual native continuation completion."""
+    return _cuda_child(payload, tel, "replay_policy.py", "varena-p2-replay-policy")
+
+
+@app.entrypoint(accelerator=True)
 def native_cudnn(payload: Probe, tel: Telemetry) -> Report:
     """Fresh native-Torch cuDNN lifetime control, retaining the same strict sanitizer verdict."""
     return _cuda_child(payload, tel, "native_cudnn.py", "native-cudnn-lifetime")
