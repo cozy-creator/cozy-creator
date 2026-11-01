@@ -774,6 +774,11 @@ fn worker_tick(
             registration.callback.shrink(&scope, wanted)
         }))
         .unwrap_or_else(|_| Err(Error::Poisoned("cache callback panicked".into())));
+        // Capture excludes every owner. Replay may exclude just this owner's physical
+        // Cache release/full retirement; a later logical graph owner can still proceed.
+        // Read capture metadata before taking either owner/job mutex.
+        let capture_active =
+            matches!(&result, Err(Error::CaptureActive)) && crate::is_capturing(control.device)?;
         let mut owner = registration.owner.lock()?;
         owner.facts.running = false;
         let mut held = job.lock()?;
@@ -789,14 +794,14 @@ fn worker_tick(
                 held.waiting_service = job.key.cause != Cause::Allocation;
                 held.collect_pending = job.key.cause == Cause::Allocation;
             }
-            Err(Error::CaptureActive) => {
+            Err(Error::CaptureActive) if capture_active => {
                 owner.facts.deferred += 1;
                 held.owners.push_front(id);
                 held.facts.queued = held.owners.len();
             }
-            Err(Error::Busy) => {
+            Err(Error::Busy | Error::CaptureActive) => {
                 // This owner's lock/admission is unavailable. It is not a device-wide
-                // capture exclusion and must not starve later owners in the same request.
+                // capture exclusion and must not starve later logical owners in this request.
                 owner.facts.returned += 1;
                 owner.facts.declined += 1;
                 held.facts.returned += 1;

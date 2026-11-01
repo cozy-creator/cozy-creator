@@ -98,7 +98,9 @@ Runtime modules; it does not infer the loaded implementation from a helper build
   another three-stage NativeSequence to advance while the owner callback remains in
   capture-only exclusion. A real escaped view retains captured pool storage both
   during that other replay and after replay completion; only dropping that view may
-  free the retired pool. Complete outputs and final working/pool baseline are checked.
+  free the retired pool. A preceding real Cache owner attempts a physical release and
+  receives the actual replay refusal; it must not starve this later logical owner.
+  Complete outputs and final working/pool/Cache baseline are checked.
 - `owner_capture_close` queues a real owner during an actual CUDA graph capture, observes
   the native capture gate and pending request, and closes admission with a typed refusal. It requires
   zero product working-driver calls in that interval and retirement only after capture

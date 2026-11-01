@@ -331,6 +331,8 @@ def graph_retirement(payload, ctx):
     assert program.region._cache_owner is not None
     native_owner = program.region._cache_owner.native
     first_execution = a_execution = None
+    blocker = blocker_owner = None
+    blocker_calls = []
     release = threading.Event()
     retired = threading.Event()
     alias = None
@@ -346,8 +348,24 @@ def graph_retirement(payload, ctx):
             assert not program.closed and not b._closed
             full_tensor_value(first_execution.wait()[0], 7)
         first_execution = None
+        until(ctx, lambda: active_request.facts()['finished'], 'active target request did not settle')
         alias = b.state[0][::2]  # genuine live captured-output storage, outside the owner
         pool_before = vt.stats(0)['pools_bytes']
+        blocker = varena.Cache(0, 2 * MIB)
+        blocker.commit(0, blocker.reserved_bytes)
+        raw_cache_value(blocker, 127)
+
+        def blocked_physical_owner(wanted):
+            attempt = {'wanted': wanted}
+            blocker_calls.append(attempt)
+            try:
+                blocker.release(0, blocker.reserved_bytes, 0)
+            except varena.CacheOwnerDeferredError as error:
+                attempt['refusal'] = error.reason
+                raise
+
+        blocker_owner = varena.CacheOwner(0, blocked_physical_owner)
+        native_owner.touch()  # real use ordering: the physical Cache owner is tried first
         original_shrink = program.region.shrink
 
         def close_then_hold(shrink=original_shrink):
@@ -373,6 +391,10 @@ def graph_retirement(payload, ctx):
         during = until(ctx, lambda execution=a_execution: (p if (p := execution.poll()).completed_steps >= 2 and not p.done else None),
                        'other sequence did not enter later native stages during retirement')
         assert native_owner.facts()['running'] and program.closed
+        blocked = blocker_owner.facts()
+        assert blocked['declined'] == 1 and blocked['failed'] is None
+        assert len(blocker_calls) == 1 and blocker_calls[0].get('refusal') == 'capture'
+        assert blocker.stats()['live_bytes'] == blocker.reserved_bytes
         assert all(trace.facts()['retired'] for trace in b_footprints)
         vt.trim(0)
         with_alias = vt.stats(0)
@@ -381,6 +403,12 @@ def graph_retirement(payload, ctx):
         until(ctx, lambda: not native_owner.facts()['running'], 'owner callback did not finish')
         full_tensor_value(a_execution.wait()[0], 3)
         full_tensor_value(alias, 7)
+        raw_cache_value(blocker, 127, write=False)
+        blocker_owner.close()
+        blocker.release(0, blocker.reserved_bytes, 0)
+        torch.cuda.synchronize()
+        blocker.poll()
+        blocker.close()
         # Reclaim is now eligible with no unrelated replay. The escaped storage itself,
         # rather than A's replay guard, must continue to retain the retired pool.
         vt.trim(0)
@@ -395,6 +423,7 @@ def graph_retirement(payload, ctx):
                   'provenance': provenance, 'active_target_declined': True,
                   'other_sequence_completed_while_callback_running': during.completed_steps,
                   'other_sequence_result': 3, 'escaped_output_result': 7,
+                  'earlier_physical_owner': blocked, 'earlier_owner_attempts': blocker_calls,
                   'owner': native_owner.facts(), 'with_alias': with_alias,
                   'idle_with_alias': idle_with_alias, 'after_alias': after_alias}
     finally:
@@ -408,10 +437,13 @@ def graph_retirement(payload, ctx):
             loops._kept.pop(site, None)
         loop._close_idle(program)
         alias = None
+        if blocker_owner is not None:
+            blocker_owner.defer_close()
     del a, a_execution, program, original_shrink, close_then_hold
     settle()
     final = vt.stats(0)
     result.update(baseline=baseline, final=final, footprints=[trace.facts() for trace in a_footprints])
-    for name in ('allocated_bytes', 'allocated_capacity', 'mapped_bytes', 'pending_bytes', 'pools', 'pools_bytes'):
+    for name in ('allocated_bytes', 'allocated_capacity', 'mapped_bytes', 'pending_bytes',
+                 'pools', 'pools_bytes', 'cache_mapped_bytes', 'cache_reserved_bytes', 'caches'):
         assert final[name] == baseline[name], (name, baseline, final)
     return Report(True, json.dumps(result, sort_keys=True))
