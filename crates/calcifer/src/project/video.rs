@@ -691,9 +691,23 @@ impl Video {
             .collect()
     }
 
-    /// The files project.yaml names for node `i` that are gone: it cannot render until they are
-    /// linked again.
+    /// The files gone that node `i` reads, its own or through what it reads: it cannot render until
+    /// they are linked again.
     pub fn missing(&self, i: usize) -> Vec<&str> {
+        let mut gone: BTreeSet<&str> = self.own_missing(i).into_iter().collect();
+        let mut seen = vec![false; self.graph.nodes.len()];
+        let mut next: Vec<usize> = self.graph.upstream[i].iter().map(|edge| edge.node).collect();
+        while let Some(j) = next.pop() {
+            if !std::mem::replace(&mut seen[j], true) {
+                gone.extend(self.own_missing(j));
+                next.extend(self.graph.upstream[j].iter().map(|edge| edge.node));
+            }
+        }
+        gone.into_iter().collect()
+    }
+
+    /// The files project.yaml names for node `i` itself that are gone.
+    fn own_missing(&self, i: usize) -> Vec<&str> {
         let mut files: Vec<&str> = vec![];
         match self.items[i] {
             Item::Entity(a) => {
