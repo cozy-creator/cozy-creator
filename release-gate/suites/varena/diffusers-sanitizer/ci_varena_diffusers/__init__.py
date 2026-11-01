@@ -24,7 +24,7 @@ class Probe(msgspec.Struct, forbid_unknown_fields=True):
     extension_sha256: str
     shim_sha256: str
     gpu_uuid: str
-    compute_sanitizer: str = '/var/lib/cozy/xs138-tools/cuda-sanitizer-13.1.1/compute-sanitizer/compute-sanitizer'
+    compute_sanitizer: str
     mode: str = 'both'
     seed: int = 13801
 
