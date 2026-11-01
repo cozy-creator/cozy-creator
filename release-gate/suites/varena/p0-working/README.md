@@ -295,3 +295,18 @@ backing, alter process/development/peer limits, change pins or choose a Runtime
 execution mode. The separately owned Runtime retention change must qualify its
 actual graph/cache ownership boundary before using it. Native source checks and
 fixture syntax pass; GPU execution remains pending.
+# Bounded working-cache trim regression
+
+`bounded_trim` creates 8 MiB of ready, unpinned weight bytes plus three completed idle
+working allocations (8, 16, and 32 MiB) under a 64 MiB managed limit. An actual 24 MiB
+allocation cannot reuse their exact size classes. Releasing at most 32 MiB of whole
+working segments suffices; the case requires at least 24 MiB of other completed free
+backing while its correctly filled 24 MiB output is live, and at least 48 MiB free after
+that output's stream completes and retires. It verifies every output and weight byte,
+unchanged weight fills/evictions, and final zero native working/weight ownership.
+
+The case does not assert segment ordering or pointer selection. It uses real drained
+stream retirement to establish completed cache without calling trim. `Report.passed`
+is the cache-preservation gate; `detail.execution_passed` separately records successful
+allocation, byte checks, and cleanup. A red preservation result retains the full report.
+Initial source is unchanged `9ccb36a2`; no product fix or H3-causality claim is included.
