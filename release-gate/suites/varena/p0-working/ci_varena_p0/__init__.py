@@ -223,6 +223,9 @@ def benchmark(payload: Benchmark, tel: Telemetry) -> Report:
         "qualification": "allocator host-pair microbenchmark only; Python dispatch included; not model latency",
         "results": results,
     }
+    if "process_guard" in candidate["provenance"]:
+        report["qualification"] = "default-off kernel fork-guard performance experiment; shared-VM contract remains unqualified"
+        report["qualification_eligible"] = False
     tel.log(json.dumps({"allocator_benchmark": report}, sort_keys=True))
     # Preserve every failed sample in the result artifact; successful delivery is not a pass.
     return Report(report["passed"], json.dumps(report, sort_keys=True))

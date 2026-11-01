@@ -11,5 +11,16 @@ publish.workspace = true
 libloading.workspace = true
 thiserror.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { workspace = true, optional = true }
+
+[features]
+# Experiment only: separate-TGID CLONE_VM with copied TLS remains unqualified.
+kernel-fork-guard = ["dep:libc"]
+
+[dev-dependencies]
+libc.workspace = true
+serde_json.workspace = true
+
 [lints]
 workspace = true

@@ -11,6 +11,8 @@
 
 mod cuda;
 pub mod working;
+#[cfg(all(target_os = "linux", feature = "kernel-fork-guard"))]
+pub mod fork_guard;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering};
@@ -325,6 +327,14 @@ static CAPTURES: OnceLock<Mutex<BTreeMap<i32, DeviceActivity>>> = OnceLock::new(
 static PROCESS: AtomicU32 = AtomicU32::new(0);
 
 fn check_process() -> Result<()> {
+    #[cfg(all(target_os = "linux", feature = "kernel-fork-guard"))]
+    if let Some(result) = fork_guard::check() {
+        return result;
+    }
+    check_process_pid()
+}
+
+fn check_process_pid() -> Result<()> {
     let pid = std::process::id();
     let owner = match PROCESS.load(Ordering::Relaxed) {
         0 => PROCESS
