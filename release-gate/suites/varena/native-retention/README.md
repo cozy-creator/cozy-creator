@@ -5,7 +5,8 @@ It writes a real TensorFS checkpoint and loads a five-block pointwise model thro
 `Declared`, `Weights` and `Memory.load`. Each block adds a 4 MiB weight; a common
 scalar stays in the root's normal ownership scope. No context, allocator, reader
 or graph owner is mocked. This is a bounded consumer proof, not full H3/SDXL or
-smaller-GPU qualification.
+smaller-GPU qualification. A separate real tied-weight model asserts identical
+Parameter objects inside its forward and requires the common native owner.
 
 The fixture measures the actual first-pass working mapping peak and actual native
 weight-region sizes. It derives two test capacities from those observations:
@@ -17,7 +18,8 @@ actual capacity pressure with zero `streaming_limit` eviction. Region addresses
 remain stable. These capacities are fixture inputs, not production memory policy.
 
 The same model is then retained through Runtime's actual `Binding.prepare`,
-captured using `vt.graph`, and replayed with `vt.replay`. Native pressure cannot
+captured using `vt.graph`, and replayed with `vt.replay` inside the binding's real
+`replay_use` consumer-fence scope. Native pressure cannot
 reclaim bound weights. After graph and binding retirement, an escaped weight view
 and an escaped captured-output view must still contain the correct bytes. Once
 those aliases are dropped, ordinary reclamation must return their backing.

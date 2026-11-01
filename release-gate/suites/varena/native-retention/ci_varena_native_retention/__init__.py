@@ -62,6 +62,17 @@ class Network(nn.Module):
         return self.layers(value) + self.bias
 
 
+class Tied(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.a, self.b = Add(), Add()
+        self.b.weight = self.a.weight
+
+    def forward(self, value):
+        assert self.a.weight is self.b.weight
+        return self.b(self.a(value))
+
+
 class Scaling:
     """Actual mutable source recipe; an escaped failed Fill remains an ordinary native Pin."""
     def __init__(self):
@@ -150,6 +161,11 @@ def exercise(request, vt, device):
             component.put('bias', torch.ones(1, dtype=torch.float32))
             for index in range(LAYERS):
                 component.put(f'layers.{index}.weight', torch.full((ELEMENTS,), index + 1.0))
+        tied_component = writer.component('tied')
+        shared = torch.full((ELEMENTS,), 2.0)
+        tied_component.put('a.weight', shared)
+        tied_component.put('b.weight', shared)
+        del shared
         checkpoint = writer.commit()
         inputs = torch.zeros(ELEMENTS, dtype=torch.float32, device=memory.device)
         network, loaded = model(memory, checkpoint)
@@ -215,7 +231,8 @@ def exercise(request, vt, device):
                 weight_pointer = weight_alias.data_ptr()
                 with vt.graph(graph, stream=stream, reserve_bytes=16 * BYTES):
                     captured = network(inputs)
-            vt.replay(graph, stream=stream)
+            with binding.replay_use(stream):
+                vt.replay(graph, stream=stream)
             stream.synchronize()
             torch.testing.assert_close(captured.cpu(), expected(), rtol=0, atol=0)
             output_alias = captured[::2]
@@ -289,6 +306,21 @@ def exercise(request, vt, device):
             transform.escaped = None
             cases.append({'case': 'failed_fill_then_healthy_demand', 'unpublished_region_retired': True,
                           'escaped_partial_bytes_preserved': True, 'healthy': repaired})
+            from cozy_runtime.internal import residency
+
+            tied = Tied()
+            vars(tied)['_cozy_weights'] = residency.Declared(
+                residency.Weights(checkpoint, 'tied'), blocks=['a', 'b'],
+            )
+            tied_owner = memory.load(tied, 'ram')
+            owners.append(tied_owner)
+            request.plan([tied])
+            tied_output = tied(inputs)
+            torch.testing.assert_close(tied_output.cpu(), torch.full((ELEMENTS,), 4.0), rtol=0, atol=0)
+            assert tied_owner.common is not None
+            cases.append({'case': 'tied_parameter_identity', 'common_owner': True,
+                          'same_parameter_in_actual_forward': True, 'output_value': 4})
+            del tied_output, tied
         finally:
             vt.set_limit(device, None)
             torch.cuda.synchronize(device)
