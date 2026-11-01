@@ -1,0 +1,33 @@
+{
+  "passed": true,
+  "results": [
+    {
+      "case": "owner_held_gil",
+      "returncode": 0,
+      "passed": true
+    },
+    {
+      "case": "owner_capture_close",
+      "returncode": 0,
+      "passed": true
+    },
+    {
+      "case": "graph_owner_retirement",
+      "returncode": 0,
+      "passed": true
+    },
+    {
+      "case": "graph_owner_replay_exclusion",
+      "returncode": 0,
+      "passed": true
+    },
+    {
+      "case": "owner_allocator_progress",
+      "returncode": 0,
+      "passed": true
+    }
+  ],
+  "native": "dfb912042f60fd99a0bbe404b9927665e9b39715",
+  "runtime": "8384bfd3d74f10d2c57800bb1a8ccb55aba46984",
+  "scope": "five-parent-cache-owner-cases-with-native-CUDA-recovery-cut"
+}

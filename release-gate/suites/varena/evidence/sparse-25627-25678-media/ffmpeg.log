@@ -1,0 +1,61 @@
+Input #0, mov,mp4,m4a,3gp,3g2,mj2, from '/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/attempt-002/sparse-full-pair-167/control/media/25627-video.mp4':
+  Metadata:
+    major_brand     : iso5
+    minor_version   : 512
+    compatible_brands: iso5iso6mp41
+  Duration: 00:00:15.08, start: 0.000000, bitrate: 5040 kb/s
+  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(tv, bt709, progressive), 1344x768 [SAR 1:1 DAR 7:4], 4850 kb/s, 24 fps, 24 tbr, 12288 tbn (default)
+    Metadata:
+      handler_name    : VideoHandler
+      vendor_id       : [0][0][0][0]
+  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 32000 Hz, stereo, fltp, 182 kb/s (default)
+    Metadata:
+      handler_name    : SoundHandler
+      vendor_id       : [0][0][0][0]
+Input #1, mov,mp4,m4a,3gp,3g2,mj2, from '/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/attempt-002/sparse-full-pair-167/candidate/media/25678-video.mp4':
+  Metadata:
+    major_brand     : iso5
+    minor_version   : 512
+    compatible_brands: iso5iso6mp41
+  Duration: 00:00:15.08, start: 0.000000, bitrate: 4634 kb/s
+  Stream #1:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(tv, bt709, progressive), 1344x768 [SAR 1:1 DAR 7:4], 4444 kb/s, 24 fps, 24 tbr, 12288 tbn (default)
+    Metadata:
+      handler_name    : VideoHandler
+      vendor_id       : [0][0][0][0]
+  Stream #1:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 32000 Hz, stereo, fltp, 183 kb/s (default)
+    Metadata:
+      handler_name    : SoundHandler
+      vendor_id       : [0][0][0][0]
+Stream mapping:
+  Stream #0:0 (h264) -> split:default
+  Stream #1:0 (h264) -> split:default
+  ssim:default -> Stream #0:0 (wrapped_avframe)
+  psnr:default -> Stream #0:1 (wrapped_avframe)
+Press [q] to stop, [?] for help
+Output #0, null, to 'pipe:':
+  Metadata:
+    major_brand     : iso5
+    minor_version   : 512
+    compatible_brands: iso5iso6mp41
+    encoder         : Lavf60.16.100
+  Stream #0:0: Video: wrapped_avframe, yuv420p(tv, bt709, progressive), 1344x768 [SAR 1:1 DAR 7:4], q=2-31, 200 kb/s, 24 fps, 24 tbn (default)
+    Metadata:
+      encoder         : Lavc60.31.102 wrapped_avframe
+  Stream #0:1: Video: wrapped_avframe, yuv420p(tv, bt709, progressive), 1344x768 [SAR 1:1 DAR 7:4], q=2-31, 200 kb/s, 24 fps, 24 tbn
+    Metadata:
+      encoder         : Lavc60.31.102 wrapped_avframe
+frame=    0 fps=0.0 q=-0.0 q=-0.0 size=       0kB time=00:00:00.00 bitrate=N/A speed=   0x    
+frame=   44 fps=0.0 q=-0.0 q=-0.0 size=N/A time=00:00:01.79 bitrate=N/A speed=3.47x    
+frame=   80 fps= 79 q=-0.0 q=-0.0 size=N/A time=00:00:03.29 bitrate=N/A speed=3.23x    
+frame=  113 fps= 74 q=-0.0 q=-0.0 size=N/A time=00:00:04.66 bitrate=N/A speed=3.06x    
+frame=  145 fps= 71 q=-0.0 q=-0.0 size=N/A time=00:00:06.00 bitrate=N/A speed=2.95x    
+frame=  179 fps= 71 q=-0.0 q=-0.0 size=N/A time=00:00:07.41 bitrate=N/A speed=2.93x    
+frame=  214 fps= 71 q=-0.0 q=-0.0 size=N/A time=00:00:08.87 bitrate=N/A speed=2.93x    
+frame=  248 fps= 70 q=-0.0 q=-0.0 size=N/A time=00:00:10.29 bitrate=N/A speed=2.91x    
+frame=  284 fps= 70 q=-0.0 q=-0.0 size=N/A time=00:00:11.79 bitrate=N/A speed=2.92x    
+frame=  316 fps= 70 q=-0.0 q=-0.0 size=N/A time=00:00:13.12 bitrate=N/A speed=2.89x    
+frame=  343 fps= 68 q=-0.0 q=-0.0 size=N/A time=00:00:14.25 bitrate=N/A speed=2.83x    
+[out#0/null @ 0x556fdd5f9940] video:339kB audio:0kB subtitle:0kB other streams:0kB global headers:0kB muxing overhead: unknown
+frame=  362 fps= 68 q=-0.0 Lq=-0.0 size=N/A time=00:00:15.04 bitrate=N/A speed=2.84x    
+[Parsed_psnr_3 @ 0x556fdd716f00] PSNR y:15.265649 u:31.943962 v:34.445767 average:16.990271 min:14.792856 max:20.002794
+[Parsed_ssim_2 @ 0x556fdd716d40] SSIM Y:0.637400 (4.405721) U:0.931022 (11.612923) V:0.948321 (12.866878) All:0.738157 (5.819595)

@@ -1,0 +1,40 @@
+{
+  "command": [
+    "cozy",
+    "run",
+    "/home/fidika/cozy_v2/outputs/xs138-p3-native-recovery/cohort-8384-dfb-sorata/project/owner_capture_close",
+    "--on",
+    "sorata",
+    "--gpus=1",
+    "--input",
+    "/home/fidika/cozy_v2/outputs/xs138-p3-native-recovery/cohort-8384-dfb-sorata/input-template.json",
+    "--json",
+    "--out",
+    "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/attempt-002/cuda-cut-8384/owner_capture_close-artifacts"
+  ],
+  "input_sha256": "c77b17c8ee9c0302f7712456b75ac24de04342e468994586092b60cf66a5d64f",
+  "input": {
+    "source_sha": "6bdde809ac56136fc02ad14cf1256fde3a40dbfe",
+    "helper_sha256": "562ce61b8e6c2fd12e140c8e200e84053d22b90ba17514ecec53fb5f39695b03",
+    "native_extension_sha256": "232b44ec8032dbf6966de649191aa2615ea224ad3bc7d3fb1f96a6292cacabc7",
+    "gpu_uuid": "GPU-846689c6-daf3-15b1-580e-f2a78bdf6748",
+    "runtime_version": "0.36.23+dev.g8384bfd3",
+    "runtime_modules": {
+      "internal/cache_owners.py": "c9a71ec941be57133452f17b095aac9478c5fa99870df28e2fbf46b70230cf8a",
+      "internal/loop.py": "d269551d61be97cb59f328352d1642db8fc9efd70ca911e02bdb4a407f0bd089",
+      "internal/prepared.py": "6d4581762b34a00b81403a47f40230909e82a53ff3c9e0e241a2dfc340fac86a",
+      "internal/residency.py": "0eabe9143523bc5f034cc92e466eafd110cdfbe5226ffd94f7bdd06555c408ee",
+      "internal/weights.py": "3ba1ec248a9836b38198a1751f59fae1b723d48190fd8996ae46168d9e2413f7",
+      "graphs/__init__.py": "25deacb7a770ab1a696094e884f0a083e28c79cdac4db0a1271051447f92f508",
+      "graphs/domain.py": "d21eba1a9323ff4490d5c494dad964a317cc4687473ea2d2bf91323cf8f78484",
+      "lm/__init__.py": "0cae4e9b9d0137a43defcc05e93f978287a104626014d87a338a5a4e1432b300",
+      "internal/int8_linear.py": "4b55ed7b166f4f435b66501f516e203bf6f9bddcbf774235e1ccb7960efcc269",
+      "internal/kernel_ready.py": "f5874855b69cbc857a0375dad67515176e52440b81d276563ea0579632031669",
+      "internal/prebuilt.py": "3f5d32d9214de115049ee5a8016bf6f5ae1c909b2570327b9cb4e64edfa75eab"
+    },
+    "gil_gate_sha256": "3ccfe6b4ea229413be99b0f4235f6d508d3bebee7a4265f28ec289cbcff0dcc9"
+  },
+  "started_at": "2026-11-01T21:54:19.531983+00:00",
+  "returncode": 0,
+  "finished_at": "2026-11-01T21:54:35.504014+00:00"
+}

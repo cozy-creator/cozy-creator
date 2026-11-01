@@ -1,0 +1,34 @@
+{
+  "reviewer": "/root/retention_restart",
+  "runs": [
+    25627,
+    25678
+  ],
+  "frames": [
+    0,
+    52,
+    103,
+    155,
+    206,
+    258,
+    309,
+    361
+  ],
+  "verdict": "Comparable sampled detail and lighting; materially different composition",
+  "observations": [
+    "Both show detailed bench tools and machinery against warm window light.",
+    "Control includes a prominent lamp and differently placed box; candidate has different window/tool framing.",
+    "No obvious candidate corruption, blank frames or systematic loss of detail was visible in the eight matched samples."
+  ],
+  "limitations": [
+    "No full-motion playback",
+    "No audio listening or perceptual audio-equivalence claim",
+    "No numerical or pixel equality claim",
+    "Timing and actual adoption audited separately by core"
+  ],
+  "numeric_report_sha256": "bbe5d376aedaa69523f7c0d0d12e5b7fdf56d828c910c48e074a6fac17b44c89",
+  "contact_sheets": {
+    "matched-frames-1.webp": "1d559ca1fc9d5a9db3e6c0966fbdde1cacf4ceb7f961108015171d44b6b71002",
+    "matched-frames-2.webp": "6cafbc5f046112a88f96e0b721b55426a2e666a87e16d7d315862d9811544c49"
+  }
+}
