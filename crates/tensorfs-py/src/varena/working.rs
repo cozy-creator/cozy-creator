@@ -68,6 +68,8 @@ fn call<T: Default>(failure: *mut Failure, operation: impl FnOnce() -> varena::R
     match result {
         Ok(value) => value,
         Err(error) => {
+            #[cfg(feature = "allocator-probe")]
+            varena::probe::failure();
             // SAFETY: the shim supplies a writable Failure for this synchronous call.
             unsafe {
                 failure.write(Failure::from_error(&error));

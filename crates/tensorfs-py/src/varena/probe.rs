@@ -44,6 +44,10 @@ fn _varena_allocator_probe_calibrate(py: Python<'_>) -> PyResult<String> {
         "dispatch_unit": "one enter/exit callback, not an alloc/free pair; loop overhead included",
         "disabled_dispatch_ns": value.disabled_dispatch_ns,
         "enabled_dispatch_ns": value.enabled_dispatch_ns,
+        "empty_bundle_pairs": value.bundle_pairs,
+        "disabled_empty_bundle_ns": value.disabled_bundle_ns,
+        "enabled_empty_bundle_ns": value.enabled_bundle_ns,
+        "empty_bundle_meaning": "each pair runs alloc then free enter/all marks/allocation-metadata/exit in actual point order, including every unsampled helper and occasional sampled clocks; no real allocation; loop overhead included",
         "meaning": "CPU-only empty clock/marker spans and enter/exit loops; no allocator operation; raw overhead, not automatic subtraction",
     }).to_string())
 }

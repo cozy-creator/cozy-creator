@@ -198,11 +198,17 @@ def main(config):
             }
             if native_probe:
                 sample["native_probe"] = trace
-                sample["native_probe_summary"] = probe_summary(trace, mode, pair_count)
-                if mode == "varena":
-                    assert all(after[field] == before[field] for field in (
-                        "driver_memory_calls", "event_queries", "event_records", "event_waits", "context_joins"
-                    )), (before, after)
+                try:
+                    summary = probe_summary(trace, mode, pair_count)
+                    if mode == "varena":
+                        assert all(after[field] == before[field] for field in (
+                            "driver_memory_calls", "event_queries", "event_records", "event_waits", "context_joins"
+                        )), (before, after)
+                    sample["native_probe_summary"] = summary
+                except AssertionError as error:
+                    # Reject attribution but preserve every raw row through the result
+                    # artifact, including failed samples; telemetry lines may truncate.
+                    sample["native_probe_error"] = str(error)
             samples.append(sample)
             emit({"benchmark_sample": sample, "mode": mode})
     finally:
@@ -224,6 +230,7 @@ def main(config):
     }
     if native_probe:
         result["native_probe_calibration"] = calibration
+        result["native_probe_valid"] = all("native_probe_error" not in sample for sample in samples)
         result["native_probe_qualification"] = "diagnostic only; raw nested spans include instrumentation; no automatic overhead subtraction; post-submitted read cost is in drain/completion"
     emit({"result": result})
 

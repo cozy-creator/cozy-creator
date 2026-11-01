@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from pathlib import Path
 import subprocess
 import sys
 
 import msgspec
-from cozy_runtime.author import App, Telemetry
+from cozy_runtime.author import App, File, Outputs, Telemetry
 
 app = App()
 
@@ -27,6 +28,12 @@ class Probe(msgspec.Struct, forbid_unknown_fields=True):
 class Report(msgspec.Struct):
     passed: bool
     detail: str
+
+
+class AllocatorProbeReport(msgspec.Struct):
+    passed: bool
+    detail: str
+    raw: File
 
 
 @app.entrypoint(accelerator=False)
@@ -171,9 +178,23 @@ def benchmark(payload: Benchmark, tel: Telemetry) -> Report:
 
 
 @app.entrypoint(accelerator=True)
-def allocator_probe(payload: Benchmark, tel: Telemetry) -> Report:
+def allocator_probe(payload: Benchmark, tel: Telemetry, out: Outputs) -> AllocatorProbeReport:
     """Default-off native timer build only; function attribution, never release qualification."""
-    return _benchmark(payload, tel, native_probe=True)
+    measured = _benchmark(payload, tel, native_probe=True)
+    data = measured.detail.encode()
+    raw = out.save_bytes(data, media_type="application/json")
+    summary = json.loads(measured.detail)
+    summary["raw_receipt_bytes"] = len(data)
+    summary["raw_receipt_sha256"] = hashlib.sha256(data).hexdigest()
+    # Runtime has an actual 4 MiB inline result door. Preserve every raw row through
+    # ordinary File custody, and keep only counters/quantiles in the typed inline result.
+    for result in summary["results"].values():
+        for sample in result["samples"]:
+            trace = sample["native_probe"]
+            trace["record_count"] = len(trace.pop("records"))
+        calibration = result["native_probe_calibration"]["empty_markers"]
+        calibration["record_count"] = len(calibration.pop("records"))
+    return AllocatorProbeReport(measured.passed, json.dumps(summary, sort_keys=True), raw)
 
 
 def _benchmark(payload: Benchmark, tel: Telemetry, *, native_probe: bool) -> Report:
@@ -195,7 +216,8 @@ def _benchmark(payload: Benchmark, tel: Telemetry, *, native_probe: bool) -> Rep
             assert process.stdout is not None
             try:
                 for line in process.stdout:
-                    tel.log(line.rstrip())
+                    if not native_probe:
+                        tel.log(line.rstrip())
                     tel.progress(0.0)
                     try:
                         record = json.loads(line)
@@ -232,6 +254,12 @@ def _benchmark(payload: Benchmark, tel: Telemetry, *, native_probe: bool) -> Rep
     if native_probe:
         report["qualification"] = "sparse native timer diagnostic only; instrumentation changes code layout and cost"
         report["qualification_eligible"] = False
-    tel.log(json.dumps({"allocator_benchmark": report}, sort_keys=True))
+        report["diagnostic_valid"] = all(result["native_probe_valid"] for result in results.values())
+        report["passed"] = report["passed"] and report["diagnostic_valid"]
+    if native_probe:
+        tel.log(json.dumps({"allocator_probe": {key: value for key, value in report.items()
+                                               if key != "results"}}, sort_keys=True))
+    else:
+        tel.log(json.dumps({"allocator_benchmark": report}, sort_keys=True))
     # Preserve every failed sample in the result artifact; successful delivery is not a pass.
     return Report(report["passed"], json.dumps(report, sort_keys=True))

@@ -58,6 +58,7 @@ pub struct Record {
     pub present: u16,
     pub duplicate: u16,
     pub ns: [u64; POINTS],
+    callback_failed: bool,
 }
 
 impl Record {
@@ -72,6 +73,7 @@ impl Record {
         present: 0,
         duplicate: 0,
         ns: [0; POINTS],
+        callback_failed: false,
     };
 
     fn mark(&mut self, point: Point, origin: Instant) {
@@ -195,7 +197,7 @@ pub fn exit(sampled: bool, success: bool) {
             Point::BridgeExit,
             state.origin.expect("reset outside timing"),
         );
-        record.success = success;
+        record.success = success && !record.callback_failed;
         let at = state.len;
         state.records[at] = record;
         state.len += 1;
@@ -213,11 +215,20 @@ pub fn mark(point: Point) {
     });
 }
 
+#[inline(never)]
 pub fn allocation(requested: usize, capacity: usize) {
     STATE.with(|state| {
         if let Some(record) = &mut state.borrow_mut().active {
             record.requested = requested;
             record.capacity = capacity;
+        }
+    });
+}
+
+pub fn failure() {
+    STATE.with(|state| {
+        if let Some(record) = &mut state.borrow_mut().active {
+            record.callback_failed = true;
         }
     });
 }
@@ -262,6 +273,31 @@ pub struct Calibration {
     pub dispatch_iterations: usize,
     pub disabled_dispatch_ns: u64,
     pub enabled_dispatch_ns: u64,
+    pub bundle_pairs: usize,
+    pub disabled_bundle_ns: u64,
+    pub enabled_bundle_ns: u64,
+}
+
+fn empty_marks(operation: Operation) {
+    mark(Point::CoreEnter);
+    mark(Point::PidEnter);
+    mark(Point::PidExit);
+    if matches!(operation, Operation::Free) {
+        mark(Point::CaptureEnter);
+        mark(Point::CaptureAcquired);
+    }
+    mark(Point::RegistryEnter);
+    mark(Point::RegistryExit);
+    if matches!(operation, Operation::Alloc) {
+        allocation(0, 0);
+    }
+    mark(Point::StateEnter);
+    mark(Point::StateAcquired);
+    if matches!(operation, Operation::Free) {
+        allocation(0, 0);
+    }
+    mark(Point::BookkeepingEnd);
+    mark(Point::CoreExit);
 }
 
 /// CPU-only empty spans, not simulated allocator operations. Run outside GPU timing.
@@ -279,25 +315,7 @@ pub fn calibrate() -> crate::Result<Calibration> {
                 state.seen[operation as usize] += 1;
                 state.start(operation, 0)
             });
-            mark(Point::CoreEnter);
-            mark(Point::PidEnter);
-            mark(Point::PidExit);
-            if matches!(operation, Operation::Free) {
-                mark(Point::CaptureEnter);
-                mark(Point::CaptureAcquired);
-            }
-            mark(Point::RegistryEnter);
-            mark(Point::RegistryExit);
-            if matches!(operation, Operation::Alloc) {
-                allocation(0, 0);
-            }
-            mark(Point::StateEnter);
-            mark(Point::StateAcquired);
-            if matches!(operation, Operation::Free) {
-                allocation(0, 0);
-            }
-            mark(Point::BookkeepingEnd);
-            mark(Point::CoreExit);
+            empty_marks(operation);
             exit(sampled, true);
         }
     }
@@ -314,11 +332,31 @@ pub fn calibrate() -> crate::Result<Calibration> {
         elapsed[at] = start.elapsed().as_nanos() as u64;
         let _ = read()?;
     }
+    let bundle_pairs = 50_000;
+    let mut bundle = [0; 2];
+    for (at, enabled) in [false, true].into_iter().enumerate() {
+        STATE.with(|state| state.borrow_mut().reset(enabled))?;
+        let start = Instant::now();
+        for _ in 0..bundle_pairs {
+            for operation in [Operation::Alloc, Operation::Free] {
+                let sampled = enter(operation, 0);
+                // Unsampled calls still execute every marker/metadata helper, as they do
+                // in the real diagnostic build. This is not an allocator simulation.
+                empty_marks(operation);
+                exit(sampled, true);
+            }
+        }
+        bundle[at] = start.elapsed().as_nanos() as u64;
+        let _ = read()?;
+    }
     Ok(Calibration {
         clock_pairs_ns: clocks,
         empty_markers,
         dispatch_iterations,
         disabled_dispatch_ns: elapsed[0],
         enabled_dispatch_ns: elapsed[1],
+        bundle_pairs,
+        disabled_bundle_ns: bundle[0],
+        enabled_bundle_ns: bundle[1],
     })
 }
