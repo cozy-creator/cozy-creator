@@ -110,10 +110,10 @@ product_ideogram_4() {
     seed:=$((R + 26))
 }
 product_krea_2() { cell krea "$(pkg krea-2 generate)" prompt="$CHAR under a neon sign that reads \"NIGHT MARKET\", photo" seed:=$((R + 27)); }
-# HunyuanImage 3.0's 80B experts page about 85 GB a step through a 24 GB card and wedged there (se-079): only by --only,
-# on a card that holds its working set.
+# HunyuanImage 3.0's 80B experts page about 85 GB a step through a 24 GB card and wedged there (se-079): only by --only
+# (hunyuan, hunyuan-refs or hunyuan-image-3), on a card of 48 GB or more (rtx-pro-6000, a100-80gb).
 product_hunyuan_image_3() {
-  [[ $ONLY == *",hunyuan,"* || $ONLY == *",hunyuan-image-3,"* ]] || { log "hunyuan-image-3: only by --only"; return 0; }
+  [[ $ONLY == *",hunyuan"* ]] || { log "hunyuan-image-3: only by --only, on 48 GB or more"; return 0; }
   cell hunyuan "$(pkg hunyuan-image-3 generate_turbo)" prompt="$SCENE, a paper banner overhead reads \"WELCOME\"" seed:=$((R + 28))
   refs hunyuan-refs hunyuan-image-3 generate_turbo $((R + 29))
 }
