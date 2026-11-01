@@ -313,7 +313,7 @@ requires-dist = [
     { name = "diffusers", specifier = "==0.40.0" },
     { name = "huggingface-hub", specifier = "==1.29.0" },
     { name = "msgspec", specifier = ">=0.19" },
-    { name = "sdxl", specifier = "==0.1.5", index = "https://tensorhub.com/v1/index/_/simple/" },
+    { name = "sdxl", specifier = "==0.1.7", index = "https://tensorhub.com/v1/index/_/simple/" },
     { name = "torch", specifier = "==2.14.0" },
     { name = "transformers", specifier = "==5.16.1" },
 ]
@@ -1472,7 +1472,7 @@ wheels = [
 
 [[package]]
 name = "sdxl"
-version = "0.1.5"
+version = "0.1.7"
 source = { registry = "https://tensorhub.com/v1/index/_/simple/" }
 dependencies = [
     { name = "cozy-runtime", extra = ["adapters", "media"] },
@@ -1491,7 +1491,7 @@ dependencies = [
     { name = "transformers" },
 ]
 wheels = [
-    { url = "https://tensorhub.com/v1/index/_/sdxl/0.1.5/sdxl-0.1.5-py3-none-any.whl", hash = "sha256:921477a8984ff8e3c0acd78cf18e8dcda947c1cb4da206d3c01ef161afe016c7" },
+    { url = "https://tensorhub.com/v1/index/_/sdxl/0.1.7/sdxl-0.1.7-py3-none-any.whl", hash = "sha256:b68e8869c1cb618881e19c3089b0d282908800923fb43395c23ef3d662a7503e" },
 ]
 
 [[package]]
