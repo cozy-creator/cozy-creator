@@ -77,5 +77,32 @@ and wheel hashes are checked inside the real executor before cases begin.
 Dependencies reuse the P0 production Torch 2.14.0 lock; the explicit machine SDK
 override selects the exact candidate Runtime/TensorFS and the payload verifies it.
 
-Preparation performed static syntax/schema and offline-lock checks only. No GPU,
-native build, rental, model download or result is claimed here.
+## GPU qualification: 2026-11-01
+
+Runs **24899** (GPU cases) and **24900** (cleanup) passed on the same executor
+PID **41605**. The tested fixture is commit `6706b06bd`; Runtime is
+`97706e71` / `0.36.18+dev.g97706e71`, and TensorFS is `e5418c21` /
+`0.17.16+dev.ge5418c21`. Exact module/extension/shim hashes, the GPU UUID,
+and complete fixture results are in [the evidence receipt](evidence/2026-11-01.json).
+
+- 64/48/40 MiB selected `batch:4`, `batch:2`, `batch:1`, respectively.
+  Each exact leaf record published after the real eager phase completed.
+  All output comparisons passed with maximum absolute difference zero.
+- 39 MiB refused before allocation: 41,943,040 bytes required,
+  40,894,464 available, `varena_no_retry=True`, allocation delta zero.
+- Initial and final live bytes were exactly **17,039,360**, with two live
+  executor library allocations, zero pending bytes, and no graph pools.
+- The next request in the same PID found the prior request's key already
+  retired (`phase_forget` returned false).
+
+Earlier failed runs remain preserved: 24891 exposed passing the public
+`author.Device` directly to Torch; 24894 exposed the fixture taking its baseline
+while the executor's primed int8 library probe still ran on a background thread.
+The fixture now asks the existing `int8_linear.native` readiness boundary before
+measuring its baseline. This joins that real probe and records before/after
+stats and availability; it neither clears borrowed library workspaces nor relaxes
+the strict final equality assertion.
+
+AST, Ruff, schema and offline-lock checks also passed. This qualifies the actual
+closed norm adapter and request cleanup on the recorded cohort. It does not
+qualify full-model performance, other split consumers, or complete policy removal.
