@@ -1,0 +1,34 @@
+{
+  "runtime_version": "0.36.21+dev.gdae97328",
+  "runtime_modules": {
+    "author/kernels.py": "b63c5e57df0f76fcb88304ed1a7f8cb3d17646838f7bff92a278bc21287df262",
+    "author/_split.py": "60870cce6b43ec9c75755b3ab4a38b3ec974da4a3eaa163c08cdb3f193153fec",
+    "rows.py": "8d830ef6486aa2602fb6f9c8223475dc336e6e224e8f2591fb1825af23f28bb2",
+    "lora.py": "2908f3b3717a2b8565a256b0ba3d78ff70ac85038cd2e902ef23c860dc986a46",
+    "internal/attention_sol.py": "a64cfa53d2ce0900e57bfce68303d9e093d93f26dbd563784b6043e7826f38f1",
+    "internal/attention_int4.py": "a45c37cf77964968beefb9a33778c48c3de68f80c979f1c643a6032e04a27103",
+    "internal/execution/__init__.py": "c512e78d7e391136fdefdc87dbe21023f8fd311e1bebd0c52cdc9a23ecadae94",
+    "internal/execution/native_heads.py": "32ff32aacbe72d4ad49a63511d7fd2d8d4061fca086e36ae0a3da13376d9fc80",
+    "internal/execution/native_linear_split.py": "def2d5a1836bbc59d6492a88c0ce6925f7d6f680c84997a6f3c0b2665aa3f9bf",
+    "internal/execution/native_residual_ffn.py": "c0e8eb7c8a25f4eb1b2bbe1225e1fb8c3ca1736dd9db0c13d425997f92109702",
+    "internal/encoding/leaves.py": "c0aa697b9baa0f232b036783516790e75c85847559971ce3278507bd232e53f6",
+    "internal/prebuilt.py": "3f5d32d9214de115049ee5a8016bf6f5ae1c909b2570327b9cb4e64edfa75eab",
+    "internal/triton_kernels.py": "81ba6fb73430d035c47b05bcb9caa132c1457af61fd0c0ef2dbd86bfc5236935",
+    "_kernels/_gemm.abi3.so": "9523c5070bd1646f43b505e0ce0bb05670d7b39f8d7e4be3a52846e2b7a81d3e",
+    "_kernels/_attn4.abi3.so": "9e2d37a88ef53f2128c0b29e48665eacdc8336a03449b79e73fc2e5b5119a8df"
+  },
+  "tensorfs_version": "0.17.16+dev.gb20f699c",
+  "extension_sha256": "ea131006d23325bee34be91d64bb6b92c5947738e967d6f3d91a0d7ccbc449b6",
+  "shim_sha256": "09684b61d0b909c39d56c7d129432e906ddb0a57f1b4b916b20bb2c4c8d7716e",
+  "gpu_uuid": "GPU-9e7b1c5d-0754-e081-0ec2-45c94ce5c59c",
+  "package_modules": {
+    "__init__.py": "3d32fa69e16131aecce5b7422db4119f25d8a64c52b17001e1cecd88266ac925",
+    "glue.py": "198afa6d36558eaddd51d5aa85bce133576e95777e186384d1cb3e4106678198",
+    "adaln_pruned.py": "de3f09deea1af42b6e63635ac7c2a1be2004b6c16a8ed8690966c986b3c557d5",
+    "overlay.py": "1964cd5304648c204f09c4d01eff171e9aca1ac20b31b6a9c2ea6206cf5ffb44"
+  },
+  "glue_identities": {
+    "minimax-h3-glue": "sha256:5296525747c8fa82b137f4a4425c1460e20b3f8a208b88ee4fd6c8cfac5a8314",
+    "minimax-h3-glue-fp8": "sha256:059472e0f4b204f848f178644281da6759fdd6c2691b1e3cbf4d99c40b48f573"
+  }
+}

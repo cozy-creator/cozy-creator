@@ -1,0 +1,196 @@
+{
+  "passed": true,
+  "run": 25223,
+  "cleanup": 25224,
+  "source_scope": "Runtime dae973282, package3476, TensorFSb20, corrected14-case fixture",
+  "gpu_uuid": "9e7b1c5d-0754-e081-0ec2-45c94ce5c59c",
+  "pid": 417,
+  "cases": 14,
+  "numeric_comparisons": 19,
+  "max_relative_l2": 0.00015459312831936435,
+  "exact_comparisons": 14,
+  "allocation_census": [
+    {
+      "tokens": 8195,
+      "heads": 56,
+      "chunk": 56,
+      "allocations": 15,
+      "classes": {
+        "32768": 3,
+        "49152": 1,
+        "65536": 1,
+        "524288": 1,
+        "31457280": 2,
+        "35651584": 1,
+        "46137344": 1,
+        "60817408": 1,
+        "119537664": 4
+      }
+    },
+    {
+      "tokens": 8195,
+      "heads": 56,
+      "chunk": 28,
+      "allocations": 15,
+      "classes": {
+        "16384": 3,
+        "32768": 1,
+        "49152": 1,
+        "262144": 1,
+        "16777216": 2,
+        "31457280": 1,
+        "35651584": 1,
+        "46137344": 1,
+        "60817408": 3,
+        "119537664": 1
+      }
+    },
+    {
+      "tokens": 8195,
+      "heads": 56,
+      "chunk": 7,
+      "allocations": 15,
+      "classes": {
+        "4096": 3,
+        "8192": 1,
+        "49152": 1,
+        "65536": 1,
+        "4194304": 2,
+        "8388608": 1,
+        "16777216": 3,
+        "18874368": 1,
+        "46137344": 1,
+        "119537664": 1
+      }
+    },
+    {
+      "tokens": 8195,
+      "heads": 56,
+      "chunk": 1,
+      "allocations": 14,
+      "classes": {
+        "512": 3,
+        "1536": 1,
+        "12288": 1,
+        "49152": 1,
+        "786432": 2,
+        "2097152": 1,
+        "4194304": 3,
+        "46137344": 1,
+        "119537664": 1
+      }
+    },
+    {
+      "tokens": 513,
+      "heads": 56,
+      "chunk": 56,
+      "allocations": 15,
+      "classes": {
+        "3072": 1,
+        "8192": 1,
+        "32768": 3,
+        "49152": 1,
+        "2097152": 2,
+        "4194304": 2,
+        "8388608": 4,
+        "18874368": 1
+      }
+    },
+    {
+      "tokens": 513,
+      "heads": 55,
+      "chunk": 55,
+      "allocations": 15,
+      "classes": {
+        "3072": 1,
+        "8192": 1,
+        "32768": 3,
+        "49152": 1,
+        "2097152": 2,
+        "4194304": 2,
+        "8388608": 4,
+        "18874368": 1
+      }
+    },
+    {
+      "tokens": 513,
+      "heads": 55,
+      "chunk": 28,
+      "allocations": 15,
+      "classes": {
+        "3072": 1,
+        "4096": 1,
+        "16384": 3,
+        "24576": 1,
+        "1048576": 2,
+        "2097152": 1,
+        "4194304": 4,
+        "8388608": 1,
+        "18874368": 1
+      }
+    }
+  ],
+  "initial": {
+    "allocated_bytes": 17039360,
+    "allocated_capacity": 20971520,
+    "allocated_peak": 17039360,
+    "allocations": 1735,
+    "context_joins": 0,
+    "driver_memory_calls": 172,
+    "event_handles": 0,
+    "event_queries": 271,
+    "event_records": 264,
+    "event_waits": 0,
+    "free_bytes": 0,
+    "frees": 1733,
+    "mapped_bytes": 20971520,
+    "mapped_peak": 117440512,
+    "ooms": 0,
+    "pending_bytes": 0,
+    "pools": 0,
+    "pools_bytes": 0,
+    "prefetch_admissions": 0,
+    "prefetch_attempts": 0,
+    "prefetch_declines": 0,
+    "reclaimable_bytes": 0,
+    "unassigned_bytes": 0
+  },
+  "final": {
+    "allocated_bytes": 17039360,
+    "allocated_capacity": 20971520,
+    "allocated_peak": 932319652,
+    "allocations": 2038,
+    "context_joins": 0,
+    "driver_memory_calls": 912,
+    "event_handles": 0,
+    "event_queries": 516,
+    "event_records": 487,
+    "event_waits": 0,
+    "free_bytes": 0,
+    "frees": 2036,
+    "mapped_bytes": 20971520,
+    "mapped_peak": 1291845632,
+    "ooms": 1,
+    "pending_bytes": 0,
+    "pools": 0,
+    "pools_bytes": 0,
+    "prefetch_admissions": 0,
+    "prefetch_attempts": 0,
+    "prefetch_declines": 0,
+    "reclaimable_bytes": 0,
+    "unassigned_bytes": 0
+  },
+  "request_owned_keys_retired": [
+    "runtime.split.int8_linear/1:b73e73e44dddecb1ab66e5a12326684345bb79ca8b6f0fc41b53d9190e2790e2",
+    "runtime.split.int8_linear/1:ff269472e12d52ee8d40d058d98c53650a3a49eab3275aead9eed1def6661443",
+    "runtime.split.projected_heads/1:1af03287067a0b032ef2f6f43cc6c42067fc2e838f1d6a07107b050365d4c658",
+    "runtime.split.projected_heads/1:c2e6f0f6d097b42a4a61097e503212169424e34708f648828c5a6e4d76fc9d21",
+    "runtime.split.projected_heads/1:d2bd80ca93fe26f88372905c444ba8b58fc4c7b06b2d5afc7aa7e8bf9a83c770"
+  ],
+  "files": {
+    "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p2-heads-leg14-plan/attempt-001/heads-gpu-25223.json": "0490868e9956925e230c486a542a902380159968130ed0be1071e7678c873728",
+    "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p2-heads-leg14-plan/attempt-001/heads-cleanup-25224.json": "abd46ca940c43ab33cc46f3825102289ecfd3378ce1157472189e0d7e4bbf331",
+    "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p2-heads-leg14-plan/attempt-001/heads-input.json": "c7e72053ffe95ceeb7986c165a119fc97f05f486938305376d8b91e699e8980d"
+  },
+  "scope": "instrumented complete operation and lifetime/refusal proof; no full-model speed or quality verdict"
+}
