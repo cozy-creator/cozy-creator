@@ -27,6 +27,9 @@ class Probe(msgspec.Struct, forbid_unknown_fields=True):
     native_extension_sha256: str
     gpu_uuid: str
     timeout_s: float = 60.0
+    runtime_version: str = ''
+    runtime_modules: dict[str, str] = msgspec.field(default_factory=dict)
+    gil_gate_sha256: str = ''
 
 
 class Report(msgspec.Struct):
@@ -243,5 +246,49 @@ def abandoned_live(payload: Probe, ctx: Context) -> Report:
 
 
 @app.entrypoint(accelerator=True)
+def split_choice(payload: Probe, ctx: Context) -> Report:
+    return native(payload, ctx, 'choice')
+
+
+@app.entrypoint(accelerator=True)
+def planned_split_choice(payload: Probe, ctx: Context) -> Report:
+    return native(payload, ctx, 'choice_plan')
+
+
+@app.entrypoint(accelerator=True)
+def native_owners(payload: Probe, ctx: Context) -> Report:
+    return native(payload, ctx, 'owners')
+
+
+@app.entrypoint(accelerator=True)
+def arena_concurrency(payload: Probe, ctx: Context) -> Report:
+    return native(payload, ctx, 'arena_concurrency')
+
+
+@app.entrypoint(accelerator=True)
 def python_binding(payload: Probe, ctx: Context) -> Report:
     return binding(payload, ctx)
+
+
+@app.entrypoint(accelerator=True)
+def owner_allocator_progress(payload: Probe, ctx: Context) -> Report:
+    from .runtime_owners import allocator_progress
+    return allocator_progress(payload, ctx)
+
+
+@app.entrypoint(accelerator=True)
+def owner_held_gil(payload: Probe, ctx: Context) -> Report:
+    from .runtime_owners import held_gil
+    return held_gil(payload, ctx)
+
+
+@app.entrypoint(accelerator=True)
+def owner_capture_close(payload: Probe, ctx: Context) -> Report:
+    from .runtime_owners import capture_close
+    return capture_close(payload, ctx)
+
+
+@app.entrypoint(accelerator=True)
+def graph_owner_retirement(payload: Probe, ctx: Context) -> Report:
+    from .runtime_owners import graph_retirement
+    return graph_retirement(payload, ctx)

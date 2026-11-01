@@ -1,8 +1,9 @@
-"""Explicit Linux GPU peer service; no allocation hook or background policy is installed.
+"""Linux GPU cooperation with an explicit peer or a native automatic owner.
 
 This staged integration requires one UID and user/PID/mount namespace, a shared tmpfs
 directory and a typed GPU/MIG UUID that the native driver verifies. Samples are observations,
-not allocation permissions. TensorD's existing policy is not switched by constructing this owner.
+not allocation permissions. The automatic owner requires a categorically negotiated native
+policy; constructing a manual peer does not switch TensorD's existing memory policy.
 """
 from __future__ import annotations
 
@@ -97,6 +98,11 @@ class CooperationOwner:
     def capability() -> int:
         return int(getattr(getattr(_ext, "_VarenaOwner", None), "OWNER_PROTOCOL", 0))
 
+    @staticmethod
+    def pressure_capability() -> int:
+        """CPU-only sampled-pressure capability; no CUDA/NVML initialization."""
+        return int(getattr(getattr(_ext, "_VarenaOwner", None), "PRESSURE_PROTOCOL", 0))
+
     initialize = staticmethod(Cooperation.initialize)
 
     def __init__(self, device: int, uuid: str, directory: str | os.PathLike[str], *,
@@ -108,6 +114,10 @@ class CooperationOwner:
 
     def wake(self, *, used: bool = False) -> None:
         self._native.wake(time.monotonic_ns() if used else 0)
+
+    def request_boundary(self, *, begin: bool) -> None:
+        """Actual request lifecycle only; native code observes and decides every byte."""
+        self._native.request_boundary(begin)
 
     def facts(self) -> dict[str, Any]:
         return json.loads(self._native.facts())

@@ -78,6 +78,14 @@ pub(super) struct Descriptor {
 
 impl Descriptor {
     pub(super) fn open(path: &Path) -> Result<Arc<Self>> {
+        Self::open_mode(path, false)
+    }
+
+    pub(super) fn create_new(path: &Path) -> Result<Arc<Self>> {
+        Self::open_mode(path, true)
+    }
+
+    fn open_mode(path: &Path, exclusive: bool) -> Result<Arc<Self>> {
         let _registry = Registry::lock();
         hooks()?;
         // Hold across open AND registration: a fork between them must not inherit an
@@ -90,6 +98,7 @@ impl Descriptor {
             .read(true)
             .write(true)
             .create(true)
+            .create_new(exclusive)
             .truncate(false)
             .mode(0o600)
             .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)

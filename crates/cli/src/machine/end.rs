@@ -213,6 +213,7 @@ pub async fn update(
     tensorfs: Option<String>,
     tensord: Option<String>,
     gpu_memory_limit: Option<u64>,
+    mode: Option<protocol::config::MachineMode>,
 ) -> Result<ExitCode, Error> {
     protocol::calcifer::local_usable(name)?;
     let mut payload = serde_json::Map::new();
@@ -232,7 +233,7 @@ pub async fn update(
         "" => ctx.hub().clone(),
         origin => Origin::parse(origin)?,
     };
-    let flagless = asked.is_empty() && gpu_memory_limit.is_none();
+    let flagless = asked.is_empty() && gpu_memory_limit.is_none() && mode.is_none();
     // The cozy `cozy update` installed here and `local` has not moved to yet: the update activates
     // it, unless `--tensord` names another binary.
     let mut placed = placed(ctx, &m);
@@ -333,8 +334,13 @@ pub async fn update(
         });
         payload.insert("gpu_memory_limit".into(), limit.into());
     }
-    // A new binary or a limit restarts the machine: either way its warm models reload.
-    if (restarts || gpu_memory_limit.is_some())
+    if let Some(mode) = mode {
+        named.push(format!("{} mode", mode.name()));
+        payload.insert("mode".into(), mode.name().into());
+        want.push(("mode", mode.name().into()));
+    }
+    // A new binary or machine setting restarts the machine; its warm models reload.
+    if (restarts || gpu_memory_limit.is_some() || mode.is_some())
         && m.status
             .as_ref()
             .is_some_and(|s| s.warm.iter().any(|w| !w.level.is_empty()))
@@ -635,10 +641,11 @@ fn stamp(wheel: &Path, local: &str) -> std::io::Result<PathBuf> {
 /// The machine's three components after an update.
 fn updated(ctx: &Context, name: &str, s: &MachineStatus) {
     if ctx.json {
-        output::json(&serde_json::json!({"machine": name, "tensord": s.version, "runtime": s.runtime, "tensorfs": s.tensorfs}));
+        output::json(&serde_json::json!({"machine": name, "tensord": s.version, "runtime": s.runtime, "tensorfs": s.tensorfs, "mode":s.mode}));
     } else {
         let build = if s.dev { " (dev build)" } else { "" };
-        output::say(ctx, &format!("{name} runs TensorD (cozy) {}{build}, Runtime {}, TensorFS {}", s.version, s.runtime, s.tensorfs));
+        let sharing = if s.mode.is_empty() { String::new() } else { format!(", {} mode", s.mode) };
+        output::say(ctx, &format!("{name} runs TensorD (cozy) {}{build}, Runtime {}, TensorFS {}{sharing}", s.version, s.runtime, s.tensorfs));
     }
 }
 
@@ -669,7 +676,10 @@ async fn verify(ctx: &Context, name: &str, run: &calcifer::Run, want: &[(&str, s
         ..status.clone()
     });
     let named: Vec<_> = want.iter().filter(|(field, _)| *field != "dev").cloned().collect();
-    if let Some(left) = left.filter(|left| m.unreachable.is_some() && runs(left, &named)) {
+    // `to` names software only. A mode request requires a live post-restart report;
+    // cloning an older status's mode into the software result cannot establish that.
+    if let Some(left) = left.filter(|left| m.unreachable.is_some()
+        && !want.iter().any(|(field, _)| *field == "mode") && runs(left, &named)) {
         return Ok(left);
     }
     let run = run.id.as_str();

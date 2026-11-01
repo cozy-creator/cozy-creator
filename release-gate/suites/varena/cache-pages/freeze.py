@@ -37,7 +37,7 @@ def main():
                'native_tree': git('rev-parse', f'{source_sha}:crates/varena').decode().strip(),
                'archive': str(archive.resolve()), 'archive_sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
                'source_directory': str(tree.resolve()), 'files': files,
-               'scope': 'native paged Cache primitive and thin bindings; asynchronous owner callbacks not implemented; GPU pending'}
+               'scope': 'native Cache pages, finite asynchronous owner recovery, weak Python callbacks and real native/Runtime owner fixtures; GPU qualification is checkpoint-specific'}
     (args.output / 'source.json').write_text(json.dumps(receipt, indent=2) + '\n')
     print(json.dumps({'source_sha': source_sha, 'files': len(files), 'source_directory': str(tree)}))
 

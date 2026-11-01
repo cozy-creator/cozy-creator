@@ -509,6 +509,8 @@ struct State {
     splits: split::Splits,
     caches: BTreeMap<u64, cache::Storage>,
     next_cache: u64,
+    pressure_pending: bool,
+    prefetch_suppressed: bool,
 }
 
 impl State {
@@ -1205,6 +1207,7 @@ impl Working {
             self.room
                 .working
                 .fetch_sub(bytes, std::sync::atomic::Ordering::AcqRel);
+            self.room.released.fetch_add(bytes as u64, Ordering::AcqRel);
             let blocks: Vec<_> = state
                 .blocks
                 .range(base..base + bytes as u64)
@@ -1374,8 +1377,8 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> 
     loop {
         let mut physical = None;
         let result = alloc_local(device, bytes, stream, pool, &mut physical);
-        if let (Err(Error::OutOfMemory { .. }), Some(needed)) = (&result, physical)
-            && recovery.next(device, needed)?
+        if pool.is_none() && let Err(Error::OutOfMemory { requested_bytes }) = &result
+            && recovery.next(device, physical.unwrap_or(*requested_bytes), physical.is_some())?
         {
             continue; // All native guards are gone; retry the real allocator, never a grant.
         }
@@ -1831,6 +1834,21 @@ pub fn trim(device: i32) -> Result<usize> {
         .map_err(|error| owner.fail(&mut state, error))
 }
 
+/// A cache-owner action has returned. Reclaim only known completed native backing;
+/// no callback, future owner action or unknown-consumer context join is awaited here.
+pub(crate) fn reclaim_completed(device: i32, wanted: usize) -> Result<usize> {
+    let Some(owner) = existing(device)? else { return Ok(0); };
+    let captures = crate::capture_counts()?;
+    crate::ensure_recovery_allowed(&captures, device)?;
+    let mut state = owner.lock()?;
+    let _context = owner.driver.enter()?;
+    let result = (|| {
+        owner.poll_mode(&mut state, false)?;
+        owner.trim_ready(&mut state, wanted, None, &BTreeSet::new())
+    })();
+    result.map_err(|error| owner.fail(&mut state, error))
+}
+
 pub fn trim_all() -> Result<usize> {
     let devices: Vec<_> = devices()?.keys().copied().collect();
     devices.into_iter().try_fold(0usize, |total, device| {
@@ -1869,6 +1887,9 @@ pub fn phase_enter(device: i32, key: Option<String>, mode: PhaseMode) -> Result<
         return Err(Error::Invalid(
             "execution phases cannot overlap on one device",
         ));
+    }
+    if !state.pressure_pending {
+        state.prefetch_suppressed = false;
     }
     let token = state
         .phases
@@ -2278,6 +2299,10 @@ fn admit_with_gap<T>(
     gap: Option<usize>,
     admit: impl FnOnce() -> Result<T>,
 ) -> Result<Option<T>> {
+    if state.prefetch_suppressed {
+        state.stats.prefetch_declines += 1;
+        return Ok(None);
+    }
     let Some(gap) = gap else {
         state.stats.prefetch_declines += 1;
         return Ok(None);
@@ -2390,7 +2415,23 @@ pub fn pool_reserve(device: i32, pool: PoolId, bytes: usize) -> Result<usize> {
     initialize(device)?;
     let owner = owner(device)?;
     let wanted = rounded(bytes, owner.page)?;
+    let mut recovery = crate::Recovery::default();
+    loop {
+        let mut physical = None;
+        let result = pool_reserve_local(device, pool, wanted, &mut physical);
+        if let Err(Error::OutOfMemory { requested_bytes }) = &result
+            && recovery.next(device, physical.unwrap_or(*requested_bytes), physical.is_some())? {
+            continue;
+        }
+        return result;
+    }
+}
+
+fn pool_reserve_local(device: i32, pool: PoolId, wanted: usize,
+                      physical: &mut Option<usize>) -> Result<usize> {
+    let owner = owner(device)?;
     for attempt in 0..3 {
+        *physical = None;
         let result = {
             let captures = crate::capture_counts()?;
             crate::ensure_recovery_allowed(&captures, device)?;
@@ -2409,7 +2450,7 @@ pub fn pool_reserve(device: i32, pool: PoolId, bytes: usize) -> Result<usize> {
                 return Ok(have);
             }
             let _context = owner.driver.enter()?;
-            let result = (|| {
+            let result = (|| -> crate::AllocationResult<usize> {
                 if attempt == 2 {
                     owner.wait_reclaimable(&mut state, wanted - have, Some(pool))?;
                 } else {
@@ -2418,7 +2459,10 @@ pub fn pool_reserve(device: i32, pool: PoolId, bytes: usize) -> Result<usize> {
                 owner.map(&mut state, wanted - have, Some(pool), 0)?;
                 Ok(wanted)
             })();
-            result.map_err(|error| owner.fail(&mut state, error))
+            result.map_err(|failure| {
+                *physical = failure.physical_bytes();
+                owner.fail(&mut state, failure.into())
+            })
         };
         match result {
             Err(Error::OutOfMemory { .. }) if attempt == 0 => {
