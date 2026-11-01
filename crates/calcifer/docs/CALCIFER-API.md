@@ -15,9 +15,10 @@ answers, and restarts it when it runs another cozy than the installed one.
 Calcifer and the CLI are one binary, but a running Calcifer can be older than a freshly updated CLI. The CLI
 reads an answer that shows this as a version skew and never shows it as a bare 404 (`calcifer_client.rs`,
 `Client::exchange` and `Client::opened`, behind every `get`, `post`, `delete`, `text` and `watch`):
-- a route Calcifer does not serve (`404 unknown_route`), an answer without fields the CLI reads, or, from a
-  Calcifer of another version, a request body it cannot read (`400 body_invalid`, the CLI's newer shape): the CLI
-  says so, restarts Calcifer on the installed cozy and asks once more. If the restarted Calcifer is the same version,
+- from a Calcifer of another version, a route it does not serve (`404 unknown_route`), an answer without fields
+  the CLI reads, or a request body it cannot read (`400 body_invalid`, the CLI's newer shape): the CLI says so,
+  restarts Calcifer on the installed cozy and asks once more. From a Calcifer of the CLI's own version these are
+  refused as they are: a restart could not help. If the restarted Calcifer is the same version,
   it refuses with `calcifer_outdated` and the remedy (`cozy update`).
 - request fields Calcifer did not read: Calcifer names them in `Cozy-Ignored-Fields`. The ask was carried out
   without them, so it is never sent again; the CLI says so and restarts Calcifer for the next command.
