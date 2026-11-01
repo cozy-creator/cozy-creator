@@ -78,10 +78,8 @@ pub unsafe trait FillResource: Send + 'static {
 
 A simple native owned value can use an internal wrapper whose retire drops it only after
 completion. TensorFS implements checked release for its real owned read state. No public
-completion boolean or arbitrary completion predicate is accepted. If this contract is not
-chosen, the Source adapter would need its current independent ProducerGuard and separate
-cleanup failure. Root instead chose the checked contract; no dual Box<dyn Send> compatibility
-API is retained. FillFacts exposes producer failure, retirement_failure, resources_remaining
+completion boolean or arbitrary completion predicate is accepted. Root chose the checked
+contract; no dual Box<dyn Send> compatibility API is retained. FillFacts exposes producer failure, retirement_failure, resources_remaining
 and retirement_finished separately. Permanent failures quarantine the exact remaining owners.
 
 The shared native retirement queue is being implemented by the observer-retirement owner:

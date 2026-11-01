@@ -29,10 +29,17 @@ The external P4 worktree is unchanged. Existing synchronous APIs stay in place.
 ## Proposed native Rust surface
 
 Keep this as a narrow ownership/event API, with no allocator callback registry or byte policy.
-Opaque resource ownership is a retained Rust value, not a completion callback.
+Owned resources have a checked native retirement contract, not a completion callback.
+This successor replaces4f's provisional Drop-only envelope; no compatibility overload remains.
+Producer completion and retirement failure are separate facts, and failed retirement keeps
+the remaining objects plus ProducerGuard in quarantine.
 
 ```rust
-pub struct FillOwners { /* fixed streams plus owned source/staging/stream resources */ }
+pub enum FillRetirement { Complete, Pending }
+pub unsafe trait FillResource: Send + 'static {
+    fn retire(&mut self) -> Result<FillRetirement>;
+}
+pub struct FillOwners { /* fixed streams plus checked source/staging/stream resources */ }
 impl FillOwners {
     // Host-only; same-device primary-context streams. Owners must keep every stream,
     // direct host/device input, staging allocation and producer library alive.
@@ -41,7 +48,7 @@ impl FillOwners {
     // publish/abort's declared closure.
     pub unsafe fn new(
         producer_streams: Vec<u64>,
-        owners: Vec<Box<dyn Send + 'static>>,
+        owners: Vec<Box<dyn FillResource>>,
     ) -> Self;
 }
 
@@ -83,6 +90,8 @@ pub struct FillFacts {
     pub recorded_count: usize,
     pub completed_count: usize,
     pub failure: Option<Error>,
+    pub retirement_failure: Option<Error>,
+    pub resources_remaining: usize,
 }
 impl FillTicket {
     pub fn facts(&self) -> Result<FillFacts>; // metadata only, never a query/wait in an allocator
