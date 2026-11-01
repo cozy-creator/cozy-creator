@@ -166,6 +166,17 @@ named() {
 named h3-lora-named h3-lora 1
 named h3-lora-20s-named h3-lora-20s 2
 
+# A shot that moves on from its opening (se-087): one character picture, the opening a place and an activity the beats
+# leave, three pieces. A later piece that restates the opening is pulled back to it with a cut at its edge (0.2.4's
+# h3-base-20s/lora-20s, 24980/24981: back in the food cart the otter had walked away from). Its frames are also looked
+# at for a cut and for people the shot never had (se-089). One seed is one sample: the same request, seed and Runtime
+# render a different take on another machine (se-089: 25229 and 25344 differ from piece 1), so a failure holds the
+# release for a look at more seeds rather than convicting a change on its own.
+BMOVE='[{"at": 0, "prompt": "<Rider> flips noodles in a wok at a harbour food stall."}, {"at": 9, "prompt": "<Rider> hands the bowl over, steps out of the stall and walks along the pier."}, {"at": 19, "prompt": "<Rider> reaches the end of the pier and looks out at the boats."}]'
+cell h3-shot-moves-on "$SHOT" assets:="[{\"name\": \"Rider\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
+  prompt="<Rider> cooks at a busy harbour food stall at dusk, steam and lanterns, ambient sound" duration_s:=30 beats:="$BMOVE" seed:=$((R + 96))
+span_seams h3-shot-moves-on-seams h3-shot-moves-on
+
 # A reference shot, then a text-only render on the next call: the second must get the GPU, never waiting behind the
 # first's prefetch (TensorD 0.14.6: lily run 22344 then 22363 waited until cancelled; fixed by cozy 0.14.8, #2316). On
 # 0.1.x's functions, pinned, as production served them before 0.2.x.
