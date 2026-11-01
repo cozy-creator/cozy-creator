@@ -1,0 +1,251 @@
+{
+  "id": "run-7698de3b5c5b19fd39ed55d0",
+  "number": 24917,
+  "kind": "call",
+  "target": "local/ci-varena-p0/cooperative",
+  "hub": "https://tensorhub.com",
+  "machine": "ghislaine",
+  "status": "failed",
+  "cancel_requested": false,
+  "machine_state": "running",
+  "reason": {
+    "code": "unhandled_exception",
+    "message": "RuntimeError: varena-p3-cooperative child failed (1): None",
+    "origin": "author",
+    "detail": "Traceback (most recent call last):\n  File \"/var/lib/cozy/tensord/generations/5c30ae2fac721ba0fc4de0703db3bbd1/env/lib/python3.12/site-packages/cozy_runtime/author/_invoke.py\", line 564, in run_prepared\n    return invoke(prepared, inv, record), SUCCEEDED, record\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/generations/5c30ae2fac721ba0fc4de0703db3bbd1/env/lib/python3.12/site-packages/cozy_runtime/author/_invoke.py\", line 493, in invoke\n    result = _call(surface, kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/generations/5c30ae2fac721ba0fc4de0703db3bbd1/env/lib/python3.12/site-packages/cozy_runtime/author/_invoke.py\", line 1042, in _call\n    return surface.fn(**kwargs)\n           ^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/editable/b21d2799bb061b36/ci-varena-p0/source-d8154ed0e3f44fb9a3240d201c14605db03c139fd7ba2719d1e484d295afb76f/tree/ci_varena_p0/__init__.py\", line 100, in cooperative\n    return _cuda_child(payload, tel, \"cooperative.py\", \"varena-p3-cooperative\")\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/editable/b21d2799bb061b36/ci-varena-p0/source-d8154ed0e3f44fb9a3240d201c14605db03c139fd7ba2719d1e484d295afb76f/tree/ci_varena_p0/__init__.py\", line 153, in _cuda_child\n    raise RuntimeError(f\"{stage} child failed ({code}): {result}\")\nRuntimeError: varena-p3-cooperative child failed (1): None"
+  },
+  "output": [],
+  "created_at_ms": 1793508083240,
+  "accepted_at_ms": 1793508083656,
+  "started_at_ms": 1793508085676,
+  "settled_at_ms": 1793508089759,
+  "execution_ms": 3964,
+  "measurements": {
+    "attribution": {
+      "folded_names": 0,
+      "method": "perf_counter deltas accumulated in place: count/total/min/max/first/last and wall bounds per named span; step tracks keep up to 512 [end_unix_ms, ms] points",
+      "stages": {
+        "varena-p3-cooperative": {
+          "count": 1,
+          "ended_unix_ms": 1793508089596,
+          "first_ms": 3120.025,
+          "last_ms": 3120.025,
+          "max_ms": 3120.025,
+          "mean_ms": 3120.025,
+          "min_ms": 3120.025,
+          "started_unix_ms": 1793508086476,
+          "total_ms": 3120.025
+        }
+      },
+      "steps": {}
+    },
+    "execution": {
+      "construction": {
+        "fill_ms": 0.0,
+        "legs_ms": {},
+        "prepare_ms": 0.0,
+        "prepared_unix_ms": 0,
+        "warm_ms": 0.0
+      },
+      "cuts": {
+        "levels": {},
+        "oom_floor": 0,
+        "sites": []
+      },
+      "degree": 1,
+      "executor": {
+        "legs_ms": {
+          "cuda_init": 763.4,
+          "package_import": 4.3,
+          "package_warmup": 0.0,
+          "torch_import": 0.0
+        },
+        "ms": 767.7,
+        "started_unix_ms": 1793508085680
+      },
+      "gpus": [
+        {
+          "arch": "sm_89",
+          "attention": {
+            "impl": "",
+            "observed": "",
+            "requested": ""
+          },
+          "end_us": 1793508089610260,
+          "gpu": 0,
+          "pid": 972,
+          "start_us": 1793508086473697,
+          "uuid": "GPU-2eb9e2ca-fca5-d50d-4344-7d0127c4ec68"
+        }
+      ],
+      "loops": [],
+      "on_demand": {},
+      "plan": {},
+      "plan_reports": {},
+      "reply_built_unix_ms": 1793508089624.2,
+      "reply_sent_unix_ms": 1793508089624.8,
+      "spread": {}
+    },
+    "memory": {
+      "driver": [
+        {
+          "before_bytes": 3997696,
+          "gpu": 0,
+          "peak_bytes": 1725759488,
+          "power_max_w": 63,
+          "sm_mhz_limit": 3105,
+          "sm_mhz_low": 2520,
+          "sm_mhz_mean": 2582,
+          "temperature_max_c": 36,
+          "throttled_share": 0.0,
+          "throttles": []
+        }
+      ],
+      "peak_allocated_bytes": 33223216,
+      "peak_reserved_bytes": 117440512,
+      "stats": {
+        "varena": [
+          {
+            "ceiling": {
+              "disk_gbps": 3.2874508596578376,
+              "h2d_gbps": 13.349656619973242
+            },
+            "gpu": 0,
+            "stats": {
+              "allocated": 17039360,
+              "allocator": {
+                "allocations": 1712,
+                "context_joins": 0,
+                "driver_memory_calls": 90,
+                "event_queries": 257,
+                "event_records": 219,
+                "event_waits": 0,
+                "frees": 1714,
+                "ooms": 0
+              },
+              "allocator_scope": "process",
+              "baked_pages": {
+                "bytes": 0,
+                "cap": 67061549056,
+                "pages": 0,
+                "pinned": true,
+                "room": -1,
+                "scope": "the host tier: every streamed page's bytes, pinned",
+                "wanted": 0
+              },
+              "final_bindings": {
+                "fallback_blocks": 0,
+                "fills": 0,
+                "final_resident_bytes": 0,
+                "hits": 0,
+                "native_prefetch": true,
+                "raw_resident_bytes": 0,
+                "resident_scope": "process"
+              },
+              "gathered": 0,
+              "host": null,
+              "moved": {
+                "baked": {
+                  "bytes": 0,
+                  "fills": 0,
+                  "ns": 0
+                },
+                "store": {
+                  "bytes": 0,
+                  "ns": 0
+                }
+              },
+              "overlapping": false,
+              "peak": 33223216,
+              "peak_window": "Working high-water plus sampled native backing, carried across resets; other constructions' resident sets left out",
+              "phase_policy_supported": true,
+              "phases": [],
+              "prefetch": {
+                "canceled": 0,
+                "completed": 0,
+                "failed": 0,
+                "queued": [],
+                "released_cache": 0,
+                "scope": "one exact raw block; current demand precedes queued speculation",
+                "skipped_capacity": 0,
+                "started": 0,
+                "wait_ns": 0
+              },
+              "request": "10",
+              "reserved": 117440512,
+              "room_first_pass": null,
+              "sets": {},
+              "trace": [],
+              "trace_scope": "fills",
+              "weight_residency": {
+                "context_joins": 0,
+                "event_waits": 0,
+                "evictions": 0,
+                "fills": 0,
+                "hits": 0,
+                "pinned_bytes": 0,
+                "poisoned": false,
+                "preferred_bytes": 0,
+                "ready_bytes": 0,
+                "reclaimable_bytes": 0,
+                "reclaimed_by_reason": {
+                  "allocator": 0,
+                  "requested": 0,
+                  "room": 0,
+                  "streaming_limit": 0,
+                  "weight_allocation": 0
+                },
+                "reclaimed_bytes": 0,
+                "regions": 0,
+                "reserved_bytes": 0,
+                "resident_bytes": 0,
+                "streaming_limit_bytes": 18446744073709551615
+              },
+              "working_allocator": {
+                "allocated_bytes": 17039360,
+                "allocated_capacity": 20971520,
+                "allocated_peak": 33223216,
+                "allocations": 1735,
+                "context_joins": 0,
+                "driver_memory_calls": 106,
+                "event_handles": 83,
+                "event_queries": 261,
+                "event_records": 223,
+                "event_waits": 0,
+                "free_bytes": 57561600,
+                "frees": 1733,
+                "mapped_bytes": 117440512,
+                "mapped_peak": 117440512,
+                "ooms": 0,
+                "pending_bytes": 37018624,
+                "pools": 0,
+                "pools_bytes": 0,
+                "prefetch_admissions": 0,
+                "prefetch_attempts": 0,
+                "prefetch_declines": 0,
+                "reclaimable_bytes": 23068672,
+                "unassigned_bytes": 1888768
+              },
+              "working_phases": [],
+              "working_splits": []
+            },
+            "torch_peak": 33223216
+          }
+        ]
+      }
+    },
+    "models": [],
+    "observations": [],
+    "residency": {
+      "graphs": {},
+      "notes": {}
+    },
+    "software": {
+      "attempt_ordinal": 1,
+      "runtime": "0.36.18+dev.g97706e71",
+      "tensord": "0.15.4",
+      "tensord_commit": "9d2ae4827167828d52fbeb2b6e7eaddb34c82f99",
+      "tensorfs": "0.17.16+dev.g1c6b1c15"
+    }
+  }
+}
