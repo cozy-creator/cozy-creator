@@ -52,5 +52,46 @@ run receipts and the returned detail. Copy the payload and add `expected_pid` an
 `keys` from the first result, then run `/cleanup` on the same machine. Require both
 CLI completion and the assertions.
 
-AST/Ruff and offline lock verification are source checks. GPU execution, complete
-query-versus-run parity, real H3 integration and performance remain pending.
+## Qualified GPU result: 2026-11-01
+
+Runs **24925** (consumer) and **24926** (cleanup) passed in the same process,
+PID **1694**, on the RTX 4090 / SM89. Tested fixture `55759abf0` used Runtime
+`b2225f7f0` (`0.36.18+dev.gb2225f7f`) and TensorFS `0e05a2539`
+(`0.17.16+dev.g0e05a253`). [The complete evidence](evidence/2026-11-01.json)
+includes exact module/extension/shim hashes, GPU UUID and returned records.
+
+| Actual query rows | Selected dispatch | Queried workspace | Actual workspace request |
+| --- | --- | ---: | ---: |
+| 8193 | GEMM config 5, Stream-K | 33,554,944 bytes | 33,554,944 bytes |
+| 4097 | GEMM config 1 | 0 | 0 |
+| 3 | GEMV | 0 | 0 |
+
+Public `split` selected row chunks **8193 / 4097 / 2049**, with tails
+**8193 / 4096 / 2046** and observed leaf backing **180 / 118 / 104 MiB**.
+Each leaf published only after the genuine eager phase completed. Each phase
+recorded one native choice. All three outputs matched the ordinary whole native
+reference exactly (relative L2 zero; the declared acceptance budget remains 0.01).
+The half-size choice needed 116 MiB of additional backing because it reused a
+24,576-byte slot in an already-backed 2 MiB slab; its full leaf backing was 118 MiB.
+
+The minimum case refused at **90,177,536 required / 90,177,535 available** bytes,
+with zero output/scratch allocations and `varena_no_retry=True`. Its caught
+refusal invalidated the parent with `split_select_error` and published no sample.
+The baked zero-delta hook read no factors and published a native leaf; unbaked
+execution read factors three times, used the existing path, and published no
+closed projection sample. Both returned relative L2 zero.
+
+Initial and final live bytes were exactly **17,039,360**, with two executor library
+allocations, zero pending bytes and zero graph pools. The next request in the same
+PID found both prior request keys already retired (`phase_forget` false).
+
+Failed run **24923** remains preserved. Its operation was blocked by the fixture
+calling `phase_forget` while its unknown-key parent phase was still active. Only
+fixture cleanup moved after `denoise_loop` closed that owner; Runtime and TensorFS
+were unchanged for the passing rerun. No assertion or quality threshold was relaxed.
+
+AST/Ruff, actual schema import and offline lock checks also passed. This qualifies
+the recorded operator, workspace, selection, completion, refusal, hook and cleanup
+boundaries. The componentless parent is intentionally unknown and unpublished;
+reusable named-model parent-key behavior, full H3 integration and performance
+remain separate gates.
