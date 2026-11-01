@@ -1400,10 +1400,13 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> 
         };
         match result {
             Err(Error::OutOfMemory { .. }) if attempt == 0 => {
+                // Retry the mapping after completed working pages return. Do not evict
+                // weights when that release alone already makes this allocation fit.
                 trim(device)?;
+            }
+            Err(Error::OutOfMemory { .. }) if attempt == 1 => {
                 crate::reclaim(device, class)?;
             }
-            Err(Error::OutOfMemory { .. }) if attempt == 1 => continue,
             Err(error @ Error::OutOfMemory { .. }) => {
                 owner.lock()?.stats.ooms += 1;
                 return Err(error);
