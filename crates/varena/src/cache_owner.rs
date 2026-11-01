@@ -672,7 +672,7 @@ fn worker_tick(
     control: &Arc<Control>,
     registrations: &mpsc::Receiver<Registration>,
     callbacks: &mut BTreeMap<u64, Registration>,
-    arenas: &mut Vec<Arc<crate::Arena>>,
+    arenas: &mut Vec<Arc<crate::arena_retirement::Observation>>,
 ) -> Result<()> {
     for registration in registrations.try_iter() {
         callbacks.insert(registration.id, registration);
@@ -691,7 +691,7 @@ fn worker_tick(
         })
         .collect::<Vec<_>>();
     for id in retiring {
-        crate::retain_arenas(control.device, arenas)?;
+        let _observed = crate::retain_arenas(control.device, arenas)?;
         let registration = callbacks.get_mut(&id).expect("worker-owned callback");
         let scope = CallbackScope {
             control: Arc::clone(control),
@@ -782,7 +782,7 @@ fn worker_tick(
             held.facts.running = true;
             (id, held.wanted.saturating_sub(completed))
         };
-        crate::retain_arenas(control.device, arenas)?;
+        let _observed = crate::retain_arenas(control.device, arenas)?;
         let Some(registration) = callbacks.get_mut(&id) else {
             // Constructor publication can race this tick's registration-channel drain.
             // Keep the accepted request until the already-transferred callback arrives.

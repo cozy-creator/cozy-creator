@@ -18,15 +18,15 @@ unsafe extern "C" fn blocked(data: *mut c_void) {
     }
 }
 
-struct Stream<'a> {
+pub(super) struct Stream<'a> {
     _cuda: &'a Cuda,
-    ptr: Ctx,
+    pub(super) ptr: Ctx,
     sync: StreamOp,
     destroy: StreamOp,
     gate: Option<Box<Gate>>,
 }
 impl<'a> Stream<'a> {
-    fn new(cuda: &'a Cuda) -> Result<Self> {
+    pub(super) fn new(cuda: &'a Cuda) -> Result<Self> {
         let (create, sync, destroy) = unsafe {
             (
                 *cuda._library.get::<StreamCreate>(b"cuStreamCreate\0")?,
@@ -44,7 +44,7 @@ impl<'a> Stream<'a> {
             gate: None,
         })
     }
-    fn block(&mut self) -> Result<()> {
+    pub(super) fn block(&mut self) -> Result<()> {
         self.gate = Some(Box::new(Gate {
             entered: AtomicBool::new(false),
             open: AtomicBool::new(false),
@@ -69,7 +69,7 @@ impl<'a> Stream<'a> {
         }
         Ok(())
     }
-    fn finish(&self) -> Result<()> {
+    pub(super) fn finish(&self) -> Result<()> {
         if let Some(gate) = &self.gate {
             gate.open.store(true, Ordering::Release);
         }
@@ -113,7 +113,7 @@ fn caches_only(
     Ok(snapshot)
 }
 
-fn filled(
+pub(super) fn filled(
     arena: &std::sync::Arc<varena::Arena>,
     bytes: usize,
     value: u8,

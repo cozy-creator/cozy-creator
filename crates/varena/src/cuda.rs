@@ -5,6 +5,7 @@ use crate::{Error, Result};
 use libloading::Library;
 use std::ffi::{c_int, c_uint, c_void};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 type Status = c_int;
 type Context = *mut c_void;
@@ -63,12 +64,22 @@ type EventOp = unsafe extern "system" fn(Object) -> Status;
 type IsCapturing = unsafe extern "system" fn(Object, *mut c_int) -> Status;
 type MemoryInfo = unsafe extern "system" fn(*mut usize, *mut usize) -> Status;
 
+#[derive(Default)]
+pub(crate) struct Counters {
+    pub(crate) activity_calls: AtomicU64,
+    pub(crate) memory_calls: AtomicU64,
+    pub(crate) physical_ooms: AtomicU64,
+    pub(crate) event_queries: AtomicU64,
+    pub(crate) event_records: AtomicU64,
+    pub(crate) event_waits: AtomicU64,
+}
+
 pub(crate) struct Driver {
     // Keep a primary-context retain for the process lifetime. CUDA reset/fork is unsupported.
     context: usize,
+    counters: Arc<Counters>,
     device: c_int,
     device_uuid: DeviceUuid,
-    activity_calls: AtomicU64,
     push: Push,
     pop: Pop,
     synchronize: Synchronize,
@@ -90,15 +101,12 @@ pub(crate) struct Driver {
     stream_wait_event: StreamWaitEvent,
     stream_context: StreamContext,
     memory_info: MemoryInfo,
-    memory_calls: AtomicU64,
-    physical_ooms: AtomicU64,
-    event_queries: AtomicU64,
-    event_records: AtomicU64,
-    event_waits: AtomicU64,
     pub(crate) granularity: usize,
 }
 
 impl Driver {
+    pub(crate) fn counters(&self) -> Arc<Counters> { Arc::clone(&self.counters) }
+
     pub(crate) fn open(ordinal: i32) -> Result<Self> {
         #[cfg(windows)]
         let name = "nvcuda.dll";
@@ -121,9 +129,9 @@ impl Driver {
         let granularity = symbol!("cuMemGetAllocationGranularity", Granularity);
         let mut driver = Self {
             context: 0,
+            counters: Arc::new(Counters::default()),
             device: ordinal,
             device_uuid: symbol!("cuDeviceGetUuid_v2", DeviceUuid),
-            activity_calls: AtomicU64::new(0),
             push: symbol!("cuCtxPushCurrent_v2", Push),
             pop: symbol!("cuCtxPopCurrent_v2", Pop),
             synchronize: symbol!("cuCtxSynchronize", Synchronize),
@@ -145,11 +153,6 @@ impl Driver {
             stream_wait_event: symbol!("cuStreamWaitEvent", StreamWaitEvent),
             stream_context: symbol!("cuStreamGetCtx", StreamContext),
             memory_info: symbol!("cuMemGetInfo_v2", MemoryInfo),
-            memory_calls: AtomicU64::new(0),
-            physical_ooms: AtomicU64::new(0),
-            event_queries: AtomicU64::new(0),
-            event_records: AtomicU64::new(0),
-            event_waits: AtomicU64::new(0),
             granularity: 0,
         };
         // CUDA registers process exit handlers; unloading its library after init is unsafe.
@@ -192,7 +195,7 @@ impl Driver {
     }
 
     pub(crate) fn enter(&self) -> Result<ContextGuard<'_>> {
-        self.activity_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: the context is retained for the process lifetime. Push/pop is thread local.
         status("cuCtxPushCurrent", unsafe {
             (self.push)(self.context as Context)
@@ -201,13 +204,13 @@ impl Driver {
     }
 
     pub(crate) fn synchronize(&self) -> Result<()> {
-        self.activity_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: every caller enters this driver's primary context first.
         status("cuCtxSynchronize", unsafe { (self.synchronize)() })
     }
 
     pub(crate) fn memory_info(&self) -> Result<(usize, usize)> {
-        self.activity_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
         let (mut free, mut total) = (0, 0);
         // SAFETY: valid output storage; the caller entered this driver's primary context.
         status("cuMemGetInfo", unsafe {
@@ -217,9 +220,9 @@ impl Driver {
     }
 
     pub(crate) fn reserve(&self, bytes: usize) -> Result<u64> {
-        self.activity_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
         let mut ptr = 0;
-        self.memory_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.memory_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: valid output pointer; size is rounded to this driver's allocation granularity.
         status("cuMemAddressReserve", unsafe {
             (self.reserve)(&mut ptr, bytes, 0, 0, 0)
@@ -228,8 +231,8 @@ impl Driver {
     }
 
     pub(crate) fn free_address(&self, ptr: u64, bytes: usize) -> Result<()> {
-        self.activity_calls.fetch_add(1, Ordering::Relaxed);
-        self.memory_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.memory_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: only a successfully unmapped owned reservation reaches here.
         status("cuMemAddressFree", unsafe {
             (self.address_free)(ptr, bytes)
@@ -237,13 +240,13 @@ impl Driver {
     }
 
     pub(crate) fn create(&self, bytes: usize) -> crate::AllocationResult<u64> {
-        self.activity_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
         let mut handle = 0;
-        self.memory_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.memory_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: valid output pointer and properties; bytes satisfy granularity.
         let code = unsafe { (self.create)(&mut handle, bytes, &self.properties(), 0) };
         if code == 2 {
-            self.physical_ooms.fetch_add(1, Ordering::Relaxed);
+            self.counters.physical_ooms.fetch_add(1, Ordering::Relaxed);
             return Err(crate::AllocationFailure::DriverOutOfMemory(bytes));
         }
         status("cuMemCreate", code)?;
@@ -251,8 +254,8 @@ impl Driver {
     }
 
     pub(crate) fn map(&self, ptr: u64, bytes: usize, handle: u64) -> Result<()> {
-        self.activity_calls.fetch_add(1, Ordering::Relaxed);
-        self.memory_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.memory_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: an owned, unoccupied reservation and equally-sized owned allocation.
         status("cuMemMap", unsafe { (self.map)(ptr, bytes, 0, handle, 0) })?;
         let access = Access {
@@ -262,8 +265,8 @@ impl Driver {
             },
             flags: 3, // CU_MEM_ACCESS_FLAGS_PROT_READWRITE
         };
-        self.memory_calls.fetch_add(1, Ordering::Relaxed);
-        self.activity_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.memory_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: the entire range just mapped above; one descriptor grants local device access.
         status("cuMemSetAccess", unsafe {
             (self.set_access)(ptr, bytes, &access, 1)
@@ -271,21 +274,21 @@ impl Driver {
     }
 
     pub(crate) fn unmap(&self, ptr: u64, bytes: usize) -> Result<()> {
-        self.activity_calls.fetch_add(1, Ordering::Relaxed);
-        self.memory_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.memory_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: owned whole mapping, no pins, and checked completion of all uses before call.
         status("cuMemUnmap", unsafe { (self.unmap)(ptr, bytes) })
     }
 
     pub(crate) fn release(&self, handle: u64) -> Result<()> {
-        self.activity_calls.fetch_add(1, Ordering::Relaxed);
-        self.memory_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.memory_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: owned allocation handle; caller has confirmed unmap before releasing.
         status("cuMemRelease", unsafe { (self.release)(handle) })
     }
 
     pub(crate) fn create_event(&self) -> Result<usize> {
-        self.activity_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
         let mut event = std::ptr::null_mut();
         // SAFETY: valid output pointer; CU_EVENT_DISABLE_TIMING in the entered primary context.
         status("cuEventCreate", unsafe {
@@ -295,8 +298,8 @@ impl Driver {
     }
 
     pub(crate) fn record(&self, event: usize, stream: usize) -> Result<()> {
-        self.activity_calls.fetch_add(1, Ordering::Relaxed);
-        self.event_records.fetch_add(1, Ordering::Relaxed);
+        self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.event_records.fetch_add(1, Ordering::Relaxed);
         // SAFETY: an owned live event; the caller vouches for a live stream of this context.
         status("cuEventRecord", unsafe {
             (self.event_record)(event as Object, stream as Object)
@@ -305,8 +308,8 @@ impl Driver {
 
     /// Whether all work captured by the event's latest record has completed.
     pub(crate) fn query(&self, event: usize) -> Result<bool> {
-        self.activity_calls.fetch_add(1, Ordering::Relaxed);
-        self.event_queries.fetch_add(1, Ordering::Relaxed);
+        self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.event_queries.fetch_add(1, Ordering::Relaxed);
         // SAFETY: an owned live event; callers exclude CUDA graph capture.
         match unsafe { (self.event_query)(event as Object) } {
             600 => Ok(false), // CUDA_ERROR_NOT_READY
@@ -315,8 +318,8 @@ impl Driver {
     }
 
     pub(crate) fn wait_event(&self, event: usize) -> Result<()> {
-        self.activity_calls.fetch_add(1, Ordering::Relaxed);
-        self.event_waits.fetch_add(1, Ordering::Relaxed);
+        self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.event_waits.fetch_add(1, Ordering::Relaxed);
         // SAFETY: an owned live event; callers exclude CUDA graph capture.
         status("cuEventSynchronize", unsafe {
             (self.event_synchronize)(event as Object)
@@ -324,7 +327,7 @@ impl Driver {
     }
 
     pub(crate) fn destroy_event(&self, event: usize) -> Result<()> {
-        self.activity_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: the sole owner destroys this event once and never uses it again.
         status("cuEventDestroy", unsafe {
             (self.event_destroy)(event as Object)
@@ -332,7 +335,7 @@ impl Driver {
     }
 
     pub(crate) fn is_capturing(&self, stream: usize) -> Result<bool> {
-        self.activity_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
         let mut capture = 0;
         // SAFETY: valid output pointer; the caller vouches for a live stream of this context.
         status("cuStreamIsCapturing", unsafe {
@@ -342,7 +345,7 @@ impl Driver {
     }
 
     pub(crate) fn query_stream(&self, stream: usize) -> Result<bool> {
-        self.activity_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: retirement's caller still owns this live stream and has stopped submissions.
         match unsafe { (self.stream_query)(stream as Object) } {
             600 => Ok(false),
@@ -372,7 +375,7 @@ impl Driver {
     }
 
     pub(crate) fn copy_from_host(&self, ptr: u64, bytes: &[u8]) -> Result<()> {
-        self.activity_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: Fill owns the exclusive mapped destination; slice lives through synchronous copy.
         status("cuMemcpyHtoD", unsafe {
             (self.copy_host)(ptr, bytes.as_ptr().cast(), bytes.len())
@@ -382,15 +385,15 @@ impl Driver {
     /// All calls through initialized driver wrappers, including context entry/pop and sampling.
     /// Metadata reads of this counter perform no CUDA work.
     pub(crate) fn activity_calls(&self) -> u64 {
-        self.activity_calls.load(Ordering::Relaxed)
+        self.counters.activity_calls.load(Ordering::Relaxed)
     }
 
     pub(crate) fn physical_ooms(&self) -> u64 {
-        self.physical_ooms.load(Ordering::Relaxed)
+        self.counters.physical_ooms.load(Ordering::Relaxed)
     }
 
     pub(crate) fn uuid(&self) -> Result<[u8; 16]> {
-        self.activity_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
         let mut uuid = Uuid { bytes: [0; 16] };
         // SAFETY: CUuuid is exactly sixteen bytes; the initialized device belongs to this driver.
         status("cuDeviceGetUuid_v2", unsafe { (self.device_uuid)(&mut uuid, self.device) })?;
@@ -399,10 +402,10 @@ impl Driver {
 
     pub(crate) fn calls(&self) -> (u64, u64, u64, u64) {
         (
-            self.memory_calls.load(Ordering::Relaxed),
-            self.event_queries.load(Ordering::Relaxed),
-            self.event_records.load(Ordering::Relaxed),
-            self.event_waits.load(Ordering::Relaxed),
+            self.counters.memory_calls.load(Ordering::Relaxed),
+            self.counters.event_queries.load(Ordering::Relaxed),
+            self.counters.event_records.load(Ordering::Relaxed),
+            self.counters.event_waits.load(Ordering::Relaxed),
         )
     }
 }
@@ -414,7 +417,7 @@ pub(crate) struct ContextGuard<'a> {
 impl Drop for ContextGuard<'_> {
     fn drop(&mut self) {
         let mut previous = std::ptr::null_mut();
-        self.driver.activity_calls.fetch_add(1, Ordering::Relaxed);
+        self.driver.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: one matching pop on the same thread for the push which constructed this guard.
         // A failing pop never triggers memory reuse; any subsequent operation must push afresh.
         let _ = unsafe { (self.driver.pop)(&mut previous) };

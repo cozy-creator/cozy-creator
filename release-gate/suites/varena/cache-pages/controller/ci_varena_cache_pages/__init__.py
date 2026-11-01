@@ -28,6 +28,7 @@ class Probe(msgspec.Struct, forbid_unknown_fields=True):
     gpu_uuid: str
     timeout_s: float = 60.0
     expected_devices: int = 1
+    other_gpu_uuid: str = ''
     runtime_version: str = ''
     runtime_modules: dict[str, str] = msgspec.field(default_factory=dict)
     gil_gate_sha256: str = ''
@@ -91,6 +92,12 @@ def native(payload, ctx, mode):
         directory = tempfile.mkdtemp(prefix='varena-cache-pages-', dir='/dev/shm')
         os.chmod(directory, 0o700)
         command = [str(binary), mode, directory, payload.gpu_uuid, '0']
+        if mode == 'arena_retirement_cross_device':
+            import torch
+            assert payload.expected_devices == 2 and payload.other_gpu_uuid.startswith(('GPU-', 'MIG-'))
+            actual = str(torch.cuda.get_device_properties(1).uuid)
+            assert actual.removeprefix('GPU-').lower() == payload.other_gpu_uuid.removeprefix('GPU-').lower()
+            command.append(payload.other_gpu_uuid)
         result['command'] = command
         child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                  text=True, close_fds=True, start_new_session=True)
@@ -312,3 +319,21 @@ def multi_arena_plan(payload: Probe, ctx: Context) -> Report:
 def multi_arena_plan_cross_device(payload: Probe, ctx: Context) -> Report:
     assert payload.expected_devices == 2, 'this case requires an actual second leased GPU'
     return native(payload, ctx, 'multi_plan_cross_device')
+
+
+@app.entrypoint(accelerator=True)
+def arena_observer_retirement(payload: Probe, ctx: Context) -> Report:
+    assert payload.expected_devices == 1
+    return native(payload, ctx, 'arena_retirement')
+
+
+@app.entrypoint(accelerator=True)
+def arena_retirement_unproven(payload: Probe, ctx: Context) -> Report:
+    assert payload.expected_devices == 1
+    return native(payload, ctx, 'arena_retirement_unproven')
+
+
+@app.entrypoint(accelerator=True)
+def arena_retirement_cross_device(payload: Probe, ctx: Context) -> Report:
+    assert payload.expected_devices == 2
+    return native(payload, ctx, 'arena_retirement_cross_device')

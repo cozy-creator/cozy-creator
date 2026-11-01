@@ -9,6 +9,7 @@ use std::{
 use varena::{Cache, cooperative, ledger, working};
 mod probes;
 mod multi_plan;
+mod arena_retirement;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 type Ctx = *mut c_void;
 type Retain = unsafe extern "C" fn(*mut Ctx, i32) -> i32;
@@ -192,7 +193,7 @@ fn accounting(peer: &cooperative::Peer) -> Result<Value> {
 fn run() -> Result<Value> {
     let args = std::env::args().collect::<Vec<_>>();
     require(
-        args.len() == 5,
+        args.len() == 5 || (args.get(1).is_some_and(|mode| mode=="arena_retirement_cross_device") && args.len()==6),
         "expected mode, private tmpfs directory, GPU UUID and device",
     )?;
     ledger::initialize()?;
@@ -220,6 +221,9 @@ fn run() -> Result<Value> {
         "abandoned" => probes::abandoned(&cuda, &peer, device)?,
         "choice" => probes::choice(&cuda, &peer, device)?,
         "choice_plan" => probes::choice_plan(&cuda, &peer, device)?,
+        "arena_retirement" => arena_retirement::observers(&cuda,&peer,device,&args[2],&args[3])?,
+        "arena_retirement_cross_device" => arena_retirement::cross_device(&cuda,&peer,device,&args[2],&args[5])?,
+        "arena_retirement_unproven" => arena_retirement::unproven(&cuda,&peer,device)?,
         "multi_plan" => multi_plan::same_device(&cuda, &peer, device)?,
         "multi_plan_cross_device" => multi_plan::mismatched_device(device)?,
         "owners" => probes::owners(&cuda, &peer, device)?,
