@@ -1,0 +1,127 @@
+{
+  "passed": true,
+  "reviewer": "/root/retention_restart",
+  "native": "dfb912042f60fd99a0bbe404b9927665e9b39715",
+  "runtime": "2626e3f48bc147f1f3d46b19bd385356e628680c",
+  "controller": "6bdde809ac56136fc02ad14cf1256fde3a40dbfe",
+  "pid": 121296,
+  "cases": [
+    {
+      "name": "owner_held_gil",
+      "run": 25587,
+      "execution_ms": 2139
+    },
+    {
+      "name": "owner_capture_close",
+      "run": 25588,
+      "execution_ms": 172
+    },
+    {
+      "name": "graph_owner_retirement",
+      "run": 25589,
+      "execution_ms": 1779
+    },
+    {
+      "name": "graph_owner_replay_exclusion",
+      "run": 25590,
+      "execution_ms": 1765
+    },
+    {
+      "name": "owner_allocator_progress",
+      "run": 25591,
+      "execution_ms": 10149
+    }
+  ],
+  "typed_gil": {
+    "limit": 39845888,
+    "initial_storage": 2097152,
+    "later_storage": 16777216,
+    "cache_physically_released": 16777216,
+    "held_gil_callback_progress": 0,
+    "later_callbacks": 1,
+    "physical_ooms": 0,
+    "cleanup": "later same-PID capture baseline; live-storage snapshot itself has2MiB pending"
+  },
+  "capture": {
+    "working_driver_calls_before": 223,
+    "after": 223,
+    "live_cache_preserved": 2097152,
+    "retired_after_capture": true
+  },
+  "graphs": {
+    "actual_sequence_stage_while_callback_running": 2,
+    "output": 3,
+    "escaped_output": 7,
+    "pool_bytes_with_alias": 50331648,
+    "pool_bytes_after_alias": 25165824,
+    "ordinary_first_owner": "actual legal release; no global replay scope assumed",
+    "explicit_replay_first_owner": "actual replay refusal then later graph owner proceeded"
+  },
+  "allocation": {
+    "filler_bytes": 24285020160,
+    "output_bytes": 201326592,
+    "driver_physical_ooms": 4,
+    "physical_cache_released_by_allocation_return": 201326592,
+    "remaining_ready_cache_at_return": 67108864,
+    "cache_mapped_after_full_read": 0,
+    "allocation_elapsed_ns": 11746180,
+    "peer_report": {
+      "completed_bytes": 0,
+      "elapsed_ns": 1067481,
+      "outcome": "peer_reclaim_exhausted",
+      "released_bytes": 0,
+      "requested_bytes": 201326592,
+      "round": 14795
+    },
+    "callback_count": 1,
+    "full_readback": true
+  },
+  "final_baseline": {
+    "allocated_bytes": 17039360,
+    "mapped_bytes": 20971520,
+    "pending_pools_caches_events": 0
+  },
+  "boundaries": [
+    "Actual matched native/Python bridge and componentless Loop-owned NativeSequence proof",
+    "No LM-specific KV or DerivedCache consumer lifecycle qualification",
+    "No Cooperative/Foreign/v3 donor-credit qualification",
+    "No broad performance, release or CUDA policy-cut claim",
+    "Explicit replay scope is separate from ordinary NativeSequence protection",
+    "GIL unavailable owner explicitly fails first call; later successful resize is a separate call"
+  ],
+  "files": {
+    "coherent-parent.json": "f975025250dddf12a5739ced5b91904c5c1bd0664c2276d31bbdb528f738f5dd",
+    "graph_owner_replay_exclusion-25590.json": "9834386f33edddf68190851d9ced9acbe4d945c7b5b677e1ac1de5bc4f607a41",
+    "graph_owner_replay_exclusion-invocation.json": "20f67c0b611bb7a3d33aa9e855204e0746cffd775851b104619d3a0442ffe72d",
+    "graph_owner_replay_exclusion-result.json": "0f2cc87ea7cdaeac52d28f321309d635f1133a90808142c9cb3f9b9dff43a8b9",
+    "graph_owner_replay_exclusion.err": "0bc8588b737eb9e11efa333f1e9341388fdef2959e703f84267e3908125ac63c",
+    "graph_owner_replay_exclusion.ndjson": "0c387393c154c35117e0051174539bff56c9e8e1cc9e9e477bb50a6fadd58a6a",
+    "graph_owner_retirement-25589.json": "954d0d80ea8f310ef42396fcc4befdf0b5f2438d5c48f32ad25d512193e5ee3f",
+    "graph_owner_retirement-invocation.json": "9296696b756b80335ed7d831066ae3ff760c0a122137dea0cd31cf4e7b966e19",
+    "graph_owner_retirement-result.json": "22ec63887966c1f69c0ef381a773a846347d0444d63719ae3d301f7fd2aff733",
+    "graph_owner_retirement.err": "0bc8588b737eb9e11efa333f1e9341388fdef2959e703f84267e3908125ac63c",
+    "graph_owner_retirement.ndjson": "1d4fac1a362898e504cfd2133177731ba95a3017a474876fddffc55b84120e3b",
+    "input-template.json": "bb5da6d144e4a6ab6eecbda3002f2646dc91ba0f483fd37e7b488daf31b3dcf5",
+    "install-invocation.json": "504d24b37d82ab060f331656687d1c620a6890dd1db669fa2a0c84737aa7d83f",
+    "install.err": "0bc8588b737eb9e11efa333f1e9341388fdef2959e703f84267e3908125ac63c",
+    "install.ndjson": "97a75c08f79860afac20e1b91a03f2da1170d69f1e1bc1ba7fee0d8030254a99",
+    "owner_allocator_progress-25591.json": "4c02bf0713b536c37b7d86e1245fe0fa859ac35e93970c0aac4c9ff67336c9b0",
+    "owner_allocator_progress-invocation.json": "9e1bb20b427c50f985436f2fbc4098d415e21321b0a46dc3ba84544b9bc33f27",
+    "owner_allocator_progress-result.json": "25dccedd35b2378708a0365e6f8606e9ca2db8b20bf5161331638f16dee1228b",
+    "owner_allocator_progress.err": "0bc8588b737eb9e11efa333f1e9341388fdef2959e703f84267e3908125ac63c",
+    "owner_allocator_progress.ndjson": "bdce40733a380a770a0b7e6b2af7bbc19ca1f9850570bc54c40f57e6dc6be5e6",
+    "owner_capture_close-25588.json": "528431ca56d418a7f0d48e6e84726d867e9477371596576b304a03557fd9fade",
+    "owner_capture_close-invocation.json": "fa5270bc919a71e76e2a3b3b8a5c4c70bbd909ddb12f67ab004fc1e08b806c7b",
+    "owner_capture_close-result.json": "807894fa37d87081eb1abd37008b24ebc4c118c87db04e18abd58e3895c8b0f4",
+    "owner_capture_close.err": "0bc8588b737eb9e11efa333f1e9341388fdef2959e703f84267e3908125ac63c",
+    "owner_capture_close.ndjson": "e03e4a6cca73866a7b28d64a2a330683ee647ad5d7a8a5c6155ec115148e3611",
+    "owner_held_gil-25587.json": "c0bedeb780202ae8e911cf26a3e7fe0e900479834d8eb915055f062f4390f75b",
+    "owner_held_gil-invocation.json": "bd5ef9da5d54cb7029526f01e51235032f314ba760e8af88a18257d8c104c833",
+    "owner_held_gil-result.json": "331e116e6b02ebb73dc45862573d84b490f4b5d6066d34f91b128b2ac70ab055",
+    "owner_held_gil.err": "fa8d53827dd9cf35ab0302a2188d9cdfc5fcc09ef0221b2d3f88e3c05dad3e11",
+    "owner_held_gil.ndjson": "bd90c4c0c07cc0524f8e1fa40685751c6794619bf0ffc6c0d30e9ba3bc1526b9",
+    "progress.json": "8010693d6fba3cddb8a1330c5241a84e0154099238d37f7c43e70d0e92b8913a",
+    "qualification.json": "49bc8672f8d1879619bfb818266267defe32370555891a783c6ad071348e7acf",
+    "ready.json": "b0398a42b4ebf0826ed8cb9983587ad281087c54afbf34cde6b6c8c8ecc6dd76"
+  }
+}
