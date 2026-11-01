@@ -9,3 +9,14 @@ Initially use real Loop-carried mean slots. The prior is selected once, remains 
 Use actual `sol_attn_plan` full/tail workspace results and actual `int8_plan` output pitches. Packed QKV has row pitch three times its head width; this rules out the contiguous-only GEMV path on ragged tails. A caller-owned V/window-output buffer may be reused only after all V reads complete on the same stream. An active native phase Plan must carry its selected generation unchanged.
 
 This is an initial implementation scope. Source, bounded GPU and full-model qualification remain separate. The existing INT8/Plan cohort and its matched full-model pair stay frozen. Root owns every native/kernel build, GPU action, rental and final qualification artifact.
+
+
+### Host phase correction after run25515
+
+The first26-case GPU attempt stopped before the kernel because Loop supplies a Tensor
+index and AttentionLayout requires integer host metadata. The fixture now declares
+`phases=(0,)` or`(0,1)` and uses the real keyword host phase for routing and rolling.
+It never converts a device Tensor to an integer, including under capture. The actual
+Runtime `_Loop.eager` CPU red/green proof reproduces the old constructor error and
+verifies both host phases with CUDA uninitialized. All26 cases, Runtime9b and packagefc4
+are unchanged. Original25515 is preserved; GPU retry is pending.

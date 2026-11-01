@@ -315,17 +315,20 @@ def consumer(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
                                 'complete': complete, 'allocations': allocations, 'request': request}
                         before_selections = {key: row['selections'] for key, row in request.working_splits.items()}
 
-                        def step(i, marker, slot, previous, current, cos, sin, *, case=case,
+                        def step(i, marker, slot, previous, current, cos, sin, *, phase, case=case,
                                  attn=attn, tokens=tokens):
-                            del marker
+                            del i, marker
                             assert not slot.is_inference()
-                            case['seed_step'] = case['mode'] == 'rolling' and i == 0
+                            # Routing uses the declared host phase, never a Tensor readback.
+                            assert type(phase) is int
+                            step_index = phase
+                            case['seed_step'] = case['mode'] == 'rolling' and step_index == 0
                             case['slot'] = slot
                             token = _CASE.set(case)
                             try:
                                 with (
-                                    producer.carrying(producer.Carry({id(attn): slot}, rolling=i > 0)),
-                                    attention_scope(AttentionLayout(tokens, 64, step=i, dense_until_step=0)),
+                                    producer.carrying(producer.Carry({id(attn): slot}, rolling=step_index > 0)),
+                                    attention_scope(AttentionLayout(tokens, 64, step=step_index, dense_until_step=0)),
                                 ):
                                     try:
                                         result = attn(previous if case['seed_step'] else current,
@@ -341,7 +344,8 @@ def consumer(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
                             finally:
                                 _CASE.reset(token)
 
-                        denoise_loop(step, range(2 if mode == 'rolling' else 1), state=(marker,),
+                        steps = range(2 if mode == 'rolling' else 1)
+                        denoise_loop(step, steps, state=(marker,), phases=tuple(steps),
                                      carried=(slot,), inputs=(previous, current, *rotary),
                                      key=('actual-sparse-producer', tokens, heads, mode))
                         phase = request.working_phases[-1]
