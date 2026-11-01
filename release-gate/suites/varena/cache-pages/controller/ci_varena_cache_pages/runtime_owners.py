@@ -234,7 +234,8 @@ def capture_close(payload, ctx):
             capture_gate = vt.split_context(0)
             pending_request = queued.facts()
             assert not capture_gate['eligible'] and capture_gate['reason'] == 'capture_active'
-            assert pending_request['queued'] > 0 and not pending_request['finished']
+            assert not pending_request['finished']
+            assert pending_request['queued'] > 0 or pending_request['running']
             failure = None
             try:
                 owner.close()

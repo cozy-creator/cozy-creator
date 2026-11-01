@@ -696,7 +696,11 @@ fn worker_tick(
                     #[cfg(not(all(target_os = "linux", target_has_atomic = "64")))]
                     let _ = released;
                 }
-                Err(error) if deferred(&error) => continue,
+                // Physical collection can be blocked by an unrelated graph replay.
+                // The owner still has its own exclusion/claims: a Python logical
+                // retirement may proceed while native full retirement must defer.
+                // Keep collection pending; no action return counts as freed bytes.
+                Err(error) if deferred(&error) => {}
                 Err(error) => return Err(error),
             }
         }
@@ -709,7 +713,10 @@ fn worker_tick(
                 .checked_sub(job.start_release)
                 .unwrap_or(0);
             held.facts.observed_release_bytes = observed;
-            if held.cancelled || observed >= held.wanted as u64 || held.owners.is_empty() {
+            if held.cancelled
+                || observed >= held.wanted as u64
+                || (held.owners.is_empty() && !held.collect_pending)
+            {
                 held.facts.finished = true;
             }
             if held.facts.finished {
@@ -727,6 +734,9 @@ fn worker_tick(
             }
             if held.waiting_service {
                 continue;
+            }
+            if held.owners.is_empty() {
+                continue; // A deferred physical collection still owns this job.
             }
             let id = held.owners.pop_front().expect("pending owner");
             held.facts.queued = held.owners.len();
