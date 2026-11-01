@@ -21,7 +21,10 @@ eager phase completes. The limited capacity is obtained from native accounting
 of each complete allocation vector, never from a Python size-class estimate.
 
 A cap one byte below the legal output-only minimum must refuse before output or
-scratch allocation with a typed no-retry error. A real zero-delta LoRA hook then
+scratch allocation with a typed no-retry error and invalidate the enclosing phase
+even when that refusal is caught. This requires the paired native admission-failure
+invalidation followup. A componentless phase cannot prove reusable named-model
+parent identity; that remains a real-model gate. A real zero-delta LoRA hook then
 checks both modes: baked leaves may use the closed adapter without calling the
 factor getter; unbaked leaves perform their LoRA work on the existing path and
 must not publish a closed projection sample. The hook is never removed to force

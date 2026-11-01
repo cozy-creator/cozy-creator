@@ -54,7 +54,8 @@ def actual_request(payload, ctx):
     assert set(payload.runtime_modules) == {
         'author/kernels.py', 'author/_split.py', 'internal/encoding/leaves.py',
         'internal/prebuilt.py', 'internal/execution/__init__.py',
-        'internal/execution/native_linear_split.py', 'lora.py', '_kernels/_gemm.abi3.so',
+        'internal/execution/native_linear_split.py', 'internal/execution/native_split.py',
+        'lora.py', '_kernels/_gemm.abi3.so',
     }
     for relative, expected in payload.runtime_modules.items():
         assert digest(base / relative) == expected, relative
@@ -211,6 +212,7 @@ def gpu(payload: Probe, ctx: Context) -> Report:
             phase = request.working_phases[-1]
             if chunk is None:
                 assert 'output' not in held and 'refusal' in held
+                assert phase['invalidated'] and not phase['published'], phase
                 cases.append({'refusal': held['refusal'], 'phase': phase})
                 continue
             output = held.pop('output').cpu()
@@ -219,6 +221,7 @@ def gpu(payload: Probe, ctx: Context) -> Report:
             assert relative <= prebuilt.BUDGET, (relative, prebuilt.BUDGET)
             observations = phase['split_observations']
             assert len(observations) == 1 and observations[0]['published'], observations
+            assert phase['cut_choices'] == 1, phase
             sample = observations[0]
             selected = request.working_splits[sample['key']]
             assert selected['row_chunk'] == chunk, selected

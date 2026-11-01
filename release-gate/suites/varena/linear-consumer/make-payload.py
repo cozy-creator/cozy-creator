@@ -28,7 +28,8 @@ r, rv = package(runtime, 'cozy-runtime')
 t, tv = package(tensorfs, 'tensorfs')
 modules = ('author/kernels.py', 'author/_split.py', 'internal/encoding/leaves.py',
            'internal/prebuilt.py', 'internal/execution/__init__.py',
-           'internal/execution/native_linear_split.py', 'lora.py', '_kernels/_gemm.abi3.so')
+           'internal/execution/native_linear_split.py', 'internal/execution/native_split.py',
+           'lora.py', '_kernels/_gemm.abi3.so')
 result = {'runtime_version': rv,
           'runtime_modules': {n: digest(r, 'cozy_runtime/' + n) for n in modules},
           'tensorfs_version': tv, 'extension_sha256': digest(t, 'tensorfs/_ext.abi3.so'),
