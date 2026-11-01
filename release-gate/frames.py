@@ -23,6 +23,11 @@ variant: gray at 192x108 over every 4th frame: SSIM against the control (`ssim`,
 `ssim_second`, so a LoRA that reaches only one piece of a two-piece shot shows), the mean per-frame luma deviation of
 the output and of the control (`contrast`, `control_contrast`: a grey render scores near 0), and over consecutive output
 frames the mean SSIM (`coherence`) and the least one with its time (`seam`, `seam_at_s`: a cut between pieces scores low).
+seams: gray at 224x128, at each boundary the frame pair across the edge and the next two pairs, the carried head going
+into new frames (a reframe or cut there scores low): the largest change as a ratio to the shot's median change, and the
+least consecutive SSIM; `inside_ssim` is the same three-pair window's least SSIM every 2.5 s away from the boundaries
+(median), the shot's own norm. A wider window would blame a piece's own last frames on its seam (se-087: h3-shot-40s's
+15.08 s dip is two frames inside piece 1, alike in every arm).
 """
 
 import json
@@ -147,7 +152,9 @@ def seams(output: str, at: list[float]) -> dict:
     d = np.abs(np.diff(b, axis=0)).mean(axis=(1, 2))
     med = max(float(np.median(d)), 0.5)
     def window(t: float) -> tuple[int, int]:
-        return max(0, round((t - 0.5) * FPS)), min(len(d), round((t + 0.5) * FPS))
+        # Pairs (k-1, k), (k, k+1), (k+1, k+2): k is the boundary's first new frame.
+        k = round(t * FPS)
+        return max(0, k - 1), min(len(d), k + 2)
 
     def worst_ssim(t: float) -> float:
         lo, hi = window(t)
@@ -159,7 +166,7 @@ def seams(output: str, at: list[float]) -> dict:
         k = lo + int(np.argmax(d[lo:hi]))
         out.append({"at": t, "worst_at_s": round((k + 1) / FPS, 2), "ratio": round(float(d[k]) / med, 2),
                     "ssim": round(worst_ssim(t), 3)})
-    # The same worst-SSIM window every 2.5 s away from the boundaries: how alike the shot's own consecutive frames are.
+    # The same three-pair window every 2.5 s away from the boundaries: how alike the shot's own consecutive frames are.
     inside = [t for t in np.arange(2.5, len(d) / FPS - 1, 2.5) if all(abs(t - a) > 1.5 for a in at)]
     ref = float(np.median([worst_ssim(t) for t in inside])) if inside else None
     frames = np.where((d > 3 * med) & (d > 4))[0] + 1
