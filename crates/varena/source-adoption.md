@@ -108,3 +108,18 @@ Source4f's four native cases are not qualification of these adapters. The next r
 must read an actual TensorFS checkpoint into Regions, observe native in-flight publication,
 order actual consumer streams, verify complete bytes and source counters, and exercise
 cancellation/error/escaped aliases plus exact final accounting. GPU work remains root-owned.
+
+## Current checkpoint boundaries
+
+Frozen4f's native/example and complete TensorFS binding cargo checks passed in the root
+build lane (native-check-002 and bindings-check-001; bindings2m55s). No GPU result follows
+from those checks. The checked FillResource successor requires its own compilation and
+real retirement Pending/failure plus raw Source consumer proof.
+
+Current NVIDIA13.4 documentation confirms that non-blocking streams do not implicitly
+synchronize with stream0, and unrecorded events contain no submitted work. The implementation
+therefore keeps explicit stream identities and requires all producer event records before
+publication; a successful query of an unrecorded event is never a completion proof.
+References: [stream management](https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/group__CUDA__STREAM.html),
+[event management](https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/group__CUDA__EVENT.html).
+Historical CUDA13.0 receipts are preserved; no driver/toolkit upgrade or13.4 execution is claimed.

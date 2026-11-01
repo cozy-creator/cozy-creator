@@ -190,9 +190,12 @@ The returned Pin retains the real Region; subsequent consumer lifetime is indepe
 
 CUDA's stream wait orders subsequent work after the recorded event; event recording is
 not a completion assertion. An event created but never recorded must never be accepted as
-proof. These semantics are from the official CUDA13.0 stream/event API documentation:
-https://docs.nvidia.com/cuda/archive/13.0.2/cuda-driver-api/group__CUDA__STREAM.html
-https://docs.nvidia.com/cuda/archive/13.0.2/cuda-driver-api/group__CUDA__EVENT.html
+proof. The successor follows the current official CUDA13.4 stream/event contracts, rechecked
+on2026-11-01:
+https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/group__CUDA__STREAM.html
+https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/group__CUDA__EVENT.html
+The immutable4f proposal references CUDA13.0; its source/build receipts remain scoped to
+that checkpoint. These documentation checks do not qualify execution on a CUDA13.4 driver.
 
 A partial consumer wait failure returns no usable Pin and retains all producer ownership.
 Previously enqueued waits are harmless ordering, not writes or accepted operation progress.
