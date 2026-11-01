@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard, atomic::Ordering};
 mod owner;
 pub use owner::{Facts, Owner, RecoveryOutcome, RecoveryReport};
 pub(crate) use owner::{Participation, recover};
+pub(crate) use owner::wake_cache_actions;
 
 fn deferred(error: &Error) -> bool {
     matches!(error,

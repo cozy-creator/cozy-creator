@@ -459,6 +459,32 @@ pub fn request_shrink(device: i32, key: RequestKey, bytes: usize) -> Result<Opti
     if state.worker == Some(std::thread::current().id()) {
         return Ok(None);
     }
+    // Concurrent/rapid local failures share one outstanding owner pass. A new actual
+    // refusal after earlier physical releases asks for remaining progress, not a sum
+    // of duplicate deficits. No allocator waits for this pass or its callback thread.
+    if key.cause == Cause::Allocation {
+        for pending in state
+            .jobs
+            .values()
+            .filter(|job| job.key.cause == Cause::Allocation)
+        {
+            let mut held = pending.lock()?;
+            if !held.cancelled && !held.facts.finished && !held.owners.is_empty() {
+                let observed = start_release
+                    .checked_sub(pending.start_release)
+                    .unwrap_or(0);
+                held.wanted = held.wanted.max(bytes.saturating_add(observed as usize));
+                let job = Arc::clone(pending);
+                drop(held);
+                drop(state);
+                control.changed.notify_all();
+                return Ok(Some(ShrinkRequest { control, job }));
+            }
+        }
+    }
+    if control.requestable.load(Ordering::Acquire) == 0 {
+        return Ok(None);
+    }
     if !state.jobs.contains_key(&key)
         && state
             .last
@@ -616,7 +642,15 @@ fn worker_tick(
         };
         if let Some(wanted) = collect {
             match crate::reclaim_completed(control.device, wanted) {
-                Ok(_) => job.lock()?.collect_pending = false,
+                Ok(released) => {
+                    job.lock()?.collect_pending = false;
+                    #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
+                    if released != 0 {
+                        crate::cooperative::wake_cache_actions(control.device)?;
+                    }
+                    #[cfg(not(all(target_os = "linux", target_has_atomic = "64")))]
+                    let _ = released;
+                }
                 Err(error) if deferred(&error) => continue,
                 Err(error) => return Err(error),
             }
@@ -722,6 +756,8 @@ fn worker_tick(
         drop(held);
         drop(owner);
         control.changed.notify_all();
+        #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
+        crate::cooperative::wake_cache_actions(control.device)?;
     }
     Ok(())
 }

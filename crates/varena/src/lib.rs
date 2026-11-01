@@ -88,28 +88,50 @@ enum PeerProgress {
     FinalRetry,
 }
 
+const RECOVERY_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+
 #[derive(Default)]
 struct Recovery {
     deadline: Option<std::time::Instant>,
     observed: Option<(u64, u64)>,
     terminal: bool,
+    cache_request: Option<cache_owner::ShrinkRequest>,
     #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
     participation: Option<cooperative::Participation>,
 }
 
 impl Recovery {
-    /// Called only after all local demand retries end in an actual physical refusal.
-    fn next(&mut self, device: i32, bytes: usize) -> Result<bool> {
+    /// Called after finite local retries fail. Owner requests are always asynchronous;
+    /// only physical refusals can enter peer recovery. Local caps never ask other PIDs.
+    fn next(&mut self, device: i32, bytes: usize, physical: bool) -> Result<bool> {
         if self.terminal { return Ok(false); }
+        {
+            let captures = capture_counts()?;
+            ensure_recovery_allowed(&captures, device)?;
+        }
+        let limit = *self.deadline.get_or_insert_with(|| std::time::Instant::now() + RECOVERY_BUDGET);
+        if std::time::Instant::now() >= limit { self.terminal = true; return Ok(false); }
+        let release_before = released_bytes(device)?;
+        if cache_owner::requestable(device)? != 0 {
+            self.cache_request = cache_owner::request_shrink(device, cache_owner::RequestKey {
+                cause: cache_owner::Cause::Allocation, generation: cache_owner::next_generation()?,
+            }, bytes)?;
+        }
         #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
-        let progress = cooperative::recover(device, bytes, &mut self.deadline, &mut self.observed, &mut self.participation)?;
+        let progress = if physical {
+            cooperative::recover(device, bytes, &mut self.deadline, &mut self.observed,
+                &mut self.participation, self.cache_request.as_ref().map(|_| release_before))?
+        } else { PeerProgress::Unavailable };
         #[cfg(not(all(target_os = "linux", target_has_atomic = "64")))]
-        let progress = { let _ = (device, bytes, &mut self.deadline, &mut self.observed); PeerProgress::Unavailable };
-        self.terminal = !matches!(progress, PeerProgress::Retry);
+        let progress = { let _ = (device, bytes, physical, &mut self.deadline, &mut self.observed); PeerProgress::Unavailable };
+        let cache_progress = self.cache_request.is_some() && released_bytes(device)? > release_before;
+        self.terminal = std::time::Instant::now() >= limit
+            || (!cache_progress && !matches!(progress, PeerProgress::Retry));
         #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
         if self.terminal { drop(self.participation.take()); }
-        Ok(!matches!(progress, PeerProgress::Unavailable))
+        Ok(cache_progress || !matches!(progress, PeerProgress::Unavailable))
     }
+
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1472,9 +1494,8 @@ impl Region {
                     self.prepare_locked(admission, &captures, &mut state, &mut physical)
                 };
                 if admission == Admission::Any
-                    && matches!(result, Err(Error::OutOfMemory { .. }))
-                    && let Some(bytes) = physical
-                    && recovery.next(self.arena.device, bytes)?
+                    && let Err(Error::OutOfMemory { requested_bytes }) = &result
+                    && recovery.next(self.arena.device, physical.unwrap_or(*requested_bytes), physical.is_some())?
                 {
                     continue; // Revalidate admission after peer progress, outside every guard.
                 }
