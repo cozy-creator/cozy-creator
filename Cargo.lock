@@ -4579,7 +4579,9 @@ dependencies = [
 name = "varena"
 version = "0.17.16"
 dependencies = [
+ "libc",
  "libloading 0.9.0",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
