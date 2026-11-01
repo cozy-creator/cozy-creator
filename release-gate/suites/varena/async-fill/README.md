@@ -44,3 +44,11 @@ worker-start refusal, inherited post-CUDA Session refusal, last-Arena retirement
 with another ticket, multiple-GPU isolation, and the TensorFS/public asynchronous Source
 adapters. No error injection hooks or mocked CUDA completion exist in this fixture. Existing
 synchronous API, checked joins and Source ABI remain unchanged by this native slice.
+
+Integration boundary: the coordinator base's existing Arena::drop still holds the global
+capture mutex during its context join. The async queues are per device and separate event
+polling from resource retirement, but that existing finalizer can still block another GPU's
+capture-mutex access. The observer-retirement lane owns the shared native finalization seam;
+its exclusion-token/no-held-capture-mutex implementation must be composed and qualified
+before claiming last-Arena or cross-device progress. Async producer/Region/Pin leases are
+genuine ownership and must not be detached as observers or inferred from Arc strong counts.
