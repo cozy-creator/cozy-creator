@@ -456,6 +456,19 @@ impl Room {
 
 type ArenaRegistry = Vec<(i32, Weak<Arena>)>;
 static ARENAS: OnceLock<Mutex<ArenaRegistry>> = OnceLock::new();
+
+/// Acquire matching GPU owners before capture/arena/working guards. No recovery or
+/// last-owner destruction runs under the registry; callers keep these leases outside
+/// every later guard, including early-return/error paths.
+fn arena_leases(device: i32) -> Result<Vec<Arc<Arena>>> {
+    check_process()?;
+    let Some(registry) = ARENAS.get() else { return Ok(Vec::new()); };
+    let registry = registry.lock().map_err(|_| Error::Poisoned("arena registry mutex".into()))?;
+    let leases = registry.iter().filter(|(ordinal, _)| *ordinal == device)
+        .filter_map(|(_, arena)| Weak::upgrade(arena)).collect();
+    drop(registry);
+    Ok(leases)
+}
 #[derive(Default)]
 struct DeviceActivity {
     activity_epoch: u64,
@@ -859,6 +872,40 @@ impl Arena {
         let mut state = self.lock()?;
         let _context = self.driver.enter()?;
         self.reclaim_locked(&mut state, bytes, preferred, None, reason)
+    }
+
+    /// One strictly nonwaiting pass. Caller holds capture exclusion and retained Arena
+    /// ownership; cold/retired backing is still ineligible when Pending or Unjoined.
+    fn reclaim_ready_counted(&self, captures: &BTreeMap<i32, DeviceActivity>, wanted: usize,
+                            maximum: usize, reason: ReclaimReason, completed: &mut usize)
+        -> Result<ReclaimReport> {
+        ensure_recovery_allowed(captures, self.device)?;
+        let mut state = self.lock()?;
+        let result = (|| {
+            let _context = self.driver.enter()?;
+            let mut report = ReclaimReport { requested_bytes: wanted, ..ReclaimReport::default() };
+            let contentless = state.contentless_candidates(true, None);
+            let candidates = state.reclaim_candidates(true, None, reason);
+            for id in &contentless {
+                if report.reclaimed_bytes >= wanted { break; }
+                if state.entries[id].bytes <= maximum.saturating_sub(report.reclaimed_bytes)
+                    && self.completion(&mut state, *id)? == Completion::Done {
+                    self.evict_counted(&mut state, *id, reason, &mut report, completed)?;
+                }
+            }
+            for (id, preferred, _) in candidates {
+                if report.reclaimed_bytes >= wanted { break; }
+                if contentless.contains(&id) { continue; }
+                if state.entries[&id].bytes > maximum.saturating_sub(report.reclaimed_bytes) { continue; }
+                if self.completion(&mut state, id)? == Completion::Done {
+                    self.evict_counted(&mut state, id, reason, &mut report, completed)?;
+                } else if preferred {
+                    break; // Do not jump a pending/unjoined preferred suffix or wait for it.
+                }
+            }
+            Ok(report)
+        })();
+        result.map_err(|error| poison(&mut state, error))
     }
 
     fn reclaim_locked(
@@ -2023,12 +2070,24 @@ pub fn released_bytes(device: i32) -> Result<u64> {
     Ok(room(device)?.released.load(Ordering::Acquire))
 }
 
-fn reclaim_completed(device: i32, wanted: usize) -> Result<usize> {
+fn reclaim_completed(device: i32, wanted: usize, retained: &mut Vec<Arc<Arena>>) -> Result<usize> {
+    // The callback worker retains observed Arena leases exactly as Peer does. Otherwise a
+    // temporary snapshot could become the last owner and context-join from this no-wait pass.
+    for arena in arena_leases(device)? {
+        if !retained.iter().any(|held| Arc::ptr_eq(held, &arena)) { retained.push(arena); }
+    }
     let working = working::reclaim_completed(device, wanted)?;
-    let weights = if working < wanted {
-        reclaim(device, wanted - working)?.reclaimed_bytes
-    } else { 0 };
-    Ok(working.saturating_add(weights))
+    let mut completed = working;
+    if completed < wanted {
+        let captures = capture_counts()?;
+        ensure_recovery_allowed(&captures, device)?;
+        for arena in retained.iter() {
+            if completed >= wanted { break; }
+            arena.reclaim_ready_counted(&captures, wanted - completed, usize::MAX,
+                ReclaimReason::Allocator, &mut completed)?;
+        }
+    }
+    Ok(completed)
 }
 
 /// The room this process may hold on `device` (weight pages plus mapped working allocations),
@@ -2062,17 +2121,7 @@ fn reclaim_room(device: i32, room: &Room) -> Result<ReclaimReport> {
         return Ok(report);
     }
     report.reclaimed_bytes += working::trim(device)?;
-    let Some(registry) = ARENAS.get() else {
-        return Ok(report);
-    };
-    let arenas: Vec<_> = registry
-        .lock()
-        .map_err(|_| Error::Poisoned("arena registry mutex".into()))?
-        .iter()
-        .filter(|(ordinal, _)| *ordinal == device)
-        .filter_map(|(_, arena)| Weak::upgrade(arena))
-        .collect();
-    for arena in arenas {
+    for arena in arena_leases(device)? {
         let need = room.over(0);
         if need == 0 {
             break;
@@ -2090,8 +2139,9 @@ pub fn room_limit(device: i32) -> Result<Option<usize>> {
     Ok((limit != usize::MAX).then_some(limit))
 }
 
-/// Allocator-pressure entry point: native-only, one finite pass, no callbacks or external waits.
-/// The caller retries its allocation once only if this returns enough useful reclaimed bytes.
+/// Allocator-pressure entry point: one native pass, with no callbacks. It may wait for
+/// submitted consumer fences or join unannotated GPU work; owner collection instead uses
+/// the separate strictly ready-only pass. Actual reclaimed bytes are observations, not grants.
 pub fn reclaim(device: i32, bytes: usize) -> Result<ReclaimReport> {
     check_process()?;
     if is_recovery_blocked(device)? {
@@ -2101,17 +2151,7 @@ pub fn reclaim(device: i32, bytes: usize) -> Result<ReclaimReport> {
         requested_bytes: bytes,
         ..ReclaimReport::default()
     };
-    let Some(registry) = ARENAS.get() else {
-        return Ok(report);
-    };
-    let registry = registry
-        .lock()
-        .map_err(|_| Error::Poisoned("arena registry mutex".into()))?;
-    for arena in registry
-        .iter()
-        .filter(|(ordinal, _)| *ordinal == device)
-        .filter_map(|(_, arena)| Weak::upgrade(arena))
-    {
+    for arena in arena_leases(device)? {
         if report.reclaimed_bytes >= bytes {
             break;
         }
@@ -2129,16 +2169,7 @@ pub fn reclaim(device: i32, bytes: usize) -> Result<ReclaimReport> {
 /// Physical bytes owned by live arenas on this device, for a local managed-memory ceiling.
 pub fn resident_bytes(device: i32) -> Result<usize> {
     check_process()?;
-    let Some(registry) = ARENAS.get() else {
-        return Ok(0);
-    };
-    let registry = registry
-        .lock()
-        .map_err(|_| Error::Poisoned("arena registry mutex".into()))?;
-    registry
-        .iter()
-        .filter(|(ordinal, _)| *ordinal == device)
-        .filter_map(|(_, arena)| Weak::upgrade(arena))
+    arena_leases(device)?.into_iter()
         .try_fold(0usize, |bytes, arena| {
             bytes
                 .checked_add(arena.stats()?.resident_bytes)

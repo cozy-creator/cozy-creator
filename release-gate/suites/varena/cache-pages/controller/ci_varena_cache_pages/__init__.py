@@ -253,5 +253,10 @@ def native_owners(payload: Probe, ctx: Context) -> Report:
 
 
 @app.entrypoint(accelerator=True)
+def arena_concurrency(payload: Probe, ctx: Context) -> Report:
+    return native(payload, ctx, 'arena_concurrency')
+
+
+@app.entrypoint(accelerator=True)
 def python_binding(payload: Probe, ctx: Context) -> Report:
     return binding(payload, ctx)

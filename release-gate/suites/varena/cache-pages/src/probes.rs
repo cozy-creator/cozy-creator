@@ -113,6 +113,21 @@ fn caches_only(
     Ok(snapshot)
 }
 
+fn filled(
+    arena: &std::sync::Arc<varena::Arena>,
+    bytes: usize,
+    value: u8,
+) -> Result<(std::sync::Arc<varena::Region>, varena::Pin)> {
+    let region = arena.reserve(bytes)?;
+    let mut fill = match region.prepare()? {
+        varena::Preparation::Fill(fill) => fill,
+        _ => return Err(io::Error::other("new region unexpectedly resident").into()),
+    };
+    fill.copy_from_host(&vec![value; bytes])?;
+    let pin = fill.commit()?;
+    Ok((region, pin))
+}
+
 fn capture(cuda: &Cuda, peer: &cooperative::Peer, cache: &Cache, device: i32) -> Result<Value> {
     type Begin = unsafe extern "C" fn(Ctx, i32) -> i32;
     type End = unsafe extern "C" fn(Ctx, *mut Ctx) -> i32;
@@ -533,6 +548,21 @@ pub(super) fn owners(cuda: &Cuda, peer: &cooperative::Peer, device: i32) -> Resu
     second.commit(0, page)?;
     sentinel(cuda, first.base()?, page, 137)?;
     sentinel(cuda, second.base()?, page, 149)?;
+    let arena = varena::Arena::new(device)?;
+    let (pending_weight, pending_pin) = filled(&arena, page, 151)?;
+    let (unjoined_weight, unjoined_pin) = filled(&arena, page, 157)?;
+    let unjoined_owner = unjoined_pin.into_unpinned_region();
+    let cold_weight = arena.reserve(page)?;
+    let mut cold_fill = match cold_weight.prepare()? {
+        varena::Preparation::Fill(fill) => fill,
+        _ => return Err(io::Error::other("new cold region unexpectedly resident").into()),
+    };
+    cold_fill.copy_from_host(&vec![163; page])?;
+    drop(cold_fill); // Real unfinished publication: Cold backing, unannotated release.
+    let mut gate = Stream::new(cuda)?;
+    gate.block()?;
+    let pending_owner = unsafe { pending_pin.into_fenced_region(&[gate.ptr as u64]) };
+    let weights_before = arena.stats()?;
     let lock = Arc::new(Mutex::new(()));
     let held = lock
         .lock()
@@ -589,14 +619,44 @@ pub(super) fn owners(cuda: &Cuda, peer: &cooperative::Peer, device: i32) -> Resu
         first.stats()?.live_bytes == page && second.stats()?.mapped_bytes == 0,
         "wrong native owner backing was reclaimed",
     )?;
-    read(cuda, first.base()?, page, 137)?;
+    let weights_after = arena.stats()?;
+    require(
+        weights_after.resident_bytes == 3 * page
+            && weights_after.context_joins == weights_before.context_joins
+            && weights_after.event_waits == weights_before.event_waits,
+        "completed-only owner collection waited on or credited Pending/Unjoined weights",
+    )?;
     let observed = caches_only(peer, page, 0, 0)?;
+    require(
+        observed["weight_pending"] == 3 * page
+            && observed["weight_idle"] == 0
+            && observed["pending_release"] == page,
+        "only the actual submitted weight fence may appear as pending release",
+    )?;
     let after = working_stats(device)?;
     require(
         before["cache_mapped"].as_u64().unwrap() - after["cache_mapped"].as_u64().unwrap()
             == page as u64,
         "actual mapped Cache reduction differs from the successful owner",
     )?;
+    gate.finish()?;
+    read(cuda, first.base()?, page, 137)?;
+    read(cuda, pending_weight.ptr(), page, 151)?;
+    read(cuda, unjoined_weight.ptr(), page, 157)?;
+    read(cuda, cold_weight.ptr(), page, 163)?;
+    // Explicit cleanup may join unannotated weights, after the real gate opens.
+    arena.reclaim(usize::MAX)?;
+    require(
+        arena.stats()?.resident_bytes == 0,
+        "explicit weight cleanup incomplete",
+    )?;
+    drop((
+        pending_owner,
+        unjoined_owner,
+        pending_weight,
+        unjoined_weight,
+        cold_weight,
+    ));
     drop(held);
     first_owner.close()?;
     second_owner.close()?;
@@ -618,7 +678,95 @@ pub(super) fn owners(cuda: &Cuda, peer: &cooperative::Peer, device: i32) -> Resu
         "request":{"returned":progress.returned,"declined":progress.declined,"failed":progress.failed,
             "observed_physical_release":progress.observed_release_bytes},
         "before":before,"after":after,"accounting":observed,"first_full_readback":true,
+        "weights":{"resident_before":weights_before.resident_bytes,"resident_after":weights_after.resident_bytes,
+            "context_joins_before":weights_before.context_joins,"context_joins_after":weights_after.context_joins,
+            "event_waits_before":weights_before.event_waits,"event_waits_after":weights_after.event_waits,
+            "pending_and_unjoined_full_readback":true},
         "both_callback_owners_retired":true,
         "scope":"actual native owner requests and physical release; allocator trigger and Python/GIL integration are separate"}),
     )
+}
+
+pub(super) fn arena_concurrency(peer: &cooperative::Peer, device: i32) -> Result<Value> {
+    use std::sync::{Arc, Barrier};
+    struct Creating(Arc<AtomicBool>);
+    impl Drop for Creating {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::Release);
+        }
+    }
+    let anchor = varena::Arena::new(device)?; // Every recovery traverses a real live Arena.
+    let start = Arc::new(Barrier::new(4));
+    let creating = Arc::new(AtomicBool::new(true));
+    let result = std::thread::scope(|scope| -> std::result::Result<Value, String> {
+        let create_start = Arc::clone(&start);
+        let create_active = Arc::clone(&creating);
+        let creators = scope.spawn(move || -> std::result::Result<usize, String> {
+            let _creating = Creating(create_active); // errors also end the observation window
+            let cuda = Cuda::open(device).map_err(|error| error.to_string());
+            create_start.wait();
+            let cuda = cuda?;
+            for _ in 0..128 {
+                let arena = varena::Arena::new(device).map_err(|error| error.to_string())?;
+                let (region, pin) = filled(&arena, 2 << 20, 173).map_err(|error| error.to_string())?;
+                read(&cuda, pin.ptr(), pin.len(), 173).map_err(|error| error.to_string())?;
+                // Full readback proves every consumer completed before this exact pin ends.
+                let done = unsafe { pin.into_completed_region() };
+                drop((done, region, arena));
+            }
+            Ok(128)
+        });
+        let reclaim_start = Arc::clone(&start);
+        let reclaim_active = Arc::clone(&creating);
+        let reclaimers = scope.spawn(move || -> std::result::Result<(usize, usize), String> {
+            reclaim_start.wait();
+            let (mut passes, mut overlapping) = (0, 0);
+            while passes < 512 || reclaim_active.load(Ordering::Acquire) {
+                overlapping += usize::from(reclaim_active.load(Ordering::Acquire));
+                varena::reclaim(device, 2 << 20).map_err(|error| error.to_string())?;
+                varena::resident_bytes(device).map_err(|error| error.to_string())?;
+                passes += 1;
+                std::thread::yield_now();
+            }
+            Ok((passes, overlapping))
+        });
+        let publish_start = Arc::clone(&start);
+        let publish_active = Arc::clone(&creating);
+        let publishers = scope.spawn(move || -> std::result::Result<(usize, usize, usize), String> {
+            publish_start.wait();
+            let (mut refreshed, mut deferred, mut overlapping) = (0, 0, 0);
+            while refreshed + deferred < 512 || publish_active.load(Ordering::Acquire) {
+                overlapping += usize::from(publish_active.load(Ordering::Acquire));
+                match peer.publish(0) {
+                    Ok(_) => refreshed += 1,
+                    Err(cooperative::Error::Native(varena::Error::Busy | varena::Error::CaptureActive)
+                        | cooperative::Error::Ledger(ledger::Error::Busy | ledger::Error::Stale | ledger::Error::StaleSample)) => deferred += 1,
+                    Err(error) => return Err(error.to_string()),
+                }
+                std::thread::yield_now();
+            }
+            Ok((refreshed, deferred, overlapping))
+        });
+        start.wait();
+        let made = creators.join().map_err(|_| "arena creator panicked")??;
+        let (reclaimed, reclaim_overlap) = reclaimers.join().map_err(|_| "arena reclaimer panicked")??;
+        let (published, deferred, publish_overlap) = publishers.join().map_err(|_| "arena publisher panicked")??;
+        if reclaim_overlap == 0 || publish_overlap == 0 { return Err("no actual concurrent creation observation".into()); }
+        Ok(json!({"actual_creation_fill_readback_drop_passes":made,
+            "actual_reclaim_and_resident_snapshot_passes":reclaimed,"reclaim_passes_while_creating":reclaim_overlap,
+            "actual_peer_publications":published,"typed_deferred_publications":deferred,
+            "publication_passes_while_creating":publish_overlap,
+            "simultaneous_start_barrier":true,"production_probe_hooks":false}))
+    }).map_err(io::Error::other)?;
+    varena::reclaim(device, usize::MAX)?;
+    require(
+        varena::resident_bytes(device)? == 0,
+        "concurrent native arenas retained physical backing",
+    )?;
+    require(
+        accounting(peer)?["physical"] == 0,
+        "concurrent arena final physical accounting",
+    )?;
+    drop(anchor);
+    Ok(result)
 }
