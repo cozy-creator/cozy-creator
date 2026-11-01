@@ -154,7 +154,8 @@ def failed_capture_and_unknown_key():
     graph.reset()
     del graph
     probe.clean()
-    definition = Definition(pool, stream)
+    # All owners of the abandoned Torch host pool are gone; a new capture gets a new handle.
+    definition = Definition(torch.cuda.graph_pool_handle(), stream)
     controller = varena.PhaseController(varena.Arena(0))
     try:
         unknown = run(definition, controller, None)
