@@ -272,12 +272,13 @@ def gpu(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
                         legacy_calls[0] += 1
                         return value(value)
 
-                    def step(i, marker, hidden, cos, sin, seed, *,
+                    def step(i, marker, seed, hidden, cos, sin, *,
                              capacity_key=capacity_key, allocations=tuple(allocations),
                              chunk=chunk, census=census, held=held, attn=attn,
                              actual_original=actual_original):
                         del i, marker
-                        assert glue.KEY_MEAN.get().slot is seed
+                        assert not seed.is_inference(), 'the mutable seed must be Loop-owned state'
+                        census.seed = seed
                         current_operator = glue._Heads.of(attn.processor, attn, hidden, (cos, sin), None)
                         assert type(current_operator) is glue._Heads
                         trim(vt, device)
@@ -287,6 +288,7 @@ def gpu(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
                         if chunk is None:
                             assert room['required_bytes'] > 0, 'minimum is fully cached; cannot force refusal'
                         vt.set_limit(device, before['mapped_bytes'] + room['required_bytes'] - (1 if chunk is None else 0))
+                        mean_token = glue.KEY_MEAN.set(glue.KeyMean(seed))
                         try:
                             with census:
                                 held['output'] = split(actual_original, current_operator, Cut(2), intent=current_operator.intent())
@@ -299,10 +301,11 @@ def gpu(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
                             if chunk is None:
                                 assert held['refusal']['allocation_delta'] == 0
                         finally:
+                            glue.KEY_MEAN.reset(mean_token)
                             vt.set_limit(device, None)
 
                     try:
-                        denoise_loop(step, range(1), state=(marker,), inputs=(hidden, *rotary, seed),
+                        denoise_loop(step, range(1), state=(marker,), carried=(seed,), inputs=(hidden, *rotary),
                                      key=('actual-h3-heads', tokens, heads))
                     finally:
                         vt.phase_forget(device, capacity_key)
@@ -366,28 +369,31 @@ def gpu(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
                 expected_owner = attn.to_out[1](attn.to_out[0](attended.flatten(2, 3))).cpu()
                 del attended
                 seed.fill_(19.)
-                mean = glue.KEY_MEAN.get()
-                assert mean is not None
-                mean.heads = 0
                 owner_result = {}
 
-                def owner(i, marker, hidden, cos, sin, seed, *, attn=attn,
+                def owner(i, marker, seed, hidden, cos, sin, *, attn=attn,
                           owner_result=owner_result):
                     del i, marker
-                    assert glue.KEY_MEAN.get().slot is seed
-                    owner_result['output'] = attn(hidden, (cos, sin), None)
+                    assert not seed.is_inference()
+                    mean = glue.KeyMean(seed)
+                    mean_token = glue.KEY_MEAN.set(mean)
+                    try:
+                        owner_result['output'] = attn(hidden, (cos, sin), None)
+                        owner_result['seeded_heads'] = mean.heads
+                    finally:
+                        glue.KEY_MEAN.reset(mean_token)
 
-                denoise_loop(owner, range(1), state=(marker,), inputs=(hidden, *rotary, seed),
+                denoise_loop(owner, range(1), state=(marker,), carried=(seed,), inputs=(hidden, *rotary),
                              key=('actual-h3-attention-owner', tokens, heads))
                 phase = request.working_phases[-1]
-                assert mean.heads == heads and len(phase['split_observations']) == 2
+                assert owner_result['seeded_heads'] == heads and len(phase['split_observations']) == 2
                 assert phase['cut_choices'] == 2 and all(s['published'] for s in phase['split_observations'])
                 cases.append({'case': 'complete-processor-and-output-projection', 'tokens': tokens,
-                              'heads': heads, 'seeded_heads': mean.heads, 'phase': phase,
+                              'heads': heads, 'seeded_heads': owner_result['seeded_heads'], 'phase': phase,
                               'output': output_equal(owner_result['output'].cpu(), expected_owner),
                               'seed': output_equal(seed.cpu(), seed_reference)})
                 owner_result.clear()
-                del owner, owner_result, expected_owner, mean
+                del owner, owner_result, expected_owner
 
                 from dataclasses import replace
                 intent = operator.intent()
