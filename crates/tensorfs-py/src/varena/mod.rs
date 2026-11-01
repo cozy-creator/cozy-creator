@@ -88,7 +88,7 @@ impl Consumers {
 fn raise(py: Python<'_>, error: varena::Error) -> PyErr {
     let message = error.to_string();
     let class = match error {
-        varena::Error::OutOfMemory { .. } => "OutOfMemoryError",
+        varena::Error::OutOfMemory { .. } | varena::Error::Exhausted { .. } => "OutOfMemoryError",
         varena::Error::Poisoned(_) => return VarenaPoisonedError::new_err(message),
         varena::Error::DeviceFault { .. } | varena::Error::Cuda { .. } => "AcceleratorError",
         _ => return PyRuntimeError::new_err(message),
@@ -98,6 +98,11 @@ fn raise(py: Python<'_>, error: varena::Error) -> PyErr {
         // Torch's exception types take the ordinary RuntimeError constructor arguments.
         // The CUDA error code is an attribute, not an accepted constructor keyword.
         let exception = class.call1((message.clone(),))?;
+        if let varena::Error::Exhausted { requested_bytes, available_bytes } = error {
+            exception.setattr("varena_no_retry", true)?;
+            exception.setattr("required_bytes", requested_bytes)?;
+            exception.setattr("available_bytes", available_bytes)?;
+        }
         if let varena::Error::DeviceFault { code, .. } | varena::Error::Cuda { code, .. } = error {
             exception.setattr("error_code", code)?;
         }

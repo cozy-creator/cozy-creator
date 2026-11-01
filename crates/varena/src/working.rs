@@ -8,6 +8,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 
+mod split;
+pub use split::{
+    SplitContext, SplitObservation, SplitSelection, split_begin, split_context, split_end,
+    split_select,
+};
+
 pub type PoolId = (u64, u64);
 
 /// Allocation ranges retained by one actual graph definition. This owns metadata only.
@@ -327,6 +333,7 @@ pub struct PhaseStats {
 
 #[derive(Clone, Debug)]
 pub struct PhaseObservation {
+    pub split_observations: Vec<SplitObservation>,
     pub definitions: Vec<u64>,
     pub token: u64,
     pub mode: PhaseMode,
@@ -478,6 +485,7 @@ struct State {
     phases: Phases,
     trace: Option<CaptureTrace>,
     poison: Option<String>,
+    splits: split::Splits,
 }
 
 impl State {
@@ -571,6 +579,7 @@ impl State {
             active.owned_peak = active.owned_peak.max(owned);
             active.backing = backing;
             active.backing_peak = active.backing_peak.max(backing);
+            split::refresh(self);
         }
     }
 
@@ -669,13 +678,18 @@ impl Working {
         // The inactive measurement path does not even load the callback counter.
         if state.phases.active.is_some() && self.external_callbacks.load(Ordering::Acquire) != 0 {
             state.phases.invalidate("external_callback_memory");
+            split::invalidate(state, "external_callback_memory");
         }
     }
 
     fn fail(&self, state: &mut State, error: Error) -> Error {
         if !matches!(
             error,
-            Error::OutOfMemory { .. } | Error::Invalid(_) | Error::CaptureActive | Error::Busy
+            Error::OutOfMemory { .. }
+                | Error::Exhausted { .. }
+                | Error::Invalid(_)
+                | Error::CaptureActive
+                | Error::Busy
         ) {
             state.poison = Some(error.to_string());
         }
@@ -832,6 +846,7 @@ impl Working {
                     if let Some((before, prior)) = observed {
                         let (capacity, segment) = (block.capacity, block.segment);
                         state.phase_changed(before, capacity, prior, phase, segment);
+                        split::allocated(state, ptr);
                     }
                     return Some(ptr);
                 }
@@ -1465,6 +1480,7 @@ fn free_inner(device: i32, ptr: u64, stream: u64) -> Result<()> {
     }
     if let Some((charge, phase, segment)) = observed {
         state.phase_changed(class, charge, phase, phase, segment);
+        split::refresh(&mut state);
     }
     state.stats.allocated_bytes -= requested;
     state.stats.frees += 1;
@@ -1544,6 +1560,9 @@ fn retire_native_inner(device: i32, ptr: u64, completed: bool) -> Result<()> {
         phase,
         segment,
     );
+    if state.phases.active.is_some() {
+        split::refresh(&mut state);
+    }
     state.stats.allocated_bytes -= requested;
     state.stats.frees += 1;
     Ok(())
@@ -1860,6 +1879,7 @@ pub fn phase_invalidate(device: i32, token: u64, reason: &str) -> Result<()> {
         return Err(Error::Invalid("unknown execution phase token"));
     }
     state.phases.invalidate(reason);
+    split::invalidate(&mut state, reason);
     Ok(())
 }
 
@@ -1872,6 +1892,7 @@ pub(crate) fn invalidate_current_phase(device: i32, reason: &str) -> Result<()> 
         .lock()
         .map_err(|_| Error::Poisoned("working allocator mutex".into()))?;
     state.phases.invalidate(reason);
+    split::invalidate(&mut state, reason);
     if let Some(trace) = &mut state.trace {
         trace.invalid = true;
     }
@@ -1936,6 +1957,11 @@ pub fn phase_leave(
         active.owned_peak += trace.bytes;
         active.backing_peak += trace.backing;
     }
+    if split::open_for(&state, active.token) {
+        active
+            .invalid
+            .get_or_insert_with(|| "split_interval_open".to_owned());
+    }
     let mismatch = active
         .key
         .as_ref()
@@ -1962,7 +1988,13 @@ pub fn phase_leave(
             String::new()
         }
     });
-    let published = reason.is_empty();
+    let split_observations = split::phase_finished(
+        &mut state,
+        active.token,
+        completed && active.mode == PhaseMode::Eager && active.invalid.is_none(),
+        &reason,
+    );
+    let published = reason.is_empty() && active.invalid.is_none();
     let definitions: Vec<_> = active.replay.as_ref().map_or_else(Vec::new, |trace| {
         trace
             .footprints
@@ -2015,6 +2047,7 @@ pub fn phase_leave(
         sample = record.clone();
     }
     Ok(PhaseObservation {
+        split_observations,
         definitions,
         token,
         mode: active.mode,
@@ -2053,13 +2086,14 @@ pub fn phase_forget(device: i32, key: &str) -> Result<bool> {
     {
         return Err(Error::Busy);
     }
+    let split_removed = split::forget(&mut state, key)?;
     let removed = state.phases.samples.remove(key).is_some();
     let previous = state.phases.replay_samples.len();
     state
         .phases
         .replay_samples
         .retain(|record, _| record.semantic != key);
-    Ok(removed || previous != state.phases.replay_samples.len())
+    Ok(removed || split_removed || previous != state.phases.replay_samples.len())
 }
 
 /// Caller holds the capture registry and region state. Hold working metadata through physical

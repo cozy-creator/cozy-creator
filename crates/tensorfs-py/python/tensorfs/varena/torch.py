@@ -14,7 +14,7 @@ import platform
 import sys
 import threading
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Iterator, Literal, TypeAlias, cast
+from typing import TYPE_CHECKING, Any, Iterator, Literal, Sequence, TypeAlias, cast
 
 from .. import _ext
 
@@ -148,6 +148,36 @@ def set_limit(device: DeviceLike, bytes: int | None = None) -> int:
     """
     _installed()
     return _ext._varena_working_set_limit(_device(device), bytes)
+
+
+def split_context(device: int) -> dict[str, Any]:
+    """Metadata-only eligibility for an explicit device; no implicit CUDA initialization."""
+    _installed()
+    if device < 0:
+        raise ValueError("device must be nonnegative")
+    return _ext._varena_split_context(device)
+
+
+def split_select(device: DeviceLike, key: str, choices: Sequence[tuple[str, Sequence[int]]], *, preferred: str) -> dict[str, Any]:
+    """Choose an opaque legal variant from a complete copied allocation menu before execution."""
+    _installed()
+    return _ext._varena_split_select(_device(device), key, [(name, list(sizes)) for name, sizes in choices], preferred=preferred)
+
+
+def split_begin(device: DeviceLike, key: str, choice_id: str, *, completion_owner: int | None = None) -> int:
+    """Commit exactly this choice and open one nonnested leaf interval within its phase.
+
+    completion_owner is the active eager observation whose checked stream completion also
+    covers this leaf. None permits declared selection but cannot train a successful sample.
+    """
+    _installed()
+    return _ext._varena_split_begin(_device(device), key, choice_id, completion_owner=completion_owner)
+
+
+def split_end(device: DeviceLike, observation_id: int, *, submitted: bool) -> dict[str, Any]:
+    """Close host submission; only the enclosing phase's checked completion can publish."""
+    _installed()
+    return _ext._varena_split_end(_device(device), observation_id, submitted=submitted)
 
 
 def phase_enter(device: DeviceLike, key: str | None = None, *, mode: Literal["eager", "capture", "replay", "preparation"] = "eager") -> int:

@@ -18,7 +18,7 @@ struct Failure {
 impl Failure {
     fn from_error(error: &varena::Error) -> Self {
         let (kind, cuda) = match error {
-            varena::Error::OutOfMemory { .. } => (1, 0),
+            varena::Error::OutOfMemory { .. } | varena::Error::Exhausted { .. } => (1, 0),
             varena::Error::DeviceFault { code, .. } | varena::Error::Cuda { code, .. } => {
                 (2, *code)
             }
@@ -353,6 +353,113 @@ fn _varena_working_pool_release(py: Python<'_>, device: i32, pool: (u64, u64)) -
     .map_err(|e| super::raise(py, e))
 }
 
+fn split_error(py: Python<'_>, error: varena::Error) -> PyErr {
+    let capacity = matches!(
+        error,
+        varena::Error::OutOfMemory { .. } | varena::Error::Exhausted { .. }
+    );
+    let result = super::raise(py, error);
+    if capacity {
+        let _ = result.value(py).setattr("varena_no_retry", true);
+    }
+    result
+}
+
+#[pyfunction]
+fn _varena_split_context<'py>(py: Python<'py>, device: i32) -> PyResult<Bound<'py, PyDict>> {
+    let context = py
+        .detach(|| {
+            check()?;
+            varena::working::split_context(device)
+        })
+        .map_err(|error| super::raise(py, error))?;
+    let row = PyDict::new(py);
+    row.set_item("eligible", context.eligible)?;
+    row.set_item("reason", context.reason)?;
+    Ok(row)
+}
+
+#[pyfunction]
+#[pyo3(signature = (device, key, choices, *, preferred))]
+fn _varena_split_select<'py>(
+    py: Python<'py>,
+    device: i32,
+    key: &str,
+    choices: Vec<(String, Vec<usize>)>,
+    preferred: &str,
+) -> PyResult<Bound<'py, PyDict>> {
+    let selected = py
+        .detach(|| {
+            check()?;
+            varena::working::split_select(device, key, choices, preferred)
+        })
+        .map_err(|error| split_error(py, error))?;
+    let row = PyDict::new(py);
+    row.set_item("choice_id", selected.choice_id)?;
+    row.set_item("eligible", selected.eligible)?;
+    row.set_item("required_bytes", selected.required_bytes)?;
+    row.set_item("available_bytes", selected.available_bytes)?;
+    row.set_item("basis", selected.basis)?;
+    row.set_item("reclaimed_working_bytes", selected.reclaimed_working_bytes)?;
+    row.set_item("reclaimed_weight_bytes", selected.reclaimed_weight_bytes)?;
+    Ok(row)
+}
+
+#[pyfunction]
+#[pyo3(signature = (device, key, choice_id, *, completion_owner = None))]
+fn _varena_split_begin(
+    py: Python<'_>,
+    device: i32,
+    key: &str,
+    choice_id: &str,
+    completion_owner: Option<u64>,
+) -> PyResult<u64> {
+    py.detach(|| {
+        check()?;
+        varena::working::split_begin(device, key, choice_id, completion_owner)
+    })
+    .map_err(|error| split_error(py, error))
+}
+
+#[pyfunction]
+#[pyo3(signature = (device, observation_id, *, submitted))]
+fn _varena_split_end<'py>(
+    py: Python<'py>,
+    device: i32,
+    observation_id: u64,
+    submitted: bool,
+) -> PyResult<Bound<'py, PyDict>> {
+    // A failed operation still closes its interval after the bridge records the original error.
+    let observed = py
+        .detach(|| varena::working::split_end(device, observation_id, submitted))
+        .map_err(|error| super::raise(py, error))?;
+    split_observation(py, &observed)
+}
+
+fn split_observation<'py>(
+    py: Python<'py>,
+    observed: &varena::working::SplitObservation,
+) -> PyResult<Bound<'py, PyDict>> {
+    let row = PyDict::new(py);
+    row.set_item("observation_id", observed.observation_id)?;
+    row.set_item("key", &observed.key)?;
+    row.set_item("choice_id", &observed.choice_id)?;
+    row.set_item(
+        "peak_bytes",
+        observed.observed.then_some(observed.peak_bytes),
+    )?;
+    row.set_item(
+        "backing_peak_bytes",
+        observed.observed.then_some(observed.backing_peak_bytes),
+    )?;
+    row.set_item("observed", observed.observed)?;
+    row.set_item("pending", observed.pending)?;
+    row.set_item("published", observed.published)?;
+    row.set_item("reason", &observed.reason)?;
+    row.set_item("successful_passes", observed.successful_passes)?;
+    Ok(row)
+}
+
 #[pyclass(name = "_VarenaCallbackScope", module = "tensorfs._ext", frozen)]
 struct CallbackScope {
     guard: Mutex<Option<varena::GlobalCaptureGuard>>,
@@ -470,6 +577,12 @@ pub(super) fn observation<'py>(
     observed: &varena::working::PhaseObservation,
 ) -> PyResult<Bound<'py, PyDict>> {
     let row = PyDict::new(py);
+    let splits = observed
+        .split_observations
+        .iter()
+        .map(|item| split_observation(py, item))
+        .collect::<PyResult<Vec<_>>>()?;
+    row.set_item("split_observations", splits)?;
     row.set_item("definitions", &observed.definitions)?;
     row.set_item("observation_id", observed.token)?;
     row.set_item("mode", observed.mode.name())?;
@@ -531,6 +644,10 @@ fn _varena_phase_forget(py: Python<'_>, device: i32, key: &str) -> PyResult<bool
 }
 
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(_varena_split_context, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_split_select, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_split_begin, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_split_end, module)?)?;
     module.add_class::<PyGraphFootprint>()?;
     module.add_class::<CallbackScope>()?;
     module.add_function(wrap_pyfunction!(_varena_phase_enter, module)?)?;
