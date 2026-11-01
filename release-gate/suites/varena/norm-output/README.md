@@ -51,3 +51,12 @@ for both reference and candidate. No private context variable is assigned and no
 contract is bypassed. CPU construction verifies the registered component/path and actual
 forward wrapper; GPU projection qualification remains pending. The separate RMSNorm
 cell and same-PID cleanup passed25578/25582 on136/a96.
+
+
+Run25718 passed the first dense native and explicit-sharing comparisons (both exact),
+then the learned-group setup incorrectly reused the preceding module. That explicit
+sharing fallback actually chose legacy split level3; its window views can teach a
+single-use group. The learned-group case now constructs a separate real module, asserts
+an absent initial group, and retains both ordinary reads and the exact group2 refusal
+checks. The fixture explicitly creates normal tensors with inference disabled and
+grad disabled. No learned flag is assigned or guard relaxed; both records remain.

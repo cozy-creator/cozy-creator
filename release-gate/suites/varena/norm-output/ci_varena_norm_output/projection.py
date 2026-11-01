@@ -123,10 +123,10 @@ def projection(payload: Probe, ctx: Context) -> Report:
     state = _OBSERVED.request_state()
 
     def run(result):
-        attn = reference_attn = hidden = rotary = marker = slot = output = None
+        attn = reference_attn = learner = learning_leaf = hidden = rotary = marker = slot = output = None
         step = None
         try:
-            with torch.no_grad():
+            with torch.inference_mode(False), torch.no_grad():
                 tokens, heads = 513, 56
                 for mode in ('dense', 'sparse-bootstrap'):
                     hidden = torch.randn((1, tokens, WIDTH), dtype=torch.bfloat16,
@@ -208,45 +208,60 @@ def projection(payload: Probe, ctx: Context) -> Report:
                     assert all(row['selections'] == prior.get(key, 0)
                                for key, row in request.working_splits.items())
                     result['cases'].append({'case': f'explicit-sharing/{mode}',
-                                            'relative_l2': shared_error, 'native_selections': 0})
+                                            'relative_l2': shared_error, 'native_selections': 0,
+                                            'observed_group_after': getattr(attn.to_out[0], '_cozy_siblings', None)})
                     assert shared_error <= prebuilt.BUDGET
                     shared_result = expected_shared = values = None
-                    # Two real ordinary reads of the same normal input teach a multi-use
-                    # group; no test assigns _cozy_siblings to manufacture this exclusion.
+                    # The preceding legacy split can teach this module single-use from
+                    # its window views. A separate real module tests fresh-group learning.
+                    learner, learner_reads = make_attention(
+                        on, torch.Generator().manual_seed(payload.seed), launch, stats,
+                        ready.member, heads)
+                    learning_leaf = learner.to_out[0]
+                    assert getattr(learning_leaf, '_cozy_siblings', None) is None
+                    # Two real ordinary reads teach a multi-use group; no test sets it.
                     values = torch.randn((1, 513, heads * 128), dtype=torch.bfloat16,
                                          generator=torch.Generator().manual_seed(payload.seed + 4)).to(on)
-                    first = attn.to_out[0](values)
-                    second = attn.to_out[0](values)
+                    assert not values.is_inference()
+                    first = learning_leaf(values)
+                    second = learning_leaf(values)
                     assert first.shape == second.shape == (1, 513, WIDTH)
-                    assert _RECENT.held is not None and _RECENT.held.uses == 2
+                    assert _RECENT.held is not None and _RECENT.held.uses == 2, {
+                        'learned': getattr(learning_leaf, '_cozy_siblings', None),
+                        'input_inference': values.is_inference(),
+                        'held_uses': None if _RECENT.held is None else _RECENT.held.uses,
+                    }
                     values = first = second = None
                     settle(vt, device)
-                    assert getattr(attn.to_out[0], '_cozy_siblings', None) == 2
+                    assert getattr(learning_leaf, '_cozy_siblings', None) == 2
                     values = torch.randn((1, 513, heads * 128), dtype=torch.bfloat16,
                                          generator=torch.Generator().manual_seed(payload.seed + 5)).to(on)
                     prior = {key: row['selections'] for key, row in request.working_splits.items()}
-                    output = glue.output_projection(attn.to_out[0], values)
+                    output = glue.output_projection(learning_leaf, values)
                     assert all(row['selections'] == prior.get(key, 0)
                                for key, row in request.working_splits.items())
-                    expected_shared = attn.to_out[0](values)
+                    expected_shared = learning_leaf(values)
                     learned_error = verify.error(torch, output.cpu(), expected_shared.cpu())
                     assert bool(torch.isfinite(output.cpu()).all()) and learned_error <= prebuilt.BUDGET
                     result['cases'].append({'case': f'actual-learned-sharing/{mode}',
-                                            'sibling_count': attn.to_out[0]._cozy_siblings,
-                                            'relative_l2': learned_error, 'native_selections': 0})
+                                            'sibling_count': learning_leaf._cozy_siblings,
+                                            'relative_l2': learned_error, 'native_selections': 0,
+                                            'fresh_group_before': None})
                     # A real new input retires the previous learned group's last-reader
                     # marker, then its own weak input lifetime releases the new operand.
                     next_values = torch.randn((1, 513, heads * 128), dtype=torch.bfloat16,
                                               generator=torch.Generator().manual_seed(payload.seed + 6)).to(on)
-                    next_output = attn.to_out[0](next_values)
+                    next_output = learning_leaf(next_values)
                     assert next_output.shape == (1, 513, WIDTH)
                     next_values = next_output = expected_shared = None
+                    assert learner_reads == [0]
+                    learner = learning_leaf = None
                     attn = hidden = rotary = marker = slot = output = values = None
                     settle(vt, device)
         finally:
             vt.set_limit(device, None)
             step = None
-            attn = reference_attn = hidden = rotary = marker = slot = output = None
+            attn = reference_attn = learner = learning_leaf = hidden = rotary = marker = slot = output = None
             values = shared_result = expected_shared = first = second = None
             next_values = next_output = None
             state.close()
