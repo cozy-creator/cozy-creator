@@ -1,0 +1,17 @@
+{
+  "passed": true,
+  "cuda_initialized": false,
+  "layers": 8,
+  "stored_bytes": 33587200,
+  "actual_types": [
+    "NativeLinear",
+    "NativeLinear",
+    "NativeLinear",
+    "NativeLinear",
+    "NativeLinear",
+    "NativeLinear",
+    "NativeLinear",
+    "NativeLinear"
+  ],
+  "phase_plan_supported_on_cpu": false
+}
