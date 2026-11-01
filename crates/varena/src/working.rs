@@ -12,6 +12,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 
 mod split;
+mod cache;
+pub use cache::{Cache, CacheStats};
 pub use split::{
     SplitContext, SplitObservation, SplitSelection, split_begin, split_context, split_end,
     split_select,
@@ -410,6 +412,13 @@ pub struct WorkingStats {
     pub prefetch_attempts: u64,
     pub prefetch_admissions: u64,
     pub prefetch_declines: u64,
+    /// Owner-controlled cache storage is separate from Torch/phase working demand.
+    pub cache_reserved_bytes: usize,
+    pub cache_mapped_bytes: usize,
+    pub cache_live_bytes: usize,
+    pub cache_pending_bytes: usize,
+    pub cache_ready_bytes: usize,
+    pub caches: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -498,6 +507,8 @@ struct State {
     trace: Option<CaptureTrace>,
     poison: Option<String>,
     splits: split::Splits,
+    caches: BTreeMap<u64, cache::Storage>,
+    next_cache: u64,
 }
 
 impl State {
@@ -764,6 +775,7 @@ impl Working {
 
     // A peer response may query submitted fences, but never join unknown consumers.
     fn poll_mode(&self, state: &mut State, join_unknown: bool) -> Result<()> {
+        cache::poll(self, state)?;
         // The caller holds capture exclusion. Unknown foreign consumers require a context
         // completion proof, but their last-owner retirement itself never calls CUDA.
         if join_unknown && state
@@ -1234,6 +1246,8 @@ impl Working {
             }
             state.pools.remove(&id);
         }
+        released += cache::trim_ready(self, state, limit.saturating_sub(released),
+            maximum.saturating_sub(released), completed, None)?;
         Ok(released)
     }
 
@@ -1288,6 +1302,7 @@ impl Working {
                 }
             }
         }
+        cache::wait_pending(self, state, limit.saturating_sub(bytes))?;
         self.trim(state, limit, exclude)
     }
 }
@@ -2327,6 +2342,7 @@ pub fn stats(device: i32) -> Result<WorkingStats> {
         .map(|s| s.bytes)
         .sum();
     stats.pools = state.pools.len();
+    cache::working_stats(&state, owner.page, &mut stats);
     stats.event_handles = state
         .blocks
         .values()
@@ -2336,7 +2352,8 @@ pub fn stats(device: i32) -> Result<WorkingStats> {
             .pools
             .values()
             .map(|pool| pool.events.len() + pool.retired_events.len())
-            .sum::<usize>();
+            .sum::<usize>()
+        + state.caches.values().map(|cache| cache.events.len()).sum::<usize>();
     (
         stats.driver_memory_calls,
         stats.event_queries,

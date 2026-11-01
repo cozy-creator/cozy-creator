@@ -1,5 +1,6 @@
 //! Process-local weight residency bindings. CUDA ownership remains in the Rust core.
 mod working;
+mod cache;
 #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
 mod cooperative;
 mod plan;
@@ -646,6 +647,7 @@ fn _varena_make_room(py: Python<'_>, device: i32, limit: Option<usize>) -> PyRes
         .map_err(|e| raise(py, e))
 }
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_class::<cache::PyCache>()?;
     working::install(module)?;
     #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
     cooperative::install(module)?;

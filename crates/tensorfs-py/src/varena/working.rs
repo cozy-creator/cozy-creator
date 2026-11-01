@@ -256,6 +256,12 @@ fn _varena_working_stats(
         ("prefetch_attempts", stats.prefetch_attempts),
         ("prefetch_admissions", stats.prefetch_admissions),
         ("prefetch_declines", stats.prefetch_declines),
+        ("cache_reserved_bytes", stats.cache_reserved_bytes as u64),
+        ("cache_mapped_bytes", stats.cache_mapped_bytes as u64),
+        ("cache_live_bytes", stats.cache_live_bytes as u64),
+        ("cache_pending_bytes", stats.cache_pending_bytes as u64),
+        ("cache_ready_bytes", stats.cache_ready_bytes as u64),
+        ("caches", stats.caches as u64),
     ]
     .into())
 }
