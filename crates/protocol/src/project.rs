@@ -61,6 +61,9 @@ pub struct State {
     /// Nodes out of date, and why.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stale: Vec<Stale>,
+    /// Nodes project.lock keeps versions of that project.yaml no longer names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub orphans: Vec<Orphan>,
     /// Whether its walk is going: runs being made, or asked and not yet sent.
     pub busy: bool,
     /// The cuts it makes: `edit.mp4`, and `preview.mp4` when it has a `resolution:`.
@@ -73,6 +76,29 @@ pub struct State {
 pub struct Stale {
     pub name: String,
     pub why: String,
+}
+
+/// A node project.lock keeps versions of that project.yaml no longer names, and, when project.yaml
+/// has exactly one new node of its kind with none, that node: renamed, it would be this
+/// (`POST /v1/projects/{id}/rename`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Orphan {
+    pub name: String,
+    pub kind: String,
+    pub versions: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renamed_to: Option<String>,
+}
+
+/// A file the project uses: its path in the project (`assets/<sha256>.<ext>`, `GET
+/// /v1/projects/{id}/assets/{sha256}.{ext}`), its sha256, and for a file project.yaml names, the path
+/// written there (its asset is a link to it).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Asset {
+    pub path: String,
+    pub sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original: Option<String>,
 }
 
 /// A cut, made here: its name (`GET /v1/projects/{id}/cuts/{cut}`), its file, when it was last cut
@@ -101,11 +127,13 @@ pub struct Node {
     /// hand, or has none yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved: Option<u32>,
-    /// What it reads as now, by output name (`video`, `image`, `latents`), each a path in the project
-    /// (`GET /v1/projects/{id}/assets/{path}`): the approved one's assets, else the file attached in
-    /// project.yaml.
+    /// What it reads as now, by output name (`video`, `image`, `clean`, `latents`): the approved
+    /// one's assets, else the file attached in project.yaml.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub assets: BTreeMap<String, String>,
+    pub assets: BTreeMap<String, Asset>,
+    /// The file it reads as now (its primary asset's path), for people who want it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     /// The function that made the approved one, `org/package/function@release`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub made_by: Option<String>,
@@ -124,8 +152,8 @@ pub struct NodeVersions {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Version {
     pub number: u32,
-    /// By output name, each one's path in the project (`renders/fight/fight_take002.mp4`).
-    pub assets: BTreeMap<String, String>,
+    /// By output name.
+    pub assets: BTreeMap<String, Asset>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub made_by: Option<String>,
     /// The runs that made it, in order (a shot in consecutive calls has one per call).
@@ -171,13 +199,29 @@ pub struct Approved {
     pub name: String,
     pub noun: String,
     pub number: u32,
-    pub assets: BTreeMap<String, String>,
+    pub assets: BTreeMap<String, Asset>,
     /// Its primary asset: the file the node reads as now.
     pub path: String,
     /// What this put out of date.
     pub stale: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+}
+
+/// `POST /v1/projects/{id}/rename`: what project.lock keeps of `from` (versions, approval, what read
+/// it) kept as `to`, a node project.yaml names now (of the same kind, with no versions). Nothing on
+/// disk moves; people rename the node, and its `<mentions>`, in project.yaml.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Rename {
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Renamed {
+    pub from: String,
+    pub to: String,
+    pub versions: u32,
 }
 
 /// `GET /v1/projects/{id}/events`: what the project's runs do, as they do it.
@@ -190,13 +234,12 @@ pub enum Event {
         run: String,
         number: u64,
     },
-    /// `name`'s version `number` (its `noun`) was made: its assets, and its primary one's path
-    /// (`renders/fight/fight_take002.mp4`).
+    /// `name`'s version `number` (its `noun`) was made: its assets, and its primary one's path.
     Landed {
         name: String,
         noun: String,
         number: u32,
-        assets: BTreeMap<String, String>,
+        assets: BTreeMap<String, Asset>,
         path: String,
     },
     Said {
