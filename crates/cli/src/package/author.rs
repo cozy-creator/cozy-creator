@@ -8,7 +8,7 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
-    process::{Command, ExitCode},
+    process::ExitCode,
     time::Duration,
 };
 
@@ -23,40 +23,9 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
 use super::{PackageRef, carried};
-use calcifer::local_code::{INDEX, Project, account, index_url, refuse, source_files};
+use calcifer::local_code::{self, INDEX, Project, account, index_url, python, refuse, run, source_files, uv};
 
 use crate::{Context, context::hub_error, output, run::interface::Interface};
-
-/// `uv` (cozy's pinned uv, else PATH's: `tools::uv`) in `dir`, quiet and colorless.
-pub(super) fn uv(uv: &Path, dir: &Path) -> Command {
-    let mut command = Command::new(uv);
-    command.current_dir(dir).env("NO_COLOR", "1");
-    command
-}
-
-/// Runs `command`; a failure is refused as `code` with the tool's own last words.
-pub(super) fn run(command: &mut Command, code: &str) -> Result<String, Error> {
-    let out = command.output().map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => Error::new(
-            Kind::Unavailable,
-            "uv_unavailable",
-            format!("{} is gone", command.get_program().to_string_lossy()),
-        )
-        .remedy("run it again: cozy fetches uv when it is missing")
-        .next("cozy doctor"),
-        _ => refuse(code, e),
-    })?;
-    if !out.status.success() {
-        let said = [&out.stderr[..], &out.stdout[..]].concat();
-        let said = String::from_utf8_lossy(&said);
-        let tail: Vec<&str> = said.lines().filter(|l| !l.trim().is_empty()).collect();
-        return Err(refuse(
-            code,
-            tail[tail.len().saturating_sub(12)..].join("\n"),
-        ));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-}
 
 /// The tools locking and publishing `project` need: git when it depends on a git source (refused
 /// with its install named, before uv runs and fails on it), and uv (fetched, pinned).
@@ -70,76 +39,12 @@ async fn tools(project: &Project, ctx: &Context) -> Result<PathBuf, Error> {
         crate::tools::uv(ctx).await
     }
 
-/// The Python a release of `project` runs on: `.python-version`, else requires-python's floor;
-/// its exact version as uv finds it (installing a managed one when none is here).
-fn python(project: &Project, uv: &Path) -> Result<Python, Error> {
-        let pinned = fs::read_to_string(project.root.join(".python-version")).ok();
-        let floor = project.requires_python.split(',').find_map(|clause| {
-            let version = clause
-                .trim()
-                .strip_prefix(">=")
-                .or_else(|| clause.trim().strip_prefix("~="))?;
-            Some(
-                version
-                    .trim()
-                    .splitn(3, '.')
-                    .take(2)
-                    .collect::<Vec<_>>()
-                    .join("."),
-            )
-        });
-        let request = pinned
-            .as_deref()
-            .and_then(|text| text.lines().next())
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .map(str::to_owned)
-            .or(floor)
-            .unwrap_or_else(|| "3.12".into());
-        let find = || {
-            run(
-                self::uv(uv, &project.root).args([
-                    "python",
-                    "find",
-                    "--show-version",
-                    request.as_str(),
-                ]),
-                "python_not_found",
-            )
-        };
-        let full = match find() {
-            Ok(version) => version,
-            Err(_) => {
-                run(
-                    self::uv(uv, &project.root).args(["python", "install", request.as_str()]),
-                    "python_install_failed",
-                )?;
-                find()?
-            }
-        };
-        Ok(Python {
-            request,
-            full: full.trim().to_owned(),
-        })
-    }
-
 /// `project`'s interface, read where it is as a publish reads it, with the Runtime release its lock
 /// holds (else the newest). Nothing installs, and none of it runs.
 pub(super) async fn described(project: &Project, ctx: &Context) -> Result<Described, Error> {
-        let uv = crate::tools::uv(ctx).await?;
-        let python = python(project, &uv)?;
-        let lock = fs::read_to_string(project.root.join("uv.lock")).unwrap_or_default();
-        let runtime = (toml::from_str::<Lock>(&lock).ok())
-            .and_then(|lock| lock.package.into_iter().find(|p| p.name == "cozy-runtime"))
-            .map(|p| p.version);
-        describe(&uv, &project.root, &python.request, runtime.as_deref())
-}
-
-struct Python {
-    /// What uv is asked for (`3.12`).
-    request: String,
-    /// The exact version a release records (`3.12.12`).
-    full: String,
+    let uv = crate::tools::uv(ctx).await?;
+    let python = python(project, &uv)?;
+    describe(&uv, &project.root, &python.request, local_code::locked_runtime(&project.root).as_deref())
 }
 
 /// A private copy of the project to lock and build in.
@@ -636,20 +541,7 @@ pub(crate) struct Described {
 /// model default with no org stays as written: it names a first-party model (a machine reads
 /// `sdxl@1.0.0` as `_/sdxl@1.0.0`), and the Runtime's interface parser refuses an org of `_`.
 fn describe(uv: &Path, dir: &Path, python: &str, runtime: Option<&str>) -> Result<Described, Error> {
-    let from = match runtime {
-        Some(version) => format!("cozy-runtime=={version}"),
-        // `@latest`: a bare name would take whatever cozy-runtime `uv tool install` left here.
-        None => "cozy-runtime@latest".into(),
-    };
-    let said = run(
-        self::uv(uv, dir)
-            .args(["tool", "run", "--no-progress", "--python", python, "--from", from.as_str()])
-            .args(["cozy-runtime", "--json", "--dir"])
-            .arg(dir)
-            .arg("describe"),
-        "describe_failed",
-    )?;
-    let document: Value = serde_json::from_str(&said).map_err(|e| refuse("describe_failed", e))?;
+    let (said, document) = local_code::describe_with(uv, dir, python, runtime)?;
     let interface = Interface::parse(&document).map_err(|why| {
         refuse(
             "package_interface_invalid",

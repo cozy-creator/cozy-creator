@@ -363,6 +363,7 @@ dependencies = [
  "serde_path_to_error",
  "sha2",
  "tempfile",
+ "tensorfs",
  "thiserror 2.0.21",
  "time",
  "tokio",

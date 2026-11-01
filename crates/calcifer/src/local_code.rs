@@ -13,6 +13,7 @@ use std::{
     fmt::Display,
     fs,
     path::{Path, PathBuf},
+    process::Command,
     sync::Arc,
 };
 
@@ -942,4 +943,148 @@ pub async fn described(api: &Arc<Api>, path: &Path, on: &On, hub: &str) -> Resul
         machine: None,
         install: None,
     })
+}
+
+/// `uv` (cozy's pinned uv, else PATH's: `tools::uv`) in `dir`, quiet and colorless.
+pub fn uv(uv: &Path, dir: &Path) -> Command {
+    let mut command = Command::new(uv);
+    command.current_dir(dir).env("NO_COLOR", "1");
+    command
+}
+
+/// Runs `command`; a failure is refused as `code` with the tool's own last words.
+pub fn run(command: &mut Command, code: &str) -> Result<String, Error> {
+    let out = command.output().map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => Error::new(
+            Kind::Unavailable,
+            "uv_unavailable",
+            format!("{} is gone", command.get_program().to_string_lossy()),
+        )
+        .remedy("run it again: cozy fetches uv when it is missing")
+        .next("cozy doctor"),
+        _ => refuse(code, e),
+    })?;
+    if !out.status.success() {
+        let said = [&out.stderr[..], &out.stdout[..]].concat();
+        let said = String::from_utf8_lossy(&said);
+        let tail: Vec<&str> = said.lines().filter(|l| !l.trim().is_empty()).collect();
+        return Err(refuse(
+            code,
+            tail[tail.len().saturating_sub(12)..].join("\n"),
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// The Python a release of `project` runs on: `.python-version`, else requires-python's floor;
+/// its exact version as uv finds it (installing a managed one when none is here).
+pub fn python(project: &Project, uv: &Path) -> Result<Python, Error> {
+        let pinned = fs::read_to_string(project.root.join(".python-version")).ok();
+        let floor = project.requires_python.split(',').find_map(|clause| {
+            let version = clause
+                .trim()
+                .strip_prefix(">=")
+                .or_else(|| clause.trim().strip_prefix("~="))?;
+            Some(
+                version
+                    .trim()
+                    .splitn(3, '.')
+                    .take(2)
+                    .collect::<Vec<_>>()
+                    .join("."),
+            )
+        });
+        let request = pinned
+            .as_deref()
+            .and_then(|text| text.lines().next())
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .or(floor)
+            .unwrap_or_else(|| "3.12".into());
+        let find = || {
+            run(
+                self::uv(uv, &project.root).args([
+                    "python",
+                    "find",
+                    "--show-version",
+                    request.as_str(),
+                ]),
+                "python_not_found",
+            )
+        };
+        let full = match find() {
+            Ok(version) => version,
+            Err(_) => {
+                run(
+                    self::uv(uv, &project.root).args(["python", "install", request.as_str()]),
+                    "python_install_failed",
+                )?;
+                find()?
+            }
+        };
+        Ok(Python {
+            request,
+            full: full.trim().to_owned(),
+        })
+    }
+
+/// The Python a release runs on.
+pub struct Python {
+    /// What uv is asked for (`3.12`).
+    pub request: String,
+    /// The exact version a release records (`3.12.12`).
+    pub full: String,
+}
+
+/// The cozy-runtime release `root`'s uv.lock holds, if it holds one.
+pub fn locked_runtime(root: &Path) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Lock {
+        #[serde(default)]
+        package: Vec<Locked>,
+    }
+    #[derive(Deserialize)]
+    struct Locked {
+        name: String,
+        #[serde(default)]
+        version: String,
+    }
+    let lock: Lock = toml::from_str(&fs::read_to_string(root.join("uv.lock")).ok()?).ok()?;
+    lock.package.into_iter().find(|p| p.name == "cozy-runtime").map(|p| p.version)
+}
+
+/// What Runtime's static describer reads from the source at `dir`, with `runtime`'s release (else
+/// the newest) on `python`: its exact words and the document they are. Nothing installs, and none
+/// of the code runs.
+pub fn describe_with(uv: &Path, dir: &Path, python: &str, runtime: Option<&str>) -> Result<(String, Value), Error> {
+    let from = match runtime {
+        Some(version) => format!("cozy-runtime=={version}"),
+        // `@latest`: a bare name would take whatever cozy-runtime `uv tool install` left here.
+        None => "cozy-runtime@latest".into(),
+    };
+    let said = run(
+        self::uv(uv, dir)
+            .args(["tool", "run", "--no-progress", "--python", python, "--from", from.as_str()])
+            .args(["cozy-runtime", "--json", "--dir"])
+            .arg(dir)
+            .arg("describe"),
+        "describe_failed",
+    )?;
+    let document: Value = serde_json::from_str(&said).map_err(|e| refuse("describe_failed", e))?;
+    if !interface(&document) {
+        return Err(refuse("package_interface_invalid", "the describer's answer is not a package interface"));
+    }
+    Ok((said.trim_end().to_owned(), document))
+}
+
+/// The local code at `path` (a package directory or a script) as Runtime's static describer reads
+/// it, on the Python and Runtime release its project names: `local/<name>` and its interface.
+/// Nothing installs, and no machine is asked.
+pub async fn describe(home: &Home, path: &Path) -> Result<(String, Value), Error> {
+    let project = Project::read(project(home, path)?)?;
+    let uv = crate::tools::uv(home, &|line| tracing::info!("{line}")).await?;
+    let python = python(&project, &uv)?;
+    let (_, document) = describe_with(&uv, &project.root, &python.request, locked_runtime(&project.root).as_deref())?;
+    Ok((format!("local/{}", project.name), document))
 }

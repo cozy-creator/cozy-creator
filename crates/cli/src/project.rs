@@ -161,12 +161,6 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
 
 pub async fn render(ctx: &Context, args: Render) -> Result<ExitCode, Error> {
     let opened = open(ctx, &args.at, false).await?;
-    if let [only] = args.names.as_slice()
-        && only.eq_ignore_ascii_case("all")
-    {
-        // Calcifer cuts the edit with the ffmpeg cozy keeps; fetched now if this computer has none.
-        crate::tools::ffmpeg(ctx).await?;
-    }
     let calcifer = ctx.calcifer().await?;
     let mut events = calcifer.watch::<Event>(&format!("/v1/projects/{}/events", opened.id)).await?;
     let on: Vec<On> =
