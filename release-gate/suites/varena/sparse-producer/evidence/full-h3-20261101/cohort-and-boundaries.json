@@ -1,0 +1,42 @@
+{
+  "control_run": 25627,
+  "candidate_run": 25678,
+  "runtime_control": "00f9aab0b020e5b53c3bd6e96c72788e5317463c",
+  "runtime_candidate": "167ffc828e3f84062d43641fcf53dbda54892631",
+  "native": "a96c7c3e837314795d0d21b993df1246dc394aed",
+  "package": "fc4af2f2e5d075f04bde1d9803cae92a378c84f3",
+  "package_exception": "same one-line fl2va_piece memoize=False in both arms; all43 submitted source files matched",
+  "worker": "616cf254b032e7b6522d3205657a41485db33579",
+  "gpu_uuid": "846689c6-daf3-15b1-580e-f2a78bdf6748",
+  "request_sha256": "fe62dc81e2830a0a40f967f785dbf3566fa152052c069d0b87bc556b09568341",
+  "no_worse_passed": false,
+  "raw_sha256": {
+    "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/attempt-002/sparse-full-pair-167/control/run-show.json": "2ca17af6a3ad28431d2d9da72696a2ead05e229e90e6cbf856e9584b98165bef",
+    "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/attempt-002/sparse-full-pair-167/candidate/run-show.json": "aabfb9b67ee49fa4bb413d2246afd3108fe4e761dc34c26e95df5a4168ed4eb9"
+  },
+  "phase_peak_semantics": {
+    "first_step_equal": {
+      "charged": 10817374208,
+      "total": 11200013824,
+      "backing": 10829692928
+    },
+    "later_29_control": {
+      "charged": 12567616000,
+      "total": 12951042048,
+      "backing": 12585009152
+    },
+    "later_29_candidate": {
+      "charged": 16447920640,
+      "total": 16831346688,
+      "backing": 16464740352
+    },
+    "charged_is_not_live_only": "native Block::charge includes pending/same-stream-reusable blocks; no distinct live/pending peak in these receipts",
+    "final_allocator_peaks": "legacy sizing resets them; they are not whole-denoise maxima"
+  },
+  "limitations": [
+    "One serial pair, one GPU, one seed",
+    "First NVML sample is asynchronous whole-device usage, not a guaranteed pre-Start or sustained-capacity baseline",
+    "Eight paired frame visual review only; no continuous motion or audio listening claim",
+    "Class reuse and pending/weight-use timing remain an open diagnosis; no cause assigned from totals"
+  ]
+}

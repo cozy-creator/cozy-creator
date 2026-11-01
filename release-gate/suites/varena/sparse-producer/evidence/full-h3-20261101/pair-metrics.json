@@ -1,0 +1,212 @@
+{
+  "matched_source_request": true,
+  "same_native_a96": true,
+  "same_worker616": true,
+  "same_fc4_no_piece_memo_source": true,
+  "source_files": 43,
+  "metrics": {
+    "total_ms": {
+      "control": 1064304,
+      "candidate": 1093292,
+      "delta": 28988,
+      "percent": 2.7236579022534846
+    },
+    "denoise_ms": {
+      "control": 1024864.305,
+      "candidate": 1047623.511,
+      "delta": 22759.206000000006,
+      "percent": 2.2207043302186147
+    },
+    "denoise_step_ms": {
+      "control": 1024833.548,
+      "candidate": 1047587.881,
+      "delta": 22754.3330000001,
+      "percent": 2.2202954854869894
+    },
+    "denoise_device_ms": {
+      "control": 1024824.424,
+      "candidate": 1047578.654,
+      "delta": 22754.22999999998,
+      "percent": 2.220305202249939
+    },
+    "store_bytes": {
+      "control": 286366762820,
+      "candidate": 314782470980,
+      "delta": 28415708160,
+      "percent": 9.92283737127031
+    },
+    "store_sync_ms": {
+      "control": 293271.570521,
+      "candidate": 314080.422639,
+      "delta": 20808.85211799998,
+      "percent": 7.095420835041333
+    },
+    "baked_bytes": {
+      "control": 0,
+      "candidate": 0,
+      "delta": 0,
+      "percent": null
+    },
+    "baked_sync_ms": {
+      "control": 0.0,
+      "candidate": 0.0,
+      "delta": 0.0,
+      "percent": null
+    },
+    "allocations": {
+      "control": 320532,
+      "candidate": 96399,
+      "delta": -224133,
+      "percent": -69.9253116693497
+    },
+    "driver_memory_calls": {
+      "control": 45074,
+      "candidate": 35816,
+      "delta": -9258,
+      "percent": -20.539557172649424
+    },
+    "event_records": {
+      "control": 40309,
+      "candidate": 28210,
+      "delta": -12099,
+      "percent": -30.015629263936095
+    },
+    "event_queries": {
+      "control": 152609,
+      "candidate": 111307,
+      "delta": -41302,
+      "percent": -27.0639346303298
+    },
+    "event_waits": {
+      "control": 572,
+      "candidate": 461,
+      "delta": -111,
+      "percent": -19.405594405594407
+    },
+    "ooms": {
+      "control": 0,
+      "candidate": 0,
+      "delta": 0,
+      "percent": null
+    },
+    "context_joins": {
+      "control": 0,
+      "candidate": 0,
+      "delta": 0,
+      "percent": null
+    },
+    "weight_evictions": {
+      "control": 654,
+      "candidate": 725,
+      "delta": 71,
+      "percent": 10.856269113149853
+    },
+    "weight_fills": {
+      "control": 745,
+      "candidate": 815,
+      "delta": 70,
+      "percent": 9.395973154362425
+    },
+    "weight_hits": {
+      "control": 1627,
+      "candidate": 1557,
+      "delta": -70,
+      "percent": -4.3023970497848785
+    },
+    "weight_driver_physical_ooms": {
+      "control": 441,
+      "candidate": 530,
+      "delta": 89,
+      "percent": 20.18140589569162
+    },
+    "working_physical_ooms_cumulative": {
+      "control": 1101,
+      "candidate": 312,
+      "delta": -789,
+      "percent": -71.66212534059946
+    }
+  },
+  "native_adoption": {
+    "control": {
+      "projected-heads": 600,
+      "residual-ffn-tail": 1500,
+      "int8-linear-rows": 1450
+    },
+    "candidate": {
+      "projected-heads": 600,
+      "residual-ffn-tail": 1500,
+      "int8-linear-rows": 1450,
+      "sparse-projected-heads": 900
+    }
+  },
+  "candidate_sparse_choices": [
+    {
+      "site": "sparse-projected-heads",
+      "choice": "heads:14/chunks:4096/4096:14:0:0:5/4096:14:1:0:5/2627:14:0:0:5/2627:14:1:0:5",
+      "statistics": "rolling",
+      "count": 72,
+      "published": 72,
+      "peak_bytes_max": 2791374848,
+      "backing_peak_min": 2797600768,
+      "backing_peak_max": 2797600768
+    },
+    {
+      "site": "sparse-projected-heads",
+      "choice": "heads:56/chunks:4096/4096:56:0:0:0/4096:56:1:0:0/2627:56:0:0:0/2627:56:1:0:0",
+      "statistics": "rolling",
+      "count": 658,
+      "published": 658,
+      "peak_bytes_max": 4687249408,
+      "backing_peak_min": 4691329024,
+      "backing_peak_max": 4691329024
+    },
+    {
+      "site": "sparse-projected-heads",
+      "choice": "heads:28/chunks:4096/4096:28:0:0:5/4096:28:1:0:5/2627:28:0:0:1/2627:28:1:0:1",
+      "statistics": "rolling",
+      "count": 103,
+      "published": 103,
+      "peak_bytes_max": 3955310592,
+      "backing_peak_min": 3959422976,
+      "backing_peak_max": 3959422976
+    },
+    {
+      "site": "sparse-projected-heads",
+      "choice": "heads:7/chunks:4096/4096:7:0:0:1/4096:7:1:0:1/2627:7:0:0:1/2627:7:1:0:1",
+      "statistics": "rolling",
+      "count": 44,
+      "published": 44,
+      "peak_bytes_max": 2174803968,
+      "backing_peak_min": 2181038080,
+      "backing_peak_max": 2181038080
+    },
+    {
+      "site": "sparse-projected-heads",
+      "choice": "heads:4/chunks:4096/4096:4:0:0:1/4096:4:1:0:1/2627:4:0:0:2/2627:4:1:0:2",
+      "statistics": "rolling",
+      "count": 22,
+      "published": 22,
+      "peak_bytes_max": 1923141632,
+      "backing_peak_min": 1929379840,
+      "backing_peak_max": 1929379840
+    },
+    {
+      "site": "sparse-projected-heads",
+      "choice": "heads:2/chunks:4096/4096:2:0:0:2/4096:2:1:0:2/2627:2:0:0:2/2627:2:1:0:2",
+      "statistics": "rolling",
+      "count": 1,
+      "published": 1,
+      "peak_bytes_max": 1755367424,
+      "backing_peak_min": 1761607680,
+      "backing_peak_max": 1761607680
+    }
+  ],
+  "no_worse_gate": false,
+  "limitations": [
+    "one serial pair on one GPU",
+    "driver before_bytes is the first asynchronous whole-device sample, not a guaranteed pre-Start baseline",
+    "physical OOM fields are cumulative snapshots; terminal OOM and context-join counters are zero",
+    "source/working reductions do not establish a performance win",
+    "quality review is independently scoped to eight paired frames and numerical media metrics"
+  ]
+}

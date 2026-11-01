@@ -47,3 +47,34 @@ The later request in PID121758 confirms31 measurement keys already retired. Sour
 raw-result hashes and independent checks are in evidence/gpu-20261101. This is bounded
 consumer/ownership qualification; full-H3 numerical, perceptual and performance evidence
 is still a separate gate. Original failures25515/25536/25575 remain preserved.
+
+
+## Full H3 pair: no-worse gate failed
+
+The matched15-second/30-step/audio pair25627(control00f9)/25678(candidate167) completed
+on the same Sorata GPU, nativea96 and worker616, with the same43 submitted fc4 source
+files and request. Both arms explicitly disabled piece memoization. Candidate adopted
+all900 rolling sparse calls, alongside the same600 dense Heads,1500 Tail and1450 linear
+calls; all native child observations published. Sparse choices were658 whole56-head,
+103 at28,72 at14,44 at7,22 at4 and1 at2. Control sparse used899 whole and1 half call.
+
+The no-worse gate **failed**: total1,064,304→1,093,292ms(+2.724%);
+denoise1,024,864.305→1,047,623.511ms(+2.221%); store286,366,762,820→314,782,470,980B
+(+9.923%). The extra28,415,708,160B is exactly70 additional transformer-block fills.
+Weight evictions654→725. Allocations320,532→96,399 and driver calls45,074→35,816
+decreased, but these reductions do not establish a speedup. Terminal OOM and context
+join counters remained zero. Physical-OOM counters are cumulative snapshots.
+
+Preserved later-step charged/backing peaks increase by about3.88GB; charged includes
+pending/same-stream-reusable blocks and is not a live-only peak. The final allocator
+peak fields are reset by legacy sizing and cannot establish the denoise maximum. The
+first whole-device NVML reading is asynchronous, not a proven pre-Start capacity
+baseline. The exact cause of extra evictions/fills remains under source/timeline
+investigation; no speculative kernel or capacity change is qualified by this pair.
+
+The completed videos have matching362-frame1344×768@24fps formats. Eight matched
+frames show comparable sampled detail/lighting and no obvious corruption, with
+materially different composition. Full numerical SSIM is0.738157 and PSNR16.9903dB;
+video-latent relativeL2 is0.625057 and cosine0.805589, with finite values and matching
+metadata. PCM differs. No continuous-motion or audio-listening equivalence is claimed.
+Independent numerical/source/visual receipts and raw hashes are in evidence/full-h3-20261101.
