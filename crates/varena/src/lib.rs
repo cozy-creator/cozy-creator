@@ -11,6 +11,8 @@
 
 mod cuda;
 pub mod working;
+#[cfg(feature = "allocator-probe")]
+pub mod probe;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering};
@@ -325,7 +327,11 @@ static CAPTURES: OnceLock<Mutex<BTreeMap<i32, DeviceActivity>>> = OnceLock::new(
 static PROCESS: AtomicU32 = AtomicU32::new(0);
 
 fn check_process() -> Result<()> {
+    #[cfg(feature = "allocator-probe")]
+    probe::mark(probe::Point::PidEnter);
     let pid = std::process::id();
+    #[cfg(feature = "allocator-probe")]
+    probe::mark(probe::Point::PidExit);
     let owner = match PROCESS.load(Ordering::Relaxed) {
         0 => PROCESS
             .compare_exchange(0, pid, Ordering::Relaxed, Ordering::Relaxed)
@@ -342,6 +348,8 @@ fn check_process() -> Result<()> {
 // driver calls so capture entry cannot race a context join or residency mutation.
 fn capture_counts() -> Result<MutexGuard<'static, BTreeMap<i32, DeviceActivity>>> {
     check_process()?;
+    #[cfg(feature = "allocator-probe")]
+    probe::mark(probe::Point::CaptureEnter);
     CAPTURES
         .get_or_init(Mutex::default)
         .lock()

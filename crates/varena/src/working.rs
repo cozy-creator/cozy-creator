@@ -4,6 +4,8 @@
 //! `pool_record_stream` after every replay/consumer submission before dropping its reference.
 
 use crate::{Error, GlobalCaptureGuard, Result, cuda};
+#[cfg(feature = "allocator-probe")]
+use crate::probe::{self, Point};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
@@ -627,6 +629,8 @@ fn devices() -> Result<MutexGuard<'static, BTreeMap<i32, Arc<Working>>>> {
 
 // Only after check_process, directly or through capture_counts, on this call's thread.
 fn lock_devices() -> Result<MutexGuard<'static, BTreeMap<i32, Arc<Working>>>> {
+    #[cfg(feature = "allocator-probe")]
+    probe::mark(Point::RegistryEnter);
     DEVICES
         .get_or_init(Mutex::default)
         .lock()
@@ -634,7 +638,10 @@ fn lock_devices() -> Result<MutexGuard<'static, BTreeMap<i32, Arc<Working>>>> {
 }
 
 fn existing(device: i32) -> Result<Option<Arc<Working>>> {
-    Ok(devices()?.get(&device).cloned())
+    let found = devices()?.get(&device).cloned();
+    #[cfg(feature = "allocator-probe")]
+    probe::mark(Point::RegistryExit);
+    Ok(found)
 }
 
 fn owner(device: i32) -> Result<Arc<Working>> {
@@ -1325,10 +1332,14 @@ fn valid_stream(stream: u64) -> Result<()> {
 
 /// Allocate from a prepared pool during capture, or the device's working slabs otherwise.
 pub fn alloc(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> Result<u64> {
+    #[cfg(feature = "allocator-probe")]
+    probe::mark(Point::CoreEnter);
     let result = alloc_inner(device, bytes, stream, pool);
     if result.is_err() {
         let _ = invalidate_current_phase(device, "allocation_error");
     }
+    #[cfg(feature = "allocator-probe")]
+    probe::mark(Point::CoreExit);
     result
 }
 
@@ -1344,8 +1355,14 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> 
         owner(device)?
     };
     let class = size_class(bytes, owner.page)?;
+    #[cfg(feature = "allocator-probe")]
+    probe::allocation(bytes, class);
     {
+        #[cfg(feature = "allocator-probe")]
+        probe::mark(Point::StateEnter);
         let mut state = owner.lock()?;
+        #[cfg(feature = "allocator-probe")]
+        probe::mark(Point::StateAcquired);
         owner.callback_mutation(&mut state);
         if let Some(pool) = pool {
             let session = state
@@ -1359,8 +1376,13 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> 
             }
         }
         if let Some(ptr) = owner.take(&mut state, class, bytes, stream, pool) {
-            return Ok(Working::activate(&mut state, ptr, bytes));
+            let activated = Working::activate(&mut state, ptr, bytes);
+            #[cfg(feature = "allocator-probe")]
+            probe::mark(Point::BookkeepingEnd);
+            return Ok(activated);
         }
+        #[cfg(feature = "allocator-probe")]
+        probe::slow();
         if let Some(id) = pool {
             if let Some(ptr) = owner.fit_pool(&mut state, id, class, bytes, stream) {
                 return Ok(Working::activate(&mut state, ptr, bytes));
@@ -1418,10 +1440,14 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> 
 }
 
 pub fn free(device: i32, ptr: u64, stream: u64) -> Result<()> {
+    #[cfg(feature = "allocator-probe")]
+    probe::mark(Point::CoreEnter);
     let result = free_inner(device, ptr, stream);
     if result.is_err() {
         let _ = invalidate_current_phase(device, "free_error");
     }
+    #[cfg(feature = "allocator-probe")]
+    probe::mark(Point::CoreExit);
     result
 }
 
@@ -1433,11 +1459,19 @@ fn free_inner(device: i32, ptr: u64, stream: u64) -> Result<()> {
     valid_stream(stream)?;
     // capture_counts checks process identity before either inherited registry mutex is touched.
     let captures = crate::capture_counts()?;
+    #[cfg(feature = "allocator-probe")]
+    probe::mark(Point::CaptureAcquired);
     let owner = lock_devices()?.get(&device).cloned().ok_or(Error::Invalid(
         "working allocator is not initialized on this device",
     ))?;
+    #[cfg(feature = "allocator-probe")]
+    probe::mark(Point::RegistryExit);
     let capturing = crate::ensure_not_capturing(&captures, device).is_err();
+    #[cfg(feature = "allocator-probe")]
+    probe::mark(Point::StateEnter);
     let mut state = owner.lock()?;
+    #[cfg(feature = "allocator-probe")]
+    probe::mark(Point::StateAcquired);
     owner.callback_mutation(&mut state);
     let measured = state.phases.active.is_some();
     let transition = (|| {
@@ -1461,6 +1495,8 @@ fn free_inner(device: i32, ptr: u64, stream: u64) -> Result<()> {
             block.streams.insert(stream);
         }
         let requested = block.requested;
+        #[cfg(feature = "allocator-probe")]
+        probe::allocation(requested, block.capacity);
         block.requested = 0;
         if in_pool_capture {
             block.life = Life::Captured;
@@ -1477,6 +1513,8 @@ fn free_inner(device: i32, ptr: u64, stream: u64) -> Result<()> {
             block.life = Life::Deferred;
             block.reusable_on = None;
         } else {
+            #[cfg(feature = "allocator-probe")]
+            probe::slow();
             let _context = owner.driver.enter()?;
             owner.record_free(block)?;
         }
@@ -1507,6 +1545,8 @@ fn free_inner(device: i32, ptr: u64, stream: u64) -> Result<()> {
     }
     state.stats.allocated_bytes -= requested;
     state.stats.frees += 1;
+    #[cfg(feature = "allocator-probe")]
+    probe::mark(Point::BookkeepingEnd);
     Ok(())
 }
 

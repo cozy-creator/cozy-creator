@@ -1,5 +1,7 @@
 //! Process-local weight residency bindings. CUDA ownership remains in the Rust core.
 mod working;
+#[cfg(feature = "allocator-probe")]
+mod probe;
 #[cfg(feature = "store")]
 mod continuation;
 #[cfg(feature = "store")]
@@ -638,6 +640,8 @@ fn _varena_make_room(py: Python<'_>, device: i32, limit: Option<usize>) -> PyRes
 }
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     working::install(module)?;
+    #[cfg(feature = "allocator-probe")]
+    probe::install(module)?;
     let poisoned = module.py().get_type::<VarenaPoisonedError>();
     poisoned.setattr("__module__", "tensorfs._ext")?;
     poisoned.setattr("sticky", true)?;

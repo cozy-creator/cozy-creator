@@ -167,6 +167,16 @@ class Benchmark(msgspec.Struct, forbid_unknown_fields=True):
 
 @app.entrypoint(accelerator=True)
 def benchmark(payload: Benchmark, tel: Telemetry) -> Report:
+    return _benchmark(payload, tel, native_probe=False)
+
+
+@app.entrypoint(accelerator=True)
+def allocator_probe(payload: Benchmark, tel: Telemetry) -> Report:
+    """Default-off native timer build only; function attribution, never release qualification."""
+    return _benchmark(payload, tel, native_probe=True)
+
+
+def _benchmark(payload: Benchmark, tel: Telemetry, *, native_probe: bool) -> Report:
     if payload.samples < 5 or payload.rounds < 10_000:
         raise ValueError("allocator benchmark needs at least five samples and 10,000 rounds")
     child = Path(__file__).with_name("benchmark.py")
@@ -174,6 +184,8 @@ def benchmark(payload: Benchmark, tel: Telemetry) -> Report:
     for mode in ("native", "varena"):
         config = msgspec.to_builtins(payload)
         config["mode"] = mode
+        if native_probe:
+            config["native_probe"] = True
         result = None
         with tel.stage(f"allocator-{mode}"):
             process = subprocess.Popen(
@@ -217,6 +229,9 @@ def benchmark(payload: Benchmark, tel: Telemetry) -> Report:
         "qualification": "allocator host-pair microbenchmark only; Python dispatch included; not model latency",
         "results": results,
     }
+    if native_probe:
+        report["qualification"] = "sparse native timer diagnostic only; instrumentation changes code layout and cost"
+        report["qualification_eligible"] = False
     tel.log(json.dumps({"allocator_benchmark": report}, sort_keys=True))
     # Preserve every failed sample in the result artifact; successful delivery is not a pass.
     return Report(report["passed"], json.dumps(report, sort_keys=True))

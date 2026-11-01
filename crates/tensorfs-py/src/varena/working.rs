@@ -104,13 +104,23 @@ unsafe extern "C" fn alloc(
     b: u64,
     failure: *mut Failure,
 ) -> u64 {
-    call(failure, || {
+    #[cfg(feature = "allocator-probe")]
+    let sampled = varena::probe::enter(varena::probe::Operation::Alloc, bytes);
+    let result = call(failure, || {
         varena::working::alloc(device, bytes, stream, (routed != 0).then_some((a, b)))
-    })
+    });
+    #[cfg(feature = "allocator-probe")]
+    varena::probe::exit(sampled, result != 0 || bytes == 0);
+    result
 }
 
 unsafe extern "C" fn free(device: i32, ptr: u64, stream: u64, failure: *mut Failure) -> i32 {
-    retire(failure, || varena::working::free(device, ptr, stream))
+    #[cfg(feature = "allocator-probe")]
+    let sampled = varena::probe::enter(varena::probe::Operation::Free, 0);
+    let result = retire(failure, || varena::working::free(device, ptr, stream));
+    #[cfg(feature = "allocator-probe")]
+    varena::probe::exit(sampled, result != 0);
+    result
 }
 
 unsafe extern "C" fn record_stream(ptr: u64, stream: u64, failure: *mut Failure) -> i32 {
