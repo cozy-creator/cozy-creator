@@ -1084,6 +1084,18 @@ pub(super) fn prepare_work(
         }
         varena::Preparation::Fill(fill) => fill,
     };
+    prepare_fill(region, checkpoint, items, threads, fill, producer, initialize).map(Some)
+}
+
+fn prepare_fill(
+    region: &Arc<varena::Region>,
+    checkpoint: tensorfs::Checkpoint,
+    items: Vec<Item>,
+    threads: usize,
+    fill: varena::Fill,
+    producer: varena::ProducerGuard,
+    initialize: bool,
+) -> Result<Work, Failure> {
     // This really initializes bounded staging and streams, before a resident graph.
     io::prepare_device(region.device()).map_err(cuda_failure)?;
     let source = Arc::new(checkpoint.local_source(true));
@@ -1140,7 +1152,28 @@ pub(super) fn prepare_work(
         // producer lease only after capture, when the sealed slot is submitted.
         drop(work.producer.take());
     }
-    Ok(Some(work))
+    Ok(work)
+}
+
+/// Explicit P2 opt-in. Production StageSource prefetch retains its existing path until an
+/// execution owner can promise a committed key; unknown keys here decline without any IO.
+fn prepare_raw_prefetch(
+    region: &Arc<varena::Region>,
+    checkpoint: tensorfs::Checkpoint,
+    parts: Vec<(String, usize, usize)>,
+    threads: usize,
+) -> Result<Option<Work>, Failure> {
+    let items = prepare_items(&checkpoint, parts, region.len())?;
+    let producer = match varena::enter_producer(region.device()) {
+        Ok(producer) => producer,
+        Err(varena::Error::CaptureActive) => return Ok(None),
+        Err(error) => return Err(Failure::Native(error)),
+    };
+    let prepared = region.prepare_prefetch().map_err(Failure::Native)?;
+    let Some(varena::Preparation::Fill(fill)) = prepared else { return Ok(None) };
+    // Admission has released every allocator lock. Reuse source/producer ownership directly;
+    // never call prepare_work recursively beneath an already admitted Fill.
+    prepare_fill(region, checkpoint, items, threads, fill, producer, false).map(Some)
 }
 
 /// Prepare one component's existing raw block regions without changing their identities.
@@ -1896,6 +1929,24 @@ impl PreparedRead {
     const CAPTURE_GUARD: bool = true;
     #[classattr]
     const HOST: bool = true;
+
+    #[staticmethod]
+    #[pyo3(signature = (region, checkpoint, parts, threads = 2))]
+    fn prefetch(
+        py: Python<'_>,
+        region: PyRef<'_, PyRegion>,
+        checkpoint: PyRef<'_, PyCheckpoint>,
+        parts: Vec<(String, usize, usize)>,
+        threads: usize,
+    ) -> PyResult<Option<Self>> {
+        let region = region.region.clone();
+        let checkpoint = checkpoint.core(py)?;
+        py.detach(|| {
+            prepare_raw_prefetch(&region, checkpoint, parts, threads)?
+                .map(|work| Self::read_only(work, Arc::new(ReadControl::default())))
+                .transpose()
+        }).map_err(|error| error.raise(py))
+    }
 
     #[new]
     #[pyo3(signature = (region, checkpoint, parts, threads = 2, reclaim = true, evict_completed = false, host = None))]

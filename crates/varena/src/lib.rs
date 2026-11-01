@@ -132,6 +132,7 @@ enum Admission {
     Any,
     Completed,
     None,
+    Prefetch,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -310,6 +311,7 @@ impl Room {
 static ARENAS: OnceLock<Mutex<Vec<Weak<Arena>>>> = OnceLock::new();
 #[derive(Default)]
 struct DeviceActivity {
+    activity_epoch: u64,
     captures: Arc<AtomicUsize>,
     replays: Arc<AtomicUsize>,
     producers: Arc<AtomicUsize>,
@@ -374,6 +376,7 @@ pub fn enter_capture(device: i32) -> Result<GlobalCaptureGuard> {
             "native producers must finish before CUDA graph capture",
         ));
     }
+    activity.activity_epoch = activity.activity_epoch.wrapping_add(1);
     activity
         .captures
         .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
@@ -392,6 +395,7 @@ pub fn enter_replay(device: i32) -> Result<GlobalCaptureGuard> {
     let mut counts = capture_counts()?;
     ensure_not_capturing(&counts, device)?;
     let activity = counts.entry(device).or_default();
+    activity.activity_epoch = activity.activity_epoch.wrapping_add(1);
     activity
         .replays
         .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
@@ -1210,38 +1214,72 @@ impl Region {
         self.prepare_with_reclaim(Admission::Completed)
     }
 
-    fn prepare_with_reclaim(self: &Arc<Self>, admission: Admission) -> Result<Preparation> {
-        let reclaim = admission == Admission::Any;
+    /// Optional immutable raw prefetch. Unknown/unqualified phase configurations decline
+    /// without IO or reclaim. The native check and page admission are one locked operation.
+    pub fn prepare_prefetch(self: &Arc<Self>) -> Result<Option<Preparation>> {
         let captures = capture_counts()?;
+        if ensure_recovery_allowed(&captures, self.arena.device).is_err() {
+            return Ok(None);
+        }
         let mut state = self.arena.lock()?;
+        let entry = state.entries.get(&self.id).expect("live region");
+        if entry.uses.state() == Contents::Ready {
+            return Ok(None); // Already ready: no speculative Pin or source worker is needed.
+        }
+        let bytes = if entry.handle.is_some() { 0 } else { self.rounded };
+        let epoch = captures.get(&self.arena.device).map_or(0, |activity| activity.activity_epoch);
+        working::admit_prefetch(self.arena.device, epoch, bytes, || {
+            self.prepare_locked(Admission::Prefetch, &captures, &mut state)
+        })
+    }
+
+    fn prepare_with_reclaim(self: &Arc<Self>, admission: Admission) -> Result<Preparation> {
+        let result = (|| {
+            let captures = capture_counts()?;
+            let mut state = self.arena.lock()?;
+            self.prepare_locked(admission, &captures, &mut state)
+        })();
+        if result.is_err() {
+            let _ = working::invalidate_current_phase(self.arena.device, "weight_admission_error");
+        }
+        result
+    }
+
+    fn prepare_locked(
+        self: &Arc<Self>,
+        admission: Admission,
+        captures: &BTreeMap<i32, DeviceActivity>,
+        state: &mut State,
+    ) -> Result<Preparation> {
+        let reclaim = admission == Admission::Any;
         let entry = state.entries.get(&self.id).expect("live region");
         if entry.uses.state() == Contents::Loading {
             return Err(Error::Busy);
         }
         if entry.uses.state() == Contents::Ready {
             state.hits = state.hits.saturating_add(1);
-            return Ok(Preparation::Resident(self.pin_locked(&mut state)?));
+            return Ok(Preparation::Resident(self.pin_locked(state)?));
         }
         // A failed fill can leave escaped foreign storage. It owns these bytes until destruction.
         if entry.uses.pins() != 0 {
             return Err(Error::Busy);
         }
         if reclaim {
-            ensure_recovery_allowed(&captures, self.arena.device)?;
+            ensure_recovery_allowed(captures, self.arena.device)?;
         } else {
-            ensure_not_capturing(&captures, self.arena.device)?;
+            ensure_not_capturing(captures, self.arena.device)?;
         }
         let _context = self.arena.driver.enter()?;
         let has_handle = entry.handle.is_some();
         if !has_handle {
-            if !entry.preferred() && state.streaming_limit != usize::MAX {
+            if admission != Admission::Prefetch && !entry.preferred() && state.streaming_limit != usize::MAX {
                 let resident = state.streaming_bytes();
                 let limit = state.streaming_limit.max(self.rounded);
                 let excess = resident.saturating_add(self.rounded).saturating_sub(limit);
                 match admission {
                     Admission::Any => {
                         self.arena.reclaim_locked(
-                            &mut state,
+                            state,
                             excess,
                             false,
                             Some(self.id),
@@ -1250,18 +1288,18 @@ impl Region {
                     }
                     Admission::Completed => {
                         self.arena.reclaim_completed_locked(
-                            &mut state,
+                            state,
                             excess,
                             self.id,
                             ReclaimReason::StreamingLimit,
                         )?;
                     }
-                    Admission::None if excess != 0 => {
+                    Admission::None | Admission::Prefetch if excess != 0 => {
                         return Err(Error::OutOfMemory {
                             requested_bytes: self.rounded,
                         });
                     }
-                    Admission::None => {}
+                    Admission::None | Admission::Prefetch => {}
                 }
                 let remaining = state.streaming_bytes();
                 if remaining.saturating_add(self.rounded) > limit {
@@ -1271,7 +1309,7 @@ impl Region {
                 }
             }
             let allocation = match self.arena.create(self.rounded) {
-                Err(Error::OutOfMemory { .. }) if admission != Admission::None => {
+                Err(Error::OutOfMemory { .. }) if matches!(admission, Admission::Any | Admission::Completed) => {
                     working::reclaim_for_weights(self.arena.device, self.rounded)?;
                     self.arena.create(self.rounded)
                 }
@@ -1281,14 +1319,14 @@ impl Region {
                 Ok(handle) => handle,
                 Err(Error::OutOfMemory { .. }) => {
                     match admission {
-                        Admission::None => {
+                        Admission::None | Admission::Prefetch => {
                             return Err(Error::OutOfMemory {
                                 requested_bytes: self.rounded,
                             });
                         }
                         Admission::Completed => {
                             self.arena.reclaim_completed_locked(
-                                &mut state,
+                                state,
                                 self.rounded,
                                 self.id,
                                 ReclaimReason::WeightAllocation,
@@ -1296,7 +1334,7 @@ impl Region {
                         }
                         Admission::Any => {
                             self.arena.reclaim_locked(
-                                &mut state,
+                                state,
                                 self.rounded,
                                 false,
                                 Some(self.id),
@@ -1307,26 +1345,26 @@ impl Region {
                     match self.arena.create(self.rounded) {
                         Ok(handle) => handle,
                         Err(error @ Error::OutOfMemory { .. }) => return Err(error),
-                        Err(error) => return Err(poison(&mut state, error)),
+                        Err(error) => return Err(poison(state, error)),
                     }
                 }
-                Err(error) => return Err(poison(&mut state, error)),
+                Err(error) => return Err(poison(state, error)),
             };
             // Record custody before map. Even an ambiguous map failure keeps both handle and VA.
             state.entries.get_mut(&self.id).expect("live region").handle = Some(handle);
             if let Err(error) = self.arena.driver.map(self.ptr, self.rounded, handle) {
-                return Err(poison(&mut state, error));
+                return Err(poison(state, error));
             }
         } else {
             // An abandoned external fill may still have queued writes. Only a checked
             // native last-use release can remove this join; ordinary storage remains guarded.
-            match (admission, self.arena.completion(&mut state, self.id)?) {
+            match (admission, self.arena.completion(state, self.id)?) {
                 (_, Completion::Done) if admission != Admission::None => {}
                 (Admission::Any, Completion::Pending) => {
-                    self.arena.wait_fences(&mut state, self.id)?
+                    self.arena.wait_fences(state, self.id)?
                 }
                 (Admission::Any, Completion::Unjoined) => {
-                    self.arena.join_context(&mut state, &[self.id])?
+                    self.arena.join_context(state, &[self.id])?
                 }
                 // Even an abandoned fill with no remaining pins may have queued writers.
                 _ => {
@@ -1336,7 +1374,7 @@ impl Region {
                 }
             }
         }
-        let pin = self.pin_locked(&mut state)?;
+        let pin = self.pin_locked(state)?;
         self.uses.set(Contents::Loading);
         Ok(Preparation::Fill(Fill {
             pin: Some(pin),

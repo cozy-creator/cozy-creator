@@ -47,6 +47,24 @@ This P1 integration requires its matching Runtime branch and real CUDA/model qua
 The implementation removes the old `install_allocator`, `allocator_stats` and
 `set_activation_limit` APIs; callers use the explicit `tensorfs.varena.torch` interface above.
 
+## Keyed eager observations
+
+`vt.phase_enter(device, key=None, mode="eager")` returns an integer owner token. After checked
+completion, `vt.phase_leave(device, token, completed=True, key=actual_key)` may publish the
+newly allocated phase-owned charged peak. `total_peak_bytes` reports total-process charge
+separately; `backing_peak_bytes` is the measured physical-segment watermark used for admission.
+Unrelated live buffers and outside-shared slabs never satisfy the phase's future demand. Unknown entry
+keys measure without speculation; known keys promise a
+fixed configuration. `vt.phase_invalidate` marks caught retries/failed dispatches. Recording,
+replay, preparation, aborts and mismatches do not replace a successful sample. `vt.phase_stats`
+reports the successful and aborted observations separately; `vt.phase_forget` retires a dead
+model/plan's key after its last execution owner releases it.
+
+`region.prepare_prefetch(checkpoint, parts)` is an explicit raw-source API: it returns
+PreparedRead only after native no-reclaim admission, otherwise None. It starts no source IO;
+start/wait/cancel and source ownership are the existing PreparedRead contract. The existing
+production prepare_read/StageSource paths remain unchanged pending committed-key integration.
+
 ## Owned native refill
 
 `region.pin()` atomically borrows existing ready contents as an ordinary `Use`, or returns

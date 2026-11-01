@@ -3,7 +3,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use pyo3::prelude::*;
+use pyo3::{prelude::*, types::PyDict};
 
 static OWNER: AtomicU32 = AtomicU32::new(0);
 static CALLBACK_ERROR: OnceLock<varena::Error> = OnceLock::new();
@@ -240,6 +240,9 @@ fn _varena_working_stats(
         ("event_records", stats.event_records),
         ("event_waits", stats.event_waits),
         ("context_joins", stats.context_joins),
+        ("prefetch_attempts", stats.prefetch_attempts),
+        ("prefetch_admissions", stats.prefetch_admissions),
+        ("prefetch_declines", stats.prefetch_declines),
     ]
     .into())
 }
@@ -350,7 +353,112 @@ fn _varena_working_pool_release(py: Python<'_>, device: i32, pool: (u64, u64)) -
     .map_err(|e| super::raise(py, e))
 }
 
+#[pyfunction]
+#[pyo3(signature = (device, key = None, *, mode = "eager"))]
+fn _varena_phase_enter(
+    py: Python<'_>,
+    device: i32,
+    key: Option<String>,
+    mode: &str,
+) -> PyResult<u64> {
+    use varena::working::PhaseMode;
+    let mode = match mode {
+        "eager" => PhaseMode::Eager,
+        "capture" => PhaseMode::Capture,
+        "replay" => PhaseMode::Replay,
+        "preparation" => PhaseMode::Preparation,
+        _ => {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "unknown execution phase mode",
+            ));
+        }
+    };
+    py.detach(|| {
+        check()?;
+        varena::working::phase_enter(device, key, mode)
+    })
+    .map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
+#[pyo3(signature = (device, token, *, completed, key = None))]
+fn _varena_phase_leave<'py>(
+    py: Python<'py>,
+    device: i32,
+    token: u64,
+    completed: bool,
+    key: Option<String>,
+) -> PyResult<Bound<'py, PyDict>> {
+    // Cleanup must remain possible after an allocator callback has latched its original error.
+    let observed = py
+        .detach(|| varena::working::phase_leave(device, token, completed, key))
+        .map_err(|e| super::raise(py, e))?;
+    let row = PyDict::new(py);
+    row.set_item("token", observed.token)?;
+    row.set_item("mode", observed.mode.name())?;
+    row.set_item("key", observed.key)?;
+    row.set_item("peak_bytes", observed.peak_bytes)?;
+    row.set_item("total_peak_bytes", observed.total_peak_bytes)?;
+    row.set_item("backing_peak_bytes", observed.backing_peak_bytes)?;
+    row.set_item("published", observed.published)?;
+    row.set_item("invalidated", observed.invalidated)?;
+    row.set_item("reason", observed.reason)?;
+    row.set_item("successful_peak_bytes", observed.successful_peak_bytes)?;
+    row.set_item(
+        "successful_backing_peak_bytes",
+        observed.successful_backing_peak_bytes,
+    )?;
+    row.set_item("successful_passes", observed.successful_passes)?;
+    Ok(row)
+}
+
+#[pyfunction]
+#[pyo3(signature = (device, token, reason = "execution_retry"))]
+fn _varena_phase_invalidate(py: Python<'_>, device: i32, token: u64, reason: &str) -> PyResult<()> {
+    py.detach(|| varena::working::phase_invalidate(device, token, reason))
+        .map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
+fn _varena_phase_stats<'py>(
+    py: Python<'py>,
+    device: i32,
+    key: &str,
+) -> PyResult<Bound<'py, PyDict>> {
+    let sample = py
+        .detach(|| {
+            check()?;
+            varena::working::phase_stats(device, key)
+        })
+        .map_err(|e| super::raise(py, e))?;
+    let row = PyDict::new(py);
+    row.set_item("known", sample.known)?;
+    row.set_item("peak_bytes", sample.peak_bytes)?;
+    row.set_item("total_peak_bytes", sample.total_peak_bytes)?;
+    row.set_item("backing_peak_bytes", sample.backing_peak_bytes)?;
+    row.set_item("successful_passes", sample.successful_passes)?;
+    row.set_item("aborted_passes", sample.aborted_passes)?;
+    row.set_item("aborted_peak_bytes", sample.aborted_peak_bytes)?;
+    row.set_item("aborted_total_peak_bytes", sample.aborted_total_peak_bytes)?;
+    row.set_item(
+        "aborted_backing_peak_bytes",
+        sample.aborted_backing_peak_bytes,
+    )?;
+    Ok(row)
+}
+
+#[pyfunction]
+fn _varena_phase_forget(py: Python<'_>, device: i32, key: &str) -> PyResult<bool> {
+    py.detach(|| varena::working::phase_forget(device, key))
+        .map_err(|e| super::raise(py, e))
+}
+
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(_varena_phase_enter, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_phase_leave, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_phase_invalidate, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_phase_stats, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_phase_forget, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_trim, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_set_limit, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_retire_stream, module)?)?;

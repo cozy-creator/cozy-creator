@@ -77,6 +77,50 @@ Foreign CUDA/context allocations remain outside this managed accounting.
 already proven. Stats do not poll or seal deferred frees; the value intentionally undercounts
 pending or unobserved completion and excludes graph pools and partially live slabs.
 
+## P2 measurement foundation (not yet qualified)
+
+`working::phase_enter(device, key, mode)` owns one device-wide observation. A missing key
+means the configuration is not known before execution: it can be measured, but never enables
+speculation. Only `PhaseMode::Eager` can publish, and `phase_leave(..., completed=true, key)`
+must follow the caller's checked execution completion. Capture, replay and preparation remain
+non-publishing in this checkpoint; graph pool size is not a replay demand measurement.
+
+The sample is the maximum newly allocated charged capacity owned by this phase: live allocations
+plus freed blocks whose consumers are not yet proven complete, including alignment. Every
+allocation generation is tagged with the active token; reusing a pre-existing pending block
+counts as a new phase allocation. Outside live holdings stay charged globally but never reduce
+this phase's future working requirement. Retiring an old pending allocation cannot subtract
+from the phase's own demand. `total_peak_bytes` preserves the total-process charged telemetry. Global `reset_peak` does not reset
+this observation. Completed eager cache and idle graph pools are not demand. A returned
+allocation/free error, a caught retry reported through `phase_invalidate`, a capture/replay attempt or
+changed promised key invalidates publication. Successful internal allocator reclamation does
+not. Aborts retain the previous successful record and report their peak separately. Keys are
+opaque semantic execution configurations; the model/plan owner calls `phase_forget` when the
+last owner retires. Runtime must not use addresses, object IDs or refill generations as keys.
+
+`Region::prepare_prefetch` is an explicit immutable-raw admission API. It requires an active,
+known, qualified eager key with a successful sample. It holds capture exclusion, region state
+and working metadata through native page admission, then returns the Fill before any source IO
+runs. It never evicts or waits for pending consumers. The needed working headroom uses `backing_peak_bytes`: the measured peak of distinct physical segments holding
+phase-owned live/pending blocks. This includes the real slab floor: simultaneous 512 B and
+1024 B classes need two separate 2 MiB slabs, not 1536 B of physical room. Current backing
+counts toward that peak only when every charged block in the segment belongs to this phase;
+a segment shared with an outside live/pending allocation supplies no credit. Completed wholly
+free eager segments also count once. Graph-private cache and partial outside slabs supply none. Rounded source bytes plus that
+headroom must fit both observed driver-free memory and the existing managed ceiling.
+
+This remains a scheduling hint, not a guarantee against future/foreign allocation. The adapter
+keeps checkpoint, producer, stream and fill ownership; source work happens after allocator locks
+are gone. `tensorfs.varena.Region.prepare_prefetch` returns an ordinary PreparedRead or None;
+None is a declined/no-op admission, never a completed read of an unfilled region. Encoded
+prefetch is excluded until its scratch follows no-reclaim admission too.
+
+Production prefetch and split sizing are deliberately unchanged in this foundation. Current
+Runtime dynamic cuts are unknown at entry; switching all existing prefetch to the new API would
+suppress it on every pass. Cutover needs a real committed-split or qualified native-replay owner
+signal, followed by consumer proof and deletion of the replaced policy. There is no fallback
+from a declined new admission into the old budget path.
+
 ## Weight residency
 
 ```text

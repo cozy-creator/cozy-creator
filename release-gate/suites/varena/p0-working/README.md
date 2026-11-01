@@ -159,3 +159,42 @@ unreported DLPack side-stream consumer runs. `shared-managed-limit` checks that 
 backing and working mappings count, and clearing a static ceiling or temporary room does not
 lift the other. These cases use the same fresh-child binary provenance and <=256 MiB bound.
 Capture diagnostics additionally include attempted unknown-owner `context_joins`.
+
+
+## P2 phase observation and explicit raw admission (source only until run)
+
+`/phase_policy` uses the same exact-wheel provenance and fresh CUDA child as `/gpu`,
+but runs the P2 observation/admission cases. It creates one local immutable raw TensorFS
+source and bounds device storage with the real Varena managed limit; no model download,
+mock driver, whole-card ballast or production prefetch cutover is used.
+
+```sh
+cozy run ./release-gate/suites/varena/p0-working/phase_policy --on "$NAME" --gpus=1 \
+  tensorfs_version="$TENSORFS_VERSION" extension_sha256="$EXTENSION_SHA256" \
+  shim_sha256="$SHIM_SHA256" case=all
+```
+
+The cases require last-success replacement (not a historical maximum), actual pending
+capacity despite a global peak reset, preserved samples after abort/caught OOM/retry/key
+mismatch, rejected overlapping scopes, unknown-key refusal, and non-publication for
+preparation/capture/replay. A native replay guard entered and left inside an eager scope
+must invalidate that sample even without Torch's replay hooks. Dead-owner records retire.
+
+The raw-source cases reproduce three concrete admission mistakes:
+
+- A prior 64 MiB phase plus an unrelated 32 MiB live tensor under a 96 MiB cap must decline
+  a 2 MiB prefetch, preserving room for the repeated 64 MiB operation. The outside live
+  tensor cannot be subtracted from the phase's future demand.
+- Simultaneous 512 B and 1024 B allocations use two real 2 MiB size-class slabs. After trim,
+  a 4 MiB cap must decline a 2 MiB prefetch, despite only 1536 B of live block demand.
+- An almost-full slab holding 4095 outside 512 B allocations gives no current-phase credit.
+  The repeated two-allocation phase needs another slab and must retain that room.
+
+Additional arms retire outside pending buffers without subtracting phase-owned demand,
+retag same-address pending reuse, complete and byte-check an admitted raw source, and
+cancel a second read admitted beside already completed eager backing. Every case drains
+its real stream/fill/tensor owners and checks zero managed bytes, graph pools and events.
+These are explicit API proofs. The current model prefetch and split policy remain unchanged;
+known configuration commitment and native replay-demand integration are still required
+before replacing those production decisions. A successful delivery is not a passed proof:
+inspect the result and every case. No P2 GPU receipt exists at this source checkpoint.

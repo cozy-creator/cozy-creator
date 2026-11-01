@@ -9,6 +9,86 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 pub type PoolId = (u64, u64);
 
+/// Execution classification is explicit: recording/preparation/replay are not eager samples.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PhaseMode {
+    Eager,
+    Capture,
+    Replay,
+    Preparation,
+}
+
+impl PhaseMode {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Eager => "eager",
+            Self::Capture => "capture",
+            Self::Replay => "replay",
+            Self::Preparation => "preparation",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct PhaseStats {
+    pub known: bool,
+    /// Newly allocated charged capacity attributable to the last successful phase.
+    pub peak_bytes: usize,
+    pub total_peak_bytes: usize,
+    /// Distinct backing segments containing phase-owned live/pending blocks: admission watermark.
+    pub backing_peak_bytes: usize,
+    pub successful_passes: u64,
+    pub aborted_passes: u64,
+    pub aborted_peak_bytes: usize,
+    pub aborted_total_peak_bytes: usize,
+    pub aborted_backing_peak_bytes: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct PhaseObservation {
+    pub token: u64,
+    pub mode: PhaseMode,
+    pub key: Option<String>,
+    pub peak_bytes: usize,
+    pub total_peak_bytes: usize,
+    pub backing_peak_bytes: usize,
+    pub published: bool,
+    pub invalidated: bool,
+    pub reason: String,
+    pub successful_peak_bytes: usize,
+    pub successful_backing_peak_bytes: usize,
+    pub successful_passes: u64,
+}
+
+struct ActivePhase {
+    token: u64,
+    key: Option<String>,
+    mode: PhaseMode,
+    activity_epoch: u64,
+    charged: usize,
+    peak: usize,
+    owned_charged: usize,
+    owned_peak: usize,
+    backing: usize,
+    backing_peak: usize,
+    invalid: Option<String>,
+}
+
+#[derive(Default)]
+struct Phases {
+    next: u64,
+    active: Option<ActivePhase>,
+    samples: BTreeMap<String, PhaseStats>,
+}
+
+impl Phases {
+    fn invalidate(&mut self, reason: &str) {
+        if let Some(active) = &mut self.active {
+            active.invalid.get_or_insert_with(|| reason.to_owned());
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WorkingStats {
     pub allocated_bytes: usize,
@@ -32,6 +112,9 @@ pub struct WorkingStats {
     pub event_records: u64,
     pub event_waits: u64,
     pub context_joins: u64,
+    pub prefetch_attempts: u64,
+    pub prefetch_admissions: u64,
+    pub prefetch_declines: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -51,6 +134,8 @@ struct Block {
     requested: usize,
     stream: u64,
     origin_retired: bool,
+    // Allocation generation, not address identity: reuse retags an old/pending block.
+    phase: Option<u64>,
     streams: BTreeSet<u64>,
     events: BTreeMap<u64, usize>,
     life: Life,
@@ -59,6 +144,14 @@ struct Block {
 }
 
 impl Block {
+    fn charge(&self) -> usize {
+        if self.life != Life::Ready || self.reusable_on.is_some() {
+            self.capacity
+        } else {
+            0
+        }
+    }
+
     fn deferred_default(&self) -> bool {
         self.life == Life::Deferred
             && self.reusable_on == Some(0)
@@ -71,6 +164,9 @@ struct Segment {
     bytes: usize,
     handle: u64,
     pool: Option<PoolId>,
+    // Rebuilt at phase entry; maintained only while that phase owns the device observation.
+    charged_blocks: usize,
+    phase_blocks: usize,
 }
 
 #[derive(Default)]
@@ -94,7 +190,115 @@ struct State {
     addresses: BTreeMap<u64, usize>,
     pools: BTreeMap<PoolId, Pool>,
     stats: WorkingStats,
+    phases: Phases,
     poison: Option<String>,
+}
+
+impl State {
+    fn charged(&self) -> usize {
+        self.blocks.values().map(Block::charge).sum()
+    }
+
+    fn reusable_eager_pages(&self) -> usize {
+        self.segments
+            .iter()
+            .filter(|(base, segment)| {
+                segment.pool.is_none()
+                    && self
+                        .blocks
+                        .range(**base..**base + segment.bytes as u64)
+                        .all(|(_, block)| block.life == Life::Ready && block.reusable_on.is_none())
+            })
+            .map(|(_, segment)| segment.bytes)
+            .sum()
+    }
+
+    fn phase_changed(
+        &mut self,
+        before: usize,
+        after: usize,
+        prior: Option<u64>,
+        next: Option<u64>,
+        segment: u64,
+    ) {
+        let Some(active) = &mut self.phases.active else {
+            return;
+        };
+        active.charged = active.charged - before + after;
+        active.peak = active.peak.max(active.charged);
+        let was_owned = prior == Some(active.token) && before != 0;
+        let is_owned = next == Some(active.token) && after != 0;
+        if was_owned {
+            active.owned_charged -= before;
+        }
+        if is_owned {
+            active.owned_charged += after;
+        }
+        active.owned_peak = active.owned_peak.max(active.owned_charged);
+        let segment = self
+            .segments
+            .get_mut(&segment)
+            .expect("live allocation segment");
+        let held = segment.phase_blocks != 0;
+        segment.charged_blocks =
+            segment.charged_blocks - usize::from(before != 0) + usize::from(after != 0);
+        segment.phase_blocks =
+            segment.phase_blocks - usize::from(was_owned) + usize::from(is_owned);
+        match (held, segment.phase_blocks != 0) {
+            (false, true) => active.backing += segment.bytes,
+            (true, false) => active.backing -= segment.bytes,
+            _ => {}
+        }
+        active.backing_peak = active.backing_peak.max(active.backing);
+    }
+
+    // Completion and pool resizing already traverse metadata. Rebuild their phase counts once.
+    fn refresh_phase(&mut self) {
+        if let Some(token) = self.phases.active.as_ref().map(|active| active.token) {
+            for segment in self.segments.values_mut() {
+                segment.charged_blocks = 0;
+                segment.phase_blocks = 0;
+            }
+            let (mut charged, mut owned) = (0usize, 0usize);
+            for block in self.blocks.values().filter(|block| block.charge() != 0) {
+                charged += block.capacity;
+                let segment = self
+                    .segments
+                    .get_mut(&block.segment)
+                    .expect("live allocation segment");
+                segment.charged_blocks += 1;
+                if block.phase == Some(token) {
+                    owned += block.capacity;
+                    segment.phase_blocks += 1;
+                }
+            }
+            let backing = self
+                .segments
+                .values()
+                .filter(|segment| segment.phase_blocks != 0)
+                .map(|segment| segment.bytes)
+                .sum();
+            let active = self.phases.active.as_mut().expect("active phase");
+            active.charged = charged;
+            active.peak = active.peak.max(charged);
+            active.owned_charged = owned;
+            active.owned_peak = active.owned_peak.max(owned);
+            active.backing = backing;
+            active.backing_peak = active.backing_peak.max(backing);
+        }
+    }
+
+    fn exclusive_phase_backing(&self) -> usize {
+        self.segments
+            .values()
+            .filter(|segment| {
+                segment.pool.is_none()
+                    && segment.phase_blocks != 0
+                    && segment.charged_blocks == segment.phase_blocks
+            })
+            .map(|segment| segment.bytes)
+            .sum()
+    }
 }
 
 struct Working {
@@ -289,6 +493,7 @@ impl Working {
                 .or_default()
                 .push(ptr);
         }
+        state.refresh_phase();
         Ok(())
     }
 
@@ -300,6 +505,7 @@ impl Working {
         stream: u64,
         pool: Option<PoolId>,
     ) -> Option<u64> {
+        let phase = state.phases.active.as_ref().map(|active| active.token);
         for origin in [Some(stream), None] {
             let slots = state.free.get_mut(&(pool, bytes, origin));
             if let Some(slots) = slots {
@@ -313,6 +519,9 @@ impl Working {
                     if !reusable || block.capacity != bytes || block.reusable_on != origin {
                         continue;
                     }
+                    let before = block.charge();
+                    let prior = block.phase;
+                    block.phase = phase;
                     block.life = Life::Live;
                     block.stream = stream;
                     block.origin_retired = false;
@@ -321,6 +530,8 @@ impl Working {
                         block.streams.clear();
                         block.streams.insert(stream);
                     }
+                    let (capacity, segment) = (block.capacity, block.segment);
+                    state.phase_changed(before, capacity, prior, phase, segment);
                     return Some(ptr);
                 }
             }
@@ -397,6 +608,8 @@ impl Working {
                 bytes,
                 handle,
                 pool,
+                charged_blocks: 0,
+                phase_blocks: 0,
             },
         );
         self.room
@@ -414,6 +627,7 @@ impl Working {
                     requested: 0,
                     stream: 0,
                     origin_retired: false,
+                    phase: None,
                     streams: BTreeSet::new(),
                     events: BTreeMap::new(),
                     life: Life::Ready,
@@ -439,6 +653,7 @@ impl Working {
                         requested: 0,
                         stream: 0,
                         origin_retired: false,
+                        phase: None,
                         streams: BTreeSet::new(),
                         events: BTreeMap::new(),
                         life: Life::Ready,
@@ -500,6 +715,7 @@ impl Working {
             consider(start, length, *base, complete);
         }
         let (ptr, capacity, segment, complete) = best?;
+        let phase = state.phases.active.as_ref().map(|active| active.token);
         let end = ptr + capacity as u64;
         let parts: Vec<_> = state.blocks.range(ptr..end).map(|(p, _)| *p).collect();
         let mut events = Vec::new();
@@ -533,6 +749,7 @@ impl Working {
                     requested: 0,
                     stream,
                     origin_retired: false,
+                    phase: if complete { None } else { phase },
                     streams: if complete {
                         BTreeSet::new()
                     } else {
@@ -561,12 +778,14 @@ impl Working {
                 requested,
                 stream,
                 origin_retired: false,
+                phase,
                 streams: BTreeSet::from([stream]),
                 events: BTreeMap::new(),
                 life: Life::Live,
                 reusable_on: None,
             },
         );
+        state.refresh_phase();
         Some(ptr)
     }
 
@@ -758,6 +977,14 @@ fn valid_stream(stream: u64) -> Result<()> {
 
 /// Allocate from a prepared pool during capture, or the device's working slabs otherwise.
 pub fn alloc(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> Result<u64> {
+    let result = alloc_inner(device, bytes, stream, pool);
+    if result.is_err() {
+        let _ = invalidate_current_phase(device, "allocation_error");
+    }
+    result
+}
+
+fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> Result<u64> {
     valid_stream(stream)?;
     if bytes == 0 {
         crate::check_process()?;
@@ -838,6 +1065,14 @@ pub fn alloc(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> Re
 }
 
 pub fn free(device: i32, ptr: u64, stream: u64) -> Result<()> {
+    let result = free_inner(device, ptr, stream);
+    if result.is_err() {
+        let _ = invalidate_current_phase(device, "free_error");
+    }
+    result
+}
+
+fn free_inner(device: i32, ptr: u64, stream: u64) -> Result<()> {
     if ptr == 0 {
         crate::check_process()?;
         return Ok(());
@@ -893,9 +1128,18 @@ pub fn free(device: i32, ptr: u64, stream: u64) -> Result<()> {
         let reusable = block.life == Life::Ready
             || (block.life == Life::Captured && block.reusable_on.is_some())
             || block.deferred_default();
-        Ok((requested, pool, block.capacity, block.reusable_on, reusable))
+        Ok((
+            requested,
+            pool,
+            block.capacity,
+            block.reusable_on,
+            reusable,
+            block.charge(),
+            block.phase,
+            block.segment,
+        ))
     })();
-    let (requested, pool, class, reusable_on, reusable) =
+    let (requested, pool, class, reusable_on, reusable, charge, phase, segment) =
         transition.map_err(|error| owner.fail(&mut state, error))?;
     if reusable {
         state
@@ -904,6 +1148,7 @@ pub fn free(device: i32, ptr: u64, stream: u64) -> Result<()> {
             .or_default()
             .push(ptr);
     }
+    state.phase_changed(class, charge, phase, phase, segment);
     state.stats.allocated_bytes -= requested;
     state.stats.frees += 1;
     Ok(())
@@ -932,6 +1177,14 @@ pub unsafe fn free_untracked(device: i32, ptr: u64) -> Result<()> {
 }
 
 fn retire_native(device: i32, ptr: u64, completed: bool) -> Result<()> {
+    let result = retire_native_inner(device, ptr, completed);
+    if result.is_err() {
+        let _ = invalidate_current_phase(device, "native_retirement_error");
+    }
+    result
+}
+
+fn retire_native_inner(device: i32, ptr: u64, completed: bool) -> Result<()> {
     if ptr == 0 {
         return crate::check_process();
     }
@@ -949,6 +1202,8 @@ fn retire_native(device: i32, ptr: u64, completed: bool) -> Result<()> {
     let block = state.blocks.get_mut(&ptr).expect("checked live allocation");
     let requested = block.requested;
     let capacity = block.capacity;
+    let phase = block.phase;
+    let segment = block.segment;
     block.requested = 0;
     block.life = if completed {
         Life::Ready
@@ -964,12 +1219,27 @@ fn retire_native(device: i32, ptr: u64, completed: bool) -> Result<()> {
             .or_default()
             .push(ptr);
     }
+    state.phase_changed(
+        capacity,
+        if completed { 0 } else { capacity },
+        phase,
+        phase,
+        segment,
+    );
     state.stats.allocated_bytes -= requested;
     state.stats.frees += 1;
     Ok(())
 }
 
 pub fn record_stream(device: i32, ptr: u64, stream: u64) -> Result<()> {
+    let result = record_stream_inner(device, ptr, stream);
+    if result.is_err() {
+        let _ = invalidate_current_phase(device, "record_stream_error");
+    }
+    result
+}
+
+fn record_stream_inner(device: i32, ptr: u64, stream: u64) -> Result<()> {
     if ptr == 0 {
         crate::check_process()?;
         return Ok(());
@@ -989,6 +1259,20 @@ pub fn record_stream(device: i32, ptr: u64, stream: u64) -> Result<()> {
 }
 
 pub fn record_stream_any(ptr: u64, stream: u64) -> Result<()> {
+    let result = record_stream_any_inner(ptr, stream);
+    if result.is_err()
+        && let Ok(owners) = devices().map(|devices| devices.values().cloned().collect::<Vec<_>>())
+    {
+        for owner in owners {
+            if let Ok(mut state) = owner.state.lock() {
+                state.phases.invalidate("record_stream_error");
+            }
+        }
+    }
+    result
+}
+
+fn record_stream_any_inner(ptr: u64, stream: u64) -> Result<()> {
     if ptr == 0 {
         crate::check_process()?;
         return Ok(());
@@ -1108,6 +1392,7 @@ pub fn retire_stream(device: i32, stream: u64) -> Result<()> {
                 .or_default()
                 .push(ptr);
         }
+        state.refresh_phase();
         Ok(())
     })();
     result.map_err(|error| owner.fail(&mut state, error))
@@ -1153,6 +1438,278 @@ pub(crate) fn reclaim_for_weights(device: i32, bytes: usize) -> Result<usize> {
     reclaimed.map_err(|error| owner.fail(&mut state, error))
 }
 
+/// Begin one device-wide execution observation. None means the final configuration is not
+/// known yet: observe demand, but do not admit speculation from an earlier guessed key.
+pub fn phase_enter(device: i32, key: Option<String>, mode: PhaseMode) -> Result<u64> {
+    if key.as_ref().is_some_and(String::is_empty) {
+        return Err(Error::Invalid("phase execution key must not be empty"));
+    }
+    let owner = initialize_owner(device)?;
+    let captures = crate::capture_counts()?;
+    let mut state = owner.lock()?;
+    if state.phases.active.is_some() {
+        return Err(Error::Invalid(
+            "execution phases cannot overlap on one device",
+        ));
+    }
+    let token = state
+        .phases
+        .next
+        .checked_add(1)
+        .ok_or(Error::Invalid("phase token overflow"))?;
+    state.phases.next = token;
+    let charged = state.charged();
+    let activity_epoch = captures
+        .get(&device)
+        .map_or(0, |activity| activity.activity_epoch);
+    let invalid = (mode == PhaseMode::Eager
+        && crate::ensure_recovery_allowed(&captures, device).is_err())
+    .then(|| "capture_or_replay_active".to_owned());
+    state.phases.active = Some(ActivePhase {
+        token,
+        key,
+        mode,
+        activity_epoch,
+        charged,
+        peak: charged,
+        owned_charged: 0,
+        owned_peak: 0,
+        backing: 0,
+        backing_peak: 0,
+        invalid,
+    });
+    state.refresh_phase();
+    Ok(token)
+}
+
+/// Mark a caught retry/failed dispatch without replacing its caller's original exception.
+/// A later successful outer return must not publish the contaminated peak.
+pub fn phase_invalidate(device: i32, token: u64, reason: &str) -> Result<()> {
+    let owner = owner(device)?;
+    let mut state = owner
+        .state
+        .lock()
+        .map_err(|_| Error::Poisoned("working allocator mutex".into()))?;
+    if state
+        .phases
+        .active
+        .as_ref()
+        .is_none_or(|active| active.token != token)
+    {
+        return Err(Error::Invalid("unknown execution phase token"));
+    }
+    state.phases.invalidate(reason);
+    Ok(())
+}
+
+pub(crate) fn invalidate_current_phase(device: i32, reason: &str) -> Result<()> {
+    let Some(owner) = existing(device)? else {
+        return Ok(());
+    };
+    let mut state = owner
+        .state
+        .lock()
+        .map_err(|_| Error::Poisoned("working allocator mutex".into()))?;
+    state.phases.invalidate(reason);
+    Ok(())
+}
+
+/// Publish only a successfully completed eager execution. The owner proves completion at its
+/// existing stream/continuation boundary; capture completion is not execution completion.
+/// Metadata cleanup remains possible after an allocator fault, retaining the prior sample.
+pub fn phase_leave(
+    device: i32,
+    token: u64,
+    completed: bool,
+    key: Option<String>,
+) -> Result<PhaseObservation> {
+    if key.as_ref().is_some_and(String::is_empty) {
+        return Err(Error::Invalid("phase execution key must not be empty"));
+    }
+    let owner = owner(device)?;
+    let captures = crate::capture_counts()?;
+    let mut state = owner
+        .state
+        .lock()
+        .map_err(|_| Error::Poisoned("working allocator mutex".into()))?;
+    if state
+        .phases
+        .active
+        .as_ref()
+        .is_none_or(|active| active.token != token)
+    {
+        return Err(Error::Invalid("unknown execution phase token"));
+    }
+    state.refresh_phase();
+    let mut active = state.phases.active.take().expect("checked phase token");
+    if state.poison.is_some() {
+        active
+            .invalid
+            .get_or_insert_with(|| "allocator_poisoned".to_owned());
+    }
+    if active.mode == PhaseMode::Eager
+        && active.activity_epoch
+            != captures
+                .get(&device)
+                .map_or(0, |activity| activity.activity_epoch)
+    {
+        active
+            .invalid
+            .get_or_insert_with(|| "capture_or_replay_attempt".to_owned());
+    }
+    let mismatch = active
+        .key
+        .as_ref()
+        .zip(key.as_ref())
+        .is_some_and(|(expected, actual)| expected != actual);
+    if mismatch {
+        active
+            .invalid
+            .get_or_insert_with(|| "execution_key_changed".to_owned());
+    }
+    let observed = if mismatch {
+        active.key.clone()
+    } else {
+        key.or_else(|| active.key.clone())
+    };
+    let reason = active.invalid.clone().unwrap_or_else(|| {
+        if active.mode != PhaseMode::Eager {
+            format!("{}_unqualified", active.mode.name())
+        } else if !completed {
+            "aborted".to_owned()
+        } else if observed.is_none() {
+            "execution_key_unknown".to_owned()
+        } else {
+            String::new()
+        }
+    });
+    let published = reason.is_empty();
+    let mut sample = PhaseStats::default();
+    if active.mode == PhaseMode::Eager
+        && let Some(key) = &observed
+    {
+        let record = state.phases.samples.entry(key.clone()).or_default();
+        if published {
+            record.known = true;
+            record.peak_bytes = active.owned_peak;
+            record.total_peak_bytes = active.peak;
+            record.backing_peak_bytes = active.backing_peak;
+            record.successful_passes += 1;
+        } else {
+            record.aborted_passes += 1;
+            record.aborted_peak_bytes = active.owned_peak;
+            record.aborted_total_peak_bytes = active.peak;
+            record.aborted_backing_peak_bytes = active.backing_peak;
+        }
+        sample = record.clone();
+    }
+    Ok(PhaseObservation {
+        token,
+        mode: active.mode,
+        key: observed,
+        peak_bytes: active.owned_peak,
+        total_peak_bytes: active.peak,
+        backing_peak_bytes: active.backing_peak,
+        published,
+        invalidated: active.invalid.is_some(),
+        reason,
+        successful_peak_bytes: sample.peak_bytes,
+        successful_backing_peak_bytes: sample.backing_peak_bytes,
+        successful_passes: sample.successful_passes,
+    })
+}
+
+pub fn phase_stats(device: i32, key: &str) -> Result<PhaseStats> {
+    let Some(owner) = existing(device)? else {
+        return Ok(PhaseStats::default());
+    };
+    let state = owner.lock()?;
+    Ok(state.phases.samples.get(key).cloned().unwrap_or_default())
+}
+
+/// Retire measurements with their model/plan owner, never by an arbitrary age or timer.
+pub fn phase_forget(device: i32, key: &str) -> Result<bool> {
+    let Some(owner) = existing(device)? else {
+        return Ok(false);
+    };
+    let mut state = owner.lock()?;
+    if state
+        .phases
+        .active
+        .as_ref()
+        .is_some_and(|active| active.key.as_deref().is_none_or(|held| held == key))
+    {
+        return Err(Error::Busy);
+    }
+    Ok(state.phases.samples.remove(key).is_some())
+}
+
+/// Caller holds the capture registry and region state. Hold working metadata through physical
+/// admission too, so another same-process working transition cannot spend this observation.
+/// The closure performs only native no-reclaim page admission; never source IO or callbacks.
+pub(crate) fn admit_prefetch<T>(
+    device: i32,
+    activity_epoch: u64,
+    bytes: usize,
+    admit: impl FnOnce() -> Result<T>,
+) -> Result<Option<T>> {
+    let Some(owner) = existing(device)? else {
+        return Ok(None);
+    };
+    let mut state = owner.lock()?;
+    state.stats.prefetch_attempts += 1;
+    let gap = state.phases.active.as_ref().and_then(|active| {
+        if active.mode != PhaseMode::Eager
+            || active.invalid.is_some()
+            || active.activity_epoch != activity_epoch
+        {
+            return None;
+        }
+        let sample = state.phases.samples.get(active.key.as_ref()?)?;
+        if !sample.known {
+            return None;
+        }
+        // Reserve measured physical backing, not just the sum of small block classes.
+        // A currently shared outside slab cannot cover the remaining phase allocation need.
+        // Graph-private cache is never general eager capacity.
+        Some(
+            sample.backing_peak_bytes.saturating_sub(
+                state
+                    .exclusive_phase_backing()
+                    .saturating_add(state.reusable_eager_pages()),
+            ),
+        )
+    });
+    let Some(gap) = gap else {
+        state.stats.prefetch_declines += 1;
+        return Ok(None);
+    };
+    let Some(needed) = bytes.checked_add(gap) else {
+        state.stats.prefetch_declines += 1;
+        return Ok(None);
+    };
+    let _context = owner.driver.enter()?;
+    let (free, _) = owner.driver.memory_info()?;
+    if needed > free || owner.room.over(needed) != 0 {
+        state.stats.prefetch_declines += 1;
+        return Ok(None);
+    }
+    match admit() {
+        Ok(prepared) => {
+            state.stats.prefetch_admissions += 1;
+            Ok(Some(prepared))
+        }
+        Err(Error::OutOfMemory { .. } | Error::Busy | Error::CaptureActive) => {
+            state.stats.prefetch_declines += 1;
+            Ok(None)
+        }
+        Err(error) => {
+            state.phases.invalidate("prefetch_fault");
+            Err(error)
+        }
+    }
+}
+
 pub fn stats(device: i32) -> Result<WorkingStats> {
     let Some(owner) = existing(device)? else {
         return Ok(WorkingStats::default());
@@ -1177,18 +1734,7 @@ pub fn stats(device: i32) -> Result<WorkingStats> {
         .filter(|b| b.life == Life::Ready && b.reusable_on.is_none())
         .map(|b| b.capacity)
         .sum();
-    stats.reclaimable_bytes = state
-        .segments
-        .iter()
-        .filter(|(base, segment)| {
-            segment.pool.is_none()
-                && state
-                    .blocks
-                    .range(**base..**base + segment.bytes as u64)
-                    .all(|(_, block)| block.life == Life::Ready && block.reusable_on.is_none())
-        })
-        .map(|(_, segment)| segment.bytes)
-        .sum();
+    stats.reclaimable_bytes = state.reusable_eager_pages();
     stats.unassigned_bytes =
         stats.mapped_bytes - stats.allocated_capacity - stats.pending_bytes - stats.free_bytes;
     stats.pools_bytes = state
@@ -1239,6 +1785,7 @@ pub fn pool_cancel_preparation(device: i32, pool: PoolId) -> Result<()> {
     Ok(())
 }
 pub fn pool_reserve(device: i32, pool: PoolId, bytes: usize) -> Result<usize> {
+    invalidate_current_phase(device, "capture_preparation")?;
     initialize(device)?;
     let owner = owner(device)?;
     let wanted = rounded(bytes, owner.page)?;
@@ -1391,6 +1938,7 @@ pub fn pool_capture_complete(device: i32, id: PoolId) -> Result<()> {
             .or_default()
             .push(ptr);
     }
+    state.refresh_phase();
     drop(guard);
     Ok(())
 }
@@ -1401,6 +1949,7 @@ pub fn pool_retain(device: i32, id: PoolId) -> Result<()> {
     let captures = crate::capture_counts()?;
     crate::ensure_not_capturing(&captures, device)?;
     let mut state = owner.lock()?;
+    state.phases.invalidate("graph_replay");
     let pool = state
         .pools
         .get_mut(&id)

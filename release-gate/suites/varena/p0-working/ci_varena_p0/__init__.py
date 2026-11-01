@@ -67,6 +67,12 @@ def gpu(payload: Probe, tel: Telemetry) -> Report:
 
 
 @app.entrypoint(accelerator=True)
+def phase_policy(payload: Probe, tel: Telemetry) -> Report:
+    """P2 keyed eager measurements and explicit raw admission; existing model policy is unchanged."""
+    return _cuda_child(payload, tel, "phase_policy.py", "varena-p2-phase-policy")
+
+
+@app.entrypoint(accelerator=True)
 def native_cudnn(payload: Probe, tel: Telemetry) -> Report:
     """Fresh native-Torch cuDNN lifetime control, retaining the same strict sanitizer verdict."""
     return _cuda_child(payload, tel, "native_cudnn.py", "native-cudnn-lifetime")

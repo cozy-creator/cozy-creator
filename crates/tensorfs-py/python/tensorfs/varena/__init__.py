@@ -123,6 +123,23 @@ class Region:
         native = self._native.pin()
         return None if native is None else Use(native)
 
+    def prepare_prefetch(
+        self,
+        checkpoint: _ext.Checkpoint,
+        parts: Sequence[tuple[str, int, int]],
+        *,
+        threads: int = 2,
+    ) -> PreparedRead | None:
+        """Opt into native no-reclaim admission for an immutable raw source.
+
+        None means no fill was admitted (unknown/unqualified key, insufficient room, or
+        already resident). An admitted read retains its source and Fill but starts no IO.
+        Existing production prefetch callers remain on prepare_read until a committed
+        execution key is available. Encoded decode/scratch is outside this first slice.
+        """
+        native = _ext._VarenaPreparedRead.prefetch(self._native, checkpoint, list(parts), threads)
+        return None if native is None else PreparedRead(native)
+
     def prepare_read(
         self,
         checkpoint: _ext.Checkpoint,

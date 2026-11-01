@@ -13,7 +13,7 @@ from pathlib import Path
 import platform
 import threading
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Iterator, TypeAlias, cast
+from typing import TYPE_CHECKING, Any, Iterator, Literal, TypeAlias, cast
 
 from .. import _ext
 
@@ -147,6 +147,44 @@ def set_limit(device: DeviceLike, bytes: int | None = None) -> int:
     """
     _installed()
     return _ext._varena_working_set_limit(_device(device), bytes)
+
+
+def phase_enter(device: DeviceLike, key: str | None = None, *, mode: Literal["eager", "capture", "replay", "preparation"] = "eager") -> int:
+    """Begin one execution observation. An unknown key never enables speculation.
+
+    A known key promises fixed geometry/dispatch/split choices. Only successful eager
+    execution can publish in this checkpoint; recording and replay remain unqualified.
+    """
+    _installed()
+    return _ext._varena_phase_enter(_device(device), key, mode=mode)
+
+
+def phase_leave(device: DeviceLike, token: int, *, completed: bool, key: str | None = None) -> dict[str, Any]:
+    """End after checked execution completion, supplying an actually observed key if needed.
+
+    Aborted, retried, recording/preparation/replay and mismatched-key observations never
+    replace the previous successful charged-capacity sample. This performs no CUDA work.
+    """
+    _installed()
+    return _ext._varena_phase_leave(_device(device), token, completed=completed, key=key)
+
+
+def phase_invalidate(device: DeviceLike, token: int, reason: str = "execution_retry") -> None:
+    """Invalidate a caught failed dispatch/retry without hiding its original exception."""
+    _installed()
+    _ext._varena_phase_invalidate(_device(device), token, reason)
+
+
+def phase_stats(device: DeviceLike, key: str) -> dict[str, Any]:
+    """Owned block/backing peaks and total-process telemetry, with separate aborted counts."""
+    _installed()
+    return _ext._varena_phase_stats(_device(device), key)
+
+
+def phase_forget(device: DeviceLike, key: str) -> bool:
+    """Retire a dead model/plan's measurement after its final execution owner releases it."""
+    _installed()
+    return _ext._varena_phase_forget(_device(device), key)
 
 
 def prepare_pool(pool: PoolId, bytes: int, device: DeviceLike = 0) -> int:
