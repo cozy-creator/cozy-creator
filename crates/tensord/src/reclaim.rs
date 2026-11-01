@@ -6,8 +6,8 @@
 //! update downloads, unused generations (then the uv entries only they linked), and compiled
 //! kernels last, only when they alone lift it. Garbage goes every sweep once idle: a generation
 //! whose build failed, an editable environment no generation names, a Runtime pair neither
-//! selected nor kept to roll back to, a machine's own PyTorch base neither active nor linked by
-//! any environment. Only bytes an unlink frees on the measured filesystem count:
+//! selected nor kept to roll back to, an unbound environment on a PyTorch base no longer active,
+//! then that base once no environment links it. Only bytes an unlink frees on the measured filesystem count:
 //! single-link files this process does not hold open, on that filesystem. Optional cache
 //! writes are skipped on a low disk. Never evicted: uncollected results (durable outputs),
 //! journal rows, a generation a run holds or an installation names, a uv entry an environment
@@ -607,6 +607,16 @@ pub fn sweep(caches: &Caches) -> io::Result<Swept> {
     let generations = caches.catalog.root();
     let engine_dir = generations.parent().unwrap_or(generations);
     let mut named = HashSet::new();
+    // A machine's own PyTorch bases other than the active one: an unbound environment on one is
+    // never used again, so it goes once idle, and the base once no environment links it.
+    let inactive: Vec<(PathBuf, String)> = match caches.torch {
+        Some(torch @ crate::published::layer::Torch::Own { engine, .. }) => {
+            let active = torch.base();
+            crate::published::layer::bases(engine).into_iter().filter(|(base, _)| Some(base) != active.as_ref()).collect()
+        }
+        _ => vec![],
+    };
+    let mut stale = vec![];
     // Generations unbound by any installation, unfinished run or configured package: a
     // resolve touches `.hold`, and a holder's shared lock on it refuses collection.
     for entry in fs::read_dir(generations)?.flatten() {
@@ -620,7 +630,11 @@ pub fn sweep(caches: &Caches) -> io::Result<Swept> {
         {
             if entry.path().join("generation.json").is_file() {
                 let used = modified(&entry.path().join(".hold"));
-                add(Kind::Generation, entry.path(), used, None);
+                let on_inactive = inactive.iter().any(|(base, _)| links_into(&entry.path().join("env"), base, 0));
+                match on_inactive && unused_for(used, IDLE) {
+                    true => stale.push(Entry { kind: Kind::Generation, path: entry.path(), used, hold: None, guard: None }),
+                    false => add(Kind::Generation, entry.path(), used, None),
+                }
                 continue;
             }
             let lock = File::open(generations.join(".locks").join(format!("{name}.lock")));
@@ -648,20 +662,6 @@ pub fn sweep(caches: &Caches) -> io::Result<Swept> {
             garbage(Kind::Pair, &pair.path(), last_use(&pair.path()));
         }
     }
-    // A machine's own PyTorch base that is not the active one, once no environment links it.
-    if let Some(torch @ crate::published::layer::Torch::Own { engine, .. }) = caches.torch {
-        let active = torch.base();
-        for (base, version) in crate::published::layer::bases(engine) {
-            if Some(&base) == active.as_ref() || caches.environments.iter().any(|root| links_into(root, &base, 3)) {
-                continue;
-            }
-            let bytes = releasable(&base, filesystem, &open).unwrap_or(0);
-            if remove(&base) {
-                tracing::info!("removed PyTorch {version} ({}): not this machine's PyTorch, and no environment uses it", size(bytes));
-                swept.add(Kind::Torch, 1, bytes);
-            }
-        }
-    }
     // An update's staged and downloaded files: a dev build sent again, a release fetched again.
     for dir in ["staged", "downloads"] {
         for entry in fs::read_dir(engine_dir.join("update").join(dir)).into_iter().flatten().flatten() {
@@ -684,6 +684,19 @@ pub fn sweep(caches: &Caches) -> io::Result<Swept> {
         }
         Ok(())
     };
+    for mut entry in stale {
+        discard(&mut entry, &mut swept)?;
+    }
+    for (base, version) in inactive {
+        if caches.environments.iter().any(|root| links_into(root, &base, 3)) {
+            continue;
+        }
+        let bytes = releasable(&base, filesystem, &open).unwrap_or(0);
+        if remove(&base) {
+            tracing::info!("removed PyTorch {version} ({}): not this machine's PyTorch, and no environment uses it", size(bytes));
+            swept.add(Kind::Torch, 1, bytes);
+        }
+    }
     let mut kept = vec![];
     for mut entry in entries {
         match unused_for(entry.used, TTL) {
