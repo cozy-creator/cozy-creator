@@ -149,7 +149,7 @@ fn collect_environments(home: &Path, named: &HashSet<PathBuf>) -> usize {
 fn removed(what: &str, path: &Path) {
     let bytes = crate::reclaim::freeable(path);
     if fs::remove_dir_all(path).is_ok() {
-        tracing::info!("removed {what} {}: {}", path.display(), crate::reclaim::gib(bytes));
+        tracing::info!("removed {what} {}: {}", path.display(), crate::reclaim::size(bytes));
     }
 }
 

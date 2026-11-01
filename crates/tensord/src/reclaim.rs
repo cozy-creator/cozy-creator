@@ -99,7 +99,7 @@ impl Swept {
 
 impl std::fmt::Display for Swept {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let kinds: Vec<String> = self.kinds.iter().map(|(kind, (n, bytes))| format!("{n} {} {}", kind.name(), gib(*bytes))).collect();
+        let kinds: Vec<String> = self.kinds.iter().map(|(kind, (n, bytes))| format!("{n} {} {}", kind.name(), size(*bytes))).collect();
         write!(f, "{}", kinds.join(", "))?;
         match self.environments.is_empty() {
             true => Ok(()),
@@ -108,9 +108,12 @@ impl std::fmt::Display for Swept {
     }
 }
 
-/// Bytes as GiB to a hundredth, for people.
-pub fn gib(bytes: u64) -> String {
-    format!("{:.2} GiB", bytes as f64 / (1u64 << 30) as f64)
+/// Bytes for people: MiB to a tenth below a GiB, else GiB to a hundredth.
+pub fn size(bytes: u64) -> String {
+    match bytes < 1 << 30 {
+        true => format!("{:.1} MiB", bytes as f64 / (1u64 << 20) as f64),
+        false => format!("{:.2} GiB", bytes as f64 / (1u64 << 30) as f64),
+    }
 }
 
 /// The persistent compiled-kernel store (`Seal::prepare`'s `<root>/u<uid>/`). Every executor
@@ -240,7 +243,7 @@ pub fn remove_generation(generations: &Path, identity: &str) -> io::Result<Optio
     let mut entry = Entry { kind: Kind::Generation, path, used: SystemTime::now(), hold: None, guard: None };
     let removed = entry.remove()?;
     if removed {
-        tracing::info!("removed package environment {label}: {}", gib(bytes));
+        tracing::info!("removed package environment {label}: {}", size(bytes));
     }
     Ok(removed.then_some(bytes))
 }
@@ -715,8 +718,8 @@ pub fn advice(path: &Path, missing: u64) -> String {
         return String::new();
     };
     let held = usage().map_or(String::new(), |u| {
-        format!("models {}, package environments {}, Runtime {}; ", gib(u.models), gib(u.environments), gib(u.runtime))
+        format!("models {}, package environments {}, Runtime {}; ", size(u.models), size(u.environments), size(u.runtime))
     });
     let gb = (disk.capacity.saturating_sub(disk.available) + missing + disk.reserve()).div_ceil(10_000_000_000) * 10;
-    format!(" (the disk holds {held}{} of {} free; --disk-gb {gb} would hold this call)", gib(disk.available), gib(disk.capacity))
+    format!(" (the disk holds {held}{} of {} free; --disk-gb {gb} would hold this call)", size(disk.available), size(disk.capacity))
 }

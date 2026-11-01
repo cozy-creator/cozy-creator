@@ -188,7 +188,7 @@ impl Store {
         let _ = fs::remove_dir(self.root.join("tmp").join("gc"));
         if collected.bytes > 0 {
             let evicted = collected.uses.len();
-            tracing::info!("tensorfs: freed {} in {} objects ({evicted} evicted, the rest unreferenced)", gib(collected.bytes), collected.objects);
+            tracing::info!("tensorfs: freed {} in {} objects ({evicted} evicted, the rest unreferenced)", size(collected.bytes), collected.objects);
         }
         Ok(collected)
     }
@@ -246,8 +246,8 @@ impl Store {
             self.remove_record(&self.root.join("uses").join(&u.name))?;
             let name = names.get(&u.name).cloned().unwrap_or_else(|| format!("cache entry {}", &u.name[..12]));
             let idle = u.used.elapsed().unwrap_or_default().as_secs() / 60;
-            let why = if need == u64::MAX { "past its TTL".into() } else { format!("the disk {} short", gib(need)) };
-            tracing::info!("tensorfs: evicted {name}: {}, idle {idle} min, {why}", gib(*bytes));
+            let why = if need == u64::MAX { "past its TTL".into() } else { format!("the disk {} short", size(need)) };
+            tracing::info!("tensorfs: evicted {name}: {}, idle {idle} min, {why}", size(*bytes));
         }
         let dropped: BTreeSet<String> = plan.into_iter().map(|(u, _)| u.name.clone()).collect();
         uses.retain(|u| !dropped.contains(&u.name));
@@ -357,7 +357,10 @@ fn exclusive(path: &std::path::Path) -> Result<Option<File>> {
     }
 }
 
-/// Bytes as GiB to a hundredth, for people.
-fn gib(bytes: u64) -> String {
-    format!("{:.2} GiB", bytes as f64 / (1u64 << 30) as f64)
+/// Bytes for people: MiB to a tenth below a GiB, else GiB to a hundredth.
+fn size(bytes: u64) -> String {
+    match bytes < 1 << 30 {
+        true => format!("{:.1} MiB", bytes as f64 / (1u64 << 20) as f64),
+        false => format!("{:.2} GiB", bytes as f64 / (1u64 << 30) as f64),
+    }
 }
