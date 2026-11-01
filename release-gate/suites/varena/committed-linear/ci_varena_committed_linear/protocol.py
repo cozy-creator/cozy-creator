@@ -187,7 +187,7 @@ def protocol(payload: Probe, ctx: Context) -> Report:
                                         'projection_value_correct': correct})
                 assert correct and graph_value_host == 2
                 assert observed['invalidated'] and not observed['published']
-                assert observed['reason'] == 'capture_or_replay_attempt'
+                assert observed['reason'] == 'graph_replay'
                 assert after_replay['successful_passes'] == before_replay['successful_passes']
                 assert after_replay['peak_bytes'] == before_replay['peak_bytes']
                 owner = value = None
