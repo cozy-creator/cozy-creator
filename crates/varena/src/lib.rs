@@ -22,6 +22,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     #[error("CUDA capacity exhausted allocating {requested_bytes} bytes")]
     OutOfMemory { requested_bytes: usize },
+    #[error("CUDA split capacity exhausted: required {requested_bytes} bytes, available {available_bytes} bytes")]
+    Exhausted { requested_bytes: usize, available_bytes: usize },
     #[error("CUDA device fault in {operation}: CUresult {code}")]
     DeviceFault { operation: &'static str, code: i32 },
     #[error("CUDA driver failure in {operation}: CUresult {code}")]

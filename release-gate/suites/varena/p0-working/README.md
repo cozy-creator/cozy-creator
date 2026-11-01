@@ -244,3 +244,21 @@ observation rows, unchanged streaming limit and final allocator/weight retiremen
 CLI completion is not sufficient; the fitting arm must have actual source lookahead and the
 refusal arms must not invalidate their successful demand measurements. These CUDA cells and
 full-model capture/denoise/H2D qualification remain pending at this source checkpoint.
+
+## P2 native split lifecycle and capacity (source only until run)
+
+`/split_policy` exercises real CUDA allocation/copy operations under a copied menu with one
+32 MiB output and 32/16/8 MiB scratch variants. The native managed caps select 64/48/40 MiB
+choices; only the executed exact choice becomes measured after one enclosing phase completion.
+A query before that proof must still say declared. No per-chunk synchronization or operation
+retry is used.
+
+Additional cells require typed minimum exhaustion before any allocation operation, separate
+outside-live accounting, the real two-small-class slab floor, rejected nested leaf ownership,
+preserved successful samples after abort or a caught actual allocation failure, and no learning
+from a side-stream leaf without a matching completion owner. An empty invalidation diagnostic
+must still prevent publication and preserve the previous successful phase sample.
+
+These cells qualify native menu/admission/observation mechanics, not the actual channel_norm
+consumer or its quality/performance. That requires the paired Runtime's real Request, phase and
+compiled launcher path; full-model, capture-choice and multi-GPU cutovers remain separate.

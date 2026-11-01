@@ -85,6 +85,12 @@ def raw_prefetch(payload: Probe, tel: Telemetry) -> Report:
 
 
 @app.entrypoint(accelerator=True)
+def split_policy(payload: Probe, tel: Telemetry) -> Report:
+    """Real CUDA copied-menu admission and phase-completed leaf measurements."""
+    return _cuda_child(payload, tel, "split_policy.py", "varena-p2-split-policy")
+
+
+@app.entrypoint(accelerator=True)
 def native_cudnn(payload: Probe, tel: Telemetry) -> Report:
     """Fresh native-Torch cuDNN lifetime control, retaining the same strict sanitizer verdict."""
     return _cuda_child(payload, tel, "native_cudnn.py", "native-cudnn-lifetime")
