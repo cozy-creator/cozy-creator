@@ -1,3 +1,8 @@
+> Historical migration proof only: run against native commit
+> `0657802458dfbf4fb7e66613e30c9baef1308e68`, whose receipts remain preserved.
+> Current Varena deliberately refuses older layouts; use the ledger-current-format
+> gate for the active contract. Do not apply this migration fixture to current source.
+
 # Real v2/v3 metadata gate
 
 `build.py` copies the exact old committed and current ledger modules into output-only

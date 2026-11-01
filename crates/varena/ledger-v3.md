@@ -12,16 +12,14 @@ ordering key. Requestability means an owner can be asked, never that any byte is
 Native request boundaries publish activity; native cache registration supplies the
 requestable fact. No Python byte target or polling policy is introduced.
 
-An old table can be replaced only while publication and every independent row lock
-are held. Live and stopped participants block migration. Stale rows grant no memory.
-The new table is fully allocated/initialized first. Then the old selector becomes0
-and its magic becomes a nonzero incompatible tombstone before atomic replacement.
-This matters because v2 checked the named inode before taking publication: an old
-waiter could otherwise register a row lock on the new inode while publishing into
-the detached old mapping. Failed rename restores the old selector/header; an
-interrupted tombstone is recoverable by a new opener. V3 checks identity again after
-publication admission. H resets to unknown for the new ledger lifetime; new writers
-preserve the maximum qualified measurement across unknown/lower observations.
+Only the current layout is accepted. An existing file with an incompatible size
+or nonzero header is refused without truncating, tombstoning, renaming or resetting
+it. There is no older-format migration. Replacing the pathname while an opener waits
+for publication yields Busy; it never joins a detached mapping. Initializing an empty
+file or recovering an interrupted, unpublished initial header remains supported.
+Existing current-format participants retain the same inode, rows and qualified H
+measurements when another current client joins. Repeated unknown/lower observations
+cannot reduce H.
 
 Rounds distinguish Allocation, measured DevicePressure and AllIdle. AllIdle is one
 new-foreign-process threshold episode, bounded by a fresh device-total observation,
@@ -53,8 +51,10 @@ the final returned callback needs a matching post-action service pass before the
 job finishes. Allocation-style requests retain their existing actual-retry signal.
 
 CPU proof is real native threads/processes, OFD locks and actual filesystem faults.
-The old/new metadata gate covers stopped owners, waiting old transactions/registers/
-opens, the rename-only ghost-lock negative control, crash recovery and rename rollback.
+The historical old/new migration gate applies only to its frozen predecessor source.
+The current-format gate checks real shared-file initialization, repeated/current live
+opens, incompatible-file refusal with byte/inode preservation, stopped publication
+and replaced-path refusal.
 Its declared byte facts are not GPU release. Host callback tests cover cancellation
 and dispatcher self-wait refusal without loading CUDA/NVML. Scoped-progress epoch
 tests and latest replay integration are being completed. No new GPU claim follows
