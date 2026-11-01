@@ -1,0 +1,44 @@
+{
+  "command": [
+    "nice",
+    "-n",
+    "19",
+    "cargo",
+    "run",
+    "--offline",
+    "--manifest-path",
+    "/home/fidika/cozy_v2/outputs/xs138-p3-native-service/lifecycle-close-fork/native/Cargo.toml",
+    "--target-dir",
+    "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p3-ledger/target",
+    "--example",
+    "lifecycle",
+    "-j",
+    "1"
+  ],
+  "exit_code": 0,
+  "seconds": 5.176615610020235,
+  "sources": {
+    "crates/varena/src/lib.rs": "1acadb734d0711e62b07f367e9048fbd3ef1c881e907caeae4d4e946778954e6",
+    "crates/varena/src/ledger.rs": "0dc097ee67944b465aa4582de2c2a6124698be53d48cb1ee5c103af0b68bb019",
+    "crates/varena/src/working.rs": "bd70428373ca55b8b50871cc6eba780311e226fc2e5187daf519466d62f71215",
+    "crates/varena/src/cuda.rs": "2d23bc6ac06adcaf9be9b9367ad33de590c03f16722f1fd159c7b3ea6f659d14",
+    "crates/varena/src/cooperative.rs": "8ad8676e10c2a003520c8b9d324ad0bdd4a9a4bebd65701ed0acc691f82a231b",
+    "crates/varena/src/ledger/os.rs": "60c73b13f199dabf9faae5986f5f9ae7cb591d3c70f5e665433e8ef2600f8c23",
+    "crates/varena/src/cooperative/owner.rs": "a57057126977d35f6c6c4ce9473eb91399e6ab0eeea5f359ed6c30936ad10469",
+    "crates/varena/src/working/peer.rs": "d5c75257d8eecde0b79ee641d80d4a569dba088ef80989d8f692b810e7471242",
+    "crates/varena/src/working/split.rs": "07611093d21db699d5e57a5260b7f2aeee4598e40e7896e676c307f303f26eb2"
+  },
+  "harness_sha256": "fbb7c63c9f8c0f661d84d20b3b1285ab9bbc0557428e2b65cc8d6ea65f208e3c",
+  "scope": "actual native host-control concurrency; no CUDA participant, GPU or native donor qualification",
+  "result": {
+    "passed": true,
+    "native_thread_cancellations": 512,
+    "admitted_vs_queued": true,
+    "drop_did_not_join": true,
+    "poison_cancellation": true,
+    "permanent_fault_close_returned": true,
+    "fault_not_marked_retired": true,
+    "fork_rejected_before_inherited_mutex": true,
+    "gpu_qualified": false
+  }
+}

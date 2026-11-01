@@ -1,0 +1,202 @@
+{
+  "passed": true,
+  "cells": [
+    {
+      "label": "cache-binding",
+      "run": 25373,
+      "passed": true,
+      "cases": 0,
+      "raw_sha256": "790ec9bc2168f5a4c308ca0459ab84306bc4d658e0e7554a3475845ed8a2680c",
+      "input_sha256": "75c138077d34221f476f4b1e54610992b0c20b42dac35e93ca269c6e3c698885"
+    },
+    {
+      "label": "allocator",
+      "run": 25375,
+      "passed": true,
+      "cases": 18,
+      "raw_sha256": "2e223088fe05c87fd5ed836d96a249752cc4f561672b6b09f16af1695b24443f",
+      "input_sha256": "43a40a6a1f31b82200c8167b8ce6bfec90860f2707edbfc151d600b1e9306882"
+    },
+    {
+      "label": "benchmark",
+      "run": 25376,
+      "passed": true,
+      "cases": 0,
+      "raw_sha256": "597c2e458b0422e86a6441e1532c420ecda93125f0297c74035511933ccdf48b",
+      "input_sha256": "43a40a6a1f31b82200c8167b8ce6bfec90860f2707edbfc151d600b1e9306882"
+    },
+    {
+      "label": "split",
+      "run": 25378,
+      "passed": true,
+      "cases": 13,
+      "raw_sha256": "20d8b8d7055dee8906a1b59ea84442f4173e40a24dd7b9ed6535c655c97ed454",
+      "input_sha256": "43a40a6a1f31b82200c8167b8ce6bfec90860f2707edbfc151d600b1e9306882"
+    },
+    {
+      "label": "plan-runtime",
+      "run": 25380,
+      "passed": true,
+      "cases": 4,
+      "raw_sha256": "29e15888efb8eedc46f95b9a2e0345574dd4526395120014603c8a58fddaf876",
+      "input_sha256": "4b211adcef9f3ac9ffbdc7b485073306bfb2d95776ea9c1dd228f329891eeb8a"
+    },
+    {
+      "label": "plan-lifetime",
+      "run": 25381,
+      "passed": true,
+      "cases": 0,
+      "raw_sha256": "3cec51d1f6bbe9d84ffcaf50e8810983189ccfb93a3265bcd969800517c53135",
+      "input_sha256": "4b211adcef9f3ac9ffbdc7b485073306bfb2d95776ea9c1dd228f329891eeb8a"
+    },
+    {
+      "label": "plan-primitive",
+      "run": 25382,
+      "passed": true,
+      "cases": 7,
+      "raw_sha256": "b1d67bc44d4a48b067607a55a8135a53e817f623990f395c5e9d922e736b34e5",
+      "input_sha256": "4b211adcef9f3ac9ffbdc7b485073306bfb2d95776ea9c1dd228f329891eeb8a"
+    },
+    {
+      "label": "plan-cleanup",
+      "run": 25383,
+      "passed": true,
+      "cases": 0,
+      "raw_sha256": "a282ce777d18bacb35237909937f12b2069bf8b9d44e1fb94d4fb17f5a8e1cda",
+      "input_sha256": "01cfcc0305120a24a83ceb478db940b252cfe7f0c5542c8280c2a6d6b26b1b18"
+    },
+    {
+      "label": "shortage-working",
+      "run": 25385,
+      "passed": true,
+      "cases": 0,
+      "raw_sha256": "d6807715938c1acb0144e30c1e759e3db951f7eede762d1e400c728f0519381d",
+      "input_sha256": "2841addc81052552a2eb55a4684863986d61e8786c9c885758888edfded80538"
+    },
+    {
+      "label": "shortage-weight",
+      "run": 25386,
+      "passed": true,
+      "cases": 0,
+      "raw_sha256": "55ab9fa43846b1b4c3049cdf361a021df554631243ce1dcd9328ed62c180d5e1",
+      "input_sha256": "9bb701cd6b5b520d0b119e33b008bf0eeb04751366c0f1fe00cb9f5752cc3569"
+    },
+    {
+      "label": "shortage-gil",
+      "run": 25387,
+      "passed": true,
+      "cases": 0,
+      "raw_sha256": "cbb202028847fd7bd7f9bd654e1492244b90be17bf1a429ca50005a1836ff0f9",
+      "input_sha256": "1a51090465e3ec46fcd6601b6d4d611e57a491d4d5d4481cbfffc9be31b2999b"
+    },
+    {
+      "label": "shortage-stopped",
+      "run": 25388,
+      "passed": true,
+      "cases": 0,
+      "raw_sha256": "efc5571fab4b9867b2441c3b20d2a1368cabdcc23c8780eecbe8974a9d49e172",
+      "input_sha256": "2e5f4195837038069c9561d5bd3c25d332ba64f5f567a6b34f2d5f793848a43b"
+    },
+    {
+      "label": "shortage-renewal",
+      "run": 25389,
+      "passed": true,
+      "cases": 0,
+      "raw_sha256": "10306e3094a55ac80bd6b8e49a2fcc2f3ee092462a1bc199f7a12dda492b6ed4",
+      "input_sha256": "03b4a36f166948ab3fd62c73e109acc1e0de4f33d6a806d7130b90480ce778a9"
+    },
+    {
+      "label": "shortage-writer",
+      "run": 25390,
+      "passed": true,
+      "cases": 0,
+      "raw_sha256": "cc1b002270d86653e352b8f5c7fbaefc2a3f33a056b34cd2c83ff06bfdbe4723",
+      "input_sha256": "9a50166ae33e1a5af3d793e1301dc00def09bec9e29fd234e44291c147298687"
+    },
+    {
+      "label": "shortage-cap",
+      "run": 25391,
+      "passed": true,
+      "cases": 0,
+      "raw_sha256": "82c7ced894c6df40a9768be95cfdd7067dca6396b45704bd15a6ffe772d11d20",
+      "input_sha256": "536c72a8718adb2cee22f2ea4e67f8bcf8c75af0b54120e25ffe9ff906f21996"
+    },
+    {
+      "label": "shortage-va",
+      "run": 25392,
+      "passed": true,
+      "cases": 0,
+      "raw_sha256": "4e4aaa619b5767130dd05b32e18d32acaf33485bbf3ab469be8ef3869755f9ae",
+      "input_sha256": "62302c4c5e70587d2a05e25aceb7a1dda270cabc70307e9eae3a304da05c2ba1"
+    },
+    {
+      "label": "shortage-limited",
+      "run": 25393,
+      "passed": true,
+      "cases": 0,
+      "raw_sha256": "494cf90c8a54b39fc8d9c473aee008f19b902e62bfd41b3525cbfb4cb7ccc18b",
+      "input_sha256": "6dc69602f19ddbcdd459838760269c547f8208118323ee43043fb903778f18b1"
+    },
+    {
+      "label": "shortage-capture",
+      "run": 25394,
+      "passed": true,
+      "cases": 0,
+      "raw_sha256": "a96421108b99c6c4d601827850e6cd42d165c2cb6d48464b8ea64093b9d7c414",
+      "input_sha256": "422f67ef0633424f531e5523b257d84e397a88e64414a0b191457b4e58612054"
+    },
+    {
+      "label": "shortage-replay",
+      "run": 25395,
+      "passed": true,
+      "cases": 0,
+      "raw_sha256": "abc99883c3b5545a49de7feec3d584d5394723c75c3fd0862a83a8147f3224ad",
+      "input_sha256": "e882b5375048f1655c433b393ce120e2c86c3153ffd0cf4bfb49196be84cf8a4"
+    },
+    {
+      "label": "shortage-observe",
+      "run": 25396,
+      "passed": true,
+      "cases": 0,
+      "raw_sha256": "56db4f920b37a9b14b9b3fdc09889e01fa4d95a79c36380a17827ed73ab326ce",
+      "input_sha256": "35581e1bd1125678f20d66d16b1725e3c380c65d4ecee3c75b8f059636c926b6"
+    },
+    {
+      "label": "heads",
+      "run": 25398,
+      "passed": true,
+      "cases": 17,
+      "raw_sha256": "0c6dc0d3247de052e920d5efda49e28f83ee1dd399b62cb956f630859daf8cfd",
+      "input_sha256": "62e95b83740637dffb4187f3316a3fca549e3ca830c318bb202a21f6791a242c"
+    },
+    {
+      "label": "heads-cleanup",
+      "run": 25399,
+      "passed": true,
+      "cases": 0,
+      "raw_sha256": "4752734467c38ed896f07b6b43d89629354c23acb2a36fa7ea81fb9aa972b937",
+      "input_sha256": "727693d062dd434eab08a495bb391a636aac9cd6bbbc546c78672363ff3a6403"
+    }
+  ],
+  "benchmark": {
+    "native_median_ns": 421.369075,
+    "varena_median_ns": 364.4486625,
+    "ratio": 0.8649155434579531,
+    "unchanged_limit": 2.0,
+    "timed_driver_memory_calls": 0,
+    "final_live_mapped_and_handles_zero": true,
+    "actual_guard": {
+      "backend": "kernel_wipe",
+      "contract": "one_process/1",
+      "failure_errno": 0,
+      "failure_stage": 0,
+      "marker": 156124,
+      "page_bytes": 4096,
+      "schema": "varena.process_guard/1",
+      "shared_vm_child_use": "unsupported; inherited calls are not guaranteed to reject",
+      "thread_authenticated": true
+    }
+  },
+  "cache_binding_scope": "25373 executes Python Cache against the parent a96 extension. Archived e545 helper provenance is not an executing standalone core in this cell. Cache-owned fields retire; working pending is not claimed zero.",
+  "scope": "all22 completed raw results and input custody match; detailed mechanism audit is separate for each fixture; no full-model inheritance or shared-VM child-operation proof"
+}

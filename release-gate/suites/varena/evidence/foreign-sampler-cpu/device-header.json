@@ -1,0 +1,324 @@
+{
+  "passed": true,
+  "device_round": {
+    "capacity_epoch": 7,
+    "device": 29,
+    "generation": 11,
+    "inode": 2319421,
+    "round": {
+      "aborted": false,
+      "completed": 0,
+      "donors": [
+        {
+          "answer": "Waiting",
+          "completed": 0,
+          "incarnation": 1,
+          "pending": 0,
+          "requested": 64,
+          "slot": 0
+        },
+        {
+          "answer": "Waiting",
+          "completed": 0,
+          "incarnation": 2,
+          "pending": 0,
+          "requested": 32,
+          "slot": 1
+        }
+      ],
+      "finished": false,
+      "id": 10,
+      "requested": 96,
+      "sample": 9
+    },
+    "rows": [
+      {
+        "idle": 64,
+        "incarnation": 1,
+        "live": 0,
+        "pending": 0,
+        "pid": 1921393,
+        "priority": -20,
+        "reclaimable": 64,
+        "sharing": "Shared",
+        "slot": 0,
+        "start_ticks": 56443937,
+        "want": 96
+      },
+      {
+        "idle": 64,
+        "incarnation": 2,
+        "live": 0,
+        "pending": 0,
+        "pid": 1921394,
+        "priority": -10,
+        "reclaimable": 64,
+        "sharing": "Shared",
+        "slot": 1,
+        "start_ticks": 56443937,
+        "want": 96
+      },
+      {
+        "idle": 128,
+        "incarnation": 3,
+        "live": 0,
+        "pending": 0,
+        "pid": 1921395,
+        "priority": -30,
+        "reclaimable": 128,
+        "sharing": "Dedicated",
+        "slot": 2,
+        "start_ticks": 56443937,
+        "want": 0
+      }
+    ],
+    "sample": {
+      "attributable": false,
+      "capacity_epoch": 7,
+      "id": 9,
+      "reserve": null,
+      "total": 512,
+      "used": 256
+    }
+  },
+  "completed_metadata": {
+    "capacity_epoch": 11,
+    "device": 29,
+    "generation": 15,
+    "inode": 2319421,
+    "round": {
+      "aborted": false,
+      "completed": 96,
+      "donors": [
+        {
+          "answer": "Complete",
+          "completed": 64,
+          "incarnation": 1,
+          "pending": 0,
+          "requested": 64,
+          "slot": 0
+        },
+        {
+          "answer": "Complete",
+          "completed": 32,
+          "incarnation": 2,
+          "pending": 0,
+          "requested": 32,
+          "slot": 1
+        }
+      ],
+      "finished": true,
+      "id": 10,
+      "requested": 96,
+      "sample": 9
+    },
+    "rows": [
+      {
+        "idle": 0,
+        "incarnation": 1,
+        "live": 0,
+        "pending": 0,
+        "pid": 1921393,
+        "priority": -20,
+        "reclaimable": 0,
+        "sharing": "Shared",
+        "slot": 0,
+        "start_ticks": 56443937,
+        "want": 96
+      },
+      {
+        "idle": 32,
+        "incarnation": 2,
+        "live": 0,
+        "pending": 0,
+        "pid": 1921394,
+        "priority": -10,
+        "reclaimable": 32,
+        "sharing": "Shared",
+        "slot": 1,
+        "start_ticks": 56443937,
+        "want": 96
+      },
+      {
+        "idle": 128,
+        "incarnation": 3,
+        "live": 0,
+        "pending": 0,
+        "pid": 1921395,
+        "priority": -30,
+        "reclaimable": 128,
+        "sharing": "Dedicated",
+        "slot": 2,
+        "start_ticks": 56443937,
+        "want": 0
+      }
+    ],
+    "sample": {
+      "attributable": false,
+      "capacity_epoch": 7,
+      "id": 9,
+      "reserve": null,
+      "total": 512,
+      "used": 256
+    }
+  },
+  "ordinary_allocation_round": {
+    "capacity_epoch": 12,
+    "device": 29,
+    "generation": 18,
+    "inode": 2319421,
+    "round": {
+      "aborted": false,
+      "completed": 0,
+      "donors": [
+        {
+          "answer": "Waiting",
+          "completed": 0,
+          "incarnation": 2,
+          "pending": 0,
+          "requested": 32,
+          "slot": 1
+        }
+      ],
+      "finished": false,
+      "id": 18,
+      "requested": 64,
+      "sample": 17
+    },
+    "rows": [
+      {
+        "idle": 64,
+        "incarnation": 1,
+        "live": 0,
+        "pending": 0,
+        "pid": 1921393,
+        "priority": -20,
+        "reclaimable": 64,
+        "sharing": "Shared",
+        "slot": 0,
+        "start_ticks": 56443937,
+        "want": 64
+      },
+      {
+        "idle": 32,
+        "incarnation": 2,
+        "live": 0,
+        "pending": 0,
+        "pid": 1921394,
+        "priority": -10,
+        "reclaimable": 32,
+        "sharing": "Shared",
+        "slot": 1,
+        "start_ticks": 56443937,
+        "want": 96
+      },
+      {
+        "idle": 128,
+        "incarnation": 3,
+        "live": 0,
+        "pending": 0,
+        "pid": 1921395,
+        "priority": -30,
+        "reclaimable": 128,
+        "sharing": "Dedicated",
+        "slot": 2,
+        "start_ticks": 56443937,
+        "want": 0
+      }
+    ],
+    "sample": {
+      "attributable": false,
+      "capacity_epoch": 12,
+      "id": 17,
+      "reserve": null,
+      "total": 512,
+      "used": 224
+    }
+  },
+  "dedicated_refusal": {
+    "error": "invalid ledger operation: device pressure requires a Shared participant"
+  },
+  "same_round_for_two_processes": true,
+  "self_included_without_double_deficit": true,
+  "unknown_headroom_preserved": true,
+  "driver_capacity_not_credited": true,
+  "unknown_sampler_preserves_qualified_device_max": {
+    "capacity_epoch": 12,
+    "device": 29,
+    "generation": 20,
+    "inode": 2319421,
+    "round": {
+      "aborted": false,
+      "completed": 0,
+      "donors": [
+        {
+          "answer": "Waiting",
+          "completed": 0,
+          "incarnation": 2,
+          "pending": 0,
+          "requested": 32,
+          "slot": 1
+        }
+      ],
+      "finished": false,
+      "id": 18,
+      "requested": 64,
+      "sample": 17
+    },
+    "rows": [
+      {
+        "idle": 64,
+        "incarnation": 1,
+        "live": 0,
+        "pending": 0,
+        "pid": 1921393,
+        "priority": -20,
+        "reclaimable": 64,
+        "sharing": "Shared",
+        "slot": 0,
+        "start_ticks": 56443937,
+        "want": 64
+      },
+      {
+        "idle": 32,
+        "incarnation": 2,
+        "live": 0,
+        "pending": 0,
+        "pid": 1921394,
+        "priority": -10,
+        "reclaimable": 32,
+        "sharing": "Shared",
+        "slot": 1,
+        "start_ticks": 56443937,
+        "want": 96
+      },
+      {
+        "idle": 128,
+        "incarnation": 3,
+        "live": 0,
+        "pending": 0,
+        "pid": 1921395,
+        "priority": -30,
+        "reclaimable": 128,
+        "sharing": "Dedicated",
+        "slot": 2,
+        "start_ticks": 56443937,
+        "want": 0
+      }
+    ],
+    "sample": {
+      "attributable": true,
+      "capacity_epoch": 12,
+      "id": 20,
+      "reserve": 64,
+      "total": 512,
+      "used": 224
+    }
+  },
+  "lower_reserve_does_not_lower_device_max": true,
+  "unattributable_reserve_rejected": {
+    "error": "invalid ledger operation: reserve requires an attributable observation"
+  },
+  "gpu_execution": false,
+  "scope": "real processes, OFD row/publication locks and native ledger; supplied byte metadata only"
+}
