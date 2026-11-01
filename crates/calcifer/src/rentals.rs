@@ -263,7 +263,7 @@ impl Machines {
                 provider_cost_usd_micros: r.provider_cost_usd_micros,
             });
         }
-        rentals.sort_by(|a, b| b.started_at_ms.cmp(&a.started_at_ms));
+        rentals.sort_by_key(|row| std::cmp::Reverse(row.started_at_ms));
         let (mut days, mut total) = (std::collections::BTreeMap::<String, RentalSum>::new(), RentalSum::default());
         for row in &rentals {
             let day = utc_day(row.started_at_ms);

@@ -56,10 +56,16 @@ pub async fn authorize(ctx: &Context, key: &str, remove: bool) -> Result<ExitCod
     let key = key.trim();
     let path = crate::calcifer_client::path(&["v1", "machines", "local", "authorized-keys", key]);
     let calcifer = ctx.calcifer().await?;
-    let answer: Authorized = match remove {
+    let mut answer: Authorized = match remove {
         false => calcifer.put(&path, &serde_json::json!({})).await?,
         true => calcifer.delete(&path).await?,
     };
+    // An idle machine moves to every interface at once; a busy one once its runs end.
+    let began = std::time::Instant::now();
+    while !remove && answer.machine.reach.is_none() && !answer.image && began.elapsed() < std::time::Duration::from_secs(30) {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        answer.machine = calcifer.get("/v1/machines/local").await?;
+    }
     let verb = if remove { "removed" } else { "authorized" };
     if ctx.json {
         output::json(&serde_json::json!({verb: key, "changed": answer.changed, "machine": answer.machine}));
