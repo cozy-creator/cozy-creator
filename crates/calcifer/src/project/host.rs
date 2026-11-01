@@ -266,18 +266,10 @@ impl Host {
     }
 
     /// cozy's ffmpeg and ffprobe: the pinned build `cozy` fetched, else PATH's.
-    pub fn ffmpeg(&self) -> Result<(PathBuf, PathBuf), Error> {
-        let tools = self.api.machines.hubs.home().tools();
-        let path: Vec<PathBuf> = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect();
-        let (found, ffprobe) = platform::tools::ffmpeg(&tools, &path).ok_or_else(|| {
-            Error::new(
-                Kind::Unavailable,
-                "ffmpeg_unavailable",
-                "the edit is cut with ffmpeg, which this computer lacks",
-            )
-            .next("cozy doctor")
-        })?;
-        Ok((found.path, ffprobe))
+    pub async fn ffmpeg(&self) -> Result<(PathBuf, PathBuf), Error> {
+        let home = self.api.machines.hubs.home();
+        let found = crate::tools::ffmpeg(home, &|line| tracing::info!("{line}")).await?;
+        Ok((found.ffmpeg, found.ffprobe))
     }
 }
 
