@@ -48,6 +48,7 @@ struct Cuda {
     d2d: D2D,
     read: unsafe extern "system" fn(*mut c_void, u64, usize) -> i32,
     set: unsafe extern "system" fn(u64, u8, usize) -> i32,
+    set_async: unsafe extern "system" fn(u64, u8, usize, Obj) -> i32,
     wait: unsafe extern "system" fn(Obj, u64, u32, u32) -> i32,
     write: unsafe extern "system" fn(Obj, u64, u32, u32) -> i32,
     uuid: String,
@@ -93,6 +94,7 @@ impl Cuda {
                 d2d: *library.get(b"cuMemcpyDtoDAsync_v2\0")?,
                 read: *library.get(b"cuMemcpyDtoH_v2\0")?,
                 set: *library.get(b"cuMemsetD8_v2\0")?,
+                set_async: *library.get(b"cuMemsetD8Async\0")?,
                 wait: *library.get(b"cuStreamWaitValue32\0")?,
                 write: *library.get(b"cuStreamWriteValue32\0")?,
                 uuid: encoded,
@@ -580,6 +582,172 @@ fn capture_refusal(cuda: Arc<Cuda>, device: i32) -> Result<Value> {
     drop(capture);
     Ok(json!({"refused":refused,"retry_abort":facts(ticket.facts()?),"final":stats(&arena)?}))
 }
+struct PendingScratch {
+    cuda: Arc<Cuda>,
+    device: i32,
+    pointer: Option<u64>,
+    stream: Option<u64>,
+    producer: Option<varena::ProducerGuard>,
+}
+// SAFETY: the fixed private stream is the only user of this native allocation. A real
+// stream query decides Pending; Complete follows checked stream destruction and memory
+// retirement and leaves all owning fields empty. Errors retain every remaining field.
+unsafe impl varena::FillResource for PendingScratch {
+    fn retire(&mut self) -> varena::Result<varena::FillRetirement> {
+        let Some(stream) = self.stream else {
+            return Ok(varena::FillRetirement::Complete);
+        };
+        let status = |operation, code| {
+            if code == 0 {
+                Ok(())
+            } else {
+                Err(varena::Error::Cuda { operation, code })
+            }
+        };
+        // SAFETY: this object owns the primary-context stream and allocation; its local
+        // producer lease excludes capture until this exact resource is checked complete.
+        unsafe {
+            status(
+                "scratch context enter",
+                (self.cuda.push)(self.cuda.context as Obj),
+            )?;
+            let queried = (self.cuda.stream_query)(stream as Obj);
+            let mut old = std::ptr::null_mut();
+            let popped = status("scratch context leave", (self.cuda.pop)(&mut old));
+            if queried == 600 {
+                popped?;
+                return Ok(varena::FillRetirement::Pending);
+            }
+            status("scratch stream query", queried)?;
+            popped?;
+            status(
+                "scratch context enter",
+                (self.cuda.push)(self.cuda.context as Obj),
+            )?;
+            let destroyed = status(
+                "scratch stream destroy",
+                (self.cuda.stream_destroy)(stream as Obj),
+            );
+            let popped = status("scratch context leave", (self.cuda.pop)(&mut old));
+            destroyed?;
+            self.stream = None;
+            popped?;
+            if let Some(pointer) = self.pointer {
+                working::free_completed(self.device, pointer)?;
+                self.pointer = None;
+            }
+        }
+        drop(self.producer.take());
+        Ok(varena::FillRetirement::Complete)
+    }
+}
+fn retirement_pending(cuda: Arc<Cuda>, device: i32) -> Result<Value> {
+    let arena = Arena::new(device)?;
+    let region = arena.reserve(BYTES)?;
+    let resources = Resources::new(Arc::clone(&cuda))?;
+    let dropped = Arc::clone(&resources.dropped);
+    let errors = Arc::clone(&resources.errors);
+    let control = cuda.stream()?;
+    let gate = working::alloc(device, 4, control, None)?;
+    let producer = varena::enter_producer(device)?;
+    let scratch_stream = cuda.stream()?;
+    let scratch = working::alloc(device, BYTES, scratch_stream, None)?;
+    // SAFETY: all addresses and streams are owned here. The private write really waits
+    // for a device gate; no synthetic busy/refusal or fabricated completion is supplied.
+    unsafe {
+        check("clear private gate", (cuda.set)(gate, 0, 4))?;
+        check(
+            "private wait",
+            (cuda.wait)(scratch_stream as Obj, gate, 1, 1),
+        )?;
+        check(
+            "private GPU work",
+            (cuda.set_async)(scratch, 91, BYTES, scratch_stream as Obj),
+        )?;
+    }
+    let pending = PendingScratch {
+        cuda: Arc::clone(&cuda),
+        device,
+        pointer: Some(scratch),
+        stream: Some(scratch_stream),
+        producer: Some(producer),
+    };
+    // SAFETY: fixed fill writers retain native resources; private scratch has its own
+    // actual consumer completion and producer exclusion through checked retirement.
+    let mut session = unsafe {
+        fill(&region)?.into_async(FillOwners::new(
+            resources.streams.clone(),
+            vec![
+                Box::new(pending),
+                Box::new(NativeResources(Some(Arc::clone(&resources)))),
+            ],
+        ))
+    };
+    let destination = session.begin()?;
+    // SAFETY: full disjoint halves are covered by the fixed producer streams; source
+    // resources stay owned by Session after the caller's Arc is dropped below.
+    unsafe {
+        check(
+            "pending case first half",
+            (cuda.copy)(
+                destination.ptr,
+                resources.host as *const c_void,
+                BYTES / 2,
+                resources.streams[0] as Obj,
+            ),
+        )?;
+        check(
+            "pending case second half",
+            (cuda.copy)(
+                destination.ptr + (BYTES / 2) as u64,
+                (resources.host + BYTES / 2) as *const c_void,
+                BYTES / 2,
+                resources.streams[1] as Obj,
+            ),
+        )?;
+    }
+    // SAFETY: these are the final writes; every logical byte was submitted above.
+    let ticket = unsafe { session.publish()? };
+    drop(session);
+    drop(resources);
+    until(|| {
+        Ok(ticket.facts()?.completed
+            && dropped.load(Ordering::SeqCst) == 1
+            && ticket.facts()?.resources_remaining == 1)
+    })?;
+    let pending_facts = ticket.facts()?;
+    require(
+        !pending_facts.retirement_finished && pending_facts.retirement_failure.is_none(),
+        "pending resource was treated as retired or failed",
+    )?;
+    require(
+        region.is_resident()? && working::stats(device)?.allocated_bytes >= BYTES + 4,
+        "pending private storage was freed",
+    )?;
+    require(
+        varena::enter_capture(device).is_err(),
+        "pending resource lost capture exclusion",
+    )?;
+    release_gate(&cuda, gate, control)?;
+    until(|| Ok(ticket.facts()?.retirement_finished))?;
+    require(
+        errors.load(Ordering::SeqCst) == 0,
+        "checked source retirement failed",
+    )?;
+    let pin = region.pin()?;
+    cuda.verify(pin.ptr())?;
+    // SAFETY: the only reader was the synchronous full readback, which completed.
+    unsafe {
+        drop(pin.into_completed_region());
+    }
+    arena.reclaim(BYTES)?;
+    finish_working(&cuda, device, &[gate], &[control])?;
+    Ok(
+        json!({"pending":facts(pending_facts),"retired":facts(ticket.facts()?),
+        "later_resource_retired_while_first_pending":true,"full_readback":true,"final":stats(&arena)?}),
+    )
+}
+
 fn abandoned(cuda: Arc<Cuda>, device: i32) -> Result<Value> {
     let arena = Arena::new(device)?;
     let region = arena.reserve(BYTES)?;
@@ -647,6 +815,7 @@ fn run() -> Result<Value> {
         "abort" => abort_fill(Arc::clone(&cuda), device)?,
         "capture" => capture_refusal(Arc::clone(&cuda), device)?,
         "abandoned" => abandoned(Arc::clone(&cuda), device)?,
+        "retirement_pending" => retirement_pending(Arc::clone(&cuda), device)?,
         _ => return Err("unknown mode".into()),
     };
     Ok(

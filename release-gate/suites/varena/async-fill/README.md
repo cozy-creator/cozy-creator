@@ -12,6 +12,7 @@ async_fill ordering GPU-... 0
 async_fill abort GPU-... 0
 async_fill capture GPU-... 0
 async_fill abandoned GPU-... 0
+async_fill retirement_pending GPU-... 0
 ```
 
 `ordering` keeps one of two actual producer streams behind a CUDA memory-value gate,
@@ -38,6 +39,14 @@ submission closure. Dropping that Session must quarantine its actual source reso
 backing even though the fixture privately synchronized its own producers. The full bytes
 remain readable and no resource destructor runs. This is intentional retention until child
 exit, not a cleanup pass or recovered-capacity claim.
+
+`retirement_pending` is the checked-contract successor's real resource test. A private
+native Working allocation has actual gated CUDA work after the fill producers complete.
+Its checked retirement returns Pending from cuStreamQuery, while the second source
+resource really retires. The ticket must report completed data, one remaining resource
+and unfinished retirement; the private bytes and capture exclusion remain owned. Opening
+the device gate permits checked stream destruction/Working retirement and final readback.
+No fabricated Busy flag or Python/GIL action supplies this result.
 
 Still separate/unexecuted gates: real driver failure during partial event recording, source
 worker-start refusal, inherited post-CUDA Session refusal, last-Arena retirement concurrent
