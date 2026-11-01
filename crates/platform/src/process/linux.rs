@@ -247,12 +247,34 @@ pub(super) fn in_kernel(pid: u32) -> Option<String> {
     Some(if wchan == "0" { String::new() } else { wchan })
 }
 
+pub(super) fn threads(pid: u32) -> Vec<(String, usize)> {
+    let mut seen = std::collections::BTreeMap::<String, usize>::new();
+    for task in fs::read_dir(format!("/proc/{pid}/task")).into_iter().flatten().flatten() {
+        let read = |name: &str| fs::read_to_string(task.path().join(name)).unwrap_or_default();
+        let comm = read("comm").trim().to_string();
+        let state = read("stat").rsplit_once(") ").and_then(|(_, rest)| rest.chars().next()).unwrap_or('?');
+        let wchan = read("wchan");
+        let wchan = if wchan.is_empty() || wchan == "0" { "-".to_string() } else { wchan };
+        // Pool threads differ only by their number: one line for them all.
+        let name = comm.trim_end_matches(|c: char| c.is_ascii_digit() || c == '_').to_string();
+        *seen.entry(format!("{name} {state} {wchan}")).or_default() += 1;
+    }
+    seen.into_iter().collect()
+}
+
 pub(super) fn usage(pid: u32) -> io::Result<super::Usage> {
     let stat = stat(pid)?;
-    Ok(super::Usage {
-        cpu: stat.cpu,
-        running: matches!(stat.state, 'R' | 'D'),
-    })
+    // Any thread of it: the leader can sit in a read while another works (an executor's idle
+    // thread reading pages from the store).
+    let thread = |tid: &str| {
+        let record = fs::read_to_string(format!("/proc/{pid}/task/{tid}/stat")).ok()?;
+        record.rsplit_once(") ").and_then(|(_, rest)| rest.chars().next())
+    };
+    let running = matches!(stat.state, 'R' | 'D')
+        || fs::read_dir(format!("/proc/{pid}/task"))?.filter_map(Result::ok).any(|entry| {
+            entry.file_name().to_str().and_then(thread).is_some_and(|state| matches!(state, 'R' | 'D'))
+        });
+    Ok(super::Usage { cpu: stat.cpu, running })
 }
 
 /// `VmHWM`, this image's own peak: `ru_maxrss` keeps the peak of the image this process exec'd

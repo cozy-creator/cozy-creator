@@ -1,7 +1,8 @@
 # Suite `h3`: minimax-h3's shot and upscale at their edges, from the package users get (or its --pins release).
 # - Regenerate-2K (`upscale.model: regenerate-2k`) at 1080p, 1440p and 2160p, each against the 768p shot it starts from: its
-#   layout at 112x64 (frames.py), since regenerated texture rightly differs.
-# - SeedVR2, the default model, at 2160p on the same shot.
+#   layout at 112x64 (frames.py), since regenerated texture rightly differs, and that it moves as the original does (no
+#   flicker: a refine window off the latent chunk grid flickers at every chunk, run 22567).
+# - SeedVR2, the default model, at 2160p on the same shot, its lane the one an empty card gives.
 # - A plate (a synthetic, people-free test pattern) as long as the shot, shorter, longer, at 30 fps and at 9:16: the
 #   output must follow it frame by frame.
 # - First and last keyframes: the shot opens and ends on them without a cut.
@@ -34,11 +35,18 @@ for r in 1080 1440 2160; do
   cell "regen-${r}p" "$UP" --file video="$(video_of regen-768p)" resolution=${r}p prompt="$P" seed:=$((R + 70)) \
     'upscale:={"model": "regenerate-2k"}'
   av "regen-${r}p" $r
-  judge "regen-${r}p-frames" "regen-${r}p" ".structure_psnr >= 18 and .structure_ssim >= 0.5 and .lag_ms != null and (.lag_ms | $ABS) <= 10 and .corr >= 0.95" \
+  judge "regen-${r}p-frames" "regen-${r}p" ".structure_psnr >= 18 and .structure_ssim >= 0.5 and .flicker <= 2 and .lag_ms != null and (.lag_ms | $ABS) <= 10 and .corr >= 0.95" \
     regen "$(video_of regen-768p)"
 done
 cell seedvr2-2160p "$UP" --file video="$(video_of regen-768p)" resolution=2160p seed:=$((R + 71))
 av seedvr2-2160p 2160
+# After the shot and Regenerate-2K, SeedVR2's lane is the one it gets on an empty card: the idle models leave for its
+# call, so it never resolves for the free bytes beside them (pawoo 22998, TensorD 0.14.3: "no lane ... fits 0.3 GiB
+# free ... streaming the rest" on a 24 GB card it then had to itself; holds from #2319's TensorD).
+if [ -f seedvr2-2160p.number ]; then
+  w=$(grep -o 'no lane of [^"]*' "$OUT/seedvr2-2160p.ndjson" 2>/dev/null | head -1)
+  expect seedvr2-lane "$([ -z "$w" ] && echo PASS || echo FAIL)" "${w:-resolved for the card, nothing streamed}"
+fi
 if [[ $ONLY == *",regen-2160p-15s,"* ]]; then
   P15="$SCENE at night, rain on the windows, a neon sign reads CAFE, rain and footsteps"
   SAVED=$ONLY; ONLY="$ONLY,regen-768p-15s,"
@@ -47,7 +55,7 @@ if [[ $ONLY == *",regen-2160p-15s,"* ]]; then
   cell regen-2160p-15s "$UP" --file video="$(video_of regen-768p-15s)" resolution=2160p prompt="$P15" seed:=$((R + 72)) \
     'upscale:={"model": "regenerate-2k"}'
   av regen-2160p-15s 2160
-  judge regen-2160p-15s-frames regen-2160p-15s ".structure_psnr >= 18 and .structure_ssim >= 0.5 and (.lag_ms | $ABS) <= 10 and .corr >= 0.95" \
+  judge regen-2160p-15s-frames regen-2160p-15s ".structure_psnr >= 18 and .structure_ssim >= 0.5 and .flicker <= 2 and (.lag_ms | $ABS) <= 10 and .corr >= 0.95" \
     regen "$(video_of regen-768p-15s)"
 fi
 
@@ -102,8 +110,15 @@ judge h3-checkpoint-frames h3-checkpoint '.contrast >= 0.5 * .control_contrast a
 cell h3-lora "$SHOT" prompt="$VP" seed:=$((R + 80)) duration_s:=5 --lora "$LORA,0.8"
 judge h3-lora-frames h3-lora '.contrast >= 0.5 * .control_contrast and .coherence >= 0.6 and .ssim < 0.9' variant "$(video_of h3-base)"
 cell h3-lora-20s "$SHOT" prompt="$VP" seed:=$((R + 81)) duration_s:=20 beats:="[{\"at\": 0, \"prompt\": \"They walk toward the camera.\"}, {\"at\": 10, \"prompt\": \"They turn and look back over one shoulder.\"}]" --lora "$LORA,0.8"
-judge h3-lora-20s-frames h3-lora-20s '.contrast >= 0.5 * .control_contrast and .seam >= 0.5 and .ssim_first < 0.9 and .ssim_second < 0.9' \
+judge h3-lora-20s-frames h3-lora-20s '.contrast >= 0.5 * .control_contrast and .ssim_first < 0.9 and .ssim_second < 0.9' \
   variant "$(video_of h3-base-20s)"
+# The seam is judged at the piece boundary (its record's `boundaries_s`), as h3-shot-40s judges its own: a camera move at
+# a beat inside a piece is content (0.2.1 and 0.2.2 make the same jump at the 10 s beat from one seed, runs 24512/24340).
+if [ -f h3-lora-20s.number ] && [ "$(run_get "$OUT" h3-lora-20s .status)" = completed ]; then
+  b=$("$CLI" run show "$(cat h3-lora-20s.number)" --once 2>/dev/null | grep -o 'boundaries_s=[0-9.,]*' | head -1 | cut -d= -f2)
+  r=$([ -n "$b" ] && "${FR[@]}" seams "$(video_of h3-lora-20s)" --at "$b" 2>&1 | tail -1)
+  expect h3-lora-20s-seams "$(jq -r 'if (.boundaries | length) >= 1 and ((([0.6, 0.9 * (.inside_ssim // 1)] | min) as $bar | [.boundaries[] | .ratio <= 3 and .ssim >= $bar] | all)) then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" "boundaries ${b:-unread}: $r"
+fi
 # named <check> <cell> <min calls>: the run record names the LoRA (a model adapter) in at least that many of its
 # generate or piece calls (0.2.x's shot runs one call per piece).
 named() {
@@ -125,10 +140,37 @@ if [ -f h3-lease-next.number ]; then
   expect h3-lease "$([ "$s" = completed ] && [ "${w:-0}" = 0 ] && echo PASS || echo FAIL)" "next call $s, ${w:-0} waits behind another run"
 fi
 
+# A reference shot, then at once a text-only one, three times (cl-697). After H3 the host rule finds the host short as
+# the next call starts and ends the idle executor (memory log `end_idle`, then `host_short ended gpu`) while that call's
+# GPU child is placed: on 0.15.0 the child waited behind nothing until cancelled (jitae 23697 and 23759, 2 of 3 such
+# transitions). Each executor the host rule ends during a text-only call must be followed by a placement within 30 s;
+# the verdict counts how many transitions did that. An SDXL pod cannot stand in: its calls' host growth never reaches
+# the host rule, so no squeeze makes it end an idle executor.
+SWITCH=("carves a long turn across an empty plaza at dusk, wheels on concrete" "rolls down a ramp into a sunlit car park"
+  "glides past shuttered shops under a light rain")
+for i in 1 2 3; do
+  cell "h3-switch-ref-$i" "$SHOT" assets:="[{\"name\": \"Skater\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
+    prompt="<Skater> ${SWITCH[$((i - 1))]}" seed:=$((R + 100 + i)) duration_s:=5
+  cell "h3-switch-text-$i" "$SHOT" prompt="$SCENE, take $i, slow push-in, ambient sound" seed:=$((R + 110 + i)) duration_s:=5
+done
+if [ -f h3-switch-text-1.number ]; then
+  "$CLI" machine logs "$M" memory -n 0 > h3-switch.memory.log 2>&1
+  calls=$(for i in 1 2 3; do [ -f "h3-switch-text-$i.number" ] && jq -r '"\(.status) \((.accepted_at_ms // 0) / 1000) \((.settled_at_ms // .finished_at_ms // 0) / 1000)"' "$OUT/h3-switch-text-$i.json"; done | paste -sd';')
+  r=$(awk -v calls="$calls" '
+    BEGIN { n = split(calls, c, ";"); for (i = 1; i <= n; i++) { split(c[i], f, " "); if (f[1] != "completed") bad++; a[i] = f[2]; s[i] = f[3] } }
+    /"event":"end_idle"/ { e = $1 }
+    /"event":"host_short"/ && /"ended":"gpu"/ && e && $1 - e < 10 { for (i = 1; i <= n; i++) if ($1 >= a[i] - 2 && $1 <= s[i]) { t[++k] = $1; break } }
+    /"event":"place"/ { for (j = 1; j <= k; j++) if (!p[j] && $1 >= t[j]) p[j] = $1 }
+    END { for (j = 1; j <= k; j++) { d = p[j] ? p[j] - t[j] : 999; if (d > 30) late++; if (d > w) w = d }
+      printf "%d not completed, %d host_short-ended transitions, %d placed later than 30 s (worst %.1f s)", bad, k, late, w }' h3-switch.memory.log)
+  expect h3-switch "$(grep -q '^0 not completed, [0-9]* host_short-ended transitions, 0 placed' <<< "$r" && echo PASS || echo FAIL)" "$r"
+fi
+
 # The long shot projects depend on (xs-136; it replaces the RC's h3-shot, folding in its length and A/V checks): 40 s in three pieces (beats at 0/13/27), one character picture, Turbo. Its timing
 # is recorded: per piece, s/step, the whole-shot decode, render seconds per output second (baseline run 22816, 0.2.1 on
 # Runtime 0.36.7: 1406.6 s, 35.2 s per output second). Each piece boundary (its record's `boundaries_s`) is judged with
-# frames.py seams: the change there under 3x the shot's median (the flicker rule of #2322), consecutive SSIM >= 0.6.
+# frames.py seams: the change there under 3x the shot's median (the flicker rule of #2322), and its consecutive SSIM no
+# lower than 0.9x the shot's own away from the boundaries (or 0.6): a fast shot is unalike frame to frame everywhere.
 B40='[{"at": 0, "prompt": "<Rider> rolls out of a garage onto a wet street at dawn."}, {"at": 13, "prompt": "<Rider> weaves through a quiet market as stalls open."}, {"at": 27, "prompt": "<Rider> stops on a bridge and looks out over the river."}]'
 cell h3-shot-40s "$SHOT" assets:="[{\"name\": \"Rider\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
   prompt="<Rider> rides a bicycle through an old town, one continuous tracking shot, ambient sound" duration_s:=40 beats:="$B40" seed:=$((R + 95))
@@ -142,5 +184,5 @@ if [ -f h3-shot-40s.number ] && [ "$(run_get "$OUT" h3-shot-40s .status)" = comp
     pieces denoise \([$p[].d | floor]) s, s/step \([$p[] | select(.s | length > 0) | (.s | add) / (.s | length) | . * 10 | floor / 10]), decode_video \([$p[].v | floor]) s"' "$OUT/h3-shot-40s.json" | tr -s ' \n' ' ')"
   b=$("$CLI" run show "$(cat h3-shot-40s.number)" --once 2>/dev/null | grep -o 'boundaries_s=[0-9.,]*' | head -1 | cut -d= -f2)
   r=$([ -n "$b" ] && "${FR[@]}" seams "$(video_of h3-shot-40s)" --at "$b" 2>&1 | tail -1)
-  expect h3-shot-40s-seams "$(jq -r 'if (.boundaries | length) >= 2 and ([.boundaries[] | .ratio <= 3 and .ssim >= 0.6] | all) then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" "boundaries ${b:-unread}: $r"
+  expect h3-shot-40s-seams "$(jq -r 'if (.boundaries | length) >= 2 and ((([0.6, 0.9 * (.inside_ssim // 1)] | min) as $bar | [.boundaries[] | .ratio <= 3 and .ssim >= $bar] | all)) then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" "boundaries ${b:-unread}: $r"
 fi
