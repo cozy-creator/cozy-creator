@@ -1,12 +1,12 @@
-# Suite `project` (xs-139): `cozy render` on fixture projects, the walk in this computer's Calcifer (the candidate cozy),
-# the runs on $M. Each cell is a project folder under $OUT, judged from its project.lock and files:
+# Suite `project` (xs-139, cl-716): `cozy project render` on fixture projects, the walk in this computer's Calcifer (the
+# candidate cozy), the runs on $M. Each cell is a project folder under $OUT, judged from its project.lock and assets:
 # - project-split: a 10 s shot whose write at 5 s a later beat reads: two calls, the second continuing the first
 #   (`continue_from`, the first's latents), the written frame kept, the join smooth; project-upscale: its upscale from
 #   those latents, at 1080p and the shot's aspect, and edit.mp4 at the 1920x1080 canvas.
 # - project-plate: a shot with `plate:` follows it frame by frame (guide-equal's bar).
 # - project-voice: a character with `voice:` speaks; the voice goes with the request and the video has sound.
 # - project-stills: a place and its setup at the canvas aspect, at 16:9 and again at 9:16; a character cleaned.
-# - project-local: a node rendered `with: ./still.py/draw`, local code made ready by `cozy render`.
+# - project-local: a node rendered `with: ./still.py/draw`, local code made ready by Calcifer.
 # - project-refusals: a plate to a function that takes none, and an option that sets the canvas, refused before any run.
 FR=(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/frames.py")
 # A checkout's ./pkg/fn names the gate's folder; a project reads `with:` from its own.
@@ -20,11 +20,13 @@ project() {
   nice -n 19 ffmpeg -v error -y -i "${K:-$REF}" "$P/hero.png"; nice -n 19 ffmpeg -v error -y -i "$REF" "$P/place.png"
   echo "$P"
 }
-render() { local c=$1 P=$2; shift 2; "$CLI" render "$@" --project "$P" --on "$M" > "$c.log" 2>&1; }
+render() { local c=$1 P=$2; shift 2; "$CLI" project -p "$P" render "$@" --on "$M" > "$c.log" 2>&1; }
 # lockq <folder> <python expression of lock>
 lockq() { python3 -c "import json, sys; lock = json.load(open(sys.argv[1] + '/project.lock')); print($2)" "$1" 2>/dev/null; }
-# approved <folder> <node>: the approved version's record, as JSON.
-approved() { lockq "$1" "json.dumps(next((v for v in lock['nodes'].get('$2', {}).get('versions', []) if v['file'] == lock['nodes']['$2'].get('approved')), {}))"; }
+# approved <folder> <node>: the approved take's or version's record, as JSON; its primary asset (`.assets.video` or
+# `.assets.image`) is the one project.lock approves.
+approved() { lockq "$1" "json.dumps(next((v for v in lock['nodes'].get('$2', {}).get('versions', []) if (v['assets'].get('video') or v['assets'].get('image')) == lock['nodes']['$2'].get('approved')), {}))"; }
+PRIMARY='.assets.video // .assets.image // empty' 
 aspect() { ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$1" | awk -F, '{ printf "%.4f", $1 / $2 }'; }
 near() { awk -v a="$1" -v b="$2" 'BEGIN { d = a / b - 1; print (d < 0 ? -d : d) <= 0.03 ? "PASS" : "FAIL" }'; }
 SEAMBAR='if (.boundaries | length) >= 1 and ((([0.6, 0.9 * (.inside_ssim // 1)] | min) as $bar | [.boundaries[] | .ratio <= 3 and .ssim >= $bar] | all)) then "PASS" else "FAIL" end'
@@ -54,24 +56,24 @@ YAML
 )
   render project-split "$P" all --preview || expect project-split FAIL "render all --preview: $(tail -c 300 project-split.log)"
   v=$(approved "$P" mural)
-  f=$(jq -r '.file // empty' <<< "$v")
+  f=$(jq -r "$PRIMARY" <<< "$v")
   if [ -z "$f" ]; then expect project-split FAIL "no version of mural: $(tail -c 300 project-split.log)"
   else
-    calls=$(jq -r '(.runs // []) + [.run] | map(tostring) | join(" ")' <<< "$v")
-    expect project-split "$(jq -r 'if (.runs | length) >= 1 and .latents != null and .outputs.wall != null then "PASS" else "FAIL" end' <<< "$v")" \
-      "runs $calls, latents $(jq -r '.latents // "none"' <<< "$v"), wall $(jq -r '.outputs.wall // "none"' <<< "$v"), made by $(jq -r '.made_by.with' <<< "$v")"
+    calls=$(jq -r '.runs // [] | map(tostring) | join(" ")' <<< "$v")
+    expect project-split "$(jq -r 'if (.runs | length) >= 2 and .assets.latents != null and .writes.wall != null then "PASS" else "FAIL" end' <<< "$v")" \
+      "runs $calls, latents $(jq -r '.assets.latents // "none"' <<< "$v"), wall $(jq -r '.writes.wall // "none"' <<< "$v"), made by $(jq -r '.made_by.with' <<< "$v")"
     r=$("${FR[@]}" seams "$P/$f" --at 5 2>&1 | tail -1)
     expect project-split-seam "$(jq -r "$SEAMBAR" <<< "$r" 2>/dev/null || echo FAIL)" "join at 5 s: $r"
   fi
   if want project-upscale && [ -n "$f" ]; then
     render project-upscale "$P" mural.upscale || expect project-upscale FAIL "render mural.upscale: $(tail -c 300 project-upscale.log)"
-    u=$(jq -r '.file // empty' <<< "$(approved "$P" mural.upscale)")
+    u=$(jq -r "$PRIMARY" <<< "$(approved "$P" mural.upscale)")
     if [ -z "$u" ]; then expect project-upscale FAIL "no upscale: $(tail -c 300 project-upscale.log)"
     else
       h=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$P/$u")
       expect project-upscale "$([ "$h" = 1080 ] && [ "$(near "$(aspect "$P/$u")" "$(aspect "$P/$f")")" = PASS ] && echo PASS || echo FAIL)" \
         "upscale $(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$P/$u"), shot $(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$P/$f")"
-      grep -q 'latents' project-upscale.log || "$CLI" run show "$(lockq "$P" "next(v for v in lock['nodes']['mural.upscale']['versions'])['run']")" --once 2>/dev/null | grep -q latents \
+      grep -q 'latents' project-upscale.log || "$CLI" run show "$(lockq "$P" "next(v for v in lock['nodes']['mural.upscale']['versions'])['runs'][-1]")" --once 2>/dev/null | grep -q latents \
         || expect project-upscale-latents FAIL "the upscale was not sent the shot's latents"
       render project-edit "$P" all
       e=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$P/edit.mp4" 2>/dev/null)
@@ -95,7 +97,7 @@ YAML
   nice -n 19 ffmpeg -v error -y -f lavfi -i testsrc2=size=1344x768:rate=24:duration=5 -c:v libx264 -pix_fmt yuv420p "$P/plate.mp4"
   nice -n 19 ffmpeg -v error -y -i "$P/plate.mp4" -frames:v 1 "$P/plate.png"
   render project-plate "$P" follow
-  f=$(jq -r '.file // empty' <<< "$(approved "$P" follow)")
+  f=$(jq -r "$PRIMARY" <<< "$(approved "$P" follow)")
   r=$([ -n "$f" ] && "${FR[@]}" guide "$P/plate.mp4" "$P/$f" 2>&1 | tail -1)
   expect project-plate "$(jq -r 'if .within_1 >= 0.8 then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" \
     "${r:-no version: $(tail -c 300 project-plate.log)}"
@@ -115,16 +117,16 @@ shots:
 YAML
 )
   # The voice: 4 s of the split shot's soundtrack (its "Done."), else of the gate's H3 clip, else a tone.
-  src=$(ls "$OUT"/project-split/files/*.mp4 2>/dev/null | head -1); src=${src:-$CLIP}
+  src=$(ls "$OUT"/project-split/assets/*.mp4 2>/dev/null | head -1); src=${src:-$CLIP}
   if [ -n "$src" ]; then nice -n 19 ffmpeg -v error -y -ss 5 -i "$src" -t 4 -vn -ac 1 -ar 24000 "$P/voice.wav"
   else nice -n 19 ffmpeg -v error -y -f lavfi -i sine=frequency=220:duration=4 -ac 1 -ar 24000 "$P/voice.wav"; fi
   render project-voice "$P" hello
-  v=$(approved "$P" hello); f=$(jq -r '.file // empty' <<< "$v")
+  v=$(approved "$P" hello); f=$(jq -r "$PRIMARY" <<< "$v")
   # Sent: a piece's logged references name the character's voice (H3 attaches it as "<name>'s voice").
-  sent=$([ -n "$f" ] && "$CLI" run show "$(jq -r .run <<< "$v")" --once 2>/dev/null | grep -o "references=\"[^\"]*host's voice[^\"]*\"" | head -1)
+  sent=$([ -n "$f" ] && "$CLI" run show "$(jq -r '.runs[-1]' <<< "$v")" --once 2>/dev/null | grep -o "references=\"[^\"]*host's voice[^\"]*\"" | head -1)
   a=$([ -n "$f" ] && ffprobe -v error -select_streams a:0 -show_entries stream=duration -of csv=p=0 "$P/$f")
   expect project-voice "$([ -n "$sent" ] && [ -n "$a" ] && echo PASS || echo FAIL)" \
-    "voice ${sent:-not sent}, sound ${a:-none} s${f:+ (run $(jq -r .run <<< "$v"))}"
+    "voice ${sent:-not sent}, sound ${a:-none} s${f:+ (run $(jq -r '.runs[-1]' <<< "$v"))}"
 fi
 
 if want project-stills; then
@@ -143,14 +145,14 @@ YAML
 )
   render project-stills "$P" all
   for n in kitchen kitchen.a; do
-    f=$(jq -r '.file // empty' <<< "$(approved "$P" $n)")
+    f=$(jq -r "$PRIMARY" <<< "$(approved "$P" $n)")
     expect "project-stills-$n" "$([ -n "$f" ] && near "$(aspect "$P/$f")" 1.7778 || echo FAIL)" "${f:+aspect $(aspect "$P/$f")} want 16:9"
   done
   expect project-stills-clean "$(lockq "$P" "'PASS' if any(v.get('cleaned') for v in lock['nodes']['cook']['versions']) else 'FAIL'" || echo FAIL)" \
     "cook's picture cleaned before use"
   sed -i 's/aspect_ratio: "16:9"/aspect_ratio: "9:16"/' "$P/project.yaml"
   render project-stills-916 "$P" kitchen
-  f=$(lockq "$P" "lock['nodes']['kitchen']['versions'][-1]['file']")
+  f=$(lockq "$P" "lock['nodes']['kitchen']['versions'][-1]['assets']['image']")
   expect project-stills-916 "$([ -n "$f" ] && near "$(aspect "$P/$f")" 0.5625 || echo FAIL)" "${f:+aspect $(aspect "$P/$f")} want 9:16"
 fi
 
@@ -164,7 +166,7 @@ YAML
 )
   cp "$HERE/suites/project/still.py" "$P/still.py"
   render project-local "$P" lot
-  v=$(approved "$P" lot); f=$(jq -r '.file // empty' <<< "$v")
+  v=$(approved "$P" lot); f=$(jq -r "$PRIMARY" <<< "$v")
   expect project-local "$([ -n "$f" ] && [[ $(jq -r .made_by.with <<< "$v") == local/still/draw@* ]] && [ "$(near "$(aspect "$P/$f")" 1.7778)" = PASS ] && echo PASS || echo FAIL)" \
     "made by $(jq -r '.made_by.with // "nothing"' <<< "$v")${f:+, aspect $(aspect "$P/$f")}: $(tail -c 200 project-local.log)"
 fi

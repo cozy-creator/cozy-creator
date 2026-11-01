@@ -1,14 +1,16 @@
-//! Calcifer's project API (xs-136, xs-139): a project folder opened by its path, its nodes as they stand,
-//! the runs that make their versions, and what happens as they go. The CLI's `cozy project` verbs
-//! and the web UI are its clients.
-use std::path::PathBuf;
+//! Calcifer's project API (xs-136, xs-139, cl-716): the projects this computer knows, a project
+//! folder opened by its path, its nodes as they stand and their versions (a shot's are takes), the
+//! runs that make them, what happens as they go, and its assets and cuts. The CLI's `cozy project`
+//! verbs are one client of it.
+use std::{collections::BTreeMap, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::{calcifer::On, error::Error};
 
-/// `POST /v1/projects`: the project in `path`, made first when `create`. The same path is always
-/// the same project.
+/// `POST /v1/projects`: the project holding `path` (the nearest folder up from it with a
+/// project.yaml), or with `create` a new one made at `path`. The same folder is always the same
+/// project, and opening it records it in the index.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Open {
     pub path: PathBuf,
@@ -22,23 +24,62 @@ pub struct Opened {
     pub path: PathBuf,
 }
 
+/// `GET /v1/projects`: the projects this computer's Calcifer has opened, last used first.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Projects {
+    pub projects: Vec<Known>,
+    /// How many more are older than this page.
+    #[serde(default)]
+    pub older: u64,
+}
+
+/// One project in the index.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Known {
+    pub id: String,
+    /// Its folder's name.
+    pub name: String,
+    pub path: PathBuf,
+    pub used_at_ms: i64,
+    /// Its folder holds no project.yaml any more (moved or deleted); `DELETE` forgets it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub missing: bool,
+    /// Its runs are being made, or asked and not yet sent.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub busy: bool,
+}
+
 /// `GET /v1/projects/{id}`: its nodes in order, and what reading the project said.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct State {
     pub id: String,
     pub path: PathBuf,
     pub nodes: Vec<Node>,
+    /// Nodes with nothing made yet that the project needs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing: Vec<String>,
+    /// Nodes out of date, and why.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stale: Vec<Stale>,
     /// Whether its walk is going: runs being made, or asked and not yet sent.
     pub busy: bool,
-    pub edit: Edit,
+    /// The cuts it makes: `edit.mp4`, and `preview.mp4` when it has a `resolution:`.
+    pub cuts: Vec<Cut>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
 }
 
-/// The edit, cut here: where it is, when it was last cut (None: not yet), and the shots it cuts that
-/// have no version yet, which it skips.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Edit {
+pub struct Stale {
+    pub name: String,
+    pub why: String,
+}
+
+/// A cut, made here: its name (`GET /v1/projects/{id}/cuts/{cut}`), its file, when it was last cut
+/// (None: not yet), and the shots it cuts that have nothing made yet, which it skips.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Cut {
+    pub cut: String,
     pub path: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cut_at_ms: Option<i64>,
@@ -52,22 +93,49 @@ pub struct Edit {
 pub struct Node {
     pub name: String,
     pub kind: String,
+    /// What its alternatives are called: `take` (a shot's, and its upscale's) or `version`.
+    pub noun: String,
+    /// How many it has.
     pub versions: u32,
-    /// The file it reads as now, relative to the project.
+    /// Which is approved, 1 first; None when it reads a file attached by hand, or has none yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub file: Option<String>,
-    /// Which version is approved, 1 first; None for a file attached by hand, or none yet.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub chosen: Option<u32>,
-    /// The function that made that version, `org/package/function@release`.
+    pub approved: Option<u32>,
+    /// What it reads as now, by output name (`video`, `image`, `latents`), relative to the project:
+    /// the approved one's assets (`assets/…`, `GET /v1/projects/{id}/assets/{asset}`), else the
+    /// file attached in project.yaml.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub assets: BTreeMap<String, String>,
+    /// The function that made the approved one, `org/package/function@release`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub made_by: Option<String>,
-    /// For people: current, no version yet, out of date and why, making (run N), …
+    /// For people, in its own noun: current, no take yet, out of date and why, making (run N), …
     pub status: String,
 }
 
+/// `GET /v1/projects/{id}/nodes/{name}`: a node and each of its versions, 1 first.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NodeVersions {
+    pub node: Node,
+    pub versions: Vec<Version>,
+}
+
+/// One version (a take, for a shot or its upscale).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Version {
+    pub number: u32,
+    /// By output name, `assets/<sha256>.<ext>`.
+    pub assets: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub made_by: Option<String>,
+    /// The runs that made it, in order (a shot in consecutive calls has one per call).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runs: Vec<u64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub approved: bool,
+}
+
 /// `POST /v1/projects/{id}/runs`: `n` new versions of each of `names`, or with `all` every node
-/// brought up to date, each new version approved, then the edit cut. It joins the project's walk,
+/// brought up to date, each new version approved, then the cuts. It joins the project's walk,
 /// which sends each version once what it reads is settled; `on` lists the machines they may go to.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Runs {
@@ -81,6 +149,9 @@ pub struct Runs {
     /// With `all`: no upscales, and only the native cut (`preview.mp4`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub preview: bool,
+    /// The new version is approved when it lands; only with `n` 1.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub approve: bool,
 }
 
 fn one() -> u32 {
@@ -96,7 +167,10 @@ pub struct Approve {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Approved {
-    pub file: String,
+    pub name: String,
+    pub noun: String,
+    pub number: u32,
+    pub assets: BTreeMap<String, String>,
     /// What this put out of date.
     pub stale: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -113,10 +187,12 @@ pub enum Event {
         run: String,
         number: u64,
     },
-    /// `file` became one of `name`'s versions.
+    /// `name`'s version `number` (its `noun`) was made: its assets.
     Landed {
         name: String,
-        file: String,
+        noun: String,
+        number: u32,
+        assets: BTreeMap<String, String>,
     },
     Said {
         message: String,
@@ -124,9 +200,9 @@ pub enum Event {
     Warning {
         message: String,
     },
-    /// The edit, cut here.
+    /// A cut (`edit.mp4`, `preview.mp4`) was made again here.
     Cut {
-        path: PathBuf,
+        cut: String,
         seconds: f64,
     },
     /// The walk is over: nothing it was asked is left to send or follow; `error` is the first thing
