@@ -78,17 +78,20 @@ restarts a Calcifer that is stuck or runs an older cozy.
 
 A video project is a folder:
 - `project.yaml`: yours. cozy writes it only at `new`.
-- `references/` (pictures, voices and videos that guide) and `plates/` (footage to edit): your own files,
-  which cozy never copies or changes. Paths in `project.yaml` are relative to the folder.
-- `assets/`: everything cozy makes, kept by content in `assets/.store/`, and linked by name for you: one folder
-  per node, `fight/fight_take002.mp4` (a shot's takes), `theo/theo_v001.png` and `theo_v001_clean.png` (other
-  nodes' versions), and `fight/fight_approved.mp4`, which follows approval. Deleting the links loses nothing:
-  cozy makes them again after every render and approval.
-- `project.lock`: cozy's record of each node's takes or versions, what made each, and which is approved.
+- `references/`: your pictures, voices and videos that guide, and the versions cozy makes of characters,
+  props, places and world states, one folder per node (`references/theo/theo_v001.png`, `theo_v001_clean.png`).
+- `plates/`: your footage to edit.
+- `renders/`: the takes cozy makes of shots and upscales (`renders/fight/fight_take002.mp4`,
+  `fight_take002.latents`).
+- `project.lock`: cozy's record of each node's takes or versions, what made each (and each file's sha256), and
+  which is approved. No file says which is approved.
+
+Paths in `project.yaml` are relative to the folder. cozy never copies or changes your files: it writes and
+removes only the `<node>_take###` and `<node>_v###` files it made, and refuses to overwrite one of yours.
 - `edit.mp4`: the film, cut on this computer as shots land.
 
 A shot's alternatives (and its upscale's) are takes; every other node's are versions. Each one is a set
-of assets: a shot's take is its video and latents. `cozy project new garden` makes the folder with a
+of assets, numbered from 1 and never renumbered: a shot's take is its video and latents. `cozy project new garden` makes the folder with a
 commented `project.yaml`; fill it in:
 
 ```yaml

@@ -141,6 +141,21 @@ pub fn login_home() -> Option<PathBuf> {
     login::home()
 }
 
+/// cozy's cache for this OS user, where the platform keeps regenerable files (never `/tmp`, which
+/// is RAM on many systems and emptied at boot): `$XDG_CACHE_HOME/cozy` (default `~/.cache/cozy`)
+/// on Linux, `~/Library/Caches/cozy` on macOS, `%LOCALAPPDATA%\\cozy\\cache` on Windows. What is in
+/// it is cozy's to prune, and the OS may clear it.
+pub fn cache() -> Option<PathBuf> {
+    let absolute = |name: &str| std::env::var_os(name).map(PathBuf::from).filter(|path| path.is_absolute());
+    if cfg!(windows) {
+        return absolute("LOCALAPPDATA").map(|dir| dir.join("cozy").join("cache"));
+    }
+    if cfg!(target_os = "macos") {
+        return login_home().map(|home| home.join("Library").join("Caches").join("cozy"));
+    }
+    absolute("XDG_CACHE_HOME").or_else(|| Some(login_home()?.join(".cache"))).map(|dir| dir.join("cozy"))
+}
+
 /// Whether `user_home` is this OS user's own home.
 pub fn is_login_home(user_home: &Path) -> bool {
     let canonical =

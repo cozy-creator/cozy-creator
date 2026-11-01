@@ -97,12 +97,13 @@ pub struct Node {
     pub noun: String,
     /// How many it has.
     pub versions: u32,
-    /// Which is approved, 1 first; None when it reads a file attached by hand, or has none yet.
+    /// The approved one's number (1 first, never reused); None when it reads a file attached by
+    /// hand, or has none yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved: Option<u32>,
-    /// What it reads as now, by output name (`video`, `image`, `latents`), relative to the project:
-    /// the approved one's assets (`assets/.store/<asset>`, `GET /v1/projects/{id}/assets/{asset}`),
-    /// else the file attached in project.yaml.
+    /// What it reads as now, by output name (`video`, `image`, `latents`), each a path in the project
+    /// (`GET /v1/projects/{id}/assets/{path}`): the approved one's assets, else the file attached in
+    /// project.yaml.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub assets: BTreeMap<String, String>,
     /// The function that made the approved one, `org/package/function@release`.
@@ -123,7 +124,7 @@ pub struct NodeVersions {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Version {
     pub number: u32,
-    /// By output name, `assets/.store/<sha256>.<ext>`.
+    /// By output name, each one's path in the project (`renders/fight/fight_take002.mp4`).
     pub assets: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub made_by: Option<String>,
@@ -171,8 +172,8 @@ pub struct Approved {
     pub noun: String,
     pub number: u32,
     pub assets: BTreeMap<String, String>,
-    /// The link to it people open: `assets/<node>/<node>_approved.<ext>`.
-    pub link: String,
+    /// Its primary asset: the file the node reads as now.
+    pub path: String,
     /// What this put out of date.
     pub stale: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -189,15 +190,14 @@ pub enum Event {
         run: String,
         number: u64,
     },
-    /// `name`'s version `number` (its `noun`) was made: its assets, and the link to it people open
-    /// (`assets/<node>/<node>_take###.<ext>`).
+    /// `name`'s version `number` (its `noun`) was made: its assets, and its primary one's path
+    /// (`renders/fight/fight_take002.mp4`).
     Landed {
         name: String,
         noun: String,
         number: u32,
         assets: BTreeMap<String, String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        link: Option<String>,
+        path: String,
     },
     Said {
         message: String,
