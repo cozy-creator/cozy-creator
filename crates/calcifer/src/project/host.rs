@@ -14,18 +14,22 @@ use protocol::{
     ids::RunId,
     interface::{self, Slot},
     model_ref::ModelRef,
+    project::LocalCode,
 };
 use serde_json::Value;
 
 use crate::api::{Api, Refusal};
 
-/// A renderer as the Hub has it: its package's newest release, and the longest piece it makes when
-/// it renders shots.
+/// A renderer as the Hub has it (its package's newest release, or the one `@release` names), or
+/// local code as `cozy render` made it ready; and the longest piece it makes when it renders shots.
 #[derive(Clone)]
 pub struct Renderer {
     pub package: String,
     pub function: String,
+    /// For local code, its source's digest.
     pub release: String,
+    /// Local code: how each machine it was made ready on takes it.
+    pub local: Vec<LocalCode>,
     /// What its request takes, read from its schema.
     pub accepts: Accepts,
     /// Its model slots and those of the calls it makes, for a request's `models:` and `lora:`.
@@ -64,6 +68,39 @@ impl Accepts {
     }
 }
 
+impl Renderer {
+    /// `function` of the package interface `document`.
+    fn read(
+        package: &str,
+        function: &str,
+        release: String,
+        document: &Value,
+        local: Vec<LocalCode>,
+    ) -> Result<Self, Error> {
+        let unknown = || format!("{package}@{release} has no function {function}");
+        let entry = (interface::entrypoints(document).find(|entry| interface::name(entry) == Some(function)))
+            .ok_or_else(|| Error::new(Kind::NotFound, "callable_unknown", unknown()))?;
+        let read = |slots: Vec<&Value>| slots.into_iter().filter_map(|slot| Slot::read(slot).ok()).collect();
+        Ok(Self {
+            package: package.into(),
+            function: function.into(),
+            release,
+            local,
+            accepts: Accepts::read(&entry["request"]),
+            slots: read(interface::models(entry).iter().collect()),
+            calls: read(interface::call_slots(document, entry)),
+        })
+    }
+
+    /// Its run's name for people: `org/package/function@release`, or `local/<name>/function`.
+    pub fn target(&self) -> String {
+        match self.local.is_empty() {
+            true => format!("{}/{}@{}", self.package, self.function, self.release),
+            false => format!("{}/{}", self.package, self.function),
+        }
+    }
+}
+
 pub struct Host {
     api: Arc<Api>,
     /// Read once a walk, by Hub and target.
@@ -75,14 +112,28 @@ impl Host {
         Self { api: api.clone(), renderers: Mutex::default() }
     }
 
-    /// `target` (`[org/]package/function`) as `hub` (empty: the default one) has it.
-    pub async fn renderer(&self, hub: &str, target: &str) -> Result<Renderer, Error> {
+    /// `target` as `cozy run` takes it: local code (`./dir/function`) as `local` has it, else
+    /// `[org/]package/function[@release]` as `hub` (empty: the default one) has it.
+    pub async fn renderer(&self, hub: &str, target: &str, local: &[LocalCode]) -> Result<Renderer, Error> {
+        let made: Vec<LocalCode> = local.iter().filter(|code| code.with == target).cloned().collect();
+        if let Some(code) = made.first() {
+            let release = code.source.manifest.trim_start_matches("sha256:").chars().take(12).collect();
+            return Renderer::read(&code.package, &code.function, release, &code.interface, made.clone());
+        }
+        let path = target.starts_with(['.', '/', '~']) || target.ends_with(".py");
+        if path || std::path::Path::new(target).is_absolute() {
+            let said = format!("{target} is local code, which `cozy render` makes ready from this computer");
+            return Err(Error::new(Kind::Unavailable, "renderer_local", said));
+        }
         let at = (hub.to_owned(), target.to_owned());
         if let Some(found) = self.renderers.lock().expect("renderers lock").get(&at) {
             return Ok(found.clone());
         }
-        let malformed =
-            || Error::new(Kind::Validation, "renderer_malformed", format!("{target} is not [org/]package/function"));
+        let malformed = || {
+            let said = format!("{target} is not [org/]package/function[@release]");
+            Error::new(Kind::Validation, "renderer_malformed", said)
+        };
+        let (target, pinned) = target.split_once('@').map_or((target, None), |(target, pin)| (target, Some(pin)));
         let parts: Vec<&str> = target.split('/').collect();
         let (org, name, function) = match parts[..] {
             [name, function] => (protocol::names::ROOT, name, function),
@@ -92,33 +143,18 @@ impl Host {
         let hubs = &self.api.machines.hubs;
         let client = hubs.reader(&if hub.is_empty() { hubs.default_origin() } else { hub.to_owned() })?;
         let (org, name) = (org.to_ascii_lowercase(), name.to_ascii_lowercase());
-        let package = client.get_package_if_changed(&org, &name, None).await.map_err(hub_refusal)?;
-        let release = (package.and_then(|(card, _)| card.package.latest_release)).ok_or_else(|| {
-            Error::new(Kind::NotFound, "package_unreleased", format!("{org}/{name} has no release to run"))
-        })?;
+        let release = match pinned {
+            Some(release) => release.to_owned(),
+            None => {
+                let package = client.get_package_if_changed(&org, &name, None).await.map_err(hub_refusal)?;
+                (package.and_then(|(card, _)| card.package.latest_release)).ok_or_else(|| {
+                    Error::new(Kind::NotFound, "package_unreleased", format!("{org}/{name} has no release to run"))
+                })?
+            }
+        };
         let card = client.get_package_release(&org, &name, &release).await.map_err(hub_refusal)?;
         let card = serde_json::to_value(&card).expect("a card serializes");
-        let entry = interface::entrypoints(&card["package_interface"])
-            .find(|entry| interface::name(entry) == Some(function))
-            .ok_or_else(|| {
-                Error::new(
-                    Kind::NotFound,
-                    "callable_unknown",
-                    format!("{org}/{name}@{release} has no function {function}"),
-                )
-            })?;
-        let accepts = Accepts::read(&entry["request"]);
-        let read = |slots: Vec<&Value>| slots.into_iter().filter_map(|slot| Slot::read(slot).ok()).collect();
-        let slots = read(interface::models(entry).iter().collect());
-        let calls = read(interface::call_slots(&card["package_interface"], entry));
-        let found = Renderer {
-            package: format!("{org}/{name}"),
-            function: function.into(),
-            release,
-            accepts,
-            slots,
-            calls,
-        };
+        let found = Renderer::read(&format!("{org}/{name}"), function, release, &card["package_interface"], vec![])?;
         self.renderers.lock().expect("renderers lock").insert(at, found.clone());
         Ok(found)
     }

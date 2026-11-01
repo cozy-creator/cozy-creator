@@ -54,7 +54,7 @@ shots:   # in order; past its renderer's longest piece (15 s for minimax-h3) a s
   # - {name: walk, setup: dock.a, prompt: \"<theo> crosses <dock>.\", duration_s: 8, writes: [{state: stage}],
   #    beats: [{at: 0, prompt: \"He walks to the edge.\"}, {at: 4, prompt: \"He looks out to sea.\"}],
   #    references: [{name: stride, kind: video, video: refs/walk.mp4}]}   # also plate: {video: …}, first_frame, last_frame
-# a node's render: {with: <function>, models: {...}, lora: [...], options: {...}} renders it another way
+# a node's render: {with: <function or ./dir/function>, models: {...}, lora: [...], options: {...}} renders it another way
 # image: (or a shot's video:) attaches your own file, used until you approve a version cozy made
 # resolution: 1440p   # the edit's short edge: shots below it are upscaled (their approved version), and
 # aspect_ratio: \"16:9\"   # the canvas every shot fills; both are the project's alone
@@ -89,7 +89,8 @@ struct Project {
     edit: Option<Vec<Cut>>,
 }
 
-/// How a node is rendered: `with` a function (`[org/]package/function`), cozy run's model choices
+/// How a node is rendered: `with` a function as `cozy run` takes it (`[org/]package/function[@release]`,
+/// or local code, `./dir/function`, which `cozy render` made ready), cozy run's model choices
 /// (`models`, `lora`, as `cozy run --input` takes them) and the function's own `options`.
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct Render {

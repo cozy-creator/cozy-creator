@@ -59,6 +59,8 @@ struct Member {
 pub(crate) struct Local {
     pub package: String,
     pub source: v1::LocalSource,
+    /// The manifest document `source` names.
+    pub manifest: String,
     pub inputs: Vec<StagedInput>,
     /// What the machine's environment is built from, apart from the project's own source: its
     /// metadata and lock, its path dependencies, carried wheels and indexes.
@@ -220,6 +222,7 @@ pub(crate) async fn source(ctx: &Context, path: &Path, on: &On) -> Result<Local,
         source: v1::LocalSource {
             manifest: digest.to_string(),
         },
+        manifest: String::from_utf8(document).expect("JSON is UTF-8"),
         inputs,
         environment,
         _manifest: held,

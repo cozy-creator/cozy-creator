@@ -5,7 +5,11 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{calcifer::On, error::Error};
+use crate::{
+    calcifer::{On, StagedInput},
+    error::Error,
+    machine::LocalSource,
+};
 
 /// `POST /v1/projects`: the project in `path`, made first when `create`. The same path is always
 /// the same project.
@@ -81,6 +85,32 @@ pub struct Runs {
     /// With `all`: no upscales, and only the native cut (`preview.mp4`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub preview: bool,
+    /// The local code its render blocks name, installed by the client.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub local: Vec<LocalCode>,
+}
+
+/// Local code a render block names (`with: ./dir/fn`, relative to the project), installed on the
+/// walk's machines by the client as `cozy run` installs it: what Calcifer calls it with, by its
+/// `with:` text. Each call carries the code's files again, so a machine that dropped them, or
+/// never had them, installs them in the call.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LocalCode {
+    /// The render block's `with:`, as written.
+    pub with: String,
+    /// The machine it was made ready for (this computer's reads it in place).
+    pub on: On,
+    pub function: String,
+    /// `local/<name>`.
+    pub package: String,
+    pub source: LocalSource,
+    /// The source's manifest document, whose digest is `source.manifest`.
+    pub manifest: String,
+    /// The code's files here (its source's, sent to another machine; a carried wheel).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<StagedInput>,
+    /// Its package interface, as its install answered.
+    pub interface: serde_json::Value,
 }
 
 fn one() -> u32 {

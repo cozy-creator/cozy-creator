@@ -12,6 +12,7 @@ use platform::durable;
 use protocol::{
     calcifer::On,
     error::{Error, Kind},
+    project::LocalCode,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -163,11 +164,14 @@ pub struct Owed {
     /// New versions of named nodes, one each.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub takes: Vec<Take>,
+    /// The local code render blocks name, as `cozy render` made it ready: kept until the walk ends.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub local: Vec<LocalCode>,
 }
 
 impl Owed {
     pub fn is_empty(&self) -> bool {
-        self.all.is_none() && self.sent.is_empty() && self.takes.is_empty()
+        self.all.is_none() && self.sent.is_empty() && self.takes.is_empty() && self.local.is_empty()
     }
 }
 

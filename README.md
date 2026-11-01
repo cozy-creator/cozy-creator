@@ -122,8 +122,10 @@ reads it as it stands then, so a shot that writes one and reads it later renders
 project compiles from what it reads; what that function does not take is left out and said. Character and prop pictures are cleaned on this computer before
 use. Only a changed upstream file puts something out of date, never a text edit or a render block:
 `cozy render <name>` when you want a new take. A node renders by its `render: {with, models, lora,
-options}`: `with` a function, `models: {base_model: {ref: org/checkpoint}}` and `lora: [{ref: org/lora,
-strength: 0.8}]` as `cozy run --input` takes them, and `options`, the function's own fields. A block that
+options}`: `with` a function as `cozy run` takes it (`pkg/fn@0.3.0`, or local code, `./dir/fn` from the
+project's folder, which `cozy render` makes ready on each `--on` machine), `models: {base_model: {ref:
+org/checkpoint}}` and `lora: [{ref: org/lora, strength: 0.8}]` as `cozy run --input` takes them, and
+`options`, the function's own fields. A block that
 names no function adjusts its kind's `defaults:` (entity, setup, world_state, shot, upscale, clean).
 `cozy project status` shows what made each approved version. A file you attach (`image:`, or a shot's
 `video:`) is used until you approve one cozy made.
