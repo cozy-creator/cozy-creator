@@ -260,6 +260,16 @@ def stream_geometry(case):
     blocker = None
     parent = leaf = None
     done = torch.cuda.Event()
+    # CUDA lazy module/event initialization can synchronize. Warm these exact operations
+    # BEFORE establishing the pending interval; the pending event is still checked afterward.
+    with torch.cuda.stream(default):
+        warmed = torch.empty(8 * MIB, dtype=torch.uint8, device="cuda")
+        warmed.fill_(7)
+        torch.cuda._sleep(1)
+        done.record(default)
+    default.synchronize()
+    del warmed
+    probe.clean()
     if case == "completed-cache":
         with torch.cuda.stream(other):
             cached = torch.empty(8 * MIB, dtype=torch.uint8, device="cuda")
