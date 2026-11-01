@@ -309,4 +309,16 @@ The case does not assert segment ordering or pointer selection. It uses real dra
 stream retirement to establish completed cache without calling trim. `Report.passed`
 is the cache-preservation gate; `detail.execution_passed` separately records successful
 allocation, byte checks, and cleanup. A red preservation result retains the full report.
-Initial source is unchanged `9ccb36a2`; no product fix or H3-causality claim is included.
+The initial fixture `fa13b2ef8` ran against unchanged native `9ccb36a2` in actual GPU
+run **25143** and was red: while the 24 MiB output was live, other free working backing
+was **zero**; after output retirement, only 24 MiB was cached. All output and weight
+bytes were correct, weights had no eviction/refill, and final ownership was zero.
+The full report and independent audit are in `../evidence/bounded-trim-20261101/`.
+
+Product fix `bda123e7b` removes the first OOM arm's `trim(device)` call. The existing
+second attempt still trims only the requested mapping's bytes from completed whole
+segments. If that mapping fails, the unchanged third attempt follows weight reclaim
+and completion-wait handling. The three attempts, capture exclusions, fault poisoning,
+and working-before-weights order remain. Single-job `cargo check -p varena --lib --locked`
+passes; the fixed GPU run is pending. This demonstrates one unnecessary trim, not the
+cause or timing impact of all observed full-H3 driver churn.
