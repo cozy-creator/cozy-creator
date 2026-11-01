@@ -43,7 +43,7 @@ def observe(name, sizes, *, entry=None, mode="eager", completed=True, invalidate
         for value in values:
             value.fill_(37)
         torch.cuda.synchronize()
-        if invalidate:
+        if invalidate is not None:
             vt.phase_invalidate(DEVICE, token, invalidate)
     except BaseException:
         vt.phase_leave(DEVICE, token, completed=False, key=name)
@@ -117,6 +117,7 @@ def samples_and_invalidation():
     attempted = [
         observe(name, [12 * MIB], completed=False),
         observe(name, [16 * MIB], invalidate="caught_cut_retry"),
+        observe(name, [18 * MIB], invalidate=""),
         observe(key("different-shape"), [6 * MIB], entry=name),
     ]
     assert all(not item["published"] for item in attempted)
