@@ -1,0 +1,176 @@
+{
+  "files": [
+    {
+      "path": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/attempt-002/sparse-full-pair-167/control/media/25627-video.mp4",
+      "sha256": "41462a1932be6d546cbf9066bcf7eb8dc9b497ba628c657a6c68e1428983bc9e",
+      "bytes": 9503941
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/attempt-002/sparse-full-pair-167/candidate/media/25678-video.mp4",
+      "sha256": "1583dc3a9a9d9a1b3d71b5ab96d3ec28401e32ca8299bed77a0447a123f00e74",
+      "bytes": 8738684
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/attempt-002/sparse-full-pair-167/control/media/25627-latents",
+      "sha256": "3989c09d594646f32fafef93224c73eeffb3b46162a1a590c968711f99750ddd",
+      "bytes": 20708824
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/attempt-002/sparse-full-pair-167/candidate/media/25678-latents",
+      "sha256": "0f8d85e48f67ef637cbaba0bf9ddcc681e004b2fcf890f56fc10b45ce917269c",
+      "bytes": 20708824
+    }
+  ],
+  "frames": [
+    0,
+    52,
+    103,
+    155,
+    206,
+    258,
+    309,
+    361
+  ],
+  "frame_times_s": [
+    0.0,
+    2.1666666666666665,
+    4.291666666666667,
+    6.458333333333333,
+    8.583333333333334,
+    10.75,
+    12.875,
+    15.041666666666666
+  ],
+  "video": {
+    "baseline": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/attempt-002/sparse-full-pair-167/control/media/25627-video.mp4",
+    "candidate": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/attempt-002/sparse-full-pair-167/candidate/media/25678-video.mp4",
+    "baseline_sha256": "41462a1932be6d546cbf9066bcf7eb8dc9b497ba628c657a6c68e1428983bc9e",
+    "candidate_sha256": "1583dc3a9a9d9a1b3d71b5ab96d3ec28401e32ca8299bed77a0447a123f00e74",
+    "file_exact": false,
+    "format_matched": true,
+    "video_summaries": [
+      "[Parsed_psnr_3 @ 0x556fdd716f00] PSNR y:15.265649 u:31.943962 v:34.445767 average:16.990271 min:14.792856 max:20.002794",
+      "[Parsed_ssim_2 @ 0x556fdd716d40] SSIM Y:0.637400 (4.405721) U:0.931022 (11.612923) V:0.948321 (12.866878) All:0.738157 (5.819595)"
+    ],
+    "audio": {
+      "pcm_exact": false,
+      "interleaved_samples": 966656,
+      "max_absolute_delta": 476,
+      "reference_rms": 60.66926946164534,
+      "error_rms": 23.28780414352112,
+      "snr_db": 8.316804511560465
+    },
+    "interpretation": "Full-request paired evidence. Model quality is reviewed separately; no byte-equality acceptance gate or statistical performance claim."
+  },
+  "video_format": {
+    "width": 1344,
+    "height": 768,
+    "nb_read_frames": "362",
+    "r_frame_rate": "24/1",
+    "duration": "15.083333",
+    "pix_fmt": "yuv420p"
+  },
+  "latents": {
+    "control": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/attempt-002/sparse-full-pair-167/control/media/25627-latents",
+    "candidate": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/attempt-002/sparse-full-pair-167/candidate/media/25678-latents",
+    "control_sha256": "3989c09d594646f32fafef93224c73eeffb3b46162a1a590c968711f99750ddd",
+    "candidate_sha256": "0f8d85e48f67ef637cbaba0bf9ddcc681e004b2fcf890f56fc10b45ce917269c",
+    "file_exact": false,
+    "metadata_equal": true,
+    "tensor": {
+      "dtype": "F16",
+      "shape": [
+        1,
+        24,
+        107,
+        48,
+        84
+      ],
+      "data_offsets": [
+        0,
+        20708352
+      ]
+    },
+    "finite": true,
+    "values": 10354176,
+    "value_mismatches": 10348743,
+    "bit_mismatches": 10348743,
+    "relative_l2": 0.625056574980576,
+    "rmse": 0.6561107203822679,
+    "max_absolute_delta": 6.029296875,
+    "cosine": 0.8055888846727857,
+    "control_rms": 1.0496821354173533,
+    "candidate_rms": 1.0546787274025176,
+    "boundary": "Same final normalized video latent space and metadata; numerical differences are not by themselves a perceptual quality verdict. No audio latents are saved by this public format."
+  },
+  "affinity": [
+    0
+  ],
+  "nice": 19,
+  "ffmpeg_threads": 1,
+  "invocations": [
+    {
+      "label": "compare-video",
+      "argv": [
+        "/usr/bin/python3",
+        "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/h3-results/compare-quality.py",
+        "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/attempt-002/sparse-full-pair-167/control/media/25627-video.mp4",
+        "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/attempt-002/sparse-full-pair-167/candidate/media/25678-video.mp4",
+        "/home/fidika/cozy_v2/outputs/xs138-sparse-producer/review-leg16-media/full-video"
+      ]
+    },
+    {
+      "label": "compare-latents",
+      "argv": [
+        "/usr/bin/python3",
+        "/home/fidika/cozy_v2/outputs/xs138-p2-tail/full-h3/audit/compare-latents.py",
+        "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/attempt-002/sparse-full-pair-167/control/media/25627-latents",
+        "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/attempt-002/sparse-full-pair-167/candidate/media/25678-latents",
+        "/home/fidika/cozy_v2/outputs/xs138-sparse-producer/review-leg16-media/latents.json"
+      ]
+    },
+    {
+      "label": "control-frames",
+      "argv": [
+        "ffmpeg",
+        "-v",
+        "error",
+        "-threads",
+        "1",
+        "-i",
+        "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/attempt-002/sparse-full-pair-167/control/media/25627-video.mp4",
+        "-vf",
+        "select=eq(n\\,0)+eq(n\\,52)+eq(n\\,103)+eq(n\\,155)+eq(n\\,206)+eq(n\\,258)+eq(n\\,309)+eq(n\\,361)",
+        "-filter_threads",
+        "1",
+        "-fps_mode",
+        "passthrough",
+        "-threads",
+        "1",
+        "/home/fidika/cozy_v2/outputs/xs138-sparse-producer/review-leg16-media/control/frame-%02d.png"
+      ]
+    },
+    {
+      "label": "candidate-frames",
+      "argv": [
+        "ffmpeg",
+        "-v",
+        "error",
+        "-threads",
+        "1",
+        "-i",
+        "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/attempt-002/sparse-full-pair-167/candidate/media/25678-video.mp4",
+        "-vf",
+        "select=eq(n\\,0)+eq(n\\,52)+eq(n\\,103)+eq(n\\,155)+eq(n\\,206)+eq(n\\,258)+eq(n\\,309)+eq(n\\,361)",
+        "-filter_threads",
+        "1",
+        "-fps_mode",
+        "passthrough",
+        "-threads",
+        "1",
+        "/home/fidika/cozy_v2/outputs/xs138-sparse-producer/review-leg16-media/candidate/frame-%02d.png"
+      ]
+    }
+  ],
+  "scope": "eight matched sampled frames; full decoded numerical video/audio and final video latents; visual inspection follows, no full-motion or audio-listening assessment"
+}

@@ -1,0 +1,96 @@
+{
+  "passed": true,
+  "reviewer": "/root/retention_restart",
+  "runtime": "8384bfd3d74f10d2c57800bb1a8ccb55aba46984",
+  "native": "dfb912042f60fd99a0bbe404b9927665e9b39715",
+  "pid": 232068,
+  "cases": [
+    {
+      "case": "owner_held_gil",
+      "run": 25723,
+      "execution_ms": 2950
+    },
+    {
+      "case": "owner_capture_close",
+      "run": 25724,
+      "execution_ms": 247
+    },
+    {
+      "case": "graph_owner_retirement",
+      "run": 25725,
+      "execution_ms": 2272
+    },
+    {
+      "case": "graph_owner_replay_exclusion",
+      "run": 25726,
+      "execution_ms": 2008
+    },
+    {
+      "case": "owner_allocator_progress",
+      "run": 25727,
+      "execution_ms": 16596
+    }
+  ],
+  "typed_gil": true,
+  "same_pid_following_baseline_proves_gil_cleanup": true,
+  "capture_driver_calls": [
+    223,
+    223
+  ],
+  "both_graph_variants_and_escaped_aliases": true,
+  "allocation": {
+    "filler_bytes": 24285020160,
+    "output_bytes": 201326592,
+    "actual_driver_oom_delta": 4,
+    "cache_released_by_return": 201326592,
+    "peer_report": {
+      "completed_bytes": 0,
+      "elapsed_ns": 1250851,
+      "outcome": "peer_reclaim_exhausted",
+      "released_bytes": 0,
+      "requested_bytes": 201326592,
+      "round": 21144
+    }
+  },
+  "baseline": {
+    "allocated_bytes": 17039360,
+    "mapped_bytes": 20971520,
+    "pending_pools_cache_events": 0
+  },
+  "boundary": "Five exact owner mechanism cases on CUDA cut; not full-model performance, LM/DerivedCache adoption, MPS or v3 GPU qualification",
+  "files": {
+    "coherent-parent.json": "43a67e9ea9430217ae29954475f6431becbff056843f0cae8c774d7e3f40d4a9",
+    "graph_owner_replay_exclusion-25726.json": "e625790202daa7419a2ea7e8e9e0c711bd8abf333bc2eb35e649e989a9a34968",
+    "graph_owner_replay_exclusion-invocation.json": "bedbafd060e228a4e0b9cfa4eafb0fda98b2a167b1ea37c2a090d8434c183aae",
+    "graph_owner_replay_exclusion-result.json": "77fbb5527e99158fe8ee032dda0da0c096e7dd4852edf16008816766761eee93",
+    "graph_owner_replay_exclusion.err": "0bc8588b737eb9e11efa333f1e9341388fdef2959e703f84267e3908125ac63c",
+    "graph_owner_replay_exclusion.ndjson": "1c2e9643637d96f5b801a39e669ab8479593712e56f2891c878180d63b23524e",
+    "graph_owner_retirement-25725.json": "23498d823eef30514a02d1b929d49f59083c19e32b2daa2e12df9e9e12f5deb2",
+    "graph_owner_retirement-invocation.json": "71306956bddec2b5e9fb2ef84fcd8c3d680c83522eb2236dabbd6b7abbd50897",
+    "graph_owner_retirement-result.json": "3fc172f13043fea060dd069b703276dad363921c4a1f21781d381e76394a8abe",
+    "graph_owner_retirement.err": "0bc8588b737eb9e11efa333f1e9341388fdef2959e703f84267e3908125ac63c",
+    "graph_owner_retirement.ndjson": "c476c293da9ebf8347242e35465d21dbbd3ce131eb8b892d79cbb783e129972b",
+    "input-template.json": "c77b17c8ee9c0302f7712456b75ac24de04342e468994586092b60cf66a5d64f",
+    "install-invocation.json": "eeddb0b920f67e052d3ca9f2fb91f7ac2520e1154c4880936903b16bf0354ee0",
+    "install.err": "0bc8588b737eb9e11efa333f1e9341388fdef2959e703f84267e3908125ac63c",
+    "install.ndjson": "fba1857a5fcbcd1359b5e35676f9c9c6716d0991c0c876e41ea67c1218d83a68",
+    "owner_allocator_progress-25727.json": "3d5bf9e309a2a1e91a4a11976594b5cf1a2bcd1d0a9fe10ef39686e9fdf3fb6b",
+    "owner_allocator_progress-invocation.json": "660e61687c2cb25e6996376578db87e9b1f76952893ea43e5f6c4178c5f9e882",
+    "owner_allocator_progress-result.json": "c9e9a40913e48c091fa96eb5c459aaef8ddd8dbc2e839cd2c3f00bc99de23e8e",
+    "owner_allocator_progress.err": "0bc8588b737eb9e11efa333f1e9341388fdef2959e703f84267e3908125ac63c",
+    "owner_allocator_progress.ndjson": "d89df022187e97920c2346fe4d7d85200608e0018aed7064a0082a329b62d57f",
+    "owner_capture_close-25724.json": "df03ed0a04d5037e5108098420bcdab90e5fccbae0edeecd891c69cd5c842e78",
+    "owner_capture_close-invocation.json": "8e2a7b71bd0185a7beee8bd5d0b1b61315ba9935485fb6a1e4b242e0ef5ba9a7",
+    "owner_capture_close-result.json": "6502403c21cc80037f35594bc91795348732acca2a2e72d3be2557dd784e0b5e",
+    "owner_capture_close.err": "0bc8588b737eb9e11efa333f1e9341388fdef2959e703f84267e3908125ac63c",
+    "owner_capture_close.ndjson": "5c18cabd336f7b95cf37e85bd157a0ece85ef1f4e914f685b66b75ab817b98b3",
+    "owner_held_gil-25723.json": "9e9d8d634ad1f40822ceb63cc761749b49167669b4ecfe5a54c5432aa1a9e0cd",
+    "owner_held_gil-invocation.json": "87e3cc4f727517a63cf3bafbbb68e7d536fff399f8ebdf0471e3c0d7d0d2759e",
+    "owner_held_gil-result.json": "29b8807e6d387d0748e74802f09a5712e54d9f269e7d5e38e33b1eada6d2dca8",
+    "owner_held_gil.err": "fa8d53827dd9cf35ab0302a2188d9cdfc5fcc09ef0221b2d3f88e3c05dad3e11",
+    "owner_held_gil.ndjson": "4c50162e95922585abc04cd269a94d205f4a6830cfc78273e44b83a998fb0f73",
+    "progress.json": "8010693d6fba3cddb8a1330c5241a84e0154099238d37f7c43e70d0e92b8913a",
+    "qualification.json": "60002c6f215b29e3a77130c2fc91b332b5ad03d30415edbdcdcc752bf3c1592f",
+    "ready.json": "aea6b445e685a0d12990bea217e732e9698e36b84755088be1d7d8080197e28b"
+  }
+}

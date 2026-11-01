@@ -1,0 +1,2 @@
+[lm] 8 tokens after 3: prefill 0.040 s, then 1.92 ms/token over 7 (eager, 1.0 rows a step), 0 captures 0.000 s, gated-delta kernels off
+[lm] 8 tokens after 3: prefill 0.002 s, then 1.91 ms/token over 7 (eager, 1.0 rows a step), 0 captures 0.000 s, gated-delta kernels off
