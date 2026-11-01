@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import gc
+from pathlib import Path
 import json
+import importlib.util
 import sys
 import time
 
@@ -11,7 +13,12 @@ from tensorfs import varena
 import tensorfs.varena.torch as vt
 from cozy_runtime._kernels import _execution
 
-import probe
+# The fresh child uses -I, so load the reviewed sibling by its exact frozen path.
+_probe_spec = importlib.util.spec_from_file_location("varena_fixture_probe", Path(__file__).with_name("probe.py"))
+assert _probe_spec is not None and _probe_spec.loader is not None
+probe = importlib.util.module_from_spec(_probe_spec)
+sys.modules[_probe_spec.name] = probe
+_probe_spec.loader.exec_module(probe)
 
 MIB = probe.MIB
 
