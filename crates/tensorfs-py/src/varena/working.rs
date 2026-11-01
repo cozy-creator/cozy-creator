@@ -430,6 +430,7 @@ fn _varena_split_select<'py>(
         "reclaimable_working_bytes",
         selected.reclaimable_working_bytes,
     )?;
+    row.set_item("reclaimable_cache_bytes", selected.reclaimable_cache_bytes)?;
     row.set_item("choice_id", selected.choice_id)?;
     row.set_item("eligible", selected.eligible)?;
     row.set_item("required_bytes", selected.required_bytes)?;

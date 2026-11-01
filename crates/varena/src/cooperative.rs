@@ -1,12 +1,13 @@
 //! Explicit native GPU participant. No allocation hook, daemon, byte budget or background
 //! policy is installed. Callers publish at owner boundaries and service advisory asks.
-use crate::{Arena, Completion, Contents, ReclaimReason, ReclaimReport, ledger, working};
+use crate::{Arena, Completion, Contents, ReclaimReason, ledger, working};
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, atomic::Ordering};
 
 mod owner;
 pub use owner::{Facts, Owner, RecoveryOutcome, RecoveryReport};
 pub(crate) use owner::{Participation, recover};
+pub(crate) use owner::wake_cache_actions;
 
 fn deferred(error: &Error) -> bool {
     matches!(error,
@@ -326,7 +327,8 @@ impl Peer {
                 if *released >= wanted {
                     break;
                 }
-                release_weights(arena, wanted - *released, maximum - *released, released)?;
+                arena.reclaim_ready_counted(&captures, wanted - *released, maximum - *released,
+                    ReclaimReason::Room, released)?;
             }
         }
         let reading = working::peer::with_snapshot(self.device, refresh, |mut reading| {
@@ -392,56 +394,4 @@ impl Peer {
         })?;
         Ok(reading)
     }
-}
-
-fn release_weights(
-    arena: &Arena,
-    wanted: usize,
-    maximum: usize,
-    completed: &mut usize,
-) -> crate::Result<()> {
-    let mut state = arena.lock()?;
-    let result = (|| {
-        let _context = arena.driver.enter()?;
-        let mut report = ReclaimReport {
-            requested_bytes: wanted,
-            ..ReclaimReport::default()
-        };
-        let contentless = state.contentless_candidates(true, None);
-        let candidates = state.reclaim_candidates(true, None, ReclaimReason::Room);
-        for id in &contentless {
-            if report.reclaimed_bytes >= wanted {
-                break;
-            }
-            if state.entries[id].bytes <= maximum - report.reclaimed_bytes
-                && arena.completion(&mut state, *id)? == Completion::Done
-            {
-                arena.evict_counted(
-                    &mut state,
-                    *id,
-                    ReclaimReason::Room,
-                    &mut report,
-                    completed,
-                )?;
-            }
-        }
-        for (id, preferred, _) in candidates {
-            if report.reclaimed_bytes >= wanted {
-                break;
-            }
-            if contentless.contains(&id) {
-                continue;
-            }
-            if state.entries[&id].bytes > maximum - report.reclaimed_bytes {
-                continue;
-            }
-            if arena.completion(&mut state, id)? == Completion::Done {
-                arena.evict_counted(&mut state, id, ReclaimReason::Room, &mut report, completed)?;
-            } else if preferred {
-                break; // Preserve the preferred suffix order without waiting for it.
-            }
-        }
-        Ok(())
-    })();
-    result.map_err(|error| crate::poison(&mut state, error))
 }

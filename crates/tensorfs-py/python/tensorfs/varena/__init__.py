@@ -6,7 +6,7 @@ always use the same Varena working allocator.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
@@ -76,6 +76,57 @@ class Cache:
     def close(self) -> None:
         """Refuse live/pending pages; return the reservation after release completes."""
         self._native.close()
+
+
+class _CacheOwnerDeferredError(RuntimeError):
+    pass
+
+
+CacheOwnerDeferredError = getattr(_ext, "CacheOwnerDeferredError", _CacheOwnerDeferredError)
+
+
+class CacheOwner:
+    """Internal weak callback integration; the caller retains its shrink callable.
+
+    The callable receives requested bytes as intent, never as a reclaimed-byte credit.
+    It runs on the native callback worker with the GIL and capture-only exclusion, and
+    must claim owner/domain locks nonblocking before touching their GPU resources.
+    Returning False declines this attempt. Returning does not prove physical release.
+    """
+
+    @staticmethod
+    def capability() -> int:
+        return int(getattr(getattr(_ext, "_VarenaCacheOwner", None), "CACHE_OWNER_PROTOCOL", 0))
+
+    def __init__(self, device: int, callback: Callable[[int], object]) -> None:
+        if self.capability() != 1:
+            raise RuntimeError("this TensorFS has no native cache-owner capability")
+        self._native = _ext._VarenaCacheOwner(device, callback)
+
+    def touch(self) -> None:
+        self._native.touch()
+
+    def check(self) -> None:
+        self._native.check()
+
+    def suspend(self) -> None:
+        self._native.suspend()
+
+    def facts(self) -> dict[str, object]:
+        return self._native.facts()
+
+    def defer_close(self) -> None:
+        """Disable new requests without waiting for a callback or its runtime."""
+        self._native.defer_close()
+
+    def close(self) -> None:
+        """Drain outside caller owner locks; capture/current-worker refusal retains data."""
+        self._native.close()
+
+
+def request_cache_shrink(device: int, bytes: int) -> _ext._VarenaCacheRequest | None:
+    """Queue local owner intent without waiting or treating the request as free memory."""
+    return _ext._varena_cache_request(device, bytes)
 
 
 class Arena:

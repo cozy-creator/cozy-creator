@@ -183,6 +183,8 @@ fn accounting(peer: &cooperative::Peer) -> Result<Value> {
     Ok(
         json!({"cache_live":r.physical.caches.live,"cache_pending":r.physical.caches.pending,
         "cache_idle":r.physical.caches.idle,"physical":r.physical.total()?,
+        "weight_live":r.physical.weights.live,"weight_pending":r.physical.weights.pending,
+        "weight_idle":r.physical.weights.idle,
         "reclaimable":r.reclaimable,"pending_release":r.pending_release,"refreshed":r.refreshed}),
     )
 }
@@ -215,6 +217,9 @@ fn run() -> Result<Value> {
         "pages" => probes::pages(&cuda, &peer, device)?,
         "rollback" => probes::rollback(&cuda, &peer, device)?,
         "abandoned" => probes::abandoned(&cuda, &peer, device)?,
+        "choice" => probes::choice(&cuda, &peer, device)?,
+        "owners" => probes::owners(&cuda, &peer, device)?,
+        "arena_concurrency" => probes::arena_concurrency(&peer, device)?,
         _ => return Err(io::Error::other("unknown Cache proof mode").into()),
     };
     cuda.synchronize()?;
