@@ -1,26 +1,17 @@
-//! `cozy login|logout|whoami`: this computer's device key at each Hub. Login enrolls a key by
-//! an emailed code; every later call signs in with it silently. Codes and names are read from
-//! stdin, never from argv. `--export` enrolls a key for another computer (CI) into a file, which
-//! that computer installs with `--key`.
-use std::{io::Write as _, path::PathBuf, process::ExitCode, sync::Arc};
+//! `cozy login|logout|whoami`: this computer's device key at each Hub, through Calcifer
+//! (CALCIFER-API.md "Account"). Login enrolls a key by an emailed code; every later call signs in
+//! with it silently. Codes and names are read from stdin, never from argv. `--export` enrolls a
+//! key for another computer (CI) into a file, which that computer installs with `--key`.
+use std::{io::Write as _, path::PathBuf, process::ExitCode};
 
-use hub_client::{Credential, DeviceKey, Enrollment, UserSession};
 use protocol::{
     config::Origin,
     error::{Error, Kind},
+    hub::{Account, At, Code, CodeAnswer, CodeRequest, KeyInstall, Naming, Proven, Purpose, SignedOut},
 };
 use serde_json::json;
 
-use crate::{
-    Context,
-    context::{hub_answer, hub_error},
-    machine::usd,
-    output,
-};
-
-/// The label a Hub shows for this computer's key, and for a key `--export` writes.
-const LABEL: &str = "cozy";
-const EXPORT_LABEL: &str = "cozy-export";
+use crate::{Context, calcifer_client::{Client, path}, machine::usd, output};
 
 #[derive(clap::Args, Debug)]
 pub struct Login {
@@ -36,128 +27,103 @@ pub struct Login {
     key: Option<PathBuf>,
 }
 
+fn at(hub: &Origin) -> At {
+    At { hub: Some(hub.to_string()) }
+}
+
 /// Enrolls this computer's key by the code the Hub emails, then names the account if it has
 /// no name yet. A key already accepted for this email is kept.
 pub async fn login(ctx: &Context, args: Login) -> Result<ExitCode, Error> {
     let hub = ctx.hub();
+    let calcifer = ctx.calcifer().await?;
     if let Some(file) = &args.key {
-        return install(ctx, &hub, file).await;
+        let key = std::fs::read_to_string(file).map_err(|e| {
+            Error::credential("hub_credential", format!("{}: {e}", file.display())).next(ctx.config.login(hub))
+        })?;
+        let ask = KeyInstall { hub: Some(hub.to_string()), key };
+        let account = calcifer.put("/v1/account/key", &ask).await?;
+        return signed_in(ctx, &calcifer, hub, account, "signed in").await;
     }
     let email = args.email.as_deref().unwrap_or_default().trim();
     if let Some(file) = &args.export {
-        return export(ctx, &hub, email, file).await;
+        let Proven::Export(key) = prove(ctx, &calcifer, hub, Purpose::Export, Some(email)).await? else {
+            return Err(unexpected());
+        };
+        platform::durable::replace(file, key.key.as_bytes(), 0o600)
+            .map_err(|e| Error::new(Kind::Internal, "key_unwritable", e.to_string()))?;
+        if ctx.json {
+            output::json(&json!({
+                "status": "exported", "hub": hub, "email": key.email, "device_key": key.device_key, "file": file,
+            }));
+        } else {
+            output::Record::new()
+                .field("status", "exported")
+                .field("hub", hub)
+                .field("email", &key.email)
+                .field("device key", &key.device_key)
+                .field("file", file.display())
+                .print(ctx);
+        }
+        return Ok(ExitCode::SUCCESS);
     }
-    if ctx.signed_in(&hub)
-        && let Ok(session) = ctx.hub_session(&hub)
-        && session.key().email.eq_ignore_ascii_case(email)
-        && matches!(standing(ctx, &hub).await, Ok(Some(_)))
-    {
-        return signed_in(ctx, &hub, session, "already signed in").await;
+    let now: Account = calcifer.get_query("/v1/account", &at(hub)).await?;
+    if now.logged_in && now.email.as_deref().is_some_and(|e| e.eq_ignore_ascii_case(email)) {
+        return signed_in(ctx, &calcifer, hub, now, "already signed in").await;
     }
-    let anonymous = ctx.hub_anonymous(&hub);
-    let enrollment = Enrollment::begin(&anonymous, email, LABEL, None)
-        .await
-        .map_err(hub_error)?;
-    let code = ask(ctx, &format!("A code was sent to {email}. Code: "), "code")?;
-    let (key, bearer) = enrollment
-        .finish(&anonymous, &code)
-        .await
-        .map_err(hub_error)?;
-    let keep = |e: platform::Error| Error::new(Kind::Internal, "key_unwritable", e.to_string());
-    platform::durable::private_dir(&ctx.home.keys()).map_err(keep)?;
-    key.save(&hub.device_key(&ctx.home)).map_err(hub_error)?;
-    let bearer = serde_json::to_vec(&bearer).expect("a bearer serializes");
-    platform::durable::replace(&hub.bearer(&ctx.home), &bearer, 0o600).map_err(keep)?;
-    signed_in(ctx, &hub, ctx.hub_session(&hub)?, "signed in").await
+    let Proven::SignIn(account) = prove(ctx, &calcifer, hub, Purpose::SignIn, Some(email)).await? else {
+        return Err(unexpected());
+    };
+    signed_in(ctx, &calcifer, hub, account, "signed in").await
 }
 
-/// Enrolls a new key by the emailed code and writes it to `file`, for another computer.
-async fn export(
+/// Has the Hub email a code for `purpose`, and answers it with what the user types.
+async fn prove(
     ctx: &Context,
+    calcifer: &Client,
     hub: &Origin,
-    email: &str,
-    file: &std::path::Path,
-) -> Result<ExitCode, Error> {
-    let anonymous = ctx.hub_anonymous(hub);
-    let enrollment = Enrollment::begin(&anonymous, email, EXPORT_LABEL, None)
-        .await
-        .map_err(hub_error)?;
-    let code = ask(ctx, &format!("A code was sent to {email}. Code: "), "code")?;
-    let (key, _) = enrollment
-        .finish(&anonymous, &code)
-        .await
-        .map_err(hub_error)?;
-    key.save(file).map_err(hub_error)?;
-    if ctx.json {
-        output::json(&json!({
-            "status": "exported", "hub": hub, "email": key.email, "device_key": key.id, "file": file,
-        }));
-    } else {
-        output::Record::new()
-            .field("status", "exported")
-            .field("hub", hub)
-            .field("email", &key.email)
-            .field("device key", &key.id)
-            .field("file", file.display())
-            .print(ctx);
-    }
-    Ok(ExitCode::SUCCESS)
+    purpose: Purpose,
+    email: Option<&str>,
+) -> Result<Proven, Error> {
+    let ask = CodeRequest { hub: Some(hub.to_string()), purpose, email: email.map(str::to_owned) };
+    let sent: Code = calcifer.post("/v1/account/codes", &ask, None).await?;
+    let code = ask_line(ctx, &format!("A code was sent to {}. Code: ", sent.email), "code")?;
+    calcifer.post(&path(&["v1", "account", "codes", &sent.id]), &CodeAnswer { code }, None).await
 }
 
-/// Makes the key in `file` this computer's key at `hub`, and proves it by naming its account.
-async fn install(ctx: &Context, hub: &Origin, file: &std::path::Path) -> Result<ExitCode, Error> {
-    let key = DeviceKey::load(file).map_err(hub_error)?;
-    if key.hub.trim_end_matches('/') != hub.as_str().trim_end_matches('/') {
-        return Err(Error::new(
-            Kind::Usage,
-            "key_other_hub",
-            format!("{} holds a key for {}, not {hub}", file.display(), key.hub),
-        ));
-    }
-    let keep = |e: platform::Error| Error::new(Kind::Internal, "key_unwritable", e.to_string());
-    platform::durable::private_dir(&ctx.home.keys()).map_err(keep)?;
-    key.save(&hub.device_key(&ctx.home)).map_err(hub_error)?;
-    if let Err(e) = std::fs::remove_file(hub.bearer(&ctx.home))
-        && e.kind() != std::io::ErrorKind::NotFound
-    {
-        return Err(Error::new(Kind::Internal, "key_unwritable", e.to_string()));
-    }
-    signed_in(ctx, hub, ctx.hub_session(hub)?, "signed in").await
+fn unexpected() -> Error {
+    Error::new(Kind::Internal, "untyped_answer", "Calcifer proved another code than the one asked")
 }
 
-/// Reports the account `session` signs in as, naming it first when it has no name yet.
+/// Reports the account a key signs in as, naming it first when it has no name yet.
 async fn signed_in(
     ctx: &Context,
+    calcifer: &Client,
     hub: &Origin,
-    session: Arc<UserSession>,
+    mut account: Account,
     status: &str,
 ) -> Result<ExitCode, Error> {
-    let user = ctx.hub_signed_in(hub)?;
-    let account = match hub_answer(user.get_current_account().await) {
-        // A taken or invalid name asks again; an empty line ends the login.
-        Err(e) if e.code == "account.name_required" => loop {
-            let name = ask(ctx, "Tensorhub account name: ", "account name")?;
-            match hub_answer(user.register_account(&name).await) {
-                Err(e) if matches!(e.code.as_str(), "account.name_unavailable" | "account.name_invalid") => {
-                    output::warn(&format!("{} ({})", e.message, e.code));
-                }
-                answer => break answer?,
+    // A taken or invalid name asks again; an empty line ends the login.
+    while account.account.is_none() {
+        let name = ask_line(ctx, "Tensorhub account name: ", "account name")?;
+        let ask = Naming { hub: Some(hub.to_string()), name };
+        match calcifer.put("/v1/account/name", &ask).await {
+            Err(e) if matches!(e.code.as_str(), "account.name_unavailable" | "account.name_invalid") => {
+                output::warn(&format!("{} ({})", e.message, e.code));
             }
-        },
-        answer => answer?,
-    };
-    let key = session.key();
+            named => account = named?,
+        }
+    }
+    let (email, name) = (account.email.unwrap_or_default(), account.account.unwrap_or_default());
     if ctx.json {
         output::json(&json!({
-            "status": status, "hub": hub, "email": key.email, "account": account.name,
-            "device_key": key.id,
+            "status": status, "hub": hub, "email": email, "account": name, "device_key": account.device_key,
         }));
     } else {
         output::Record::new()
             .field("status", status)
             .field("hub", hub)
-            .field("email", &key.email)
-            .field("account", &account.name)
+            .field("email", &email)
+            .field("account", &name)
             .print(ctx);
     }
     Ok(ExitCode::SUCCESS)
@@ -174,84 +140,33 @@ pub struct Logout {
 /// whatever the Hub answers.
 pub async fn logout(ctx: &Context, args: Logout) -> Result<ExitCode, Error> {
     let hub = ctx.hub();
-    if !ctx.signed_in(&hub) {
-        return report_logout(ctx, &hub, None, false, vec![]);
-    }
-    let session = ctx.hub_session(&hub)?;
-    let key = session.key();
+    let calcifer = ctx.calcifer().await?;
+    let mut out = None;
     if args.everywhere {
-        revoke_others(ctx, &hub, key).await?;
-    }
-    let revoked = hub_answer(ctx.hub_signed_in(&hub)?.revoke_sign_in_key(&key.id).await);
-    for path in [hub.device_key(&ctx.home), hub.bearer(&ctx.home)] {
-        if let Err(e) = std::fs::remove_file(&path)
-            && e.kind() != std::io::ErrorKind::NotFound
-        {
-            return Err(Error::new(
-                Kind::Internal,
-                "key_unremovable",
-                format!("{}: {e}", path.display()),
-            ));
+        match prove(ctx, &calcifer, hub, Purpose::SignOutEverywhere, None).await {
+            Ok(Proven::SignOutEverywhere(signed_out)) => out = Some(signed_out),
+            Ok(_) => return Err(unexpected()),
+            // Signed out already: there is no key to prove a mailbox with.
+            Err(e) if e.code == "not_logged_in" => {}
+            Err(e) => return Err(e),
         }
     }
-    let mut notes = vec![];
-    if let Err(e) = revoked {
-        notes.push(format!(
-            "{hub} did not confirm revoking this computer's key ({}); it is erased here",
-            e.code
-        ));
-    }
-    report_logout(ctx, &hub, Some(&key.email), args.everywhere, notes)
-}
-
-/// Revokes every other key of the account, with a token proven by an emailed code.
-async fn revoke_others(ctx: &Context, hub: &Origin, key: &DeviceKey) -> Result<(), Error> {
-    let anonymous = ctx.hub_anonymous(hub);
-    let enrollment = Enrollment::begin(&anonymous, &key.email, LABEL, Some(key))
-        .await
-        .map_err(hub_error)?;
-    let code = ask(
-        ctx,
-        &format!("A code was sent to {}. Code: ", key.email),
-        "code",
-    )?;
-    let (_, bearer) = enrollment
-        .finish(&anonymous, &code)
-        .await
-        .map_err(hub_error)?;
-    let proven = Credential::Bearer(bearer.token);
-    let client = hub_client::Client::connect(hub, ctx.http().clone(), proven);
-    hub_answer(client.revoke_other_device_keys().await)
-}
-
-fn report_logout(
-    ctx: &Context,
-    hub: &Origin,
-    email: Option<&str>,
-    everywhere: bool,
-    notes: Vec<String>,
-) -> Result<ExitCode, Error> {
-    let status = if email.is_some() {
-        "signed out"
-    } else {
-        "not signed in"
+    let out: SignedOut = match out {
+        Some(out) => out,
+        None => calcifer.delete_query("/v1/account", &at(hub)).await?,
     };
     if ctx.json {
-        output::json(&json!({
-            "status": status, "hub": hub, "email": email, "everywhere": everywhere, "notes": notes,
-        }));
+        output::json(&out);
         return Ok(ExitCode::SUCCESS);
     }
-    let mut record = output::Record::new()
-        .field("status", status)
-        .field("hub", hub);
-    if let Some(email) = email {
+    let mut record = output::Record::new().field("status", &out.status).field("hub", &out.hub);
+    if let Some(email) = &out.email {
         record = record.field("email", email);
     }
-    if everywhere {
+    if out.everywhere {
         record = record.field("other computers", "signed out");
     }
-    for note in notes {
+    for note in out.notes {
         record = record.note(note);
     }
     record.print(ctx);
@@ -265,81 +180,40 @@ pub struct Whoami {}
 /// (`unmetered` where the Hub does not meter it) and the Hub's page to buy more.
 pub async fn whoami(ctx: &Context, _args: Whoami) -> Result<ExitCode, Error> {
     let hub = ctx.hub();
-    let session = match ctx.signed_in(&hub) {
-        true => Some(ctx.hub_session(&hub)?),
-        false => None,
-    };
-    let (accepted, account) = match &session {
-        Some(_) => match standing(ctx, &hub).await? {
-            Some(account) => (true, account),
-            None => (false, None),
-        },
-        None => (false, None),
-    };
-    // A named account's credit: `Some(None)` where the Hub does not meter it.
-    let balance = match &account {
-        Some(_) => Some(
-            hub_answer(ctx.hub_signed_in(&hub)?.get_credit().await)?
-                .credit
-                .map(|c| c.available_usd_micros),
-        ),
-        None => None,
-    };
-    let buy = balance.is_some().then(|| format!("{hub}/account"));
-    let key = session.as_ref().filter(|_| accepted).map(|s| s.key());
-    let orgs = account.as_ref().map(|a| a.orgs.clone()).unwrap_or_default();
-    let account = account.map(|a| a.name);
+    let account: Account = ctx.calcifer().await?.get_query("/v1/account", &at(hub)).await?;
     if ctx.json {
-        output::json(&json!({
-            "logged_in": accepted, "account": account, "orgs": orgs, "email": key.map(|k| &k.email),
-            "billing": balance.map(|b| if b.is_some() { "metered" } else { "unmetered" }),
-            "balance_usd_micros": balance.flatten(), "device_key": key.map(|k| &k.id),
-            "buy_credits": buy,
-        }));
+        output::json(&account);
         return Ok(ExitCode::SUCCESS);
     }
     let mut record = output::Record::new();
-    match key {
-        Some(key) => {
+    match (account.logged_in, account.key_refused) {
+        (true, _) => {
             record = record
-                .field("account", account.as_deref().unwrap_or("none yet"))
-                .field("email", &key.email);
-            if !orgs.is_empty() {
-                record = record.field("orgs", &orgs.join(", "));
+                .field("account", account.account.as_deref().unwrap_or("none yet"))
+                .field("email", account.email.as_deref().unwrap_or_default());
+            if !account.orgs.is_empty() {
+                record = record.field("orgs", account.orgs.join(", "));
             }
-            if let Some(balance) = balance {
-                record = record.field("balance", balance.map_or("unmetered".into(), usd));
+            if account.billing.is_some() {
+                record = record.field("balance", account.balance_usd_micros.map_or("unmetered".into(), usd));
             }
-            record = record.field("device key", &key.id);
-            if let Some(buy) = &buy {
+            record = record.field("device key", account.device_key.as_deref().unwrap_or_default());
+            if let Some(buy) = &account.buy_credits {
                 record = record.note(format!("Buy credits at {buy}"));
             }
         }
-        None if session.is_some() => {
-            record = record.field("login", "this computer's key is no longer accepted");
-        }
-        None => record = record.field("login", "not signed in"),
+        (false, true) => record = record.field("login", "this computer's key is no longer accepted"),
+        (false, false) => record = record.field("login", "not signed in"),
     }
     record.print(ctx);
-    if !accepted || account.is_none() {
-        output::next(ctx, &[&ctx.config.login(&hub)]);
+    if !account.logged_in || account.account.is_none() {
+        output::next(ctx, &[&ctx.config.login(hub)]);
     }
     Ok(ExitCode::SUCCESS)
 }
 
-/// The account this computer's key signs in as at `hub`: `None` when the Hub no longer accepts
-/// the key (revoked from another computer), `Some(None)` when the account has no name yet.
-async fn standing(ctx: &Context, hub: &Origin) -> Result<Option<Option<hub_client::types::Account>>, Error> {
-    match hub_answer(ctx.hub_signed_in(hub)?.get_current_account().await) {
-        Ok(account) => Ok(Some(Some(account))),
-        Err(e) if e.code == "account.name_required" => Ok(Some(None)),
-        Err(e) if e.kind == Kind::Credential => Ok(None),
-        Err(e) => Err(e),
-    }
-}
-
 /// One line from stdin after a prompt on stderr.
-fn ask(_ctx: &Context, prompt: &str, what: &str) -> Result<String, Error> {
+fn ask_line(_ctx: &Context, prompt: &str, what: &str) -> Result<String, Error> {
     anstream::eprint!("{prompt}");
     let _ = anstream::stderr().flush();
     let mut line = String::new();

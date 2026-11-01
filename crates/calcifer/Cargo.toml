@@ -34,6 +34,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 tensorfs = { workspace = true, features = ["store"] }
 toml.workspace = true
+toml_edit.workspace = true
 
 [lints]
 workspace = true

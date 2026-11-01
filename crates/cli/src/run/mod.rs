@@ -9,20 +9,17 @@ use clap::ValueHint;
 use clap_complete::ArgValueCompleter;
 use protocol::{
     calcifer::{FileTerm, On, ReleaseFrom, Run, RunRequest, Target},
-    config::Origin,
     error::{Error, Kind},
     interface::Interface,
     machine::WarmLevel,
 };
 
 use crate::{Context, output};
-pub(crate) use follow::{exit_code, follow, follow_until, mint_key, settled, submit};
-pub(crate) use hub_client::cards::Card;
+pub(crate) use follow::{exit_code, follow, follow_until, mint_key, settle, settled, submit};
 
 mod follow;
 pub(crate) mod list;
 pub(crate) mod live;
-pub(crate) mod local;
 mod play;
 mod show;
 
@@ -373,96 +370,4 @@ impl Warm {
             Warm::Off => WarmLevel::Off,
         }
     }
-}
-
-/// What another verb's call runs: a package's release, or local code.
-pub(crate) enum Callee<'a> {
-    Release { package: &'a str, card: &'a Card },
-    Local(&'a local::Prepared),
-}
-
-impl Callee<'_> {
-    /// The package as its runs name it: `org/name`, or `local/<name>`.
-    pub(crate) fn package(&self) -> &str {
-        match self {
-            Callee::Release { package, .. } => package,
-            Callee::Local(prepared) => prepared.package(),
-        }
-    }
-
-    pub(crate) fn interface(&self) -> &Interface {
-        match self {
-            Callee::Release { card, .. } => &card.interface,
-            Callee::Local(prepared) => prepared.interface(),
-        }
-    }
-
-    /// The code exactly: its release, or a local source's manifest digest.
-    pub(crate) fn release(&self) -> &str {
-        match self {
-            Callee::Release { card, .. } => &card.release,
-            Callee::Local(prepared) => prepared.source(),
-        }
-    }
-
-    /// `function` of it as a run's target.
-    fn target(&self, function: &str) -> String {
-        match self {
-            Callee::Release { package, card } => format!("{package}/{function}@{}", card.release),
-            Callee::Local(prepared) => format!("{}/{function}", prepared.path().display()),
-        }
-    }
-}
-
-impl std::fmt::Display for Callee<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Callee::Release { package, card } => write!(f, "{package}@{}", card.release),
-            Callee::Local(prepared) => f.write_str(prepared.package()),
-        }
-    }
-}
-
-/// `cozy run <package>/<function> <inputs…> --on …` for another verb: `model quantize` runs a
-/// package's recipes this way. The run as it settled, or as it was when Ctrl-C stopped following
-/// it; its record is printed either way.
-pub(crate) async fn call(
-    ctx: &Context,
-    callee: &Callee<'_>,
-    function: &str,
-    inputs: Vec<String>,
-    placement: &Placement,
-) -> Result<Run, Error> {
-    let cwd = std::env::current_dir()
-        .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
-    send(ctx, RunRequest {
-        target: callee.target(function),
-        on: Some(placement.on()?),
-        hub: ctx.hub().to_string(),
-        terms: inputs,
-        cwd: Some(cwd),
-        recipes: true,
-        ..Default::default()
-    })
-    .await
-}
-
-/// A release's card, kept on this computer (the Hub's read once).
-pub(crate) async fn card(ctx: &Context, hub: &Origin, package: &str, release: &str) -> Result<Card, Error> {
-    hub_client::cards::card(|| ctx.hub_client(hub), ctx.home.root(), hub, package, release).await
-}
-
-/// The Hub's newest release of `package` now, and kept.
-pub(crate) async fn fresh(ctx: &Context, hub: &Origin, package: &str) -> Result<String, Error> {
-    hub_client::cards::fresh(&ctx.hub_client(hub)?, ctx.home.root(), hub, package).await
-}
-
-/// `release` of `package`'s card, else its newest this computer keeps.
-pub(crate) async fn resolve(ctx: &Context, hub: &Origin, package: &str, release: Option<&str>) -> Result<Card, Error> {
-    let root = ctx.home.root();
-    let release = match release {
-        Some(release) => release.to_owned(),
-        None => hub_client::cards::latest(|| ctx.hub_client(hub), root, hub, package).await?,
-    };
-    card(ctx, hub, package, &release).await
 }

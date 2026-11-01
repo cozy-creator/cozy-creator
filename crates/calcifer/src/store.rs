@@ -585,6 +585,14 @@ impl Store {
         })
     }
 
+    /// The idempotency key run `id` was submitted under.
+    pub fn key(&self, id: &str) -> Result<Option<String>> {
+        self.read(|db| {
+            let key = db.query_row("SELECT idempotency_key FROM runs WHERE id = ?1", [id], |r| r.get(0));
+            Ok(key.optional()?)
+        })
+    }
+
     pub fn submit(&self, key: &str, digest: &str, new: NewRun) -> Result<(RunRow, bool)> {
         let (id, fresh) = self.write(|tx| {
             let recorded: Option<(String, String)> = tx

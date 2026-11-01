@@ -11,6 +11,7 @@
 mod access;
 pub mod api;
 mod files;
+mod hub;
 mod kept;
 mod lanes;
 pub mod link;
@@ -88,6 +89,8 @@ pub struct Calcifer {
     warm: Mutex<HashMap<String, Vec<v1::WarmItem>>>,
     /// The machines and their Hubs, which mint what a send carries to its Hub.
     granting: OnceLock<Weak<machines::Machines>>,
+    /// What asks do once their run's machine completes it, by the ask's key (`hub::after`).
+    after: PathBuf,
 }
 
 /// A turn to write one object to one machine, and the number of the run whose turn it is.
@@ -176,6 +179,7 @@ impl Calcifer {
             exports: outputs::Exports::default(),
             warm: Mutex::default(),
             granting: OnceLock::new(),
+            after: home.join("after"),
         });
         calcifer.sweep_inputs()?;
         Ok(calcifer)
@@ -1027,7 +1031,9 @@ impl Calcifer {
                     batch.machine_state = Some(state.state);
                     continue;
                 }
-                Frame::Outcome(outcome) => {
+                Frame::Outcome(mut outcome) => {
+                    // What its ask does once the machine completed it, before it settles.
+                    self.after(id, &mut outcome).await;
                     let received = Instant::now();
                     tracing::info!(run = %id, phase = "outcome_received", sequence = durable,
                         machine_at_ms = frame.at_ms);

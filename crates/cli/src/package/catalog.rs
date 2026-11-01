@@ -1,56 +1,27 @@
-//! `cozy package ls|info`: the Hub's catalog, as this computer's account sees it (anonymous when signed out).
+//! `cozy package ls|info`: the Hub's catalog, as this computer's account sees it (anonymous when
+//! signed out), through Calcifer (CALCIFER-API.md "Packages").
 use std::process::ExitCode;
 
 use protocol::{
-    config::Origin,
-    error::{Error, Kind},
+    error::Error,
+    hub::{PackageDetail, PackageSearch},
 };
-use serde::Serialize;
 
-use super::{PackageRef, newest_first, stamp};
+use super::PackageRef;
 use crate::{
     Context,
-    context::hub_error,
+    calcifer_client::path,
     output::{self, Table},
 };
-
-#[derive(Serialize)]
-struct Found {
-    package: String,
-    latest_release: Option<String>,
-    created_at: String,
-}
-
-#[derive(Serialize)]
-struct Search {
-    packages: Vec<Found>,
-    total: i64,
-    omitted: i64,
-}
 
 pub async fn search(ctx: &Context, query: &str, limit: u32) -> Result<ExitCode, Error> {
     let hub = ctx.hub();
     let query = query.trim();
-    let answer = ctx
-        .hub_client(&hub)?
-        .search_packages((!query.is_empty()).then_some(query), limit)
-        .await
-        .map_err(hub_error)?;
-    let packages: Vec<Found> = answer
-        .packages
-        .into_iter()
-        .map(|p| Found {
-            package: protocol::names::shown(&format!("{}/{}", p.org, p.name)),
-            latest_release: p.latest_release,
-            created_at: stamp(&p.created_at),
-        })
-        .collect();
-    let omitted = (answer.search.total - packages.len() as i64).max(0);
-    let result = Search {
-        packages,
-        total: answer.search.total,
-        omitted,
-    };
+    let mut ask = vec![("hub", hub.to_string()), ("limit", limit.to_string())];
+    if !query.is_empty() {
+        ask.push(("q", query.to_owned()));
+    }
+    let result: PackageSearch = ctx.calcifer().await?.get_query("/v1/packages", &ask).await?;
     if ctx.json {
         output::json(&result);
         return Ok(ExitCode::SUCCESS);
@@ -71,72 +42,19 @@ pub async fn search(ctx: &Context, query: &str, limit: u32) -> Result<ExitCode, 
         table = table.row([p.package.as_str(), latest, p.created_at.as_str()]);
     }
     table.print();
-    if omitted > 0 {
+    if result.older > 0 {
         let shown = result.total.min(200);
-        println!("{omitted} more not shown. Use --limit {shown} to show them.");
+        println!("{} more not shown. Use --limit {shown} to show them.", result.older);
     }
     Ok(ExitCode::SUCCESS)
 }
 
-#[derive(Serialize)]
-struct Release {
-    release: String,
-    published: Option<String>,
-    yanked: bool,
-}
-
-#[derive(Serialize)]
-struct Info {
-    package: String,
-    latest_release: Option<String>,
-    releases: Vec<Release>,
-    /// The named release's publish warnings, which the Hub tells its owner.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    warnings: Vec<String>,
-}
-
 pub async fn info(ctx: &Context, package: &PackageRef) -> Result<ExitCode, Error> {
     let hub = ctx.hub();
-    let card = ctx
-        .hub_client(&hub)?
-        .get_package(&package.org, &package.name)
-        .await
-        .map_err(|e| missing(hub_error(e), package, hub.as_str()))?;
-    let releases: Vec<Release> = card
-        .releases
-        .into_iter()
-        .map(|r| Release {
-            yanked: r.yanked.unwrap_or(false) || r.yanked_at.is_some(),
-            published: r.cut_at.as_deref().map(stamp),
-            release: r.release,
-        })
-        .collect();
-    let mut releases = newest_first(releases, |r| r.release.as_str());
-    // A named release: its row alone, and what its publish warned of.
-    let mut warned = vec![];
-    if let Some(release) = &package.release {
-        releases.retain(|r| r.release == *release);
-        if releases.is_empty() {
-            return Err(Error::new(
-                Kind::NotFound,
-                "release_not_found",
-                format!(
-                    "{} has no release {release} on {}",
-                    package.package(),
-                    hub.as_str()
-                ),
-            )
-            .next(format!("cozy package info {}", package.package())));
-        }
-        warned = warnings(ctx, &hub, package, release).await?;
-    }
-    let info = Info {
-        // The name as published: the Hub finds `qwen3-5` for `qwen3.5`.
-        package: format!("{}/{}", card.package.org, card.package.name),
-        latest_release: card.package.latest_release,
-        releases,
-        warnings: warned,
-    };
+    let mut ask = vec![("hub", hub.to_string())];
+    ask.extend(package.release.clone().map(|release| ("release", release)));
+    let at = path(&["v1", "packages", &package.org, &package.name]);
+    let info: PackageDetail = ctx.calcifer().await?.get_query(&at, &ask).await?;
     if ctx.json {
         output::json(&info);
         return Ok(ExitCode::SUCCESS);
@@ -161,44 +79,4 @@ pub async fn info(ctx: &Context, package: &PackageRef) -> Result<ExitCode, Error
     }
     table.print();
     Ok(ExitCode::SUCCESS)
-}
-
-/// A release's publish warnings (a pin of its org's own package since yanked, or with a newer
-/// release), as the Hub's publish status tells the package's owner; none for anyone else.
-async fn warnings(
-    ctx: &Context,
-    hub: &Origin,
-    package: &PackageRef,
-    release: &str,
-) -> Result<Vec<String>, Error> {
-    if !ctx.signed_in(hub) {
-        return Ok(vec![]);
-    }
-    let status = ctx
-        .hub_signed_in(hub)?
-        .get_package_finalization(&package.org, &package.name, release)
-        .await;
-    match status.map_err(hub_error) {
-        Ok(status) => Ok(status.warnings),
-        Err(e) if matches!(e.kind, Kind::Forbidden | Kind::Credential | Kind::NotFound) => {
-            Ok(vec![])
-        }
-        Err(e) => Err(e),
-    }
-}
-
-/// A package this Hub does not have, named with the Hub searched and where to look instead.
-fn missing(error: Error, package: &PackageRef, hub: &str) -> Error {
-    if error.kind != Kind::NotFound {
-        return error;
-    }
-    let cause = error.cause.clone().unwrap_or(error.code);
-    Error::new(
-        Kind::NotFound,
-        "package_not_found",
-        format!("no package {} on {hub}", package.package()),
-    )
-    .remedy("check the name")
-    .next(format!("cozy package ls {}", package.name))
-    .cause(cause)
 }

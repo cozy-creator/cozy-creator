@@ -1068,7 +1068,7 @@ pub(crate) fn hub_refusal(origin: &str, e: hub_client::Error) -> Error {
 }
 
 /// `cozy login` for the Hub at `origin`, spelled by the config as it is now.
-fn login(origin: &str) -> String {
+pub(crate) fn login(origin: &str) -> String {
     config::load().map(|loaded| loaded.config).unwrap_or_default().login(origin)
 }
 

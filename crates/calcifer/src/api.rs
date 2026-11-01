@@ -54,6 +54,10 @@ pub struct Api {
     pub calcifer: Arc<Calcifer>,
     pub machines: Arc<Machines>,
     pub projects: crate::project::Projects,
+    /// Emailed codes waiting for what arrived (`POST /v1/account/codes`).
+    pub(crate) codes: crate::hub::Codes,
+    /// Package locks and publications this Calcifer started (`POST /v1/package-locks`, …).
+    pub(crate) works: crate::hub::Works,
     /// The three spellings of this server's own `host:port`.
     hosts: [String; 3],
     bearer: [u8; 32],
@@ -74,6 +78,8 @@ impl Api {
             calcifer,
             machines,
             projects: Default::default(),
+            codes: Default::default(),
+            works: Default::default(),
             hosts: [
                 format!("127.0.0.1:{port}"),
                 format!("localhost:{port}"),
@@ -156,6 +162,7 @@ pub fn router(api: Arc<Api>) -> Router {
         )
         .route("/v1/session", post(session).delete(end_session))
         .merge(crate::project::routes())
+        .merge(crate::hub::routes())
         // Routes go above this line: the bearer and the admission gate guard only those.
         .route_layer(middleware::from_fn_with_state(api.clone(), admit))
         .fallback(unknown_route)
