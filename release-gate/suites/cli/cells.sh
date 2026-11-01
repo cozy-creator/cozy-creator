@@ -59,7 +59,7 @@ fi
 # `rename`, which status suggests. A cycle is refused
 # before anything runs, and so is `--approve` with -n 2; a re-rolled character, once approved, puts what reads it out of
 # date and nothing else; `--approve` approves its new version; a person's save during a render stands (cozy writes
-# only project.lock); the re-cut is timed.
+# only project.lock); the re-cut is timed; the edit cuts by frame and writes edit.otio beside edit.mp4.
 project_cell() {
   local P=$PWD/project ok
   rm -rf "$P"; "$CLI" project new "$P" > project-new.log 2>&1 || { cli_fail "project new: $(tail -c 300 project-new.log)"; return; }
@@ -80,7 +80,7 @@ world_states:
 shots:
   - {name: one, setup: place.a, prompt: "<lead> in <place>. $MOTION", duration_s: 5, writes: [{state: start}]}
   - {name: two, prompt: "<lead> looks back over one shoulder, after <start>.", duration_s: 5}
-edit: [{shot: one, end: 4}, {shot: two, start: 1}]
+edit: [{shot: one, end: 96}, {shot: two, start: 24}]
 YAML
   cp "$P/project.yaml" project-ok.yaml
   # lead's description naming <start>, whose init names <lead>, is a cycle.
@@ -97,6 +97,8 @@ YAML
   ok=$(jq -r '[.nodes[] | select(.kind != "upscale" and .status != "current")] | length' project-status.json 2>/dev/null)
   [ "$ok" = 0 ] || cli_fail "after render all, $ok nodes are not current: $(tail -c 400 project-status.json)"
   [ -s "$P/edit.mp4" ] || cli_fail "render all cut no edit.mp4"
+  jq -e '.tracks.children[] | select(.kind == "Video") | .children[0].source_range | .start_time.value == 0 and .duration.value == 96' \
+    "$P/edit.otio" > /dev/null 2>&1 || cli_fail "edit.otio does not cut one's frames 0-96: $(head -c 300 "$P/edit.otio" 2>&1)"
   "$CLI" --json project ls > project-ls.json 2>&1
   jq -e --arg p "$P" '.projects | any(.path == $p and (.missing | not))' project-ls.json > /dev/null \
     || cli_fail "project ls does not list $P: $(tail -c 300 project-ls.json)"

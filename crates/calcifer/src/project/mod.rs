@@ -351,12 +351,15 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
                 vec![]
             }
         };
-        cuts.push(Cut { cut: name.into(), path, cut_at_ms, skips });
+        let made = video::timeline(&project.folder, name);
+        let (frames, retimed) = (made.as_ref().map(|made| made.frames), made.map(|made| made.retimed).unwrap_or_default());
+        cuts.push(Cut { cut: name.into(), path, cut_at_ms, frames, retimed, skips });
     }
     warnings.dedup();
     let busy = *project.walking.lock().expect("walking lock");
     let orphans = orphans(&video, &lock);
-    Ok(Json(ProjectState { id, path: project.folder.dir.clone(), nodes, missing, stale, orphans, busy, cuts, warnings }))
+    let (path, fps) = (project.folder.dir.clone(), video.canvas.fps);
+    Ok(Json(ProjectState { id, path, fps, nodes, missing, stale, orphans, busy, cuts, warnings }))
 }
 
 /// Where a node stands, for the lists under a project's table.
@@ -706,7 +709,8 @@ async fn asset(
     send(&project.folder.path(&format!("{}/{asset}", folder::ASSETS)), &format!("\"{hex}\""), &headers)
 }
 
-/// One of the project's cuts (`edit.mp4`, `preview.mp4`), as last made: its ETag names that cut.
+/// One of the project's cuts (`edit.mp4`, `preview.mp4`) or its timeline (`edit.otio`), as last
+/// made: its ETag names that cut.
 async fn cut(
     State(api): State<Arc<Api>>,
     Path((id, cut)): Path<(String, String)>,
@@ -714,9 +718,10 @@ async fn cut(
 ) -> Result<Response, Refusal> {
     let project = api.projects.get(&api, &id)?;
     let video = Video::load(&project.folder).map_err(Refusal)?;
-    if !made_cuts(&video).iter().any(|(name, _)| *name == cut) {
+    let named = |name: &str| name == cut || FsPath::new(name).with_extension("otio") == FsPath::new(&cut);
+    if !made_cuts(&video).iter().any(|(name, _)| named(name)) {
         let made: Vec<&str> = made_cuts(&video).into_iter().map(|(name, _)| name).collect();
-        let said = format!("the project makes no cut {cut}: it makes {}", made.join(" and "));
+        let said = format!("the project makes no cut {cut}: it makes {}, each with its .otio", made.join(" and "));
         return Err(Refusal(Error::new(Kind::NotFound, "cut_unknown", said)));
     }
     let path = project.folder.dir.join(&cut);
@@ -939,13 +944,14 @@ impl Walk {
                 (Folder::open(&self.folder().dir)?, self.project.cutting.clone(), Instant::now());
             let canvas = Canvas { short: if preview { None } else { video.canvas.short }, ..video.canvas.clone() };
             let cache = self.host.cache().join("cuts");
-            tokio::task::spawn_blocking(move || {
+            let made = tokio::task::spawn_blocking(move || {
                 let _held = cutting.lock().expect("cutting lock");
                 video::cut(&ffmpeg, &ffprobe, &folder, &pieces, &canvas, name, &cache)
             })
             .await
             .map_err(|e| Error::new(Kind::Internal, "edit_cut", e.to_string()))??;
-            self.say(Event::Cut { cut: name.into(), seconds: began.elapsed().as_secs_f64() });
+            let (frames, fps, retimed, took_s) = (made.frames, video.canvas.fps, made.retimed, began.elapsed().as_secs_f64());
+            self.say(Event::Cut { cut: name.into(), frames, fps, retimed, took_s });
         }
         Ok(())
     }
@@ -1431,6 +1437,7 @@ fn media_type(path: &FsPath) -> &'static str {
         "wav" => "audio/wav",
         "mp3" => "audio/mpeg",
         "flac" => "audio/flac",
+        "otio" => "application/json",
         _ => "application/octet-stream",
     }
 }
