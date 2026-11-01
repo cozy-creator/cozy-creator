@@ -102,6 +102,10 @@ enum Verb {
         /// machine keeps it in its config, across updates and restarts.
         #[arg(long, value_name = "SIZE|off", value_parser = gpu_memory_limit)]
         gpu_memory_limit: Option<u64>,
+        /// How this machine shares its GPU with other work. Persists in its config and
+        /// takes effect after the ordinary update drain and restart.
+        #[arg(long, value_name = "shared|dedicated", value_parser = machine_mode)]
+        mode: Option<protocol::config::MachineMode>,
     },
     /// Add another computer's machine by its address and TLS fingerprint.
     Add {
@@ -146,8 +150,17 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             tensorfs,
             tensord,
             gpu_memory_limit,
-        } => end::update(ctx, &name, runtime, tensorfs, tensord, gpu_memory_limit).await,
+            mode,
+        } => end::update(ctx, &name, runtime, tensorfs, tensord, gpu_memory_limit, mode).await,
         Verb::Authorize { public_key, remove } => local::authorize(ctx, &public_key, remove).await,
+    }
+}
+
+fn machine_mode(text: &str) -> Result<protocol::config::MachineMode, String> {
+    match text {
+        "shared" => Ok(protocol::config::MachineMode::Shared),
+        "dedicated" => Ok(protocol::config::MachineMode::Dedicated),
+        _ => Err("expected shared or dedicated".into()),
     }
 }
 
