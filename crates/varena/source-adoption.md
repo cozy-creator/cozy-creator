@@ -82,10 +82,11 @@ completion boolean or arbitrary completion predicate is accepted. Root chose the
 contract; no dual Box<dyn Send> compatibility API is retained. FillFacts exposes producer failure, retirement_failure, resources_remaining
 and retirement_finished separately. Permanent failures quarantine the exact remaining owners.
 
-The shared native retirement queue is being implemented by the observer-retirement owner:
-`retirement::enqueue(device, Job) -> Result<(), (Error, Job)>`. After that source freezes,
-add the typed FillResources job to that queue and remove the separate private fill-retire
-queue. The independent producer-event polling queue remains. Arena/Region/Pin/source leases
+The shared native retirement queue from49685f087 is now composed through
+`retirement::enqueue(device, Job) -> Result<(), (Error, Job)>` and its failure-retaining
+`defer` wrapper. The typed FillResources job shares that queue with final Arena resources;
+the separate private fill-retire queue is removed. The independent producer-event polling
+queue remains. Arena/Region/Pin/source leases
 here are genuine owners; observer detachment must not remove them or infer Arc counts.
 
 ## Later active users and deletion

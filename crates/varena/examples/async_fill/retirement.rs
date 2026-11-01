@@ -8,6 +8,18 @@ fn arena_facts(ticket: &varena::ArenaRetirement) -> Result<Value> {
         "remaining_physical_bytes":facts.remaining_physical_bytes,"failure":facts.failure}))
 }
 
+fn request_retirement(arena: Arc<Arena>) -> Result<varena::ArenaRetirement> {
+    match arena.request_retirement() {
+        Ok(ticket) => Ok(ticket),
+        Err((owner, error)) => {
+            // This isolated fixture is failing. Preserve the returned owner rather than
+            // silently releasing it while reporting a refused ownership transfer.
+            std::mem::forget(owner);
+            Err(error.into())
+        }
+    }
+}
+
 fn useful_work(cuda: &Cuda, region: &Arc<varena::Region>, stream: u64, output: u64) -> Result<()> {
     let pin = region.pin()?;
     // SAFETY: the ready Region and output own complete BYTES ranges in this context.
@@ -73,7 +85,7 @@ pub(super) fn run(cuda: Arc<Cuda>, device: i32) -> Result<Value> {
             (cuda.d2d)(output, pin.ptr(), BYTES, consumer as Obj),
         )?;
     }
-    let ticket = retiring.request_retirement().map_err(|(_, error)| error)?;
+    let ticket = request_retirement(retiring)?;
     until(|| Ok(ticket.facts()?.observers_detached))?;
     require(
         !ticket.try_complete()?,
@@ -111,6 +123,8 @@ pub(super) fn run(cuda: Arc<Cuda>, device: i32) -> Result<Value> {
         drop(pin.into_fenced_region(&[consumer]));
     }
     drop(region);
+    // Observation only: native retirement makes the decision; this fixture never forces
+    // Arc ownership or uses its count to authorize physical teardown.
     until(|| Ok(weak.strong_count() == 0))?;
     require(
         !ticket.try_complete()? && ticket.facts()?.remaining_physical_bytes == physical,
@@ -149,7 +163,7 @@ pub(super) fn run(cuda: Arc<Cuda>, device: i32) -> Result<Value> {
         &[control, consumer, independent],
     )?;
     drop(live_region);
-    let live_ticket = live.request_retirement().map_err(|(_, error)| error)?;
+    let live_ticket = request_retirement(live)?;
     until(|| live_ticket.try_complete().map_err(Into::into))?;
     Ok(
         json!({"while_producing":while_producing,"after_producer":after_producer,

@@ -394,7 +394,7 @@ impl Drop for FillSession {
     }
 }
 
-struct Payload {
+pub(crate) struct Payload {
     control: Arc<Control>,
     region: Option<Arc<Region>>,
     fill: Option<Fill>,
@@ -415,8 +415,8 @@ impl Payload {
     fn quarantine(&mut self, error: Error) {
         self.quarantine_at(error, false);
     }
-    fn quarantine_retirement(&mut self, error: Error) {
-        self.quarantine_at(error, true);
+    pub(crate) fn retirement_failed(&mut self, error: &Error) {
+        self.quarantine_at(error.clone(), true);
     }
     fn quarantine_at(&mut self, error: Error, retirement: bool) {
         // Called only after every operation guard has left the stack.
@@ -480,7 +480,7 @@ impl Payload {
         }
         Ok(true)
     }
-    fn retire(&mut self) -> Result<bool> {
+    pub(crate) fn retire(&mut self) -> Result<bool> {
         self.control.check()?;
         if !self.completed {
             return Err(Error::Poisoned("fill retired before completion".into()));
@@ -572,6 +572,8 @@ fn worker(device: i32) -> Result<mpsc::Sender<Payload>> {
     if previous != 0 && previous != pid {
         return Err(Error::Invalid("fill worker inherited after fork"));
     }
+    // Both event polling and final-resource custody exist before any destination is exposed.
+    crate::retirement::prepare(device)?;
     let mut slot = WORKER
         .get_or_init(Mutex::default)
         .lock()
@@ -579,17 +581,10 @@ fn worker(device: i32) -> Result<mpsc::Sender<Payload>> {
     if let Some(sender) = slot.get(&device) {
         return Ok(sender.clone());
     }
-    let (retire_sender, retire_receiver) = mpsc::channel::<Payload>();
-    std::thread::Builder::new()
-        .name(format!("varena-fill-retire-{device}"))
-        .spawn(move || run_worker(retire_receiver, None))
-        .map_err(|error| {
-            Error::Unsupported(format!("fill retirement worker could not start: {error}"))
-        })?;
     let (sender, receiver) = mpsc::channel::<Payload>();
     std::thread::Builder::new()
         .name(format!("varena-fill-{device}"))
-        .spawn(move || run_worker(receiver, Some(retire_sender)))
+        .spawn(move || run_worker(receiver))
         .map_err(|error| {
             Error::Unsupported(format!("fill completion worker could not start: {error}"))
         })?;
@@ -597,7 +592,7 @@ fn worker(device: i32) -> Result<mpsc::Sender<Payload>> {
     Ok(sender)
 }
 
-fn run_worker(receiver: mpsc::Receiver<Payload>, retirement: Option<mpsc::Sender<Payload>>) {
+fn run_worker(receiver: mpsc::Receiver<Payload>) {
     let mut pending = Vec::new();
     loop {
         let received = if pending.is_empty() {
@@ -616,38 +611,27 @@ fn run_worker(receiver: mpsc::Receiver<Payload>, retirement: Option<mpsc::Sender
         pending.extend(receiver.try_iter());
         let mut index = 0;
         while index < pending.len() {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                if retirement.is_some() {
-                    pending[index].tick()
-                } else {
-                    pending[index].retire()
-                }
-            }));
+            let result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pending[index].tick()));
             match result {
                 Ok(Ok(false)) => index += 1,
                 Ok(Ok(true)) => {
                     let payload = pending.swap_remove(index);
-                    if let Some(retirement) = &retirement {
-                        if let Err(error) = retirement.send(payload) {
-                            let mut payload = error.0;
-                            payload.quarantine_retirement(Error::Poisoned(
-                                "fill retirement worker stopped".into(),
-                            ));
-                            std::mem::forget(payload);
-                        }
-                    } // Retired Payload owns no remaining GPU resources.
+                    let device = payload.region().device();
+                    // The shared queue owns every checked final resource. Handoff failure
+                    // records retirement_failure and retains the exact job in quarantine.
+                    crate::retirement::defer(
+                        device,
+                        crate::retirement::Job::FillResources(payload),
+                    );
                 }
-                other => {
-                    let error = match other {
+                failure => {
+                    let error = match failure {
                         Ok(Err(error)) => error,
-                        _ => Error::Poisoned("fill worker panicked".into()),
+                        _ => Error::Poisoned("fill completion worker panicked".into()),
                     };
                     let mut payload = pending.swap_remove(index);
-                    if retirement.is_some() {
-                        payload.quarantine(error);
-                    } else {
-                        payload.quarantine_retirement(error);
-                    }
+                    payload.quarantine(error);
                     std::mem::forget(payload);
                 }
             }

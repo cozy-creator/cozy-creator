@@ -354,7 +354,7 @@ impl Driver {
     }
 
     pub(crate) fn validate_stream(&self, stream: usize) -> Result<()> {
-        self.activity_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
         let mut context = std::ptr::null_mut();
         // SAFETY: writable output and caller-owned stream; this primary context is entered.
         status("cuStreamGetCtx", unsafe {
@@ -367,7 +367,7 @@ impl Driver {
     }
 
     pub(crate) fn order_event(&self, stream: usize, event: usize) -> Result<()> {
-        self.activity_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: live same-context consumer and recorded event, retained across this call.
         status("cuStreamWaitEvent", unsafe {
             (self.stream_wait_event)(stream as Object, event as Object, 0)

@@ -55,13 +55,12 @@ with another ticket, multiple-GPU isolation, and the TensorFS/public asynchronou
 adapters. No error injection hooks or mocked CUDA completion exist in this fixture. Existing
 synchronous API, checked joins and Source ABI remain unchanged by this native slice.
 
-Integration boundary: the coordinator base's existing Arena::drop still holds the global
-capture mutex during its context join. The async queues are per device and separate event
-polling from resource retirement, but that existing finalizer can still block another GPU's
-capture-mutex access. The observer-retirement lane owns the shared native finalization seam;
-its exclusion-token/no-held-capture-mutex implementation must be composed and qualified
-before claiming last-Arena or cross-device progress. Async producer/Region/Pin leases are
-genuine ownership and must not be detached as observers or inferred from Arc strong counts.
+Integration boundary: native Arena retirement49685f087 is composed in this follow-up.
+Final Arena resources use completion-event queries without context/device synchronization,
+and both Arena and Fill resources share one typed per-device retirement queue. The event
+poller is independent. Source/host compilation does not qualify last-owner or cross-device
+progress; the actual GPU fixtures remain unrun. Genuine producer/Region/Pin leases are
+never detached as observers or inferred from Arc strong counts.
 
 `arena_retirement` composes the two native ownership systems. It requests retirement
 while a published Fill and an ordered consumer hold real owners. Separate device gates

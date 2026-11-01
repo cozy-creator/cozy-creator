@@ -167,10 +167,11 @@ No CUDA wait/destructor occurs while holding capture/arena/working/ledger/ABI-re
 Every potentially final Region/Arena/resource owner leaves those guards before destruction;
 final ownership release uses retirement exclusion, or stays queued for a later legal attempt.
 Metadata observations cannot accidentally become the final GPU-owning Arc under a mutex.
-A separate per-device retirement queue performs potentially blocking final owner destruction;
-final resource destruction is not performed on the producer-event polling thread.
-The existing Arena destructor's global capture-mutex coupling is an integration gate
-(recorded in the fixture README), so cross-device progress is not yet qualified.
+The shared typed per-device retirement queue performs final Arena and Fill resource
+retirement; final resource destruction is not performed on the producer-event polling
+thread. Native Arena retirement49685f087 removes the old context-wide join and global
+capture-mutex coupling. The composed source still requires real GPU qualification,
+including separate final owners and cross-device progress.
 `retirement_finished` is set after native owners and exclusion tokens are released; it is
 not a statement that an escaped alias or frontend finalizer released physical memory.
 Both workers start before destination exposure. These are genuine owner leases, not the

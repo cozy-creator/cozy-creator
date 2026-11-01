@@ -355,7 +355,7 @@ pub(crate) fn snapshot(lease: &Lease) -> Result<Option<Snapshot>> {
                 !phase.ids.contains(id)
                     && entry.handle.is_some()
                     && entry.uses.pins() == 0
-                    && entry.uses.state() != Contents::Loading
+                    && !matches!(entry.uses.state(), Contents::Loading | Contents::Published)
             })
             .map(|(id, entry)| (*id, entry.bytes))
             .collect();
@@ -408,7 +408,7 @@ pub(crate) fn reclaim_outside(device: i32, bytes: usize) -> Result<usize> {
                 !phase.ids.contains(id)
                     && entry.handle.is_some()
                     && entry.uses.pins() == 0
-                    && entry.uses.state() != Contents::Loading
+                    && !matches!(entry.uses.state(), Contents::Loading | Contents::Published)
             })
             .map(|(id, entry)| (*id, state.eviction_key(entry)))
             .collect();

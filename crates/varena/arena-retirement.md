@@ -45,16 +45,16 @@ are explicitly refused/quarantined with intact backing/accounting; there is no
 hidden context/device synchronization fallback. Active consumers still producing
 unjoined releases must migrate and qualify real stream/event completion.
 
-The private shared queue starts with owned Arena jobs:
+The private shared queue owns Arena and checked Fill resource jobs:
 
 ```rust
 retirement::enqueue(device: i32, job: Job)
     -> std::result::Result<(), (Error, Job)>;
 ```
 
-The async-fill owner will add the typed FillResources variant in a recorded
-follow-up, retaining its separate completion-event poller. The integrated cohort
-must have one per-device final-resource queue, not competing finalizer services.
+The fill-retirement follow-up adds the typed FillResources variant while retaining
+its separate completion-event poller. This integrated cohort has one per-device
+final-resource queue, with the original source checkpoint preserved below.
 Checked resource-retirement errors must feed quarantine without dropping remaining
 producer/source owners or claiming physical cleanup.
 

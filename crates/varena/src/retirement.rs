@@ -1,5 +1,5 @@
 //! Owned per-device final resources. No event poller or allocator metadata owns these jobs.
-//! Async fill adds its typed FillResources variant here; event submission stays separate.
+//! Arena resources and checked Fill resources share this queue; producer event polling stays separate.
 use crate::{Error, Result};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
@@ -7,17 +7,20 @@ use std::time::Duration;
 
 pub(crate) enum Job {
     Arena(crate::arena_retirement::Payload),
+    FillResources(crate::async_fill::Payload),
 }
 
 impl Job {
     fn poll(&mut self) -> Result<bool> {
         match self {
             Self::Arena(job) => job.poll(),
+            Self::FillResources(job) => job.retire(),
         }
     }
     fn failed(&mut self, error: &Error) {
         match self {
             Self::Arena(job) => job.failed(error),
+            Self::FillResources(job) => job.retirement_failed(error),
         }
     }
 }
