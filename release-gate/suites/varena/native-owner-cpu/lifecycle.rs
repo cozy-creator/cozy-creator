@@ -2,7 +2,11 @@
 // concurrency harness exercises host control, not CUDA or a simulated GPU participant.
 fn proof_control() -> Arc<Control> {
     let control = Arc::new(Control::new());
-    control.lock().unwrap().facts.active = true;
+    {
+        let mut state = control.lock().unwrap();
+        state.facts.active = true;
+        assert_eq!(state.add_client().unwrap(), 1);
+    }
     control
 }
 
@@ -17,7 +21,7 @@ fn proof_queued(control: &Control, count: usize) {
 #[allow(unsafe_code)]
 fn proof_inherited_control() {
     let control = proof_control();
-    let owner = Owner { device: 0, id: ledger::RowId { slot: 0, incarnation: 1 }, control: Arc::clone(&control) };
+    let owner = Owner { client: 1, device: 0, id: ledger::RowId { slot: 0, incarnation: 1 }, control: Arc::clone(&control) };
     let held = control.lock().unwrap();
     // The child inherits a locked mutex. Every public control operation must reject by PID
     // before touching it. This is a real private-VM fork, with no CUDA or GPU participant.
@@ -55,7 +59,7 @@ pub fn lifecycle_proof() -> String {
             let waiting = Arc::clone(&control);
             let done = done.clone();
             callers.push(std::thread::spawn(move || {
-                done.send(waiting.call(Command::Snapshot).is_err()).unwrap();
+                done.send(waiting.call(1, Command::Snapshot).is_err()).unwrap();
             }));
         }
         proof_queued(&control, 2);
@@ -64,7 +68,7 @@ pub fn lifecycle_proof() -> String {
             assert!(results.recv_timeout(Duration::from_secs(1)).unwrap());
         }
         for caller in callers { caller.join().unwrap(); }
-        assert!(control.call(Command::Snapshot).is_err());
+        assert!(control.call(1, Command::Snapshot).is_err());
         let state = control.lock().unwrap();
         assert!(state.stopping && !state.retired && !state.facts.active);
     }
@@ -92,7 +96,7 @@ pub fn lifecycle_proof() -> String {
         held.recv_timeout(Duration::from_secs(2)).unwrap();
         assert!(worker_control.lock().unwrap().stopping);
     });
-    drop(Owner { device: 0, id: ledger::RowId { slot: 0, incarnation: 1 }, control });
+    drop(Owner { client: 1, device: 0, id: ledger::RowId { slot: 0, incarnation: 1 }, control });
     release.send(()).unwrap();
     worker.join().unwrap();
 
@@ -114,7 +118,7 @@ pub fn lifecycle_proof() -> String {
     let closing = Arc::clone(&control);
     let (done, result) = mpsc::sync_channel(1);
     let caller = std::thread::spawn(move || {
-        let owner = Owner { device: 0, id: ledger::RowId { slot: 0, incarnation: 1 }, control: closing };
+        let owner = Owner { client: 1, device: 0, id: ledger::RowId { slot: 0, incarnation: 1 }, control: closing };
         done.send(owner.close().map_err(|error| error.to_string())).unwrap();
     });
     {
@@ -132,7 +136,8 @@ pub fn lifecycle_proof() -> String {
     pressure_lifetimes_proof();
     cache_callback_lifetimes_proof();
     cache_service_epoch_proof();
-    format!("{{\"passed\":true,\"native_thread_cancellations\":{},\"admitted_vs_queued\":true,\"drop_did_not_join\":true,\"poison_cancellation\":true,\"permanent_fault_close_returned\":true,\"fault_not_marked_retired\":true,\"fork_rejected_before_inherited_mutex\":true,\"coordination_budget_ms\":{},\"final_retry_instruction\":true,\"deadline_not_reset\":true,\"control_remained_active_after_budget\":true,\"capture_mutex_free_while_waiting\":true,\"local_waiter_drop_preserves_other_demand\":true,\"withdrawal_latched_across_new_demand\":true,\"stopped_control_cancels_recovery\":true,\"pressure_withdrawal_preserves_allocation_owner\":true,\"queued_request_boundary_cancels\":true,\"no_nvml_or_cuda_loaded\":true,\"real_callback_cancellation_returned_busy\":true,\"cooperation_close_refused_dispatcher_self_wait\":true,\"callback_return_granted_no_bytes\":true,\"repeated_queue_did_not_advance_owner\":true,\"stale_service_epoch_did_not_advance_owner\":true,\"last_callback_required_native_service\":true,\"gpu_qualified\":false}}", rounds * 2, budget_ms)
+    shared_clients_proof();
+    format!("{{\"passed\":true,\"native_thread_cancellations\":{},\"admitted_vs_queued\":true,\"drop_did_not_join\":true,\"poison_cancellation\":true,\"permanent_fault_close_returned\":true,\"fault_not_marked_retired\":true,\"fork_rejected_before_inherited_mutex\":true,\"coordination_budget_ms\":{},\"final_retry_instruction\":true,\"deadline_not_reset\":true,\"control_remained_active_after_budget\":true,\"capture_mutex_free_while_waiting\":true,\"local_waiter_drop_preserves_other_demand\":true,\"withdrawal_latched_across_new_demand\":true,\"stopped_control_cancels_recovery\":true,\"pressure_withdrawal_preserves_allocation_owner\":true,\"queued_request_boundary_cancels\":true,\"no_nvml_or_cuda_loaded\":true,\"real_callback_cancellation_returned_busy\":true,\"cooperation_close_refused_dispatcher_self_wait\":true,\"callback_return_granted_no_bytes\":true,\"repeated_queue_did_not_advance_owner\":true,\"stale_service_epoch_did_not_advance_owner\":true,\"last_callback_required_native_service\":true,\"shared_client_lifetime\":true,\"shared_client_races\":256,\"failed_service_tombstone_survived_last_handle\":true,\"old_close_ignored_new_capture\":true,\"unreported_clients_remain_unknown\":true,\"client_abandonment_did_not_train_H\":true,\"gpu_qualified\":false}}", rounds * 2, budget_ms)
 }
 
 fn cache_service_epoch_proof() {
@@ -182,7 +187,7 @@ fn cache_callback_lifetimes_proof() {
     use crate::cache_owner::{CacheOwner, CallbackResult, Cause, RequestKey, next_generation, request_shrink};
     let device = 194; // Real host metadata only; no CUDA device is opened or substituted.
     let control = proof_control();
-    let callback_owner = Owner { device, id: ledger::RowId {slot:0,incarnation:1}, control: Arc::clone(&control) };
+    let callback_owner = Owner { client: 1, device, id: ledger::RowId {slot:0,incarnation:1}, control: Arc::clone(&control) };
     let (entered, started) = mpsc::sync_channel(1);
     let (release, held) = mpsc::sync_channel(1);
     let (closed, close_result) = mpsc::sync_channel(1);
@@ -239,7 +244,7 @@ fn pressure_lifetimes_proof() {
         state.demands.insert(0, Instant::now() + COORDINATION_BUDGET);
         state.next_demand = 1;
     }
-    registry().unwrap().insert(device, Arc::downgrade(&control));
+    registry().unwrap().insert(device, Registered::new(&control));
     let (done, receive) = mpsc::sync_channel(1);
     let caller = std::thread::spawn(move || {
         let mut recovery = crate::Recovery::default();
@@ -267,7 +272,7 @@ fn pressure_lifetimes_proof() {
     let control = proof_control();
     let waiting = Arc::clone(&control);
     let caller = std::thread::spawn(move || {
-        let owner = Owner { device: 0, id: ledger::RowId { slot: 0, incarnation: 1 }, control: waiting };
+        let owner = Owner { client: 1, device: 0, id: ledger::RowId { slot: 0, incarnation: 1 }, control: waiting };
         assert!(owner.boundary(Boundary::RequestBegin).is_err());
     });
     proof_queued(&control, 1);
@@ -282,7 +287,7 @@ fn recovery_wait_proof() -> u128 {
     // real coordinator has no responder; its explicit deadline requests one final retry.
     let device = 91;
     let control = proof_control();
-    registry().unwrap().insert(device, Arc::downgrade(&control));
+    registry().unwrap().insert(device, Registered::new(&control));
     let (done, result) = mpsc::sync_channel(1);
     let caller = std::thread::spawn(move || {
         let mut recovery = crate::Recovery::default();
@@ -345,7 +350,7 @@ fn recovery_lifetimes_proof() {
         assert!(state.demands.is_empty() && state.owned_round.is_none());
     }
     let device = 92;
-    registry().unwrap().insert(device, Arc::downgrade(&control));
+    registry().unwrap().insert(device, Registered::new(&control));
     let (done, result) = mpsc::sync_channel(1);
     let caller = std::thread::spawn(move || {
         let mut recovery = crate::Recovery::default();

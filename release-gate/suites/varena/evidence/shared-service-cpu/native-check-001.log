@@ -1,0 +1,26 @@
+    Checking varena v0.17.16 (/home/fidika/cozy/.worktrees/cozy-creator/xs138-p3-shared-service/crates/varena)
+error[E0283]: type annotations needed
+   --> crates/varena/src/cooperative/owner.rs:622:91
+    |
+622 |                 .map_err(|_| crate::Error::Poisoned("native owner startup failed".into()).into())?);
+    |                                                                                           ^^^^
+    |
+note: multiple `impl`s satisfying `_: From<Error>` found
+   --> crates/varena/src/lib.rs:77:1
+    |
+ 77 | impl From<Error> for AllocationFailure {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: crates/varena/src/cooperative.rs:23:14
+    |
+ 23 |     Native(#[from] crate::Error),
+    |              ^^^^
+    = note: required for `Error` to implement `Into<_>`
+help: try using a fully qualified path to specify the expected types
+    |
+622 -                 .map_err(|_| crate::Error::Poisoned("native owner startup failed".into()).into())?);
+622 +                 .map_err(|_| <Error as Into<T>>::into(crate::Error::Poisoned("native owner startup failed".into())))?);
+    |
+
+For more information about this error, try `rustc --explain E0283`.
+error: could not compile `varena` (lib) due to 1 previous error
