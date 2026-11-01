@@ -13,6 +13,7 @@ def exercise(payload, ctx):
     cases = {'working', 'weight', 'gil', 'stopped', 'cap', 'va', 'limited', 'capture', 'replay'}
     assert payload.case in cases
     torch, vt, memory, owner, provenance = current(payload, ctx)
+    owner_row = eventually(owner._peer.snapshot)['owner']
     assert memory.room_limit is None
     assert 'driver_physical_ooms' in vt.stats(0) and 'recoveries' in owner.facts()
     target_bytes = 64 * MIB
@@ -225,7 +226,7 @@ def exercise(payload, ctx):
     final = eventually(settled)
     assert final['allocated_bytes'] == baseline['allocated_bytes'] and final['pending_bytes'] == 0
     assert final['pools'] == baseline['pools'] and final['event_handles'] == 0
-    return {'passed': True, 'case': payload.case, 'provenance': provenance, 'setup': setup,
+    return {'passed': True, 'case': payload.case, 'provenance': provenance, 'owner_row': owner_row, 'setup': setup,
             'before': native_before, 'after': native_after, 'donor_after': donor_after,
             'phase': phase_report, 'operation_error': operation_error, 'allocation_elapsed_ns': elapsed_ns,
             'baseline': baseline, 'final': final,
