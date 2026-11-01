@@ -1341,8 +1341,12 @@ impl Region {
 
     /// Record this region's reusable last-consumer event on each stream. Never waits.
     fn record_fences(&self, streams: &[u64], submission: Option<&async_fill::Control>) -> Result<()> {
-        let captures = capture_counts()?;
-        ensure_not_capturing(&captures, self.device())?;
+        // Only the new ordered-pin route needs this stronger publication/fence exclusion;
+        // ordinary completed pins keep their qualified release path unchanged.
+        let captures = submission.map(|_| capture_counts()).transpose()?;
+        if let Some(captures) = &captures {
+            ensure_not_capturing(captures, self.device())?;
+        }
         let ordered = submission.is_some_and(|control| {
             control.generation == self.uses.generation.load(Ordering::Acquire)
                 && self.uses.state() == Contents::Published
