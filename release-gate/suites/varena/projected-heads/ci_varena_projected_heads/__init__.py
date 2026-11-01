@@ -191,13 +191,30 @@ class Census(TorchDispatchMode):
             if self.seed_copies == 2:
                 torch.cuda.current_stream(self.device).synchronize()
                 assert self.output is not None
-                self.boundary = {'seed_copies_completed': 2,
-                                 'seed_after_second_copy': self.seed.cpu(),
-                                 'first_output_head_after_write': self.output[:, :, :1].cpu()}
+                self.boundary = {'seed_copies_completed': 2, 'stage': 'completed-writes'}
+                readback_before = self.vt.stats(self.device)
+                # A whole first-head view is noncontiguous: a D2H copy may create CUDA
+                # staging storage. Read every completed contiguous row directly into CPU
+                # storage, retaining full first-head coverage under the unchanged cap.
+                first_head = torch.empty((1, self.output.shape[1], 1, 128),
+                                         dtype=self.output.dtype, device='cpu')
+                for row in range(self.output.shape[1]):
+                    source = self.output[0, row, 0]
+                    assert source.is_contiguous()
+                    first_head[0, row, 0].copy_(source)
+                seed_host = self.seed.cpu()
+                readback_after = self.vt.stats(self.device)
+                readback_allocations = readback_after['allocations'] - readback_before['allocations']
+                assert readback_allocations == 0, (readback_before, readback_after)
+                self.boundary.update(stage='readback-complete',
+                                     seed_after_second_copy=seed_host,
+                                     first_output_head_after_write=first_head,
+                                     readback_device_allocations=readback_allocations)
                 # A real managed-capacity refusal after confirmed device writes. The
                 # request exceeds the whole limit by itself, so no driver overcommit occurs.
                 limit = after['mapped_bytes']
                 self.vt.set_limit(self.device, limit)
+                self.boundary['stage'] = 'real-refusal-requested'
                 torch.empty(limit + (2 << 20), dtype=torch.uint8, device=self.seed.device)
                 raise AssertionError('the real managed allocation unexpectedly succeeded')
         return result
@@ -310,6 +327,10 @@ def gpu(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
                     finally:
                         vt.phase_forget(device, capacity_key)
                     phase = request.working_phases[-1]
+                    tel.log('heads case boundary', tokens=tokens, heads=heads, chunk=str(chunk),
+                            seed_copies=census.seed_copies, returned='output' in held,
+                            refused='refusal' in held,
+                            boundary='none' if census.boundary is None else census.boundary['stage'])
                     tel.log(json.dumps({'heads_case_executed': {'tokens': tokens, 'heads': heads,
                         'requested_chunk': chunk, 'legacy_calls': legacy_calls[0],
                         'after_write_boundary_reached': census.boundary is not None,
@@ -338,13 +359,19 @@ def gpu(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
                         record = current[0]
                         assert record['head_chunk'] == chosen
                         if chunk == 'after-write':
-                            assert 'refusal' in held and 'output' not in held and census.boundary is not None
+                            assert ('refusal' in held and 'output' not in held
+                                    and census.boundary is not None
+                                    and census.boundary['stage'] == 'real-refusal-requested'), {
+                                        'head_chunk': record['head_chunk'], 'held': sorted(held),
+                                        'seed_copies': census.seed_copies,
+                                        'boundary': None if census.boundary is None else census.boundary['stage']}
                             assert phase['invalidated'] and not phase['published']
                             assert not torch.equal(census.boundary['seed_after_second_copy'], torch.full((heads, 128), 19., dtype=torch.float32))
                             partial = output_equal(census.boundary['first_output_head_after_write'], reference[:, :, :1])
                             cases.append({'case': 'real-refusal-after-writes', 'tokens': tokens, 'heads': heads,
                                           'boundary': 'second seed copy completed, after first output chunk',
                                           'seed_copies_completed': 2, 'first_output_head': partial,
+                                          'readback_device_allocations': census.boundary['readback_device_allocations'],
                                           'refusal': held['refusal'], 'phase': phase, 'allocation_census': census.rows})
                             cases[-1]['actual_allocation_classes'] = classes
                         else:
