@@ -125,7 +125,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         }
     };
     let machine = match crate::machine::adopt(ctx)? {
-        Adopted::MovesWhenIdle => match crate::machine::activate(ctx).await {
+        Adopted::MovesWhenIdle => match crate::machine::activate(ctx, &version).await {
             Ok(Some(run)) => Adopted::Moves { run },
             Ok(None) => Adopted::MovesWhenIdle,
             Err(e) => {

@@ -99,6 +99,68 @@ unsatisfiable), and `If-None-Match` naming its ETag with `304`, so a `<video>` s
 
 ### Machines and rentals
 <!-- cl-716 C -->
+A machine is this computer's (`local`, started when used), a rental, or another computer's added by address.
+`{name}` is a live machine's name or former name, or any machine's rental id. Records: `protocol::calcifer`.
+
+- `GET /v1/machines[?refresh=true]`: `MachineList {machines, hubs, unanswered, signed_out, rentals}`. It lists
+  every live machine, and the live rentals of this account that another controller rented (`recorded: false`).
+  `refresh` lists every Hub again first. `rentals` sums the live rentals: count, `usd_micros_per_hour`, and
+  `accrued_usd_micros` on its weakest `accrued_basis` (`accrued_floor` when some Hub said nothing).
+- `GET /v1/machines/events`: `machine.updated {machine}` each time a machine changes, and `machine.removed
+  {name}`. There is no backlog: subscribe, then list.
+- `GET /v1/machines/{name}[?fresh=true]`: `Machine`. `fresh` reads its Status now, or refuses
+  `machine_unavailable`.
+- `POST /v1/machines` (`NewMachine`):
+  - `{"kind": "rent", sku, hub, gpus?, disk_gb?, ssh_key?, agreed}`, with an `Idempotency-Key`. It answers
+    `202 Rented {machine, quote, replay}`, or `200` on a replay. Follow the boot on the events until the
+    machine is `ready`, or `ended` without one. `agreed` is the quote's `agreed()`: a dearer order rents
+    nothing (`rental_price_rose`).
+  - `{"kind": "add", name, address, fingerprint}` answers `Machine`.
+- `DELETE /v1/machines/{name}[?force=true]`: `Ended {machine, changed, abandoned}`, `202` while `ending`.
+  - The end is recorded at once and survives a restart. Calcifer carries it out once the outputs of the
+    machine's runs have landed here, and `machine.ending` says what it waits for.
+  - `force` ends it now; `abandoned` names the outputs given up. Asked again with `force`, it stops the wait.
+  - A rental is `ending` until its Hub affirms the pod gone, then `ended`. An added machine is removed.
+  - An ending machine takes no new runs (`409 machine_ending`), and `local` is refused.
+- `POST /v1/machines/{name}/keepalive`: `Keepalive`. It restarts a rental's 15-minute idle clock once the
+  machine acknowledges.
+- `POST /v1/machines/{name}/update` (`MachineUpdate`), with an `Idempotency-Key`: the machine's Runtime,
+  TensorFS and TensorD (its `cozy`) in one update run and one restart.
+  - Each component is `{"version": "0.33.1"}` or `{"file": "/abs/path"}`. A file is a dev build on this
+    computer: a wheel named `<distribution>-<version>-….whl`, or a `cozy` binary.
+  - A wheel version that PyPI lacks is fetched from its GitHub prerelease, matched to the machine's platform.
+  - With nothing named, each component moves to the Hub's target: always when the target is pinned, else only
+    forward.
+  - On `local`, a `cozy` that `cozy update` installed goes along with the update.
+  - It answers `Updating {machine, run?, target, warnings}`: `202` with the run, which is followed like any
+    other; `200` with no run when the machine already runs the target.
+  - The run fails `update_unapplied` unless the machine then runs what it asked for.
+- `GET /v1/machines/{name}/logs/{tensord|tensorfs|memory}?lines=N&since_ms=T`:
+  - The newest `N` whole lines (`0`: all), as `text/plain`. `since_ms` drops the lines before the first one
+    stamped at or after `T`.
+  - With `Accept: text/event-stream`, each batch follows as `{"type": "lines", after, text}`, with `id:` set to
+    `after`. Resume with `?after=` or `Last-Event-ID`.
+  - A machine that cannot answer is answered from the copy Calcifer kept.
+- `GET /v1/machines/local/authorized-keys`: `AuthorizedKeys {file, keys}`. These are other computers'
+  controllers that this computer's machine admits.
+- `PUT /v1/machines/local/authorized-keys/{key}` and `DELETE …/{key}` answer `Authorized {key, file, changed,
+  machine, image}`.
+  - `key` is an Ed25519 public key, 32 bytes of unpadded base64url.
+  - An added key answers once `local` names where other computers add it (`machine.reach`), or after 30 s if
+    it is busy and moves there once idle.
+  - A removed key's next call is refused.
+- `GET /v1/rental-skus[?hub=]`: `RentalSkus {rental_skus}`. These are the Hub's products for rent now,
+  cheapest first by their fewest GPUs. A product the Hub cannot sell now, for any reason, is not listed.
+- `POST /v1/rental-quotes` (`NewMachine` rent): `Quote`, the Hub's price for exactly that order. Nothing is
+  rented.
+  - First it admits the product at that GPU count, never widening it to another: `400 sku_unknown`, or
+    `507 sku_out_of_stock`, `sku_cooldown` or `sku_retry_in_progress`.
+  - `POST /v1/run-quotes` admits a product the run names the same way.
+- `GET /v1/rentals[?since_ms=&hub=]`: `RentalHistory {since_ms, rentals, days, total}`.
+  - It covers every rental of this account at the Hub, ended ones and those rented from any computer, newest
+    first, with what each cost (`spend_basis`: `charged`, `unmetered` or `estimate`).
+  - Sums are per UTC day and in all. It is not paged: `since_ms` is the window.
+  - Provider cost is present only when the Hub tells it, which it does for an operator.
 
 ### Packages, models, account and orgs
 <!-- cl-716 D -->
@@ -180,3 +242,16 @@ ffmpeg (cuts, frames, clips) and uv (local code). No route asks for them.
 | `cozy project rename <old> <new>` | `POST /v1/projects {path}`, `POST /v1/projects/{id}/rename` |
 | any verb, Calcifer of another version | `POST /v1/down`, then the installed cozy's Calcifer started |
 <!-- each PR adds its verbs' rows -->
+| `machine ls` | `GET /v1/machines?refresh=true`; on a terminal, `GET /v1/machines/events`, then `GET /v1/machines` |
+| `machine ls --history [--since D]` | `GET /v1/rentals?since_ms=` |
+| `machine show <name>` | `GET /v1/machines/{name}`; live on a terminal, as `ls` |
+| `machine logs <name> [log] [--since D] [-f]` | `GET /v1/machines/{name}/logs/{log}?lines=&since_ms=` (SSE with `-f`). `logs local calcifer` reads Calcifer's log file, so it works while Calcifer is down |
+| `machine rent` | `GET /v1/rental-skus` |
+| `machine rent <sku>` | `POST /v1/rental-quotes`, `POST /v1/machines` (rent), then `GET /v1/machines/events` until ready or ended |
+| `machine end <name> [--force]` | `DELETE /v1/machines/{name}`, then `GET /v1/machines/events` until ended |
+| `machine keepalive <name>` | `POST /v1/machines/{name}/keepalive` |
+| `machine update <name> [--runtime\|--tensorfs\|--tensord V\|PATH]` | `POST /v1/machines/{name}/update`, then the run's events. A project directory is built here first |
+| `machine add <name> <address>` | `POST /v1/machines` (add) |
+| `machine authorize <key> [--remove]` | `PUT` or `DELETE /v1/machines/local/authorized-keys/{key}` |
+| `machine ssh <name>` | `GET /v1/machines/{name}` for its address, then `ssh` here |
+| `update` (moving `local` to the new cozy) | `POST /v1/machines/local/update` with `{"tensord": {"version": V}}` |

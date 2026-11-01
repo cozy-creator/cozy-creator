@@ -510,6 +510,14 @@ impl Store {
         self.read(|conn| ask_in(conn, key))
     }
 
+    /// Replaces a pending ask's body: what it is to do, changed by its asker while it waits.
+    pub fn rewrite_ask(&self, key: &str, body: &[u8]) -> Result<()> {
+        self.write(|tx| {
+            tx.execute("UPDATE asks SET body = ?2 WHERE key = ?1 AND state = 'pending'", params![key, body])?;
+            Ok(())
+        })
+    }
+
     /// Asks not yet answered: what a starting Calcifer asks again.
     pub fn pending_asks(&self) -> Result<Vec<Ask>> {
         self.read(|conn| {
@@ -1529,6 +1537,7 @@ impl From<&MachineRow> for Machine {
             unverified: false,
             controller_key: None,
             reach: None,
+            ending: None,
         }
     }
 }
