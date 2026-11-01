@@ -379,7 +379,7 @@ impl Drop for Cache {
         if self.pid != std::process::id() || self.closed.load(Ordering::Acquire) {
             return;
         }
-        // No CUDA or waits in finalization. Unreleased live pages have no completion proof.
+        // No CUDA or GPU waits in finalization. Live pages have no completion proof.
         if let Ok(owner) = owner(self.device)
             && let Ok(mut state) = owner.lock()
             && let Some(held) = state.caches.get_mut(&self.id)

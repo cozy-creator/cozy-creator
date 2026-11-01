@@ -12,8 +12,8 @@ from typing import TYPE_CHECKING
 
 from .. import _ext
 from .cooperative import Cooperation as Cooperation
-from .cooperative import CooperationOwner as CooperationOwner
 from .cooperative import CooperationDeferredError as CooperationDeferredError
+from .cooperative import CooperationOwner as CooperationOwner
 from .cooperative import CooperationStaleSampleError as CooperationStaleSampleError
 
 if TYPE_CHECKING:
@@ -32,6 +32,50 @@ def make_room(device: int, limit: int | None) -> int:
     `limit`, None for no limit; returns the pages taken back now. Fills and working allocations stay
     inside it until it changes: what the machine asks when another program needs the GPU."""
     return _ext._varena_make_room(device, limit)
+
+
+class Cache:
+    """Owner-addressed CUDA pages; raw addresses are not tensor or graph lifetime leases.
+
+    Retain this owner while any consumer may use its reservation. Before release, stop
+    new use of the exact range and join every consumer into the supplied stream. Poll
+    collects completed releases without waiting. No shrink callback is installed here.
+    """
+
+    def __init__(self, device: int, reserve_bytes: int) -> None:
+        self._native = _ext._VarenaCache(device, reserve_bytes)
+        self.device = device
+
+    @property
+    def base(self) -> int:
+        return self._native.base
+
+    @property
+    def granularity(self) -> int:
+        return self._native.granularity
+
+    @property
+    def reserved_bytes(self) -> int:
+        return self._native.reserved_bytes
+
+    def commit(self, offset: int, bytes: int) -> None:
+        """Map an entirely free, page-aligned range; capacity failure rolls it back."""
+        self._native.commit(offset, bytes)
+
+    def release(self, offset: int, bytes: int, stream: int = 0) -> None:
+        """Release only the owner's joined pages after this CUstream completes."""
+        self._native.release(offset, bytes, stream)
+
+    def poll(self) -> dict[str, int]:
+        """Collect completed releases without waiting on future work."""
+        return self._native.poll()
+
+    def stats(self) -> dict[str, int]:
+        return self._native.stats()
+
+    def close(self) -> None:
+        """Refuse live/pending pages; return the reservation after release completes."""
+        self._native.close()
 
 
 class Arena:
