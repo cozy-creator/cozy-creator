@@ -6,7 +6,7 @@ use std::{path::PathBuf, process::ExitCode};
 use protocol::{
     calcifer::{On, local_usable},
     error::{Error, Kind},
-    project::{Approve, Approved, Event, Open, Opened, Projects, Runs, State},
+    project::{Approve, Approved, Event, Open, Opened, Projects, Rename, Renamed, Runs, State},
 };
 
 use crate::{
@@ -15,7 +15,7 @@ use crate::{
 };
 
 const EXAMPLES: &str = "Examples:
-  cozy project new garden                    a folder with project.yaml, references/, plates/, renders/
+  cozy project new garden                    a folder with a project.yaml to fill in
   cd garden && cozy project render all --on kiyui
                                              everything missing or out of date, then the edit
   cozy project status                        what is missing, out of date and why, and the cuts
@@ -23,17 +23,17 @@ const EXAMPLES: &str = "Examples:
   cozy project approve fight 2               its take 2 approved: what is made from it goes out of date
   cozy project -p ~/films/garden status      a project elsewhere, as git -C
   cozy project ls                            the projects this computer knows
+  cozy project rename theo mara              after renaming theo to mara in project.yaml: keep its versions
 
 The project is the folder holding project.yaml, found from the folder you are in or above it.
 project.yaml lists entities (characters, props, environments with camera setups), world states
 and shots; people write it and cozy never does. A shot's alternatives, and its upscale's, are
-takes; every other node's are versions, each a set of assets in one folder per node: takes in
-renders/ (renders/fight/fight_take002.mp4), versions in references/ beside your own files
-(references/theo/theo_v001.png, theo_v001_clean.png). project.lock records them, what made each
-and which is approved; numbers are never reused. Keep your own files in references/ (what
-guides) and plates/ (footage to edit): project.yaml's paths are relative to the folder, and cozy
-never touches a file it did not make. A file
-you attach (image:, or a shot's video:) is used until you approve one cozy made. A node's
+takes; every other node's are versions, numbered from 1 and never renumbered. Each is a set of
+assets, kept by content in assets/<sha256>.<ext>; project.lock records them, what made each and
+which is approved, and `status` prints each node's file. A file project.yaml names (relative to
+the folder, or absolute) is linked into assets/ on first use: edit it and what reads it goes out
+of date; move it and status says to relink. A file you attach (image:, or a shot's video:) is
+used until you approve one cozy made. A node's
 render: {with, models, lora, options} (or defaults: per kind) says how it is made. Names match
 in any case. The edit is edit.mp4, cut on this computer.";
 
@@ -66,8 +66,7 @@ pub struct Args {
 
 #[derive(clap::Subcommand, Debug)]
 enum Verb {
-    /// Make a project: a folder with a project.yaml to fill in (it shows each kind of entity),
-    /// references/ and plates/ for your own files, and renders/ for the takes cozy makes.
+    /// Make a project: a folder with a project.yaml to fill in (it shows each kind of entity).
     #[command(after_help = "Example:\n  cozy project new garden && $EDITOR garden/project.yaml")]
     New {
         /// The folder to make it in.
@@ -86,9 +85,18 @@ enum Verb {
         /// Its take or version, 1 first.
         version: u32,
     },
-    /// What is missing, what is out of date and why, and where the cuts are.
+    /// What is missing, what is out of date and why, each node's file, and where the cuts are.
     #[command(after_help = "Example:\n  cozy project status")]
     Status,
+    /// Keep a node's versions under its new name, after renaming it (and its <mentions>) in
+    /// project.yaml. Nothing on disk moves.
+    #[command(after_help = "Example:\n  cozy project rename theo mara   (status suggests it after a rename)")]
+    Rename {
+        /// Its name in project.lock.
+        from: String,
+        /// Its name in project.yaml now: a node of the same kind with no versions.
+        to: String,
+    },
 }
 
 /// New takes and versions of a project's nodes, made on a machine; `all` brings everything up to
@@ -169,7 +177,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                 output::json(&state);
                 return Ok(ExitCode::SUCCESS);
             }
-            let table = output::Table::new(ctx, ["NAME", "KIND", "MADE", "APPROVED", "MADE BY", "STATUS"]);
+            let table = output::Table::new(ctx, ["NAME", "KIND", "MADE", "APPROVED", "MADE BY", "STATUS", "FILE"]);
             let rows = state.nodes.iter().map(|n| {
                 let made = match n.versions {
                     1 => format!("1 {}", n.noun),
@@ -181,10 +189,20 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                     (None, true) => "-".into(),
                 };
                 let made_by = n.made_by.clone().unwrap_or_else(|| "-".into());
-                [n.name.clone(), n.kind.clone(), made, approved, made_by, n.status.clone()]
+                let file = n.path.clone().unwrap_or_else(|| "-".into());
+                [n.name.clone(), n.kind.clone(), made, approved, made_by, n.status.clone(), file]
             });
             rows.fold(table, output::Table::row).print();
             summary(ctx, &state);
+        }
+        Verb::Rename { from, to } => {
+            let opened = open(ctx, args.path.as_ref(), false).await?;
+            let path = format!("/v1/projects/{}/rename", opened.id);
+            let renamed: Renamed = ctx.calcifer().await?.post(&path, &Rename { from, to }, None).await?;
+            match ctx.json {
+                true => output::json(&renamed),
+                false => output::say(ctx, &format!("{} is {} now: its {} kept", renamed.from, renamed.to, renamed.versions)),
+            }
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -241,6 +259,13 @@ fn summary(ctx: &Context, state: &State) {
     if !state.stale.is_empty() {
         let stale: Vec<String> = state.stale.iter().map(|s| format!("{} ({})", s.name, s.why)).collect();
         output::say(ctx, &format!("out of date: {}", stale.join(", ")));
+    }
+    for orphan in &state.orphans {
+        let (n, name, kind) = (orphan.versions, &orphan.name, &orphan.kind);
+        let said = format!("project.lock keeps {n} made of {name} (a {kind}), which project.yaml no longer names");
+        output::say(ctx, &said);
+        let to = orphan.renamed_to.as_deref().unwrap_or("<its new name>");
+        output::next(ctx, &[&format!("cozy project rename {} {to}", orphan.name)]);
     }
     for cut in &state.cuts {
         let skips = match cut.skips.as_slice() {

@@ -53,16 +53,17 @@ if "$CLI" --json model upload "local/ci-e2e-q8-$R" "$q" --lane bf16 --on "$M" > 
 fi
 "$CLI" --json model delete "$q" -y > /dev/null 2>&1 || cli_fail "model delete $q failed: delete it by hand"
 
-# cli-project (xs-136, cl-716): a project through every verb (`cozy project new|ls|render|approve|status`), its renders
-# on $M and its pictures' cleans and the edit on this computer. `new` makes references/, plates/ and renders/; the
-# project is found from inside it (renders/) and named with -p from elsewhere, and `ls` lists it. A cycle is refused
+# cli-project (xs-136, cl-716): a project through every verb (`cozy project new|ls|render|approve|status|rename`), its
+# renders on $M and its pictures' cleans and the edit on this computer. The project is found from a folder inside it
+# and named with -p from elsewhere, and `ls` lists it; a node renamed in project.yaml keeps its versions through
+# `rename`, which status suggests. A cycle is refused
 # before anything runs, and so is `--approve` with -n 2; a re-rolled character, once approved, puts what reads it out of
 # date and nothing else; `--approve` approves its new version; a person's save during a render stands (cozy writes
 # only project.lock); the re-cut is timed.
 project_cell() {
   local P=$PWD/project ok
   rm -rf "$P"; "$CLI" project new "$P" > project-new.log 2>&1 || { cli_fail "project new: $(tail -c 300 project-new.log)"; return; }
-  for d in references plates renders; do [ -d "$P/$d" ] || cli_fail "project new made no $d/"; done
+  [ -f "$P/project.yaml" ] || cli_fail "project new made no project.yaml"; mkdir -p "$P/notes"
   cat > "$P/project.yaml" <<YAML
 type: video
 defaults: {entity: {with: $(pkg qwen-image-2 generate)}, setup: {with: $(pkg qwen-image-2 generate)},
@@ -91,7 +92,7 @@ YAML
   if "$CLI" project -p "$P" render lead -n 2 --approve --on "$M" > project-approve-n.log 2>&1 || ! grep -q approve_one project-approve-n.log; then
     cli_fail "--approve with -n 2 was not refused: $(tail -c 300 project-approve-n.log)"
   fi
-  ( cd "$P/renders" && "$CLI" project render all --on "$M" ) > project-render.log 2>&1 || cli_fail "render all from renders/: $(tail -c 400 project-render.log)"
+  ( cd "$P/notes" && "$CLI" project render all --on "$M" ) > project-render.log 2>&1 || cli_fail "render all from notes/: $(tail -c 400 project-render.log)"
   "$CLI" --json project -p "$P" status > project-status.json 2>&1
   ok=$(jq -r '[.nodes[] | select(.kind != "upscale" and .status != "current")] | length' project-status.json 2>/dev/null)
   [ "$ok" = 0 ] || cli_fail "after render all, $ok nodes are not current: $(tail -c 400 project-status.json)"
@@ -107,6 +108,15 @@ YAML
   "$CLI" --json project -p "$P" status > project-status-2.json 2>&1
   jq -e '.nodes[] | select(.name == "place") | .approved == 2' project-status-2.json > /dev/null \
     || cli_fail "render place --approve did not approve version 2: $(jq -c '.nodes[] | select(.name == "place")' project-status-2.json)"
+  # place renamed yard in project.yaml (and its mentions): status suggests the rename, which keeps its versions.
+  sed -i 's/name: place$/name: yard/; s/<place>/<yard>/g; s/setup: place\.a/setup: yard.a/' "$P/project.yaml"
+  "$CLI" project -p "$P" status > project-orphan.log 2>&1
+  grep -q "cozy project rename place yard" project-orphan.log || cli_fail "status did not suggest the rename: $(tail -c 300 project-orphan.log)"
+  "$CLI" project -p "$P" rename place yard > project-rename.log 2>&1 || cli_fail "project rename: $(tail -c 300 project-rename.log)"
+  "$CLI" project -p "$P" rename place.a yard.a >> project-rename.log 2>&1 || cli_fail "project rename of the setup: $(tail -c 300 project-rename.log)"
+  "$CLI" --json project -p "$P" status > project-renamed.json 2>&1
+  jq -e '(.orphans // []) == [] and (.nodes[] | select(.name == "yard") | .approved == 2 and .versions == 2)' project-renamed.json > /dev/null \
+    || cli_fail "after rename, yard does not hold place's versions: $(jq -c '[.orphans, (.nodes[] | select(.name == "yard"))]' project-renamed.json)"
   # A person's save while a run is in flight stands: cozy writes only project.lock.
   ( "$CLI" project -p "$P" render all --on "$M" > project-race.log 2>&1; echo $? > project-race.exit ) &
   for _ in $(seq 1 1800); do grep -q '"pending"' "$P/project.lock" 2>/dev/null && break; sleep 1; done
