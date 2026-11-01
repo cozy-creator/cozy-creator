@@ -420,6 +420,7 @@ pub struct Arena {
     captures: Arc<AtomicUsize>,
     room: Arc<Room>,
     state: Mutex<State>,
+    retired: bool,
 }
 
 /// This process's GPU bytes on one device against the room it may hold (`make_room`): its mapped
@@ -707,6 +708,7 @@ impl Arena {
         let (capturing, room) = (Arc::clone(&activity.captures), Arc::clone(&activity.room));
         drop(captures);
         let arena = Arc::new(Self {
+            retired: false,
             driver,
             device,
             pid: std::process::id(),
@@ -2073,50 +2075,46 @@ impl Drop for Region {
     }
 }
 
-impl Drop for Arena {
-    fn drop(&mut self) {
-        if self.pid != std::process::id() {
-            return;
-        }
-        let Ok(captures) = capture_counts() else {
-            return;
-        };
-        let _ = plan::arena_changed(self.device);
-        if ensure_recovery_allowed(&captures, self.device).is_err() {
-            return;
-        }
-        let Ok(state) = self.state.get_mut() else {
-            return;
-        };
-        if state.poison.is_some() {
-            return;
-        }
-        let Ok(_context) = self.driver.enter() else {
-            return;
-        };
-        if self.driver.synchronize().is_err() {
-            return;
-        }
-        for entry in state.entries.values() {
-            // Last Arc<Arena> means no Region, Pin, Fill, or CaptureGuard can still exist.
-            for fence in entry.uses.fences().drain(..) {
-                let _ = self.driver.destroy_event(fence.event);
-            }
-            if let Some(handle) = entry.handle {
-                if self.driver.unmap(entry.ptr, entry.bytes).is_err() {
-                    return;
+impl Arena {
+    // Called only with exclusive ownership. Public ABI retirement holds capture/replay
+    // exclusion throughout and quarantines this exact object on a permanent failure.
+    fn finish_retirement(&mut self) -> Result<()> {
+        if self.retired { return Ok(()); }
+        if self.pid != std::process::id() { return Err(Error::Invalid("arena used after fork")); }
+        let _retirement = enter_retirement(self.device)?;
+        let state = self.state.get_mut().map_err(|_| Error::Poisoned("arena mutex".into()))?;
+        if let Some(reason) = &state.poison { return Err(Error::Poisoned(reason.clone())); }
+        let _context = self.driver.enter()?;
+        self.driver.synchronize()?;
+        let result = (|| {
+            for id in state.entries.keys().copied().collect::<Vec<_>>() {
+                let entry = state.entries.get_mut(&id).expect("exclusive arena owner");
+                let mut fences = entry.uses.fences();
+                while let Some(fence) = fences.last() {
+                    self.driver.destroy_event(fence.event)?;
+                    fences.pop();
                 }
-                if self.driver.release(handle).is_err() {
-                    return;
+                drop(fences);
+                if let Some(handle) = entry.handle {
+                    self.driver.unmap(entry.ptr, entry.bytes)?;
+                    self.driver.release(handle)?;
+                    entry.handle = None;
+                    self.room.pages.fetch_sub(entry.bytes, Ordering::AcqRel);
+                    self.room.released.fetch_add(entry.bytes as u64, Ordering::AcqRel);
                 }
-                self.room.pages.fetch_sub(entry.bytes, Ordering::AcqRel);
-                self.room.released.fetch_add(entry.bytes as u64, Ordering::AcqRel);
+                self.driver.free_address(entry.ptr, entry.bytes)?;
+                state.entries.remove(&id);
             }
-            if self.driver.free_address(entry.ptr, entry.bytes).is_err() {
-                return;
-            }
-        }
+            Ok(())
+        })();
+        if let Err(error) = result { return Err(poison(state, error)); }
+        plan::arena_changed(self.device)?;
+        self.retired = true;
+        Ok(())
     }
+}
+impl Drop for Arena {
+    fn drop(&mut self) { let _ = self.finish_retirement(); }
 }
 
 fn room(device: i32) -> Result<Arc<Room>> {

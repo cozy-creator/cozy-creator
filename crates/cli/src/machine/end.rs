@@ -217,6 +217,8 @@ pub async fn update(
     protocol::calcifer::local_usable(name)?;
     let mut payload = serde_json::Map::new();
     let (mut staged, mut inputs, mut named, mut want) = (vec![], vec![], vec![], vec![]);
+    // Keep automatically packed local native dependencies alive through input upload.
+    let mut native_bundles = Vec::new();
     let mut asked = vec![];
     for (member, distribution, value) in [
         ("runtime", "cozy_runtime", runtime),
@@ -295,10 +297,20 @@ pub async fn update(
             }
             Component::Build(path) => path,
         };
+        let expected_binary_version = (member == "tensord").then(|| built_version(&path)).flatten();
+        let path = if member == "tensord" {
+            let temporary = tempfile::Builder::new().prefix("cozy-native-").tempdir()
+                .map_err(|e| Error::new(Kind::Validation, "native_bundle_failed", e.to_string()))?;
+            match platform::native_bundle::pack_binary(&path, &temporary.path().join("cozy-native.tar.gz"))
+                .map_err(|e| Error::new(Kind::Validation, "native_bundle_failed", e.to_string()))? {
+                Some(packed) => { native_bundles.push(temporary); packed },
+                None => path,
+            }
+        } else { path };
         let (file, input) = wheel(&path, distribution)?;
         dev |= member == "tensord";
         want.push(match member {
-            "tensord" => built_version(&path).map_or(("dev", true.into()), |v| ("version", v.into())),
+            "tensord" => expected_binary_version.map_or(("dev", true.into()), |v| ("version", v.into())),
             _ => reports(member, &file),
         });
         named.push(match reports(member, &file) {
@@ -478,6 +490,18 @@ async fn prerelease(
 
 /// The release a `cozy` binary built here says it is, when it runs here.
 fn built_version(path: &Path) -> Option<String> {
+    use std::io::Read as _;
+    let mut magic = [0u8; 2];
+    std::fs::File::open(path).ok()?.read_exact(&mut magic).ok()?;
+    let temporary;
+    let staged;
+    let path = if magic == *b"PK" || magic == [0x1f, 0x8b] {
+        temporary = tempfile::Builder::new().prefix("cozy-version-").tempdir().ok()?;
+        let archive = temporary.path().join("bundle");
+        std::fs::copy(path, &archive).ok()?;
+        staged = platform::native_bundle::staged(&archive).ok()?;
+        staged.as_path()
+    } else { path };
     let out = std::process::Command::new(path).arg("--version").stdin(std::process::Stdio::null()).output().ok()?;
     String::from_utf8_lossy(&out.stdout).trim().strip_prefix("cozy ").map(str::to_owned).filter(|_| out.status.success())
 }
@@ -528,7 +552,20 @@ fn build(dir: &Path, distribution: &str) -> Result<PathBuf, Error> {
         Err(e) => return Err(failed(e.to_string())),
     }
     if distribution.is_empty() {
-        return Ok(dir.join("target/release").join(if cfg!(windows) { "cozy.exe" } else { "cozy" }));
+        let binary = dir.join("target/release").join(if cfg!(windows) { "cozy.exe" } else { "cozy" });
+        let archive = out.join("cozy-native.tar.gz");
+        std::fs::create_dir_all(&out).map_err(|e| failed(e.to_string()))?;
+        let mut command = std::process::Command::new("uv");
+        command.args(["run", "--no-project"]);
+        if cfg!(target_os = "linux") { command.args(["--with", "patchelf"]); }
+        if cfg!(windows) { command.args(["--with", "lief"]); }
+        let status = command.arg("python")
+            .arg(dir.join("scripts/bundle-native.py"))
+            .arg("--binary").arg(binary).arg("--target").arg(dir.join("target/release"))
+            .arg("--out").arg(out.join("native")).arg("--archive").arg(&archive)
+            .status().map_err(|e| failed(e.to_string()))?;
+        if !status.success() { return Err(failed("native dependency bundling failed".into())); }
+        return Ok(archive);
     }
     let newest = std::fs::read_dir(&out)
         .map_err(|e| failed(e.to_string()))?

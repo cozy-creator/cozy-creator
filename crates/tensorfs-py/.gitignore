@@ -21,3 +21,6 @@ wheel-data/scripts/*
 .task-owner*.md
 .worktree-owner*.md
 .owner-agent/
+
+# Private libraries staged by build.rs for native CLI wheel installation.
+wheel-data/data/

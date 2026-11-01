@@ -1,11 +1,31 @@
 //! Nonwaiting requests to explicit cache owners. Allocators see host control only;
 //! callback/data ownership stays on a separate worker, never the cooperation thread.
 use crate::{Error, GlobalCaptureGuard, Result};
+use std::cell::Cell;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, mpsc};
 use std::thread::ThreadId;
 use std::time::Duration;
+
+thread_local! {
+    // Only the native dispatcher establishes this identity. An already-running
+    // callback keeps a release/read borrow while its public owner is retiring.
+    static CALLBACK_OWNER: Cell<Option<(i32, u64)>> = const { Cell::new(None) };
+}
+
+struct CallbackIdentity(Option<(i32, u64)>);
+impl Drop for CallbackIdentity {
+    fn drop(&mut self) { CALLBACK_OWNER.with(|current| current.set(self.0)); }
+}
+fn invoke_callback<T>(device: i32, id: u64, invoke: impl FnOnce() -> T) -> T {
+    let previous = CALLBACK_OWNER.with(|current| current.replace(Some((device, id))));
+    let _identity = CallbackIdentity(previous);
+    invoke()
+}
+pub(crate) fn in_callback(owner: &CacheOwner) -> bool {
+    CALLBACK_OWNER.with(|current| current.get() == Some((owner.device(), owner.id())))
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Cause {
@@ -254,6 +274,8 @@ pub struct CacheOwner {
     id: u64,
 }
 impl CacheOwner {
+    /// Logical device identity; reading it performs no CUDA work.
+    pub fn device(&self) -> i32 { self.control.device }
     pub fn new<F>(device: i32, callback: F) -> Result<Self>
     where
         F: FnMut(usize) -> Result<CallbackResult> + Send + 'static,
@@ -661,7 +683,7 @@ fn worker_tick(
             job: None,
         };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            registration.callback.retire(&scope)
+            invoke_callback(control.device, id, || registration.callback.retire(&scope))
         }))
         .unwrap_or_else(|_| Err(Error::Poisoned("cache callback retirement panicked".into())));
         match result {
@@ -771,7 +793,7 @@ fn worker_tick(
             job: Some(Arc::clone(&job)),
         };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            registration.callback.shrink(&scope, wanted)
+            invoke_callback(control.device, id, || registration.callback.shrink(&scope, wanted))
         }))
         .unwrap_or_else(|_| Err(Error::Poisoned("cache callback panicked".into())));
         // Capture excludes every owner. Replay may exclude just this owner's physical

@@ -42,6 +42,20 @@ fn callback_error(py: Python<'_>, error: PyErr) -> varena::Error {
 struct PythonCallback {
     // Created by weakref.ref with no weakref callback: this object owns no GPU resource.
     callback: Option<Py<PyAny>>,
+    physical: bool,
+}
+impl PythonCallback {
+    fn unavailable(&self) -> varena::Error {
+        if self.physical {
+            // This dispatcher is not in a Python GC traversal. try_attach's None
+            // means the runtime is absent/shutting down, not ordinary GIL contention.
+            // Retain the payload through the existing callback-retirement failure
+            // path; this is an owner/runtime failure, not a CUDA DeviceFault.
+            varena::Error::Callback("Python runtime unavailable for physical Cache callback ownership".into())
+        } else {
+            varena::Error::Busy
+        }
+    }
 }
 impl CacheCallback for PythonCallback {
     fn shrink(&mut self, scope: &CallbackScope, bytes: usize) -> varena::Result<CallbackResult> {
@@ -49,7 +63,7 @@ impl CacheCallback for PythonCallback {
             // Never acquire exclusion while waiting for the allocating caller's GIL.
             // Strong temporary Python targets are born/dropped within capture exclusion;
             // other sequences retain their independent replay entry and physical Pins.
-            let _guard = scope.producing()?;
+            let _guard = if self.physical { scope.enter()? } else { scope.producing()? };
             let callback = self
                 .callback
                 .as_ref()
@@ -71,24 +85,42 @@ impl CacheCallback for PythonCallback {
                 },
             )
         })
-        .unwrap_or(Err(varena::Error::Busy))
+        .unwrap_or_else(|| Err(self.unavailable()))
     }
 
     fn retire(&mut self, scope: &CallbackScope) -> varena::Result<()> {
         Python::try_attach(|py| {
-            let _guard = scope.producing()?;
+            let _guard = if self.physical { scope.enter()? } else { scope.producing()? };
             if let Some(callback) = self.callback.take() {
                 callback.drop_ref(py);
             }
             Ok(())
         })
-        .unwrap_or(Err(varena::Error::Busy))
+        .unwrap_or_else(|| Err(self.unavailable()))
     }
 }
 
 #[pyclass(name = "_VarenaCacheOwner", module = "tensorfs._ext", frozen)]
 pub(super) struct PyCacheOwner {
-    owner: Deferred<varena::CacheOwner>,
+    owner: Deferred<Arc<varena::CacheOwner>>,
+}
+
+fn create_owner(
+    py: Python<'_>,
+    device: i32,
+    callback: &Bound<'_, PyAny>,
+    physical: bool,
+) -> PyResult<Arc<varena::CacheOwner>> {
+    if !callback.is_callable() {
+        return Err(PyValueError::new_err("cache shrinker must be callable"));
+    }
+    let callback = py.import("weakref")?.getattr("ref")?.call1((callback,))?.unbind();
+    py.detach(|| varena::CacheOwner::with_callback(
+        device,
+        Box::new(PythonCallback { callback: Some(callback), physical }),
+    ))
+    .map(Arc::new)
+    .map_err(|error| owner_error(py, error))
 }
 
 #[pymethods]
@@ -98,26 +130,8 @@ impl PyCacheOwner {
 
     #[new]
     fn new(py: Python<'_>, device: i32, callback: &Bound<'_, PyAny>) -> PyResult<Self> {
-        if !callback.is_callable() {
-            return Err(PyValueError::new_err("cache shrinker must be callable"));
-        }
-        let callback = py
-            .import("weakref")?
-            .getattr("ref")?
-            .call1((callback,))?
-            .unbind();
-        let owner = py
-            .detach(|| {
-                varena::CacheOwner::with_callback(
-                    device,
-                    Box::new(PythonCallback {
-                        callback: Some(callback),
-                    }),
-                )
-            })
-            .map_err(|error| owner_error(py, error))?;
         Ok(Self {
-            owner: Deferred::new(owner),
+            owner: Deferred::new(create_owner(py, device, callback, false)?),
         })
     }
 
@@ -160,6 +174,22 @@ impl PyCacheOwner {
         row.set_item("retirement_failed", value.retirement_failed)?;
         Ok(row)
     }
+}
+
+#[pyfunction]
+fn _varena_public_cache_owner(
+    py: Python<'_>,
+    handle: u64,
+    device: i32,
+    callback: &Bound<'_, PyAny>,
+) -> PyResult<PyCacheOwner> {
+    // Physical ABI Cache pages need full replay exclusion. Existing logical graph
+    // owners retain their producing-only adapter above.
+    let owner = create_owner(py, device, callback, true)?;
+    let retained = Arc::clone(&owner);
+    py.detach(|| varena::abi::attach_cache_owner(handle, retained))
+        .map_err(|error| owner_error(py, error))?;
+    Ok(PyCacheOwner { owner: Deferred::new(owner) })
 }
 
 #[pyclass(name = "_VarenaCacheRequest", module = "tensorfs._ext", frozen)]
@@ -208,6 +238,7 @@ fn _varena_cache_request(
 
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyCacheOwner>()?;
+    module.add_function(wrap_pyfunction!(_varena_public_cache_owner, module)?)?;
     module.add_class::<PyCacheRequest>()?;
     module.add_function(wrap_pyfunction!(_varena_cache_request, module)?)?;
     module.add(
