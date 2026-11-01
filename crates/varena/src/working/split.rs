@@ -404,6 +404,20 @@ pub fn split_select(
     preferred: &str,
     stream: u64,
 ) -> Result<SplitSelection> {
+    let result = split_select_inner(device, key, choices, preferred, stream);
+    if result.is_err() {
+        let _ = invalidate_current_phase(device, "split_select_error");
+    }
+    result
+}
+
+fn split_select_inner(
+    device: i32,
+    key: &str,
+    choices: Vec<(String, Vec<usize>)>,
+    preferred: &str,
+    stream: u64,
+) -> Result<SplitSelection> {
     valid_stream(stream)?;
     context(device)?;
     let owner = initialize_owner(device)?;
@@ -432,6 +446,20 @@ pub fn split_select(
 /// Re-evaluate the exact agreed geometry and stream immediately before opening the leaf.
 /// Matched compatible cache stays mapped; only unmatched completed backing may be trimmed.
 pub fn split_begin(
+    device: i32,
+    key: &str,
+    choice_id: &str,
+    completion_owner: Option<u64>,
+    stream: u64,
+) -> Result<u64> {
+    let result = split_begin_inner(device, key, choice_id, completion_owner, stream);
+    if result.is_err() {
+        let _ = invalidate_current_phase(device, "split_begin_error");
+    }
+    result
+}
+
+fn split_begin_inner(
     device: i32,
     key: &str,
     choice_id: &str,
