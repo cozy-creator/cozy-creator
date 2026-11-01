@@ -59,3 +59,21 @@ This assertion changes no product source; its source checks pass, and the GPU
 claim remains for 3939. Full new-package H3, other GPUs/providers, captured tails,
 post-acceptance fault injection and unrelated incoming quantized-cache ownership
 remain outside this proof.
+
+## Full H3 pair: no-worse gate failed
+
+Full matched control **25112** / candidate **25151** proves all **1,500 native Tail
+scopes** execute and publish. The component proofs above remain valid. The full
+consumer is **not accepted**: denoise rises **0.8893%** and recorded store bytes
+rise **3.8758%** (+17,455,363,584 B). Most native choices use 27,280 or 54,562 rows,
+compared with legacy 3,307 / 1,679; rest-loop working backing grows by 2.686 GB.
+The actual model kernel recipes match, including the unserved sm90-only FA3
+refusal in both arms. Full video/PCM/public-latent comparison and sampled visuals
+are preserved; roughly comparable sampled quality does not remove the timing/I/O
+failure. See `evidence/2026-11-01/full-h3-review.md` and its hash-linked JSON.
+
+`choice-policy-gap.md` and `prefetch-boundary.md` identify the next P2 boundary:
+actual declared phase weights and committed choices are missing; active phase
+key None makes optional eager prefetch structurally ineligible. No old Python
+window policy, guessed prior key or benchmark-specific smaller chunk was added.
+Product source and the tested fixture remain frozen.
