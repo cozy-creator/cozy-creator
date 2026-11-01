@@ -57,7 +57,7 @@ def main(config):
     torch.cuda.set_device(0)
     actual.update({'gpu': torch.cuda.get_device_name(0), 'gpu_uuid': str(torch.cuda.get_device_properties(0).uuid),
                    'cudnn': torch.backends.cudnn.version(), 'mode': config['mode']})
-    assert actual['gpu_uuid'] == config['gpu_uuid'], actual['gpu_uuid']
+    assert actual['gpu_uuid'].removeprefix('GPU-').lower() == config['gpu_uuid'].removeprefix('GPU-').lower(), actual['gpu_uuid']
     emit({'provenance': actual})
     pipe = StableDiffusionXLPipeline.from_pretrained(
         str(snapshot), torch_dtype=torch.float16, variant='fp16', use_safetensors=True,

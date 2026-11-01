@@ -45,8 +45,10 @@ def gpu(payload: Probe, tel: Telemetry) -> Report:
     if payload.mode not in ('both', 'native', 'varena'):
         raise ValueError('mode must be both, native or varena')
     import torch
-    if not payload.gpu_uuid.startswith('GPU-') or str(torch.cuda.get_device_properties(0).uuid) != payload.gpu_uuid:
-        raise ValueError('the visible GPU must match the explicitly owned rental UUID before any weight download')
+    actual_uuid = str(torch.cuda.get_device_properties(0).uuid)
+    if (not payload.gpu_uuid.startswith('GPU-')
+            or actual_uuid.removeprefix('GPU-').lower() != payload.gpu_uuid.removeprefix('GPU-').lower()):
+        raise ValueError(f'visible GPU {actual_uuid!r} must match owned rental {payload.gpu_uuid!r} before download')
     tool = Path(payload.compute_sanitizer)
     if not tool.is_absolute() or not tool.is_file():
         raise ValueError('the reviewed Compute Sanitizer must already be installed; this fixture never installs it')
