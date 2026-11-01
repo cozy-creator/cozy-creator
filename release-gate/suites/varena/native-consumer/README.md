@@ -47,7 +47,8 @@ Earlier fa731/fbb artifacts remain preserved as pre-withdrawal-fix evidence. Thi
 fixture now consumes exact native `c3bf579ae82b42b254aa30fe54c609fc8e89afcb`, the
 product owner's frozen withdrawal fix. It observes own demand/active recoveries/
 pending withdrawals and unfinished owned rounds return to idle without issuing any
-withdraw/clear_want/ask/service command. GPU qualification is still pending. Native
+withdraw/clear_want/ask/service command. The four bounded GPU cells passed on
+Hitoshiki; exact receipts and limits are in `evidence/2026-11-01-hitoshiki/`. Native
 product code is imported unchanged from that checkpoint; this fixture introduces no
 allocator, daemon or published tool behavior. Source/build success is not GPU proof.
 

@@ -1,7 +1,7 @@
 import hashlib,json,sys
 from pathlib import Path
 
-ROOT=Path('/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-shortage-int8-leg15-plan/attempt-001')
+ROOT=Path(__file__).parent
 OUT=Path(__file__).parent
 NATIVE='c3bf579ae82b42b254aa30fe54c609fc8e89afcb'
 HELPER='30c09e4b2fb1ac0e95ddb028deb766a168606536'
