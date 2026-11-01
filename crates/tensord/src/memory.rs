@@ -682,7 +682,8 @@ impl Host {
 /// What the host keeps free for the calls running on it: each process's anonymous growth still
 /// to come (its requests' measured anonymous peak less its anonymous bytes now) and [`Growth`],
 /// the most a look saw them grow past what was measured to come (an unmeasured call's every
-/// byte). Page cache is never need: the budget holds it.
+/// byte). Page cache is never need: the budget holds it. With no call running nothing can grow,
+/// so nothing is kept: an idle executor the next call would use is not ended for growth to come.
 #[derive(Default)]
 struct Keep {
     growth: Growth,
@@ -715,7 +716,8 @@ impl Keep {
             }
         }
         self.running = by.values().map(|call| (call.pid, call.running)).collect();
-        need.saturating_add(self.growth.observe(unforeseen))
+        let growth = self.growth.observe(unforeseen);
+        if by.is_empty() { 0 } else { need.saturating_add(growth) }
     }
 }
 
