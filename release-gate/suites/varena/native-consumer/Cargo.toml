@@ -1,0 +1,16 @@
+[package]
+name = "varena-native-consumer"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+varena = { path = "../../../../crates/varena" }
+libloading = "0.9"
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+debug = false
