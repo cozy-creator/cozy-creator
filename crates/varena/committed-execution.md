@@ -19,3 +19,8 @@ owner callbacks and cross-process ownership remain in their existing modules/bra
 
 This is a source design checkpoint. Native implementation and CPU/GPU qualification are
 separate gates; root owns all GPU execution and paid resources.
+
+The execution lease excludes new graph capture only. Independently owned graph replay
+remains legal; its activity epoch invalidates the eager measurement, preserving an older
+successful sample. This metadata owner does not hold final-retirement exclusion for its
+compute lifetime. It owns no GPU allocation destructor requiring that global boundary.

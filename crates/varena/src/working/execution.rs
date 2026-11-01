@@ -6,7 +6,7 @@ struct Active {
     leaf: Option<u64>,
     ended: bool,
     submitted: bool,
-    _exclusion: GlobalCaptureGuard,
+    _exclusion: crate::ProducerGuard,
 }
 
 enum Progress {
@@ -90,7 +90,7 @@ impl Execution {
                 "closed execution requires current configuration and site",
             ));
         }
-        let _exclusion = crate::enter_retirement(device)?;
+        let _exclusion = crate::enter_producer(device)?;
         let owner = initialize_owner(device)?;
         inactive(&owner)?;
         let selected = split_select(device, site, choices.clone(), preferred, stream)?;
@@ -156,7 +156,7 @@ impl Execution {
             }
         }
         let result = (|| {
-            let exclusion = crate::enter_retirement(self.device)?;
+            let exclusion = crate::enter_producer(self.device)?;
             let owner = owner(self.device)?;
             inactive(&owner)?;
             split::validate_committed(&owner, &self.site, self.choices.clone(), &self.preferred)?;

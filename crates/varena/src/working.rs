@@ -1890,6 +1890,9 @@ fn phase_enter_inner(
             "execution phases cannot overlap on one device",
         ));
     }
+    if committed_site.is_some() && state.splits.active_is_present() {
+        return Err(Error::Invalid("committed execution cannot overlap an active split"));
+    }
     let token = state
         .phases
         .next
