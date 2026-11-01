@@ -45,7 +45,10 @@ impl PyPlan {
             .collect();
         let plan = py
             .detach(|| varena::plan::Plan::new(arena, phases))
-            .map_err(|error| super::raise(py, error))?;
+            .map_err(|error| match error {
+                varena::Error::Invalid(message) => pyo3::exceptions::PyValueError::new_err(message),
+                other => super::raise(py, other),
+            })?;
         Ok(Self {
             plan: Deferred::new(plan),
             pid: std::process::id(),
