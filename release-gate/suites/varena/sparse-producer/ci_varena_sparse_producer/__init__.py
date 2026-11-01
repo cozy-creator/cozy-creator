@@ -59,6 +59,9 @@ def actual(payload, ctx):
         'author/_split.py', 'internal/execution/native_sparse_producer.py',
         'internal/execution/native_linear_split.py', 'internal/execution/phase.py',
         'internal/residency.py', 'internal/producers.py',
+        'rows.py', 'lora.py', 'internal/encoding/leaves.py', 'internal/prebuilt.py',
+        'internal/execution/native_heads.py', 'internal/execution/native_residual_ffn.py',
+        '_kernels/_gemm.abi3.so',
     }
     for name, expected in payload.runtime_modules.items():
         assert digest(root / name) == expected, name

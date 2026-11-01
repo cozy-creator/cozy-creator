@@ -7,6 +7,8 @@ from collections import Counter
 from contextlib import nullcontext
 from contextvars import ContextVar
 from dataclasses import replace
+from importlib import import_module
+from importlib.metadata import version
 
 import torch
 from cozy_runtime.author import (
@@ -21,7 +23,7 @@ from cozy_runtime.author import (
 from minimax_h3 import glue, producer, producer_kernels
 from torch.utils._python_dispatch import TorchDispatchMode
 
-from . import Probe, Report, actual, app, settle
+from . import Probe, Report, actual, app, digest, settle
 
 WIDTH = 5376
 _CASE: ContextVar[dict | None] = ContextVar('sparse_consumer_fixture', default=None)
@@ -264,9 +266,14 @@ def consumer(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
     assert int8_linear.native(torch, device) is not None
     ready, = attention.pinned(_OBSERVED.name, measure_device(torch, device, 'cuda'))
     from comfy_kitchen.backends import cuda as kitchen
+    kitchen_source = import_module('comfy_kitchen.sage_attention')
+    assert version('comfy-kitchen') == '0.2.40'
+    assert digest(kitchen_source.__file__) == '23447a19aa113722f9b0e9a3b1fcc30cec59c438fe652535b870922f50d0543a'
     launch = triton_kernels.load(glue.kernels(on), device=on)
     stats = triton_kernels.load(producer_kernels.STATS, device=on)
-    provenance.update(launcher_key=stats.key, backend=str(ready.member.value))
+    provenance.update(launcher_key=stats.key, backend=str(ready.member.value),
+                      kitchen_artifact=ready.artifact, kitchen_version=version('comfy-kitchen'),
+                      kitchen_extension_sha256=digest(kitchen._C.__file__))
     generator = torch.Generator().manual_seed(payload.seed)
     settle(vt, device)
     initial = vt.stats(device)
@@ -359,6 +366,7 @@ def consumer(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
                             assert len(records) == 1
                             record = records[0]
                             assert record['statistics'] == mode
+                            assert record['kernel_identity'][-1] == provenance['kitchen_extension_sha256']
                             if not complete:
                                 assert record['head_chunk'] == selected
                                 observed = [s for r in census.rows for s in r['storage']]

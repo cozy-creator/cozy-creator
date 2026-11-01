@@ -15,6 +15,9 @@ MODULES = (
     'author/_split.py', 'internal/execution/native_sparse_producer.py',
     'internal/execution/native_linear_split.py', 'internal/execution/phase.py',
     'internal/residency.py', 'internal/producers.py',
+    'rows.py', 'lora.py', 'internal/encoding/leaves.py', 'internal/prebuilt.py',
+    'internal/execution/native_heads.py', 'internal/execution/native_residual_ffn.py',
+    '_kernels/_gemm.abi3.so',
 )
 PACKAGE = ('__init__.py', 'glue.py', 'adaln_pruned.py', 'overlay.py', 'producer_kernels.py', 'producer.py')
 
