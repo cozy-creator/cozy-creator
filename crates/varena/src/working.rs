@@ -813,9 +813,14 @@ impl Working {
                     if !reusable || block.capacity != bytes || block.reusable_on != origin {
                         continue;
                     }
-                    let before = block.charge();
-                    let prior = block.phase;
-                    block.phase = phase;
+                    // Phase tokens never repeat, and entry rebuilds segment accounting.
+                    // Outside an observation an old tag needs neither reading nor clearing.
+                    let observed = phase.map(|token| {
+                        let before = block.charge();
+                        let prior = block.phase;
+                        block.phase = Some(token);
+                        (before, prior)
+                    });
                     block.life = Life::Live;
                     block.stream = stream;
                     block.origin_retired = false;
@@ -824,8 +829,10 @@ impl Working {
                         block.streams.clear();
                         block.streams.insert(stream);
                     }
-                    let (capacity, segment) = (block.capacity, block.segment);
-                    state.phase_changed(before, capacity, prior, phase, segment);
+                    if let Some((before, prior)) = observed {
+                        let (capacity, segment) = (block.capacity, block.segment);
+                        state.phase_changed(before, capacity, prior, phase, segment);
+                    }
                     return Some(ptr);
                 }
             }
@@ -1394,6 +1401,7 @@ fn free_inner(device: i32, ptr: u64, stream: u64) -> Result<()> {
     let capturing = crate::ensure_not_capturing(&captures, device).is_err();
     let mut state = owner.lock()?;
     owner.callback_mutation(&mut state);
+    let measured = state.phases.active.is_some();
     let transition = (|| {
         let State {
             blocks,
@@ -1443,12 +1451,10 @@ fn free_inner(device: i32, ptr: u64, stream: u64) -> Result<()> {
             block.capacity,
             block.reusable_on,
             reusable,
-            block.charge(),
-            block.phase,
-            block.segment,
+            measured.then(|| (block.charge(), block.phase, block.segment)),
         ))
     })();
-    let (requested, pool, class, reusable_on, reusable, charge, phase, segment) =
+    let (requested, pool, class, reusable_on, reusable, observed) =
         transition.map_err(|error| owner.fail(&mut state, error))?;
     if reusable {
         state
@@ -1457,7 +1463,9 @@ fn free_inner(device: i32, ptr: u64, stream: u64) -> Result<()> {
             .or_default()
             .push(ptr);
     }
-    state.phase_changed(class, charge, phase, phase, segment);
+    if let Some((charge, phase, segment)) = observed {
+        state.phase_changed(class, charge, phase, phase, segment);
+    }
     state.stats.allocated_bytes -= requested;
     state.stats.frees += 1;
     Ok(())
