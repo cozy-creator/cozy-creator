@@ -1,0 +1,2 @@
+src/cozy_runtime/author/kernels.py:364: error: Item "None" of "Any | None" has no attribute "_version"  [union-attr]
+Found 1 error in 1 file (checked 4 source files)

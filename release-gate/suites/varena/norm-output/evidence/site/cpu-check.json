@@ -1,0 +1,650 @@
+{
+  "passed": true,
+  "cuda_initialized": false,
+  "torch": "2.14.0+cu130",
+  "torch_git": "08187d9e0fba026dc8217405802ab5381dc88d90",
+  "norm_type": "RMSNorm",
+  "norm_width": 5376,
+  "cpu_norm_bit_exact": true,
+  "actual_processor": "Processor",
+  "registered_sol_site": {
+    "component": "fixture",
+    "path": "attention"
+  },
+  "first_output_group": null,
+  "output_weight_shape": [
+    5376,
+    7168
+  ],
+  "sets": {
+    "minimax-h3-glue": {
+      "identity": "sha256:5296525747c8fa82b137f4a4425c1460e20b3f8a208b88ee4fd6c8cfac5a8314",
+      "entries": {
+        "_norm_mod_kernel[BLOCK=8192,FP8=0,RESIDUAL=0]": {
+          "kernel": "469accf048197941f5cec5d268750f41d21ae614a4aa4feb34af889b56a4465c",
+          "signature": {
+            "x_ptr": "*bf16",
+            "branch_ptr": "*bf16",
+            "gate_ptr": "*bf16",
+            "hidden_ptr": "*bf16",
+            "out_ptr": "*bf16",
+            "scale_out_ptr": "*bf16",
+            "weight_ptr": "*bf16",
+            "scale_ptr": "*bf16",
+            "shift_ptr": "*bf16",
+            "index_ptr": "*i64",
+            "n_cols": "i32",
+            "n_index": "i32",
+            "stride_x": "i32",
+            "stride_table": "i32",
+            "eps": "fp32",
+            "RESIDUAL": "constexpr",
+            "FP8": "constexpr",
+            "BLOCK": "constexpr"
+          },
+          "constexprs": {
+            "RESIDUAL": 0,
+            "FP8": 0,
+            "BLOCK": 8192
+          },
+          "aligned": [
+            "x_ptr",
+            "branch_ptr",
+            "gate_ptr",
+            "hidden_ptr",
+            "out_ptr",
+            "scale_out_ptr",
+            "weight_ptr",
+            "scale_ptr",
+            "shift_ptr",
+            "index_ptr",
+            "n_cols",
+            "stride_x",
+            "stride_table"
+          ],
+          "options": {
+            "num_warps": 16,
+            "num_stages": 3,
+            "enable_fp_fusion": true
+          }
+        },
+        "_norm_mod_kernel[BLOCK=8192,FP8=0,RESIDUAL=1]": {
+          "kernel": "469accf048197941f5cec5d268750f41d21ae614a4aa4feb34af889b56a4465c",
+          "signature": {
+            "x_ptr": "*bf16",
+            "branch_ptr": "*bf16",
+            "gate_ptr": "*bf16",
+            "hidden_ptr": "*bf16",
+            "out_ptr": "*bf16",
+            "scale_out_ptr": "*bf16",
+            "weight_ptr": "*bf16",
+            "scale_ptr": "*bf16",
+            "shift_ptr": "*bf16",
+            "index_ptr": "*i64",
+            "n_cols": "i32",
+            "n_index": "i32",
+            "stride_x": "i32",
+            "stride_table": "i32",
+            "eps": "fp32",
+            "RESIDUAL": "constexpr",
+            "FP8": "constexpr",
+            "BLOCK": "constexpr"
+          },
+          "constexprs": {
+            "RESIDUAL": 1,
+            "FP8": 0,
+            "BLOCK": 8192
+          },
+          "aligned": [
+            "x_ptr",
+            "branch_ptr",
+            "gate_ptr",
+            "hidden_ptr",
+            "out_ptr",
+            "scale_out_ptr",
+            "weight_ptr",
+            "scale_ptr",
+            "shift_ptr",
+            "index_ptr",
+            "n_cols",
+            "stride_x",
+            "stride_table"
+          ],
+          "options": {
+            "num_warps": 16,
+            "num_stages": 3,
+            "enable_fp_fusion": true
+          }
+        },
+        "_gate_add_kernel[BLOCK=8192]": {
+          "kernel": "15830e323f497b65a503ddf888e597c18935a5830261eb3400dd83328ede9577",
+          "signature": {
+            "x_ptr": "*bf16",
+            "branch_ptr": "*bf16",
+            "gate_ptr": "*bf16",
+            "out_ptr": "*bf16",
+            "index_ptr": "*i64",
+            "n_cols": "i32",
+            "n_index": "i32",
+            "stride_x": "i32",
+            "stride_table": "i32",
+            "BLOCK": "constexpr"
+          },
+          "constexprs": {
+            "BLOCK": 8192
+          },
+          "aligned": [
+            "x_ptr",
+            "branch_ptr",
+            "gate_ptr",
+            "out_ptr",
+            "index_ptr",
+            "n_cols",
+            "stride_x",
+            "stride_table"
+          ],
+          "options": {
+            "num_warps": 16,
+            "num_stages": 3,
+            "enable_fp_fusion": true
+          }
+        },
+        "_swiglu_kernel[BLOCK=1024,FP8=0]": {
+          "kernel": "cdeff0aae6e373b736f1c395be017733cc35c44f90ba813ca774c10aa0231fc4",
+          "signature": {
+            "x_ptr": "*bf16",
+            "out_ptr": "*bf16",
+            "scale_out_ptr": "*bf16",
+            "half": "i32",
+            "stride_x": "i32",
+            "stride_out": "i32",
+            "FP8": "constexpr",
+            "BLOCK": "constexpr"
+          },
+          "constexprs": {
+            "FP8": 0,
+            "BLOCK": 1024
+          },
+          "aligned": [
+            "x_ptr",
+            "out_ptr",
+            "scale_out_ptr",
+            "half",
+            "stride_x",
+            "stride_out"
+          ],
+          "options": {
+            "num_warps": 8,
+            "num_stages": 3,
+            "enable_fp_fusion": true
+          }
+        },
+        "_rope_norm_kernel[HEADS=8,HEAD_DIM=128,ROTARY=96]": {
+          "kernel": "18a86b5d2055595844569b61c369a546a0cf732fe4d34bd10344f2b69e844cd3",
+          "signature": {
+            "x_ptr": "*bf16",
+            "out_ptr": "*bf16",
+            "weight_ptr": "*bf16",
+            "cos_ptr": "*fp32",
+            "sin_ptr": "*fp32",
+            "seq": "i32",
+            "heads": "i32",
+            "eps": "fp32",
+            "HEAD_DIM": "constexpr",
+            "ROTARY": "constexpr",
+            "HEADS": "constexpr"
+          },
+          "constexprs": {
+            "HEAD_DIM": 128,
+            "ROTARY": 96,
+            "HEADS": 8
+          },
+          "aligned": [
+            "x_ptr",
+            "out_ptr",
+            "weight_ptr",
+            "cos_ptr",
+            "sin_ptr"
+          ],
+          "options": {
+            "num_warps": 4,
+            "num_stages": 3,
+            "enable_fp_fusion": true
+          }
+        },
+        "_key_sum_kernel[BLOCK_T=64,HEAD_DIM=128]": {
+          "kernel": "65976069e504b1fe269590d5b0714a220c003da6a8b74b5a3b345d73a4ddffb9",
+          "signature": {
+            "key_ptr": "*bf16",
+            "out_ptr": "*fp32",
+            "tokens": "i32",
+            "stride_t": "i32",
+            "HEAD_DIM": "constexpr",
+            "BLOCK_T": "constexpr"
+          },
+          "constexprs": {
+            "HEAD_DIM": 128,
+            "BLOCK_T": 64
+          },
+          "aligned": [
+            "key_ptr",
+            "out_ptr",
+            "stride_t"
+          ],
+          "options": {
+            "num_warps": 4,
+            "num_stages": 3,
+            "enable_fp_fusion": true
+          }
+        }
+      }
+    },
+    "minimax-h3-glue-fp8": {
+      "identity": "sha256:059472e0f4b204f848f178644281da6759fdd6c2691b1e3cbf4d99c40b48f573",
+      "entries": {
+        "_norm_mod_kernel[BLOCK=8192,FP8=0,RESIDUAL=0]": {
+          "kernel": "469accf048197941f5cec5d268750f41d21ae614a4aa4feb34af889b56a4465c",
+          "signature": {
+            "x_ptr": "*bf16",
+            "branch_ptr": "*bf16",
+            "gate_ptr": "*bf16",
+            "hidden_ptr": "*bf16",
+            "out_ptr": "*bf16",
+            "scale_out_ptr": "*bf16",
+            "weight_ptr": "*bf16",
+            "scale_ptr": "*bf16",
+            "shift_ptr": "*bf16",
+            "index_ptr": "*i64",
+            "n_cols": "i32",
+            "n_index": "i32",
+            "stride_x": "i32",
+            "stride_table": "i32",
+            "eps": "fp32",
+            "RESIDUAL": "constexpr",
+            "FP8": "constexpr",
+            "BLOCK": "constexpr"
+          },
+          "constexprs": {
+            "RESIDUAL": 0,
+            "FP8": 0,
+            "BLOCK": 8192
+          },
+          "aligned": [
+            "x_ptr",
+            "branch_ptr",
+            "gate_ptr",
+            "hidden_ptr",
+            "out_ptr",
+            "scale_out_ptr",
+            "weight_ptr",
+            "scale_ptr",
+            "shift_ptr",
+            "index_ptr",
+            "n_cols",
+            "stride_x",
+            "stride_table"
+          ],
+          "options": {
+            "num_warps": 16,
+            "num_stages": 3,
+            "enable_fp_fusion": true
+          }
+        },
+        "_norm_mod_kernel[BLOCK=8192,FP8=1,RESIDUAL=0]": {
+          "kernel": "469accf048197941f5cec5d268750f41d21ae614a4aa4feb34af889b56a4465c",
+          "signature": {
+            "x_ptr": "*bf16",
+            "branch_ptr": "*bf16",
+            "gate_ptr": "*bf16",
+            "hidden_ptr": "*bf16",
+            "out_ptr": "*fp8e4nv",
+            "scale_out_ptr": "*fp32",
+            "weight_ptr": "*bf16",
+            "scale_ptr": "*bf16",
+            "shift_ptr": "*bf16",
+            "index_ptr": "*i64",
+            "n_cols": "i32",
+            "n_index": "i32",
+            "stride_x": "i32",
+            "stride_table": "i32",
+            "eps": "fp32",
+            "RESIDUAL": "constexpr",
+            "FP8": "constexpr",
+            "BLOCK": "constexpr"
+          },
+          "constexprs": {
+            "RESIDUAL": 0,
+            "FP8": 1,
+            "BLOCK": 8192
+          },
+          "aligned": [
+            "x_ptr",
+            "branch_ptr",
+            "gate_ptr",
+            "hidden_ptr",
+            "out_ptr",
+            "scale_out_ptr",
+            "weight_ptr",
+            "scale_ptr",
+            "shift_ptr",
+            "index_ptr",
+            "n_cols",
+            "stride_x",
+            "stride_table"
+          ],
+          "options": {
+            "num_warps": 16,
+            "num_stages": 3,
+            "enable_fp_fusion": true
+          }
+        },
+        "_norm_mod_kernel[BLOCK=8192,FP8=0,RESIDUAL=1]": {
+          "kernel": "469accf048197941f5cec5d268750f41d21ae614a4aa4feb34af889b56a4465c",
+          "signature": {
+            "x_ptr": "*bf16",
+            "branch_ptr": "*bf16",
+            "gate_ptr": "*bf16",
+            "hidden_ptr": "*bf16",
+            "out_ptr": "*bf16",
+            "scale_out_ptr": "*bf16",
+            "weight_ptr": "*bf16",
+            "scale_ptr": "*bf16",
+            "shift_ptr": "*bf16",
+            "index_ptr": "*i64",
+            "n_cols": "i32",
+            "n_index": "i32",
+            "stride_x": "i32",
+            "stride_table": "i32",
+            "eps": "fp32",
+            "RESIDUAL": "constexpr",
+            "FP8": "constexpr",
+            "BLOCK": "constexpr"
+          },
+          "constexprs": {
+            "RESIDUAL": 1,
+            "FP8": 0,
+            "BLOCK": 8192
+          },
+          "aligned": [
+            "x_ptr",
+            "branch_ptr",
+            "gate_ptr",
+            "hidden_ptr",
+            "out_ptr",
+            "scale_out_ptr",
+            "weight_ptr",
+            "scale_ptr",
+            "shift_ptr",
+            "index_ptr",
+            "n_cols",
+            "stride_x",
+            "stride_table"
+          ],
+          "options": {
+            "num_warps": 16,
+            "num_stages": 3,
+            "enable_fp_fusion": true
+          }
+        },
+        "_norm_mod_kernel[BLOCK=8192,FP8=1,RESIDUAL=1]": {
+          "kernel": "469accf048197941f5cec5d268750f41d21ae614a4aa4feb34af889b56a4465c",
+          "signature": {
+            "x_ptr": "*bf16",
+            "branch_ptr": "*bf16",
+            "gate_ptr": "*bf16",
+            "hidden_ptr": "*bf16",
+            "out_ptr": "*fp8e4nv",
+            "scale_out_ptr": "*fp32",
+            "weight_ptr": "*bf16",
+            "scale_ptr": "*bf16",
+            "shift_ptr": "*bf16",
+            "index_ptr": "*i64",
+            "n_cols": "i32",
+            "n_index": "i32",
+            "stride_x": "i32",
+            "stride_table": "i32",
+            "eps": "fp32",
+            "RESIDUAL": "constexpr",
+            "FP8": "constexpr",
+            "BLOCK": "constexpr"
+          },
+          "constexprs": {
+            "RESIDUAL": 1,
+            "FP8": 1,
+            "BLOCK": 8192
+          },
+          "aligned": [
+            "x_ptr",
+            "branch_ptr",
+            "gate_ptr",
+            "hidden_ptr",
+            "out_ptr",
+            "scale_out_ptr",
+            "weight_ptr",
+            "scale_ptr",
+            "shift_ptr",
+            "index_ptr",
+            "n_cols",
+            "stride_x",
+            "stride_table"
+          ],
+          "options": {
+            "num_warps": 16,
+            "num_stages": 3,
+            "enable_fp_fusion": true
+          }
+        },
+        "_gate_add_kernel[BLOCK=8192]": {
+          "kernel": "15830e323f497b65a503ddf888e597c18935a5830261eb3400dd83328ede9577",
+          "signature": {
+            "x_ptr": "*bf16",
+            "branch_ptr": "*bf16",
+            "gate_ptr": "*bf16",
+            "out_ptr": "*bf16",
+            "index_ptr": "*i64",
+            "n_cols": "i32",
+            "n_index": "i32",
+            "stride_x": "i32",
+            "stride_table": "i32",
+            "BLOCK": "constexpr"
+          },
+          "constexprs": {
+            "BLOCK": 8192
+          },
+          "aligned": [
+            "x_ptr",
+            "branch_ptr",
+            "gate_ptr",
+            "out_ptr",
+            "index_ptr",
+            "n_cols",
+            "stride_x",
+            "stride_table"
+          ],
+          "options": {
+            "num_warps": 16,
+            "num_stages": 3,
+            "enable_fp_fusion": true
+          }
+        },
+        "_swiglu_kernel[BLOCK=1024,FP8=0]": {
+          "kernel": "cdeff0aae6e373b736f1c395be017733cc35c44f90ba813ca774c10aa0231fc4",
+          "signature": {
+            "x_ptr": "*bf16",
+            "out_ptr": "*bf16",
+            "scale_out_ptr": "*bf16",
+            "half": "i32",
+            "stride_x": "i32",
+            "stride_out": "i32",
+            "FP8": "constexpr",
+            "BLOCK": "constexpr"
+          },
+          "constexprs": {
+            "FP8": 0,
+            "BLOCK": 1024
+          },
+          "aligned": [
+            "x_ptr",
+            "out_ptr",
+            "scale_out_ptr",
+            "half",
+            "stride_x",
+            "stride_out"
+          ],
+          "options": {
+            "num_warps": 8,
+            "num_stages": 3,
+            "enable_fp_fusion": true
+          }
+        },
+        "_swiglu_kernel[BLOCK=1024,FP8=1]": {
+          "kernel": "cdeff0aae6e373b736f1c395be017733cc35c44f90ba813ca774c10aa0231fc4",
+          "signature": {
+            "x_ptr": "*bf16",
+            "out_ptr": "*fp8e4nv",
+            "scale_out_ptr": "*fp32",
+            "half": "i32",
+            "stride_x": "i32",
+            "stride_out": "i32",
+            "FP8": "constexpr",
+            "BLOCK": "constexpr"
+          },
+          "constexprs": {
+            "FP8": 1,
+            "BLOCK": 1024
+          },
+          "aligned": [
+            "x_ptr",
+            "out_ptr",
+            "scale_out_ptr",
+            "half",
+            "stride_x",
+            "stride_out"
+          ],
+          "options": {
+            "num_warps": 8,
+            "num_stages": 3,
+            "enable_fp_fusion": true
+          }
+        },
+        "_rope_norm_kernel[HEADS=8,HEAD_DIM=128,ROTARY=96]": {
+          "kernel": "18a86b5d2055595844569b61c369a546a0cf732fe4d34bd10344f2b69e844cd3",
+          "signature": {
+            "x_ptr": "*bf16",
+            "out_ptr": "*bf16",
+            "weight_ptr": "*bf16",
+            "cos_ptr": "*fp32",
+            "sin_ptr": "*fp32",
+            "seq": "i32",
+            "heads": "i32",
+            "eps": "fp32",
+            "HEAD_DIM": "constexpr",
+            "ROTARY": "constexpr",
+            "HEADS": "constexpr"
+          },
+          "constexprs": {
+            "HEAD_DIM": 128,
+            "ROTARY": 96,
+            "HEADS": 8
+          },
+          "aligned": [
+            "x_ptr",
+            "out_ptr",
+            "weight_ptr",
+            "cos_ptr",
+            "sin_ptr"
+          ],
+          "options": {
+            "num_warps": 4,
+            "num_stages": 3,
+            "enable_fp_fusion": true
+          }
+        },
+        "_key_sum_kernel[BLOCK_T=64,HEAD_DIM=128]": {
+          "kernel": "65976069e504b1fe269590d5b0714a220c003da6a8b74b5a3b345d73a4ddffb9",
+          "signature": {
+            "key_ptr": "*bf16",
+            "out_ptr": "*fp32",
+            "tokens": "i32",
+            "stride_t": "i32",
+            "HEAD_DIM": "constexpr",
+            "BLOCK_T": "constexpr"
+          },
+          "constexprs": {
+            "HEAD_DIM": 128,
+            "BLOCK_T": 64
+          },
+          "aligned": [
+            "key_ptr",
+            "out_ptr",
+            "stride_t"
+          ],
+          "options": {
+            "num_warps": 4,
+            "num_stages": 3,
+            "enable_fp_fusion": true
+          }
+        }
+      }
+    },
+    "minimax-h3-producer-stats": {
+      "identity": "sha256:294d4cd6f4ed643d4aa7f7cfe3234846e53aba3a75961aa3eaed92b41afe37ae",
+      "entries": {
+        "_value_absmax_kernel[BLOCK_C=32,BLOCK_T=64]": {
+          "kernel": "4ffd3086b2eaaa5d7432e2b687feb31f718c9ca7c2b8751594eb28daaba71db3",
+          "signature": {
+            "value_ptr": "*bf16",
+            "maximum_ptr": "*fp32",
+            "rows": "i32",
+            "channels": "i32",
+            "stride_t": "i32",
+            "BLOCK_T": "constexpr",
+            "BLOCK_C": "constexpr"
+          },
+          "constexprs": {
+            "BLOCK_T": 64,
+            "BLOCK_C": 32
+          },
+          "aligned": [
+            "value_ptr",
+            "maximum_ptr",
+            "channels",
+            "stride_t"
+          ],
+          "options": {
+            "num_warps": 4,
+            "num_stages": 3,
+            "enable_fp_fusion": false
+          }
+        },
+        "_key_sum_kernel[BLOCK_T=64,HEAD_DIM=128]": {
+          "kernel": "65976069e504b1fe269590d5b0714a220c003da6a8b74b5a3b345d73a4ddffb9",
+          "signature": {
+            "key_ptr": "*fp32",
+            "out_ptr": "*fp32",
+            "tokens": "i32",
+            "stride_t": "i32",
+            "HEAD_DIM": "constexpr",
+            "BLOCK_T": "constexpr"
+          },
+          "constexprs": {
+            "HEAD_DIM": 128,
+            "BLOCK_T": 64
+          },
+          "aligned": [
+            "key_ptr",
+            "out_ptr",
+            "stride_t"
+          ],
+          "options": {
+            "num_warps": 4,
+            "num_stages": 3,
+            "enable_fp_fusion": false
+          }
+        }
+      }
+    }
+  },
+  "source_sha256": "e8addfaeebdb513dc2873c34e029c6651c2cb968550f4cdac0b75f4c8309db05",
+  "scope": "real CPU module/Processor construction, API identity and unchanged kernel source keys; no GPU execution claim"
+}

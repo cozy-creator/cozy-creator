@@ -1,0 +1,18 @@
+{
+  "heads": {
+    "runtime": "136cdba49bdebda647021c86e26cf076c1ad32b9",
+    "control": "15615cf75093f4300ca54725487c3f91bb114bae",
+    "package": "5d27a1e97b79ce2f98bc8dd07aacfae5833c888b"
+  },
+  "runtime_targeted_mypy": true,
+  "changed_scope_mypy": "one unchanged baseline author/kernels.py weakref optional _version diagnostic (349 ->364)",
+  "runtime_targeted_ruff": true,
+  "package_ruff": true,
+  "fixture_ruff": true,
+  "python_syntax": true,
+  "offline_lock": true,
+  "cpu_construction_and_keys": true,
+  "cuda_initialized": false,
+  "gpu_qualified": false,
+  "independent_source_review": "retention_restart: no concrete product/API/refusal/lifetime blocker; GPU census/numerics remain pending"
+}

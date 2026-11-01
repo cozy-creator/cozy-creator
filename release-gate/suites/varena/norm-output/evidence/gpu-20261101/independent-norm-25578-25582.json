@@ -1,0 +1,56 @@
+{
+  "passed": true,
+  "run": 25578,
+  "cleanup": 25582,
+  "pid": 121066,
+  "runtime": "136cdba49bdebda647021c86e26cf076c1ad32b9",
+  "native": "a96c7c3e837314795d0d21b993df1246dc394aed",
+  "cases": 6,
+  "whole_census": [
+    {
+      "case": "whole/torch.bfloat16/32768",
+      "actual_allocations": 2,
+      "requests": [
+        352321536,
+        131072
+      ],
+      "relative_l2": 0.0,
+      "bit_exact": true
+    },
+    {
+      "case": "whole/torch.float16/513",
+      "actual_allocations": 2,
+      "requests": [
+        5515776,
+        2052
+      ],
+      "relative_l2": 0.0,
+      "bit_exact": true
+    },
+    {
+      "case": "whole/torch.float32/513",
+      "actual_allocations": 2,
+      "requests": [
+        11031552,
+        2052
+      ],
+      "relative_l2": 0.0,
+      "bit_exact": true
+    }
+  ],
+  "minimum_refusals": 3,
+  "previous_measured_samples_preserved": true,
+  "same_pid_keys_retired": 3,
+  "final_baseline": {
+    "allocated_bytes": 17039360,
+    "mapped_bytes": 20971520,
+    "pending_bytes": 0,
+    "pools_bytes": 0,
+    "event_handles": 0
+  },
+  "raw_sha256": {
+    "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/attempt-002/norm-output/norm-result.json": "fbf0490e5918d2b773a70d6dd9077acd1d48c613ebac6994a6f8ff833326c01b",
+    "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/attempt-002/norm-output/norm-cleanup-result.json": "d2d2f270ad5f6a6b0c252eef42cecbac6d39a905dd013102ff5884e4bf2d1eee"
+  },
+  "scope": "exact whole Torch08187 RMSNorm/BF16-FP16-FP32 consumer; projection and full-model qualification separate"
+}
