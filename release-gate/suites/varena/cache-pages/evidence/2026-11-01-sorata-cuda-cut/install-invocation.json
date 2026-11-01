@@ -1,0 +1,16 @@
+{
+  "command": [
+    "cozy",
+    "machine",
+    "update",
+    "sorata",
+    "--runtime",
+    "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/runtime-build-8384bfd3d/dist/cozy_runtime-0.36.23+dev.g8384bfd3-cp312-abi3-manylinux_2_28_x86_64.whl",
+    "--tensorfs",
+    "/home/fidika/cozy_v2/outputs/xs138-p3-cache-integrated/native-dfb912042/tensorfs-0.17.16+dev.gdfb91204-cp311-abi3-manylinux_2_28_x86_64.whl",
+    "--json"
+  ],
+  "started_at": "2026-11-01T21:53:57.504246+00:00",
+  "returncode": 0,
+  "finished_at": "2026-11-01T21:54:04.112174+00:00"
+}

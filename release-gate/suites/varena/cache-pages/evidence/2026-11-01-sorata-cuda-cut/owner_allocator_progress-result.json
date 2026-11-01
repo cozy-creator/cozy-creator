@@ -1,0 +1,611 @@
+{
+  "after": {
+    "cache": {
+      "live_bytes": 0,
+      "mapped_bytes": 0,
+      "pending_bytes": 0,
+      "ready_bytes": 0,
+      "reserved_bytes": 268435456
+    },
+    "cooperation": {
+      "active": true,
+      "active_recoveries": 0,
+      "deferred": 3,
+      "demand_clear_pending": false,
+      "failed": null,
+      "last_donation": null,
+      "last_recovery": {
+        "completed_bytes": 0,
+        "elapsed_ns": 1250851,
+        "outcome": "peer_reclaim_exhausted",
+        "released_bytes": 0,
+        "requested_bytes": 201326592,
+        "round": 21144
+      },
+      "last_withdrawn_round": null,
+      "pending_withdrawals": 0,
+      "physical_bytes": 24507318272,
+      "published": 101,
+      "recoveries": 1,
+      "retired": false,
+      "serviced": 101,
+      "stopping": false,
+      "withdrawn_rounds": 0
+    },
+    "owner": {
+      "callbacks": 1,
+      "closing": false,
+      "declined": 0,
+      "deferred": 0,
+      "failed": null,
+      "id": 7,
+      "registered": true,
+      "requestable": true,
+      "retired": false,
+      "retirement_failed": null,
+      "returned": 1,
+      "running": false
+    },
+    "working": {
+      "allocated_bytes": 24503386112,
+      "allocated_capacity": 24507318272,
+      "allocated_peak": 24503386112,
+      "allocations": 1764,
+      "cache_live_bytes": 0,
+      "cache_mapped_bytes": 0,
+      "cache_pending_bytes": 0,
+      "cache_ready_bytes": 0,
+      "cache_reserved_bytes": 268435456,
+      "caches": 1,
+      "context_joins": 0,
+      "driver_memory_calls": 997,
+      "driver_physical_ooms": 4,
+      "event_handles": 0,
+      "event_queries": 386,
+      "event_records": 323,
+      "event_waits": 0,
+      "free_bytes": 0,
+      "frees": 1760,
+      "mapped_bytes": 24507318272,
+      "mapped_peak": 24507318272,
+      "ooms": 1,
+      "pending_bytes": 0,
+      "pools": 0,
+      "pools_bytes": 0,
+      "prefetch_admissions": 0,
+      "prefetch_attempts": 0,
+      "prefetch_declines": 0,
+      "reclaimable_bytes": 0,
+      "unassigned_bytes": 0
+    }
+  },
+  "before": {
+    "cache": {
+      "live_bytes": 268435456,
+      "mapped_bytes": 268435456,
+      "pending_bytes": 0,
+      "ready_bytes": 0,
+      "reserved_bytes": 268435456
+    },
+    "cooperation": {
+      "active": true,
+      "active_recoveries": 0,
+      "deferred": 3,
+      "demand_clear_pending": false,
+      "failed": null,
+      "last_donation": null,
+      "last_recovery": null,
+      "last_withdrawn_round": null,
+      "pending_withdrawals": 0,
+      "physical_bytes": 24574427136,
+      "published": 97,
+      "recoveries": 0,
+      "retired": false,
+      "serviced": 97,
+      "stopping": false,
+      "withdrawn_rounds": 0
+    },
+    "owner": {
+      "callbacks": 0,
+      "closing": false,
+      "declined": 0,
+      "deferred": 0,
+      "failed": null,
+      "id": 7,
+      "registered": true,
+      "requestable": true,
+      "retired": false,
+      "retirement_failed": null,
+      "returned": 0,
+      "running": false
+    },
+    "working": {
+      "allocated_bytes": 24302059520,
+      "allocated_capacity": 24305991680,
+      "allocated_peak": 24302059520,
+      "allocations": 1763,
+      "cache_live_bytes": 268435456,
+      "cache_mapped_bytes": 268435456,
+      "cache_pending_bytes": 0,
+      "cache_ready_bytes": 0,
+      "cache_reserved_bytes": 268435456,
+      "caches": 1,
+      "context_joins": 0,
+      "driver_memory_calls": 734,
+      "driver_physical_ooms": 0,
+      "event_handles": 0,
+      "event_queries": 385,
+      "event_records": 322,
+      "event_waits": 0,
+      "free_bytes": 0,
+      "frees": 1760,
+      "mapped_bytes": 24305991680,
+      "mapped_peak": 24305991680,
+      "ooms": 1,
+      "pending_bytes": 0,
+      "pools": 0,
+      "pools_bytes": 0,
+      "prefetch_admissions": 0,
+      "prefetch_attempts": 0,
+      "prefetch_declines": 0,
+      "reclaimable_bytes": 0,
+      "unassigned_bytes": 0
+    }
+  },
+  "calls": [
+    {
+      "at_ns": 1117662373291236,
+      "wanted": 201326592
+    }
+  ],
+  "case": "allocator_owner_progress",
+  "diagnostics": {
+    "after": {
+      "cache": {
+        "live_bytes": 0,
+        "mapped_bytes": 0,
+        "pending_bytes": 0,
+        "ready_bytes": 0,
+        "reserved_bytes": 268435456
+      },
+      "cooperation": {
+        "active": true,
+        "active_recoveries": 0,
+        "deferred": 3,
+        "demand_clear_pending": false,
+        "failed": null,
+        "last_donation": null,
+        "last_recovery": {
+          "completed_bytes": 0,
+          "elapsed_ns": 1250851,
+          "outcome": "peer_reclaim_exhausted",
+          "released_bytes": 0,
+          "requested_bytes": 201326592,
+          "round": 21144
+        },
+        "last_withdrawn_round": null,
+        "pending_withdrawals": 0,
+        "physical_bytes": 24507318272,
+        "published": 101,
+        "recoveries": 1,
+        "retired": false,
+        "serviced": 101,
+        "stopping": false,
+        "withdrawn_rounds": 0
+      },
+      "owner": {
+        "callbacks": 1,
+        "closing": false,
+        "declined": 0,
+        "deferred": 0,
+        "failed": null,
+        "id": 7,
+        "registered": true,
+        "requestable": true,
+        "retired": false,
+        "retirement_failed": null,
+        "returned": 1,
+        "running": false
+      },
+      "working": {
+        "allocated_bytes": 24503386112,
+        "allocated_capacity": 24507318272,
+        "allocated_peak": 24503386112,
+        "allocations": 1764,
+        "cache_live_bytes": 0,
+        "cache_mapped_bytes": 0,
+        "cache_pending_bytes": 0,
+        "cache_ready_bytes": 0,
+        "cache_reserved_bytes": 268435456,
+        "caches": 1,
+        "context_joins": 0,
+        "driver_memory_calls": 997,
+        "driver_physical_ooms": 4,
+        "event_handles": 0,
+        "event_queries": 386,
+        "event_records": 323,
+        "event_waits": 0,
+        "free_bytes": 0,
+        "frees": 1760,
+        "mapped_bytes": 24507318272,
+        "mapped_peak": 24507318272,
+        "ooms": 1,
+        "pending_bytes": 0,
+        "pools": 0,
+        "pools_bytes": 0,
+        "prefetch_admissions": 0,
+        "prefetch_attempts": 0,
+        "prefetch_declines": 0,
+        "reclaimable_bytes": 0,
+        "unassigned_bytes": 0
+      }
+    },
+    "allocation_returned_ns": 1117662387386976,
+    "allocation_started_ns": 1117662373018135,
+    "at_allocation_return": {
+      "cache": {
+        "live_bytes": 0,
+        "mapped_bytes": 67108864,
+        "pending_bytes": 0,
+        "ready_bytes": 67108864,
+        "reserved_bytes": 268435456
+      },
+      "working": {
+        "allocated_bytes": 24503386112,
+        "allocated_capacity": 24507318272,
+        "allocated_peak": 24503386112,
+        "allocations": 1764,
+        "cache_live_bytes": 0,
+        "cache_mapped_bytes": 67108864,
+        "cache_pending_bytes": 0,
+        "cache_ready_bytes": 67108864,
+        "cache_reserved_bytes": 268435456,
+        "caches": 1,
+        "context_joins": 0,
+        "driver_memory_calls": 933,
+        "driver_physical_ooms": 4,
+        "event_handles": 0,
+        "event_queries": 386,
+        "event_records": 323,
+        "event_waits": 0,
+        "free_bytes": 0,
+        "frees": 1760,
+        "mapped_bytes": 24507318272,
+        "mapped_peak": 24507318272,
+        "ooms": 1,
+        "pending_bytes": 0,
+        "pools": 0,
+        "pools_bytes": 0,
+        "prefetch_admissions": 0,
+        "prefetch_attempts": 0,
+        "prefetch_declines": 0,
+        "reclaimable_bytes": 0,
+        "unassigned_bytes": 0
+      }
+    },
+    "before": {
+      "cache": {
+        "live_bytes": 268435456,
+        "mapped_bytes": 268435456,
+        "pending_bytes": 0,
+        "ready_bytes": 0,
+        "reserved_bytes": 268435456
+      },
+      "cooperation": {
+        "active": true,
+        "active_recoveries": 0,
+        "deferred": 3,
+        "demand_clear_pending": false,
+        "failed": null,
+        "last_donation": null,
+        "last_recovery": null,
+        "last_withdrawn_round": null,
+        "pending_withdrawals": 0,
+        "physical_bytes": 24574427136,
+        "published": 97,
+        "recoveries": 0,
+        "retired": false,
+        "serviced": 97,
+        "stopping": false,
+        "withdrawn_rounds": 0
+      },
+      "owner": {
+        "callbacks": 0,
+        "closing": false,
+        "declined": 0,
+        "deferred": 0,
+        "failed": null,
+        "id": 7,
+        "registered": true,
+        "requestable": true,
+        "retired": false,
+        "retirement_failed": null,
+        "returned": 0,
+        "running": false
+      },
+      "working": {
+        "allocated_bytes": 24302059520,
+        "allocated_capacity": 24305991680,
+        "allocated_peak": 24302059520,
+        "allocations": 1763,
+        "cache_live_bytes": 268435456,
+        "cache_mapped_bytes": 268435456,
+        "cache_pending_bytes": 0,
+        "cache_ready_bytes": 0,
+        "cache_reserved_bytes": 268435456,
+        "caches": 1,
+        "context_joins": 0,
+        "driver_memory_calls": 734,
+        "driver_physical_ooms": 0,
+        "event_handles": 0,
+        "event_queries": 385,
+        "event_records": 322,
+        "event_waits": 0,
+        "free_bytes": 0,
+        "frees": 1760,
+        "mapped_bytes": 24305991680,
+        "mapped_peak": 24305991680,
+        "ooms": 1,
+        "pending_bytes": 0,
+        "pools": 0,
+        "pools_bytes": 0,
+        "prefetch_admissions": 0,
+        "prefetch_attempts": 0,
+        "prefetch_declines": 0,
+        "reclaimable_bytes": 0,
+        "unassigned_bytes": 0
+      }
+    },
+    "calls": [
+      {
+        "at_ns": 1117662373291236,
+        "wanted": 201326592
+      }
+    ],
+    "case": "allocator_owner_progress",
+    "full_readback_ended_ns": 1117662543910888,
+    "observed_driver_free": 136118272
+  },
+  "driver_total": 25252724736,
+  "filler_bytes": 24285020160,
+  "final": {
+    "allocated_bytes": 17039360,
+    "allocated_capacity": 20971520,
+    "allocated_peak": 24503386112,
+    "allocations": 1764,
+    "cache_live_bytes": 0,
+    "cache_mapped_bytes": 0,
+    "cache_pending_bytes": 0,
+    "cache_ready_bytes": 0,
+    "cache_reserved_bytes": 0,
+    "caches": 0,
+    "context_joins": 0,
+    "driver_memory_calls": 1001,
+    "driver_physical_ooms": 4,
+    "event_handles": 0,
+    "event_queries": 388,
+    "event_records": 325,
+    "event_waits": 0,
+    "free_bytes": 0,
+    "frees": 1762,
+    "mapped_bytes": 20971520,
+    "mapped_peak": 24507318272,
+    "ooms": 1,
+    "pending_bytes": 0,
+    "pools": 0,
+    "pools_bytes": 0,
+    "prefetch_admissions": 0,
+    "prefetch_attempts": 0,
+    "prefetch_declines": 0,
+    "reclaimable_bytes": 0,
+    "unassigned_bytes": 0
+  },
+  "full_readback": true,
+  "observed_free": 136118272,
+  "passed": true,
+  "provenance": {
+    "controller_pid": 232068,
+    "driver_before": {
+      "free": 24689573888,
+      "total": 25252724736
+    },
+    "input": {
+      "gil_gate_sha256": "3ccfe6b4ea229413be99b0f4235f6d508d3bebee7a4265f28ec289cbcff0dcc9",
+      "gpu_uuid": "GPU-846689c6-daf3-15b1-580e-f2a78bdf6748",
+      "helper_sha256": "562ce61b8e6c2fd12e140c8e200e84053d22b90ba17514ecec53fb5f39695b03",
+      "native_extension_sha256": "232b44ec8032dbf6966de649191aa2615ea224ad3bc7d3fb1f96a6292cacabc7",
+      "runtime_modules": {
+        "graphs/__init__.py": "25deacb7a770ab1a696094e884f0a083e28c79cdac4db0a1271051447f92f508",
+        "graphs/domain.py": "d21eba1a9323ff4490d5c494dad964a317cc4687473ea2d2bf91323cf8f78484",
+        "internal/cache_owners.py": "c9a71ec941be57133452f17b095aac9478c5fa99870df28e2fbf46b70230cf8a",
+        "internal/int8_linear.py": "4b55ed7b166f4f435b66501f516e203bf6f9bddcbf774235e1ccb7960efcc269",
+        "internal/kernel_ready.py": "f5874855b69cbc857a0375dad67515176e52440b81d276563ea0579632031669",
+        "internal/loop.py": "d269551d61be97cb59f328352d1642db8fc9efd70ca911e02bdb4a407f0bd089",
+        "internal/prebuilt.py": "3f5d32d9214de115049ee5a8016bf6f5ae1c909b2570327b9cb4e64edfa75eab",
+        "internal/prepared.py": "6d4581762b34a00b81403a47f40230909e82a53ff3c9e0e241a2dfc340fac86a",
+        "internal/residency.py": "0eabe9143523bc5f034cc92e466eafd110cdfbe5226ffd94f7bdd06555c408ee",
+        "internal/weights.py": "3ba1ec248a9836b38198a1751f59fae1b723d48190fd8996ae46168d9e2413f7",
+        "lm/__init__.py": "0cae4e9b9d0137a43defcc05e93f978287a104626014d87a338a5a4e1432b300"
+      },
+      "runtime_version": "0.36.23+dev.g8384bfd3",
+      "source_sha": "6bdde809ac56136fc02ad14cf1256fde3a40dbfe",
+      "timeout_s": 60.0
+    },
+    "manifest": {
+      "archive_sha256": "9ec32543fb13d0d42de20c50f6a2c44fb9d1e31d9970b2128d1d2a04e00e6cc9",
+      "binary_sha256": "562ce61b8e6c2fd12e140c8e200e84053d22b90ba17514ecec53fb5f39695b03",
+      "elf": {
+        "class": "ELF64",
+        "glibc_max": [
+          2,
+          28
+        ],
+        "glibc_versions": [
+          [
+            2,
+            2
+          ],
+          [
+            2,
+            3
+          ],
+          [
+            2,
+            10
+          ],
+          [
+            2,
+            12
+          ],
+          [
+            2,
+            14
+          ],
+          [
+            2,
+            16
+          ],
+          [
+            2,
+            17
+          ],
+          [
+            2,
+            18
+          ],
+          [
+            2,
+            28
+          ]
+        ],
+        "machine": "x86_64",
+        "needed": [
+          "libdl.so.2",
+          "libgcc_s.so.1",
+          "libpthread.so.0",
+          "libc.so.6",
+          "ld-linux-x86-64.so.2"
+        ]
+      },
+      "mixed_sources": {
+        "compiled_inputs_unchanged": true,
+        "controller": "6bdde809ac56136fc02ad14cf1256fde3a40dbfe",
+        "gil_gate_source": "9ce925dd95e73f9c3f21fecf514259b4bf102f5e",
+        "native_and_rust_helper": "dfb912042f60fd99a0bbe404b9927665e9b39715"
+      },
+      "native_base": "a96c7c3e837314795d0d21b993df1246dc394aed",
+      "native_source": "dfb912042f60fd99a0bbe404b9927665e9b39715",
+      "native_tree": "e7f324f402710001c7f47d794214c3e328964fdd",
+      "runtime_owner_fixture": {
+        "boundary": "fixture PyDLL calls real Storage.resize_ while holding the GIL; no allocator interception",
+        "gil_gate_glibc_versions": [
+          [
+            2,
+            2
+          ]
+        ],
+        "gil_gate_needed": [
+          "libc.so.6"
+        ],
+        "gil_gate_sha256": "3ccfe6b4ea229413be99b0f4235f6d508d3bebee7a4265f28ec289cbcff0dcc9",
+        "gil_gate_source_sha256": "5f90dec1679267bd4cb43662f647ef6160a2c93b0abd118cbcd654c197945061",
+        "runtime_modules": {
+          "graphs/__init__.py": "25deacb7a770ab1a696094e884f0a083e28c79cdac4db0a1271051447f92f508",
+          "graphs/domain.py": "d21eba1a9323ff4490d5c494dad964a317cc4687473ea2d2bf91323cf8f78484",
+          "internal/cache_owners.py": "c9a71ec941be57133452f17b095aac9478c5fa99870df28e2fbf46b70230cf8a",
+          "internal/int8_linear.py": "4b55ed7b166f4f435b66501f516e203bf6f9bddcbf774235e1ccb7960efcc269",
+          "internal/kernel_ready.py": "f5874855b69cbc857a0375dad67515176e52440b81d276563ea0579632031669",
+          "internal/loop.py": "d269551d61be97cb59f328352d1642db8fc9efd70ca911e02bdb4a407f0bd089",
+          "internal/prebuilt.py": "3f5d32d9214de115049ee5a8016bf6f5ae1c909b2570327b9cb4e64edfa75eab",
+          "internal/prepared.py": "6d4581762b34a00b81403a47f40230909e82a53ff3c9e0e241a2dfc340fac86a",
+          "internal/residency.py": "0eabe9143523bc5f034cc92e466eafd110cdfbe5226ffd94f7bdd06555c408ee",
+          "internal/weights.py": "3ba1ec248a9836b38198a1751f59fae1b723d48190fd8996ae46168d9e2413f7",
+          "lm/__init__.py": "0cae4e9b9d0137a43defcc05e93f978287a104626014d87a338a5a4e1432b300"
+        },
+        "runtime_version": "0.36.23+dev.g8384bfd3",
+        "runtime_wheel": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/runtime-build-8384bfd3d/dist/cozy_runtime-0.36.23+dev.g8384bfd3-cp312-abi3-manylinux_2_28_x86_64.whl",
+        "runtime_wheel_sha256": "dbc19d3769be39c5484dbdd027a94588d396706e88f8d07435347868f19ba2f0"
+      },
+      "scope": "Fixture-only actual startup readiness, complete diagnostics and separate ordinary/explicit replay cases; real16MiB and192MiB allocation semantics unchanged; native/helperdfb and Runtime2626 unchanged; failed25557/25560/25563 preserved.",
+      "source_receipt_sha256": "3aaab2fc705295505210b82f54c2c73fa90be2503f25713a371b447624080478",
+      "source_sha": "6bdde809ac56136fc02ad14cf1256fde3a40dbfe"
+    },
+    "native_extension": "/var/lib/cozy/tensord/generations/cf14cbf7cfd8fc9fd1ac3cea16e5f1d5/env/lib/python3.12/site-packages/tensorfs/_ext.abi3.so",
+    "parent_cache_binding_available": true,
+    "request_id": "92",
+    "startup_native_readiness": {
+      "after": {
+        "allocated_bytes": 17039360,
+        "allocated_capacity": 20971520,
+        "allocated_peak": 17039360,
+        "allocations": 1762,
+        "cache_live_bytes": 0,
+        "cache_mapped_bytes": 0,
+        "cache_pending_bytes": 0,
+        "cache_ready_bytes": 0,
+        "cache_reserved_bytes": 0,
+        "caches": 0,
+        "context_joins": 0,
+        "driver_memory_calls": 347,
+        "driver_physical_ooms": 0,
+        "event_handles": 0,
+        "event_queries": 385,
+        "event_records": 322,
+        "event_waits": 0,
+        "free_bytes": 0,
+        "frees": 1760,
+        "mapped_bytes": 20971520,
+        "mapped_peak": 20971520,
+        "ooms": 1,
+        "pending_bytes": 0,
+        "pools": 0,
+        "pools_bytes": 0,
+        "prefetch_admissions": 0,
+        "prefetch_attempts": 0,
+        "prefetch_declines": 0,
+        "reclaimable_bytes": 0,
+        "unassigned_bytes": 0
+      },
+      "before": {
+        "allocated_bytes": 17039360,
+        "allocated_capacity": 20971520,
+        "allocated_peak": 17039360,
+        "allocations": 1762,
+        "cache_live_bytes": 0,
+        "cache_mapped_bytes": 0,
+        "cache_pending_bytes": 0,
+        "cache_ready_bytes": 0,
+        "cache_reserved_bytes": 0,
+        "caches": 0,
+        "context_joins": 0,
+        "driver_memory_calls": 347,
+        "driver_physical_ooms": 0,
+        "event_handles": 0,
+        "event_queries": 385,
+        "event_records": 322,
+        "event_waits": 0,
+        "free_bytes": 0,
+        "frees": 1760,
+        "mapped_bytes": 20971520,
+        "mapped_peak": 20971520,
+        "ooms": 1,
+        "pending_bytes": 0,
+        "pools": 0,
+        "pools_bytes": 0,
+        "prefetch_admissions": 0,
+        "prefetch_attempts": 0,
+        "prefetch_declines": 0,
+        "reclaimable_bytes": 0,
+        "unassigned_bytes": 0
+      },
+      "library": "sha256:lSPFBwvRZG9DtQXgzguwVnDXs5-NfkvjpShG4reoHT4",
+      "provider": "cozy-int8"
+    },
+    "versions": {
+      "cozy-runtime": "0.36.23+dev.g8384bfd3",
+      "tensorfs": "0.17.16+dev.gdfb91204",
+      "torch": "2.14.0"
+    }
+  },
+  "requested_output": 201326592
+}

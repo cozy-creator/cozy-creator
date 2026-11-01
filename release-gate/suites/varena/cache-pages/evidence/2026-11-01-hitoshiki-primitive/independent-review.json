@@ -1,0 +1,90 @@
+{
+  "passed": true,
+  "raw_results_equal_extracted": true,
+  "cases": [
+    {
+      "run": 25358,
+      "case": "pages",
+      "passed": true,
+      "pid": 155465,
+      "source_file": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-shortage-int8-leg15-plan/attempt-001/cache-pages-e545-result.json",
+      "source_sha256": "b89b5e222d90f8db400596cff9e5597316a957c0cae0685a3c914fd8b2107556",
+      "summary": {
+        "interior_neighbors_and_recommit": "full readback passed",
+        "pending_bytes": 6291456,
+        "pending_events": 3,
+        "working_phase_peak": 2097152,
+        "concurrent_cache_bytes": 8388608,
+        "capture_native_working_driver_counts": [
+          124,
+          124
+        ],
+        "final_cache_bytes": 0
+      },
+      "parent_sdk_versions": {
+        "cozy-runtime": "0.36.22+dev.g3daaaeda",
+        "tensorfs": "0.17.16+dev.g4dcf2618",
+        "torch": "2.14.0"
+      },
+      "parent_extension_sha256": "8703a6cdeaf452aa0a7829526d65c60032459a9b41f02b0ee46baa97103a5c59",
+      "native_child_source": "e54525838aabe5ab3491cba5c03d50884198c0e4",
+      "binary_sha256": "76e0bcd23b48514b6ac8bebf836b19c2f53b2002206ab5a2e2bcd0de2a623ba8",
+      "gpu_uuid": "GPU-18d960a8-2283-19c9-c060-ef8a22fabe35",
+      "scope": "native paged Cache primitive only; no Python binding, optimal split choice, owner callback or graph retirement qualification"
+    },
+    {
+      "run": 25359,
+      "case": "rollback",
+      "passed": true,
+      "pid": 155475,
+      "source_file": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-shortage-int8-leg15-plan/attempt-001/cache-rollback-e545-result.json",
+      "source_sha256": "0d5cde4dd42715528d8030592b901b21278d140a91a30b2b6b6c6136e54505d5",
+      "summary": {
+        "filler_full_readback_bytes": 23517462528,
+        "actual_physical_ooms": 3,
+        "memory_call_delta": 963,
+        "mapped_pages_rolled_back": 192,
+        "unchanged_old_range_bytes": 4194304,
+        "final_cache_bytes": 0
+      },
+      "parent_sdk_versions": {
+        "cozy-runtime": "0.36.22+dev.g3daaaeda",
+        "tensorfs": "0.17.16+dev.g4dcf2618",
+        "torch": "2.14.0"
+      },
+      "parent_extension_sha256": "8703a6cdeaf452aa0a7829526d65c60032459a9b41f02b0ee46baa97103a5c59",
+      "native_child_source": "e54525838aabe5ab3491cba5c03d50884198c0e4",
+      "binary_sha256": "76e0bcd23b48514b6ac8bebf836b19c2f53b2002206ab5a2e2bcd0de2a623ba8",
+      "gpu_uuid": "GPU-18d960a8-2283-19c9-c060-ef8a22fabe35",
+      "scope": "native paged Cache primitive only; no Python binding, optimal split choice, owner callback or graph retirement qualification"
+    },
+    {
+      "run": 25360,
+      "case": "abandoned",
+      "passed": true,
+      "pid": 155484,
+      "source_file": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-shortage-int8-leg15-plan/attempt-001/cache-abandoned-e545-result.json",
+      "source_sha256": "beaf45c4dbac5126f2178b8a8e7b2792bcd018b294803d1746ca5b733eafa479",
+      "summary": {
+        "unproven_live_bytes_retained_in_child": 2097152,
+        "full_readback_after_drop": true,
+        "native_memory_calls_before_after": [
+          4,
+          4
+        ],
+        "exit_observed": true,
+        "physical_release_not_inferred_from_exit": true
+      },
+      "parent_sdk_versions": {
+        "cozy-runtime": "0.36.22+dev.g3daaaeda",
+        "tensorfs": "0.17.16+dev.g4dcf2618",
+        "torch": "2.14.0"
+      },
+      "parent_extension_sha256": "8703a6cdeaf452aa0a7829526d65c60032459a9b41f02b0ee46baa97103a5c59",
+      "native_child_source": "e54525838aabe5ab3491cba5c03d50884198c0e4",
+      "binary_sha256": "76e0bcd23b48514b6ac8bebf836b19c2f53b2002206ab5a2e2bcd0de2a623ba8",
+      "gpu_uuid": "GPU-18d960a8-2283-19c9-c060-ef8a22fabe35",
+      "scope": "native paged Cache primitive only; no Python binding, optimal split choice, owner callback or graph retirement qualification"
+    }
+  ]
+}

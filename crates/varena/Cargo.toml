@@ -11,5 +11,18 @@ publish.workspace = true
 libloading.workspace = true
 thiserror.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
+[features]
+# one_process/1: ordinary same-process TLS threads; shared-VM child allocator use is unsupported.
+default = ["kernel-fork-guard"]
+kernel-fork-guard = []
+# Additive Cargo features require an explicit override, including in transitive dependencies.
+strict-pid-guard = []
+
+[dev-dependencies]
+serde_json.workspace = true
+
 [lints]
 workspace = true
