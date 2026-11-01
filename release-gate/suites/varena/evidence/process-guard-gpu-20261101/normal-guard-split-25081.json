@@ -1,0 +1,249 @@
+{
+  "id": "run-77943c202fb8ca45ad43e4c9",
+  "number": 25081,
+  "kind": "call",
+  "target": "local/ci-varena-p0/split_policy",
+  "hub": "https://tensorhub.com",
+  "machine": "columbina",
+  "status": "completed",
+  "cancel_requested": false,
+  "machine_state": "running",
+  "output": [],
+  "created_at_ms": 1793530664656,
+  "accepted_at_ms": 1793530664773,
+  "started_at_ms": 1793530664778,
+  "settled_at_ms": 1793530670435,
+  "result": {
+    "detail": "{\"cases\": {\"caught-allocation-failure\": {\"caught_failure\": {\"backing_peak_bytes\": 2097152, \"definitions\": [], \"invalidated\": true, \"key\": null, \"mode\": \"eager\", \"observation_id\": 10, \"peak_bytes\": 2097152, \"published\": false, \"reason\": \"allocation_error\", \"split_observations\": [{\"backing_peak_bytes\": 2097152, \"choice_id\": \"only\", \"key\": \"split-proof:failed-declaration\", \"observation_id\": 10, \"observed\": true, \"peak_bytes\": 2097152, \"pending\": false, \"published\": false, \"reason\": \"allocation_error\", \"successful_passes\": 1}], \"successful_backing_peak_bytes\": 0, \"successful_passes\": 0, \"successful_peak_bytes\": 0, \"total_peak_bytes\": 2097152}, \"prior\": {\"backing_peak_bytes\": 4194304, \"definitions\": [], \"invalidated\": false, \"key\": null, \"mode\": \"eager\", \"observation_id\": 9, \"peak_bytes\": 4194304, \"published\": false, \"reason\": \"execution_key_unknown\", \"split_observations\": [{\"backing_peak_bytes\": 4194304, \"choice_id\": \"only\", \"key\": \"split-proof:failed-declaration\", \"observation_id\": 9, \"observed\": true, \"peak_bytes\": 4194304, \"pending\": false, \"published\": true, \"reason\": \"\", \"successful_passes\": 1}], \"successful_backing_peak_bytes\": 0, \"successful_passes\": 0, \"successful_peak_bytes\": 0, \"total_peak_bytes\": 4194304}, \"retained\": {\"allocation_backing_bytes\": 4194304, \"available_bytes\": 8388608, \"basis\": \"measured\", \"choice_id\": \"only\", \"eligible\": [\"only\"], \"measured_backing_peak_bytes\": 4194304, \"preserved_backing_bytes\": 0, \"reclaimable_working_bytes\": 0, \"reclaimed_weight_bytes\": 0, \"reclaimed_working_bytes\": 0, \"required_bytes\": 4194304, \"reused_capacity_bytes\": 0, \"stream\": 0}, \"retired\": {\"allocated_bytes\": 0, \"allocated_capacity\": 0, \"allocated_peak\": 67108864, \"allocations\": 31, \"context_joins\": 0, \"driver_memory_calls\": 121, \"event_handles\": 0, \"event_queries\": 28, \"event_records\": 26, \"event_waits\": 0, \"free_bytes\": 0, \"frees\": 31, \"mapped_bytes\": 0, \"mapped_peak\": 67108864, \"ooms\": 1, \"pending_bytes\": 0, \"pools\": 0, \"pools_bytes\": 0, \"prefetch_admissions\": 0, \"prefetch_attempts\": 0, \"prefetch_declines\": 0, \"reclaimable_bytes\": 0, \"unassigned_bytes\": 0}, \"seconds\": 0.07528069615364075}, \"caught-begin-refusal\": {\"caught_parent\": {\"backing_peak_bytes\": 2097152, \"definitions\": [], \"invalidated\": true, \"key\": \"split-proof:caught-begin:parent\", \"mode\": \"eager\", \"observation_id\": 14, \"peak_bytes\": 2097152, \"published\": false, \"reason\": \"split_begin_error\", \"split_observations\": [], \"successful_backing_peak_bytes\": 4194304, \"successful_passes\": 1, \"successful_peak_bytes\": 4194304, \"total_peak_bytes\": 2097152}, \"prior\": {\"backing_peak_bytes\": 4194304, \"definitions\": [], \"invalidated\": false, \"key\": \"split-proof:caught-begin:parent\", \"mode\": \"eager\", \"observation_id\": 13, \"peak_bytes\": 4194304, \"published\": true, \"reason\": \"\", \"split_observations\": [], \"successful_backing_peak_bytes\": 4194304, \"successful_passes\": 1, \"successful_peak_bytes\": 4194304, \"total_peak_bytes\": 4194304}, \"prior_stats\": {\"aborted_backing_peak_bytes\": 0, \"aborted_passes\": 0, \"aborted_peak_bytes\": 0, \"aborted_total_peak_bytes\": 0, \"backing_peak_bytes\": 4194304, \"known\": true, \"peak_bytes\": 4194304, \"successful_passes\": 1, \"total_peak_bytes\": 4194304}, \"refusal\": {\"available_bytes\": 2097152, \"required_bytes\": 4194304, \"type\": \"OutOfMemoryError\", \"varena_no_retry\": true}, \"retained\": {\"aborted_backing_peak_bytes\": 2097152, \"aborted_passes\": 1, \"aborted_peak_bytes\": 2097152, \"aborted_total_peak_bytes\": 2097152, \"backing_peak_bytes\": 4194304, \"known\": true, \"peak_bytes\": 4194304, \"successful_passes\": 1, \"total_peak_bytes\": 4194304}, \"retired\": {\"allocated_bytes\": 0, \"allocated_capacity\": 0, \"allocated_peak\": 67108864, \"allocations\": 35, \"context_joins\": 0, \"driver_memory_calls\": 141, \"event_handles\": 0, \"event_queries\": 32, \"event_records\": 30, \"event_waits\": 0, \"free_bytes\": 0, \"frees\": 35, \"mapped_bytes\": 0, \"mapped_peak\": 67108864, \"ooms\": 1, \"pending_bytes\": 0, \"pools\": 0, \"pools_bytes\": 0, \"prefetch_admissions\": 0, \"prefetch_attempts\": 0, \"prefetch_declines\": 0, \"reclaimable_bytes\": 0, \"unassigned_bytes\": 0}, \"retired_before_verdict\": {\"allocated_bytes\": 0, \"allocated_capacity\": 0, \"allocated_peak\": 67108864, \"allocations\": 35, \"context_joins\": 0, \"driver_memory_calls\": 141, \"event_handles\": 0, \"event_queries\": 32, \"event_records\": 30, \"event_waits\": 0, \"free_bytes\": 0, \"frees\": 35, \"mapped_bytes\": 0, \"mapped_peak\": 67108864, \"ooms\": 1, \"pending_bytes\": 0, \"pools\": 0, \"pools_bytes\": 0, \"prefetch_admissions\": 0, \"prefetch_attempts\": 0, \"prefetch_declines\": 0, \"reclaimable_bytes\": 0, \"unassigned_bytes\": 0}, \"seconds\": 0.07613643910735846, \"selected\": {\"allocation_backing_bytes\": 4194304, \"available_bytes\": 6291456, \"basis\": \"declared\", \"choice_id\": \"only\", \"eligible\": [\"only\"], \"measured_backing_peak_bytes\": null, \"preserved_backing_bytes\": 0, \"reclaimable_working_bytes\": 0, \"reclaimed_weight_bytes\": 0, \"reclaimed_working_bytes\": 0, \"required_bytes\": 4194304, \"reused_capacity_bytes\": 0, \"stream\": 0}, \"stage\": \"begin\"}, \"caught-select-refusal\": {\"caught_parent\": {\"backing_peak_bytes\": 2097152, \"definitions\": [], \"invalidated\": true, \"key\": \"split-proof:caught-select:parent\", \"mode\": \"eager\", \"observation_id\": 12, \"peak_bytes\": 2097152, \"published\": false, \"reason\": \"split_select_error\", \"split_observations\": [], \"successful_backing_peak_bytes\": 4194304, \"successful_passes\": 1, \"successful_peak_bytes\": 4194304, \"total_peak_bytes\": 2097152}, \"prior\": {\"backing_peak_bytes\": 4194304, \"definitions\": [], \"invalidated\": false, \"key\": \"split-proof:caught-select:parent\", \"mode\": \"eager\", \"observation_id\": 11, \"peak_bytes\": 4194304, \"published\": true, \"reason\": \"\", \"split_observations\": [], \"successful_backing_peak_bytes\": 4194304, \"successful_passes\": 1, \"successful_peak_bytes\": 4194304, \"total_peak_bytes\": 4194304}, \"prior_stats\": {\"aborted_backing_peak_bytes\": 0, \"aborted_passes\": 0, \"aborted_peak_bytes\": 0, \"aborted_total_peak_bytes\": 0, \"backing_peak_bytes\": 4194304, \"known\": true, \"peak_bytes\": 4194304, \"successful_passes\": 1, \"total_peak_bytes\": 4194304}, \"refusal\": {\"available_bytes\": 2097152, \"required_bytes\": 4194304, \"type\": \"OutOfMemoryError\", \"varena_no_retry\": true}, \"retained\": {\"aborted_backing_peak_bytes\": 2097152, \"aborted_passes\": 1, \"aborted_peak_bytes\": 2097152, \"aborted_total_peak_bytes\": 2097152, \"backing_peak_bytes\": 4194304, \"known\": true, \"peak_bytes\": 4194304, \"successful_passes\": 1, \"total_peak_bytes\": 4194304}, \"retired\": {\"allocated_bytes\": 0, \"allocated_capacity\": 0, \"allocated_peak\": 67108864, \"allocations\": 33, \"context_joins\": 0, \"driver_memory_calls\": 131, \"event_handles\": 0, \"event_queries\": 30, \"event_records\": 28, \"event_waits\": 0, \"free_bytes\": 0, \"frees\": 33, \"mapped_bytes\": 0, \"mapped_peak\": 67108864, \"ooms\": 1, \"pending_bytes\": 0, \"pools\": 0, \"pools_bytes\": 0, \"prefetch_admissions\": 0, \"prefetch_attempts\": 0, \"prefetch_declines\": 0, \"reclaimable_bytes\": 0, \"unassigned_bytes\": 0}, \"retired_before_verdict\": {\"allocated_bytes\": 0, \"allocated_capacity\": 0, \"allocated_peak\": 67108864, \"allocations\": 33, \"context_joins\": 0, \"driver_memory_calls\": 131, \"event_handles\": 0, \"event_queries\": 30, \"event_records\": 28, \"event_waits\": 0, \"free_bytes\": 0, \"frees\": 33, \"mapped_bytes\": 0, \"mapped_peak\": 67108864, \"ooms\": 1, \"pending_bytes\": 0, \"pools\": 0, \"pools_bytes\": 0, \"prefetch_admissions\": 0, \"prefetch_attempts\": 0, \"prefetch_declines\": 0, \"reclaimable_bytes\": 0, \"unassigned_bytes\": 0}, \"seconds\": 0.07651347015053034, \"selected\": null, \"stage\": \"select\"}, \"compatible-completed-cache\": {\"completed\": {\"backing_peak_bytes\": 41943040, \"definitions\": [], \"invalidated\": false, \"key\": null, \"mode\": \"eager\", \"observation_id\": 2, \"peak_bytes\": 41943040, \"published\": false, \"reason\": \"execution_key_unknown\", \"split_observations\": [{\"backing_peak_bytes\": 41943040, \"choice_id\": \"only\", \"key\": \"split-proof:stream-geometry:completed-cache\", \"observation_id\": 2, \"observed\": true, \"peak_bytes\": 41943040, \"pending\": false, \"published\": true, \"reason\": \"\", \"successful_passes\": 1}], \"successful_backing_peak_bytes\": 0, \"successful_passes\": 0, \"successful_peak_bytes\": 0, \"total_peak_bytes\": 41943040}, \"managed_limit\": 41943040, \"retired\": {\"allocated_bytes\": 0, \"allocated_capacity\": 0, \"allocated_peak\": 41943040, \"allocations\": 13, \"context_joins\": 0, \"driver_memory_calls\": 56, \"event_handles\": 0, \"event_queries\": 15, \"event_records\": 13, \"event_waits\": 0, \"free_bytes\": 0, \"frees\": 13, \"mapped_bytes\": 0, \"mapped_peak\": 41943040, \"ooms\": 0, \"pending_bytes\": 0, \"pools\": 0, \"pools_bytes\": 0, \"prefetch_admissions\": 0, \"prefetch_attempts\": 0, \"prefetch_declines\": 0, \"reclaimable_bytes\": 0, \"unassigned_bytes\": 0}, \"same_pointer_reused\": true, \"seconds\": 0.07622171984985471, \"selection\": {\"allocation_backing_bytes\": 41943040, \"available_bytes\": 33554432, \"basis\": \"declared\", \"choice_id\": \"only\", \"eligible\": [\"only\"], \"measured_backing_peak_bytes\": null, \"preserved_backing_bytes\": 8388608, \"reclaimable_working_bytes\": 0, \"reclaimed_weight_bytes\": 0, \"reclaimed_working_bytes\": 0, \"required_bytes\": 33554432, \"reused_capacity_bytes\": 8388608, \"stream\": 0}, \"submitted\": {\"backing_peak_bytes\": 41943040, \"choice_id\": \"only\", \"key\": \"split-proof:stream-geometry:completed-cache\", \"observation_id\": 2, \"observed\": true, \"peak_bytes\": 41943040, \"pending\": true, \"published\": false, \"reason\": \"\", \"successful_passes\": 0}}, \"cross-stream-pending-exclusion\": {\"managed_limit\": 41943040, \"pending_bytes\": 8388608, \"refused\": true, \"retired\": {\"allocated_bytes\": 0, \"allocated_capacity\": 0, \"allocated_peak\": 41943040, \"allocations\": 6, \"context_joins\": 0, \"driver_memory_calls\": 26, \"event_handles\": 0, \"event_queries\": 7, \"event_records\": 6, \"event_waits\": 0, \"free_bytes\": 0, \"frees\": 6, \"mapped_bytes\": 0, \"mapped_peak\": 41943040, \"ooms\": 0, \"pending_bytes\": 0, \"pools\": 0, \"pools_bytes\": 0, \"prefetch_admissions\": 0, \"prefetch_attempts\": 0, \"prefetch_declines\": 0, \"reclaimable_bytes\": 0, \"unassigned_bytes\": 0}, \"seconds\": 0.8127995280083269}, \"exact-choices\": {\"half\": {\"completed\": {\"backing_peak_bytes\": 50331648, \"definitions\": [], \"invalidated\": false, \"key\": null, \"mode\": \"eager\", \"observation_id\": 4, \"peak_bytes\": 50331648, \"published\": false, \"reason\": \"execution_key_unknown\", \"split_observations\": [{\"backing_peak_bytes\": 50331648, \"choice_id\": \"batch:2\", \"key\": \"split-proof:closed-32MiB-output\", \"observation_id\": 4, \"observed\": true, \"peak_bytes\": 50331648, \"pending\": false, \"published\": true, \"reason\": \"\", \"successful_passes\": 1}], \"successful_backing_peak_bytes\": 0, \"successful_passes\": 0, \"successful_peak_bytes\": 0, \"total_peak_bytes\": 50331648}, \"selection\": {\"allocation_backing_bytes\": 50331648, \"available_bytes\": 50331648, \"basis\": \"declared\", \"choice_id\": \"batch:2\", \"eligible\": [\"batch:2\", \"batch:1\"], \"measured_backing_peak_bytes\": null, \"preserved_backing_bytes\": 0, \"reclaimable_working_bytes\": 0, \"reclaimed_weight_bytes\": 0, \"reclaimed_working_bytes\": 0, \"required_bytes\": 50331648, \"reused_capacity_bytes\": 0, \"stream\": 0}, \"submitted\": {\"backing_peak_bytes\": 50331648, \"choice_id\": \"batch:2\", \"key\": \"split-proof:closed-32MiB-output\", \"observation_id\": 4, \"observed\": true, \"peak_bytes\": 50331648, \"pending\": true, \"published\": false, \"reason\": \"\", \"successful_passes\": 0}}, \"narrow\": {\"completed\": {\"backing_peak_bytes\": 41943040, \"definitions\": [], \"invalidated\": false, \"key\": null, \"mode\": \"eager\", \"observation_id\": 5, \"peak_bytes\": 41943040, \"published\": false, \"reason\": \"execution_key_unknown\", \"split_observations\": [{\"backing_peak_bytes\": 41943040, \"choice_id\": \"batch:1\", \"key\": \"split-proof:closed-32MiB-output\", \"observation_id\": 5, \"observed\": true, \"peak_bytes\": 41943040, \"pending\": false, \"published\": true, \"reason\": \"\", \"successful_passes\": 1}], \"successful_backing_peak_bytes\": 0, \"successful_passes\": 0, \"successful_peak_bytes\": 0, \"total_peak_bytes\": 41943040}, \"selection\": {\"allocation_backing_bytes\": 41943040, \"available_bytes\": 41943040, \"basis\": \"declared\", \"choice_id\": \"batch:1\", \"eligible\": [\"batch:1\"], \"measured_backing_peak_bytes\": null, \"preserved_backing_bytes\": 0, \"reclaimable_working_bytes\": 0, \"reclaimed_weight_bytes\": 0, \"reclaimed_working_bytes\": 0, \"required_bytes\": 41943040, \"reused_capacity_bytes\": 0, \"stream\": 0}, \"submitted\": {\"backing_peak_bytes\": 41943040, \"choice_id\": \"batch:1\", \"key\": \"split-proof:closed-32MiB-output\", \"observation_id\": 5, \"observed\": true, \"peak_bytes\": 41943040, \"pending\": true, \"published\": false, \"reason\": \"\", \"successful_passes\": 0}}, \"repeat\": {\"completed\": {\"backing_peak_bytes\": 50331648, \"definitions\": [], \"invalidated\": false, \"key\": null, \"mode\": \"eager\", \"observation_id\": 6, \"peak_bytes\": 50331648, \"published\": false, \"reason\": \"execution_key_unknown\", \"split_observations\": [{\"backing_peak_bytes\": 50331648, \"choice_id\": \"batch:2\", \"key\": \"split-proof:closed-32MiB-output\", \"observation_id\": 6, \"observed\": true, \"peak_bytes\": 50331648, \"pending\": false, \"published\": true, \"reason\": \"\", \"successful_passes\": 2}], \"successful_backing_peak_bytes\": 0, \"successful_passes\": 0, \"successful_peak_bytes\": 0, \"total_peak_bytes\": 50331648}, \"selection\": {\"allocation_backing_bytes\": 50331648, \"available_bytes\": 50331648, \"basis\": \"measured\", \"choice_id\": \"batch:2\", \"eligible\": [\"batch:2\", \"batch:1\"], \"measured_backing_peak_bytes\": 50331648, \"preserved_backing_bytes\": 0, \"reclaimable_working_bytes\": 0, \"reclaimed_weight_bytes\": 0, \"reclaimed_working_bytes\": 0, \"required_bytes\": 50331648, \"reused_capacity_bytes\": 0, \"stream\": 0}, \"submitted\": {\"backing_peak_bytes\": 50331648, \"choice_id\": \"batch:2\", \"key\": \"split-proof:closed-32MiB-output\", \"observation_id\": 6, \"observed\": true, \"peak_bytes\": 50331648, \"pending\": true, \"published\": false, \"reason\": \"\", \"successful_passes\": 0}}, \"retired\": {\"allocated_bytes\": 0, \"allocated_capacity\": 0, \"allocated_peak\": 67108864, \"allocations\": 26, \"context_joins\": 0, \"driver_memory_calls\": 96, \"event_handles\": 0, \"event_queries\": 23, \"event_records\": 21, \"event_waits\": 0, \"free_bytes\": 0, \"frees\": 26, \"mapped_bytes\": 0, \"mapped_peak\": 67108864, \"ooms\": 0, \"pending_bytes\": 0, \"pools\": 0, \"pools_bytes\": 0, \"prefetch_admissions\": 0, \"prefetch_attempts\": 0, \"prefetch_declines\": 0, \"reclaimable_bytes\": 0, \"unassigned_bytes\": 0}, \"seconds\": 0.13114189403131604, \"whole\": {\"completed\": {\"backing_peak_bytes\": 67108864, \"definitions\": [], \"invalidated\": false, \"key\": null, \"mode\": \"eager\", \"observation_id\": 3, \"peak_bytes\": 67108864, \"published\": false, \"reason\": \"execution_key_unknown\", \"split_observations\": [{\"backing_peak_bytes\": 67108864, \"choice_id\": \"batch:4\", \"key\": \"split-proof:closed-32MiB-output\", \"observation_id\": 3, \"observed\": true, \"peak_bytes\": 67108864, \"pending\": false, \"published\": true, \"reason\": \"\", \"successful_passes\": 1}], \"successful_backing_peak_bytes\": 0, \"successful_passes\": 0, \"successful_peak_bytes\": 0, \"total_peak_bytes\": 67108864}, \"selection\": {\"allocation_backing_bytes\": 67108864, \"available_bytes\": 67108864, \"basis\": \"declared\", \"choice_id\": \"batch:4\", \"eligible\": [\"batch:4\", \"batch:2\", \"batch:1\"], \"measured_backing_peak_bytes\": null, \"preserved_backing_bytes\": 0, \"reclaimable_working_bytes\": 0, \"reclaimed_weight_bytes\": 0, \"reclaimed_working_bytes\": 0, \"required_bytes\": 67108864, \"reused_capacity_bytes\": 0, \"stream\": 0}, \"submitted\": {\"backing_peak_bytes\": 67108864, \"choice_id\": \"batch:4\", \"key\": \"split-proof:closed-32MiB-output\", \"observation_id\": 3, \"observed\": true, \"peak_bytes\": 67108864, \"pending\": true, \"published\": false, \"reason\": \"\", \"successful_passes\": 0}}}, \"invalidation-without-detail\": {\"invalidated\": {\"backing_peak_bytes\": 2097152, \"definitions\": [], \"invalidated\": true, \"key\": \"split-proof:empty-invalidation\", \"mode\": \"eager\", \"observation_id\": 16, \"peak_bytes\": 2097152, \"published\": false, \"reason\": \"\", \"split_observations\": [], \"successful_backing_peak_bytes\": 4194304, \"successful_passes\": 1, \"successful_peak_bytes\": 4194304, \"total_peak_bytes\": 2097152}, \"prior\": {\"backing_peak_bytes\": 4194304, \"definitions\": [], \"invalidated\": false, \"key\": \"split-proof:empty-invalidation\", \"mode\": \"eager\", \"observation_id\": 15, \"peak_bytes\": 4194304, \"published\": true, \"reason\": \"\", \"split_observations\": [], \"successful_backing_peak_bytes\": 4194304, \"successful_passes\": 1, \"successful_peak_bytes\": 4194304, \"total_peak_bytes\": 4194304}, \"retained\": {\"aborted_backing_peak_bytes\": 2097152, \"aborted_passes\": 1, \"aborted_peak_bytes\": 2097152, \"aborted_total_peak_bytes\": 2097152, \"backing_peak_bytes\": 4194304, \"known\": true, \"peak_bytes\": 4194304, \"successful_passes\": 1, \"total_peak_bytes\": 4194304}, \"retired\": {\"allocated_bytes\": 0, \"allocated_capacity\": 0, \"allocated_peak\": 67108864, \"allocations\": 37, \"context_joins\": 0, \"driver_memory_calls\": 151, \"event_handles\": 0, \"event_queries\": 34, \"event_records\": 32, \"event_waits\": 0, \"free_bytes\": 0, \"frees\": 37, \"mapped_bytes\": 0, \"mapped_peak\": 67108864, \"ooms\": 1, \"pending_bytes\": 0, \"pools\": 0, \"pools_bytes\": 0, \"prefetch_admissions\": 0, \"prefetch_attempts\": 0, \"prefetch_declines\": 0, \"reclaimable_bytes\": 0, \"unassigned_bytes\": 0}, \"seconds\": 0.07496649399399757}, \"no-completion-owner\": {\"leaf\": {\"backing_peak_bytes\": null, \"choice_id\": \"only\", \"key\": \"split-proof:unjoined-owner\", \"observation_id\": 11, \"observed\": false, \"peak_bytes\": null, \"pending\": false, \"published\": false, \"reason\": \"completion_owner_missing\", \"successful_passes\": 0}, \"parent\": {\"backing_peak_bytes\": 8388608, \"definitions\": [], \"invalidated\": false, \"key\": null, \"mode\": \"eager\", \"observation_id\": 17, \"peak_bytes\": 8388608, \"published\": false, \"reason\": \"execution_key_unknown\", \"split_observations\": [], \"successful_backing_peak_bytes\": 0, \"successful_passes\": 0, \"successful_peak_bytes\": 0, \"total_peak_bytes\": 8388608}, \"retired\": {\"allocated_bytes\": 0, \"allocated_capacity\": 0, \"allocated_peak\": 67108864, \"allocations\": 38, \"context_joins\": 0, \"driver_memory_calls\": 156, \"event_handles\": 0, \"event_queries\": 35, \"event_records\": 33, \"event_waits\": 0, \"free_bytes\": 0, \"frees\": 38, \"mapped_bytes\": 0, \"mapped_peak\": 67108864, \"ooms\": 1, \"pending_bytes\": 0, \"pools\": 0, \"pools_bytes\": 0, \"prefetch_admissions\": 0, \"prefetch_attempts\": 0, \"prefetch_declines\": 0, \"reclaimable_bytes\": 0, \"unassigned_bytes\": 0}, \"seconds\": 0.050803686026483774, \"unlearned\": {\"allocation_backing_bytes\": 8388608, \"available_bytes\": 24119803904, \"basis\": \"declared\", \"choice_id\": \"only\", \"eligible\": [\"only\"], \"measured_backing_peak_bytes\": null, \"preserved_backing_bytes\": 0, \"reclaimable_working_bytes\": 0, \"reclaimed_weight_bytes\": 0, \"reclaimed_working_bytes\": 0, \"required_bytes\": 8388608, \"reused_capacity_bytes\": 0, \"stream\": 0}}, \"outside-holdings-and-slab-floor\": {\"outside_selection\": {\"allocation_backing_bytes\": 50331648, \"available_bytes\": 50331648, \"basis\": \"declared\", \"choice_id\": \"batch:2\", \"eligible\": [\"batch:2\", \"batch:1\"], \"measured_backing_peak_bytes\": null, \"preserved_backing_bytes\": 0, \"reclaimable_working_bytes\": 0, \"reclaimed_weight_bytes\": 0, \"reclaimed_working_bytes\": 0, \"required_bytes\": 50331648, \"reused_capacity_bytes\": 0, \"stream\": 0}, \"retired\": {\"allocated_bytes\": 0, \"allocated_capacity\": 0, \"allocated_peak\": 67108864, \"allocations\": 27, \"context_joins\": 0, \"driver_memory_calls\": 101, \"event_handles\": 0, \"event_queries\": 24, \"event_records\": 22, \"event_waits\": 0, \"free_bytes\": 0, \"frees\": 27, \"mapped_bytes\": 0, \"mapped_peak\": 67108864, \"ooms\": 0, \"pending_bytes\": 0, \"pools\": 0, \"pools_bytes\": 0, \"prefetch_admissions\": 0, \"prefetch_attempts\": 0, \"prefetch_declines\": 0, \"reclaimable_bytes\": 0, \"unassigned_bytes\": 0}, \"seconds\": 0.050555214984342456, \"two_class_required_bytes\": 4194304}, \"ownership-and-abort\": {\"aborted\": {\"backing_peak_bytes\": 4194304, \"definitions\": [], \"invalidated\": true, \"key\": null, \"mode\": \"eager\", \"observation_id\": 8, \"peak_bytes\": 4194304, \"published\": false, \"reason\": \"split_begin_error\", \"split_observations\": [{\"backing_peak_bytes\": 4194304, \"choice_id\": \"only\", \"key\": \"split-proof:ownership\", \"observation_id\": 8, \"observed\": true, \"peak_bytes\": 4194304, \"pending\": false, \"published\": false, \"reason\": \"split_begin_error\", \"successful_passes\": 1}], \"successful_backing_peak_bytes\": 0, \"successful_passes\": 0, \"successful_peak_bytes\": 0, \"total_peak_bytes\": 4194304}, \"baseline\": {\"backing_peak_bytes\": 8388608, \"definitions\": [], \"invalidated\": false, \"key\": null, \"mode\": \"eager\", \"observation_id\": 7, \"peak_bytes\": 8388608, \"published\": false, \"reason\": \"execution_key_unknown\", \"split_observations\": [{\"backing_peak_bytes\": 8388608, \"choice_id\": \"only\", \"key\": \"split-proof:ownership\", \"observation_id\": 7, \"observed\": true, \"peak_bytes\": 8388608, \"pending\": false, \"published\": true, \"reason\": \"\", \"successful_passes\": 1}], \"successful_backing_peak_bytes\": 0, \"successful_passes\": 0, \"successful_peak_bytes\": 0, \"total_peak_bytes\": 8388608}, \"nested_rejected\": true, \"retained\": {\"allocation_backing_bytes\": 8388608, \"available_bytes\": 24119803904, \"basis\": \"measured\", \"choice_id\": \"only\", \"eligible\": [\"only\"], \"measured_backing_peak_bytes\": 8388608, \"preserved_backing_bytes\": 0, \"reclaimable_working_bytes\": 0, \"reclaimed_weight_bytes\": 0, \"reclaimed_working_bytes\": 0, \"required_bytes\": 8388608, \"reused_capacity_bytes\": 0, \"stream\": 0}, \"retired\": {\"allocated_bytes\": 0, \"allocated_capacity\": 0, \"allocated_peak\": 67108864, \"allocations\": 29, \"context_joins\": 0, \"driver_memory_calls\": 111, \"event_handles\": 0, \"event_queries\": 26, \"event_records\": 24, \"event_waits\": 0, \"free_bytes\": 0, \"frees\": 29, \"mapped_bytes\": 0, \"mapped_peak\": 67108864, \"ooms\": 0, \"pending_bytes\": 0, \"pools\": 0, \"pools_bytes\": 0, \"prefetch_admissions\": 0, \"prefetch_attempts\": 0, \"prefetch_declines\": 0, \"reclaimable_bytes\": 0, \"unassigned_bytes\": 0}, \"seconds\": 0.07508815405890346}, \"preexecution-exhaustion\": {\"exhausted\": {\"available_bytes\": 40894464, \"required_bytes\": 41943040, \"type\": \"OutOfMemoryError\", \"varena_no_retry\": true}, \"operation_invocations\": 0, \"retired\": {\"allocated_bytes\": 0, \"allocated_capacity\": 0, \"allocated_peak\": 67108864, \"allocations\": 26, \"context_joins\": 0, \"driver_memory_calls\": 96, \"event_handles\": 0, \"event_queries\": 23, \"event_records\": 21, \"event_waits\": 0, \"free_bytes\": 0, \"frees\": 26, \"mapped_bytes\": 0, \"mapped_peak\": 67108864, \"ooms\": 0, \"pending_bytes\": 0, \"pools\": 0, \"pools_bytes\": 0, \"prefetch_admissions\": 0, \"prefetch_attempts\": 0, \"prefetch_declines\": 0, \"reclaimable_bytes\": 0, \"unassigned_bytes\": 0}, \"seconds\": 0.02505183103494346}, \"same-stream-pending\": {\"completed\": {\"backing_peak_bytes\": 41943040, \"definitions\": [], \"invalidated\": false, \"key\": null, \"mode\": \"eager\", \"observation_id\": 1, \"peak_bytes\": 41943040, \"published\": false, \"reason\": \"execution_key_unknown\", \"split_observations\": [{\"backing_peak_bytes\": 41943040, \"choice_id\": \"only\", \"key\": \"split-proof:stream-geometry:same-stream\", \"observation_id\": 1, \"observed\": true, \"peak_bytes\": 41943040, \"pending\": false, \"published\": true, \"reason\": \"\", \"successful_passes\": 1}], \"successful_backing_peak_bytes\": 0, \"successful_passes\": 0, \"successful_peak_bytes\": 0, \"total_peak_bytes\": 41943040}, \"managed_limit\": 41943040, \"retired\": {\"allocated_bytes\": 0, \"allocated_capacity\": 0, \"allocated_peak\": 41943040, \"allocations\": 4, \"context_joins\": 0, \"driver_memory_calls\": 16, \"event_handles\": 0, \"event_queries\": 4, \"event_records\": 4, \"event_waits\": 0, \"free_bytes\": 0, \"frees\": 4, \"mapped_bytes\": 0, \"mapped_peak\": 41943040, \"ooms\": 0, \"pending_bytes\": 0, \"pools\": 0, \"pools_bytes\": 0, \"prefetch_admissions\": 0, \"prefetch_attempts\": 0, \"prefetch_declines\": 0, \"reclaimable_bytes\": 0, \"unassigned_bytes\": 0}, \"same_pointer_reused\": true, \"seconds\": 0.8631176219787449, \"selection\": {\"allocation_backing_bytes\": 41943040, \"available_bytes\": 33554432, \"basis\": \"declared\", \"choice_id\": \"only\", \"eligible\": [\"only\"], \"measured_backing_peak_bytes\": null, \"preserved_backing_bytes\": 8388608, \"reclaimable_working_bytes\": 0, \"reclaimed_weight_bytes\": 0, \"reclaimed_working_bytes\": 0, \"required_bytes\": 33554432, \"reused_capacity_bytes\": 8388608, \"stream\": 0}, \"submitted\": {\"backing_peak_bytes\": 41943040, \"choice_id\": \"only\", \"key\": \"split-proof:stream-geometry:same-stream\", \"observation_id\": 1, \"observed\": true, \"peak_bytes\": 41943040, \"pending\": true, \"published\": false, \"reason\": \"\", \"successful_passes\": 0}}, \"unique-reusable-slot\": {\"managed_limit\": 44040192, \"pending_bytes\": 8388608, \"refused\": true, \"retired\": {\"allocated_bytes\": 0, \"allocated_capacity\": 0, \"allocated_peak\": 41943040, \"allocations\": 9, \"context_joins\": 0, \"driver_memory_calls\": 41, \"event_handles\": 0, \"event_queries\": 12, \"event_records\": 9, \"event_waits\": 0, \"free_bytes\": 0, \"frees\": 9, \"mapped_bytes\": 0, \"mapped_peak\": 41943040, \"ooms\": 0, \"pending_bytes\": 0, \"pools\": 0, \"pools_bytes\": 0, \"prefetch_admissions\": 0, \"prefetch_attempts\": 0, \"prefetch_declines\": 0, \"reclaimable_bytes\": 0, \"unassigned_bytes\": 0}, \"seconds\": 0.816137762973085}}, \"final\": {\"allocated_bytes\": 0, \"allocated_capacity\": 0, \"allocated_peak\": 67108864, \"allocations\": 38, \"context_joins\": 0, \"driver_memory_calls\": 156, \"event_handles\": 0, \"event_queries\": 35, \"event_records\": 33, \"event_waits\": 0, \"free_bytes\": 0, \"frees\": 38, \"mapped_bytes\": 0, \"mapped_peak\": 67108864, \"ooms\": 1, \"pending_bytes\": 0, \"pools\": 0, \"pools_bytes\": 0, \"prefetch_admissions\": 0, \"prefetch_attempts\": 0, \"prefetch_declines\": 0, \"reclaimable_bytes\": 0, \"unassigned_bytes\": 0}, \"host_cache\": {\"after\": {\"active_bytes.allocated\": 31, \"active_bytes.current\": 0, \"active_bytes.freed\": 31, \"active_bytes.peak\": 1, \"active_requests.allocated\": 31, \"active_requests.current\": 0, \"active_requests.freed\": 31, \"active_requests.peak\": 1, \"allocated_bytes.allocated\": 1, \"allocated_bytes.current\": 0, \"allocated_bytes.freed\": 1, \"allocated_bytes.peak\": 1, \"allocations.allocated\": 1, \"allocations.current\": 0, \"allocations.freed\": 1, \"allocations.peak\": 1, \"host_alloc_time.avg\": 1829, \"host_alloc_time.count\": 1, \"host_alloc_time.max\": 1829, \"host_alloc_time.min\": 1829, \"host_alloc_time.total\": 1829, \"host_free_time.avg\": 943, \"host_free_time.count\": 1, \"host_free_time.max\": 943, \"host_free_time.min\": 943, \"host_free_time.total\": 943, \"num_host_alloc\": 1, \"num_host_free\": 1}, \"before\": {\"active_bytes.allocated\": 31, \"active_bytes.current\": 0, \"active_bytes.freed\": 31, \"active_bytes.peak\": 1, \"active_requests.allocated\": 31, \"active_requests.current\": 0, \"active_requests.freed\": 31, \"active_requests.peak\": 1, \"allocated_bytes.allocated\": 1, \"allocated_bytes.current\": 1, \"allocated_bytes.freed\": 0, \"allocated_bytes.peak\": 1, \"allocations.allocated\": 1, \"allocations.current\": 1, \"allocations.freed\": 0, \"allocations.peak\": 1, \"host_alloc_time.avg\": 1829, \"host_alloc_time.count\": 1, \"host_alloc_time.max\": 1829, \"host_alloc_time.min\": 1829, \"host_alloc_time.total\": 1829, \"host_free_time.avg\": 0, \"host_free_time.count\": 0, \"host_free_time.max\": 0, \"host_free_time.min\": 0, \"host_free_time.total\": 0, \"num_host_alloc\": 1, \"num_host_free\": 0}}, \"passed\": true, \"provenance\": {\"capability\": [8, 9], \"driver_free_total\": [24205787136, 25252724736], \"executable\": \"/var/lib/cozy/tensord/generations/e2f188a0a594e8c83846c1c575ffece1/env/bin/python\", \"extension_path\": \"/opt/cozy/dependency-seed/uv-cache/archive-v0/mxO8Jae6fT3XU9j3/tensorfs/_ext.abi3.so\", \"extension_sha256\": \"7593e53c6edb79a9596d7f670f801e67dbdd47a7bbf54f980af7ec0ff67e467e\", \"gpu\": \"NVIDIA GeForce RTX 4090\", \"platform\": \"Linux-6.8.0-147-generic-x86_64-with-glibc2.36\", \"python\": \"3.12.12 (main, Feb 24 2026, 20:29:11) [GCC 12.2.0]\", \"shim_sha256\": \"09684b61d0b909c39d56c7d129432e906ddb0a57f1b4b916b20bb2c4c8d7716e\", \"tensorfs_version\": \"0.17.16+dev.gbacdb9db\", \"torch\": \"2.14.0+cu130\", \"torch_cuda\": \"13.0\", \"torch_cxx11_abi\": true, \"torch_distribution\": \"2.14.0\", \"torch_git\": \"08187d9e0fba026dc8217405802ab5381dc88d90\"}}",
+    "passed": true
+  },
+  "execution_ms": 5616,
+  "measurements": {
+    "attribution": {
+      "folded_names": 0,
+      "method": "perf_counter deltas accumulated in place: count/total/min/max/first/last and wall bounds per named span; step tracks keep up to 512 [end_unix_ms, ms] points",
+      "stages": {
+        "varena-p2-split-policy": {
+          "count": 1,
+          "ended_unix_ms": 1793530670374,
+          "first_ms": 5592.666,
+          "last_ms": 5592.666,
+          "max_ms": 5592.666,
+          "mean_ms": 5592.666,
+          "min_ms": 5592.666,
+          "started_unix_ms": 1793530664781,
+          "total_ms": 5592.666
+        }
+      },
+      "steps": {}
+    },
+    "execution": {
+      "construction": {
+        "fill_ms": 0.0,
+        "legs_ms": {},
+        "prepare_ms": 0.01,
+        "prepared_unix_ms": 0,
+        "warm_ms": 0.0
+      },
+      "cuts": {
+        "levels": {},
+        "oom_floor": 0,
+        "sites": []
+      },
+      "degree": 1,
+      "executor": {
+        "legs_ms": {
+          "cuda_init": 1299.7,
+          "package_import": 7.4,
+          "package_warmup": 0.0,
+          "torch_import": 0.0
+        },
+        "ms": 1307.1,
+        "started_unix_ms": 1793530645529
+      },
+      "gpus": [
+        {
+          "arch": "sm_89",
+          "attention": {
+            "impl": "",
+            "observed": "",
+            "requested": ""
+          },
+          "end_us": 1793530670377528,
+          "gpu": 0,
+          "pid": 190325,
+          "start_us": 1793530664780602,
+          "uuid": "GPU-74f2ac0a-1c52-2e52-a7a6-b207f1db7a89"
+        }
+      ],
+      "loops": [],
+      "on_demand": {},
+      "plan": {},
+      "plan_reports": {},
+      "reply_built_unix_ms": 1793530670381.8,
+      "reply_sent_unix_ms": 1793530670382.7,
+      "spread": {}
+    },
+    "memory": {
+      "driver": [
+        {
+          "before_bytes": 636616704,
+          "gpu": 0,
+          "peak_bytes": 1183252480,
+          "power_max_w": 90,
+          "sm_mhz_limit": 3105,
+          "sm_mhz_low": 2520,
+          "sm_mhz_mean": 2702,
+          "temperature_max_c": 47,
+          "throttled_share": 0.0,
+          "throttles": []
+        }
+      ],
+      "peak_allocated_bytes": 17039360,
+      "peak_reserved_bytes": 117440512,
+      "stats": {
+        "varena": [
+          {
+            "ceiling": {
+              "disk_gbps": 6.494588356276638,
+              "h2d_gbps": 26.07814170956751
+            },
+            "gpu": 0,
+            "stats": {
+              "allocated": 17039360,
+              "allocator": {
+                "allocations": 0,
+                "context_joins": 0,
+                "driver_memory_calls": 0,
+                "event_queries": 0,
+                "event_records": 0,
+                "event_waits": 0,
+                "frees": 0,
+                "ooms": 0
+              },
+              "allocator_scope": "process",
+              "baked_pages": {
+                "bytes": 0,
+                "cap": 270323621888,
+                "pages": 0,
+                "pinned": true,
+                "room": -1,
+                "scope": "the host tier: every streamed page's bytes, pinned",
+                "wanted": 0
+              },
+              "final_bindings": {
+                "fallback_blocks": 0,
+                "fills": 0,
+                "final_resident_bytes": 0,
+                "hits": 0,
+                "native_prefetch": true,
+                "raw_resident_bytes": 0,
+                "resident_scope": "process"
+              },
+              "gathered": 0,
+              "host": null,
+              "moved": {
+                "baked": {
+                  "bytes": 0,
+                  "fills": 0,
+                  "ns": 0
+                },
+                "store": {
+                  "bytes": 0,
+                  "ns": 0
+                }
+              },
+              "overlapping": false,
+              "peak": 17039360,
+              "peak_window": "Working high-water plus sampled native backing, carried across resets; other constructions' resident sets left out",
+              "phase_policy_supported": true,
+              "phases": [],
+              "prefetch": {
+                "canceled": 0,
+                "completed": 0,
+                "declined_native": 0,
+                "failed": 0,
+                "queued": [],
+                "scope": "immutable stored RAW; native measured admission; unknown keys decline",
+                "started": 0,
+                "unsupported_sources": {},
+                "wait_ns": 0
+              },
+              "request": "18",
+              "reserved": 117440512,
+              "room_first_pass": null,
+              "sets": {},
+              "trace": [],
+              "trace_scope": "fills",
+              "weight_residency": {
+                "context_joins": 0,
+                "event_waits": 0,
+                "evictions": 0,
+                "fills": 0,
+                "hits": 0,
+                "pinned_bytes": 0,
+                "poisoned": false,
+                "preferred_bytes": 0,
+                "ready_bytes": 0,
+                "reclaimable_bytes": 0,
+                "reclaimed_by_reason": {
+                  "allocator": 0,
+                  "requested": 0,
+                  "room": 0,
+                  "streaming_limit": 0,
+                  "weight_allocation": 0
+                },
+                "reclaimed_bytes": 0,
+                "regions": 0,
+                "reserved_bytes": 0,
+                "resident_bytes": 0,
+                "streaming_limit_bytes": 18446744073709551615
+              },
+              "working_allocator": {
+                "allocated_bytes": 17039360,
+                "allocated_capacity": 20971520,
+                "allocated_peak": 17039360,
+                "allocations": 1735,
+                "context_joins": 0,
+                "driver_memory_calls": 106,
+                "event_handles": 83,
+                "event_queries": 241,
+                "event_records": 223,
+                "event_waits": 0,
+                "free_bytes": 57561600,
+                "frees": 1733,
+                "mapped_bytes": 117440512,
+                "mapped_peak": 117440512,
+                "ooms": 0,
+                "pending_bytes": 37018624,
+                "pools": 0,
+                "pools_bytes": 0,
+                "prefetch_admissions": 0,
+                "prefetch_attempts": 0,
+                "prefetch_declines": 0,
+                "reclaimable_bytes": 23068672,
+                "unassigned_bytes": 1888768
+              },
+              "working_phases": [],
+              "working_splits": []
+            },
+            "torch_peak": 17039360
+          }
+        ]
+      }
+    },
+    "models": [],
+    "observations": [],
+    "residency": {
+      "graphs": {},
+      "notes": {}
+    },
+    "software": {
+      "attempt_ordinal": 1,
+      "runtime": "0.36.20+dev.g9b8d74e6",
+      "tensord": "0.15.4",
+      "tensord_commit": "9d2ae4827167828d52fbeb2b6e7eaddb34c82f99",
+      "tensorfs": "0.17.16+dev.gbacdb9db"
+    }
+  }
+}

@@ -98,4 +98,28 @@ path, while strict/feature-off paths reject. No child executes CUDA.
 [Original CPU receipts](../../release-gate/suites/varena/evidence/process-guard-contract-20261101)
 keep `gpu_qualified=false`. The benchmark's timed-pair and entire timed-sample-loop
 AST match the frozen experiment, and its2× numerical threshold is unchanged.
-This coherent default candidate has not yet had a GPU/model release qualification.
+That CPU checkpoint did not claim GPU or model release qualification; the subsequent bounded GPU result is below.
+
+## Coherent normal-contract GPU proof — 2026-11-01
+
+Frozen source **bacdb9db721dd4ceda3ffe279d1285bbea556708**, wheelSHA
+`82036120d83083a9cc326714ea023ba47079049386fb2a89dfe0464c9805403c`,
+passed the unchanged7×400,000 allocator benchmark in **25078**: native806.5834675ns
+versus Varena729.864925ns per pair, ratio **0.904884559**, under the unchanged2×
+bar. This is the coherent normal-contract build, not an experimental artifact
+with its exclusion flag removed. The actual warmed backend is `kernel_wipe`,
+contract`one_process/1`,4096-byte marker page, correct PID and authenticated thread;
+no initialization fallback was used. No production-certified bit is emitted.
+
+The matching4090/driver595.91.07/Torch2.14.0+cu130 cohort also passes all18 allocator
+stream/capture/lifetime groups (**25079**), all6 ordinary-fork callback checks
+without CUDA initialization (**25080**), and all13 native split groups (**25081**).
+Every timed allocation sample has zero working-driver memory/event/context-join
+increments; all final managed live/mapped/pending/pool/event state is zero.
+Exact extensionSHA7593e53c… and original shim09684b61… match the portable receipt.
+
+[Original run/result documents and independent audit](../../release-gate/suites/varena/evidence/process-guard-gpu-20261101)
+retain the full samples and schema/backend values. This proves the named allocator
+and supported-process mechanism scope. It is not full-model performance, a merge
+or release claim, or operation support for the preserved shared-VM/copied-TLS
+counterexample. The historical strict/default and experimental receipts remain.
