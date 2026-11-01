@@ -146,8 +146,8 @@ A machine is this computer's (`local`, started when used), a rental, or another 
 - `PUT /v1/machines/local/authorized-keys/{key}` and `DELETE …/{key}` answer `Authorized {key, file, changed,
   machine, image}`.
   - `key` is an Ed25519 public key, 32 bytes of unpadded base64url.
-  - An added key answers once `local` names where other computers add it (`machine.reach`), or after 30 s if
-    it is busy and moves there once idle.
+  - The answer comes at once. `local` reads its keys again on the call this makes, then listens on every
+    interface once it is idle, and `machine.reach` says where other computers add it.
   - A removed key's next call is refused.
 - `GET /v1/rental-skus[?hub=]`: `RentalSkus {rental_skus}`. These are the Hub's products for rent now,
   cheapest first by their fewest GPUs. A product the Hub cannot sell now, for any reason, is not listed.

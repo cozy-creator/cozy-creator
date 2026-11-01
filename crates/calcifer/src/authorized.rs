@@ -1,7 +1,7 @@
 //! `/v1/machines/local/authorized-keys`: the controllers of other computers this computer's
 //! machine admits (`cozy machine authorize`). While any is authorized the machine listens on every
 //! interface (it moves there once idle), stays up, and Calcifer starts it with itself at login.
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use axum::{
     Json,
@@ -17,24 +17,15 @@ use crate::{
     machines::Machines,
 };
 
-/// How long an added key waits for `local` to say where other computers add it: it moves to
-/// every interface at once when idle, else once its runs end.
-const REACH: Duration = Duration::from_secs(30);
-
 impl Machines {
     /// Adds (`add`) or takes back a controller's key. `local` reads its keys again at its next
-    /// call, which this makes; an added key is answered once `local` names where other computers
-    /// add it, or says it moves there once idle.
+    /// call, which this makes: once idle it listens on every interface, and `reach` then says
+    /// where other computers add it.
     pub async fn authorize(self: &Arc<Self>, key: &str, add: bool) -> Result<Authorized, Error> {
         protocol::calcifer::local_usable("local")?;
         let changed = self.local.authorize(key, add)?;
         let image = self.local.image();
-        let began = tokio::time::Instant::now();
-        let mut machine = self.show("local").await?;
-        while add && machine.reach.is_none() && !image && began.elapsed() < REACH {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            machine = self.show("local").await?;
-        }
+        let machine = self.show("local").await?;
         Ok(Authorized {
             key: key.to_owned(),
             file: self.local.keys_file(),
