@@ -1,0 +1,10 @@
+   Compiling varena v0.17.16 (/home/fidika/cozy_v2/outputs/xs138-p3-shared-service/host-005/native)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.11s
+     Running `/home/fidika/cozy/.worktrees/cozy-creator/xs138-p3-ledger/target/debug/examples/lifecycle`
+
+thread '<unnamed>' (2953801) panicked at src/cooperative/owner.rs:1431:9:
+intentional native metadata unwind
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread '<unnamed>' (2954442) panicked at src/cooperative/owner.rs:1960:9:
+intentional shared-service metadata retirement fault

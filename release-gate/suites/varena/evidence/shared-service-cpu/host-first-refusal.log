@@ -1,0 +1,10 @@
+   Compiling varena v0.17.16 (/home/fidika/cozy_v2/outputs/xs138-p3-shared-service/host-001/native)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.23s
+     Running `/home/fidika/cozy/.worktrees/cozy-creator/xs138-p3-ledger/target/debug/examples/lifecycle`
+
+thread '<unnamed>' (2908583) panicked at src/cooperative/owner.rs:1350:9:
+intentional native metadata unwind
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'main' (2907263) panicked at src/cooperative/owner.rs:1648:58:
+called `Result::unwrap()` on an `Err` value: Incompatible("ledger backing directory must be tmpfs")

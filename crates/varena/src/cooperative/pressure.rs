@@ -56,7 +56,6 @@ pub(super) struct Pressure {
     pending_processes: BTreeSet<u32>,
     signal_deadline: Option<std::time::Instant>,
     requests: usize,
-    activity_known: bool,
     window: Option<Window>,
     last: Option<(u64, u64)>,
     largest_growth: Option<u64>,
@@ -98,7 +97,6 @@ impl Pressure {
             pending_processes: BTreeSet::new(),
             signal_deadline: None,
             requests: 0,
-            activity_known: false,
             window: None,
             last: None,
             largest_growth: None,
@@ -204,7 +202,6 @@ impl Pressure {
     pub fn boundary(&mut self, kind: Boundary) -> crate::Result<()> {
         match kind {
             Boundary::RequestBegin => {
-                self.activity_known = true;
                 self.requests = self
                     .requests
                     .checked_add(1)
@@ -258,17 +255,24 @@ impl Pressure {
         Ok(())
     }
 
+    /// A client disappeared without completing its request. This is not a successful
+    /// boundary and cannot publish a reserve from the interrupted measurement window.
+    pub fn abandon(&mut self, requests: usize) -> crate::Result<()> {
+        if requests == 0 { return Ok(()); }
+        self.requests = self.requests.checked_sub(requests)
+            .ok_or(crate::Error::Invalid("abandoned request count exceeds active requests"))?;
+        self.invalidate_observation();
+        if self.requests == 0 { self.window = None; }
+        self.facts.rejected_requests += 1;
+        self.facts.measurement = Some("abandoned_request_window");
+        Ok(())
+    }
+
     pub fn invalidate_observation(&mut self) {
         self.last = None;
         if let Some(window) = &mut self.window {
             window.valid = false;
         }
-    }
-
-    pub fn activity(&self) -> ledger::Activity {
-        if !self.activity_known { ledger::Activity::Unknown }
-        else if self.requests != 0 { ledger::Activity::Active }
-        else { ledger::Activity::Idle }
     }
 
     pub fn wanted(&self) -> u64 {

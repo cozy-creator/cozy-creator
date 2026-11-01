@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import time
 import tomllib
+import uuid
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--source', type=Path, required=True)
@@ -44,6 +45,9 @@ shutil.copy2(args.source / 'Cargo.lock', fixture / 'Cargo.lock')
 harness = Path(__file__).with_name('lifecycle.rs')
 with (fixture / 'src/cooperative/owner.rs').open('a') as output:
     output.write('\n' + harness.read_text())
+    output.write('\n' + harness.with_name('shared.rs').read_text())
+with (fixture / 'src/cooperative/pressure.rs').open('a') as output:
+    output.write('\n' + harness.with_name('pressure_host.rs').read_text())
 with (fixture / 'src/cooperative.rs').open('a') as output:
     output.write('\npub use owner::lifecycle_proof;\n')
 (fixture / 'examples').mkdir()
@@ -51,12 +55,16 @@ with (fixture / 'src/cooperative.rs').open('a') as output:
     'fn main() { println!("{}", varena::cooperative::lifecycle_proof()); }\n')
 command = ['nice', '-n', '19', 'cargo', 'run', '--offline', '--manifest-path',
            str(fixture / 'Cargo.toml'), '--target-dir', str(args.target), '--example', 'lifecycle', '-j', '1']
+ledger_directory = Path('/dev/shm') / ('xs138-shared-' + uuid.uuid4().hex)
 start = time.monotonic()
 with (args.out / 'stdout').open('w') as stdout, (args.out / 'stderr').open('w') as stderr:
     completed = subprocess.run(command, stdout=stdout, stderr=stderr,
-                               env={**os.environ, 'CARGO_BUILD_JOBS': '1'}, timeout=180)
+                               env={**os.environ, 'CARGO_BUILD_JOBS': '1', 'VARENA_HOST_PROOF_DIRECTORY': str(ledger_directory)}, timeout=180)
 report = {'command': command, 'exit_code': completed.returncode, 'seconds': time.monotonic() - start,
           'sources': sources, 'harness_sha256': hashlib.sha256(harness.read_bytes()).hexdigest(),
+          'shared_harness_sha256': hashlib.sha256(harness.with_name('shared.rs').read_bytes()).hexdigest(),
+          'pressure_harness_sha256': hashlib.sha256(harness.with_name('pressure_host.rs').read_bytes()).hexdigest(),
+          'ledger_directory': str(ledger_directory),
           'scope': 'actual native host-control concurrency; no CUDA participant, GPU or native donor qualification'}
 if completed.returncode == 0:
     report['result'] = json.loads((args.out / 'stdout').read_text())

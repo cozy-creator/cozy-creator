@@ -4,7 +4,8 @@ use super::pressure::{Boundary, Pressure};
 use super::{Peer, Result, Service, deferred};
 use crate::ledger;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::path::Path;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak, mpsc};
 use std::time::{Duration, Instant};
 
@@ -100,6 +101,10 @@ fn report(
 
 #[derive(Clone, Debug, Default)]
 pub struct Facts {
+    /// Live application clients; worker/recovery references are not client leases.
+    pub clients: usize,
+    /// This handle released its lease; other clients may keep the service active.
+    pub closed: bool,
     pub active: bool,
     pub stopping: bool,
     pub retired: bool,
@@ -125,11 +130,48 @@ enum Command {
     Configure(ledger::Sharing, i32, mpsc::SyncSender<Result<()>>),
     Snapshot(mpsc::SyncSender<Result<ledger::Snapshot>>),
     CudaCalls(mpsc::SyncSender<Result<u64>>),
-    Boundary(Boundary, mpsc::SyncSender<Result<()>>),
+    Boundary(u64, Boundary, mpsc::SyncSender<Result<()>>),
+    ReleaseClient(u64),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Identity {
+    descriptor: ledger::Device,
+    directory: PathBuf,
+    directory_device: u64,
+    directory_inode: u64,
+    scope: ledger::Scope,
+}
+impl Identity {
+    fn read(descriptor: ledger::Device, directory: &Path) -> Result<Self> {
+        crate::check_process()?;
+        let directory = directory.canonicalize().map_err(ledger::Error::Io)?;
+        let metadata = directory.metadata().map_err(ledger::Error::Io)?;
+        Ok(Self {
+            descriptor,
+            directory,
+            directory_device: metadata.dev(),
+            directory_inode: metadata.ino(),
+            scope: ledger::Scope::current()?,
+        })
+    }
+}
+
+#[derive(Default)]
+struct Client {
+    released: bool,
+    final_client: bool,
+    reported: bool,
+    requests: usize,
 }
 
 #[derive(Default)]
 struct State {
+    identity: Option<Identity>,
+    row: Option<ledger::RowId>,
+    next_client: u64,
+    clients: BTreeMap<u64, Client>,
+    interrupted_window: bool,
     stopping: bool,
     retired: bool,
     generation: u64,
@@ -146,6 +188,39 @@ struct State {
     // Pressure yields ownership before any physical-allocation recovery starts. It never
     // withdraws a round used by an allocator, or borrows that allocator's latency budget.
     pressure_round: Option<u64>,
+}
+
+impl State {
+    fn add_client(&mut self) -> Result<u64> {
+        let id = self.next_client.checked_add(1).ok_or(ledger::Error::Overflow)?;
+        self.next_client = id;
+        self.interrupted_window |= self.clients.values().any(|client| client.requests != 0);
+        self.clients.insert(id, Client::default());
+        self.facts.activity = self.activity();
+        self.generation = self.generation.wrapping_add(1);
+        Ok(id)
+    }
+
+    fn activity(&self) -> ledger::Activity {
+        if self.clients.values().any(|client| client.requests != 0) {
+            ledger::Activity::Active
+        } else if self.clients.values().any(|client| !client.released && !client.reported) {
+            ledger::Activity::Unknown
+        } else {
+            ledger::Activity::Idle
+        }
+    }
+
+    fn client(&self, id: u64) -> Result<&Client> {
+        self.clients.get(&id).filter(|client| !client.released)
+            .ok_or_else(|| crate::Error::Invalid("cooperation client is closed").into())
+    }
+
+    fn stop(&mut self) {
+        self.stopping = true;
+        self.facts.active = false;
+        self.commands.clear();
+    }
 }
 
 fn queue_withdrawal(state: &mut State, round: u64) {
@@ -226,17 +301,86 @@ impl Control {
         }
         // Cancellation must disconnect waiters even if a panicked worker poisoned metadata.
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        state.stopping = true;
-        state.facts.active = false;
-        state.commands.clear();
+        state.stop();
         self.changed.notify_all();
     }
 
-    fn call<T>(&self, command: impl FnOnce(mpsc::SyncSender<Result<T>>) -> Command) -> Result<T> {
+    // Idempotent host-only release. Finality is decided with admission under the same
+    // mutex, never inferred from Arc counts that include worker/recovery references.
+    fn release_client(&self, id: u64) -> bool {
+        if self.pid != std::process::id() { return false; }
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let Some(client) = state.clients.get_mut(&id) else { return false; };
+        if client.released { return client.final_client; }
+        client.released = true;
+        let final_client = !state.clients.values().any(|client| !client.released);
+        state.clients.get_mut(&id).expect("released client").final_client = final_client;
+        state.facts.activity = state.activity();
+        if final_client {
+            state.stop();
+        } else if !state.stopping {
+            // Ordered after already admitted boundaries, so their matching abandonment
+            // runs on the worker and never samples NVML or trains H on a Drop stack.
+            state.commands.push_back(Command::ReleaseClient(id));
+        }
+        self.changed.notify_all();
+        final_client
+    }
+
+    fn next_boundary(&self, client: u64, kind: Boundary) -> Result<usize> {
+        let state = self.lock()?;
+        let requests = state.clients.get(&client)
+            .ok_or(crate::Error::Invalid("unknown cooperation client"))?.requests;
+        match kind {
+            Boundary::RequestBegin => requests.checked_add(1),
+            Boundary::RequestEnd => requests.checked_sub(1),
+        }.ok_or_else(|| crate::Error::Invalid("unbalanced client request boundary").into())
+    }
+
+    // Called only by the service worker, after any optional device observation. The
+    // pressure/request state transition itself owns no CUDA/NVML/ledger operation.
+    fn apply_boundary(&self, pressure: &mut Pressure, client: u64, kind: Boundary) -> Result<ledger::Activity> {
+        let next = self.next_boundary(client, kind)?;
+        let mut state = self.lock()?;
+        // The first Begin reports this client's activity. Other unreported consumers,
+        // or a client arriving during a request and leaving before this boundary, make
+        // that window unattributable. They cannot silently train the local reserve.
+        let starting = matches!(kind, Boundary::RequestBegin).then_some(client);
+        if state.interrupted_window || state.clients.iter().any(|(id, value)| {
+            !value.released && !value.reported && Some(*id) != starting
+        }) {
+            pressure.invalidate_observation();
+        }
+        state.interrupted_window = false;
+        pressure.boundary(kind)?;
+        let caller = state.clients.get_mut(&client).ok_or(crate::Error::Invalid("unknown cooperation client"))?;
+        caller.requests = next;
+        caller.reported = true;
+        let activity = state.activity();
+        state.facts.activity = activity;
+        state.facts.pressure = pressure.facts.clone();
+        state.generation = state.generation.wrapping_add(1);
+        self.changed.notify_all();
+        Ok(activity)
+    }
+
+    fn abandon_client(&self, pressure: &mut Pressure, client: u64) -> Result<ledger::Activity> {
+        let mut state = self.lock()?;
+        let requests = state.clients.remove(&client)
+            .ok_or(crate::Error::Invalid("unknown released cooperation client"))?.requests;
+        pressure.abandon(requests)?;
+        let activity = state.activity();
+        state.facts.activity = activity;
+        state.facts.pressure = pressure.facts.clone();
+        Ok(activity)
+    }
+
+    fn call<T>(&self, client: u64, command: impl FnOnce(mpsc::SyncSender<Result<T>>) -> Command) -> Result<T> {
         let (send, receive) = mpsc::sync_channel(1);
         {
             let mut state = self.lock()?;
             check(&state)?;
+            state.client(client)?;
             state.commands.push_back(command(send));
             self.changed.notify_all();
         }
@@ -256,14 +400,37 @@ fn check(state: &State) -> Result<()> {
     Ok(())
 }
 
-static OWNERS: OnceLock<Mutex<BTreeMap<i32, Weak<Control>>>> = OnceLock::new();
+struct Registered {
+    control: Weak<Control>,
+    // A quarantined service cannot disappear with its clients. This is host text only,
+    // never Peer/GPU ownership, and requires process retirement rather than reopening.
+    failed: Option<String>,
+}
+impl Registered {
+    fn new(control: &Arc<Control>) -> Self {
+        Self { control: Arc::downgrade(control), failed: None }
+    }
 
-fn registry() -> Result<MutexGuard<'static, BTreeMap<i32, Weak<Control>>>> {
+    fn get(&self) -> Result<Option<Arc<Control>>> {
+        if let Some(reason) = &self.failed {
+            return Err(crate::Error::Poisoned(format!("native cooperation failed: {reason}")).into());
+        }
+        Ok(self.control.upgrade())
+    }
+}
+
+static OWNERS: OnceLock<Mutex<BTreeMap<i32, Registered>>> = OnceLock::new();
+
+fn registry() -> Result<MutexGuard<'static, BTreeMap<i32, Registered>>> {
     crate::check_process()?; // Before touching a possibly inherited mutex.
     OWNERS
         .get_or_init(Mutex::default)
         .lock()
         .map_err(|_| crate::Error::Poisoned("native owner registry mutex".into()).into())
+}
+
+fn registered(device: i32) -> Result<Option<Arc<Control>>> {
+    registry()?.get(&device).map(Registered::get).transpose().map(Option::flatten)
 }
 
 fn native(error: super::Error) -> crate::Error {
@@ -278,7 +445,7 @@ fn native(error: super::Error) -> crate::Error {
 /// Called after cache callbacks/reclaim, outside all allocator/arena/ledger guards.
 /// Only host Control is acquired; callback return itself supplies no capacity credit.
 pub(crate) fn wake_cache_actions(device: i32) -> crate::Result<()> {
-    let control = registry().map_err(native)?.get(&device).and_then(Weak::upgrade);
+    let control = registered(device).map_err(native)?;
     if let Some(control) = control {
         let mut state = control.lock().map_err(native)?;
         state.generation = state.generation.wrapping_add(1);
@@ -300,10 +467,7 @@ pub(crate) fn recover(
         let captures = crate::capture_counts()?;
         crate::ensure_recovery_allowed(&captures, device)?;
     }
-    let control = registry()
-        .map_err(native)?
-        .get(&device)
-        .and_then(Weak::upgrade);
+    let control = registered(device).map_err(native)?;
     let Some(control) = control else {
         return Ok(crate::PeerProgress::Unavailable);
     };
@@ -431,15 +595,52 @@ pub(crate) fn recover(
     }
 }
 
-/// Lifecycle handle, never retained by Room or Arena. Drop only requests asynchronous stop.
-/// Explicit close may wait for final GPU retirement, outside application/allocator locks.
+// Reserve only host state. Opening waits/driver work are outside this registry lock.
+fn reserve(device: i32, identity: &Identity, reuse: bool) -> Result<(Arc<Control>, u64, Option<ledger::RowId>)> {
+    let mut owners = registry()?;
+    if let Some(control) = owners.get(&device).map(Registered::get).transpose()?.flatten() {
+        let mut state = control.lock()?;
+        if state.identity.as_ref() != Some(identity) {
+            return Err(crate::Error::Invalid("cooperation service device or ledger domain differs").into());
+        }
+        if let Some(reason) = &state.facts.failed {
+            return Err(crate::Error::Poisoned(format!("native cooperation failed: {reason}")).into());
+        }
+        if !state.retired {
+            if !reuse || state.stopping || !state.facts.active {
+                return Err(crate::Error::Busy.into());
+            }
+            let row = state.row.ok_or(crate::Error::Invalid("ready cooperation service has no row"))?;
+            let client = state.add_client()?;
+            drop(state);
+            control.changed.notify_all();
+            return Ok((control, client, Some(row)));
+        }
+        // Successful retirement proves the old worker no longer owns Peer resources.
+        // Its remaining closed handles retain only their own, permanently stopped Control.
+    }
+    let control = Arc::new(Control::new());
+    let client = {
+        let mut state = control.lock()?;
+        state.identity = Some(identity.clone());
+        state.add_client()?
+    };
+    owners.insert(device, Registered::new(&control));
+    Ok((control, client, None))
+}
+
+/// One application client of the native service, never retained by Room or Arena.
+/// Drop releases only this client. Final retirement remains on the native worker.
+/// Explicit final close may wait outside application/allocator/GIL locks and is retryable.
 pub struct Owner {
     device: i32,
     id: ledger::RowId,
+    client: u64,
     control: Arc<Control>,
 }
 
 impl Owner {
+    /// Exclusive creation: refuse an existing live, opening or retiring service.
     pub fn open(
         device: i32,
         descriptor: ledger::Device,
@@ -447,45 +648,75 @@ impl Owner {
         sharing: ledger::Sharing,
         priority: i32,
     ) -> Result<Self> {
-        let control = Arc::new(Control::new());
-        {
-            let mut owners = registry()?;
-            if owners.get(&device).and_then(Weak::upgrade).is_some() {
-                return Err(crate::Error::Busy.into());
-            }
-            owners.insert(device, Arc::downgrade(&control));
-        }
-        // Even failed thread creation cannot drop GPU ownership on the caller's stack.
-        let worker = Arc::clone(&control);
-        let directory = directory.to_path_buf();
-        let (ready, started) = mpsc::sync_channel(1);
-        std::thread::Builder::new()
-            .name(format!("varena-owner-{device}"))
-            .spawn(
-                move || match Peer::open(device, descriptor, &directory, sharing, priority) {
-                    Ok(peer) => {
-                        if let Ok(mut state) = worker.lock() {
-                            state.facts.active = true;
-                        }
-                        if ready.send(Ok(peer.id())).is_err() {
-                            worker.stop(); // The opening caller no longer owns this service.
-                        }
-                        run(peer, worker, descriptor);
-                    }
-                    Err(error) => {
-                        let _ = ready.send(Err(error));
-                    }
-                },
-            )
-            .map_err(ledger::Error::Io)?;
-        let id = started
-            .recv()
-            .map_err(|_| crate::Error::Poisoned("native owner startup failed".into()))??;
-        Ok(Self {
+        Self::acquire(device, descriptor, directory, sharing, priority, false)
+    }
+
+    /// Share a ready service in the same verified device/ledger domain. Initial sharing
+    /// and priority apply ONLY to creation; acquisition never reconfigures existing users.
+    /// Runtime and public bindings must both use this route for either arrival order.
+    pub fn get_or_open(
+        device: i32,
+        descriptor: ledger::Device,
+        directory: &Path,
+        initial_sharing: ledger::Sharing,
+        initial_priority: i32,
+    ) -> Result<Self> {
+        Self::acquire(device, descriptor, directory, initial_sharing, initial_priority, true)
+    }
+
+    fn acquire(
+        device: i32,
+        descriptor: ledger::Device,
+        directory: &Path,
+        sharing: ledger::Sharing,
+        priority: i32,
+        reuse: bool,
+    ) -> Result<Self> {
+        let identity = Identity::read(descriptor, directory)?;
+        let (control, client, row) = reserve(device, &identity, reuse)?;
+        // This provisional host lease also releases on spawn/startup failure or unwind.
+        let mut owner = Self {
             device,
-            id,
-            control,
-        })
+            id: row.unwrap_or(ledger::RowId { slot: 0, incarnation: 0 }),
+            client,
+            control: Arc::clone(&control),
+        };
+        if row.is_some() { return Ok(owner); }
+        let worker = Arc::clone(&control);
+        let directory = identity.directory;
+        let (ready, started) = mpsc::sync_channel(1);
+        let spawned = std::thread::Builder::new()
+            .name(format!("varena-owner-{device}"))
+            .spawn(move || match Peer::open(device, descriptor, &directory, sharing, priority) {
+                Ok(peer) => {
+                    if let Ok(mut state) = worker.lock() {
+                        state.row = Some(peer.id());
+                        state.facts.active = true;
+                    }
+                    // The provisional client's Drop handles cancellation; another client
+                    // may already have joined Ready, so a disconnected opener cannot stop all.
+                    let _ = ready.send(Ok(peer.id()));
+                    run(peer, worker, descriptor);
+                }
+                Err(error) => {
+                    let _ = ready.send(Err(error));
+                }
+            });
+        let startup = spawned.map_err(ledger::Error::Io).map_err(super::Error::from)
+            .and_then(|_| started.recv()
+                .map_err(|_| super::Error::Native(crate::Error::Poisoned("native owner startup failed".into())))?);
+        match startup {
+            Ok(id) => { owner.id = id; Ok(owner) }
+            Err(error) => {
+                // No Ready service was published on ordinary startup failure. Remove only
+                // our reservation, never a later service. GPU teardown stays on the worker.
+                let mut owners = registry()?;
+                if owners.get(&device).is_some_and(|entry| entry.control.ptr_eq(&Arc::downgrade(&control))) {
+                    owners.remove(&device);
+                }
+                Err(error)
+            }
+        }
     }
 
     pub fn id(&self) -> ledger::RowId {
@@ -495,6 +726,7 @@ impl Owner {
     pub fn wake(&self, last_use: u64) -> Result<()> {
         let mut state = self.control.lock()?;
         check(&state)?;
+        state.client(self.client)?;
         state.last_use = state.last_use.max(last_use);
         state.generation = state.generation.wrapping_add(1);
         self.control.changed.notify_all();
@@ -504,6 +736,9 @@ impl Owner {
     pub fn facts(&self) -> Result<Facts> {
         let state = self.control.lock()?;
         let mut facts = state.facts.clone();
+        facts.clients = state.clients.values().filter(|client| !client.released).count();
+        facts.closed = state.client(self.client).is_err();
+        facts.active &= !facts.closed;
         facts.stopping = state.stopping;
         facts.retired = state.retired;
         facts.active_recoveries = state
@@ -524,25 +759,34 @@ impl Owner {
     /// application work; overlapping or VMM-changing windows cannot train opaque reserve.
     pub fn boundary(&self, boundary: Boundary) -> Result<()> {
         self.control
-            .call(|reply| Command::Boundary(boundary, reply))
+            .call(self.client, |reply| Command::Boundary(self.client, boundary, reply))
     }
 
     pub fn configure(&self, sharing: ledger::Sharing, priority: i32) -> Result<()> {
         self.control
-            .call(|reply| Command::Configure(sharing, priority, reply))
+            .call(self.client, |reply| Command::Configure(sharing, priority, reply))
     }
 
     pub fn snapshot(&self) -> Result<ledger::Snapshot> {
-        self.control.call(Command::Snapshot)
+        self.control.call(self.client, Command::Snapshot)
     }
 
     pub fn cuda_calls(&self) -> Result<u64> {
-        self.control.call(Command::CudaCalls)
+        self.control.call(self.client, Command::CudaCalls)
     }
 
     pub fn close(&self) -> Result<()> {
         drop(self.control.lock()?); // Process check precedes stop and capture registry access.
-        self.control.stop();
+        if !self.control.release_client(self.client) { return Ok(()); }
+        {
+            let state = self.control.lock()?;
+            if let Some(error) = &state.facts.failed {
+                return Err(crate::Error::Poisoned(error.clone()).into());
+            }
+            // Retrying an old completed close must not consult a later service's
+            // capture/dispatcher state or interfere with that service generation.
+            if state.retired { return Ok(()); }
+        }
         if crate::cache_owner::is_dispatcher_thread(self.device)? {
             return Err(crate::Error::Busy.into());
         }
@@ -572,9 +816,7 @@ impl Owner {
 impl Drop for Owner {
     fn drop(&mut self) {
         // A private-VM child must not touch its parent's inherited synchronization state.
-        if self.control.pid == std::process::id() {
-            self.control.stop();
-        }
+        self.control.release_client(self.client);
     }
 }
 
@@ -600,8 +842,21 @@ fn command(peer: &Peer, control: &Control, pressure: &mut Pressure, command: Com
         Command::CudaCalls(reply) => {
             let _ = reply.send(peer.cuda_calls());
         }
-        Command::Boundary(kind, reply) => {
+        Command::ReleaseClient(client) => {
             let result = (|| {
+                peer.set_activity(control.abandon_client(pressure, client)?)?;
+                Ok::<(), super::Error>(())
+            })();
+            if let Err(error) = result {
+                if let Ok(mut state) = control.lock() { state.facts.failed.get_or_insert_with(|| error.to_string()); }
+                control.stop();
+            }
+        }
+        Command::Boundary(client, kind, reply) => {
+            let result = (|| {
+                // A queued boundary precedes ReleaseClient. Refuse a mismatched End before
+                // sampling, rather than consuming another client's outstanding request.
+                control.next_boundary(client, kind)?;
                 // A capture/deferred sample cannot block lifecycle cleanup or supply an H
                 // observation. Unknown accounting simply makes this window unqualified.
                 match pressure.observe(peer) {
@@ -610,14 +865,7 @@ fn command(peer: &Peer, control: &Control, pressure: &mut Pressure, command: Com
                         result?;
                     }
                 }
-                pressure.boundary(kind)?;
-                let activity = pressure.activity();
-                peer.set_activity(activity)?;
-                let mut state = control.lock()?;
-                state.facts.activity = activity;
-                state.facts.pressure = pressure.facts.clone();
-                state.generation = state.generation.wrapping_add(1);
-                control.changed.notify_all();
+                peer.set_activity(control.apply_boundary(pressure, client, kind)?)?;
                 Ok(())
             })();
             let _ = reply.send(result);
@@ -626,6 +874,10 @@ fn command(peer: &Peer, control: &Control, pressure: &mut Pressure, command: Com
 }
 
 fn tick(peer: &Peer, control: &Control, used: u64) -> Result<()> {
+    // Acquisition may add an unreported consumer without a request command. Publish
+    // the aggregate category before considering this process as an idle donor.
+    let activity = control.lock()?.activity();
+    peer.set_activity(activity)?;
     let reading = peer.publish(used)?;
     {
         let mut state = control.lock()?;
@@ -1007,6 +1259,7 @@ fn serve(peer: &Peer, control: &Control, pressure: &mut Pressure) -> Result<()> 
 }
 
 fn run(mut peer: Peer, control: Arc<Control>, descriptor: ledger::Device) {
+    let device = peer.device;
     let mut pressure = Pressure::new(descriptor);
     // Keep Peer outside the unwind scope: even an unexpected worker panic retires it safely.
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1018,7 +1271,7 @@ fn run(mut peer: Peer, control: Arc<Control>, descriptor: ledger::Device) {
         Err(_) => Some("native owner worker panicked".into()),
     };
     if let Ok(mut state) = control.lock() {
-        state.facts.failed = error;
+        if state.facts.failed.is_none() { state.facts.failed = error; }
     }
     control.stop();
     let retired = loop {
@@ -1034,7 +1287,7 @@ fn run(mut peer: Peer, control: Arc<Control>, descriptor: ledger::Device) {
                 } else {
                     // Unknown native ownership/fault state cannot authorize destruction.
                     if let Ok(mut state) = control.lock() {
-                        state.facts.failed = Some(error.to_string());
+                        state.facts.failed.get_or_insert_with(|| error.to_string());
                     }
                     std::mem::forget(peer);
                     break false;
@@ -1042,8 +1295,26 @@ fn run(mut peer: Peer, control: Arc<Control>, descriptor: ledger::Device) {
             }
         }
     };
-    if let Ok(mut state) = control.lock() {
+    finish_retirement(device, &control, retired);
+}
+
+fn finish_retirement(device: i32, control: &Arc<Control>, retired: bool) {
+    let failed = {
+        let mut state = control.state.lock().unwrap_or_else(|error| {
+            let mut state = error.into_inner();
+            state.facts.failed.get_or_insert_with(|| "native owner control mutex poisoned".into());
+            state
+        });
         state.retired = retired;
-        control.changed.notify_all();
+        state.facts.failed.clone()
+    };
+    if let Some(failed) = failed
+        && let Ok(mut owners) = registry()
+        && let Some(entry) = owners.get_mut(&device)
+        && entry.control.ptr_eq(&Arc::downgrade(control))
+    {
+        entry.failed.get_or_insert(failed);
     }
+    // Registry poison already refuses lookup; it cannot permit an unrecorded restart.
+    control.changed.notify_all();
 }
