@@ -127,11 +127,13 @@ impl Fill {
                 events: Vec::new(),
             }),
         });
+        let region = Arc::clone(self.pin.as_ref().expect("fill pin").region());
         FillSession {
             control: Arc::clone(&control),
             sender: None,
             payload: Some(Payload {
                 control,
+                region: Some(region),
                 fill: Some(self),
                 completed_pin: None,
                 owners: Some(owners),
@@ -182,6 +184,14 @@ impl FillSession {
         let region = payload.region();
         let guard = enter_producer(region.device())?;
         let result = (|| {
+            let _arena = region.arena.lock()?;
+            if region.uses.state() != Contents::Loading
+                || region.uses.generation.load(Ordering::Acquire) != self.control.generation
+            {
+                return Err(Error::Invalid(
+                    "asynchronous fill generation changed before begin",
+                ));
+            }
             let _context = region.arena.driver.enter()?;
             for &stream in &owners.streams {
                 region.arena.driver.validate_stream(stream as usize)?;
@@ -349,6 +359,7 @@ impl Drop for FillSession {
 
 struct Payload {
     control: Arc<Control>,
+    region: Option<Arc<Region>>,
     fill: Option<Fill>,
     completed_pin: Option<Pin>,
     owners: Option<FillOwners>,
@@ -361,11 +372,7 @@ struct Payload {
 }
 impl Payload {
     fn region(&self) -> Arc<Region> {
-        let pin = match &self.fill {
-            Some(fill) => fill.pin.as_ref().expect("fill pin"),
-            None => self.completed_pin.as_ref().expect("completed pin"),
-        };
-        Arc::clone(pin.region())
+        Arc::clone(self.region.as_ref().expect("worker region custody"))
     }
     fn quarantine(&mut self, error: Error) {
         // Called only after every operation guard has left the stack.
@@ -442,6 +449,7 @@ impl Payload {
         }
         drop(self.guard.take());
         drop(_context);
+        drop(self.region.take());
         drop(region); // must precede retirement exclusion's release, even for the last Arena
         Ok(true)
     }
@@ -460,6 +468,9 @@ impl Drop for Payload {
         }
         if let Some(guard) = self.guard.take() {
             std::mem::forget(guard);
+        }
+        if let Some(region) = self.region.take() {
+            std::mem::forget(region);
         }
     }
 }
