@@ -1583,7 +1583,7 @@ pub fn phase_leave(
             String::new()
         }
     });
-    let published = reason.is_empty();
+    let published = reason.is_empty() && active.invalid.is_none();
     let mut sample = PhaseStats::default();
     if active.mode == PhaseMode::Eager
         && let Some(key) = &observed
