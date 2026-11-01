@@ -1,0 +1,9 @@
+{
+  "tested_fixture": "3939db65f6ac35b66dc0e5f58277f0ee6eaedf83",
+  "tested_required_bytes": 2097152,
+  "new_source_change": "Assert required_bytes > 0 before setting a refusal cap or executing the operation; future fully reused case fails fast.",
+  "source_sha256": "1fe01ebed6d58325618c4593e9367fbdb1664b5dfd4a60f48a7cc361694f2aec",
+  "source_checks": "Ruff, AST and diff check pass",
+  "new_source_gpu_reexecuted": false,
+  "product_source_unchanged": true
+}

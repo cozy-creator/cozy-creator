@@ -26,3 +26,36 @@ and TensorFS wheels, `key-check/candidate-v2.json`, exact GPU UUID, and a new ou
 The resulting `project/` contains the exact four original package modules; `input.json` comes
 from wheel bytes and kernel/source receipts. Both GLUE sets are hashed, and the GPU entrypoint
 loads the package's actual device-selected set, as H3 does.
+
+## GPU evidence: 2026-11-01
+
+Tested fixture **3939db65f** with Runtime **fe5a783da**, TensorFS **9ccb36a24** and
+package **9e7490c0** passes actual tail run **25084** and same-PID cleanup **25085**
+on columbina RTX4090. Whole 8195, half 4098 + 4097 and quarter 2048 + final 3 rows
+are bit-exact to current `_Tail.run`; M=1 has relative L2 zero. All 14 independent
+automatic native workspace checks match (33,554,944 B for the large Stream-K
+shapes, zero for 2048/GEMV shapes). Every accepted operation publishes one native
+child observation and one parent choice. The componentless parent remains
+explicitly `execution_key_unknown`; it is not fabricated as a model phase.
+
+Minimum refusal required 2,097,152 B with 2,097,151 B available, changed no output,
+allocated nothing and published no child. Final live 17,039,360 B and capacity /
+mapped 20,971,520 B match the initial library-owned baseline; pending bytes, pools
+and events are zero. Following request in PID 190641 finds both native site keys
+already retired. Built-in baked hooks read no factors; unbaked, nonexclusive,
+output-alias and unaligned-index declarations decline before output writes.
+
+The unchanged standalone projection fixture also passes **25086 / 25087** with
+the extracted helper: whole/half/quarter exact, actual automatic workspace exact,
+baked and unbaked hook outputs exact, minimum refusal before allocations, matching
+baseline and same-PID retirement. Full structured results and original run
+records are under `evidence/2026-11-01`; `independent-review.json` records hashes
+and qualification boundaries.
+
+A later fixture-only assertion now refuses to execute the minimum case if an
+incoming slab offers fully reusable scratch (`required_bytes == 0`). The tested
+3939 artifact proved a positive 2 MiB requirement and is preserved unchanged.
+This assertion changes no product source; its source checks pass, and the GPU
+claim remains for 3939. Full new-package H3, other GPUs/providers, captured tails,
+post-acceptance fault injection and unrelated incoming quantized-cache ownership
+remain outside this proof.

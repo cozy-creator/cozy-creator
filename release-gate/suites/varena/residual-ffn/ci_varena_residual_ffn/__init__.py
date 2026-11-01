@@ -266,6 +266,10 @@ def gpu(payload: Probe, ctx: Context) -> Report:
                 exact = vt.split_select(device, capacity_key, [('target', allocations)],
                                         preferred='target',
                                         stream=int(torch.cuda.current_stream(device).cuda_stream))
+                if chunk is None:
+                    assert exact['required_bytes'] > 0, (
+                        'fixture cannot force minimum refusal with fully reusable scratch; '
+                        'stop before the operation instead of executing tiny chunks')
                 vt.set_limit(device, before['mapped_bytes'] + exact['required_bytes']
                              - (1 if chunk is None else 0))
                 try:
