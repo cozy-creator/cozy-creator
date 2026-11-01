@@ -1,0 +1,590 @@
+{
+  "cases": [
+    {
+      "budget": 0.01,
+      "exact": true,
+      "phase": {
+        "backing_peak_bytes": 190840832,
+        "cut_choices": 1,
+        "definitions": [],
+        "invalidated": false,
+        "key": null,
+        "mode": "eager",
+        "observation_id": 1,
+        "peak_bytes": 186696192,
+        "published": false,
+        "reason": "execution_key_unknown",
+        "split_observations": [
+          {
+            "backing_peak_bytes": 188743680,
+            "choice_id": "rows:8193/full:0:5/tail:8193:0:5",
+            "key": "runtime.split.int8_linear/1:d86aad6bdfc817a45639f37134cec058d76e4854bbf2097d24587ec1c596dc28",
+            "observation_id": 1,
+            "observed": true,
+            "peak_bytes": 186695680,
+            "pending": false,
+            "published": true,
+            "reason": "",
+            "successful_passes": 1
+          }
+        ],
+        "successful_backing_peak_bytes": 0,
+        "successful_passes": 0,
+        "successful_peak_bytes": 0,
+        "total_peak_bytes": 367076864
+      },
+      "query": {
+        "full": {
+          "config": 5,
+          "kind": 0,
+          "status": 0,
+          "workspace_bytes": 33554944
+        },
+        "tail": {
+          "config": 5,
+          "kind": 0,
+          "status": 0,
+          "workspace_bytes": 33554944
+        },
+        "tail_rows": 8193
+      },
+      "relative_l2": 0.0,
+      "row_chunk": 8193,
+      "selection": {
+        "dispatch": {
+          "full": {
+            "config": 5,
+            "kind": 0,
+            "rows": 8193,
+            "workspace": 33554944
+          },
+          "tail": {
+            "config": 5,
+            "kind": 0,
+            "rows": 8193,
+            "workspace": 33554944
+          }
+        },
+        "key": "runtime.split.int8_linear/1:d86aad6bdfc817a45639f37134cec058d76e4854bbf2097d24587ec1c596dc28",
+        "row_chunk": 8193,
+        "selection": {
+          "allocation_backing_bytes": 188743680,
+          "available_bytes": 188743680,
+          "basis": "declared",
+          "choice_id": "rows:8193/full:0:5/tail:8193:0:5",
+          "eligible": [
+            "rows:8193/full:0:5/tail:8193:0:5",
+            "rows:4097/full:0:1/tail:4096:0:1",
+            "rows:2049/full:0:0/tail:2046:0:0",
+            "rows:1025/full:0:1/tail:1018:0:1",
+            "rows:513/full:0:4/tail:498:0:4",
+            "rows:257/full:0:4/tail:226:0:4",
+            "rows:129/full:0:4/tail:66:0:6",
+            "rows:65/full:0:6/tail:3:1:-1",
+            "rows:33/full:0:6/tail:9:0:3",
+            "rows:17/full:0:6/tail:16:0:3",
+            "rows:9/full:0:3/tail:3:1:-1",
+            "rows:5/full:0:3/tail:3:1:-1",
+            "rows:3/full:1:-1/tail:3:1:-1",
+            "rows:2/full:1:-1/tail:1:1:-1",
+            "rows:1/full:1:-1/tail:1:1:-1"
+          ],
+          "measured_backing_peak_bytes": null,
+          "preserved_backing_bytes": 0,
+          "reclaimable_working_bytes": 0,
+          "reclaimed_weight_bytes": 0,
+          "reclaimed_working_bytes": 0,
+          "required_bytes": 188743680,
+          "reused_capacity_bytes": 0,
+          "stream": 0
+        },
+        "selections": 1,
+        "site": "int8-linear-rows",
+        "submission": {
+          "backing_peak_bytes": 188743680,
+          "choice_id": "rows:8193/full:0:5/tail:8193:0:5",
+          "key": "runtime.split.int8_linear/1:d86aad6bdfc817a45639f37134cec058d76e4854bbf2097d24587ec1c596dc28",
+          "observation_id": 1,
+          "observed": true,
+          "peak_bytes": 186695680,
+          "pending": true,
+          "published": false,
+          "reason": "",
+          "successful_passes": 0
+        },
+        "workspace_bytes": 33554944
+      }
+    },
+    {
+      "budget": 0.01,
+      "exact": true,
+      "phase": {
+        "backing_peak_bytes": 125829120,
+        "cut_choices": 1,
+        "definitions": [],
+        "invalidated": false,
+        "key": null,
+        "mode": "eager",
+        "observation_id": 2,
+        "peak_bytes": 121659904,
+        "published": false,
+        "reason": "execution_key_unknown",
+        "split_observations": [
+          {
+            "backing_peak_bytes": 123731968,
+            "choice_id": "rows:4097/full:0:1/tail:4096:0:1",
+            "key": "runtime.split.int8_linear/1:d86aad6bdfc817a45639f37134cec058d76e4854bbf2097d24587ec1c596dc28",
+            "observation_id": 2,
+            "observed": true,
+            "peak_bytes": 121659392,
+            "pending": false,
+            "published": true,
+            "reason": "",
+            "successful_passes": 1
+          }
+        ],
+        "successful_backing_peak_bytes": 0,
+        "successful_passes": 0,
+        "successful_peak_bytes": 0,
+        "total_peak_bytes": 367076864
+      },
+      "query": {
+        "full": {
+          "config": 1,
+          "kind": 0,
+          "status": 0,
+          "workspace_bytes": 0
+        },
+        "tail": {
+          "config": 1,
+          "kind": 0,
+          "status": 0,
+          "workspace_bytes": 0
+        },
+        "tail_rows": 4096
+      },
+      "relative_l2": 0.0,
+      "row_chunk": 4097,
+      "selection": {
+        "dispatch": {
+          "full": {
+            "config": 1,
+            "kind": 0,
+            "rows": 4097,
+            "workspace": 0
+          },
+          "tail": {
+            "config": 1,
+            "kind": 0,
+            "rows": 4096,
+            "workspace": 0
+          }
+        },
+        "key": "runtime.split.int8_linear/1:d86aad6bdfc817a45639f37134cec058d76e4854bbf2097d24587ec1c596dc28",
+        "row_chunk": 4097,
+        "selection": {
+          "allocation_backing_bytes": 123731968,
+          "available_bytes": 121634816,
+          "basis": "declared",
+          "choice_id": "rows:4097/full:0:1/tail:4096:0:1",
+          "eligible": [
+            "rows:4097/full:0:1/tail:4096:0:1",
+            "rows:2049/full:0:0/tail:2046:0:0",
+            "rows:1025/full:0:1/tail:1018:0:1",
+            "rows:513/full:0:4/tail:498:0:4",
+            "rows:257/full:0:4/tail:226:0:4",
+            "rows:129/full:0:4/tail:66:0:6",
+            "rows:65/full:0:6/tail:3:1:-1",
+            "rows:33/full:0:6/tail:9:0:3",
+            "rows:17/full:0:6/tail:16:0:3",
+            "rows:9/full:0:3/tail:3:1:-1",
+            "rows:5/full:0:3/tail:3:1:-1",
+            "rows:3/full:1:-1/tail:3:1:-1",
+            "rows:2/full:1:-1/tail:1:1:-1",
+            "rows:1/full:1:-1/tail:1:1:-1"
+          ],
+          "measured_backing_peak_bytes": null,
+          "preserved_backing_bytes": 2097152,
+          "reclaimable_working_bytes": 0,
+          "reclaimed_weight_bytes": 0,
+          "reclaimed_working_bytes": 0,
+          "required_bytes": 121634816,
+          "reused_capacity_bytes": 24576,
+          "stream": 0
+        },
+        "selections": 2,
+        "site": "int8-linear-rows",
+        "submission": {
+          "backing_peak_bytes": 123731968,
+          "choice_id": "rows:4097/full:0:1/tail:4096:0:1",
+          "key": "runtime.split.int8_linear/1:d86aad6bdfc817a45639f37134cec058d76e4854bbf2097d24587ec1c596dc28",
+          "observation_id": 2,
+          "observed": true,
+          "peak_bytes": 121659392,
+          "pending": true,
+          "published": false,
+          "reason": "",
+          "successful_passes": 0
+        },
+        "workspace_bytes": 0
+      }
+    },
+    {
+      "budget": 0.01,
+      "exact": true,
+      "phase": {
+        "backing_peak_bytes": 111149056,
+        "cut_choices": 1,
+        "definitions": [],
+        "invalidated": false,
+        "key": null,
+        "mode": "eager",
+        "observation_id": 3,
+        "peak_bytes": 106967552,
+        "published": false,
+        "reason": "execution_key_unknown",
+        "split_observations": [
+          {
+            "backing_peak_bytes": 109051904,
+            "choice_id": "rows:2049/full:0:0/tail:2046:0:0",
+            "key": "runtime.split.int8_linear/1:d86aad6bdfc817a45639f37134cec058d76e4854bbf2097d24587ec1c596dc28",
+            "observation_id": 3,
+            "observed": true,
+            "peak_bytes": 106967040,
+            "pending": false,
+            "published": true,
+            "reason": "",
+            "successful_passes": 1
+          }
+        ],
+        "successful_backing_peak_bytes": 0,
+        "successful_passes": 0,
+        "successful_peak_bytes": 0,
+        "total_peak_bytes": 302040576
+      },
+      "query": {
+        "full": {
+          "config": 0,
+          "kind": 0,
+          "status": 0,
+          "workspace_bytes": 0
+        },
+        "tail": {
+          "config": 0,
+          "kind": 0,
+          "status": 0,
+          "workspace_bytes": 0
+        },
+        "tail_rows": 2046
+      },
+      "relative_l2": 0.0,
+      "row_chunk": 2049,
+      "selection": {
+        "dispatch": {
+          "full": {
+            "config": 0,
+            "kind": 0,
+            "rows": 2049,
+            "workspace": 0
+          },
+          "tail": {
+            "config": 0,
+            "kind": 0,
+            "rows": 2046,
+            "workspace": 0
+          }
+        },
+        "key": "runtime.split.int8_linear/1:d86aad6bdfc817a45639f37134cec058d76e4854bbf2097d24587ec1c596dc28",
+        "row_chunk": 2049,
+        "selection": {
+          "allocation_backing_bytes": 109051904,
+          "available_bytes": 109051904,
+          "basis": "declared",
+          "choice_id": "rows:2049/full:0:0/tail:2046:0:0",
+          "eligible": [
+            "rows:2049/full:0:0/tail:2046:0:0",
+            "rows:1025/full:0:1/tail:1018:0:1",
+            "rows:65/full:0:6/tail:3:1:-1",
+            "rows:33/full:0:6/tail:9:0:3",
+            "rows:17/full:0:6/tail:16:0:3",
+            "rows:9/full:0:3/tail:3:1:-1",
+            "rows:5/full:0:3/tail:3:1:-1",
+            "rows:3/full:1:-1/tail:3:1:-1",
+            "rows:2/full:1:-1/tail:1:1:-1",
+            "rows:1/full:1:-1/tail:1:1:-1"
+          ],
+          "measured_backing_peak_bytes": null,
+          "preserved_backing_bytes": 0,
+          "reclaimable_working_bytes": 0,
+          "reclaimed_weight_bytes": 0,
+          "reclaimed_working_bytes": 0,
+          "required_bytes": 109051904,
+          "reused_capacity_bytes": 0,
+          "stream": 0
+        },
+        "selections": 3,
+        "site": "int8-linear-rows",
+        "submission": {
+          "backing_peak_bytes": 109051904,
+          "choice_id": "rows:2049/full:0:0/tail:2046:0:0",
+          "key": "runtime.split.int8_linear/1:d86aad6bdfc817a45639f37134cec058d76e4854bbf2097d24587ec1c596dc28",
+          "observation_id": 3,
+          "observed": true,
+          "peak_bytes": 106967040,
+          "pending": true,
+          "published": false,
+          "reason": "",
+          "successful_passes": 0
+        },
+        "workspace_bytes": 0
+      }
+    },
+    {
+      "phase": {
+        "backing_peak_bytes": 2097152,
+        "cut_choices": 0,
+        "definitions": [],
+        "invalidated": true,
+        "key": null,
+        "mode": "eager",
+        "observation_id": 4,
+        "peak_bytes": 512,
+        "published": false,
+        "reason": "split_select_error",
+        "split_observations": [],
+        "successful_backing_peak_bytes": 0,
+        "successful_passes": 0,
+        "successful_peak_bytes": 0,
+        "total_peak_bytes": 287348224
+      },
+      "refusal": {
+        "allocation_delta": 0,
+        "available_bytes": 90177535,
+        "no_retry": true,
+        "required_bytes": 90177536
+      }
+    },
+    {
+      "baked_hook": true,
+      "factor_reads": 0,
+      "phase": {
+        "backing_peak_bytes": 27262976,
+        "cut_choices": 1,
+        "definitions": [],
+        "invalidated": false,
+        "key": null,
+        "mode": "eager",
+        "observation_id": 5,
+        "peak_bytes": 22021632,
+        "published": false,
+        "reason": "execution_key_unknown",
+        "split_observations": [
+          {
+            "backing_peak_bytes": 25165824,
+            "choice_id": "rows:129/full:0:4/tail:129:0:4",
+            "key": "runtime.split.int8_linear/1:8e0be67562db172785f2e0412a7784b27ad497f48c802ad8fa3ba612a2cc54b4",
+            "observation_id": 4,
+            "observed": true,
+            "peak_bytes": 22021120,
+            "pending": false,
+            "published": true,
+            "reason": "",
+            "successful_passes": 1
+          }
+        ],
+        "successful_backing_peak_bytes": 0,
+        "successful_passes": 0,
+        "successful_peak_bytes": 0,
+        "total_peak_bytes": 202430976
+      },
+      "relative_l2": 0.0
+    },
+    {
+      "baked_hook": false,
+      "factor_reads": 3,
+      "phase": {
+        "backing_peak_bytes": 12582912,
+        "cut_choices": 1,
+        "definitions": [],
+        "invalidated": false,
+        "key": null,
+        "mode": "eager",
+        "observation_id": 6,
+        "peak_bytes": 6685696,
+        "published": false,
+        "reason": "execution_key_unknown",
+        "split_observations": [],
+        "successful_backing_peak_bytes": 0,
+        "successful_passes": 0,
+        "successful_peak_bytes": 0,
+        "total_peak_bytes": 202430976
+      },
+      "relative_l2": 0.0
+    }
+  ],
+  "final": {
+    "allocated_bytes": 17039360,
+    "allocated_capacity": 20971520,
+    "allocated_peak": 174463000,
+    "allocations": 1799,
+    "context_joins": 0,
+    "driver_memory_calls": 317,
+    "event_handles": 0,
+    "event_queries": 372,
+    "event_records": 305,
+    "event_waits": 0,
+    "free_bytes": 0,
+    "frees": 1797,
+    "mapped_bytes": 20971520,
+    "mapped_peak": 220200960,
+    "ooms": 0,
+    "pending_bytes": 0,
+    "pools": 0,
+    "pools_bytes": 0,
+    "prefetch_admissions": 0,
+    "prefetch_attempts": 0,
+    "prefetch_declines": 0,
+    "reclaimable_bytes": 0,
+    "unassigned_bytes": 0
+  },
+  "initial": {
+    "allocated_bytes": 17039360,
+    "allocated_capacity": 20971520,
+    "allocated_peak": 33223216,
+    "allocations": 1735,
+    "context_joins": 0,
+    "driver_memory_calls": 172,
+    "event_handles": 0,
+    "event_queries": 331,
+    "event_records": 264,
+    "event_waits": 0,
+    "free_bytes": 0,
+    "frees": 1733,
+    "mapped_bytes": 20971520,
+    "mapped_peak": 117440512,
+    "ooms": 0,
+    "pending_bytes": 0,
+    "pools": 0,
+    "pools_bytes": 0,
+    "prefetch_admissions": 0,
+    "prefetch_attempts": 0,
+    "prefetch_declines": 0,
+    "reclaimable_bytes": 0,
+    "unassigned_bytes": 0
+  },
+  "passed": true,
+  "provenance": {
+    "extension_sha256": "ea131006d23325bee34be91d64bb6b92c5947738e967d6f3d91a0d7ccbc449b6",
+    "gpu_uuid": "001d94d1-0a24-f46e-9917-aeacf408c95f",
+    "pid": 533,
+    "readiness": {
+      "before": {
+        "allocated_bytes": 9046016,
+        "allocated_capacity": 11012096,
+        "allocated_peak": 9048064,
+        "allocations": 23,
+        "context_joins": 0,
+        "driver_memory_calls": 16,
+        "event_handles": 4,
+        "event_queries": 4,
+        "event_records": 4,
+        "event_waits": 0,
+        "free_bytes": 7858176,
+        "frees": 20,
+        "mapped_bytes": 18874368,
+        "mapped_peak": 18874368,
+        "ooms": 0,
+        "pending_bytes": 2048,
+        "pools": 0,
+        "pools_bytes": 0,
+        "prefetch_admissions": 0,
+        "prefetch_attempts": 0,
+        "prefetch_declines": 0,
+        "reclaimable_bytes": 4194304,
+        "unassigned_bytes": 2048
+      },
+      "settled": {
+        "allocated_bytes": 17039360,
+        "allocated_capacity": 20971520,
+        "allocated_peak": 33223216,
+        "allocations": 1735,
+        "context_joins": 0,
+        "driver_memory_calls": 172,
+        "event_handles": 0,
+        "event_queries": 331,
+        "event_records": 264,
+        "event_waits": 0,
+        "free_bytes": 0,
+        "frees": 1733,
+        "mapped_bytes": 20971520,
+        "mapped_peak": 117440512,
+        "ooms": 0,
+        "pending_bytes": 0,
+        "pools": 0,
+        "pools_bytes": 0,
+        "prefetch_admissions": 0,
+        "prefetch_attempts": 0,
+        "prefetch_declines": 0,
+        "reclaimable_bytes": 0,
+        "unassigned_bytes": 0
+      }
+    },
+    "request_id": "3",
+    "runtime_modules": {
+      "_kernels/_gemm.abi3.so": "9523c5070bd1646f43b505e0ce0bb05670d7b39f8d7e4be3a52846e2b7a81d3e",
+      "author/_split.py": "60870cce6b43ec9c75755b3ab4a38b3ec974da4a3eaa163c08cdb3f193153fec",
+      "author/kernels.py": "b63c5e57df0f76fcb88304ed1a7f8cb3d17646838f7bff92a278bc21287df262",
+      "internal/encoding/leaves.py": "c0aa697b9baa0f232b036783516790e75c85847559971ce3278507bd232e53f6",
+      "internal/execution/__init__.py": "c512e78d7e391136fdefdc87dbe21023f8fd311e1bebd0c52cdc9a23ecadae94",
+      "internal/execution/native_linear_split.py": "def2d5a1836bbc59d6492a88c0ce6925f7d6f680c84997a6f3c0b2665aa3f9bf",
+      "internal/execution/native_split.py": "368cc0944ec6429a45f999c6646b97f943187b02593fc8f4dfcd3f441e59d4aa",
+      "internal/prebuilt.py": "3f5d32d9214de115049ee5a8016bf6f5ae1c909b2570327b9cb4e64edfa75eab",
+      "lora.py": "2908f3b3717a2b8565a256b0ba3d78ff70ac85038cd2e902ef23c860dc986a46"
+    },
+    "runtime_version": "0.36.21+dev.gdae97328",
+    "seed": 7113970500922125,
+    "shim_sha256": "09684b61d0b909c39d56c7d129432e906ddb0a57f1b4b916b20bb2c4c8d7716e",
+    "tensorfs_version": "0.17.16+dev.gb20f699c"
+  },
+  "query_execution": [
+    {
+      "actual_workspace": [
+        33554944
+      ],
+      "query": {
+        "config": 5,
+        "kind": 0,
+        "status": 0,
+        "workspace_bytes": 33554944
+      },
+      "relative_l2": 0.0,
+      "rows": 8193
+    },
+    {
+      "actual_workspace": [],
+      "query": {
+        "config": 1,
+        "kind": 0,
+        "status": 0,
+        "workspace_bytes": 0
+      },
+      "relative_l2": 0.0,
+      "rows": 4097
+    },
+    {
+      "actual_workspace": [],
+      "query": {
+        "config": -1,
+        "kind": 1,
+        "status": 0,
+        "workspace_bytes": 0
+      },
+      "relative_l2": 0.0,
+      "rows": 3
+    }
+  ],
+  "request_owned_keys": [
+    "runtime.split.int8_linear/1:8e0be67562db172785f2e0412a7784b27ad497f48c802ad8fa3ba612a2cc54b4",
+    "runtime.split.int8_linear/1:d86aad6bdfc817a45639f37134cec058d76e4854bbf2097d24587ec1c596dc28"
+  ]
+}

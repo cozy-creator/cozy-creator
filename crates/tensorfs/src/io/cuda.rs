@@ -8,6 +8,8 @@ use std::sync::OnceLock;
 
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {
+    #[error(transparent)]
+    Allocation(#[from] varena::Error),
     #[error("CUDA unavailable: {0}")]
     CudaUnavailable(String),
     #[error("{op}: CUDA {code} ({name})")]
@@ -184,9 +186,7 @@ pub struct Driver {
     pub mem_host_unregister: F<*mut c_void>,
     pub mem_host_alloc: unsafe extern "C" fn(*mut *mut c_void, usize, c_uint) -> CUresult,
     pub mem_free_host: F<*mut c_void>,
-    pub mem_alloc: unsafe extern "C" fn(*mut CUdeviceptr, usize) -> CUresult,
     pub pointer_get_attribute: unsafe extern "C" fn(*mut c_void, c_int, CUdeviceptr) -> CUresult,
-    pub mem_free: F<CUdeviceptr>,
     pub mem_get_allocation_granularity:
         unsafe extern "C" fn(*mut usize, *const AllocationProp, u32) -> CUresult,
     pub mem_address_reserve:
@@ -217,6 +217,21 @@ pub fn driver() -> Result<&'static Driver> {
         Ok(d) => Ok(d),
         Err(error) => Err(error.clone()),
     }
+}
+
+/// Native multi-stream callers receive completed backing, including when Varena reuses a
+/// default-stream block. The producer lease excludes capture through allocation and the join.
+pub(super) fn allocate_ready(device: i32, bytes: usize) -> Result<u64> {
+    let _producer = varena::enter_producer(device)?;
+    let ptr = varena::working::alloc(device, bytes, 0, None)?;
+    if ptr != 0 {
+        // SAFETY: the caller entered this device's primary context; stream 0 is never destroyed.
+        // A failed completion leaves the actual live allocation retained by Varena.
+        check("cuStreamSynchronize(native allocation)", unsafe {
+            (driver()?.stream_synchronize)(std::ptr::null_mut())
+        })?;
+    }
+    Ok(ptr)
 }
 
 pub fn available() -> bool {
@@ -297,9 +312,7 @@ impl Driver {
             mem_host_unregister: load!(lib, b"cuMemHostUnregister"),
             mem_host_alloc: load!(lib, b"cuMemHostAlloc"),
             mem_free_host: load!(lib, b"cuMemFreeHost"),
-            mem_alloc: load!(lib, b"cuMemAlloc_v2"),
             pointer_get_attribute: load!(lib, b"cuPointerGetAttribute"),
-            mem_free: load!(lib, b"cuMemFree_v2"),
             mem_get_allocation_granularity: load!(lib, b"cuMemGetAllocationGranularity"),
             mem_address_reserve: load!(lib, b"cuMemAddressReserve"),
             mem_address_free: load!(lib, b"cuMemAddressFree"),

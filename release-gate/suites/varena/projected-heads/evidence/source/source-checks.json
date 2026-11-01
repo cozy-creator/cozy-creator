@@ -1,0 +1,7 @@
+{
+  "passed": true,
+  "mypy_existing_warning": "author/kernels.py shared_operand optional _version; function AST unchanged",
+  "baseline": "5f3ec55d69bdac36dd4e5660a5a66c0bed092ce9",
+  "fixture_runtime_module_receipt_names_match": true,
+  "runtime_modules": 15
+}

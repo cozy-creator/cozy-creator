@@ -1,0 +1,59 @@
+{
+  "passed": true,
+  "runtime": "0.36.21+dev.gdae97328",
+  "tensorfs": "0.17.16+dev.gb20f699c",
+  "gpu_uuid": "001d94d1-0a24-f46e-9917-aeacf408c95f",
+  "regressions": {
+    "linear": {
+      "passed": true,
+      "run": 25204,
+      "cleanup": 25207,
+      "cases": 6,
+      "pid": 533,
+      "numeric_cases": 5,
+      "max_relative_l2": 0.0,
+      "actual_query_checks": 3,
+      "query_max_relative_l2": 0.0,
+      "baseline_allocated_bytes": 17039360,
+      "final_allocated_bytes": 17039360,
+      "baseline_mapped_bytes": 20971520,
+      "final_mapped_bytes": 20971520,
+      "request_keys_retired": [
+        "runtime.split.int8_linear/1:8e0be67562db172785f2e0412a7784b27ad497f48c802ad8fa3ba612a2cc54b4",
+        "runtime.split.int8_linear/1:d86aad6bdfc817a45639f37134cec058d76e4854bbf2097d24587ec1c596dc28"
+      ],
+      "files": {
+        "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p2-heads-leg13-plan/attempt-001/heads-linear-regression-25204.json": "a34399274505bef1fdcf0af6b00ff4d753fa094d6bd04ca337dd2b1e535f348e",
+        "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p2-heads-leg13-plan/attempt-001/heads-linear-regression-result.json": "075cbe722b9dab04b35df50a2716cd0314c7bb5fbe7221c344a18fdb21769258",
+        "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p2-heads-leg13-plan/attempt-001/heads-linear-cleanup-25207.json": "40762ffbe4511eaa2ae9af582b044e37171f53f5cf3b825958f5b8ad13eff020",
+        "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p2-heads-leg13-plan/attempt-001/heads-linear-cleanup-result.json": "876c5aaa372c68f09db73bf47c713db179e5803b01ec071d07808505560ece99"
+      }
+    },
+    "tail": {
+      "passed": true,
+      "run": 25208,
+      "cleanup": 25209,
+      "cases": 5,
+      "pid": 667,
+      "numeric_cases": 4,
+      "max_relative_l2": 0.0,
+      "actual_query_checks": 14,
+      "query_max_relative_l2": 0.0,
+      "baseline_allocated_bytes": 17039360,
+      "final_allocated_bytes": 17039360,
+      "baseline_mapped_bytes": 20971520,
+      "final_mapped_bytes": 20971520,
+      "request_keys_retired": [
+        "runtime.split.residual_ffn/1:2fa10e6e3912e66f0304b9633e750c26da22961d3216d6057188902016845e64",
+        "runtime.split.residual_ffn/1:da9253a038f8c994f22da7fbead085a0fc58938f2f3d247773aa672acbcb2e0a"
+      ],
+      "files": {
+        "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p2-heads-leg13-plan/attempt-001/heads-tail-regression-25208.json": "762d2ff1509403b872b6fd139a48bfad48236579a00384f41e15ae3d19be680e",
+        "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p2-heads-leg13-plan/attempt-001/heads-tail-regression-result.json": "5c8d11a1259ecf33823877dd134690c294b2b95071d719d89b9d31a51051bcf6",
+        "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p2-heads-leg13-plan/attempt-001/heads-tail-cleanup-25209.json": "b633e18ae54e4ab1e75203b11c7d73c5a392a00a9be3658fcc844e16cde128e5",
+        "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p2-heads-leg13-plan/attempt-001/heads-tail-cleanup-result.json": "46bc0320852b5c89349b6fe0345ba247abbe5d7382490fd78221e36e460260fc"
+      }
+    }
+  },
+  "scope": "unchanged standalone/Tail helpers; fixture-owned allocations return to nonzero initial baseline, native leaf observations publish, and same-process request keys retire; not a Heads or full-model performance verdict"
+}
