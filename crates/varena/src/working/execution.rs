@@ -42,8 +42,9 @@ fn execution_key(
     selected: &SplitSelection,
 ) -> String {
     // Length-prefixing is unambiguous. Configuration is the consumer's current immutable
-    // descriptor, not an observed prior key. Transient Plan generations are validated at
-    // entry but excluded here so identical current configurations can reuse their sample.
+    // descriptor, not an observed prior key. Region intent/generation is revalidated at
+    // entry/begin, but its address-derived name is not compute demand. The fixed choice
+    // already records its effect on the operation's allocation geometry.
     let mut key = String::from("varena.closed-eager/1:");
     for value in [configuration, site, preferred, &selected.choice_id] {
         field(&mut key, value);
@@ -55,13 +56,6 @@ fn execution_key(
         for bytes in allocations {
             field(&mut key, &bytes.to_string());
         }
-    }
-    match &selected.phase {
-        Some(phase) => {
-            key.push('1');
-            field(&mut key, phase);
-        }
-        None => key.push('0'),
     }
     key
 }

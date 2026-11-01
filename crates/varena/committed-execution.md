@@ -24,3 +24,8 @@ The execution lease excludes new graph capture only. Independently owned graph r
 remains legal; its activity epoch invalidates the eager measurement, preserving an older
 successful sample. This metadata owner does not hold final-retirement exclusion for its
 compute lifetime. It owns no GPU allocation destructor requiring that global boundary.
+
+The working fingerprint excludes the Region Plan's address-derived name as well as its
+transient generation. Current producer/source/layout/kernel metadata, the copied exact
+menu and fixed choice define compute demand. Actual generation is still revalidated at
+entry and begin; replacing a reservation cannot authorize an old stale execution token.
