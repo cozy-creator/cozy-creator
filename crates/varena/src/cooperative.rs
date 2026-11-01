@@ -108,7 +108,8 @@ impl Peer {
             }
         }
         // Native capture/context guards are gone before opening any shared lock.
-        let ledger = ledger::Ledger::open(directory, descriptor)?;
+        let ledger = ledger::Ledger::open_nonblocking(directory, descriptor)?;
+        ledger.reap_dead()?;
         let participant = ledger.register(sharing, priority)?;
         let peer = Self {
             device,
@@ -165,6 +166,8 @@ impl Peer {
     /// the generation read before that observation. H/attribution remain unknown here.
     pub fn sample(&self, observed_at: u64) -> Result<ledger::Sample> {
         self.check()?;
+        // Commit exact departures first, separately from optimistic sample validation.
+        self.ledger.reap_dead()?;
         let expected = self.ledger.snapshot()?.generation;
         let (free, total) = {
             let captures = crate::capture_counts()?;
@@ -193,6 +196,7 @@ impl Peer {
     /// only after native context/capture/allocator guards are gone. An ack is never a grant.
     pub fn service(&self) -> Result<Service> {
         let mut state = self.lock()?;
+        self.ledger.reap_dead()?;
         let table = self.ledger.snapshot()?;
         let Some(round) = table.round.filter(|round| !round.aborted) else {
             return Ok(Service::default());

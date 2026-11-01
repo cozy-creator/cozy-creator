@@ -14,7 +14,20 @@ from typing import Any
 from .. import _ext
 
 
+class _Deferred(RuntimeError):
+    """Fallback type for platforms/older extensions without automatic owner support."""
+
+
+CooperationDeferredError = getattr(_ext, "CooperationDeferredError", _Deferred)
+CooperationStaleSampleError = getattr(_ext, "CooperationStaleSampleError", _Deferred)
+
+
 class Cooperation:
+    @staticmethod
+    def capability() -> int:
+        """CPU-only owner-protocol capability; initializes no CUDA or participant."""
+        return int(getattr(getattr(_ext, "_VarenaPeer", None), "OWNER_PROTOCOL", 0))
+
     @staticmethod
     def initialize() -> None:
         """Install metadata-only fork handling before concurrent fork producers start."""
@@ -30,13 +43,20 @@ class Cooperation:
             raise NotImplementedError("GPU cooperation requires the Linux native ledger")
         self._native = native(device, uuid, os.fspath(directory), shared, priority)
 
-    def publish(self, *, used: bool = False) -> dict[str, Any]:
+    def publish(self, *, used: bool = False, last_use_ns: int | None = None) -> dict[str, Any]:
         """Publish actual native backing; used marks an actual owner use, not a polling tick.
 
         A safe refresh queries submitted completion events without waiting. During capture or
         the replay guard it reports metadata only, with refreshed=False and no CUDA calls.
         """
-        return json.loads(self._native.publish(time.monotonic_ns() if used else 0))
+        # An asynchronous owner can carry the actual use boundary's timestamp; repeated
+        # publication must not make an idle donor appear recently used.
+        stamp = last_use_ns if last_use_ns is not None else time.monotonic_ns() if used else 0
+        return json.loads(self._native.publish(stamp))
+
+    def configure(self, *, shared: bool, priority: int) -> None:
+        """Update lifecycle categories, never a byte limit."""
+        self._native.configure(shared, priority)
 
     def sample(self) -> dict[str, Any]:
         """Observe real driver free/total and commit optimistically. A stale observation must

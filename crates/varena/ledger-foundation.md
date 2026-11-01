@@ -71,3 +71,24 @@ No CUDA test, foreign-game latency or complete P3 acceptance is implied by these
 The separate [GPU integration checkpoint](cooperative-gpu.md) adds an explicit native participant
 on top of this metadata API. It does not change the metadata-only CPU proof into GPU evidence or
 activate TensorD/allocator policy automatically.
+
+## Automatic-owner connection mode
+
+`Ledger::open_nonblocking` is the GPU participant's connection. Its operations
+try the process-local serialization mutex and OFD publication lock, returning
+`Busy` on contention. A live writer stopped while holding publication must not
+trap a donor service tick or its owner's shutdown. Existing `Ledger::open`
+retains its blocking operation contract for explicit CPU callers.
+
+Participant destruction now always clears its row on a best-effort nonblocking
+basis, then releases the independent row descriptor. A read-only snapshot can
+therefore retain departed metadata. A coordinator explicitly commits reaping
+before a fresh capacity sample; an available row lock permits exact reaping even
+while the former owner process stays alive. Row disappearance never counts as
+GPU release and never changes an observed driver-capacity sample. GPU `Peer`
+open, service and sample perform that separate reaping; asks already did so.
+
+Real stopped-holder and live-owner-close proof is in
+`release-gate/suites/varena/ledger-cpu/nonblocking.py`. The fork/open race example
+also verifies departed row lock availability after exact child waits before
+reaping and checking its strict one-live-row invariant.

@@ -641,7 +641,7 @@ fn _varena_make_room(py: Python<'_>, device: i32, limit: Option<usize>) -> PyRes
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     working::install(module)?;
     #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
-    module.add_class::<cooperative::PyPeer>()?;
+    cooperative::install(module)?;
     let poisoned = module.py().get_type::<VarenaPoisonedError>();
     poisoned.setattr("__module__", "tensorfs._ext")?;
     poisoned.setattr("sticky", true)?;

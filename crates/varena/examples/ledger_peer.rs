@@ -81,6 +81,8 @@ mod proof {
                 Ok(json!({"ok":true}))
             }
             "sample" => {
+                // Coordinator sampling commits exact departures before its optimistic read.
+                ledger.reap_dead()?;
                 let expected = ledger.snapshot()?.generation;
                 let s = peer.sample(expected, n(1), n(2), n(3), None, false)?;
                 Ok(json!({"sample":s.generation}))
@@ -311,9 +313,48 @@ mod proof {
         stopped.store(true, Ordering::Release);
         let opens = worker.join().expect("open/close worker");
         assert!(opens > 0);
-        assert_eq!(ledger.snapshot()?.rows.len(), 1);
+        // Best-effort Drop may leave metadata when the observer held publication. Every
+        // child has been exactly waited above; reap its released row lock before asserting
+        // the live set. A read-only snapshot is not an implicit liveness/cleanup operation.
+        let before = ledger.snapshot()?;
+        let probe = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(ledger.path())?;
+        for row in before.rows.iter().filter(|row| row.pid != parent) {
+            let mut range = libc::flock {
+                l_type: libc::F_WRLCK as _,
+                l_whence: libc::SEEK_SET as _,
+                l_start: (row.id.slot + 1) as _,
+                l_len: 1,
+                l_pid: 0,
+            };
+            // SAFETY: independent live descriptor and valid Linux flock; each child was
+            // exactly waited above. Taking its row range proves the ownership FD is gone.
+            assert_eq!(
+                unsafe { libc::fcntl(probe.as_raw_fd(), libc::F_OFD_SETLK, &range) },
+                0
+            );
+            range.l_type = libc::F_UNLCK as _;
+            // SAFETY: release only the exact row range this proof just acquired.
+            assert_eq!(
+                unsafe { libc::fcntl(probe.as_raw_fd(), libc::F_OFD_SETLK, &range) },
+                0
+            );
+        }
+        let reaped = ledger.reap_dead()?;
+        assert!(reaped.iter().all(|row| row.pid != parent));
+        let after = ledger.snapshot()?;
+        assert_eq!(after.rows.len(), 1);
+        assert_eq!(
+            after.sample, before.sample,
+            "reaping never changes observed driver capacity"
+        );
         drop(peer);
-        emit(json!({"fork_open_close_iterations":32,"concurrent_opens":opens,"passed":true}));
+        emit(
+            json!({"fork_open_close_iterations":32,"concurrent_opens":opens,
+            "departures_reaped":reaped.len(),"passed":true}),
+        );
         Ok(())
     }
 
@@ -329,7 +370,14 @@ mod proof {
         if role == "fork-race" {
             return fork_race(directory);
         }
-        let ledger = open(directory)?;
+        let ledger = if role == "nonblocking" {
+            Ledger::open_nonblocking(
+                directory,
+                Device::parse("GPU-13800000-0000-0000-0000-000000000003")?,
+            )?
+        } else {
+            open(directory)?
+        };
         if role == "inspect" {
             let descriptions = fs::read_dir("/proc/self/fd")?
                 .filter_map(|entry| {
@@ -349,12 +397,26 @@ mod proof {
             json!({"ready":true,"pid":std::process::id(),"slot":peer.id().slot,
                 "incarnation":peer.id().incarnation,"path":ledger.path(),"snapshot":snapshot(&ledger)?}),
         );
+        let mut peer = Some(peer);
         for line in io::stdin().lock().lines() {
             let line = line?;
             if line == "close" {
                 break;
             }
-            match command(&ledger, &peer, &line) {
+            if line == "leave" {
+                drop(peer.take());
+                emit(json!({"left":true,"pid":std::process::id()}));
+                continue;
+            }
+            if line == "alive" {
+                emit(json!({"pid":std::process::id(),"participant":peer.is_some()}));
+                continue;
+            }
+            let Some(peer) = &peer else {
+                emit(json!({"error":"participant already left"}));
+                continue;
+            };
+            match command(&ledger, peer, &line) {
                 Ok(value) => emit(value),
                 Err(error) => emit(json!({"error":error.to_string()})),
             }

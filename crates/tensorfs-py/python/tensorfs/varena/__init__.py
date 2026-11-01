@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING
 
 from .. import _ext
 from .cooperative import Cooperation as Cooperation
+from .cooperative import CooperationDeferredError as CooperationDeferredError
+from .cooperative import CooperationStaleSampleError as CooperationStaleSampleError
 
 if TYPE_CHECKING:
     from torch import Tensor

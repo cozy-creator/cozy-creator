@@ -7,7 +7,7 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, TryLockError};
 
 pub const ROWS: usize = 64;
 const MAGIC: u64 = u64::from_le_bytes(*b"VARENA3\0");
@@ -45,6 +45,8 @@ pub enum Error {
     Stale,
     #[error("stale ledger capacity observation")]
     StaleSample,
+    #[error("ledger publication is busy")]
+    Busy,
     #[error("ledger generation overflow")]
     Overflow,
 }
@@ -273,6 +275,7 @@ struct Connection {
     file: Arc<os::Descriptor>,
     map: os::Mapping,
     serial: Mutex<()>,
+    blocking: bool,
     pid: u32,
     scope: Scope,
     backing: (u64, u64),
@@ -291,6 +294,16 @@ impl Ledger {
     /// before starting concurrent fork producers. Direct syscall fork/clone bypassing libc's
     /// registered handlers is outside this checkpoint's supported inheritance contract.
     pub fn open(directory: &Path, device: Device) -> Result<Self> {
+        Self::open_mode(directory, device, true)
+    }
+
+    /// GPU service/startup must defer rather than wait for a live, stopped publisher.
+    /// Every operation through this connection tries both local and shared publication locks.
+    pub fn open_nonblocking(directory: &Path, device: Device) -> Result<Self> {
+        Self::open_mode(directory, device, false)
+    }
+
+    fn open_mode(directory: &Path, device: Device, blocking: bool) -> Result<Self> {
         let scope = Scope::current()?;
         let directory = directory.canonicalize()?;
         let boot = scope
@@ -300,7 +313,7 @@ impl Ledger {
             .collect::<String>();
         let path = directory.join(format!("varena-v3-{}-{boot}-{}", scope.uid, device.name()));
         let file = os::Descriptor::open(&path)?;
-        let _publication = file.lock(0, true)?.expect("blocking lock");
+        let _publication = file.lock(0, blocking)?.ok_or(Error::Busy)?;
         let (dev, ino, size) = file.identity()?;
         if size == 0 {
             file.resize(WORDS * 8)?;
@@ -372,6 +385,7 @@ impl Ledger {
             file,
             map,
             serial: Mutex::new(()),
+            blocking,
             pid: std::process::id(),
             scope,
             backing: (dev, ino),
@@ -401,14 +415,29 @@ impl Ledger {
         write: bool,
         operation: impl FnOnce(&mut Data, u64) -> Result<T>,
     ) -> Result<T> {
+        self.transaction_mode(write, self.0.blocking, operation)
+    }
+
+    fn transaction_mode<T>(
+        &self,
+        write: bool,
+        blocking: bool,
+        operation: impl FnOnce(&mut Data, u64) -> Result<T>,
+    ) -> Result<T> {
         // Reject inherited handles BEFORE any inherited local mutex can be touched.
         self.check()?;
-        let _serial = self
-            .0
-            .serial
-            .lock()
-            .map_err(|_| Error::Invalid("poisoned connection mutex"))?;
-        let _publication = self.0.file.lock(0, true)?.expect("blocking lock");
+        let _serial = if blocking {
+            self.0
+                .serial
+                .lock()
+                .map_err(|_| Error::Invalid("poisoned connection mutex"))?
+        } else {
+            self.0.serial.try_lock().map_err(|error| match error {
+                TryLockError::WouldBlock => Error::Busy,
+                TryLockError::Poisoned(_) => Error::Invalid("poisoned connection mutex"),
+            })?
+        };
+        let _publication = self.0.file.lock(0, blocking)?.ok_or(Error::Busy)?;
         let selected = self.0.map.load(SELECTOR, Ordering::Acquire);
         let generation = selected >> 1;
         if generation == 0 {
@@ -744,7 +773,10 @@ impl Drop for Participant {
         if self.ledger.0.pid != std::process::id() {
             return;
         }
-        let _ = self.ledger.transaction(true, |data, _| {
+        // Best effort only: a live stopped publisher cannot trap owner destruction. If
+        // clearing is busy, dropping the independent row FD below permits exact reaping,
+        // even while this PID remains alive. Reaping credits no GPU memory.
+        let _ = self.ledger.transaction_mode(true, false, |data, _| {
             self.own(data)?;
             data.rows[self.row.slot] = None;
             data.capacity_changed()?;

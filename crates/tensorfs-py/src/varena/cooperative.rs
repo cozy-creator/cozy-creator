@@ -7,8 +7,47 @@ use varena::{
     ledger,
 };
 
+pyo3::create_exception!(tensorfs, CooperationDeferredError, PyRuntimeError);
+pyo3::create_exception!(
+    tensorfs,
+    CooperationStaleSampleError,
+    CooperationDeferredError
+);
+
+fn transient(py: Python<'_>, reason: &str, error: PyErr) -> PyErr {
+    match error.value(py).setattr("reason", reason) {
+        Ok(()) => error,
+        Err(error) => error,
+    }
+}
+
 fn raise(py: Python<'_>, error: cooperative::Error) -> PyErr {
     match error {
+        cooperative::Error::Native(error @ varena::Error::CaptureActive) => transient(
+            py,
+            "capture",
+            CooperationDeferredError::new_err(error.to_string()),
+        ),
+        cooperative::Error::Native(error @ varena::Error::Busy) => transient(
+            py,
+            "busy",
+            CooperationDeferredError::new_err(error.to_string()),
+        ),
+        cooperative::Error::Ledger(error @ ledger::Error::StaleSample) => transient(
+            py,
+            "stale_sample",
+            CooperationStaleSampleError::new_err(error.to_string()),
+        ),
+        cooperative::Error::Ledger(error @ ledger::Error::Stale) => transient(
+            py,
+            "stale",
+            CooperationDeferredError::new_err(error.to_string()),
+        ),
+        cooperative::Error::Ledger(error @ ledger::Error::Busy) => transient(
+            py,
+            "publication",
+            CooperationDeferredError::new_err(error.to_string()),
+        ),
         cooperative::Error::Native(error) => super::raise(py, error),
         cooperative::Error::Ledger(error) => PyRuntimeError::new_err(error.to_string()),
     }
@@ -78,6 +117,10 @@ impl PyPeer {
 
 #[pymethods]
 impl PyPeer {
+    /// Typed transient outcomes and categorical configuration, safe for an automatic owner.
+    #[classattr]
+    const OWNER_PROTOCOL: u32 = 1;
+
     #[staticmethod]
     fn initialize() -> PyResult<()> {
         ledger::initialize().map_err(|error| PyRuntimeError::new_err(error.to_string()))
@@ -111,6 +154,19 @@ impl PyPeer {
     fn publish(&self, py: Python<'_>, last_use: u64) -> PyResult<String> {
         self.call(py, |peer| {
             Ok(accounting(peer.publish(last_use)?).to_string())
+        })
+    }
+
+    fn configure(&self, py: Python<'_>, shared: bool, priority: i32) -> PyResult<()> {
+        self.call(py, |peer| {
+            peer.configure(
+                if shared {
+                    ledger::Sharing::Shared
+                } else {
+                    ledger::Sharing::Dedicated
+                },
+                priority,
+            )
         })
     }
 
@@ -181,6 +237,17 @@ impl PyPeer {
         py.detach(|| drop(retired));
         Ok(())
     }
+}
+
+pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_class::<PyPeer>()?;
+    let deferred = module.py().get_type::<CooperationDeferredError>();
+    deferred.setattr("__module__", "tensorfs._ext")?;
+    module.add("CooperationDeferredError", deferred)?;
+    let stale = module.py().get_type::<CooperationStaleSampleError>();
+    stale.setattr("__module__", "tensorfs._ext")?;
+    module.add("CooperationStaleSampleError", stale)?;
+    Ok(())
 }
 
 impl Drop for PyPeer {
