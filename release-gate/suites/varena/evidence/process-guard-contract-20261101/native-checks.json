@@ -1,0 +1,44 @@
+[
+  {
+    "label": "default",
+    "command": [
+      "nice",
+      "-n",
+      "19",
+      "cargo",
+      "check",
+      "--offline",
+      "--locked",
+      "-p",
+      "tensorfs-py",
+      "-j",
+      "1"
+    ],
+    "seconds": 38.1014926659991,
+    "returncode": 0,
+    "target": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p3-ledger/target",
+    "source": "2f3f0e7b9c82103c97cb8b0116247624c28a7f4c"
+  },
+  {
+    "label": "strict",
+    "command": [
+      "nice",
+      "-n",
+      "19",
+      "cargo",
+      "check",
+      "--offline",
+      "--locked",
+      "-p",
+      "tensorfs-py",
+      "-j",
+      "1",
+      "--features",
+      "strict-pid-guard"
+    ],
+    "seconds": 18.779362182016484,
+    "returncode": 0,
+    "target": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p3-ledger/target",
+    "source": "2f3f0e7b9c82103c97cb8b0116247624c28a7f4c"
+  }
+]
