@@ -25,6 +25,7 @@ class Probe(msgspec.Struct, forbid_unknown_fields=True):
     shim_sha256: str
     gpu_uuid: str
     compute_sanitizer: str
+    model_directory: str
     mode: str = 'both'
     seed: int = 13801
 
@@ -59,14 +60,11 @@ def gpu(payload: Probe, tel: Telemetry) -> Report:
     ROOT.mkdir(parents=True, exist_ok=True)
     run_dir = ROOT / ('report-' + str(time.time_ns()))
     run_dir.mkdir()
-    # This entrypoint must be sent with --on OWNED_RENTAL. Never download weights on the controller.
-    from huggingface_hub import snapshot_download
-    with tel.stage('public-sdxl-download-and-hash'):
-        snapshot = Path(snapshot_download(
-            MANIFEST['repo_id'], revision=MANIFEST['revision'],
-            allow_patterns=[item['path'] for item in MANIFEST['files']],
-            cache_dir=str(ROOT / 'cache'), token=False, max_workers=2,
-        ))
+    # Stage reviewed public weights through machine setup before the network-free executor runs.
+    snapshot = Path(payload.model_directory)
+    if not snapshot.is_absolute() or not snapshot.is_dir():
+        raise ValueError('model_directory must name the already staged full SDXL snapshot on the rental')
+    with tel.stage('public-sdxl-hash'):
         for index, item in enumerate(MANIFEST['files']):
             path = snapshot / item['path']
             if path.stat().st_size != item['bytes'] or digest(path) != item['sha256']:

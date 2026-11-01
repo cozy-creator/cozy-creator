@@ -1,7 +1,7 @@
 # Public Diffusers SDXL sanitizer consumer
 
-This ordinary Cozy release-gate application downloads the complete public SDXL-base
-fp16 model on the explicitly owned rental and runs the public
+This ordinary Cozy release-gate application verifies the complete public SDXL-base
+fp16 model staged on the explicitly owned rental and runs the public
 `StableDiffusionXLPipeline` at1024x1024 for two Euler denoising steps, including text
 encoding and VAE decode. It launches fresh native-Torch and Varena children under
 the already installed Compute Sanitizer2025.4.1.0. The Varena child calls
@@ -47,7 +47,9 @@ exact direct dependency pins are in pyproject.toml. If ordinary `cozy package lo
 needs to bind the staged project to its Hub/account, run it from this directory
 and retain the direct pins and resulting lock. Record installed dependency
 provenance. Then, only on the owned rental, supply
-its actual GPU UUID and candidate hashes in a JSON payload:
+its actual GPU UUID and candidate hashes in a JSON payload. Stage the exact manifest files
+through machine setup first: executor code is network-free. The fixture rechecks every file
+size and hash before starting either child:
 
 ```json
 {
@@ -56,6 +58,7 @@ its actual GPU UUID and candidate hashes in a JSON payload:
   "shim_sha256": "09684b61d0b909c39d56c7d129432e906ddb0a57f1b4b916b20bb2c4c8d7716e",
   "gpu_uuid": "GPU-REPLACE-WITH-OWNED-RENTAL-UUID",
   "compute_sanitizer": "/var/lib/cozy/xs138-tools/cuda-sanitizer-13.1.1/compute-sanitizer/compute-sanitizer",
+  "model_directory": "/var/lib/cozy/xs138-public-diffusers/model-462165984030d82259a11f4367a4eed129e94a7b",
   "mode": "both",
   "seed": 13801
 }
@@ -67,8 +70,8 @@ cozy run ./release-gate/suites/varena/diffusers-sanitizer/gpu \
 ```
 
 Never omit `--on` or substitute the controller's GPU UUID. The fixture checks the
-visible UUID before downloading. Model bytes stay under
-`/var/lib/cozy/xs138-public-diffusers/cache` on that rental and are shared by the
+visible UUID before reading model files. Model bytes stay under
+the supplied task-owned `model_directory` on that rental and are shared by the
 two sequential children. Both children use the same exact hashed files. `native`
 or `varena` mode can run one arm separately; matching both is needed to attribute
 library-retained allocations.
