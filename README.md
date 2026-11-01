@@ -76,9 +76,16 @@ restarts a Calcifer that is stuck or runs an older cozy.
 
 ## Projects
 
-A video project is a folder: `project.yaml` (yours; cozy never writes it after `new`), `project.lock`
-(cozy's: each node's versions, what made each, and which is approved), `files/` (every version, by
-content) and `edit.mp4`, cut on this computer as shots land. `cozy project new --project garden` writes a
+A video project is a folder:
+- `project.yaml`: yours. cozy writes it only at `new`.
+- `references/` (pictures, voices and videos that guide) and `plates/` (footage to edit): your own files,
+  which cozy never copies or changes. Paths in `project.yaml` are relative to the folder.
+- `assets/`: everything cozy makes, by content.
+- `project.lock`: cozy's record of each node's takes or versions, what made each, and which is approved.
+- `edit.mp4`: the film, cut on this computer as shots land.
+
+A shot's alternatives (and its upscale's) are takes; every other node's are versions. Each one is a set
+of assets: a shot's take is its video and latents. `cozy project new garden` makes the folder with a
 commented `project.yaml`; fill it in:
 
 ```yaml
@@ -96,22 +103,28 @@ world_states:
   - {name: stage, init: "<juno> and <theo> face off on <dock>.", blocking: "juno by the crates."}
 shots:
   - {name: fight, setup: dock.a, prompt: "<theo> and <juno> spar.", duration_s: 20, writes: [{state: stage, at: 12}],
-     references: [{name: kata, kind: video, video: refs/kata.mp4}],
+     references: [{name: kata, kind: video, video: references/kata.mp4}],
      beats: [{at: 0, prompt: "They circle."}, {at: 10, prompt: "<juno> sweeps his legs."}]}
   - {name: reaction, prompt: "Close on <theo>, wincing, after <stage>.", duration_s: 4}
 edit: [{shot: fight, end: 8}, {shot: reaction}, {shot: fight, start: 10}]
 ```
 
 ```sh
-cozy render all --project garden --on <machine>   # everything missing or out of date, then the edit
-cozy render theo --project garden --on <machine>  # another take of theo
-cozy project approve theo 2 --project garden      # approve it: what is made from theo goes out of date
-cozy project status --project garden              # what is missing, out of date and why, and the edit
+cd garden
+cozy project render all --on <machine>     # everything missing or out of date, then the edit
+cozy project render fight -n 3 --on <machine>
+                                           # three more takes of fight
+cozy project approve fight 2               # approve take 2: what is made from it goes out of date
+cozy project render theo --approve --on <machine>
+                                           # a new version of theo, approved when it lands
+cozy project status                        # what is missing, out of date and why, and the cuts
+cozy project ls                            # every project this computer has opened
 ```
 
-Each version is sent as soon as what it reads is made, so independent ones render at once and the
-machine's scheduler places them; `--on a,b` spreads them over machines (the least busy, one that holds
-the models first), and a `cozy render` asked while another goes joins it.
+The project is the folder holding `project.yaml`, found from where you are or above it; `-p <path>` names
+another, as `git -C` does. Each take or version is sent as soon as what it reads is made, so independent
+ones render at once and the machine's scheduler places them. `--on a,b` spreads them over machines (the
+least busy, one that holds the models first), and a render asked while another goes joins it.
 
 `<name>` in a text names another node, which it is then made from; a setup's camera is written in
 screen terms (what is near or far, left or right). A shot reads a world state it
@@ -121,9 +134,9 @@ reads it as it stands then, so a shot that writes one and reads it later renders
 `plate:` (the video it edits), `first_frame:` and `last_frame:` go to its function after the references the
 project compiles from what it reads; what that function does not take is left out and said. Character and prop pictures are cleaned on this computer before
 use. Only a changed upstream file puts something out of date, never a text edit or a render block:
-`cozy render <name>` when you want a new take. A node renders by its `render: {with, models, lora,
+`cozy project render <name>` when you want a new take. A node renders by its `render: {with, models, lora,
 options}`: `with` a function as `cozy run` takes it (`pkg/fn@0.3.0`, or local code, `./dir/fn` from the
-project's folder, which `cozy render` makes ready on each `--on` machine), `models: {base_model: {ref:
+project's folder, which Calcifer makes ready on each `--on` machine), `models: {base_model: {ref:
 org/checkpoint}}` and `lora: [{ref: org/lora, strength: 0.8}]` as `cozy run --input` takes them, and
 `options`, the function's own fields. A block that
 names no function adjusts its kind's `defaults:` (entity, setup, world_state, shot, upscale, clean).

@@ -54,10 +54,8 @@ enum Command {
     Package(package::Args),
     /// Find, download, upload and publish models.
     Model(model::Args),
-    /// A video project: make one, approve versions, see what is missing or out of date (`cozy render` makes them).
+    /// Video projects: make one, render and approve its takes and versions, see what is missing or out of date.
     Project(project::Args),
-    /// New versions of a project's nodes, made on a machine; `all` brings everything up to date.
-    Render(project::Render),
     /// Claim an organization parked under your name.
     Org(org::Args),
     /// Sign in to the Hub with this computer's device key.
@@ -136,7 +134,6 @@ async fn dispatch(ctx: &Context, command: Command) -> Result<ExitCode, Error> {
         Command::Package(args) => package::exec(ctx, args).await,
         Command::Model(args) => model::exec(ctx, args).await,
         Command::Project(args) => project::exec(ctx, args).await,
-        Command::Render(args) => project::render(ctx, args).await,
         Command::Org(args) => org::exec(ctx, args).await,
         Command::Login(args) => account::login(ctx, args).await,
         Command::Logout(args) => account::logout(ctx, args).await,

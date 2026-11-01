@@ -53,13 +53,16 @@ if "$CLI" --json model upload "local/ci-e2e-q8-$R" "$q" --lane bf16 --on "$M" > 
 fi
 "$CLI" --json model delete "$q" -y > /dev/null 2>&1 || cli_fail "model delete $q failed: delete it by hand"
 
-# cli-project (xs-136): a project through every verb (`cozy project new|status|approve`, `cozy render`), its renders on $M
-# and its pictures' cleans and the edit on this computer. A cycle is refused before anything runs; a re-rolled character,
-# once approved, puts what reads it out of date and nothing else; a person's save during a render stands (cozy writes
+# cli-project (xs-136, cl-716): a project through every verb (`cozy project new|ls|render|approve|status`), its renders
+# on $M and its pictures' cleans and the edit on this computer. `new` makes references/, plates/ and assets/; the
+# project is found from inside it (assets/) and named with -p from elsewhere, and `ls` lists it. A cycle is refused
+# before anything runs, and so is `--approve` with -n 2; a re-rolled character, once approved, puts what reads it out of
+# date and nothing else; `--approve` approves its new version; a person's save during a render stands (cozy writes
 # only project.lock); the re-cut is timed.
 project_cell() {
   local P=$PWD/project ok
-  rm -rf "$P"; "$CLI" project new --project "$P" > project-new.log 2>&1 || { cli_fail "project new: $(tail -c 300 project-new.log)"; return; }
+  rm -rf "$P"; "$CLI" project new "$P" > project-new.log 2>&1 || { cli_fail "project new: $(tail -c 300 project-new.log)"; return; }
+  for d in references plates assets; do [ -d "$P/$d" ] || cli_fail "project new made no $d/"; done
   cat > "$P/project.yaml" <<YAML
 type: video
 defaults: {entity: {with: $(pkg qwen-image-2 generate)}, setup: {with: $(pkg qwen-image-2 generate)},
@@ -81,21 +84,31 @@ YAML
   cp "$P/project.yaml" project-ok.yaml
   # lead's description naming <start>, whose init names <lead>, is a cycle.
   sed -i "0,/description: \"/s//description: \"After <start>, /" "$P/project.yaml"
-  if "$CLI" project status --project "$P" > project-cycle.log 2>&1 || ! grep -q "a cycle: " project-cycle.log; then
+  if "$CLI" project -p "$P" status > project-cycle.log 2>&1 || ! grep -q "a cycle: " project-cycle.log; then
     cli_fail "project status did not refuse a cycle: $(tail -c 300 project-cycle.log)"
   fi
   cp project-ok.yaml "$P/project.yaml"
-  "$CLI" render all --project "$P" --on "$M" > project-render.log 2>&1 || cli_fail "render all: $(tail -c 400 project-render.log)"
-  "$CLI" --json project status --project "$P" > project-status.json 2>&1
+  if "$CLI" project -p "$P" render lead -n 2 --approve --on "$M" > project-approve-n.log 2>&1 || ! grep -q approve_one project-approve-n.log; then
+    cli_fail "--approve with -n 2 was not refused: $(tail -c 300 project-approve-n.log)"
+  fi
+  ( cd "$P/assets" && "$CLI" project render all --on "$M" ) > project-render.log 2>&1 || cli_fail "render all from assets/: $(tail -c 400 project-render.log)"
+  "$CLI" --json project -p "$P" status > project-status.json 2>&1
   ok=$(jq -r '[.nodes[] | select(.kind != "upscale" and .status != "current")] | length' project-status.json 2>/dev/null)
   [ "$ok" = 0 ] || cli_fail "after render all, $ok nodes are not current: $(tail -c 400 project-status.json)"
   [ -s "$P/edit.mp4" ] || cli_fail "render all cut no edit.mp4"
-  "$CLI" render lead --project "$P" --on "$M" > project-run.log 2>&1 || cli_fail "render lead: $(tail -c 400 project-run.log)"
-  "$CLI" project approve lead 2 --project "$P" > project-approve.log 2>&1 || cli_fail "project approve lead 2: $(tail -c 300 project-approve.log)"
+  "$CLI" --json project ls > project-ls.json 2>&1
+  jq -e --arg p "$P" '.projects | any(.path == $p and (.missing | not))' project-ls.json > /dev/null \
+    || cli_fail "project ls does not list $P: $(tail -c 300 project-ls.json)"
+  "$CLI" project -p "$P" render lead --on "$M" > project-run.log 2>&1 || cli_fail "render lead: $(tail -c 400 project-run.log)"
+  "$CLI" project -p "$P" approve lead 2 > project-approve.log 2>&1 || cli_fail "project approve lead 2: $(tail -c 300 project-approve.log)"
   grep -q "out of date now: one, start, two$" project-approve.log \
     || cli_fail "approving lead put out of date other than one, start, two: $(tail -c 300 project-approve.log)"
+  "$CLI" project -p "$P" render place --approve --on "$M" > project-approve-new.log 2>&1 || cli_fail "render place --approve: $(tail -c 400 project-approve-new.log)"
+  "$CLI" --json project -p "$P" status > project-status-2.json 2>&1
+  jq -e '.nodes[] | select(.name == "place") | .approved == 2' project-status-2.json > /dev/null \
+    || cli_fail "render place --approve did not approve version 2: $(jq -c '.nodes[] | select(.name == "place")' project-status-2.json)"
   # A person's save while a run is in flight stands: cozy writes only project.lock.
-  ( "$CLI" render all --project "$P" --on "$M" > project-race.log 2>&1; echo $? > project-race.exit ) &
+  ( "$CLI" project -p "$P" render all --on "$M" > project-race.log 2>&1; echo $? > project-race.exit ) &
   for _ in $(seq 1 1800); do grep -q '"pending"' "$P/project.lock" 2>/dev/null && break; sleep 1; done
   sed -i 's/lead in the middle, facing the camera./lead in the middle, facing the camera, hands in pockets./' "$P/project.yaml"
   wait
