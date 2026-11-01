@@ -11,7 +11,7 @@
 
 mod cuda;
 pub mod working;
-#[cfg(all(target_os = "linux", feature = "kernel-fork-guard"))]
+#[cfg(all(target_os = "linux", feature = "kernel-fork-guard", not(feature = "strict-pid-guard")))]
 pub mod fork_guard;
 
 use std::collections::BTreeMap;
@@ -326,8 +326,39 @@ struct DeviceActivity {
 static CAPTURES: OnceLock<Mutex<BTreeMap<i32, DeviceActivity>>> = OnceLock::new();
 static PROCESS: AtomicU32 = AtomicU32::new(0);
 
+/// Observed process-check backend. Reading this never initializes CUDA or arms a guard.
+#[derive(Debug)]
+pub struct ProcessGuardStatus {
+    pub backend: &'static str,
+    pub marker: u32,
+    pub thread_authenticated: bool,
+    pub page_address: usize,
+    pub page_bytes: usize,
+    pub failure_stage: u32,
+    pub failure_errno: i32,
+}
+
+pub fn process_guard_status() -> ProcessGuardStatus {
+    #[cfg(all(target_os = "linux", feature = "kernel-fork-guard", not(feature = "strict-pid-guard")))]
+    {
+        fork_guard::status()
+    }
+    #[cfg(not(all(target_os = "linux", feature = "kernel-fork-guard", not(feature = "strict-pid-guard"))))]
+    {
+        ProcessGuardStatus {
+            backend: "actual_pid",
+            marker: 0,
+            thread_authenticated: false,
+            page_address: 0,
+            page_bytes: 0,
+            failure_stage: 0,
+            failure_errno: 0,
+        }
+    }
+}
+
 fn check_process() -> Result<()> {
-    #[cfg(all(target_os = "linux", feature = "kernel-fork-guard"))]
+    #[cfg(all(target_os = "linux", feature = "kernel-fork-guard", not(feature = "strict-pid-guard")))]
     if let Some(result) = fork_guard::check() {
         return result;
     }

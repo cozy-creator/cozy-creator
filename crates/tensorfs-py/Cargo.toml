@@ -32,6 +32,7 @@ default = ["store"]
 store = ["tensorfs/store"]
 extension-module = ["pyo3/extension-module"]
 kernel-fork-guard = ["varena/kernel-fork-guard"]
+strict-pid-guard = ["varena/strict-pid-guard"]
 
 [lints]
 workspace = true

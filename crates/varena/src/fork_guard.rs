@@ -1,5 +1,5 @@
-//! Default-off Linux experiment. The default actual-PID contract is unchanged.
-//! WIPEONFORK does not detect separate-TGID CLONE_VM with copied authenticated TLS.
+//! Linux one_process/1 guard: same-process threads have correctly initialized TLS.
+//! Shared-VM children must exec/exit before calling Varena; copied authenticated TLS is not detected.
 #![allow(unsafe_code)]
 use std::{
     cell::Cell,
@@ -32,7 +32,7 @@ pub(crate) fn check() -> Option<crate::Result<()>> {
     Some(AUTHENTICATED.with(|authenticated| {
         if authenticated.get() != owner {
             // Proper new TLS threads authenticate the actual PID before using inherited
-            // registries. Copied TLS + CLONE_VM is explicitly not covered by this experiment.
+            // registries. Shared-VM child calls are outside the one_process/1 contract.
             if std::process::id() != owner {
                 return Err(inherited());
             }
@@ -66,7 +66,7 @@ fn system(stage: Stage) -> PrepareError {
     }
 }
 
-/// A real unpublished mapping. Public only under the experimental feature so the CPU proof
+/// A real unpublished mapping. Public under the kernel guard feature so the CPU proof
 /// can hold this exact initialization window; no fake guard or injected syscall is used.
 pub struct Prepared {
     page: *mut AtomicU32,
@@ -175,18 +175,9 @@ pub(crate) fn arm() -> crate::Result<()> {
     Ok(())
 }
 
-#[derive(Debug)]
-pub struct Status {
-    pub backend: &'static str,
-    pub marker: u32,
-    pub thread_authenticated: bool,
-    pub page_address: usize,
-    pub page_bytes: usize,
-    pub failure_stage: u32,
-    pub failure_errno: i32,
-}
+pub type Status = crate::ProcessGuardStatus;
 
-/// Cold metadata for the explicit experimental proof, never called by alloc/free.
+/// Cold metadata only; this neither arms the guard nor opens CUDA.
 pub fn status() -> Status {
     let page = PAGE.load(Ordering::Acquire);
     let mut status = Status {

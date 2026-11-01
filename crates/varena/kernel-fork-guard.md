@@ -1,3 +1,7 @@
+> Historical experiment note: this describes frozen d1b314a83 / PR2371. The separate
+> normal-contract source candidate is documented in [process-contract.md](process-contract.md).
+> Its explicit contract/default decision does not rewrite the experimental receipts.
+
 # Default-off kernel fork guard experiment
 
 Owner `/root/p2_core_resume`. New branch from fresh `origin/master` plus immutable0e05;

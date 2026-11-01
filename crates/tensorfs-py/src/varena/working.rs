@@ -43,16 +43,15 @@ pub(super) fn installed() -> bool {
     OWNER.load(Ordering::Acquire) != 0
 }
 
-#[cfg(all(target_os = "linux", feature = "kernel-fork-guard"))]
 #[pyfunction]
-fn _varena_kernel_fork_guard_status() -> String {
-    let status = varena::fork_guard::status();
+fn _varena_process_guard_status() -> String {
+    let status = varena::process_guard_status();
     serde_json::json!({
-        "schema": "varena.kernel_fork_guard/experimental-1", "backend": status.backend,
+        "schema": "varena.process_guard/1", "contract": "one_process/1", "backend": status.backend,
         "marker": status.marker, "thread_authenticated": status.thread_authenticated,
         "page_bytes": status.page_bytes, "failure_stage": status.failure_stage,
-        "failure_errno": status.failure_errno, "production_qualified": false,
-        "known_limit": "copied authenticated TLS with separate-TGID CLONE_VM is not covered",
+        "failure_errno": status.failure_errno,
+        "shared_vm_child_use": "unsupported; inherited calls are not guaranteed to reject",
     }).to_string()
 }
 
@@ -674,8 +673,7 @@ fn _varena_phase_forget(py: Python<'_>, device: i32, key: &str) -> PyResult<bool
 }
 
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    #[cfg(all(target_os = "linux", feature = "kernel-fork-guard"))]
-    module.add_function(wrap_pyfunction!(_varena_kernel_fork_guard_status, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_process_guard_status, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_context, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_select, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_begin, module)?)?;

@@ -618,7 +618,7 @@ static DEVICES: OnceLock<Mutex<BTreeMap<i32, Arc<Working>>>> = OnceLock::new();
 /// later operation; the disabled-by-default Linux fork-guard experiment may arm its host page.
 pub fn bind_process() -> Result<()> {
     crate::check_process()?;
-    #[cfg(all(target_os = "linux", feature = "kernel-fork-guard"))]
+    #[cfg(all(target_os = "linux", feature = "kernel-fork-guard", not(feature = "strict-pid-guard")))]
     crate::fork_guard::arm()?;
     Ok(())
 }

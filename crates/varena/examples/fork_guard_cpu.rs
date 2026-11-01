@@ -3,7 +3,7 @@
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod proof {
     use serde_json::{Value, json};
-    #[cfg(feature = "kernel-fork-guard")]
+    #[cfg(all(feature = "kernel-fork-guard", not(feature = "strict-pid-guard")))]
     use std::sync::{Arc, Barrier};
     use std::{
         fs,
@@ -36,35 +36,35 @@ mod proof {
         .fold(0, |mask, (i, ok)| mask | ((ok as u32) << i))
     }
     fn marker() -> u32 {
-        #[cfg(feature = "kernel-fork-guard")]
+        #[cfg(all(feature = "kernel-fork-guard", not(feature = "strict-pid-guard")))]
         {
             varena::fork_guard::status().marker
         }
-        #[cfg(not(feature = "kernel-fork-guard"))]
+        #[cfg(any(not(feature = "kernel-fork-guard"), feature = "strict-pid-guard"))]
         {
             0
         }
     }
     fn authenticated() -> bool {
-        #[cfg(feature = "kernel-fork-guard")]
+        #[cfg(all(feature = "kernel-fork-guard", not(feature = "strict-pid-guard")))]
         {
             varena::fork_guard::status().thread_authenticated
         }
-        #[cfg(not(feature = "kernel-fork-guard"))]
+        #[cfg(any(not(feature = "kernel-fork-guard"), feature = "strict-pid-guard"))]
         {
             false
         }
     }
     fn status_json() -> Value {
-        #[cfg(feature = "kernel-fork-guard")]
+        #[cfg(all(feature = "kernel-fork-guard", not(feature = "strict-pid-guard")))]
         {
             let s = varena::fork_guard::status();
             json!({"backend":s.backend,"marker":s.marker,"thread_authenticated":s.thread_authenticated,
                 "page_bytes":s.page_bytes,"failure_stage":s.failure_stage,"failure_errno":s.failure_errno})
         }
-        #[cfg(not(feature = "kernel-fork-guard"))]
+        #[cfg(any(not(feature = "kernel-fork-guard"), feature = "strict-pid-guard"))]
         {
-            json!({"backend":"default_actual_pid"})
+            json!({"backend":varena::process_guard_status().backend})
         }
     }
     fn emit_child(fd: i32, mask: u32) -> ! {
@@ -188,7 +188,7 @@ mod proof {
         );
     }
     fn protection() -> String {
-        #[cfg(feature = "kernel-fork-guard")]
+        #[cfg(all(feature = "kernel-fork-guard", not(feature = "strict-pid-guard")))]
         {
             let s = varena::fork_guard::status();
             if s.page_address == 0 {
@@ -210,7 +210,7 @@ mod proof {
             }
             panic!("published read-only VMA absent");
         }
-        #[cfg(not(feature = "kernel-fork-guard"))]
+        #[cfg(any(not(feature = "kernel-fork-guard"), feature = "strict-pid-guard"))]
         {
             "default_actual_pid".into()
         }
@@ -249,12 +249,17 @@ mod proof {
         "accepted":row[1]==0,"counterexample_demonstrated":armed,"qualified":false})
     }
     fn run(mode: &str) -> Value {
+        let cold = varena::process_guard_status();
+        assert!(matches!(cold.backend, "unarmed_pid" | "actual_pid"));
+        assert_eq!(cold.page_bytes, 0, "status must not arm a guard");
+        assert_eq!(cold.page_address, 0);
+        assert!(!cold.thread_authenticated);
         assert!(
             !fs::read_to_string("/proc/self/maps")
                 .unwrap()
                 .contains("libcuda.so")
         );
-        #[cfg(feature = "kernel-fork-guard")]
+        #[cfg(all(feature = "kernel-fork-guard", not(feature = "strict-pid-guard")))]
         if mode == "unpublished" {
             let prepared = varena::fork_guard::Prepared::new().unwrap();
             assert_eq!(varena::fork_guard::status().backend, "unarmed_pid");
@@ -265,7 +270,7 @@ mod proof {
             healthy();
             return json!({"passed":true,"case":mode,"before_publication":before,"after_publication":fork_case(true,false),"protection":protection(),"cuda_initialized":false});
         }
-        #[cfg(feature = "kernel-fork-guard")]
+        #[cfg(all(feature = "kernel-fork-guard", not(feature = "strict-pid-guard")))]
         if mode == "concurrent" {
             let ready = Arc::new(Barrier::new(5));
             let publish = Arc::new(Barrier::new(5));
@@ -309,7 +314,7 @@ mod proof {
             // SAFETY: immediately restore original limits before formatting or allocating.
             assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_AS, &old) }, 0);
             bound.unwrap();
-            #[cfg(feature = "kernel-fork-guard")]
+            #[cfg(all(feature = "kernel-fork-guard", not(feature = "strict-pid-guard")))]
             {
                 let s = varena::fork_guard::status();
                 assert_eq!(s.backend, "fallback_pid");
@@ -331,7 +336,7 @@ mod proof {
         })
         .join()
         .unwrap();
-        #[cfg(feature = "kernel-fork-guard")]
+        #[cfg(all(feature = "kernel-fork-guard", not(feature = "strict-pid-guard")))]
         if mode != "fallback" {
             assert!(!thread.0 && thread.1);
         }
@@ -342,7 +347,7 @@ mod proof {
         healthy();
         json!({"passed":true,"case":mode,"guard":status_json(),"protection":protection(),"ordinary":ordinary,"raw":raw,"descendant":descendant,
         "thread_auth_before":thread.0,"thread_auth_after":thread.1,"thread_fork":thread.2,"unauthenticated_thread_fork":unauthed,
-        "shared_vm":counterexample,"cuda_initialized":false,"production_qualified":false})
+        "shared_vm":counterexample,"cuda_initialized":false,"contract":"one_process/1","gpu_qualified":false})
     }
     pub(super) fn main() {
         let mode = std::env::args().nth(1).unwrap_or_else(|| "matrix".into());
@@ -351,7 +356,7 @@ mod proof {
             return;
         }
         let mut cases = vec!["armed", "fallback"];
-        if cfg!(feature = "kernel-fork-guard") {
+        if cfg!(all(feature = "kernel-fork-guard", not(feature = "strict-pid-guard"))) {
             cases.extend(["unpublished", "concurrent"]);
         }
         let mut rows = vec![];
@@ -369,7 +374,7 @@ mod proof {
         }
         println!(
             "{}",
-            json!({"passed":true,"experimental_feature":cfg!(feature="kernel-fork-guard"),"production_qualified":false,"cuda_initialized":false,"cases":rows})
+            json!({"passed":true,"kernel_guard_enabled":cfg!(all(feature="kernel-fork-guard",not(feature="strict-pid-guard"))),"contract":"one_process/1","gpu_qualified":false,"cuda_initialized":false,"cases":rows})
         );
     }
 }

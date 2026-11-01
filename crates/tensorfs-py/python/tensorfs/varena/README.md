@@ -249,3 +249,15 @@ Composed slots check private event, allocation and stream destruction before pub
 event-mode Fill. Successful handles become inert. A failed release retains the actual partially
 released Work, poisons the arena and cannot be retried by Drop; no successful output is reported.
 These checks reuse the decoder and buffer owners rather than a separate cleanup registry.
+
+## Host-process boundary
+
+This build follows Varena's `one_process/1` contract: ordinary same-process threads
+with independently initialized TLS, no inherited allocator/CUDA use in child
+processes. Ordinary/private-VM forks reject before inherited allocator locks.
+Linux uses a kernel-cleared marker by default; failed setup and other platforms
+use actual PID checks. A separate-TGID child sharing VM and copied authenticated
+TLS must exec or exit before calling Varena/CUDA; clean rejection is not guaranteed
+for that unsupported pattern. `strict-pid-guard` is a compile-time override for
+per-call actual-PID checking. See [the native contract](../../../../varena/process-contract.md).
+The private status API reports the actual backend and never initializes CUDA.
