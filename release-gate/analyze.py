@@ -45,9 +45,15 @@ def walk(o):
             yield from walk(v)
 
 
+# A function renamed by a release, so its cells hold against the numbers the old name earned (xs-139: 0.3.0's generate
+# is 0.2.x's shot).
+RENAMED = {'minimax-h3/shot': 'minimax-h3/generate'}
+
+
 def canonical(target):
     """The package function a target names, whether published (org/pkg/fn@v) or a checkout (./pkg/fn)."""
-    return re.sub(r'^(\./|[^/]+/(?=[^/]+/[^/]+$))', '', re.sub(r'@.*$', '', target))
+    name = re.sub(r'^(\./|[^/]+/(?=[^/]+/[^/]+$))', '', re.sub(r'@.*$', '', target))
+    return RENAMED.get(name, name)
 
 
 # A device without fp8 tensor cores (before sm89) serves an fp8 lane's weights at 16-bit compute (cozy-creator #2210):
