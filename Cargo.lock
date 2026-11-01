@@ -367,6 +367,7 @@ dependencies = [
  "time",
  "tokio",
  "tokio-util",
+ "toml",
  "tracing",
  "tracing-subscriber",
 ]
@@ -496,6 +497,7 @@ dependencies = [
  "anstream",
  "anstyle",
  "base64 0.23.1",
+ "calcifer",
  "clap",
  "clap_complete",
  "comfy-table",
