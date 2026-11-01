@@ -20,7 +20,7 @@ use std::{
     io,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::Instant,
+    time::{Duration, Instant},
 };
 use crate::{
     held_models::Pulled,
@@ -222,6 +222,49 @@ fn canceled() -> Failure {
     (CANCELED, "the run was canceled while it prepared".into())
 }
 
+/// A lookup the network could not answer for now: no name resolution, a link refused, reset or
+/// silent, the Hub's 5xx. A definite answer (absent, private, refused, malformed) is never this.
+pub const UNREACHABLE: &str = "hub_unreachable";
+/// The wait before an unanswered lookup is asked again: doubling from the first to the most.
+const FIRST_WAIT: Duration = Duration::from_secs(1);
+const MOST_WAIT: Duration = Duration::from_secs(30);
+/// How often a wait looks at its run's cancel.
+const TICK: Duration = Duration::from_millis(100);
+
+/// `prepare` asked again while the network leaves it unanswered ([`UNREACHABLE`]), for as long as
+/// its run lives: its cancel ends the wait, and the run shows what it waits for. Nothing has
+/// executed, so asking again re-executes nothing, and what an earlier ask resolved is held. A
+/// hint (no run to stop) is asked once.
+fn patiently<T>(job: &Job, mut prepare: impl FnMut() -> Result<T, Failure>) -> Result<T, Failure> {
+    let Some(stop) = &job.stop else { return prepare() };
+    let (mut wait, mut waited) = (FIRST_WAIT, false);
+    loop {
+        let why = match prepare() {
+            Err((UNREACHABLE, why)) => why,
+            answered => {
+                if waited {
+                    job.waiting(None);
+                }
+                return answered;
+            }
+        };
+        let said = format!("unreachable, retrying: {why}");
+        tracing::warn!(run = %job.caller, retry_in_s = wait.as_secs(), "{said}");
+        job.stage(said.clone());
+        job.waiting(Some(said));
+        waited = true;
+        let until = Instant::now() + wait;
+        while Instant::now() < until {
+            if stop.is_cancelled() {
+                job.waiting(None);
+                return Err(canceled());
+            }
+            std::thread::sleep(TICK);
+        }
+        wait = (wait * 2).min(MOST_WAIT);
+    }
+}
+
 /// What one environment generation is built from: the release's card (its exact pyproject and
 /// uv.lock, its carried wheels, Python and interface), what its lock leaves to this machine, and
 /// where the release lives.
@@ -269,7 +312,8 @@ impl Publisher {
     }
 
     /// One run's preparation on the calling thread, reported through `observe`: a held
-    /// installation and resolution answer at once.
+    /// installation and resolution answer at once; one the network leaves unanswered waits for it
+    /// (`patiently`).
     pub fn prepare_now(
         &self,
         service: &Arc<Service>,
@@ -296,7 +340,7 @@ impl Publisher {
             }),
             ..Default::default()
         };
-        self.work(service, actor, request, &job)
+        patiently(&job, || self.work(service, actor, request, &job))
     }
 
     /// A slot's model made from its provider source (TensorFS `source_model`), kept as the
@@ -1341,18 +1385,20 @@ fn unsigned(source: &hub::Source, failure: Failure, refusal: &tensorfs::err::Ref
 
 /// `failure` of `named`, a commit by hash, read with no sign-in: it is private (or absent).
 fn private(source: &hub::Source, named: &Named, failure: Failure, refusal: &tensorfs::err::Refusal) -> Failure {
-    match source.capability.is_none() {
+    match source.capability.is_none() && failure.0 != UNREACHABLE {
         true => (failure.0, format!("{} is private, or no such commit: this run carried no sign-in; `cozy login <email>` on the computer that sent it reads it as its account ({})", named.shown(), refusal)),
         false => unsigned(source, failure, refusal),
     }
 }
 
-/// A TensorFS refusal as a run's reason; a download the disk cannot fit is its own.
+/// A TensorFS refusal as a run's reason; a download the disk cannot fit is its own, and one the
+/// network left unanswered (TensorFS's `network` kind) is [`UNREACHABLE`].
 fn refused(code: &'static str, refusal: tensorfs::err::Refusal) -> Failure {
     match refusal.code {
         tensorfs::err::Code::CAPACITY_EXHAUSTED => ("machine_disk_full", refusal.to_string()),
         // The run's capability was refused (expired); without one a private object is absent.
         tensorfs::err::Code::CREDENTIAL_REQUIRED => ("hub_credential_refused", refusal.detail),
+        _ if tensorfs::Failure::from(refusal.clone()).kind == tensorfs::Kind::Network => (UNREACHABLE, refusal.to_string()),
         _ => (code, refusal.to_string()),
     }
 }
@@ -1495,17 +1541,18 @@ fn apply_adapters(
 /// is the read's, naming what it read and the Hub's whole answer (run 14446 said only "internal:
 /// unexpected internal failure").
 /// The Hub's own 404 names an absence; one without its envelope (`http_404`: a tunnel or proxy
-/// in front of it) names nothing (tfs-101).
+/// in front of it) names nothing (tfs-101). No answer, or the Hub's 5xx, is [`UNREACHABLE`].
 fn absent(refusal: hub_client::Error, code: &'static str, read: &str, named: impl FnOnce() -> String) -> Failure {
-    let failed = |why: String| ("catalog_read_failed", format!("reading {read}: {why}"));
-    match refusal {
-        hub_client::Error::Hub { status: 404, code: hub, .. } if !hub.starts_with("http_") => (code, named()),
-        hub_client::Error::Hub { status, code, message, remedy } => failed(match remedy.is_empty() {
+    let failed = if refusal.retry() { UNREACHABLE } else { "catalog_read_failed" };
+    let why = match refusal {
+        hub_client::Error::Hub { status: 404, code: hub, .. } if !hub.starts_with("http_") => return (code, named()),
+        hub_client::Error::Hub { status, code, message, remedy } => match remedy.is_empty() {
             true => format!("the Hub answered {status} {code}: {message}"),
             false => format!("the Hub answered {status} {code}: {message} ({remedy})"),
-        }),
-        other => failed(other.to_string()),
-    }
+        },
+        other => other.to_string(),
+    };
+    (failed, format!("reading {read}: {why}"))
 }
 
 /// What a person sees while a release's environment is built here: an install, named the first
