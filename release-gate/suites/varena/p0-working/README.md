@@ -31,6 +31,8 @@ its bytes hashed before replacement. No shared cache, model artifact, source imp
 The full P1 set now contains 19 cases. The earlier qualified 18-case receipts remain valid for that earlier set;
 this fixture-only addition requires a new `case=failed-source-fill` or full-set GPU receipt. Its source can run
 against the unchanged, qualified `cbfc677c7` native wheel; no product/native rebuild is needed.
+The separate [encoded failure boundary](encoded-failure-boundary.md) records why the current public API does
+not provide an equivalent standalone encoded admission/start seam; no substitute test or product defect is claimed.
 
 Cases cover empty capture initialization, 512-byte alignment, same-stream reuse, cross-stream retirement, reuse
 inside capture, retained outputs after graph destruction, changed replay stream, shared and distinct graph pools,
