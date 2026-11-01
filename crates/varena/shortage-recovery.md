@@ -10,8 +10,9 @@ is included; pressure does not restore the old whole-cache flush.
 Every native allocation episode gets one monotonic two-second coordination budget.
 Busy/stale publications and unanswered/pending donors consume that same budget.
 Joining a local wait or another round cannot reset it. Expiry records the typed
-`peer_wait_budget_exhausted` outcome and permits one final actual allocator retry;
-if that fails, the ordinary exhaustion result remains. This does not bound CUDA
+`peer_wait_budget_exhausted` outcome and permits one final local admission pass,
+including its usual finite reclaim/driver retries. It is not necessarily one
+`cuMemCreate` call. If that pass fails, ordinary exhaustion remains. This does not bound CUDA
 event waits or total allocation latency, infer donor death, cancel another owner's
 round, or turn acknowledgements into free capacity.
 

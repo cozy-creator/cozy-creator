@@ -32,6 +32,11 @@ class Observe(Probe, kw_only=True):
     owner_row: dict[str, int]
 
 
+class Shortage(Probe, kw_only=True):
+    case: str
+    gil_gate_sha256: str
+
+
 class Report(msgspec.Struct):
     passed: bool
     detail: str
@@ -85,8 +90,8 @@ def eventually(operation):
 
 
 class Requester:
-    def __init__(self, config):
-        self.process = subprocess.Popen([sys.executable, '-I', str(Path(__file__).with_name('requester.py')),
+    def __init__(self, config, script='requester.py'):
+        self.process = subprocess.Popen([sys.executable, '-I', str(Path(__file__).with_name(script)),
                                          json.dumps(config)], stdin=subprocess.PIPE,
                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.selector = selectors.DefaultSelector()
@@ -248,3 +253,13 @@ def cleanup_failure(payload: Probe, ctx: Context) -> Report:
         # The real Memory cleanup seam must latch/report the native coordination fault
         # without replacing the exception already unwinding through it.
         memory.cooperation_boundary(check=False)
+
+
+@app.entrypoint(accelerator=True)
+def shortage(payload: Shortage, ctx: Context) -> Report:
+    from .pressure import exercise as pressure
+    try:
+        return Report(True, json.dumps(pressure(payload, ctx), sort_keys=True))
+    except Exception as error:
+        return Report(False, json.dumps({'passed': False, 'error': f'{type(error).__name__}: {error}',
+                                        'traceback': traceback.format_exc()}, sort_keys=True))
