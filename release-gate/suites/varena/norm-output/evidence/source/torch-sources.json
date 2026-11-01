@@ -1,0 +1,12 @@
+[
+  {
+    "url": "https://raw.githubusercontent.com/pytorch/pytorch/08187d9e0fba026dc8217405802ab5381dc88d90/aten/src/ATen/native/layer_norm.cpp",
+    "sha256": "30658907d8863565c331de5e58f26c023d898d502f8a2ed119763684112f0c90",
+    "path": "outputs/xs138-p2-norm-output-audit/pinned/layer_norm.cpp"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/pytorch/pytorch/08187d9e0fba026dc8217405802ab5381dc88d90/aten/src/ATen/native/cuda/layer_norm_kernel.cu",
+    "sha256": "aca7054f068c01c4e7a3ba598764747e8cbdce2d06f4b6206b3b67eb3562eae4",
+    "path": "outputs/xs138-p2-norm-output-audit/pinned/layer_norm_kernel.cu"
+  }
+]

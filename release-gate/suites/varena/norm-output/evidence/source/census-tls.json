@@ -1,0 +1,6 @@
+{
+  "outer_grad": false,
+  "inference_false_context_grad": true,
+  "restored_grad": false,
+  "cuda_initialized": false
+}

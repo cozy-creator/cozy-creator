@@ -1,0 +1,30 @@
+{
+  "source_run": 25405,
+  "analysis_sha256": "d5598ed0961c2ba93c1b7ac71f83d69feb945402d811c31bc323c2ae2e685b34",
+  "norm_levels": [
+    150
+  ],
+  "linear_levels": [
+    48,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    1,
+    1
+  ],
+  "norm_width": 5376,
+  "attention_output_input_width": 7168,
+  "max_norm_rows": 32768,
+  "norm_dtype": "bfloat16",
+  "whole_output_bytes": 352321536,
+  "whole_rstd_bytes": 131072,
+  "half_split_peak_requested_bytes": 528547840,
+  "old_python_advice_bytes": 1409286144,
+  "decision": "whole-only exact native admission; retain no contrived split menu",
+  "gpu_qualification": false
+}
