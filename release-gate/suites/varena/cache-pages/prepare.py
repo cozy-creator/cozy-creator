@@ -21,6 +21,7 @@ def main():
     parser.add_argument('--native-extension-sha256', required=True)
     parser.add_argument('--gpu-uuid', default='UNBOUND')
     parser.add_argument('--expected-devices', type=int, choices=(1, 2), default=1)
+    parser.add_argument('--other-gpu-uuid', default='')
     parser.add_argument('--runtime-wheel', type=Path)
     parser.add_argument('--gil-gate', type=Path)
     parser.add_argument('--output', type=Path, required=True)
@@ -59,7 +60,7 @@ def main():
     (target / 'provenance.json').write_text(json.dumps(manifest, indent=2) + '\n')
     payload = {'source_sha': source['source_sha'], 'helper_sha256': manifest['binary_sha256'],
                'native_extension_sha256': args.native_extension_sha256, 'gpu_uuid': args.gpu_uuid,
-               'expected_devices': args.expected_devices}
+               'expected_devices': args.expected_devices, 'other_gpu_uuid': args.other_gpu_uuid}
     if args.runtime_wheel:
         names = ('internal/cache_owners.py', 'internal/loop.py', 'internal/prepared.py',
                  'internal/residency.py', 'internal/weights.py', 'graphs/__init__.py',

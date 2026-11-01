@@ -6,7 +6,7 @@ Fetched master: `ea521be3c` (cl-714). Native base:
 Integration `bccf2ac48a5f480cb28bacd8a63f115167147c95` changes only upstream CLI/rental
 files relative to7a; native source initially matches7a. Frozen cohorts stay untouched.
 
-## Approved ownership direction; API to freeze before frontend adoption
+## Implemented contract for review before frontend adoption
 
 ```rust
 Arena::request_retirement(self: Arc<Self>)
@@ -74,3 +74,41 @@ qualification. Parent owns every GPU/install/rental action.
 The user's pre-launch hard cut is recorded in tracker40cd9957. Removing old-layout
 migration is a separate successor delta: this retirement change adds no compatibility
 and never resets or reinterprets a live table.
+
+
+## Source checkpoint and integration boundary
+
+Native source check passes (1.22 seconds); final TensorFS binding check passes
+(5.81 seconds); staged native helper checks pass (0.34 seconds), all one nice19
+Cargo job. Initial type/fixture-visibility failures are preserved in task receipts.
+No GPU cell has run and no new toolkit artifact has been built. Native source
+ownership and API checks are not runtime retirement qualification.
+
+Staged ordinary controller entrypoints are `arena_observer_retirement` (one GPU),
+`arena_retirement_unproven` (isolated destructive-last refusal cell), and
+`arena_retirement_cross_device` (two actual leased GPUs, `expected_devices=2` and
+both actual UUIDs bound). The first holds both persistent stores plus real
+Region/Pin/Plan/transient references, drops and reopens the host ticket, observes
+new leases after close, and runs live A work while B's real event remains blocked.
+The cross-device cell also completes actual capture on device zero before device
+one's gated consumer is released. All remain GPU-unqualified. The shared core and
+Rust runtime must match the helper; a lone executable is not a portable payload.
+
+P4 Gpu disposal and internal TensorFS PyArena disposal must explicitly request
+retirement after review. Bare Arc drop cannot identify the last genuine client
+while persistent observer Arcs still exist; no Arc-count heuristic was added.
+These wrappers remain separate adoption work. Failed handoff returns its actual
+input Arc; callers must retain/retry/quarantine it. Successful ticket Drop is
+host-only, and final native resource transfer keeps custody in the library queue.
+
+The async integration owner will add checked FillResources to the private typed
+queue. Independent producer-event polling remains separate. The finalizer uses
+an allow-list of Cold/Ready/Retired, so Loading and the async Published state are
+unproven even if a future invalid caller evades its genuine producer Pin.
+
+The current NVIDIA reference is CUDA13.4: recorded-event queries distinguish
+completed work from pending work, and VMM still exposes explicit mapping/unmapping
+and allocation-handle release. This source follows those event-scoped contracts;
+it does not turn historical CUDA13.0 receipts into current-toolkit proof.
+References: [NVIDIA event management](https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/group__CUDA__EVENT.html),
+[NVIDIA VMM](https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/group__CUDA__VA.html).

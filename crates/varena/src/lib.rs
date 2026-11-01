@@ -14,6 +14,9 @@ mod cuda;
 /// Versioned public ABI. All frontends resolve this shared library.
 pub mod abi;
 pub mod plan;
+pub mod arena_retirement;
+mod retirement;
+pub use arena_retirement::{ArenaRetirement, ArenaRetirementFacts, ArenaRetirementState};
 pub mod working;
 pub mod cache_owner;
 pub use cache_owner::CacheOwner;
@@ -328,6 +331,13 @@ struct State {
 }
 
 impl State {
+    fn empty() -> Self {
+        Self { entries:BTreeMap::new(), clock:0, streaming_limit:usize::MAX,
+            phase_boundary:None, preferred_end:None, poison:None, fills:0, hits:0,
+            evictions:0, reclaimed_bytes:0, reclaimed_by_reason:ReclaimedBytes::default(),
+            context_joins:0, event_waits:0 }
+    }
+
     fn standby(&self, entry: &Entry) -> bool {
         self.phase_boundary.is_some_and(|boundary| {
             self.clock != u64::MAX
@@ -413,7 +423,8 @@ impl State {
 /// A manager owned by one executor. It may serve multiple threads of that process.
 pub struct Arena {
     id: u64,
-    driver: cuda::Driver,
+    driver: Arc<cuda::Driver>,
+    metadata: Arc<arena_retirement::Metadata>,
     device: i32,
     pid: u32,
     // Lock-free view of this device's capture guards, for release paths that never wait.
@@ -465,6 +476,7 @@ struct RegisteredArena {
     device: i32,
     id: u64,
     owner: Weak<Arena>,
+    metadata: Arc<arena_retirement::Metadata>,
 }
 
 type ArenaRegistry = Vec<RegisteredArena>;
@@ -483,15 +495,33 @@ fn next_identity() -> Result<u64> {
 /// Acquire matching GPU owners before capture/arena/working guards. No recovery or
 /// last-owner destruction runs under the registry; callers keep these leases outside
 /// every later guard, including early-return/error paths.
-fn arena_leases(device: i32) -> Result<Vec<Arc<Arena>>> {
-    check_process()?;
-    let Some(registry) = ARENAS.get() else { return Ok(Vec::new()); };
-    let registry = registry.lock().map_err(|_| Error::Poisoned("arena registry mutex".into()))?;
-    let leases = registry.iter().filter(|entry| entry.device == device)
-        .filter_map(|entry| entry.owner.upgrade()).collect();
-    drop(registry);
-    Ok(leases)
+struct ArenaInventory {
+    arenas: Vec<Arc<Arena>>,
+    finalizing: Vec<Arc<arena_retirement::Metadata>>,
 }
+
+fn arena_inventory(device:i32) -> Result<ArenaInventory> {
+    check_process()?;
+    let Some(registry)=ARENAS.get() else { return Ok(ArenaInventory { arenas:Vec::new(),finalizing:Vec::new() }); };
+    let (mut arenas,finalizing,gap)={
+        let registry=registry.lock().map_err(|_| Error::Poisoned("arena registry mutex".into()))?;
+        let (mut arenas,mut finalizing,mut gap)=(Vec::new(),Vec::new(),false);
+        for entry in registry.iter().filter(|entry| entry.device==device) {
+            if let Some(arena)=entry.owner.upgrade() { arenas.push(arena); }
+            else if entry.metadata.finalizing.load(Ordering::Acquire) { finalizing.push(entry.metadata.clone()); }
+            else { gap=true; }
+        }
+        (arenas,finalizing,gap)
+    };
+    // An accepted native resource job is known, nonreclaimable inventory. Only an
+    // unknown last-Arc/handoff gap refuses a partial snapshot. Owning drops are outside.
+    if gap { return Err(Error::Busy); }
+    arenas.sort_by_key(|arena| arena.id());
+    Ok(ArenaInventory { arenas,finalizing })
+}
+
+fn arena_leases(device:i32) -> Result<Vec<Arc<Arena>>> { Ok(arena_inventory(device)?.arenas) }
+
 #[derive(Default)]
 struct DeviceActivity {
     activity_epoch: u64,
@@ -717,34 +747,23 @@ impl Drop for ProducerGuard {
 impl Arena {
     pub fn new(device: i32) -> Result<Arc<Self>> {
         let id = next_identity()?;
+        retirement::prepare(device)?;
         let mut captures = capture_counts()?;
         ensure_recovery_allowed(&captures, device)?;
-        let driver = cuda::Driver::open(device)?;
+        let driver = Arc::new(cuda::Driver::open(device)?);
+        let metadata = arena_retirement::Metadata::new(id,device,driver.counters());
         let activity = captures.entry(device).or_default();
         let (capturing, room) = (Arc::clone(&activity.captures), Arc::clone(&activity.room));
         drop(captures);
         let arena = Arc::new(Self {
             id,
             driver,
+            metadata,
             device,
             pid: std::process::id(),
             captures: capturing,
             room,
-            state: Mutex::new(State {
-                entries: BTreeMap::new(),
-                clock: 0,
-                streaming_limit: usize::MAX,
-                phase_boundary: None,
-                preferred_end: None,
-                poison: None,
-                fills: 0,
-                hits: 0,
-                evictions: 0,
-                reclaimed_bytes: 0,
-                reclaimed_by_reason: ReclaimedBytes::default(),
-                context_joins: 0,
-                event_waits: 0,
-            }),
+            state: Mutex::new(State::empty()),
         });
         // Registration changes the bounded phase-plan arena inventory. This guard
         // is declared after `arena`: every error drops it before the owning Arc.
@@ -755,12 +774,16 @@ impl Arena {
             .lock()
             .map_err(|_| Error::Poisoned("arena registry mutex".into()))?;
         plan::inventory_changed(device)?;
-        registry.push(RegisteredArena { device, id, owner: Arc::downgrade(&arena) });
+        registry.push(RegisteredArena { device, id, owner: Arc::downgrade(&arena),metadata:arena.metadata.clone() });
         Ok(arena)
     }
 
     /// Never-reused lifetime identity within this process's one native core.
     pub fn id(&self) -> u64 { self.id }
+
+    pub fn request_retirement(self:Arc<Self>) -> std::result::Result<ArenaRetirement,(Arc<Self>,Error)> {
+        arena_retirement::request(self)
+    }
 
     pub fn device(&self) -> i32 {
         self.device
@@ -775,6 +798,7 @@ impl Arena {
         }
         let handle = self.driver.create(bytes)?;
         self.room.pages.fetch_add(bytes, Ordering::AcqRel);
+        self.metadata.physical.fetch_add(bytes, Ordering::AcqRel);
         Ok(handle)
     }
 
@@ -1255,6 +1279,7 @@ impl Arena {
         }
         *completed += size;
         self.room.pages.fetch_sub(size, Ordering::AcqRel);
+        self.metadata.physical.fetch_sub(size, Ordering::AcqRel);
         self.room.released.fetch_add(size as u64, Ordering::AcqRel);
         let entry = state.entries.get_mut(&id).expect("locked candidate");
         // Every event is complete here; a destroy failure only leaks the event.
@@ -2114,53 +2139,8 @@ impl Drop for Region {
 
 impl Drop for Arena {
     fn drop(&mut self) {
-        if self.pid != std::process::id() {
-            return;
-        }
-        let Ok(captures) = capture_counts() else {
-            return;
-        };
-        if let Some(registry) = ARENAS.get() {
-            let Ok(mut registry) = registry.lock() else { return; };
-            if let Some(index) = registry.iter().position(|entry| entry.id == self.id) {
-                let _ = plan::inventory_changed(self.device);
-                registry.remove(index);
-            }
-        }
-        if ensure_recovery_allowed(&captures, self.device).is_err() {
-            return;
-        }
-        let Ok(state) = self.state.get_mut() else {
-            return;
-        };
-        if state.poison.is_some() {
-            return;
-        }
-        let Ok(_context) = self.driver.enter() else {
-            return;
-        };
-        if self.driver.synchronize().is_err() {
-            return;
-        }
-        for entry in state.entries.values() {
-            // Last Arc<Arena> means no Region, Pin, Fill, or CaptureGuard can still exist.
-            for fence in entry.uses.fences().drain(..) {
-                let _ = self.driver.destroy_event(fence.event);
-            }
-            if let Some(handle) = entry.handle {
-                if self.driver.unmap(entry.ptr, entry.bytes).is_err() {
-                    return;
-                }
-                if self.driver.release(handle).is_err() {
-                    return;
-                }
-                self.room.pages.fetch_sub(entry.bytes, Ordering::AcqRel);
-                self.room.released.fetch_add(entry.bytes as u64, Ordering::AcqRel);
-            }
-            if self.driver.free_address(entry.ptr, entry.bytes).is_err() {
-                return;
-            }
-        }
+        if self.pid != std::process::id() { return; }
+        arena_retirement::final_owner(self);
     }
 }
 
@@ -2174,16 +2154,16 @@ pub fn released_bytes(device: i32) -> Result<u64> {
     Ok(room(device)?.released.load(Ordering::Acquire))
 }
 
-fn reclaim_completed(device: i32, wanted: usize, retained: &mut Vec<Arc<Arena>>) -> Result<usize> {
+fn reclaim_completed(device: i32, wanted: usize, retained: &mut Vec<Arc<arena_retirement::Observation>>) -> Result<usize> {
     // The callback worker retains observed Arena leases exactly as Peer does. Otherwise a
     // temporary snapshot could become the last owner and context-join from this no-wait pass.
-    retain_arenas(device, retained)?;
+    let inventory = retain_arenas(device, retained)?;
     let working = working::reclaim_completed(device, wanted)?;
     let mut completed = working;
     if completed < wanted {
         let captures = capture_counts()?;
         ensure_recovery_allowed(&captures, device)?;
-        for arena in retained.iter() {
+        for arena in &inventory.arenas {
             if completed >= wanted { break; }
             arena.reclaim_ready_counted(&captures, wanted - completed, usize::MAX,
                 ReclaimReason::Allocator, &mut completed)?;
@@ -2192,11 +2172,20 @@ fn reclaim_completed(device: i32, wanted: usize, retained: &mut Vec<Arc<Arena>>)
     Ok(completed)
 }
 
-fn retain_arenas(device: i32, retained: &mut Vec<Arc<Arena>>) -> Result<()> {
-    for arena in arena_leases(device)? {
-        if !retained.iter().any(|held| Arc::ptr_eq(held, &arena)) { retained.push(arena); }
+fn observe_inventory(inventory:&ArenaInventory, retained:&mut Vec<Arc<arena_retirement::Observation>>) -> Result<()> {
+    for arena in &inventory.arenas {
+        if !retained.iter().any(|held| held.id==arena.id()) { retained.push(arena.metadata.observe(Some(arena))?); }
+    }
+    for metadata in &inventory.finalizing {
+        if !retained.iter().any(|held| held.id==metadata.id) { retained.push(metadata.observe(None)?); }
     }
     Ok(())
+}
+
+fn retain_arenas(device:i32, retained:&mut Vec<Arc<arena_retirement::Observation>>) -> Result<ArenaInventory> {
+    let inventory=arena_inventory(device)?;
+    observe_inventory(&inventory,retained)?;
+    Ok(inventory)
 }
 
 /// The room this process may hold on `device` (weight pages plus mapped working allocations),
@@ -2278,10 +2267,13 @@ pub fn reclaim(device: i32, bytes: usize) -> Result<ReclaimReport> {
 /// Physical bytes owned by live arenas on this device, for a local managed-memory ceiling.
 pub fn resident_bytes(device: i32) -> Result<usize> {
     check_process()?;
-    arena_leases(device)?.into_iter()
-        .try_fold(0usize, |bytes, arena| {
-            bytes
-                .checked_add(arena.stats()?.resident_bytes)
-                .ok_or(Error::Invalid("resident byte count overflow"))
-        })
+    let inventory=arena_inventory(device)?;
+    let mut bytes=0usize;
+    for arena in &inventory.arenas {
+        bytes=bytes.checked_add(arena.stats()?.resident_bytes).ok_or(Error::Invalid("resident byte count overflow"))?;
+    }
+    for metadata in &inventory.finalizing {
+        bytes=bytes.checked_add(metadata.physical.load(Ordering::Acquire)).ok_or(Error::Invalid("resident byte count overflow"))?;
+    }
+    Ok(bytes)
 }

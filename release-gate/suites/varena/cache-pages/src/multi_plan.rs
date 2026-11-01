@@ -195,7 +195,8 @@ pub(super) fn same_device(cuda: &Cuda, peer: &cooperative::Peer, device: i32) ->
     let execution = committed(device, page)?;
     let old_arena_id = temporary_arena.id();
     let before_retirement = varena::plan::inventory_generation(device)?;
-    drop(temporary_arena);
+    let retired = super::arena_retirement::request(temporary_arena)?;
+    wait_retired(&retired)?;
     require(
         varena::plan::inventory_generation(device)? > before_retirement,
         "Arena retirement did not advance inventory",
@@ -239,14 +240,23 @@ pub(super) fn same_device(cuda: &Cuda, peer: &cooperative::Peer, device: i32) ->
         held_a.clone(),
         vec![("held".into(), vec![held_region.clone()])],
     )?;
-    drop(held_a);
-    drop(held_b);
+    let retire_a = super::arena_retirement::request(held_a)?;
+    let retire_b = super::arena_retirement::request(held_b)?;
     drop(held_region);
+    for ticket in [&retire_a, &retire_b] {
+        let end = Instant::now() + Duration::from_secs(5);
+        while !ticket.facts()?.observers_detached {
+            require(Instant::now() < end, "observer detach did not settle")?;
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
     require(
         weak_a.upgrade().is_some() && weak_b.upgrade().is_some() && weak_region.upgrade().is_some(),
         "Plan did not retain all reservation owners",
     )?;
     drop(held_plan);
+    wait_retired(&retire_a)?;
+    wait_retired(&retire_b)?;
     require(
         weak_a.upgrade().is_none() && weak_b.upgrade().is_none() && weak_region.upgrade().is_none(),
         "Plan lifetime owners did not retire",
@@ -278,6 +288,17 @@ pub(super) fn same_device(cuda: &Cuda, peer: &cooperative::Peer, device: i32) ->
             "multi-arena physical cleanup",
         )?;
     }
+    drop(r1);
+    drop(r2);
+    drop(cached);
+    let retired = [
+        super::arena_retirement::request(a)?,
+        super::arena_retirement::request(b)?,
+        super::arena_retirement::request(outside)?,
+    ];
+    for ticket in &retired {
+        wait_retired(ticket)?;
+    }
     Ok(
         json!({"page":page,"identities":ids,"deduplicated_regions":facts[0].regions,
         "phase_bytes":facts[0].bytes,"cold_missing_bytes":cold.phase_missing_bytes,
@@ -287,6 +308,18 @@ pub(super) fn same_device(cuda: &Cuda, peer: &cooperative::Peer, device: i32) ->
         "capture":capture,"physical_baseline_restored":true,
         "mismatched_device_case":"separate two-GPU entrypoint required"}),
     )
+}
+
+fn wait_retired(ticket: &varena::ArenaRetirement) -> Result<()> {
+    let end = Instant::now() + Duration::from_secs(5);
+    while !ticket.try_complete()? {
+        require(
+            Instant::now() < end,
+            "actual native final resources did not retire",
+        )?;
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    Ok(())
 }
 
 fn concurrent_inventory(device: i32, page: usize) -> Result<Value> {
@@ -300,7 +333,19 @@ fn concurrent_inventory(device: i32, page: usize) -> Result<Value> {
                 let arena = Arena::new(device)?;
                 let region = arena.reserve(page)?;
                 drop(region);
-                drop(arena);
+                let ticket = arena.request_retirement().map_err(|(arena, error)| {
+                    std::mem::forget(arena);
+                    error
+                })?;
+                let end = Instant::now() + Duration::from_secs(5);
+                while !ticket.try_complete()? {
+                    if Instant::now() >= end {
+                        return Err(varena::Error::Invalid(
+                            "concurrent retirement did not settle",
+                        ));
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
             }
             Ok(())
         })()

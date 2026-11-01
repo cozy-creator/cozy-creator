@@ -103,33 +103,10 @@ fn registry() -> Result<std::sync::MutexGuard<'static, BTreeMap<i32, Device>>> {
         .map_err(|_| Error::Poisoned("phase-plan registry mutex".into()))
 }
 
-fn arenas(device: i32) -> Result<Vec<Arc<Arena>>> {
-    let Some(found) = crate::ARENAS.get() else {
-        return Ok(Vec::new());
-    };
-    let (mut live, retiring) = {
-        let registry = found
-            .lock()
-            .map_err(|_| Error::Poisoned("arena registry mutex".into()))?;
-        let mut live = Vec::new();
-        let mut retiring = false;
-        for entry in registry.iter().filter(|entry| entry.device == device) {
-            if let Some(arena) = entry.owner.upgrade() {
-                live.push(arena);
-            } else {
-                retiring = true;
-            }
-        }
-        (live, retiring)
-    }; // Owning leases can only be destroyed after the registry guard releases.
-    if retiring {
-        return Err(Error::Busy);
-    }
-    live.sort_by_key(|arena| arena.id());
-    Ok(live)
-}
+fn arenas(device:i32) -> Result<Vec<Arc<Arena>>> { Ok(crate::arena_inventory(device)?.arenas) }
 
-/// Called with capture exclusion at arena/region publication or logical retirement.
+/// Called under capture exclusion, or the registration mutex for an accepted final
+/// last-Arc handoff that no live owning snapshot can concurrently reference.
 /// An epoch can conservatively advance before a failed publication; it grants no bytes.
 pub(crate) fn inventory_changed(device: i32) -> Result<()> {
     registry()?.entry(device).or_default().advance(true)

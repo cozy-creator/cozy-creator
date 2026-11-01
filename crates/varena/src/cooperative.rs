@@ -1,6 +1,6 @@
 //! Native GPU cooperation. Peer is the explicit publication/service mechanism; Owner runs
 //! that mechanism and sampled pressure on the library-owned thread. No daemon or hook.
-use crate::{Arena, Completion, Contents, ReclaimReason, ledger, working};
+use crate::{Completion, Contents, ReclaimReason, ledger, working};
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, atomic::Ordering};
 
@@ -70,9 +70,9 @@ impl Drop for Shrink {
 struct State {
     // Host-only handles cancel before the retained GPU leases are dropped.
     shrink: Option<Shrink>,
-    // Retain observed arenas for this participant's explicit lifetime. A temporary snapshot
-    // Arc must never become the final owner and run Arena::drop/context sync during service.
-    arenas: Vec<Arc<Arena>>,
+    // Explicit persistent observer roots can detach without ending this participant.
+    // Host driver-counter history survives detach; actual snapshot owners stay transient.
+    arenas: Vec<Arc<crate::arena_retirement::Observation>>,
     last_use: u64,
     progress: Option<(u64, u64)>,
     activity: ledger::Activity,
@@ -232,9 +232,10 @@ impl Peer {
     /// Actual host-monotonic last-use time supplied by the owner. Do not advance it merely
     /// because a periodic publication runs. No shared IPC is added to alloc/free.
     pub fn publish(&self, last_use: u64) -> Result<Accounting> {
+        let inventory=self.inventory()?;
         let mut state = self.lock()?;
         state.last_use = state.last_use.max(last_use);
-        let reading = self.native_tick(&mut state, 0, 0, &mut 0)?;
+        let reading = self.native_tick(&mut state, &inventory, 0, 0, &mut 0)?;
         self.participant.publish_policy(reading.physical, reading.reclaimable, state.last_use,
             Some((state.activity, crate::cache_owner::requestable(self.device)? != 0)))?;
         Ok(reading)
@@ -302,6 +303,7 @@ impl Peer {
         if crate::cache_owner::is_dispatcher_thread(self.device)? {
             return Err(crate::Error::Busy.into());
         }
+        let inventory=self.inventory()?;
         let mut state = self.lock()?;
         if let Some(shrink) = state.shrink.as_ref().filter(|shrink| shrink.queueing) {
             return Ok(Service { round: Some(shrink.round), deferred: true, ..Service::default() });
@@ -357,7 +359,7 @@ impl Peer {
             .map(|request| request.facts().map(|facts| facts.action_epoch)).transpose()?.unwrap_or(0);
         let mut released = 0;
         let outcome =
-            self.native_tick(&mut state, wanted as usize, maximum as usize, &mut released);
+            self.native_tick(&mut state, &inventory, wanted as usize, maximum as usize, &mut released);
         // Preserve each successful physical effect even if the subsequent snapshot or
         // publication fails; a retry must not spend this donor snapshot a second time.
         result.released = released as u64;
@@ -449,50 +451,48 @@ impl Peer {
             + state
                 .arenas
                 .iter()
-                .map(|arena| arena.driver.activity_calls())
+                .map(|arena| arena.activity_calls())
                 .sum::<u64>())
     }
 
     fn memory_calls(&self) -> Result<u64> {
         let state = self.lock()?;
         Ok(working::peer::memory_calls(self.device)? + state.arenas.iter()
-            .map(|arena| arena.driver.calls().0).sum::<u64>())
+            .map(|arena| arena.memory_calls()).sum::<u64>())
     }
 
     fn observation<T>(&self, operation: impl FnOnce() -> T) -> Result<T> {
         self.check()?;
         let captures = crate::capture_counts()?;
         crate::ensure_recovery_allowed(&captures, self.device)?;
+        if captures.get(&self.device).is_some_and(|entry| entry.retirements.load(Ordering::Acquire)!=0) {
+            return Err(crate::Error::Busy.into());
+        }
         Ok(operation())
+    }
+
+    fn inventory(&self) -> Result<crate::ArenaInventory> {
+        let inventory=crate::arena_inventory(self.device)?;
+        {
+            let mut state=self.lock()?;
+            crate::observe_inventory(&inventory,&mut state.arenas)?;
+        }
+        Ok(inventory)
     }
 
     fn native_tick(
         &self,
-        state: &mut State,
+        _state: &mut State,
+        inventory: &crate::ArenaInventory,
         wanted: usize,
         maximum: usize,
         released: &mut usize,
     ) -> crate::Result<Accounting> {
         let captures = crate::capture_counts()?;
         let refresh = crate::ensure_recovery_allowed(&captures, self.device).is_ok();
-        // Filter before upgrading: never acquire/drop an unrelated device's last Arc here.
-        if let Some(registry) = crate::ARENAS.get() {
-            for entry in registry
-                .lock()
-                .map_err(|_| crate::Error::Poisoned("arena registry mutex".into()))?
-                .iter()
-                .filter(|entry| entry.device == self.device)
-            {
-                if !state.arenas.iter().any(|arena| arena.id() == entry.id)
-                    && let Some(arena) = entry.owner.upgrade()
-                {
-                    state.arenas.push(arena);
-                }
-            }
-        }
         if refresh && wanted != 0 {
             working::peer::release(self.device, wanted, maximum, released)?;
-            for arena in &state.arenas {
+            for arena in &inventory.arenas {
                 if *released >= wanted {
                     break;
                 }
@@ -502,12 +502,12 @@ impl Peer {
         }
         let reading = working::peer::with_snapshot(self.device, refresh, |mut reading| {
             // Lock order: capture registry → working state → arena states in registration order.
-            let mut states = state
+            let mut states = inventory
                 .arenas
                 .iter()
                 .map(|arena| arena.lock())
                 .collect::<crate::Result<Vec<_>>>()?;
-            for (arena, held) in state.arenas.iter().zip(&mut states) {
+            for (arena, held) in inventory.arenas.iter().zip(&mut states) {
                 let _context = refresh
                     .then(|| arena.driver.enter())
                     .transpose()
@@ -545,6 +545,11 @@ impl Peer {
                     }
                 }
             }
+            // Accepted final resources stay physically accounted but provide neither
+            // reclaimable nor pending-release credit to this donor's capped service.
+            for metadata in &inventory.finalizing {
+                reading.physical.weights.pending += metadata.physical.load(Ordering::Acquire) as u64;
+            }
             let physical = reading
                 .physical
                 .total()
@@ -554,9 +559,9 @@ impl Peer {
                 != (room.pages.load(Ordering::Acquire) + room.working.load(Ordering::Acquire))
                     as u64
             {
-                // An arena already in its final Drop cannot be upgraded from Weak; its
-                // teardown waits for this capture guard. Publish nothing, let that owner
-                // finish outside this tick, and retry from a fresh observation.
+                // Finalizing jobs update exact host counters only after real release.
+                // A partial counter observation is not a coherent capacity publication;
+                // retry a fresh snapshot rather than crediting any missing bytes.
                 return Err(crate::Error::Busy);
             }
             Ok(reading)
