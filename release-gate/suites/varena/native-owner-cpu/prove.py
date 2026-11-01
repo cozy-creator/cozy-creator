@@ -24,7 +24,8 @@ shutil.copytree(args.source / 'crates/varena/src', fixture / 'src')
 sources = {str(p.relative_to(args.source)): hashlib.sha256(p.read_bytes()).hexdigest()
            for p in (args.source / 'crates/varena/src').rglob('*.rs')}
 workspace = tomllib.loads((args.source / 'Cargo.toml').read_text())['workspace']
-package = tomllib.loads((args.source / 'crates/varena/Cargo.toml').read_text())['package']
+crate = tomllib.loads((args.source / 'crates/varena/Cargo.toml').read_text())
+package = crate['package']
 
 def toml(value):
     if isinstance(value, dict):
@@ -35,6 +36,9 @@ manifest = ['[package]', 'name = "varena"', f'version = "{package["version"]}"',
             f'edition = "{workspace["package"]["edition"]}"', '[dependencies]']
 for name in ('libloading', 'thiserror', 'libc', 'nvml-wrapper'):
     manifest.append(f'{name} = {toml(workspace["dependencies"][name])}')
+manifest.append('[features]')
+for name, value in crate.get('features', {}).items():
+    manifest.append(f'{name} = {toml(value)}')
 (fixture / 'Cargo.toml').write_text('\n'.join(manifest) + '\n')
 shutil.copy2(args.source / 'Cargo.lock', fixture / 'Cargo.lock')
 harness = Path(__file__).with_name('lifecycle.rs')

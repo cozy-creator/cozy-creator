@@ -130,7 +130,101 @@ pub fn lifecycle_proof() -> String {
     let budget_ms = recovery_wait_proof();
     recovery_lifetimes_proof();
     pressure_lifetimes_proof();
-    format!("{{\"passed\":true,\"native_thread_cancellations\":{},\"admitted_vs_queued\":true,\"drop_did_not_join\":true,\"poison_cancellation\":true,\"permanent_fault_close_returned\":true,\"fault_not_marked_retired\":true,\"fork_rejected_before_inherited_mutex\":true,\"coordination_budget_ms\":{},\"final_retry_instruction\":true,\"deadline_not_reset\":true,\"control_remained_active_after_budget\":true,\"capture_mutex_free_while_waiting\":true,\"local_waiter_drop_preserves_other_demand\":true,\"withdrawal_latched_across_new_demand\":true,\"stopped_control_cancels_recovery\":true,\"pressure_withdrawal_preserves_allocation_owner\":true,\"queued_request_boundary_cancels\":true,\"no_nvml_or_cuda_loaded\":true,\"gpu_qualified\":false}}", rounds * 2, budget_ms)
+    cache_callback_lifetimes_proof();
+    cache_service_epoch_proof();
+    format!("{{\"passed\":true,\"native_thread_cancellations\":{},\"admitted_vs_queued\":true,\"drop_did_not_join\":true,\"poison_cancellation\":true,\"permanent_fault_close_returned\":true,\"fault_not_marked_retired\":true,\"fork_rejected_before_inherited_mutex\":true,\"coordination_budget_ms\":{},\"final_retry_instruction\":true,\"deadline_not_reset\":true,\"control_remained_active_after_budget\":true,\"capture_mutex_free_while_waiting\":true,\"local_waiter_drop_preserves_other_demand\":true,\"withdrawal_latched_across_new_demand\":true,\"stopped_control_cancels_recovery\":true,\"pressure_withdrawal_preserves_allocation_owner\":true,\"queued_request_boundary_cancels\":true,\"no_nvml_or_cuda_loaded\":true,\"real_callback_cancellation_returned_busy\":true,\"cooperation_close_refused_dispatcher_self_wait\":true,\"callback_return_granted_no_bytes\":true,\"repeated_queue_did_not_advance_owner\":true,\"stale_service_epoch_did_not_advance_owner\":true,\"last_callback_required_native_service\":true,\"gpu_qualified\":false}}", rounds * 2, budget_ms)
+}
+
+fn cache_service_epoch_proof() {
+    use crate::cache_owner::{CacheOwner,CallbackResult,Cause,RequestKey,next_generation,request_shrink};
+    let device=195;
+    let (first,first_done)=mpsc::sync_channel(1);
+    let (second,second_done)=mpsc::sync_channel(1);
+    let a=CacheOwner::new(device,move |wanted| {first.send(wanted).unwrap();Ok(CallbackResult::Declined)}).unwrap();
+    let b=CacheOwner::new(device,move |wanted| {second.send(wanted).unwrap();Ok(CallbackResult::Returned)}).unwrap();
+    let key=RequestKey{cause:Cause::Cooperative,generation:next_generation().unwrap()};
+    let request=request_shrink(device,key,32).unwrap().unwrap();
+    assert_eq!(first_done.recv_timeout(Duration::from_secs(2)).unwrap(),32);
+    let wait_epoch=|epoch| {
+        let limit=Instant::now()+Duration::from_secs(2);
+        loop {
+            let facts=request.facts().unwrap();
+            if facts.action_epoch>=epoch {return facts;}
+            assert!(Instant::now()<limit);
+            std::thread::yield_now();
+        }
+    };
+    assert!(!wait_epoch(1).finished);
+    // Actual worker observation intervals, not a process-death inference. Repeating the
+    // queue request or supplying a pass that predates the action cannot dispatch B.
+    request_shrink(device,key,32).unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(matches!(second_done.try_recv(),Err(mpsc::TryRecvError::Empty)));
+    request.service_progress(0,0).unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(matches!(second_done.try_recv(),Err(mpsc::TryRecvError::Empty)));
+    assert!(request.service_progress(33,1).is_err());
+    assert!(request.service_progress(0,2).is_err());
+    request.service_progress(0,1).unwrap();
+    assert_eq!(second_done.recv_timeout(Duration::from_secs(2)).unwrap(),32);
+    let pending=wait_epoch(2);
+    assert!(!pending.finished && pending.observed_release_bytes==0 && pending.serviced_bytes==0);
+    request.service_progress(0,1).unwrap();
+    assert!(!request.facts().unwrap().finished);
+    request.service_progress(0,2).unwrap();
+    let complete=request.facts().unwrap();
+    assert!(complete.finished && complete.returned==2 && complete.declined==1);
+    assert_eq!(complete.serviced_bytes,0);
+    a.close().unwrap();b.close().unwrap();
+}
+
+fn cache_callback_lifetimes_proof() {
+    use crate::cache_owner::{CacheOwner, CallbackResult, Cause, RequestKey, next_generation, request_shrink};
+    let device = 194; // Real host metadata only; no CUDA device is opened or substituted.
+    let control = proof_control();
+    let callback_owner = Owner { device, id: ledger::RowId {slot:0,incarnation:1}, control: Arc::clone(&control) };
+    let (entered, started) = mpsc::sync_channel(1);
+    let (release, held) = mpsc::sync_channel(1);
+    let (closed, close_result) = mpsc::sync_channel(1);
+    let cache = CacheOwner::new(device, move |_| {
+        assert!(crate::cache_owner::is_dispatcher_thread(device)?);
+        entered.send(()).unwrap();
+        held.recv_timeout(Duration::from_secs(5)).unwrap();
+        // The metadata-only cooperation handle must refuse a self-wait on this actual
+        // native callback thread; the fixture does not fabricate a Peer or GPU release.
+        let busy = matches!(callback_owner.close(), Err(super::Error::Native(crate::Error::Busy)));
+        closed.send(busy).unwrap();
+        Ok(CallbackResult::Returned)
+    }).unwrap();
+    let key = RequestKey {cause:Cause::Cooperative,generation:next_generation().unwrap()};
+    let request = request_shrink(device,key,32).unwrap().unwrap();
+    started.recv_timeout(Duration::from_secs(2)).unwrap();
+    let mut state = super::State::default();
+    state.shrink = Some(super::Shrink {round:77,key,request:Some(request),queueing:false,start_completed:0,target:32});
+    let (sent, returned) = mpsc::sync_channel(1);
+    let cancellation = std::thread::spawn(move || {
+        let busy = matches!(state.cancel_shrink(), Err(super::Error::Native(crate::Error::Busy)));
+        sent.send((state,busy)).unwrap();
+    });
+    let (mut state,busy) = returned.recv_timeout(Duration::from_secs(2)).unwrap();
+    cancellation.join().unwrap();
+    assert!(busy, "cancellation must refuse, not wait for the blocked callback");
+    let facts = state.shrink.as_ref().unwrap().request.as_ref().unwrap().facts().unwrap();
+    assert!(facts.cancelled && facts.running && facts.observed_release_bytes == 0);
+    release.send(()).unwrap();
+    assert!(close_result.recv_timeout(Duration::from_secs(2)).unwrap());
+    let limit = Instant::now()+Duration::from_secs(2);
+    while cache.facts().unwrap().running {
+        assert!(Instant::now()<limit);
+        std::thread::yield_now();
+    }
+    state.cancel_shrink().unwrap();
+    assert!(state.shrink.is_none());
+    cache.close().unwrap();
+    assert!(cache.facts().unwrap().retired);
+    assert!(control.lock().unwrap().stopping);
+    let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
+    assert!(!maps.contains("libcuda.so") && !maps.contains("libnvidia-ml.so"));
 }
 
 fn pressure_lifetimes_proof() {
@@ -149,7 +243,7 @@ fn pressure_lifetimes_proof() {
     let (done, receive) = mpsc::sync_channel(1);
     let caller = std::thread::spawn(move || {
         let mut recovery = crate::Recovery::default();
-        done.send(recovery.next(device, 2 << 20).is_err()).unwrap();
+        done.send(recovery.next(device, 2 << 20, true).is_err()).unwrap();
     });
     let limit = Instant::now() + Duration::from_secs(1);
     loop {
@@ -193,10 +287,10 @@ fn recovery_wait_proof() -> u128 {
     let caller = std::thread::spawn(move || {
         let mut recovery = crate::Recovery::default();
         let started = Instant::now();
-        assert!(recovery.next(device, 2 << 20).unwrap());
+        assert!(recovery.next(device, 2 << 20, true).unwrap());
         let elapsed = started.elapsed();
         let deadline = recovery.deadline;
-        assert!(!recovery.next(device, 2 << 20).unwrap());
+        assert!(!recovery.next(device, 2 << 20, true).unwrap());
         assert_eq!(recovery.deadline, deadline);
         done.send(elapsed).unwrap();
     });
@@ -255,7 +349,7 @@ fn recovery_lifetimes_proof() {
     let (done, result) = mpsc::sync_channel(1);
     let caller = std::thread::spawn(move || {
         let mut recovery = crate::Recovery::default();
-        done.send(recovery.next(device, 2 << 20).is_err()).unwrap();
+        done.send(recovery.next(device, 2 << 20, true).is_err()).unwrap();
     });
     let limit = Instant::now() + Duration::from_secs(1);
     while control.lock().unwrap().demands.is_empty() {

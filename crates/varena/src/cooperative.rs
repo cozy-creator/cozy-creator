@@ -45,15 +45,67 @@ pub struct Service {
     pub pending: u64,
     pub deferred: bool,
     pub accounting: Option<Accounting>,
+    pub owner_action: bool,
+    pub owner_pending: bool,
+    pub owner_returned: u64,
+    pub owner_declined: u64,
+    pub owner_failed: u64,
+}
+
+struct Shrink {
+    round: u64,
+    key: crate::cache_owner::RequestKey,
+    request: Option<crate::cache_owner::ShrinkRequest>,
+    queueing: bool,
+    start_completed: u64,
+    target: usize,
+}
+impl Drop for Shrink {
+    fn drop(&mut self) {
+        if let Some(request) = &self.request { let _ = request.cancel(); }
+    }
 }
 
 #[derive(Default)]
 struct State {
+    // Host-only handles cancel before the retained GPU leases are dropped.
+    shrink: Option<Shrink>,
     // Retain observed arenas for this participant's explicit lifetime. A temporary snapshot
     // Arc must never become the final owner and run Arena::drop/context sync during service.
     arenas: Vec<Arc<Arena>>,
     last_use: u64,
     progress: Option<(u64, u64)>,
+    activity: ledger::Activity,
+}
+
+impl State {
+    fn cancel_shrink(&mut self) -> Result<()> {
+        if let Some(shrink) = &self.shrink {
+            if shrink.queueing { return Err(crate::Error::Busy.into()); }
+            if let Some(request) = &shrink.request {
+                request.cancel()?;
+                if request.facts()?.running { return Err(crate::Error::Busy.into()); }
+            }
+        }
+        self.shrink = None;
+        Ok(())
+    }
+}
+
+struct QueueAdmission<'a> {
+    peer: &'a Peer,
+    key: crate::cache_owner::RequestKey,
+    armed: bool,
+}
+impl Drop for QueueAdmission<'_> {
+    fn drop(&mut self) {
+        if self.armed && self.peer.pid == std::process::id() {
+            let mut state = self.peer.state.lock().unwrap_or_else(|error| error.into_inner());
+            if let Some(shrink) = state.shrink.as_mut().filter(|shrink| shrink.key == self.key) {
+                shrink.queueing = false;
+            }
+        }
+    }
 }
 
 /// One explicit participant for a process/device. The typed descriptor is verified against
@@ -81,6 +133,8 @@ impl Peer {
     /// Acquire retirement exclusion without destroying anything. On refusal the complete
     /// owner is returned unchanged. This lets an adapter unlock before actual final drops.
     pub fn retire(self) -> std::result::Result<Retirement, (Self, Error)> {
+        let ready = self.lock().and_then(|mut state| state.cancel_shrink());
+        if let Err(error) = ready { return Err((self, error)); }
         match crate::enter_retirement(self.device) {
             Ok(guard) => Ok(Retirement {
                 _owner: self,
@@ -163,8 +217,16 @@ impl Peer {
         // Serialize with the complete donor pass, including its captured assignment,
         // physical effects and acknowledgement. Once Dedicated returns, an earlier
         // Shared snapshot cannot start another release on this Peer.
-        let _state = self.lock()?;
+        let mut state = self.lock()?;
+        if sharing == ledger::Sharing::Dedicated { state.cancel_shrink()?; }
         Ok(self.participant.configure(sharing, priority)?)
+    }
+
+    /// Host lifecycle only. Publication carries the latest category; this never queries
+    /// CUDA or waits for shared metadata on the caller's boundary.
+    pub fn set_activity(&self, activity: ledger::Activity) -> Result<()> {
+        self.lock()?.activity = activity;
+        Ok(())
     }
 
     /// Actual host-monotonic last-use time supplied by the owner. Do not advance it merely
@@ -173,8 +235,8 @@ impl Peer {
         let mut state = self.lock()?;
         state.last_use = state.last_use.max(last_use);
         let reading = self.native_tick(&mut state, 0, 0, &mut 0)?;
-        self.participant
-            .publish(reading.physical, reading.reclaimable, state.last_use)?;
+        self.participant.publish_policy(reading.physical, reading.reclaimable, state.last_use,
+            Some((state.activity, crate::cache_owner::requestable(self.device)? != 0)))?;
         Ok(reading)
     }
 
@@ -218,6 +280,11 @@ impl Peer {
         Ok(self.participant.ask_device(sample_generation, wanted)?)
     }
 
+    pub fn ask_idle(&self, sample_generation: u64) -> Result<ledger::Round> {
+        self.check()?;
+        Ok(self.participant.ask_idle(sample_generation)?)
+    }
+
     pub fn withdraw(&self, round: u64) -> Result<bool> {
         self.check()?;
         Ok(self.participant.withdraw(round)?)
@@ -231,29 +298,43 @@ impl Peer {
     /// One finite no-wait donor pass. Copies the assignment before CUDA; publishes and acks
     /// only after native context/capture/allocator guards are gone. An ack is never a grant.
     pub fn service(&self) -> Result<Service> {
+        self.check()?;
+        if crate::cache_owner::is_dispatcher_thread(self.device)? {
+            return Err(crate::Error::Busy.into());
+        }
         let mut state = self.lock()?;
+        if let Some(shrink) = state.shrink.as_ref().filter(|shrink| shrink.queueing) {
+            return Ok(Service { round: Some(shrink.round), deferred: true, ..Service::default() });
+        }
         self.ledger.reap_dead()?;
         let table = self.ledger.snapshot()?;
         let Some(round) = table.round.filter(|round| !round.aborted) else {
+            state.cancel_shrink()?;
             return Ok(Service::default());
         };
+        if state.shrink.as_ref().is_some_and(|shrink| shrink.round != round.generation) {
+            state.cancel_shrink()?;
+        }
         let Some(donor) = round
             .donations
             .iter()
             .find(|donor| donor.owner == self.id())
         else {
+            state.cancel_shrink()?;
             return Ok(Service::default());
         };
         let mut result = Service {
             round: Some(round.generation),
             completed: donor.completed,
             pending: donor.pending,
+            owner_action: donor.action,
             ..Service::default()
         };
         if matches!(
             donor.answer,
-            ledger::Answer::Complete | ledger::Answer::Refused | ledger::Answer::OwnerGone
+            ledger::Answer::Unasked | ledger::Answer::Complete | ledger::Answer::Refused | ledger::Answer::OwnerGone
         ) {
+            state.cancel_shrink()?;
             return Ok(result);
         }
         let completed = state
@@ -262,15 +343,18 @@ impl Peer {
             .map_or(donor.completed, |(_, done)| done.max(donor.completed));
         if table.rows.iter().find(|row| row.id == self.id())
             .is_some_and(|row| row.sharing == ledger::Sharing::Dedicated) {
+            state.cancel_shrink()?;
             // Lifecycle configuration applies before any further native release. Preserve
             // prior actual progress, but an old assignment is not ongoing Shared consent.
-            self.participant.acknowledge(round.generation, completed, 0, ledger::Answer::Refused)?;
+            self.participant.acknowledge_stage(round.generation, donor.action, completed, 0, ledger::Answer::Refused)?;
             result.completed = completed;
             result.pending = 0;
             return Ok(result);
         }
         let maximum = donor.held_at_ask.saturating_sub(completed);
         let wanted = donor.requested.saturating_sub(completed);
+        let observed_action = state.shrink.as_ref().and_then(|shrink| shrink.request.as_ref())
+            .map(|request| request.facts().map(|facts| facts.action_epoch)).transpose()?.unwrap_or(0);
         let mut released = 0;
         let outcome =
             self.native_tick(&mut state, wanted as usize, maximum as usize, &mut released);
@@ -282,8 +366,8 @@ impl Peer {
         let reading = outcome?;
         result.deferred = !reading.refreshed;
         result.accounting = Some(reading);
-        self.participant
-            .publish(reading.physical, reading.reclaimable, state.last_use)?;
+        self.participant.publish_policy(reading.physical, reading.reclaimable, state.last_use,
+            Some((state.activity, crate::cache_owner::requestable(self.device)? != 0)))?;
         if result.deferred {
             return Ok(result);
         }
@@ -294,15 +378,66 @@ impl Peer {
                 .pending_release
                 .min(donor.held_at_ask.saturating_sub(result.completed))
         };
+        if donor.action && result.completed < donor.requested {
+            let key = match &state.shrink {
+                Some(shrink) => shrink.key,
+                None => {
+                    let key = crate::cache_owner::RequestKey {
+                        cause: match round.kind {
+                            ledger::AskKind::Allocation => crate::cache_owner::Cause::Cooperative,
+                            ledger::AskKind::DevicePressure | ledger::AskKind::AllIdle => crate::cache_owner::Cause::Foreign,
+                        },
+                        generation: crate::cache_owner::next_generation()?,
+                    };
+                    state.shrink = Some(Shrink { round: round.generation, key, request: None, queueing: false,
+                        start_completed: result.completed, target: donor.requested.saturating_sub(result.completed) as usize });
+                    key
+                }
+            };
+            state.shrink.as_mut().expect("associated round").queueing = true;
+            let shrink = state.shrink.as_ref().expect("associated round");
+            let existing = shrink.request.clone();
+            let target = shrink.target;
+            let serviced = result.completed.saturating_sub(shrink.start_completed).min(target as u64) as usize;
+            drop(state);
+            // Queue only after the capped native pass and outside Peer, capture, allocator
+            // and ledger guards. The distinct cache dispatcher owns callback/GIL execution.
+            let mut admission = QueueAdmission { peer: self, key, armed: true };
+            let queued = match existing {
+                Some(request) => request.service_progress(serviced, observed_action).map(|()| Some(request)),
+                None => crate::cache_owner::request_shrink(self.device, key, target),
+            };
+            state = self.lock()?;
+            admission.armed = false;
+            let shrink = state.shrink.as_mut().filter(|shrink| shrink.key == key)
+                .ok_or(crate::Error::Busy)?;
+            shrink.queueing = false;
+            // A closing owner can make requestable zero while its admitted callback is
+            // still running. Retain the old handle so Dedicated/retirement can see it.
+            if let Some(request) = queued? { shrink.request = Some(request); }
+            if let Some(request) = &shrink.request {
+                let facts = request.facts()?;
+                result.owner_pending = facts.running || (!facts.cancelled && !facts.finished);
+                result.owner_returned = facts.returned;
+                result.owner_declined = facts.declined;
+                result.owner_failed = facts.failed;
+                // observed_release_bytes is global process progress, never donor credit.
+            }
+        }
         let answer = if result.completed >= donor.requested {
             ledger::Answer::Complete
-        } else if result.pending != 0 {
+        } else if result.pending != 0 || result.owner_pending {
             ledger::Answer::Pending
         } else {
             ledger::Answer::Refused
         };
+        if answer != ledger::Answer::Pending {
+            if let Some(request) = state.shrink.as_ref().and_then(|shrink| shrink.request.as_ref()) {
+                request.cancel()?;
+            }
+        }
         self.participant
-            .acknowledge(round.generation, result.completed, result.pending, answer)?;
+            .acknowledge_stage(round.generation, donor.action, result.completed, result.pending, answer)?;
         Ok(result)
     }
 

@@ -34,6 +34,7 @@ pub struct Facts {
     pub new_processes: Vec<u32>,
     pub process_signals: u64,
     pub process_signals_served: u64,
+    pub process_signals_expired: u64,
     pub suppressed: bool,
     pub round: Option<u64>,
     pub completed: u64,
@@ -53,7 +54,9 @@ pub(super) struct Pressure {
     host_pids: bool,
     previous: Option<BTreeMap<u32, u64>>,
     pending_processes: BTreeSet<u32>,
+    signal_deadline: Option<std::time::Instant>,
     requests: usize,
+    activity_known: bool,
     window: Option<Window>,
     last: Option<(u64, u64)>,
     largest_growth: Option<u64>,
@@ -93,7 +96,9 @@ impl Pressure {
             host_pids: initial_pid_namespace(),
             previous: None,
             pending_processes: BTreeSet::new(),
+            signal_deadline: None,
             requests: 0,
+            activity_known: false,
             window: None,
             last: None,
             largest_growth: None,
@@ -167,12 +172,14 @@ impl Pressure {
                     {
                         if self.pending_processes.insert(pid) {
                             self.facts.process_signals += 1;
+                            self.signal_deadline.get_or_insert_with(|| std::time::Instant::now() + crate::RECOVERY_BUDGET);
                         }
                     }
                 }
             }
             self.pending_processes
                 .retain(|pid| foreign.get(pid).is_some_and(|bytes| *bytes >= NEW_PROCESS));
+            if self.pending_processes.is_empty() { self.signal_deadline = None; }
             self.previous = Some(foreign);
             self.facts.attribution = Some("nvml_host_pid_sampled");
             if before == after && reading.refreshed {
@@ -197,6 +204,7 @@ impl Pressure {
     pub fn boundary(&mut self, kind: Boundary) -> crate::Result<()> {
         match kind {
             Boundary::RequestBegin => {
+                self.activity_known = true;
                 self.requests = self
                     .requests
                     .checked_add(1)
@@ -257,9 +265,15 @@ impl Pressure {
         }
     }
 
-    pub fn wanted(&self, reclaimable: u64) -> u64 {
+    pub fn activity(&self) -> ledger::Activity {
+        if !self.activity_known { ledger::Activity::Unknown }
+        else if self.requests != 0 { ledger::Activity::Active }
+        else { ledger::Activity::Idle }
+    }
+
+    pub fn wanted(&self) -> u64 {
         if !self.pending_processes.is_empty() {
-            return reclaimable;
+            return self.facts.total.unwrap_or(0);
         }
         match (self.facts.free, self.facts.reserve) {
             (Some(free), Some(reserve)) if free < reserve => {
@@ -285,7 +299,19 @@ impl Pressure {
         self.facts.process_signals_served += self.pending_processes.len() as u64;
         self.pending_processes.clear();
         self.facts.new_processes.clear();
+        self.signal_deadline = None;
     }
+
+    pub fn expire_process_signals(&mut self) {
+        if self.signal_deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+            self.facts.process_signals_expired += self.pending_processes.len() as u64;
+            self.pending_processes.clear();
+            self.facts.new_processes.clear();
+            self.signal_deadline = None;
+        }
+    }
+
+    pub fn signal_deadline(&self) -> Option<std::time::Instant> { self.signal_deadline }
 }
 
 /// No CUDA/NVML initialization. Unavailable or nested namespace identity stays unknown.

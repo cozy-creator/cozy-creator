@@ -71,10 +71,13 @@ fn row_id(value: ledger::RowId) -> Value {
 
 fn round(value: ledger::Round) -> Value {
     json!({"generation":value.generation,"sample_generation":value.sample_generation,
+        "kind":format!("{:?}",value.kind),
         "requester":row_id(value.requester),"requested":value.requested,"aborted":value.aborted,
         "finished":value.finished(),"completed":value.completed().expect("bounded donations"),
         "donations":value.donations.iter().map(|d|json!({"owner":row_id(d.owner),
             "requested":d.requested,"held_at_ask":d.held_at_ask,"completed":d.completed,
+            "offered_at_ask":d.offered_at_ask,"requestable":d.requestable,
+            "owner_action":d.action,
             "pending":d.pending,"answer":format!("{:?}",d.answer)})).collect::<Vec<_>>()})
 }
 
@@ -86,12 +89,15 @@ fn sample(value: ledger::Sample) -> Value {
 
 fn service(value: cooperative::Service) -> Value {
     json!({"round":value.round,"released":value.released,"completed":value.completed,
+        "owner_action":value.owner_action,"owner_pending":value.owner_pending,
+        "owner_returned":value.owner_returned,"owner_declined":value.owner_declined,"owner_failed":value.owner_failed,
         "pending":value.pending,"deferred":value.deferred,
         "accounting":value.accounting.map(accounting)})
 }
 
 fn snapshot(owner: ledger::RowId, value: ledger::Snapshot) -> Value {
     json!({"owner":row_id(owner),"generation":value.generation,
+        "protocol_version":value.protocol_version,
         "capacity_epoch":value.capacity_epoch,"backing_device":value.backing_device,
         "backing_inode":value.backing_inode,"scope":{"boot":value.scope.boot,
             "uid":value.scope.uid,"user_namespace":value.scope.user_namespace,
@@ -99,6 +105,7 @@ fn snapshot(owner: ledger::RowId, value: ledger::Snapshot) -> Value {
         "sample":value.sample.map(sample),"round":value.round.map(round),
         "rows":value.rows.into_iter().map(|r|json!({"id":row_id(r.id),"pid":r.pid,
             "start_ticks":r.start_ticks,"priority":r.priority,"sharing":format!("{:?}",r.sharing),
+            "activity":format!("{:?}",r.activity),"requestable":r.requestable,
             "last_use":r.last_use,"want":r.want,"physical":physical(r.physical),"reclaimable":r.reclaimable})).collect::<Vec<_>>()})
 }
 
@@ -305,6 +312,7 @@ impl PyOwner {
         let pressure = &facts.pressure;
         Ok(
             json!({"active":facts.active,"stopping":facts.stopping,"retired":facts.retired,
+                "activity":format!("{:?}",facts.activity),
                 "pressure":{"samples":pressure.samples,"observed_at":pressure.observed_at,
                     "free":pressure.free,"total":pressure.total,"own_opaque":pressure.own_opaque,
                     "foreign":pressure.foreign,"attribution":pressure.attribution,
@@ -312,6 +320,7 @@ impl PyOwner {
                     "local_reserve":pressure.local_reserve,"process_signals":pressure.process_signals,
                     "measurement":pressure.measurement,
                     "process_signals_served":pressure.process_signals_served,
+                    "process_signals_expired":pressure.process_signals_expired,
                     "rejected_requests":pressure.rejected_requests,"new_processes":pressure.new_processes,
                     "suppressed":pressure.suppressed,"round":pressure.round,"completed":pressure.completed,
                     "budget_exhausted":pressure.budget_exhausted},

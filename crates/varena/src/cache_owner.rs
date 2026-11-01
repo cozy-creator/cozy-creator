@@ -153,6 +153,11 @@ pub struct RequestFacts {
     pub cancelled: bool,
     /// Actual global physical releases observed during this request, never owner attribution.
     pub observed_release_bytes: u64,
+    pub requested_bytes: usize,
+    /// Cumulative capped donor service, supplied only by the cooperative adapter.
+    pub serviced_bytes: usize,
+    /// Completed owner actions that a native service pass must observe before advancing.
+    pub action_epoch: u64,
 }
 
 struct JobState {
@@ -163,6 +168,7 @@ struct JobState {
     waiting_service: bool,
     cancelled: bool,
     collect_pending: bool,
+    serviced: usize,
 }
 struct Job {
     key: RequestKey,
@@ -412,7 +418,15 @@ pub fn requestable(device: i32) -> Result<usize> {
     Ok(control(device)?.map_or(0, |control| control.requestable.load(Ordering::Acquire)))
 }
 
+/// Host metadata only: synchronous lifecycle operations must not await this dispatcher
+/// from one of its own callbacks. No callback/Arena/Driver owner leaves the worker.
+pub(crate) fn is_dispatcher_thread(device: i32) -> Result<bool> {
+    let Some(control) = control(device)? else { return Ok(false); };
+    Ok(control.lock()?.worker == Some(std::thread::current().id()))
+}
+
 /// A caller may observe this handle; it owns host data only and grants no capacity.
+#[derive(Clone)]
 pub struct ShrinkRequest {
     control: Arc<Control>,
     job: Arc<Job>,
@@ -428,6 +442,8 @@ impl ShrinkRequest {
     pub fn facts(&self) -> Result<RequestFacts> {
         self.check()?;
         let mut job = self.job.lock()?;
+        job.facts.requested_bytes = job.wanted;
+        job.facts.serviced_bytes = job.serviced;
         job.facts.observed_release_bytes = self
             .control
             .room
@@ -445,11 +461,32 @@ impl ShrinkRequest {
         self.control.changed.notify_all();
         Ok(())
     }
+
+    /// Report an actual capped pass for this exact request. The action epoch must have
+    /// been read BEFORE that pass: a callback finishing during it needs a later pass.
+    /// Global process releases never settle a Cooperative/Foreign donor request.
+    pub fn service_progress(&self, completed: usize, observed_action: u64) -> Result<()> {
+        self.check()?;
+        if self.job.key.cause == Cause::Allocation {
+            return Err(Error::Invalid("allocation requests do not take donor service progress"));
+        }
+        let mut job = self.job.lock()?;
+        if completed < job.serviced || completed > job.wanted || observed_action > job.facts.action_epoch {
+            return Err(Error::Invalid("invalid cumulative donor service progress"));
+        }
+        job.serviced = completed;
+        if observed_action == job.facts.action_epoch { job.waiting_service = false; }
+        if !job.facts.running && !job.waiting_service && job.owners.is_empty() {
+            job.facts.finished = true;
+        }
+        self.control.changed.notify_all();
+        Ok(())
+    }
 }
 
 /// Queue only. Repeated observations coalesce by cause/generation, never add promised bytes.
-/// Cooperative/foreign callers repeat this only after their ordinary capped service pass;
-/// that permits the next owner action without crediting the previous callback's return.
+/// Cooperative/foreign callers use service_progress after their capped native pass to
+/// permit another owner action; repeated queue calls alone cannot advance an action.
 pub fn request_shrink(device: i32, key: RequestKey, bytes: usize) -> Result<Option<ShrinkRequest>> {
     let Some(control) = control(device)? else {
         return Ok(None);
@@ -506,7 +543,7 @@ pub fn request_shrink(device: i32, key: RequestKey, bytes: usize) -> Result<Opti
             }
         } else {
             held.wanted = held.wanted.max(bytes);
-            held.waiting_service = false;
+            if key.cause == Cause::Allocation { held.waiting_service = false; }
         }
         drop(held);
         job
@@ -534,6 +571,7 @@ pub fn request_shrink(device: i32, key: RequestKey, bytes: usize) -> Result<Opti
                 waiting_service: false,
                 cancelled: false,
                 collect_pending: key.cause == Cause::Allocation,
+                serviced: 0,
             }),
         });
         state.jobs.insert(key, Arc::clone(&job));
@@ -667,7 +705,8 @@ fn worker_tick(
                 .checked_sub(job.start_release)
                 .unwrap_or(0);
             held.facts.observed_release_bytes = observed;
-            if held.cancelled || observed >= held.wanted as u64 || held.owners.is_empty() {
+            let completed = if job.key.cause == Cause::Allocation { observed as usize } else { held.serviced };
+            if held.cancelled || completed >= held.wanted || (held.owners.is_empty() && !held.waiting_service) {
                 held.facts.finished = true;
             }
             if held.facts.finished {
@@ -689,7 +728,7 @@ fn worker_tick(
             let id = held.owners.pop_front().expect("pending owner");
             held.facts.queued = held.owners.len();
             held.facts.running = true;
-            (id, held.wanted.saturating_sub(observed as usize))
+            (id, held.wanted.saturating_sub(completed))
         };
         let Some(registration) = callbacks.get_mut(&id) else {
             // Constructor publication can race this tick's registration-channel drain.
@@ -735,6 +774,8 @@ fn worker_tick(
                 }
                 held.waiting_service = job.key.cause != Cause::Allocation;
                 held.collect_pending = job.key.cause == Cause::Allocation;
+                held.facts.action_epoch = held.facts.action_epoch.checked_add(1)
+                    .ok_or(Error::Invalid("cache action epoch overflow"))?;
             }
             Err(Error::CaptureActive) => {
                 owner.facts.deferred += 1;
@@ -750,10 +791,16 @@ fn worker_tick(
                 held.facts.declined += 1;
                 held.waiting_service = job.key.cause != Cause::Allocation;
                 held.collect_pending = job.key.cause == Cause::Allocation;
+                held.facts.action_epoch = held.facts.action_epoch.checked_add(1)
+                    .ok_or(Error::Invalid("cache action epoch overflow"))?;
             }
             Err(error) => {
                 failed(control, &mut owner, error.to_string(), false);
                 held.facts.failed += 1;
+                held.waiting_service = job.key.cause != Cause::Allocation;
+                held.collect_pending = job.key.cause == Cause::Allocation;
+                held.facts.action_epoch = held.facts.action_epoch.checked_add(1)
+                    .ok_or(Error::Invalid("cache action epoch overflow"))?;
             }
         }
         drop(held);

@@ -2,6 +2,7 @@
 //! See `ledger-foundation.md` for the supported namespace and fork contract.
 
 mod os;
+mod upgrade;
 
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -11,12 +12,12 @@ use std::sync::{Arc, Mutex, TryLockError};
 
 pub const ROWS: usize = 64;
 const MAGIC: u64 = u64::from_le_bytes(*b"VARENA3\0");
-const VERSION: u64 = 2;
+const VERSION: u64 = 3;
 const HEADER: usize = 16;
 const SELECTOR: usize = 15;
-const ROW_WORDS: usize = 20;
-const DONOR_WORDS: usize = 6;
-const META_WORDS: usize = 17;
+const ROW_WORDS: usize = 22;
+const DONOR_WORDS: usize = 9;
+const META_WORDS: usize = 18;
 const BANK: usize = META_WORDS + ROWS * (ROW_WORDS + DONOR_WORDS);
 const WORDS: usize = HEADER + 2 * BANK;
 
@@ -141,6 +142,19 @@ pub enum Sharing {
     Dedicated,
 }
 
+/// Execution lifecycle, separate from a consumer's numeric priority. Unreported consumers
+/// are conservatively ordered with active consumers, never inferred idle from a timer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Activity {
+    #[default]
+    Unknown,
+    Idle,
+    Active,
+}
+impl Activity {
+    fn reclaim_order(self) -> u8 { u8::from(self != Self::Idle) }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Bytes {
     pub live: u64,
@@ -179,6 +193,9 @@ pub struct Row {
     pub start_ticks: u64,
     pub sharing: Sharing,
     pub priority: i32,
+    pub activity: Activity,
+    /// At least one registered owner can be asked; this is not reclaimable byte capacity.
+    pub requestable: bool,
     pub last_use: u64,
     pub want: u64,
     pub physical: Physical,
@@ -202,6 +219,7 @@ pub struct Sample {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Answer {
+    Unasked,
     Waiting,
     Pending,
     Complete,
@@ -213,16 +231,23 @@ pub struct Donation {
     pub owner: RowId,
     pub requested: u64,
     pub held_at_ask: u64,
+    pub offered_at_ask: u64,
+    pub requestable: bool,
+    /// This assignment may request owner action after the ready-only stage ended.
+    pub action: bool,
     pub completed: u64,
     pub pending: u64,
     pub answer: Answer,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AskKind { Allocation, DevicePressure, AllIdle }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Round {
     pub generation: u64,
     pub sample_generation: u64,
     pub requester: RowId,
     pub requested: u64,
+    pub kind: AskKind,
     pub aborted: bool,
     pub donations: Vec<Donation>,
 }
@@ -245,6 +270,7 @@ impl Round {
 
 #[derive(Clone, Debug)]
 pub struct Snapshot {
+    pub protocol_version: u64,
     pub generation: u64,
     pub capacity_epoch: u64,
     pub backing_device: u64,
@@ -316,14 +342,6 @@ impl Ledger {
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
         let path = directory.join(format!("varena-v3-{}-{boot}-{}", scope.uid, device.name()));
-        let file = os::Descriptor::open(&path)?;
-        let _publication = file.lock(0, blocking)?.ok_or(Error::Busy)?;
-        let (dev, ino, size) = file.identity()?;
-        if size == 0 {
-            file.resize(WORDS * 8)?;
-        } else if size != (WORDS * 8) as u64 {
-            return Err(Error::Incompatible("layout length"));
-        }
         let halves = |bytes: [u8; 16]| {
             [
                 u64::from_le_bytes(bytes[..8].try_into().unwrap()),
@@ -349,6 +367,25 @@ impl Ledger {
             u64::from_ne_bytes(*b"abcdefgh"),
             0,
         ];
+        loop {
+        let file = os::Descriptor::open(&path)?;
+        let _publication = file.lock(0, blocking)?.ok_or(Error::Busy)?;
+        let (dev, ino, size) = file.identity()?;
+        let named = fs::symlink_metadata(&path)?;
+        if named.file_type().is_symlink() { return Err(Error::Incompatible("ledger path is a symlink")); }
+        if (named.dev(), named.ino()) != (dev, ino) {
+            // Another opener replaced an empty older format while this FD waited.
+            continue;
+        }
+        if size == (upgrade::OLD_WORDS * 8) as u64 {
+            upgrade::Prepared::prepare(&file, &path, &expected)?.commit()?;
+            continue;
+        }
+        if size == 0 {
+            file.resize(WORDS * 8)?;
+        } else if size != (WORDS * 8) as u64 {
+            return Err(Error::Incompatible("layout length"));
+        }
         let existing = file.header(expected.len())?;
         if existing[0] != 0 && existing.as_slice() != expected {
             return Err(Error::Incompatible(
@@ -384,7 +421,7 @@ impl Ledger {
             }
         }
         drop(_publication);
-        Ok(Self(Arc::new(Connection {
+        return Ok(Self(Arc::new(Connection {
             path,
             file,
             map,
@@ -393,7 +430,8 @@ impl Ledger {
             pid: std::process::id(),
             scope,
             backing: (dev, ino),
-        })))
+        })));
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -442,6 +480,13 @@ impl Ledger {
             })?
         };
         let _publication = self.0.file.lock(0, blocking)?.ok_or(Error::Busy)?;
+        // A blocking observer may have passed check() before another opener replaced an
+        // empty old inode. Validate again after publication admission, not just beforehand.
+        self.check()?;
+        if self.0.map.load(0, Ordering::Acquire) != MAGIC
+            || self.0.map.load(1, Ordering::Acquire) != VERSION {
+            return Err(Error::Incompatible("retired or changed ledger format"));
+        }
         let selected = self.0.map.load(SELECTOR, Ordering::Acquire);
         let generation = selected >> 1;
         if generation == 0 {
@@ -483,6 +528,7 @@ impl Ledger {
     pub fn snapshot(&self) -> Result<Snapshot> {
         self.transaction(false, |data, generation| {
             Ok(Snapshot {
+                protocol_version: VERSION,
                 generation,
                 capacity_epoch: data.capacity_epoch,
                 backing_device: self.0.backing.0,
@@ -528,6 +574,7 @@ impl Ledger {
         }
         if !reaped.is_empty() {
             data.capacity_changed()?;
+            data.advance()?;
         }
         Ok(reaped)
     }
@@ -567,6 +614,8 @@ impl Ledger {
                 start_ticks,
                 sharing,
                 priority,
+                activity: Activity::Unknown,
+                requestable: false,
                 last_use: 0,
                 want: 0,
                 physical: Physical::default(),
@@ -601,6 +650,11 @@ impl Participant {
     /// Publish a new physical observation and invalidate earlier capacity samples, even if
     /// these counts match: intervening release/remap may have left the same final holdings.
     pub fn publish(&self, physical: Physical, reclaimable: u64, last_use: u64) -> Result<()> {
+        self.publish_policy(physical, reclaimable, last_use, None)
+    }
+
+    pub fn publish_policy(&self, physical: Physical, reclaimable: u64, last_use: u64,
+                          policy: Option<(Activity, bool)>) -> Result<()> {
         physical.total()?;
         if reclaimable > physical.idle()? {
             return Err(Error::Invalid(
@@ -612,6 +666,10 @@ impl Participant {
             row.physical = physical;
             row.reclaimable = reclaimable;
             row.last_use = last_use;
+            if let Some((activity, requestable)) = policy {
+                row.activity = activity;
+                row.requestable = requestable;
+            }
             data.capacity_changed()?;
             Ok(())
         })
@@ -668,17 +726,25 @@ impl Participant {
     /// newly completed release. Joining/repeating the same round does not spend it again.
     /// Donor requests are advisory; completed acknowledgements still require a driver retry.
     pub fn ask(&self, sample_generation: u64, wanted: u64) -> Result<Round> {
-        self.ask_inner(sample_generation, wanted, false)
+        self.ask_inner(sample_generation, wanted, false, AskKind::Allocation)
     }
 
     /// One device-pressure request may return this Shared participant's own idle pages too.
     /// It joins the same single round as other askers: no local release precedes coordination,
     /// and requested/pending bytes remain advisory rather than capacity credit.
     pub fn ask_device(&self, sample_generation: u64, wanted: u64) -> Result<Round> {
-        self.ask_inner(sample_generation, wanted, true)
+        self.ask_inner(sample_generation, wanted, true, AskKind::DevicePressure)
     }
 
-    fn ask_inner(&self, sample_generation: u64, wanted: u64, include_requester: bool) -> Result<Round> {
+    /// One all-idle episode, bounded by an actual device observation. The total is an upper
+    /// request bound, not an allocation deficit, estimate or claim of releasable backing.
+    pub fn ask_idle(&self, sample_generation: u64) -> Result<Round> {
+        let sample = self.ledger.snapshot()?.sample
+            .filter(|sample| sample.generation == sample_generation).ok_or(Error::StaleSample)?;
+        self.ask_inner(sample_generation, sample.total, true, AskKind::AllIdle)
+    }
+
+    fn ask_inner(&self, sample_generation: u64, wanted: u64, include_requester: bool, kind: AskKind) -> Result<Round> {
         // Commit exact dead-row removal independently. If that invalidates this sample,
         // returning StaleSample below must not roll the reap back and repeat it forever.
         self.ledger.reap_dead()?;
@@ -705,26 +771,26 @@ impl Participant {
                 .flatten()
                 .filter(|row| {
                     (include_requester || row.id != mine.id)
-                        && row.sharing == Sharing::Shared && row.reclaimable != 0
+                        && row.sharing == Sharing::Shared && (row.reclaimable != 0 || row.requestable)
                 })
                 .copied()
                 .collect();
-            peers.sort_by_key(|row| (row.priority, row.last_use, row.id.slot));
+            peers.sort_by_key(|row| (row.priority, row.activity.reclaim_order(), row.last_use, row.id.slot));
             let mut remaining = wanted;
             let mut donations = Vec::new();
             for peer in peers {
-                if remaining == 0 {
-                    break;
-                }
                 let requested = remaining.min(peer.reclaimable);
                 remaining -= requested;
                 donations.push(Donation {
                     owner: peer.id,
                     requested,
                     held_at_ask: peer.physical.total()?,
+                    offered_at_ask: peer.reclaimable,
+                    requestable: peer.requestable,
+                    action: false,
                     completed: 0,
                     pending: 0,
-                    answer: Answer::Waiting,
+                    answer: if requested == 0 { Answer::Unasked } else { Answer::Waiting },
                 });
             }
             let round = Round {
@@ -732,11 +798,13 @@ impl Participant {
                 sample_generation,
                 requester: mine.id,
                 requested: wanted,
+                kind,
                 aborted: false,
                 donations,
             };
-            data.round = Some(round.clone());
-            Ok(round)
+            data.round = Some(round);
+            data.advance()?;
+            Ok(data.round.as_ref().expect("created round").clone())
         })
     }
 
@@ -774,7 +842,12 @@ impl Participant {
         pending: u64,
         answer: Answer,
     ) -> Result<()> {
-        if matches!(answer, Answer::Waiting | Answer::OwnerGone)
+        self.acknowledge_stage(round_id, false, completed, pending, answer)
+    }
+
+    pub fn acknowledge_stage(&self, round_id: u64, action: bool, completed: u64,
+                             pending: u64, answer: Answer) -> Result<()> {
+        if matches!(answer, Answer::Unasked | Answer::Waiting | Answer::OwnerGone)
             || (answer != Answer::Pending && pending != 0)
         {
             return Err(Error::Invalid("invalid donor acknowledgement"));
@@ -791,6 +864,7 @@ impl Participant {
                 .iter_mut()
                 .find(|donor| donor.owner == self.row)
                 .ok_or(Error::Stale)?;
+            if donor.answer == Answer::Unasked || donor.action != action { return Err(Error::Stale); }
             if completed < donor.completed
                 || completed > donor.held_at_ask
                 || pending > donor.held_at_ask.saturating_sub(completed)
@@ -815,6 +889,7 @@ impl Participant {
             if released {
                 data.capacity_changed()?;
             }
+            data.advance()?;
             Ok(())
         })
     }
@@ -842,6 +917,7 @@ impl Drop for Participant {
                     }
                 }
             }
+            data.advance()?;
             Ok(())
         });
     }
@@ -870,6 +946,54 @@ fn birth(pid: u32) -> Result<Option<u64>> {
 }
 
 impl Data {
+    /// Finish known ready assignments before asking one potential owner at a time. No
+    /// queued/pending/declined action subtracts demand; only completed release does.
+    fn advance(&mut self) -> Result<()> {
+        let Some(round) = &mut self.round else { return Ok(()); };
+        if round.aborted { return Ok(()); }
+        let remaining = round.requested.saturating_sub(round.completed()?);
+        if remaining == 0 {
+            for donor in &mut round.donations {
+                if donor.answer == Answer::Unasked { donor.answer = Answer::Refused; }
+            }
+            return Ok(());
+        }
+        if round.donations.iter().any(|donor| matches!(donor.answer, Answer::Waiting | Answer::Pending)) {
+            return Ok(());
+        }
+        let available = |donor: &Donation| self.rows[donor.owner.slot]
+            .filter(|row| row.id == donor.owner && row.sharing == Sharing::Shared);
+        let mut outstanding = remaining;
+        let mut assigned = false;
+        for donor in &mut round.donations {
+            if donor.answer != Answer::Unasked || donor.offered_at_ask == 0 { continue; }
+            if available(donor).is_none() { donor.answer = Answer::Refused; continue; }
+            donor.requested = outstanding.min(donor.offered_at_ask);
+            if donor.requested == 0 { break; }
+            outstanding -= donor.requested;
+            donor.answer = Answer::Waiting;
+            assigned = true;
+        }
+        if assigned { return Ok(()); }
+        for donor in &mut round.donations {
+            if donor.action || !donor.requestable { continue; }
+            let current = self.rows[donor.owner.slot].filter(|row| row.id == donor.owner);
+            match current {
+                None => { donor.answer = Answer::OwnerGone; continue; }
+                Some(row) if row.sharing != Sharing::Shared || !row.requestable => { donor.answer = Answer::Refused; continue; }
+                _ => (),
+            }
+            donor.requested = donor.completed.checked_add(remaining).ok_or(Error::Overflow)?;
+            donor.action = true;
+            donor.answer = Answer::Waiting;
+            return Ok(());
+        }
+        for donor in &mut round.donations {
+            if donor.answer == Answer::Unasked { donor.answer = Answer::Refused; }
+        }
+        Ok(())
+    }
+
     fn capacity_changed(&mut self) -> Result<()> {
         self.capacity_epoch = self.capacity_epoch.checked_add(1).ok_or(Error::Overflow)?;
         Ok(())
@@ -892,6 +1016,7 @@ impl Data {
             ]);
         }
         if let Some(round) = &self.round {
+            words[17] = match round.kind { AskKind::Allocation => 0, AskKind::DevicePressure => 1, AskKind::AllIdle => 2 };
             words[8..15].copy_from_slice(&[
                 round.generation,
                 round.sample_generation,
@@ -911,6 +1036,9 @@ impl Data {
                     donor.held_at_ask,
                     donor.completed,
                     donor.pending,
+                    donor.offered_at_ask,
+                    u64::from(donor.requestable),
+                    u64::from(donor.action),
                 ]);
             }
         }
@@ -934,6 +1062,8 @@ impl Data {
                 ]);
             }
             words[offset + 19] = row.reclaimable;
+            words[offset + 20] = match row.activity { Activity::Unknown => 0, Activity::Idle => 1, Activity::Active => 2 };
+            words[offset + 21] = u64::from(row.requestable);
         }
         words
     }
@@ -983,6 +1113,14 @@ impl Data {
                 start_ticks: words[at + 2],
                 sharing,
                 priority: words[at + 4] as i64 as i32,
+                activity: match words[at + 20] {
+                    0 => Activity::Unknown, 1 => Activity::Idle, 2 => Activity::Active,
+                    _ => return Err(Error::Incompatible("execution activity")),
+                },
+                requestable: match words[at + 21] {
+                    0 => false, 1 => true,
+                    _ => return Err(Error::Incompatible("owner requestability")),
+                },
                 last_use: words[at + 5],
                 want: words[at + 6],
                 physical: Physical {
@@ -1023,6 +1161,13 @@ impl Data {
                     held_at_ask: words[at + 3],
                     completed: words[at + 4],
                     pending: words[at + 5],
+                    offered_at_ask: words[at + 6],
+                    requestable: match words[at + 7] {
+                        0 => false, 1 => true, _ => return Err(Error::Incompatible("donor requestability")),
+                    },
+                    action: match words[at + 8] {
+                        0 => false, 1 => true, _ => return Err(Error::Incompatible("donor stage")),
+                    },
                 });
             }
             result.round = Some(Round {
@@ -1033,6 +1178,8 @@ impl Data {
                     incarnation: words[11],
                 },
                 requested: words[12],
+                kind: match words[17] { 0 => AskKind::Allocation, 1 => AskKind::DevicePressure, 2 => AskKind::AllIdle,
+                    _ => return Err(Error::Incompatible("round kind")), },
                 aborted: words[13] != 0,
                 donations,
             });
@@ -1042,6 +1189,7 @@ impl Data {
 }
 fn answer(answer: Answer) -> u8 {
     match answer {
+        Answer::Unasked => 5,
         Answer::Waiting => 0,
         Answer::Pending => 1,
         Answer::Complete => 2,
@@ -1056,6 +1204,7 @@ fn decode_answer(value: u64) -> Result<Answer> {
         2 => Ok(Answer::Complete),
         3 => Ok(Answer::Refused),
         4 => Ok(Answer::OwnerGone),
+        5 => Ok(Answer::Unasked),
         _ => Err(Error::Incompatible("donor answer")),
     }
 }

@@ -117,6 +117,8 @@ pub struct Facts {
     pub last_withdrawn_round: Option<u64>,
     pub demand_clear_pending: bool,
     pub pressure: super::PressureFacts,
+    /// Local execution knowledge; the shared row carries the most recent publication.
+    pub activity: ledger::Activity,
 }
 
 enum Command {
@@ -541,6 +543,9 @@ impl Owner {
     pub fn close(&self) -> Result<()> {
         drop(self.control.lock()?); // Process check precedes stop and capture registry access.
         self.control.stop();
+        if crate::cache_owner::is_dispatcher_thread(self.device)? {
+            return Err(crate::Error::Busy.into());
+        }
         loop {
             {
                 let captures = crate::capture_counts()?;
@@ -606,7 +611,13 @@ fn command(peer: &Peer, control: &Control, pressure: &mut Pressure, command: Com
                     }
                 }
                 pressure.boundary(kind)?;
-                control.lock()?.facts.pressure = pressure.facts.clone();
+                let activity = pressure.activity();
+                peer.set_activity(activity)?;
+                let mut state = control.lock()?;
+                state.facts.activity = activity;
+                state.facts.pressure = pressure.facts.clone();
+                state.generation = state.generation.wrapping_add(1);
+                control.changed.notify_all();
                 Ok(())
             })();
             let _ = reply.send(result);
@@ -810,6 +821,7 @@ fn pressure_tick(
     deadline: &mut Option<Instant>,
     joined: &mut Option<(u64, Instant)>,
 ) -> Result<()> {
+    pressure.expire_process_signals();
     let table = peer.snapshot()?;
     let shared = table
         .rows
@@ -871,16 +883,9 @@ fn pressure_tick(
         return Ok(());
     }
     let sample = pressure.observe(peer)?;
-    let capacity = peer.snapshot()?;
-    let reclaimable = capacity
-        .rows
-        .iter()
-        .filter(|row| row.sharing == ledger::Sharing::Shared)
-        .try_fold(0u64, |sum, row| {
-            sum.checked_add(row.reclaimable)
-                .ok_or(ledger::Error::Overflow)
-        })?;
-    let wanted = pressure.wanted(reclaimable);
+    pressure.expire_process_signals();
+    let wanted = pressure.wanted();
+    let all_idle = !pressure.facts.new_processes.is_empty();
     pressure.facts.suppressed = crate::working::peer::pressure(
         peer.device,
         wanted != 0
@@ -890,8 +895,11 @@ fn pressure_tick(
         owned.is_none() && joined.is_none() && pressure.calm(),
     )?;
     if wanted != 0 && owned.is_none() && joined.is_none() {
-        let round = peer.ask_device(sample.generation, wanted)?;
-        pressure.consume_process_signals();
+        let episode_deadline = pressure.signal_deadline()
+            .unwrap_or_else(|| Instant::now() + COORDINATION_BUDGET);
+        let round = if all_idle { peer.ask_idle(sample.generation)? }
+            else { peer.ask_device(sample.generation, wanted)? };
+        if round.kind == ledger::AskKind::AllIdle { pressure.consume_process_signals(); }
         let mut state = control.lock()?;
         pressure.facts.round = Some(round.generation);
         pressure.facts.completed = round.completed()?;
@@ -902,7 +910,7 @@ fn pressure_tick(
                 && !state.stopping
             {
                 state.pressure_round = Some(round.generation);
-                *deadline = Some(Instant::now() + COORDINATION_BUDGET);
+                *deadline = Some(episode_deadline);
             } else {
                 // An allocator may arrive while ask_device is outside Control. Retire this
                 // exact pressure generation before that caller starts its own ask.
@@ -912,7 +920,7 @@ fn pressure_tick(
             // Joining another owner never gives us cancellation authority. Clearing our
             // advisory want is also performed before a subsequent allocator asks.
             state.clear_want = true;
-            *joined = Some((round.generation, Instant::now() + COORDINATION_BUDGET));
+            *joined = Some((round.generation, episode_deadline));
         }
         control.changed.notify_all();
     } else if wanted == 0 && !pressure.facts.new_processes.is_empty() {
@@ -988,7 +996,9 @@ fn serve(peer: &Peer, control: &Control, pressure: &mut Pressure) -> Result<()> 
             ) {
                 Err(error) if deferred(&error) => {
                     pressure.invalidate_observation();
-                    control.lock()?.facts.deferred += 1;
+                    let mut state = control.lock()?;
+                    state.facts.deferred += 1;
+                    state.facts.pressure = pressure.facts.clone();
                 }
                 result => result?,
             }
