@@ -541,12 +541,16 @@ async fn approve(
     if !*project.walking.lock().expect("walking lock") {
         garbage(folder).map_err(Refusal)?;
     }
+    relink(folder);
     if video.cut_reads(i) {
         Walk { host: Host::new(&api), project: project.clone() }.recut().await.map_err(Refusal)?;
     }
     let assets = lock.made(&node.id, &folder::digest_of(&file)).map(|made| made.assets.clone()).unwrap_or_default();
     let (name, noun) = (node.id.clone(), node.noun.to_owned());
-    Ok(Json(Approved { name, noun, number: asked.version, assets, stale, warnings: vec![] }))
+    let ext = std::path::Path::new(&file).extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    let dir = name.replace(['/', '\\'], "_");
+    let link = format!("{}/{dir}/{dir}_approved{ext}", folder::ASSETS);
+    Ok(Json(Approved { name, noun, number: asked.version, assets, link, stale, warnings: vec![] }))
 }
 
 async fn events(
@@ -931,7 +935,7 @@ impl Walk {
         then: Then,
         settle: &impl Fn(&mut Lock),
     ) -> Result<(), Error> {
-        let made = Made { cleaned: true, assets: Default::default(), writes: Default::default(), ..made };
+        let made = Made { cleaned: true, writes: Default::default(), ..made };
         let pending = Pending { made, run: 0, hub: hub.into(), field: "image".into(), on: vec![], call: None, then };
         let payload = serde_json::json!({ "image": picture.1 });
         let files = vec![("image".into(), picture.0, picture.1)];
@@ -1090,9 +1094,10 @@ impl Walk {
         };
         let picture = saved(&pending.field, 0)?;
         if let Then::Clean { approve } = pending.then {
-            // The render itself is never listed: only its clean is, made by both runs.
+            // Listed once cleaned, made by both runs: the render as its `image`, and its `clean`.
             let mut made = pending.made;
             made.runs.push(run.number);
+            made.assets.insert(pending.field.clone(), folder.keep(&picture)?.0);
             return Ok(Landed::Clean { made: Box::new(made), picture, approve, hub: pending.hub });
         }
         let video = Video::load(folder)?;
@@ -1104,19 +1109,25 @@ impl Walk {
         };
         let mut made = pending.made.clone();
         made.runs.push(run.number);
-        // Every file the run saved, by its output's name (a list's items as `<name>.<n>`).
-        for output in &run.output {
-            let Some(path) = output.path.as_ref().filter(|path| path.is_file()) else { continue };
-            let name = match output.index {
-                0 => output.name.clone(),
-                n => format!("{}.{n}", output.name),
-            };
-            made.assets.insert(name, folder.keep(path)?.0);
+        match made.cleaned {
+            // A clean's one asset is the clean.
+            true => drop(made.assets.insert("clean".into(), folder.keep(&picture)?.0)),
+            false => {
+                // Every file the run saved, by its output's name (a list's items as `<name>.<n>`).
+                for output in &run.output {
+                    let Some(path) = output.path.as_ref().filter(|path| path.is_file()) else { continue };
+                    let name = match output.index {
+                        0 => output.name.clone(),
+                        n => format!("{}.{n}", output.name),
+                    };
+                    made.assets.insert(name, folder.keep(path)?.0);
+                }
+                made.assets.insert(pending.field.clone(), folder.keep(&picture)?.0);
+            }
         }
-        made.assets.insert(pending.field.clone(), folder.keep(&picture)?.0);
         if pending.field == "video" {
             let (_, ffprobe) = self.host.ffmpeg().await?;
-            made.size = video::size(&ffprobe, &folder.path(&made.assets[&pending.field]));
+            made.size = video::size(&ffprobe, &folder.path(&made.assets["video"]));
         }
         let approve = matches!(pending.then, Then::List { approve: true } | Then::Clean { approve: true });
         if let Some(call) = pending.call.clone() {
@@ -1132,7 +1143,7 @@ impl Walk {
     }
 
     /// Lists `made` as its node's newest version (dropping the pending run under `key` in the same
-    /// write), approved when `approve`, and says it landed.
+    /// write), approved when `approve`, links it, and says it landed.
     fn record(&self, key: Option<&str>, made: &Made, approve: bool, noun: &str) -> Result<(), Error> {
         let number = std::cell::Cell::new(0);
         self.folder().update_lock(|lock| {
@@ -1141,8 +1152,10 @@ impl Walk {
             }
             number.set(lock.record(made.clone(), approve));
         })?;
-        let (name, assets) = (made.node.clone(), made.assets.clone());
-        self.say(Event::Landed { name, noun: noun.into(), number: number.get(), assets });
+        relink(self.folder());
+        let (name, number, assets) = (made.node.clone(), number.get(), made.assets.clone());
+        let link = folder::links(&name, noun, number, made).into_iter().next().map(|(link, _)| link);
+        self.say(Event::Landed { name, noun: noun.into(), number, assets, link });
         Ok(())
     }
 
@@ -1251,10 +1264,24 @@ fn set(payload: &mut Value, field: &str, value: Value) {
     *at = value;
 }
 
-/// Forgets the versions of nodes the project no longer has, and deletes the files nothing names.
+/// Forgets the versions of nodes the project no longer has, deletes the files nothing names, and
+/// makes the tree of links again.
 fn garbage(folder: &Folder) -> Result<(), Error> {
     let video = Video::load(folder)?;
-    folder.collect_garbage(&video.keys(), &video.attached(folder)?)
+    folder.collect_garbage(&video.keys(), &video.attached(folder)?)?;
+    relink(folder);
+    Ok(())
+}
+
+/// The tree of links for people made again from project.lock; derived, so a failure is only said.
+fn relink(folder: &Folder) {
+    let linked = Video::load(folder).and_then(|video| {
+        let nodes = video.graph.nodes.iter().map(|node| (node.id.as_str(), node.noun)).collect();
+        folder.relink(&folder::Linked { nodes })
+    });
+    if let Err(error) = linked {
+        warn!("the links in {}/assets: {}", folder.dir.display(), error.message);
+    }
 }
 
 fn find(video: &Video, name: &str) -> Result<usize, Error> {

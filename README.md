@@ -80,7 +80,10 @@ A video project is a folder:
 - `project.yaml`: yours. cozy writes it only at `new`.
 - `references/` (pictures, voices and videos that guide) and `plates/` (footage to edit): your own files,
   which cozy never copies or changes. Paths in `project.yaml` are relative to the folder.
-- `assets/`: everything cozy makes, by content.
+- `assets/`: everything cozy makes, kept by content in `assets/.store/`, and linked by name for you: one folder
+  per node, `fight/fight_take002.mp4` (a shot's takes), `theo/theo_v001.png` and `theo_v001_clean.png` (other
+  nodes' versions), and `fight/fight_approved.mp4`, which follows approval. Deleting the links loses nothing:
+  cozy makes them again after every render and approval.
 - `project.lock`: cozy's record of each node's takes or versions, what made each, and which is approved.
 - `edit.mp4`: the film, cut on this computer as shots land.
 

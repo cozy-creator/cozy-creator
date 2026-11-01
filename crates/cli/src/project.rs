@@ -27,8 +27,9 @@ const EXAMPLES: &str = "Examples:
 The project is the folder holding project.yaml, found from the folder you are in or above it.
 project.yaml lists entities (characters, props, environments with camera setups), world states
 and shots; people write it and cozy never does. A shot's alternatives, and its upscale's, are
-takes; every other node's are versions. Each is a set of assets under assets/, and project.lock
-records them, what made each and which is approved. Keep your own files in references/ (what
+takes; every other node's are versions. Each is a set of assets, kept by content in assets/.store
+and linked by name (assets/fight/fight_take002.mp4, theo/theo_v001.png, fight/fight_approved.mp4);
+project.lock records them, what made each and which is approved. Keep your own files in references/ (what
 guides) and plates/ (footage to edit): project.yaml's paths are relative to the folder. A file
 you attach (image:, or a shot's video:) is used until you approve one cozy made. A node's
 render: {with, models, lora, options} (or defaults: per kind) says how it is made. Names match
@@ -150,9 +151,9 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             if ctx.json {
                 output::json(&approved);
             } else {
-                let assets: Vec<&str> = approved.assets.values().map(String::as_str).collect();
                 let (name, noun, number) = (&approved.name, &approved.noun, approved.number);
-                output::say(ctx, &format!("{name}: {noun} {number} approved ({})", assets.join(", ")));
+                let link = output::link(ctx, &opened.path.join(&approved.link));
+                output::say(ctx, &format!("{name}: {noun} {number} approved ({link})"));
                 if !approved.stale.is_empty() {
                     output::say(ctx, &format!("out of date now: {}", approved.stale.join(", ")));
                 }
@@ -213,9 +214,9 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
                     return Ok(ExitCode::SUCCESS);
                 }
             }
-            Event::Landed { name, noun, number, assets } => {
-                let assets: Vec<&str> = assets.values().map(String::as_str).collect();
-                output::say(ctx, &format!("{name}: {noun} {number} ({})", assets.join(", ")));
+            Event::Landed { name, noun, number, link, .. } => {
+                let link = link.map(|link| format!(" ({})", output::link(ctx, &opened.path.join(link))));
+                output::say(ctx, &format!("{name}: {noun} {number}{}", link.unwrap_or_default()));
             }
             Event::Said { message } => output::say(ctx, &message),
             Event::Warning { message } => output::warn(&message),
