@@ -1,0 +1,1 @@
+external safe Rust client: ABI 1, typed Invalid, no core crate dependency

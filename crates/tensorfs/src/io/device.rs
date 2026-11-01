@@ -1,4 +1,4 @@
-//! B7's bounded pinned staging and reuse policy, independent of varena's placement types.
+//! Bounded pinned host staging; every native device buffer belongs to Varena working memory.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::io;
@@ -23,7 +23,8 @@ fn failed(copy: usize, error: cuda::Error) -> Error {
             code: cuda::ERROR_OUT_OF_MEMORY,
             ..
         } => io::ErrorKind::OutOfMemory,
-        cuda::Error::CudaUnavailable(_) => io::ErrorKind::Unsupported,
+        cuda::Error::Allocation(varena::Error::OutOfMemory { .. }) => io::ErrorKind::OutOfMemory,
+        cuda::Error::Allocation(varena::Error::Unsupported(_)) | cuda::Error::CudaUnavailable(_) => io::ErrorKind::Unsupported,
         _ => io::ErrorKind::Other,
     };
     Error {
@@ -233,8 +234,8 @@ struct Engine {
 /// Completed events an engine keeps for reuse; more than this go.
 const EVENTS: usize = 64;
 
-/// An engine-owned CUDA allocation. DLPack holders share it; the last owner frees it in its
-/// primary context, independently of Python checkpoint and component handles.
+/// A Varena working allocation. DLPack holders share it; completed decoder owners return it
+/// directly. An unannotated final owner joins its primary context before permitting reuse.
 pub struct DeviceBuffer {
     ptr: u64,
     len: usize,
@@ -244,15 +245,10 @@ pub struct DeviceBuffer {
 
 impl DeviceBuffer {
     pub fn new(device: i32, len: usize) -> cuda::Result<DeviceBuffer> {
+        let _producer = varena::enter_producer(device)?;
         let engine = Engine::get(device)?;
         let _ctx = CtxGuard::enter(engine.ctx)?;
-        let mut ptr = 0;
-        if len != 0 {
-            // SAFETY: `ptr` is a writable out-pointer and the engine's context is current.
-            cuda::check("cuMemAlloc", unsafe {
-                (cuda::driver()?.mem_alloc)(&mut ptr, len)
-            })?;
-        }
+        let ptr = cuda::allocate_ready(device, len)?;
         Ok(DeviceBuffer {
             ptr,
             len,
@@ -291,11 +287,8 @@ impl DeviceBuffer {
             return Ok(());
         }
         self.release_failed = true;
-        let _ctx = CtxGuard::enter(self.engine.ctx)?;
-        // SAFETY: the caller certified all users complete and this object owns the pointer.
-        cuda::check("cuMemFree(checked)", unsafe {
-            (cuda::driver()?.mem_free)(self.ptr)
-        })?;
+        // SAFETY: the caller certified every use complete and exclusively owns the pointer.
+        unsafe { varena::working::free_completed(self.engine.device, self.ptr) }?;
         self.ptr = 0;
         self.len = 0;
         self.release_failed = false;
@@ -306,11 +299,12 @@ impl DeviceBuffer {
 impl Drop for DeviceBuffer {
     fn drop(&mut self) {
         if self.ptr != 0 && !self.release_failed {
-            if let (Ok(d), Ok(_ctx)) = (cuda::driver(), CtxGuard::enter(self.engine.ctx)) {
-                // SAFETY: this buffer allocated `ptr` in the engine's context, which is current; freed once, here.
-                unsafe { (d.mem_free)(self.ptr) };
-            }
+            // Unknown DLPack consumers may still run. Varena records retirement without CUDA
+            // work, including during capture, and joins the context before reuse or unmap.
+            // SAFETY: this is the final native owner; no further submissions may use its pointer.
+            let _ = unsafe { varena::working::free_untracked(self.engine.device, self.ptr) };
         }
+        // A failed metadata transition leaves the live block retained by Varena.
     }
 }
 
@@ -502,6 +496,12 @@ impl Engine {
             self.synchronize(owners)?;
         }
         let mut first = None;
+        for buffer in owners.iter_mut().flat_map(|r| &mut r._buffers) {
+            // SAFETY: all private streams completed; these are quarantined private owners.
+            if let Err(error) = unsafe { buffer.release_completed() } {
+                first.get_or_insert(error);
+            }
+        }
         for pin in owners.iter_mut().flat_map(|r| &mut r.pins) {
             if let Err(error) = pin.release() {
                 first.get_or_insert(error);
