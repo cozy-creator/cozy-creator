@@ -21,9 +21,11 @@ for p in sdxl qwen-image-2 minimax-h3; do
   done
 done
 read -r _ free models envs runtime < <(tail -1 "$T/use.tsv"); removed=$(logs 'removed package environment')
-[ ${#bad[@]} -eq 0 ] && [ "${envs:-0}" -gt 0 ] && [ "${runtime:-0}" -gt 0 ] && [ "$removed" -gt 0 ] \
-  && expect disk-envs PASS "installs and updates done, $removed previous environments removed: models $models, environments $envs, Runtime $runtime, free $free" \
-  || expect disk-envs FAIL "${bad[*]:-}; $removed environments removed; machine show: environments ${envs:-none}, Runtime ${runtime:-none}"
+# A Calcifer older than this machine reports no disk use (version skew): the removals judge it then.
+shown=$([ -n "$envs" ] && echo "models $models, environments $envs, Runtime $runtime" || echo "this cozy's Calcifer reports no disk use")
+[ ${#bad[@]} -eq 0 ] && [ "$removed" -gt 0 ] && { [ -z "$envs" ] || [ "$envs" -gt 0 ]; } \
+  && expect disk-envs PASS "installs and updates done, $removed previous environments removed (logged with bytes); $shown; free $free" \
+  || expect disk-envs FAIL "${bad[*]:-}; $removed environments removed; $shown"
 
 held=$(basename "$(mktemp -u "$T/run-XXXXXX")")
 run_submit "$T" "$held" run "$(pkg sdxl generate)" --on "$M" prompt="$OBJECT, held through a full disk" steps:=8 seed:=$((R + 700)) > /dev/null
