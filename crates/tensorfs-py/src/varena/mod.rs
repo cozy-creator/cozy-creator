@@ -1,5 +1,7 @@
 //! Process-local weight residency bindings. CUDA ownership remains in the Rust core.
-mod allocator;
+mod working;
+#[cfg(all(target_os = "linux", target_has_atomic = "64"))]
+mod cooperative;
 #[cfg(feature = "store")]
 mod continuation;
 #[cfg(feature = "store")]
@@ -88,7 +90,7 @@ impl Consumers {
 fn raise(py: Python<'_>, error: varena::Error) -> PyErr {
     let message = error.to_string();
     let class = match error {
-        varena::Error::OutOfMemory { .. } => "OutOfMemoryError",
+        varena::Error::OutOfMemory { .. } | varena::Error::Exhausted { .. } => "OutOfMemoryError",
         varena::Error::Poisoned(_) => return VarenaPoisonedError::new_err(message),
         varena::Error::DeviceFault { .. } | varena::Error::Cuda { .. } => "AcceleratorError",
         _ => return PyRuntimeError::new_err(message),
@@ -98,6 +100,11 @@ fn raise(py: Python<'_>, error: varena::Error) -> PyErr {
         // Torch's exception types take the ordinary RuntimeError constructor arguments.
         // The CUDA error code is an attribute, not an accepted constructor keyword.
         let exception = class.call1((message.clone(),))?;
+        if let varena::Error::Exhausted { requested_bytes, available_bytes } = error {
+            exception.setattr("varena_no_retry", true)?;
+            exception.setattr("required_bytes", requested_bytes)?;
+            exception.setattr("available_bytes", available_bytes)?;
+        }
         if let varena::Error::DeviceFault { code, .. } | varena::Error::Cuda { code, .. } = error {
             exception.setattr("error_code", code)?;
         }
@@ -623,17 +630,6 @@ impl PyNoCapture {
     }
 }
 
-#[pyfunction]
-fn _varena_install_allocator(py: Python<'_>) -> PyResult<usize> {
-    py.detach(allocator::install)
-        .map_err(PyRuntimeError::new_err)
-}
-#[pyfunction]
-#[pyo3(signature = (device, limit = None))]
-fn _varena_set_activation_limit(py: Python<'_>, device: i32, limit: Option<usize>) -> PyResult<()> {
-    py.detach(|| allocator::set_limit(device, limit))
-        .map_err(PyRuntimeError::new_err)
-}
 /// Sets this process's room on `device` (None lifts it) and returns the pages it took back.
 #[pyfunction]
 #[pyo3(signature = (device, limit = None))]
@@ -642,16 +638,10 @@ fn _varena_make_room(py: Python<'_>, device: i32, limit: Option<usize>) -> PyRes
         .map(|report| report.reclaimed_bytes)
         .map_err(|e| raise(py, e))
 }
-#[pyfunction]
-fn _varena_allocator_stats(
-    py: Python<'_>,
-    device: i32,
-) -> PyResult<std::collections::BTreeMap<&'static str, u64>> {
-    py.detach(|| allocator::stats(device))
-        .map_err(PyRuntimeError::new_err)
-}
-
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    working::install(module)?;
+    #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
+    module.add_class::<cooperative::PyPeer>()?;
     let poisoned = module.py().get_type::<VarenaPoisonedError>();
     poisoned.setattr("__module__", "tensorfs._ext")?;
     poisoned.setattr("sticky", true)?;
@@ -674,9 +664,6 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<stage_continuation::StageJob>()?;
     #[cfg(feature = "store")]
     module.add_class::<phase::PhaseController>()?;
-    module.add_function(wrap_pyfunction!(_varena_install_allocator, module)?)?;
-    module.add_function(wrap_pyfunction!(_varena_set_activation_limit, module)?)?;
-    module.add_function(wrap_pyfunction!(_varena_allocator_stats, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_make_room, module)?)?;
     Ok(())
 }
