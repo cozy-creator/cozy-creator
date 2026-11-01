@@ -392,9 +392,17 @@ def gpu(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
 
                 # The actual processor owns successful seed bookkeeping, and its ordinary
                 # output projection also exercises launch_projection's unchanged default.
-                attended = reference.to(on)
-                expected_owner = attn.to_out[1](attn.to_out[0](attended.flatten(2, 3))).cpu()
-                del attended
+                siblings_before = getattr(attn.to_out[0], '_cozy_siblings', None)
+                # A real normal-tensor invocation learns single-use operand ownership.
+                # An inference tensor intentionally does not train that existing policy.
+                with torch.inference_mode(False), torch.no_grad():
+                    attended = reference.to(on)
+                    assert not attended.is_inference()
+                    expected_owner = attn.to_out[1](attn.to_out[0](attended.flatten(2, 3))).cpu()
+                    del attended
+                gc.collect()
+                siblings_after = getattr(attn.to_out[0], '_cozy_siblings', None)
+                assert siblings_after == 1, {'before': siblings_before, 'after': siblings_after}
                 seed.fill_(19.)
                 owner_result = {}
 
@@ -413,10 +421,18 @@ def gpu(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
                 denoise_loop(owner, range(1), state=(marker,), carried=(seed,), inputs=(hidden, *rotary),
                              key=('actual-h3-attention-owner', tokens, heads))
                 phase = request.working_phases[-1]
-                assert owner_result['seeded_heads'] == heads and len(phase['split_observations']) == 2
+                tel.log('heads complete processor', tokens=tokens, heads=heads,
+                        seeded_heads=owner_result['seeded_heads'],
+                        native_observations=len(phase['split_observations']),
+                        learned_siblings=siblings_after)
+                assert owner_result['seeded_heads'] == heads and len(phase['split_observations']) == 2, {
+                    'seeded_heads': owner_result['seeded_heads'], 'expected_heads': heads,
+                    'native_observations': len(phase['split_observations']),
+                    'siblings_before': siblings_before, 'siblings_after': siblings_after}
                 assert phase['cut_choices'] == 2 and all(s['published'] for s in phase['split_observations'])
                 cases.append({'case': 'complete-processor-and-output-projection', 'tokens': tokens,
                               'heads': heads, 'seeded_heads': owner_result['seeded_heads'], 'phase': phase,
+                              'normal_input_learning': {'before': siblings_before, 'after': siblings_after},
                               'output': output_equal(owner_result['output'].cpu(), expected_owner),
                               'seed': output_equal(seed.cpu(), seed_reference)})
                 owner_result.clear()
