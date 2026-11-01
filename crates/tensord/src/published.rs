@@ -1154,17 +1154,15 @@ impl Publisher {
         Ok(path)
     }
 
-    /// The uv cache `reclaim` manages (`Uv::machine_cache`).
-    pub fn uv_cache(&self) -> Option<PathBuf> {
-        self.sdk.uv.machine_cache().map(Path::to_path_buf)
+    /// The uv cache `reclaim` manages (`Uv::cache`).
+    pub fn uv_cache(&self) -> PathBuf {
+        self.sdk.uv.cache().to_path_buf()
     }
 
     /// Held shared through one environment build, so `reclaim` removes nothing from the cache
     /// between uv's own per-command holds either.
-    pub(super) fn uv_cache_hold(&self) -> io::Result<Option<File>> {
-        let Some(cache) = self.uv_cache() else {
-            return Ok(None);
-        };
+    pub(super) fn uv_cache_hold(&self) -> io::Result<File> {
+        let cache = self.uv_cache();
         fs::create_dir_all(&cache)?;
         let lock = File::options()
             .create(true)
@@ -1172,7 +1170,7 @@ impl Publisher {
             .write(true)
             .open(cache.join(".lock"))?;
         lock.lock_shared()?;
-        Ok(Some(lock))
+        Ok(lock)
     }
 
     /// The run's model grants and its precision warnings. Each slot takes the run's choice, else

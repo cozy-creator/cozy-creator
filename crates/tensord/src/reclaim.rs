@@ -392,9 +392,10 @@ fn kernel_entries(caches: &KernelCaches) -> Vec<(PathBuf, PathBuf)> {
     entries
 }
 
-/// The uv cache's unpacked wheels (`archive-v0/<id>`) no environment links, each removed past
-/// the TTL since it was last linked or let go (its newest ctime), or on a low disk least
-/// recently used first until it is not. Environments hard-link a machine cache's files and
+/// The uv cache's unpacked wheels (`archive-v0/<id>`) no environment links, each removed once its
+/// last link went since the previous pass (an environment or PyTorch base dropped takes what only
+/// it used), else past the TTL since it was last linked or let go (its newest ctime), or on a low
+/// disk least recently used first until it is not. Environments hard-link a machine cache's files and
 /// symlink an image's seeded one (so overlayfs never copies its payload): an entry with a file
 /// linked twice (a hard-linked environment's, the image's own interpreter's) or one an
 /// environment under `environments` symlinks stays. uv takes the cache's `.lock` shared for
@@ -406,6 +407,10 @@ fn uv_pass(cache: &Path, environments: &[PathBuf], disk: &dyn Fn() -> io::Result
     let Some(_held) = lock.ok().filter(|lock| lock.try_lock().is_ok()) else {
         return Ok(());
     };
+    // ctime is the kernel's coarse clock: a second's margin.
+    static PASSED: Mutex<Option<SystemTime>> = Mutex::new(None);
+    let since = PASSED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replace(SystemTime::now());
+    let since = since.map(|at| at - Duration::from_secs(1));
     let archives = cache.join("archive-v0");
     let mut linked = HashSet::new();
     for root in environments {
@@ -425,8 +430,9 @@ fn uv_pass(cache: &Path, environments: &[PathBuf], disk: &dyn Fn() -> io::Result
     entries.sort();
     let filesystem = FileId::at(cache)?.dev;
     for (used, path, pointers) in entries {
-        if !unused_for(used, TTL) && disk()?.short().is_none() {
-            break;
+        let dropped = since.is_some_and(|since| used >= since);
+        if !dropped && !unused_for(used, TTL) && disk()?.short().is_none() {
+            continue;
         }
         let bytes = releasable(&path, filesystem, &HashSet::new()).unwrap_or(0);
         for pointer in &pointers {
@@ -720,8 +726,8 @@ pub fn sweep(caches: &Caches) -> io::Result<Swept> {
             }
         }
     }
-    // The uv entries only the environments just dropped linked.
-    if !swept.environments.is_empty() {
+    // The uv entries only the environments and bases just dropped linked.
+    if !swept.is_empty() {
         uv(&mut swept)?;
     }
     Ok(swept)

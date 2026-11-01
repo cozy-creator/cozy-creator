@@ -406,7 +406,7 @@ impl Service {
     /// A sweep as though `incoming` more bytes were taken; `all` caches, or the garbage alone.
     fn sweep(&self, incoming: u64, all: bool) -> crate::reclaim::Swept {
         let publisher = self.publisher.lock().unwrap().clone();
-        let uv_cache = publisher.as_ref().and_then(|publisher| publisher.uv_cache());
+        let uv_cache = publisher.as_ref().map(|publisher| publisher.uv_cache());
         let generations = self.catalog.root();
         let engine = generations.parent().unwrap_or(generations);
         // Run objects no unfinished run needs go first.

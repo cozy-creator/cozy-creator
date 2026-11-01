@@ -5,7 +5,6 @@
 use platform::{paths::Home, tools};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
     fs, io,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -19,17 +18,15 @@ pub struct Uv {
     pythons: PathBuf,
 }
 
-/// The cache uv keeps wheels and environments' files in.
+/// The cache uv keeps wheels and environments' files in, which `reclaim` manages: the machine's
+/// own, never its owner's general one (shared with their other projects), so what a dropped
+/// environment or PyTorch base alone used goes with it.
 #[derive(Clone, Debug)]
 enum Cache {
     /// An image's baked one, linked so overlayfs never copies its payload (Torch) into each
-    /// environment. `reclaim` manages what the machine adds to it; the image's own entries,
-    /// which its interpreter hard-links, stay.
+    /// environment; the image's own entries, which its interpreter hard-links, stay.
     Seeded(PathBuf),
-    /// On a local machine its owner's, as the owner's own uv resolves it, so a package's Torch
-    /// stack is fetched and kept once; uv and its owner manage it.
-    Owner(PathBuf),
-    /// The machine's own, which `reclaim` manages.
+    /// Under the machine's engine, on its filesystem: environments hard-link it.
     Machine(PathBuf),
 }
 
@@ -43,14 +40,11 @@ impl Uv {
             false => tools::uv_dir(&Home::under(&home).tools()).join(platform::paths::exe("uv")),
         };
         let (seed, own) = (root.join("opt/cozy/dependency-seed/uv-cache"), engine.join("published"));
-        let owner = owner(protocol::config::environment()).filter(|_| !rental);
-        let cache = match (seed.is_dir(), &owner) {
-            (true, _) => Cache::Seeded(seed),
-            (false, Some((cache, _))) => Cache::Owner(cache.clone()),
-            (false, None) => Cache::Machine(own.join("uv-cache")),
+        let cache = match seed.is_dir() {
+            true => Cache::Seeded(seed),
+            false => Cache::Machine(own.join("uv-cache")),
         };
-        let pythons = owner.map_or_else(|| own.join("python"), |(_, pythons)| pythons);
-        Self { path, cache, pythons }
+        Self { path, cache, pythons: own.join("python") }
     }
 
     /// A uv command: the machine's environment without credentials or names the executor seal
@@ -61,16 +55,15 @@ impl Uv {
         command.env_clear().envs(crate::launch_identity::inherited()).env("UV_PYTHON_INSTALL_DIR", &self.pythons);
         match &self.cache {
             Cache::Seeded(cache) => command.env("UV_CACHE_DIR", cache).env("UV_LINK_MODE", "symlink"),
-            Cache::Owner(cache) | Cache::Machine(cache) => command.env("UV_CACHE_DIR", cache),
+            Cache::Machine(cache) => command.env("UV_CACHE_DIR", cache),
         };
         Ok(command)
     }
 
-    /// The cache the machine manages, its own or an image's; none when the owner's serves.
-    pub fn machine_cache(&self) -> Option<&Path> {
+    /// The cache the machine manages: its own or an image's.
+    pub fn cache(&self) -> &Path {
         match &self.cache {
-            Cache::Machine(cache) | Cache::Seeded(cache) => Some(cache),
-            Cache::Owner(_) => None,
+            Cache::Machine(cache) | Cache::Seeded(cache) => cache,
         }
     }
 
@@ -125,18 +118,6 @@ impl Uv {
             moved => moved,
         }
     }
-}
-
-/// Where uv keeps its cache and managed Pythons for the owner whose environment `env` is: as
-/// uv itself resolves them (its variables, then XDG, then the home directory's defaults).
-fn owner(env: &BTreeMap<String, String>) -> Option<(PathBuf, PathBuf)> {
-    let path = |name: &str| env.get(name).map(PathBuf::from).filter(|p| p.is_absolute());
-    let home = path("HOME");
-    let base = |xdg: &str, default: &str| path(xdg).or_else(|| home.as_ref().map(|h| h.join(default)));
-    Some((
-        path("UV_CACHE_DIR").or_else(|| Some(base("XDG_CACHE_HOME", ".cache")?.join("uv")))?,
-        path("UV_PYTHON_INSTALL_DIR").or_else(|| Some(base("XDG_DATA_HOME", ".local/share")?.join("uv/python")))?,
-    ))
 }
 
 /// Waits until the executable just written at `path` runs. A child another thread forked while
