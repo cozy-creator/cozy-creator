@@ -1,0 +1,16 @@
+{
+  "source_commit": "a5290c7e44cd232da242ffdadafc38950f72c8e9",
+  "fixture": "/home/fidika/cozy_v2/outputs/xs138-p3-native-service/cleanup-fixture/release-gate/suites/varena/owner-runtime",
+  "files": {
+    "README.md": "92e6ea35adfe0be3ad452826ab20beda9ad306b04a73cb8c1313604fb6d31c0f",
+    "package.toml": "f0a13d43196e20b8d99417cda48cd010c6096a68d78692d7f2022a5fd407e9ce",
+    "uv.lock": "7945f10235ecaad3c1bc55683853cfe7199b14bbedabcab822890bb59bd90e25",
+    "pyproject.toml": "10d577fe05fe27602294f518b86e7b38acf9390e3caae80737a0b3b2f9545979",
+    "make-payload.py": "c6a18f25f5a5643dc5efc1eee48ca6ff19795d00e478d9ca7c03cbb7ca268f2a",
+    "ci_varena_owner/requester.py": "f3d3effc499a99df6f03daba10ea5dc165a1af796b4f313c0e0dff2a54f91c3e",
+    "ci_varena_owner/__init__.py": "47970cb383b91a644ab7e107447df8eb8e8ac46acb78db2d689f28d63a17c665"
+  },
+  "order": "destructive last cell, after parity/observe/collector-after",
+  "expected_error": "xs138_cleanup_original_error",
+  "gpu_qualification": false
+}

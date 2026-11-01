@@ -1,0 +1,11 @@
+{
+  "error": {
+    "kind": "unavailable",
+    "code": "local_install_failed",
+    "message": "the machine did not install this code: a part is `Content-Range: bytes a-b/length`",
+    "next": [
+      "cozy run show 25192"
+    ],
+    "cause": "invalid_range"
+  }
+}

@@ -1,0 +1,120 @@
+{
+  "actual_versions": {
+    "attempt_ordinal": 1,
+    "runtime": "0.36.21+dev.g4d5844f0",
+    "tensord": "0.15.4+dev.gafa6f922",
+    "tensord_commit": "afa6f9229153d1a7e93bbf72fc86f5543a4ac21c",
+    "tensorfs": "0.17.16+dev.g1fec2950"
+  },
+  "coverage": {
+    "claim": "bounded logged-action coverage only; missing/ambiguous anchor is inconclusive",
+    "covered": true,
+    "matches": [
+      154
+    ],
+    "method": "exact pre-run suffix retained in post-run all-lines read",
+    "records": 32
+  },
+  "device_index": 0,
+  "errors": [],
+  "gpu_run": 25190,
+  "gpu_uuid": "GPU-74f2ac0a-1c52-2e52-a7a6-b207f1db7a89",
+  "legacy_actions": [],
+  "logged_action_window_ms": [
+    1793534815363,
+    1793534820752.8
+  ],
+  "observe_run": 25191,
+  "owner_row": {
+    "incarnation": 3,
+    "slot": 0
+  },
+  "passed": true,
+  "pid": 439849,
+  "policy_bindings": [
+    {
+      "at_ms": 1793534815363,
+      "line": 193,
+      "note": {
+        "event": "gpu_memory_policy",
+        "gpus": [
+          0
+        ],
+        "mode": "Cooperative",
+        "pid": 439849
+      }
+    }
+  ],
+  "same_pid_and_incarnation": true,
+  "scope": "automatic same-domain owner mechanism and bounded logged policy isolation only; not all unlogged paths, machine shared-mode propagation, game coexistence or complete P3",
+  "scoped_notes": [
+    {
+      "at_ms": 1793534815363,
+      "line": 193,
+      "note": {
+        "event": "gpu_memory_policy",
+        "gpus": [
+          0
+        ],
+        "mode": "Cooperative",
+        "pid": 439849
+      }
+    },
+    {
+      "at_ms": 1793534816823,
+      "line": 194,
+      "note": {
+        "event": "driver_pids",
+        "executors": [
+          439849
+        ],
+        "gpu": "GPU-74f2ac0a-1c52-2e52-a7a6-b207f1db7a89",
+        "ours": [
+          439849
+        ],
+        "unattributed": null
+      }
+    },
+    {
+      "at_ms": 1793534820267,
+      "line": 195,
+      "note": {
+        "calls": [
+          {
+            "anon": 1331589120,
+            "peak": null,
+            "pid": 439849,
+            "running": 1
+          }
+        ],
+        "event": "host_calls"
+      }
+    },
+    {
+      "at_ms": 1793534820269,
+      "line": 196,
+      "note": {
+        "changed": [
+          {
+            "Request": {
+              "bytes": 58982400,
+              "key": "plan-9e86be04c94f484b06e4e13de11e6390532933084cdb3c5e3ecea0a92690eb2a|-"
+            }
+          }
+        ],
+        "event": "peaks_saved",
+        "model": "NVIDIA GeForce RTX 4090"
+      }
+    },
+    {
+      "at_ms": 1793534820701,
+      "line": 197,
+      "note": {
+        "calls": [],
+        "event": "host_calls"
+      }
+    }
+  ],
+  "start_active_boundary": "raw Start frame is not exposed by runshow; actual owner active in both requests plus exact worker/run versions and TensorD source acknowledgement are checked",
+  "worker_boot_stable": true
+}

@@ -1,0 +1,25 @@
+{
+  "native_product_source": "1fec2950bb807bd6c46cccd49ed633e15a3e7649",
+  "runtime_product_source": "4d5844f0ffb0af23dbb4f19a9e143c1d179203d6",
+  "runtime_wheel": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/runtime-build-4d5844f0f/dist/cozy_runtime-0.36.21+dev.g4d5844f0-cp312-abi3-manylinux_2_28_x86_64.whl",
+  "runtime_sha256": "b395f5187175aa3834cceceab45fdaf23cadb20fd2ac1483c0466aff39e3ad14",
+  "tensorfs_wheel": "/home/fidika/cozy_v2/outputs/xs138-p3-native-owner-candidate-1fec2950b/tensorfs-0.17.16+dev.g1fec2950-cp311-abi3-manylinux_2_28_x86_64.whl",
+  "tensorfs_sha256": "d5f8e6b2cf1e2a1f92673871c237590bb528e570d6442796d29501e729339c04",
+  "worker": "/home/fidika/cozy_v2/outputs/xs138-p3-owner-candidate-afa6f9229/cozy/cozy-linux-x86_64",
+  "worker_source": "afa6f9229153d1a7e93bbf72fc86f5543a4ac21c",
+  "cohort": "/home/fidika/cozy_v2/outputs/xs138-p3-native-service/cohort.json",
+  "payload": "/home/fidika/cozy_v2/outputs/xs138-p3-native-service/owner-payload-columbina.json",
+  "payload_sha256": "67404e73fb14a7d0e7f871fac8964a29234e7f61f547b80f2968724b07b48882",
+  "normal_fixture": "/home/fidika/cozy_v2/outputs/xs138-p3-owner-candidate-afa6f9229/fixture/owner-runtime",
+  "cleanup_fixture": "/home/fidika/cozy_v2/outputs/xs138-p3-native-service/cleanup-fixture/release-gate/suites/varena/owner-runtime",
+  "collector": "/home/fidika/cozy_v2/outputs/xs138-p3-owner-candidate-afa6f9229/qualification/collect.py",
+  "order": [
+    "install exact trio",
+    "collector before",
+    "normal gpu",
+    "same-PID observe",
+    "collector after",
+    "cleanup_failure expected sentinel error last"
+  ],
+  "gpu_qualification": false
+}
