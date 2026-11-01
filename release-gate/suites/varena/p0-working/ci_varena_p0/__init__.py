@@ -91,6 +91,12 @@ def split_policy(payload: Probe, tel: Telemetry) -> Report:
 
 
 @app.entrypoint(accelerator=True)
+def retention_policy(payload: Probe, tel: Telemetry) -> Report:
+    """Real cache-window clearing, roomy retention and unchanged managed/peer capacity."""
+    return _cuda_child(payload, tel, "retention_policy.py", "varena-p2-retention-policy")
+
+
+@app.entrypoint(accelerator=True)
 def reclaim_sequence(payload: Probe, tel: Telemetry) -> Report:
     """Preserve the full executed result even when the weight-preservation regression is red."""
     executed = _cuda_child(payload, tel, "reclaim_sequence.py", "working-before-weights")
