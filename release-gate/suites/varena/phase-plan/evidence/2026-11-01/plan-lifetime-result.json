@@ -1,0 +1,31 @@
+{
+  "boundary": "real concurrent last-owner stress plus checked native retirement; not a timing benchmark or proof of every scheduler interleaving",
+  "counts": {
+    "generation_refusals": 0,
+    "selected": 3
+  },
+  "passed": true,
+  "prior_retirement_progress": [],
+  "provenance": {
+    "extension_sha256": "8703a6cdeaf452aa0a7829526d65c60032459a9b41f02b0ee46baa97103a5c59",
+    "gpu_uuid": "9e7b1c5d-0754-e081-0ec2-45c94ce5c59c",
+    "pid": 169520,
+    "request_id": "11",
+    "runtime_modules": {
+      "_kernels/_gemm.abi3.so": "9523c5070bd1646f43b505e0ce0bb05670d7b39f8d7e4be3a52846e2b7a81d3e",
+      "author/_split.py": "c4939ac26380212a0e40371d7ea9421405de696a84f5e113421105da327121da",
+      "author/kernels.py": "51b00bb679b8eb16abe4ff984eb42e1eb55de10cb2ac9047893e84e5f802e123",
+      "internal/encoding/leaves.py": "c0aa697b9baa0f232b036783516790e75c85847559971ce3278507bd232e53f6",
+      "internal/execution/native_linear_split.py": "e97674b588a288e5e3d9f5e816f11f373f0b791f6c67f4863790449199788d1b",
+      "internal/execution/native_residual_ffn.py": "245e18de3560041516367683b4e2c954544408eadf957aea6b29c8e728358135",
+      "internal/execution/native_split.py": "dbb4447b4241174894005127bb975f44ff1c9e75535014b9be1878bd9f1fcaa0",
+      "internal/execution/phase.py": "a4ad0bb892d784e6f89c876e6ba6513f751a4132f66f0008859f4148586e841c",
+      "internal/residency.py": "6e190682a9973a6c59dddc2f772dad14a44b8b22c916003850dca703f25026f6"
+    },
+    "runtime_version": "0.36.21+dev.g190fe844",
+    "shim_sha256": "09684b61d0b909c39d56c7d129432e906ddb0a57f1b4b916b20bb2c4c8d7716e",
+    "tensorfs_version": "0.17.16+dev.g4dcf2618"
+  },
+  "reservation_progress": [],
+  "reservations_retired": 64
+}

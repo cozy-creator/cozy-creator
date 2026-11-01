@@ -1,0 +1,82 @@
+{
+  "passed": true,
+  "runs": {
+    "runtime": 25281,
+    "lifetime": 25282,
+    "primitive": 25283,
+    "cleanup": 25284
+  },
+  "cohort": {
+    "native": "4dcf26183fafe6bd160a52856afd057eae43d184",
+    "runtime": "190fe844d34da8b3573038591c01f142ad03a3cc",
+    "fixture": "281c291f4aba5d65fc624d683b51ff2da2a19ed8",
+    "gpu_uuid": "9e7b1c5d-0754-e081-0ec2-45c94ce5c59c",
+    "pid": 169520
+  },
+  "runtime_capacity_cases": [
+    {
+      "row_chunk": 8193,
+      "managed_limit": 234881024,
+      "declared_weight_backing": 50331648,
+      "warm_store_delta": 0,
+      "warm_host_delta": 0,
+      "warm_fill_delta": 0,
+      "published_per_pass": 8
+    },
+    {
+      "row_chunk": 4097,
+      "managed_limit": 218103808,
+      "declared_weight_backing": 50331648,
+      "warm_store_delta": 0,
+      "warm_host_delta": 0,
+      "warm_fill_delta": 0,
+      "published_per_pass": 8
+    }
+  ],
+  "primitive": {
+    "small_cap": 73400320,
+    "large_cap": 90177536,
+    "weight_intent_bytes": 33554432,
+    "only_initially_resident_bytes": 4194304,
+    "unplanned_whole_resident_regions": 4,
+    "planned_half_resident_regions": 8,
+    "planned_roomy_whole_resident_regions": 8,
+    "stale_begin_allocations": 0,
+    "capture_and_cross_arena_refused": true
+  },
+  "lifetime": {
+    "native_queries": 3,
+    "generation_refusals": 0,
+    "reservations_retired": 64,
+    "scope": "real concurrent query/drop completed; does not prove every scheduler interleaving"
+  },
+  "baseline": {
+    "allocated_bytes": 17039360,
+    "allocated_capacity": 20971520,
+    "mapped_bytes": 20971520,
+    "pending_bytes": 0,
+    "pools": 0,
+    "event_handles": 0
+  },
+  "identity_and_failed_fill_retire_intent": true,
+  "escaped_failed_alias_preserved": true,
+  "model_site_keys_retired": 2,
+  "request_key_retired_on_following_same_pid_request": true,
+  "numerical_boundary": "Actual consumer assertions passed within existing prebuilt relative-L2 budget0.01; no unrecorded bit-exact result is inferred.",
+  "limits": [
+    "Working cache is trimmed each pass: warm proof is weight/source retention, not warmed activation-cache timing.",
+    "One arena/one device, bounded managed capacities; no multi-arena/global Belady claim.",
+    "No eager execution key or prefetch eligibility qualification.",
+    "No full H3, smaller-GPU, cross-process integration or all-P2 acceptance from these cells."
+  ],
+  "files": {
+    "plan-runtime-result.json": "c4c08af7f921cebf677ce5c2288c04cb63958110f262c5c7f667ab5265063697",
+    "plan-runtime-25281.json": "561778eb872ccf6dd47ca1aff8f47b8adc854a10111a66e5c8d3a472762d295c",
+    "plan-lifetime-result.json": "e057b0cb21f60c17438181bc7c86dd7c7f42f78be8d86ba2831e9e69cdc6a947",
+    "plan-lifetime-25282.json": "4f60efdd0b233c3d0ff81ac250f47840ebc9f955fe8a3846299c51478be3e4f7",
+    "plan-primitive-result.json": "d0d4d5d71903b9aa50c4fdbbc31cf624a4d1dc29fd459b89906247a62fa5b2c8",
+    "plan-primitive-25283.json": "2f8c374655be7d3dc5069b3c1ae55df78ea604151cde5010a6f1ad0bba6abbf4",
+    "plan-cleanup-result.json": "c33125b5ff6dad24e723a3767ea028d16fb81082e64421c2e4917f4ea231b41a",
+    "plan-cleanup-25284.json": "42ce7ff88694072dc65dfa84f57060194ba0fdcc42f189472d61543172ee6079"
+  }
+}

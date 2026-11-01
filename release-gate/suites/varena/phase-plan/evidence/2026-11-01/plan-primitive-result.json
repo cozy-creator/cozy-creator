@@ -1,0 +1,516 @@
+{
+  "cases": [
+    {
+      "cap": 73400320,
+      "phase": {
+        "backing_peak_bytes": 35651584,
+        "cut_choices": 1,
+        "definitions": [],
+        "invalidated": false,
+        "key": null,
+        "mode": "eager",
+        "observation_id": 10,
+        "peak_bytes": 33554944,
+        "published": false,
+        "reason": "execution_key_unknown",
+        "split_observations": [
+          {
+            "backing_peak_bytes": 33554432,
+            "choice_id": "whole",
+            "key": "fixture.phase-regions/whole-half-minimum",
+            "observation_id": 65,
+            "observed": true,
+            "peak_bytes": 33554432,
+            "pending": false,
+            "published": true,
+            "reason": "",
+            "successful_passes": 1
+          }
+        ],
+        "successful_backing_peak_bytes": 0,
+        "successful_passes": 0,
+        "successful_peak_bytes": 0,
+        "total_peak_bytes": 54526976
+      },
+      "planned": false,
+      "resident": [
+        true,
+        true,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true
+      ],
+      "selection": {
+        "allocation_backing_bytes": 33554432,
+        "available_bytes": 46137344,
+        "basis": "declared",
+        "choice_id": "whole",
+        "eligible": [
+          "whole",
+          "half",
+          "minimum"
+        ],
+        "measured_backing_peak_bytes": null,
+        "phase": null,
+        "phase_missing_bytes": 0,
+        "phase_outside_reclaimable_bytes": 0,
+        "phase_weight_bytes": 0,
+        "plan_generation": 6,
+        "preserved_backing_bytes": 0,
+        "preserves_phase_weights": false,
+        "reclaimable_working_bytes": 0,
+        "reclaimed_weight_bytes": 0,
+        "reclaimed_working_bytes": 0,
+        "required_bytes": 33554432,
+        "reused_capacity_bytes": 0,
+        "stream": 0
+      },
+      "submission": {
+        "backing_peak_bytes": 33554432,
+        "choice_id": "whole",
+        "key": "fixture.phase-regions/whole-half-minimum",
+        "observation_id": 65,
+        "observed": true,
+        "peak_bytes": 33554432,
+        "pending": true,
+        "published": false,
+        "reason": "",
+        "successful_passes": 0
+      },
+      "touches": [
+        {
+          "filled": false,
+          "pointer": 138443350867968
+        },
+        {
+          "filled": true,
+          "pointer": 138444785319936
+        },
+        {
+          "filled": true,
+          "pointer": 138444789514240
+        },
+        {
+          "filled": true,
+          "pointer": 138444793708544
+        },
+        {
+          "filled": true,
+          "pointer": 138444797902848
+        },
+        {
+          "filled": true,
+          "pointer": 138444802097152
+        },
+        {
+          "filled": true,
+          "pointer": 138444806291456
+        },
+        {
+          "filled": true,
+          "pointer": 138444810485760
+        }
+      ],
+      "weights": {
+        "context_joins": 1,
+        "event_waits": 0,
+        "evictions": 45,
+        "fills": 48,
+        "hits": 25,
+        "pinned_bytes": 0,
+        "poisoned": false,
+        "preferred_bytes": 0,
+        "ready_bytes": 16777216,
+        "reclaimable_bytes": 16777216,
+        "reclaimed_by_reason": {
+          "allocator": 0,
+          "requested": 257949696,
+          "room": 0,
+          "streaming_limit": 0,
+          "weight_allocation": 16777216
+        },
+        "reclaimed_bytes": 274726912,
+        "regions": 8,
+        "reserved_bytes": 33554432,
+        "resident_bytes": 16777216,
+        "streaming_limit_bytes": 18446744073709551615
+      },
+      "working_bytes": 16777216
+    },
+    {
+      "cap": 73400320,
+      "phase": {
+        "backing_peak_bytes": 18874368,
+        "cut_choices": 1,
+        "definitions": [],
+        "invalidated": false,
+        "key": null,
+        "mode": "eager",
+        "observation_id": 11,
+        "peak_bytes": 16777728,
+        "published": false,
+        "reason": "execution_key_unknown",
+        "split_observations": [
+          {
+            "backing_peak_bytes": 16777216,
+            "choice_id": "half",
+            "key": "fixture.phase-regions/whole-half-minimum",
+            "observation_id": 66,
+            "observed": true,
+            "peak_bytes": 16777216,
+            "pending": false,
+            "published": true,
+            "reason": "",
+            "successful_passes": 1
+          }
+        ],
+        "successful_backing_peak_bytes": 0,
+        "successful_passes": 0,
+        "successful_peak_bytes": 0,
+        "total_peak_bytes": 37749760
+      },
+      "planned": true,
+      "resident": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "selection": {
+        "allocation_backing_bytes": 16777216,
+        "available_bytes": 46137344,
+        "basis": "declared",
+        "choice_id": "half",
+        "eligible": [
+          "whole",
+          "half",
+          "minimum"
+        ],
+        "measured_backing_peak_bytes": null,
+        "phase": "all",
+        "phase_missing_bytes": 29360128,
+        "phase_outside_reclaimable_bytes": 0,
+        "phase_weight_bytes": 33554432,
+        "plan_generation": 7,
+        "preserved_backing_bytes": 0,
+        "preserves_phase_weights": true,
+        "reclaimable_working_bytes": 0,
+        "reclaimed_weight_bytes": 0,
+        "reclaimed_working_bytes": 0,
+        "required_bytes": 16777216,
+        "reused_capacity_bytes": 0,
+        "stream": 0
+      },
+      "submission": {
+        "backing_peak_bytes": 16777216,
+        "choice_id": "half",
+        "key": "fixture.phase-regions/whole-half-minimum",
+        "observation_id": 66,
+        "observed": true,
+        "peak_bytes": 16777216,
+        "pending": true,
+        "published": false,
+        "reason": "",
+        "successful_passes": 0
+      },
+      "touches": [
+        {
+          "filled": false,
+          "pointer": 138443350867968
+        },
+        {
+          "filled": true,
+          "pointer": 138444785319936
+        },
+        {
+          "filled": true,
+          "pointer": 138444789514240
+        },
+        {
+          "filled": true,
+          "pointer": 138444793708544
+        },
+        {
+          "filled": true,
+          "pointer": 138444797902848
+        },
+        {
+          "filled": true,
+          "pointer": 138444802097152
+        },
+        {
+          "filled": true,
+          "pointer": 138444806291456
+        },
+        {
+          "filled": true,
+          "pointer": 138444810485760
+        }
+      ],
+      "weights": {
+        "context_joins": 1,
+        "event_waits": 0,
+        "evictions": 49,
+        "fills": 56,
+        "hits": 26,
+        "pinned_bytes": 0,
+        "poisoned": false,
+        "preferred_bytes": 0,
+        "ready_bytes": 33554432,
+        "reclaimable_bytes": 33554432,
+        "reclaimed_by_reason": {
+          "allocator": 0,
+          "requested": 274726912,
+          "room": 0,
+          "streaming_limit": 0,
+          "weight_allocation": 16777216
+        },
+        "reclaimed_bytes": 291504128,
+        "regions": 8,
+        "reserved_bytes": 33554432,
+        "resident_bytes": 33554432,
+        "streaming_limit_bytes": 18446744073709551615
+      },
+      "working_bytes": 16777216
+    },
+    {
+      "cap": 90177536,
+      "phase": {
+        "backing_peak_bytes": 35651584,
+        "cut_choices": 1,
+        "definitions": [],
+        "invalidated": false,
+        "key": null,
+        "mode": "eager",
+        "observation_id": 12,
+        "peak_bytes": 33554944,
+        "published": false,
+        "reason": "execution_key_unknown",
+        "split_observations": [
+          {
+            "backing_peak_bytes": 33554432,
+            "choice_id": "whole",
+            "key": "fixture.phase-regions/whole-half-minimum",
+            "observation_id": 67,
+            "observed": true,
+            "peak_bytes": 33554432,
+            "pending": false,
+            "published": true,
+            "reason": "",
+            "successful_passes": 2
+          }
+        ],
+        "successful_backing_peak_bytes": 0,
+        "successful_passes": 0,
+        "successful_peak_bytes": 0,
+        "total_peak_bytes": 54526976
+      },
+      "planned": true,
+      "resident": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "selection": {
+        "allocation_backing_bytes": 33554432,
+        "available_bytes": 62914560,
+        "basis": "measured",
+        "choice_id": "whole",
+        "eligible": [
+          "whole",
+          "half",
+          "minimum"
+        ],
+        "measured_backing_peak_bytes": 33554432,
+        "phase": "all",
+        "phase_missing_bytes": 29360128,
+        "phase_outside_reclaimable_bytes": 0,
+        "phase_weight_bytes": 33554432,
+        "plan_generation": 7,
+        "preserved_backing_bytes": 0,
+        "preserves_phase_weights": true,
+        "reclaimable_working_bytes": 0,
+        "reclaimed_weight_bytes": 0,
+        "reclaimed_working_bytes": 0,
+        "required_bytes": 33554432,
+        "reused_capacity_bytes": 0,
+        "stream": 0
+      },
+      "submission": {
+        "backing_peak_bytes": 33554432,
+        "choice_id": "whole",
+        "key": "fixture.phase-regions/whole-half-minimum",
+        "observation_id": 67,
+        "observed": true,
+        "peak_bytes": 33554432,
+        "pending": true,
+        "published": false,
+        "reason": "",
+        "successful_passes": 0
+      },
+      "touches": [
+        {
+          "filled": false,
+          "pointer": 138443350867968
+        },
+        {
+          "filled": true,
+          "pointer": 138444785319936
+        },
+        {
+          "filled": true,
+          "pointer": 138444789514240
+        },
+        {
+          "filled": true,
+          "pointer": 138444793708544
+        },
+        {
+          "filled": true,
+          "pointer": 138444797902848
+        },
+        {
+          "filled": true,
+          "pointer": 138444802097152
+        },
+        {
+          "filled": true,
+          "pointer": 138444806291456
+        },
+        {
+          "filled": true,
+          "pointer": 138444810485760
+        }
+      ],
+      "weights": {
+        "context_joins": 1,
+        "event_waits": 0,
+        "evictions": 57,
+        "fills": 64,
+        "hits": 27,
+        "pinned_bytes": 0,
+        "poisoned": false,
+        "preferred_bytes": 0,
+        "ready_bytes": 33554432,
+        "reclaimable_bytes": 33554432,
+        "reclaimed_by_reason": {
+          "allocator": 0,
+          "requested": 308281344,
+          "room": 0,
+          "streaming_limit": 0,
+          "weight_allocation": 16777216
+        },
+        "reclaimed_bytes": 325058560,
+        "regions": 8,
+        "reserved_bytes": 33554432,
+        "resident_bytes": 33554432,
+        "streaming_limit_bytes": 18446744073709551615
+      },
+      "working_bytes": 33554432
+    },
+    {
+      "allocation_delta": 0,
+      "stale_begin_refused": true,
+      "transition": "phase"
+    },
+    {
+      "allocation_delta": 0,
+      "stale_begin_refused": true,
+      "transition": "deactivate"
+    },
+    {
+      "capture_activation_refused": true,
+      "physical_weights_unchanged": true
+    },
+    {
+      "cross_arena_descriptor_refused": true,
+      "second_live_arena_activation_refused": true
+    }
+  ],
+  "final": {
+    "allocated_bytes": 17039360,
+    "allocated_capacity": 20971520,
+    "allocated_peak": 50593808,
+    "allocations": 2018,
+    "context_joins": 0,
+    "driver_memory_calls": 362,
+    "event_handles": 0,
+    "event_queries": 355,
+    "event_records": 313,
+    "event_waits": 0,
+    "free_bytes": 0,
+    "frees": 2016,
+    "mapped_bytes": 20971520,
+    "mapped_peak": 56623104,
+    "ooms": 0,
+    "pending_bytes": 0,
+    "pools": 0,
+    "pools_bytes": 0,
+    "prefetch_admissions": 0,
+    "prefetch_attempts": 21,
+    "prefetch_declines": 21,
+    "reclaimable_bytes": 0,
+    "unassigned_bytes": 0
+  },
+  "initial": {
+    "allocated_bytes": 17039360,
+    "allocated_capacity": 20971520,
+    "allocated_peak": 17039360,
+    "allocations": 2011,
+    "context_joins": 0,
+    "driver_memory_calls": 342,
+    "event_handles": 0,
+    "event_queries": 348,
+    "event_records": 306,
+    "event_waits": 0,
+    "free_bytes": 0,
+    "frees": 2009,
+    "mapped_bytes": 20971520,
+    "mapped_peak": 20971520,
+    "ooms": 0,
+    "pending_bytes": 0,
+    "pools": 0,
+    "pools_bytes": 0,
+    "prefetch_admissions": 0,
+    "prefetch_attempts": 21,
+    "prefetch_declines": 21,
+    "reclaimable_bytes": 0,
+    "unassigned_bytes": 0
+  },
+  "passed": true,
+  "provenance": {
+    "extension_sha256": "8703a6cdeaf452aa0a7829526d65c60032459a9b41f02b0ee46baa97103a5c59",
+    "gpu_uuid": "9e7b1c5d-0754-e081-0ec2-45c94ce5c59c",
+    "pid": 169520,
+    "request_id": "12",
+    "runtime_modules": {
+      "_kernels/_gemm.abi3.so": "9523c5070bd1646f43b505e0ce0bb05670d7b39f8d7e4be3a52846e2b7a81d3e",
+      "author/_split.py": "c4939ac26380212a0e40371d7ea9421405de696a84f5e113421105da327121da",
+      "author/kernels.py": "51b00bb679b8eb16abe4ff984eb42e1eb55de10cb2ac9047893e84e5f802e123",
+      "internal/encoding/leaves.py": "c0aa697b9baa0f232b036783516790e75c85847559971ce3278507bd232e53f6",
+      "internal/execution/native_linear_split.py": "e97674b588a288e5e3d9f5e816f11f373f0b791f6c67f4863790449199788d1b",
+      "internal/execution/native_residual_ffn.py": "245e18de3560041516367683b4e2c954544408eadf957aea6b29c8e728358135",
+      "internal/execution/native_split.py": "dbb4447b4241174894005127bb975f44ff1c9e75535014b9be1878bd9f1fcaa0",
+      "internal/execution/phase.py": "a4ad0bb892d784e6f89c876e6ba6513f751a4132f66f0008859f4148586e841c",
+      "internal/residency.py": "6e190682a9973a6c59dddc2f772dad14a44b8b22c916003850dca703f25026f6"
+    },
+    "runtime_version": "0.36.21+dev.g190fe844",
+    "shim_sha256": "09684b61d0b909c39d56c7d129432e906ddb0a57f1b4b916b20bb2c4c8d7716e",
+    "tensorfs_version": "0.17.16+dev.g4dcf2618"
+  },
+  "request_owned_keys": [
+    "fixture.phase-regions/whole-half-minimum"
+  ]
+}
