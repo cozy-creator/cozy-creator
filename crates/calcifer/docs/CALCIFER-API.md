@@ -95,7 +95,50 @@ unsatisfiable), and `If-None-Match` naming its ETag with `304`, so a `<video>` s
 - `DELETE /v1/session`: `204`, the cookie cleared.
 
 ### Runs
-<!-- cl-716 B: runs, files, interfaces -->
+A run is asked for unbound (`RunRequest`); Calcifer resolves its target, binds it against the function's
+interface, cuts and stages its files and builds the machine's spec (`crates/calcifer/src/runs`). No client builds
+a spec.
+
+- `POST /v1/runs` (`Idempotency-Key`): a `RunRequest`. Answers `202` (`200` when the key had made it) with
+  `Submitted {run, replay, notes, preparing}`:
+  - `target`: `[org/]pkg/fn[@release]` (no `@`: the newest release this computer keeps, refreshed from its Hub;
+    `x/y` is root package x's function y, else account x's package y), or local code `./dir[/fn]`,
+    `./script.py[/fn]`.
+  - `on` (`local`, a machine, `any`, `new[:sku]`), `hub`, `gpus`, `lane`, `attention_kernel`, `out`, `warm`
+    (a level, instead of running), `agreed` (a `new` run's quote).
+  - The payload: `input` (an object) or `input_file` (a JSON or YAML file here; files it names are relative to
+    it); then `terms` override it (`key=value` typed as declared, `key:=<json>`, `model.<slot>=<ref>`, one
+    positional value, input files), `loras` (`[slot=]ref[,strength]`), `files` (`{name?, file}`: an input's
+    field path, a label, or none for the declared files) and `fidelities`. A file is a path here (a video's may
+    end `#t=<start>,<end>`, cut once into `~/.cozy/cache/clips`), a directory at a tree input, or an uploaded
+    `sha256:<hex>`. Relative paths start at `cwd`; without one they are refused.
+  - An omitted integer `seed` derives from the key, so a retried key rebuilds the same request. The same key
+    again answers the recorded run without binding anything; another request under it is `409`.
+  - `notes` are what binding said, in order (`info`: a clip cut; `warning`: fields dropped, a machine with no
+    GPU). `preparing`: the run is local code's install; follow it, then send the same request under the same key.
+  - Refusals name the field: `function_unnamed` (with the commands that name one), `callable_unknown`,
+    `callable_recipe`, `request_payload_invalid`, `asset_media_type`, `input_segment_invalid`, ….
+- `POST /v1/run-quotes`: a `RunRequest` whose `on` is `new[:sku]`: what it would rent and its price
+  (`RunQuote`). Nothing is rented or recorded.
+- `GET /v1/targets?target=&cwd=&hub=`: what a run of `target` calls, resolved as `POST /v1/runs` resolves it:
+  `{package, function?, release, release_from: asked|latest|local, summary, interface}` (the package's interface
+  document; local code's read from its source, installing nothing). A named function is checked as a run checks
+  it.
+- `PUT /v1/files/sha256:<hex>`: a file's bytes, which must hash to its name: `201`, or `200` when held, with
+  `{digest, length, media_type}`. `HEAD` asks whether it is held. A held file unnamed for a day is dropped.
+- `GET /v1/runs` (`status`, `package`, `machine`, `before`, `limit`): `{runs, older, machine?, unreadable?}`.
+- `GET /v1/runs/{id}`: the run. While it waits, `queue_position` (1 is next); while it runs, `progress` with
+  `done_fraction`, `bytes_per_s` and `eta_s`. `?detail=full` adds `measurements`, `calls` and `report` (each
+  executor's stages and unaccounted time, models, kernels, and each GPU's memory, with rates against its
+  ceiling).
+- `GET /v1/runs/{id}/events` (`Last-Event-ID` or `?starting_after=`): `run.*`, `output_item.*`, `run.log`,
+  `run.call`, and the live `run.progress` and `run.waiting`. It ends after the terminal event once every output
+  has landed here or failed to.
+- `GET /v1/runs/events`: every run's change as `run.updated`, each run whole. No backlog: subscribe, then list.
+- `POST /v1/runs/{id}/cancel`: `202`, or `200` when it had ended.
+- `GET /v1/runs/{id}/outputs/{name}`, `GET /v1/runs/{id}/play`: an output's bytes; a link that plays it.
+- Bridge, until package install and removal and model upload and download are Calcifer's (cl-716 D):
+  `POST /v1/runs/prepared` and `POST /v1/run-quotes/prepared` take a `SubmitRun` whose spec the client built.
 
 ### Machines and rentals
 <!-- cl-716 C -->
@@ -179,4 +222,10 @@ ffmpeg (cuts, frames, clips) and uv (local code). No route asks for them.
 | `cozy project status` | `POST /v1/projects {path}`, `GET /v1/projects/{id}` |
 | `cozy project rename <old> <new>` | `POST /v1/projects {path}`, `POST /v1/projects/{id}/rename` |
 | any verb, Calcifer of another version | `POST /v1/down`, then the installed cozy's Calcifer started |
+| `cozy run <target> [inputs] [flags]` | `POST /v1/run-quotes` (`--on new`), `POST /v1/runs` (again after a `preparing` install), then `GET /v1/runs/{id}/events` |
+| `cozy run <target> --describe`, `cozy run <package>` | `GET /v1/targets` |
+| `cozy run ls` | `GET /v1/runs`; live: `GET /v1/runs/events` |
+| `cozy run show <run>` | `GET /v1/runs/{id}?detail=full`, `GET /v1/runs/{id}/events` |
+| `cozy run cancel <run>` | `GET /v1/runs/{id}`, `POST /v1/runs/{id}/cancel` |
+| `cozy run play <run>` | `GET /v1/runs/{id}/play` |
 <!-- each PR adds its verbs' rows -->

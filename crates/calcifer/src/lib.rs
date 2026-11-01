@@ -22,11 +22,12 @@ pub mod outputs;
 pub mod play;
 pub mod project;
 mod rentals;
+pub mod runs;
 pub mod serve;
 pub mod store;
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     io::{Read as _, Write as _},
     path::{Path, PathBuf},
     pin::Pin,
@@ -36,7 +37,7 @@ use std::{
 };
 
 use protocol::{
-    calcifer::{Event, On, Progress, Reason, Run, StagedInput, SubmitRun, Submitted},
+    calcifer::{Event, On, Progress, Reason, Run, StagedInput, Status as RunStatus, SubmitRun, Submitted},
     config::Origin,
     ids::{Digest, RunId},
     machine as v1,
@@ -92,11 +93,13 @@ pub struct Calcifer {
 /// A turn to write one object to one machine, and the number of the run whose turn it is.
 type Turn = Arc<(tokio::sync::Mutex<()>, Mutex<u64>)>;
 
-/// What a run is doing now, never stored: the latest of each live event.
+/// What a run is doing now, never stored: the latest of each live event, and the stage moving
+/// bytes with its last few seconds of (when, bytes moved): its rate.
 #[derive(Default)]
 struct Live {
     waiting: Option<String>,
     progress: Option<Progress>,
+    moving: (String, VecDeque<(Instant, u64)>),
 }
 
 /// A machine's connection, shared by its runs' drivers.
@@ -247,10 +250,26 @@ impl Calcifer {
         self.machines_changed.send_replace(());
     }
 
-    /// Records a run under `key` and starts it; the same key again answers the recorded run.
-    pub async fn submit(
+    /// Calcifer's home, `~/.cozy/calcifer`.
+    pub(crate) fn home(&self) -> &Path {
+        self.inputs.parent().expect("inputs lie in Calcifer's home")
+    }
+
+    /// Records a prebuilt run under `key` and starts it; the same key again answers the recorded
+    /// run.
+    pub async fn submit(self: &Arc<Self>, key: &str, submit: SubmitRun) -> Result<Submitted, Error> {
+        // The same run asked again is the same submission whatever price it was quoted since.
+        let asked = SubmitRun { agreed: None, ..submit.clone() };
+        let digest = format!("sha256:{}", hex::encode(Sha256::digest(serde_json::to_vec(&asked).expect("serializes"))));
+        self.submit_under(key, &digest, submit).await
+    }
+
+    /// Records `submit` under `key` as the ask `digest` names and starts it; the same key again
+    /// answers the recorded run, and another ask under it is a conflict.
+    pub async fn submit_under(
         self: &Arc<Self>,
         key: &str,
+        digest: &str,
         submit: SubmitRun,
     ) -> Result<Submitted, Error> {
         if submit
@@ -263,17 +282,6 @@ impl Calcifer {
                 "a stored submission cannot contain a TensorFS token; omit tensorfs options to use this computer's Hub sign-in at send time".into(),
             ));
         }
-        // The same run asked again is the same submission whatever price it was quoted since.
-        let asked = SubmitRun {
-            agreed: None,
-            ..submit.clone()
-        };
-        let digest = format!(
-            "sha256:{}",
-            hex::encode(Sha256::digest(
-                serde_json::to_vec(&asked).expect("serializes")
-            ))
-        );
         let mut named = None;
         if self.store.keyed(key)?.is_none()
             && let Some(machines) = self.machines()
@@ -306,7 +314,7 @@ impl Calcifer {
             wants,
             agreed: submit.agreed,
         };
-        let (me, key, given) = (self.clone(), key.to_owned(), submit.inputs);
+        let (me, key, given, digest) = (self.clone(), key.to_owned(), submit.inputs, digest.to_owned());
         let (row, fresh) = tokio::task::spawn_blocking(move || {
             // Copied first; then, against a settled run's deletion of the same objects, checked
             // again and recorded under one guard.
@@ -333,6 +341,8 @@ impl Calcifer {
         Ok(Submitted {
             run: self.record(&row)?,
             replay: !fresh,
+            notes: vec![],
+            preparing: false,
         })
     }
 
@@ -353,6 +363,15 @@ impl Calcifer {
         if let Some(live) = lock(&self.live).get(&row.id) {
             run.waiting.clone_from(&live.waiting);
             run.progress.clone_from(&live.progress);
+        }
+        if queued(&run) {
+            // Its machine's count, else the runs waiting ahead of it for that machine.
+            let told = (run.waiting.as_deref())
+                .and_then(|w| w.split("position ").nth(1)?.split(' ').next()?.parse().ok());
+            run.queue_position = match told {
+                Some(place) => Some(place),
+                None => Some(self.store.queued_ahead(run.machine.as_deref(), run.number)? + 1),
+            };
         }
         Ok(run)
     }
@@ -520,11 +539,19 @@ impl Calcifer {
         }
     }
 
-    /// Records the run's progress; whether it entered a stage it was not in.
-    fn progress(&self, id: &RunId, progress: Progress) -> bool {
+    /// Records the run's progress, with how far it is and at what rate its bytes move; whether it
+    /// entered a stage it was not in.
+    fn progress(&self, id: &RunId, mut progress: Progress) -> bool {
         let entered = {
             let mut live = lock(&self.live);
             let live = live.entry(id.clone()).or_default();
+            progress.done_fraction = done_fraction(&progress);
+            let (done, total) = (progress.bytes_done, progress.bytes_total);
+            if done > 0 || total > 0 {
+                progress.bytes_per_s = rate(&mut live.moving, &progress.stage, done, Instant::now());
+                progress.eta_s = (progress.bytes_per_s.filter(|rate| total > done && *rate >= 1.0))
+                    .map(|rate| ((total - done) as f64 / rate) as i64);
+            }
             let was = live.progress.replace(progress.clone()).map(|p| p.stage);
             !progress.stage.is_empty() && was.as_deref() != Some(progress.stage.as_str())
         };
@@ -984,6 +1011,7 @@ impl Calcifer {
                             step_ms: p.step_ms,
                             step_avg_ms: p.step_avg_ms,
                             at_ms: frame.at_ms,
+                            ..Default::default()
                         },
                     );
                     if entered {
@@ -1224,6 +1252,37 @@ impl Calcifer {
         }
         Ok(())
     }
+}
+
+/// Waiting for its turn: in the outbox, or in its machine's line.
+fn queued(run: &Run) -> bool {
+    run.status == RunStatus::Queued
+        || (run.status == RunStatus::InProgress && run.machine_state.as_deref() == Some("queued"))
+}
+
+/// How far a run is: its own fraction, else its stage's, else its steps', else its bytes'.
+fn done_fraction(progress: &Progress) -> Option<f64> {
+    let of = |done: u64, total: u64| (total > 0).then(|| done as f64 / total as f64);
+    (progress.fraction.filter(|f| *f >= 0.0))
+        .or(progress.stage_fraction)
+        .or_else(|| of(progress.completed, progress.total))
+        .or_else(|| of(progress.bytes_done, progress.bytes_total))
+}
+
+/// A stage's bytes a second over its last 10 s (and at least its last two counts), once a second
+/// of them is seen. A new stage, or a count that went back, starts again.
+fn rate(moving: &mut (String, VecDeque<(Instant, u64)>), stage: &str, done: u64, now: Instant) -> Option<f64> {
+    let (name, seen) = moving;
+    if name != stage || seen.back().is_some_and(|(_, last)| done < *last) {
+        (*name, *seen) = (stage.to_owned(), VecDeque::new());
+    }
+    seen.push_back((now, done));
+    while seen.len() > 2 && seen.front().is_some_and(|(at, _)| now - *at > Duration::from_secs(10)) {
+        seen.pop_front();
+    }
+    let (at, first) = *seen.front()?;
+    let secs = (now - at).as_secs_f64();
+    (secs >= 1.0).then(|| (done - first) as f64 / secs)
 }
 
 /// Keeps each given file as `inputs/<sha256 hex>` unless it is there: a hard link to the file a

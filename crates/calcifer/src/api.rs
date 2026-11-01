@@ -127,7 +127,8 @@ impl Api {
 
 pub fn router(api: Arc<Api>) -> Router {
     Router::new()
-        .route("/v1/runs", post(submit).get(list))
+        .route("/v1/runs", post(crate::runs::submit).get(list))
+        .route("/v1/runs/prepared", post(prepared))
         .route("/v1/runs/events", get(runs_events))
         .route("/v1/runs/{id}", get(show))
         .route("/v1/runs/{id}/cancel", post(cancel))
@@ -144,7 +145,15 @@ pub fn router(api: Arc<Api>) -> Router {
         .route("/v1/machines/{name}/keepalive", post(machines::keepalive))
         .route("/v1/machines/{name}/logs/{log}", get(machines::logs))
         .route("/v1/rental-quotes", post(machines::quote))
-        .route("/v1/run-quotes", post(machines::run_quote))
+        .route("/v1/run-quotes", post(crate::runs::quote))
+        .route("/v1/run-quotes/prepared", post(prepared_quote))
+        .route("/v1/targets", get(crate::runs::describe))
+        .route(
+            "/v1/files/{name}",
+            axum::routing::put(crate::runs::files::put)
+                .head(crate::runs::files::head)
+                .layer(DefaultBodyLimit::disable()),
+        )
         .route("/v1/session", post(session).delete(end_session))
         .merge(crate::project::routes())
         // Routes go above this line: the bearer and the admission gate guard only those.
@@ -191,15 +200,16 @@ impl From<StoreError> for Refusal {
     }
 }
 
+/// A key that already names another ask.
+pub(crate) fn conflict(key: &str) -> Error {
+    Error::new(Kind::Conflict, "idempotency_conflict", format!("idempotency key {key:?} already names another run"))
+        .remedy("submit a different run under a new key")
+}
+
 impl From<crate::Error> for Refusal {
     fn from(e: crate::Error) -> Self {
         Refusal(match e {
-            crate::Error::Store(StoreError::Conflict(key)) => Error::new(
-                Kind::Conflict,
-                "idempotency_conflict",
-                format!("idempotency key {key:?} already names another run"),
-            )
-            .remedy("submit a different run under a new key"),
+            crate::Error::Store(StoreError::Conflict(key)) => conflict(&key),
             crate::Error::Store(StoreError::UnknownMachine(name)) => Error::new(
                 Kind::NotFound,
                 "machine_not_found",
@@ -428,7 +438,20 @@ pub(crate) fn find(api: &Api, key: &str) -> Result<RunRow, Refusal> {
     })
 }
 
-async fn submit(
+/// `POST /v1/run-quotes/prepared`: what a `new` prepared run would rent, and its price. Leaves with
+/// `POST /v1/runs/prepared`.
+async fn prepared_quote(
+    State(api): State<Arc<Api>>,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<Json<protocol::calcifer::RunQuote>, Refusal> {
+    let submit = parse::<SubmitRun>(&body?)?;
+    api.machines.hubs.client(&submit.hub).map_err(Refusal)?;
+    Ok(Json(api.machines.run_quote(&submit).await.map_err(Refusal)?))
+}
+
+/// `POST /v1/runs/prepared`: a run whose machine spec its client built, for the verbs that still
+/// build one (package install and removal, model upload and download). Leaves with them (cl-716 D).
+async fn prepared(
     State(api): State<Arc<Api>>,
     IdempotencyKey(key): IdempotencyKey,
     body: Result<Bytes, BytesRejection>,
@@ -511,13 +534,9 @@ async fn show(
         return Ok(Json(api.calcifer.record(&row)?));
     }
     let mut run = api.calcifer.store().detail(&row)?;
-    for live in api.calcifer.live(&row.id) {
-        match live {
-            Event::Waiting { reason } => run.waiting = Some(reason),
-            Event::Progress { progress } => run.progress = Some(progress),
-            _ => {}
-        }
-    }
+    let record = api.calcifer.record(&row)?;
+    (run.waiting, run.progress, run.queue_position) = (record.waiting, record.progress, record.queue_position);
+    run.report = crate::runs::report::of(&run);
     Ok(Json(run))
 }
 
@@ -581,13 +600,16 @@ struct Resume {
 /// The run's events from `starting_after`: what the store holds after it, the latest live
 /// events, then the broadcast as it happens. The stream ends after the run's terminal event once
 /// each of its outputs has landed or carries an `export_error`; Calcifer stopping ends it without
-/// one (reconnect from the last `id:`).
+/// one (reconnect from the last `id:`, as `Last-Event-ID` or `?starting_after=`).
 async fn events(
     State(api): State<Arc<Api>>,
     Path(key): Path<String>,
+    headers: axum::http::HeaderMap,
     query: Result<Query<Resume>, QueryRejection>,
 ) -> Result<Sse<impl Stream<Item = Result<sse::Event, Infallible>>>, Refusal> {
     let Query(Resume { starting_after }) = query?;
+    let last = headers.get("last-event-id").and_then(|v| v.to_str().ok()?.trim().parse::<u64>().ok());
+    let starting_after = starting_after.max(last.unwrap_or(0));
     // Subscribed first: whatever happens after the store is read is in the tail.
     let tail = api.calcifer.subscribe();
     let row = find(&api, &key)?;

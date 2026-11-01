@@ -105,11 +105,166 @@ pub struct StagedInput {
     pub length: u64,
 }
 
+/// `POST /v1/runs` and `POST /v1/run-quotes`: a run as people ask for it, which Calcifer resolves and
+/// binds against its function's interface. Under one `Idempotency-Key` it is one run, whose integer
+/// `seed`, when the request omits one, derives from the key.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RunRequest {
+    /// `[org/]pkg/fn[@release]`, or local code: `./dir[/fn]`, `./script.py[/fn]`.
+    pub target: String,
+    /// `local` (the default), a machine's name, `any`, or `new[:sku]`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on: Option<On>,
+    /// The Tensorhub origin; empty: Calcifer's.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub hub: String,
+    /// The payload as an object; `terms` override it. A file field holds a path or an uploaded
+    /// file's `sha256:<hex>`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<serde_json::Map<String, serde_json::Value>>,
+    /// The payload from a JSON or YAML file on this computer; the files it names are relative to it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_file: Option<PathBuf>,
+    /// `key=value` (typed as the field is declared), `key:=<json>`, `model.<slot>=<ref>`, one
+    /// positional value, and input files.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub terms: Vec<String>,
+    /// Attached files, each into a named input, a labelled occurrence of the declared files, or
+    /// those files.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<FileTerm>,
+    /// `label-or-index=auto|low|medium|high`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fidelities: Vec<String>,
+    /// `[slot=]ref[,strength]`, in order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub loras: Vec<String>,
+    /// Where relative paths start; absent, a relative path is refused.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<PathBuf>,
+    /// At most this many GPUs; absent: every GPU its slots support.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpus: Option<u32>,
+    /// The main model's lane; absent: the Hub's pick for the machine.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lane: Option<String>,
+    /// `KERNEL` or `[SLOT/]COMPONENT=KERNEL`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attention_kernel: Option<String>,
+    /// Keep the function at this level instead of running it (`off` takes it out).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warm: Option<crate::machine::WarmLevel>,
+    /// Where outputs land; absent: `~/.cozy/outputs`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub out: Option<PathBuf>,
+    /// Calls a package's `quantize`, which `cozy run` refuses: `cozy model quantize` runs it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub recipes: bool,
+    /// The quote a `new` run's renter agreed to (`POST /v1/run-quotes`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agreed: Option<Agreed>,
+}
+
+/// One attached file: `name` is an input's field path (`image`, `frames.0`) or a label, absent for
+/// one of the declared files; `file` is a path on this computer (a video's may end in
+/// `#t=<start>,<end>`) or an uploaded file's `sha256:<hex>`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileTerm {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub file: String,
+}
+
+impl FileTerm {
+    /// `--file`'s grammar, `[NAME=]FILE`: an explicit path is never split on `=`.
+    pub fn parse(raw: &str) -> Self {
+        let bare = || Self { name: None, file: raw.to_owned() };
+        if crate::target::written_as_path(raw) {
+            return bare();
+        }
+        match raw.split_once('=') {
+            Some((name, file)) => Self { name: Some(name.trim().to_owned()), file: file.trim().to_owned() },
+            None => bare(),
+        }
+    }
+}
+
+/// `PUT /v1/files/sha256:<hex>`: a file Calcifer holds for runs to name, by its content.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct File {
+    pub digest: Digest,
+    pub length: u64,
+    pub media_type: String,
+}
+
+/// `GET /v1/targets?target=`: what a run of `target` calls, resolved as `POST /v1/runs` resolves it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Target {
+    /// `org/pkg`, or local code's `local/<name>`.
+    pub package: String,
+    /// The function, as the interface spells it; absent: the target names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function: Option<String>,
+    /// The release, or local code's source digest.
+    pub release: String,
+    pub release_from: ReleaseFrom,
+    /// What the package does, in a line.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary: String,
+    /// The package's interface document (`cozy.package.interface/1`).
+    pub interface: serde_json::Value,
+}
+
+/// Why a run binds and runs the release it does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReleaseFrom {
+    /// The target named it.
+    Asked,
+    /// The newest release this computer keeps of the package, refreshed from its Hub.
+    Latest,
+    /// Local code: its source as it is now.
+    Local,
+}
+
+impl fmt::Display for ReleaseFrom {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            ReleaseFrom::Asked => "asked",
+            ReleaseFrom::Latest => "the Hub's latest",
+            ReleaseFrom::Local => "local",
+        })
+    }
+}
+
 /// The answer to a submit: 202 when this call recorded the run, 200 (`replay`) when the key had.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Submitted {
     pub run: Run,
     pub replay: bool,
+    /// What resolving and binding the request said, in order (dropped fields, cut clips, a machine
+    /// without a GPU), for its client to show.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<Note>,
+    /// `run` makes the target ready (local code's install): follow it, then send the same request
+    /// under the same key again for the call.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub preparing: bool,
+}
+
+/// Something a request's handling said.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Note {
+    pub level: NoteLevel,
+    pub message: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoteLevel {
+    Info,
+    Warning,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,6 +312,10 @@ pub struct Run {
     /// Live: the machine's latest progress.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<Progress>,
+    /// A run waiting for its turn: its place in its machine's line (1 is next: only the work
+    /// running is ahead of it), or among the runs waiting for a machine to be chosen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_position: Option<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<Warning>,
     /// How its machine served the request other than as sent, once settled.
@@ -176,6 +335,9 @@ pub struct Run {
     /// With `?detail=full`: the run's settled calls, in the order they ended.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub calls: Vec<Call>,
+    /// With `?detail=full`: its measurements and its calls', worked out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<crate::report::Report>,
 }
 
 /// One request field a run's executor served other than as sent (`Outcome.adjustments`).
@@ -288,6 +450,16 @@ pub struct Progress {
     /// When the machine last saw it move (Unix ms; 0: unknown): how long a run has not.
     #[serde(default)]
     pub at_ms: i64,
+    /// How far the run is, as Calcifer reads it: its own fraction, else its stage's, else its
+    /// steps', else its bytes'.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done_fraction: Option<f64>,
+    /// The stage's bytes a second over its last 10 s, once a second of them is seen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes_per_s: Option<f64>,
+    /// The seconds its bytes still take at that rate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eta_s: Option<i64>,
 }
 
 /// One event of a run's stream.
@@ -1017,5 +1189,39 @@ impl fmt::Display for On {
             On::New(None) => f.write_str("new"),
             On::New(Some(sku)) => write!(f, "new:{sku}"),
         }
+    }
+}
+
+/// `gpus`: 1 or more. Where a run uses the CPU is its function's and its machine's to say.
+pub fn gpu_count(text: &str) -> Result<u32, String> {
+    match text.parse::<u32>() {
+        Ok(0) => Err(
+            "a function that needs no GPU runs on the CPU by itself, as does every run on a \
+             machine without one: `--on new:cpu` rents a machine with none"
+                .into(),
+        ),
+        Ok(n) => Ok(n),
+        Err(_) => Err(format!("{text:?} is not a number of GPUs")),
+    }
+}
+
+/// `attention_kernel`, in the grammar the Runtime reads (`KERNEL` or `[SLOT/]COMPONENT=KERNEL`, no
+/// whitespace); the Runtime judges the names.
+pub fn attention_pin(pin: &str) -> Result<String, String> {
+    let formed = match pin.split_once('=') {
+        None => !pin.is_empty(),
+        Some((scope, kernel)) => !scope.is_empty() && !kernel.is_empty() && !kernel.contains('='),
+    };
+    match formed && !pin.contains(char::is_whitespace) {
+        true => Ok(pin.to_owned()),
+        false => Err("use KERNEL or [SLOT/]COMPONENT=KERNEL, with no whitespace".into()),
+    }
+}
+
+/// A file fidelity's form; which file it names is checked as the run binds.
+pub fn fidelity(term: &str) -> Result<String, String> {
+    match term.rsplit_once('=') {
+        Some((asset, "auto" | "low" | "medium" | "high")) if !asset.is_empty() => Ok(term.into()),
+        _ => Err("use LABEL-OR-INDEX=auto|low|medium|high".into()),
     }
 }

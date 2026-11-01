@@ -5,7 +5,7 @@
 //! `cozy run ls`) stops following and never cancels: the run is Calcifer's, and `cozy run
 //! show` reattaches.
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::HashSet,
     fmt::Write as _,
     process::ExitCode,
     time::{Duration, Instant},
@@ -15,8 +15,8 @@ use protocol::names::shown;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use protocol::{
     calcifer::{
-        Adjustment, Event, Machine, MachineState, On, OutputItem, Progress, Run, RunQuote, Status,
-        SubmitRun, Submitted,
+        Adjustment, Event, Machine, MachineState, NoteLevel, On, OutputItem, Progress, Run, RunQuote,
+        RunRequest, Status, SubmitRun, Submitted,
     },
     error::{Error, Kind},
 };
@@ -28,8 +28,31 @@ use crate::{
     output,
 };
 
-/// Submits under `key`, or a fresh one: one key names one submission forever. A run that rents
-/// carries the quote its renter agreed to (`machine::agree`).
+/// Submits `ask` under `key`: one key names one run forever. A run that rents carries the quote
+/// its renter agreed to (`machine::agree`). What binding it said is shown, in order.
+pub(crate) async fn submit_request(ctx: &Context, ask: &RunRequest, key: &str) -> Result<Submitted, Error> {
+    let calcifer = ctx.calcifer().await?;
+    let mut ask = ask.clone();
+    if matches!(ask.on, Some(On::New(_))) && ask.agreed.is_none() {
+        let quoted: RunQuote = calcifer.post("/v1/run-quotes", &ask, None).await?;
+        if !crate::machine::agree(ctx, &quoted)? {
+            return Err(Error::new(Kind::Usage, "quote_declined", "nothing was rented and the run was not sent"));
+        }
+        ask.agreed = Some(quoted.quote.agreed());
+    }
+    let submitted: Submitted = calcifer.post("/v1/runs", &ask, Some(key)).await?;
+    for note in &submitted.notes {
+        match note.level {
+            NoteLevel::Info => output::say(ctx, &note.message),
+            NoteLevel::Warning => output::warn(&note.message),
+        }
+    }
+    replayed(ctx, &submitted);
+    Ok(submitted)
+}
+
+/// Submits a run whose spec its verb built (`POST /v1/runs/prepared`: package install and removal,
+/// model upload and download, until Calcifer builds theirs) under `key`, or a fresh one.
 pub(crate) async fn submit(
     ctx: &Context,
     mut run: SubmitRun,
@@ -38,13 +61,19 @@ pub(crate) async fn submit(
     let key = key.map_or_else(mint_key, str::to_owned);
     let calcifer = ctx.calcifer().await?;
     if matches!(run.on, On::New(_)) && run.agreed.is_none() {
-        let quoted: RunQuote = calcifer.post("/v1/run-quotes", &run, None).await?;
+        let quoted: RunQuote = calcifer.post("/v1/run-quotes/prepared", &run, None).await?;
         if !crate::machine::agree(ctx, &quoted)? {
             return Err(Error::new(Kind::Usage, "quote_declined", "nothing was rented and the run was not sent"));
         }
         run.agreed = Some(quoted.quote.agreed());
     }
-    let submitted = calcifer.submit(&key, &run).await?;
+    let submitted: Submitted = calcifer.post("/v1/runs/prepared", &run, Some(&key)).await?;
+    replayed(ctx, &submitted);
+    Ok(submitted)
+}
+
+/// Says that the key named a run submitted before.
+fn replayed(ctx: &Context, submitted: &Submitted) {
     if submitted.replay {
         output::say(
             ctx,
@@ -54,7 +83,6 @@ pub(crate) async fn submit(
             ),
         );
     }
-    Ok(submitted)
 }
 
 /// A fresh idempotency key.
@@ -142,7 +170,7 @@ fn saved(run: Run) -> Result<Run, Error> {
 
 /// Follows a run another one waits on (local code's install): its progress on a terminal, no
 /// record and no events of its own.
-pub(super) async fn settle(ctx: &Context, run: Run) -> Result<Run, Error> {
+pub(crate) async fn settle(ctx: &Context, run: Run) -> Result<Run, Error> {
     Ok(watch(ctx, run, false, interrupt()).await?.0)
 }
 
@@ -423,8 +451,6 @@ struct View {
     status: Option<Status>,
     /// The output items already named.
     named: HashSet<String>,
-    /// The stage moving bytes, and its last few seconds of (when, bytes moved): its rate.
-    moving: (String, VecDeque<(Instant, u64)>),
     /// The progress last shown, and when its step count last moved: a step running far past its
     /// stage's pace says so.
     last: Option<(Progress, Instant)>,
@@ -451,7 +477,6 @@ impl View {
             waiting: None,
             status: None,
             named: HashSet::new(),
-            moving: (String::new(), VecDeque::new()),
             last: None,
         };
         view.lifecycle(run);
@@ -590,16 +615,12 @@ impl View {
 
     fn show_progress(&mut self) {
         let Some((progress, stepped)) = self.last.clone() else { return };
-        let fraction = fraction(&progress);
+        let fraction = progress.done_fraction;
         let mut text = said(&progress);
         // At what rate bytes move, and so how long is left: a download that crawls says so.
-        let (done, total) = (progress.bytes_done, progress.bytes_total);
-        if (done > 0 || total > 0)
-            && let Some(rate) = rate(&mut self.moving, &progress.stage, done, Instant::now())
-        {
+        if let Some(rate) = progress.bytes_per_s {
             let _ = write!(text, " at {}/s", output::bytes(rate as u64));
-            if total > done && rate >= 1.0 {
-                let left = ((total - done) as f64 / rate) as i64;
+            if let Some(left) = progress.eta_s {
                 let _ = write!(text, ", {} left", output::span(left));
             }
         }
@@ -636,15 +657,6 @@ impl View {
             bar.finish_and_clear();
         }
     }
-}
-
-/// How far a run is: its own fraction, else its stage's, else its steps', else its bytes'.
-pub(crate) fn fraction(progress: &Progress) -> Option<f64> {
-    let of = |done: u64, total: u64| (total > 0).then(|| done as f64 / total as f64);
-    (progress.fraction.filter(|f| *f >= 0.0))
-        .or(progress.stage_fraction)
-        .or_else(|| of(progress.completed, progress.total))
-        .or_else(|| of(progress.bytes_done, progress.bytes_total))
 }
 
 /// Where a run is: its stage, its steps of their total and their times, and its bytes of theirs;
@@ -692,20 +704,4 @@ fn took(ms: f64) -> String {
         true => format!("{:.1}s", ms / 1000.0),
         false => output::span((ms / 1000.0) as i64),
     }
-}
-
-/// A stage's bytes a second over its last 10 s (and at least its last two counts), once a second
-/// of them is seen. A new stage, or a count that went back, starts again.
-fn rate(moving: &mut (String, VecDeque<(Instant, u64)>), stage: &str, done: u64, now: Instant) -> Option<f64> {
-    let (name, seen) = moving;
-    if name != stage || seen.back().is_some_and(|(_, last)| done < *last) {
-        (*name, *seen) = (stage.to_owned(), VecDeque::new());
-    }
-    seen.push_back((now, done));
-    while seen.len() > 2 && seen.front().is_some_and(|(at, _)| now - *at > Duration::from_secs(10)) {
-        seen.pop_front();
-    }
-    let (at, first) = *seen.front()?;
-    let secs = (now - at).as_secs_f64();
-    (secs >= 1.0).then(|| (done - first) as f64 / secs)
 }
