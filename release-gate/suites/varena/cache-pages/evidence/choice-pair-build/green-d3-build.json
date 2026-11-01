@@ -1,0 +1,11 @@
+{
+  "arm": "green-d3",
+  "source_receipt_sha256": "104ee1b2917fcdb08acab1ac27d4ce6b859fc76745c1742512c50b2ef51e9eaf",
+  "binary_sha256": "d71ab02e57f814d8237ff72817e0f38401ca2e62b62c250268c8a19a47490478",
+  "build_log_sha256": "ca282a4f75374febf27e23ce746820fe981412866d26750080c94b0a49507494",
+  "build_script_sha256": "b506a2bc42e8a9b13d943957c51b88b65b6f08a5b3546e2f0cd676a4a10ec667",
+  "source_receipt": "/home/fidika/cozy_v2/outputs/xs138-p3-cache/choice-pair/green-d3/source.json",
+  "prepared_receipt": "/home/fidika/cozy_v2/outputs/xs138-p3-cache/choice-pair/green-d3/controller-hitoshiki/ready.json",
+  "gpu_executed": false,
+  "build": "one CPU/job nice19 offline manylinux2_28 Rust1.99.1; existing target reused; binary copied before next build"
+}

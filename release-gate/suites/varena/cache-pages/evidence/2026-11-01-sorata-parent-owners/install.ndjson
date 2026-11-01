@@ -1,0 +1,26 @@
+{"type":"run.created","sequence_number":1,"run":{"id":"run-43b0df6e220794b452cab566","number":25585,"kind":"update","target":"runtime 0.36.23+dev.g2626e3f4 (dev), tensorfs 0.17.16+dev.gdfb91204 (dev)","hub":"https://tensorhub.com","machine":"sorata","status":"queued","cancel_requested":false,"output":[],"created_at_ms":1793566416915}}
+{"type":"run.waiting","reason":"sending to sorata"}
+{"type":"run.log","sequence_number":2,"at_ms":1793566416991,"level":"inputs","text":"reused runtime, tensorfs (48.0 MiB): sorata already holds them"}
+{"type":"run.in_progress","sequence_number":3,"run":{"id":"run-43b0df6e220794b452cab566","number":25585,"kind":"update","target":"runtime 0.36.23+dev.g2626e3f4 (dev), tensorfs 0.17.16+dev.gdfb91204 (dev)","hub":"https://tensorhub.com","machine":"sorata","status":"in_progress","cancel_requested":false,"machine_state":"queued","output":[],"created_at_ms":1793566416915,"accepted_at_ms":1793566417194}}
+{"type":"run.progress","progress":{"stage":"waiting","completed":0,"total":0,"bytes_done":0,"bytes_total":0,"step_ms":0.0,"step_avg_ms":0.0,"at_ms":1793566417176}}
+{"type":"run.log","sequence_number":4,"at_ms":1793566417176,"level":"stage","text":"waiting"}
+{"type":"run.progress","progress":{"stage":"preparing","completed":0,"total":0,"bytes_done":0,"bytes_total":0,"step_ms":0.0,"step_avg_ms":0.0,"at_ms":1793566417230}}
+{"type":"run.log","sequence_number":5,"at_ms":1793566417230,"level":"stage","text":"preparing"}
+{"type":"run.waiting","reason":"no answer from sorata yet (0s): machine_booting: the machine is starting; ask again once it serves"}
+{"type":"run.waiting","reason":""}
+{"type":"run.progress","progress":{"stage":"waiting","completed":0,"total":0,"bytes_done":0,"bytes_total":0,"step_ms":0.0,"step_avg_ms":0.0,"at_ms":1793566417176}}
+{"type":"run.progress","progress":{"stage":"preparing","completed":0,"total":0,"bytes_done":0,"bytes_total":0,"step_ms":0.0,"step_avg_ms":0.0,"at_ms":1793566417230}}
+{"type":"run.progress","progress":{"stage":"installing","completed":0,"total":0,"bytes_done":0,"bytes_total":0,"step_ms":0.0,"step_avg_ms":0.0,"at_ms":1793566418001}}
+{"type":"run.progress","progress":{"stage":"starting","completed":0,"total":0,"bytes_done":0,"bytes_total":0,"step_ms":0.0,"step_avg_ms":0.0,"at_ms":1793566418004}}
+{"type":"run.log","sequence_number":6,"at_ms":1793566417176,"level":"stage","text":"waiting"}
+{"type":"run.log","sequence_number":7,"at_ms":1793566417230,"level":"stage","text":"preparing"}
+{"type":"run.log","sequence_number":8,"at_ms":1793566418001,"level":"stage","text":"installing"}
+{"type":"run.log","sequence_number":9,"at_ms":1793566418004,"level":"stage","text":"starting"}
+{"type":"run.in_progress","sequence_number":10,"run":{"id":"run-43b0df6e220794b452cab566","number":25585,"kind":"update","target":"runtime 0.36.23+dev.g2626e3f4 (dev), tensorfs 0.17.16+dev.gdfb91204 (dev)","hub":"https://tensorhub.com","machine":"sorata","status":"in_progress","cancel_requested":false,"machine_state":"running","output":[],"created_at_ms":1793566416915,"accepted_at_ms":1793566417194}}
+{"type":"run.completed","sequence_number":11,"run":{"id":"run-43b0df6e220794b452cab566","number":25585,"kind":"update","target":"runtime 0.36.23+dev.g2626e3f4 (dev), tensorfs 0.17.16+dev.gdfb91204 (dev)","hub":"https://tensorhub.com","machine":"sorata","status":"completed","cancel_requested":false,"machine_state":"running","output":[],"created_at_ms":1793566416915,"accepted_at_ms":1793566417194,"settled_at_ms":1793566418769,"result":{"from":{"cozy":"0.15.7+dev.g616cf254","runtime":"0.36.23+dev.g136cdba4","runtime_sha256":"a4072e1c0b0b82c8048444a74d40c4e38543248c12d67a14cc29d0b3b29a4e54","tensorfs":"0.17.16+dev.ga96c7c3e","tensorfs_sha256":"22b0039e44071ee89c6e9464f80aa9e4dc739bf39ff014e3cc7a88975c88d3fc"},"to":{"cozy":"0.15.7+dev.g616cf254","runtime":"0.36.23+dev.g2626e3f4","runtime_sha256":"e69fcb98a7855a6c2e532885732f5416745ff212ec01f3f73cc2ff1e9e217156","tensorfs":"0.17.16+dev.gdfb91204","tensorfs_sha256":"14570f4fabfd53de63704716a2a18dd32b4944c0a6c2505b418e1e60fad80b53"}}}}
+{
+  "machine": "sorata",
+  "runtime": "0.36.23+dev.g2626e3f4",
+  "tensord": "0.15.7+dev.g616cf254",
+  "tensorfs": "0.17.16+dev.gdfb91204"
+}

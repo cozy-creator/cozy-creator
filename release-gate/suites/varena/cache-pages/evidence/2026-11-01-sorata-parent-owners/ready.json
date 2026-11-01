@@ -1,0 +1,135 @@
+{
+  "manifest": {
+    "source_sha": "6bdde809ac56136fc02ad14cf1256fde3a40dbfe",
+    "native_base": "a96c7c3e837314795d0d21b993df1246dc394aed",
+    "native_source": "dfb912042f60fd99a0bbe404b9927665e9b39715",
+    "mixed_sources": {
+      "controller": "6bdde809ac56136fc02ad14cf1256fde3a40dbfe",
+      "native_and_rust_helper": "dfb912042f60fd99a0bbe404b9927665e9b39715",
+      "gil_gate_source": "9ce925dd95e73f9c3f21fecf514259b4bf102f5e",
+      "compiled_inputs_unchanged": true
+    },
+    "native_tree": "e7f324f402710001c7f47d794214c3e328964fdd",
+    "binary_sha256": "562ce61b8e6c2fd12e140c8e200e84053d22b90ba17514ecec53fb5f39695b03",
+    "archive_sha256": "9ec32543fb13d0d42de20c50f6a2c44fb9d1e31d9970b2128d1d2a04e00e6cc9",
+    "source_receipt_sha256": "3aaab2fc705295505210b82f54c2c73fa90be2503f25713a371b447624080478",
+    "elf": {
+      "class": "ELF64",
+      "machine": "x86_64",
+      "needed": [
+        "libdl.so.2",
+        "libgcc_s.so.1",
+        "libpthread.so.0",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ],
+      "glibc_versions": [
+        [
+          2,
+          2
+        ],
+        [
+          2,
+          3
+        ],
+        [
+          2,
+          10
+        ],
+        [
+          2,
+          12
+        ],
+        [
+          2,
+          14
+        ],
+        [
+          2,
+          16
+        ],
+        [
+          2,
+          17
+        ],
+        [
+          2,
+          18
+        ],
+        [
+          2,
+          28
+        ]
+      ],
+      "glibc_max": [
+        2,
+        28
+      ]
+    },
+    "scope": "Fixture-only actual startup readiness, complete diagnostics and separate ordinary/explicit replay cases; real16MiB and192MiB allocation semantics unchanged; native/helperdfb and Runtime2626 unchanged; failed25557/25560/25563 preserved.",
+    "runtime_owner_fixture": {
+      "runtime_wheel": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/runtime-build-2626e3f48/dist/cozy_runtime-0.36.23+dev.g2626e3f4-cp312-abi3-manylinux_2_28_x86_64.whl",
+      "runtime_wheel_sha256": "e69fcb98a7855a6c2e532885732f5416745ff212ec01f3f73cc2ff1e9e217156",
+      "runtime_version": "0.36.23+dev.g2626e3f4",
+      "runtime_modules": {
+        "internal/cache_owners.py": "c9a71ec941be57133452f17b095aac9478c5fa99870df28e2fbf46b70230cf8a",
+        "internal/loop.py": "d269551d61be97cb59f328352d1642db8fc9efd70ca911e02bdb4a407f0bd089",
+        "internal/prepared.py": "6d4581762b34a00b81403a47f40230909e82a53ff3c9e0e241a2dfc340fac86a",
+        "internal/residency.py": "2571ddeaf2c9eb8fdbd50fdbf5e8f29316200cfd9ec90138dbd4bf0a2861494f",
+        "internal/weights.py": "3ba1ec248a9836b38198a1751f59fae1b723d48190fd8996ae46168d9e2413f7",
+        "graphs/__init__.py": "25deacb7a770ab1a696094e884f0a083e28c79cdac4db0a1271051447f92f508",
+        "graphs/domain.py": "d21eba1a9323ff4490d5c494dad964a317cc4687473ea2d2bf91323cf8f78484",
+        "lm/__init__.py": "0cae4e9b9d0137a43defcc05e93f978287a104626014d87a338a5a4e1432b300",
+        "internal/int8_linear.py": "4b55ed7b166f4f435b66501f516e203bf6f9bddcbf774235e1ccb7960efcc269",
+        "internal/kernel_ready.py": "f5874855b69cbc857a0375dad67515176e52440b81d276563ea0579632031669",
+        "internal/prebuilt.py": "3f5d32d9214de115049ee5a8016bf6f5ae1c909b2570327b9cb4e64edfa75eab"
+      },
+      "gil_gate_sha256": "3ccfe6b4ea229413be99b0f4235f6d508d3bebee7a4265f28ec289cbcff0dcc9",
+      "gil_gate_source_sha256": "5f90dec1679267bd4cb43662f647ef6160a2c93b0abd118cbcd654c197945061",
+      "gil_gate_needed": [
+        "libc.so.6"
+      ],
+      "gil_gate_glibc_versions": [
+        [
+          2,
+          2
+        ]
+      ],
+      "boundary": "fixture PyDLL calls real Storage.resize_ while holding the GIL; no allocator interception"
+    }
+  },
+  "project": "/home/fidika/cozy_v2/outputs/xs138-p3-cache-integrated/cohort-dfb-2626-diagnostics-sorata/project",
+  "files": {
+    "ci_varena_cache_pages/__init__.py": "dee58ca65c7665bf0536bda1036437e1286206d1ccb4fdff09d2b768bd712f04",
+    "ci_varena_cache_pages/bin/gil_resize.so": "3ccfe6b4ea229413be99b0f4235f6d508d3bebee7a4265f28ec289cbcff0dcc9",
+    "ci_varena_cache_pages/bin/provenance.json": "81babd4955113a7fd84489d553fd16a531430c5bbf3e72158626e6d62a448f3f",
+    "ci_varena_cache_pages/bin/varena-cache-pages": "562ce61b8e6c2fd12e140c8e200e84053d22b90ba17514ecec53fb5f39695b03",
+    "ci_varena_cache_pages/gil_resize.c": "5f90dec1679267bd4cb43662f647ef6160a2c93b0abd118cbcd654c197945061",
+    "ci_varena_cache_pages/runtime_owners.py": "ca39ee59effe647f37d92068be1566e21c51ec8007db825ff429d704ce607f15",
+    "pyproject.toml": "b7ed2af66a12cd5d1ff21283219f6c1d3dea5b37840abcb80917860c48878cd2",
+    "uv.lock": "d8ff437c54f8215e4d07c9e5047d40d52c8a55d125648dd6f2969a37e0663370"
+  },
+  "input": {
+    "source_sha": "6bdde809ac56136fc02ad14cf1256fde3a40dbfe",
+    "helper_sha256": "562ce61b8e6c2fd12e140c8e200e84053d22b90ba17514ecec53fb5f39695b03",
+    "native_extension_sha256": "232b44ec8032dbf6966de649191aa2615ea224ad3bc7d3fb1f96a6292cacabc7",
+    "gpu_uuid": "GPU-846689c6-daf3-15b1-580e-f2a78bdf6748",
+    "runtime_version": "0.36.23+dev.g2626e3f4",
+    "runtime_modules": {
+      "internal/cache_owners.py": "c9a71ec941be57133452f17b095aac9478c5fa99870df28e2fbf46b70230cf8a",
+      "internal/loop.py": "d269551d61be97cb59f328352d1642db8fc9efd70ca911e02bdb4a407f0bd089",
+      "internal/prepared.py": "6d4581762b34a00b81403a47f40230909e82a53ff3c9e0e241a2dfc340fac86a",
+      "internal/residency.py": "2571ddeaf2c9eb8fdbd50fdbf5e8f29316200cfd9ec90138dbd4bf0a2861494f",
+      "internal/weights.py": "3ba1ec248a9836b38198a1751f59fae1b723d48190fd8996ae46168d9e2413f7",
+      "graphs/__init__.py": "25deacb7a770ab1a696094e884f0a083e28c79cdac4db0a1271051447f92f508",
+      "graphs/domain.py": "d21eba1a9323ff4490d5c494dad964a317cc4687473ea2d2bf91323cf8f78484",
+      "lm/__init__.py": "0cae4e9b9d0137a43defcc05e93f978287a104626014d87a338a5a4e1432b300",
+      "internal/int8_linear.py": "4b55ed7b166f4f435b66501f516e203bf6f9bddcbf774235e1ccb7960efcc269",
+      "internal/kernel_ready.py": "f5874855b69cbc857a0375dad67515176e52440b81d276563ea0579632031669",
+      "internal/prebuilt.py": "3f5d32d9214de115049ee5a8016bf6f5ae1c909b2570327b9cb4e64edfa75eab"
+    },
+    "gil_gate_sha256": "3ccfe6b4ea229413be99b0f4235f6d508d3bebee7a4265f28ec289cbcff0dcc9"
+  },
+  "gpu_uuid_bound": true,
+  "gpu_executed": false
+}
