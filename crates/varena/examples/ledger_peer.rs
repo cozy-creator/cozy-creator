@@ -45,8 +45,10 @@ mod proof {
             "requested":d.requested,"completed":d.completed,"pending":d.pending,"answer":format!("{:?}",d.answer)})).collect::<Vec<_>>(),
     }));
         Ok(
-            json!({"generation":snapshot.generation,"device":snapshot.backing_device,"inode":snapshot.backing_inode,
-        "rows":rows,"round":round,"sample":snapshot.sample.map(|s|json!({"id":s.generation,"used":s.driver_used,"total":s.total}))}),
+            json!({"generation":snapshot.generation,"capacity_epoch":snapshot.capacity_epoch,
+        "device":snapshot.backing_device,"inode":snapshot.backing_inode,
+        "rows":rows,"round":round,"sample":snapshot.sample.map(|s|json!({"id":s.generation,
+            "capacity_epoch":s.capacity_epoch,"used":s.driver_used,"total":s.total}))}),
         )
     }
     fn published(
@@ -79,7 +81,12 @@ mod proof {
                 Ok(json!({"ok":true}))
             }
             "sample" => {
-                let s = peer.sample(n(1), n(2), n(3), None, false)?;
+                let expected = ledger.snapshot()?.generation;
+                let s = peer.sample(expected, n(1), n(2), n(3), None, false)?;
+                Ok(json!({"sample":s.generation}))
+            }
+            "sample-at" => {
+                let s = peer.sample(n(1), n(2), n(3), n(4), None, false)?;
                 Ok(json!({"sample":s.generation}))
             }
             "ask" => {

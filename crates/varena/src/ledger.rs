@@ -11,12 +11,13 @@ use std::sync::{Arc, Mutex};
 
 pub const ROWS: usize = 64;
 const MAGIC: u64 = u64::from_le_bytes(*b"VARENA3\0");
-const VERSION: u64 = 1;
+const VERSION: u64 = 2;
 const HEADER: usize = 16;
 const SELECTOR: usize = 15;
 const ROW_WORDS: usize = 20;
 const DONOR_WORDS: usize = 6;
-const BANK: usize = 15 + ROWS * (ROW_WORDS + DONOR_WORDS);
+const META_WORDS: usize = 17;
+const BANK: usize = META_WORDS + ROWS * (ROW_WORDS + DONOR_WORDS);
 const WORDS: usize = HEADER + 2 * BANK;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -42,6 +43,8 @@ pub enum Error {
     Inherited,
     #[error("stale ledger row or round incarnation")]
     Stale,
+    #[error("stale ledger capacity observation")]
+    StaleSample,
     #[error("ledger generation overflow")]
     Overflow,
 }
@@ -182,6 +185,8 @@ pub struct Row {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Sample {
     pub generation: u64,
+    /// Capacity metadata at the observation's optimistic commit, not a memory grant.
+    pub capacity_epoch: u64,
     pub total: u64,
     pub driver_used: u64,
     pub observed_at: u64,
@@ -235,6 +240,7 @@ impl Round {
 #[derive(Clone, Debug)]
 pub struct Snapshot {
     pub generation: u64,
+    pub capacity_epoch: u64,
     pub backing_device: u64,
     pub backing_inode: u64,
     pub scope: Scope,
@@ -245,6 +251,7 @@ pub struct Snapshot {
 
 struct Data {
     next_incarnation: u64,
+    capacity_epoch: u64,
     sample: Option<Sample>,
     round: Option<Round>,
     rows: [Option<Row>; ROWS],
@@ -253,6 +260,7 @@ impl Default for Data {
     fn default() -> Self {
         Self {
             next_incarnation: 1,
+            capacity_epoch: 1,
             sample: None,
             round: None,
             rows: [None; ROWS],
@@ -414,13 +422,16 @@ impl Ledger {
         });
         let mut data = Data::decode(words)?;
         let result = operation(&mut data, generation)?;
-        if write {
+        // Duplicate delivery and other no-op transactions must not invalidate a sampler's
+        // optimistic commit merely by rewriting an identical bank.
+        let encoded = write.then(|| data.encode());
+        if let Some(encoded) = encoded.filter(|encoded| *encoded != words) {
             let next = generation
                 .checked_add(1)
                 .filter(|next| *next <= u64::MAX >> 1)
                 .ok_or(Error::Overflow)?;
             let other = 1 - bank;
-            for (at, value) in data.encode().into_iter().enumerate() {
+            for (at, value) in encoded.into_iter().enumerate() {
                 self.0
                     .map
                     .store(HEADER + other * BANK + at, value, Ordering::Relaxed);
@@ -440,6 +451,7 @@ impl Ledger {
         self.transaction(false, |data, generation| {
             Ok(Snapshot {
                 generation,
+                capacity_epoch: data.capacity_epoch,
                 backing_device: self.0.backing.0,
                 backing_inode: self.0.backing.1,
                 scope: self.0.scope,
@@ -480,6 +492,9 @@ impl Ledger {
                     "ended owner still has an inherited row lock",
                 ));
             }
+        }
+        if !reaped.is_empty() {
+            data.capacity_changed()?;
         }
         Ok(reaped)
     }
@@ -524,6 +539,7 @@ impl Ledger {
                 physical: Physical::default(),
                 reclaimable: 0,
             });
+            data.capacity_changed()?;
             Ok((id, lock))
         })?;
         Ok(Participant {
@@ -549,6 +565,8 @@ impl Participant {
         }
         Ok(row)
     }
+    /// Publish a new physical observation and invalidate earlier capacity samples, even if
+    /// these counts match: intervening release/remap may have left the same final holdings.
     pub fn publish(&self, physical: Physical, reclaimable: u64, last_use: u64) -> Result<()> {
         physical.total()?;
         if reclaimable > physical.idle()? {
@@ -561,6 +579,7 @@ impl Participant {
             row.physical = physical;
             row.reclaimable = reclaimable;
             row.last_use = last_use;
+            data.capacity_changed()?;
             Ok(())
         })
     }
@@ -572,9 +591,12 @@ impl Participant {
             Ok(())
         })
     }
-    /// Record an actual caller observation. This does not manufacture a driver reading.
+    /// Commit an actual observation against the snapshot generation read BEFORE observing
+    /// the driver outside all ledger locks. Any intervening publication rejects this commit;
+    /// take a fresh snapshot and observation after StaleSample. No driver reading is made here.
     pub fn sample(
         &self,
+        expected_generation: u64,
         total: u64,
         driver_used: u64,
         observed_at: u64,
@@ -586,8 +608,12 @@ impl Participant {
         }
         self.ledger.transaction(true, |data, generation| {
             self.own(data)?;
+            if generation != expected_generation {
+                return Err(Error::StaleSample);
+            }
             let sample = Sample {
                 generation: generation + 1,
+                capacity_epoch: data.capacity_epoch,
                 total,
                 driver_used,
                 observed_at,
@@ -599,10 +625,14 @@ impl Participant {
         })
     }
     /// Join an unfinished round, or retain the already answered round for the same sample.
+    /// A new round requires a sample predating no physical publication, membership change or
+    /// newly completed release. Joining/repeating the same round does not spend it again.
     /// Donor requests are advisory; completed acknowledgements still require a driver retry.
     pub fn ask(&self, sample_generation: u64, wanted: u64) -> Result<Round> {
+        // Commit exact dead-row removal independently. If that invalidates this sample,
+        // returning StaleSample below must not roll the reap back and repeat it forever.
+        self.ledger.reap_dead()?;
         self.ledger.transaction(true, |data, generation| {
-            self.ledger.reap(data)?;
             let mine = *self.own(data)?;
             self.own(data)?.want = wanted;
             if let Some(round) = &data.round
@@ -610,11 +640,11 @@ impl Participant {
             {
                 return Ok(round.clone());
             }
-            if data
-                .sample
-                .is_none_or(|sample| sample.generation != sample_generation)
-            {
-                return Err(Error::Stale);
+            if data.sample.is_none_or(|sample| {
+                sample.generation != sample_generation
+                    || sample.capacity_epoch != data.capacity_epoch
+            }) {
+                return Err(Error::StaleSample);
             }
             let mut peers: Vec<_> = data
                 .rows
@@ -698,9 +728,13 @@ impl Participant {
                     Err(Error::Stale)
                 };
             }
+            let released = completed > donor.completed;
             donor.completed = completed;
             donor.pending = pending;
             donor.answer = answer;
+            if released {
+                data.capacity_changed()?;
+            }
             Ok(())
         })
     }
@@ -713,6 +747,7 @@ impl Drop for Participant {
         let _ = self.ledger.transaction(true, |data, _| {
             self.own(data)?;
             data.rows[self.row.slot] = None;
+            data.capacity_changed()?;
             if let Some(round) = &mut data.round {
                 if round.requester == self.row {
                     round.aborted = true;
@@ -752,10 +787,17 @@ fn birth(pid: u32) -> Result<Option<u64>> {
 }
 
 impl Data {
+    fn capacity_changed(&mut self) -> Result<()> {
+        self.capacity_epoch = self.capacity_epoch.checked_add(1).ok_or(Error::Overflow)?;
+        Ok(())
+    }
+
     fn encode(&self) -> [u64; BANK] {
         let mut words = [0; BANK];
         words[0] = self.next_incarnation;
+        words[16] = self.capacity_epoch;
         if let Some(sample) = self.sample {
+            words[15] = sample.capacity_epoch;
             words[1..8].copy_from_slice(&[
                 sample.generation,
                 sample.total,
@@ -777,7 +819,7 @@ impl Data {
                 round.donations.len() as u64,
             ]);
             for (index, donor) in round.donations.iter().enumerate() {
-                let offset = 15 + ROWS * ROW_WORDS + index * DONOR_WORDS;
+                let offset = META_WORDS + ROWS * ROW_WORDS + index * DONOR_WORDS;
                 // Slot and state fit together; incarnation remains independent and never wraps.
                 words[offset..offset + DONOR_WORDS].copy_from_slice(&[
                     donor.owner.incarnation,
@@ -791,7 +833,7 @@ impl Data {
         }
         for (slot, row) in self.rows.iter().enumerate() {
             let Some(row) = row else { continue };
-            let offset = 15 + slot * ROW_WORDS;
+            let offset = META_WORDS + slot * ROW_WORDS;
             words[offset..offset + 7].copy_from_slice(&[
                 row.id.incarnation,
                 row.pid as u64,
@@ -815,14 +857,16 @@ impl Data {
     fn decode(words: [u64; BANK]) -> Result<Self> {
         let mut result = Self {
             next_incarnation: words[0],
+            capacity_epoch: words[16],
             ..Self::default()
         };
-        if result.next_incarnation == 0 {
-            return Err(Error::Incompatible("row generation"));
+        if result.next_incarnation == 0 || result.capacity_epoch == 0 {
+            return Err(Error::Incompatible("row or capacity generation"));
         }
         if words[1] != 0 {
             result.sample = Some(Sample {
                 generation: words[1],
+                capacity_epoch: words[15],
                 total: words[2],
                 driver_used: words[3],
                 observed_at: words[4],
@@ -831,7 +875,7 @@ impl Data {
             });
         }
         for slot in 0..ROWS {
-            let at = 15 + slot * ROW_WORDS;
+            let at = META_WORDS + slot * ROW_WORDS;
             if words[at] == 0 {
                 continue;
             }
@@ -881,7 +925,7 @@ impl Data {
             }
             let mut donations = Vec::new();
             for index in 0..count {
-                let at = 15 + ROWS * ROW_WORDS + index * DONOR_WORDS;
+                let at = META_WORDS + ROWS * ROW_WORDS + index * DONOR_WORDS;
                 let slot = (words[at + 1] & 255) as usize;
                 if slot >= ROWS {
                     return Err(Error::Incompatible("donor slot"));

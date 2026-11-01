@@ -44,6 +44,23 @@ acknowledgements replace cumulative progress rather than add it. Pending work an
 reported completed physical release. The requester must re-read actual driver capacity after a round; the table
 never grants/reserves memory or transfers CUDA handles. Row death does not turn a request into returned bytes.
 
+Capacity observations use an optimistic commit: obtain `Ledger::snapshot().generation`, observe the driver
+outside every ledger lock, then pass that expected generation to `Participant::sample`. An intervening metadata
+publication returns `Error::StaleSample`; obtain a fresh snapshot **and** observation instead of reusing the old
+reading. The sample records a capacity epoch. Every physical publication (even identical final counts), row
+membership change, or increase in completed physical release advances that epoch. A sample predating one of
+those changes cannot open a new ask round. It can still join an unfinished round or retrieve the already answered
+round for its own generation: neither spends the deficit again. Reaping invalidates an observation without
+crediting the dead row's holdings as released memory. Dead-row cleanup commits before ask validation so a stale
+sample cannot roll back the reap and force an endless retry.
+
+Exact duplicate acknowledgements change neither the capacity epoch nor the publication generation; identical
+metadata transactions do not rewrite a bank. Pending acknowledgements do not advance capacity until completed
+bytes increase. This prevents duplicate delivery from starving an optimistic sample commit. Layout version 2
+stores both epochs in the committed bank; older layouts are refused, never resized or repaired. This validates
+observations against published metadata, not unreported physical transitions or concurrent foreign CUDA changes;
+the actual driver allocation remains the authority. No sampling leader, daemon, grant or CUDA call is added.
+
 Real CPU proof must use independent processes, kernel-held locks, fork and explicit process death: publication,
 concurrent asks/duplicate acks, stale row identities, a stopped-but-live owner, killed writer recovery, parent death
 while its forked child survives, and descriptor-number reuse before dropping inherited Rust objects. Namespace

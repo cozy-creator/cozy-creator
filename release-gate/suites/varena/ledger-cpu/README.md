@@ -16,6 +16,12 @@ The proof uses actual library operations in independent processes and threads. I
 - explicit refusal of a 65th row and of a 257th registered descriptor, with recovery after close;
 - concurrent asks joining one round, cumulative duplicate acknowledgements, and pending bytes excluded from
   completed release;
+- a sample published before another round's release refusing to open a fresh round afterward, while joining
+  the unfinished round remains valid; physical publications also invalidate earlier samples;
+- actual independent observation/commit writers racing at one expected generation, only one commit succeeding,
+  and a physical publication between observation and commit refusing the stale sample;
+- exact duplicate acknowledgements changing neither capacity epoch nor publication generation, so a duplicate
+  cannot invalidate an otherwise current optimistic sample commit; partial release advances the epoch only once;
 - a SIGSTOPped owner remaining registered, explicit owner death releasing its row, no fabricated returned bytes,
   and a new slot incarnation refusing the previous donor's acknowledgement;
 - death of an active round's requester aborting that round without invented release, followed by a fresh sample
@@ -39,6 +45,11 @@ new directory; earlier failed receipts stay intact.
 a fork that was already in progress; this limitation is explicit, not hidden behind a general fork interposer.
 Direct syscall fork/clone bypassing libc handlers is outside this checkpoint's supported contract. Every ledger
 operation still rejects a changed PID/domain before touching inherited local locks.
+
+Sample callers read the snapshot generation before observing the driver, then supply it to `sample`; the driver
+observation itself must be outside all ledger locks. `StaleSample` requires a new snapshot and new observation.
+The committed capacity epoch prevents an accepted but pre-release sample from starting a later round. Layout
+version 2 stores these epochs; this proof's interrupted-publication reader uses that version's metadata offset.
 
 The first domain is same UID, user/PID/mount namespaces and boot, using the same tmpfs file. Different backing
 inodes are separate domains. Full cross-container/multi-UID support, GPU/MIG discovery, wake/recheck latency,

@@ -89,6 +89,80 @@ def publication_held(fd):
     return False
 
 
+def stale_samples(directory):
+    """A real peer's newer sample must not spend an older round's release again."""
+    directory.mkdir()
+    donor = Peer("sample-donor", directory)
+    first = Peer("sample-first", directory)
+    second = Peer("sample-second", directory)
+    for actor in (donor, first, second):
+        actor.read()
+    assert donor.call("publish 0 100 0 100 1")["ok"]
+    old = first.call("sample 10000 1000 1")["sample"]
+    active = first.call(f"ask {old} 80")["round"]
+    early = second.call("sample 10000 1000 2")["sample"]
+    assert second.call(f"ask {early} 80")["round"] == active
+    # No physical-row publish here: acknowledgement alone must invalidate the early sample.
+    assert donor.call(f"ack {active} 50 0 complete")["ok"]
+    stale = second.call(f"ask {early} 80")
+    assert "stale" in stale.get("error", ""), {"pre_release_sample_opened_new_round": stale}
+    after = first.call("snapshot")
+    assert after["round"]["id"] == active and after["round"]["completed"] == 50
+    assert after["sample"]["id"] == early and after["sample"]["used"] == 1000
+    assert first.call(f"ask {old} 999")["round"] == active
+    epoch = after["capacity_epoch"]
+    second.call("sample 10000 950 3")
+    before_duplicate = first.call("snapshot")
+    assert donor.call(f"ack {active} 50 0 complete")["ok"]
+    assert first.call("snapshot") == before_duplicate
+    # An identical ack must not make an observation/commit pair spuriously stale.
+    fresh = second.call(f"sample-at {before_duplicate['generation']} 10000 950 3")["sample"]
+    next_round = second.call(f"ask {fresh} 40")["round"]
+    assert next_round != active
+    assert donor.call(f"ack {next_round} 0 0 refused")["ok"]
+
+    before_publish = first.call("sample 10000 950 4")["sample"]
+    assert donor.call("publish 0 100 0 100 1")["ok"]  # even equal counts are a new physical observation
+    assert "stale" in first.call(f"ask {before_publish} 40")["error"]
+    assert first.call("snapshot")["capacity_epoch"] > epoch
+
+    observed = second.call("snapshot")["generation"]
+    assert donor.call("publish 0 50 0 50 5")["ok"]
+    assert "stale" in second.call(f"sample-at {observed} 10000 950 5")["error"]
+    assert second.call("snapshot")["sample"]["id"] == before_publish
+
+    # Independent writers observed one generation before either commits its driver sample.
+    expected = first.call("snapshot")["generation"]
+    first.send(f"sample-at {expected} 10000 950 6")
+    second.send(f"sample-at {expected} 10000 950 6")
+    competing = [first.read(), second.read()]
+    assert sum("sample" in result for result in competing) == 1, competing
+    assert sum("stale" in result.get("error", "") for result in competing) == 1, competing
+    accepted = next(result["sample"] for result in competing if "sample" in result)
+    final_round = first.call(f"ask {accepted} 40")["round"]
+    assert final_round != next_round
+    before_pending = first.call("snapshot")["capacity_epoch"]
+    assert donor.call(f"ack {final_round} 0 40 pending")["ok"]
+    pending_snapshot = second.call("snapshot")
+    assert donor.call(f"ack {final_round} 0 40 pending")["ok"]
+    assert second.call("snapshot") == pending_snapshot
+    assert pending_snapshot["capacity_epoch"] == before_pending
+    assert donor.call(f"ack {final_round} 20 20 pending")["ok"]
+    after_partial = second.call("snapshot")["capacity_epoch"]
+    assert after_partial > before_pending
+    assert donor.call(f"ack {final_round} 20 20 pending")["ok"]
+    assert second.call("snapshot")["capacity_epoch"] == after_partial
+    assert donor.call(f"ack {final_round} 40 0 complete")["ok"]
+    final = first.call("snapshot")
+    for actor in (donor, first, second):
+        actor.close()
+    return {"early_sample": early, "completed_round": active,
+            "pre_release_sample_refused": True, "unfinished_round_joined": True,
+            "physical_publication_invalidates": True, "in_flight_sample_commit_refused": True,
+            "concurrent_sample_commit_once": True, "duplicate_acks_do_not_advance_capacity": True,
+            "pending_is_not_capacity": True, "fresh_sample_opens_next_round": True, "final": final}
+
+
 report = {"passed": False, "binary": str(peer_binary),
           "binary_sha256": hashlib.sha256(peer_binary.read_bytes()).hexdigest(),
           "cuda_initialized": False, "scope": "metadata/process proof only; published byte counts are fixture observations, not actual GPU releases"}
@@ -97,6 +171,7 @@ fork_pidfd = None
 try:
     with tempfile.TemporaryDirectory(prefix="varena-ledger-proof-", dir="/dev/shm") as temporary:
         root = Path(temporary)
+        report["stale_samples"] = stale_samples(root / "stale-samples")
         basic = root / "basic"
         basic.mkdir()
         donor = Peer("donor", basic, priority=-10)
@@ -149,10 +224,13 @@ try:
         assert replacement.call("publish 0 25 0 25 3")["ok"]
         next_sample = first.call("sample 10000 999 2")["sample"]
         abandoned_round = first.call(f"ask {next_sample} 25")["round"]
+        before_death_sample = second.call("sample 10000 999 2")["sample"]
         first.process.kill()
         first.process.wait(timeout=15)
-        assert second.call("reap")["reaped"] == [first.process.pid]
+        assert "stale" in second.call(f"ask {before_death_sample} 25")["error"]
+        assert second.call("reap")["reaped"] == [], "stale sample rejection must not roll back ask's reap"
         abandoned = second.call("snapshot")
+        assert all(row["pid"] != first.process.pid for row in abandoned["rows"])
         assert abandoned["round"]["aborted"] and abandoned["round"]["completed"] == 0
         assert abandoned["sample"]["used"] == 999
         assert "stale" in replacement.call(f"ack {abandoned_round} 0 0 refused")["error"]
@@ -162,7 +240,8 @@ try:
         assert replacement.call(f"ack {resumed_round} 0 0 refused")["ok"]
         assert second.call("snapshot")["round"]["finished"]
         report["round_owner_death"] = {"aborted_round":abandoned_round,"new_round":resumed_round,
-                                       "no_release_invented":True,"fresh_sample_required":True}
+                                       "no_release_invented":True,"fresh_sample_required":True,
+                                       "stale_ask_keeps_exact_reap":True}
         replacement.close()
         second.close()
         assert inspected(basic)["rows"] == []
@@ -232,7 +311,7 @@ try:
                 assert os.WIFSTOPPED(os.waitpid(writer.process.pid, os.WUNTRACED)[1])
                 selector = struct.unpack_from("=Q", mapped, 15 * 8)[0]
                 bank = selector & 1
-                live_word = 15 + ready["slot"] * 20 + 7
+                live_word = 17 + ready["slot"] * 20 + 7  # ledger layout v2 metadata prefix
                 current = struct.unpack_from("=Q", mapped, (16 + bank * bank_words + live_word) * 8)[0]
                 uncommitted = struct.unpack_from("=Q", mapped, (16 + (1 - bank) * bank_words + live_word) * 8)[0]
                 if publication_held(file.fileno()) and uncommitted > current:
