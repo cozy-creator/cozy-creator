@@ -83,3 +83,19 @@ The P3 shared-memory ledger's independent OFD row/publication locks and atfork F
 handling remain required. This GPU process guard does not close inherited ledger
 file descriptions, repair PID/mount/user namespace identity, grant memory to peers
 or replace the ledger's own initialization boundary. No P3 contract changes here.
+
+## Candidate CPU evidence — 2026-11-01
+
+Implementation `2f3f0e7b9` passes native TensorFS checks with defaults and with
+`strict-pid-guard` enabled (38.10s /18.78s). Three separately built native CPU
+matrices pass: default kernel, strict override despite the kernel default, and
+feature-off actual PID. Each checks cold status without page/arena/CUDA creation.
+Ordinary/raw/descendant forks reject six inherited operations; proper new-thread
+authentication, publication windows/races and real mmap ENOMEM fallback pass.
+The shared-VM/copied-TLS child acceptance remains recorded for the default kernel
+path, while strict/feature-off paths reject. No child executes CUDA.
+
+[Original CPU receipts](../../release-gate/suites/varena/evidence/process-guard-contract-20261101)
+keep `gpu_qualified=false`. The benchmark's timed-pair and entire timed-sample-loop
+AST match the frozen experiment, and its2× numerical threshold is unchanged.
+This coherent default candidate has not yet had a GPU/model release qualification.
