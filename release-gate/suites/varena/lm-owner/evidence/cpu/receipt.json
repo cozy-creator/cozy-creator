@@ -1,0 +1,16 @@
+{
+  "runtime_control": "74cce8aea0cdb6b7b6388330f4c98323446a97b3",
+  "runtime_candidate": "53402332844b958f27de21299577f6af1a81f2d5",
+  "gpu_executed": false,
+  "mechanism": "actual Qwen checkpoint -> resolver/Backend/ModelRegistry/Placement -> public lm.generate -> idle Region.discard -> rebuild -> lm.release",
+  "cpu_entry_sha256": "df87c177e6ba4e1dfe010d3915677370fa1c3242a272b714faee6d53b913d1cb",
+  "model_sha256": "325eb4bb2e11052c4c909d7b03431c45971d589f3316e747417d541dff4e34dd",
+  "interpreter": "/home/fidika/cozy_v2/packages/minimax-h3/.venv/bin/python -I -B",
+  "environment": {
+    "CUDA_VISIBLE_DEVICES": "",
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1"
+  },
+  "candidate_assertion": "--require-closed",
+  "review": "core_restart independently reviewed _try_drop lock/completion ordering; no concrete source blocker, no GPU fixture qualification"
+}
