@@ -1,0 +1,8 @@
+{
+  "baseline_errors": 19,
+  "candidate_errors": 19,
+  "new": [],
+  "removed": [],
+  "candidate_log": "candidate-corrected.txt",
+  "scope": "paired same actual stub/dependency environment and source files; existing errors preserved"
+}
