@@ -1,0 +1,250 @@
+{
+  "passed": true,
+  "source": "b20f699cab2416c6ff3d6e458376c29efbcf448a",
+  "product_source": "bda123e7b8b570585cba3b40edf417aacaf44c0b",
+  "fixture_source": "fa13b2ef8ad568244acddd91d9c2f84f42dc3ca8",
+  "wheel_sha256": "c84b08eefe667359993a4d0a917b459310e4441144398bc47ff6e9af6aa0deb6",
+  "extension_sha256": "ea131006d23325bee34be91d64bb6b92c5947738e967d6f3d91a0d7ccbc449b6",
+  "shim_sha256": "09684b61d0b909c39d56c7d129432e906ddb0a57f1b4b916b20bb2c4c8d7716e",
+  "runs": {
+    "bounded-trim": {
+      "run": 25158,
+      "passed": true,
+      "cases": [
+        "bounded-working-trim"
+      ],
+      "raw_sha256": "5ae9e8a473dfdca24a54cd319c8b50ce7e3fa342fc28e50d13450f31e181b581",
+      "result_sha256": "dded9f1b6105d4fc923827fc7924bd46d20f7cea22cc6123d9a41c72c9473da7",
+      "gpu": {
+        "arch": "sm_89",
+        "attention": {
+          "impl": "",
+          "observed": "",
+          "requested": ""
+        },
+        "end_us": 1793533749347383,
+        "gpu": 0,
+        "pid": 355812,
+        "start_us": 1793533746915487,
+        "uuid": "GPU-74f2ac0a-1c52-2e52-a7a6-b207f1db7a89"
+      },
+      "final": {
+        "allocated_bytes": 0,
+        "allocated_capacity": 0,
+        "allocated_peak": 58720256,
+        "allocations": 4,
+        "context_joins": 0,
+        "driver_memory_calls": 21,
+        "event_handles": 0,
+        "event_queries": 0,
+        "event_records": 4,
+        "event_waits": 0,
+        "free_bytes": 0,
+        "frees": 4,
+        "mapped_bytes": 0,
+        "mapped_peak": 58720256,
+        "ooms": 0,
+        "pending_bytes": 0,
+        "pools": 0,
+        "pools_bytes": 0,
+        "prefetch_admissions": 0,
+        "prefetch_attempts": 0,
+        "prefetch_declines": 0,
+        "reclaimable_bytes": 0,
+        "unassigned_bytes": 0
+      }
+    },
+    "gpu": {
+      "run": 25159,
+      "passed": true,
+      "cases": [
+        "allocator-reuse",
+        "capture-exhaustion",
+        "captured-reuse",
+        "cudnn-capture-shortfall",
+        "default-deferred-free",
+        "distinct-pools",
+        "dlpack-record-stream",
+        "empty-capture",
+        "external-stream-retirement",
+        "native-working-ownership",
+        "pool-variable-reuse",
+        "replay-after-remap",
+        "replay-hook-failure",
+        "retained-output",
+        "rng-capture",
+        "shared-managed-limit",
+        "shared-pool",
+        "side-stream"
+      ],
+      "raw_sha256": "6cdaa80a8dc95d71f95b891f138528e7bd13af95f511d214751b477c17e99491",
+      "result_sha256": "474e924b8cd3afdb32521e4e624ff65a6ca470f6930c735a3f108fa357fd866e",
+      "gpu": {
+        "arch": "sm_89",
+        "attention": {
+          "impl": "",
+          "observed": "",
+          "requested": ""
+        },
+        "end_us": 1793533754368417,
+        "gpu": 0,
+        "pid": 355812,
+        "start_us": 1793533749720747,
+        "uuid": "GPU-74f2ac0a-1c52-2e52-a7a6-b207f1db7a89"
+      },
+      "final": {
+        "allocated_bytes": 0,
+        "allocated_capacity": 0,
+        "allocated_peak": 5261328,
+        "allocations": 131,
+        "context_joins": 2,
+        "driver_memory_calls": 361,
+        "event_handles": 0,
+        "event_queries": 184,
+        "event_records": 153,
+        "event_waits": 0,
+        "free_bytes": 0,
+        "frees": 131,
+        "mapped_bytes": 0,
+        "mapped_peak": 10485760,
+        "ooms": 4,
+        "pending_bytes": 0,
+        "pools": 0,
+        "pools_bytes": 0,
+        "prefetch_admissions": 0,
+        "prefetch_attempts": 0,
+        "prefetch_declines": 0,
+        "reclaimable_bytes": 0,
+        "unassigned_bytes": 0
+      }
+    },
+    "reclaim-sequence": {
+      "run": 25162,
+      "passed": true,
+      "cases": [
+        "working-before-weights"
+      ],
+      "raw_sha256": "c02035b4de9432dc5f9e566b4923a3fba90b93699c8f683d611b9c39291fc97f",
+      "result_sha256": "785a7d7ef431620cc38f65960bc59986dd54f05cc792a771557d71a867df4a75",
+      "gpu": {
+        "arch": "sm_89",
+        "attention": {
+          "impl": "",
+          "observed": "",
+          "requested": ""
+        },
+        "end_us": 1793533756940310,
+        "gpu": 0,
+        "pid": 355812,
+        "start_us": 1793533754726564,
+        "uuid": "GPU-74f2ac0a-1c52-2e52-a7a6-b207f1db7a89"
+      },
+      "final": {
+        "allocated_bytes": 0,
+        "allocated_capacity": 0,
+        "allocated_peak": 16777216,
+        "allocations": 2,
+        "context_joins": 0,
+        "driver_memory_calls": 11,
+        "event_handles": 0,
+        "event_queries": 2,
+        "event_records": 2,
+        "event_waits": 0,
+        "free_bytes": 0,
+        "frees": 2,
+        "mapped_bytes": 0,
+        "mapped_peak": 16777216,
+        "ooms": 0,
+        "pending_bytes": 0,
+        "pools": 0,
+        "pools_bytes": 0,
+        "prefetch_admissions": 0,
+        "prefetch_attempts": 0,
+        "prefetch_declines": 0,
+        "reclaimable_bytes": 0,
+        "unassigned_bytes": 0
+      }
+    },
+    "split-policy": {
+      "run": 25163,
+      "passed": true,
+      "cases": [
+        "caught-allocation-failure",
+        "caught-begin-refusal",
+        "caught-select-refusal",
+        "compatible-completed-cache",
+        "cross-stream-pending-exclusion",
+        "exact-choices",
+        "invalidation-without-detail",
+        "no-completion-owner",
+        "outside-holdings-and-slab-floor",
+        "ownership-and-abort",
+        "preexecution-exhaustion",
+        "same-stream-pending",
+        "unique-reusable-slot"
+      ],
+      "raw_sha256": "2747f381686e3a1ca843cdb6e4dbcc26c74141411a12ee4da2626a30a84d0560",
+      "result_sha256": "8c4fef9963ec4e8eeb1cb1b1b0a0c456bc644a56909cae2dd0c001946202cfd8",
+      "gpu": {
+        "arch": "sm_89",
+        "attention": {
+          "impl": "",
+          "observed": "",
+          "requested": ""
+        },
+        "end_us": 1793533762957589,
+        "gpu": 0,
+        "pid": 355812,
+        "start_us": 1793533757223608,
+        "uuid": "GPU-74f2ac0a-1c52-2e52-a7a6-b207f1db7a89"
+      },
+      "final": {
+        "allocated_bytes": 0,
+        "allocated_capacity": 0,
+        "allocated_peak": 67108864,
+        "allocations": 38,
+        "context_joins": 0,
+        "driver_memory_calls": 156,
+        "event_handles": 0,
+        "event_queries": 35,
+        "event_records": 33,
+        "event_waits": 0,
+        "free_bytes": 0,
+        "frees": 38,
+        "mapped_bytes": 0,
+        "mapped_peak": 67108864,
+        "ooms": 1,
+        "pending_bytes": 0,
+        "pools": 0,
+        "pools_bytes": 0,
+        "prefetch_admissions": 0,
+        "prefetch_attempts": 0,
+        "prefetch_declines": 0,
+        "reclaimable_bytes": 0,
+        "unassigned_bytes": 0
+      }
+    }
+  },
+  "cpu_fork_cases": 6,
+  "comparison": {
+    "red_run": 25143,
+    "green_run": 25158,
+    "other_free_bytes_red_green": [
+      0,
+      33554432
+    ],
+    "cache_after_free_red_green": [
+      25165824,
+      58720256
+    ],
+    "driver_calls_while_live_red_green": [
+      19,
+      17
+    ],
+    "driver_calls_final_red_green": [
+      21,
+      21
+    ]
+  },
+  "scope": "bounded allocation regression and unchanged allocator/split/reclaim suites; no full-model speed or total-driver-count reduction claim"
+}

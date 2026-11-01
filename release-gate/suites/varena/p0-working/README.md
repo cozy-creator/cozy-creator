@@ -320,5 +320,17 @@ second attempt still trims only the requested mapping's bytes from completed who
 segments. If that mapping fails, the unchanged third attempt follows weight reclaim
 and completion-wait handling. The three attempts, capture exclusions, fault poisoning,
 and working-before-weights order remain. Single-job `cargo check -p varena --lib --locked`
-passes; the fixed GPU run is pending. This demonstrates one unnecessary trim, not the
-cause or timing impact of all observed full-H3 driver churn.
+passes. The exact portable `0.17.16+dev.gb20f699c` then passes GPU **25158**: 32 MiB
+of other free backing survives beside the 24 MiB live output, and 56 MiB is free after
+its retirement. All bytes and weight-preservation checks pass, then ownership reaches
+zero. The unchanged 18 allocator/capture/lifetime cases (**25159**), working-before-weights
+regression (**25162**), and 13 split cases (**25163**) pass on the same RTX4090; every
+case retires its working ownership. Six CPU-only fork cases also pass on this exact
+wheel. Full green reports, independent audit and artifact receipt are committed beside red.
+
+Driver calls while the result is live fall 19→17, but final counts remain 21→21 because
+cleanup later releases the retained backing. This proves one unnecessary early trim;
+it does not establish the cause or timing impact of all observed full-H3 driver churn.
+The artifact's other fresh-master differences are disclosed in `source-diff-review.json`:
+TensorFS/TensorFS-Python/platform trees are unchanged and Varena differs only by this hunk;
+additive protocol memo fields and workspace version changes are outside the allocator.
