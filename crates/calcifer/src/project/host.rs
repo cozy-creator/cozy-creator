@@ -22,6 +22,7 @@ use sha2::{Digest as _, Sha256};
 use crate::{
     api::{Api, Refusal},
     local_code,
+    runs::target::{self, Resolved},
 };
 
 /// A renderer as the Hub has it (its package's newest release, or the one `@release` names), or
@@ -176,32 +177,17 @@ impl Host {
         if let Some(found) = self.renderers.lock().expect("renderers lock").get(&at) {
             return Ok(found.clone());
         }
-        let malformed = || {
+        // As `cozy run` resolves it: the release named, else the newest this computer keeps.
+        let hub = crate::runs::hub(&self.api, hub);
+        let Resolved::Release { package, function, card, .. } = target::published(&self.api, &hub, target).await? else {
+            unreachable!("a published target resolves to a release");
+        };
+        let function = function.ok_or_else(|| {
             let said = format!("{target} is not [org/]package/function[@release]");
             Error::new(Kind::Validation, "renderer_malformed", said)
-        };
-        let (target, pinned) = target.split_once('@').map_or((target, None), |(target, pin)| (target, Some(pin)));
-        let parts: Vec<&str> = target.split('/').collect();
-        let (org, name, function) = match parts[..] {
-            [name, function] => (protocol::names::ROOT, name, function),
-            [org, name, function] => (org, name, function),
-            _ => return Err(malformed()),
-        };
-        let hubs = &self.api.machines.hubs;
-        let client = hubs.reader(&if hub.is_empty() { hubs.default_origin() } else { hub.to_owned() })?;
-        let (org, name) = (org.to_ascii_lowercase(), name.to_ascii_lowercase());
-        let release = match pinned {
-            Some(release) => release.to_owned(),
-            None => {
-                let package = client.get_package_if_changed(&org, &name, None).await.map_err(hub_refusal)?;
-                (package.and_then(|(card, _)| card.package.latest_release)).ok_or_else(|| {
-                    Error::new(Kind::NotFound, "package_unreleased", format!("{org}/{name} has no release to run"))
-                })?
-            }
-        };
-        let card = client.get_package_release(&org, &name, &release).await.map_err(hub_refusal)?;
-        let card = serde_json::to_value(&card).expect("a card serializes");
-        let found = Renderer::read(&format!("{org}/{name}"), function, release, &card["package_interface"], None)?;
+        })?;
+        let function = crate::runs::callable(&package, &card.interface, &function)?.name.clone();
+        let found = Renderer::read(&package, &function, card.release.clone(), card.interface_document(), None)?;
         self.renderers.lock().expect("renderers lock").insert(at, found.clone());
         Ok(found)
     }
@@ -285,8 +271,4 @@ fn owed(run: &Run) -> bool {
 
 fn refused(error: crate::Error) -> Error {
     Refusal::from(error).0
-}
-
-fn hub_refusal(error: hub_client::Error) -> Error {
-    error.refusal(|| "cozy login <email>".into())
 }

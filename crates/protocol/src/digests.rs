@@ -9,7 +9,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use protocol::{
+use crate::{
     error::{Error, Kind},
     ids::Digest,
 };

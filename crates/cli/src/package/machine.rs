@@ -151,7 +151,7 @@ async fn installed(
         if !package.starts_with("local/") {
             retire(ctx, &machine, package, &installed.release).await?;
         }
-        let first = run::interface::Interface::parse(&installed.interface)
+        let first = protocol::interface::Interface::parse(&installed.interface)
             .ok()
             .and_then(|interface| interface.public().first().map(|name| name.to_string()));
         if let Some(callable) = first {

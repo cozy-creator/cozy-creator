@@ -21,7 +21,7 @@ use crate::Context;
 use crate::context::{hub_answer, hub_error};
 use crate::output::{self, Record};
 use crate::run::Callee;
-use crate::run::interface::{Interface, Recipe, RECIPES};
+use protocol::interface::{Interface, Recipe, RECIPES};
 
 /// Legacy spellings, besides TensorFS's canonical BF16/F16/F32 dtype names.
 const ORIGINAL: [&str; 3] = ["bf16", "fp16", "f32"];
@@ -130,7 +130,7 @@ enum Named {
 fn package(ctx: &Context, named: &str) -> Result<Named, Error> {
     let cwd = std::env::current_dir()
         .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
-    if let Some(path) = crate::run::target::local(named, &cwd, &ctx.user_home) {
+    if let Some(path) = protocol::target::local(named, &cwd, &ctx.user_home) {
         return Ok(Named::Local(path));
     }
     let named = crate::package::PackageRef::parse(named)?;
@@ -177,7 +177,7 @@ pub(crate) async fn quantize(ctx: &Context, args: Quantize) -> Result<ExitCode, 
     let (card, prepared);
     let callee = match &named {
         Named::Hub(package, release) => {
-            card = crate::run::resolve(ctx, &hub, package, release.as_deref()).await?.card;
+            card = crate::run::resolve(ctx, &hub, package, release.as_deref()).await?;
             Callee::Release { package, card: &card }
         }
         Named::Local(path) => {

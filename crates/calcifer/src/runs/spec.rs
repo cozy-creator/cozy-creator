@@ -2,17 +2,14 @@
 use std::path::PathBuf;
 
 use protocol::{
-    calcifer::{Kind as RunKind, On, StagedInput, SubmitRun, Warning},
-    error::{Error, Kind},
+    calcifer::{On, StagedInput, SubmitRun, Warning},
     choices::{self, Choice},
+    error::{Error, Kind},
+    interface::Callable,
     machine as v1,
 };
 
-use super::{
-    Warm,
-    bind::Bound,
-    interface::Callable,
-};
+use super::bind::Bound;
 
 /// A function as a run names it: a published release's, or local code's.
 pub struct Call<'a> {
@@ -82,15 +79,7 @@ impl Call<'_> {
 
     /// A WARM run that sets the function's place in the machine's warm set: Calcifer merges
     /// this one item into the set the machine last reported, and level 0 takes it out.
-    pub fn warm(&self, level: Warm, models: &[Choice], payload: Option<v1::Json>) -> Result<v1::RunSpec, Error> {
-        let level = match level {
-            Warm::Installed => v1::WarmLevel::Installed,
-            Warm::Downloaded => v1::WarmLevel::Downloaded,
-            Warm::Imported => v1::WarmLevel::Imported,
-            Warm::Host => v1::WarmLevel::Host,
-            Warm::Gpu => v1::WarmLevel::Gpu,
-            Warm::Off => v1::WarmLevel::Off,
-        };
+    pub fn warm(&self, level: v1::WarmLevel, models: &[Choice], payload: Option<v1::Json>) -> Result<v1::RunSpec, Error> {
         let source = match self.source {
             Source::Release(_) => v1::WarmSource::Release(self.release()),
             Source::Local {
@@ -134,10 +123,7 @@ impl Call<'_> {
         out: Option<PathBuf>,
     ) -> SubmitRun {
         let target = self.target();
-        let kind = match spec.kind {
-            v1::RunKind::Warm => RunKind::Warm,
-            _ => RunKind::Call,
-        };
+        let kind = super::kind(spec);
         let inputs = bound.map_or_else(Vec::new, |b| {
             let files = b.files.iter().map(|f| StagedInput {
                 path: f.path.clone(),

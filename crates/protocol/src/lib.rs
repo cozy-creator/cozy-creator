@@ -5,6 +5,8 @@ pub mod calcifer;
 pub mod capability;
 pub mod choices;
 pub mod config;
+pub mod contract;
+pub mod digests;
 pub mod error;
 pub mod interface;
 pub mod executor;
@@ -13,6 +15,9 @@ pub mod machine;
 pub mod model_ref;
 pub mod names;
 pub mod project;
+pub mod report;
+pub mod stage;
+pub mod target;
 pub mod tree;
 pub mod yaml;
 

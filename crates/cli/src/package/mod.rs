@@ -8,13 +8,13 @@ use std::{path::PathBuf, process::ExitCode};
 use clap::Subcommand;
 use protocol::error::{Error, Kind};
 
-use crate::{Context, run::{Placement, target::Target}};
+use crate::{Context, run::Placement};
+use protocol::target::Published;
 
 mod author;
 mod carried;
 mod catalog;
 pub(crate) mod live;
-pub(crate) mod local;
 mod machine;
 
 #[derive(clap::Args, Debug)]
@@ -137,9 +137,9 @@ impl PackageRef {
     /// package y.
     pub fn parse(text: &str) -> Result<Self, Error> {
         let invalid = || Error::new(Kind::Usage, "package_ref_invalid", format!("{text:?} is not [org/]name[@release]"));
-        let (package, release) = match Target::published(text.trim()).map_err(|_| invalid())? {
-            Target::Published { package, function: None, release, .. } => (package, release),
-            Target::Published { owned: Some(owned), release, .. } => (owned, release),
+        let (package, release) = match Published::parse(text.trim()).map_err(|_| invalid())? {
+            Published { package, function: None, release, .. } => (package, release),
+            Published { owned: Some(owned), release, .. } => (owned, release),
             _ => return Err(invalid()),
         };
         let (org, name) = package.split_once('/').ok_or_else(invalid)?;
@@ -163,7 +163,7 @@ impl std::fmt::Display for PackageRef {
 /// Local code `text` names (`run::target::local`), from the working directory.
 fn local(ctx: &Context, text: &str) -> Result<Option<PathBuf>, Error> {
     let cwd = std::env::current_dir().map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
-    Ok(crate::run::target::local(text, &cwd, &ctx.user_home))
+    Ok(protocol::target::local(text, &cwd, &ctx.user_home))
 }
 
 /// Names to remove: `[org/]name` (or `local/name`), with no release.

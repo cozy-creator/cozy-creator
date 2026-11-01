@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 
 use serde_json::Value;
 
-use super::interface::{Callable, Constraints, Field, Interface, Struct, Type, Wire};
+use crate::interface::{Callable, Constraints, Field, Interface, Struct, Type, Wire};
 
 /// One concrete invocation: required terms bare, optional ones bracketed. A conversion reads its
 /// input model and the repository it writes first.

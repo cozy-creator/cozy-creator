@@ -293,7 +293,7 @@ async fn open(ctx: &Context, at: Option<&PathBuf>, create: bool) -> Result<Opene
     let cwd = std::env::current_dir()
         .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
     let path = match at {
-        Some(at) => crate::run::target::spelled(&at.to_string_lossy(), &cwd, &ctx.user_home),
+        Some(at) => protocol::target::spelled(&at.to_string_lossy(), &cwd, &ctx.user_home),
         None => cwd,
     };
     ctx.calcifer().await?.post("/v1/projects", &Open { path, create }, None).await
