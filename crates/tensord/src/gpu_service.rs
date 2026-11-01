@@ -1142,6 +1142,47 @@ impl Pool {
             self.end_session(&key)
         })
     }
+
+    /// A cold Cooperative executor is about to Start on a lane the caller already holds.
+    /// Retire idle non-warm GPU processes there: native page donation cannot release their
+    /// CUDA contexts. This is a lifecycle choice, independent of byte samples or fit estimates.
+    /// Running sessions are outside `sessions`; import-only parents are in `zygotes`.
+    fn retire_idle_for_start(&self, lane: &std::ops::Range<usize>, construction: &str, starting: &Birth) -> io::Result<()> {
+        loop {
+            let victim = {
+                // Membership and idle custody are checked atomically at removal. A warm-set
+                // update after this point sees an already retiring executor, not a warm owner
+                // that was selected from a stale membership snapshot.
+                let members = self.members.lock().unwrap();
+                let warm: std::collections::BTreeSet<&str> = members.values().flatten()
+                    .filter_map(|member| member.plan.as_ref().map(|plan| plan.construction.as_str())).collect();
+                let mut sessions = self.sessions.lock().unwrap();
+                let key = sessions.iter()
+                    .filter(|(_, session)| session.degree != 0
+                        && session.start >= lane.start && session.lane().end <= lane.end
+                        && !session.loaded.keys().any(|key| warm.contains(key.as_str())))
+                    .min_by_key(|(_, session)| session.used)
+                    .map(|(key, _)| key.clone());
+                key.and_then(|key| sessions.remove(&key))
+            };
+            let Some(session) = victim else { return Ok(()); };
+            let births = executor_births(&session.executor.birth, &session.followers);
+            let (plan, start) = (session.env.clone(), session.start);
+            let ended = session.executor.terminate();
+            self.retire_returned(&plan, start, &births);
+            let exited = births.iter().try_fold(true, |all, birth| birth.ended().map(|gone| all && gone));
+            let proven = exited.as_ref().is_ok_and(|all| *all);
+            self.notes.note(serde_json::json!({"event":"cooperative_idle_exit", "plan":plan,
+                "for":construction, "starting":starting, "gpus":lane.clone().collect::<Vec<_>>(),
+                "retired":births, "exited":proven,
+                "terminate_error":ended.as_ref().err().map(ToString::to_string),
+                "observation_error":exited.as_ref().err().map(ToString::to_string)}));
+            ended?;
+            if !exited? {
+                return Err(io::Error::other("cold GPU Start refused: an idle executor's exact exit is unproven"));
+            }
+        }
+    }
     /// The bytes a call of `construction` still needs free on `lane`, per GPU the largest of its
     /// measured working-set peak less what its executor already holds there (`held`, the driver's
     /// bytes for each rank's process, aligned with the lane). A cold call holds nothing; a reused
@@ -3655,6 +3696,8 @@ impl Pool {
                 "gpus":lane.clone().collect::<Vec<_>>(), "mode":format!("{selected:?}")}));
             if selected == MemoryMode::Legacy {
                 self.make_room(engine, &plan.construction, lane, Some(vec![]));
+            } else {
+                self.retire_idle_for_start(&lane, &plan.construction, &executor.birth)?;
             }
             settings
         };
