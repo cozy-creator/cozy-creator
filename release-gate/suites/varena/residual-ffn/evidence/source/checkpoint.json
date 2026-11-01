@@ -1,0 +1,16 @@
+{
+  "gpu_executed": false,
+  "heads": {
+    "runtime": "fe5a783da98b61ad1b840c704bcf69c694d18052",
+    "control": "1aca1d6cd1ca955708f8261b3e49bef69504524e",
+    "package": "9e7490c04f14e6f69712778bb6c303da24d6d769"
+  },
+  "checks": {
+    "ruff": "pass",
+    "ast": "pass",
+    "offline_uv_lock": "pass",
+    "actual_cpu_construction": "pass; CUDA not initialized",
+    "independent_source_review": "core_restart; no concrete blocker"
+  },
+  "source_sha256": "dda00a3378eb8fb286694ebd0a4e5101cc9daab369f365afbab85b4316f2d6e0"
+}

@@ -1,0 +1,17 @@
+{
+  "passed": true,
+  "identical_ast": [
+    "_Tail.run",
+    "_FFN.__call__",
+    "_entries",
+    "gate_add_rmsnorm_modulate",
+    "swiglu",
+    "gate_add",
+    "_norm_mod_kernel",
+    "_gate_add_kernel",
+    "_swiglu_kernel",
+    "_rope_norm_kernel",
+    "_key_sum_kernel"
+  ],
+  "source_sha256": "3d07e63c5ac68f11daa5d97984145d49fac54311c8111dc3d4f7e8858f8dd130"
+}

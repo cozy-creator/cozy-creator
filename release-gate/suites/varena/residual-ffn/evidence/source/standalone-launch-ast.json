@@ -1,0 +1,7 @@
+{
+  "qualified_baseline": "9b8d74e69",
+  "same_native_calls_arguments_checks_after_renaming_self_fields": true,
+  "new_shape_equivalence": "count is rows in the exact contiguous narrow; width/channels from the same input/data, dtype and stream unchanged",
+  "standalone_admission_and_lifetimes_unchanged": true,
+  "gpu_regression_still_required": true
+}
