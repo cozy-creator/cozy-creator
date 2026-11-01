@@ -4,7 +4,7 @@
 # into wheel-data/scripts/ (pyproject `data`), so installers put it on PATH beside the
 # module.
 #
-#   scripts/build-wheel.sh [--out <dir>] [maturin build args...]
+#   scripts/build-wheel.sh [--out <dir>] [--torch-python <python>] [maturin build args...]
 #
 # Portable builds use the existing CI/release manylinux environment for BOTH
 # cargo and maturin. A host build can explicitly pass --compatibility linux.
@@ -13,10 +13,12 @@ cd "$(dirname "$0")/.."
 py="${PYTHON:-python3}"
 
 out=target/wheels
+torch_python=
 args=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --out) out="$2"; shift ;;
+        --torch-python) torch_python="$2"; shift ;;
         --plane|--no-default-features)
             echo "tensorfs ships one full Python+CLI wheel; $1 is not a supported wheel option" >&2
             exit 2 ;;
@@ -24,6 +26,10 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+
+if [ -n "$torch_python" ]; then
+    nice -n 19 "$torch_python" shim/build.py
+fi
 
 if [ "$(uname -s)" != Darwin ]; then
     if [ ! -f ../tensorfs/kernels/aot/catalog.rs ]; then
@@ -37,6 +43,12 @@ nice -n 19 cargo build --release --locked -p tensorfs --bin tfs
 # The cozy workspace's target directory, not this tree's.
 target=$(cargo metadata --format-version 1 --no-deps | "$py" -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
 
+if [ "$(uname -s)" = Linux ]; then
+    # The executable and extension depend on one shared Varena core and the matching
+    # Rust std. The bundle step makes the installed wheel independent of this path.
+    export LD_LIBRARY_PATH="$target/release/deps:$(rustc --print target-libdir)${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
 said=$("$target"/release/tfs version)
 case "$said" in
@@ -48,3 +60,9 @@ mkdir -p wheel-data/scripts
 install -m 755 "$target"/release/tfs wheel-data/scripts/tfs
 
 nice -n 19 maturin build --release --locked --out "$out" ${args[@]+"${args[@]}"}
+
+if [ "$(uname -s)" = Linux ]; then
+    for wheel in "$out"/tensorfs-"$version"-*.whl; do
+        uv run --no-project --with patchelf python ../varena/bundle.py --target "$target/release" --wheel "$wheel"
+    done
+fi
