@@ -50,6 +50,8 @@ def main(config):
         "torch_distribution": version("torch"), "torch_cuda": torch.version.cuda,
         "torch_cxx11_abi": bool(torch._C._GLIBCXX_USE_CXX11_ABI),
         "python": sys.version, "executable": sys.executable, "platform": platform.platform(),
+        "pid": os.getpid(),
+        "perf_counter_clock": time.get_clock_info("perf_counter").implementation,
         "visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
         "allocator_conf": os.environ.get("PYTORCH_ALLOC_CONF"),
         "cuda_allocator_conf": os.environ.get("PYTORCH_CUDA_ALLOC_CONF"),
@@ -128,6 +130,7 @@ def main(config):
             assert after["allocated_bytes"] == warm["allocated_bytes"], (warm, after)
             sample = {
                 "index": index, "pairs": pair_count,
+                "host_start_ns": start, "host_submitted_ns": submitted,
                 "host_ns": submitted - start,
                 "drain_ns": completed - submitted,
                 "completion_ns": completed - start,
