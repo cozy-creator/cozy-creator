@@ -614,6 +614,13 @@ impl Arena {
         Ok(())
     }
 
+    /// Clear only the legacy idle-cache window. This is intent metadata: no CUDA call or
+    /// reclaim occurs, and process managed/development/peer capacity limits remain in force.
+    pub fn clear_streaming_limit(&self) -> Result<()> {
+        self.lock()?.streaming_limit = usize::MAX;
+        Ok(())
+    }
+
     /// Actual current policy, for a scoped caller to preserve and conditionally restore.
     pub fn streaming_limit(&self) -> Result<usize> {
         Ok(self.lock()?.streaming_limit)

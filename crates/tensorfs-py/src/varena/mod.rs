@@ -143,6 +143,11 @@ impl PyArena {
             .map_err(|e| raise(py, e))
     }
 
+    fn clear_streaming_limit(&self, py: Python<'_>) -> PyResult<()> {
+        py.detach(|| self.arena.clear_streaming_limit())
+            .map_err(|e| raise(py, e))
+    }
+
     #[getter]
     fn streaming_limit_bytes(&self, py: Python<'_>) -> PyResult<usize> {
         py.detach(|| self.arena.streaming_limit())

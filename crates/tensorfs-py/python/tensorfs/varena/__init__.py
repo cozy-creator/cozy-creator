@@ -45,6 +45,10 @@ class Arena:
     def set_streaming_limit(self, bytes: int) -> None:
         self._native.set_streaming_limit(bytes)
 
+    def clear_streaming_limit(self) -> None:
+        """Clear the legacy idle-cache window without reclaim or changing capacity limits."""
+        self._native.clear_streaming_limit()
+
     @property
     def streaming_limit_bytes(self) -> int:
         return self._native.streaming_limit_bytes
