@@ -140,6 +140,63 @@ impl Descriptor {
         Ok(())
     }
 
+    /// Read the small header without mapping sparse tmpfs pages. A correctly sized file may
+    /// still be under-backed after an earlier failed initialization.
+    pub(super) fn header(&self, words: usize) -> Result<Vec<u64>> {
+        let mut bytes = vec![0u8; words * 8];
+        let mut done = 0;
+        while done < bytes.len() {
+            // SAFETY: pread writes only the remaining slice of this owned buffer, at the
+            // matching bounded header offset, through our live descriptor.
+            let count = unsafe {
+                libc::pread(
+                    self.raw()?,
+                    bytes[done..].as_mut_ptr().cast(),
+                    bytes.len() - done,
+                    done as libc::off_t,
+                )
+            };
+            if count < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error.into());
+            }
+            if count == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "truncated ledger header",
+                )
+                .into());
+            }
+            done += count as usize;
+        }
+        Ok(bytes
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|word| u64::from_ne_bytes(*word))
+            .collect())
+    }
+
+    /// Reserve actual tmpfs backing before mmap. ftruncate changes the logical size alone;
+    /// a page fault while writing an unbacked shared mapping can otherwise raise SIGBUS.
+    /// This is required on every compatible open, including retries after failed allocation.
+    pub(super) fn allocate(&self, bytes: usize) -> Result<()> {
+        loop {
+            // SAFETY: the caller holds the publication lock and validated this fixed-size
+            // private tmpfs file. Mode zero preserves existing contents and allocates holes.
+            if unsafe { libc::fallocate(self.raw()?, 0, 0, bytes as libc::off_t) } == 0 {
+                return Ok(());
+            }
+            let error = std::io::Error::last_os_error();
+            if error.kind() != std::io::ErrorKind::Interrupted {
+                return Err(error.into());
+            }
+        }
+    }
+
     pub(super) fn lock(self: &Arc<Self>, byte: i64, wait: bool) -> Result<Option<Locked>> {
         let fd = self.raw()?;
         loop {

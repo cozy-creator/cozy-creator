@@ -30,6 +30,9 @@ The table uses two metadata banks with an atomic committed-bank generation. A wr
 bank before publishing its index; a process killed while writing leaves the last committed bank readable.
 Snapshots are taken under the short publication lock. No user callback, CUDA operation or wait for a donor
 runs under that lock.
+The fixed tmpfs backing is allocated before mmap on every compatible open, including retries after an ENOSPC
+failure left a correctly sized sparse file. Existing nonzero headers are checked before allocation; no
+incompatible layout is repaired. This makes a small/full Docker shm limit an ordinary I/O refusal, not SIGBUS.
 
 Rows publish disjoint physical weights, nonpool working storage, graph-pool storage and owner-rebuildable cache
 classes. Live/idle/pending subdivisions partition each class. Reclaimable bytes are a subset of idle holdings,

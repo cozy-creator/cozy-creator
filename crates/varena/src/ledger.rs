@@ -299,7 +299,6 @@ impl Ledger {
         } else if size != (WORDS * 8) as u64 {
             return Err(Error::Incompatible("layout length"));
         }
-        let map = os::Mapping::new(&file, WORDS)?;
         let halves = |bytes: [u8; 16]| {
             [
                 u64::from_le_bytes(bytes[..8].try_into().unwrap()),
@@ -325,6 +324,16 @@ impl Ledger {
             u64::from_ne_bytes(*b"abcdefgh"),
             0,
         ];
+        let existing = file.header(expected.len())?;
+        if existing[0] != 0 && existing.as_slice() != expected {
+            return Err(Error::Incompatible(
+                "device, boot, UID, namespace or layout identity",
+            ));
+        }
+        // Also allocate correctly sized files: an earlier ENOSPC after ftruncate can leave
+        // sparse backing. Reject an incompatible nonzero header before changing allocation.
+        file.allocate(WORDS * 8)?;
+        let map = os::Mapping::new(&file, WORDS)?;
         if map.load(0, Ordering::Acquire) == 0 {
             // A writer killed during first initialization leaves magic zero; no participant
             // can have registered before the completed header becomes visible.

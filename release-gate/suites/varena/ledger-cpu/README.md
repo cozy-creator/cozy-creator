@@ -43,3 +43,23 @@ operation still rejects a changed PID/domain before touching inherited local loc
 The first domain is same UID, user/PID/mount namespaces and boot, using the same tmpfs file. Different backing
 inodes are separate domains. Full cross-container/multi-UID support, GPU/MIG discovery, wake/recheck latency,
 real donor release, allocator policy and TensorD migration remain unqualified by this CPU proof.
+
+## Exhausted tmpfs initialization
+
+The fixed backing is preallocated before mapping, on every compatible open. `ftruncate` alone can succeed in
+a tiny/full tmpfs and then make initialization stores fault with SIGBUS. A failed preallocation can leave a
+correctly sized sparse file, so a retry must reserve its backing again. Existing nonzero headers are validated
+with `pread` before allocation; an incompatible layout is refused without repair.
+
+Run this negative test only in its private Docker shared-memory mount, never by filling host `/dev/shm`:
+
+```sh
+python3 release-gate/suites/varena/ledger-cpu/tmpfs_capacity.py \
+  target/debug/examples/ledger_peer CACHED_COMPATIBLE_IMAGE /absolute/new/receipt-directory
+```
+
+It uses cached images only, runc, private IPC, no network/GPU and no host shared-memory mount. The actual ledger
+must return an I/O ENOSPC error on both first and repeated opens with 16 KiB shm. With 64 KiB it must open twice
+without changing bytes. A correctly sized but incompatible sparse header must remain unchanged and report the
+layout error before attempting backing allocation. The original reproduced SIGBUS and later fixed receipts are
+kept separately; the test does not replace or mock mmap/fallocate.
