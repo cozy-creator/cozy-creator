@@ -72,6 +72,21 @@ def native_cudnn(payload: Probe, tel: Telemetry) -> Report:
     return _cuda_child(payload, tel, "native_cudnn.py", "native-cudnn-lifetime")
 
 
+@app.entrypoint(accelerator=True)
+def triton_reader(payload: Probe, tel: Telemetry) -> Report:
+    """Paired public Triton launch/do_bench consumers; no model weights or implementation search."""
+    results = {}
+    for mode in ("native", "varena"):
+        arm = Probe(**{**msgspec.to_builtins(payload), "case": mode})
+        report = _cuda_child(arm, tel, "triton_reader.py", "public-triton-" + mode)
+        results[mode] = json.loads(report.detail)
+    if all(item.get("passed") for item in results.values()):
+        assert results["native"]["output_sha256"] == results["varena"]["output_sha256"]
+        for key in ("gpu_uuid", "torch", "torch_git", "triton", "extension_sha256", "shim_sha256"):
+            assert results["native"]["provenance"][key] == results["varena"]["provenance"][key]
+    return Report(all(item.get("passed") for item in results.values()), json.dumps(results, sort_keys=True))
+
+
 def _cuda_child(payload: Probe, tel: Telemetry, filename: str, stage: str) -> Report:
     config = msgspec.json.encode(payload).decode()
     child = Path(__file__).with_name(filename)
