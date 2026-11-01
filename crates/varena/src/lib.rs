@@ -11,6 +11,8 @@
 #![deny(unsafe_code)]
 
 mod cuda;
+/// Versioned public ABI. All frontends resolve this shared library.
+pub mod abi;
 pub mod plan;
 pub mod working;
 pub mod cache_owner;

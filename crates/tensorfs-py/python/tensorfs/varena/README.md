@@ -261,3 +261,12 @@ TLS must exec or exit before calling Varena/CUDA; clean rejection is not guarant
 for that unsupported pattern. `strict-pid-guard` is a compile-time override for
 per-call actual-PID checking. See [the native contract](../../../../varena/process-contract.md).
 The private status API reports the actual backend and never initializes CUDA.
+
+## External developer API
+
+The unreleased `tensorfs.varena.api` facade adds `Gpu`, `Region`, working `Allocation`,
+`Cache` and `Plan` over ABI 1, resolving the same native core as this module's existing
+adapters. `tensorfs.varena.open` and `Gpu` are re-exported. See
+[`crates/varena/PUBLIC-API.md`](../../../../varena/PUBLIC-API.md) for the exact
+contract, build and runnable examples. General `torch.offload(pipe)` is planned,
+not an implemented supported Diffusers entry point.
