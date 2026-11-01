@@ -189,11 +189,14 @@ def allocator_probe(payload: Benchmark, tel: Telemetry, out: Outputs) -> Allocat
     # Runtime has an actual 4 MiB inline result door. Preserve every raw row through
     # ordinary File custody, and keep only counters/quantiles in the typed inline result.
     for result in summary["results"].values():
-        for sample in result["samples"]:
-            trace = sample["native_probe"]
+        for sample in result.get("samples", []):
+            if trace := sample.get("native_probe"):
+                trace["record_count"] = len(trace.pop("records"))
+        if calibration := result.get("native_probe_calibration"):
+            trace = calibration["empty_markers"]
             trace["record_count"] = len(trace.pop("records"))
-        calibration = result["native_probe_calibration"]["empty_markers"]
-        calibration["record_count"] = len(calibration.pop("records"))
+        if partial := result.get("failure", {}).get("native_probe_partial"):
+            partial["record_count"] = len(partial.pop("records"))
     return AllocatorProbeReport(measured.passed, json.dumps(summary, sort_keys=True), raw)
 
 
@@ -208,6 +211,7 @@ def _benchmark(payload: Benchmark, tel: Telemetry, *, native_probe: bool) -> Rep
         if native_probe:
             config["native_probe"] = True
         result = None
+        partial = {"samples": []}
         with tel.stage(f"allocator-{mode}"):
             process = subprocess.Popen(
                 [sys.executable, "-I", str(child), json.dumps(config)],
@@ -223,6 +227,13 @@ def _benchmark(payload: Benchmark, tel: Telemetry, *, native_probe: bool) -> Rep
                         record = json.loads(line)
                     except ValueError:
                         continue
+                    if native_probe and isinstance(record, dict):
+                        if "benchmark_sample" in record:
+                            partial["samples"].append(record["benchmark_sample"])
+                        if "benchmark_provenance" in record:
+                            partial["provenance"] = record["benchmark_provenance"]
+                        if "native_probe_calibration" in record:
+                            partial["native_probe_calibration"] = record["native_probe_calibration"]
                     if isinstance(record, dict) and "result" in record:
                         result = record["result"]
                 code = process.wait()
@@ -231,6 +242,15 @@ def _benchmark(payload: Benchmark, tel: Telemetry, *, native_probe: bool) -> Rep
                     process.terminate()
                     process.wait()
         if code or not isinstance(result, dict) or not result.get("passed"):
+            if native_probe:
+                partial["failure"] = result if isinstance(result, dict) else {"error": "child returned no final result"}
+                partial["child_exit"] = code
+                results[mode] = partial
+                return Report(False, json.dumps({
+                    "passed": False, "diagnostic_valid": False, "qualification_eligible": False,
+                    "qualification": "failed sparse probe; completed samples and readable partial rows retained",
+                    "results": results,
+                }, sort_keys=True))
             raise RuntimeError(f"allocator {mode} child failed ({code}): {result}")
         results[mode] = result
     native, candidate = results["native"], results["varena"]

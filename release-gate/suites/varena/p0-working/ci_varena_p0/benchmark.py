@@ -168,6 +168,7 @@ def main(config):
     if native_probe:
         calibration = json.loads(_ext._varena_allocator_probe_calibrate())
         assert calibration["schema"] == "varena.allocator_probe_calibration/1"
+        emit({"native_probe_calibration": calibration, "mode": mode})
     samples = []
     pair_count = config["rounds"] * len(SIZES)
     enabled = gc.isenabled()
@@ -236,8 +237,16 @@ def main(config):
 
 
 if __name__ == "__main__":
+    config = {}
     try:
-        main(json.loads(sys.argv[1]))
+        config = json.loads(sys.argv[1])
+        main(config)
     except BaseException as error:
-        emit({"result": {"passed": False, "error": f"{type(error).__name__}: {error}"}})
+        failed = {"passed": False, "error": f"{type(error).__name__}: {error}"}
+        if config.get("native_probe", False):
+            try:
+                failed["native_probe_partial"] = json.loads(_ext._varena_allocator_probe_read())
+            except Exception as probe_error:
+                failed["native_probe_read_error"] = f"{type(probe_error).__name__}: {probe_error}"
+        emit({"result": failed})
         raise
