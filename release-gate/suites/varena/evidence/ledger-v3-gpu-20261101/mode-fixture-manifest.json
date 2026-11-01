@@ -1,0 +1,11 @@
+{
+  "common.json": "a1f4886e8d8e47425baa306aefcc65fd287e7bd312d6f0ab542c5652bd956d2d",
+  "a/package.toml": "9b9595d47563fd2da747a148aa4d266b1cd95f40af9f32485a75df89f8a81e79",
+  "a/uv.lock": "c9508494990df768ba382b307d6105bf637fda929423d676bef222e5ed2a2e4f",
+  "a/pyproject.toml": "00f031cda7f2a5a81d1ce68062397e454bc765afa35faa323a81ab7cbfa6aaed",
+  "b/package.toml": "9b9595d47563fd2da747a148aa4d266b1cd95f40af9f32485a75df89f8a81e79",
+  "b/uv.lock": "5a6326d14348e57e093384518ac7fbc8b4ddb4b5688da48c6b034a696be58c6f",
+  "b/pyproject.toml": "c2fc8f15d64110eb3981cf7c0cb3b3d25338188c376211a446f40608a82d4e40",
+  "a/ci_varena_idle/__init__.py": "83a2dd188ec9ce8c9394eda4c6a79636662442657496380de8811a053f98c00a",
+  "b/ci_varena_idle/__init__.py": "8c4e9fda85b01e5cd69b395054dd675ee11a14bd4105aaa589a43473e1d14046"
+}

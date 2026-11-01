@@ -1,0 +1,30 @@
+{
+  "fixture_commit": "6e85733ef6d3cea3697b30c10fb4eef1cf9c1297",
+  "native_product_commit": "0657802458dfbf4fb7e66613e30c9baef1308e68",
+  "runtime_commit": "6c8122412bf502f2913c35eaba6cf9d263d314b5",
+  "project": "/home/fidika/cozy_v2/outputs/xs138-p3-ledger-v3/fixture-6e85733ef/owner-runtime",
+  "entrypoint": "owner_actions",
+  "files": {
+    "README.md": "6e367cbd56a21b53d8b4549067f6bc1bf6504cca285e8f18710d55622bf480db",
+    "package.toml": "f0a13d43196e20b8d99417cda48cd010c6096a68d78692d7f2022a5fd407e9ce",
+    "stage-shortage.py": "b94d59805a701266e06929548b3227763f60438e6422ea9abf532530164f1c69",
+    "uv.lock": "7945f10235ecaad3c1bc55683853cfe7199b14bbedabcab822890bb59bd90e25",
+    "pyproject.toml": "10d577fe05fe27602294f518b86e7b38acf9390e3caae80737a0b3b2f9545979",
+    "make-payload.py": "c6a18f25f5a5643dc5efc1eee48ca6ff19795d00e478d9ca7c03cbb7ca268f2a",
+    "ci_varena_owner/action_requester.py": "95c261285dbb9aab9201c9498bbe85dfaf15621b00e0c57aed4bcda1ff2c8f03",
+    "ci_varena_owner/gil_gate.c": "06314663878e68eb18a13dcf0be9649e8bfb6325c51bf2f46752fb76f32ccead",
+    "ci_varena_owner/foreign_process.py": "b2ca05cef929f93cb561cd0aaa948603b0eb713cc4bd3d813021128dbb03a5f6",
+    "ci_varena_owner/owner_actions.py": "7a1fe372c72287463e7c534437865161651cb9bfc231edb11c2d602fb39733a5",
+    "ci_varena_owner/foreign.py": "19ca25a09858ba81709dee6fd6b2837a871e57012f15ba1518620ed3595aff0c",
+    "ci_varena_owner/pressure.py": "92f6b53434766979045bc7abe3641e9b057cc279d85a63a3fed23da97afe5571",
+    "ci_varena_owner/publication_holder.py": "680496a9da2c5c81e3985d276b390ce7218ce7fd03f6f29183f6cb13a6603c41",
+    "ci_varena_owner/mode_requester.py": "2b170d1ce93dc0c4cc5732666c7f36057cf3dd65ade1957c9026c6109e774531",
+    "ci_varena_owner/requester.py": "f3d3effc499a99df6f03daba10ea5dc165a1af796b4f313c0e0dff2a54f91c3e",
+    "ci_varena_owner/__init__.py": "1c0ccfe40fb491c202804cebac068ed13cf37fbdcbc9f64daa247e1634325897",
+    "ci_varena_owner/donor.py": "51760fce9436a3613e61e1f7121128f581b793324979c8fd09b7ac00574d84cd"
+  },
+  "portable_child_helper_required": false,
+  "child": "ci_varena_owner/action_requester.py uses the installed exact TensorFS/Torch; no C helper required",
+  "gpu_execution": false,
+  "source_ast_passed": true
+}

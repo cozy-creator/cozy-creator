@@ -1,0 +1,21 @@
+{"type":"run.created","sequence_number":1,"run":{"id":"run-919c62c94756deb18dd38580","number":25742,"kind":"update","target":"dedicated mode","hub":"https://tensorhub.com","machine":"sorata","status":"queued","cancel_requested":false,"output":[],"created_at_ms":1793570578119}}
+{"type":"run.waiting","reason":"sending to sorata"}
+{"type":"run.in_progress","sequence_number":2,"run":{"id":"run-919c62c94756deb18dd38580","number":25742,"kind":"update","target":"dedicated mode","hub":"https://tensorhub.com","machine":"sorata","status":"in_progress","cancel_requested":false,"machine_state":"queued","output":[],"created_at_ms":1793570578119,"accepted_at_ms":1793570578259}}
+{"type":"run.progress","progress":{"stage":"waiting","completed":0,"total":0,"bytes_done":0,"bytes_total":0,"step_ms":0.0,"step_avg_ms":0.0,"at_ms":1793570578238}}
+{"type":"run.log","sequence_number":3,"at_ms":1793570578238,"level":"stage","text":"waiting"}
+{"type":"run.waiting","reason":"no answer from sorata yet (0s): machine_booting: the machine is starting; ask again once it serves"}
+{"type":"run.waiting","reason":""}
+{"type":"run.progress","progress":{"stage":"waiting","completed":0,"total":0,"bytes_done":0,"bytes_total":0,"step_ms":0.0,"step_avg_ms":0.0,"at_ms":1793570578238}}
+{"type":"run.progress","progress":{"stage":"installing","completed":0,"total":0,"bytes_done":0,"bytes_total":0,"step_ms":0.0,"step_avg_ms":0.0,"at_ms":1793570578318}}
+{"type":"run.progress","progress":{"stage":"starting","completed":0,"total":0,"bytes_done":0,"bytes_total":0,"step_ms":0.0,"step_avg_ms":0.0,"at_ms":1793570578322}}
+{"type":"run.log","sequence_number":4,"at_ms":1793570578318,"level":"stage","text":"installing"}
+{"type":"run.log","sequence_number":5,"at_ms":1793570578322,"level":"stage","text":"starting"}
+{"type":"run.in_progress","sequence_number":6,"run":{"id":"run-919c62c94756deb18dd38580","number":25742,"kind":"update","target":"dedicated mode","hub":"https://tensorhub.com","machine":"sorata","status":"in_progress","cancel_requested":false,"machine_state":"running","output":[],"created_at_ms":1793570578119,"accepted_at_ms":1793570578259}}
+{"type":"run.completed","sequence_number":7,"run":{"id":"run-919c62c94756deb18dd38580","number":25742,"kind":"update","target":"dedicated mode","hub":"https://tensorhub.com","machine":"sorata","status":"completed","cancel_requested":false,"machine_state":"running","output":[],"created_at_ms":1793570578119,"accepted_at_ms":1793570578259,"settled_at_ms":1793570579146,"result":{"from":{"cozy":"0.15.7+dev.gf57bf6ea","runtime":"0.36.23+dev.g6c812241","runtime_sha256":"2e918a43bf087def526d4f188477bb3228b7da95e43bbe547b08f86a2cb4a89d","tensorfs":"0.17.16+dev.g06578024","tensorfs_sha256":"89a7829521f9fddc6eef9a36bcb2e769b280375c11970cb054b8ad5225bf520d"},"to":{"cozy":"0.15.7+dev.gf57bf6ea","runtime":"0.36.23+dev.g6c812241","runtime_sha256":"2e918a43bf087def526d4f188477bb3228b7da95e43bbe547b08f86a2cb4a89d","tensorfs":"0.17.16+dev.g06578024","tensorfs_sha256":"89a7829521f9fddc6eef9a36bcb2e769b280375c11970cb054b8ad5225bf520d"}}}}
+{
+  "machine": "sorata",
+  "mode": "dedicated",
+  "runtime": "0.36.23+dev.g6c812241",
+  "tensord": "0.15.7+dev.gf57bf6ea",
+  "tensorfs": "0.17.16+dev.g06578024"
+}

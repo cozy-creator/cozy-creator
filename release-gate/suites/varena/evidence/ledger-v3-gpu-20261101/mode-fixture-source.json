@@ -1,0 +1,10 @@
+{
+  "source": "fea8109ed8318e6a00015cacb8f6051195278037",
+  "files": {
+    "release-gate/suites/varena/idle-lifecycle/app.py": "f152d0bd244dd6d3f5a4dd935fa87a87a183c122927b3eb3b9d0dcb0c52189a2",
+    "release-gate/suites/varena/idle-lifecycle/stage.py": "f353c4ac2a68c5fe58823b814eceee7d928e367f404a2ec237e6b73f3ecec2c2",
+    "release-gate/suites/varena/owner-runtime/pyproject.toml": "10d577fe05fe27602294f518b86e7b38acf9390e3caae80737a0b3b2f9545979",
+    "release-gate/suites/varena/owner-runtime/uv.lock": "7945f10235ecaad3c1bc55683853cfe7199b14bbedabcab822890bb59bd90e25",
+    "release-gate/suites/varena/machine-mode/prove.py": "67c20ed72e134367cd2e29524c448768afd40ed0050ada7d9cd36519ffbedf23"
+  }
+}

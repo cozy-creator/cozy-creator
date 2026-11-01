@@ -1,0 +1,113 @@
+[
+  {
+    "label": "before",
+    "command": [
+      "/home/fidika/cozy_v2/outputs/xs138-p3-machine-mode/candidate-f57bf6eaa/cozy-linux-x86_64",
+      "machine",
+      "show",
+      "sorata",
+      "--json"
+    ],
+    "returncode": 0
+  },
+  {
+    "label": "update-shared",
+    "command": [
+      "/home/fidika/cozy_v2/outputs/xs138-p3-machine-mode/candidate-f57bf6eaa/cozy-linux-x86_64",
+      "machine",
+      "update",
+      "sorata",
+      "--mode",
+      "shared",
+      "--json"
+    ],
+    "returncode": 0
+  },
+  {
+    "label": "show-shared",
+    "command": [
+      "/home/fidika/cozy_v2/outputs/xs138-p3-machine-mode/candidate-f57bf6eaa/cozy-linux-x86_64",
+      "machine",
+      "show",
+      "sorata",
+      "--json"
+    ],
+    "returncode": 0
+  },
+  {
+    "label": "gpu-shared",
+    "command": [
+      "/home/fidika/cozy_v2/outputs/xs138-p3-machine-mode/candidate-f57bf6eaa/cozy-linux-x86_64",
+      "run",
+      "/home/fidika/cozy_v2/outputs/xs138-p3-machine-mode/fixture-fea8109-sorata/bundle/a/probe",
+      "--on",
+      "sorata",
+      "--gpus=1",
+      "--input",
+      "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/attempt-002/machine-mode/shared-input.json",
+      "--json"
+    ],
+    "returncode": 0
+  },
+  {
+    "label": "update-dedicated",
+    "command": [
+      "/home/fidika/cozy_v2/outputs/xs138-p3-machine-mode/candidate-f57bf6eaa/cozy-linux-x86_64",
+      "machine",
+      "update",
+      "sorata",
+      "--mode",
+      "dedicated",
+      "--json"
+    ],
+    "returncode": 0
+  },
+  {
+    "label": "show-dedicated",
+    "command": [
+      "/home/fidika/cozy_v2/outputs/xs138-p3-machine-mode/candidate-f57bf6eaa/cozy-linux-x86_64",
+      "machine",
+      "show",
+      "sorata",
+      "--json"
+    ],
+    "returncode": 0
+  },
+  {
+    "label": "gpu-dedicated",
+    "command": [
+      "/home/fidika/cozy_v2/outputs/xs138-p3-machine-mode/candidate-f57bf6eaa/cozy-linux-x86_64",
+      "run",
+      "/home/fidika/cozy_v2/outputs/xs138-p3-machine-mode/fixture-fea8109-sorata/bundle/a/probe",
+      "--on",
+      "sorata",
+      "--gpus=1",
+      "--input",
+      "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/attempt-002/machine-mode/dedicated-input.json",
+      "--json"
+    ],
+    "returncode": 0
+  },
+  {
+    "label": "before-restore",
+    "command": [
+      "/home/fidika/cozy_v2/outputs/xs138-p3-machine-mode/candidate-f57bf6eaa/cozy-linux-x86_64",
+      "machine",
+      "show",
+      "sorata",
+      "--json"
+    ],
+    "returncode": 0
+  },
+  {
+    "label": "restored",
+    "command": [
+      "/home/fidika/cozy_v2/outputs/xs138-p3-machine-mode/candidate-f57bf6eaa/cozy-linux-x86_64",
+      "machine",
+      "show",
+      "sorata",
+      "--json"
+    ],
+    "returncode": 0
+  }
+]

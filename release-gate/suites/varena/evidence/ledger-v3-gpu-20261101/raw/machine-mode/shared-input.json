@@ -1,0 +1,7 @@
+{
+  "runtime_version": "0.36.23+dev.g6c812241",
+  "tensorfs_version": "0.17.16+dev.g06578024",
+  "extension_sha256": "caee9f2cd9c1bbd25de35381e1c505957ce10968f3de9d7fbcb3148d5f93f068",
+  "gpu_uuid": "GPU-846689c6-daf3-15b1-580e-f2a78bdf6748",
+  "expected_shared": true
+}

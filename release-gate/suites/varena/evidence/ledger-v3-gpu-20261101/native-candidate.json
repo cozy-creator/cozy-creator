@@ -1,0 +1,149 @@
+{
+  "source_commit": "0657802458dfbf4fb7e66613e30c9baef1308e68",
+  "tensorfs_version": "0.17.16+dev.g06578024",
+  "wheel_path": "/home/fidika/cozy_v2/outputs/xs138-p3-ledger-v3/native-065780245/tensorfs-0.17.16+dev.g06578024-cp311-abi3-manylinux_2_28_x86_64.whl",
+  "wheel_sha256": "89a7829521f9fddc6eef9a36bcb2e769b280375c11970cb054b8ad5225bf520d",
+  "source_archive_sha256": "8bdc4d5fe1a3ace111e36e2bc2c733088748673a892287848974acbfba4ad9ad",
+  "installed_path": "/home/fidika/cozy_v2/outputs/xs138-p3-ledger-v3/native-065780245/installed",
+  "elf": {
+    "extension": {
+      "required_versions": [
+        "GLIBC_2.10",
+        "GLIBC_2.12",
+        "GLIBC_2.14",
+        "GLIBC_2.15",
+        "GLIBC_2.16",
+        "GLIBC_2.17",
+        "GLIBC_2.18",
+        "GLIBC_2.2.5",
+        "GLIBC_2.25",
+        "GLIBC_2.27",
+        "GLIBC_2.28",
+        "GLIBC_2.3",
+        "GLIBC_2.3.2",
+        "GLIBC_2.3.4",
+        "GLIBC_2.4",
+        "GLIBC_2.5",
+        "GLIBC_2.6",
+        "GLIBC_2.7",
+        "GLIBC_2.9"
+      ],
+      "needed": [
+        "libdl.so.2",
+        "libgcc_s.so.1",
+        "libpthread.so.0",
+        "libm.so.6",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ]
+    },
+    "shim": {
+      "required_versions": [
+        "CXXABI_1.3",
+        "CXXABI_1.3.9",
+        "GLIBCXX_3.4",
+        "GLIBCXX_3.4.11",
+        "GLIBCXX_3.4.14",
+        "GLIBCXX_3.4.21",
+        "GLIBCXX_3.4.9",
+        "GLIBC_2.14",
+        "GLIBC_2.2.5"
+      ],
+      "needed": [
+        "libc10.so",
+        "libstdc++.so.6",
+        "libm.so.6",
+        "libgcc_s.so.1",
+        "libc.so.6"
+      ]
+    },
+    "cli": {
+      "required_versions": [
+        "GLIBC_2.12",
+        "GLIBC_2.14",
+        "GLIBC_2.16",
+        "GLIBC_2.17",
+        "GLIBC_2.18",
+        "GLIBC_2.2.5",
+        "GLIBC_2.25",
+        "GLIBC_2.27",
+        "GLIBC_2.28",
+        "GLIBC_2.3",
+        "GLIBC_2.3.2",
+        "GLIBC_2.3.4",
+        "GLIBC_2.4",
+        "GLIBC_2.5",
+        "GLIBC_2.6",
+        "GLIBC_2.7",
+        "GLIBC_2.9"
+      ],
+      "needed": [
+        "libdl.so.2",
+        "libgcc_s.so.1",
+        "libpthread.so.0",
+        "libm.so.6",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ]
+    }
+  },
+  "build_image": "quay.io/pypa/manylinux_2_28_x86_64:2026.10.10-1",
+  "cuda_execution": "not performed",
+  "auditwheel": "canonical manylinux_2_28 check passed; no repair/bundling",
+  "aot_provenance_receipt": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p0-torch/.task/aot-control-01716/final-receipt.json",
+  "extension_member": "tensorfs/_ext.abi3.so",
+  "extension_sha256": "caee9f2cd9c1bbd25de35381e1c505957ce10968f3de9d7fbcb3148d5f93f068",
+  "shim_sha256": "09684b61d0b909c39d56c7d129432e906ddb0a57f1b4b916b20bb2c4c8d7716e",
+  "cli_member": "tensorfs-0.17.16+dev.g06578024.data/scripts/tfs",
+  "tfs_sha256": "784132362c7f24a2e2e451f1e414f6375f8af3cac7d12a14a0845b35e4e15c10",
+  "torch_build": {
+    "abi": 1,
+    "cuda": "13.0",
+    "cxx11_abi": 1,
+    "machine": "x86_64",
+    "supported_torch": [
+      "2.14.0+cu130",
+      "2.14.1+cu130"
+    ],
+    "system": "Linux",
+    "torch": "2.14.0+cu130",
+    "torch_git": "08187d9e0fba026dc8217405802ab5381dc88d90"
+  },
+  "wheel_members": 22,
+  "python_members_verified": {
+    "tensorfs/__init__.py": "09b8e50414292f1079e3e391f7729936b4ec005f017db0e733104c7a0c193e2c",
+    "tensorfs/_ext.pyi": "42b93328ffd2cc2ced463cad9b1293a4e7d7150f106f05bbd17603c0cca86180",
+    "tensorfs/api.py": "e88867188a416ea01f68f7187409b4bfe6773489508eccad66bffe3f49e956a6",
+    "tensorfs/api.pyi": "6f3f5d61f5f2691cf80ee53a37c70bfa880e7567600ef98a0ff4fd392ad38b44",
+    "tensorfs/executor.py": "fdbabcd5f1c03352535d9bb8aa62dbbd0abaead62ddc3128420d3658f3b0df5f",
+    "tensorfs/executor.pyi": "0676578975e330ad04e85b62da7fa8ab8848c2414dd5c75603fdafc0f6fb34b3",
+    "tensorfs/raw.py": "18b14e08fe920dea12e6856d53425f86e391c9e6c1406fe3bbb6d0e2d301d9cc",
+    "tensorfs/raw.pyi": "acf2c62ab4db6e931e0ce265307ab8df13c58a89ea8ded4da9640aa024b371bd",
+    "tensorfs/varena/__init__.py": "23d886320402085a8cc6c620fd6635fe30ed2e148bf64c90f2c6270cd8cd8140",
+    "tensorfs/varena/cooperative.py": "bf6a0493c73b696b0c18427b53ff20d310b9fd2aa4a149ee71f2b8e91ec48259",
+    "tensorfs/varena/torch.py": "78b7674680a1f869274409de6628e31bc97123114ba1e4206ad66551b8cc72f6"
+  },
+  "aot_binaries": 378,
+  "aot_unique_full_images_verified_in_extension": 330,
+  "aot_full_images_in_cli": 0,
+  "cli_aot_reference_comparison": {
+    "qualified_p0": {
+      "wheel_sha256": "acc8d121b69be8b87a8e4fa5da02c88e910dfa2e1c7e5c91b380fad6cfe76c8c",
+      "cli_sha256": "99d5d5dbb345a179f5324828005df9ca58713d8c622bfc95e2c2d5e7a3718f35",
+      "full_aot_images_in_cli": 0,
+      "p1_retirement_marker": false
+    },
+    "fast_p0": {
+      "wheel_sha256": "0d9b7ecfd7be9d709ae42fcb0a5b9c3e75be30338797d6280f736bfac407f6e2",
+      "cli_sha256": "db8fd91ab44aab898f11605c6bf96844edb50b6fbdf14c8093f5dfe0ef7e8f7a",
+      "full_aot_images_in_cli": 0,
+      "p1_retirement_marker": false
+    },
+    "p1": {
+      "wheel_sha256": "7eeb10bda0e11a46e84fd65169d137d9f66f08013b3a7afc496158a7b5b8a73e",
+      "cli_sha256": "51f0772b3b0df71e0b0d03abf26bf5121f8a0678a76b4a334735515f522ac459",
+      "full_aot_images_in_cli": 0,
+      "p1_retirement_marker": true
+    }
+  }
+}
