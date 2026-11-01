@@ -114,17 +114,18 @@ def gpu(payload: Probe, ctx: Context) -> Report:
 
     request, vt, provenance = actual_request(payload, ctx)
     device = ctx.device.index or 0
+    torch_device = torch.device(ctx.device.type, device)
     torch.set_num_threads(1)
     trim(vt, device)
     initial = vt.stats(device)
     plan_reports = []
-    plan = Plan(ctx.device, partial(triton_kernels.load, device=ctx.device),
+    plan = Plan(torch_device, partial(triton_kernels.load, device=torch_device),
                 report=lambda name, row: plan_reports.append({'name': name, **row}))
     rows = []
     reference = None
     holder = {}
     with torch.inference_mode():
-        norm = FixtureChannelNorm(ctx.device)
+        norm = FixtureChannelNorm(torch_device)
         identity = fusion.install_norms(plan, LAYOUT, norm)
         assert identity and getattr(type(norm), '_cozy_fused', None) == 'channel'
         launcher = norm._cozy_norm.switch.launch
@@ -134,9 +135,9 @@ def gpu(payload: Probe, ctx: Context) -> Report:
                           kernel_source=LAYOUT.entries[0].kernel.cache_key)
         cpu_input = torch.randn((4, 256, 256, 64), dtype=torch.bfloat16,
                                 generator=torch.Generator().manual_seed(payload.seed))
-        x = cpu_input.permute(0, 3, 1, 2).to(ctx.device)
+        x = cpu_input.permute(0, 3, 1, 2).to(torch_device)
         assert tuple(x.shape) == SHAPE and not x.is_contiguous()
-        marker = torch.zeros(1, dtype=torch.int64, device=ctx.device)
+        marker = torch.zeros(1, dtype=torch.int64, device=torch_device)
         try:
             for headroom, expected in ((64, 'batch:4'), (48, 'batch:2'), (40, 'batch:1'), (39, None)):
                 holder.clear()
