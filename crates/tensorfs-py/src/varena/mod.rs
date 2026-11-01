@@ -184,6 +184,7 @@ impl PyArena {
             ("evictions", stats.evictions),
             ("reclaimed_bytes", stats.reclaimed_bytes),
             ("context_joins", stats.context_joins),
+            ("driver_physical_ooms", stats.driver_physical_ooms),
             ("event_waits", stats.event_waits),
         ] {
             output.set_item(name, value)?;

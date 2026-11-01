@@ -236,6 +236,7 @@ fn _varena_working_stats(
         ("frees", stats.frees),
         ("ooms", stats.ooms),
         ("driver_memory_calls", stats.driver_memory_calls),
+        ("driver_physical_ooms", stats.driver_physical_ooms),
         ("event_queries", stats.event_queries),
         ("event_records", stats.event_records),
         ("event_waits", stats.event_waits),

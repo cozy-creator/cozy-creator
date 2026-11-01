@@ -16,6 +16,17 @@ static FDS: [AtomicPtr<Descriptor>; FD_SLOTS] =
 static REGISTRY: AtomicBool = AtomicBool::new(false);
 static HOOKS: AtomicI32 = AtomicI32::new(0); // 0 uninstalled, 1 ready, negative errno
 
+pub(super) fn monotonic_ns() -> Result<u64> {
+    let mut value = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: an initialized, writable timespec; CLOCK_MONOTONIC matches host peer stamps.
+    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut value) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let seconds = u64::try_from(value.tv_sec).map_err(|_| Error::Overflow)?;
+    let nanos = u64::try_from(value.tv_nsec).map_err(|_| Error::Overflow)?;
+    seconds.checked_mul(1_000_000_000).and_then(|n| n.checked_add(nanos)).ok_or(Error::Overflow)
+}
+
 extern "C" fn prepare_fork() {
     while REGISTRY
         .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)

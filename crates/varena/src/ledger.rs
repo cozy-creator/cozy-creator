@@ -29,6 +29,8 @@ pub fn initialize() -> Result<()> {
     os::initialize()
 }
 
+pub(crate) fn monotonic_ns() -> Result<u64> { os::monotonic_ns() }
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("ledger I/O: {0}")]

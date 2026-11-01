@@ -87,6 +87,7 @@ pub(crate) struct Driver {
     stream_query: EventOp,
     memory_info: MemoryInfo,
     memory_calls: AtomicU64,
+    physical_ooms: AtomicU64,
     event_queries: AtomicU64,
     event_records: AtomicU64,
     event_waits: AtomicU64,
@@ -139,6 +140,7 @@ impl Driver {
             stream_query: symbol!("cuStreamQuery", EventOp),
             memory_info: symbol!("cuMemGetInfo_v2", MemoryInfo),
             memory_calls: AtomicU64::new(0),
+            physical_ooms: AtomicU64::new(0),
             event_queries: AtomicU64::new(0),
             event_records: AtomicU64::new(0),
             event_waits: AtomicU64::new(0),
@@ -235,6 +237,7 @@ impl Driver {
         // SAFETY: valid output pointer and properties; bytes satisfy granularity.
         let code = unsafe { (self.create)(&mut handle, bytes, &self.properties(), 0) };
         if code == 2 {
+            self.physical_ooms.fetch_add(1, Ordering::Relaxed);
             return Err(crate::AllocationFailure::DriverOutOfMemory(bytes));
         }
         status("cuMemCreate", code)?;
@@ -353,6 +356,10 @@ impl Driver {
     /// Metadata reads of this counter perform no CUDA work.
     pub(crate) fn activity_calls(&self) -> u64 {
         self.activity_calls.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn physical_ooms(&self) -> u64 {
+        self.physical_ooms.load(Ordering::Relaxed)
     }
 
     pub(crate) fn uuid(&self) -> Result<[u8; 16]> {

@@ -402,6 +402,7 @@ pub struct WorkingStats {
     pub frees: u64,
     pub ooms: u64,
     pub driver_memory_calls: u64,
+    pub driver_physical_ooms: u64,
     pub event_queries: u64,
     pub event_records: u64,
     pub event_waits: u64,
@@ -1350,7 +1351,20 @@ pub fn alloc(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> Re
 }
 
 fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> Result<u64> {
-    alloc_local(device, bytes, stream, pool, &mut None)
+    let mut recovery = crate::Recovery::default();
+    loop {
+        let mut physical = None;
+        let result = alloc_local(device, bytes, stream, pool, &mut physical);
+        if let (Err(Error::OutOfMemory { .. }), Some(needed)) = (&result, physical)
+            && recovery.next(device, needed)?
+        {
+            continue; // All native guards are gone; retry the real allocator, never a grant.
+        }
+        if matches!(result, Err(Error::OutOfMemory { .. })) {
+            owner(device)?.lock()?.stats.ooms += 1;
+        }
+        return result;
+    }
 }
 
 fn alloc_local(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>,
@@ -1387,7 +1401,6 @@ fn alloc_local(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>,
             if let Some(ptr) = owner.fit_pool(&mut state, id, class, bytes, stream) {
                 return Ok(Working::activate(&mut state, ptr, bytes));
             }
-            state.stats.ooms += 1;
             return Err(Error::OutOfMemory {
                 requested_bytes: bytes,
             });
@@ -1435,7 +1448,6 @@ fn alloc_local(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>,
                 crate::reclaim(device, class)?;
             }
             Err(error @ Error::OutOfMemory { .. }) => {
-                owner.lock()?.stats.ooms += 1;
                 return Err(error);
             }
             result => return result,
@@ -2327,6 +2339,7 @@ pub fn stats(device: i32) -> Result<WorkingStats> {
         stats.event_records,
         stats.event_waits,
     ) = owner.driver.calls();
+    stats.driver_physical_ooms = owner.driver.physical_ooms();
     Ok(stats)
 }
 

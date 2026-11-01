@@ -5,7 +5,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, atomic::Ordering};
 
 mod owner;
-pub use owner::{Facts, Owner};
+pub use owner::{Facts, Owner, RecoveryOutcome, RecoveryReport};
+pub(crate) use owner::recover;
 
 fn deferred(error: &Error) -> bool {
     matches!(error,

@@ -5,9 +5,95 @@ use crate::ledger;
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const CADENCE: Duration = Duration::from_millis(500);
+const COORDINATION_BUDGET: Duration = Duration::from_secs(2);
+
+#[derive(Clone, Copy, Debug)]
+pub enum RecoveryOutcome {
+    Released,
+    Changed,
+    Exhausted,
+    BudgetExhausted,
+}
+
+impl RecoveryOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Released => "released",
+            Self::Changed => "round_changed",
+            Self::Exhausted => "peer_reclaim_exhausted",
+            Self::BudgetExhausted => "peer_wait_budget_exhausted",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct RecoveryReport {
+    pub outcome: RecoveryOutcome,
+    pub requested_bytes: usize,
+    /// Newly observed round progress, never capacity credit; local waiters may share it.
+    pub released_bytes: u64,
+    pub round: Option<u64>,
+    pub completed_bytes: u64,
+    pub elapsed_ns: u64,
+}
+
+#[derive(Default)]
+struct AttemptState {
+    observed: Option<(u64, u64)>,
+    result: Option<RecoveryReport>,
+}
+
+struct Attempt {
+    requested: usize,
+    deadline: Instant,
+    observed: Option<(u64, u64)>,
+    state: Mutex<AttemptState>,
+}
+
+impl Attempt {
+    fn lock(&self) -> crate::Result<MutexGuard<'_, AttemptState>> {
+        self.state
+            .lock()
+            .map_err(|_| crate::Error::Poisoned("peer recovery state mutex".into()))
+    }
+
+    fn report(
+        &self,
+        outcome: RecoveryOutcome,
+        released_bytes: u64,
+        observed: Option<(u64, u64)>,
+    ) -> RecoveryReport {
+        report(
+            self.requested,
+            self.deadline,
+            outcome,
+            released_bytes,
+            observed,
+        )
+    }
+}
+
+fn report(
+    requested_bytes: usize,
+    deadline: Instant,
+    outcome: RecoveryOutcome,
+    released_bytes: u64,
+    observed: Option<(u64, u64)>,
+) -> RecoveryReport {
+    RecoveryReport {
+        outcome,
+        requested_bytes,
+        released_bytes,
+        round: observed.map(|value| value.0),
+        completed_bytes: observed.map_or(0, |value| value.1),
+        elapsed_ns: (Instant::now() - (deadline - COORDINATION_BUDGET))
+            .as_nanos()
+            .min(u64::MAX as u128) as u64,
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct Facts {
@@ -20,6 +106,8 @@ pub struct Facts {
     pub physical_bytes: u64,
     pub last_donation: Option<Service>,
     pub failed: Option<String>,
+    pub recoveries: u64,
+    pub last_recovery: Option<RecoveryReport>,
 }
 
 enum Command {
@@ -36,6 +124,7 @@ struct State {
     last_use: u64,
     commands: VecDeque<Command>,
     facts: Facts,
+    attempt: Option<Arc<Attempt>>,
 }
 
 // No Peer, Arena, Driver, Python reference or JoinHandle may be stored here.
@@ -107,6 +196,119 @@ fn registry() -> Result<MutexGuard<'static, BTreeMap<i32, Weak<Control>>>> {
         .get_or_init(Mutex::default)
         .lock()
         .map_err(|_| crate::Error::Poisoned("native owner registry mutex".into()).into())
+}
+
+fn native(error: super::Error) -> crate::Error {
+    match error {
+        super::Error::Native(error) => error,
+        super::Error::Ledger(error) => {
+            crate::Error::Poisoned(format!("native cooperation: {error}"))
+        }
+    }
+}
+
+/// The only allocator entry into cooperation. All references acquired here own host data.
+pub(crate) fn recover(
+    device: i32,
+    bytes: usize,
+    deadline: &mut Option<Instant>,
+    observed: &mut Option<(u64, u64)>,
+) -> crate::Result<crate::PeerProgress> {
+    {
+        let captures = crate::capture_counts()?;
+        crate::ensure_recovery_allowed(&captures, device)?;
+    }
+    let control = registry()
+        .map_err(native)?
+        .get(&device)
+        .and_then(Weak::upgrade);
+    let Some(control) = control else {
+        return Ok(crate::PeerProgress::Unavailable);
+    };
+    let limit = deadline.get_or_insert_with(|| Instant::now() + COORDINATION_BUDGET);
+    'attempt: loop {
+        let mut state = control.lock().map_err(native)?;
+        check(&state).map_err(native)?;
+        if Instant::now() >= *limit {
+            state.facts.last_recovery = Some(report(
+                bytes,
+                *limit,
+                RecoveryOutcome::BudgetExhausted,
+                0,
+                *observed,
+            ));
+            return Ok(crate::PeerProgress::FinalRetry);
+        }
+        let pending = match state.attempt.as_ref() {
+            Some(attempt)
+                if attempt.deadline > Instant::now() && attempt.lock()?.result.is_none() =>
+            {
+                Some(Arc::clone(attempt))
+            }
+            _ => None,
+        };
+        let attempt = if let Some(attempt) = pending {
+            *limit = (*limit).min(attempt.deadline); // Joining cannot extend an episode.
+            attempt
+        } else {
+            let attempt = Arc::new(Attempt {
+                requested: bytes,
+                deadline: *limit,
+                observed: *observed,
+                state: Mutex::default(),
+            });
+            state.attempt = Some(Arc::clone(&attempt));
+            state.facts.recoveries += 1;
+            state.generation = state.generation.wrapping_add(1);
+            control.changed.notify_all();
+            attempt
+        };
+        loop {
+            check(&state).map_err(native)?;
+            if let Some(mut report) = attempt.lock()?.result {
+                if let Some(round) = report.round {
+                    let prior = observed
+                        .filter(|(id, _)| *id == round)
+                        .map_or(0, |(_, done)| done);
+                    if matches!(report.outcome, RecoveryOutcome::Released) {
+                        if report.completed_bytes <= prior {
+                            // Another local caller consumed this same observation before its
+                            // latest driver failure. Wait for new progress, never spend it twice.
+                            drop(state);
+                            continue 'attempt;
+                        }
+                        report.released_bytes = report.completed_bytes - prior;
+                    }
+                    *observed = Some((round, report.completed_bytes));
+                }
+                state.facts.last_recovery = Some(report);
+                return Ok(match report.outcome {
+                    RecoveryOutcome::Released | RecoveryOutcome::Changed => {
+                        crate::PeerProgress::Retry
+                    }
+                    RecoveryOutcome::Exhausted | RecoveryOutcome::BudgetExhausted => {
+                        crate::PeerProgress::FinalRetry
+                    }
+                });
+            }
+            let now = Instant::now();
+            if now >= *limit {
+                let known = attempt.lock()?.observed.or(*observed);
+                state.facts.last_recovery = Some(report(
+                    bytes,
+                    *limit,
+                    RecoveryOutcome::BudgetExhausted,
+                    0,
+                    known,
+                ));
+                return Ok(crate::PeerProgress::FinalRetry);
+            }
+            (state, _) = control
+                .changed
+                .wait_timeout(state, *limit - now)
+                .map_err(|_| crate::Error::Poisoned("peer recovery wait mutex".into()))?;
+        }
+    }
 }
 
 /// Lifecycle handle, never retained by Room or Arena. Drop only requests asynchronous stop.
@@ -270,12 +472,101 @@ fn tick(peer: &Peer, control: &Control, used: u64) -> Result<()> {
     Ok(())
 }
 
+fn finish_attempt(control: &Control, attempt: &Attempt, report: RecoveryReport) -> Result<()> {
+    {
+        let mut state = attempt.lock()?;
+        if state.result.is_some() {
+            return Ok(());
+        }
+        state.result = Some(report);
+    }
+    // Never nest an Attempt guard with Control: callers inspect attempts under Control.
+    let mut state = control.lock()?;
+    state.facts.last_recovery = Some(report);
+    control.changed.notify_all();
+    Ok(())
+}
+
+fn recover_tick(peer: &Peer, control: &Control) -> Result<()> {
+    let attempt = control.lock()?.attempt.clone();
+    let Some(attempt) = attempt else {
+        return Ok(());
+    };
+    let observed = {
+        let state = attempt.lock()?;
+        if state.result.is_some() {
+            return Ok(());
+        }
+        state.observed
+    };
+    let expired = || {
+        attempt.report(
+            RecoveryOutcome::BudgetExhausted,
+            0,
+            observed.or(attempt.observed),
+        )
+    };
+    if Instant::now() >= attempt.deadline {
+        return finish_attempt(control, &attempt, expired());
+    }
+    let round = if let Some((generation, completed)) = observed {
+        let table = peer.snapshot()?;
+        match table.round {
+            Some(round) if round.generation == generation => round,
+            _ => {
+                return finish_attempt(
+                    control,
+                    &attempt,
+                    attempt.report(RecoveryOutcome::Changed, 0, Some((generation, completed))),
+                );
+            }
+        }
+    } else {
+        let sample = peer.sample(ledger::monotonic_ns()?)?;
+        if Instant::now() >= attempt.deadline {
+            return finish_attempt(control, &attempt, expired());
+        }
+        peer.ask(sample.generation, attempt.requested as u64)?
+    };
+    if Instant::now() >= attempt.deadline {
+        return finish_attempt(control, &attempt, expired());
+    }
+    let completed = round.completed()?;
+    let previous = observed
+        .or(attempt.observed)
+        .filter(|(id, _)| *id == round.generation)
+        .map_or(0, |(_, bytes)| bytes);
+    if completed < previous {
+        return Err(crate::Error::Poisoned("peer round completion regressed".into()).into());
+    }
+    let next = Some((round.generation, completed));
+    let outcome = if completed > previous {
+        Some(RecoveryOutcome::Released)
+    } else if round.aborted {
+        Some(RecoveryOutcome::Changed)
+    } else if round.finished() {
+        Some(RecoveryOutcome::Exhausted)
+    } else {
+        None
+    };
+    if let Some(outcome) = outcome {
+        finish_attempt(
+            control,
+            &attempt,
+            attempt.report(outcome, completed - previous, next),
+        )?;
+    } else {
+        attempt.lock()?.observed = next;
+    }
+    Ok(())
+}
+
 fn serve(peer: &Peer, control: &Control) -> Result<()> {
     let mut generation = u64::MAX;
     loop {
-        let used = {
+        let (used, commands) = {
             let state = control.lock()?;
-            let (mut state, _) = control
+            let (state, _) = control
                 .changed
                 .wait_timeout_while(state, CADENCE, |s| {
                     !s.stopping && s.generation == generation && s.commands.is_empty()
@@ -285,9 +576,9 @@ fn serve(peer: &Peer, control: &Control) -> Result<()> {
                 return Ok(());
             }
             generation = state.generation;
-            state.last_use
+            (state.last_use, state.commands.len())
         };
-        loop {
+        for _ in 0..commands {
             // Leave unadmitted commands in Control so stop cancels all queued callers.
             let next = {
                 let mut state = control.lock()?;
@@ -302,6 +593,13 @@ fn serve(peer: &Peer, control: &Control) -> Result<()> {
             }
         }
         match tick(peer, control, used) {
+            Err(error) if deferred(&error) => {
+                control.lock()?.facts.deferred += 1;
+            }
+            result => result?,
+        }
+        // Donor work above always runs, even while this process is also asking for memory.
+        match recover_tick(peer, control) {
             Err(error) if deferred(&error) => {
                 control.lock()?.facts.deferred += 1;
             }

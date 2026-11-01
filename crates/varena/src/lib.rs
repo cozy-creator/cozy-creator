@@ -79,6 +79,32 @@ impl From<AllocationFailure> for Error {
     }
 }
 
+enum PeerProgress {
+    Unavailable,
+    Retry,
+    FinalRetry,
+}
+
+#[derive(Default)]
+struct Recovery {
+    deadline: Option<std::time::Instant>,
+    observed: Option<(u64, u64)>,
+    terminal: bool,
+}
+
+impl Recovery {
+    /// Called only after all local demand retries end in an actual physical refusal.
+    fn next(&mut self, device: i32, bytes: usize) -> Result<bool> {
+        if self.terminal { return Ok(false); }
+        #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
+        let progress = cooperative::recover(device, bytes, &mut self.deadline, &mut self.observed)?;
+        #[cfg(not(all(target_os = "linux", target_has_atomic = "64")))]
+        let progress = { let _ = (device, bytes, &mut self.deadline, &mut self.observed); PeerProgress::Unavailable };
+        self.terminal = !matches!(progress, PeerProgress::Retry);
+        Ok(!matches!(progress, PeerProgress::Unavailable))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Stats {
     pub reserved_bytes: usize,
@@ -94,6 +120,8 @@ pub struct Stats {
     pub reclaimed_by_reason: ReclaimedBytes,
     /// cuCtxSynchronize calls made before reclaiming or refilling unfenced releases.
     pub context_joins: u64,
+    /// Actual cuMemCreate allocation refusals, excluding local room and VA limits.
+    pub driver_physical_ooms: u64,
     /// Last-consumer events host-waited before reclaiming or refilling fenced releases.
     pub event_waits: u64,
     pub poisoned: bool,
@@ -1103,6 +1131,7 @@ impl Arena {
             reclaimed_bytes: state.reclaimed_bytes,
             reclaimed_by_reason: state.reclaimed_by_reason,
             context_joins: state.context_joins,
+            driver_physical_ooms: self.driver.physical_ooms(),
             event_waits: state.event_waits,
             poisoned: state.poison.is_some(),
             ..Stats::default()
@@ -1421,11 +1450,24 @@ impl Region {
     }
 
     fn prepare_with_reclaim(self: &Arc<Self>, admission: Admission) -> Result<Preparation> {
-        let mut physical = None;
         let result = (|| {
-            let captures = capture_counts()?;
-            let mut state = self.arena.lock()?;
-            self.prepare_locked(admission, &captures, &mut state, &mut physical)
+            let mut recovery = Recovery::default();
+            loop {
+                let mut physical = None;
+                let result = {
+                    let captures = capture_counts()?;
+                    let mut state = self.arena.lock()?;
+                    self.prepare_locked(admission, &captures, &mut state, &mut physical)
+                };
+                if admission == Admission::Any
+                    && matches!(result, Err(Error::OutOfMemory { .. }))
+                    && let Some(bytes) = physical
+                    && recovery.next(self.arena.device, bytes)?
+                {
+                    continue; // Revalidate admission after peer progress, outside every guard.
+                }
+                return result;
+            }
         })();
         if result.is_err() {
             let _ = working::invalidate_current_phase(self.arena.device, "weight_admission_error");

@@ -293,7 +293,11 @@ impl PyOwner {
             json!({"active":facts.active,"stopping":facts.stopping,"retired":facts.retired,
                 "published":facts.published,"serviced":facts.serviced,
             "deferred":facts.deferred,"physical_bytes":facts.physical_bytes,
-            "last_donation":facts.last_donation.map(service),"failed":facts.failed})
+                "last_donation":facts.last_donation.map(service),"failed":facts.failed,
+                "recoveries":facts.recoveries,"last_recovery":facts.last_recovery.map(|value|
+                    json!({"outcome":value.outcome.as_str(),"requested_bytes":value.requested_bytes,
+                        "released_bytes":value.released_bytes,"round":value.round,
+                        "completed_bytes":value.completed_bytes,"elapsed_ns":value.elapsed_ns}))})
             .to_string(),
         )
     }
