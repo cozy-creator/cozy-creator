@@ -151,7 +151,8 @@ impl From<crate::io::cuda::Error> for Failure {
     fn from(error: crate::io::cuda::Error) -> Failure {
         use crate::io::cuda;
         let kind = match &error {
-            cuda::Error::CudaUnavailable(_) => Kind::Unsupported,
+            cuda::Error::Allocation(varena::Error::OutOfMemory { .. }) => Kind::DeviceMemory,
+            cuda::Error::Allocation(varena::Error::Unsupported(_)) | cuda::Error::CudaUnavailable(_) => Kind::Unsupported,
             cuda::Error::Cuda { code, .. } if *code == cuda::ERROR_OUT_OF_MEMORY => Kind::DeviceMemory,
             _ => Kind::Io,
         };
