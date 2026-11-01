@@ -1,0 +1,176 @@
+{
+  "name": "sorata",
+  "kind": "rental",
+  "state": "ready",
+  "hub": "https://tensorhub.com",
+  "rental_id": "pr-2dd374e9d153afbc7edd",
+  "alias": "rent-2dc9da1c",
+  "address": "203.57.40.72:10243",
+  "fingerprint": "sha256:c4e975057e71069d2ca8f4cb9e94b27c416eaea4656d40fd4391b2051acef338",
+  "rental": {
+    "sku": "rtx-4090",
+    "accelerator": "NVIDIA GeForce RTX 4090",
+    "gpus": 1,
+    "usd_micros_per_hour": 1513000,
+    "spend_usd_micros": 4004827,
+    "spend_basis": "unmetered",
+    "rented_at_ms": 1793560747011,
+    "disk_gb": 150,
+    "base_worker_image_digest": "sha256:654b4664ea90734142d2e5a29df73cb15eab0f3cd3b585732190ec1e7ea64bc1",
+    "ssh": "203.57.40.72:10244"
+  },
+  "status": {
+    "worker_id": "ra-43946ceb0dee7e68f0c7",
+    "version": "0.15.7+dev.gf57bf6ea",
+    "commit": "f57bf6eaa7ad94ec9f3e66d1d7b85b5ba6ae4784",
+    "dev": true,
+    "platform": "linux/x86_64",
+    "phase": "ready",
+    "runtime": "0.36.23+dev.g6c812241",
+    "tensorfs": "0.17.16+dev.g06578024",
+    "started_at_ms": 1793570563047,
+    "idle_deadline_ms": 1793571463662,
+    "gpus": [
+      {
+        "index": 0,
+        "name": "NVIDIA GeForce RTX 4090",
+        "memory_bytes": 25757220864,
+        "driver": "595.91.07",
+        "family": "sm89",
+        "memory_class": "discrete"
+      }
+    ],
+    "disk_total_bytes": 161061273600,
+    "disk_free_bytes": 97655631872,
+    "disk_models_bytes": 0,
+    "disk_environments_bytes": 0,
+    "disk_runtime_bytes": 0,
+    "runs": [],
+    "models": [
+      {
+        "repository": "alibaba-pai/minimax-h3-turbo-lora",
+        "total_bytes": 798221574,
+        "unique_bytes": 798221574,
+        "checkpoints": [
+          {
+            "release": "",
+            "lane": "pdd8",
+            "precision": "bf16",
+            "manifest": "sha256:030ec3859fae0a1b599184d84690b77b922d8697887b24191cb71e12ba1aac98"
+          }
+        ]
+      },
+      {
+        "repository": "minimaxai/minimax-h3",
+        "total_bytes": 52017031887,
+        "unique_bytes": 52017031887,
+        "checkpoints": [
+          {
+            "release": "",
+            "lane": "int8",
+            "precision": "int8",
+            "manifest": "sha256:b80c5e41b487e5e8ede4638c4b00688c1763b48c8141d955845dd26268b865be"
+          }
+        ]
+      }
+    ],
+    "models_bytes": 52815253461,
+    "environments": [
+      {
+        "installation": "local-b7c10bec0d54fccd2f3a2b87ca3839e6",
+        "package": "local/ci-varena-cache-pages",
+        "release": "0.1.0",
+        "hub": "",
+        "level": "installed",
+        "warning": ""
+      },
+      {
+        "installation": "local-238c636757ed2482bd90f71b0abe61d7",
+        "package": "local/ci-varena-committed-linear",
+        "release": "0.1.0",
+        "hub": "",
+        "level": "installed",
+        "warning": ""
+      },
+      {
+        "installation": "local-1d7e63bc258a7c93c32cc56e01b034b3",
+        "package": "local/ci-varena-idle-a",
+        "release": "0.1.0",
+        "hub": "",
+        "level": "installed",
+        "warning": ""
+      },
+      {
+        "installation": "local-f99f087d7aa0bb2b7de1e86827d38307",
+        "package": "local/ci-varena-idle-b",
+        "release": "0.1.0",
+        "hub": "",
+        "level": "installed",
+        "warning": ""
+      },
+      {
+        "installation": "local-45666937d1e0aaef72402895ed909681",
+        "package": "local/ci-varena-linear-consumer",
+        "release": "0.1.0",
+        "hub": "",
+        "level": "installed",
+        "warning": ""
+      },
+      {
+        "installation": "local-2f34b3f694c2f070c864de17b443de52",
+        "package": "local/ci-varena-norm-output",
+        "release": "0.1.0",
+        "hub": "",
+        "level": "installed",
+        "warning": ""
+      },
+      {
+        "installation": "local-1c2853645ae175391cf8b7e763a32891",
+        "package": "local/ci-varena-owner",
+        "release": "0.1.0",
+        "hub": "",
+        "level": "installed",
+        "warning": ""
+      },
+      {
+        "installation": "local-e835f920dc962ca2b863491f962c0e7f",
+        "package": "local/ci-varena-residual-ffn",
+        "release": "0.1.0",
+        "hub": "",
+        "level": "installed",
+        "warning": ""
+      },
+      {
+        "installation": "local-560ff3478144a2005d5ec8d0b018d976",
+        "package": "local/ci-varena-sparse-producer",
+        "release": "0.1.0",
+        "hub": "",
+        "level": "installed",
+        "warning": ""
+      },
+      {
+        "installation": "local-796328fddf5081f5a93a71259b7f122a",
+        "package": "local/minimax-h3",
+        "release": "0.2.6",
+        "hub": "",
+        "level": "downloaded",
+        "warning": ""
+      }
+    ],
+    "warm": [],
+    "mode": "shared",
+    "driver_floor": "580.65.06",
+    "toolchain": {
+      "state": "ready",
+      "nvcc": "Cuda compilation tools, release 13.0, V13.0.88",
+      "host_compiler": "c++ (Debian 12.2.0-14+deb12u1) 12.2.0",
+      "missing": [],
+      "install": "",
+      "detail": ""
+    }
+  },
+  "running": 0,
+  "queued": 0,
+  "recorded": true,
+  "unverified": false
+}

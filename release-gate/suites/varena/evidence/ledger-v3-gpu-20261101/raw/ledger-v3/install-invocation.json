@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cozy",
+    "machine",
+    "update",
+    "sorata",
+    "--tensord",
+    "/home/fidika/cozy_v2/outputs/xs138-p3-machine-mode/candidate-f57bf6eaa/cozy-linux-x86_64",
+    "--runtime",
+    "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/runtime-build-6c8122412/dist/cozy_runtime-0.36.23+dev.g6c812241-cp312-abi3-manylinux_2_28_x86_64.whl",
+    "--tensorfs",
+    "/home/fidika/cozy_v2/outputs/xs138-p3-ledger-v3/native-065780245/tensorfs-0.17.16+dev.g06578024-cp311-abi3-manylinux_2_28_x86_64.whl",
+    "--json"
+  ],
+  "started_at": "2026-11-01T21:59:45.909562+00:00",
+  "boundary": "ordinary update/drain/restart before one-way v3 table upgrade; no table deletion/reset; no further v2 cohort will be installed on this rental",
+  "returncode": 0,
+  "finished_at": "2026-11-01T21:59:51.106530+00:00"
+}

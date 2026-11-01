@@ -1,0 +1,43 @@
+{
+  "source_commit": "f57bf6eaa7ad94ec9f3e66d1d7b85b5ba6ae4784",
+  "version": "0.15.7+dev.gf57bf6ea",
+  "path": "/home/fidika/cozy_v2/outputs/xs138-p3-machine-mode/candidate-f57bf6eaa/cozy-linux-x86_64",
+  "sha256": "99bb8efcc345aad127b6f15f7316d42f3cd233b9137e61f11a40d47f9c260c9b",
+  "reported_version": "cozy 0.15.7+dev.gf57bf6ea",
+  "embedded_full_commit_verified": true,
+  "elf_required_versions": [
+    "GLIBC_2.10",
+    "GLIBC_2.12",
+    "GLIBC_2.14",
+    "GLIBC_2.15",
+    "GLIBC_2.16",
+    "GLIBC_2.17",
+    "GLIBC_2.18",
+    "GLIBC_2.2.5",
+    "GLIBC_2.25",
+    "GLIBC_2.27",
+    "GLIBC_2.28",
+    "GLIBC_2.3",
+    "GLIBC_2.3.2",
+    "GLIBC_2.3.4",
+    "GLIBC_2.4",
+    "GLIBC_2.5",
+    "GLIBC_2.6",
+    "GLIBC_2.7",
+    "GLIBC_2.9"
+  ],
+  "max_glibc": "2.28",
+  "elf_needed": [
+    "libdl.so.2",
+    "libgcc_s.so.1",
+    "libpthread.so.0",
+    "libm.so.6",
+    "libc.so.6",
+    "ld-linux-x86-64.so.2"
+  ],
+  "build_seconds": 511.0972352739773,
+  "source_preparation": "/home/fidika/cozy_v2/outputs/xs138-p3-machine-mode/candidate-f57bf6eaa/source-preparation.json",
+  "build_timing": "/home/fidika/cozy_v2/outputs/xs138-p3-machine-mode/candidate-f57bf6eaa/build-timing.json",
+  "gpu_execution": false,
+  "sdk_installed": false
+}

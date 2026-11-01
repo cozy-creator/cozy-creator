@@ -1,0 +1,8 @@
+{
+  "passed": true,
+  "run": 25737,
+  "native": "0657802458dfbf4fb7e66613e30c9baef1308e68",
+  "runtime": "6c8122412bf502f2913c35eaba6cf9d263d314b5",
+  "fixture": "6e85733ef6d3cea3697b30c10fb4eef1cf9c1297",
+  "scope": "v3 scoped owner action service; no broader foreign/mode or full-model qualification"
+}

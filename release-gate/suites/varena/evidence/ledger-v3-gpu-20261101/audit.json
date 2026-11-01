@@ -1,0 +1,135 @@
+{
+  "passed": true,
+  "scope": "independent offline audit; no remote/GPU action, build or installed state mutation",
+  "native": "0657802458dfbf4fb7e66613e30c9baef1308e68",
+  "runtime": "6c8122412bf502f2913c35eaba6cf9d263d314b5",
+  "worker": "f57bf6eaa7ad94ec9f3e66d1d7b85b5ba6ae4784",
+  "owner_fixture": "6e85733ef6d3cea3697b30c10fb4eef1cf9c1297",
+  "mode_fixture": "fea8109ed8318e6a00015cacb8f6051195278037",
+  "wheel_sha256": "89a7829521f9fddc6eef9a36bcb2e769b280375c11970cb054b8ad5225bf520d",
+  "runtime_wheel_sha256": "2e918a43bf087def526d4f188477bb3228b7da95e43bbe547b08f86a2cb4a89d",
+  "worker_sha256": "99bb8efcc345aad127b6f15f7316d42f3cd233b9137e61f11a40d47f9c260c9b",
+  "gpu_uuid": "GPU-846689c6-daf3-15b1-580e-f2a78bdf6748",
+  "owner_run": 25737,
+  "owner_execution_ms": 11511,
+  "donor_identity": {
+    "id": {
+      "incarnation": 1,
+      "slot": 0
+    },
+    "pid": 232527,
+    "start_ticks": 111795946
+  },
+  "round": 34,
+  "scoped_credit_bytes": 33554432,
+  "unrelated_released_bytes": 33554432,
+  "retained_readback_bytes": 41943040,
+  "requester_readback_bytes": 33554432,
+  "baseline_fields": {
+    "allocated_bytes": 17039360,
+    "mapped_bytes": 20971520,
+    "pending_bytes": 0,
+    "pools": 0,
+    "event_handles": 0,
+    "cache_mapped_bytes": 0,
+    "cache_reserved_bytes": 0,
+    "caches": 0
+  },
+  "working_driver_call_delta": 190,
+  "sampled_device_used_drop_bytes": 46858240,
+  "device_sample_is_not_donor_credit": true,
+  "mode_results": [
+    {
+      "mode": "shared",
+      "update_run": 25739,
+      "gpu_run": 25741,
+      "worker_started_at_ms": 1793570563047,
+      "executor": {
+        "boot_id": "a1b9b4f8-5255-4532-99bf-bff0bf72ca99",
+        "pid": 232721,
+        "start_ticks": 111813487,
+        "state": "S"
+      },
+      "worker_parent": {
+        "boot_id": "a1b9b4f8-5255-4532-99bf-bff0bf72ca99",
+        "pid": 232571,
+        "start_ticks": 111812711,
+        "state": "S"
+      },
+      "row": {
+        "incarnation": 3,
+        "slot": 0
+      }
+    },
+    {
+      "mode": "dedicated",
+      "update_run": 25742,
+      "gpu_run": 25743,
+      "worker_started_at_ms": 1793570578387,
+      "executor": {
+        "boot_id": "a1b9b4f8-5255-4532-99bf-bff0bf72ca99",
+        "pid": 232771,
+        "start_ticks": 111814388,
+        "state": "S"
+      },
+      "worker_parent": {
+        "boot_id": "a1b9b4f8-5255-4532-99bf-bff0bf72ca99",
+        "pid": 232739,
+        "start_ticks": 111814245,
+        "state": "S"
+      },
+      "row": {
+        "incarnation": 4,
+        "slot": 0
+      }
+    }
+  ],
+  "restored_mode": "dedicated",
+  "priority_qualified": false,
+  "limits": [
+    "Requester asks explicitly; not an automatic physical-OOM recovery proof.",
+    "Owner-action cell temporarily opts its donor Shared; ordinary mode propagation is proved by separate25741/25743.",
+    "Requester cleanup kills-if-running then waits; graceful child Peer.close is not proved.",
+    "Final donor baseline is quiescent task-owned accounting, not zero whole-process use.",
+    "Device-used samples are shared-device observations, not attributed donor release.",
+    "No foreign-growth attribution/reserve, first-foreign-allocation guarantee, full model, or shared-client db701 qualification.",
+    "Mode cell uses restart and fresh executor births; no in-place owner mode-switch or exact old-process exit assertion.",
+    "Mode probes verify storage endpoints, not full16MiB content; periodic row physical bytes may precede that allocation.",
+    "Protocol3 reached after ordinary update from a96/v2; no before/after table-image migration receipt in this cell."
+  ],
+  "raw_receipt_sha256": {
+    "ledger-v3/install-invocation.json": "ab9925903e59983b15074ea28c58e974aadc1c7b5f7bb2e605f8dd67e88d7fd5",
+    "ledger-v3/install.err": "0bc8588b737eb9e11efa333f1e9341388fdef2959e703f84267e3908125ac63c",
+    "ledger-v3/install.ndjson": "28e4cfa75985f5c837e6e41a4021638e7668157096d9d410933ea593349aa7f7",
+    "ledger-v3/owner-actions-25737.json": "06875d49d00df8f96597636875007638a97336164ba5a3877cabbe8d0fd9289a",
+    "ledger-v3/owner-actions-invocation.json": "603933c1ea3daf9608bb29f654d521397dd4856cd9c85cba8e1951033f67b68d",
+    "ledger-v3/owner-actions-result.json": "a062e640eac7b5debf6f265e27e9f754d03015ff3149f3f3527ea3d36adf3186",
+    "ledger-v3/owner-actions.err": "fa8d53827dd9cf35ab0302a2188d9cdfc5fcc09ef0221b2d3f88e3c05dad3e11",
+    "ledger-v3/owner-actions.ndjson": "12399bcb7451c82cce44030b40ea8c4b809b85adffe7710af887e11b64c82e43",
+    "ledger-v3/qualification.json": "d9ebc0191cf06e2c9cb89741afa11473085a01de353e3064c16c582762591f1e",
+    "machine-mode/before-restore.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "machine-mode/before-restore.stdout": "20c99a44baf89657bd916b5db75cb81e2e26a5735282382357362d686dcbc8f3",
+    "machine-mode/before.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "machine-mode/before.stdout": "691b973875b51c640c7e42e478fa3d2e11771d5889a1e80258d59c489b4ad8d3",
+    "machine-mode/dedicated-input.json": "241041d0dc5818eb46d44c110f669fd6544fa7ba4d01d68db291385ac03f32a7",
+    "machine-mode/dedicated-run-show.json": "1a883dee15192f2d1c54a2e51caa4f7e79f4aa5a8b18a028f8cf3a45ec52c4aa",
+    "machine-mode/gpu-dedicated.stderr": "0bc8588b737eb9e11efa333f1e9341388fdef2959e703f84267e3908125ac63c",
+    "machine-mode/gpu-dedicated.stdout": "47335907e50ebb8b59ed0231d41e81404707940235722d147aa2c8735b822d5b",
+    "machine-mode/gpu-shared.stderr": "fa8d53827dd9cf35ab0302a2188d9cdfc5fcc09ef0221b2d3f88e3c05dad3e11",
+    "machine-mode/gpu-shared.stdout": "19dc5635ec016759e37da765209a427d249834630f99b550bbdfcaca964bb2a4",
+    "machine-mode/progress.json": "1753d99eba054955bc657c77cf1755fd57b340e0f7c4d603b8b3def942a87042",
+    "machine-mode/report.json": "85d011e43f2e3c79025e5ffef8025080ae864ece5a5411e7595150583ab8115a",
+    "machine-mode/restored.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "machine-mode/restored.stdout": "20c99a44baf89657bd916b5db75cb81e2e26a5735282382357362d686dcbc8f3",
+    "machine-mode/shared-input.json": "6879fc3294844af37c1420b98abda75b3ec78991c0909cc2108169acb3d56411",
+    "machine-mode/shared-run-show.json": "4c555bdace815d85d03964bc7434f3ec3f6b364476f96bc64c53994ed17305e5",
+    "machine-mode/show-dedicated.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "machine-mode/show-dedicated.stdout": "89621f4d06e1ff123ebf1c8c0579d6823debe148bee8d873791e854df11c33b0",
+    "machine-mode/show-shared.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "machine-mode/show-shared.stdout": "12cc707b34fcfe56213be6ed47991d2f951d5981770ad50232e1345754379ddc",
+    "machine-mode/update-dedicated.stderr": "0bc8588b737eb9e11efa333f1e9341388fdef2959e703f84267e3908125ac63c",
+    "machine-mode/update-dedicated.stdout": "068f2716816ee126b18bf1e4d714854c581b013dcfebe6eec7de89bf74f727e9",
+    "machine-mode/update-shared.stderr": "0bc8588b737eb9e11efa333f1e9341388fdef2959e703f84267e3908125ac63c",
+    "machine-mode/update-shared.stdout": "24f519c67b49f4f27845d1da491b87177461c7532d14b07e6752fd178b031126"
+  }
+}
