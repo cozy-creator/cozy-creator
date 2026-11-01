@@ -49,6 +49,8 @@ pub enum Error {
     Invalid(&'static str),
     #[error("CUDA virtual memory unavailable: {0}")]
     Unsupported(String),
+    #[error("cache owner callback failed: {0}")]
+    Callback(String),
 }
 
 /// Private admission cause: another process cannot repair a local cap or VA refusal.
@@ -2128,9 +2130,7 @@ pub fn released_bytes(device: i32) -> Result<u64> {
 fn reclaim_completed(device: i32, wanted: usize, retained: &mut Vec<Arc<Arena>>) -> Result<usize> {
     // The callback worker retains observed Arena leases exactly as Peer does. Otherwise a
     // temporary snapshot could become the last owner and context-join from this no-wait pass.
-    for arena in arena_leases(device)? {
-        if !retained.iter().any(|held| Arc::ptr_eq(held, &arena)) { retained.push(arena); }
-    }
+    retain_arenas(device, retained)?;
     let working = working::reclaim_completed(device, wanted)?;
     let mut completed = working;
     if completed < wanted {
@@ -2143,6 +2143,13 @@ fn reclaim_completed(device: i32, wanted: usize, retained: &mut Vec<Arc<Arena>>)
         }
     }
     Ok(completed)
+}
+
+fn retain_arenas(device: i32, retained: &mut Vec<Arc<Arena>>) -> Result<()> {
+    for arena in arena_leases(device)? {
+        if !retained.iter().any(|held| Arc::ptr_eq(held, &arena)) { retained.push(arena); }
+    }
+    Ok(())
 }
 
 /// The room this process may hold on `device` (weight pages plus mapped working allocations),

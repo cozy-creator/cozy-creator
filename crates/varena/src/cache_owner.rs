@@ -40,7 +40,7 @@ pub enum CallbackResult {
 }
 
 /// Narrow foreign-runtime adapter. Implementations acquire their runtime/GIL first,
-/// then `scope.enter()` before touching opaque GPU owners. Retirement must empty owned
+/// then the appropriate scope before touching opaque GPU owners. Retirement must empty owned
 /// callback data before returning success, so destroying the adapter itself is host-only.
 #[doc(hidden)]
 pub trait CacheCallback: Send + 'static {
@@ -57,7 +57,8 @@ pub struct CallbackScope {
 /// Counter leases only: no capture/allocator/ledger mutex is held across a callback.
 pub struct CallbackGuard {
     _callback: GlobalCaptureGuard,
-    _retirement: GlobalCaptureGuard,
+    _retirement: Option<GlobalCaptureGuard>,
+    _producer: Option<crate::ProducerGuard>,
 }
 
 impl CallbackScope {
@@ -68,13 +69,13 @@ impl CallbackScope {
     pub fn current(&self) -> Result<bool> {
         let owner = self.owner.lock()?;
         Ok(if let Some(job) = &self.job {
-            !owner.closing && !job.lock()?.cancelled
+            !owner.closing && owner.facts.requestable && !job.lock()?.cancelled
         } else {
             owner.closing
         })
     }
 
-    /// Python adapters call this only after acquiring the GIL, including retirement.
+    /// Full retirement exclusion for callbacks that can destroy their last GPU owner.
     pub fn enter(&self) -> Result<CallbackGuard> {
         if !self.current()? {
             return Err(Error::Busy);
@@ -83,7 +84,24 @@ impl CallbackScope {
         let callback = crate::enter_external_callback(self.control.device)?;
         Ok(CallbackGuard {
             _callback: callback,
-            _retirement: retirement,
+            _retirement: Some(retirement),
+            _producer: None,
+        })
+    }
+
+    /// Logical owner retirement with actual per-owner locks/pins, allowing other graph
+    /// sequences to replay. The worker retains observed Arena leases separately; physical
+    /// unmapping remains in the ready-only pass after this scope and defers during replay.
+    pub fn producing(&self) -> Result<CallbackGuard> {
+        if !self.current()? {
+            return Err(Error::Busy);
+        }
+        let producer = crate::enter_producer(self.control.device)?;
+        let callback = crate::enter_external_callback(self.control.device)?;
+        Ok(CallbackGuard {
+            _callback: callback,
+            _retirement: None,
+            _producer: Some(producer),
         })
     }
 }
@@ -342,6 +360,23 @@ impl CacheOwner {
             return Err(Error::Invalid("cache owner is closed"));
         }
         owner.last_use = self.control.clock.fetch_add(1, Ordering::AcqRel);
+        if owner.facts.registered
+            && !owner.facts.requestable
+            && owner.facts.failed.is_none()
+            && owner.facts.retirement_failed.is_none()
+        {
+            owner.facts.requestable = true;
+            self.control.requestable.fetch_add(1, Ordering::AcqRel);
+        }
+        Ok(())
+    }
+    /// The owner has no disposable contents until its next actual use/rebuild.
+    pub fn suspend(&self) -> Result<()> {
+        let mut owner = self.owner.lock()?;
+        if owner.facts.requestable {
+            owner.facts.requestable = false;
+            self.control.requestable.fetch_sub(1, Ordering::AcqRel);
+        }
         Ok(())
     }
     pub fn id(&self) -> u64 {
@@ -352,8 +387,13 @@ impl CacheOwner {
     }
     pub fn check(&self) -> Result<()> {
         let owner = self.owner.lock()?;
-        if owner.facts.failed.is_some() || owner.facts.retirement_failed.is_some() {
-            return Err(Error::Invalid("cache owner callback failed"));
+        if let Some(reason) = owner
+            .facts
+            .failed
+            .as_ref()
+            .or(owner.facts.retirement_failed.as_ref())
+        {
+            return Err(Error::Callback(reason.clone()));
         }
         if owner.closing {
             return Err(Error::Invalid("cache owner is closed"));
@@ -551,7 +591,7 @@ pub fn request_shrink(device: i32, key: RequestKey, bytes: usize) -> Result<Opti
         let mut owners = Vec::new();
         for (id, owner) in &state.owners {
             let held = owner.lock()?;
-            if held.facts.registered && !held.closing && held.facts.failed.is_none() {
+            if held.facts.requestable && !held.closing && held.facts.failed.is_none() {
                 owners.push((held.last_use, *id));
             }
         }
@@ -619,6 +659,7 @@ fn worker(control: Arc<Control>, registrations: mpsc::Receiver<Registration>) {
         let Ok(state) = control.lock() else {
             std::mem::forget(callbacks);
             std::mem::forget(arenas);
+            std::mem::forget(registrations); // queued callback data remains owned too
             return;
         };
         let _ = control
@@ -650,6 +691,7 @@ fn worker_tick(
         })
         .collect::<Vec<_>>();
     for id in retiring {
+        crate::retain_arenas(control.device, arenas)?;
         let registration = callbacks.get_mut(&id).expect("worker-owned callback");
         let scope = CallbackScope {
             control: Arc::clone(control),
@@ -692,7 +734,11 @@ fn worker_tick(
                     #[cfg(not(all(target_os = "linux", target_has_atomic = "64")))]
                     let _ = released;
                 }
-                Err(error) if deferred(&error) => continue,
+                // Physical collection can be blocked by an unrelated graph replay.
+                // The owner still has its own exclusion/claims: a Python logical
+                // retirement may proceed while native full retirement must defer.
+                // Keep collection pending; no action return counts as freed bytes.
+                Err(error) if deferred(&error) => {}
                 Err(error) => return Err(error),
             }
         }
@@ -706,7 +752,10 @@ fn worker_tick(
                 .unwrap_or(0);
             held.facts.observed_release_bytes = observed;
             let completed = if job.key.cause == Cause::Allocation { observed as usize } else { held.serviced };
-            if held.cancelled || completed >= held.wanted || (held.owners.is_empty() && !held.waiting_service) {
+            if held.cancelled
+                || completed >= held.wanted
+                || (held.owners.is_empty() && !held.collect_pending && !held.waiting_service)
+            {
                 held.facts.finished = true;
             }
             if held.facts.finished {
@@ -725,11 +774,15 @@ fn worker_tick(
             if held.waiting_service {
                 continue;
             }
+            if held.owners.is_empty() {
+                continue; // A deferred physical collection still owns this job.
+            }
             let id = held.owners.pop_front().expect("pending owner");
             held.facts.queued = held.owners.len();
             held.facts.running = true;
             (id, held.wanted.saturating_sub(completed))
         };
+        crate::retain_arenas(control.device, arenas)?;
         let Some(registration) = callbacks.get_mut(&id) else {
             // Constructor publication can race this tick's registration-channel drain.
             // Keep the accepted request until the already-transferred callback arrives.
@@ -744,7 +797,7 @@ fn worker_tick(
         };
         {
             let mut owner = registration.owner.lock()?;
-            if owner.closing || owner.facts.failed.is_some() {
+            if owner.closing || !owner.facts.requestable || owner.facts.failed.is_some() {
                 job.lock()?.facts.running = false;
                 continue;
             }
@@ -760,6 +813,11 @@ fn worker_tick(
             registration.callback.shrink(&scope, wanted)
         }))
         .unwrap_or_else(|_| Err(Error::Poisoned("cache callback panicked".into())));
+        // Capture excludes every owner. Replay may exclude just this owner's physical
+        // Cache release/full retirement; a later logical graph owner can still proceed.
+        // Read capture metadata before taking either owner/job mutex.
+        let capture_active =
+            matches!(&result, Err(Error::CaptureActive)) && crate::is_capturing(control.device)?;
         let mut owner = registration.owner.lock()?;
         owner.facts.running = false;
         let mut held = job.lock()?;
@@ -777,14 +835,14 @@ fn worker_tick(
                 held.facts.action_epoch = held.facts.action_epoch.checked_add(1)
                     .ok_or(Error::Invalid("cache action epoch overflow"))?;
             }
-            Err(Error::CaptureActive) => {
+            Err(Error::CaptureActive) if capture_active => {
                 owner.facts.deferred += 1;
                 held.owners.push_front(id);
                 held.facts.queued = held.owners.len();
             }
-            Err(Error::Busy) => {
+            Err(Error::Busy | Error::CaptureActive) => {
                 // This owner's lock/admission is unavailable. It is not a device-wide
-                // capture exclusion and must not starve later owners in the same request.
+                // capture exclusion and must not starve later logical owners in this request.
                 owner.facts.returned += 1;
                 owner.facts.declined += 1;
                 held.facts.returned += 1;

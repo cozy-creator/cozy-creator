@@ -337,7 +337,8 @@ fn fits(
             let after_outside = headroom(
                 owner,
                 free,
-                reclaimable.saturating_add(reclaimable_cache)
+                reclaimable
+                    .saturating_add(reclaimable_cache)
                     .saturating_add(phase.map_or(0, |intent| intent.outside_reclaimable)),
             );
             Ok(Fit {

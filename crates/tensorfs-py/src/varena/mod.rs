@@ -1,6 +1,7 @@
 //! Process-local weight residency bindings. CUDA ownership remains in the Rust core.
 mod working;
 mod cache;
+mod cache_owner;
 #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
 mod cooperative;
 mod plan;
@@ -92,6 +93,11 @@ impl Consumers {
 fn raise(py: Python<'_>, error: varena::Error) -> PyErr {
     let message = error.to_string();
     let class = match error {
+        varena::Error::Callback(_) => {
+            let error = PyRuntimeError::new_err(message);
+            let _ = error.value(py).setattr("varena_no_retry", true);
+            return error;
+        },
         varena::Error::OutOfMemory { .. } | varena::Error::Exhausted { .. } => "OutOfMemoryError",
         varena::Error::Poisoned(_) => return VarenaPoisonedError::new_err(message),
         varena::Error::DeviceFault { .. } | varena::Error::Cuda { .. } => "AcceleratorError",
@@ -647,6 +653,7 @@ fn _varena_make_room(py: Python<'_>, device: i32, limit: Option<usize>) -> PyRes
         .map_err(|e| raise(py, e))
 }
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    cache_owner::install(module)?;
     module.add_class::<cache::PyCache>()?;
     working::install(module)?;
     #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
