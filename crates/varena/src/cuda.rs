@@ -228,16 +228,14 @@ impl Driver {
         })
     }
 
-    pub(crate) fn create(&self, bytes: usize) -> Result<u64> {
+    pub(crate) fn create(&self, bytes: usize) -> crate::AllocationResult<u64> {
         self.activity_calls.fetch_add(1, Ordering::Relaxed);
         let mut handle = 0;
         self.memory_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: valid output pointer and properties; bytes satisfy granularity.
         let code = unsafe { (self.create)(&mut handle, bytes, &self.properties(), 0) };
         if code == 2 {
-            return Err(Error::OutOfMemory {
-                requested_bytes: bytes,
-            });
+            return Err(crate::AllocationFailure::DriverOutOfMemory(bytes));
         }
         status("cuMemCreate", code)?;
         Ok(handle)

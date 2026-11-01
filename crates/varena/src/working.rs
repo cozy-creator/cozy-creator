@@ -925,11 +925,11 @@ impl Working {
         bytes: usize,
         pool: Option<PoolId>,
         class: usize,
-    ) -> Result<u64> {
+    ) -> crate::AllocationResult<u64> {
         if self.room.over(bytes) != 0 {
             return Err(Error::OutOfMemory {
                 requested_bytes: bytes,
-            });
+            }.into());
         }
         let ptr = Self::address(state, bytes)?;
         let handle = match self.driver.create(bytes) {
@@ -1350,6 +1350,11 @@ pub fn alloc(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> Re
 }
 
 fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> Result<u64> {
+    alloc_local(device, bytes, stream, pool, &mut None)
+}
+
+fn alloc_local(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>,
+               physical: &mut Option<usize>) -> Result<u64> {
     valid_stream(stream)?;
     if bytes == 0 {
         crate::check_process()?;
@@ -1390,13 +1395,14 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> 
     }
     // Never hold working state while asking the weight pager to reclaim: it has its own lock.
     for attempt in 0..3 {
+        *physical = None;
         let result = {
             let captures = crate::capture_counts()?;
             crate::ensure_recovery_allowed(&captures, device)?;
             let mut state = owner.lock()?;
             owner.callback_mutation(&mut state);
             let _context = owner.driver.enter()?;
-            let result = (|| {
+            let result = (|| -> crate::AllocationResult<u64> {
                 owner.poll(&mut state)?;
                 if let Some(ptr) = owner.take(&mut state, class, bytes, stream, None) {
                     return Ok(Working::activate(&mut state, ptr, bytes));
@@ -1413,15 +1419,20 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> 
                     .expect("new slab has a block");
                 Ok(Working::activate(&mut state, ptr, bytes))
             })();
-            result.map_err(|error| owner.fail(&mut state, error))
+            result.map_err(|failure| {
+                *physical = failure.physical_bytes();
+                owner.fail(&mut state, failure.into())
+            })
         };
         match result {
             Err(Error::OutOfMemory { .. }) if attempt == 0 => {
                 // Retry the mapping after completed working pages return. Do not evict
                 // weights when that release alone already makes this allocation fit.
+                *physical = None;
                 trim(device)?;
             }
             Err(Error::OutOfMemory { .. }) if attempt == 1 => {
+                *physical = None;
                 crate::reclaim(device, class)?;
             }
             Err(error @ Error::OutOfMemory { .. }) => {

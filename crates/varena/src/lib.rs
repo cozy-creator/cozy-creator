@@ -45,6 +45,40 @@ pub enum Error {
     Unsupported(String),
 }
 
+/// Private admission cause: another process cannot repair a local cap or VA refusal.
+enum AllocationFailure {
+    DriverOutOfMemory(usize),
+    Other(Error),
+}
+
+type AllocationResult<T> = std::result::Result<T, AllocationFailure>;
+
+impl AllocationFailure {
+    fn physical_bytes(&self) -> Option<usize> {
+        match self {
+            Self::DriverOutOfMemory(bytes) => Some(*bytes),
+            Self::Other(_) => None,
+        }
+    }
+
+    fn is_oom(&self) -> bool {
+        matches!(self, Self::DriverOutOfMemory(_) | Self::Other(Error::OutOfMemory { .. }))
+    }
+}
+
+impl From<Error> for AllocationFailure {
+    fn from(error: Error) -> Self { Self::Other(error) }
+}
+
+impl From<AllocationFailure> for Error {
+    fn from(failure: AllocationFailure) -> Self {
+        match failure {
+            AllocationFailure::DriverOutOfMemory(requested_bytes) => Self::OutOfMemory { requested_bytes },
+            AllocationFailure::Other(error) => error,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Stats {
     pub reserved_bytes: usize,
@@ -591,9 +625,9 @@ impl Arena {
     /// Physical pages for one region, inside this process's room on the device: over the room
     /// reads as the driver's out of memory, so each admission treats a smaller room as a smaller
     /// card (reclaims what it may, else refuses).
-    fn create(&self, bytes: usize) -> Result<u64> {
+    fn create(&self, bytes: usize) -> AllocationResult<u64> {
         if self.room.over(bytes) != 0 {
-            return Err(Error::OutOfMemory { requested_bytes: bytes });
+            return Err(Error::OutOfMemory { requested_bytes: bytes }.into());
         }
         let handle = self.driver.create(bytes)?;
         self.room.pages.fetch_add(bytes, Ordering::AcqRel);
@@ -1285,7 +1319,7 @@ impl Region {
         let bytes = if entry.handle.is_some() { 0 } else { self.rounded };
         let epoch = captures.get(&self.arena.device).map_or(0, |activity| activity.activity_epoch);
         working::admit_prefetch(self.arena.device, epoch, bytes, || {
-            self.prepare_locked(Admission::Prefetch, &captures, &mut state)
+            self.prepare_locked(Admission::Prefetch, &captures, &mut state, &mut None)
         })
     }
 
@@ -1347,7 +1381,7 @@ impl Region {
             let mut created = Vec::new();
             for region in regions {
                 let fresh = state.entries[&region.id].handle.is_none();
-                match region.prepare_locked(Admission::Prefetch, &captures, &mut state) {
+                match region.prepare_locked(Admission::Prefetch, &captures, &mut state, &mut None) {
                     Ok(value) => {
                         if fresh {
                             created.push(region.id);
@@ -1387,10 +1421,11 @@ impl Region {
     }
 
     fn prepare_with_reclaim(self: &Arc<Self>, admission: Admission) -> Result<Preparation> {
+        let mut physical = None;
         let result = (|| {
             let captures = capture_counts()?;
             let mut state = self.arena.lock()?;
-            self.prepare_locked(admission, &captures, &mut state)
+            self.prepare_locked(admission, &captures, &mut state, &mut physical)
         })();
         if result.is_err() {
             let _ = working::invalidate_current_phase(self.arena.device, "weight_admission_error");
@@ -1403,6 +1438,7 @@ impl Region {
         admission: Admission,
         captures: &BTreeMap<i32, DeviceActivity>,
         state: &mut State,
+        physical: &mut Option<usize>,
     ) -> Result<Preparation> {
         let reclaim = admission == Admission::Any;
         let entry = state.entries.get(&self.id).expect("live region");
@@ -1462,7 +1498,7 @@ impl Region {
                 }
             }
             let allocation = match self.arena.create(self.rounded) {
-                Err(Error::OutOfMemory { .. }) if matches!(admission, Admission::Any | Admission::Completed) => {
+                Err(error) if error.is_oom() && matches!(admission, Admission::Any | Admission::Completed) => {
                     working::reclaim_for_weights(self.arena.device, self.rounded)?;
                     self.arena.create(self.rounded)
                 }
@@ -1470,7 +1506,7 @@ impl Region {
             };
             let handle = match allocation {
                 Ok(handle) => handle,
-                Err(Error::OutOfMemory { .. }) => {
+                Err(error) if error.is_oom() => {
                     match admission {
                         Admission::None | Admission::Prefetch => {
                             return Err(Error::OutOfMemory {
@@ -1497,11 +1533,14 @@ impl Region {
                     }
                     match self.arena.create(self.rounded) {
                         Ok(handle) => handle,
-                        Err(error @ Error::OutOfMemory { .. }) => return Err(error),
-                        Err(error) => return Err(poison(state, error)),
+                        Err(error) if error.is_oom() => {
+                            *physical = error.physical_bytes();
+                            return Err(error.into());
+                        }
+                        Err(error) => return Err(poison(state, error.into())),
                     }
                 }
-                Err(error) => return Err(poison(state, error)),
+                Err(error) => return Err(poison(state, error.into())),
             };
             // Record custody before map. Even an ambiguous map failure keeps both handle and VA.
             state.entries.get_mut(&self.id).expect("live region").handle = Some(handle);
