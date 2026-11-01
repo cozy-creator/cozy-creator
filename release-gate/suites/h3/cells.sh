@@ -6,8 +6,9 @@
 # - A plate (a synthetic, people-free test pattern) as long as the shot, shorter, longer, at 30 fps and at 9:16: the
 #   output must follow it frame by frame.
 # - First and last keyframes: the shot opens and ends on them without a cut.
-# `regen-2160p-15s` (about an hour on 24 GB, in three windows) runs only when --only names it. A run that breaches its
-# memory envelope fails (analyze.py: not completed), so every cell below also asserts that.
+# - A plate and reference footage past one piece (se-086): `guide-30s` and `footage-30s`.
+# `regen-2160p-15s` (about an hour on 24 GB, in three windows), `guide-30s` and `footage-30s` run only when --only names
+# them. A run that breaches its memory envelope fails (analyze.py: not completed), so every cell below also asserts that.
 FR=(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/frames.py")
 # video_of <cell>: its tallest mp4.
 video_of() {
@@ -88,6 +89,42 @@ judge guide-30fps guide-30fps '.within_1 >= 0.8' guide "$OUT/guide-30fps.mp4" --
 # 9:16: the render takes the clip's canvas, 768x1344 at 768p.
 guide_cell guide-aspect guide-9x16.mp4 guide-9x16.png $((R + 77))
 judge guide-aspect guide-aspect '.width == 768 and .height == 1344 and .within_1 >= 0.8' guide "$OUT/guide-9x16.mp4"
+# span_seams <check> <cell>: frames.py seams at the piece boundaries its record logs (`boundaries_s`): the change there
+# under 3x the shot's median (the flicker rule of #2322), and its consecutive SSIM no lower than 0.9x the shot's own away
+# from the boundaries (or 0.6): a fast shot is unalike frame to frame everywhere.
+span_seams() {
+  [ -f "$2.number" ] && [ "$(run_get "$OUT" "$2" .status)" = completed ] || return 0
+  local b r
+  b=$("$CLI" run show "$(cat "$2.number")" --once 2>/dev/null | grep -o 'boundaries_s=[0-9.,]*' | head -1 | cut -d= -f2)
+  r=$([ -n "$b" ] && "${FR[@]}" seams "$(video_of "$2")" --at "$b" 2>&1 | tail -1)
+  expect "$1" "$(jq -r 'if (.boundaries | length) >= 2 and ((([0.6, 0.9 * (.inside_ssim // 1)] | min) as $bar | [.boundaries[] | .ratio <= 3 and .ssim >= $bar] | all)) then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" "boundaries ${b:-unread}: $r"
+}
+# Past one piece (se-086): 30 s in three pieces (15/9/6 s), each reading its own window of the clip, 1:1 with the shot,
+# its carried head included. A plate as long as the shot is followed frame by frame across both edges (a piece reading
+# the clip from its start again scores about 0.5); reference footage's windows are the ones its pieces' spans give.
+B30='[{"at": 0, "prompt": "The pattern runs."}, {"at": 8, "prompt": "The sweep keeps turning."}, {"at": 19, "prompt": "The timecode keeps counting."}]'
+PATTERN_ASSET="[{\"name\": \"Pattern\", \"kind\": \"environment\", \"image\": \"$OUT/guide-5s.png\"}]"
+if [[ $ONLY == *",guide-30s,"* ]]; then
+  pattern guide-30s.mp4 1344x768 24 30
+  cell guide-30s "$SHOT" prompt="$GUIDE_PROMPT" duration_s:=30 beats:="$B30" seed:=$((R + 96)) assets:="$PATTERN_ASSET" \
+    plate:="{\"video\": \"$OUT/guide-30s.mp4\"}"
+  judge guide-30s guide-30s '.within_1 >= 0.8' guide "$OUT/guide-30s.mp4"
+  span_seams guide-30s-seams guide-30s
+fi
+if [[ $ONLY == *",footage-30s,"* ]]; then
+  pattern footage-30s.mp4 1280x720 30 30
+  cell footage-30s "$SHOT" duration_s:=30 beats:="$B30" seed:=$((R + 97)) assets:="$PATTERN_ASSET" \
+    prompt="<Sweep> gives the motion and timing: a synthetic broadcast test pattern, colour bars, a moving gradient sweep and a running timecode on a dark field; no person appears." \
+    reference_footage:="[{\"name\": \"Sweep\", \"video\": \"$OUT/footage-30s.mp4\"}]"
+  if [ -f footage-30s.number ]; then
+    s=$("$CLI" run show "$(cat footage-30s.number)" --once 2>/dev/null)
+    b=$(grep -o 'boundaries_s=[0-9.,]*' <<< "$s" | head -1 | cut -d= -f2)
+    w=$(grep -o 'clip_windows=[^ ]*' <<< "$s" | head -1 | cut -d= -f2)
+    want=$(awk -v b="$b" 'BEGIN { n = split(b, e, ","); printf "Sweep@0"; for (i = 1; i <= n; i++) printf ";Sweep@%d", int(e[i] * 24 + 0.5) - 22 }')
+    expect footage-30s-windows "$([ -n "$b" ] && [ "$w" = "$want" ] && echo PASS || echo FAIL)" "clip_windows ${w:-unread}, want $want"
+  fi
+  span_seams footage-30s-seams footage-30s
+fi
 # Keyframes: a shot from the pattern's first frame to its last (FL2VA), each end on its keyframe, with no cut onto it.
 nice -n 19 ffmpeg -v error -y -sseof -0.1 -i guide-5s.mp4 -frames:v 1 guide-5s-last.png
 cell keyframes "$SHOT" prompt="A synthetic broadcast test pattern: colour bars, a moving gradient sweep and a running timecode." \
@@ -168,9 +205,7 @@ fi
 
 # The long shot projects depend on (xs-136; it replaces the RC's h3-shot, folding in its length and A/V checks): 40 s in three pieces (beats at 0/13/27), one character picture, Turbo. Its timing
 # is recorded: per piece, s/step, the whole-shot decode, render seconds per output second (baseline run 22816, 0.2.1 on
-# Runtime 0.36.7: 1406.6 s, 35.2 s per output second). Each piece boundary (its record's `boundaries_s`) is judged with
-# frames.py seams: the change there under 3x the shot's median (the flicker rule of #2322), and its consecutive SSIM no
-# lower than 0.9x the shot's own away from the boundaries (or 0.6): a fast shot is unalike frame to frame everywhere.
+# Runtime 0.36.7: 1406.6 s, 35.2 s per output second). Its seams are judged by span_seams.
 B40='[{"at": 0, "prompt": "<Rider> rolls out of a garage onto a wet street at dawn."}, {"at": 13, "prompt": "<Rider> weaves through a quiet market as stalls open."}, {"at": 27, "prompt": "<Rider> stops on a bridge and looks out over the river."}]'
 cell h3-shot-40s "$SHOT" assets:="[{\"name\": \"Rider\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
   prompt="<Rider> rides a bicycle through an old town, one continuous tracking shot, ambient sound" duration_s:=40 beats:="$B40" seed:=$((R + 95))
@@ -182,7 +217,5 @@ if [ -f h3-shot-40s.number ] && [ "$(run_get "$OUT" h3-shot-40s .status)" = comp
     {d: (($a.stages.denoise.total_ms // 0) / 1000), s: [$a.steps.denoise.series[]?[1] / 1000], v: (($a.stages.decode_video.total_ms // 0) / 1000)}] as $p |
     ((.execution_ms // 0) / 1000) as $x | "exec \($x | floor) s, \($x / 40 * 100 | floor / 100) s per output second (run 22816: 1406.6 s, 35.16);
     pieces denoise \([$p[].d | floor]) s, s/step \([$p[] | select(.s | length > 0) | (.s | add) / (.s | length) | . * 10 | floor / 10]), decode_video \([$p[].v | floor]) s"' "$OUT/h3-shot-40s.json" | tr -s ' \n' ' ')"
-  b=$("$CLI" run show "$(cat h3-shot-40s.number)" --once 2>/dev/null | grep -o 'boundaries_s=[0-9.,]*' | head -1 | cut -d= -f2)
-  r=$([ -n "$b" ] && "${FR[@]}" seams "$(video_of h3-shot-40s)" --at "$b" 2>&1 | tail -1)
-  expect h3-shot-40s-seams "$(jq -r 'if (.boundaries | length) >= 2 and ((([0.6, 0.9 * (.inside_ssim // 1)] | min) as $bar | [.boundaries[] | .ratio <= 3 and .ssim >= $bar] | all)) then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" "boundaries ${b:-unread}: $r"
+  span_seams h3-shot-40s-seams h3-shot-40s
 fi
