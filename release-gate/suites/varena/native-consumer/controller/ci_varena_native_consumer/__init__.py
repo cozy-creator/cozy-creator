@@ -404,6 +404,9 @@ def death_case(h):
             result['separate_post_exit_allocation'] = 'not attempted: driver headroom still insufficient'
     requester.call('verify', name='canary')
     filler.call('verify', name='canary')
+    result['protocol_and_integrity_passed'] = True
+    result['automatic_episode_progress'] = first['ok']
+    result['physical_readback_proven'] = bool(first['ok'] or result.get('separate_post_exit_readback'))
     result['boundary'] = 'Waiting row plus owned PID/birth/pidfd authorizes this fixture death; metadata reaping grants no capacity. Initial failure and any later driver-backed readback remain separate.'
     return result
 
@@ -451,21 +454,26 @@ def simultaneous_case(h):
     assert sum(r['stats']['driver_physical_ooms'] for r in replies) > sum(r['stats']['driver_physical_ooms'] for r in published)
     assert any(r['owner']['recoveries'] for r in replies), replies
     final_rows = [child.call('row') for child in peers]
+    progress = any(row['ok'] for row in replies)
     return {'initial_published_idle': published, 'pressure': setup, 'operation_ready': armed,
             'gates_released_ns': released, 'actual_allocation_intervals_ns': intervals,
             'overlap_proven': True, 'replies': replies, 'final_owner_rows': final_rows,
             'outcomes': ['full_readback_then_free' if r['ok'] else 'accepted_physical_exhaustion' for r in replies],
+            'safety_passed': True, 'progress_qualified': progress, 'qualified': progress,
+            'progress_outcome': 'real_allocation_and_full_readback' if progress else 'overlapping_bounded_failure_only',
             'boundary': 'Both real automatic consumers hold idle cache then demand concurrently. Actual recovery/donation facts are recorded; equal success or donation by both is not inferred.'}
 
 
 def execute(payload, ctx, case):
     h = None
     result = {'passed': False, 'case': case.__name__}
-    directory = tempfile.mkdtemp(prefix='varena-native-consumers-')
+    # Ledger ABI requires TMPFS_MAGIC; ordinary /tmp may be an overlay or disk filesystem.
+    directory = tempfile.mkdtemp(prefix='varena-native-consumers-', dir='/dev/shm')
     os.chmod(directory, 0o700)
     try:
         h = Harness(payload, ctx, directory)
-        result.update(provenance=h.provenance, detail=case(h), passed=True)
+        detail = case(h)
+        result.update(provenance=h.provenance, detail=detail, passed=detail.get('qualified', True))
     except Exception as error:  # noqa: BLE001 - preserve native failure receipts, never retry the cell
         result.update(error=f'{type(error).__name__}: {error}', traceback=traceback.format_exc())
     finally:

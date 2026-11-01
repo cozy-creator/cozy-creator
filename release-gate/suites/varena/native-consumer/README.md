@@ -13,6 +13,8 @@ The controller has three ordinary Cozy entrypoints: `smoke`, `donor_death` and
 `simultaneous_auto`. It verifies the executed ELF hash, PID/start_ticks/pidfd and no
 Python/Torch maps for every native child. Readback covers every requested byte using
 bounded host windows. Watchers also prove that CUDA is not loaded.
+Private ledgers are created explicitly under `/dev/shm` with0700; default `/tmp`
+is not assumed to satisfy the ledger's tmpfs requirement.
 
 `donor_death` warms all contexts and small read/write paths, publishes real completed
 idle working pages from a manual donor, and leaves that donor blocked on stdin without
@@ -27,6 +29,11 @@ actual driver observation. A reaped row never counts as available bytes.
 are armed. Both own published idle cache and an automatic service. Actual allocator
 intervals must overlap. Work reads back its complete output before freeing it; resulting
 native recovery/donation facts distinguish real roles, successes and capacity failures.
+At least one real allocation/full readback is required for `progress_qualified` and
+the simultaneous cell's positive result. If both exhaust, overlapping bounded failure
+can pass safety checks but the positive progress gate remains false. Donor-death's
+`automatic_episode_progress` distinguishes the original request from a separate later
+physical readback; a protocol/integrity pass does not erase its initial exhaustion.
 Metadata snapshots may retry Busy; GPU allocations are never silently retried by the
 controller. Cleanup targets only owned children and preserves receipts/directories if
 termination does not finish.

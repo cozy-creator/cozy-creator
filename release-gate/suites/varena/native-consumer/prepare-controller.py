@@ -35,6 +35,7 @@ def main():
     assert needed and not any('python' in name.lower() or 'torch' in name.lower() for name in needed)
     glibc = sorted({tuple(map(int, x)) for x in re.findall(r'GLIBC_(\d+)\.(\d+)', versions)})
     assert glibc and glibc[-1] <= (2, 28), glibc
+    assert 'GLIBC_ABI_' not in versions and 'GLIBC_PRIVATE' not in versions
     manifest = {'helper_source': source['helper_source'], 'native_source': source['native_source'],
                 'binary_sha256': sha(args.binary), 'source_receipt_sha256': sha(args.source_receipt),
                 'archive_sha256': source['archive_sha256'], 'native_tree': source['native_tree'],
