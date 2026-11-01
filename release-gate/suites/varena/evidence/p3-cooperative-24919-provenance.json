@@ -1,0 +1,134 @@
+{
+  "run": 24919,
+  "native_source": "1c6b1c15b3c6e5929e29de5cfcb997312219afd5",
+  "fixture_source": "e25a46b751f15ec2f8c27e8a1373621cd1ee6000",
+  "runtime_source": "97706e71ad487cdb02ffb7d4f8ce15d5a6c00952",
+  "software": {
+    "attempt_ordinal": 1,
+    "runtime": "0.36.18+dev.g97706e71",
+    "tensord": "0.15.4",
+    "tensord_commit": "9d2ae4827167828d52fbeb2b6e7eaddb34c82f99",
+    "tensorfs": "0.17.16+dev.g1c6b1c15"
+  },
+  "wheel_sha256": "c09985894cd7b9e0eb1450250150114ac52c898a5397d335bb45c363d7ca27d4",
+  "extension_sha256": "b8be88766a565c2a0071f554b007d1d28c1008f97d37a31fae7530de4b069c96",
+  "shim_sha256": "09684b61d0b909c39d56c7d129432e906ddb0a57f1b4b916b20bb2c4c8d7716e",
+  "torch_build": {
+    "abi": 1,
+    "cuda": "13.0",
+    "cxx11_abi": 1,
+    "machine": "x86_64",
+    "supported_torch": [
+      "2.14.0+cu130",
+      "2.14.1+cu130"
+    ],
+    "system": "Linux",
+    "torch": "2.14.0+cu130",
+    "torch_git": "08187d9e0fba026dc8217405802ab5381dc88d90"
+  },
+  "fixture_changes_only": [
+    "release-gate/suites/varena/p0-working/ci_varena_p0/__init__.py",
+    "release-gate/suites/varena/p0-working/ci_varena_p0/cooperative.py"
+  ],
+  "fixture_source_files": {
+    "README.md": "2de29d240fdd163f91becf8a427566bf673767e8a148fe038508adf1af4405e9",
+    "ci_varena_p0/__init__.py": "cd06cf2bc77a9531db4ff8a3fe3a6e74d3a87d5d03bb4487f7459c188e845306",
+    "ci_varena_p0/benchmark.py": "605e0170fc06b571f7a1c3a0acbd665cbb8c345d9536e73f7332883bd981cf1a",
+    "ci_varena_p0/cooperative.py": "83fe74e840493a2347d3b8f151036097b27a103f610d0d8dcf3db0ab2f21371e",
+    "ci_varena_p0/fork_probe.py": "df09deb99120dd0c8f03c2f55d90d1f0caaa56ba93f6f316cc57a6a1617efdf4",
+    "ci_varena_p0/native_cudnn.py": "d11e8ecf46a88e30801f91708b3bc8ef7b58a365563389c75358f314f7c3aca6",
+    "ci_varena_p0/phase_policy.py": "c5d35a29fe6f39db605d5603d2b105051342608792b7ba20cc4f228d8aa64af8",
+    "ci_varena_p0/probe.py": "fd26dc3875c47833900623e99a61f3dbf85225c3492633a2109448baf72952bd",
+    "ci_varena_p0/raw_prefetch.py": "7117e9a5a80835fb0c61a58f1d6ad37a1ee8bc4986fe51d507b6251b22d42987",
+    "ci_varena_p0/replay_policy.py": "a67a5574088c1d081126620a93f6a1145b5d5669d8df25d5133730fe68adec24",
+    "ci_varena_p0/split_policy.py": "b93db78a8c7fa82e723eb925b22ecdb187135e020c2a46990704cf3544651a06",
+    "package.toml": "ba269148341ccadbdbbd57caf401f66f0f08d8f2f1d69d5d281cb45ea7a6c35a",
+    "pyproject.toml": "558ab389193cbb9ce0df41da133eb39cf51f85570887ee27941a4190acff0d9a",
+    "uv.lock": "9d2df6f8410d7e07e1c45b83c349ec46b97d61fc25eca9f14ada32808597f77a"
+  },
+  "invocation": {
+    "command": [
+      "cozy",
+      "run",
+      "/home/fidika/cozy_v2/outputs/xs138-p3-candidate-1c6b1c15b/gate-source-e25a46b75/p0-working/cooperative",
+      "--on",
+      "ghislaine",
+      "--gpus=1",
+      "--input",
+      "/home/fidika/cozy_v2/outputs/xs138-p3-candidate-1c6b1c15b/gpu-config.json",
+      "--json"
+    ],
+    "input_sha256": "e86fde4484637e2ff5dd7e9609696599282ad7f1a1204e8cfae731477c4fd7b4",
+    "input": {
+      "tensorfs_version": "0.17.16+dev.g1c6b1c15",
+      "extension_sha256": "b8be88766a565c2a0071f554b007d1d28c1008f97d37a31fae7530de4b069c96",
+      "shim_sha256": "09684b61d0b909c39d56c7d129432e906ddb0a57f1b4b916b20bb2c4c8d7716e",
+      "gpu_uuid": "GPU-2eb9e2ca-fca5-d50d-4344-7d0127c4ec68"
+    },
+    "started_at": "2026-11-01T04:43:23.980947+00:00",
+    "returncode": 0,
+    "finished_at": "2026-11-01T04:43:34.841533+00:00"
+  },
+  "preserved_files": {
+    "p3-cooperative-24919.json": {
+      "source_path": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p2-shim-leg10-plan/attempt-001/p3-cooperative-v2-result.json",
+      "sha256": "224db456b6c8c16b8240216bef1511eef0c1ba8e75359300588d5784a88f66fd"
+    },
+    "p3-cooperative-24919-run.json": {
+      "source_path": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p2-shim-leg10-plan/attempt-001/p3-cooperative-v2-24919.json",
+      "sha256": "5817017a25b421fbde70bc2a59e06a77f7d019b6bb76c72c3660dfd732eaa56e"
+    },
+    "p3-cooperative-24917.json": {
+      "source_path": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p2-shim-leg10-plan/attempt-001/p3-cooperative-24917.json",
+      "sha256": "63255dfaa1fc40dc509aadb00d822e02425c2abadcc9f6c37c7a174c88b8d259"
+    },
+    "p3-cooperative-24917.ndjson": {
+      "source_path": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p2-shim-leg10-plan/attempt-001/p3-cooperative.ndjson",
+      "sha256": "d9588ae3305ecb56d8034d0b7c79cd9f44c27a6c7b7682c4415d475c5f88ebf7"
+    }
+  },
+  "raw_success_log": {
+    "path": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p2-shim-leg10-plan/attempt-001/p3-cooperative-v2.ndjson",
+    "sha256": "fcfe3022511ff992c687cde8963130ea914152796225cb7886d524cf6569e9af"
+  },
+  "prior_failure": {
+    "run": 24917,
+    "native_source_unchanged": true,
+    "fixture_source": "1c6b1c15b3c6e5929e29de5cfcb997312219afd5",
+    "cause": "The GC fixture recorded torch.ones in a CUDA graph, then read its output before replaying. Native recording does not execute the fill. e25 adds vt.replay with stream/pool consumer tracking before the existing synchronization/read.",
+    "additional_fix": "Preserve nested traceback, partial cases and child exit in Report.detail; run completion alone is not the fixture verdict.",
+    "invocation": {
+      "command": [
+        "cozy",
+        "run",
+        "/home/fidika/cozy_v2/outputs/xs138-p3-candidate-1c6b1c15b/gate-source/p0-working/cooperative",
+        "--on",
+        "ghislaine",
+        "--gpus=1",
+        "--input",
+        "/home/fidika/cozy_v2/outputs/xs138-p3-candidate-1c6b1c15b/gpu-config.json",
+        "--json"
+      ],
+      "input_sha256": "e86fde4484637e2ff5dd7e9609696599282ad7f1a1204e8cfae731477c4fd7b4",
+      "input": {
+        "tensorfs_version": "0.17.16+dev.g1c6b1c15",
+        "extension_sha256": "b8be88766a565c2a0071f554b007d1d28c1008f97d37a31fae7530de4b069c96",
+        "shim_sha256": "09684b61d0b909c39d56c7d129432e906ddb0a57f1b4b916b20bb2c4c8d7716e",
+        "gpu_uuid": "GPU-2eb9e2ca-fca5-d50d-4344-7d0127c4ec68"
+      },
+      "started_at": "2026-11-01T04:41:19.026033+00:00",
+      "returncode": 1,
+      "finished_at": "2026-11-01T04:41:29.780458+00:00"
+    }
+  },
+  "qualified_scope": "one RTX4090; two same-UID/user/PID/mount-namespace fresh CUDA processes on one real tmpfs inode; explicit cooperative service",
+  "not_qualified": [
+    "automatic allocator policy",
+    "autonomous foreign-pressure sampling/latency",
+    "Runtime model/cache-owner integration",
+    "TensorD room migration/deletion",
+    "cross-container/private namespaces",
+    "MIG or multi-GPU",
+    "raw Rust Drop inside capture"
+  ]
+}
