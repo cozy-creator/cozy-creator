@@ -370,15 +370,18 @@ fn trim_for(device: i32, owner: &Working, key: &str, choice: &str, stream: u64) 
     crate::ensure_recovery_allowed(&captures, device)?;
     let mut state = owner.lock()?;
     let _context = owner.driver.enter()?;
-    owner.poll(&mut state)?;
-    let (free, _) = owner.driver.memory_info()?;
-    let plans = fits(owner, &state, key, stream, free)?;
-    let plan = plans
-        .iter()
-        .find(|plan| plan.id == choice)
-        .ok_or(Error::Invalid("split choice is not declared"))?;
-    let needed = plan.missing.saturating_sub(plan.now);
-    owner.trim_ready(&mut state, needed, None, &plan.preserve)
+    let result = (|| {
+        owner.poll(&mut state)?;
+        let (free, _) = owner.driver.memory_info()?;
+        let plans = fits(owner, &state, key, stream, free)?;
+        let plan = plans
+            .iter()
+            .find(|plan| plan.id == choice)
+            .ok_or(Error::Invalid("split choice is not declared"))?;
+        let needed = plan.missing.saturating_sub(plan.now);
+        owner.trim_ready(&mut state, needed, None, &plan.preserve)
+    })();
+    result.map_err(|error| owner.fail(&mut state, error))
 }
 
 fn exhausted(plans: &[Fit]) -> Error {
