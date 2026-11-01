@@ -1,4 +1,5 @@
-//! Process-local weight residency. TensorFS supplies bytes; this crate owns only CUDA memory.
+//! Process-local CUDA memory. TensorFS supplies weight bytes; [`working`] supplies ordinary
+//! allocations and prepared graph pools alongside stable-address weight residency.
 //!
 //! Every foreign storage must retain its [`Pin`] until the final alias is destroyed. Raw addresses
 //! are not ownership. Kernels may finish after the final storage disappears, so reclamation joins
@@ -9,6 +10,7 @@
 #![deny(unsafe_code)]
 
 mod cuda;
+pub mod working;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering};
@@ -65,6 +67,7 @@ pub struct ReclaimedBytes {
     pub streaming_limit: u64,
     pub weight_allocation: u64,
     pub allocator: u64,
+    pub room: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -73,6 +76,7 @@ enum ReclaimReason {
     StreamingLimit,
     WeightAllocation,
     Allocator,
+    Room,
 }
 
 impl ReclaimedBytes {
@@ -82,6 +86,7 @@ impl ReclaimedBytes {
             ReclaimReason::StreamingLimit => &mut self.streaming_limit,
             ReclaimReason::WeightAllocation => &mut self.weight_allocation,
             ReclaimReason::Allocator => &mut self.allocator,
+            ReclaimReason::Room => &mut self.room,
         };
         *counter = counter.saturating_add(bytes as u64);
     }
@@ -263,7 +268,43 @@ pub struct Arena {
     pid: u32,
     // Lock-free view of this device's capture guards, for release paths that never wait.
     captures: Arc<AtomicUsize>,
+    room: Arc<Room>,
     state: Mutex<State>,
+}
+
+/// This process's GPU bytes on one device against the room it may hold (`make_room`): its mapped
+/// weight pages and working allocations. A smaller room reads as a
+/// smaller card to every fill and every working mapping.
+struct Room {
+    /// usize::MAX: no limit.
+    limit: AtomicUsize,
+    pages: AtomicUsize,
+    working: AtomicUsize,
+    ceiling: AtomicUsize,
+}
+
+impl Default for Room {
+    fn default() -> Self {
+        Self {
+            limit: AtomicUsize::new(usize::MAX),
+            pages: AtomicUsize::new(0),
+            working: AtomicUsize::new(0),
+            ceiling: AtomicUsize::new(usize::MAX),
+        }
+    }
+}
+
+impl Room {
+    /// Bytes `more` would put over the limit.
+    fn over(&self, more: usize) -> usize {
+        self.pages
+            .load(Ordering::Acquire)
+            .saturating_add(self.working.load(Ordering::Acquire))
+            .saturating_add(more)
+            .saturating_sub(
+                self.limit.load(Ordering::Acquire).min(self.ceiling.load(Ordering::Acquire)),
+            )
+    }
 }
 
 static ARENAS: OnceLock<Mutex<Vec<Weak<Arena>>>> = OnceLock::new();
@@ -272,6 +313,7 @@ struct DeviceActivity {
     captures: Arc<AtomicUsize>,
     replays: Arc<AtomicUsize>,
     producers: Arc<AtomicUsize>,
+    room: Arc<Room>,
 }
 
 static CAPTURES: OnceLock<Mutex<BTreeMap<i32, DeviceActivity>>> = OnceLock::new();
@@ -279,9 +321,12 @@ static PROCESS: AtomicU32 = AtomicU32::new(0);
 
 fn check_process() -> Result<()> {
     let pid = std::process::id();
-    let owner = PROCESS
-        .compare_exchange(0, pid, Ordering::Relaxed, Ordering::Relaxed)
-        .unwrap_or_else(|owner| owner);
+    let owner = match PROCESS.load(Ordering::Relaxed) {
+        0 => PROCESS
+            .compare_exchange(0, pid, Ordering::Relaxed, Ordering::Relaxed)
+            .unwrap_or_else(|owner| owner),
+        owner => owner,
+    };
     if owner != 0 && owner != pid {
         return Err(Error::Invalid("CUDA residency cannot be used after fork"));
     }
@@ -422,13 +467,15 @@ impl Arena {
         let mut captures = capture_counts()?;
         ensure_recovery_allowed(&captures, device)?;
         let driver = cuda::Driver::open(device)?;
-        let capturing = Arc::clone(&captures.entry(device).or_default().captures);
+        let activity = captures.entry(device).or_default();
+        let (capturing, room) = (Arc::clone(&activity.captures), Arc::clone(&activity.room));
         drop(captures);
         let arena = Arc::new(Self {
             driver,
             device,
             pid: std::process::id(),
             captures: capturing,
+            room,
             state: Mutex::new(State {
                 entries: BTreeMap::new(),
                 next_id: 1,
@@ -458,6 +505,19 @@ impl Arena {
     pub fn device(&self) -> i32 {
         self.device
     }
+
+    /// Physical pages for one region, inside this process's room on the device: over the room
+    /// reads as the driver's out of memory, so each admission treats a smaller room as a smaller
+    /// card (reclaims what it may, else refuses).
+    fn create(&self, bytes: usize) -> Result<u64> {
+        if self.room.over(bytes) != 0 {
+            return Err(Error::OutOfMemory { requested_bytes: bytes });
+        }
+        let handle = self.driver.create(bytes)?;
+        self.room.pages.fetch_add(bytes, Ordering::AcqRel);
+        Ok(handle)
+    }
+
     pub fn granularity(&self) -> usize {
         self.driver.granularity
     }
@@ -547,8 +607,13 @@ impl Arena {
     pub fn enter_phase(&self, incoming: &[Arc<Region>]) -> Result<()> {
         let captures = capture_counts()?;
         ensure_recovery_allowed(&captures, self.device)?;
-        if incoming.iter().any(|region| !std::ptr::eq(self, Arc::as_ptr(&region.arena))) {
-            return Err(Error::Invalid("phase regions must belong to the same arena"));
+        if incoming
+            .iter()
+            .any(|region| !std::ptr::eq(self, Arc::as_ptr(&region.arena)))
+        {
+            return Err(Error::Invalid(
+                "phase regions must belong to the same arena",
+            ));
         }
         let mut state = self.lock()?;
         state.preferred_end = None;
@@ -557,7 +622,10 @@ impl Arena {
             entry.preferred = false;
         }
         for region in incoming {
-            let entry = state.entries.get_mut(&region.id).ok_or(Error::Invalid("phase region is retired"))?;
+            let entry = state
+                .entries
+                .get_mut(&region.id)
+                .ok_or(Error::Invalid("phase region is retired"))?;
             entry.preferred = entry.handle.is_some() && entry.uses.state() == Contents::Ready;
         }
         Ok(())
@@ -907,6 +975,7 @@ impl Arena {
         if let Err(error) = self.driver.release(handle) {
             return Err(poison(state, error));
         }
+        self.room.pages.fetch_sub(size, Ordering::AcqRel);
         let entry = state.entries.get_mut(&id).expect("locked candidate");
         // Every event is complete here; a destroy failure only leaks the event.
         for fence in entry.uses.fences().drain(..) {
@@ -1068,7 +1137,13 @@ impl Region {
     /// Native capture detachment uses this only to refuse surviving foreign storage.
     pub fn has_live_pins(&self) -> Result<bool> {
         let state = self.arena.lock()?;
-        Ok(state.entries.get(&self.id).expect("live region").uses.pins() != 0)
+        Ok(state
+            .entries
+            .get(&self.id)
+            .expect("live region")
+            .uses
+            .pins()
+            != 0)
     }
 
     pub fn is_resident(&self) -> Result<bool> {
@@ -1195,7 +1270,14 @@ impl Region {
                     });
                 }
             }
-            let handle = match self.arena.driver.create(self.rounded) {
+            let allocation = match self.arena.create(self.rounded) {
+                Err(Error::OutOfMemory { .. }) if admission != Admission::None => {
+                    working::reclaim_for_weights(self.arena.device, self.rounded)?;
+                    self.arena.create(self.rounded)
+                }
+                result => result,
+            };
+            let handle = match allocation {
                 Ok(handle) => handle,
                 Err(Error::OutOfMemory { .. }) => {
                     match admission {
@@ -1222,7 +1304,7 @@ impl Region {
                             )?;
                         }
                     }
-                    match self.arena.driver.create(self.rounded) {
+                    match self.arena.create(self.rounded) {
                         Ok(handle) => handle,
                         Err(error @ Error::OutOfMemory { .. }) => return Err(error),
                         Err(error) => return Err(poison(&mut state, error)),
@@ -1616,12 +1698,76 @@ impl Drop for Arena {
                 if self.driver.release(handle).is_err() {
                     return;
                 }
+                self.room.pages.fetch_sub(entry.bytes, Ordering::AcqRel);
             }
             if self.driver.free_address(entry.ptr, entry.bytes).is_err() {
                 return;
             }
         }
     }
+}
+
+fn room(device: i32) -> Result<Arc<Room>> {
+    Ok(Arc::clone(&capture_counts()?.entry(device).or_default().room))
+}
+
+/// The room this process may hold on `device` (weight pages plus mapped working allocations),
+/// None for no limit, and at once its pages above it back, in reclaim order (pins are never
+/// overridden; under a capture or replay they wait for the next fill or allocation, which the
+/// room bounds from now on). What a machine asks of an executor when another program needs the
+/// GPU (design/vram-yield.md): the one make_room for foreign pressure.
+pub fn make_room(device: i32, limit: Option<usize>) -> Result<ReclaimReport> {
+    check_process()?;
+    let room = room(device)?;
+    room.limit.store(limit.unwrap_or(usize::MAX), Ordering::Release);
+    reclaim_room(device, &room)
+}
+
+/// Bound managed physical memory, independently of the temporary room requested by a peer.
+/// Native decode, Torch working allocations and resident weight pages all count.
+/// Contexts and allocations made by other CUDA libraries are outside this ceiling.
+pub fn set_limit(device: i32, limit: Option<usize>) -> Result<ReclaimReport> {
+    let room = room(device)?;
+    room.ceiling.store(limit.unwrap_or(usize::MAX), Ordering::Release);
+    reclaim_room(device, &room)
+}
+
+fn reclaim_room(device: i32, room: &Room) -> Result<ReclaimReport> {
+    let over = room.over(0);
+    let mut report = ReclaimReport {
+        requested_bytes: over,
+        ..ReclaimReport::default()
+    };
+    if over == 0 || is_recovery_blocked(device)? {
+        return Ok(report);
+    }
+    report.reclaimed_bytes += working::trim(device)?;
+    let Some(registry) = ARENAS.get() else {
+        return Ok(report);
+    };
+    let arenas: Vec<_> = registry
+        .lock()
+        .map_err(|_| Error::Poisoned("arena registry mutex".into()))?
+        .iter()
+        .filter_map(Weak::upgrade)
+        .filter(|arena| arena.device == device)
+        .collect();
+    for arena in arenas {
+        let need = room.over(0);
+        if need == 0 {
+            break;
+        }
+        let next = arena.reclaim_with_preference(need, true, ReclaimReason::Room)?;
+        report.reclaimed_bytes += next.reclaimed_bytes;
+        report.evicted_regions += next.evicted_regions;
+    }
+    Ok(report)
+}
+
+/// `make_room`'s current limit on `device`, None for none.
+pub fn room_limit(device: i32) -> Result<Option<usize>> {
+    let limit = room(device)?.limit.load(Ordering::Acquire);
+    Ok((limit != usize::MAX).then_some(limit))
 }
 
 /// Allocator-pressure entry point: native-only, one finite pass, no callbacks or external waits.

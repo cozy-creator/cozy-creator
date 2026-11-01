@@ -1,7 +1,7 @@
 # Suite `h3`: minimax-h3's shot and upscale at their edges, from the package users get (or its --pins release).
 # - Regenerate-2K (`upscale.model: regenerate-2k`) at 1080p, 1440p and 2160p, each against the 768p shot it starts from: its
 #   layout at 112x64 (frames.py), since regenerated texture rightly differs.
-# - SeedVR2, the default model, at 2160p on the same shot.
+# - SeedVR2, the default model, at 2160p on the same shot, its lane the one an empty card gives.
 # - A plate (a synthetic, people-free test pattern) as long as the shot, shorter, longer, at 30 fps and at 9:16: the
 #   output must follow it frame by frame.
 # - First and last keyframes: the shot opens and ends on them without a cut.
@@ -39,6 +39,13 @@ for r in 1080 1440 2160; do
 done
 cell seedvr2-2160p "$UP" --file video="$(video_of regen-768p)" resolution=2160p seed:=$((R + 71))
 av seedvr2-2160p 2160
+# After the shot and Regenerate-2K, SeedVR2's lane is the one it gets on an empty card: the idle models leave for its
+# call, so it never resolves for the free bytes beside them (pawoo 22998, TensorD 0.14.3: "no lane ... fits 0.3 GiB
+# free ... streaming the rest" on a 24 GB card it then had to itself; holds from #2319's TensorD).
+if [ -f seedvr2-2160p.number ]; then
+  w=$(grep -o 'no lane of [^"]*' "$OUT/seedvr2-2160p.ndjson" 2>/dev/null | head -1)
+  expect seedvr2-lane "$([ -z "$w" ] && echo PASS || echo FAIL)" "${w:-resolved for the card, nothing streamed}"
+fi
 if [[ $ONLY == *",regen-2160p-15s,"* ]]; then
   P15="$SCENE at night, rain on the windows, a neon sign reads CAFE, rain and footsteps"
   SAVED=$ONLY; ONLY="$ONLY,regen-768p-15s,"
@@ -128,7 +135,8 @@ fi
 # The long shot projects depend on (xs-136; it replaces the RC's h3-shot, folding in its length and A/V checks): 40 s in three pieces (beats at 0/13/27), one character picture, Turbo. Its timing
 # is recorded: per piece, s/step, the whole-shot decode, render seconds per output second (baseline run 22816, 0.2.1 on
 # Runtime 0.36.7: 1406.6 s, 35.2 s per output second). Each piece boundary (its record's `boundaries_s`) is judged with
-# frames.py seams: the change there under 3x the shot's median (the flicker rule of #2322), consecutive SSIM >= 0.6.
+# frames.py seams: the change there under 3x the shot's median (the flicker rule of #2322), and its consecutive SSIM no
+# lower than 0.9x the shot's own away from the boundaries (or 0.6): a fast shot is unalike frame to frame everywhere.
 B40='[{"at": 0, "prompt": "<Rider> rolls out of a garage onto a wet street at dawn."}, {"at": 13, "prompt": "<Rider> weaves through a quiet market as stalls open."}, {"at": 27, "prompt": "<Rider> stops on a bridge and looks out over the river."}]'
 cell h3-shot-40s "$SHOT" assets:="[{\"name\": \"Rider\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
   prompt="<Rider> rides a bicycle through an old town, one continuous tracking shot, ambient sound" duration_s:=40 beats:="$B40" seed:=$((R + 95))
@@ -142,5 +150,5 @@ if [ -f h3-shot-40s.number ] && [ "$(run_get "$OUT" h3-shot-40s .status)" = comp
     pieces denoise \([$p[].d | floor]) s, s/step \([$p[] | select(.s | length > 0) | (.s | add) / (.s | length) | . * 10 | floor / 10]), decode_video \([$p[].v | floor]) s"' "$OUT/h3-shot-40s.json" | tr -s ' \n' ' ')"
   b=$("$CLI" run show "$(cat h3-shot-40s.number)" --once 2>/dev/null | grep -o 'boundaries_s=[0-9.,]*' | head -1 | cut -d= -f2)
   r=$([ -n "$b" ] && "${FR[@]}" seams "$(video_of h3-shot-40s)" --at "$b" 2>&1 | tail -1)
-  expect h3-shot-40s-seams "$(jq -r 'if (.boundaries | length) >= 2 and ([.boundaries[] | .ratio <= 3 and .ssim >= 0.6] | all) then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" "boundaries ${b:-unread}: $r"
+  expect h3-shot-40s-seams "$(jq -r 'if (.boundaries | length) >= 2 and ((([0.6, 0.9 * (.inside_ssim // 1)] | min) as $bar | [.boundaries[] | .ratio <= 3 and .ssim >= $bar] | all)) then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" "boundaries ${b:-unread}: $r"
 fi
