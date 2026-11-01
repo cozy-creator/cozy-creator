@@ -62,3 +62,15 @@ narrowed process-identity contract.
 The standalone `fork_guard_cpu` proof currently targets Linux x86_64. The experimental
 page implementation on other Linux architectures remains unqualified; default builds
 still use actual PID checks. No profiler is included in this branch.
+
+Initial actual CPU matrices passed with the feature off and on. Armed ordinary/raw forks,
+descendants and both fork-thread authentication states rejected all six zero-sized/metadata
+operations; the parent remained healthy with no CUDA library and zero working/driver stats.
+The real mmap-failure fallback and held/competing publication cases passed. The armed
+shared-VM/copied-TLS case actually accepted the calls while default/fallback rejected them:
+that counterexample is retained as `qualified=false`, never production qualification.
+
+Experimental Python builds expose `_varena_kernel_fork_guard_status` as cold metadata.
+The existing benchmark records the actual backend after warmup, validates an armed marker
+against its PID, and labels the feature's result `qualification_eligible=false`. The timed
+loop and 2× comparison are unchanged; a fallback result is not an armed-guard speed result.

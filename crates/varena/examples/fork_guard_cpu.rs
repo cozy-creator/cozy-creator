@@ -1,10 +1,10 @@
 //! Real CPU-only fork/initialization proof. No nonzero allocation or CUDA API is invoked.
 #![allow(unsafe_code)]
-use serde_json::{Value, json};
-#[cfg(feature = "kernel-fork-guard")]
-use std::sync::{Arc, Barrier};
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod proof {
+    use serde_json::{Value, json};
+    #[cfg(feature = "kernel-fork-guard")]
+    use std::sync::{Arc, Barrier};
     use std::{
         fs,
         io::Read,
@@ -53,6 +53,18 @@ mod proof {
         #[cfg(not(feature = "kernel-fork-guard"))]
         {
             false
+        }
+    }
+    fn status_json() -> Value {
+        #[cfg(feature = "kernel-fork-guard")]
+        {
+            let s = varena::fork_guard::status();
+            json!({"backend":s.backend,"marker":s.marker,"thread_authenticated":s.thread_authenticated,
+                "page_bytes":s.page_bytes,"failure_stage":s.failure_stage,"failure_errno":s.failure_errno})
+        }
+        #[cfg(not(feature = "kernel-fork-guard"))]
+        {
+            json!({"backend":"default_actual_pid"})
         }
     }
     fn emit_child(fd: i32, mask: u32) -> ! {
@@ -302,6 +314,7 @@ mod proof {
                 let s = varena::fork_guard::status();
                 assert_eq!(s.backend, "fallback_pid");
                 assert_eq!(s.failure_errno, libc::ENOMEM);
+                assert_eq!(s.failure_stage, varena::fork_guard::Stage::Map as u32);
             }
         } else {
             working::bind_process().unwrap();
@@ -327,7 +340,7 @@ mod proof {
             .unwrap();
         let counterexample = shared_vm_counterexample();
         healthy();
-        json!({"passed":true,"case":mode,"protection":protection(),"ordinary":ordinary,"raw":raw,"descendant":descendant,
+        json!({"passed":true,"case":mode,"guard":status_json(),"protection":protection(),"ordinary":ordinary,"raw":raw,"descendant":descendant,
         "thread_auth_before":thread.0,"thread_auth_after":thread.1,"thread_fork":thread.2,"unauthenticated_thread_fork":unauthed,
         "shared_vm":counterexample,"cuda_initialized":false,"production_qualified":false})
     }
