@@ -84,6 +84,24 @@ fn sample(value: ledger::Sample) -> Value {
         "reserve":value.reserve,"attributable":value.attributable})
 }
 
+fn service(value: cooperative::Service) -> Value {
+    json!({"round":value.round,"released":value.released,"completed":value.completed,
+        "pending":value.pending,"deferred":value.deferred,
+        "accounting":value.accounting.map(accounting)})
+}
+
+fn snapshot(owner: ledger::RowId, value: ledger::Snapshot) -> Value {
+    json!({"owner":row_id(owner),"generation":value.generation,
+        "capacity_epoch":value.capacity_epoch,"backing_device":value.backing_device,
+        "backing_inode":value.backing_inode,"scope":{"boot":value.scope.boot,
+            "uid":value.scope.uid,"user_namespace":value.scope.user_namespace,
+            "pid_namespace":value.scope.pid_namespace,"mount_namespace":value.scope.mount_namespace},
+        "sample":value.sample.map(sample),"round":value.round.map(round),
+        "rows":value.rows.into_iter().map(|r|json!({"id":row_id(r.id),"pid":r.pid,
+            "start_ticks":r.start_ticks,"priority":r.priority,"sharing":format!("{:?}",r.sharing),
+            "last_use":r.last_use,"physical":physical(r.physical),"reclaimable":r.reclaimable})).collect::<Vec<_>>()})
+}
+
 #[pyclass(name = "_VarenaPeer", module = "tensorfs._ext", frozen)]
 pub(super) struct PyPeer {
     // Python methods detach before this lock. Close takes the owner out, unlocks, then drops it.
@@ -181,29 +199,12 @@ impl PyPeer {
     }
 
     fn service(&self, py: Python<'_>) -> PyResult<String> {
-        self.call(py, |peer| {
-            let value = peer.service()?;
-            Ok(
-                json!({"round":value.round,"released":value.released,"completed":value.completed,
-                "pending":value.pending,"deferred":value.deferred,
-                "accounting":value.accounting.map(accounting)})
-                .to_string(),
-            )
-        })
+        self.call(py, |peer| Ok(service(peer.service()?).to_string()))
     }
 
     fn snapshot(&self, py: Python<'_>) -> PyResult<String> {
         self.call(py, |peer| {
-            let value = peer.snapshot()?;
-            Ok(json!({"owner":row_id(peer.id()),"generation":value.generation,
-                "capacity_epoch":value.capacity_epoch,"backing_device":value.backing_device,
-                "backing_inode":value.backing_inode,"scope":{"boot":value.scope.boot,
-                    "uid":value.scope.uid,"user_namespace":value.scope.user_namespace,
-                    "pid_namespace":value.scope.pid_namespace,"mount_namespace":value.scope.mount_namespace},
-                "sample":value.sample.map(sample),"round":value.round.map(round),
-                "rows":value.rows.into_iter().map(|r|json!({"id":row_id(r.id),"pid":r.pid,
-                    "start_ticks":r.start_ticks,"priority":r.priority,"sharing":format!("{:?}",r.sharing),
-                    "last_use":r.last_use,"physical":physical(r.physical),"reclaimable":r.reclaimable})).collect::<Vec<_>>()}).to_string())
+            Ok(snapshot(peer.id(), peer.snapshot()?).to_string())
         })
     }
 
@@ -239,8 +240,97 @@ impl PyPeer {
     }
 }
 
+/// Its handle contains host control only. Native retirement never attaches to Python.
+#[pyclass(name = "_VarenaOwner", module = "tensorfs._ext", frozen)]
+pub(super) struct PyOwner {
+    owner: cooperative::Owner,
+    row: ledger::RowId,
+}
+
+#[pymethods]
+impl PyOwner {
+    #[classattr]
+    const OWNER_PROTOCOL: u32 = 1;
+
+    #[new]
+    fn new(
+        py: Python<'_>,
+        device: i32,
+        uuid: &str,
+        directory: PathBuf,
+        shared: bool,
+        priority: i32,
+    ) -> PyResult<Self> {
+        let descriptor =
+            ledger::Device::parse(uuid).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let owner = py
+            .detach(|| {
+                cooperative::Owner::open(
+                    device,
+                    descriptor,
+                    &directory,
+                    if shared {
+                        ledger::Sharing::Shared
+                    } else {
+                        ledger::Sharing::Dedicated
+                    },
+                    priority,
+                )
+            })
+            .map_err(|e| raise(py, e))?;
+        let row = owner.id();
+        Ok(Self { owner, row })
+    }
+
+    fn wake(&self, py: Python<'_>, used_at: u64) -> PyResult<()> {
+        py.detach(|| self.owner.wake(used_at))
+            .map_err(|e| raise(py, e))
+    }
+
+    fn facts(&self, py: Python<'_>) -> PyResult<String> {
+        let facts = py.detach(|| self.owner.facts()).map_err(|e| raise(py, e))?;
+        Ok(
+            json!({"active":facts.active,"stopping":facts.stopping,"retired":facts.retired,
+                "published":facts.published,"serviced":facts.serviced,
+            "deferred":facts.deferred,"physical_bytes":facts.physical_bytes,
+            "last_donation":facts.last_donation.map(service),"failed":facts.failed})
+            .to_string(),
+        )
+    }
+
+    fn configure(&self, py: Python<'_>, shared: bool, priority: i32) -> PyResult<()> {
+        py.detach(|| {
+            self.owner.configure(
+                if shared {
+                    ledger::Sharing::Shared
+                } else {
+                    ledger::Sharing::Dedicated
+                },
+                priority,
+            )
+        })
+        .map_err(|e| raise(py, e))
+    }
+
+    fn snapshot(&self, py: Python<'_>) -> PyResult<String> {
+        py.detach(|| self.owner.snapshot())
+            .map(|value| snapshot(self.row, value).to_string())
+            .map_err(|e| raise(py, e))
+    }
+
+    fn cuda_calls(&self, py: Python<'_>) -> PyResult<u64> {
+        py.detach(|| self.owner.cuda_calls())
+            .map_err(|e| raise(py, e))
+    }
+
+    fn close(&self, py: Python<'_>) -> PyResult<()> {
+        py.detach(|| self.owner.close()).map_err(|e| raise(py, e))
+    }
+}
+
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyPeer>()?;
+    module.add_class::<PyOwner>()?;
     let deferred = module.py().get_type::<CooperationDeferredError>();
     deferred.setattr("__module__", "tensorfs._ext")?;
     module.add("CooperationDeferredError", deferred)?;

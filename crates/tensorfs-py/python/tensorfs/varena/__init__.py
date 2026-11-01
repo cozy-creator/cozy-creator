@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from .. import _ext
 from .cooperative import Cooperation as Cooperation
+from .cooperative import CooperationOwner as CooperationOwner
 from .cooperative import CooperationDeferredError as CooperationDeferredError
 from .cooperative import CooperationStaleSampleError as CooperationStaleSampleError
 

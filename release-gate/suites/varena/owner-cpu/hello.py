@@ -31,7 +31,11 @@ launcher = args.out / 'child.py'
 launcher.write_text('''from pathlib import Path
 import hashlib, json, sys, threading
 sys.path[:0] = [sys.argv[1], sys.argv[2], str(Path(__file__).parent / 'metadata')]
+def native_threads():
+    return {p.name: p.joinpath('comm').read_text().strip() for p in Path('/proc/self/task').iterdir()}
+threads_before_import = native_threads()
 from cozy_runtime.internal import executor, cooperation
+threads_before_hello = native_threads()
 main = executor.main
 code = main(['--socket', sys.argv[3], '--root', sys.argv[4]])
 from tensorfs import _ext, varena
@@ -40,7 +44,12 @@ torch = sys.modules.get('torch')
 result = {'exit_code': code, 'torch_imported': torch is not None,
           'cuda_initialized': bool(torch is not None and torch.cuda.is_initialized()),
           'driver_loaded': 'libcuda.so' in maps or 'libnvidia-ml.so' in maps,
-          'cooperation_capability': getattr(getattr(varena, 'Cooperation', None), 'capability', lambda: 0)(),
+          'cooperation_capability': int(cooperation.capable()),
+          'native_service_protocol': getattr(getattr(varena, 'CooperationOwner', None), 'capability', lambda: 0)(),
+          'native_threads_before_import': threads_before_import,
+          'native_threads_before_hello': threads_before_hello,
+          'native_threads_after_hello': native_threads(),
+          'blas_libraries': sorted({line.rsplit(' ', 1)[-1] for line in maps.splitlines() if 'blas' in line.lower()}),
           'extension': _ext.__file__, 'native_version': _ext.__version__,
           'runtime_executor_source': executor.__file__,
           'runtime_executor_sha256': hashlib.sha256(Path(executor.__file__).read_bytes()).hexdigest(),
@@ -98,6 +107,8 @@ try:
                 assert hello['runtime_version'] == project['version']
                 assert Path(state['runtime_executor_source']).resolve() == (args.runtime_source / 'cozy_runtime/internal/executor.py').resolve()
                 assert state['threads'] == ['MainThread'], state
+                assert state['native_threads_before_hello'] == state['native_threads_after_hello'], state
+                assert not any(name.startswith('varena-owner') for name in state['native_threads_after_hello'].values()), state
                 report.update(passed=True, command=command, hello=hello, shutdown=shutdown,
                               child=state, extension_sha256=hashlib.sha256(Path(state['extension']).read_bytes()).hexdigest())
 except BaseException as error:

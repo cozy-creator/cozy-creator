@@ -88,3 +88,38 @@ class Cooperation:
         wait for GPU work; service ticks retain their arena owners and never do this teardown.
         """
         self._native.close()
+
+
+class CooperationOwner:
+    """Native automatic service; lifecycle and status calls contain no memory policy."""
+
+    @staticmethod
+    def capability() -> int:
+        return int(getattr(getattr(_ext, "_VarenaOwner", None), "OWNER_PROTOCOL", 0))
+
+    initialize = staticmethod(Cooperation.initialize)
+
+    def __init__(self, device: int, uuid: str, directory: str | os.PathLike[str], *,
+                 shared: bool = True, priority: int = 0) -> None:
+        native = getattr(_ext, "_VarenaOwner", None)
+        if native is None:
+            raise NotImplementedError("native automatic GPU cooperation is unavailable")
+        self._native = native(device, uuid, os.fspath(directory), shared, priority)
+
+    def wake(self, *, used: bool = False) -> None:
+        self._native.wake(time.monotonic_ns() if used else 0)
+
+    def facts(self) -> dict[str, Any]:
+        return json.loads(self._native.facts())
+
+    def configure(self, *, shared: bool, priority: int) -> None:
+        self._native.configure(shared, priority)
+
+    def snapshot(self) -> dict[str, Any]:
+        return json.loads(self._native.snapshot())
+
+    def cuda_calls(self) -> int:
+        return self._native.cuda_calls()
+
+    def close(self) -> None:
+        self._native.close()

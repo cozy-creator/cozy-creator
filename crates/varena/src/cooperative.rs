@@ -4,6 +4,15 @@ use crate::{Arena, Completion, Contents, ReclaimReason, ReclaimReport, ledger, w
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, atomic::Ordering};
 
+mod owner;
+pub use owner::{Facts, Owner};
+
+fn deferred(error: &Error) -> bool {
+    matches!(error,
+        Error::Native(crate::Error::CaptureActive | crate::Error::Busy)
+        | Error::Ledger(ledger::Error::Busy | ledger::Error::Stale | ledger::Error::StaleSample))
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
