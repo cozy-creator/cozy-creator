@@ -110,15 +110,17 @@ machine lacks it, then the call with its files. Its interface comes from Runtime
 Python and cozy-runtime its project locks; nothing runs to describe it.
 
 ### Projects
-A project is a folder holding `project.yaml` (people's), `project.lock` (Calcifer's), `assets/` (everything
-made), `references/` and `plates/` (people's own files), and its cuts (`edit.mp4`, with `resolution:` also
-`preview.mp4`). Its id is fixed by its folder. Assets are kept by content in `assets/.store/<sha256>.<ext>`,
-which project.lock and every record name. Beside the store, Calcifer keeps a tree of links for people, made again
-after every landing, approval and collection: `assets/<node>/<node>_take###.<ext>` (shots' and upscales'
-takes) or `<node>_v###.<ext>`, a cleaned picture's clean as `<node>_v###_clean.<ext>`, and
-`<node>_approved.<ext>`. They are symlinks into `.store` on Linux and macOS, and hard links on Windows (one
-volume), where a symlink needs a privilege. A shot's and an upscale's alternatives are
-takes, every other node's versions: records carry one generic field (`versions`, `version`) and a `noun`.
+A project is a folder holding `project.yaml` (people's), `project.lock` (Calcifer's), its cuts (`edit.mp4`,
+with `resolution:` also `preview.mp4`), and three folders: `references/` (people's own files, and the versions
+cozy makes of characters, props, environments, setups and world states), `plates/` (people's footage) and
+`renders/` (the takes cozy makes of shots and upscales). Its id is fixed by its folder.
+
+A shot's and an upscale's alternatives are takes, every other node's versions: records carry one generic
+field (`versions`, `version`) and a `noun`. Each is a set of assets, real files in its node's folder, named
+by its number (1 first, never reused): `renders/fight/fight_take002.mp4` and `fight_take002.latents`,
+`references/theo/theo_v001.png` and `theo_v001_clean.png`. project.lock records each asset's path and
+sha256, and which version is approved; no file says it. Calcifer writes and removes only files it named,
+refuses to overwrite another (`409 asset_name_taken`), and never touches anything else.
 
 - `POST /v1/projects` `{path, create?}`: the project holding `path` (the nearest folder up from it with a
   project.yaml), or with `create` a new one made at `path` (`409 project_exists`). Answers `{id, path}` and
@@ -137,16 +139,19 @@ takes, every other node's versions: records carry one generic field (`versions`,
   or versions of each name, or `names: ["all"]`, everything missing or out of date, each approved, then the
   cuts. `approve` approves the new one when it lands (`400 approve_one` with `n` > 1). `202 {id, path}`; the
   work goes on in the project's walk and is followed on its events.
-- `POST /v1/projects/{id}/approve` `{name, version}`: `{name, noun, number, assets, link, stale, warnings}`. `stale`
-  names what this put out of date; the cuts are made again when a shot's take changed.
+- `POST /v1/projects/{id}/approve` `{name, version}` (`version` its number): `{name, noun, number, assets, path,
+  stale, warnings}`. `path` is its primary asset; `stale` names what this put out of date; the cuts are made
+  again when a shot's take changed.
 - `GET /v1/projects/{id}/events`: `started {name, run, number}` (follow the run on `GET /v1/runs/{id}/events`),
-  `landed {name, noun, number, assets, link}`, `said {message}`, `warning {message}`, `cut {cut, seconds}` and
+  `landed {name, noun, number, assets, path}`, `said {message}`, `warning {message}`, `cut {cut, seconds}` and
   `ended {error?}` when the walk owes nothing more. Not resumable: a client reads `GET /v1/projects/{id}`
   after reconnecting.
-- `GET|HEAD /v1/projects/{id}/assets/{asset}` (`<sha256>.<ext>`, its name in the store): the asset (Files).
-  Its ETag is its digest.
+- `GET|HEAD /v1/projects/{id}/assets/{path}` (`renders/fight/fight_take002.mp4`, any file under
+  `references/`, `plates/` or `renders/`): the file (Files). An asset's ETag is its sha256.
 - `GET|HEAD /v1/projects/{id}/cuts/{cut}` (`edit.mp4`, `preview.mp4`): the cut as last made (Files), so a
-  `<video>` seeks it; `404 file_missing` before the first cut.
+  `<video>` seeks it; `404 file_missing` before the first cut. Its encoded edge pieces are kept in cozy's
+  cache folder (`$XDG_CACHE_HOME/cozy/cuts`, `~/Library/Caches/cozy/cuts`, `%LOCALAPPDATA%\cozy\cache\cuts`) by
+  take, span and encoding, unused ones pruned after 14 days and the oldest past 10 GiB.
 
 ### Tools and Calcifer
 Calcifer fetches the tools it runs on first need, pinned builds held to their sha256, into `~/.cozy/tools`:

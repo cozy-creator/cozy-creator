@@ -15,7 +15,7 @@ use crate::{
 };
 
 const EXAMPLES: &str = "Examples:
-  cozy project new garden                    a folder with project.yaml, references/ and plates/
+  cozy project new garden                    a folder with project.yaml, references/, plates/, renders/
   cd garden && cozy project render all --on kiyui
                                              everything missing or out of date, then the edit
   cozy project status                        what is missing, out of date and why, and the cuts
@@ -27,10 +27,12 @@ const EXAMPLES: &str = "Examples:
 The project is the folder holding project.yaml, found from the folder you are in or above it.
 project.yaml lists entities (characters, props, environments with camera setups), world states
 and shots; people write it and cozy never does. A shot's alternatives, and its upscale's, are
-takes; every other node's are versions. Each is a set of assets, kept by content in assets/.store
-and linked by name (assets/fight/fight_take002.mp4, theo/theo_v001.png, fight/fight_approved.mp4);
-project.lock records them, what made each and which is approved. Keep your own files in references/ (what
-guides) and plates/ (footage to edit): project.yaml's paths are relative to the folder. A file
+takes; every other node's are versions, each a set of assets in one folder per node: takes in
+renders/ (renders/fight/fight_take002.mp4), versions in references/ beside your own files
+(references/theo/theo_v001.png, theo_v001_clean.png). project.lock records them, what made each
+and which is approved; numbers are never reused. Keep your own files in references/ (what
+guides) and plates/ (footage to edit): project.yaml's paths are relative to the folder, and cozy
+never touches a file it did not make. A file
 you attach (image:, or a shot's video:) is used until you approve one cozy made. A node's
 render: {with, models, lora, options} (or defaults: per kind) says how it is made. Names match
 in any case. The edit is edit.mp4, cut on this computer.";
@@ -65,7 +67,7 @@ pub struct Args {
 #[derive(clap::Subcommand, Debug)]
 enum Verb {
     /// Make a project: a folder with a project.yaml to fill in (it shows each kind of entity),
-    /// references/ and plates/ for your own files, and assets/ for what cozy makes.
+    /// references/ and plates/ for your own files, and renders/ for the takes cozy makes.
     #[command(after_help = "Example:\n  cozy project new garden && $EDITOR garden/project.yaml")]
     New {
         /// The folder to make it in.
@@ -152,8 +154,8 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                 output::json(&approved);
             } else {
                 let (name, noun, number) = (&approved.name, &approved.noun, approved.number);
-                let link = output::link(ctx, &opened.path.join(&approved.link));
-                output::say(ctx, &format!("{name}: {noun} {number} approved ({link})"));
+                let path = output::link(ctx, &opened.path.join(&approved.path));
+                output::say(ctx, &format!("{name}: {noun} {number} approved ({path})"));
                 if !approved.stale.is_empty() {
                     output::say(ctx, &format!("out of date now: {}", approved.stale.join(", ")));
                 }
@@ -214,9 +216,9 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
                     return Ok(ExitCode::SUCCESS);
                 }
             }
-            Event::Landed { name, noun, number, link, .. } => {
-                let link = link.map(|link| format!(" ({})", output::link(ctx, &opened.path.join(link))));
-                output::say(ctx, &format!("{name}: {noun} {number}{}", link.unwrap_or_default()));
+            Event::Landed { name, noun, number, path, .. } => {
+                let path = output::link(ctx, &opened.path.join(path));
+                output::say(ctx, &format!("{name}: {noun} {number} ({path})"));
             }
             Event::Said { message } => output::say(ctx, &message),
             Event::Warning { message } => output::warn(&message),

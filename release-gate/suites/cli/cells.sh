@@ -54,15 +54,15 @@ fi
 "$CLI" --json model delete "$q" -y > /dev/null 2>&1 || cli_fail "model delete $q failed: delete it by hand"
 
 # cli-project (xs-136, cl-716): a project through every verb (`cozy project new|ls|render|approve|status`), its renders
-# on $M and its pictures' cleans and the edit on this computer. `new` makes references/, plates/ and assets/; the
-# project is found from inside it (assets/) and named with -p from elsewhere, and `ls` lists it. A cycle is refused
+# on $M and its pictures' cleans and the edit on this computer. `new` makes references/, plates/ and renders/; the
+# project is found from inside it (renders/) and named with -p from elsewhere, and `ls` lists it. A cycle is refused
 # before anything runs, and so is `--approve` with -n 2; a re-rolled character, once approved, puts what reads it out of
 # date and nothing else; `--approve` approves its new version; a person's save during a render stands (cozy writes
 # only project.lock); the re-cut is timed.
 project_cell() {
   local P=$PWD/project ok
   rm -rf "$P"; "$CLI" project new "$P" > project-new.log 2>&1 || { cli_fail "project new: $(tail -c 300 project-new.log)"; return; }
-  for d in references plates assets; do [ -d "$P/$d" ] || cli_fail "project new made no $d/"; done
+  for d in references plates renders; do [ -d "$P/$d" ] || cli_fail "project new made no $d/"; done
   cat > "$P/project.yaml" <<YAML
 type: video
 defaults: {entity: {with: $(pkg qwen-image-2 generate)}, setup: {with: $(pkg qwen-image-2 generate)},
@@ -91,7 +91,7 @@ YAML
   if "$CLI" project -p "$P" render lead -n 2 --approve --on "$M" > project-approve-n.log 2>&1 || ! grep -q approve_one project-approve-n.log; then
     cli_fail "--approve with -n 2 was not refused: $(tail -c 300 project-approve-n.log)"
   fi
-  ( cd "$P/assets" && "$CLI" project render all --on "$M" ) > project-render.log 2>&1 || cli_fail "render all from assets/: $(tail -c 400 project-render.log)"
+  ( cd "$P/renders" && "$CLI" project render all --on "$M" ) > project-render.log 2>&1 || cli_fail "render all from renders/: $(tail -c 400 project-render.log)"
   "$CLI" --json project -p "$P" status > project-status.json 2>&1
   ok=$(jq -r '[.nodes[] | select(.kind != "upscale" and .status != "current")] | length' project-status.json 2>/dev/null)
   [ "$ok" = 0 ] || cli_fail "after render all, $ok nodes are not current: $(tail -c 400 project-status.json)"

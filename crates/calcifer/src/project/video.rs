@@ -11,9 +11,10 @@ use std::{
 use protocol::error::{Error, Kind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use sha2::{Digest as _, Sha256};
 
 use super::{
-    folder::{self, Call, Folder, Lock, Made, Upstream, digest_of},
+    folder::{self, Asset, Call, Folder, Lock, Made, Upstream},
     graph::{Edge, Graph, Node, mentions, name_key},
     host::{Accepts, Renderer},
 };
@@ -41,7 +42,8 @@ pub fn skeleton() -> String {
 #   cozy project render all --on <machine>
 # makes everything missing or out of date, in order, and cuts edit.mp4 here. Paths are relative to
 # this folder: keep your own files in references/ (pictures, voices, videos that guide) and plates/
-# (footage to edit). Everything cozy makes goes to assets/.
+# (footage to edit). cozy keeps the takes it renders in renders/<shot>/ and the versions of everything
+# else in references/<name>/, named <name>_take### and <name>_v###, and never touches another file.
 type: video
 style: \"\"   # the look, added to every picture and shot
 # defaults:   # each node kind's render block; a node's own render: wins
@@ -334,10 +336,12 @@ pub struct Input {
     pub at: Option<f64>,
 }
 
-/// What a request reads from upstream: the edge, and the file it reads now.
+/// What a request reads from upstream: the edge, and the file it reads now (here, in the project,
+/// and its sha256).
 struct Read<'a> {
     edge: &'a Edge,
     path: PathBuf,
+    file: String,
     digest: String,
 }
 
@@ -581,8 +585,8 @@ impl Video {
         let canvas = Canvas::read(project.resolution.as_deref(), project.aspect_ratio.as_deref())?;
         let sizes = (graph.nodes.iter())
             .map(|node| {
-                let (_, digest) = node.file.as_ref()?;
-                lock.made(&node.id, digest)?.size
+                let (path, _) = node.file.as_ref()?;
+                lock.made(&node.id, path)?.size
             })
             .collect();
         Ok(Self { project, items, graph, warnings, canvas, sizes })
@@ -654,7 +658,7 @@ impl Video {
     pub fn unclean(&self, lock: &Lock, i: usize) -> Option<(String, String)> {
         let node = &self.graph.nodes[i];
         let file = node.file.as_ref().filter(|_| self.cleans(i))?;
-        lock.made(&node.id, &file.1).is_none().then(|| file.clone())
+        lock.made(&node.id, &file.0).is_none().then(|| file.clone())
     }
 
     /// Shots longer than their renderer's longest piece with no beats, as node index, name and
@@ -675,8 +679,8 @@ impl Video {
         self.graph.nodes.iter().map(|node| name_key(&node.id)).collect()
     }
 
-    /// The digest of every file attached in project.yaml.
-    pub fn attached(&self, folder: &Folder) -> Result<BTreeSet<String>, Error> {
+    /// Every file attached in project.yaml that is there, as written.
+    pub fn attached(&self, folder: &Folder) -> BTreeSet<String> {
         let mut files: Vec<&String> = vec![];
         for entity in &self.project.entities {
             files.extend(&entity.image);
@@ -687,7 +691,7 @@ impl Video {
             files.extend(&shot.video);
             files.extend(&shot.upscale.video);
         }
-        files.into_iter().filter(|file| folder.path(file).is_file()).map(|file| folder.digest(file)).collect()
+        files.into_iter().filter(|file| folder.path(file).is_file()).cloned().collect()
     }
 
     /// The request that makes a version of node `i`, from what it reads now, as its function
@@ -709,7 +713,7 @@ impl Video {
         i: usize,
         renderer: &Renderer,
         call: Call,
-        own: &BTreeMap<String, String>,
+        own: &BTreeMap<String, Asset>,
     ) -> Result<Request, Error> {
         self.compile(folder, lock, i, renderer, Some(call), own)
     }
@@ -721,7 +725,7 @@ impl Video {
         i: usize,
         renderer: &Renderer,
         call: Option<Call>,
-        own: &BTreeMap<String, String>,
+        own: &BTreeMap<String, Asset>,
     ) -> Result<Request, Error> {
         let graph = &self.graph;
         let node = &graph.nodes[i];
@@ -729,7 +733,7 @@ impl Video {
         let mut reads = vec![];
         for edge in &graph.upstream[i] {
             let up = &graph.nodes[edge.node];
-            let digest = graph.read(lock, edge).ok_or_else(|| {
+            let (file, digest) = graph.read(lock, edge).ok_or_else(|| {
                 Error::new(
                     Kind::Usage,
                     "upstream_empty",
@@ -737,12 +741,8 @@ impl Video {
                 )
                 .next(format!("cozy project render {}", up.id))
             })?;
-            let path = match (&edge.state, &up.file) {
-                (None, Some((file, _))) => folder.path(file),
-                _ => folder.path(&folder.find(&digest)?),
-            };
             upstream.push(Upstream { node: up.id.clone(), state: edge.state.clone(), asset: digest.clone() });
-            reads.push(Read { edge, path, digest });
+            reads.push(Read { edge, path: folder.path(&file), file, digest });
         }
         upstream.extend(node.inputs.iter().map(|(key, file)| Upstream { node: key.clone(), state: None, asset: file.clone() }));
         let made = Made { node: node.id.clone(), upstream: Some(upstream), ..Default::default() };
@@ -842,12 +842,12 @@ impl Video {
                     payload["resolution"] = Value::String(resolution.clone());
                 }
                 // The shot's latents, for an upscaler of its package (one that reads its format).
-                let made = lock.made(&shot.name, &reads[0].digest);
+                let made = lock.made(&shot.name, &reads[0].file);
                 let same = made.and_then(|made| made.made_by.as_ref())
                     .is_some_and(|by| by.with.starts_with(&format!("{}/", renderer.package)));
                 if let Some(latents) = made.and_then(|made| made.assets.get("latents")).filter(|_| same) {
-                    let digest = digest_of(latents);
-                    files.push(Input { field: "latents".into(), path: folder.path(latents), digest: digest.clone(), at: None });
+                    let digest = latents.sha256.clone();
+                    files.push(Input { field: "latents".into(), path: folder.path(&latents.path), digest: digest.clone(), at: None });
                     payload["latents"] = Value::String(digest);
                 }
                 (payload, None)
@@ -904,7 +904,7 @@ impl Video {
         reads: &[Read],
         files: &mut Vec<Input>,
         mut call: Call,
-        own: &BTreeMap<String, String>,
+        own: &BTreeMap<String, Asset>,
         accepts: &Accepts,
         said: &mut Vec<String>,
     ) -> Result<(Value, Call), Error> {
@@ -986,7 +986,7 @@ impl Video {
                     let entry = json!({"name": name, "kind": "environment", "follow": "loose", "image": null, "description": blocking(&name)});
                     // Once this shot wrote it, its own frame.
                     let sources = match own.iter().find(|(state, _)| name_key(state) == name_key(&name)) {
-                        Some((_, frame)) => vec![("image", folder.path(frame), digest_of(frame))],
+                        Some((_, frame)) => vec![("image", folder.path(&frame.path), frame.sha256.clone())],
                         None => source("image"),
                     };
                     add(entry.as_object().expect("an object").clone(), sources, files);
@@ -1060,8 +1060,8 @@ impl Video {
             let mut from = Map::new();
             for (field, file) in std::iter::once(("video", Some(video))).chain([("latents", latents.as_ref())]) {
                 let Some(file) = file else { continue };
-                let digest = digest_of(file);
-                files.push(Input { field: format!("continue_from.{field}"), path: folder.path(file), digest: digest.clone(), at: None });
+                let digest = file.sha256.clone();
+                files.push(Input { field: format!("continue_from.{field}"), path: folder.path(&file.path), digest: digest.clone(), at: None });
                 from.insert(field.into(), Value::String(digest));
             }
             payload.insert("continue_from".into(), Value::Object(from));
@@ -1120,8 +1120,8 @@ impl Video {
 /// Cuts `pieces` into `<project>/<name>` with cozy's ffmpeg, here, on `canvas` (its short edge, or
 /// the first piece's): every piece fills it and is center-cropped, never letterboxed or stretched.
 /// By fast join when every piece is already that size: each piece's span between keyframes is
-/// copied, only the GOPs at its ends are encoded (kept in `<project>/.cuts` by file and span while
-/// the latest edit or preview uses them, so a re-cut encodes only what changed), and the sound is
+/// copied, only the GOPs at its ends are encoded (kept in `cache`, cozy's cache folder, by take, span
+/// and encoding, so a re-cut encodes only what changed; `prune` keeps it small), and the sound is
 /// encoded once. Pieces that differ in codec,
 /// size or frame rate are encoded whole. Nothing is encoded above or below its sources: an edge
 /// piece at its own take's video bitrate, a whole encode and the sound at the highest of the takes
@@ -1133,6 +1133,7 @@ pub fn cut(
     pieces: &[Piece],
     canvas: &Canvas,
     name: &str,
+    cache: &Path,
 ) -> Result<PathBuf, Error> {
     let probes = pieces.iter().map(|piece| probe(ffprobe, &piece.path)).collect::<Result<Vec<_>, _>>()?;
     let (width, height) = canvas.size(canvas.short.unwrap_or_else(|| probes[0].size.0.min(probes[0].size.1)));
@@ -1141,11 +1142,10 @@ pub fn cut(
         .zip(&probes)
         .map(|(p, probe)| (p.start.unwrap_or(0.0), p.end.unwrap_or(probe.seconds).min(probe.seconds)))
         .collect();
-    let io = |e: std::io::Error| failed(format!("{}: {e}", folder.dir.display()));
-    let work = tempfile::tempdir_in(&folder.dir).map_err(io)?;
-    let (cache, video) = (folder.dir.join(".cuts"), work.path().join("video.mp4"));
-    std::fs::create_dir_all(&cache).map_err(io)?;
-    let mut kept = BTreeSet::new();
+    let io = |e: std::io::Error| failed(format!("{}: {e}", cache.display()));
+    std::fs::create_dir_all(cache).map_err(io)?;
+    let work = tempfile::tempdir_in(cache).map_err(io)?;
+    let video = work.path().join("video.mp4");
     let highest = probes.iter().filter_map(|probe| probe.video_bit_rate).max();
     let fits = |probe: &Probe| probe.size == (width, height);
     if probes.iter().all(|probe| probe.video == probes[0].video && probe.video.starts_with("h264 ") && fits(probe)) {
@@ -1153,10 +1153,13 @@ pub fn cut(
         for (k, ((piece, probe), &(start, end))) in pieces.iter().zip(&probes).zip(&ranges).enumerate() {
             for (n, (from, to, copy)) in spans(start, end, &probe.keys, probe.rate).into_iter().enumerate() {
                 let (from_s, to_s) = (format!("{from:.6}"), format!("{:.6}", to - from));
+                // An edge piece is the same file for the same take, span and encoding, whatever cuts it.
+                let encoding = format!("libx264 veryfast {} {} {}", bit_rate(probe.video_bit_rate).join(" "), probe.pix_fmt, probe.rate_text);
+                let encoding = &hex::encode(Sha256::digest(encoding.as_bytes()))[..8];
+                let take = &piece.digest.trim_start_matches("sha256:")[..16];
                 let part = match copy {
                     true => work.path().join(format!("{k}-{n}.ts")),
-                    false => cache
-                        .join(format!("{}-{from:.3}-{to:.3}.ts", &piece.digest.trim_start_matches("sha256:")[..16])),
+                    false => cache.join(format!("{take}-{from:.3}-{to:.3}-{encoding}.ts")),
                 };
                 let source = piece.path.as_os_str();
                 if copy {
@@ -1191,7 +1194,8 @@ pub fn cut(
                     std::fs::rename(&staged, &part).map_err(io)?;
                 }
                 if !copy {
-                    kept.insert(part.file_name().expect("a part has a name").to_owned());
+                    // Used now: its age starts again.
+                    let _ = std::fs::File::options().write(true).open(&part).and_then(|file| file.set_modified(std::time::SystemTime::now()));
                 }
                 let _ = writeln!(list, "file '{}'", part.display().to_string().replace('\'', r"'\''"));
             }
@@ -1256,26 +1260,39 @@ pub fn cut(
         run(ffmpeg, &args.iter().map(|a| a.as_os_str()).collect::<Vec<_>>())?;
         mux.extend(["-i".into(), sound.into_os_string(), "-map".into(), "1:a".into()]);
     }
-    let part = work.path().join(name);
+    // Made beside the cut, then named it: a reader never meets half a file.
+    let (out, part) = (folder.dir.join(name), folder.dir.join(format!(".{name}.part")));
     mux.extend(["-map", "0:v", "-c", "copy", "-movflags", "+faststart", "-f", "mp4"].map(Into::into));
     mux.push(part.clone().into_os_string());
     run(ffmpeg, &mux.iter().map(|a| a.as_os_str()).collect::<Vec<_>>())?;
-    let out = folder.dir.join(name);
     std::fs::rename(&part, &out).map_err(io)?;
-    // `.cuts` keeps only the pieces the latest of each cut used, listed beside them as `<cut>.used`.
-    let listed: String = kept.iter().map(|piece| format!("{}\n", piece.to_string_lossy())).collect();
-    std::fs::write(cache.join(format!("{name}.used")), listed).map_err(io)?;
-    let entries: Vec<_> = std::fs::read_dir(&cache).map_err(io)?.flatten().collect();
-    let used = |entry: &std::fs::DirEntry| entry.file_name().to_string_lossy().ends_with(".used");
-    let mut keep: BTreeSet<std::ffi::OsString> = BTreeSet::new();
-    for list in entries.iter().filter(|entry| used(entry)) {
-        let pieces = std::fs::read_to_string(list.path()).unwrap_or_default();
-        keep.extend(pieces.lines().map(std::ffi::OsString::from));
-    }
-    for entry in entries.iter().filter(|entry| !used(entry) && !keep.contains(&entry.file_name())) {
-        let _ = std::fs::remove_file(entry.path());
-    }
+    prune(cache);
     Ok(out)
+}
+
+/// How long an edge piece is kept unused, and how much the pieces may hold together.
+const PIECES_KEPT_FOR: std::time::Duration = std::time::Duration::from_secs(14 * 24 * 3600);
+const PIECES_CAP: u64 = 10 << 30;
+
+/// The edge pieces in `cache` kept while used: one unused for `PIECES_KEPT_FOR` goes, and past
+/// `PIECES_CAP` the least recently used go first.
+fn prune(cache: &Path) {
+    let now = std::time::SystemTime::now();
+    let mut pieces: Vec<(std::time::SystemTime, u64, PathBuf)> = (std::fs::read_dir(cache).into_iter().flatten().flatten())
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "ts"))
+        .filter_map(|entry| {
+            let meta = entry.metadata().ok()?;
+            Some((meta.modified().ok()?, meta.len(), entry.path()))
+        })
+        .collect();
+    pieces.sort();
+    let mut held: u64 = pieces.iter().map(|(_, len, _)| len).sum();
+    for (used, len, path) in pieces {
+        let old = now.duration_since(used).is_ok_and(|age| age > PIECES_KEPT_FOR);
+        if (old || held > PIECES_CAP) && std::fs::remove_file(&path).is_ok() {
+            held -= len;
+        }
+    }
 }
 
 /// A piece's spans from `start` to `end`: copied between its first and last keyframe inside them,
@@ -1462,10 +1479,10 @@ fn current(
 ) -> Result<Versions, Error> {
     let node = lock.node(id);
     let versions: Vec<String> =
-        (node.into_iter().flat_map(|node| &node.versions)).filter_map(|made| made.primary().cloned()).collect();
-    if let Some(approved) = node.and_then(|node| node.approved.clone()) {
-        let digest = digest_of(&approved);
-        return Ok((Some((approved, digest)), versions));
+        (node.into_iter().flat_map(|node| &node.versions)).filter_map(|made| Some(made.primary()?.path.clone())).collect();
+    let approved = node.and_then(|node| node.approved.as_ref()).and_then(|path| lock.made(id, path)?.primary());
+    if let Some(approved) = approved {
+        return Ok((Some((approved.path.clone(), approved.sha256.clone())), versions));
     }
     let Some(file) = attached else { return Ok((None, versions)) };
     if !folder.path(file).is_file() {
@@ -1475,7 +1492,7 @@ fn current(
     let digest = folder.digest(file)?;
     let clean = (node.into_iter().flat_map(|node| &node.versions))
         .find(|made| cleans && made.clean_of.as_deref() == Some(digest.as_str()));
-    let clean = clean.and_then(Made::primary).map(|asset| (asset.clone(), digest_of(asset)));
+    let clean = clean.and_then(Made::primary).map(|asset| (asset.path.clone(), asset.sha256.clone()));
     Ok((Some(clean.unwrap_or((file.clone(), digest))), versions))
 }
 
