@@ -38,13 +38,16 @@ pub enum Command {
     /// `actor`'s newest run capability at `tensorfs.endpoint`, sent outside any exchange and
     /// answered by nothing: the executor's reads and uploads there present it from now on.
     Capability(Capability),
+    /// The GPU memory it may hold on one of its devices, sent outside any exchange (a running
+    /// call takes it at once) and answered by nothing; only to an executor whose hello says `room`.
+    Room(Room),
 }
 
 impl Command {
     /// Every `cmd` TensorD sends.
-    pub const NAMES: [&'static str; 13] = [
+    pub const NAMES: [&'static str; 14] = [
         "hello", "shutdown", "start", "load", "activate", "prepare_request", "invoke", "map", "unload",
-        "probe", "fork", "capability", "cancel",
+        "probe", "fork", "capability", "cancel", "room",
     ];
 
     /// One command from its wire bytes. An unknown member is ignored and a missing one takes its
@@ -69,6 +72,7 @@ impl Command {
             "probe" => Command::Probe(one(fields)?),
             "fork" => Command::Fork(one(fields)?),
             "capability" => Command::Capability(one(fields)?),
+            "room" => Command::Room(one(fields)?),
             other => return Err(format!("unknown command `{other}`")),
         })
     }
@@ -89,6 +93,7 @@ impl Command {
             Self::Probe(_) => "probe",
             Self::Fork(_) => "fork",
             Self::Capability(_) => "capability",
+            Self::Room(_) => "room",
         }
     }
 }
@@ -180,6 +185,22 @@ pub struct PrepareRequest {
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct Cancel {
     pub request_id: String,
+}
+
+/// What the executor may hold of one of its GPUs (design/vram-yield.md): `target` bytes of what
+/// the driver charges it, which charged it `held` at the machine's reading; none: no limit. Lower
+/// than it holds, it gives at once (Torch's cache, then weight pages, never below what its call
+/// needs to go on); higher, its running call takes it at its next pass. Re-sent, the same limit.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
+pub struct Room {
+    /// The device's ordinal in the executor (its first GPU is 0).
+    #[serde(default)]
+    pub device: u32,
+    #[serde(default)]
+    pub target: Option<u64>,
+    #[serde(default)]
+    pub held: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -533,6 +554,8 @@ pub struct Hello {
     pub tensorfs_version: String,
     /// Correlated PrepareRequest replies and cancellation-safe prepared-record publication.
     pub request_lookahead: bool,
+    /// It takes `room` outside any exchange, a running call included.
+    pub room: bool,
     pub sealed: BTreeMap<String, String>,
 }
 
@@ -649,6 +672,9 @@ pub struct Frame {
     #[serde(skip)]
     pub request: Option<Request>,
     pub reply: String,
+    /// A single-GPU executor's CUDA context `opening`, then `open`: the window the machine learns
+    /// its driver pid in (where the driver names other pids, a container).
+    pub cuda: String,
     pub ok: bool,
     pub code: String,
     pub detail: String,
@@ -1301,6 +1327,7 @@ mod python {
         Unload => Command::Unload,
         Probe => Command::Probe,
         Fork => Command::Fork,
-        Capability => Command::Capability
+        Capability => Command::Capability,
+        Room => Command::Room
     );
 }

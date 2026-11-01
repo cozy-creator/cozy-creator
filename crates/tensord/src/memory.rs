@@ -7,7 +7,7 @@ use platform::contain::host_memory;
 use platform::contain::host_pressure::{self, Growth, HostMode, Nudge};
 use platform::memory::{wait_any, Signal, Waitable};
 use platform::process::Exact;
-use std::{collections::BTreeMap, fs::{self, OpenOptions}, io::{self, Write}, path::PathBuf,
+use std::{collections::{BTreeMap, BTreeSet}, fs::{self, OpenOptions}, io::{self, Write}, path::PathBuf,
     sync::{Arc, Mutex}, time::{SystemTime, UNIX_EPOCH}};
 
 const ROTATE_BYTES: u64 = 4 << 20;
@@ -52,29 +52,57 @@ impl Gpu {
         platform::gpu::Device::open(&self.uuid).ok()?.read().ok()?.processes?.get(&pid).copied()
     }
 
+    /// The driver's pids with memory on this GPU now, with their bytes.
+    pub fn processes(&self) -> Option<BTreeMap<u32, u64>> {
+        platform::gpu::Device::open(&self.uuid).and_then(|gpu| gpu.read()).ok()?.processes
+    }
+
     pub fn usage(&self, tenants: &Tenants) -> Option<DeviceUse> {
+        self.usage_by(tenants).map(|(usage, _)| usage)
+    }
+
+    /// `usage`, with what the driver charges each executor (by its pid here) on this GPU.
+    pub fn usage_by(&self, tenants: &Tenants) -> Option<(DeviceUse, BTreeMap<u32, u64>)> {
         let read = platform::gpu::Device::open(&self.uuid).and_then(|gpu| gpu.read()).ok()?;
         if read.total == 0 { return None }
         let processes = read.processes?;
         let book = tenants.lock().unwrap_or_else(|e| e.into_inner());
-        // A container's local pids may differ from NVML's host pids. In that case no claim
-        // about foreign ownership is justified. WDDM's unavailable byte counts are unknown too.
-        if !book.is_empty() && !book.keys().any(|pid| processes.contains_key(pid)) { return None }
-        let (mut own, mut foreign) = (0u64, 0u64);
-        for (pid, bytes) in processes {
-            // A package's spawned CUDA worker or a kernel build is also ours. Follow current
-            // parentage rather than calling every unregistered PID a foreign application.
-            // An unreadable/disappearing process makes this sample unknown.
-            let (mut ancestor, mut ours) = (pid, false);
-            let mut seen = std::collections::BTreeSet::new();
-            while ancestor > 0 && seen.insert(ancestor) {
-                if book.contains_key(&ancestor) || ancestor == std::process::id() { ours = true; break }
-                ancestor = platform::process::parent_of(ancestor).ok()?;
+        let (mut own, mut foreign, mut by) = (0u64, 0u64, BTreeMap::<u32, u64>::new());
+        if book.is_empty() || book.keys().any(|pid| processes.contains_key(pid)) {
+            for (pid, bytes) in processes {
+                // A package's spawned CUDA worker or a kernel build is also ours. Follow current
+                // parentage rather than calling every unregistered PID a foreign application.
+                // An unreadable/disappearing process makes this sample unknown.
+                let (mut ancestor, mut ours) = (pid, None);
+                let mut seen = BTreeSet::new();
+                while ancestor > 0 && seen.insert(ancestor) {
+                    if book.contains_key(&ancestor) { ours = Some(Some(ancestor)); break }
+                    if ancestor == std::process::id() { ours = Some(None); break }
+                    ancestor = platform::process::parent_of(ancestor).ok()?;
+                }
+                match ours {
+                    Some(executor) => {
+                        own = own.saturating_add(bytes);
+                        if let Some(executor) = executor { *by.entry(executor).or_default() += bytes; }
+                    }
+                    None => foreign = foreign.saturating_add(bytes),
+                }
             }
-            if ours { own = own.saturating_add(bytes) }
-            else { foreign = foreign.saturating_add(bytes) }
+        } else {
+            // A container: the driver names host pids, ours as learned (`Registry::opened`).
+            drop(book);
+            let drivers = tenants.drivers(&self.uuid, &processes)?;
+            for (pid, bytes) in processes {
+                match drivers.get(&pid) {
+                    Some(executors) => {
+                        own = own.saturating_add(bytes);
+                        if let [executor] = executors.as_slice() { *by.entry(*executor).or_default() += bytes; }
+                    }
+                    None => foreign = foreign.saturating_add(bytes),
+                }
+            }
         }
-        Some(DeviceUse { total: read.total, free: read.free, own, foreign })
+        Some((DeviceUse { total: read.total, free: read.free, own, foreign }, by))
     }
 
     /// Driver-attributed process usage. Missing pid accounting is unknown, not zero.
@@ -107,15 +135,184 @@ pub struct Tenant {
     pub plan: String,
     pub start: usize,
     pub exact: Exact,
+    /// Its lane's GPUs (their uuids): where its driver pids are learned (`Registry::opening`).
+    pub gpus: Vec<String>,
 }
 
 pub type Tenants = Arc<Registry>;
+/// Executors by their pid here and, where the driver names other pids (a container), which
+/// driver pids are theirs. A single-GPU executor reports its CUDA context `opening` and `open`
+/// (`Frame.cuda`); a driver pid that appears on its GPU in that window is its when exactly as many
+/// appeared as executors opened there. Otherwise (more, or the driver unreadable) they stay
+/// unattributed and that GPU's readings are unknown until the extra pids exit; so are they while
+/// any executor on it has not been learned (a group, a Runtime without the window).
 #[derive(Default)]
-pub struct Registry(Mutex<BTreeMap<u32, Tenant>>);
+pub struct Registry {
+    tenants: Mutex<BTreeMap<u32, Tenant>>,
+    drivers: Mutex<Drivers>,
+}
+#[derive(Default)]
+struct Drivers {
+    /// Per GPU: our driver pids, each with the executors it was learned for.
+    ours: BTreeMap<String, BTreeMap<u32, Vec<u32>>>,
+    /// Per GPU: windows open, and those closed while another there was still open (settled
+    /// together when the last closes).
+    open: BTreeMap<String, Vec<Window>>,
+    closed: BTreeMap<String, Vec<Window>>,
+    /// Per GPU: executors whose driver pids could not be told, with the candidates (None: the
+    /// driver could not be read).
+    unattributed: BTreeMap<String, Vec<Unattributed>>,
+    /// Per GPU and executor environment (one Torch/CUDA build): what the driver charged our last
+    /// executor whose pid was told at its context's opening (its context alone), how ours is told
+    /// from another program's in a later window.
+    context: BTreeMap<(String, String), u64>,
+    next: u64,
+}
+/// Executors whose driver pids could not be told, and the candidates (None: driver unreadable).
+type Unattributed = (Vec<u32>, Option<BTreeSet<u32>>);
+struct Window {
+    id: u64,
+    before: Option<BTreeSet<u32>>,
+    executors: Vec<u32>,
+    /// Their environment (`Tenant::plan`).
+    plan: String,
+}
+/// An executor's CUDA context opening on one GPU (`Registry::opening`); dropped before it opened,
+/// its executors stay unlearned (that GPU's readings unknown while they live).
+pub struct Opening(Arc<Registry>, String, u64);
+impl Drop for Opening {
+    fn drop(&mut self) {
+        let mut drivers = self.0.drivers.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(open) = drivers.open.get_mut(&self.1) {
+            open.retain(|window| window.id != self.2);
+        }
+    }
+}
+/// What a settled window learned on its GPU: the pids taken as ours, or those left unattributed.
+pub struct Learned {
+    pub gpu: String,
+    pub ours: Vec<u32>,
+    pub unattributed: Option<Vec<u32>>,
+}
 impl Registry {
-    pub fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, BTreeMap<u32, Tenant>>> { self.0.lock() }
+    pub fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, BTreeMap<u32, Tenant>>> { self.tenants.lock() }
     pub fn register(&self, tenants: impl IntoIterator<Item = (u32, Tenant)>) {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).extend(tenants);
+        self.tenants.lock().unwrap_or_else(|e| e.into_inner()).extend(tenants);
+    }
+
+    /// `executors` of environment `plan` open their CUDA context on GPU `gpu`, whose driver pids are `now`.
+    pub fn opening(self: &Arc<Self>, gpu: &str, now: Option<BTreeSet<u32>>, executors: Vec<u32>, plan: &str) -> Opening {
+        let mut drivers = self.drivers.lock().unwrap_or_else(|e| e.into_inner());
+        drivers.next += 1;
+        let id = drivers.next;
+        drivers.open.entry(gpu.into()).or_default().push(Window { id, before: now, executors, plan: plan.into() });
+        Opening(self.clone(), gpu.into(), id)
+    }
+
+    /// The context opened; `now`: the driver's pids there with their bytes. Settled once no window
+    /// there is open: the pids that appeared since the first of them opened are ours when exactly
+    /// as many as the executors that opened. With more (another program started meanwhile), ours
+    /// are those charged a context alone, as our last told one of the same environment was, when
+    /// exactly as many are and every other candidate clearly is not; else they stay unattributed
+    /// (a program opening in the first window of an environment leaves the reading unknown until
+    /// it exits).
+    pub fn opened(&self, opening: Opening, now: Option<BTreeMap<u32, u64>>) -> Option<Learned> {
+        let mut drivers = self.drivers.lock().unwrap_or_else(|e| e.into_inner());
+        let gpu = opening.1.clone();
+        let open = drivers.open.entry(gpu.clone()).or_default();
+        let at = open.iter().position(|window| window.id == opening.2)?;
+        let window = open.remove(at);
+        let still = !open.is_empty();
+        drivers.closed.entry(gpu.clone()).or_default().push(window);
+        if still {
+            return None;
+        }
+        let batch = drivers.closed.remove(&gpu).unwrap_or_default();
+        let executors: Vec<u32> = batch.iter().flat_map(|window| window.executors.clone()).collect();
+        let claimed: BTreeSet<u32> = drivers.ours.get(&gpu).map(|ours| ours.keys().copied().collect()).unwrap_or_default();
+        // Only the first window's snapshot: a later one's holds the pids of those opened before it.
+        let before = batch.iter().min_by_key(|window| window.id).and_then(|window| window.before.clone());
+        let new = before.zip(now).map(|(before, now)| {
+            now.into_iter().filter(|(pid, _)| !claimed.contains(pid) && !before.contains(pid)).collect::<BTreeMap<u32, u64>>()
+        });
+        // One environment's contexts are alike; another Torch/CUDA build's need not be.
+        let plans: BTreeSet<&str> = batch.iter().map(|window| window.plan.as_str()).collect();
+        let key = (plans.len() == 1).then(|| (gpu.clone(), plans.first().map(|p| p.to_string()).unwrap_or_default()));
+        let context = key.as_ref().and_then(|key| drivers.context.get(key).copied());
+        const NEAR: u64 = 64 << 20;
+        let ours = new.as_ref().and_then(|new| match new.len().cmp(&executors.len()) {
+            std::cmp::Ordering::Equal => Some(new.clone()),
+            std::cmp::Ordering::Greater => {
+                let c = context?;
+                let alone: BTreeMap<u32, u64> = new.iter().filter(|(_, bytes)| bytes.abs_diff(c) <= NEAR)
+                    .map(|(pid, bytes)| (*pid, *bytes)).collect();
+                let clear = new.values().all(|bytes| bytes.abs_diff(c) <= NEAR || bytes.abs_diff(c) > 2 * NEAR);
+                (alone.len() == executors.len() && clear).then_some(alone)
+            }
+            std::cmp::Ordering::Less => None,
+        });
+        match ours {
+            Some(new) => {
+                if let (Some(key), Some(&bytes)) = (key, new.values().max()) { drivers.context.insert(key, bytes); }
+                let ours = drivers.ours.entry(gpu.clone()).or_default();
+                for pid in new.keys() { ours.insert(*pid, executors.clone()); }
+                Some(Learned { gpu, ours: new.into_keys().collect(), unattributed: None })
+            }
+            None => {
+                let new = new.map(|new| new.into_keys().collect::<BTreeSet<u32>>());
+                drivers.unattributed.entry(gpu.clone()).or_default().push((executors, new.clone()));
+                Some(Learned { gpu, ours: vec![], unattributed: Some(new.map(|n| n.into_iter().collect()).unwrap_or_default()) })
+            }
+        }
+    }
+
+    /// What the driver charged our last executor of environment `plan` told at its context's
+    /// opening on GPU `uuid`.
+    pub fn context(&self, uuid: &str, plan: &str) -> Option<u64> {
+        self.drivers.lock().unwrap_or_else(|e| e.into_inner()).context.get(&(uuid.to_string(), plan.to_string())).copied()
+    }
+
+    /// Our driver pids on GPU `uuid` among `processes`, each with its executors; None when a
+    /// live executor there is not learned or not told apart (the reading is unknown). An
+    /// unattributed set is learned once its extra pids exited: as many alive as its executors.
+    fn drivers(&self, uuid: &str, processes: &BTreeMap<u32, u64>) -> Option<BTreeMap<u32, Vec<u32>>> {
+        // An executor that ended is not live though its tenant is not yet retired: its candidates
+        // left alive are another program's, never learned as ours.
+        let live: BTreeMap<u32, bool> = self.tenants.lock().unwrap_or_else(|e| e.into_inner()).iter()
+            .filter(|(_, tenant)| !tenant.exact.ended())
+            .map(|(pid, tenant)| (*pid, tenant.gpus.iter().any(|gpu| gpu == uuid))).collect();
+        let mut drivers = self.drivers.lock().unwrap_or_else(|e| e.into_inner());
+        let drivers = &mut *drivers;
+        if let Some(unresolved) = drivers.unattributed.get_mut(uuid) {
+            unresolved.retain(|(executors, _)| executors.iter().any(|pid| live.contains_key(pid)));
+            let mut learned = vec![];
+            unresolved.retain(|(executors, candidates)| {
+                let alive: Vec<u32> = candidates.iter().flatten().copied().filter(|pid| processes.contains_key(pid)).collect();
+                if candidates.is_some() && alive.len() == executors.len() {
+                    learned.extend(alive.into_iter().map(|pid| (pid, executors.clone())));
+                    return false;
+                }
+                true
+            });
+            drivers.ours.entry(uuid.into()).or_default().extend(learned);
+            if !unresolved.is_empty() {
+                return None;
+            }
+        }
+        let ours = drivers.ours.entry(uuid.into()).or_default();
+        ours.retain(|pid, executors| processes.contains_key(pid) && executors.iter().any(|e| live.contains_key(e)));
+        let mut known: BTreeMap<u32, Vec<u32>> = ours.clone();
+        let opening: BTreeSet<u32> = drivers.open.get(uuid).into_iter().flatten().chain(drivers.closed.get(uuid).into_iter().flatten())
+            .flat_map(|window| window.executors.clone()).collect();
+        for window in drivers.open.get(uuid).into_iter().flatten() {
+            // Still opening: what appeared since counts as its until the window settles.
+            for pid in processes.keys().filter(|pid| window.before.as_ref().is_none_or(|before| !before.contains(pid))) {
+                known.entry(*pid).or_insert_with(|| window.executors.clone());
+            }
+        }
+        let learned: BTreeSet<u32> = known.values().flatten().copied().collect();
+        let unlearned = live.iter().any(|(pid, here)| *here && !learned.contains(pid) && !opening.contains(pid));
+        (!unlearned).then_some(known)
     }
 }
 
@@ -485,7 +682,8 @@ impl Host {
 /// What the host keeps free for the calls running on it: each process's anonymous growth still
 /// to come (its requests' measured anonymous peak less its anonymous bytes now) and [`Growth`],
 /// the most a look saw them grow past what was measured to come (an unmeasured call's every
-/// byte). Page cache is never need: the budget holds it.
+/// byte). Page cache is never need: the budget holds it. With no call running nothing can grow,
+/// so nothing is kept: an idle executor the next call would use is not ended for growth to come.
 #[derive(Default)]
 struct Keep {
     growth: Growth,
@@ -518,7 +716,8 @@ impl Keep {
             }
         }
         self.running = by.values().map(|call| (call.pid, call.running)).collect();
-        need.saturating_add(self.growth.observe(unforeseen))
+        let growth = self.growth.observe(unforeseen);
+        if by.is_empty() { 0 } else { need.saturating_add(growth) }
     }
 }
 
