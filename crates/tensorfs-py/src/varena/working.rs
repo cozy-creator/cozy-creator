@@ -380,21 +380,37 @@ fn _varena_split_context<'py>(py: Python<'py>, device: i32) -> PyResult<Bound<'p
 }
 
 #[pyfunction]
-#[pyo3(signature = (device, key, choices, *, preferred))]
+#[pyo3(signature = (device, key, choices, *, preferred, stream))]
 fn _varena_split_select<'py>(
     py: Python<'py>,
     device: i32,
     key: &str,
     choices: Vec<(String, Vec<usize>)>,
     preferred: &str,
+    stream: u64,
 ) -> PyResult<Bound<'py, PyDict>> {
     let selected = py
         .detach(|| {
             check()?;
-            varena::working::split_select(device, key, choices, preferred)
+            varena::working::split_select(device, key, choices, preferred, stream)
         })
         .map_err(|error| split_error(py, error))?;
     let row = PyDict::new(py);
+    row.set_item("stream", selected.stream)?;
+    row.set_item(
+        "allocation_backing_bytes",
+        selected.allocation_backing_bytes,
+    )?;
+    row.set_item(
+        "measured_backing_peak_bytes",
+        selected.measured_backing_peak_bytes,
+    )?;
+    row.set_item("reused_capacity_bytes", selected.reused_capacity_bytes)?;
+    row.set_item("preserved_backing_bytes", selected.preserved_backing_bytes)?;
+    row.set_item(
+        "reclaimable_working_bytes",
+        selected.reclaimable_working_bytes,
+    )?;
     row.set_item("choice_id", selected.choice_id)?;
     row.set_item("eligible", selected.eligible)?;
     row.set_item("required_bytes", selected.required_bytes)?;
@@ -406,17 +422,18 @@ fn _varena_split_select<'py>(
 }
 
 #[pyfunction]
-#[pyo3(signature = (device, key, choice_id, *, completion_owner = None))]
+#[pyo3(signature = (device, key, choice_id, *, stream, completion_owner = None))]
 fn _varena_split_begin(
     py: Python<'_>,
     device: i32,
     key: &str,
     choice_id: &str,
+    stream: u64,
     completion_owner: Option<u64>,
 ) -> PyResult<u64> {
     py.detach(|| {
         check()?;
-        varena::working::split_begin(device, key, choice_id, completion_owner)
+        varena::working::split_begin(device, key, choice_id, completion_owner, stream)
     })
     .map_err(|error| split_error(py, error))
 }

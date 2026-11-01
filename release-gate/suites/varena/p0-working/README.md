@@ -262,3 +262,12 @@ must still prevent publication and preserve the previous successful phase sample
 These cells qualify native menu/admission/observation mechanics, not the actual channel_norm
 consumer or its quality/performance. That requires the paired Runtime's real Request, phase and
 compiled launcher path; full-model, capture-choice and multi-GPU cutovers remain separate.
+
+The stream-aware split followup adds four real cells. An 8 MiB legacy-default-stream buffer is
+freed while its preceding GPU work is still pending; under a 40 MiB managed cap, a 32 MiB output
+plus 8 MiB scratch must select/begin without a completion query, then reuse the original scratch
+pointer in order. The same pending block must not count on another stream or twice for two
+simultaneous equal-class requests. A globally completed compatible cache block must also keep
+its pointer through admission. Cases verify actual pending events and fail if their required
+interleave was missed rather than treating elapsed time as proof. All existing menu, completion,
+minimum-refusal and ownership cells now pass the actual stream explicitly.

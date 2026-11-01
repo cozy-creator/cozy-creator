@@ -6,6 +6,7 @@ struct Choice {
     id: String,
     allocations: Vec<usize>,
     backing: usize,
+    classes: BTreeMap<usize, usize>,
 }
 #[derive(Clone, Debug, Default)]
 struct Sample {
@@ -14,6 +15,7 @@ struct Sample {
     backing: usize,
     successful: u64,
     aborted: u64,
+    classes: BTreeMap<usize, usize>,
 }
 struct Site {
     choices: Vec<Choice>,
@@ -25,11 +27,13 @@ struct Active {
     key: String,
     choice: String,
     owner: Option<u64>,
+    stream: u64,
     epoch: u64,
     allocations: BTreeSet<u64>,
     peak: usize,
     backing: usize,
     invalid: Option<String>,
+    classes: BTreeMap<usize, usize>,
 }
 #[derive(Default)]
 pub(super) struct Splits {
@@ -99,6 +103,12 @@ fn context(device: i32) -> Result<()> {
 
 #[derive(Clone, Debug)]
 pub struct SplitSelection {
+    pub stream: u64,
+    pub allocation_backing_bytes: usize,
+    pub measured_backing_peak_bytes: Option<usize>,
+    pub reused_capacity_bytes: usize,
+    pub preserved_backing_bytes: usize,
+    pub reclaimable_working_bytes: usize,
     pub choice_id: String,
     pub eligible: Vec<String>,
     pub required_bytes: usize,
@@ -119,28 +129,28 @@ pub struct SplitObservation {
     pub published: bool,
     pub reason: String,
     pub successful_passes: u64,
+    classes: BTreeMap<usize, usize>,
 }
 
-fn backing(owner: &Working, allocations: &[usize]) -> Result<usize> {
-    let mut classes = BTreeMap::<usize, usize>::new();
+fn classes(owner: &Working, allocations: &[usize]) -> Result<BTreeMap<usize, usize>> {
+    let mut classes = BTreeMap::new();
     for &bytes in allocations.iter().filter(|&&bytes| bytes != 0) {
-        let class = size_class(bytes, owner.page)?;
-        *classes.entry(class).or_default() += 1;
+        *classes.entry(size_class(bytes, owner.page)?).or_default() += 1;
     }
-    classes
-        .into_iter()
-        .try_fold(0usize, |total, (class, count)| {
-            let bytes = if class <= 1 << 20 {
-                // Use actual slab slots, including its unassigned tail; byte-sum rounding can
-                // undercount when a class does not divide the 2 MiB slab evenly.
-                count.div_ceil(owner.page / class).checked_mul(owner.page)
-            } else {
-                count.checked_mul(class)
-            };
-            bytes
-                .and_then(|bytes| total.checked_add(bytes))
-                .ok_or(Error::Invalid("split allocation declaration overflows"))
-        })
+    Ok(classes)
+}
+
+fn backing(owner: &Working, classes: &BTreeMap<usize, usize>) -> Result<usize> {
+    classes.iter().try_fold(0usize, |total, (&class, &count)| {
+        let bytes = if class <= 1 << 20 {
+            count.div_ceil(owner.page / class).checked_mul(owner.page)
+        } else {
+            count.checked_mul(class)
+        };
+        bytes
+            .and_then(|bytes| total.checked_add(bytes))
+            .ok_or(Error::Invalid("split allocation declaration overflows"))
+    })
 }
 
 fn register(
@@ -163,10 +173,12 @@ fn register(
                     "split choice IDs must be nonempty and distinct",
                 ));
             }
+            let classes = classes(owner, &allocations)?;
             Ok(Choice {
-                backing: backing(owner, &allocations)?,
+                backing: backing(owner, &classes)?,
                 id,
                 allocations,
+                classes,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -196,36 +208,26 @@ fn register(
     Ok(())
 }
 
-fn requirements(owner: &Working, key: &str) -> Result<Vec<(String, usize, &'static str)>> {
-    let state = owner.lock()?;
-    let site = state
-        .splits
-        .sites
-        .get(key)
-        .ok_or(Error::Invalid("unknown split configuration"))?;
-    Ok(site
-        .choices
-        .iter()
-        .map(
-            |choice| match site.samples.get(&choice.id).filter(|sample| sample.known) {
-                Some(sample) => (choice.id.clone(), sample.backing, "measured"),
-                None => (choice.id.clone(), choice.backing, "declared"),
-            },
-        )
-        .collect())
+struct Fit {
+    id: String,
+    basis: &'static str,
+    full: usize,
+    measured: Option<usize>,
+    missing: usize,
+    reused: usize,
+    preserve: BTreeSet<u64>,
+    preserved_bytes: usize,
+    reclaimable: usize,
+    now: usize,
+    after_idle: usize,
+}
+impl Fit {
+    fn fits(&self) -> bool {
+        self.missing <= self.after_idle
+    }
 }
 
-fn available(device: i32, owner: &Working, include_completed_cache: bool) -> Result<usize> {
-    let captures = crate::capture_counts()?;
-    crate::ensure_recovery_allowed(&captures, device)?;
-    let state = owner.lock()?;
-    let _context = owner.driver.enter()?;
-    let (free, _) = owner.driver.memory_info()?;
-    let reusable = if include_completed_cache {
-        state.reusable_eager_pages()
-    } else {
-        0
-    };
+fn headroom(owner: &Working, free: usize, released: usize) -> usize {
     let owned = owner
         .room
         .pages
@@ -236,93 +238,208 @@ fn available(device: i32, owner: &Working, include_completed_cache: bool) -> Res
         .limit
         .load(Ordering::Acquire)
         .min(owner.room.ceiling.load(Ordering::Acquire));
-    let managed = limit.saturating_sub(owned.saturating_sub(reusable));
-    Ok(free.saturating_add(reusable).min(managed))
+    free.saturating_add(released)
+        .min(limit.saturating_sub(owned.saturating_sub(released)))
+}
+
+fn fits(owner: &Working, state: &State, key: &str, stream: u64, free: usize) -> Result<Vec<Fit>> {
+    let site = state
+        .splits
+        .sites
+        .get(key)
+        .ok_or(Error::Invalid("unknown split configuration"))?;
+    site.choices
+        .iter()
+        .map(|choice| {
+            let sample = site.samples.get(&choice.id).filter(|sample| sample.known);
+            let classes = sample.map_or(&choice.classes, |sample| &sample.classes);
+            let full = if sample.is_none() {
+                choice.backing
+            } else {
+                backing(owner, classes)?
+            };
+            let mut missing = classes.clone();
+            let mut used = BTreeSet::new();
+            let mut preserve = BTreeSet::new();
+            let mut reused = 0usize;
+            for (&class, count) in &mut missing {
+                for origin in [Some(stream), None] {
+                    let Some(slots) = state.free.get(&(None, class, origin)) else {
+                        continue;
+                    };
+                    for ptr in slots.iter().rev() {
+                        if *count == 0 {
+                            break;
+                        }
+                        if used.contains(ptr) {
+                            continue;
+                        }
+                        let Some(block) = state.blocks.get(ptr) else {
+                            continue;
+                        };
+                        if block.capacity != class
+                            || !block.reusable_from(origin)
+                            || state.segments[&block.segment].pool.is_some()
+                        {
+                            continue;
+                        }
+                        used.insert(*ptr);
+                        preserve.insert(block.segment);
+                        reused += class;
+                        *count -= 1;
+                    }
+                }
+            }
+            let missing = backing(owner, &missing)?;
+            let preserved_bytes = preserve.iter().map(|base| state.segments[base].bytes).sum();
+            let reclaimable = state
+                .segments
+                .iter()
+                .filter(|(base, segment)| {
+                    segment.pool.is_none()
+                        && !preserve.contains(base)
+                        && state
+                            .blocks
+                            .range(**base..**base + segment.bytes as u64)
+                            .all(|(_, block)| {
+                                block.life == Life::Ready && block.reusable_on.is_none()
+                            })
+                })
+                .map(|(_, segment)| segment.bytes)
+                .sum();
+            Ok(Fit {
+                id: choice.id.clone(),
+                basis: if sample.is_some() {
+                    "measured"
+                } else {
+                    "declared"
+                },
+                full,
+                measured: sample.map(|sample| sample.backing),
+                missing,
+                reused,
+                preserve,
+                preserved_bytes,
+                reclaimable,
+                now: headroom(owner, free, 0),
+                after_idle: headroom(owner, free, reclaimable),
+            })
+        })
+        .collect()
+}
+
+fn snapshot(device: i32, owner: &Working, key: &str, stream: u64) -> Result<Vec<Fit>> {
+    let captures = crate::capture_counts()?;
+    crate::ensure_recovery_allowed(&captures, device)?;
+    let state = owner.lock()?;
+    let _context = owner.driver.enter()?;
+    let (free, _) = owner.driver.memory_info()?;
+    fits(owner, &state, key, stream, free)
 }
 
 fn decision(
-    requirements: &[(String, usize, &'static str)],
-    available: usize,
+    plans: &[Fit],
+    stream: u64,
     preferred: Option<&str>,
     working: usize,
     weights: usize,
 ) -> Option<SplitSelection> {
-    let eligible: Vec<_> = requirements
-        .iter()
-        .filter(|(_, bytes, _)| *bytes <= available)
-        .collect();
+    let eligible: Vec<_> = plans.iter().filter(|plan| plan.fits()).collect();
     let selected = preferred
-        .and_then(|preferred| eligible.iter().find(|(id, _, _)| id == preferred).copied())
+        .and_then(|id| eligible.iter().find(|plan| plan.id == id).copied())
         .or_else(|| eligible.first().copied())?;
     Some(SplitSelection {
-        choice_id: selected.0.clone(),
-        eligible: eligible.iter().map(|row| row.0.clone()).collect(),
-        required_bytes: selected.1,
-        available_bytes: available,
-        basis: selected.2,
+        stream,
+        choice_id: selected.id.clone(),
+        eligible: eligible.iter().map(|plan| plan.id.clone()).collect(),
+        required_bytes: selected.missing,
+        available_bytes: selected.after_idle,
+        allocation_backing_bytes: selected.full,
+        measured_backing_peak_bytes: selected.measured,
+        reused_capacity_bytes: selected.reused,
+        preserved_backing_bytes: selected.preserved_bytes,
+        reclaimable_working_bytes: selected.reclaimable,
+        basis: selected.basis,
         reclaimed_working_bytes: working,
         reclaimed_weight_bytes: weights,
     })
 }
 
-/// Select without executing probes. A successful sample replaces only its exact choice's
-/// complete initial allocation declaration, never another geometry or an inferred curve.
+fn trim_for(device: i32, owner: &Working, key: &str, choice: &str, stream: u64) -> Result<usize> {
+    let captures = crate::capture_counts()?;
+    crate::ensure_recovery_allowed(&captures, device)?;
+    let mut state = owner.lock()?;
+    let _context = owner.driver.enter()?;
+    owner.poll(&mut state)?;
+    let (free, _) = owner.driver.memory_info()?;
+    let plans = fits(owner, &state, key, stream, free)?;
+    let plan = plans
+        .iter()
+        .find(|plan| plan.id == choice)
+        .ok_or(Error::Invalid("split choice is not declared"))?;
+    let needed = plan.missing.saturating_sub(plan.now);
+    owner.trim_ready(&mut state, needed, None, &plan.preserve)
+}
+
+fn exhausted(plans: &[Fit]) -> Error {
+    let plan = plans
+        .iter()
+        .min_by_key(|plan| plan.missing.saturating_sub(plan.after_idle))
+        .expect("copied menu");
+    Error::Exhausted {
+        requested_bytes: plan.missing,
+        available_bytes: plan.after_idle,
+    }
+}
+
+/// Evaluate exact allocation classes on the supplied execution stream. Compatible slots
+/// satisfy requests once; global pending totals and unrelated classes never provide credit.
 pub fn split_select(
     device: i32,
     key: &str,
     choices: Vec<(String, Vec<usize>)>,
     preferred: &str,
+    stream: u64,
 ) -> Result<SplitSelection> {
+    valid_stream(stream)?;
     context(device)?;
     let owner = initialize_owner(device)?;
     register(&owner, key, choices, preferred)?;
-    let needs = requirements(&owner, key)?;
-    if let Some(choice) = decision(&needs, available(device, &owner, true)?, None, 0, 0) {
+    let plans = snapshot(device, &owner, key, stream)?;
+    if let Some(choice) = decision(&plans, stream, None, 0, 0) {
         return Ok(choice);
     }
-    let working = trim(device)?;
-    if let Some(choice) = decision(&needs, available(device, &owner, true)?, None, working, 0) {
+    let working = trim_for(device, &owner, key, preferred, stream)?;
+    let plans = snapshot(device, &owner, key, stream)?;
+    if let Some(choice) = decision(&plans, stream, None, working, 0) {
         return Ok(choice);
     }
-    let wanted = needs
+    let preferred_plan = plans
         .iter()
-        .find(|(id, _, _)| id == preferred)
-        .expect("validated preferred")
-        .1;
-    let before = available(device, &owner, true)?;
-    let weights = crate::reclaim(device, wanted.saturating_sub(before))?.reclaimed_bytes;
-    let now = available(device, &owner, true)?;
-    decision(&needs, now, Some(preferred), working, weights).ok_or(Error::Exhausted {
-        requested_bytes: needs
-            .iter()
-            .map(|(_, bytes, _)| *bytes)
-            .min()
-            .expect("nonempty menu"),
-        available_bytes: now,
-    })
+        .find(|plan| plan.id == preferred)
+        .expect("copied preferred");
+    let needed = preferred_plan
+        .missing
+        .saturating_sub(preferred_plan.after_idle);
+    let weights = crate::reclaim(device, needed)?.reclaimed_bytes;
+    let plans = snapshot(device, &owner, key, stream)?;
+    decision(&plans, stream, Some(preferred), working, weights).ok_or_else(|| exhausted(&plans))
 }
 
-/// The agreed ID is immutable. Recheck its capacity now; a foreign race may still exhaust
-/// a later real allocation, which fails this invocation rather than executing a new choice.
+/// Re-evaluate the exact agreed geometry and stream immediately before opening the leaf.
+/// Matched compatible cache stays mapped; only unmatched completed backing may be trimmed.
 pub fn split_begin(
     device: i32,
     key: &str,
     choice_id: &str,
     completion_owner: Option<u64>,
+    stream: u64,
 ) -> Result<u64> {
+    valid_stream(stream)?;
     context(device)?;
     let owner = owner(device)?;
-    let needs = requirements(&owner, key)?;
-    let required = needs
-        .iter()
-        .find(|(id, _, _)| id == choice_id)
-        .ok_or(Error::Invalid("split choice is not declared"))?
-        .1;
     {
         let state = owner.lock()?;
-        if state.splits.active.is_some() {
-            return Err(Error::Invalid("native split sites cannot nest"));
-        }
         if let Some(id) = completion_owner {
             if !state
                 .phases
@@ -336,25 +453,38 @@ pub fn split_begin(
             }
         }
     }
-    // Realize required free space before starting a partly mutating operation. Idle working
-    // backing precedes idle weights; no request/operator execution is retried here.
-    if available(device, &owner, false)? < required {
-        trim(device)?;
-        let free = available(device, &owner, false)?;
-        if free < required {
-            crate::reclaim(device, required - free)?;
+    let plans = snapshot(device, &owner, key, stream)?;
+    let plan = plans
+        .iter()
+        .find(|plan| plan.id == choice_id)
+        .ok_or(Error::Invalid("split choice is not declared"))?;
+    if plan.missing > plan.now {
+        trim_for(device, &owner, key, choice_id, stream)?;
+        let plans = snapshot(device, &owner, key, stream)?;
+        let plan = plans
+            .iter()
+            .find(|plan| plan.id == choice_id)
+            .expect("copied choice");
+        if plan.missing > plan.now {
+            crate::reclaim(device, plan.missing - plan.now)?;
         }
-    }
-    let free = available(device, &owner, true)?;
-    if free < required {
-        return Err(Error::Exhausted {
-            requested_bytes: required,
-            available_bytes: free,
-        });
     }
     let captures = crate::capture_counts()?;
     crate::ensure_recovery_allowed(&captures, device)?;
     let mut state = owner.lock()?;
+    let _context = owner.driver.enter()?;
+    let (free, _) = owner.driver.memory_info()?;
+    let plans = fits(&owner, &state, key, stream, free)?;
+    let plan = plans
+        .iter()
+        .find(|plan| plan.id == choice_id)
+        .ok_or(Error::Invalid("split choice is not declared"))?;
+    if plan.missing > plan.now {
+        return Err(Error::Exhausted {
+            requested_bytes: plan.missing,
+            available_bytes: plan.now,
+        });
+    }
     if state.splits.active.is_some() {
         return Err(Error::Invalid("native split sites cannot nest"));
     }
@@ -381,6 +511,7 @@ pub fn split_begin(
         key: key.to_owned(),
         choice: choice_id.to_owned(),
         owner: completion_owner,
+        stream,
         epoch: captures
             .get(&device)
             .map_or(0, |activity| activity.activity_epoch),
@@ -388,6 +519,7 @@ pub fn split_begin(
         peak: 0,
         backing: 0,
         invalid: None,
+        classes: BTreeMap::new(),
     }));
     Ok(id)
 }
@@ -396,6 +528,12 @@ pub(super) fn allocated(state: &mut State, ptr: u64) {
     if let Some(active) = &mut state.splits.active {
         if active.owner.is_some() {
             active.allocations.insert(ptr);
+            if state.blocks[&ptr].stream != active.stream {
+                active
+                    .invalid
+                    .get_or_insert_with(|| "split_allocation_stream_changed".into());
+                state.phases.invalidate("split_allocation_stream_changed");
+            }
         }
     }
     refresh(state);
@@ -410,11 +548,17 @@ pub(super) fn refresh(state: &mut State) {
     }
     let mut bytes = 0usize;
     let mut segments = BTreeSet::new();
+    let mut classes = BTreeMap::<usize, usize>::new();
     for ptr in &active.allocations {
         if let Some(block) = state.blocks.get(ptr).filter(|block| block.charge() != 0) {
             bytes += block.capacity;
+            *classes.entry(block.capacity).or_default() += 1;
             segments.insert(block.segment);
         }
+    }
+    for (class, count) in classes {
+        let peak = active.classes.entry(class).or_default();
+        *peak = (*peak).max(count);
     }
     active.peak = active.peak.max(bytes);
     active.backing = active.backing.max(
@@ -489,6 +633,7 @@ pub fn split_end(device: i32, observation_id: u64, submitted: bool) -> Result<Sp
         published: false,
         reason,
         successful_passes: 0,
+        classes: active.classes,
     };
     if let Some(parent) = parent {
         if !submitted {
@@ -529,6 +674,7 @@ pub(super) fn phase_finished(
                 published: false,
                 reason: "split_interval_open".into(),
                 successful_passes: 0,
+                classes: active.classes,
             },
         ));
     }
@@ -555,6 +701,7 @@ pub(super) fn phase_finished(
                 sample.known = true;
                 sample.peak = row.peak_bytes;
                 sample.backing = row.backing_peak_bytes;
+                sample.classes = row.classes.clone();
                 sample.successful += 1;
             } else {
                 sample.aborted += 1;

@@ -443,6 +443,14 @@ impl Block {
         }
     }
 
+    #[inline]
+    fn reusable_from(&self, origin: Option<u64>) -> bool {
+        (self.life == Life::Ready
+            || (self.life == Life::Captured && origin.is_some())
+            || (self.deferred_default() && origin == Some(0)))
+            && self.reusable_on == origin
+    }
+
     fn deferred_default(&self) -> bool {
         self.life == Life::Deferred
             && self.reusable_on == Some(0)
@@ -821,10 +829,7 @@ impl Working {
                     let Some(block) = state.blocks.get_mut(&ptr) else {
                         continue;
                     };
-                    let reusable = block.life == Life::Ready
-                        || (block.life == Life::Captured && origin.is_some())
-                        || (block.deferred_default() && origin == Some(0));
-                    if !reusable || block.capacity != bytes || block.reusable_on != origin {
+                    if block.capacity != bytes || !block.reusable_from(origin) {
                         continue;
                     }
                     // Phase tokens never repeat, and entry rebuilds segment accounting.
@@ -1116,9 +1121,24 @@ impl Working {
 
     fn trim(&self, state: &mut State, limit: usize, exclude: Option<PoolId>) -> Result<usize> {
         self.poll(state)?;
+        self.trim_ready(state, limit, exclude, &BTreeSet::new())
+    }
+
+    // The split chooser has already observed completion and matched exact reusable slots
+    // under this same lock. Preserve their backing while releasing unrelated idle pages.
+    fn trim_ready(
+        &self,
+        state: &mut State,
+        limit: usize,
+        exclude: Option<PoolId>,
+        preserve: &BTreeSet<u64>,
+    ) -> Result<usize> {
         let mut released = 0usize;
         let mut candidates = Vec::new();
         for (base, segment) in &state.segments {
+            if preserve.contains(base) {
+                continue;
+            }
             if exclude.is_some() && segment.pool == exclude {
                 continue;
             }

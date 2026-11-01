@@ -158,20 +158,20 @@ def split_context(device: int) -> dict[str, Any]:
     return _ext._varena_split_context(device)
 
 
-def split_select(device: DeviceLike, key: str, choices: Sequence[tuple[str, Sequence[int]]], *, preferred: str) -> dict[str, Any]:
+def split_select(device: DeviceLike, key: str, choices: Sequence[tuple[str, Sequence[int]]], *, preferred: str, stream: int) -> dict[str, Any]:
     """Choose an opaque legal variant from a complete copied allocation menu before execution."""
     _installed()
-    return _ext._varena_split_select(_device(device), key, [(name, list(sizes)) for name, sizes in choices], preferred=preferred)
+    return _ext._varena_split_select(_device(device), key, [(name, list(sizes)) for name, sizes in choices], preferred=preferred, stream=stream)
 
 
-def split_begin(device: DeviceLike, key: str, choice_id: str, *, completion_owner: int | None = None) -> int:
+def split_begin(device: DeviceLike, key: str, choice_id: str, *, stream: int, completion_owner: int | None = None) -> int:
     """Commit exactly this choice and open one nonnested leaf interval within its phase.
 
     completion_owner is the active eager observation whose checked stream completion also
     covers this leaf. None permits declared selection but cannot train a successful sample.
     """
     _installed()
-    return _ext._varena_split_begin(_device(device), key, choice_id, completion_owner=completion_owner)
+    return _ext._varena_split_begin(_device(device), key, choice_id, stream=stream, completion_owner=completion_owner)
 
 
 def split_end(device: DeviceLike, observation_id: int, *, submitted: bool) -> dict[str, Any]:

@@ -1,6 +1,7 @@
 """Real CUDA split admission and deferred exact-choice sampling; no mock driver or operation retry."""
 from __future__ import annotations
 
+from contextlib import suppress
 import importlib.util
 import json
 from pathlib import Path
@@ -30,9 +31,9 @@ def finish_phase(owner, *, success=True):
 def run_variant(key, cap, expected, *, preview=False):
     vt.set_limit(0, cap)
     owner = vt.phase_enter(0)
-    chosen = vt.split_select(0, key, MENU, preferred="batch:4")
+    chosen = vt.split_select(0, key, MENU, preferred="batch:4", stream=torch.cuda.current_stream().cuda_stream)
     assert chosen["choice_id"] == expected, chosen
-    observation = vt.split_begin(0, key, expected, completion_owner=owner)
+    observation = vt.split_begin(0, key, expected, stream=torch.cuda.current_stream().cuda_stream, completion_owner=owner)
     out = torch.empty(32 * MIB, dtype=torch.uint8, device="cuda")
     width = COPY[expected]
     for at in range(0, out.numel(), width):
@@ -46,7 +47,7 @@ def run_variant(key, cap, expected, *, preview=False):
         # Capacity is temporarily ample for a read-only selection query. Actual GPU completion
         # may already have occurred, but no owning completion proof has published the sample.
         vt.set_limit(0, 128 * MIB)
-        before_completion = vt.split_select(0, key, MENU, preferred="batch:4")
+        before_completion = vt.split_select(0, key, MENU, preferred="batch:4", stream=torch.cuda.current_stream().cuda_stream)
         assert before_completion["basis"] == "declared", before_completion
         vt.set_limit(0, cap)
     ended = finish_phase(owner)
@@ -84,7 +85,7 @@ def preexecution_exhaustion():
     refused = None
     try:
         try:
-            vt.split_select(0, key, MENU, preferred="batch:4")
+            vt.split_select(0, key, MENU, preferred="batch:4", stream=torch.cuda.current_stream().cuda_stream)
             calls += 1
             output = torch.empty(32 * MIB, dtype=torch.uint8, device="cuda")
             scratch = torch.empty(8 * MIB, dtype=torch.uint8, device="cuda")
@@ -108,7 +109,7 @@ def outside_holdings_and_slab_floor():
     outside = torch.empty(32 * MIB, dtype=torch.uint8, device="cuda")
     try:
         vt.set_limit(0, 80 * MIB)
-        selected = vt.split_select(0, key, MENU, preferred="batch:4")
+        selected = vt.split_select(0, key, MENU, preferred="batch:4", stream=torch.cuda.current_stream().cuda_stream)
         assert selected["choice_id"] == "batch:2" and selected["available_bytes"] == 48 * MIB, selected
     finally:
         del outside
@@ -120,7 +121,7 @@ def outside_holdings_and_slab_floor():
         vt.set_limit(0, 3 * MIB)
         refused = False
         try:
-            vt.split_select(0, key, [("two-slabs", [512, 1024])], preferred="two-slabs")
+            vt.split_select(0, key, [("two-slabs", [512, 1024])], preferred="two-slabs", stream=torch.cuda.current_stream().cuda_stream)
         except torch.OutOfMemoryError as error:
             refused = error.required_bytes == 4 * MIB
         assert refused, "two tiny size classes require two native slabs"
@@ -133,9 +134,9 @@ def outside_holdings_and_slab_floor():
 def ownership_and_abort():
     key = "split-proof:ownership"
     choices = [("only", [8 * MIB])]
-    vt.split_select(0, key, choices, preferred="only")
+    vt.split_select(0, key, choices, preferred="only", stream=torch.cuda.current_stream().cuda_stream)
     parent = vt.phase_enter(0)
-    leaf = vt.split_begin(0, key, "only", completion_owner=parent)
+    leaf = vt.split_begin(0, key, "only", stream=torch.cuda.current_stream().cuda_stream, completion_owner=parent)
     value = torch.empty(8 * MIB, dtype=torch.uint8, device="cuda")
     vt.split_end(0, leaf, submitted=True)
     ended = finish_phase(parent)
@@ -143,12 +144,12 @@ def ownership_and_abort():
     del value
     probe.clean()
     parent = vt.phase_enter(0)
-    leaf = vt.split_begin(0, key, "only", completion_owner=parent)
+    leaf = vt.split_begin(0, key, "only", stream=torch.cuda.current_stream().cuda_stream, completion_owner=parent)
     context = vt.split_context(0)
     assert context == {"eligible": False, "reason": "leaf_active"}, context
     nested = False
     try:
-        vt.split_begin(0, key, "only", completion_owner=parent)
+        vt.split_begin(0, key, "only", stream=torch.cuda.current_stream().cuda_stream, completion_owner=parent)
     except RuntimeError:
         nested = True
     assert nested
@@ -158,7 +159,7 @@ def ownership_and_abort():
     assert not aborted["split_observations"][0]["published"]
     del value
     probe.clean()
-    kept = vt.split_select(0, key, choices, preferred="only")
+    kept = vt.split_select(0, key, choices, preferred="only", stream=torch.cuda.current_stream().cuda_stream)
     assert kept["basis"] == "measured" and kept["required_bytes"] == 8 * MIB, kept
     vt.phase_forget(0, key)
     return {"baseline": ended, "aborted": aborted, "retained": kept, "nested_rejected": nested}
@@ -169,8 +170,8 @@ def caught_allocation_failure():
     menu = [("only", [4 * MIB])]
     vt.set_limit(0, 8 * MIB)
     parent = vt.phase_enter(0)
-    vt.split_select(0, key, menu, preferred="only")
-    leaf = vt.split_begin(0, key, "only", completion_owner=parent)
+    vt.split_select(0, key, menu, preferred="only", stream=torch.cuda.current_stream().cuda_stream)
+    leaf = vt.split_begin(0, key, "only", stream=torch.cuda.current_stream().cuda_stream, completion_owner=parent)
     value = torch.empty(4 * MIB, dtype=torch.uint8, device="cuda")
     vt.split_end(0, leaf, submitted=True)
     initial = finish_phase(parent)
@@ -178,7 +179,7 @@ def caught_allocation_failure():
     del value
     probe.clean()
     parent = vt.phase_enter(0)
-    leaf = vt.split_begin(0, key, "only", completion_owner=parent)
+    leaf = vt.split_begin(0, key, "only", stream=torch.cuda.current_stream().cuda_stream, completion_owner=parent)
     partial = torch.empty(2 * MIB, dtype=torch.uint8, device="cuda")
     partial.fill_(5)
     failed = False
@@ -194,7 +195,7 @@ def caught_allocation_failure():
     assert ended["reason"] == "allocation_error", ended
     del partial
     probe.clean()
-    kept = vt.split_select(0, key, menu, preferred="only")
+    kept = vt.split_select(0, key, menu, preferred="only", stream=torch.cuda.current_stream().cuda_stream)
     assert kept["basis"] == "measured" and kept["required_bytes"] == 4 * MIB, kept
     vt.set_limit(0, None)
     vt.phase_forget(0, key)
@@ -227,11 +228,11 @@ def invalidation_without_detail():
 def no_completion_owner():
     key = "split-proof:unjoined-owner"
     choices = [("only", [8 * MIB])]
-    vt.split_select(0, key, choices, preferred="only")
+    vt.split_select(0, key, choices, preferred="only", stream=torch.cuda.current_stream().cuda_stream)
     parent = vt.phase_enter(0)
     stream = torch.cuda.Stream()
     with torch.cuda.stream(stream):
-        leaf = vt.split_begin(0, key, "only", completion_owner=None)
+        leaf = vt.split_begin(0, key, "only", stream=torch.cuda.current_stream().cuda_stream, completion_owner=None)
         value = torch.empty(8 * MIB, dtype=torch.uint8, device="cuda")
         value.fill_(9)
         ended = vt.split_end(0, leaf, submitted=True)
@@ -243,7 +244,7 @@ def no_completion_owner():
     assert int(value[-1]) == 9
     del value, stream
     probe.clean()
-    selected = vt.split_select(0, key, choices, preferred="only")
+    selected = vt.split_select(0, key, choices, preferred="only", stream=torch.cuda.current_stream().cuda_stream)
     assert selected["basis"] == "declared", selected
     vt.phase_forget(0, key)
     with varena.replay(0):
@@ -251,7 +252,101 @@ def no_completion_owner():
     return {"leaf": ended, "parent": parent_result, "unlearned": selected}
 
 
+def stream_geometry(case):
+    key = "split-proof:stream-geometry:" + case
+    default = torch.cuda.default_stream()
+    other = torch.cuda.Stream()
+    old_pointer = None
+    blocker = None
+    parent = leaf = None
+    done = torch.cuda.Event()
+    if case == "completed-cache":
+        with torch.cuda.stream(other):
+            cached = torch.empty(8 * MIB, dtype=torch.uint8, device="cuda")
+            old_pointer = cached.data_ptr()
+            cached.fill_(7)
+            del cached
+        other.synchronize()
+        vt.retire_stream(other)
+        assert vt.stats(0)["reclaimable_bytes"] == 8 * MIB
+    else:
+        with torch.cuda.stream(default):
+            cached = torch.empty(8 * MIB, dtype=torch.uint8, device="cuda")
+            old_pointer = cached.data_ptr()
+            torch.cuda._sleep(2_000_000_000)
+            cached.fill_(7)
+            done.record(default)
+            del cached
+        assert not done.query(), "fixture did not retain pending work"
+        if case == "unique-slot":
+            # The real slow path polls the deferred block while its event is still pending.
+            # Its free index may contain repeated entries, but it is still ONE allocation.
+            blocker = torch.empty(MIB, dtype=torch.uint8, device="cuda")
+            assert not done.query(), "pending work completed before duplicate-credit check"
+    cap = (42 if blocker is not None else 40) * MIB
+    vt.set_limit(0, cap)
+    stream = other if case == "cross-stream" else default
+    allocations = [32 * MIB, 8 * MIB] + ([8 * MIB] if case == "unique-slot" else [])
+    before = vt.stats(0)
+    try:
+        if case in ("cross-stream", "unique-slot"):
+            refused = False
+            try:
+                vt.split_select(0, key, [("only", allocations)], preferred="only", stream=stream.cuda_stream)
+            except torch.OutOfMemoryError as error:
+                refused = bool(getattr(error, "varena_no_retry", False))
+            assert refused, "pending storage was credited on the wrong stream or more than once"
+            assert not done.query(), "exclusion requires an actually pending consumer"
+            return {"refused": True, "managed_limit": cap, "pending_bytes": before["pending_bytes"]}
+        selected = vt.split_select(0, key, [("only", allocations)], preferred="only", stream=stream.cuda_stream)
+        assert selected["allocation_backing_bytes"] == 40 * MIB, selected
+        assert selected["required_bytes"] == 32 * MIB and selected["reused_capacity_bytes"] == 8 * MIB, selected
+        parent = vt.phase_enter(0)
+        leaf = vt.split_begin(0, key, "only", stream=stream.cuda_stream, completion_owner=parent)
+        admitted = vt.stats(0)
+        assert admitted["mapped_bytes"] == before["mapped_bytes"], (before, admitted)
+        for field in ("event_records", "event_queries", "context_joins"):
+            assert admitted[field] == before[field], (field, before, admitted)
+        if case != "completed-cache":
+            assert not done.query(), "same-stream admission unnecessarily waited for completion"
+        with torch.cuda.stream(stream):
+            output = torch.empty(32 * MIB, dtype=torch.uint8, device="cuda")
+            scratch = torch.empty(8 * MIB, dtype=torch.uint8, device="cuda")
+            assert scratch.data_ptr() == old_pointer, "compatible cache was unmapped instead of reused"
+            scratch.fill_(29)
+            for at in range(0, output.numel(), scratch.numel()):
+                output[at:at + scratch.numel()].copy_(scratch)
+            del scratch
+        ended = vt.split_end(0, leaf, submitted=True)
+        leaf = None
+        stream.synchronize()
+        completed = vt.phase_leave(0, parent, completed=True)
+        parent = None
+        assert completed["split_observations"][0]["published"], completed
+        assert int(output[0]) == int(output[-1]) == 29
+        del output
+        return {"selection": selected, "submitted": ended, "completed": completed,
+                "same_pointer_reused": True, "managed_limit": cap}
+    finally:
+        if leaf is not None:
+            with suppress(Exception):
+                vt.split_end(0, leaf, submitted=False)
+        if parent is not None:
+            with suppress(Exception):
+                vt.phase_leave(0, parent, completed=False)
+        default.synchronize()
+        other.synchronize()
+        del blocker
+        probe.clean()
+        vt.set_limit(0, None)
+        vt.phase_forget(0, key)
+
+
 CASES = {
+    "same-stream-pending": lambda: stream_geometry("same-stream"),
+    "cross-stream-pending-exclusion": lambda: stream_geometry("cross-stream"),
+    "unique-reusable-slot": lambda: stream_geometry("unique-slot"),
+    "compatible-completed-cache": lambda: stream_geometry("completed-cache"),
     "exact-choices": exact_choices,
     "preexecution-exhaustion": preexecution_exhaustion,
     "outside-holdings-and-slab-floor": outside_holdings_and_slab_floor,

@@ -41,3 +41,30 @@ unsupported/nested/capture/collective contexts and opaque fallback kernels remai
 adapter. Capture uses the existing whole implementation until an actual precommitted capture
 choice exists. This is not complete P2 or qualification of arbitrary author.split, convolution,
 INT4/INT8 workspace guesses, H3 fit.py deletion or cross-rank selection.
+
+## Stream-aware allocation geometry
+
+Both select and begin require the actual raw execution stream. Each choice matches its copied
+allocation classes against UNIQUE free blocks in the allocator's existing take order, using
+the same reuse predicate. A globally completed block or a block safely ordered on that stream
+can satisfy one request. Live, unjoined, multi-stream-pending and graph-private blocks cannot;
+pending bytes on another stream are not generic headroom.
+
+Learned choices retain measured per-class peak counts alongside scalar block/backing peaks.
+The first closed full-output-plus-copy family has a simultaneous class envelope. For a more
+complex sequential family, a per-class envelope may be conservative; it is not a fitted
+cross-choice estimate or a claim that different class peaks necessarily occurred together.
+Scalar peaks remain historical diagnostics rather than pretending every existing byte can
+serve every allocation class.
+
+`required_bytes` now reports additional backing for unmatched requests;
+`allocation_backing_bytes` is the fresh backing cost of the complete class envelope.
+`reused_capacity_bytes` counts matched block capacity once. `preserved_backing_bytes` describes
+the segments that contain those slots, including any other live occupants; it is not added to
+free capacity. `reclaimable_working_bytes` covers only unrelated completed whole eager segments.
+Select reports feasibility using that reclaimable backing; begin re-evaluates and performs any
+necessary release before execution while preserving matched segments. Compatible cache is
+not unmapped merely because the total fresh allocation cost exceeds driver-free memory.
+
+The ordinary allocation slow path's unconditional weight reclaim after working trim remains
+a separate unified-reclaim followup; this correction does not silently alter it.
