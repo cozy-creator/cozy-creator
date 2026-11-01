@@ -29,6 +29,19 @@ pub fn entrypoint<'a>(document: &'a Value, name: &str) -> Option<&'a Value> {
     entrypoints(document).find(|entry| self::name(entry) == Some(name))
 }
 
+/// `name`'s request contract (`cozy run … --describe --json`), with `accelerator: false` for a CPU
+/// function: a release's card and local code's interface answer the same.
+pub fn request(document: &Value, name: &str) -> Value {
+    let Some(entry) = entrypoint(document, name) else {
+        return Value::Null;
+    };
+    let mut request = entry["request"].clone();
+    if entry["accelerator"] == Value::Bool(false) {
+        request["accelerator"] = Value::Bool(false);
+    }
+    request
+}
+
 /// Its declared quantize recipes.
 pub fn recipes(document: &Value) -> impl Iterator<Item = &Value> {
     document["recipes"].as_array().into_iter().flatten()

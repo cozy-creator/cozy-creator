@@ -12,7 +12,6 @@ use crate::{Context, run::Placement};
 use protocol::target::Published;
 
 mod author;
-mod carried;
 mod catalog;
 pub(crate) mod live;
 mod machine;
@@ -107,8 +106,14 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         },
         Command::Info { package } => catalog::info(ctx, &PackageRef::parse(&package)?).await,
         Command::Install { package, placement } => match local(ctx, &package)? {
-            Some(path) => machine::install_directory(ctx, &path, placement.on()?).await,
-            None => machine::install(ctx, &PackageRef::parse(&package)?, placement.on()?).await,
+            Some(path) => {
+                let path = crate::ask::absolute(&path.to_string_lossy())?;
+                machine::install(ctx, path, None, placement.on()?).await
+            }
+            None => {
+                let named = PackageRef::parse(&package)?;
+                machine::install(ctx, named.package(), named.release, placement.on()?).await
+            }
         },
         Command::Remove {
             packages,
@@ -181,30 +186,4 @@ fn names(texts: &[String]) -> Result<Vec<String>, Error> {
             parsed => Ok(parsed.package()),
         })
         .collect()
-}
-
-/// A Hub timestamp in whole seconds: its nanoseconds are noise in a listing.
-pub(crate) fn stamp(at: &str) -> String {
-    match at.split_once('.') {
-        Some((seconds, fraction)) => {
-            let zone = fraction
-                .find(|c: char| !c.is_ascii_digit())
-                .map_or("", |at| &fraction[at..]);
-            format!("{seconds}{zone}")
-        }
-        None => at.to_owned(),
-    }
-}
-
-/// `items` newest first by TensorFS's one version ordering (`format::newest_by`); those whose
-/// version does not parse last, as given.
-pub(crate) fn newest_first<T>(mut items: Vec<T>, version: impl Fn(&T) -> &str) -> Vec<T> {
-    let mut sorted = Vec::with_capacity(items.len());
-    loop {
-        let versions = items.iter().enumerate().map(|(i, item)| (i, version(item)));
-        let Some((newest, _)) = tensorfs::format::newest_by(versions, |(_, v)| *v) else { break };
-        sorted.push(items.remove(newest));
-    }
-    sorted.extend(items);
-    sorted
 }

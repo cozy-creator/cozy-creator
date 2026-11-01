@@ -1,6 +1,6 @@
 [package]
 name = "cli"
-description = "The cozy command line: grammar, rendering, and the client of Calcifer, the Hub and machines"
+description = "The cozy command line: grammar, rendering, and the client of Calcifer and machines"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -22,7 +22,6 @@ ed25519-dalek.workspace = true
 futures-util = { workspace = true, features = ["alloc"] }
 getrandom.workspace = true
 hex.workspace = true
-hub-client.workspace = true
 jiff = { workspace = true, features = ["serde"] }
 indicatif.workspace = true
 infer.workspace = true

@@ -16,7 +16,7 @@ use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use protocol::{
     calcifer::{
         Adjustment, Event, Machine, MachineState, NoteLevel, On, OutputItem, Progress, Run, RunQuote,
-        RunRequest, Status, SubmitRun, Submitted,
+        RunRequest, Status, Submitted,
     },
     error::{Error, Kind},
 };
@@ -47,27 +47,6 @@ pub(crate) async fn submit_request(ctx: &Context, ask: &RunRequest, key: &str) -
             NoteLevel::Warning => output::warn(&note.message),
         }
     }
-    replayed(ctx, &submitted);
-    Ok(submitted)
-}
-
-/// Submits a run whose spec its verb built (`POST /v1/runs/prepared`: package install and removal,
-/// model upload and download, until Calcifer builds theirs) under `key`, or a fresh one.
-pub(crate) async fn submit(
-    ctx: &Context,
-    mut run: SubmitRun,
-    key: Option<&str>,
-) -> Result<Submitted, Error> {
-    let key = key.map_or_else(mint_key, str::to_owned);
-    let calcifer = ctx.calcifer().await?;
-    if matches!(run.on, On::New(_)) && run.agreed.is_none() {
-        let quoted: RunQuote = calcifer.post("/v1/run-quotes/prepared", &run, None).await?;
-        if !crate::machine::agree(ctx, &quoted)? {
-            return Err(Error::new(Kind::Usage, "quote_declined", "nothing was rented and the run was not sent"));
-        }
-        run.agreed = Some(quoted.quote.agreed());
-    }
-    let submitted: Submitted = calcifer.post("/v1/runs/prepared", &run, Some(&key)).await?;
     replayed(ctx, &submitted);
     Ok(submitted)
 }
