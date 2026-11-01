@@ -14,6 +14,10 @@ parser.add_argument('--model-target')
 parser.add_argument('--model-input', type=Path)
 parser.add_argument('--model-arg', action='append', default=[])
 args = parser.parse_args()
+args.bundle = args.bundle.expanduser().resolve()
+args.out = args.out.expanduser().resolve()
+if args.model_input is not None:
+    args.model_input = args.model_input.expanduser().resolve()
 assert args.on not in ('any', 'local') and not args.on.startswith('new')
 assert bool(args.model_target) == bool(args.model_input)
 common = json.loads((args.bundle / 'common.json').read_text())
@@ -23,24 +27,50 @@ args.out.mkdir(parents=True, exist_ok=False)
 records = []
 
 
+def decode_events(text):
+    """CLI failures before a run can be one pretty JSON document, not NDJSON."""
+    if not text.strip():
+        return [], None
+    try:
+        return [json.loads(text)], None
+    except json.JSONDecodeError:
+        values = []
+        for number, line in enumerate(text.splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                values.append(json.loads(line))
+            except json.JSONDecodeError as error:
+                return values, f'line {number}: {error}'
+        return values, None
+
+
 def call(label, target, payload, fixture=True, arguments=()):
     path = args.out / f'{label}-input.json'
     path.write_text(json.dumps(payload, indent=2) + '\n')
     command = [args.cli, 'run', str(target), *arguments, '--on', args.on, '--gpus=1', '--input', str(path), '--json']
     with (args.out / f'{label}.ndjson').open('w') as stdout, (args.out / f'{label}.stderr').open('w') as stderr:
         result = subprocess.run(command, stdout=stdout, stderr=stderr)
-    events = [json.loads(line) for line in (args.out / f'{label}.ndjson').read_text().splitlines() if line.strip()]
-    runs = [event['run'] for event in events if event.get('type') in ('run.completed', 'run.failed', 'run.canceled')]
-    assert runs, events[-3:]
+    text = (args.out / f'{label}.ndjson').read_text()
+    events, parse_error = decode_events(text)
+    record = {'label': label, 'command': command, 'returncode': result.returncode,
+              'parse_error': parse_error}
+    records.append(record)
+    runs = [event['run'] for event in events if isinstance(event, dict)
+            and event.get('type') in ('run.completed', 'run.failed', 'run.canceled')]
+    if not runs:
+        record.update(no_run_receipt=True, cli_events=events)
+        (args.out / 'progress.json').write_text(json.dumps(records, indent=2) + '\n')
+        raise RuntimeError(f'{label}: CLI exit {result.returncode} before a terminal run receipt; '
+                           f'original output saved at {args.out / (label + ".ndjson")}: {text[-2000:]}')
     run = runs[-1]
     (args.out / f'{label}-run.json').write_text(json.dumps(run, indent=2) + '\n')
     with (args.out / f'{label}-show.json').open('w') as stdout, (args.out / f'{label}-show.stderr').open('w') as stderr:
         subprocess.run([args.cli, 'run', 'show', str(run['number']), '--json'], check=False,
                        stdout=stdout, stderr=stderr)
-    records.append({'label': label, 'command': command, 'returncode': result.returncode,
-                    'number': run['number'], 'status': run['status']})
+    record.update(number=run['number'], status=run['status'])
     (args.out / 'progress.json').write_text(json.dumps(records, indent=2) + '\n')
-    assert result.returncode == 0 and run['status'] == 'completed', records[-1]
+    assert result.returncode == 0 and run['status'] == 'completed' and parse_error is None, records[-1]
     if fixture:
         assert run['result']['passed'], run['result']
         return json.loads(run['result']['detail'])

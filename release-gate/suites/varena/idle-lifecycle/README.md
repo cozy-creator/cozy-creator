@@ -30,12 +30,15 @@ python3 sequence.py --bundle /absolute/bound-bundle --out /absolute/candidate-re
   --model-arg 'model.base_model=EXACT_REF' --model-arg 'model.turbo_lora=EXACT_REF'
 ```
 
-Every call goes through default-home `cozy run --gpus=1`; complete NDJSON and
-model arguments are passed verbatim as separate argv entries, with no shell parsing.
+Every call goes through default-home `cozy run --gpus=1`. Bundle/output paths are
+resolved before forming CLI targets. Model arguments are passed verbatim as separate
+argv entries, with no shell parsing.
 Use repeated `--model-arg` values to retain exact model manifests and other pinned
 model-call arguments; for a value beginning with `--`, use `--model-arg=--FLAG=VALUE`.
 The full command is saved in each progress receipt. Complete NDJSON and
-`cozy run show` receipts are saved. A model failure remains a failed cell; it is
+`cozy run show` receipts are saved. Pre-run pretty-JSON errors retain their original
+code/message and are not replaced by a secondary line-parser error. A model failure
+remains a failed cell; it is
 never replayed. Omit model arguments only for the short mechanism proof, and label
 that narrower scope. H3 model/performance evidence uses the existing full15-second,
 362-frame,1344×768,30-step/audio request, not a smaller surrogate.
