@@ -1111,9 +1111,6 @@ fn offline(rental: &types::Rental) -> Option<String> {
     let who = provider.unwrap_or("its provider");
     let code = rental.failure.as_ref().map_or("", |f| f.code.as_str());
     match rental.state.as_str() {
-        "degraded" if code == "readiness.provider_stopped.account_balance" => {
-            Some(format!("{who} stopped it (the Hub's balance there is spent)"))
-        }
         "degraded" if code.starts_with("readiness.provider_stopped") => {
             Some(format!("{who} stopped it"))
         }

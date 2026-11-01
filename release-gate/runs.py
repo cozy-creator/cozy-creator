@@ -76,6 +76,21 @@ class Run:
         return sorted({o['value'] for o in self.observations if o.get('name') == 'attention.selected'})
 
     @property
+    def graphs(self):
+        """How its denoise loops ran: `native` when any step replayed a captured CUDA graph, `eager` when none did,
+        None with no loop (a text model, a describer)."""
+        loops = [l for m in self.measurements for l in (m.get('execution') or {}).get('loops') or []]
+        if not loops:
+            return None
+        return 'native' if any((l.get('native_steps') or 0) > 0 for l in loops) else 'eager'
+
+    @property
+    def capabilities_off(self):
+        """What the Runtime turned off on its executor (`capability.off`: CUDA graphs, Triton sets) and why."""
+        return sorted({f"{o.get('value')} ({(o.get('fields') or {}).get('reason', '')})" for o in self.observations
+                       if o.get('name') == 'capability.off'})
+
+    @property
     def models(self):
         """Each model it ran as the machine resolved it (`measurements.models`: slot, repository, lane, …)."""
         return [m for ms in self.measurements for m in ms.get('models') or []]
