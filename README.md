@@ -81,12 +81,14 @@ A video project is a folder:
 - `project.lock`: cozy's record of each node's takes or versions, what made each, which is approved, and the
   files `project.yaml` names.
 - `assets/`: every file the project uses, kept by content as `assets/<sha256>.<ext>`. What cozy makes is kept
-  there as real files; a file you name in `project.yaml` (relative to the folder, absolute, or `~/…`) is linked
-  there on first use, and stays where you keep it.
+  there as real files; a file you name in `project.yaml` (relative to the folder, absolute, or `~/…`) is taken in
+  on first use: a copy-on-write clone where the filesystem has them (no space used), else a link to where you
+  keep it.
 - `edit.mp4`: the film, cut on this computer as shots land.
 
 Names live in `project.yaml` and `project.lock` only; `cozy project status` prints each node's file. Edit a
-file you named and what reads it goes out of date; move it and `status` says to relink it (fix its path).
+file you named and what reads it goes out of date; move a linked one and `status` says to relink it (fix its
+path).
 Rename a node in `project.yaml` (and its `<mentions>`), then `cozy project rename <old> <new>` keeps its
 versions; `status` suggests it.
 
