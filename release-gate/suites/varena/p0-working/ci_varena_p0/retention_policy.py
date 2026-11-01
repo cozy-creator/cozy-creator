@@ -4,12 +4,12 @@ from __future__ import annotations
 import gc
 import importlib.util
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
+import tensorfs.varena.torch as vt
 import torch
 from tensorfs import varena
-import tensorfs.varena.torch as vt
 
 spec = importlib.util.spec_from_file_location("varena_retention_helpers", Path(__file__).with_name("probe.py"))
 assert spec is not None and spec.loader is not None

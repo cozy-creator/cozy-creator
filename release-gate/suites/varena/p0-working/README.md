@@ -271,3 +271,27 @@ simultaneous equal-class requests. A globally completed compatible cache block m
 its pointer through admission. Cases verify actual pending events and fail if their required
 interleave was missed rather than treating elapsed time as proof. All existing menu, completion,
 minimum-refusal and ownership cells now pass the actual stream explicitly.
+
+## P2 clearing the legacy cache window (source-only until run)
+
+`/retention_policy` uses the actual native allocator and two fixed-address 4 MiB
+weight regions. The roomy 8 MiB case first demonstrates the old 4 MiB streaming
+window evicting one region, then clears that window and requires both regions to
+remain resident without another eviction. The refilled region keeps its address.
+The two constrained cases require demand reclamation to remain effective: a 4 MiB
+managed limit, and a 4 MiB externally assigned room under an 8 MiB managed limit.
+These are capacity mechanisms, not claims about smaller GPU hardware.
+
+The clear method is called under real native capture and replay exclusion guards.
+All native arena statistics except the window itself must remain unchanged, and
+preferences remain unset. The fixture checks actual byte contents, fill/eviction
+counts and reasons, then releases every region and verifies zero managed working
+retirement through the common CUDA fixture. No borrowed library handle is reset.
+The external room control exercised here is the existing `make_room` interface;
+this does not qualify P3's cross-process table or automatic policy.
+
+The API changes only arena intent metadata. It does not query CUDA, reclaim
+backing, alter process/development/peer limits, change pins or choose a Runtime
+execution mode. The separately owned Runtime retention change must qualify its
+actual graph/cache ownership boundary before using it. Native source checks and
+fixture syntax pass; GPU execution remains pending.
