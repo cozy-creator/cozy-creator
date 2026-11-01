@@ -31,12 +31,28 @@ pub const ASSETS: &str = "assets";
 /// picture's), else its image.
 const PRIMARY: [&str; 3] = ["video", "clean", "image"];
 
-/// A file the project uses: its path in the project (`assets/<sha256>.<ext>`) and its sha256.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// A file the project uses: its path in the project (`assets/<sha256>.<ext>`), its sha256, and for a
+/// video its shape, probed once (`Folder::shape_videos`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Asset {
     pub path: String,
     pub sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video: Option<Shape>,
 }
+
+/// A video's width and height (which decide whether its shot is upscaled), frame rate (a take at
+/// another rate than the project's is retimed when cut) and frame count.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Shape {
+    pub width: u64,
+    pub height: u64,
+    pub fps: f64,
+    pub frames: u64,
+}
+
+/// The extensions of the files whose shape is probed.
+const VIDEOS: [&str; 5] = ["mp4", "mov", "m4v", "webm", "mkv"];
 
 /// One version of a node (a take, for a shot or its upscale): its number, its assets, what made it
 /// and what it was made from.
@@ -68,9 +84,6 @@ pub struct Made {
     /// The digest of the picture attached in project.yaml that this cleans.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clean_of: Option<String>,
-    /// A video's width and height, which decide whether its shot is upscaled.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub size: Option<[u64; 2]>,
 }
 
 /// What made a version: `with` as `org/package/function@release`, and its run's model choices and
@@ -188,7 +201,7 @@ pub struct Lock {
 
 /// A file project.yaml names, as last taken in: its asset, how it was made, where the original is
 /// (absolute), and the size and time it had then, which spare hashing it again while they hold.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Input {
     #[serde(flatten)]
     pub asset: Asset,
@@ -298,13 +311,15 @@ impl Lock {
 
 pub struct Folder {
     pub dir: PathBuf,
+    /// cozy's tools folder, where its ffprobe is (else PATH's).
+    pub tools: PathBuf,
     /// Held across each write's read and swap, so no two of this Calcifer's writes lose one.
     writing: Mutex<()>,
 }
 
 impl Folder {
-    /// The project in `dir`.
-    pub fn open(dir: &Path) -> Result<Self, Error> {
+    /// The project in `dir`, its videos probed with the ffprobe in `tools` (else PATH's).
+    pub fn open(dir: &Path, tools: PathBuf) -> Result<Self, Error> {
         if !dir.join(PROJECT).is_file() {
             return Err(Error::new(
                 Kind::NotFound,
@@ -313,7 +328,7 @@ impl Folder {
             )
             .next("cozy project new <path>"));
         }
-        Ok(Self { dir: dir.to_owned(), writing: Mutex::default() })
+        Ok(Self { dir: dir.to_owned(), tools, writing: Mutex::default() })
     }
 
     pub fn project(&self) -> PathBuf {
@@ -352,7 +367,7 @@ impl Folder {
         let sha256 = hash(source)?;
         let path = asset_of(&sha256, source);
         self.store(&path, |part| std::fs::copy(source, part).map(drop))?;
-        Ok(Asset { path, sha256 })
+        Ok(Asset { path, sha256, video: None })
     }
 
     /// The file project.yaml names as `file` (relative to the folder, absolute, or `~/…`), taken in as
@@ -389,7 +404,7 @@ impl Folder {
                 made.and_then(|method| std::fs::rename(&part, &at).map(|()| method)).map_err(|e| io_at(&at, e))?
             }
         };
-        Ok(Some(Input { asset: Asset { path, sha256 }, method, original, size: meta.len(), modified_ms }))
+        Ok(Some(Input { asset: Asset { path, sha256, video: None }, method, original, size: meta.len(), modified_ms }))
     }
 
     /// `path` (an asset's) made by `write` at a part beside it and then named, unless it is there.
@@ -411,6 +426,37 @@ impl Folder {
             Some((rest, home)) => home.join(rest),
             None => self.dir.join(file),
         }
+    }
+
+    /// Every video `lock` records (a version's asset, a file project.yaml names) with no shape yet,
+    /// probed once and recorded, in `lock` and in project.lock. With no ffprobe here yet (the walk
+    /// fetches one before it cuts), they wait for the next read.
+    pub fn shape_videos(&self, lock: &mut Lock) -> Result<(), Error> {
+        let unshaped = |asset: &Asset| {
+            let ext = Path::new(&asset.path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase());
+            asset.video.is_none() && ext.is_some_and(|ext| VIDEOS.contains(&ext.as_str()))
+        };
+        let versions = lock.nodes.values().flat_map(|node| &node.versions).flat_map(|made| made.assets.values());
+        let wanted: BTreeSet<&String> =
+            lock.inputs.values().map(|input| &input.asset).chain(versions).filter(|a| unshaped(a)).map(|a| &a.path).collect();
+        if wanted.is_empty() {
+            return Ok(());
+        }
+        let Some((_, ffprobe)) = platform::tools::ffmpeg(&self.tools, &crate::tools::path()) else { return Ok(()) };
+        let shapes: BTreeMap<String, Shape> = (wanted.into_iter())
+            .filter_map(|path| Some((path.clone(), super::video::shape(&ffprobe, &self.dir.join(path))?)))
+            .collect();
+        let fill = |lock: &mut Lock| {
+            let versions = lock.nodes.values_mut().flat_map(|node| &mut node.versions).flat_map(|made| made.assets.values_mut());
+            for asset in lock.inputs.values_mut().map(|input| &mut input.asset).chain(versions) {
+                asset.video = asset.video.or_else(|| shapes.get(&asset.path).copied());
+            }
+        };
+        if shapes.is_empty() {
+            return Ok(());
+        }
+        fill(lock);
+        self.update_lock(fill)
     }
 
     /// Deletes each asset nothing in project.lock names: no version (of a node project.yaml names or
