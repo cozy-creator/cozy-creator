@@ -157,7 +157,14 @@ def exercise(payload, ctx):
             setup['stopped_donor_at_budget'] = {'pid': child.process.pid, 'row': ready['row'],
                                                'alive': True, 'donation': donation}
             os.kill(child.process.pid, signal.SIGCONT); stopped = False
-        donor_after = tell('facts')
+        if payload.case in {'working', 'weight', 'gil'}:
+            def donation_ready():
+                value = tell('facts')
+                donation = value['facts']['last_donation']
+                return value if donation is not None and donation['completed'] >= target_bytes else None
+            donor_after = eventually(donation_ready)
+        else:
+            donor_after = tell('facts')
         assert donor_after['live_preserved']
         assert int(live[0]) == int(live[-1]) == 23
         assert int(pinned.tensor[0]) == int(pinned.tensor[-1]) == 17
@@ -181,25 +188,41 @@ def exercise(payload, ctx):
             if payload.case != 'limited':
                 assert physical_working == physical_weights == 0
     finally:
-        if gate and child is not None and child.process.poll() is None:
-            child.process.stdin.write(b'x'); child.process.stdin.flush()
-        if stopped and child is not None and child.process.poll() is None:
-            os.kill(child.process.pid, signal.SIGCONT)
-        if limited:
-            vt.set_limit(0, None)
-        if phase is not None:
-            vt.phase_leave(0, phase, completed=False)
-        if target_use is not None:
-            target_use.consume_on(torch.cuda.current_stream().cuda_stream)
-        if pinned is not None:
-            pinned.consume_on(torch.cuda.current_stream().cuda_stream)
-        target_use = pinned = old_view = storage = result = live = idle = ballast = None
-        gc.collect(); torch.cuda.synchronize(); vt.trim(0)
-        eventually(lambda: True if arena.stats()['pinned_bytes'] == 0 else None)
-        arena.reclaim(1 << 30)
-        if child is not None:
-            child.close()
-    final = vt.stats(0)
+        try:
+            if gate and child is not None and child.process.poll() is None:
+                child.process.stdin.write(b'x'); child.process.stdin.flush()
+                assert child.read()['gil_released']
+                gate = False
+            if stopped and child is not None and child.process.poll() is None:
+                os.kill(child.process.pid, signal.SIGCONT)
+                stopped = False
+            if limited:
+                vt.set_limit(0, None)
+            if phase is not None:
+                vt.phase_leave(0, phase, completed=False)
+            if target_use is not None:
+                target_use.consume_on(torch.cuda.current_stream().cuda_stream)
+            if pinned is not None:
+                pinned.consume_on(torch.cuda.current_stream().cuda_stream)
+            target_use = pinned = old_view = storage = result = live = idle = ballast = None
+            gc.collect(); torch.cuda.synchronize(); vt.trim(0)
+            eventually(lambda: True if arena.stats()['pinned_bytes'] == 0 else None)
+            arena.reclaim(1 << 30)
+        finally:
+            if child is not None:
+                try:
+                    if not gate and not stopped and child.process.poll() is None:
+                        child.process.stdin.write(b'stop\n'); child.process.stdin.flush()
+                        assert child.read()['stopped']
+                        child.process.wait(timeout=10)
+                        assert child.process.returncode == 0
+                finally:
+                    child.close()
+    def settled():
+        vt.trim(0)
+        value = vt.stats(0)
+        return value if value['pending_bytes'] == 0 and value['mapped_bytes'] == baseline['mapped_bytes'] else None
+    final = eventually(settled)
     assert final['allocated_bytes'] == baseline['allocated_bytes'] and final['pending_bytes'] == 0
     assert final['pools'] == baseline['pools'] and final['event_handles'] == 0
     return {'passed': True, 'case': payload.case, 'provenance': provenance, 'setup': setup,

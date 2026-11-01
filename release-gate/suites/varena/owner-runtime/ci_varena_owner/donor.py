@@ -79,6 +79,9 @@ def main():
         live = None
         gc.collect(); torch.cuda.synchronize(); vt.trim(0)
         retry(owner.close)
+    final = vt.stats(0)
+    assert final['allocated_bytes'] == final['mapped_bytes'] == final['pending_bytes'] == 0, final
+    emit({'stopped': True, 'final': final})
 
 try:
     main()
