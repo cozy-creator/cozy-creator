@@ -344,8 +344,15 @@ components:
       properties: {lane: {type: string}, repo_id: {type: string}, revision: {type: string}}
     Disk:
       type: object
+      description: >-
+        The filesystem holding the machine's store. What fills it, as the machine's last sweep measured (0 before
+        one): its store, its package environments with what they added to uv's cache, its Runtime (pair, kernels,
+        toolchain); the rest is other.
       properties:
+        environments_bytes: {type: integer, format: int64, minimum: 0}
         free_bytes: {type: integer, format: int64, minimum: 0}
+        models_bytes: {type: integer, format: int64, minimum: 0}
+        runtime_bytes: {type: integer, format: int64, minimum: 0}
         total_bytes: {type: integer, format: int64, minimum: 0}
     Envelope:
       type: object

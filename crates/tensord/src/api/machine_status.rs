@@ -285,8 +285,12 @@ fn held_or_none<T>(listed: Result<Vec<T>, Error>) -> Result<Vec<T>, Error> {
 
 fn disk(path: &std::path::Path) -> Option<v1::Disk> {
     let space = platform::durable::space(path).ok()?;
+    let usage = crate::reclaim::usage().unwrap_or_default();
     Some(v1::Disk {
         total_bytes: space.total,
         free_bytes: space.free,
+        models_bytes: usage.models,
+        environments_bytes: usage.environments,
+        runtime_bytes: usage.runtime,
     })
 }

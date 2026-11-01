@@ -15,7 +15,7 @@ use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
@@ -250,25 +250,37 @@ impl Store {
     /// The cache's upkeep, run as bytes come in and checkpoints open: once per sweep period,
     /// expire uses past the TTL; then, while the disk is short of `incoming` bytes and a reserve,
     /// drop the least recently used. False when `incoming` still does not fit: skip the write.
-    /// An origin's handle runs none.
+    /// An origin's handle runs none. A handle collects once at a time: an admit that finds one
+    /// collecting waits for it and judges the disk by what it freed, never refused meanwhile.
+    /// Short, the machine's garbage goes first (`on_short`), then the store's own.
     pub fn maintain(&self, incoming: u64) -> Result<bool> {
         if !self.cache {
             return Ok(true);
         }
         let short = || shortfall(&self.root, incoming);
         let stamp = self.root.join("uses").join(".swept");
-        let due = fs::metadata(&stamp)
-            .and_then(|m| m.modified())
-            .map_or(true, |t| t.elapsed().map_or(true, |age| age >= SWEEP));
-        if !due && short()? == 0 {
+        let due = || {
+            fs::metadata(&stamp).and_then(|m| m.modified()).map_or(true, |t| t.elapsed().map_or(true, |age| age >= SWEEP))
+        };
+        if !due() && short()? == 0 {
             return Ok(true);
         }
-        if let Some(_gc) = try_collect(self)? {
-            // A store GC cannot walk (a ref or header of another format) keeps all it holds.
-            if let Err(e) = self.upkeep(due, &stamp, &short) {
-                tracing::warn!("tensorfs: cache upkeep skipped: {e}");
+        let seen = *self.collections.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut collections = self.collections.lock().unwrap_or_else(PoisonError::into_inner);
+        if *collections == seen {
+            // The machine's garbage goes before any model (`on_short`).
+            if let (Some(reclaim), 1..) = (self.reclaim.get(), short()?) {
+                (reclaim.0)(incoming);
             }
+            if let Some(_gc) = try_collect(self)? {
+                // A store GC cannot walk (a ref or header of another format) keeps all it holds.
+                if let Err(e) = self.upkeep(due(), &stamp, &short) {
+                    tracing::warn!("tensorfs: cache upkeep skipped: {e}");
+                }
+            }
+            *collections += 1;
         }
+        drop(collections);
         Ok(short()? == 0)
     }
 

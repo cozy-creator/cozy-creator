@@ -336,51 +336,74 @@ impl Service {
     }
     /// Observe GPU demand on the existing reclaim thread; disk caches retain their TTL cadence.
     fn reclaim_loop(weak: std::sync::Weak<Self>) {
-        let mut swept = std::time::Instant::now();
+        let mut swept: Option<std::time::Instant> = None;
         loop {
             std::thread::sleep(std::time::Duration::from_millis(500));
             match weak.upgrade() {
                 Some(service) if !*service.stopped.lock().unwrap() => {
                     if let Some(pool) = service.gpu() { pool.relieve_pressure(&service.engine); }
-                    if swept.elapsed() >= SWEEP_EVERY {
+                    // The first once the machine is configured, so its disk is measured early.
+                    if swept.is_none_or(|at| at.elapsed() >= SWEEP_EVERY) {
                         service.reclaim();
-                        swept = std::time::Instant::now();
+                        swept = Some(std::time::Instant::now());
                     }
                 }
                 _ => return,
             }
         }
     }
-    /// Caches manage themselves (`reclaim`): a TTL and a low disk, never a purge verb.
+    /// Caches manage themselves (`reclaim`): a TTL and a low disk, never a purge verb. Each
+    /// sweep logs what it freed and measures what fills the disk.
     pub fn reclaim(&self) -> crate::reclaim::Swept {
+        self.sweep(0, true)
+    }
+    /// The machine's garbage for a store admit of `incoming` bytes that finds the disk short,
+    /// before the store evicts a model (`Store::on_short`): never kernels, memoized stages or
+    /// run objects.
+    pub fn reclaim_for(&self, incoming: u64) {
+        self.sweep(incoming, false);
+    }
+    /// A sweep as though `incoming` more bytes were taken; `all` caches, or the garbage alone.
+    fn sweep(&self, incoming: u64, all: bool) -> crate::reclaim::Swept {
+        let publisher = self.publisher.lock().unwrap().clone();
+        let uv_cache = publisher.as_ref().and_then(|publisher| publisher.uv_cache());
+        let generations = self.catalog.root();
+        let engine = generations.parent().unwrap_or(generations);
         // Run objects no unfinished run needs go first.
-        if let Some(calls) = self.calls() {
-            if let Err(error) = calls.sweep_objects() {
+        let objects = match (all, self.calls()) {
+            (true, Some(calls)) => calls.sweep_objects().unwrap_or_else(|error| {
                 tracing::warn!("reclaim object roots: {error}");
-            }
-        }
+                (0, 0)
+            }),
+            _ => (0, 0),
+        };
         let sweep = || -> io::Result<crate::reclaim::Swept> {
-            let pool = self.pool();
+            let pool = self.pool().filter(|_| all);
             let bound = self.engine.bound_generations()?;
-            let kernels = self.gpu().map(|gpu| gpu.kernel_caches());
-            let publisher = self.publisher.lock().unwrap().clone();
-            let uv_cache = publisher
-                .as_ref()
-                .and_then(|publisher| publisher.uv_cache());
-            crate::reclaim::sweep(&crate::reclaim::Caches {
+            let kernels = self.gpu().filter(|_| all).map(|gpu| gpu.kernel_caches());
+            let environments = [generations.to_path_buf(), engine.join("editable"), crate::machine::toolchain::dir(engine)];
+            let disk = || crate::reclaim::measure(&self.engine.root).map(|d| crate::reclaim::Disk { available: d.available.saturating_sub(incoming), ..d });
+            let mut swept = crate::reclaim::sweep(&crate::reclaim::Caches {
                 engine: &self.engine,
                 catalog: &self.catalog,
                 bound: &bound,
                 kernels: kernels.as_ref(),
                 memo: pool.as_ref().map(|pool| pool.memo()),
                 uv_cache: uv_cache.as_deref(),
-                disk: &|| crate::reclaim::measure(&self.engine.root),
-            })
+                environments: &environments,
+                disk: &disk,
+            })?;
+            swept.add(crate::reclaim::Kind::Object, objects.0, objects.1);
+            Ok(swept)
         };
-        match sweep() {
+        let swept = sweep();
+        if let Some(publisher) = publisher.as_ref().filter(|_| all) {
+            crate::reclaim::measure_usage(publisher.store().root(), engine, uv_cache.as_deref());
+        }
+        match swept {
             Ok(swept) => {
-                if swept != crate::reclaim::Swept::default() {
-                    tracing::info!("reclaimed {swept:?}");
+                if !swept.is_empty() {
+                    tracing::info!("reclaimed {swept}");
                 }
                 swept
             }

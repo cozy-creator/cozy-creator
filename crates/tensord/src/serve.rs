@@ -197,6 +197,9 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     let machine = Machine::new(store.clone(), layout.cache.as_deref())?;
     boot.at("journal");
     let service = crate::service::Service::open(&engine, &generations, 1)?;
+    // A short store admit frees the machine's garbage before the store evicts a model.
+    let reclaimer = Arc::downgrade(&service);
+    store.on_short(move |incoming| reclaimer.upgrade().into_iter().for_each(|service| service.reclaim_for(incoming)));
     // The jobs this root held (a preparation the restart ended counts as ended now): Status
     // reports the true deadline from the first frame.
     let (working, ended_ms) = service.engine.jobs(0)?;

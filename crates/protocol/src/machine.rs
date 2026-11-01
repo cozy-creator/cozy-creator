@@ -945,6 +945,12 @@ pub struct Environment {
 pub struct Disk {
     pub total_bytes: u64,
     pub free_bytes: u64,
+    /// What fills it, as the machine's last sweep measured (0 before one, or from an older
+    /// machine): its TensorFS store; its package environments with what they added to uv's
+    /// cache; its Runtime pair, kernels and toolchain. The rest is other.
+    pub models_bytes: u64,
+    pub environments_bytes: u64,
+    pub runtime_bytes: u64,
 }
 
 /// Bytes as base64 text.

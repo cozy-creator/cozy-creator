@@ -250,13 +250,14 @@ impl Memo {
             .collect()
     }
 
-    /// The TTL, then the cap; the least recently used go first. Answers how many went.
-    pub fn sweep(&self) -> usize {
+    /// The TTL, then the cap; the least recently used go first. Answers how many went, and
+    /// their bytes.
+    pub fn sweep(&self) -> (usize, u64) {
         let Ok(homes) = fs::read_dir(&self.root) else {
-            return 0;
+            return (0, 0);
         };
         let now = SystemTime::now();
-        let (mut kept, mut total, mut dropped) = (vec![], 0u64, 0);
+        let (mut kept, mut total, mut dropped, mut freed) = (vec![], 0u64, 0, 0);
         for home in homes.flatten() {
             let path = home.path();
             let entry = home.file_name().to_str().and_then(|key| self.entry(key));
@@ -271,7 +272,11 @@ impl Memo {
                     kept.push((facts.modified().unwrap_or(UNIX_EPOCH), facts.len(), path));
                 }
                 // Expired, or a home left without its entry (an interrupted store).
-                _ => dropped += usize::from(fs::remove_dir_all(&path).is_ok()),
+                _ => {
+                    if fs::remove_dir_all(&path).is_ok() {
+                        (dropped, freed) = (dropped + 1, freed + facts.map_or(0, |f| f.len()));
+                    }
+                }
             }
         }
         kept.sort();
@@ -280,10 +285,10 @@ impl Memo {
                 break;
             }
             if fs::remove_dir_all(&path).is_ok() {
-                (total, dropped) = (total - size, dropped + 1);
+                (total, dropped, freed) = (total - size, dropped + 1, freed + size);
             }
         }
-        dropped
+        (dropped, freed)
     }
 }
 

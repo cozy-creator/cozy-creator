@@ -138,11 +138,19 @@ fn collect_environments(home: &Path, named: &HashSet<PathBuf>) -> usize {
             continue;
         }
         if !named.contains(&platform::durable::canonical(&path).unwrap_or_else(|_| path.clone())) {
-            let _ = fs::remove_dir_all(&path);
-            let _ = fs::remove_dir_all(path.with_extension("wheels"));
+            removed("editable environment", &path);
+            removed("carried wheels", &path.with_extension("wheels"));
         }
     }
     kept
+}
+
+/// Removes `path` (`what`), logging the bytes it freed.
+fn removed(what: &str, path: &Path) {
+    let bytes = crate::reclaim::freeable(path);
+    if fs::remove_dir_all(path).is_ok() {
+        tracing::info!("removed {what} {}: {}", path.display(), crate::reclaim::gib(bytes));
+    }
 }
 
 fn refused(code: &'static str, message: impl Into<String>) -> Refused {
@@ -435,7 +443,7 @@ impl LocalSources {
             if keyed(&entry.file_name().to_string_lossy(), "source-", 64)
                 && !held_tree(&path).is_empty() && collect_environments(&path, &named) == 0
             {
-                let _ = fs::remove_dir_all(&path);
+                removed("editable source", &path);
             }
         }
         if kept == 0 {

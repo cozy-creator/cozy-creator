@@ -1,6 +1,7 @@
 //! GC: mark what the roots and the uses keep (`retention.rs`), then sweep unmarked objects and
 //! snapshot folders older than the grace. A collection may first drop uses: those past a TTL, or
-//! least recently used first until enough bytes would be free.
+//! least recently used first when they free enough bytes; what only a dropped use kept goes in
+//! that collection. Each drop and each sweep that frees bytes is logged.
 //!
 //! A swept object is first renamed into `tmp/gc/`, then deleted only if it is still old: a put
 //! or reuse that raced the sweep made it young, and it goes back. A GC killed in between leaves
@@ -145,27 +146,26 @@ impl Store {
 
     /// The caller holds the collection fence for the whole mark and sweep.
     pub(super) fn collect_locked(&self, need: u64, older_than: Duration) -> Result<Collected> {
-        let cutoff = SystemTime::now()
-            .checked_sub(self.grace)
-            .unwrap_or(SystemTime::UNIX_EPOCH);
+        let now = SystemTime::now();
+        let cutoff = now.checked_sub(self.grace).unwrap_or(SystemTime::UNIX_EPOCH);
         self.restore_trash()?;
         let mut marked = self.roots()?;
         let mut uses = self.uses(&marked)?;
         let objects = self.objects()?;
-        let mut collected = Collected {
-            uses: self.drop_uses(&mut uses, &marked, &objects, need, older_than, cutoff)?,
-            ..Collected::default()
-        };
+        let (dropped, evicted) = self.drop_uses(&mut uses, &marked, &objects, need, older_than, cutoff)?;
         for kept in uses {
             marked.extend(kept.digests);
             marked.insert(kept.name);
         }
-        let doomed = objects
-            .iter()
-            .filter(|(sha, (_, modified))| *modified < cutoff && !marked.contains(*sha));
-        let doomed: Vec<&String> = doomed.map(|(sha, _)| sha).collect();
-        for sha256 in doomed {
-            if let Some(length) = self.discard(sha256, cutoff)? {
+        // Unreferenced objects past the grace, and what the dropped uses alone kept, now: what
+        // the grace protects is an object not yet named, never one a dropped use named.
+        let mut collected = Collected { uses: dropped.into_iter().collect(), ..Collected::default() };
+        for (sha256, (_, modified)) in objects.iter().filter(|(sha, _)| !marked.contains(*sha)) {
+            let since = if evicted.contains(sha256) { now } else { cutoff };
+            if *modified >= since {
+                continue;
+            }
+            if let Some(length) = self.discard(sha256, since)? {
                 collected.objects += 1;
                 collected.bytes += length;
             }
@@ -174,7 +174,7 @@ impl Store {
             let name = folder.file_name().and_then(|n| n.to_str()).unwrap_or_default();
             let old = fs::symlink_metadata(&folder)
                 .is_ok_and(|m| m.is_dir() && m.modified().is_ok_and(|m| m < cutoff));
-            if old && is_digest(name) && !marked.contains(name) {
+            if (old || collected.uses.iter().any(|u| u == name)) && is_digest(name) && !marked.contains(name) {
                 match fs::remove_dir_all(&folder) {
                     Err(e) if e.kind() != io::ErrorKind::NotFound => {
                         return Err(fail("remove", &folder)(e))
@@ -186,10 +186,17 @@ impl Store {
         self.sweep_tmp(cutoff)?;
         // The trash exists only during a collection (it holds what a killed one left).
         let _ = fs::remove_dir(self.root.join("tmp").join("gc"));
+        if collected.bytes > 0 {
+            let evicted = collected.uses.len();
+            tracing::info!("tensorfs: freed {} in {} objects ({evicted} evicted, the rest unreferenced)", gib(collected.bytes), collected.objects);
+        }
         Ok(collected)
     }
 
-    /// Removes the uses `need` asks for from the store and from `uses`: their names.
+    /// Removes the uses `need` asks for from the store and from `uses`, each logged: their
+    /// names, and the objects only they kept, which go now. The least recently used unused for
+    /// `older_than` go first, and only when, with the unreferenced objects past the grace, they
+    /// free `need` (`u64::MAX`: every one, the TTL's). A use a root holds any of stays.
     fn drop_uses(
         &self,
         uses: &mut Vec<Use>,
@@ -198,39 +205,69 @@ impl Store {
         need: u64,
         older_than: Duration,
         cutoff: SystemTime,
-    ) -> Result<Vec<String>> {
+    ) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
+        let none = (BTreeSet::new(), BTreeSet::new());
         let Some(since) = SystemTime::now().checked_sub(older_than).filter(|_| need > 0) else {
-            return Ok(vec![]);
+            return Ok(none);
         };
         uses.sort_by(|a, b| (a.used, &a.name).cmp(&(b.used, &b.name)));
         let mut count: HashMap<&str, u32> = HashMap::new();
         for digest in uses.iter().flat_map(|u| &u.digests) {
             *count.entry(digest).or_default() += 1;
         }
-        // What a sweep frees: old objects no root keeps, once no use does.
-        let size = |sha: &str| match objects.get(sha) {
-            Some((length, modified)) if *modified < cutoff && !roots.contains(sha) => *length,
-            _ => 0,
-        };
-        let mut free: u64 = objects.keys().filter(|sha| !count.contains_key(sha.as_str())).map(|sha| size(sha)).sum();
-        let mut dropped = BTreeSet::new();
-        // A use a root names frees nothing: it stays.
-        for u in uses.iter().filter(|u| u.used <= since && !roots.contains(&u.name)) {
+        let length = |sha: &str| objects.get(sha).map_or(0, |(length, _)| *length);
+        let old = |sha: &str| objects.get(sha).is_some_and(|(_, modified)| *modified < cutoff);
+        let orphan = |sha: &&String| !count.contains_key(sha.as_str()) && !roots.contains(*sha) && old(sha);
+        let mut free: u64 = objects.keys().filter(orphan).map(|sha| length(sha)).sum();
+        let (mut plan, mut evicted) = (vec![], BTreeSet::new());
+        // A use whose name or any object a root holds is in use (a running or queued call's).
+        let in_use = |u: &Use| roots.contains(&u.name) || u.digests.iter().any(|d| roots.contains(d));
+        for u in uses.iter().filter(|u| u.used <= since && !in_use(u)) {
             if free >= need {
                 break;
             }
-            self.remove_record(&self.root.join("uses").join(&u.name))?;
+            let mut bytes = 0;
             for digest in &u.digests {
                 let n = count.get_mut(digest.as_str()).expect("a use counts what it keeps");
                 *n -= 1;
-                if *n == 0 {
-                    free = free.saturating_add(size(digest));
+                if *n == 0 && length(digest) > 0 {
+                    bytes += length(digest);
+                    evicted.insert(digest.clone());
                 }
             }
-            dropped.insert(u.name.clone());
+            free = free.saturating_add(bytes);
+            plan.push((u, bytes));
         }
+        if free < need && need != u64::MAX {
+            return Ok(none);
+        }
+        let names = if plan.is_empty() { HashMap::new() } else { self.names() };
+        for (u, bytes) in &plan {
+            self.remove_record(&self.root.join("uses").join(&u.name))?;
+            let name = names.get(&u.name).cloned().unwrap_or_else(|| format!("cache entry {}", &u.name[..12]));
+            let idle = u.used.elapsed().unwrap_or_default().as_secs() / 60;
+            let why = if need == u64::MAX { "past its TTL".into() } else { format!("the disk {} short", gib(need)) };
+            tracing::info!("tensorfs: evicted {name}: {}, idle {idle} min, {why}", gib(*bytes));
+        }
+        let dropped: BTreeSet<String> = plan.into_iter().map(|(u, _)| u.name.clone()).collect();
         uses.retain(|u| !dropped.contains(&u.name));
-        Ok(dropped.into_iter().collect())
+        Ok((dropped, evicted))
+    }
+
+    /// Each model lane the refs name, `org/name@release lane`, by its commit's digest and its
+    /// header's: what a use is, for people.
+    fn names(&self) -> HashMap<String, String> {
+        let mut names = HashMap::new();
+        for repo in self.refs().unwrap_or_default() {
+            let lanes = repo.releases.iter().flat_map(|r| r.lanes.iter().map(|(lane, tree)| (format!("{}@{} {lane}", repo.name, r.version), tree)));
+            for (name, tree) in lanes.chain(repo.commits.iter().map(|tree| (repo.name.clone(), tree))) {
+                if let Some(header) = self.tree(tree).ok().and_then(|t| t.header().ok().map(|(_, h)| h.sha256.clone())) {
+                    names.insert(header, name.clone());
+                }
+                names.insert(tree.sha256.clone(), name);
+            }
+        }
+        names
     }
 
     /// Deletes `sha256` unless it became young since it was listed; its length when deleted.
@@ -318,4 +355,9 @@ fn exclusive(path: &std::path::Path) -> Result<Option<File>> {
             Err(fail("lock collection candidate", path)(error))
         }
     }
+}
+
+/// Bytes as GiB to a hundredth, for people.
+fn gib(bytes: u64) -> String {
+    format!("{:.2} GiB", bytes as f64 / (1u64 << 30) as f64)
 }

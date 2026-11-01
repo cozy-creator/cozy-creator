@@ -953,7 +953,6 @@ impl Publisher {
         if dir.join("generation.json").is_file() {
             return Ok(());
         }
-        let _cache = self.uv_cache_hold().map_err(io_failure)?;
         if dir.exists() {
             fs::remove_dir_all(&dir).map_err(io_failure)?; // an interrupted, never-published build
         }
@@ -1042,14 +1041,14 @@ impl Publisher {
         Ok(path)
     }
 
-    /// This machine's own uv cache, which `reclaim` manages (`Uv::machine_cache`).
+    /// The uv cache `reclaim` manages (`Uv::machine_cache`).
     pub fn uv_cache(&self) -> Option<PathBuf> {
         self.sdk.uv.machine_cache().map(Path::to_path_buf)
     }
 
     /// Held shared through one environment build, so `reclaim` removes nothing from the cache
     /// between uv's own per-command holds either.
-    fn uv_cache_hold(&self) -> io::Result<Option<File>> {
+    pub(super) fn uv_cache_hold(&self) -> io::Result<Option<File>> {
         let Some(cache) = self.uv_cache() else {
             return Ok(None);
         };

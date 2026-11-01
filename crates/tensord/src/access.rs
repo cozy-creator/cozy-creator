@@ -199,6 +199,7 @@ impl Fetch {
         wanted.sort_by_key(|w| w.bytes);
         behind.sort_by_key(|w| w.bytes);
         let required = wanted.len();
+        let missing: u64 = wanted.iter().chain(&behind).flat_map(|w| &w.objects).map(|o| o.length).sum();
         {
             let mut state = self.required.lock().unwrap();
             state.pending = required;
@@ -220,7 +221,12 @@ impl Fetch {
                             want.settled = true;
                         }
                         if let Err(error) = result {
-                            state.failure.get_or_insert_with(|| failed(error.clone()).to_string());
+                            // A full disk says what fills it and the disk that would hold the call.
+                            let advice = match error.code == Code::CAPACITY_EXHAUSTED {
+                                true => crate::reclaim::advice(fetch.store().root(), missing),
+                                false => String::new(),
+                            };
+                            state.failure.get_or_insert_with(|| failed(error.clone()).to_string() + &advice);
                         }
                     }
                     if let Some(engine) = wake.upgrade() { engine.notify_activity(); }
