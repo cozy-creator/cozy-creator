@@ -109,6 +109,7 @@ pub struct SplitSelection {
     pub reused_capacity_bytes: usize,
     pub preserved_backing_bytes: usize,
     pub reclaimable_working_bytes: usize,
+    pub reclaimable_cache_bytes: usize,
     pub choice_id: String,
     pub eligible: Vec<String>,
     pub required_bytes: usize,
@@ -218,6 +219,7 @@ struct Fit {
     preserve: BTreeSet<u64>,
     preserved_bytes: usize,
     reclaimable: usize,
+    reclaimable_cache: usize,
     now: usize,
     after_idle: usize,
 }
@@ -243,6 +245,9 @@ fn headroom(owner: &Working, free: usize, released: usize) -> usize {
 }
 
 fn fits(owner: &Working, state: &State, key: &str, stream: u64, free: usize) -> Result<Vec<Fit>> {
+    // Only pages whose owner released them and whose submitted fence was observed complete.
+    // These are reclaimable backing, not reusable working slots or phase working demand.
+    let reclaimable_cache = cache::ready_bytes(state, owner.page);
     let site = state
         .splits
         .sites
@@ -292,7 +297,7 @@ fn fits(owner: &Working, state: &State, key: &str, stream: u64, free: usize) -> 
             }
             let missing = backing(owner, &missing)?;
             let preserved_bytes = preserve.iter().map(|base| state.segments[base].bytes).sum();
-            let reclaimable = state
+            let reclaimable: usize = state
                 .segments
                 .iter()
                 .filter(|(base, segment)| {
@@ -321,8 +326,9 @@ fn fits(owner: &Working, state: &State, key: &str, stream: u64, free: usize) -> 
                 preserve,
                 preserved_bytes,
                 reclaimable,
+                reclaimable_cache,
                 now: headroom(owner, free, 0),
-                after_idle: headroom(owner, free, reclaimable),
+                after_idle: headroom(owner, free, reclaimable.saturating_add(reclaimable_cache)),
             })
         })
         .collect()
@@ -359,6 +365,7 @@ fn decision(
         reused_capacity_bytes: selected.reused,
         preserved_backing_bytes: selected.preserved_bytes,
         reclaimable_working_bytes: selected.reclaimable,
+        reclaimable_cache_bytes: selected.reclaimable_cache,
         basis: selected.basis,
         reclaimed_working_bytes: working,
         reclaimed_weight_bytes: weights,

@@ -514,6 +514,14 @@ pub(super) fn working_stats(state: &State, page: usize, stats: &mut WorkingStats
     }
 }
 
+pub(super) fn ready_bytes(state: &State, page: usize) -> usize {
+    state
+        .caches
+        .values()
+        .map(|held| held.stats(page).ready_bytes)
+        .sum()
+}
+
 #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
 pub(super) fn accounting(state: &State, page: usize, reading: &mut crate::cooperative::Accounting) {
     for held in state.caches.values() {

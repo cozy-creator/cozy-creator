@@ -243,5 +243,10 @@ def abandoned_live(payload: Probe, ctx: Context) -> Report:
 
 
 @app.entrypoint(accelerator=True)
+def split_choice(payload: Probe, ctx: Context) -> Report:
+    return native(payload, ctx, 'choice')
+
+
+@app.entrypoint(accelerator=True)
 def python_binding(payload: Probe, ctx: Context) -> Report:
     return binding(payload, ctx)

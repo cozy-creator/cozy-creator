@@ -435,3 +435,90 @@ pub(super) fn abandoned(cuda: &Cuda, peer: &cooperative::Peer, device: i32) -> R
         "accounting":observed,"boundary":"unreleased native last-owner drop retains backing until this isolated process exits; no completion or free capacity is invented"}),
     )
 }
+
+pub(super) fn choice(cuda: &Cuda, peer: &cooperative::Peer, device: i32) -> Result<Value> {
+    let seed = Cache::new(device, 1)?;
+    let page = seed.granularity();
+    seed.close()?;
+    let cache = Cache::new(device, 2 * page)?;
+    cache.commit(0, 2 * page)?;
+    sentinel(cuda, cache.base()?, 2 * page, 113)?;
+    varena::set_limit(device, Some(4 * page))?;
+    let key = "cache-ready-choice";
+    let select = || {
+        working::split_select(
+            device,
+            key,
+            vec![
+                ("whole".into(), vec![4 * page]),
+                ("half".into(), vec![2 * page]),
+            ],
+            "whole",
+            0,
+        )
+    };
+    let live = select()?;
+    require(
+        live.choice_id == "half",
+        "live Cache pages were credited to the larger choice",
+    )?;
+    let mut gate = Stream::new(cuda)?;
+    gate.block()?;
+    cache.release(0, 2 * page, gate.ptr as u64)?;
+    let pending_accounting = caches_only(peer, 0, 2 * page, 0)?;
+    let pending = select()?;
+    require(
+        pending.choice_id == "half",
+        "pending Cache pages were credited before actual completion",
+    )?;
+    gate.finish()?;
+    // Publication queries the actual fence but does not trim the newly Ready Cache pages.
+    let ready_accounting = caches_only(peer, 0, 0, 2 * page)?;
+    require(
+        cache.stats()?.mapped_bytes == 2 * page && cache.stats()?.ready_bytes == 2 * page,
+        "choice comparison requires physically mapped, completed owner releases",
+    )?;
+    let ready = select()?;
+    let selections = json!({"event":"choices","page":page,"managed_limit":4 * page,
+        "live":{"choice":live.choice_id,"required":live.required_bytes,"available":live.available_bytes},
+        "pending":{"choice":pending.choice_id,"required":pending.required_bytes,"available":pending.available_bytes},
+        "ready":{"choice":ready.choice_id,"required":ready.required_bytes,"available":ready.available_bytes},
+        "pending_accounting":pending_accounting,"ready_accounting":ready_accounting});
+    emit(&selections)?; // A before-fix refusal retains the actual comparison, not just an assertion.
+    require(
+        ready.choice_id == "whole" && ready.available_bytes == 4 * page,
+        "completed Cache pages did not admit the larger declared choice",
+    )?;
+    let token = working::phase_enter(device, Some(key.into()), working::PhaseMode::Eager)?;
+    let site = working::split_begin(device, key, &ready.choice_id, Some(token), 0)?;
+    let after_begin = cache_stats(&cache)?;
+    require(
+        after_begin["mapped"] == 0,
+        "split begin did not reclaim actual completed Cache backing",
+    )?;
+    let output = working::alloc(device, 4 * page, 0, None)?;
+    sentinel(cuda, output, 4 * page, 131)?;
+    unsafe {
+        working::free_completed(device, output)?;
+    }
+    let observed = working::split_end(device, site, true)?;
+    let phase = working::phase_leave(device, token, true, None)?;
+    require(
+        observed.pending
+            && phase.published
+            && phase.peak_bytes == 4 * page
+            && phase.backing_peak_bytes == 4 * page,
+        "chosen whole operation did not publish actual working demand",
+    )?;
+    require(
+        working::phase_forget(device, key)?,
+        "choice/phase measurement retired",
+    )?;
+    working::trim(device)?;
+    cache.close()?;
+    varena::set_limit(device, None)?;
+    Ok(
+        json!({"selection":selections,"cache_after_begin":after_begin,"full_readback_bytes":4 * page,
+        "phase":{"published":phase.published,"peak":phase.peak_bytes,"backing_peak":phase.backing_peak_bytes}}),
+    )
+}
