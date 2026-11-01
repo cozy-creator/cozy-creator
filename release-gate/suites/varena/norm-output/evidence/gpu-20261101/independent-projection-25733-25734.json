@@ -1,0 +1,69 @@
+{
+  "passed": true,
+  "run": 25733,
+  "cleanup": 25734,
+  "pid": 232308,
+  "runtime": "3043db98bb44472ddea03ed7c341b12d232d1569",
+  "native": "a96c7c3e837314795d0d21b993df1246dc394aed",
+  "package": "5d27a1e97b79ce2f98bc8dd07aacfae5833c888b",
+  "fixture": "700306f32aa2ecb0f197fb2690922b4226d713ce",
+  "actual_seed": 7730940094852668,
+  "first_calls": [
+    {
+      "case": "first-normal/dense",
+      "factor_reads": 0,
+      "native_children": 2,
+      "bit_exact": true,
+      "input_ownership": "declared_single_use"
+    },
+    {
+      "case": "first-normal/sparse-bootstrap",
+      "factor_reads": 0,
+      "native_children": 2,
+      "bit_exact": true,
+      "input_ownership": "declared_single_use"
+    }
+  ],
+  "sharing_cases": [
+    {
+      "case": "explicit-sharing/dense",
+      "native_selections": 0,
+      "observed_group_after": 1,
+      "relative_l2": 0.0
+    },
+    {
+      "case": "actual-learned-sharing/dense",
+      "fresh_group_before": null,
+      "native_selections": 0,
+      "relative_l2": 0.0,
+      "sibling_count": 2
+    },
+    {
+      "case": "explicit-sharing/sparse-bootstrap",
+      "native_selections": 0,
+      "observed_group_after": null,
+      "relative_l2": 0.0
+    },
+    {
+      "case": "actual-learned-sharing/sparse-bootstrap",
+      "fresh_group_before": null,
+      "native_selections": 0,
+      "relative_l2": 0.0,
+      "sibling_count": 2
+    }
+  ],
+  "all6_outputs_bit_exact_or_relative_l2_zero": true,
+  "same_pid_retired_keys": 3,
+  "baseline": {
+    "allocated_bytes": 17039360,
+    "mapped_bytes": 20971520,
+    "pending_bytes": 0,
+    "pools_bytes": 0,
+    "event_handles": 0
+  },
+  "raw_sha256": {
+    "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/attempt-002/projection-700/projection-result.json": "cb22619b62b4184de3dd145074af7b764d426d6aaa9bf0ca6b3d145dcdd406cc",
+    "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/attempt-002/projection-700/cleanup-result.json": "7c38a2a7bbb68a3814c660bdd1e5f3337252616b474b06be6f32d65752f21e9f"
+  },
+  "scope": "actual 513-token dense and sparse-bootstrap Attention processors with first-use declared ownership and genuine explicit/learned sharing; full H3 performance and rolling sparse projection remain separate"
+}

@@ -1,6 +1,6 @@
 # Exact RMSNorm and first-use output projections
 
-This is a source-ready genuine consumer fixture, not GPU qualification.
+The exact RMSNorm and first-use output-projection cohorts below have bounded GPU qualification. Full-model performance remains separate.
 
 `norm` runs the actual Torch RMSNorm installed under the package's real
 `_AdaLNPrunedOutputTable` topology. It checks BF16 at32768×5376 and FP16/F32 at513×5376.
@@ -40,8 +40,7 @@ identical to frozenfc4af. Root owns builds, installation and all GPU/rental acti
 
 Source evidence here includes the pinned Torch allocation implementation URLs/hashes,
 full25405 call inventory, CPU construction/normalization with CUDA uninitialized, and
-the redispatch TLS reproduction. Native CUDA census, output/refusal and cleanup results
-remain pending.
+the redispatch TLS reproduction. The named GPU cohorts below now supply native CUDA census, output/refusal and cleanup evidence.
 
 
 Run25583 showed that the fixture's manual processor installation omitted Sol's actual
@@ -60,3 +59,24 @@ single-use group. The learned-group case now constructs a separate real module, 
 an absent initial group, and retains both ordinary reads and the exact group2 refusal
 checks. The fixture explicitly creates normal tensors with inference disabled and
 grad disabled. No learned flag is assigned or guard relaxed; both records remain.
+
+
+## Qualified bounded cohorts
+
+RMSNorm25578/cleanup25582 pass on Runtime136/TensorFSa96: the three actual
+BF16/FP16/FP32 whole outputs are exact, with exactly two allocator requests each
+(output plus FP32 rstd), and the three minimum refusals preserve prior measurements.
+The independent receipt records the actual byte requests and PID121066.
+
+Projection25733/cleanup25734 pass on Runtime3043/TensorFSa96/package5d27/fixture700.
+Both first normal-tensor dense and sparse-bootstrap processors publish actual native
+Heads and declared-single-use output projections, with zero factor reads and exact
+outputs. The four explicit-sharing and genuinely learned two-consumer cases retain
+zero native selections and zero output relative L2. No sharing flag was assigned.
+Three request keys were already retired in the subsequent request in PID232308.
+All six cases restore17,039,360B live/20,971,520B mapped, with pending/pools/events0.
+
+The source/input hashes and independent checks are under evidence/gpu-20261101.
+Original failures25583 and25718 remain in the run receipts. This proves the bounded
+513-token dense/sparse-bootstrap consumer and ownership boundaries; rolling sparse
+projection and full-H3 performance remain separate qualifications.
