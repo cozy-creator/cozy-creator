@@ -105,7 +105,9 @@ impl Gpu {
     }
     fn eager(&self, stream: u64) -> Result<()> {
         if stream == 1 || stream == 2 {
-            return Err(invalid("use an explicit CUstream or legacy default stream 0"));
+            return Err(invalid(
+                "use an explicit CUstream or legacy default stream 0",
+            ));
         }
         let captures = crate::capture_counts()?;
         crate::ensure_recovery_allowed(&captures, self.device())?;

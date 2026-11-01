@@ -10,4 +10,3 @@ crate-type = ["cdylib"]
 [dependencies]
 varena = { path = "../../../../crates/varena" }
 varena-client = { path = "../../../../crates/varena-client" }
-
