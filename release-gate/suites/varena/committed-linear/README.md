@@ -67,3 +67,23 @@ correctly invalidated the contaminated sample. The fixture now calls actual
 as the real consumer already does. The8MiB/4MiB operation vectors and all9 cases are
 unchanged. This is a Runtime fixture preparation boundary, not a Varena API dependency
 on GEMM. The original25544 receipt remains preserved.
+
+
+## Qualified bounded GPU cohort
+
+Runtimefcde/nativeb6 passed10 actual consumer cases (25538) and later same-PID cleanup
+(25540), then all9 corrected protocol cases (25605) and cleanup (25606). Six complete
+consumer outputs are exact/L2zero, every real forward executes once, and two admitted
+raw reads each finalize4,198,400B. Unknown shape/source keys decline; intent/VA changes
+retain an equivalent compute key; tight8195→4098 geometry gets a different key. Wrong
+binding, minimum and closed source refuse before compute.
+
+Protocol proves8MiB/4MiB current samples, generation/reselection/reuse/capture guards,
+abort preserving a prior sample, independent graph replay with correct outputs, and
+external-callback invalidation. Runtime startup readiness is completed before baseline;
+cold25544 remains evidence of correct contamination rejection. Replay reason25541 is
+also preserved. Exact17,039,360B live/20,971,520B mapped baselines return with pending,
+pools and events zero; model weights and reservations return to zero. The later requests
+confirm9 consumer keys and3 protocol keys already retired. Independent audits and raw
+hashes are in evidence/gpu-20261101. This qualifies the explicit one-operation cohort,
+not whole-H3 prefetch, arbitrary callback closure or full-model performance.
