@@ -556,7 +556,7 @@ impl Walk {
             if pieces.is_empty() {
                 continue;
             }
-            let (ffmpeg, ffprobe) = self.host.ffmpeg()?;
+            let (ffmpeg, ffprobe) = self.host.ffmpeg().await?;
             let (folder, cutting, began) =
                 (Folder::open(&self.folder().dir)?, self.project.cutting.clone(), Instant::now());
             let canvas = Canvas { short: if preview { None } else { video.canvas.short }, ..video.canvas.clone() };
@@ -580,7 +580,7 @@ impl Walk {
             let Some(run) = self.host.sent(&key)? else { return Ok(None) };
             let run = self.host.wait(&run.id).await?;
             let node = self.folder().lock()?.pending.get(&key).map(|pending| pending.made.node.clone());
-            let (made, picture, approve, hub) = match self.land(&key, &run)? {
+            let (made, picture, approve, hub) = match self.land(&key, &run).await? {
                 Landed::Done => return Ok(node),
                 Landed::Call { made, call, latents, approve, hub, on } => {
                     return self.called(&key, *made, call, latents, approve, &hub, &on).await;
@@ -821,7 +821,7 @@ impl Walk {
     /// listed as its node's newest version in project.lock, approved as its `then` says (or when the
     /// node has nothing else). A run that did not complete is dropped with its reason and never run
     /// again.
-    fn land(&self, key: &str, run: &Run) -> Result<Landed, Error> {
+    async fn land(&self, key: &str, run: &Run) -> Result<Landed, Error> {
         let folder = self.folder();
         let Some(pending) = folder.lock()?.pending.remove(key) else { return Ok(Landed::Done) };
         let node = pending.made.node.clone();
@@ -858,7 +858,7 @@ impl Walk {
         let (file, _) = folder.keep(&picture)?;
         let mut made = Made { file: file.clone(), run: run.number, ..pending.made.clone() };
         if pending.field == "video" {
-            let (_, ffprobe) = self.host.ffmpeg()?;
+            let (_, ffprobe) = self.host.ffmpeg().await?;
             made.size = video::size(&ffprobe, &folder.path(&file));
         }
         let approve = matches!(pending.then, Then::List { approve: true } | Then::Clean { approve: true });
@@ -881,7 +881,7 @@ impl Walk {
 
     /// The frame of `video` at `at` seconds, as a PNG beside the project's files.
     async fn frame(&self, id: &str, video: &FsPath, at: f64) -> Result<tempfile::NamedTempFile, Error> {
-        let (ffmpeg, _) = self.host.ffmpeg()?;
+        let (ffmpeg, _) = self.host.ffmpeg().await?;
         let io = |e: std::io::Error| {
             Error::new(Kind::Unavailable, "project_io", format!("a frame of {}: {e}", video.display()))
         };
