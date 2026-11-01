@@ -273,7 +273,7 @@ interleave was missed rather than treating elapsed time as proof. All existing m
 minimum-refusal and ownership cells now pass the actual stream explicitly.
 
 
-## P3 explicit native GPU cooperation (GPU execution pending)
+## P3 explicit native GPU cooperation (run 24919 passed)
 
 `/cooperative` takes the usual exact Probe artifact fields plus `gpu_uuid`, the actual typed
 GPU/MIG UUID on the owned machine. Use ordinary `cozy run` with `--gpus=1` and the default Cozy
@@ -292,3 +292,10 @@ attempt until retirement finishes. It is not manufactured as a timing pass.
 See `crates/varena/cooperative-gpu.md` for the native ownership/lock contract and remaining P3
 scope. Normal fixture cleanup may synchronize; measured peer service may not. Keep all run
 receipts and distinguish this mechanism check from real model/foreign-pressure qualification.
+
+Run **24919** passed all nine explicit mechanism groups on one RTX 4090, using native TensorFS
+`1c6b1c15b` and fixture `e25a46b75`; the native wheel was unchanged after the initial fixture
+failure 24917. The [full result and boundaries](../evidence/p3-cooperative-24919.md) retain that
+failure, numeric accounting, GC/capture proof and actual concurrent retirement refusal.
+This proves same-UID/user/PID/mount-namespace explicit service, not automatic policy or TensorD
+migration. Always check `Report.passed` and nested `child_exit_code`, not run completion alone.

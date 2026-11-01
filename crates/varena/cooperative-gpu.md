@@ -2,8 +2,9 @@
 
 This connects the Linux metadata foundation to actual Varena GPU ownership. It installs no
 allocator callback, background sampler, process byte target, TensorD controller or Python cache
-callback. Source/build evidence and real GPU qualification are separate; the GPU fixture is
-prepared here, not claimed executed. TensorD policy removal remains later work.
+callback. Run 24919 passed the explicit two-process GPU mechanism on one RTX 4090, with native
+source 1c6b1c15b and fixture e25a46b75. See the [full receipt and boundaries](../../release-gate/suites/varena/evidence/p3-cooperative-24919.md).
+Automatic policy and TensorD removal remain later work.
 
 `cooperative::Peer::open(device, typed_uuid, directory, sharing, priority)` initializes the
 native working device outside capture and verifies the UUID bytes with `cuDeviceGetUuid_v2`.
