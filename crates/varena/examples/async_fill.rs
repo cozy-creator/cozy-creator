@@ -10,6 +10,8 @@ use std::{
     time::{Duration, Instant},
 };
 use varena::{Arena, FillFacts, FillOwners, FillState, Preparation, StreamPreparation, working};
+#[path = "async_fill/retirement.rs"]
+mod retirement;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 type Obj = *mut c_void;
 type Copy = unsafe extern "system" fn(u64, *const c_void, usize, Obj) -> i32;
@@ -816,6 +818,7 @@ fn run() -> Result<Value> {
         "capture" => capture_refusal(Arc::clone(&cuda), device)?,
         "abandoned" => abandoned(Arc::clone(&cuda), device)?,
         "retirement_pending" => retirement_pending(Arc::clone(&cuda), device)?,
+        "arena_retirement" => retirement::run(Arc::clone(&cuda), device)?,
         _ => return Err("unknown mode".into()),
     };
     Ok(

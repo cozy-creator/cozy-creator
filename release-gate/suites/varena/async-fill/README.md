@@ -13,6 +13,7 @@ async_fill abort GPU-... 0
 async_fill capture GPU-... 0
 async_fill abandoned GPU-... 0
 async_fill retirement_pending GPU-... 0
+async_fill arena_retirement GPU-... 0
 ```
 
 `ordering` keeps one of two actual producer streams behind a CUDA memory-value gate,
@@ -61,3 +62,12 @@ capture-mutex access. The observer-retirement lane owns the shared native finali
 its exclusion-token/no-held-capture-mutex implementation must be composed and qualified
 before claiming last-Arena or cross-device progress. Async producer/Region/Pin leases are
 genuine ownership and must not be detached as observers or inferred from Arc strong counts.
+
+`arena_retirement` composes the two native ownership systems. It requests retirement
+while a published Fill and an ordered consumer hold real owners. Separate device gates
+retain producers and consumers independently. A second Arena completes full useful D2D
+readbacks while the first is producing, finalizing, and fully retired. Producer completion
+retires source resources but cannot reclaim the still-gated consumer's backing. Dropping
+the final Pin/Region queues Arena resources; exact physical metadata stays visible until
+the actual consumer fence completes. This mode is authored but unrun, and does not
+claim shared peer-service observation or multi-GPU qualification.
