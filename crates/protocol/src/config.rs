@@ -114,6 +114,9 @@ pub struct MachineConfig {
     /// imported ahead of a request) or `dedicated` (the machine's alone). Absent: a rental is
     /// dedicated, anything else shared.
     pub mode: Option<MachineMode>,
+    /// The PyTorch a machine with no image installs its packages on (`2.15.0`), written by
+    /// `cozy machine update --torch`; absent: the newest it holds, else the newest there is.
+    pub torch: Option<String>,
 }
 
 /// How a machine shares its computer (`machine.mode`).

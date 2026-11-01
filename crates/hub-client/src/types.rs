@@ -115,6 +115,8 @@ pub struct Software {
     pub cozy: Option<String>,
     /// The operator's pin, not the current worker image's.
     pub pinned: bool,
+    /// The PyTorch machines with no image install packages on; absent: each keeps its own.
+    pub torch: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]

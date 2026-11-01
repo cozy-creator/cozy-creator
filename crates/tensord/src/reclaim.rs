@@ -6,7 +6,8 @@
 //! update downloads, unused generations (then the uv entries only they linked), and compiled
 //! kernels last, only when they alone lift it. Garbage goes every sweep once idle: a generation
 //! whose build failed, an editable environment no generation names, a Runtime pair neither
-//! selected nor kept to roll back to. Only bytes an unlink frees on the measured filesystem count:
+//! selected nor kept to roll back to, a machine's own PyTorch base neither active nor linked by
+//! any environment. Only bytes an unlink frees on the measured filesystem count:
 //! single-link files this process does not hold open, on that filesystem. Optional cache
 //! writes are skipped on a low disk. Never evicted: uncollected results (durable outputs),
 //! journal rows, a generation a run holds or an installation names, a uv entry an environment
@@ -146,6 +147,8 @@ pub struct Caches<'a> {
     /// that may link it are: generations, editable environments, the toolchain.
     pub uv_cache: Option<&'a Path>,
     pub environments: &'a [PathBuf],
+    /// Where the machine's PyTorch layer comes from: a machine's own bases go once unused.
+    pub torch: Option<&'a crate::published::layer::Torch>,
     /// The filesystem the machine's state is on (`measure`; a test's own).
     pub disk: &'a dyn Fn() -> io::Result<Disk>,
 }
@@ -158,6 +161,7 @@ pub(crate) enum Kind {
     UvCache,
     Editable,
     Pair,
+    Torch,
     Result,
     Log,
     Memo,
@@ -177,6 +181,7 @@ impl Kind {
             Kind::Memo => "memoized stages",
             Kind::Editable => "editable environments no generation names",
             Kind::Pair => "Runtime pairs no longer selected",
+            Kind::Torch => "PyTorch bases no longer used",
             Kind::Update => "update downloads",
             Kind::Generation => "package environments",
             Kind::Kernel => "kernel caches",
@@ -455,6 +460,17 @@ fn symlinked(dir: &Path, archives: &Path, depth: usize, found: &mut HashSet<OsSt
     }
 }
 
+/// Whether an environment under `dir`, `depth` directories down at most and never through a
+/// link, links into `base`: a venv's site-packages entry pointing there.
+fn links_into(dir: &Path, base: &Path, depth: usize) -> bool {
+    if dir.join("pyvenv.cfg").is_file() {
+        let entries = platform::paths::venv_site_packages(dir).into_iter().flat_map(|site| fs::read_dir(site).into_iter().flatten().flatten());
+        return entries.into_iter().any(|e| fs::read_link(e.path()).is_ok_and(|target| target.starts_with(base)));
+    }
+    let children = || fs::read_dir(dir).into_iter().flatten().flatten();
+    depth > 0 && children().any(|e| e.file_type().is_ok_and(|kind| kind.is_dir()) && links_into(&e.path(), base, depth - 1))
+}
+
 /// uv's pointers under `dir` to an unpacked wheel in `archive-v0`, by the archive's name: a
 /// symlink, or where uv makes none (Windows) a file whose whole text is `archive-v0/<id>`. Each
 /// has sidecars beside it (`<pointer>.rev`, `.http`, `.msgpack`).
@@ -624,6 +640,20 @@ pub fn sweep(caches: &Caches) -> io::Result<Swept> {
         if name.to_string_lossy().starts_with("candidate-") && !kept.iter().any(|k| k.file_name() == Some(&name)) {
             // A pair being staged is written to throughout.
             garbage(Kind::Pair, &pair.path(), last_use(&pair.path()));
+        }
+    }
+    // A machine's own PyTorch base that is not the active one, once no environment links it.
+    if let Some(torch @ crate::published::layer::Torch::Own { engine, .. }) = caches.torch {
+        let active = torch.base();
+        for (base, version) in crate::published::layer::bases(engine) {
+            if Some(&base) == active.as_ref() || caches.environments.iter().any(|root| links_into(root, &base, 3)) {
+                continue;
+            }
+            let bytes = releasable(&base, filesystem, &open).unwrap_or(0);
+            if remove(&base) {
+                tracing::info!("removed PyTorch {version} ({}): not this machine's PyTorch, and no environment uses it", size(bytes));
+                swept.add(Kind::Torch, 1, bytes);
+            }
         }
     }
     // An update's staged and downloaded files: a dev build sent again, a release fetched again.

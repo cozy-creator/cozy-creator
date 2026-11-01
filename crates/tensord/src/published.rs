@@ -48,16 +48,14 @@ pub struct PackageSdk {
     /// The development Runtime an update named by its wheel file (`0.24.6+e9baf7a4`): the
     /// operator's choice, which runs every package whatever its own bounds on the pair.
     pub runtime_build: String,
-    /// The base environment holding this machine's PyTorch layer (`layer`): an image's, else the
-    /// machine's own (`own_torch`), which it installs at the newest Torch when it first needs it.
-    pub torch: PathBuf,
-    pub own_torch: bool,
+    /// Where this machine's PyTorch layer comes from (`layer`).
+    pub torch: layer::Torch,
 }
 
 impl PackageSdk {
     /// Executors use the selected Runtime/TensorFS pair (an update's, else the image's), so they
     /// speak this machine's protocol; without a complete pair, each release's locked SDK.
-    pub fn selected(wheels: &Path, uv: crate::machine::uv::Uv, (torch, own_torch): (PathBuf, bool)) -> Self {
+    pub fn selected(wheels: &Path, uv: crate::machine::uv::Uv, torch: layer::Torch) -> Self {
         // An activation replaces sdk/current, not the immutable candidate directory. Freeze
         // that selection once: both cache identity and the installer's actual wheel inputs
         // must name the same build even when filenames/version labels repeat.
@@ -85,7 +83,6 @@ impl PackageSdk {
             find_links: complete.then_some(wheels),
             requirements: if complete { pair } else { vec![] },
             torch,
-            own_torch,
         }
     }
 }
@@ -322,37 +319,60 @@ impl Publisher {
     }
 
     /// This machine's PyTorch layer: its base's, read once. A machine with no image installs its
-    /// own base at the newest Torch for its accelerator the first time a package needs one; none
-    /// when it cannot (offline), and packages then install their own.
+    /// own base the first time a package needs one, at the version `machine.torch` names, else
+    /// the newest for its accelerator; none when it cannot (offline), and packages then install
+    /// their own.
     pub(crate) fn layer(&self, job: &Job) -> Result<Option<Arc<layer::Layer>>, Failure> {
         let mut held = self.layer.lock().unwrap();
         if held.is_none() {
-            let base = &self.sdk.torch;
-            let python = platform::paths::venv_python(base);
-            if !python.is_file() && self.sdk.own_torch {
-                job.stage("installing this machine's PyTorch".into());
-                let (dir, py) = (base.to_string_lossy(), python.to_string_lossy());
-                let made = self.uv(&["venv", "--no-project", "--python", &self.sdk.python, &dir], &[], job)
-                    .and_then(|()| self.uv(&["pip", "install", "--python", &py, "--torch-backend", "auto", "torch", "torchvision", "torchaudio"], &[], job));
-                if let Err((code, why)) = made {
-                    let _ = fs::remove_dir_all(base);
-                    tracing::warn!("this machine's PyTorch could not be installed ({code}): packages install their own: {why}");
-                    return Ok(None);
-                }
-            }
-            *held = layer::Layer::read(base).map_err(io_failure)?.map(Arc::new);
+            let base = match (self.sdk.torch.base(), &self.sdk.torch) {
+                (Some(base), _) => base,
+                (None, layer::Torch::Own { engine, wanted }) => match self.install_torch(engine, wanted.as_deref(), job) {
+                    Ok(base) => base,
+                    Err((code, why)) => {
+                        tracing::warn!("this machine's PyTorch could not be installed ({code}): packages install their own: {why}");
+                        return Ok(None);
+                    }
+                },
+                (None, layer::Torch::Image(_)) => return Ok(None),
+            };
+            *held = layer::Layer::read(&base).map_err(io_failure)?.map(Arc::new);
             if let Some(layer) = held.as_ref() {
                 tracing::info!("this machine's PyTorch layer: {}", layer.pins().join(" "));
                 // Compiled once here, so an environment's imports write nothing into the base.
-                environment::compile_bytecode(&python);
+                environment::compile_bytecode(&platform::paths::venv_python(&base));
             }
         }
         Ok(held.clone())
     }
 
+    /// A machine's own base, `torch-<version>` under `engine`: staged, then renamed once it
+    /// holds torch.
+    fn install_torch(&self, engine: &Path, wanted: Option<&str>, job: &Job) -> Result<PathBuf, Failure> {
+        job.stage("installing this machine's PyTorch".into());
+        let staging = engine.join(".torch.partial");
+        let _ = fs::remove_dir_all(&staging);
+        let (dir, py) = (staging.to_string_lossy(), platform::paths::venv_python(&staging));
+        let torch = wanted.map_or("torch".into(), |version| format!("torch=={version}"));
+        let made = self.uv(&["venv", "--no-project", "--python", &self.sdk.python, &dir], &[], job)
+            .and_then(|()| self.uv(&["pip", "install", "--python", &py.to_string_lossy(), "--torch-backend", "auto", &torch, "torchvision", "torchaudio"], &[], job))
+            .and_then(|()| {
+                let version = layer::torch_version(&staging).ok_or(("torch_missing", "uv installed no torch".to_string()))?;
+                let base = engine.join(format!("torch-{version}"));
+                let _ = fs::remove_dir_all(&base); // no base: it holds no torch
+                fs::rename(&staging, &base).map_err(io_failure)?;
+                tracing::info!("installed this machine's PyTorch {version}");
+                Ok(base)
+            });
+        if made.is_err() {
+            let _ = fs::remove_dir_all(&staging);
+        }
+        made
+    }
+
     /// The layer's pins an environment is built from: what an installation's identity names.
     pub(crate) fn torch_pins(&self) -> Vec<String> {
-        let read = || layer::Layer::read(&self.sdk.torch).ok().flatten().map(Arc::new);
+        let read = || layer::Layer::read(&self.sdk.torch.base()?).ok().flatten().map(Arc::new);
         let mut held = self.layer.lock().unwrap();
         if held.is_none() {
             *held = read();
@@ -919,6 +939,8 @@ impl Publisher {
             true => self.newest(service, request, &catalog()?, org, name)?,
             false => request.release.clone(),
         };
+        // The layer first: the alias names its pins.
+        let torch = self.layer(job)?.map(|layer| layer.pins()).unwrap_or_default();
         let alias = self.release_alias(request, &release);
         if let Some(held) = service.engine.installation(actor, &alias).map_err(io_failure)? {
             if service.catalog.resolve(&held.generation).is_ok() {
@@ -940,7 +962,6 @@ impl Publisher {
             .map(|record| record.dependencies.into_iter().map(|d| (normalized(&d.name), d.version)).collect());
         let stage = install_stage(&request.package, &release, before.as_ref(), &self.planned_pair(&locked));
         let wheels: Vec<&str> = card.wheels.iter().map(|wheel| wheel.sha256.as_str()).collect();
-        let torch = self.layer(job)?.map(|layer| layer.pins()).unwrap_or_default();
         let identity = sha256::hex_digest(json!({"package":request.package,"release":release,"pyproject":card.pyproject,"lock":card.lock,"wheels":wheels,"python":card.python,"hub":hub::origin_key(&source.origin),"sdk":self.sdk.requirements,"links":self.sdk.find_links,"torch":torch}).to_string().as_bytes())[..32].to_string();
         let wanted = Environment {
             card: &card,
@@ -954,7 +975,7 @@ impl Publisher {
         keep_card(&service.catalog.root().join(&identity), &card);
         let held = service.catalog.resolve(&identity).map_err(io_failure)?;
         service.installed(&held);
-        service
+        let installed = service
             .engine
             .bind_installation(Installation {
                 actor: actor.into(),
@@ -966,7 +987,21 @@ impl Publisher {
                     .map_err(|e| io_failure(io::Error::other(e)))?,
                 hub: request.origin(),
             })
-            .map_err(io_failure)
+            .map_err(io_failure)?;
+        // It replaces this release's installations by another Runtime pair or PyTorch: they go,
+        // and with them what only they held.
+        let earlier = |i: &Installation| {
+            i.package == installed.package && i.release == installed.release && i.hub == installed.hub && i.alias != installed.alias
+        };
+        match service.uninstall(actor, earlier) {
+            Ok((gone, bytes, _)) if !gone.is_empty() => tracing::info!(
+                "package {} {}: replaced {} earlier installation(s), {} freed",
+                installed.package, installed.release, gone.len(), crate::reclaim::size(bytes)
+            ),
+            Ok(_) => {}
+            Err(error) => tracing::warn!("package {} {}: its earlier installations stay: {error}", installed.package, installed.release),
+        }
+        Ok(installed)
     }
 
     /// Builds one immutable environment at its final path (its interpreter embeds the path);
@@ -1793,6 +1828,9 @@ pub(crate) struct Locked {
     hub: Vec<HubFile>,
     /// Each package it names, at its version.
     packages: BTreeMap<String, String>,
+    /// The rows only its Torch brings that a machine's layer provides (`layer::provides`): never
+    /// installed on one, whichever CUDA wheels that machine's Torch itself needs.
+    torch: Vec<String>,
 }
 
 /// The Runtime SDK pair: the machine's own, where it has one.
@@ -1818,6 +1856,16 @@ pub(crate) fn read_lock(pyproject: &str, lock: &str, source: Option<&hub::Source
         source: BTreeMap<String, toml::Value>,
         #[serde(default)]
         wheels: Vec<Wheel>,
+        #[serde(default)]
+        dependencies: Vec<Dep>,
+        #[serde(default, rename = "optional-dependencies")]
+        optional: BTreeMap<String, Vec<Dep>>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Dep {
+        name: String,
+        #[serde(default)]
+        extra: Vec<String>,
     }
     #[derive(serde::Deserialize)]
     struct Wheel {
@@ -1836,6 +1884,34 @@ pub(crate) fn read_lock(pyproject: &str, lock: &str, source: Option<&hub::Source
     }
     let rows = lock.package;
     let mut locked = Locked { distribution: project, ..Default::default() };
+    // What each row needs, extras included (`cuda-toolkit[cublas]`), across a name's platform rows.
+    let optional: HashMap<(String, &str), Vec<String>> = rows.iter().flat_map(|row| row.optional.iter()
+        .map(|(extra, deps)| ((normalized(&row.name), extra.as_str()), deps.iter().map(|d| normalized(&d.name)).collect()))).collect();
+    let mut needs: HashMap<String, BTreeSet<String>> = HashMap::new();
+    let mut roots = Vec::new();
+    for row in &rows {
+        let name = normalized(&row.name);
+        if row.source.get("editable").or(row.source.get("virtual")).and_then(|e| e.as_str()) == Some(".") {
+            roots.push(name.clone());
+        }
+        for dep in &row.dependencies {
+            let (to, extras) = (normalized(&dep.name), dep.extra.iter());
+            let via: Vec<String> = extras.filter_map(|e| optional.get(&(to.clone(), e.as_str()))).flatten().cloned().collect();
+            needs.entry(name.clone()).or_default().extend(via.into_iter().chain([to]));
+        }
+    }
+    let reach = |from: Vec<String>, stop: &[&str]| {
+        let (mut todo, mut seen) = (from, BTreeSet::new());
+        while let Some(name) = todo.pop() {
+            if !stop.contains(&name.as_str()) && seen.insert(name.clone()) {
+                todo.extend(needs.get(&name).into_iter().flatten().cloned());
+            }
+        }
+        seen
+    };
+    let other = reach(roots, &layer::ROOTS);
+    locked.torch = reach(layer::ROOTS.map(String::from).to_vec(), &[]).into_iter()
+        .filter(|name| layer::provides(name) && !other.contains(name)).collect();
     for row in rows {
         let name = normalized(&row.name);
         let local = ["directory", "editable", "path"].iter().any(|key| row.source.contains_key(*key));

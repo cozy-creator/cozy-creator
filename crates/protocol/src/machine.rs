@@ -731,6 +731,10 @@ pub struct StatusFrame {
     /// The executors' cozy-runtime.
     pub runtime: String,
     pub tensorfs: String,
+    /// The PyTorch its packages use (`2.15.0+cu132`); empty until a machine with no image has one.
+    pub torch: String,
+    /// Its PyTorch is its own, which `cozy machine update --torch` moves; else its image's.
+    pub own_torch: bool,
     /// The caller's held package installations.
     pub environments: Vec<Environment>,
     /// The filesystem holding the machine's store.

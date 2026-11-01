@@ -146,7 +146,7 @@ pub fn version() -> io::Result<()> {
 /// Runs the machine from its grant: identity and readiness under the machine root, the engine
 /// under `var/lib/cozy/tensord`, the API on the granted port.
 fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Ready) -> io::Result<()> {
-    let config::Config { mut grant, visible_devices, gpu_memory_limit, mode, endpoint, logs, .. } = config;
+    let config::Config { mut grant, visible_devices, gpu_memory_limit, mode, endpoint, logs, torch, .. } = config;
     let runtime = machine_runtime()?;
     use crate::machine::{identity, receipt};
     let layout = grant.layout.clone();
@@ -212,9 +212,10 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     // An image's base interpreter holds this machine's PyTorch layer; elsewhere the machine owns one.
     let image_torch = layout.root.join("opt/cozy/python");
     let torch = match platform::paths::venv_python(&image_torch).is_file() {
-        true => (image_torch, false),
-        false => (engine.join("torch"), true),
+        true => crate::published::layer::Torch::Image(image_torch),
+        false => crate::published::layer::Torch::Own { engine: engine.clone(), wanted: torch },
     };
+    identity.torch = Some(torch.clone());
     let sdk = crate::published::PackageSdk::selected(&paths.sdk(), crate::machine::uv::Uv::of(&layout.root, &engine, rental), torch);
     boot.at("updates");
     let running = {

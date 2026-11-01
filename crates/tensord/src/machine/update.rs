@@ -169,6 +169,10 @@ pub struct Request {
     /// Install the build toolchain (`super::toolchain`) instead of a software pair.
     #[serde(default)]
     pub toolchain: bool,
+    /// The PyTorch (`2.15.0`) a machine with no image installs packages on, written to its config
+    /// like the limit; each package's environment is built on it at its next use.
+    #[serde(default)]
+    pub torch: Option<String>,
 }
 
 /// An update waiting for the one in progress, with its status.
@@ -506,6 +510,7 @@ impl Updates {
                 gpu_memory_limit: None,
                 binary: None,
                 toolchain: true,
+                torch: None,
             };
             // One already answered (installed, failed or queued) asks nothing.
             let _ = self.request(fetch, true, |code| std::process::exit(code));
@@ -682,7 +687,7 @@ impl Updates {
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
             && (request.runtime.is_some() || request.tensorfs.is_some() || request.cozy.is_some() || request.binary.is_some()
-                || request.gpu_memory_limit.is_some())
+                || request.gpu_memory_limit.is_some() || request.torch.is_some())
                 != request.toolchain;
         if !valid {
             return Err((400, "an update requires operation and a Runtime, TensorFS or cozy binary, or the toolchain alone".into()));
@@ -854,7 +859,7 @@ impl Updates {
         let binary = self.binary(request)?;
         let pair = !(running(&request.runtime, &from.runtime, &from.runtime_sha256)
             && running(&request.tensorfs, &from.tensorfs, &from.tensorfs_sha256));
-        if !pair && binary.is_none() && request.gpu_memory_limit.is_none() {
+        if !pair && binary.is_none() && request.gpu_memory_limit.is_none() && request.torch.is_none() {
             // Nothing to install: the machine already runs this pair and binary.
             return self.set(|s| {
                 s.to = from.clone();
@@ -886,7 +891,11 @@ impl Updates {
             let activation = self.drain()?;
             self.set(|s| s.enter("installing"))?;
             if let Some(limit) = request.gpu_memory_limit {
-                write_limit(&self.paths.config, limit)?;
+                let limit = (limit > 0).then(|| toml_edit::value(limit as i64));
+                write_machine(&self.paths.config, "gpu_memory_limit", limit)?;
+            }
+            if let Some(torch) = &request.torch {
+                write_machine(&self.paths.config, "torch", Some(toml_edit::value(torch.as_str())))?;
             }
             Ok((to, activation))
         })();
@@ -1391,9 +1400,9 @@ fn unlink(link: &Path) -> io::Result<()> {
     fs::remove_file(link)
 }
 
-/// Sets `machine.gpu_memory_limit` in the machine's config (0 removes it), keeping the rest as
-/// written; a file the load would refuse is never written.
-fn write_limit(path: &Path, limit: u64) -> io::Result<()> {
+/// Sets `machine.<key>` in the machine's config (None removes it), keeping the rest as written; a
+/// file the load would refuse is never written.
+fn write_machine(path: &Path, key: &str, value: Option<toml_edit::Item>) -> io::Result<()> {
     let text = match fs::read_to_string(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
         read => read?,
@@ -1403,9 +1412,9 @@ fn write_limit(path: &Path, limit: u64) -> io::Result<()> {
     if !doc.get("machine").is_some_and(toml_edit::Item::is_table) {
         doc["machine"] = toml_edit::table();
     }
-    match limit {
-        0 => drop(doc["machine"].as_table_mut().and_then(|t| t.remove("gpu_memory_limit"))),
-        bytes => doc["machine"]["gpu_memory_limit"] = toml_edit::value(bytes as i64),
+    match value {
+        None => drop(doc["machine"].as_table_mut().and_then(|t| t.remove(key))),
+        Some(value) => doc["machine"][key] = value,
     }
     let text = doc.to_string();
     protocol::config::Config::parse(&text, &shown).map_err(|e| invalid(&e.message))?;

@@ -213,6 +213,7 @@ pub async fn update(
     tensorfs: Option<String>,
     tensord: Option<String>,
     gpu_memory_limit: Option<u64>,
+    mut torch: Option<String>,
 ) -> Result<ExitCode, Error> {
     protocol::calcifer::local_usable(name)?;
     let mut payload = serde_json::Map::new();
@@ -232,7 +233,7 @@ pub async fn update(
         "" => ctx.hub().clone(),
         origin => Origin::parse(origin)?,
     };
-    let flagless = asked.is_empty() && gpu_memory_limit.is_none();
+    let flagless = asked.is_empty() && gpu_memory_limit.is_none() && torch.is_none();
     // The cozy `cozy update` installed here and `local` has not moved to yet: the update activates
     // it, unless `--tensord` names another binary.
     let mut placed = placed(ctx, &m);
@@ -264,7 +265,10 @@ pub async fn update(
                 asked.push((member, distribution, Component::Release(wanted.into())));
             }
         }
-        if asked.is_empty() && placed.is_none() {
+        // A machine with no image follows the Hub's PyTorch; an image's moves with its image.
+        let public = status.torch.split('+').next().unwrap_or_default();
+        torch = target.torch.filter(|wanted| status.own_torch && moves(public, wanted));
+        if asked.is_empty() && placed.is_none() && torch.is_none() {
             return up_to_date(ctx, &m, status);
         }
     }
@@ -325,7 +329,12 @@ pub async fn update(
         want.push(reports("tensord", &version));
         payload.insert("cozy".into(), version.into());
     }
-    let restarts = payload.contains_key("tensord") || payload.contains_key("cozy");
+    if let Some(version) = &torch {
+        named.push(format!("PyTorch {version}"));
+        want.push(("torch", version.as_str().into()));
+        payload.insert("torch".into(), version.as_str().into());
+    }
+    let restarts = ["tensord", "cozy", "torch"].iter().any(|member| payload.contains_key(*member));
     if let Some(limit) = gpu_memory_limit {
         named.push(match limit {
             0 => "no GPU memory limit".into(),
@@ -681,7 +690,12 @@ async fn verify(ctx: &Context, name: &str, run: &calcifer::Run, want: &[(&str, s
 
 fn runs(status: &MachineStatus, want: &[(&str, serde_json::Value)]) -> bool {
     let status = serde_json::to_value(status).unwrap_or_default();
-    want.iter().all(|(field, value)| status[*field] == *value)
+    // PyTorch by its release: `2.15.0` is `2.15.0+cu132`.
+    let public = |value: &serde_json::Value| value.as_str().map(|v| v.split('+').next().unwrap_or_default().to_owned());
+    want.iter().all(|(field, value)| match *field {
+        "torch" => public(&status[*field]) == public(value),
+        _ => status[*field] == *value,
+    })
 }
 
 fn unapplied(name: &str, s: &MachineStatus, want: &[(&str, serde_json::Value)], line: Option<&str>) -> Error {

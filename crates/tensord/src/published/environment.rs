@@ -97,7 +97,7 @@ impl Publisher {
         let py = py.to_string_lossy();
         next();
         self.uv(&["venv", "--no-project", "--python", project.python, &envs], &[], job)?;
-        // uv never installs what the layer provides: a lock's Torch rows stay out (`provided`).
+        // uv never installs what the layer provides: a lock's Torch rows stay out (`Locked::torch`).
         let provided: Vec<&str> = layer.map(|l| l.provided().collect()).unwrap_or_default();
         let excludes = env.join("cozy-excludes.txt");
         fs::write(&excludes, provided.iter().map(|name| format!("{name}\n")).collect::<String>()).map_err(io_failure)?;
@@ -109,7 +109,7 @@ impl Publisher {
                     "--project", &dir, "--python", &py];
                 let held = carried.iter().map(|(name, _)| name.as_str()).chain(project.skip.iter().map(String::as_str))
                     .chain(pair.iter().copied().filter(|name| locked.packages.contains_key(*name)))
-                    .chain(provided.iter().copied().filter(|name| locked.packages.contains_key(*name)));
+                    .chain(locked.torch.iter().map(String::as_str).filter(|_| layer.is_some()));
                 for name in held {
                     args.extend(["--no-install-package", name]);
                 }
@@ -288,6 +288,7 @@ impl Publisher {
             gpu_memory_limit: None,
             binary: None,
             toolchain: false,
+            torch: None,
         };
         let stop = job.stop.clone().unwrap_or_default();
         let pause = || {

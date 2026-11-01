@@ -105,6 +105,11 @@ enum Verb {
         /// machine keeps it in its config, across updates and restarts.
         #[arg(long, value_name = "SIZE|off", value_parser = gpu_memory_limit)]
         gpu_memory_limit: Option<u64>,
+        /// The PyTorch (`2.15.0`) a machine with no image installs its packages on, from the index
+        /// for its accelerator; each package's environment is rebuilt on it at its next use. An
+        /// image's PyTorch moves with its image.
+        #[arg(long, value_name = "VERSION", value_parser = torch_version)]
+        torch: Option<String>,
     },
     /// Add another computer's machine by its address and TLS fingerprint.
     Add {
@@ -149,8 +154,17 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             tensorfs,
             tensord,
             gpu_memory_limit,
-        } => end::update(ctx, &name, runtime, tensorfs, tensord, gpu_memory_limit).await,
+            torch,
+        } => end::update(ctx, &name, runtime, tensorfs, tensord, gpu_memory_limit, torch).await,
         Verb::Authorize { public_key, remove } => local::authorize(ctx, &public_key, remove).await,
+    }
+}
+
+/// `--torch`: a release's version, `2.15.0`.
+fn torch_version(text: &str) -> Result<String, String> {
+    match text.split('.').all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit())) {
+        true => Ok(text.into()),
+        false => Err(format!("{text:?} is not a PyTorch release version (2.15.0)")),
     }
 }
 
