@@ -100,6 +100,16 @@ span_seams() {
   r=$([ -n "$b" ] && "${FR[@]}" seams "$(video_of "$2")" --at "$b" 2>&1 | tail -1)
   expect "$1" "$(jq -r 'if (.boundaries | length) >= 2 and ((([0.6, 0.9 * (.inside_ssim // 1)] | min) as $bar | [.boundaries[] | .ratio <= 3 and .ssim >= $bar] | all)) then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" "boundaries ${b:-unread}: $r"
 }
+# Continued-piece text (se-089, #787): generate must write 0.2.8's piece prompts byte for byte, compared by the sha256
+# each piece's `h3 piece prompt` line logs against 0.2.8's gate runs (seed-independent). The digests were computed offline
+# by each tree's own function up to its piece calls: 0.2.8's reproduces the three runs, and 0.3.0's (xs-139) matches them.
+same_text() {  # same_text <check> <cell> <run it must equal> <its piece digests>
+  [ -f "$2.number" ] || return 0
+  local got
+  got=$("$CLI" run show "$(cat "$2.number")" --once 2>/dev/null | grep -oE 'h3 piece prompt chars=[0-9]+ digest=[0-9a-f]+' \
+    | sed 's/.*digest=//' | paste -sd' ')
+  expect "$1" "$([ "$got" = "$4" ] && echo PASS || echo FAIL)" "pieces ${got:-none}; run $3: $4"
+}
 # Past one piece (se-086): 30 s in three pieces (15/9/6 s), each reading its own window of the clip, 1:1 with the shot,
 # its carried head included. A plate as long as the shot is followed frame by frame across both edges (a piece reading
 # the clip from its start again scores about 0.5); reference footage's windows are the ones its pieces' spans give.
@@ -125,6 +135,8 @@ if [[ $ONLY == *",footage-30s,"* ]]; then
     expect footage-30s-windows "$([ -n "$b" ] && [ "$w" = "$want" ] && echo PASS || echo FAIL)" "clip_windows ${w:-unread}, want $want"
   fi
   span_seams footage-30s-seams footage-30s
+  same_text footage-30s-text footage-30s 25471 \
+    "294da20429a29e84d7faf17e18aeb58d30fbcab632cc37756e4040c3ec3cce9f bf6fec18e39d992c497ac953c82732f580b0020a88a9d33e2b24bb76e1261d0a 7e8123fae5b3de6743b439a89ef02d766777d97190fdb61ee916547973088cc2"
 fi
 # Keyframes: a shot from the pattern's first frame to its last (FL2VA), each end on its keyframe, with no cut onto it.
 nice -n 19 ffmpeg -v error -y -sseof -0.1 -i guide-5s.mp4 -frames:v 1 guide-5s-last.png
@@ -174,9 +186,24 @@ named h3-lora-20s-named h3-lora-20s 2
 # render a different take on another machine (se-089: 25229 and 25344 differ from piece 1), so a failure holds the
 # release for a look at more seeds rather than convicting a change on its own.
 BMOVE='[{"at": 0, "prompt": "<Rider> flips noodles in a wok at a harbour food stall."}, {"at": 9, "prompt": "<Rider> hands the bowl over, steps out of the stall and walks along the pier."}, {"at": 19, "prompt": "<Rider> reaches the end of the pier and looks out at the boats."}]'
-cell h3-shot-moves-on "$SHOT" assets:="[{\"name\": \"Rider\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
+cell h3-shot-moves-on "$SHOT" references:="[{\"name\": \"Rider\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
   prompt="<Rider> cooks at a busy harbour food stall at dusk, steam and lanterns, ambient sound" duration_s:=30 beats:="$BMOVE" seed:=$((R + 96))
 span_seams h3-shot-moves-on-seams h3-shot-moves-on
+# The same shot with the cook in prose only and no picture: #787 gives it #781's neutral continuation (0.2.8 gate 2).
+BTEXT='[{"at": 0, "prompt": "The cook flips noodles in a wok at a harbour food stall."}, {"at": 9, "prompt": "The cook hands the bowl over, steps out of the stall and walks along the pier."}, {"at": 19, "prompt": "The cook reaches the end of the pier and looks out at the boats."}]'
+cell h3-moves-on-text "$SHOT" prompt="A young cook in a red jacket cooks at a busy harbour food stall at dusk, steam and lanterns, ambient sound" \
+  duration_s:=30 beats:="$BTEXT" seed:=$((R + 130))
+span_seams h3-moves-on-text-seams h3-moves-on-text
+# Both are also judged by eye for a cut: one frame a second, 10 to a row.
+for c in h3-shot-moves-on h3-moves-on-text; do
+  [ -f "$c.number" ] && v=$(video_of "$c") && [ -n "$v" ] || continue
+  nice -n 19 ffmpeg -v error -y -i "$v" -vf "fps=1,scale=224:-2,tile=10x3" -frames:v 1 "$c-sheet.png" && log "$c: judge by eye for a cut: $PWD/$c-sheet.png"
+done
+
+same_text h3-shot-moves-on-text h3-shot-moves-on 25472 \
+  "f36788038ca0754f381b93faf2f69366832820109acb68e8e425a7d83ee0739f 53870fb783957f792da3bf1d4270bc450b8df157f33b9178dc0123c8cbd4e3b6 5115e226a1e731785094cca8e54961bca33cec81d879cbaaad19b86b5f15ab5e"
+same_text h3-moves-on-text-text h3-moves-on-text 25500 \
+  "329dba4600de1b74dbb4d63eb683dfab21ff02b9f48e3c9b1b0f81c12d70fa78 2b8e25fbb70f3e23c47671a12d75abebc5c98651b444678cc4e7d015c79ea2f5 35918e8dd2207b0aaed8ca1f27b0579e3714c9bcf041fd3a271658530fd6d383"
 
 # A reference shot, then a text-only render on the next call: the second must get the GPU, never waiting behind the
 # first's prefetch (TensorD 0.14.6: lily run 22344 then 22363 waited until cancelled; fixed by cozy 0.14.8, #2316): a
