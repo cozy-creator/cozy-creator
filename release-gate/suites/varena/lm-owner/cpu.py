@@ -18,6 +18,7 @@ try:
     ids = torch.tensor([[1, 4, 9]], dtype=torch.long)
     expected = loaded.expected(ids)
     body = loaded.model.pipeline.body
+    assert not lm._unsupported(body)
     active = {}
 
     def progress(tokens):
@@ -54,6 +55,7 @@ try:
               'real_checkpoint': loaded.source.id, 'real_model': type(body).__name__,
               'runtime_lm_sha256': hashlib.sha256(Path(lm.__file__).read_bytes()).hexdigest(),
               'torch': torch.__version__, 'transformers': importlib.metadata.version('transformers'),
+              'cpu_capture_refusal': lm._capture_contract(body),
               'cuda_initialized': torch.cuda.is_initialized(), 'gpu_qualified': False}
 finally:
     loaded.close()

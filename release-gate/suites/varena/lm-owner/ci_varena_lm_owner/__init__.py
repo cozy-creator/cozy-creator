@@ -166,6 +166,8 @@ def lm_owner(payload: Probe, ctx: Context) -> Report:
             until(ctx, lambda: engine.cache is None and not owner.facts()['running'],
                   'idle LM owner did not retire')
             assert not engine.graphs and not engine.addresses and not engine.where
+            assert owner.facts()['returned'] > before_idle['owner']['returned']
+            assert owner.facts()['failed'] is None and engine.region.fresh
             assert all(binding.closed and not binding.held for binding in bindings)
             assert torch.equal(old_kv.cpu(), old_kv_cpu) and torch.equal(public_output.cpu(), expected)
             after_idle = {'owner': owner.facts(), 'request': queued.facts(),
@@ -179,13 +181,15 @@ def lm_owner(payload: Probe, ctx: Context) -> Report:
             fresh_region = engine.region
             lm.release(body)
             assert body not in lm._ENGINES and fresh_region.closed
-            assert owner.facts()['retired'] and not owner.facts()['requestable']
+            until(ctx, lambda: owner.facts()['retired'], 'closed LM owner did not retire')
+            assert not owner.facts()['requestable']
             assert torch.equal(public_output.cpu(), expected) and torch.equal(rebuilt.cpu(), expected)
             assert torch.equal(old_kv.cpu(), old_kv_cpu)
             result.update(active=active, before_idle=before_idle, after_idle=after_idle,
                           token_ids=expected.tolist(), real_model=type(body).__name__,
                           checkpoint=loaded.source.id, old_kv_pointer=old_pointer,
                           escaped_tokens_and_kv_preserved=True, owner_after_close=owner.facts(),
+                          public_output_device=str(public_output.device), escaped_kv_device=str(old_kv.device),
                           baseline=baseline, reference_device=str(request.memory.device))
             public_output = rebuilt = old_kv = None
             loaded.close()

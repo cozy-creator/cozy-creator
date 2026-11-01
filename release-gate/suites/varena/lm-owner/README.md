@@ -8,15 +8,19 @@ replacement forward, fabricated completion or forced graph eligibility.
 The recorded CPU comparison uses Torch2.14/Transformers5.17.0 with CUDA uninitialized.
 Both sources return the exact reference tokens `[41, 54, 12, 16, 41, 13, 10, 14]` and rebuild
 correctly. Active public progress observes one occupied row and one Region pin; discard
-refuses. Control74cce leaves one Binding/two retained weight blocks after idle KV discard.
+refuses. Control74cce leaves one Binding/two weight-block retentions after idle KV discard.
 Candidate534023328 closes the Binding and leaves zero retained blocks. The candidate CPU
 command passes `--require-closed`, so this is an assertion, not only a reported counter.
-Evidence and exact LM/model/script hashes are in `evidence/cpu/`.
+Evidence and exact LM/model/script hashes are in `evidence/cpu/`. CPU placement installs
+its normal float32 widening hooks, so its graph-capture contract is deliberately refused.
+The CUDA entrypoint separately requires a supported actual contract and captured/replayed
+graphs; the CPU result does not stand in for that gate.
 
 The GPU entrypoint `lm_owner` requires the real placed engine to capture and replay. Its
 public progress callback queues a native shrink and observes active-owner refusal. Once
 generation ends, ordinary Placement holds are released; native shrink must retire idle
-graphs, KV and weight bindings. Escaped token output and an initialized KV prefix must
+graphs, KV and weight bindings. The public token result is a CPU tensor; the escaped KV prefix is actual GPU storage.
+Both must
 remain unchanged. A new generation must bind/capture again and allocate different KV
 storage while the old alias remains live. Explicit `lm.release` must close the owner.
 
