@@ -1222,10 +1222,11 @@ impl Calcifer {
     }
 }
 
-/// Keeps each given file as `inputs/<sha256 hex>` unless it is there: a hard link, which reads
-/// nothing (the machine verifies the bytes it is sent), else a copy checked against its digest
-/// and length. Answers the objects the run's machine is written: every given file and every
-/// object `spec.inputs` names, each of which must be staged.
+/// Keeps each given file as `inputs/<sha256 hex>` unless it is there: a hard link to the file a
+/// given path resolves to, which reads nothing (the machine verifies the bytes it is sent), else
+/// a copy checked against its digest and length. Only a regular file is staged; any other name
+/// there is replaced. Answers the objects the run's machine is written: every given file and
+/// every object `spec.inputs` names, each of which must be staged.
 fn stage(
     inputs: &Path,
     spec: &v1::RunSpec,
@@ -1234,12 +1235,19 @@ fn stage(
     let mut objects = vec![];
     for source in given {
         let target = inputs.join(hex::encode(source.digest.bytes()));
+        // A hard link of a symlink links the symlink itself, and a relative one dangles here.
         let linked = || {
-            let same = std::fs::metadata(&source.path).is_ok_and(|m| m.len() == source.length);
-            same && std::fs::hard_link(&source.path, &target).is_ok()
+            let Ok(file) = std::fs::canonicalize(&source.path) else {
+                return false;
+            };
+            let same = std::fs::metadata(&file).is_ok_and(|m| m.len() == source.length);
+            same && std::fs::hard_link(&file, &target).is_ok()
         };
-        if !target.exists() && !linked() {
-            copy_checked(inputs, source, &target)?;
+        if !std::fs::symlink_metadata(&target).is_ok_and(|m| m.is_file()) {
+            let _ = std::fs::remove_file(&target);
+            if !linked() {
+                copy_checked(inputs, source, &target)?;
+            }
         }
         objects.push((source.digest, source.length));
     }
