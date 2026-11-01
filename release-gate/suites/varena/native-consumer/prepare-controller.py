@@ -41,7 +41,7 @@ def main():
                 'archive_sha256': source['archive_sha256'], 'native_tree': source['native_tree'],
                 'elf': {'class': 'ELF64', 'machine': 'x86_64', 'needed': needed,
                         'glibc_versions': glibc, 'glibc_max': glibc[-1]},
-                'qualification': 'source/build only; native dependency may be pre-withdrawal-fix'}
+                'qualification': source['scope']}
     controller = tree / 'release-gate/suites/varena/native-consumer/controller'
     project = args.output / 'project'
     shutil.copytree(controller, project, ignore=shutil.ignore_patterns('__pycache__', '.venv'))

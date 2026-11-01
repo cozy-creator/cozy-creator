@@ -43,7 +43,10 @@ and automatic-owner facts. `prepare-controller.py` verifies ELF64/x86_64, GLIBC<
 no Python/Torch linkage, and exact source/archive/binary hashes before freezing the
 project and an initially UNBOUND GPU input template.
 
-This checkpoint retains native `fa7318fdd` as pre-fix evidence. A confirmed unfinished
-round withdrawal defect is being fixed by the product owner; final positive coordination
-qualification requires that updated native dependency. No production API, allocator,
-daemon or published tool is changed here. Source/build success is not GPU qualification.
+Earlier fa731/fbb artifacts remain preserved as pre-withdrawal-fix evidence. This
+fixture now consumes exact native `c3bf579ae82b42b254aa30fe54c609fc8e89afcb`, the
+product owner's frozen withdrawal fix. It observes own demand/active recoveries/
+pending withdrawals and unfinished owned rounds return to idle without issuing any
+withdraw/clear_want/ask/service command. GPU qualification is still pending. Native
+product code is imported unchanged from that checkpoint; this fixture introduces no
+allocator, daemon or published tool behavior. Source/build success is not GPU proof.

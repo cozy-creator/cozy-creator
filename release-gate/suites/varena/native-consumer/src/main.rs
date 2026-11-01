@@ -200,6 +200,9 @@ fn facts(service: &Service) -> Result<Value> {
             Ok(
                 json!({"active":f.active,"recoveries":f.recoveries,"failed":f.failed,
                 "published":f.published,"serviced":f.serviced,"physical_bytes":f.physical_bytes,
+                "active_recoveries":f.active_recoveries,"pending_withdrawals":f.pending_withdrawals,
+                "withdrawn_rounds":f.withdrawn_rounds,"last_withdrawn_round":f.last_withdrawn_round,
+                "demand_clear_pending":f.demand_clear_pending,
                 "last_donation":f.last_donation.map(|d|json!({"round":d.round,"released":d.released,
                     "completed":d.completed,"pending":d.pending,"deferred":d.deferred})),
                 "last_recovery":f.last_recovery.map(|r|json!({"outcome":r.outcome.as_str(),
@@ -311,11 +314,11 @@ fn command(
                 .ok_or_else(|| io::Error::other("own row is absent"))?;
             Ok(
                 json!({"id":row(id),"pid":found.pid,"start_ticks":found.start_ticks,
-                "reclaimable":found.reclaimable,"physical":found.physical.total()?,
+                "reclaimable":found.reclaimable,"physical":found.physical.total()?,"want":found.want,
                 "working":{"live":found.physical.working.live,"idle":found.physical.working.idle,
                     "pending":found.physical.working.pending},"read_only":true,
                 "round":snapshot.round.as_ref().map(|r|json!({"generation":r.generation,
-                    "requester":row(r.requester),"aborted":r.aborted,
+                    "requester":row(r.requester),"aborted":r.aborted,"finished":r.finished(),
                     "donations":r.donations.iter().map(|d|json!({"owner":row(d.owner),
                         "answer":format!("{:?}",d.answer),"completed":d.completed,
                         "pending":d.pending,"requested":d.requested})).collect::<Vec<_>>()}))}),

@@ -332,6 +332,25 @@ def pressure(filler, margin):
             'allocation': allocation, 'full_readback': verified}
 
 
+def settled_owner(child):
+    """Observe native owner cleanup; never issue withdraw, clear_want, ask or service."""
+    deadline = time.monotonic() + 5
+    observed = []
+    while True:
+        row = child.call('row')
+        facts = row['owner']
+        observed.append(row)
+        round_ = row['result']['round']
+        own_pending_round = (round_ is not None and round_['requester'] == child.ready['row']
+                             and not round_['finished'])
+        if (row['result']['want'] == 0 and facts['active_recoveries'] == 0
+                and facts['pending_withdrawals'] == 0 and not facts['demand_clear_pending']
+                and not own_pending_round):
+            return {'settled': row, 'observations': observed}
+        assert time.monotonic() < deadline, ('automatic owner left demand/round pending', observed)
+        time.sleep(.01)
+
+
 def smoke_case(h):
     results = []
     for mode in ('auto', 'manual', 'plain'):
@@ -407,6 +426,7 @@ def death_case(h):
     result['protocol_and_integrity_passed'] = True
     result['automatic_episode_progress'] = first['ok']
     result['physical_readback_proven'] = bool(first['ok'] or result.get('separate_post_exit_readback'))
+    result['requester_cleanup'] = settled_owner(requester)
     result['boundary'] = 'Waiting row plus owned PID/birth/pidfd authorizes this fixture death; metadata reaping grants no capacity. Initial failure and any later driver-backed readback remain separate.'
     return result
 
@@ -453,7 +473,7 @@ def simultaneous_case(h):
     assert max(start for start, _ in intervals) < min(end for _, end in intervals), intervals
     assert sum(r['stats']['driver_physical_ooms'] for r in replies) > sum(r['stats']['driver_physical_ooms'] for r in published)
     assert any(r['owner']['recoveries'] for r in replies), replies
-    final_rows = [child.call('row') for child in peers]
+    final_rows = [settled_owner(child) for child in peers]
     progress = any(row['ok'] for row in replies)
     return {'initial_published_idle': published, 'pressure': setup, 'operation_ready': armed,
             'gates_released_ns': released, 'actual_allocation_intervals_ns': intervals,
