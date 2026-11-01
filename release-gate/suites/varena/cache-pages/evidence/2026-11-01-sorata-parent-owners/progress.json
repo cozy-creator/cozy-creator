@@ -1,0 +1,27 @@
+[
+  {
+    "case": "owner_held_gil",
+    "returncode": 0,
+    "passed": true
+  },
+  {
+    "case": "owner_capture_close",
+    "returncode": 0,
+    "passed": true
+  },
+  {
+    "case": "graph_owner_retirement",
+    "returncode": 0,
+    "passed": true
+  },
+  {
+    "case": "graph_owner_replay_exclusion",
+    "returncode": 0,
+    "passed": true
+  },
+  {
+    "case": "owner_allocator_progress",
+    "returncode": 0,
+    "passed": true
+  }
+]

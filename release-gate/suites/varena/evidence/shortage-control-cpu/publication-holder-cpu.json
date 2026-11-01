@@ -1,0 +1,13 @@
+{
+  "passed": true,
+  "holder": {
+    "publication_held": true,
+    "pid": 1650036,
+    "device": 29,
+    "inode": 2300029
+  },
+  "real_sigstop": true,
+  "independent_ofd_lock_refused_while_stopped": true,
+  "independent_lock_acquired_after_close": true,
+  "cuda": false
+}

@@ -1,0 +1,265 @@
+{
+  "id": "run-77bbe06ac6aa6e73d04b3006",
+  "number": 25551,
+  "kind": "call",
+  "target": "local/ci-varena-cache-pages/owner_held_gil",
+  "hub": "https://tensorhub.com",
+  "machine": "sorata",
+  "status": "failed",
+  "cancel_requested": false,
+  "machine_state": "running",
+  "reason": {
+    "code": "unhandled_exception",
+    "message": "TypeError: torch.UntypedStorage() received an invalid combination of arguments - got (int, device=Device), but expected one of:  * (*, int allocator = None, torch.device device = None)  * (int size, *, int allocator = None, torch.device device = None)  * (object sequence, *, int allocator = None, torch.device device = None) ",
+    "origin": "author",
+    "detail": "Traceback (most recent call last):\n  File \"/var/lib/cozy/tensord/generations/4622cacc3b5484c2e7cffb5a55e622f7/env/lib/python3.12/site-packages/cozy_runtime/author/_invoke.py\", line 564, in run_prepared\n    return invoke(prepared, inv, record), SUCCEEDED, record\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/generations/4622cacc3b5484c2e7cffb5a55e622f7/env/lib/python3.12/site-packages/cozy_runtime/author/_invoke.py\", line 493, in invoke\n    result = _call(surface, kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/generations/4622cacc3b5484c2e7cffb5a55e622f7/env/lib/python3.12/site-packages/cozy_runtime/author/_invoke.py\", line 1042, in _call\n    return surface.fn(**kwargs)\n           ^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/editable/08b1dea709d6d408/ci-varena-cache-pages/source-9daf7716dff9dda5071744a38da226b5b590e25014dff2cb0b13919881d5b659/tree/ci_varena_cache_pages/__init__.py\", line 282, in owner_held_gil\n    return held_gil(payload, ctx)\n           ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/var/lib/cozy/tensord/editable/08b1dea709d6d408/ci-varena-cache-pages/source-9daf7716dff9dda5071744a38da226b5b590e25014dff2cb0b13919881d5b659/tree/ci_varena_cache_pages/runtime_owners.py\", line 160, in held_gil\n    storage = torch.UntypedStorage(2 * MIB, device=ctx.device)\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: torch.UntypedStorage() received an invalid combination of arguments - got (int, device=Device), but expected one of:\n * (*, int allocator = None, torch.device device = None)\n * (int size, *, int allocator = None, torch.device device = None)\n * (object sequence, *, int allocator = None, torch.device device = None)"
+  },
+  "output": [],
+  "created_at_ms": 1793565004133,
+  "accepted_at_ms": 1793565004243,
+  "started_at_ms": 1793565004255,
+  "settled_at_ms": 1793565004383,
+  "execution_ms": 104,
+  "measurements": {
+    "attribution": {
+      "folded_names": 0,
+      "method": "perf_counter deltas accumulated in place: count/total/min/max/first/last and wall bounds per named span; step tracks keep up to 512 [end_unix_ms, ms] points",
+      "stages": {},
+      "steps": {}
+    },
+    "execution": {
+      "construction": {
+        "fill_ms": 0.0,
+        "legs_ms": {},
+        "prepare_ms": 0.01,
+        "prepared_unix_ms": 0,
+        "warm_ms": 0.0
+      },
+      "cuts": {
+        "levels": {},
+        "oom_floor": 0,
+        "sites": []
+      },
+      "degree": 1,
+      "executor": {
+        "legs_ms": {
+          "cuda_init": 1430.9,
+          "package_import": 9.6,
+          "package_warmup": 0.0,
+          "torch_import": 0.0
+        },
+        "ms": 1440.4,
+        "started_unix_ms": 1793565001971
+      },
+      "gpus": [
+        {
+          "arch": "sm_89",
+          "attention": {
+            "impl": "",
+            "observed": "",
+            "requested": ""
+          },
+          "end_us": 1793565004331669,
+          "gpu": 0,
+          "pid": 120274,
+          "start_us": 1793565004257712,
+          "uuid": "GPU-846689c6-daf3-15b1-580e-f2a78bdf6748"
+        }
+      ],
+      "loops": [],
+      "on_demand": {},
+      "plan": {},
+      "plan_reports": {},
+      "reply_built_unix_ms": 1793565004332.4,
+      "reply_sent_unix_ms": 1793565004333.8,
+      "spread": {}
+    },
+    "memory": {
+      "driver": [
+        {
+          "before_bytes": 1046937600,
+          "gpu": 0,
+          "peak_bytes": 1046937600,
+          "power_max_w": 0,
+          "sm_mhz_limit": 3105,
+          "sm_mhz_low": 0,
+          "sm_mhz_mean": 0,
+          "temperature_max_c": 0,
+          "throttled_share": 0.0,
+          "throttles": []
+        }
+      ],
+      "peak_allocated_bytes": 17039360,
+      "peak_reserved_bytes": 117440512,
+      "stats": {
+        "varena": [
+          {
+            "ceiling": {
+              "disk_gbps": 7.128696641235672,
+              "h2d_gbps": 25.74674457960659
+            },
+            "gpu": 0,
+            "stats": {
+              "allocated": 17039360,
+              "allocator": {
+                "allocations": 0,
+                "context_joins": 0,
+                "driver_memory_calls": 24,
+                "event_queries": 70,
+                "event_records": 41,
+                "event_waits": 0,
+                "frees": 0,
+                "ooms": 0
+              },
+              "allocator_scope": "process",
+              "baked_pages": {
+                "bytes": 0,
+                "cap": 135035004928,
+                "pages": 0,
+                "pinned": true,
+                "room": -1,
+                "scope": "the host tier: every streamed page's bytes, pinned",
+                "wanted": 0
+              },
+              "cooperation": {
+                "active": true,
+                "active_recoveries": 0,
+                "deferred": 0,
+                "demand_clear_pending": false,
+                "failed": null,
+                "last_donation": null,
+                "last_recovery": null,
+                "last_withdrawn_round": null,
+                "pending_withdrawals": 0,
+                "physical_bytes": 117440512,
+                "published": 7,
+                "recoveries": 0,
+                "retired": false,
+                "serviced": 7,
+                "stopping": false,
+                "withdrawn_rounds": 0
+              },
+              "final_bindings": {
+                "fallback_blocks": 0,
+                "fills": 0,
+                "final_resident_bytes": 0,
+                "hits": 0,
+                "native_prefetch": true,
+                "raw_resident_bytes": 0,
+                "resident_scope": "process"
+              },
+              "gathered": 0,
+              "host": null,
+              "moved": {
+                "baked": {
+                  "bytes": 0,
+                  "fills": 0,
+                  "ns": 0
+                },
+                "store": {
+                  "bytes": 0,
+                  "ns": 0
+                }
+              },
+              "overlapping": false,
+              "peak": 17039360,
+              "peak_window": "Working high-water plus sampled native backing, carried across resets; other constructions' resident sets left out",
+              "phase_policy_supported": true,
+              "phases": [],
+              "prefetch": {
+                "canceled": 0,
+                "completed": 0,
+                "declined_native": 0,
+                "failed": 0,
+                "queued": [],
+                "scope": "immutable stored RAW; native measured admission; unknown keys decline",
+                "started": 0,
+                "unsupported_sources": {},
+                "wait_ns": 0
+              },
+              "request": "50",
+              "reserved": 117440512,
+              "room_first_pass": null,
+              "sets": {},
+              "trace": [],
+              "trace_scope": "fills",
+              "weight_residency": {
+                "context_joins": 0,
+                "driver_physical_ooms": 0,
+                "event_waits": 0,
+                "evictions": 0,
+                "fills": 0,
+                "hits": 0,
+                "pinned_bytes": 0,
+                "poisoned": false,
+                "preferred_bytes": 0,
+                "ready_bytes": 0,
+                "reclaimable_bytes": 0,
+                "reclaimed_by_reason": {
+                  "allocator": 0,
+                  "requested": 0,
+                  "room": 0,
+                  "streaming_limit": 0,
+                  "weight_allocation": 0
+                },
+                "reclaimed_bytes": 0,
+                "regions": 0,
+                "reserved_bytes": 0,
+                "resident_bytes": 0,
+                "streaming_limit_bytes": 18446744073709551615
+              },
+              "working_allocator": {
+                "allocated_bytes": 17039360,
+                "allocated_capacity": 20971520,
+                "allocated_peak": 17039360,
+                "allocations": 1735,
+                "cache_live_bytes": 16777216,
+                "cache_mapped_bytes": 16777216,
+                "cache_pending_bytes": 0,
+                "cache_ready_bytes": 0,
+                "cache_reserved_bytes": 16777216,
+                "caches": 1,
+                "context_joins": 0,
+                "driver_memory_calls": 130,
+                "driver_physical_ooms": 0,
+                "event_handles": 87,
+                "event_queries": 304,
+                "event_records": 264,
+                "event_waits": 0,
+                "free_bytes": 94580224,
+                "frees": 1733,
+                "mapped_bytes": 117440512,
+                "mapped_peak": 117440512,
+                "ooms": 0,
+                "pending_bytes": 0,
+                "pools": 0,
+                "pools_bytes": 0,
+                "prefetch_admissions": 0,
+                "prefetch_attempts": 0,
+                "prefetch_declines": 0,
+                "reclaimable_bytes": 96468992,
+                "unassigned_bytes": 1888768
+              },
+              "working_phases": [],
+              "working_splits": []
+            },
+            "torch_peak": 17039360
+          }
+        ]
+      }
+    },
+    "models": [],
+    "observations": [],
+    "residency": {
+      "graphs": {},
+      "notes": {}
+    },
+    "software": {
+      "attempt_ordinal": 1,
+      "runtime": "0.36.23+dev.g2626e3f4",
+      "tensord": "0.15.7+dev.g616cf254",
+      "tensord_commit": "616cf254b032e7b6522d3205657a41485db33579",
+      "tensorfs": "0.17.16+dev.gdfb91204"
+    }
+  }
+}
