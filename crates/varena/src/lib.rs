@@ -12,6 +12,8 @@
 
 mod cuda;
 pub mod working;
+pub mod cache_owner;
+pub use cache_owner::CacheOwner;
 pub use working::{Cache, CacheStats};
 #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
 pub mod ledger;
@@ -19,7 +21,7 @@ pub mod ledger;
 pub mod cooperative;
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -400,6 +402,9 @@ struct Room {
     pages: AtomicUsize,
     working: AtomicUsize,
     ceiling: AtomicUsize,
+    // Actual successful physical releases only. Observations permit a real retry,
+    // never a grant or attribution to one callback/peer.
+    released: AtomicU64,
 }
 
 impl Default for Room {
@@ -409,6 +414,7 @@ impl Default for Room {
             pages: AtomicUsize::new(0),
             working: AtomicUsize::new(0),
             ceiling: AtomicUsize::new(usize::MAX),
+            released: AtomicU64::new(0),
         }
     }
 }
@@ -1103,6 +1109,7 @@ impl Arena {
         }
         *completed += size;
         self.room.pages.fetch_sub(size, Ordering::AcqRel);
+        self.room.released.fetch_add(size as u64, Ordering::AcqRel);
         let entry = state.entries.get_mut(&id).expect("locked candidate");
         // Every event is complete here; a destroy failure only leaks the event.
         for fence in entry.uses.fences().drain(..) {
@@ -1976,6 +1983,7 @@ impl Drop for Arena {
                     return;
                 }
                 self.room.pages.fetch_sub(entry.bytes, Ordering::AcqRel);
+                self.room.released.fetch_add(entry.bytes as u64, Ordering::AcqRel);
             }
             if self.driver.free_address(entry.ptr, entry.bytes).is_err() {
                 return;
@@ -1986,6 +1994,20 @@ impl Drop for Arena {
 
 fn room(device: i32) -> Result<Arc<Room>> {
     Ok(Arc::clone(&capture_counts()?.entry(device).or_default().room))
+}
+
+/// Host-only cumulative physical-release observation. Wrap is handled conservatively by
+/// request-local checked subtraction; queued owner actions never change this counter.
+pub fn released_bytes(device: i32) -> Result<u64> {
+    Ok(room(device)?.released.load(Ordering::Acquire))
+}
+
+fn reclaim_completed(device: i32, wanted: usize) -> Result<usize> {
+    let working = working::reclaim_completed(device, wanted)?;
+    let weights = if working < wanted {
+        reclaim(device, wanted - working)?.reclaimed_bytes
+    } else { 0 };
+    Ok(working.saturating_add(weights))
 }
 
 /// The room this process may hold on `device` (weight pages plus mapped working allocations),

@@ -407,6 +407,10 @@ fn rollback(
         owner.driver.release(page.handle)?;
         held.pages.remove(&at);
         owner.room.working.fetch_sub(owner.page, Ordering::AcqRel);
+        owner
+            .room
+            .released
+            .fetch_add(owner.page as u64, Ordering::AcqRel);
     }
     Ok(())
 }
@@ -481,6 +485,10 @@ pub(super) fn trim_ready(
             owner.driver.release(held.pages[&at].handle)?;
             held.pages.remove(&at);
             owner.room.working.fetch_sub(owner.page, Ordering::AcqRel);
+            owner
+                .room
+                .released
+                .fetch_add(owner.page as u64, Ordering::AcqRel);
             released += owner.page;
             *completed += owner.page;
         }
