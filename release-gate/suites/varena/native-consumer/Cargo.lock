@@ -146,6 +146,7 @@ dependencies = [
 name = "varena-native-consumer"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "libloading",
  "serde_json",
  "varena",

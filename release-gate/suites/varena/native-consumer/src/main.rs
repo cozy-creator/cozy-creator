@@ -4,7 +4,8 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     ffi::c_void,
-    io::{self, BufRead, Write},
+    io::{self, BufRead, Read as IoRead, Write},
+    os::fd::FromRawFd,
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -91,13 +92,24 @@ impl Cuda {
     }
     fn verify(&self, block: &Block) -> Result<()> {
         self.synchronize()?;
-        let mut data = vec![0u8; block.bytes];
-        // SAFETY: destination owns bytes, and the source remains live in our allocation map.
-        check("cuMemcpyDtoH", unsafe {
-            (self.read)(data.as_mut_ptr().cast(), block.ptr, block.bytes)
-        })?;
-        if data.iter().any(|byte| *byte != block.value) {
-            return Err(io::Error::other("native working allocation contents changed").into());
+        // Read EVERY requested byte without allocating a GPU-sized host copy.
+        let mut data = vec![0u8; block.bytes.min(8 << 20)];
+        for offset in (0..block.bytes).step_by(data.len()) {
+            let count = data.len().min(block.bytes - offset);
+            let address = block
+                .ptr
+                .checked_add(offset as u64)
+                .ok_or_else(|| io::Error::other("readback pointer overflow"))?;
+            // SAFETY: destination owns count bytes; the source allocation remains live.
+            check("cuMemcpyDtoH", unsafe {
+                (self.read)(data.as_mut_ptr().cast(), address, count)
+            })?;
+            if data[..count].iter().any(|byte| *byte != block.value) {
+                return Err(io::Error::other(format!(
+                    "native allocation changed at readback window {offset}"
+                ))
+                .into());
+            }
         }
         Ok(())
     }
@@ -130,9 +142,37 @@ fn row(id: ledger::RowId) -> Value {
 }
 fn libraries() -> Result<Value> {
     let maps = std::fs::read_to_string("/proc/self/maps")?;
+    if maps.contains("libpython") || maps.contains("libtorch") {
+        return Err(io::Error::other("standalone native process loaded Python or Torch").into());
+    }
     Ok(
         json!({"python_loaded":maps.contains("libpython"),"torch_loaded":maps.contains("libtorch"),"cuda_loaded":maps.contains("libcuda.so")}),
     )
+}
+fn start_ticks() -> Result<u64> {
+    let stat = std::fs::read_to_string("/proc/self/stat")?;
+    let (_, tail) = stat
+        .rsplit_once(") ")
+        .ok_or_else(|| io::Error::other("invalid self stat"))?;
+    Ok(tail
+        .split_whitespace()
+        .nth(19)
+        .ok_or_else(|| io::Error::other("missing self birth"))?
+        .parse()?)
+}
+fn monotonic_ns() -> Result<u64> {
+    let mut value = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: value is a valid output; CLOCK_MONOTONIC matches the controller's clock.
+    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut value) } != 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    Ok(u64::try_from(value.tv_sec)?
+        .checked_mul(1_000_000_000)
+        .and_then(|n| n.checked_add(value.tv_nsec as u64))
+        .ok_or_else(|| io::Error::other("monotonic clock overflow"))?)
 }
 fn emit(value: Value) -> Result<()> {
     println!("{value}");
@@ -159,6 +199,9 @@ fn facts(service: &Service) -> Result<Value> {
             let f = owner.facts()?;
             Ok(
                 json!({"active":f.active,"recoveries":f.recoveries,"failed":f.failed,
+                "published":f.published,"serviced":f.serviced,"physical_bytes":f.physical_bytes,
+                "last_donation":f.last_donation.map(|d|json!({"round":d.round,"released":d.released,
+                    "completed":d.completed,"pending":d.pending,"deferred":d.deferred})),
                 "last_recovery":f.last_recovery.map(|r|json!({"outcome":r.outcome.as_str(),
                     "requested_bytes":r.requested_bytes,"released_bytes":r.released_bytes,
                     "round":r.round,"completed_bytes":r.completed_bytes,"elapsed_ns":r.elapsed_ns}))}),
@@ -177,7 +220,7 @@ fn command(
 ) -> Result<Value> {
     let name = value["name"].as_str().unwrap_or("block");
     match value["op"].as_str().unwrap_or("") {
-        "allocate" => {
+        "allocate" | "work" => {
             if blocks.contains_key(name) {
                 return Err(io::Error::other("allocation name already live").into());
             }
@@ -189,7 +232,14 @@ fn command(
             if byte > 255 {
                 return Err(io::Error::other("invalid fill byte").into());
             }
-            let ptr = working::alloc(device, bytes, 0, None)?;
+            let begin = monotonic_ns()?;
+            emit(json!({"event":"allocation_begin","id":value["id"],"at_ns":begin,"bytes":bytes}))?;
+            let allocation = working::alloc(device, bytes, 0, None);
+            emit(
+                json!({"event":"allocation_end","id":value["id"],"at_ns":monotonic_ns()?,
+                "ok":allocation.is_ok(),"bytes":bytes}),
+            )?;
+            let ptr = allocation?;
             blocks.insert(
                 name.to_owned(),
                 Block {
@@ -199,7 +249,16 @@ fn command(
                 },
             );
             cuda.fill(ptr, bytes, byte as u8)?;
-            Ok(json!({"ptr":ptr,"bytes":bytes,"value":byte}))
+            if value["op"] == "work" {
+                cuda.verify(&blocks[name])?;
+                working::free(device, ptr, 0)?;
+                blocks.remove(name);
+                Ok(
+                    json!({"ptr":ptr,"bytes":bytes,"value":byte,"bytes_verified":bytes,"freed":true}),
+                )
+            } else {
+                Ok(json!({"ptr":ptr,"bytes":bytes,"value":byte}))
+            }
         }
         "verify" => {
             let block = blocks
@@ -237,6 +296,31 @@ fn command(
             }
             _ => Err(io::Error::other("service belongs only to the manual donor").into()),
         },
+        "row" => {
+            let (id, snapshot) = match service {
+                Service::Auto(owner) => (owner.id(), owner.snapshot()?),
+                Service::Manual(peer) => (peer.id(), peer.snapshot()?),
+                Service::None => {
+                    return Err(io::Error::other("plain consumer has no ledger row").into());
+                }
+            };
+            let found = snapshot
+                .rows
+                .iter()
+                .find(|r| r.id == id)
+                .ok_or_else(|| io::Error::other("own row is absent"))?;
+            Ok(
+                json!({"id":row(id),"pid":found.pid,"start_ticks":found.start_ticks,
+                "reclaimable":found.reclaimable,"physical":found.physical.total()?,
+                "working":{"live":found.physical.working.live,"idle":found.physical.working.idle,
+                    "pending":found.physical.working.pending},"read_only":true,
+                "round":snapshot.round.as_ref().map(|r|json!({"generation":r.generation,
+                    "requester":row(r.requester),"aborted":r.aborted,
+                    "donations":r.donations.iter().map(|d|json!({"owner":row(d.owner),
+                        "answer":format!("{:?}",d.answer),"completed":d.completed,
+                        "pending":d.pending,"requested":d.requested})).collect::<Vec<_>>()}))}),
+            )
+        }
         "stats" => Ok(Value::Null),
         _ => Err(io::Error::other("unknown native fixture operation").into()),
     }
@@ -247,6 +331,7 @@ fn consumer(
     directory: &std::path::Path,
     descriptor: ledger::Device,
     device: i32,
+    mut gate: Option<std::fs::File>,
 ) -> Result<()> {
     let cuda = Cuda::open(device)?;
     working::initialize(device)?;
@@ -274,7 +359,7 @@ fn consumer(
         Service::None => None,
     };
     emit(
-        json!({"event":"ready","pid":std::process::id(),"mode":mode,"row":id,"libraries":libraries()?,"stats":stats(device)?,"driver":cuda.memory()?}),
+        json!({"event":"ready","pid":std::process::id(),"start_ticks":start_ticks()?,"mode":mode,"row":id,"libraries":libraries()?,"stats":stats(device)?,"driver":cuda.memory()?}),
     )?;
     let mut blocks = BTreeMap::new();
     for line in io::stdin().lock().lines() {
@@ -282,14 +367,40 @@ fn consumer(
         if value["op"] == "quit" {
             break;
         }
+        if value["gated"] == true {
+            emit(json!({"event":"operation_ready","id":value["id"],"at_ns":monotonic_ns()?}))?;
+            let mut byte = [0];
+            gate.as_mut()
+                .ok_or_else(|| io::Error::other("no owned start gate"))?
+                .read_exact(&mut byte)?;
+            if byte != [1] {
+                return Err(io::Error::other("invalid owned start gate byte").into());
+            }
+        }
         let start = Instant::now();
         let result = command(&value, device, &cuda, &service, &mut blocks);
-        let (ok, result, error) = match result {
-            Ok(x) => (true, x, Value::Null),
-            Err(e) => (false, Value::Null, Value::String(e.to_string())),
+        let (ok, result, error, error_class) = match result {
+            Ok(x) => (true, x, Value::Null, ""),
+            Err(e) => {
+                let kind = match e.downcast_ref::<varena::Error>() {
+                    Some(varena::Error::OutOfMemory { .. } | varena::Error::Exhausted { .. }) => {
+                        "capacity"
+                    }
+                    Some(varena::Error::Cuda { .. } | varena::Error::DeviceFault { .. }) => {
+                        "driver"
+                    }
+                    _ => match e.downcast_ref::<cooperative::Error>() {
+                        Some(cooperative::Error::Ledger(
+                            ledger::Error::Busy | ledger::Error::Stale | ledger::Error::StaleSample,
+                        )) => "deferred",
+                        _ => "other",
+                    },
+                };
+                (false, Value::Null, Value::String(e.to_string()), kind)
+            }
         };
         emit(
-            json!({"event":"reply","ok":ok,"result":result,"error":error,"elapsed_ns":start.elapsed().as_nanos().min(u64::MAX as u128) as u64,"stats":stats(device)?,"driver":cuda.memory()?,"owner":facts(&service)?}),
+            json!({"event":"reply","id":value["id"],"op":value["op"],"ok":ok,"result":result,"error":error,"error_class":error_class,"at_ns":monotonic_ns()?,"elapsed_ns":start.elapsed().as_nanos().min(u64::MAX as u128) as u64,"stats":stats(device)?,"driver":cuda.memory()?,"owner":facts(&service)?,"libraries":libraries()?}),
         )?;
     }
     cuda.synchronize()?;
@@ -309,7 +420,9 @@ fn consumer(
         },
         Service::None => {}
     }
-    emit(json!({"event":"closed","stats":stats(device)?,"driver":cuda.memory()?}))
+    emit(
+        json!({"event":"closed","stats":stats(device)?,"driver":cuda.memory()?,"libraries":libraries()?}),
+    )
 }
 
 fn watcher(directory: &std::path::Path, device: ledger::Device, expected: &Value) -> Result<()> {
@@ -327,6 +440,11 @@ fn watcher(directory: &std::path::Path, device: ledger::Device, expected: &Value
             .ok_or_else(|| io::Error::other("missing requester incarnation"))?,
     };
     let deadline = Instant::now() + Duration::from_millis(number(expected, "timeout_ms")? as u64);
+    emit(
+        json!({"event":"watch_ready","pid":std::process::id(),"start_ticks":start_ticks()?,
+        "donor":row(donor),"requester":row(requester),"at_ns":monotonic_ns()?,
+        "libraries":libraries()?,"read_only":true}),
+    )?;
     loop {
         match map.snapshot() {
             Ok(snapshot) => {
@@ -340,7 +458,7 @@ fn watcher(directory: &std::path::Path, device: ledger::Device, expected: &Value
                     && let Some(owner) = snapshot.rows.iter().find(|r| r.id == donor)
                 {
                     emit(
-                        json!({"event":"donor_waiting","round":round.generation,"donor":row(donor),"requester":row(requester),"pid":owner.pid,"start_ticks":owner.start_ticks,"completed":donation.completed,"pending":donation.pending,"libraries":libraries()?,"read_only":true}),
+                        json!({"event":"donor_waiting","round":round.generation,"donor":row(donor),"requester":row(requester),"pid":owner.pid,"start_ticks":owner.start_ticks,"completed":donation.completed,"pending":donation.pending,"at_ns":monotonic_ns()?,"libraries":libraries()?,"read_only":true}),
                     )?;
                     return Ok(());
                 }
@@ -380,5 +498,16 @@ fn main() -> Result<()> {
             )?,
         );
     }
-    consumer(&args[1], &directory, descriptor, device)
+    let gate = args
+        .get(5)
+        .map(|value| -> Result<std::fs::File> {
+            let fd: i32 = value.parse()?;
+            if fd < 3 {
+                return Err(io::Error::other("invalid inherited gate descriptor").into());
+            }
+            // SAFETY: the ordinary controller passes this specific owned pipe via pass_fds.
+            Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+        })
+        .transpose()?;
+    consumer(&args[1], &directory, descriptor, device, gate)
 }

@@ -9,5 +9,34 @@ The ordinary Cozy fixture controller will kill only its own donor process after 
 state and a matching PID/birth identity. A deadline without the marker is a failed check, never
 authorization to kill or evidence of donor death. Reaping is not evidence of physical release.
 
-Source/build work is in progress. Real GPU proof is pending. All helpers belong to release-gate;
-no production API, allocator, daemon or published tool is changed here.
+The controller has three ordinary Cozy entrypoints: `smoke`, `donor_death` and
+`simultaneous_auto`. It verifies the executed ELF hash, PID/start_ticks/pidfd and no
+Python/Torch maps for every native child. Readback covers every requested byte using
+bounded host windows. Watchers also prove that CUDA is not loaded.
+
+`donor_death` warms all contexts and small read/write paths, publishes real completed
+idle working pages from a manual donor, and leaves that donor blocked on stdin without
+service. A plain native filler creates physical pressure from observed driver free
+minus an explicit margin. Only after `watch_ready` does the requester allocate through
+its automatic native Owner; no controller command creates an ask. The exact Waiting
+marker precedes owned donor termination. Initial physical exhaustion is preserved if
+context release lags; any later allocation/readback is a separate result, gated by an
+actual driver observation. A reaped row never counts as available bytes.
+
+`simultaneous_auto` uses owned pipes to release two native work operations after both
+are armed. Both own published idle cache and an automatic service. Actual allocator
+intervals must overlap. Work reads back its complete output before freeing it; resulting
+native recovery/donation facts distinguish real roles, successes and capacity failures.
+Metadata snapshots may retry Busy; GPU allocations are never silently retried by the
+controller. Cleanup targets only owned children and preserves receipts/directories if
+termination does not finish.
+
+Every native reply carries command identity, maps, working/live/mapped/driver counts
+and automatic-owner facts. `prepare-controller.py` verifies ELF64/x86_64, GLIBC<=2.28,
+no Python/Torch linkage, and exact source/archive/binary hashes before freezing the
+project and an initially UNBOUND GPU input template.
+
+This checkpoint retains native `fa7318fdd` as pre-fix evidence. A confirmed unfinished
+round withdrawal defect is being fixed by the product owner; final positive coordination
+qualification requires that updated native dependency. No production API, allocator,
+daemon or published tool is changed here. Source/build success is not GPU qualification.

@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ci-varena-native-consumer"
+version = "0.1.0"
+description = "Ordinary Cozy controller of independently linked native Varena consumers"
+requires-python = ">=3.12,<3.15"
+dependencies = ["cozy-runtime>=0.36.18,<0.37", "msgspec>=0.19"]
+
+[project.entry-points."cozy.application"]
+default = "ci_varena_native_consumer:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ci_varena_native_consumer"]
+
+[tool.uv]
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
