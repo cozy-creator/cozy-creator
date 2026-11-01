@@ -40,6 +40,7 @@ fn _varena_allocator_probe_calibrate(py: Python<'_>) -> PyResult<String> {
         "schema": "varena.allocator_probe_calibration/1",
         "clock_pairs_ns": value.clock_pairs_ns,
         "empty_markers": snapshot(value.empty_markers),
+        "empty_markers_selection": "128 forced records per operation, not the real-loop stride",
         "dispatch_iterations": value.dispatch_iterations,
         "dispatch_unit": "one enter/exit callback, not an alloc/free pair; loop overhead included",
         "disabled_dispatch_ns": value.disabled_dispatch_ns,
