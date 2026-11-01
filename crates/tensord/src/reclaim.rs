@@ -6,7 +6,8 @@
 //! update downloads, unused generations (then the uv entries only they linked), and compiled
 //! kernels last, only when they alone lift it. Garbage goes every sweep once idle: a generation
 //! whose build failed, an editable environment no generation names, a Runtime pair neither
-//! selected nor kept to roll back to. Only bytes an unlink frees on the measured filesystem count:
+//! selected nor kept to roll back to, an unbound environment on a PyTorch base no longer active,
+//! then that base once no environment links it. Only bytes an unlink frees on the measured filesystem count:
 //! single-link files this process does not hold open, on that filesystem. Optional cache
 //! writes are skipped on a low disk. Never evicted: uncollected results (durable outputs),
 //! journal rows, a generation a run holds or an installation names, a uv entry an environment
@@ -146,6 +147,8 @@ pub struct Caches<'a> {
     /// that may link it are: generations, editable environments, the toolchain.
     pub uv_cache: Option<&'a Path>,
     pub environments: &'a [PathBuf],
+    /// Where the machine's PyTorch layer comes from: a machine's own bases go once unused.
+    pub torch: Option<&'a crate::published::layer::Torch>,
     /// The filesystem the machine's state is on (`measure`; a test's own).
     pub disk: &'a dyn Fn() -> io::Result<Disk>,
 }
@@ -158,6 +161,7 @@ pub(crate) enum Kind {
     UvCache,
     Editable,
     Pair,
+    Torch,
     Result,
     Log,
     Memo,
@@ -177,6 +181,7 @@ impl Kind {
             Kind::Memo => "memoized stages",
             Kind::Editable => "editable environments no generation names",
             Kind::Pair => "Runtime pairs no longer selected",
+            Kind::Torch => "PyTorch bases no longer used",
             Kind::Update => "update downloads",
             Kind::Generation => "package environments",
             Kind::Kernel => "kernel caches",
@@ -387,9 +392,10 @@ fn kernel_entries(caches: &KernelCaches) -> Vec<(PathBuf, PathBuf)> {
     entries
 }
 
-/// The uv cache's unpacked wheels (`archive-v0/<id>`) no environment links, each removed past
-/// the TTL since it was last linked or let go (its newest ctime), or on a low disk least
-/// recently used first until it is not. Environments hard-link a machine cache's files and
+/// The uv cache's unpacked wheels (`archive-v0/<id>`) no environment links, each removed once its
+/// last link went since the previous pass (an environment or PyTorch base dropped takes what only
+/// it used), else past the TTL since it was last linked or let go (its newest ctime), or on a low
+/// disk least recently used first until it is not. Environments hard-link a machine cache's files and
 /// symlink an image's seeded one (so overlayfs never copies its payload): an entry with a file
 /// linked twice (a hard-linked environment's, the image's own interpreter's) or one an
 /// environment under `environments` symlinks stays. uv takes the cache's `.lock` shared for
@@ -401,6 +407,10 @@ fn uv_pass(cache: &Path, environments: &[PathBuf], disk: &dyn Fn() -> io::Result
     let Some(_held) = lock.ok().filter(|lock| lock.try_lock().is_ok()) else {
         return Ok(());
     };
+    // ctime is the kernel's coarse clock: a second's margin.
+    static PASSED: Mutex<Option<SystemTime>> = Mutex::new(None);
+    let since = PASSED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replace(SystemTime::now());
+    let since = since.map(|at| at - Duration::from_secs(1));
     let archives = cache.join("archive-v0");
     let mut linked = HashSet::new();
     for root in environments {
@@ -420,8 +430,9 @@ fn uv_pass(cache: &Path, environments: &[PathBuf], disk: &dyn Fn() -> io::Result
     entries.sort();
     let filesystem = FileId::at(cache)?.dev;
     for (used, path, pointers) in entries {
-        if !unused_for(used, TTL) && disk()?.short().is_none() {
-            break;
+        let dropped = since.is_some_and(|since| used >= since);
+        if !dropped && !unused_for(used, TTL) && disk()?.short().is_none() {
+            continue;
         }
         let bytes = releasable(&path, filesystem, &HashSet::new()).unwrap_or(0);
         for pointer in &pointers {
@@ -453,6 +464,17 @@ fn symlinked(dir: &Path, archives: &Path, depth: usize, found: &mut HashSet<OsSt
             symlinked(&entry.path(), archives, depth - 1, found);
         }
     }
+}
+
+/// Whether an environment under `dir`, `depth` directories down at most and never through a
+/// link, links into `base`: a venv's site-packages entry pointing there.
+fn links_into(dir: &Path, base: &Path, depth: usize) -> bool {
+    if dir.join("pyvenv.cfg").is_file() {
+        let entries = platform::paths::venv_site_packages(dir).into_iter().flat_map(|site| fs::read_dir(site).into_iter().flatten().flatten());
+        return entries.into_iter().any(|e| fs::read_link(e.path()).is_ok_and(|target| target.starts_with(base)));
+    }
+    let children = || fs::read_dir(dir).into_iter().flatten().flatten();
+    depth > 0 && children().any(|e| e.file_type().is_ok_and(|kind| kind.is_dir()) && links_into(&e.path(), base, depth - 1))
 }
 
 /// uv's pointers under `dir` to an unpacked wheel in `archive-v0`, by the archive's name: a
@@ -585,6 +607,16 @@ pub fn sweep(caches: &Caches) -> io::Result<Swept> {
     let generations = caches.catalog.root();
     let engine_dir = generations.parent().unwrap_or(generations);
     let mut named = HashSet::new();
+    // A machine's own PyTorch bases other than the active one: an unbound environment on one is
+    // never used again, so it goes once idle, and the base once no environment links it.
+    let inactive: Vec<(PathBuf, String)> = match caches.torch {
+        Some(torch @ crate::published::layer::Torch::Own { engine, .. }) => {
+            let active = torch.base();
+            crate::published::layer::bases(engine).into_iter().filter(|(base, _)| Some(base) != active.as_ref()).collect()
+        }
+        _ => vec![],
+    };
+    let mut stale = vec![];
     // Generations unbound by any installation, unfinished run or configured package: a
     // resolve touches `.hold`, and a holder's shared lock on it refuses collection.
     for entry in fs::read_dir(generations)?.flatten() {
@@ -598,7 +630,11 @@ pub fn sweep(caches: &Caches) -> io::Result<Swept> {
         {
             if entry.path().join("generation.json").is_file() {
                 let used = modified(&entry.path().join(".hold"));
-                add(Kind::Generation, entry.path(), used, None);
+                let on_inactive = inactive.iter().any(|(base, _)| links_into(&entry.path().join("env"), base, 0));
+                match on_inactive && unused_for(used, IDLE) {
+                    true => stale.push(Entry { kind: Kind::Generation, path: entry.path(), used, hold: None, guard: None }),
+                    false => add(Kind::Generation, entry.path(), used, None),
+                }
                 continue;
             }
             let lock = File::open(generations.join(".locks").join(format!("{name}.lock")));
@@ -648,6 +684,19 @@ pub fn sweep(caches: &Caches) -> io::Result<Swept> {
         }
         Ok(())
     };
+    for mut entry in stale {
+        discard(&mut entry, &mut swept)?;
+    }
+    for (base, version) in inactive {
+        if caches.environments.iter().any(|root| links_into(root, &base, 3)) {
+            continue;
+        }
+        let bytes = releasable(&base, filesystem, &open).unwrap_or(0);
+        if remove(&base) {
+            tracing::info!("removed PyTorch {version} ({}): not this machine's PyTorch, and no environment uses it", size(bytes));
+            swept.add(Kind::Torch, 1, bytes);
+        }
+    }
     let mut kept = vec![];
     for mut entry in entries {
         match unused_for(entry.used, TTL) {
@@ -690,8 +739,8 @@ pub fn sweep(caches: &Caches) -> io::Result<Swept> {
             }
         }
     }
-    // The uv entries only the environments just dropped linked.
-    if !swept.environments.is_empty() {
+    // The uv entries only the environments and bases just dropped linked.
+    if !swept.is_empty() {
         uv(&mut swept)?;
     }
     Ok(swept)

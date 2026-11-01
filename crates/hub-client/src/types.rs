@@ -115,6 +115,9 @@ pub struct Software {
     pub cozy: Option<String>,
     /// The operator's pin, not the current worker image's.
     pub pinned: bool,
+    /// The PyTorch a machine with no image installs packages on (`2.15.0`); absent (an older
+    /// Hub): each keeps the newest it holds.
+    pub torch: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]

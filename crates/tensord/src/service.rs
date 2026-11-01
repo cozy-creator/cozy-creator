@@ -360,6 +360,38 @@ impl Service {
             }
         }
     }
+    /// `actor`'s installations `named` leave the journal, their warm set members and the GPU
+    /// pool. Each environment no installation or unfinished run names any more is deleted,
+    /// its idle executors ended first; one a process still holds is `retained` for reclaim.
+    pub fn uninstall(
+        &self,
+        actor: &str,
+        named: impl Fn(&crate::journal::Installation) -> bool,
+    ) -> io::Result<(Vec<crate::journal::Installation>, u64, Vec<String>)> {
+        let mut removed = vec![];
+        for installed in self.engine.installations(actor)?.into_iter().filter(|i| named(i)) {
+            if let Some(gone) = self.engine.with_journal(|j| j.remove_installation(actor, &installed.alias))? {
+                removed.push(gone);
+            }
+        }
+        let generations: std::collections::BTreeSet<String> = removed.iter().map(|i| i.generation.clone()).collect();
+        if let Some(gpu) = self.gpu() {
+            gpu.drop_members(actor, &generations);
+        }
+        let bound = self.engine.with_journal(|j| j.bound_generations())?;
+        let (mut reclaimed, mut retained) = (0u64, vec![]);
+        for generation in generations.iter().filter(|g| !bound.contains(*g)) {
+            if let Some(gpu) = self.gpu() {
+                gpu.end_generation(generation);
+            }
+            match crate::reclaim::remove_generation(self.catalog.root(), generation)? {
+                Some(bytes) => reclaimed += bytes,
+                None => retained.push(generation.clone()),
+            }
+        }
+        Ok((removed, reclaimed, retained))
+    }
+
     /// Caches manage themselves (`reclaim`): a TTL and a low disk, never a purge verb. Each
     /// sweep logs what it freed and measures what fills the disk.
     pub fn reclaim(&self) -> crate::reclaim::Swept {
@@ -374,7 +406,7 @@ impl Service {
     /// A sweep as though `incoming` more bytes were taken; `all` caches, or the garbage alone.
     fn sweep(&self, incoming: u64, all: bool) -> crate::reclaim::Swept {
         let publisher = self.publisher.lock().unwrap().clone();
-        let uv_cache = publisher.as_ref().and_then(|publisher| publisher.uv_cache());
+        let uv_cache = publisher.as_ref().map(|publisher| publisher.uv_cache());
         let generations = self.catalog.root();
         let engine = generations.parent().unwrap_or(generations);
         // Run objects no unfinished run needs go first.
@@ -399,6 +431,7 @@ impl Service {
                 memo: pool.as_ref().map(|pool| pool.memo()),
                 uv_cache: uv_cache.as_deref(),
                 environments: &environments,
+                torch: publisher.as_ref().map(|publisher| &publisher.sdk.torch),
                 disk: &disk,
             })?;
             swept.add(crate::reclaim::Kind::Object, objects.0, objects.1);

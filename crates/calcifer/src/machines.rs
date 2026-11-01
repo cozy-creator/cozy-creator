@@ -1516,6 +1516,7 @@ fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
         update: String::new(),
         runtime: frame.runtime.clone(),
         tensorfs: frame.tensorfs.clone(),
+        torch: frame.torch.clone(),
         started_at_ms: frame.started_at_unix_ms,
         idle_deadline_ms: deadline(frame),
         gpus: frame

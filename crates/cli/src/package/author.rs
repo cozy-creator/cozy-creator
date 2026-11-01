@@ -252,7 +252,13 @@ pub(super) struct Stage {
     pub uv: PathBuf,
 }
 
+/// What a machine provides every package (cl-715): its PyTorch layer. A lock leaves these, and
+/// what only they bring (the CUDA wheels), to the machine.
+const TORCH_LAYER: [&str; 4] = ["torch", "torchvision", "torchaudio", "triton"];
+
 impl Stage {
+    /// The copy to lock and publish, with Torch left to the machine (`TORCH_LAYER`): its lock
+    /// holds no Torch, and an author's cap or exact pin on Torch is warned of once.
     fn new(project: &Project, uv: PathBuf) -> Result<Self, Error> {
         let dir = tempfile::tempdir().map_err(|e| refuse("stage_unavailable", e))?;
         let root = dir.path().to_path_buf();
@@ -263,6 +269,26 @@ impl Stage {
                 .and_then(|()| fs::copy(project.root.join(&file), &to))
                 .map_err(|e| refuse("stage_unavailable", e))?;
         }
+        let path = src.join("pyproject.toml");
+        let authored = fs::read_to_string(&path).map_err(|e| refuse("stage_unavailable", e))?;
+        let mut doc: toml_edit::DocumentMut = authored.parse().map_err(|e| refuse("project_invalid", e))?;
+        let on_layer = |spec: &str| TORCH_LAYER.iter().any(|name| spec.trim_start().strip_prefix(name)
+            .is_some_and(|rest| rest.is_empty() || rest.trim_start().starts_with(['<', '>', '=', '!', '~', ';', '['])));
+        let capped: Vec<String> = doc["project"]["dependencies"].as_array().into_iter().flatten()
+            .filter_map(|spec| spec.as_str())
+            .filter(|spec| on_layer(spec) && (spec.contains('<') || spec.contains("==") || spec.contains("~=")))
+            .map(str::to_owned).collect();
+        if !capped.is_empty() {
+            output::warn(&format!("{} caps or pins Torch: most machines run a newer one, so it installs its own there", capped.join(", ")));
+        }
+        let excluded = doc["tool"]["uv"]["exclude-dependencies"].or_insert(toml_edit::value(toml_edit::Array::new())).as_array_mut()
+            .ok_or_else(|| refuse("project_invalid", "tool.uv.exclude-dependencies is not a list"))?;
+        for name in TORCH_LAYER {
+            if !excluded.iter().any(|held| held.as_str() == Some(name)) {
+                excluded.push(name);
+            }
+        }
+        fs::write(&path, doc.to_string()).map_err(|e| refuse("stage_unavailable", e))?;
         Ok(Self {
             _dir: dir,
             root,

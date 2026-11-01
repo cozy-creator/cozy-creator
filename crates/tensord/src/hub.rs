@@ -560,6 +560,11 @@ impl Catalog {
         &self.origin
     }
 
+    /// The software machines run, PyTorch among it.
+    pub fn software(&self) -> Result<types::Software, hub_client::Error> {
+        asked(&self.origin, self.hub.get_software())
+    }
+
     /// A package and its releases.
     pub fn package(&self, org: &str, name: &str) -> Result<types::PackageCard, hub_client::Error> {
         asked(&self.origin, self.hub.get_package(org, name))

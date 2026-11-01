@@ -37,6 +37,8 @@ pub struct MachineIdentity {
     pub gpu_memory_limit: Option<u64>,
     /// `shared` or `dedicated` (`machine.mode`, else by its lifetime).
     pub mode: &'static str,
+    /// Where its PyTorch layer comes from; None on development front doors.
+    pub torch: Option<crate::published::layer::Torch>,
 }
 
 impl MachineIdentity {
@@ -70,6 +72,7 @@ impl MachineIdentity {
             gpus: vec![],
             gpu_memory_limit: None,
             mode: "",
+            torch: None,
             webrtc: None,
             player: Default::default(),
             webrtc_port: None,
