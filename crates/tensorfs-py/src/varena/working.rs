@@ -471,7 +471,7 @@ pub(super) fn observation<'py>(
 ) -> PyResult<Bound<'py, PyDict>> {
     let row = PyDict::new(py);
     row.set_item("definitions", &observed.definitions)?;
-    row.set_item("token", observed.token)?;
+    row.set_item("observation_id", observed.token)?;
     row.set_item("mode", observed.mode.name())?;
     row.set_item("key", observed.key.as_deref())?;
     row.set_item("peak_bytes", observed.peak_bytes)?;
