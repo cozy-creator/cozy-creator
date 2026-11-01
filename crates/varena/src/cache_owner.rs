@@ -459,6 +459,32 @@ pub fn request_shrink(device: i32, key: RequestKey, bytes: usize) -> Result<Opti
     if state.worker == Some(std::thread::current().id()) {
         return Ok(None);
     }
+    // Concurrent/rapid local failures share one outstanding owner pass. A new actual
+    // refusal after earlier physical releases asks for remaining progress, not a sum
+    // of duplicate deficits. No allocator waits for this pass or its callback thread.
+    if key.cause == Cause::Allocation {
+        for pending in state
+            .jobs
+            .values()
+            .filter(|job| job.key.cause == Cause::Allocation)
+        {
+            let mut held = pending.lock()?;
+            if !held.cancelled && !held.facts.finished && !held.owners.is_empty() {
+                let observed = start_release
+                    .checked_sub(pending.start_release)
+                    .unwrap_or(0);
+                held.wanted = held.wanted.max(bytes.saturating_add(observed as usize));
+                let job = Arc::clone(pending);
+                drop(held);
+                drop(state);
+                control.changed.notify_all();
+                return Ok(Some(ShrinkRequest { control, job }));
+            }
+        }
+    }
+    if control.requestable.load(Ordering::Acquire) == 0 {
+        return Ok(None);
+    }
     if !state.jobs.contains_key(&key)
         && state
             .last
@@ -536,11 +562,12 @@ fn failed(control: &Control, owner: &mut OwnerState, reason: String, retirement:
 
 fn worker(control: Arc<Control>, registrations: mpsc::Receiver<Registration>) {
     let mut callbacks: BTreeMap<u64, Registration> = BTreeMap::new();
+    let mut arenas = Vec::new(); // GPU leases live only here, never in allocator Control.
     if let Ok(mut state) = control.lock() {
         state.worker = Some(std::thread::current().id());
     }
     loop {
-        let result = worker_tick(&control, &registrations, &mut callbacks);
+        let result = worker_tick(&control, &registrations, &mut callbacks, &mut arenas);
         if let Err(error) = result {
             // Keep callback/data ownership intact on a worker fault. No allocator handle
             // can run these destructors. Explicit close reports failure instead of hanging.
@@ -553,6 +580,7 @@ fn worker(control: Arc<Control>, registrations: mpsc::Receiver<Registration>) {
         }
         let Ok(state) = control.lock() else {
             std::mem::forget(callbacks);
+            std::mem::forget(arenas);
             return;
         };
         let _ = control
@@ -565,6 +593,7 @@ fn worker_tick(
     control: &Arc<Control>,
     registrations: &mpsc::Receiver<Registration>,
     callbacks: &mut BTreeMap<u64, Registration>,
+    arenas: &mut Vec<Arc<crate::Arena>>,
 ) -> Result<()> {
     for registration in registrations.try_iter() {
         callbacks.insert(registration.id, registration);
@@ -615,8 +644,16 @@ fn worker_tick(
             (!held.cancelled && held.collect_pending).then_some(held.wanted)
         };
         if let Some(wanted) = collect {
-            match crate::reclaim_completed(control.device, wanted) {
-                Ok(_) => job.lock()?.collect_pending = false,
+            match crate::reclaim_completed(control.device, wanted, arenas) {
+                Ok(released) => {
+                    job.lock()?.collect_pending = false;
+                    #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
+                    if released != 0 {
+                        crate::cooperative::wake_cache_actions(control.device)?;
+                    }
+                    #[cfg(not(all(target_os = "linux", target_has_atomic = "64")))]
+                    let _ = released;
+                }
                 Err(error) if deferred(&error) => continue,
                 Err(error) => return Err(error),
             }
@@ -722,6 +759,21 @@ fn worker_tick(
         drop(held);
         drop(owner);
         control.changed.notify_all();
+        #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
+        crate::cooperative::wake_cache_actions(control.device)?;
+    }
+    // Explicit last-owner retirement is separate from no-wait collection. There are no
+    // callbacks left to serve. Preserve leases on capture/replay refusal; release them
+    // outside every metadata lock and keep exclusion through all last Arena destructors.
+    if callbacks.is_empty() && !arenas.is_empty() {
+        match crate::enter_retirement(control.device) {
+            Ok(guard) => {
+                drop(std::mem::take(arenas));
+                drop(guard);
+            }
+            Err(error) if deferred(&error) => {}
+            Err(error) => return Err(error),
+        }
     }
     Ok(())
 }

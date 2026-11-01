@@ -9,7 +9,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak, mpsc};
 use std::time::{Duration, Instant};
 
 const CADENCE: Duration = Duration::from_millis(500);
-const COORDINATION_BUDGET: Duration = Duration::from_secs(2);
+const COORDINATION_BUDGET: Duration = crate::RECOVERY_BUDGET;
 
 #[derive(Clone, Copy, Debug)]
 pub enum RecoveryOutcome {
@@ -17,6 +17,7 @@ pub enum RecoveryOutcome {
     Changed,
     Exhausted,
     BudgetExhausted,
+    LocalReleaseObserved,
 }
 
 impl RecoveryOutcome {
@@ -26,6 +27,7 @@ impl RecoveryOutcome {
             Self::Changed => "round_changed",
             Self::Exhausted => "peer_reclaim_exhausted",
             Self::BudgetExhausted => "peer_wait_budget_exhausted",
+            Self::LocalReleaseObserved => "local_physical_release_observed",
         }
     }
 }
@@ -271,6 +273,18 @@ fn native(error: super::Error) -> crate::Error {
     }
 }
 
+/// Called after cache callbacks/reclaim, outside all allocator/arena/ledger guards.
+/// Only host Control is acquired; callback return itself supplies no capacity credit.
+pub(crate) fn wake_cache_actions(device: i32) -> crate::Result<()> {
+    let control = registry().map_err(native)?.get(&device).and_then(Weak::upgrade);
+    if let Some(control) = control {
+        let mut state = control.lock().map_err(native)?;
+        state.generation = state.generation.wrapping_add(1);
+        control.changed.notify_all();
+    }
+    Ok(())
+}
+
 /// The only allocator entry into cooperation. All references acquired here own host data.
 pub(crate) fn recover(
     device: i32,
@@ -278,6 +292,7 @@ pub(crate) fn recover(
     deadline: &mut Option<Instant>,
     observed: &mut Option<(u64, u64)>,
     participation: &mut Option<Participation>,
+    local_release: Option<u64>,
 ) -> crate::Result<crate::PeerProgress> {
     {
         let captures = crate::capture_counts()?;
@@ -290,6 +305,7 @@ pub(crate) fn recover(
     let Some(control) = control else {
         return Ok(crate::PeerProgress::Unavailable);
     };
+    let room = crate::room(device)?; // host metadata, acquired before the control mutex
     let limit = deadline.get_or_insert_with(|| Instant::now() + COORDINATION_BUDGET);
     'attempt: loop {
         let mut state = control.lock().map_err(native)?;
@@ -362,6 +378,11 @@ pub(crate) fn recover(
         );
         loop {
             check(&state).map_err(native)?;
+            if local_release.is_some_and(|before| room.released.load(std::sync::atomic::Ordering::Acquire) > before) {
+                state.facts.last_recovery = Some(report(bytes, *limit,
+                    RecoveryOutcome::LocalReleaseObserved, 0, None));
+                return Ok(crate::PeerProgress::Retry);
+            }
             if let Some(mut report) = attempt.lock()?.result {
                 if let Some(round) = report.round {
                     let prior = observed
@@ -380,7 +401,7 @@ pub(crate) fn recover(
                 }
                 state.facts.last_recovery = Some(report);
                 return Ok(match report.outcome {
-                    RecoveryOutcome::Released | RecoveryOutcome::Changed => {
+                    RecoveryOutcome::Released | RecoveryOutcome::Changed | RecoveryOutcome::LocalReleaseObserved => {
                         crate::PeerProgress::Retry
                     }
                     RecoveryOutcome::Exhausted | RecoveryOutcome::BudgetExhausted => {

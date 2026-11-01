@@ -149,9 +149,12 @@ impl Cache {
         loop {
             let mut physical = None;
             let result = self.commit_local(range.clone(), &mut physical);
-            if matches!(result, Err(Error::OutOfMemory { .. }))
-                && let Some(needed) = physical
-                && recovery.next(self.device, needed)?
+            if let Err(Error::OutOfMemory { requested_bytes }) = &result
+                && recovery.next(
+                    self.device,
+                    physical.unwrap_or(*requested_bytes),
+                    physical.is_some(),
+                )?
             {
                 continue;
             }
