@@ -21,14 +21,20 @@ python3 stage.py --out /absolute/bound-bundle \
   --extension-sha256 EXACT_EXTENSION_SHA --gpu-uuid GPU-OWNED-UUID
 python3 sequence.py --bundle /absolute/bound-bundle --out /absolute/control-results \
   --on OWNED --arm control \
-  --model-target /absolute/unchanged/model/function --model-input /absolute/model-input.json
+  --model-target /absolute/unchanged/model/function --model-input /absolute/model-input.json \
+  --model-arg 'model.base_model=EXACT_REF' --model-arg 'model.turbo_lora=EXACT_REF'
 # After root installs the candidate worker, with the same SDK/source/input:
 python3 sequence.py --bundle /absolute/bound-bundle --out /absolute/candidate-results \
   --on OWNED --arm candidate \
-  --model-target /absolute/unchanged/model/function --model-input /absolute/model-input.json
+  --model-target /absolute/unchanged/model/function --model-input /absolute/model-input.json \
+  --model-arg 'model.base_model=EXACT_REF' --model-arg 'model.turbo_lora=EXACT_REF'
 ```
 
 Every call goes through default-home `cozy run --gpus=1`; complete NDJSON and
+model arguments are passed verbatim as separate argv entries, with no shell parsing.
+Use repeated `--model-arg` values to retain exact model manifests and other pinned
+model-call arguments; for a value beginning with `--`, use `--model-arg=--FLAG=VALUE`.
+The full command is saved in each progress receipt. Complete NDJSON and
 `cozy run show` receipts are saved. A model failure remains a failed cell; it is
 never replayed. Omit model arguments only for the short mechanism proof, and label
 that narrower scope. H3 model/performance evidence uses the existing full15-second,

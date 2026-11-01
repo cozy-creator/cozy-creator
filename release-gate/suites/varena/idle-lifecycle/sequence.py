@@ -12,6 +12,7 @@ parser.add_argument('--cli', default='cozy')
 parser.add_argument('--arm', choices=('control', 'candidate'), required=True)
 parser.add_argument('--model-target')
 parser.add_argument('--model-input', type=Path)
+parser.add_argument('--model-arg', action='append', default=[])
 args = parser.parse_args()
 assert args.on not in ('any', 'local') and not args.on.startswith('new')
 assert bool(args.model_target) == bool(args.model_input)
@@ -22,10 +23,10 @@ args.out.mkdir(parents=True, exist_ok=False)
 records = []
 
 
-def call(label, target, payload, fixture=True):
+def call(label, target, payload, fixture=True, arguments=()):
     path = args.out / f'{label}-input.json'
     path.write_text(json.dumps(payload, indent=2) + '\n')
-    command = [args.cli, 'run', str(target), '--on', args.on, '--gpus=1', '--input', str(path), '--json']
+    command = [args.cli, 'run', str(target), *arguments, '--on', args.on, '--gpus=1', '--input', str(path), '--json']
     with (args.out / f'{label}.ndjson').open('w') as stdout, (args.out / f'{label}.stderr').open('w') as stderr:
         result = subprocess.run(command, stdout=stdout, stderr=stderr)
     events = [json.loads(line) for line in (args.out / f'{label}.ndjson').read_text().splitlines() if line.strip()]
@@ -64,7 +65,8 @@ a_back = call('a-switch-back', a_target, {**common, 'expected_parent': birth(a['
 assert a_back['calls'] == (1 if args.arm == 'candidate' else a_reuse['calls'] + 1)
 model = None
 if args.model_target:
-    model = call('model-switch', args.model_target, json.loads(args.model_input.read_text()), fixture=False)
+    model = call('model-switch', args.model_target, json.loads(args.model_input.read_text()),
+                 fixture=False, arguments=args.model_arg)
     call('after-model', b_target, {**common, 'prior': [{'birth': birth(a_back['birth']), 'expect': expected_old}]})
 report = {'passed': True, 'arm': args.arm, 'records': records, 'same_app_reused': True,
           'idle_app_exits_observed': args.arm == 'candidate', 'old_idle_retention_observed': args.arm == 'control',
