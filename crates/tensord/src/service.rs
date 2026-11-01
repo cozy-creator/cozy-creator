@@ -133,7 +133,7 @@ impl Service {
             held: Default::default(),
         });
         service.engine.reconcile()?;
-        service.reclaim();
+        // Its first sweep is the reclaim thread's (`reclaim_loop`): a long one never delays serving.
         // Keep queued runs' generations alive, including a prior boot's.
         for record in service.engine.nonterminal(usize::MAX)? {
             if let Ok(held) = service.catalog.resolve(&record.invocation.generation) {
@@ -155,10 +155,10 @@ impl Service {
         std::thread::Builder::new()
             .name("machine-dispatch".into())
             .spawn(move || owner.dispatch_loop())?;
-        let weak = Arc::downgrade(&service);
-        std::thread::Builder::new()
-            .name("machine-reclaim".into())
-            .spawn(move || Self::reclaim_loop(weak))?;
+        for (name, sweeps) in [("machine-pressure", false), ("machine-reclaim", true)] {
+            let weak = Arc::downgrade(&service);
+            std::thread::Builder::new().name(name.into()).spawn(move || Self::reclaim_loop(weak, sweeps))?;
+        }
         Ok(service)
     }
     /// The executor pool every run runs on, once configured.
@@ -334,14 +334,21 @@ impl Service {
             self.engine.wait_activity(epoch, None);
         }
     }
-    /// Observe GPU demand on the existing reclaim thread; disk caches retain their TTL cadence.
-    fn reclaim_loop(weak: std::sync::Weak<Self>) {
+    /// GPU demand every half second, or (`sweeps`) the disk's caches on their cadence: each on its
+    /// own thread, so a long sweep never delays a GPU's relief.
+    fn reclaim_loop(weak: std::sync::Weak<Self>, sweeps: bool) {
+        if sweeps {
+            platform::process::background_thread(); // nice 19, idle I/O: a big cleanup never crowds out work
+        }
         let mut swept: Option<std::time::Instant> = None;
         loop {
             std::thread::sleep(std::time::Duration::from_millis(500));
             match weak.upgrade() {
                 Some(service) if !*service.stopped.lock().unwrap() => {
-                    if let Some(pool) = service.gpu() { pool.relieve_pressure(&service.engine); }
+                    if !sweeps {
+                        if let Some(pool) = service.gpu() { pool.relieve_pressure(&service.engine); }
+                        continue;
+                    }
                     // The first once its packages are configured, so the disk is measured early.
                     let due = swept.map_or_else(|| service.publisher.lock().unwrap().is_some(), |at| at.elapsed() >= SWEEP_EVERY);
                     if due {
