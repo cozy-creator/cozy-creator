@@ -101,6 +101,17 @@ def cooperative(payload: CooperativeProbe, tel: Telemetry) -> Report:
 
 
 @app.entrypoint(accelerator=True)
+def reclaim_sequence(payload: Probe, tel: Telemetry) -> Report:
+    """Preserve the full executed result even when the weight-preservation regression is red."""
+    executed = _cuda_child(payload, tel, "reclaim_sequence.py", "working-before-weights")
+    result = json.loads(executed.detail)
+    result["execution_passed"] = result["passed"]
+    result["passed"] = result["cases"]["working-before-weights"]["preserved_idle_weights"]
+    result["qualification"] = "working trim must preserve already-ready weights; successful execution alone is not this gate"
+    return Report(result["passed"], json.dumps(result, sort_keys=True))
+
+
+@app.entrypoint(accelerator=True)
 def native_cudnn(payload: Probe, tel: Telemetry) -> Report:
     """Fresh native-Torch cuDNN lifetime control, retaining the same strict sanitizer verdict."""
     return _cuda_child(payload, tel, "native_cudnn.py", "native-cudnn-lifetime")

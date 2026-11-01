@@ -225,6 +225,85 @@ def invalidation_without_detail():
     return {"prior": prior, "invalidated": result, "retained": kept}
 
 
+def caught_admission_refusal(at):
+    """A caught pre-leaf capacity refusal cannot replace a successful named parent sample."""
+    key = "split-proof:caught-" + at + ":parent"
+    site = "split-proof:caught-" + at + ":site"
+    menu = [("only", [4 * MIB])]
+    stream = torch.cuda.current_stream().cuda_stream
+    parent = leaf = None
+    value = None
+    report = None
+    try:
+        vt.set_limit(0, 8 * MIB)
+        parent = vt.phase_enter(0, key)
+        value = torch.empty(4 * MIB, dtype=torch.uint8, device="cuda")
+        value.fill_(19)
+        prior = finish_phase(parent)
+        parent = None
+        assert prior["published"] and prior["peak_bytes"] == 4 * MIB, prior
+        assert int(value[0]) == int(value[-1]) == 19
+        value = None
+        probe.clean()
+        prior_stats = vt.phase_stats(0, key)
+        assert prior_stats["known"] and prior_stats["successful_passes"] == 1, prior_stats
+        assert prior_stats["peak_bytes"] == prior_stats["backing_peak_bytes"] == 4 * MIB, prior_stats
+
+        parent = vt.phase_enter(0, key)
+        value = torch.empty(2 * MIB, dtype=torch.uint8, device="cuda")
+        value.fill_(23)
+        selected = None
+        if at == "begin":
+            selected = vt.split_select(0, site, menu, preferred="only", stream=stream)
+            assert selected["choice_id"] == "only" and selected["required_bytes"] == 4 * MIB, selected
+        # The existing 2 MiB stays live: the 4 MiB choice cannot fit in the 2 MiB left.
+        vt.set_limit(0, 4 * MIB)
+        refusal = None
+        try:
+            if at == "select":
+                vt.split_select(0, site, menu, preferred="only", stream=stream)
+            else:
+                leaf = vt.split_begin(0, site, "only", stream=stream, completion_owner=parent)
+        except torch.OutOfMemoryError as error:
+            assert getattr(error, "varena_no_retry", False), error
+            assert error.required_bytes == 4 * MIB and error.available_bytes == 2 * MIB, error
+            refusal = {"required_bytes": error.required_bytes, "available_bytes": error.available_bytes,
+                       "type": type(error).__name__, "varena_no_retry": error.varena_no_retry}
+        assert refusal is not None, "fixture failed to produce the real admission refusal"
+        assert vt.split_context(0)["eligible"], "a refused begin must not leave an active leaf"
+        # Deliberately catch the refusal and claim success, as an application may do.
+        ended = finish_phase(parent)
+        parent = None
+        assert int(value[0]) == int(value[-1]) == 23
+        kept = vt.phase_stats(0, key)
+        report = {"stage": at, "prior": prior, "prior_stats": prior_stats, "selected": selected,
+                  "refusal": refusal, "caught_parent": ended, "retained": kept}
+    finally:
+        if leaf is not None:
+            with suppress(Exception):
+                vt.split_end(0, leaf, submitted=False)
+        if parent is not None:
+            with suppress(Exception):
+                vt.phase_leave(0, parent, completed=False)
+        value = None
+        probe.clean()
+        vt.set_limit(0, None)
+        vt.phase_forget(0, key)
+        vt.phase_forget(0, site)
+    retired = probe.figures()
+    assert retired["allocated_bytes"] == retired["mapped_bytes"] == retired["pending_bytes"] == 0, retired
+    assert retired["pools"] == retired["event_handles"] == 0, retired
+    report["retired_before_verdict"] = retired
+    # Preserve the complete failing evidence and successful cleanup before raising the gate.
+    probe.emit({"caught_split_refusal": report})
+    ended, kept = report["caught_parent"], report["retained"]
+    assert ended["invalidated"] and not ended["published"], report
+    assert ended["reason"] == "split_" + at + "_error", report
+    assert kept["known"] and kept["successful_passes"] == 1, report
+    assert kept["peak_bytes"] == kept["backing_peak_bytes"] == 4 * MIB, report
+    return report
+
+
 def no_completion_owner():
     key = "split-proof:unjoined-owner"
     choices = [("only", [8 * MIB])]
@@ -260,6 +339,16 @@ def stream_geometry(case):
     blocker = None
     parent = leaf = None
     done = torch.cuda.Event()
+    # CUDA lazy module/event initialization can synchronize. Warm these exact operations
+    # BEFORE establishing the pending interval; the pending event is still checked afterward.
+    with torch.cuda.stream(default):
+        warmed = torch.empty(8 * MIB, dtype=torch.uint8, device="cuda")
+        warmed.fill_(7)
+        torch.cuda._sleep(1)
+        done.record(default)
+    default.synchronize()
+    del warmed
+    probe.clean()
     if case == "completed-cache":
         with torch.cuda.stream(other):
             cached = torch.empty(8 * MIB, dtype=torch.uint8, device="cuda")
@@ -352,6 +441,8 @@ CASES = {
     "outside-holdings-and-slab-floor": outside_holdings_and_slab_floor,
     "ownership-and-abort": ownership_and_abort,
     "caught-allocation-failure": caught_allocation_failure,
+    "caught-select-refusal": lambda: caught_admission_refusal("select"),
+    "caught-begin-refusal": lambda: caught_admission_refusal("begin"),
     "invalidation-without-detail": invalidation_without_detail,
     "no-completion-owner": no_completion_owner,
 }
