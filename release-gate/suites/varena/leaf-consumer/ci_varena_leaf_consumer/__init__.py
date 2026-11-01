@@ -109,15 +109,23 @@ def trim(vt, device):
 
 @app.entrypoint(accelerator=True)
 def gpu(payload: Probe, ctx: Context) -> Report:
-    from cozy_runtime.internal import triton_kernels
+    from cozy_runtime.internal import int8_linear, triton_kernels
     from cozy_runtime.internal.triton_kernels import _Launcher
 
     request, vt, provenance = actual_request(payload, ctx)
     device = ctx.device.index or 0
     torch_device = torch.device(ctx.device.type, device)
     torch.set_num_threads(1)
+    before_ready = vt.stats(device)
+    # Executor preparation primes this real probe on another thread. Its first normal
+    # readiness ask joins that owner before we measure the fixture's allocation lifetime.
+    native_ready = int8_linear.native(torch, device) is not None
+    after_ready = vt.stats(device)
+    gc.collect()
     trim(vt, device)
     initial = vt.stats(device)
+    provenance['executor_readiness'] = {'native_int8_available': native_ready,
+                                      'before_join': before_ready, 'after_join': after_ready}
     plan_reports = []
     plan = Plan(torch_device, partial(triton_kernels.load, device=torch_device),
                 report=lambda name, row: plan_reports.append({'name': name, **row}))
