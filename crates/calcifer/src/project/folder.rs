@@ -2,8 +2,9 @@
 //! new`), `project.lock` (cozy's: each node's versions, what made each, which is approved, the files
 //! the project reads, the runs still making one, and what its walk still owes), `assets/`, and the
 //! cut (`edit.mp4`). Every file the project uses is in `assets/<sha256>.<ext>`, flat: each take and
-//! version, clean and latents cozy makes (real files), and each file project.yaml names, linked there
-//! on first use (a symlink to the original). Names live only in project.yaml and the lock.
+//! version, clean and latents cozy makes (real files), and each file project.yaml names, taken in on
+//! first use: a copy-on-write clone where the filesystem has them, else a link to the original
+//! (`Method`). Names live only in project.yaml and the lock.
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::Read,
@@ -185,15 +186,36 @@ pub struct Lock {
     pub walk: Owed,
 }
 
-/// A file project.yaml names, as last taken in: its asset (a link to it), where it is (`original`,
-/// absolute), and the size and time it had then, which spare hashing it again while they hold.
+/// A file project.yaml names, as last taken in: its asset, how it was made, where the original is
+/// (absolute), and the size and time it had then, which spare hashing it again while they hold.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Input {
     #[serde(flatten)]
     pub asset: Asset,
+    pub method: Method,
     pub original: PathBuf,
     pub size: u64,
     pub modified_ms: i64,
+}
+
+/// How a file project.yaml names became an asset, tried in this order (Paul 11-01): a reflink (a
+/// copy-on-write clone: its own file, no space, whatever becomes of the original), else a symlink to
+/// the original, else (Windows without the right) a hard link on the same volume, else a copy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Method {
+    Reflink,
+    Symlink,
+    Hardlink,
+    Copy,
+}
+
+impl Method {
+    /// Whether the asset is the original itself, so it goes when the original moves and changes when
+    /// it does: a link's. A reflink or copy is the project's own.
+    pub fn linked(self) -> bool {
+        matches!(self, Method::Symlink | Method::Hardlink)
+    }
 }
 
 /// What a render asked that the project's walk has not sent yet.
@@ -333,43 +355,41 @@ impl Folder {
         Ok(Asset { path, sha256 })
     }
 
-    /// The file project.yaml names as `file` (relative to the folder, or absolute), taken in as an
-    /// asset: hashed (unless `known`, as last taken in, still has its size and time), and linked as
-    /// `assets/<sha256>.<ext>` to the original, made absolute: a symlink; on Windows, where a symlink
-    /// needs a privilege, else a hard link on the same volume, else a copy (`copied`). None when the
-    /// original is not there.
-    pub fn take_in(&self, file: &str, known: Option<&Input>) -> Result<Option<(Input, bool)>, Error> {
+    /// The file project.yaml names as `file` (relative to the folder, absolute, or `~/…`), taken in as
+    /// an asset `assets/<sha256>.<ext>` (`Method`): hashed again unless `known`, as last taken in,
+    /// still has its size and time. None when the original is not there and the asset was a link to
+    /// it; a reflink or a copy is the project's own and stays.
+    pub fn take_in(&self, file: &str, known: Option<&Input>) -> Result<Option<Input>, Error> {
         let original = std::path::absolute(self.path(file)).map_err(|e| io_at(&self.path(file), e))?;
-        let Ok(meta) = std::fs::metadata(&original) else { return Ok(None) };
+        let Ok(meta) = std::fs::metadata(&original) else {
+            let owned = known.filter(|known| !known.method.linked() && self.dir.join(&known.asset.path).is_file());
+            return Ok(owned.cloned());
+        };
         let modified_ms = (meta.modified().ok().and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok()))
             .map_or(0, |at| at.as_millis() as i64);
         let same = known.filter(|known| known.original == original && known.size == meta.len() && known.modified_ms == modified_ms);
         if let Some(known) = same.filter(|known| self.dir.join(&known.asset.path).is_file()) {
-            return Ok(Some((known.clone(), false)));
+            return Ok(Some(known.clone()));
         }
         let sha256 = hash(&original)?;
         let path = asset_of(&sha256, &original);
         let at = self.dir.join(&path);
-        let linked = std::fs::read_link(&at).ok().as_deref() == Some(original.as_path()) || (at.is_file() && !at.is_symlink());
-        let copied = match linked {
-            true => false,
-            false => {
+        let kept = known.filter(|known| known.asset.sha256 == sha256 && known.original == original && at.is_file());
+        let method = match kept {
+            Some(known) => known.method,
+            None => {
                 let dir = self.dir.join(ASSETS);
                 std::fs::create_dir_all(&dir).map_err(|e| io_at(&dir, e))?;
                 let part = dir.join(format!(".{}.part", at.file_name().expect("a name").to_string_lossy()));
                 let _ = std::fs::remove_file(&part);
-                #[cfg(unix)]
-                let made = std::os::unix::fs::symlink(&original, &part).map(|()| false);
-                #[cfg(windows)]
-                let made = (std::os::windows::fs::symlink_file(&original, &part))
-                    .or_else(|_| std::fs::hard_link(&original, &part))
-                    .map(|()| false)
-                    .or_else(|_| std::fs::copy(&original, &part).map(|_| true));
-                made.and_then(|copied| std::fs::rename(&part, &at).map(|()| copied)).map_err(|e| io_at(&at, e))?
+                let made = (durable::reflink(&original, &part).map(|()| Method::Reflink))
+                    .or_else(|_| durable::symlink(&original, &part).map(|()| Method::Symlink).map_err(std::io::Error::other))
+                    .or_else(|_| std::fs::hard_link(&original, &part).map(|()| Method::Hardlink))
+                    .or_else(|_| std::fs::copy(&original, &part).map(|_| Method::Copy));
+                made.and_then(|method| std::fs::rename(&part, &at).map(|()| method)).map_err(|e| io_at(&at, e))?
             }
         };
-        let input = Input { asset: Asset { path, sha256 }, original, size: meta.len(), modified_ms };
-        Ok(Some((input, copied)))
+        Ok(Some(Input { asset: Asset { path, sha256 }, method, original, size: meta.len(), modified_ms }))
     }
 
     /// `path` (an asset's) made by `write` at a part beside it and then named, unless it is there.
