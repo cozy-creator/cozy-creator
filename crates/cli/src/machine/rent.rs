@@ -102,9 +102,11 @@ pub async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
     let rented: Rented = match calcifer.post("/v1/machines", &ask(agreed), Some(&key)).await {
         // An answer lost on the way back may still have placed the order, which Calcifer keeps.
         Err(e) if matches!(e.kind, Kind::Unavailable | Kind::Internal) => {
-            return Err(e
+            let e = e
                 .remedy("the order may stand: `cozy machine ls` shows it before you rent again")
-                .next("cozy machine ls"));
+                .next("cozy machine ls");
+            output::refusal(ctx, &e);
+            return Ok(ExitCode::from(UNFOLLOWED));
         }
         answer => answer?,
     };
@@ -136,30 +138,24 @@ pub async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
         output::say(ctx, "this order was placed already; following it");
     }
     let machine = match follow(ctx, rented.machine.clone(), notices).await? {
-        Some(machine) => machine,
-        None => return Ok(ExitCode::SUCCESS),
+        Followed::Ready(machine) => machine,
+        Followed::Unfollowed => return Ok(ExitCode::from(UNFOLLOWED)),
     };
     if ctx.json {
         output::json(&Rented { machine, ..rented });
         return Ok(ExitCode::SUCCESS);
     }
-    let q = &rented.quote;
+    let name = &machine.name;
     let mut record = output::Record::new()
-        .field("machine", &machine.name)
-        .field("state", state_cell(&machine))
+        .field("machine", name)
         .field("gpus", gpus)
-        .field("$/hour", usd(q.gpu_usd_micros_per_hour))
-        .note(format!(
-            "billing continues until `cozy machine end {}` confirms its release",
-            machine.name
-        ))
-        .note("it ends itself after 15 minutes idle (no queued or running work)");
-    if machine.state == MachineState::Booting {
-        record = record.note("runs sent to it now wait until it is ready");
-    }
+        .field("$/hour", usd(rented.quote.gpu_usd_micros_per_hour));
     if let Some(ssh) = machine.rental.as_ref().and_then(|r| r.ssh.as_deref()) {
         record = record.field("ssh", ssh);
     }
+    record = record
+        .note(format!("billing continues until `cozy machine end {name}` confirms its release"))
+        .note("it ends itself after 15 minutes idle (no queued or running work)");
     if gpus > 1 && gpus % 2 == 1 {
         record = record.note(
             "an odd GPU count leaves one GPU out of parallel runs, which shard at even counts",
@@ -169,10 +165,12 @@ pub async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
     output::next(
         ctx,
         &[
-            &format!("cozy run <[org/]package/function> --on {}", machine.name),
-            &format!("cozy machine end {}", machine.name),
+            &format!("cozy run <[org/]package/function> --on {name}"),
+            &format!("cozy machine end {name}"),
         ],
     );
+    // The last line is the order's end, for a person and a script alike.
+    anstream::println!("{name}: {}", state_cell(&machine));
     Ok(ExitCode::SUCCESS)
 }
 
@@ -330,71 +328,127 @@ pub(crate) fn agree(ctx: &Context, quoted: &RunQuote) -> Result<bool, Error> {
     Ok(matches!(line.trim().to_ascii_lowercase().as_str(), "" | "y" | "yes"))
 }
 
-/// Follows the boot over Calcifer's machine events until the machine is ready, saying the Hub's
-/// phase as it changes. Ctrl-C stops watching only (`None`): the order goes on in Calcifer.
+/// What following an order came to: its machine ready, or the follower stopped (and said so)
+/// while the order goes on.
+pub(crate) enum Followed {
+    Ready(Machine),
+    Unfollowed,
+}
+
+/// `machine rent`'s exit once it stops following an order that goes on (Ctrl-C, SIGTERM, Calcifer
+/// lost): 0 is a ready machine, and 1 an order that ended without one.
+const UNFOLLOWED: u8 = 3;
+
+/// Follows an order over Calcifer's machine events until it ends: its machine ready, or the order
+/// ended, which its Hub says only once nothing of it bills. Everything between is progress, said
+/// as it changes: an attempt that found no capacity, the order placed again elsewhere, its rename.
+/// Ctrl-C or SIGTERM stops following only, and says the order goes on.
 pub(crate) async fn follow(
     ctx: &Context,
     booting: Machine,
     mut notices: Notices,
-) -> Result<Option<Machine>, Error> {
-    let calcifer = ctx.calcifer().await?;
-    let id = booting.rental_id.as_deref().unwrap_or(&booting.name);
-    let (mut following, mut machine) = Following::open(&calcifer, id).await?;
+) -> Result<Followed, Error> {
+    let id = booting.rental_id.clone().unwrap_or_else(|| booting.name.clone());
+    let mut machine = booting;
+    let stop = stopped();
+    tokio::pin!(stop);
+    let calcifer = match ctx.calcifer().await {
+        Ok(calcifer) => calcifer,
+        Err(e) => return Ok(unfollowed(ctx, &machine, Some(e))),
+    };
+    let opened = tokio::select! {
+        opened = Following::open(&calcifer, &id) => opened,
+        _ = &mut stop => return Ok(unfollowed(ctx, &machine, None)),
+    };
+    let mut following = match opened {
+        Ok((following, now)) => {
+            machine = now;
+            following
+        }
+        Err(e) => return Ok(unfollowed(ctx, &machine, Some(e))),
+    };
     let mut said = String::new();
     loop {
         for note in notices.fresh(&machine) {
             output::say(ctx, note);
         }
         match machine.state {
-            // Unknown: a newer Calcifer's word, shown as it is.
-            MachineState::Ready | MachineState::Stopped | MachineState::Unknown => {
-                return Ok(Some(machine));
-            }
-            MachineState::Booting => {
-                let line = state_cell(&machine);
+            MachineState::Ready | MachineState::Stopped => return Ok(Followed::Ready(machine)),
+            MachineState::Ended => return Err(ended(&machine)),
+            // Ending lives until its Hub affirms the end; Unknown is a newer Calcifer's word.
+            MachineState::Booting | MachineState::Ending | MachineState::Unknown => {
+                let line = format!("{}: {}", machine.name, state_cell(&machine));
                 if line != said {
-                    output::say(ctx, &format!("{}: {line}", machine.name));
+                    output::say(ctx, &line);
                     said = line;
                 }
             }
-            MachineState::Ending | MachineState::Ended => return Err(boot_failed(&machine)),
         }
-        tokio::select! {
-            next = following.next(&calcifer) => match next? {
-                Some(next) => machine = next,
-                // Left the list, which shows no ended machine: its record says why it ended.
-                None => {
-                    let id = machine.rental_id.clone().unwrap_or_else(|| machine.name.clone());
-                    let ended = calcifer.get(&super::route(&id)?).await.unwrap_or(machine);
-                    return Err(boot_failed(&ended));
-                }
+        let next = tokio::select! {
+            next = following.next(&calcifer) => next,
+            _ = &mut stop => return Ok(unfollowed(ctx, &machine, None)),
+        };
+        machine = match next {
+            Ok(Some(next)) => next,
+            // It left the list, which shows no ended machine: its record says where it stands.
+            Ok(None) => match calcifer.get(&super::route(&id)?).await {
+                Ok(now) => now,
+                Err(e) => return Ok(unfollowed(ctx, &machine, Some(e))),
             },
-            _ = tokio::signal::ctrl_c() => {
-                output::say(ctx, &format!(
-                    "stopped watching {}: the order continues and bills once it boots; \
-                     `cozy machine end {}` ends it", machine.name, machine.name));
-                return Ok(None);
-            }
-        }
+            Err(e) => return Ok(unfollowed(ctx, &machine, Some(e))),
+        };
     }
 }
 
-fn boot_failed(m: &Machine) -> Error {
-    let code = m.reason.clone().unwrap_or_else(|| "rental_failed".into());
-    let error = Error::new(
-        Kind::Unavailable,
-        code.clone(),
-        format!("rental {} did not come up: {code}", m.name),
-    );
-    if code == "provider_create_did_not_happen" {
-        return error
-            .remedy("Please try again later or rent a different GPU.")
-            .next("cozy machine rent");
+/// Ctrl-C, or SIGTERM from a supervisor (`timeout`): either stops the follower, never the order.
+async fn stopped() {
+    #[cfg(unix)]
+    match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+        Ok(mut term) => tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv() => {}
+        },
+        Err(_) => {
+            let _ = tokio::signal::ctrl_c().await;
+        }
     }
+    #[cfg(not(unix))]
+    let _ = tokio::signal::ctrl_c().await;
+}
+
+/// Says the follower stopped (`lost`: Calcifer could not be followed) while the order goes on,
+/// and how to find and end it.
+fn unfollowed(ctx: &Context, machine: &Machine, lost: Option<Error>) -> Followed {
+    let name = &machine.name;
+    let why = lost.map(|e| e.message);
+    if ctx.json {
+        output::ndjson(&serde_json::json!({
+            "type": "rental.unfollowed",
+            "rental_id": machine.rental_id,
+            "name": name,
+            "lost": why,
+        }));
+        return Followed::Unfollowed;
+    }
+    let stopped = why.map_or_else(|| "stopped following".to_owned(), |why| format!("lost Calcifer ({why})"));
+    output::say(
+        ctx,
+        &format!("{stopped}: {name}'s order is still live, and bills once its machine is ready"),
+    );
+    output::next(ctx, &["cozy machine ls", &format!("cozy machine end {name}")]);
+    Followed::Unfollowed
+}
+
+/// The order ended without a machine. Its Hub says an order ended only once nothing of it bills.
+fn ended(m: &Machine) -> Error {
+    let why = m.reason.as_deref().unwrap_or("its Hub ended it");
     let sku = m.rental.as_ref().map_or("<sku>", |r| r.sku.as_str());
-    error
-        .next(format!("cozy machine show {}", m.name))
-        .next(format!("cozy machine rent {sku}"))
+    Error::new(
+        Kind::Unavailable,
+        "rental_ended",
+        format!("{}: ended without a machine ({why}); nothing bills", m.name),
+    )
+    .next(format!("cozy machine rent {sku}"))
 }
 
 fn mint_key() -> String {

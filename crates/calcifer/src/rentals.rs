@@ -1124,13 +1124,14 @@ fn gone(state: &str) -> bool {
     matches!(state, "failed" | "released")
 }
 
-/// Why an ended rental ended: who released it, else its failure.
+/// Why an ended rental ended: who released it, else the Hub's word for the order. Its last
+/// attempt's failure comes last: an order that failed placing again failed for its own cause
+/// (rent-3856416f's attempt found no capacity; the order then found no offer at its price).
 fn cause(rental: &types::Rental) -> String {
-    rental
-        .release_cause
-        .clone()
+    let given = |text: &Option<String>| text.clone().filter(|t| !t.is_empty());
+    given(&rental.release_cause)
+        .or_else(|| given(&rental.detail))
         .or_else(|| rental.failure.as_ref().map(|f| f.code.clone()))
-        .or_else(|| rental.detail.clone())
         .unwrap_or_else(|| format!("its Hub says it {}", rental.state))
 }
 
@@ -1157,10 +1158,21 @@ fn endpoint(rental: &types::Rental) -> Option<Endpoint> {
 }
 
 /// A booting rental's phase, for people: a pending one's is why it is not bought yet (`waiting for
-/// capacity: …`), as its Hub says.
+/// capacity: …`), as its Hub says. Between attempts the Hub places the order again: the attempt
+/// it replaces failed, not the order, so its code is said as that attempt's.
 fn boot_phase(rental: &types::Rental) -> Option<String> {
     let boot = rental.boot.as_ref();
-    let pending = rental.detail.as_deref().filter(|d| rental.state == "pending_acquisition" && !d.is_empty());
+    let replaced = boot.filter(|b| b.state == "replanning").and_then(|b| b.replanned_from.as_ref());
+    let pending = rental.detail.as_deref().filter(|d| {
+        rental.state == "pending_acquisition" && !d.is_empty() && replaced.is_none_or(|r| r.failure_code != *d)
+    });
+    if let Some(r) = replaced {
+        let again = format!("placing it again after attempt {} ({})", r.attempt, r.failure_code);
+        return Some(match pending {
+            Some(why) => format!("{again}: {why}"),
+            None => again,
+        });
+    }
     let words: Vec<&str> = [
         Some(pending.unwrap_or(rental.state.as_str())),
         boot.and_then(|b| b.phase.as_deref()),

@@ -22,7 +22,7 @@ mod rent;
 
 pub(crate) use list::status_fields;
 pub(crate) use live::Following;
-pub(crate) use rent::{Notices, agree, follow as until_ready};
+pub(crate) use rent::{Followed, Notices, agree, follow as until_ready};
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -56,9 +56,11 @@ enum Verb {
         #[command(flatten)]
         query: crate::daemon::LogQuery,
     },
-    /// Rent a machine; with no SKU, list what is for rent. Follows its boot; Ctrl-C stops following,
-    /// never the order. With --json: NDJSON lines, the quote and then `rental.accepted` (its rental
-    /// id and name) once the Hub accepts, then the machine's document when it is ready.
+    /// Rent a machine; with no SKU, list what is for rent. Follows the order to its end: exit 0 and
+    /// `<name>: ready` last once its machine is ready, 1 once the order ended without one (nothing
+    /// bills). Ctrl-C stops following, never the order: exit 3, naming it. With --json: NDJSON
+    /// lines, the quote and then `rental.accepted` (its rental id and name) once the Hub accepts,
+    /// then the machine's document when it is ready, or `rental.unfollowed`.
     Rent(rent::Rent),
     /// End a rental (billing stops once its Hub confirms), or remove an added machine, once
     /// its runs' outputs have landed here.

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use super::PackageRef;
 use crate::{
     Context,
-    machine::{Notices, route, until_ready},
+    machine::{Followed, Notices, route, until_ready},
     output::{self, Table},
     run,
 };
@@ -208,12 +208,13 @@ async fn machines(ctx: &Context, on: Option<&On>) -> Result<Vec<Machine>, Error>
     if machine.state == MachineState::Booting {
         let name = machine.name.clone();
         output::say(ctx, &format!("waiting for {name} to start"));
-        machine = until_ready(ctx, machine, Notices::default())
-            .await?
-            .ok_or_else(|| {
+        machine = match until_ready(ctx, machine, Notices::default()).await? {
+            Followed::Ready(machine) => machine,
+            Followed::Unfollowed => {
                 let message = format!("{name} has not started; nothing was sent to it");
-                Error::new(Kind::Unavailable, "machine_booting", message)
-            })?;
+                return Err(Error::new(Kind::Unavailable, "machine_booting", message));
+            }
+        };
     }
     let path = route(&machine.name.to_ascii_lowercase())?;
     let machine: Machine = calcifer.get_query(&path, &[("fresh", "true")]).await?;
