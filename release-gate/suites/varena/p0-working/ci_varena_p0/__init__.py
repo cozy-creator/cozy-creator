@@ -97,7 +97,7 @@ class CooperativeProbe(Probe):
 @app.entrypoint(accelerator=True)
 def cooperative(payload: CooperativeProbe, tel: Telemetry) -> Report:
     """Two fresh CUDA processes exercise the explicit same-domain native ledger."""
-    return _cuda_child(payload, tel, "cooperative.py", "varena-p3-cooperative")
+    return _cuda_child(payload, tel, "cooperative.py", "varena-p3-cooperative", report_failure=True)
 
 
 @app.entrypoint(accelerator=True)
@@ -106,7 +106,7 @@ def native_cudnn(payload: Probe, tel: Telemetry) -> Report:
     return _cuda_child(payload, tel, "native_cudnn.py", "native-cudnn-lifetime")
 
 
-def _cuda_child(payload: Probe, tel: Telemetry, filename: str, stage: str) -> Report:
+def _cuda_child(payload: Probe, tel: Telemetry, filename: str, stage: str, *, report_failure: bool = False) -> Report:
     config = msgspec.json.encode(payload).decode()
     child = Path(__file__).with_name(filename)
     result = None
@@ -148,6 +148,14 @@ def _cuda_child(payload: Probe, tel: Telemetry, filename: str, stage: str) -> Re
         result["compute_sanitizer"] = {
             "path": payload.compute_sanitizer, "exit_code": code, "error_summaries": summaries,
         }
+        return Report(result["passed"], json.dumps(result, sort_keys=True))
+    if report_failure:
+        # Runtime log lines are bounded. Preserve full nested errors/receipts in the typed
+        # result, as for sanitizer reports; callers must check passed, not CLI exit alone.
+        if not isinstance(result, dict):
+            result = {"passed": False, "error": "child produced no structured result"}
+        result["passed"] = bool(not code and result.get("passed"))
+        result["child_exit_code"] = code
         return Report(result["passed"], json.dumps(result, sort_keys=True))
     if code or not isinstance(result, dict) or not result.get("passed"):
         raise RuntimeError(f"{stage} child failed ({code}): {result}")

@@ -17,6 +17,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 
 MIB = 1 << 20
 
@@ -40,6 +41,7 @@ class Actor:
         self.selector = selectors.DefaultSelector()
         self.selector.register(self.process.stdout, selectors.EVENT_READ)
         self.buffer = b""
+        self.receipts = []
         self.ready = self.read()
         assert self.ready.get("ready"), self.ready
 
@@ -58,8 +60,12 @@ class Actor:
             except ValueError:
                 emit({"peer": self.role, "log": line.decode(errors="replace")})
                 continue
+            self.receipts.append(value)
             emit({"peer": self.role, "receipt": value})
-            assert "error" not in value, value
+            if "error" in value:
+                error = RuntimeError(f"{self.role} child failed: {value['error']}")
+                error.peer_failure = value
+                raise error
             return value
 
     def call(self, command):
@@ -348,6 +354,7 @@ def child(role, config, directory):
                         emit({"gc_active": True, "owner": old_owner, "later_cleanup_task_completed": True})
                         assert sys.stdin.readline().strip() == "finish-gc"
                         captured = torch.ones(MIB, device="cuda", dtype=torch.uint8)
+                    vt.replay(graph, stream=stream)
                     stream.synchronize()
                     assert int(captured.cpu()[0]) == 1
                     graph.reset()
@@ -466,7 +473,8 @@ def child(role, config, directory):
                     raise AssertionError(command)
                 emit(value)
             except BaseException as error:
-                emit({"error": f"{type(error).__name__}: {error}"})
+                emit({"error": f"{type(error).__name__}: {error}", "traceback": traceback.format_exc(),
+                      "command": command})
                 raise
     finally:
         if checkpoint is not None:
@@ -545,6 +553,12 @@ def main(config):
             requester.close()
             emit({"result": {"passed": True, "scope": "same-domain real GPU mechanism; no foreign-pressure latency or model claim",
                 "cases": results, "gpu_uuid": config["gpu_uuid"]}})
+        except BaseException as error:
+            emit({"result": {"passed": False, "error": f"{type(error).__name__}: {error}",
+                "traceback": traceback.format_exc(), "peer_failure": getattr(error, "peer_failure", None),
+                "cases_completed": results, "receipts": {actor.role: actor.receipts for actor in actors},
+                "gpu_uuid": config["gpu_uuid"]}})
+            raise
         finally:
             for actor in actors:
                 if actor.process.poll() is None:
