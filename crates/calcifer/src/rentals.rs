@@ -1015,7 +1015,8 @@ impl Machines {
         if reopened {
             self.store().reopen_ask(&ask.key).map_err(internal)?;
         }
-        if !fresh && ask.state != AskState::Done && EndBody::of(&ask).wait && !wait {
+        // Asked again: once more after it failed, or with its wait stopped.
+        if reopened || (!fresh && ask.state != AskState::Done && EndBody::of(&ask).wait && !wait) {
             self.store().rewrite_ask(&ask.key, &body).map_err(internal)?;
             self.end_waits.notify_waiters();
         }
