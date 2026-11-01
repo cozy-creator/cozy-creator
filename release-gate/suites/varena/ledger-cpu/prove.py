@@ -304,6 +304,7 @@ try:
         # Stop only while its OFD publication lock is held AND the inactive bank contains
         # newer row data than the still-committed bank. Then kill it before the commit store.
         with path.open("r+b", buffering=0) as file, mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ) as mapped:
+            assert struct.unpack_from("=Q", mapped, 8)[0] == 3, "current v3 fixture only"
             bank_words = (len(mapped) // 8 - 16) // 2
             observed = None
             for attempt in range(1000):
@@ -311,7 +312,7 @@ try:
                 assert os.WIFSTOPPED(os.waitpid(writer.process.pid, os.WUNTRACED)[1])
                 selector = struct.unpack_from("=Q", mapped, 15 * 8)[0]
                 bank = selector & 1
-                live_word = 17 + ready["slot"] * 20 + 7  # ledger layout v2 metadata prefix
+                live_word = 18 + ready["slot"] * 22 + 7  # current v3 metadata and row prefix
                 current = struct.unpack_from("=Q", mapped, (16 + bank * bank_words + live_word) * 8)[0]
                 uncommitted = struct.unpack_from("=Q", mapped, (16 + (1 - bank) * bank_words + live_word) * 8)[0]
                 if publication_held(file.fileno()) and uncommitted > current:

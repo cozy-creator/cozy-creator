@@ -49,7 +49,8 @@ operation still rejects a changed PID/domain before touching inherited local loc
 Sample callers read the snapshot generation before observing the driver, then supply it to `sample`; the driver
 observation itself must be outside all ledger locks. `StaleSample` requires a new snapshot and new observation.
 The committed capacity epoch prevents an accepted but pre-release sample from starting a later round. Layout
-version 2 stores these epochs; this proof's interrupted-publication reader uses that version's metadata offset.
+version 3 stores these epochs; this proof's interrupted-publication reader checks that current version and uses
+its 18-word metadata and 22-word row offsets. Older-format support is deliberately absent.
 
 The first domain is same UID, user/PID/mount namespaces and boot, using the same tmpfs file. Different backing
 inodes are separate domains. Full cross-container/multi-UID support, GPU/MIG discovery, wake/recheck latency,
