@@ -319,7 +319,8 @@ impl Built {
     /// The record of the environment at `env` (a generation's): the package (distribution and
     /// version), its App and interface, the pair it holds, its description.
     pub(crate) fn record(&self, (identity, environment): (&str, &str), (distribution, version): (&str, &str), env: &Path, interface: &Value,
-        runtime_build: &str, (source_digest, callees): (String, Vec<crate::catalog::Callee>)) -> Result<Value, Failure> {
+        runtime_build: &str, described: Described) -> Result<Value, Failure> {
+        let Described { source_digest, callees, closures } = described;
         let application = protocol::interface::application(interface)
             .ok_or(("package_prepare_interface_invalid", "the package interface names no application".to_string()))?;
         let dependencies: Vec<Value> = installed(env).into_iter().filter(|(name, _)| SDK.contains(&name.as_str()))
@@ -327,7 +328,7 @@ impl Built {
         let runtime_build = if self.sdk == "machine" { runtime_build } else { "" };
         Ok(json!({"identity":identity,"package":distribution,"version":version,"application":application,
             "python":platform::paths::venv_python(env),"dependencies":dependencies,"interface":interface,"sdk":self.sdk,
-            "sdk_fallback":self.fallback,"runtime_build":runtime_build,"environment":environment,"source_digest":source_digest,"callees":callees}))
+            "sdk_fallback":self.fallback,"runtime_build":runtime_build,"environment":environment,"source_digest":source_digest,"callees":callees,"closures":closures}))
     }
 }
 
@@ -359,22 +360,37 @@ fn ask_runtime(python: &Path, request: &Value) -> Result<Value, Failure> {
     }
 }
 
-/// The environment's root digest and the other Apps it holds (`packages`: their distributions'
-/// packages), described inside it. A failed description fails the install: an environment never
-/// publishes with silently missing callees.
-pub(crate) fn describe_environment(python: &Path, root: &str, packages: &BTreeMap<String, String>)
-    -> Result<(String, Vec<crate::catalog::Callee>), Failure> {
-    let reply = ask_runtime(python, &json!({"kind": "describe_environment", "root": root, "packages": packages}))?;
-    let callees = serde_json::from_value(reply["callees"].clone())
-        .map_err(|e| ("package_prepare_description_failed", format!("the environment's callees: {e}")))?;
-    Ok((reply["source_digest"].as_str().unwrap_or_default().to_string(), callees))
+/// What an environment's Runtime says of its root (`generation`'s fields of the same names).
+pub(crate) struct Described {
+    pub source_digest: String,
+    pub callees: Vec<crate::catalog::Callee>,
+    pub closures: BTreeMap<String, String>,
 }
 
-/// A live project's interface, read from its source directory by the environment's Runtime.
-pub(crate) fn describe_project(python: &Path, project: &Path) -> Result<Value, Failure> {
+/// The environment's root digest and the other Apps it holds (`packages`: their distributions'
+/// packages), described inside it, with the root's code closures when `closures` asks. A failed
+/// description fails the install: an environment never publishes with silently missing callees.
+pub(crate) fn describe_environment(python: &Path, root: &str, packages: &BTreeMap<String, String>, closures: bool)
+    -> Result<Described, Failure> {
+    let reply = ask_runtime(python, &json!({"kind": "describe_environment", "root": root, "packages": packages, "closures": closures}))?;
+    let callees = serde_json::from_value(reply["callees"].clone())
+        .map_err(|e| ("package_prepare_description_failed", format!("the environment's callees: {e}")))?;
+    Ok(Described { source_digest: reply["source_digest"].as_str().unwrap_or_default().to_string(), callees, closures: closures_of(&reply) })
+}
+
+/// A live project's interface and code closures, read from its source directory by the
+/// environment's Runtime.
+pub(crate) fn describe_project(python: &Path, project: &Path) -> Result<(Value, BTreeMap<String, String>), Failure> {
     let reply = ask_runtime(python, &json!({"kind": "describe", "project": project, "environment_python": python}))?;
-    Some(reply["interface"].clone()).filter(Value::is_object)
-        .ok_or(("package_prepare_description_failed", "the project's description holds no interface".into()))
+    let interface = Some(reply["interface"].clone()).filter(Value::is_object)
+        .ok_or(("package_prepare_description_failed", "the project's description holds no interface".into()))?;
+    Ok((interface, closures_of(&reply)))
+}
+
+/// A reply's code closures: none from a Runtime that reads none, whose memo keys on the whole
+/// source.
+fn closures_of(reply: &Value) -> BTreeMap<String, String> {
+    serde_json::from_value(reply["closures"].clone()).unwrap_or_default()
 }
 
 /// Every distribution installed in `env`, by normalized name, at its version.

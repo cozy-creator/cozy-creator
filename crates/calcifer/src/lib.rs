@@ -941,6 +941,7 @@ impl Calcifer {
                             .and_then(|m| serde_json::from_str(m.get()).ok()),
                         reason: call.reason,
                         memoized: call.memoized,
+                        memo_basis: call.memo_basis,
                     };
                     let text = serde_json::to_string(&call).expect("serializes");
                     batch.logs.push((frame.at_ms, "call".into(), text));

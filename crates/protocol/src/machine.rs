@@ -618,6 +618,11 @@ pub struct Outcome {
     pub memoized: bool,
     /// Why it was neither looked up nor held (its author's condition unmet, e.g. "seed not given").
     pub unmemoized: String,
+    /// What keyed a memoizable callable's code: `closure` (its module and the modules of its
+    /// package it imports), `package` (its package's whole source) or `identity` (another
+    /// package's declared operation identity). Empty from a machine that predates it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub memo_basis: String,
     /// How its executor served the request other than as sent, in the executor's order. Advisory.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub adjustments: Vec<Adjustment>,
@@ -678,6 +683,9 @@ pub struct Call {
     pub computation_digest: String,
     /// Why a memoizable call was neither looked up nor held ("seed not given").
     pub unmemoized: String,
+    /// As [`Outcome::memo_basis`].
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub memo_basis: String,
 }
 
 // ---- Status ---------------------------------------------------------------------------------

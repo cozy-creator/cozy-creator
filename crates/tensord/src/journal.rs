@@ -331,6 +331,9 @@ pub struct CallMemo {
     /// Why it was neither looked up nor held: its author's condition unmet ("seed not given").
     #[serde(skip_serializing_if = "String::is_empty")]
     pub unmemoized: String,
+    /// What keyed its code (`call_memo::Basis`): `closure`, `package` or `identity`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub basis: String,
 }
 impl CallMemo {
     pub fn is_empty(&self) -> bool {

@@ -334,10 +334,10 @@ pub async fn exec(ctx: &Context, id: &str, once: bool) -> Result<ExitCode, Error
             output::Table::new(ctx, ["#", "FUNCTION", "LABEL", "STATUS", "TIME", "REASON"]);
         for call in &run.calls {
             let ms = (call.finished_at_ms - call.called_at_ms).max(0) as f64;
-            let status = if call.memoized {
-                format!("{} (memoized)", call.status)
-            } else {
-                call.status.clone()
+            let status = match (call.memoized, follow::keyed(&call.memo_basis)) {
+                (true, keyed) => format!("{} (memoized{keyed})", call.status),
+                (false, "") => call.status.clone(),
+                (false, keyed) => format!("{} (computed{keyed})", call.status),
             };
             let reason = call
                 .reason

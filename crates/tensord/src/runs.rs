@@ -846,9 +846,10 @@ impl Runs {
             true => Memo::Off,
         };
         let (memo, answer) = match memo {
-            Memo::Key(computation) => {
+            Memo::Key(computation, basis) => {
                 let answer = self.objects.recall(actor, &computation, id)?;
-                (CallMemo { memoized: answer.is_some(), computation, ..Default::default() }, answer)
+                let basis = basis.name().into();
+                (CallMemo { memoized: answer.is_some(), computation, basis, ..Default::default() }, answer)
             }
             Memo::Unmet(why) => (CallMemo { unmemoized: why, ..Default::default() }, None),
             Memo::Off => (CallMemo::default(), None),

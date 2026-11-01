@@ -167,6 +167,9 @@ pub struct Run {
     pub result: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_ms: Option<u64>,
+    /// A memoizable run's computation, once settled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memo: Option<Memo>,
     /// With `?detail=full`: what the machine measured (stages, steps, GPUs, attention).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub measurements: Option<serde_json::Value>,
@@ -177,6 +180,19 @@ pub struct Run {
 
 /// One request field a run's executor served other than as sent (`Outcome.adjustments`).
 pub use crate::machine::Adjustment;
+
+/// A memoizable run's or call's computation.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Memo {
+    /// `sha256:<hex>`.
+    pub computation: String,
+    /// Answered from a result its machine held: nothing ran.
+    pub memoized: bool,
+    /// What keyed its code (`machine::Outcome::memo_basis`); empty from a machine that predates it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub basis: String,
+}
 
 /// One settled call of a run (the run's own function or a child call).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -195,6 +211,9 @@ pub struct Call {
     pub reason: Option<Reason>,
     #[serde(default)]
     pub memoized: bool,
+    /// What keyed a memoizable call's code (`Memo::basis`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub memo_basis: String,
 }
 
 /// Why a run or call did not succeed, as its machine said it (with its traceback) or as

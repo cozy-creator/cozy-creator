@@ -938,7 +938,7 @@ impl Publisher {
         // (th-245 did, and every callee became `local/<name>`: run 5234).
         let org = package.split_once('/').map_or("", |(org, _)| org);
         let hub_packages: BTreeMap<String, String> = files.iter().map(|file| (file.distribution(), format!("{org}/{}", file.distribution()))).collect();
-        let described = environment::describe_environment(&platform::paths::venv_python(&env), &locked.distribution, &hub_packages)?;
+        let described = environment::describe_environment(&platform::paths::venv_python(&env), &locked.distribution, &hub_packages, true)?;
         let record = built.record((identity, identity), (&locked.distribution, release), &env, &card.interface, &self.sdk.runtime_build, described)?;
         environment::publish(&dir, &record)
     }
