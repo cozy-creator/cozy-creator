@@ -530,7 +530,9 @@ async fn catalog(ctx: &Context, hub: &Origin) -> Result<ExitCode, Error> {
             usd(width.price_usd_micros_per_hour),
         ]);
     }
-    table.print();
+    if !skus.is_empty() {
+        table.print();
+    }
     match (skus.is_empty(), held.join(", ")) {
         (true, held) if held.is_empty() => {
             output::say(ctx, "No machine is for rent on this Hub right now.")
