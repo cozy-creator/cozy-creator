@@ -12,12 +12,21 @@ from . import Probe, Report, actual, app, report, settle
 def protocol(payload: Probe, ctx: Context) -> Report:
     request, vt, provenance = actual(payload, ctx)
     device = ctx.device.index or 0
+    # Executor startup primes the real GEMM verifier on a background thread. Complete
+    # that existing initialization before measuring this unrelated closed operation.
+    from cozy_runtime.internal import int8_linear
+
+    startup_before = vt.stats(device)
+    assert int8_linear.native(torch, device) is not None
+    startup_after = vt.stats(device)
     stream = torch.cuda.current_stream(device)
     stream_id = int(stream.cuda_stream)
     on = torch.device('cuda', device)
     settle(vt, device)
     initial = vt.stats(device)
-    result = {'provenance': provenance, 'initial': initial, 'cases': [], 'keys': []}
+    result = {'provenance': provenance, 'initial': initial, 'cases': [], 'keys': [],
+              'startup_readiness': {'before': startup_before, 'after': startup_after,
+                                    'boundary': 'actual int8_linear.native before baseline'}}
     whole, half = 8 << 20, 4 << 20
     menu = [('whole', [whole]), ('half', [half])]
     site, configuration = 'fixture.closed-native/1', 'explicit-u8-fill/1'

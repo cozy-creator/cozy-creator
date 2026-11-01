@@ -55,3 +55,15 @@ both real source hooks, raises the actual closed-checkpoint error, and leaves CU
 uninitialized. GPU execution, measured prefetch, the tighter-capacity numerical comparison,
 replay coexistence and same-PID cleanup remain pending. No full-model or performance claim
 is made by this source checkpoint.
+
+
+## Explicit Runtime startup boundary
+
+Cold protocol run25544 overlapped the executor's primed background GEMM verifier. Its
+phase and leaf excesses match the verifier's M3/K1024 FP32 input and BF16 bias sizes;
+no allocation stack was captured, so attribution is source/counter evidence. Native
+correctly invalidated the contaminated sample. The fixture now calls actual
+`int8_linear.native` before its initial baseline, joining that existing primed opener
+as the real consumer already does. The8MiB/4MiB operation vectors and all9 cases are
+unchanged. This is a Runtime fixture preparation boundary, not a Varena API dependency
+on GEMM. The original25544 receipt remains preserved.
