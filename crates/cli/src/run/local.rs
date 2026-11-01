@@ -1,9 +1,10 @@
 //! Local code: `cozy run ./dir[/fn]` and `cozy run ./script.py[/fn]`, a package nobody published. The
 //! machine installs it and answers its interface; the CLI binds the terms against that and calls
 //! it, just as it calls a release. None of its code runs here. The interface is the source's (a
-//! static description), so it is kept by the source manifest's digest: a source sent before is
-//! called at once, and its machine makes its environment ready inside the call. `--describe` reads
-//! it from the source here, as a publish does, and installs nothing.
+//! static description) as its machine's Runtime reads it, so it is kept by the source manifest's
+//! digest and that Runtime: a source sent before to a machine on the same Runtime is called at
+//! once, and its machine makes its environment ready inside the call. `--describe` reads it from
+//! the source here, as a publish does, and installs nothing.
 use std::{
     path::{Path, PathBuf},
     process::ExitCode,
@@ -81,13 +82,15 @@ impl Prepared {
 pub(crate) async fn prepare(ctx: &Context, path: &Path, on: On, warm: bool) -> Result<Prepared, Error> {
     let hub = ctx.hub();
     let local = crate::package::local::source(ctx, path, &on).await?;
-    let installed = match kept(&ctx.home, &local).filter(|_| !warm) {
+    let runtime = runtime(ctx, &on).await;
+    let kept = runtime.as_deref().filter(|_| !warm).and_then(|runtime| kept(&ctx.home, &local, runtime));
+    let installed = match kept {
         Some(interface) => Installed {
             interface,
             installation: None,
             machine: None,
         },
-        None => install(ctx, hub, on.clone(), &local).await?,
+        None => install(ctx, hub, on.clone(), &local, runtime.as_deref()).await?,
     };
     Ok(Prepared { local, installed, on })
 }
@@ -147,13 +150,25 @@ fn chosen(ctx: &Context, package: &str, interface: &Interface, function: Option<
 /// installation and its interface, then kept. It is named for what the machine does: an install
 /// when the environment's inputs (metadata, lock, path dependencies) are new here, else a sync of
 /// the changed source.
-async fn install(ctx: &Context, hub: &str, on: On, local: &Local) -> Result<Installed, Error> {
+async fn install(ctx: &Context, hub: &str, on: On, local: &Local, runtime: Option<&str>) -> Result<Installed, Error> {
     let submitted = submit(ctx, install_run(&ctx.home, hub, on, local), None).await?;
     let run = settle(ctx, submitted.run).await?;
     let result = run.result.clone().unwrap_or_default();
     let installed = installed(run)?;
-    keep(&ctx.home, local, &result["interface"]);
+    if let Some(runtime) = runtime {
+        keep(&ctx.home, local, runtime, &result["interface"]);
+    }
     Ok(installed)
+}
+
+/// The Runtime the machine `on` names describes code with, as it last said; none for a machine
+/// not chosen yet, or one that has not answered.
+async fn runtime(ctx: &Context, on: &On) -> Option<String> {
+    let On::Machine(name) = on else {
+        return None;
+    };
+    let machine = crate::machine::machine(ctx, name).await.ok()?;
+    machine.status.map(|status| status.runtime)
 }
 
 /// The run that installs local code `on` a machine: a WARM run naming no function.
@@ -180,18 +195,20 @@ pub(crate) fn install_run(home: &Home, hub: &str, on: On, local: &Local) -> Subm
     }
 }
 
-/// Where local code's interfaces are kept, beside release cards: one file per source manifest,
-/// named for its environment's inputs, so a changed source with the same environment is seen.
+/// Where local code's interfaces are kept, beside release cards: one file per source manifest
+/// and Runtime that described it, named for its environment's inputs first, so a changed source
+/// with the same environment is seen.
 fn dir(home: &Home, local: &Local) -> PathBuf {
     let mut dir = home.root().join("packages");
     dir.extend(local.package.split('/'));
     dir
 }
 
-fn file(home: &Home, local: &Local) -> PathBuf {
+fn file(home: &Home, local: &Local, runtime: &str) -> PathBuf {
     let manifest = local.source.manifest.trim_start_matches("sha256:");
+    let runtime = &hex(&protocol::ids::Digest::of(runtime.as_bytes()))[..16];
     dir(home, local).join(format!(
-        "{}-{manifest}.json",
+        "{}-{manifest}-{runtime}.json",
         &hex(&local.environment)[..16]
     ))
 }
@@ -200,10 +217,10 @@ fn hex(digest: &protocol::ids::Digest) -> String {
     digest.to_string().trim_start_matches("sha256:").to_owned()
 }
 
-/// The interface kept for this exact source.
-fn kept(home: &Home, local: &Local) -> Option<Interface> {
+/// The interface kept for this exact source, as `runtime` described it.
+fn kept(home: &Home, local: &Local, runtime: &str) -> Option<Interface> {
     let document: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(file(home, local)).ok()?).ok()?;
+        serde_json::from_slice(&std::fs::read(file(home, local, runtime)).ok()?).ok()?;
     Interface::parse(&document).ok()
 }
 
@@ -217,12 +234,12 @@ fn synced(home: &Home, local: &Local) -> bool {
         .any(|e| e.file_name().to_string_lossy().starts_with(&prefix))
 }
 
-/// Keeps `interface` for this source, and only the newest 16 sources of the package.
-fn keep(home: &Home, local: &Local, interface: &serde_json::Value) {
+/// Keeps `interface` for this source as `runtime` described it, and only the package's newest 16.
+fn keep(home: &Home, local: &Local, runtime: &str, interface: &serde_json::Value) {
     const KEPT: usize = 16;
     let dir = dir(home, local);
     let kept = durable::private_dir(&dir).and_then(|()| {
-        durable::replace(&file(home, local), interface.to_string().as_bytes(), 0o600)
+        durable::replace(&file(home, local, runtime), interface.to_string().as_bytes(), 0o600)
     });
     // An interface that cannot be kept is asked again next time; the run goes on.
     drop(kept);
