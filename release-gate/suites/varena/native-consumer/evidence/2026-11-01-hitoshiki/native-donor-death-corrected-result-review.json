@@ -1,0 +1,312 @@
+{
+  "source": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-shortage-int8-leg15-plan/attempt-001/native-donor-death-corrected-result.json",
+  "sha256": "e1622bba8dfd347a86d6f2ac15d8c7db3d8ca46134d31b6d43e607e00929980c",
+  "case": "death_case",
+  "fixture_passed": true,
+  "checks": [
+    {
+      "passed": true,
+      "check": "fixture returned a positive result"
+    },
+    {
+      "passed": true,
+      "check": "all owned native child exits observed"
+    },
+    {
+      "passed": true,
+      "check": "no native child cleanup errors"
+    },
+    {
+      "passed": true,
+      "check": "exact corrected native/helper/binary cohort"
+    },
+    {
+      "passed": true,
+      "check": "exact Hitoshiki device UUID"
+    },
+    {
+      "passed": true,
+      "check": "donor: executed ELF digest"
+    },
+    {
+      "passed": true,
+      "check": "donor: parent observed no Python/Torch maps"
+    },
+    {
+      "passed": true,
+      "check": "donor: expected CUDA mapping boundary"
+    },
+    {
+      "passed": true,
+      "check": "donor: native process repeated map checks"
+    },
+    {
+      "passed": true,
+      "check": "donor: controller issued no manual cooperation action"
+    },
+    {
+      "passed": true,
+      "check": "donor: exactly owned manual donor kill"
+    },
+    {
+      "passed": true,
+      "check": "requester: executed ELF digest"
+    },
+    {
+      "passed": true,
+      "check": "requester: parent observed no Python/Torch maps"
+    },
+    {
+      "passed": true,
+      "check": "requester: expected CUDA mapping boundary"
+    },
+    {
+      "passed": true,
+      "check": "requester: native process repeated map checks"
+    },
+    {
+      "passed": true,
+      "check": "requester: controller issued no manual cooperation action"
+    },
+    {
+      "passed": true,
+      "check": "requester: clean native exit"
+    },
+    {
+      "passed": true,
+      "check": "requester: zero working/live/mapped/pending at close"
+    },
+    {
+      "passed": true,
+      "check": "filler: executed ELF digest"
+    },
+    {
+      "passed": true,
+      "check": "filler: parent observed no Python/Torch maps"
+    },
+    {
+      "passed": true,
+      "check": "filler: expected CUDA mapping boundary"
+    },
+    {
+      "passed": true,
+      "check": "filler: native process repeated map checks"
+    },
+    {
+      "passed": true,
+      "check": "filler: controller issued no manual cooperation action"
+    },
+    {
+      "passed": true,
+      "check": "filler: clean native exit"
+    },
+    {
+      "passed": true,
+      "check": "filler: zero working/live/mapped/pending at close"
+    },
+    {
+      "passed": true,
+      "check": "watcher: executed ELF digest"
+    },
+    {
+      "passed": true,
+      "check": "watcher: parent observed no Python/Torch maps"
+    },
+    {
+      "passed": true,
+      "check": "watcher: expected CUDA mapping boundary"
+    },
+    {
+      "passed": true,
+      "check": "watcher: native process repeated map checks"
+    },
+    {
+      "passed": true,
+      "check": "watcher: controller issued no manual cooperation action"
+    },
+    {
+      "passed": true,
+      "check": "watcher: clean native exit"
+    },
+    {
+      "passed": true,
+      "check": "Waiting marker has exact donor/requester RowIds"
+    },
+    {
+      "passed": true,
+      "check": "Waiting marker matches owned donor PID/birth"
+    },
+    {
+      "passed": true,
+      "check": "live owned pidfd verified before kill"
+    },
+    {
+      "passed": true,
+      "check": "watch ready precedes allocation; exact Waiting precedes kill inside actual allocation"
+    },
+    {
+      "passed": true,
+      "check": "dead donor was credited zero completed bytes"
+    },
+    {
+      "passed": true,
+      "check": "real driver exhaustion entered automatic recovery"
+    },
+    {
+      "passed": true,
+      "check": "pressure filler read back every real byte"
+    },
+    {
+      "passed": true,
+      "check": "automatic requester demand settled"
+    },
+    {
+      "passed": true,
+      "check": "initial request has complete physical readback"
+    }
+  ],
+  "children": [
+    {
+      "name": "donor",
+      "mode": "manual",
+      "pid": 803,
+      "birth": 80166016,
+      "exit": -9,
+      "closed_stats": null,
+      "signals": [
+        {
+          "after_ns": 801666524144776,
+          "before_ns": 801666524117184,
+          "exit_code": -9,
+          "exit_observed_ns": 801666587533177,
+          "identity": {
+            "pid": 803,
+            "pidfd_live": true,
+            "pidfd_pid": 803,
+            "start_ticks": 80166016
+          },
+          "marker": {
+            "at_ns": 801666523751118,
+            "completed": 0,
+            "donor": {
+              "incarnation": 1,
+              "slot": 0
+            },
+            "event": "donor_waiting",
+            "libraries": {
+              "cuda_loaded": false,
+              "python_loaded": false,
+              "torch_loaded": false
+            },
+            "pending": 0,
+            "pid": 803,
+            "read_only": true,
+            "requester": {
+              "incarnation": 2,
+              "slot": 1
+            },
+            "round": 22,
+            "start_ticks": 80166016
+          },
+          "reason": "exact_observed_waiting_donor",
+          "requester_identity": {
+            "pid": 810,
+            "pidfd_live": true,
+            "pidfd_pid": 810,
+            "start_ticks": 80166024
+          },
+          "signal": 9
+        }
+      ]
+    },
+    {
+      "name": "requester",
+      "mode": "auto",
+      "pid": 810,
+      "birth": 80166024,
+      "exit": 0,
+      "closed_stats": {
+        "capacity": 0,
+        "driver_calls": 19,
+        "driver_physical_ooms": 3,
+        "free": 0,
+        "live": 0,
+        "mapped": 0,
+        "ooms": 0,
+        "pending": 0,
+        "pools": 0
+      },
+      "signals": []
+    },
+    {
+      "name": "filler",
+      "mode": "plain",
+      "pid": 818,
+      "birth": 80166033,
+      "exit": 0,
+      "closed_stats": {
+        "capacity": 0,
+        "driver_calls": 16,
+        "driver_physical_ooms": 0,
+        "free": 0,
+        "live": 0,
+        "mapped": 0,
+        "ooms": 0,
+        "pending": 0,
+        "pools": 0
+      },
+      "signals": []
+    },
+    {
+      "name": "watcher",
+      "mode": "watch",
+      "pid": 825,
+      "birth": 80166652,
+      "exit": 0,
+      "closed_stats": null,
+      "signals": []
+    }
+  ],
+  "death": {
+    "round": 22,
+    "initial_ok": true,
+    "initial_outcome": "allocated_after_actual_driver_retry",
+    "recovery": {
+      "completed_bytes": 0,
+      "elapsed_ns": 500948399,
+      "outcome": "peer_reclaim_exhausted",
+      "released_bytes": 0,
+      "requested_bytes": 402653184,
+      "round": 22
+    },
+    "initial_stats": {
+      "capacity": 404750336,
+      "driver_calls": 15,
+      "driver_physical_ooms": 3,
+      "free": 0,
+      "live": 404750336,
+      "mapped": 404750336,
+      "ooms": 0,
+      "pending": 0,
+      "pools": 0
+    },
+    "driver": {
+      "free": 681312256,
+      "total": 25252724736
+    },
+    "physical_readback_proven": true,
+    "automatic_episode_progress": true,
+    "filler_bytes": 22150119424,
+    "interval_ns": [
+      801666522682586,
+      801667024128678
+    ],
+    "watch_ready_ns": 801666521415872,
+    "waiting_ns": 801666523751118,
+    "kill_ns": [
+      801666524117184,
+      801666524144776
+    ]
+  },
+  "independent_passed": true
+}

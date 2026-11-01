@@ -1,0 +1,38 @@
+{
+  "passed": true,
+  "scope": "CPU metadata-only negative test on an empty private tmpfs ledger; no donor/requester rows or GPU operations",
+  "binary_sha256": "351d9fcbb8b36442191eedb2553ea0edc4b0daaaf10393258ad598ce18209476",
+  "command": [
+    "/home/fidika/cozy_v2/outputs/xs138-p3-native-consumer/b4ea86122/varena-native-consumer",
+    "watch",
+    "/dev/shm/native-watcher-empty-27lswwat",
+    "GPU-9e7b1c5d-0754-e081-0ec2-45c94ce5c59c",
+    "0",
+    "{\"donor_slot\": 0, \"donor_incarnation\": 1, \"requester_slot\": 1, \"requester_incarnation\": 1, \"timeout_ms\": 25}"
+  ],
+  "stdout": [
+    {
+      "at_ns": 485452022792941,
+      "donor": {
+        "incarnation": 1,
+        "slot": 0
+      },
+      "event": "watch_ready",
+      "libraries": {
+        "cuda_loaded": false,
+        "python_loaded": false,
+        "torch_loaded": false
+      },
+      "pid": 1758148,
+      "read_only": true,
+      "requester": {
+        "incarnation": 1,
+        "slot": 1
+      },
+      "start_ticks": 56064065
+    }
+  ],
+  "stderr": "Error: Custom { kind: Other, error: \"waiting-state observation deadline expired; no death inferred\" }\n",
+  "returncode": 1,
+  "waiting_inferred": false
+}

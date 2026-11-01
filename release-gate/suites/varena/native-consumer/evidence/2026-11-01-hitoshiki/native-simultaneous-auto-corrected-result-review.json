@@ -1,0 +1,291 @@
+{
+  "source": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-shortage-int8-leg15-plan/attempt-001/native-simultaneous-auto-corrected-result.json",
+  "sha256": "d4c29f7b93b1850343ea314c90c38efe0e1b2b516bc6aaa2a297daa07dcf0cec",
+  "case": "simultaneous_case",
+  "fixture_passed": true,
+  "checks": [
+    {
+      "passed": true,
+      "check": "fixture returned a positive result"
+    },
+    {
+      "passed": true,
+      "check": "all owned native child exits observed"
+    },
+    {
+      "passed": true,
+      "check": "no native child cleanup errors"
+    },
+    {
+      "passed": true,
+      "check": "exact corrected native/helper/binary cohort"
+    },
+    {
+      "passed": true,
+      "check": "exact Hitoshiki device UUID"
+    },
+    {
+      "passed": true,
+      "check": "left: executed ELF digest"
+    },
+    {
+      "passed": true,
+      "check": "left: parent observed no Python/Torch maps"
+    },
+    {
+      "passed": true,
+      "check": "left: expected CUDA mapping boundary"
+    },
+    {
+      "passed": true,
+      "check": "left: native process repeated map checks"
+    },
+    {
+      "passed": true,
+      "check": "left: controller issued no manual cooperation action"
+    },
+    {
+      "passed": true,
+      "check": "left: clean native exit"
+    },
+    {
+      "passed": true,
+      "check": "left: zero working/live/mapped/pending at close"
+    },
+    {
+      "passed": true,
+      "check": "right: executed ELF digest"
+    },
+    {
+      "passed": true,
+      "check": "right: parent observed no Python/Torch maps"
+    },
+    {
+      "passed": true,
+      "check": "right: expected CUDA mapping boundary"
+    },
+    {
+      "passed": true,
+      "check": "right: native process repeated map checks"
+    },
+    {
+      "passed": true,
+      "check": "right: controller issued no manual cooperation action"
+    },
+    {
+      "passed": true,
+      "check": "right: clean native exit"
+    },
+    {
+      "passed": true,
+      "check": "right: zero working/live/mapped/pending at close"
+    },
+    {
+      "passed": true,
+      "check": "filler: executed ELF digest"
+    },
+    {
+      "passed": true,
+      "check": "filler: parent observed no Python/Torch maps"
+    },
+    {
+      "passed": true,
+      "check": "filler: expected CUDA mapping boundary"
+    },
+    {
+      "passed": true,
+      "check": "filler: native process repeated map checks"
+    },
+    {
+      "passed": true,
+      "check": "filler: controller issued no manual cooperation action"
+    },
+    {
+      "passed": true,
+      "check": "filler: clean native exit"
+    },
+    {
+      "passed": true,
+      "check": "filler: zero working/live/mapped/pending at close"
+    },
+    {
+      "passed": true,
+      "check": "actual allocation call intervals overlap"
+    },
+    {
+      "passed": true,
+      "check": "at least one automatic consumer made real allocation/readback progress"
+    },
+    {
+      "passed": true,
+      "check": "all successful operations read back and freed all requested bytes"
+    },
+    {
+      "passed": true,
+      "check": "failures remain typed physical capacity outcomes"
+    },
+    {
+      "passed": true,
+      "check": "both native demands/recovery/withdrawals settled without controller mutation"
+    }
+  ],
+  "children": [
+    {
+      "name": "left",
+      "mode": "auto",
+      "pid": 832,
+      "birth": 80166830,
+      "exit": 0,
+      "closed_stats": {
+        "capacity": 0,
+        "driver_calls": 22,
+        "driver_physical_ooms": 6,
+        "free": 0,
+        "live": 0,
+        "mapped": 0,
+        "ooms": 1,
+        "pending": 0,
+        "pools": 0
+      },
+      "signals": []
+    },
+    {
+      "name": "right",
+      "mode": "auto",
+      "pid": 840,
+      "birth": 80166838,
+      "exit": 0,
+      "closed_stats": {
+        "capacity": 0,
+        "driver_calls": 23,
+        "driver_physical_ooms": 2,
+        "free": 0,
+        "live": 0,
+        "mapped": 0,
+        "ooms": 0,
+        "pending": 0,
+        "pools": 0
+      },
+      "signals": []
+    },
+    {
+      "name": "filler",
+      "mode": "plain",
+      "pid": 848,
+      "birth": 80166846,
+      "exit": 0,
+      "closed_stats": {
+        "capacity": 0,
+        "driver_calls": 16,
+        "driver_physical_ooms": 0,
+        "free": 0,
+        "live": 0,
+        "mapped": 0,
+        "ooms": 0,
+        "pending": 0,
+        "pools": 0
+      },
+      "signals": []
+    }
+  ],
+  "simultaneous": {
+    "intervals_ns": [
+      [
+        801674344879816,
+        801674869356893
+      ],
+      [
+        801674344883262,
+        801674368243677
+      ]
+    ],
+    "outcomes": [
+      "accepted_physical_exhaustion",
+      "full_readback_then_free"
+    ],
+    "progress": true,
+    "filler_bytes": 21613248512,
+    "replies": [
+      {
+        "ok": false,
+        "stats": {
+          "capacity": 2097152,
+          "driver_calls": 20,
+          "driver_physical_ooms": 6,
+          "free": 0,
+          "live": 2097152,
+          "mapped": 2097152,
+          "ooms": 1,
+          "pending": 0,
+          "pools": 0
+        },
+        "owner": {
+          "active": true,
+          "active_recoveries": 0,
+          "demand_clear_pending": false,
+          "failed": null,
+          "last_donation": null,
+          "last_recovery": {
+            "completed_bytes": 0,
+            "elapsed_ns": 500922168,
+            "outcome": "peer_reclaim_exhausted",
+            "released_bytes": 0,
+            "requested_bytes": 805306368,
+            "round": 36
+          },
+          "last_withdrawn_round": null,
+          "pending_withdrawals": 1,
+          "physical_bytes": 2097152,
+          "published": 16,
+          "recoveries": 1,
+          "retired": false,
+          "serviced": 16,
+          "stopping": false,
+          "withdrawn_rounds": 0
+        },
+        "result": null,
+        "error": "CUDA capacity exhausted allocating 805306368 bytes"
+      },
+      {
+        "ok": true,
+        "stats": {
+          "capacity": 2097152,
+          "driver_calls": 19,
+          "driver_physical_ooms": 2,
+          "free": 0,
+          "live": 2097152,
+          "mapped": 807403520,
+          "ooms": 0,
+          "pending": 805306368,
+          "pools": 0
+        },
+        "owner": {
+          "active": true,
+          "active_recoveries": 0,
+          "demand_clear_pending": false,
+          "failed": null,
+          "last_donation": null,
+          "last_recovery": null,
+          "last_withdrawn_round": null,
+          "pending_withdrawals": 0,
+          "physical_bytes": 538968064,
+          "published": 14,
+          "recoveries": 0,
+          "retired": false,
+          "serviced": 14,
+          "stopping": false,
+          "withdrawn_rounds": 0
+        },
+        "result": {
+          "bytes": 805306368,
+          "bytes_verified": 805306368,
+          "freed": true,
+          "ptr": 12920553472,
+          "value": 98
+        },
+        "error": null
+      }
+    ]
+  },
+  "independent_passed": true
+}

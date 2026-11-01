@@ -1,0 +1,2826 @@
+{
+  "all_owned_children_exited": true,
+  "case": "death_case",
+  "children": [
+    {
+      "command": [
+        "/var/lib/cozy/tensord/editable/ccfc2b9296e5e470/ci-varena-native-consumer/source-425469512912f0a68de8f9aebb19b1b39c2c34beedbfbf374c90bfcde3970041/tree/ci_varena_native_consumer/bin/varena-native-consumer",
+        "manual",
+        "/dev/shm/varena-native-consumers-ztfkwdpb",
+        "GPU-18d960a8-2283-19c9-c060-ef8a22fabe35",
+        "0",
+        "47"
+      ],
+      "executed_binary_sha256": "351d9fcbb8b36442191eedb2553ea0edc4b0daaaf10393258ad598ce18209476",
+      "maps": {
+        "cuda_loaded": true,
+        "maps_sha256": "cfac98d5637851efaa217d43c239596ef6f101bde38bd4d7937764715a697b7c",
+        "python_loaded": false,
+        "torch_loaded": false
+      },
+      "mode": "manual",
+      "name": "donor",
+      "pid": 803,
+      "returncode": -9,
+      "rows": [
+        {
+          "driver": {
+            "free": 23648600064,
+            "total": 25252724736
+          },
+          "event": "ready",
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "mode": "manual",
+          "pid": 803,
+          "row": {
+            "incarnation": 1,
+            "slot": 0
+          },
+          "start_ticks": 80166016,
+          "stats": {
+            "capacity": 0,
+            "driver_calls": 1,
+            "driver_physical_ooms": 0,
+            "free": 0,
+            "live": 0,
+            "mapped": 0,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801660427939157,
+          "bytes": 2097152,
+          "event": "allocation_begin",
+          "id": 1
+        },
+        {
+          "at_ns": 801660428111941,
+          "bytes": 2097152,
+          "event": "allocation_end",
+          "id": 1,
+          "ok": true
+        },
+        {
+          "at_ns": 801660428226386,
+          "driver": {
+            "free": 22825861120,
+            "total": 25252724736
+          },
+          "elapsed_ns": 288531,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 1,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "allocate",
+          "owner": null,
+          "result": {
+            "bytes": 2097152,
+            "ptr": 12918456320,
+            "value": 17
+          },
+          "stats": {
+            "capacity": 2097152,
+            "driver_calls": 4,
+            "driver_physical_ooms": 0,
+            "free": 0,
+            "live": 2097152,
+            "mapped": 2097152,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801660429660964,
+          "driver": {
+            "free": 22825861120,
+            "total": 25252724736
+          },
+          "elapsed_ns": 1266804,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 2,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "verify",
+          "owner": null,
+          "result": {
+            "bytes_verified": 2097152
+          },
+          "stats": {
+            "capacity": 2097152,
+            "driver_calls": 4,
+            "driver_physical_ooms": 0,
+            "free": 0,
+            "live": 2097152,
+            "mapped": 2097152,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801660429797500,
+          "driver": {
+            "free": 22825861120,
+            "total": 25252724736
+          },
+          "elapsed_ns": 4679,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 3,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "free",
+          "owner": null,
+          "result": {
+            "freed": "warm"
+          },
+          "stats": {
+            "capacity": 0,
+            "driver_calls": 4,
+            "driver_physical_ooms": 0,
+            "free": 0,
+            "live": 0,
+            "mapped": 2097152,
+            "ooms": 0,
+            "pending": 2097152,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801660429998998,
+          "driver": {
+            "free": 22827958272,
+            "total": 25252724736
+          },
+          "elapsed_ns": 86733,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 4,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "trim",
+          "owner": null,
+          "result": {
+            "released": 2097152
+          },
+          "stats": {
+            "capacity": 0,
+            "driver_calls": 6,
+            "driver_physical_ooms": 0,
+            "free": 0,
+            "live": 0,
+            "mapped": 0,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801660430125234,
+          "bytes": 2097152,
+          "event": "allocation_begin",
+          "id": 5
+        },
+        {
+          "at_ns": 801660430197640,
+          "bytes": 2097152,
+          "event": "allocation_end",
+          "id": 5,
+          "ok": true
+        },
+        {
+          "at_ns": 801660430217717,
+          "driver": {
+            "free": 22825861120,
+            "total": 25252724736
+          },
+          "elapsed_ns": 92824,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 5,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "allocate",
+          "owner": null,
+          "result": {
+            "bytes": 2097152,
+            "ptr": 12918456320,
+            "value": 29
+          },
+          "stats": {
+            "capacity": 2097152,
+            "driver_calls": 9,
+            "driver_physical_ooms": 0,
+            "free": 0,
+            "live": 2097152,
+            "mapped": 2097152,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801660430978032,
+          "driver": {
+            "free": 22825861120,
+            "total": 25252724736
+          },
+          "elapsed_ns": 638106,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 6,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "verify",
+          "owner": null,
+          "result": {
+            "bytes_verified": 2097152
+          },
+          "stats": {
+            "capacity": 2097152,
+            "driver_calls": 9,
+            "driver_physical_ooms": 0,
+            "free": 0,
+            "live": 2097152,
+            "mapped": 2097152,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801660437569664,
+          "bytes": 536870912,
+          "event": "allocation_begin",
+          "id": 7
+        },
+        {
+          "at_ns": 801660437664702,
+          "bytes": 536870912,
+          "event": "allocation_end",
+          "id": 7,
+          "ok": true
+        },
+        {
+          "at_ns": 801660438293941,
+          "driver": {
+            "free": 22284795904,
+            "total": 25252724736
+          },
+          "elapsed_ns": 724979,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 7,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "allocate",
+          "owner": null,
+          "result": {
+            "bytes": 536870912,
+            "ptr": 12920553472,
+            "value": 41
+          },
+          "stats": {
+            "capacity": 538968064,
+            "driver_calls": 12,
+            "driver_physical_ooms": 0,
+            "free": 0,
+            "live": 538968064,
+            "mapped": 538968064,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801660585987649,
+          "driver": {
+            "free": 22284795904,
+            "total": 25252724736
+          },
+          "elapsed_ns": 147562442,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 8,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "verify",
+          "owner": null,
+          "result": {
+            "bytes_verified": 536870912
+          },
+          "stats": {
+            "capacity": 538968064,
+            "driver_calls": 12,
+            "driver_physical_ooms": 0,
+            "free": 0,
+            "live": 538968064,
+            "mapped": 538968064,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801660586280367,
+          "driver": {
+            "free": 22284795904,
+            "total": 25252724736
+          },
+          "elapsed_ns": 9969,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 9,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "free",
+          "owner": null,
+          "result": {
+            "freed": "idle"
+          },
+          "stats": {
+            "capacity": 2097152,
+            "driver_calls": 12,
+            "driver_physical_ooms": 0,
+            "free": 0,
+            "live": 2097152,
+            "mapped": 538968064,
+            "ooms": 0,
+            "pending": 536870912,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801660586622158,
+          "driver": {
+            "free": 22284795904,
+            "total": 25252724736
+          },
+          "elapsed_ns": 77986,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 10,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "publish",
+          "owner": null,
+          "result": {
+            "physical": 538968064,
+            "reclaimable": 536870912,
+            "refreshed": true
+          },
+          "stats": {
+            "capacity": 2097152,
+            "driver_calls": 12,
+            "driver_physical_ooms": 0,
+            "free": 536870912,
+            "live": 2097152,
+            "mapped": 538968064,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        }
+      ],
+      "sent": [
+        {
+          "at_ns": 801660427891388,
+          "command": {
+            "bytes": 2097152,
+            "id": 1,
+            "name": "warm",
+            "op": "allocate",
+            "value": 17
+          }
+        },
+        {
+          "at_ns": 801660428378942,
+          "command": {
+            "id": 2,
+            "name": "warm",
+            "op": "verify"
+          }
+        },
+        {
+          "at_ns": 801660429781740,
+          "command": {
+            "id": 3,
+            "name": "warm",
+            "op": "free"
+          }
+        },
+        {
+          "at_ns": 801660429903248,
+          "command": {
+            "id": 4,
+            "op": "trim"
+          }
+        },
+        {
+          "at_ns": 801660430114033,
+          "command": {
+            "bytes": 2097152,
+            "id": 5,
+            "name": "canary",
+            "op": "allocate",
+            "value": 29
+          }
+        },
+        {
+          "at_ns": 801660430331050,
+          "command": {
+            "id": 6,
+            "name": "canary",
+            "op": "verify"
+          }
+        },
+        {
+          "at_ns": 801660437556269,
+          "command": {
+            "bytes": 536870912,
+            "id": 7,
+            "name": "idle",
+            "op": "allocate",
+            "value": 41
+          }
+        },
+        {
+          "at_ns": 801660438413866,
+          "command": {
+            "id": 8,
+            "name": "idle",
+            "op": "verify"
+          }
+        },
+        {
+          "at_ns": 801660586231406,
+          "command": {
+            "id": 9,
+            "name": "idle",
+            "op": "free"
+          }
+        },
+        {
+          "at_ns": 801660586517532,
+          "command": {
+            "id": 10,
+            "op": "publish"
+          }
+        }
+      ],
+      "signals": [
+        {
+          "after_ns": 801666524144776,
+          "before_ns": 801666524117184,
+          "exit_code": -9,
+          "exit_observed_ns": 801666587533177,
+          "identity": {
+            "pid": 803,
+            "pidfd_live": true,
+            "pidfd_pid": 803,
+            "start_ticks": 80166016
+          },
+          "marker": {
+            "at_ns": 801666523751118,
+            "completed": 0,
+            "donor": {
+              "incarnation": 1,
+              "slot": 0
+            },
+            "event": "donor_waiting",
+            "libraries": {
+              "cuda_loaded": false,
+              "python_loaded": false,
+              "torch_loaded": false
+            },
+            "pending": 0,
+            "pid": 803,
+            "read_only": true,
+            "requester": {
+              "incarnation": 2,
+              "slot": 1
+            },
+            "round": 22,
+            "start_ticks": 80166016
+          },
+          "reason": "exact_observed_waiting_donor",
+          "requester_identity": {
+            "pid": 810,
+            "pidfd_live": true,
+            "pidfd_pid": 810,
+            "start_ticks": 80166024
+          },
+          "signal": 9
+        }
+      ],
+      "start_ticks": 80166016,
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/var/lib/cozy/tensord/editable/ccfc2b9296e5e470/ci-varena-native-consumer/source-425469512912f0a68de8f9aebb19b1b39c2c34beedbfbf374c90bfcde3970041/tree/ci_varena_native_consumer/bin/varena-native-consumer",
+        "auto",
+        "/dev/shm/varena-native-consumers-ztfkwdpb",
+        "GPU-18d960a8-2283-19c9-c060-ef8a22fabe35",
+        "0",
+        "47"
+      ],
+      "executed_binary_sha256": "351d9fcbb8b36442191eedb2553ea0edc4b0daaaf10393258ad598ce18209476",
+      "maps": {
+        "cuda_loaded": true,
+        "maps_sha256": "102d44a10e80f2fa9af678e71c9fea8811928c414c1cb020469ecf20d6e3ff07",
+        "python_loaded": false,
+        "torch_loaded": false
+      },
+      "mode": "auto",
+      "name": "requester",
+      "pid": 810,
+      "returncode": 0,
+      "rows": [
+        {
+          "driver": {
+            "free": 23238279168,
+            "total": 25252724736
+          },
+          "event": "ready",
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "mode": "auto",
+          "pid": 810,
+          "row": {
+            "incarnation": 2,
+            "slot": 1
+          },
+          "start_ticks": 80166024,
+          "stats": {
+            "capacity": 0,
+            "driver_calls": 1,
+            "driver_physical_ooms": 0,
+            "free": 0,
+            "live": 0,
+            "mapped": 0,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801660431116231,
+          "bytes": 2097152,
+          "event": "allocation_begin",
+          "id": 1
+        },
+        {
+          "at_ns": 801660431241125,
+          "bytes": 2097152,
+          "event": "allocation_end",
+          "id": 1,
+          "ok": true
+        },
+        {
+          "at_ns": 801660431339469,
+          "driver": {
+            "free": 22823763968,
+            "total": 25252724736
+          },
+          "elapsed_ns": 223659,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 1,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "allocate",
+          "owner": {
+            "active": true,
+            "active_recoveries": 0,
+            "demand_clear_pending": false,
+            "failed": null,
+            "last_donation": null,
+            "last_recovery": null,
+            "last_withdrawn_round": null,
+            "pending_withdrawals": 0,
+            "physical_bytes": 0,
+            "published": 1,
+            "recoveries": 0,
+            "retired": false,
+            "serviced": 1,
+            "stopping": false,
+            "withdrawn_rounds": 0
+          },
+          "result": {
+            "bytes": 2097152,
+            "ptr": 12918456320,
+            "value": 17
+          },
+          "stats": {
+            "capacity": 2097152,
+            "driver_calls": 4,
+            "driver_physical_ooms": 0,
+            "free": 0,
+            "live": 2097152,
+            "mapped": 2097152,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801660432883643,
+          "driver": {
+            "free": 22823763968,
+            "total": 25252724736
+          },
+          "elapsed_ns": 1341073,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 2,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "verify",
+          "owner": {
+            "active": true,
+            "active_recoveries": 0,
+            "demand_clear_pending": false,
+            "failed": null,
+            "last_donation": null,
+            "last_recovery": null,
+            "last_withdrawn_round": null,
+            "pending_withdrawals": 0,
+            "physical_bytes": 0,
+            "published": 1,
+            "recoveries": 0,
+            "retired": false,
+            "serviced": 1,
+            "stopping": false,
+            "withdrawn_rounds": 0
+          },
+          "result": {
+            "bytes_verified": 2097152
+          },
+          "stats": {
+            "capacity": 2097152,
+            "driver_calls": 4,
+            "driver_physical_ooms": 0,
+            "free": 0,
+            "live": 2097152,
+            "mapped": 2097152,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801660433056216,
+          "driver": {
+            "free": 22823763968,
+            "total": 25252724736
+          },
+          "elapsed_ns": 5109,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 3,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "free",
+          "owner": {
+            "active": true,
+            "active_recoveries": 0,
+            "demand_clear_pending": false,
+            "failed": null,
+            "last_donation": null,
+            "last_recovery": null,
+            "last_withdrawn_round": null,
+            "pending_withdrawals": 0,
+            "physical_bytes": 0,
+            "published": 1,
+            "recoveries": 0,
+            "retired": false,
+            "serviced": 1,
+            "stopping": false,
+            "withdrawn_rounds": 0
+          },
+          "result": {
+            "freed": "warm"
+          },
+          "stats": {
+            "capacity": 0,
+            "driver_calls": 4,
+            "driver_physical_ooms": 0,
+            "free": 0,
+            "live": 0,
+            "mapped": 2097152,
+            "ooms": 0,
+            "pending": 2097152,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801660433271490,
+          "driver": {
+            "free": 22825861120,
+            "total": 25252724736
+          },
+          "elapsed_ns": 76654,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 4,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "trim",
+          "owner": {
+            "active": true,
+            "active_recoveries": 0,
+            "demand_clear_pending": false,
+            "failed": null,
+            "last_donation": null,
+            "last_recovery": null,
+            "last_withdrawn_round": null,
+            "pending_withdrawals": 0,
+            "physical_bytes": 0,
+            "published": 1,
+            "recoveries": 0,
+            "retired": false,
+            "serviced": 1,
+            "stopping": false,
+            "withdrawn_rounds": 0
+          },
+          "result": {
+            "released": 2097152
+          },
+          "stats": {
+            "capacity": 0,
+            "driver_calls": 6,
+            "driver_physical_ooms": 0,
+            "free": 0,
+            "live": 0,
+            "mapped": 0,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801660433410450,
+          "bytes": 2097152,
+          "event": "allocation_begin",
+          "id": 5
+        },
+        {
+          "at_ns": 801660433489378,
+          "bytes": 2097152,
+          "event": "allocation_end",
+          "id": 5,
+          "ok": true
+        },
+        {
+          "at_ns": 801660433510778,
+          "driver": {
+            "free": 22823763968,
+            "total": 25252724736
+          },
+          "elapsed_ns": 100769,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 5,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "allocate",
+          "owner": {
+            "active": true,
+            "active_recoveries": 0,
+            "demand_clear_pending": false,
+            "failed": null,
+            "last_donation": null,
+            "last_recovery": null,
+            "last_withdrawn_round": null,
+            "pending_withdrawals": 0,
+            "physical_bytes": 0,
+            "published": 1,
+            "recoveries": 0,
+            "retired": false,
+            "serviced": 1,
+            "stopping": false,
+            "withdrawn_rounds": 0
+          },
+          "result": {
+            "bytes": 2097152,
+            "ptr": 12918456320,
+            "value": 29
+          },
+          "stats": {
+            "capacity": 2097152,
+            "driver_calls": 9,
+            "driver_physical_ooms": 0,
+            "free": 0,
+            "live": 2097152,
+            "mapped": 2097152,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801660434290168,
+          "driver": {
+            "free": 22823763968,
+            "total": 25252724736
+          },
+          "elapsed_ns": 642925,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 6,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "verify",
+          "owner": {
+            "active": true,
+            "active_recoveries": 0,
+            "demand_clear_pending": false,
+            "failed": null,
+            "last_donation": null,
+            "last_recovery": null,
+            "last_withdrawn_round": null,
+            "pending_withdrawals": 0,
+            "physical_bytes": 0,
+            "published": 1,
+            "recoveries": 0,
+            "retired": false,
+            "serviced": 1,
+            "stopping": false,
+            "withdrawn_rounds": 0
+          },
+          "result": {
+            "bytes_verified": 2097152
+          },
+          "stats": {
+            "capacity": 2097152,
+            "driver_calls": 9,
+            "driver_physical_ooms": 0,
+            "free": 0,
+            "live": 2097152,
+            "mapped": 2097152,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801666522472382,
+          "driver": {
+            "free": 134676480,
+            "total": 25252724736
+          },
+          "elapsed_ns": 3837,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 7,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "stats",
+          "owner": {
+            "active": true,
+            "active_recoveries": 0,
+            "demand_clear_pending": false,
+            "failed": null,
+            "last_donation": null,
+            "last_recovery": null,
+            "last_withdrawn_round": null,
+            "pending_withdrawals": 0,
+            "physical_bytes": 2097152,
+            "published": 13,
+            "recoveries": 0,
+            "retired": false,
+            "serviced": 13,
+            "stopping": false,
+            "withdrawn_rounds": 0
+          },
+          "result": null,
+          "stats": {
+            "capacity": 2097152,
+            "driver_calls": 9,
+            "driver_physical_ooms": 0,
+            "free": 0,
+            "live": 2097152,
+            "mapped": 2097152,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801666522682586,
+          "bytes": 402653184,
+          "event": "allocation_begin",
+          "id": 8
+        },
+        {
+          "at_ns": 801667024128678,
+          "bytes": 402653184,
+          "event": "allocation_end",
+          "id": 8,
+          "ok": true
+        },
+        {
+          "at_ns": 801667024606834,
+          "driver": {
+            "free": 681312256,
+            "total": 25252724736
+          },
+          "elapsed_ns": 501925220,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 8,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "allocate",
+          "owner": {
+            "active": true,
+            "active_recoveries": 0,
+            "demand_clear_pending": false,
+            "failed": null,
+            "last_donation": null,
+            "last_recovery": {
+              "completed_bytes": 0,
+              "elapsed_ns": 500948399,
+              "outcome": "peer_reclaim_exhausted",
+              "released_bytes": 0,
+              "requested_bytes": 402653184,
+              "round": 22
+            },
+            "last_withdrawn_round": null,
+            "pending_withdrawals": 0,
+            "physical_bytes": 404750336,
+            "published": 16,
+            "recoveries": 1,
+            "retired": false,
+            "serviced": 16,
+            "stopping": false,
+            "withdrawn_rounds": 0
+          },
+          "result": {
+            "bytes": 402653184,
+            "ptr": 12920553472,
+            "value": 83
+          },
+          "stats": {
+            "capacity": 404750336,
+            "driver_calls": 15,
+            "driver_physical_ooms": 3,
+            "free": 0,
+            "live": 404750336,
+            "mapped": 404750336,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801667024985814,
+          "driver": {
+            "free": 681312256,
+            "total": 25252724736
+          },
+          "elapsed_ns": 79328,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 9,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "row",
+          "owner": {
+            "active": true,
+            "active_recoveries": 0,
+            "demand_clear_pending": false,
+            "failed": null,
+            "last_donation": null,
+            "last_recovery": {
+              "completed_bytes": 0,
+              "elapsed_ns": 500948399,
+              "outcome": "peer_reclaim_exhausted",
+              "released_bytes": 0,
+              "requested_bytes": 402653184,
+              "round": 22
+            },
+            "last_withdrawn_round": null,
+            "pending_withdrawals": 0,
+            "physical_bytes": 404750336,
+            "published": 16,
+            "recoveries": 1,
+            "retired": false,
+            "serviced": 16,
+            "stopping": false,
+            "withdrawn_rounds": 0
+          },
+          "result": {
+            "id": {
+              "incarnation": 2,
+              "slot": 1
+            },
+            "physical": 404750336,
+            "pid": 810,
+            "read_only": true,
+            "reclaimable": 0,
+            "round": {
+              "aborted": false,
+              "donations": [
+                {
+                  "answer": "OwnerGone",
+                  "completed": 0,
+                  "owner": {
+                    "incarnation": 1,
+                    "slot": 0
+                  },
+                  "pending": 0,
+                  "requested": 402653184
+                }
+              ],
+              "finished": true,
+              "generation": 22,
+              "requester": {
+                "incarnation": 2,
+                "slot": 1
+              }
+            },
+            "start_ticks": 80166024,
+            "want": 0,
+            "working": {
+              "idle": 0,
+              "live": 404750336,
+              "pending": 0
+            }
+          },
+          "stats": {
+            "capacity": 404750336,
+            "driver_calls": 15,
+            "driver_physical_ooms": 3,
+            "free": 0,
+            "live": 404750336,
+            "mapped": 404750336,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801667137623512,
+          "driver": {
+            "free": 681312256,
+            "total": 25252724736
+          },
+          "elapsed_ns": 112413809,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 10,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "verify",
+          "owner": {
+            "active": true,
+            "active_recoveries": 0,
+            "demand_clear_pending": false,
+            "failed": null,
+            "last_donation": null,
+            "last_recovery": {
+              "completed_bytes": 0,
+              "elapsed_ns": 500948399,
+              "outcome": "peer_reclaim_exhausted",
+              "released_bytes": 0,
+              "requested_bytes": 402653184,
+              "round": 22
+            },
+            "last_withdrawn_round": null,
+            "pending_withdrawals": 0,
+            "physical_bytes": 404750336,
+            "published": 17,
+            "recoveries": 1,
+            "retired": false,
+            "serviced": 17,
+            "stopping": false,
+            "withdrawn_rounds": 0
+          },
+          "result": {
+            "bytes_verified": 402653184
+          },
+          "stats": {
+            "capacity": 404750336,
+            "driver_calls": 15,
+            "driver_physical_ooms": 3,
+            "free": 0,
+            "live": 404750336,
+            "mapped": 404750336,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801667138834511,
+          "driver": {
+            "free": 681312256,
+            "total": 25252724736
+          },
+          "elapsed_ns": 914554,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 11,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "verify",
+          "owner": {
+            "active": true,
+            "active_recoveries": 0,
+            "demand_clear_pending": false,
+            "failed": null,
+            "last_donation": null,
+            "last_recovery": {
+              "completed_bytes": 0,
+              "elapsed_ns": 500948399,
+              "outcome": "peer_reclaim_exhausted",
+              "released_bytes": 0,
+              "requested_bytes": 402653184,
+              "round": 22
+            },
+            "last_withdrawn_round": null,
+            "pending_withdrawals": 0,
+            "physical_bytes": 404750336,
+            "published": 17,
+            "recoveries": 1,
+            "retired": false,
+            "serviced": 17,
+            "stopping": false,
+            "withdrawn_rounds": 0
+          },
+          "result": {
+            "bytes_verified": 2097152
+          },
+          "stats": {
+            "capacity": 404750336,
+            "driver_calls": 15,
+            "driver_physical_ooms": 3,
+            "free": 0,
+            "live": 404750336,
+            "mapped": 404750336,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801667140104892,
+          "driver": {
+            "free": 681312256,
+            "total": 25252724736
+          },
+          "elapsed_ns": 104746,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 12,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "row",
+          "owner": {
+            "active": true,
+            "active_recoveries": 0,
+            "demand_clear_pending": false,
+            "failed": null,
+            "last_donation": null,
+            "last_recovery": {
+              "completed_bytes": 0,
+              "elapsed_ns": 500948399,
+              "outcome": "peer_reclaim_exhausted",
+              "released_bytes": 0,
+              "requested_bytes": 402653184,
+              "round": 22
+            },
+            "last_withdrawn_round": null,
+            "pending_withdrawals": 0,
+            "physical_bytes": 404750336,
+            "published": 17,
+            "recoveries": 1,
+            "retired": false,
+            "serviced": 17,
+            "stopping": false,
+            "withdrawn_rounds": 0
+          },
+          "result": {
+            "id": {
+              "incarnation": 2,
+              "slot": 1
+            },
+            "physical": 404750336,
+            "pid": 810,
+            "read_only": true,
+            "reclaimable": 0,
+            "round": {
+              "aborted": false,
+              "donations": [
+                {
+                  "answer": "OwnerGone",
+                  "completed": 0,
+                  "owner": {
+                    "incarnation": 1,
+                    "slot": 0
+                  },
+                  "pending": 0,
+                  "requested": 402653184
+                }
+              ],
+              "finished": true,
+              "generation": 22,
+              "requester": {
+                "incarnation": 2,
+                "slot": 1
+              }
+            },
+            "start_ticks": 80166024,
+            "want": 0,
+            "working": {
+              "idle": 0,
+              "live": 404750336,
+              "pending": 0
+            }
+          },
+          "stats": {
+            "capacity": 404750336,
+            "driver_calls": 15,
+            "driver_physical_ooms": 3,
+            "free": 0,
+            "live": 404750336,
+            "mapped": 404750336,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        },
+        {
+          "driver": {
+            "free": 23648600064,
+            "total": 25252724736
+          },
+          "event": "closed",
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "stats": {
+            "capacity": 0,
+            "driver_calls": 19,
+            "driver_physical_ooms": 3,
+            "free": 0,
+            "live": 0,
+            "mapped": 0,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        }
+      ],
+      "sent": [
+        {
+          "at_ns": 801660431096284,
+          "command": {
+            "bytes": 2097152,
+            "id": 1,
+            "name": "warm",
+            "op": "allocate",
+            "value": 17
+          }
+        },
+        {
+          "at_ns": 801660431527912,
+          "command": {
+            "id": 2,
+            "name": "warm",
+            "op": "verify"
+          }
+        },
+        {
+          "at_ns": 801660433035668,
+          "command": {
+            "id": 3,
+            "name": "warm",
+            "op": "free"
+          }
+        },
+        {
+          "at_ns": 801660433183986,
+          "command": {
+            "id": 4,
+            "op": "trim"
+          }
+        },
+        {
+          "at_ns": 801660433397536,
+          "command": {
+            "bytes": 2097152,
+            "id": 5,
+            "name": "canary",
+            "op": "allocate",
+            "value": 29
+          }
+        },
+        {
+          "at_ns": 801660433635261,
+          "command": {
+            "id": 6,
+            "name": "canary",
+            "op": "verify"
+          }
+        },
+        {
+          "at_ns": 801666522435773,
+          "command": {
+            "id": 7,
+            "op": "stats"
+          }
+        },
+        {
+          "at_ns": 801666522668349,
+          "command": {
+            "bytes": 402653184,
+            "id": 8,
+            "name": "demand",
+            "op": "allocate",
+            "value": 83
+          }
+        },
+        {
+          "at_ns": 801667024868825,
+          "command": {
+            "id": 9,
+            "op": "row"
+          }
+        },
+        {
+          "at_ns": 801667025193523,
+          "command": {
+            "id": 10,
+            "name": "demand",
+            "op": "verify"
+          }
+        },
+        {
+          "at_ns": 801667137883720,
+          "command": {
+            "id": 11,
+            "name": "canary",
+            "op": "verify"
+          }
+        },
+        {
+          "at_ns": 801667139989195,
+          "command": {
+            "id": 12,
+            "op": "row"
+          }
+        },
+        {
+          "at_ns": 801667303955566,
+          "command": {
+            "id": 13,
+            "op": "quit"
+          }
+        }
+      ],
+      "signals": [],
+      "start_ticks": 80166024,
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/var/lib/cozy/tensord/editable/ccfc2b9296e5e470/ci-varena-native-consumer/source-425469512912f0a68de8f9aebb19b1b39c2c34beedbfbf374c90bfcde3970041/tree/ci_varena_native_consumer/bin/varena-native-consumer",
+        "plain",
+        "/dev/shm/varena-native-consumers-ztfkwdpb",
+        "GPU-18d960a8-2283-19c9-c060-ef8a22fabe35",
+        "0",
+        "47"
+      ],
+      "executed_binary_sha256": "351d9fcbb8b36442191eedb2553ea0edc4b0daaaf10393258ad598ce18209476",
+      "maps": {
+        "cuda_loaded": true,
+        "maps_sha256": "1025a733c9901d0bcc62a99435a728d60f8ef8dd73231024a76f8a1479e62018",
+        "python_loaded": false,
+        "torch_loaded": false
+      },
+      "mode": "plain",
+      "name": "filler",
+      "pid": 818,
+      "returncode": 0,
+      "rows": [
+        {
+          "driver": {
+            "free": 22827958272,
+            "total": 25252724736
+          },
+          "event": "ready",
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "mode": "plain",
+          "pid": 818,
+          "row": null,
+          "start_ticks": 80166033,
+          "stats": {
+            "capacity": 0,
+            "driver_calls": 1,
+            "driver_physical_ooms": 0,
+            "free": 0,
+            "live": 0,
+            "mapped": 0,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801660434436713,
+          "bytes": 2097152,
+          "event": "allocation_begin",
+          "id": 1
+        },
+        {
+          "at_ns": 801660434548753,
+          "bytes": 2097152,
+          "event": "allocation_end",
+          "id": 1,
+          "ok": true
+        },
+        {
+          "at_ns": 801660434658659,
+          "driver": {
+            "free": 22821666816,
+            "total": 25252724736
+          },
+          "elapsed_ns": 222547,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 1,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "allocate",
+          "owner": null,
+          "result": {
+            "bytes": 2097152,
+            "ptr": 12918456320,
+            "value": 17
+          },
+          "stats": {
+            "capacity": 2097152,
+            "driver_calls": 4,
+            "driver_physical_ooms": 0,
+            "free": 0,
+            "live": 2097152,
+            "mapped": 2097152,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801660436074302,
+          "driver": {
+            "free": 22821666816,
+            "total": 25252724736
+          },
+          "elapsed_ns": 1266824,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 2,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "verify",
+          "owner": null,
+          "result": {
+            "bytes_verified": 2097152
+          },
+          "stats": {
+            "capacity": 2097152,
+            "driver_calls": 4,
+            "driver_physical_ooms": 0,
+            "free": 0,
+            "live": 2097152,
+            "mapped": 2097152,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801660436214935,
+          "driver": {
+            "free": 22821666816,
+            "total": 25252724736
+          },
+          "elapsed_ns": 4588,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 3,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "free",
+          "owner": null,
+          "result": {
+            "freed": "warm"
+          },
+          "stats": {
+            "capacity": 0,
+            "driver_calls": 4,
+            "driver_physical_ooms": 0,
+            "free": 0,
+            "live": 0,
+            "mapped": 2097152,
+            "ooms": 0,
+            "pending": 2097152,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801660436417024,
+          "driver": {
+            "free": 22823763968,
+            "total": 25252724736
+          },
+          "elapsed_ns": 74399,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 4,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "trim",
+          "owner": null,
+          "result": {
+            "released": 2097152
+          },
+          "stats": {
+            "capacity": 0,
+            "driver_calls": 6,
+            "driver_physical_ooms": 0,
+            "free": 0,
+            "live": 0,
+            "mapped": 0,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801660436549462,
+          "bytes": 2097152,
+          "event": "allocation_begin",
+          "id": 5
+        },
+        {
+          "at_ns": 801660436627789,
+          "bytes": 2097152,
+          "event": "allocation_end",
+          "id": 5,
+          "ok": true
+        },
+        {
+          "at_ns": 801660436649279,
+          "driver": {
+            "free": 22821666816,
+            "total": 25252724736
+          },
+          "elapsed_ns": 100267,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 5,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "allocate",
+          "owner": null,
+          "result": {
+            "bytes": 2097152,
+            "ptr": 12918456320,
+            "value": 29
+          },
+          "stats": {
+            "capacity": 2097152,
+            "driver_calls": 9,
+            "driver_physical_ooms": 0,
+            "free": 0,
+            "live": 2097152,
+            "mapped": 2097152,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801660437435603,
+          "driver": {
+            "free": 22821666816,
+            "total": 25252724736
+          },
+          "elapsed_ns": 650409,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 6,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "verify",
+          "owner": null,
+          "result": {
+            "bytes_verified": 2097152
+          },
+          "stats": {
+            "capacity": 2097152,
+            "driver_calls": 9,
+            "driver_physical_ooms": 0,
+            "free": 0,
+            "live": 2097152,
+            "mapped": 2097152,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801660586785574,
+          "driver": {
+            "free": 22284795904,
+            "total": 25252724736
+          },
+          "elapsed_ns": 1212,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 7,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "stats",
+          "owner": null,
+          "result": null,
+          "stats": {
+            "capacity": 2097152,
+            "driver_calls": 9,
+            "driver_physical_ooms": 0,
+            "free": 0,
+            "live": 2097152,
+            "mapped": 2097152,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801660586950273,
+          "bytes": 22150119424,
+          "event": "allocation_begin",
+          "id": 8
+        },
+        {
+          "at_ns": 801660587634946,
+          "bytes": 22150119424,
+          "event": "allocation_end",
+          "id": 8,
+          "ok": true
+        },
+        {
+          "at_ns": 801660610937231,
+          "driver": {
+            "free": 134676480,
+            "total": 25252724736
+          },
+          "elapsed_ns": 23987379,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 8,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "allocate",
+          "owner": null,
+          "result": {
+            "bytes": 22150119424,
+            "ptr": 12920553472,
+            "value": 53
+          },
+          "stats": {
+            "capacity": 22152216576,
+            "driver_calls": 12,
+            "driver_physical_ooms": 0,
+            "free": 0,
+            "live": 22152216576,
+            "mapped": 22152216576,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801666519576045,
+          "driver": {
+            "free": 134676480,
+            "total": 25252724736
+          },
+          "elapsed_ns": 5908484955,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 9,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "verify",
+          "owner": null,
+          "result": {
+            "bytes_verified": 22150119424
+          },
+          "stats": {
+            "capacity": 22152216576,
+            "driver_calls": 12,
+            "driver_physical_ooms": 0,
+            "free": 0,
+            "live": 22152216576,
+            "mapped": 22152216576,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        },
+        {
+          "at_ns": 801667139805010,
+          "driver": {
+            "free": 681312256,
+            "total": 25252724736
+          },
+          "elapsed_ns": 707826,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 10,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "verify",
+          "owner": null,
+          "result": {
+            "bytes_verified": 2097152
+          },
+          "stats": {
+            "capacity": 22152216576,
+            "driver_calls": 12,
+            "driver_physical_ooms": 0,
+            "free": 0,
+            "live": 22152216576,
+            "mapped": 22152216576,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        },
+        {
+          "driver": {
+            "free": 22833528832,
+            "total": 25252724736
+          },
+          "event": "closed",
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "stats": {
+            "capacity": 0,
+            "driver_calls": 16,
+            "driver_physical_ooms": 0,
+            "free": 0,
+            "live": 0,
+            "mapped": 0,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        }
+      ],
+      "sent": [
+        {
+          "at_ns": 801660434415543,
+          "command": {
+            "bytes": 2097152,
+            "id": 1,
+            "name": "warm",
+            "op": "allocate",
+            "value": 17
+          }
+        },
+        {
+          "at_ns": 801660434794944,
+          "command": {
+            "id": 2,
+            "name": "warm",
+            "op": "verify"
+          }
+        },
+        {
+          "at_ns": 801660436198374,
+          "command": {
+            "id": 3,
+            "name": "warm",
+            "op": "free"
+          }
+        },
+        {
+          "at_ns": 801660436332045,
+          "command": {
+            "id": 4,
+            "op": "trim"
+          }
+        },
+        {
+          "at_ns": 801660436536478,
+          "command": {
+            "bytes": 2097152,
+            "id": 5,
+            "name": "canary",
+            "op": "allocate",
+            "value": 29
+          }
+        },
+        {
+          "at_ns": 801660436773302,
+          "command": {
+            "id": 6,
+            "name": "canary",
+            "op": "verify"
+          }
+        },
+        {
+          "at_ns": 801660586764294,
+          "command": {
+            "id": 7,
+            "op": "stats"
+          }
+        },
+        {
+          "at_ns": 801660586936276,
+          "command": {
+            "bytes": 22150119424,
+            "id": 8,
+            "name": "pressure",
+            "op": "allocate",
+            "value": 53
+          }
+        },
+        {
+          "at_ns": 801660611076372,
+          "command": {
+            "id": 9,
+            "name": "pressure",
+            "op": "verify"
+          }
+        },
+        {
+          "at_ns": 801667139076525,
+          "command": {
+            "id": 10,
+            "name": "canary",
+            "op": "verify"
+          }
+        },
+        {
+          "at_ns": 801667140338319,
+          "command": {
+            "id": 11,
+            "op": "quit"
+          }
+        }
+      ],
+      "signals": [],
+      "start_ticks": 80166033,
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/var/lib/cozy/tensord/editable/ccfc2b9296e5e470/ci-varena-native-consumer/source-425469512912f0a68de8f9aebb19b1b39c2c34beedbfbf374c90bfcde3970041/tree/ci_varena_native_consumer/bin/varena-native-consumer",
+        "watch",
+        "/dev/shm/varena-native-consumers-ztfkwdpb",
+        "GPU-18d960a8-2283-19c9-c060-ef8a22fabe35",
+        "0",
+        "{\"donor_slot\": 0, \"donor_incarnation\": 1, \"requester_slot\": 1, \"requester_incarnation\": 2, \"timeout_ms\": 5000}"
+      ],
+      "executed_binary_sha256": "351d9fcbb8b36442191eedb2553ea0edc4b0daaaf10393258ad598ce18209476",
+      "maps": {
+        "cuda_loaded": false,
+        "maps_sha256": "bc84708c5db172dfd20cbcb7ba13f309f884a7184f616a3f66f4f9316d625903",
+        "python_loaded": false,
+        "torch_loaded": false
+      },
+      "mode": "watch",
+      "name": "watcher",
+      "pid": 825,
+      "returncode": 0,
+      "rows": [
+        {
+          "at_ns": 801666521415872,
+          "donor": {
+            "incarnation": 1,
+            "slot": 0
+          },
+          "event": "watch_ready",
+          "libraries": {
+            "cuda_loaded": false,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "pid": 825,
+          "read_only": true,
+          "requester": {
+            "incarnation": 2,
+            "slot": 1
+          },
+          "start_ticks": 80166652
+        },
+        {
+          "at_ns": 801666523751118,
+          "completed": 0,
+          "donor": {
+            "incarnation": 1,
+            "slot": 0
+          },
+          "event": "donor_waiting",
+          "libraries": {
+            "cuda_loaded": false,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "pending": 0,
+          "pid": 803,
+          "read_only": true,
+          "requester": {
+            "incarnation": 2,
+            "slot": 1
+          },
+          "round": 22,
+          "start_ticks": 80166016
+        }
+      ],
+      "sent": [],
+      "signals": [],
+      "start_ticks": 80166652,
+      "stderr": ""
+    }
+  ],
+  "cleanup_errors": [],
+  "detail": {
+    "automatic_episode_progress": true,
+    "boundary": "Waiting row plus owned PID/birth/pidfd authorizes this fixture death; metadata reaping grants no capacity. Initial failure and any later driver-backed readback remain separate.",
+    "full_readback": {
+      "at_ns": 801667137623512,
+      "driver": {
+        "free": 681312256,
+        "total": 25252724736
+      },
+      "elapsed_ns": 112413809,
+      "error": null,
+      "error_class": "",
+      "event": "reply",
+      "id": 10,
+      "libraries": {
+        "cuda_loaded": true,
+        "python_loaded": false,
+        "torch_loaded": false
+      },
+      "ok": true,
+      "op": "verify",
+      "owner": {
+        "active": true,
+        "active_recoveries": 0,
+        "demand_clear_pending": false,
+        "failed": null,
+        "last_donation": null,
+        "last_recovery": {
+          "completed_bytes": 0,
+          "elapsed_ns": 500948399,
+          "outcome": "peer_reclaim_exhausted",
+          "released_bytes": 0,
+          "requested_bytes": 402653184,
+          "round": 22
+        },
+        "last_withdrawn_round": null,
+        "pending_withdrawals": 0,
+        "physical_bytes": 404750336,
+        "published": 17,
+        "recoveries": 1,
+        "retired": false,
+        "serviced": 17,
+        "stopping": false,
+        "withdrawn_rounds": 0
+      },
+      "result": {
+        "bytes_verified": 402653184
+      },
+      "stats": {
+        "capacity": 404750336,
+        "driver_calls": 15,
+        "driver_physical_ooms": 3,
+        "free": 0,
+        "live": 404750336,
+        "mapped": 404750336,
+        "ooms": 0,
+        "pending": 0,
+        "pools": 0
+      }
+    },
+    "initial_allocation": {
+      "at_ns": 801667024606834,
+      "driver": {
+        "free": 681312256,
+        "total": 25252724736
+      },
+      "elapsed_ns": 501925220,
+      "error": null,
+      "error_class": "",
+      "event": "reply",
+      "id": 8,
+      "libraries": {
+        "cuda_loaded": true,
+        "python_loaded": false,
+        "torch_loaded": false
+      },
+      "ok": true,
+      "op": "allocate",
+      "owner": {
+        "active": true,
+        "active_recoveries": 0,
+        "demand_clear_pending": false,
+        "failed": null,
+        "last_donation": null,
+        "last_recovery": {
+          "completed_bytes": 0,
+          "elapsed_ns": 500948399,
+          "outcome": "peer_reclaim_exhausted",
+          "released_bytes": 0,
+          "requested_bytes": 402653184,
+          "round": 22
+        },
+        "last_withdrawn_round": null,
+        "pending_withdrawals": 0,
+        "physical_bytes": 404750336,
+        "published": 16,
+        "recoveries": 1,
+        "retired": false,
+        "serviced": 16,
+        "stopping": false,
+        "withdrawn_rounds": 0
+      },
+      "result": {
+        "bytes": 402653184,
+        "ptr": 12920553472,
+        "value": 83
+      },
+      "stats": {
+        "capacity": 404750336,
+        "driver_calls": 15,
+        "driver_physical_ooms": 3,
+        "free": 0,
+        "live": 404750336,
+        "mapped": 404750336,
+        "ooms": 0,
+        "pending": 0,
+        "pools": 0
+      }
+    },
+    "initial_outcome": "allocated_after_actual_driver_retry",
+    "owned_death": {
+      "after_ns": 801666524144776,
+      "before_ns": 801666524117184,
+      "exit_code": -9,
+      "exit_observed_ns": 801666587533177,
+      "identity": {
+        "pid": 803,
+        "pidfd_live": true,
+        "pidfd_pid": 803,
+        "start_ticks": 80166016
+      },
+      "marker": {
+        "at_ns": 801666523751118,
+        "completed": 0,
+        "donor": {
+          "incarnation": 1,
+          "slot": 0
+        },
+        "event": "donor_waiting",
+        "libraries": {
+          "cuda_loaded": false,
+          "python_loaded": false,
+          "torch_loaded": false
+        },
+        "pending": 0,
+        "pid": 803,
+        "read_only": true,
+        "requester": {
+          "incarnation": 2,
+          "slot": 1
+        },
+        "round": 22,
+        "start_ticks": 80166016
+      },
+      "reason": "exact_observed_waiting_donor",
+      "requester_identity": {
+        "pid": 810,
+        "pidfd_live": true,
+        "pidfd_pid": 810,
+        "start_ticks": 80166024
+      },
+      "signal": 9
+    },
+    "physical_readback_proven": true,
+    "post_operation_metadata": {
+      "at_ns": 801667024985814,
+      "driver": {
+        "free": 681312256,
+        "total": 25252724736
+      },
+      "elapsed_ns": 79328,
+      "error": null,
+      "error_class": "",
+      "event": "reply",
+      "id": 9,
+      "libraries": {
+        "cuda_loaded": true,
+        "python_loaded": false,
+        "torch_loaded": false
+      },
+      "ok": true,
+      "op": "row",
+      "owner": {
+        "active": true,
+        "active_recoveries": 0,
+        "demand_clear_pending": false,
+        "failed": null,
+        "last_donation": null,
+        "last_recovery": {
+          "completed_bytes": 0,
+          "elapsed_ns": 500948399,
+          "outcome": "peer_reclaim_exhausted",
+          "released_bytes": 0,
+          "requested_bytes": 402653184,
+          "round": 22
+        },
+        "last_withdrawn_round": null,
+        "pending_withdrawals": 0,
+        "physical_bytes": 404750336,
+        "published": 16,
+        "recoveries": 1,
+        "retired": false,
+        "serviced": 16,
+        "stopping": false,
+        "withdrawn_rounds": 0
+      },
+      "result": {
+        "id": {
+          "incarnation": 2,
+          "slot": 1
+        },
+        "physical": 404750336,
+        "pid": 810,
+        "read_only": true,
+        "reclaimable": 0,
+        "round": {
+          "aborted": false,
+          "donations": [
+            {
+              "answer": "OwnerGone",
+              "completed": 0,
+              "owner": {
+                "incarnation": 1,
+                "slot": 0
+              },
+              "pending": 0,
+              "requested": 402653184
+            }
+          ],
+          "finished": true,
+          "generation": 22,
+          "requester": {
+            "incarnation": 2,
+            "slot": 1
+          }
+        },
+        "start_ticks": 80166024,
+        "want": 0,
+        "working": {
+          "idle": 0,
+          "live": 404750336,
+          "pending": 0
+        }
+      },
+      "stats": {
+        "capacity": 404750336,
+        "driver_calls": 15,
+        "driver_physical_ooms": 3,
+        "free": 0,
+        "live": 404750336,
+        "mapped": 404750336,
+        "ooms": 0,
+        "pending": 0,
+        "pools": 0
+      }
+    },
+    "pressure": {
+      "allocation": {
+        "at_ns": 801660610937231,
+        "driver": {
+          "free": 134676480,
+          "total": 25252724736
+        },
+        "elapsed_ns": 23987379,
+        "error": null,
+        "error_class": "",
+        "event": "reply",
+        "id": 8,
+        "libraries": {
+          "cuda_loaded": true,
+          "python_loaded": false,
+          "torch_loaded": false
+        },
+        "ok": true,
+        "op": "allocate",
+        "owner": null,
+        "result": {
+          "bytes": 22150119424,
+          "ptr": 12920553472,
+          "value": 53
+        },
+        "stats": {
+          "capacity": 22152216576,
+          "driver_calls": 12,
+          "driver_physical_ooms": 0,
+          "free": 0,
+          "live": 22152216576,
+          "mapped": 22152216576,
+          "ooms": 0,
+          "pending": 0,
+          "pools": 0
+        }
+      },
+      "explicit_margin": 134217728,
+      "full_readback": {
+        "at_ns": 801666519576045,
+        "driver": {
+          "free": 134676480,
+          "total": 25252724736
+        },
+        "elapsed_ns": 5908484955,
+        "error": null,
+        "error_class": "",
+        "event": "reply",
+        "id": 9,
+        "libraries": {
+          "cuda_loaded": true,
+          "python_loaded": false,
+          "torch_loaded": false
+        },
+        "ok": true,
+        "op": "verify",
+        "owner": null,
+        "result": {
+          "bytes_verified": 22150119424
+        },
+        "stats": {
+          "capacity": 22152216576,
+          "driver_calls": 12,
+          "driver_physical_ooms": 0,
+          "free": 0,
+          "live": 22152216576,
+          "mapped": 22152216576,
+          "ooms": 0,
+          "pending": 0,
+          "pools": 0
+        }
+      },
+      "observed_free": 22284795904,
+      "requested_filler_bytes": 22150119424
+    },
+    "protocol_and_integrity_passed": true,
+    "published_idle": {
+      "at_ns": 801660586622158,
+      "driver": {
+        "free": 22284795904,
+        "total": 25252724736
+      },
+      "elapsed_ns": 77986,
+      "error": null,
+      "error_class": "",
+      "event": "reply",
+      "id": 10,
+      "libraries": {
+        "cuda_loaded": true,
+        "python_loaded": false,
+        "torch_loaded": false
+      },
+      "ok": true,
+      "op": "publish",
+      "owner": null,
+      "result": {
+        "physical": 538968064,
+        "reclaimable": 536870912,
+        "refreshed": true
+      },
+      "stats": {
+        "capacity": 2097152,
+        "driver_calls": 12,
+        "driver_physical_ooms": 0,
+        "free": 536870912,
+        "live": 2097152,
+        "mapped": 538968064,
+        "ooms": 0,
+        "pending": 0,
+        "pools": 0
+      }
+    },
+    "requester_cleanup": {
+      "observations": [
+        {
+          "at_ns": 801667140104892,
+          "driver": {
+            "free": 681312256,
+            "total": 25252724736
+          },
+          "elapsed_ns": 104746,
+          "error": null,
+          "error_class": "",
+          "event": "reply",
+          "id": 12,
+          "libraries": {
+            "cuda_loaded": true,
+            "python_loaded": false,
+            "torch_loaded": false
+          },
+          "ok": true,
+          "op": "row",
+          "owner": {
+            "active": true,
+            "active_recoveries": 0,
+            "demand_clear_pending": false,
+            "failed": null,
+            "last_donation": null,
+            "last_recovery": {
+              "completed_bytes": 0,
+              "elapsed_ns": 500948399,
+              "outcome": "peer_reclaim_exhausted",
+              "released_bytes": 0,
+              "requested_bytes": 402653184,
+              "round": 22
+            },
+            "last_withdrawn_round": null,
+            "pending_withdrawals": 0,
+            "physical_bytes": 404750336,
+            "published": 17,
+            "recoveries": 1,
+            "retired": false,
+            "serviced": 17,
+            "stopping": false,
+            "withdrawn_rounds": 0
+          },
+          "result": {
+            "id": {
+              "incarnation": 2,
+              "slot": 1
+            },
+            "physical": 404750336,
+            "pid": 810,
+            "read_only": true,
+            "reclaimable": 0,
+            "round": {
+              "aborted": false,
+              "donations": [
+                {
+                  "answer": "OwnerGone",
+                  "completed": 0,
+                  "owner": {
+                    "incarnation": 1,
+                    "slot": 0
+                  },
+                  "pending": 0,
+                  "requested": 402653184
+                }
+              ],
+              "finished": true,
+              "generation": 22,
+              "requester": {
+                "incarnation": 2,
+                "slot": 1
+              }
+            },
+            "start_ticks": 80166024,
+            "want": 0,
+            "working": {
+              "idle": 0,
+              "live": 404750336,
+              "pending": 0
+            }
+          },
+          "stats": {
+            "capacity": 404750336,
+            "driver_calls": 15,
+            "driver_physical_ooms": 3,
+            "free": 0,
+            "live": 404750336,
+            "mapped": 404750336,
+            "ooms": 0,
+            "pending": 0,
+            "pools": 0
+          }
+        }
+      ],
+      "settled": {
+        "at_ns": 801667140104892,
+        "driver": {
+          "free": 681312256,
+          "total": 25252724736
+        },
+        "elapsed_ns": 104746,
+        "error": null,
+        "error_class": "",
+        "event": "reply",
+        "id": 12,
+        "libraries": {
+          "cuda_loaded": true,
+          "python_loaded": false,
+          "torch_loaded": false
+        },
+        "ok": true,
+        "op": "row",
+        "owner": {
+          "active": true,
+          "active_recoveries": 0,
+          "demand_clear_pending": false,
+          "failed": null,
+          "last_donation": null,
+          "last_recovery": {
+            "completed_bytes": 0,
+            "elapsed_ns": 500948399,
+            "outcome": "peer_reclaim_exhausted",
+            "released_bytes": 0,
+            "requested_bytes": 402653184,
+            "round": 22
+          },
+          "last_withdrawn_round": null,
+          "pending_withdrawals": 0,
+          "physical_bytes": 404750336,
+          "published": 17,
+          "recoveries": 1,
+          "retired": false,
+          "serviced": 17,
+          "stopping": false,
+          "withdrawn_rounds": 0
+        },
+        "result": {
+          "id": {
+            "incarnation": 2,
+            "slot": 1
+          },
+          "physical": 404750336,
+          "pid": 810,
+          "read_only": true,
+          "reclaimable": 0,
+          "round": {
+            "aborted": false,
+            "donations": [
+              {
+                "answer": "OwnerGone",
+                "completed": 0,
+                "owner": {
+                  "incarnation": 1,
+                  "slot": 0
+                },
+                "pending": 0,
+                "requested": 402653184
+              }
+            ],
+            "finished": true,
+            "generation": 22,
+            "requester": {
+              "incarnation": 2,
+              "slot": 1
+            }
+          },
+          "start_ticks": 80166024,
+          "want": 0,
+          "working": {
+            "idle": 0,
+            "live": 404750336,
+            "pending": 0
+          }
+        },
+        "stats": {
+          "capacity": 404750336,
+          "driver_calls": 15,
+          "driver_physical_ooms": 3,
+          "free": 0,
+          "live": 404750336,
+          "mapped": 404750336,
+          "ooms": 0,
+          "pending": 0,
+          "pools": 0
+        }
+      }
+    },
+    "waiting_marker": {
+      "at_ns": 801666523751118,
+      "completed": 0,
+      "donor": {
+        "incarnation": 1,
+        "slot": 0
+      },
+      "event": "donor_waiting",
+      "libraries": {
+        "cuda_loaded": false,
+        "python_loaded": false,
+        "torch_loaded": false
+      },
+      "pending": 0,
+      "pid": 803,
+      "read_only": true,
+      "requester": {
+        "incarnation": 2,
+        "slot": 1
+      },
+      "round": 22,
+      "start_ticks": 80166016
+    },
+    "watch_ready": {
+      "at_ns": 801666521415872,
+      "donor": {
+        "incarnation": 1,
+        "slot": 0
+      },
+      "event": "watch_ready",
+      "libraries": {
+        "cuda_loaded": false,
+        "python_loaded": false,
+        "torch_loaded": false
+      },
+      "pid": 825,
+      "read_only": true,
+      "requester": {
+        "incarnation": 2,
+        "slot": 1
+      },
+      "start_ticks": 80166652
+    }
+  },
+  "parent_driver_after_children": {
+    "free": 24058920960,
+    "total": 25252724736
+  },
+  "passed": true,
+  "provenance": {
+    "binary": "/var/lib/cozy/tensord/editable/ccfc2b9296e5e470/ci-varena-native-consumer/source-425469512912f0a68de8f9aebb19b1b39c2c34beedbfbf374c90bfcde3970041/tree/ci_varena_native_consumer/bin/varena-native-consumer",
+    "build": {
+      "archive_sha256": "b2f4b8393cfce262eca69c646c33ceb88f10aa652e23eb6cb9d3831774b222e1",
+      "binary_sha256": "351d9fcbb8b36442191eedb2553ea0edc4b0daaaf10393258ad598ce18209476",
+      "elf": {
+        "class": "ELF64",
+        "glibc_max": [
+          2,
+          28
+        ],
+        "glibc_versions": [
+          [
+            2,
+            2
+          ],
+          [
+            2,
+            3
+          ],
+          [
+            2,
+            9
+          ],
+          [
+            2,
+            10
+          ],
+          [
+            2,
+            12
+          ],
+          [
+            2,
+            14
+          ],
+          [
+            2,
+            16
+          ],
+          [
+            2,
+            17
+          ],
+          [
+            2,
+            18
+          ],
+          [
+            2,
+            28
+          ]
+        ],
+        "machine": "x86_64",
+        "needed": [
+          "libdl.so.2",
+          "libgcc_s.so.1",
+          "libpthread.so.0",
+          "libc.so.6",
+          "ld-linux-x86-64.so.2"
+        ]
+      },
+      "helper_source": "30c09e4b2fb1ac0e95ddb028deb766a168606536",
+      "native_source": "c3bf579ae82b42b254aa30fe54c609fc8e89afcb",
+      "native_tree": "92ff23ec866dec3712ecba4499a62a93e43160c4",
+      "qualification": "corrected native withdrawal source/build evidence; GPU execution pending",
+      "source_receipt_sha256": "6c256e14782a3a70e262d6f34fa06230b63c450a634bd1ab15a9c7ccd98065a5"
+    },
+    "controller_pid": 757,
+    "donor_bytes": 536870912,
+    "gpu_uuid": "GPU-18d960a8-2283-19c9-c060-ef8a22fabe35",
+    "helper_sha256": "351d9fcbb8b36442191eedb2553ea0edc4b0daaaf10393258ad598ce18209476",
+    "helper_source": "30c09e4b2fb1ac0e95ddb028deb766a168606536",
+    "ledger_directory": "/dev/shm/varena-native-consumers-ztfkwdpb",
+    "margin_bytes": 134217728,
+    "native_source": "c3bf579ae82b42b254aa30fe54c609fc8e89afcb",
+    "parent_driver_before": {
+      "free": 24058920960,
+      "total": 25252724736
+    },
+    "request_bytes": 402653184,
+    "request_id": "18",
+    "simultaneous_bytes": 805306368,
+    "timeout_s": 30.0
+  }
+}

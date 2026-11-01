@@ -1,0 +1,74 @@
+{
+  "manifest": {
+    "helper_source": "0cad4f6777d96d61bc70b4a80aec923b2a857ee9",
+    "native_source": "c3bf579ae82b42b254aa30fe54c609fc8e89afcb",
+    "binary_sha256": "73365ac4f9f2e1dfae274ef60b4c7a3eb69552996af5b9f147c5614649648d38",
+    "source_receipt_sha256": "218305520fdba035ea59e7f8ba5d39beb30c5c033e9351ed91613234a66f9da3",
+    "archive_sha256": "ca887e00cbc60d0cb083a506453edb3dca6d0ab66a625735ea96437cc01c0c96",
+    "native_tree": "92ff23ec866dec3712ecba4499a62a93e43160c4",
+    "elf": {
+      "class": "ELF64",
+      "machine": "x86_64",
+      "needed": [
+        "libdl.so.2",
+        "libgcc_s.so.1",
+        "libpthread.so.0",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ],
+      "glibc_versions": [
+        [
+          2,
+          2
+        ],
+        [
+          2,
+          3
+        ],
+        [
+          2,
+          10
+        ],
+        [
+          2,
+          12
+        ],
+        [
+          2,
+          14
+        ],
+        [
+          2,
+          16
+        ],
+        [
+          2,
+          17
+        ],
+        [
+          2,
+          18
+        ],
+        [
+          2,
+          28
+        ]
+      ],
+      "glibc_max": [
+        2,
+        28
+      ]
+    },
+    "qualification": "corrected native withdrawal source/build evidence; GPU execution pending"
+  },
+  "project": "/home/fidika/cozy_v2/outputs/xs138-p3-native-consumer/0cad4f677/controller/project",
+  "files": {
+    "ci_varena_native_consumer/__init__.py": "a5a7f98e19a93f50f409b6b3788fdf5b6cdb4e2b8383d60ca2044ebaa46a6da3",
+    "ci_varena_native_consumer/bin/provenance.json": "15c4643a56bf548051073a1fc405fd0956b121d482adaaf338bb5ec8c30f9208",
+    "ci_varena_native_consumer/bin/varena-native-consumer": "73365ac4f9f2e1dfae274ef60b4c7a3eb69552996af5b9f147c5614649648d38",
+    "pyproject.toml": "60c6bb1a97026ebd669420501ebd99430fe5f9623cb9f5ecfdfc0e89342fade1",
+    "uv.lock": "6e1f1b3d07ecbd7b6623ebffbc98a13e63c0ffffd2ce3fa7cb5a3821a514bef1"
+  },
+  "gpu_uuid_bound": false,
+  "gpu_executed": false
+}

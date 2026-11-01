@@ -1,0 +1,12 @@
+{
+  "reviewer": "p3_owner_restart",
+  "scope": "Read-only optional lifetime source review; not GPU execution",
+  "helper_source": "b4ea86122ad92f51016b2598856c2bb9f182bcb7",
+  "native_source": "c3bf579ae82b42b254aa30fe54c609fc8e89afcb",
+  "blocking_findings": [],
+  "findings": [
+    "Child facts/close reach exact PID guard before inherited mutex/driver work, then fixed-byte/_exit; parent owns unreaped PID/pidfd cleanup.",
+    "Real instrumentation Peer opens before actual CUDA capture, exact v2 begin/end bracket native guard, close refusal/status and working bytes/counter remain checked.",
+    "Failed capture end avoids GPU-owning unwind. No Arena weights, last-Arena teardown or all-external-CUDA claim."
+  ]
+}

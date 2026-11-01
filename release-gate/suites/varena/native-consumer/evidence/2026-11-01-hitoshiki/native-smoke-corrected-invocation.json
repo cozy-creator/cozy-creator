@@ -1,0 +1,25 @@
+{
+  "command": [
+    "cozy",
+    "run",
+    "/home/fidika/cozy_v2/outputs/xs138-p3-native-consumer/30c09e4b2/controller-hitoshiki/project/smoke",
+    "--on",
+    "hitoshiki",
+    "--gpus=1",
+    "--input",
+    "/home/fidika/cozy_v2/outputs/xs138-p3-native-consumer/30c09e4b2/controller-hitoshiki/input-template.json",
+    "--json",
+    "--out",
+    "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-shortage-int8-leg15-plan/attempt-001/native-smoke-corrected-artifacts"
+  ],
+  "input_sha256": "e5b8bfce5f6b3bffc0ada07443bc702a42e55954ae9c8f074270a7fb797c71c1",
+  "input": {
+    "helper_source": "30c09e4b2fb1ac0e95ddb028deb766a168606536",
+    "native_source": "c3bf579ae82b42b254aa30fe54c609fc8e89afcb",
+    "helper_sha256": "351d9fcbb8b36442191eedb2553ea0edc4b0daaaf10393258ad598ce18209476",
+    "gpu_uuid": "GPU-18d960a8-2283-19c9-c060-ef8a22fabe35"
+  },
+  "started_at": "2026-11-01T14:17:48.507391+00:00",
+  "returncode": 0,
+  "finished_at": "2026-11-01T14:17:56.167038+00:00"
+}

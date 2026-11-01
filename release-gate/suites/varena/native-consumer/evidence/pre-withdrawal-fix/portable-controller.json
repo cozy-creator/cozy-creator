@@ -1,0 +1,74 @@
+{
+  "manifest": {
+    "helper_source": "fbb32ff94eda8fb372d53a8c7346a19d272aeff0",
+    "native_source": "fa7318fdd02e4e6bd73ced86ff052c24fd6e6c0d",
+    "binary_sha256": "a10a3f39bc8e96ba0bbe6c6b97359b5c9a260159b32fa6d6577834a9612d98e6",
+    "source_receipt_sha256": "d4b6ddd36f7c668718bf15b45c89200ee98d188c194856179823b07b4c85ea75",
+    "archive_sha256": "7bef405a7aa40c25cd2694131fcee692a2a4341fd046e555d2da2bb3b70b409a",
+    "native_tree": "9476af195b4f3af50c2ec112569e00ff358e4eac",
+    "elf": {
+      "class": "ELF64",
+      "machine": "x86_64",
+      "needed": [
+        "libdl.so.2",
+        "libgcc_s.so.1",
+        "libpthread.so.0",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ],
+      "glibc_versions": [
+        [
+          2,
+          2
+        ],
+        [
+          2,
+          3
+        ],
+        [
+          2,
+          10
+        ],
+        [
+          2,
+          12
+        ],
+        [
+          2,
+          14
+        ],
+        [
+          2,
+          16
+        ],
+        [
+          2,
+          17
+        ],
+        [
+          2,
+          18
+        ],
+        [
+          2,
+          28
+        ]
+      ],
+      "glibc_max": [
+        2,
+        28
+      ]
+    },
+    "qualification": "source/build only; native dependency may be pre-withdrawal-fix"
+  },
+  "project": "/home/fidika/cozy_v2/outputs/xs138-p3-native-consumer/fbb32ff94/controller/project",
+  "files": {
+    "ci_varena_native_consumer/__init__.py": "6aa7eff67a4cef837f0185fe9ee7a04e6869d0c450cbf146d0ef8a1a705d32f9",
+    "ci_varena_native_consumer/bin/provenance.json": "98e87631456c506baf04678ee23fad056c5bdfac92e8ca7529c6bbfddb43826b",
+    "ci_varena_native_consumer/bin/varena-native-consumer": "a10a3f39bc8e96ba0bbe6c6b97359b5c9a260159b32fa6d6577834a9612d98e6",
+    "pyproject.toml": "60c6bb1a97026ebd669420501ebd99430fe5f9623cb9f5ecfdfc0e89342fade1",
+    "uv.lock": "6e1f1b3d07ecbd7b6623ebffbc98a13e63c0ffffd2ce3fa7cb5a3821a514bef1"
+  },
+  "gpu_uuid_bound": false,
+  "gpu_executed": false
+}

@@ -1,0 +1,257 @@
+{
+  "id": "run-e267b077edf40405232426a8",
+  "number": 25308,
+  "kind": "call",
+  "target": "local/ci-varena-native-consumer/smoke",
+  "hub": "https://tensorhub.com",
+  "machine": "hitoshiki",
+  "status": "completed",
+  "cancel_requested": false,
+  "machine_state": "running",
+  "output": [],
+  "created_at_ms": 1793542671900,
+  "accepted_at_ms": 1793542672236,
+  "started_at_ms": 1793542674581,
+  "settled_at_ms": 1793542676134,
+  "result": {
+    "detail": "{\"all_owned_children_exited\": true, \"case\": \"smoke_case\", \"children\": [{\"command\": [\"/var/lib/cozy/tensord/editable/ccfc2b9296e5e470/ci-varena-native-consumer/source-425469512912f0a68de8f9aebb19b1b39c2c34beedbfbf374c90bfcde3970041/tree/ci_varena_native_consumer/bin/varena-native-consumer\", \"auto\", \"/dev/shm/varena-native-consumers-ceuj0c6g\", \"GPU-18d960a8-2283-19c9-c060-ef8a22fabe35\", \"0\", \"40\"], \"executed_binary_sha256\": \"351d9fcbb8b36442191eedb2553ea0edc4b0daaaf10393258ad598ce18209476\", \"maps\": {\"cuda_loaded\": true, \"maps_sha256\": \"a4d097e04933552056b850cec0f162b1c6ae51a9c613bda7997a8772843f8fb0\", \"python_loaded\": false, \"torch_loaded\": false}, \"mode\": \"auto\", \"name\": \"auto\", \"pid\": 774, \"returncode\": 0, \"rows\": [{\"driver\": {\"free\": 23730388992, \"total\": 25252724736}, \"event\": \"ready\", \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"mode\": \"auto\", \"pid\": 774, \"row\": {\"incarnation\": 1, \"slot\": 0}, \"start_ticks\": 80165863, \"stats\": {\"capacity\": 0, \"driver_calls\": 1, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 0, \"mapped\": 0, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, {\"at_ns\": 801658717058611, \"bytes\": 2097152, \"event\": \"allocation_begin\", \"id\": 1}, {\"at_ns\": 801658717187332, \"bytes\": 2097152, \"event\": \"allocation_end\", \"id\": 1, \"ok\": true}, {\"at_ns\": 801658717287299, \"driver\": {\"free\": 23726194688, \"total\": 25252724736}, \"elapsed_ns\": 229971, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 1, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"allocate\", \"owner\": {\"active\": true, \"active_recoveries\": 0, \"demand_clear_pending\": false, \"failed\": null, \"last_donation\": null, \"last_recovery\": null, \"last_withdrawn_round\": null, \"pending_withdrawals\": 0, \"physical_bytes\": 0, \"published\": 1, \"recoveries\": 0, \"retired\": false, \"serviced\": 1, \"stopping\": false, \"withdrawn_rounds\": 0}, \"result\": {\"bytes\": 2097152, \"ptr\": 12918456320, \"value\": 17}, \"stats\": {\"capacity\": 2097152, \"driver_calls\": 4, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 2097152, \"mapped\": 2097152, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, {\"at_ns\": 801658718842794, \"driver\": {\"free\": 23726194688, \"total\": 25252724736}, \"elapsed_ns\": 1371830, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 2, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"verify\", \"owner\": {\"active\": true, \"active_recoveries\": 0, \"demand_clear_pending\": false, \"failed\": null, \"last_donation\": null, \"last_recovery\": null, \"last_withdrawn_round\": null, \"pending_withdrawals\": 0, \"physical_bytes\": 0, \"published\": 1, \"recoveries\": 0, \"retired\": false, \"serviced\": 1, \"stopping\": false, \"withdrawn_rounds\": 0}, \"result\": {\"bytes_verified\": 2097152}, \"stats\": {\"capacity\": 2097152, \"driver_calls\": 4, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 2097152, \"mapped\": 2097152, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, {\"at_ns\": 801658719027570, \"driver\": {\"free\": 23724097536, \"total\": 25252724736}, \"elapsed_ns\": 4528, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 3, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"free\", \"owner\": {\"active\": true, \"active_recoveries\": 0, \"demand_clear_pending\": false, \"failed\": null, \"last_donation\": null, \"last_recovery\": null, \"last_withdrawn_round\": null, \"pending_withdrawals\": 0, \"physical_bytes\": 0, \"published\": 1, \"recoveries\": 0, \"retired\": false, \"serviced\": 1, \"stopping\": false, \"withdrawn_rounds\": 0}, \"result\": {\"freed\": \"warm\"}, \"stats\": {\"capacity\": 0, \"driver_calls\": 4, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 0, \"mapped\": 2097152, \"ooms\": 0, \"pending\": 2097152, \"pools\": 0}}, {\"at_ns\": 801658719250698, \"driver\": {\"free\": 23726194688, \"total\": 25252724736}, \"elapsed_ns\": 83878, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 4, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"trim\", \"owner\": {\"active\": true, \"active_recoveries\": 0, \"demand_clear_pending\": false, \"failed\": null, \"last_donation\": null, \"last_recovery\": null, \"last_withdrawn_round\": null, \"pending_withdrawals\": 0, \"physical_bytes\": 0, \"published\": 1, \"recoveries\": 0, \"retired\": false, \"serviced\": 1, \"stopping\": false, \"withdrawn_rounds\": 0}, \"result\": {\"released\": 2097152}, \"stats\": {\"capacity\": 0, \"driver_calls\": 6, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 0, \"mapped\": 0, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, {\"at_ns\": 801658719386463, \"bytes\": 2097152, \"event\": \"allocation_begin\", \"id\": 5}, {\"at_ns\": 801658719458979, \"bytes\": 2097152, \"event\": \"allocation_end\", \"id\": 5, \"ok\": true}, {\"at_ns\": 801658719547485, \"driver\": {\"free\": 23724097536, \"total\": 25252724736}, \"elapsed_ns\": 161343, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 5, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"allocate\", \"owner\": {\"active\": true, \"active_recoveries\": 0, \"demand_clear_pending\": false, \"failed\": null, \"last_donation\": null, \"last_recovery\": null, \"last_withdrawn_round\": null, \"pending_withdrawals\": 0, \"physical_bytes\": 0, \"published\": 1, \"recoveries\": 0, \"retired\": false, \"serviced\": 1, \"stopping\": false, \"withdrawn_rounds\": 0}, \"result\": {\"bytes\": 2097152, \"ptr\": 12918456320, \"value\": 29}, \"stats\": {\"capacity\": 2097152, \"driver_calls\": 9, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 2097152, \"mapped\": 2097152, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, {\"at_ns\": 801658720334780, \"driver\": {\"free\": 23724097536, \"total\": 25252724736}, \"elapsed_ns\": 653535, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 6, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"verify\", \"owner\": {\"active\": true, \"active_recoveries\": 0, \"demand_clear_pending\": false, \"failed\": null, \"last_donation\": null, \"last_recovery\": null, \"last_withdrawn_round\": null, \"pending_withdrawals\": 0, \"physical_bytes\": 0, \"published\": 1, \"recoveries\": 0, \"retired\": false, \"serviced\": 1, \"stopping\": false, \"withdrawn_rounds\": 0}, \"result\": {\"bytes_verified\": 2097152}, \"stats\": {\"capacity\": 2097152, \"driver_calls\": 9, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 2097152, \"mapped\": 2097152, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, {\"at_ns\": 801658720468711, \"bytes\": 67108864, \"event\": \"allocation_begin\", \"id\": 7}, {\"at_ns\": 801658720537700, \"bytes\": 67108864, \"event\": \"allocation_end\", \"id\": 7, \"ok\": true}, {\"at_ns\": 801658720604515, \"driver\": {\"free\": 23656988672, \"total\": 25252724736}, \"elapsed_ns\": 136115, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 7, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"allocate\", \"owner\": {\"active\": true, \"active_recoveries\": 0, \"demand_clear_pending\": false, \"failed\": null, \"last_donation\": null, \"last_recovery\": null, \"last_withdrawn_round\": null, \"pending_withdrawals\": 0, \"physical_bytes\": 0, \"published\": 1, \"recoveries\": 0, \"retired\": false, \"serviced\": 1, \"stopping\": false, \"withdrawn_rounds\": 0}, \"result\": {\"bytes\": 67108864, \"ptr\": 12920553472, \"value\": 71}, \"stats\": {\"capacity\": 69206016, \"driver_calls\": 12, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 69206016, \"mapped\": 69206016, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, {\"at_ns\": 801658742889895, \"driver\": {\"free\": 23656988672, \"total\": 25252724736}, \"elapsed_ns\": 22158702, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 8, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"verify\", \"owner\": {\"active\": true, \"active_recoveries\": 0, \"demand_clear_pending\": false, \"failed\": null, \"last_donation\": null, \"last_recovery\": null, \"last_withdrawn_round\": null, \"pending_withdrawals\": 0, \"physical_bytes\": 0, \"published\": 1, \"recoveries\": 0, \"retired\": false, \"serviced\": 1, \"stopping\": false, \"withdrawn_rounds\": 0}, \"result\": {\"bytes_verified\": 67108864}, \"stats\": {\"capacity\": 69206016, \"driver_calls\": 12, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 69206016, \"mapped\": 69206016, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, {\"at_ns\": 801658743095460, \"driver\": {\"free\": 23656988672, \"total\": 25252724736}, \"elapsed_ns\": 8506, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 9, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"free\", \"owner\": {\"active\": true, \"active_recoveries\": 0, \"demand_clear_pending\": false, \"failed\": null, \"last_donation\": null, \"last_recovery\": null, \"last_withdrawn_round\": null, \"pending_withdrawals\": 0, \"physical_bytes\": 0, \"published\": 1, \"recoveries\": 0, \"retired\": false, \"serviced\": 1, \"stopping\": false, \"withdrawn_rounds\": 0}, \"result\": {\"freed\": \"full-readback\"}, \"stats\": {\"capacity\": 2097152, \"driver_calls\": 12, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 2097152, \"mapped\": 69206016, \"ooms\": 0, \"pending\": 67108864, \"pools\": 0}}, {\"driver\": {\"free\": 23648600064, \"total\": 25252724736}, \"event\": \"closed\", \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"stats\": {\"capacity\": 0, \"driver_calls\": 16, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 0, \"mapped\": 0, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}], \"sent\": [{\"at_ns\": 801658717021401, \"command\": {\"bytes\": 2097152, \"id\": 1, \"name\": \"warm\", \"op\": \"allocate\", \"value\": 17}}, {\"at_ns\": 801658717457949, \"command\": {\"id\": 2, \"name\": \"warm\", \"op\": \"verify\"}}, {\"at_ns\": 801658719001141, \"command\": {\"id\": 3, \"name\": \"warm\", \"op\": \"free\"}}, {\"at_ns\": 801658719155801, \"command\": {\"id\": 4, \"op\": \"trim\"}}, {\"at_ns\": 801658719373288, \"command\": {\"bytes\": 2097152, \"id\": 5, \"name\": \"canary\", \"op\": \"allocate\", \"value\": 29}}, {\"at_ns\": 801658719668531, \"command\": {\"id\": 6, \"name\": \"canary\", \"op\": \"verify\"}}, {\"at_ns\": 801658720457870, \"command\": {\"bytes\": 67108864, \"id\": 7, \"name\": \"full-readback\", \"op\": \"allocate\", \"value\": 71}}, {\"at_ns\": 801658720722025, \"command\": {\"id\": 8, \"name\": \"full-readback\", \"op\": \"verify\"}}, {\"at_ns\": 801658743055926, \"command\": {\"id\": 9, \"name\": \"full-readback\", \"op\": \"free\"}}, {\"at_ns\": 801659101493930, \"command\": {\"id\": 10, \"op\": \"quit\"}}], \"signals\": [], \"start_ticks\": 80165863, \"stderr\": \"\"}, {\"command\": [\"/var/lib/cozy/tensord/editable/ccfc2b9296e5e470/ci-varena-native-consumer/source-425469512912f0a68de8f9aebb19b1b39c2c34beedbfbf374c90bfcde3970041/tree/ci_varena_native_consumer/bin/varena-native-consumer\", \"manual\", \"/dev/shm/varena-native-consumers-ceuj0c6g\", \"GPU-18d960a8-2283-19c9-c060-ef8a22fabe35\", \"0\", \"40\"], \"executed_binary_sha256\": \"351d9fcbb8b36442191eedb2553ea0edc4b0daaaf10393258ad598ce18209476\", \"maps\": {\"cuda_loaded\": true, \"maps_sha256\": \"3fc1aacbe18def405175a654ae170c35c01474524d1eb60261e17200749fb682\", \"python_loaded\": false, \"torch_loaded\": false}, \"mode\": \"manual\", \"name\": \"manual\", \"pid\": 782, \"returncode\": 0, \"rows\": [{\"driver\": {\"free\": 23185850368, \"total\": 25252724736}, \"event\": \"ready\", \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"mode\": \"manual\", \"pid\": 782, \"row\": {\"incarnation\": 2, \"slot\": 1}, \"start_ticks\": 80165874, \"stats\": {\"capacity\": 0, \"driver_calls\": 1, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 0, \"mapped\": 0, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, {\"at_ns\": 801658833014015, \"bytes\": 2097152, \"event\": \"allocation_begin\", \"id\": 1}, {\"at_ns\": 801658833174616, \"bytes\": 2097152, \"event\": \"allocation_end\", \"id\": 1, \"ok\": true}, {\"at_ns\": 801658833208259, \"driver\": {\"free\": 23183753216, \"total\": 25252724736}, \"elapsed_ns\": 194885, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 1, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"allocate\", \"owner\": null, \"result\": {\"bytes\": 2097152, \"ptr\": 12918456320, \"value\": 17}, \"stats\": {\"capacity\": 2097152, \"driver_calls\": 4, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 2097152, \"mapped\": 2097152, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, {\"at_ns\": 801658834911220, \"driver\": {\"free\": 23183753216, \"total\": 25252724736}, \"elapsed_ns\": 1476046, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 2, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"verify\", \"owner\": null, \"result\": {\"bytes_verified\": 2097152}, \"stats\": {\"capacity\": 2097152, \"driver_calls\": 4, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 2097152, \"mapped\": 2097152, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, {\"at_ns\": 801658835106065, \"driver\": {\"free\": 23183753216, \"total\": 25252724736}, \"elapsed_ns\": 7284, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 3, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"free\", \"owner\": null, \"result\": {\"freed\": \"warm\"}, \"stats\": {\"capacity\": 0, \"driver_calls\": 4, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 0, \"mapped\": 2097152, \"ooms\": 0, \"pending\": 2097152, \"pools\": 0}}, {\"at_ns\": 801658835375801, \"driver\": {\"free\": 23185850368, \"total\": 25252724736}, \"elapsed_ns\": 86963, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 4, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"trim\", \"owner\": null, \"result\": {\"released\": 2097152}, \"stats\": {\"capacity\": 0, \"driver_calls\": 6, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 0, \"mapped\": 0, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, {\"at_ns\": 801658835517066, \"bytes\": 2097152, \"event\": \"allocation_begin\", \"id\": 5}, {\"at_ns\": 801658835590704, \"bytes\": 2097152, \"event\": \"allocation_end\", \"id\": 5, \"ok\": true}, {\"at_ns\": 801658835677967, \"driver\": {\"free\": 23183753216, \"total\": 25252724736}, \"elapsed_ns\": 161232, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 5, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"allocate\", \"owner\": null, \"result\": {\"bytes\": 2097152, \"ptr\": 12918456320, \"value\": 29}, \"stats\": {\"capacity\": 2097152, \"driver_calls\": 9, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 2097152, \"mapped\": 2097152, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, {\"at_ns\": 801658836457939, \"driver\": {\"free\": 23183753216, \"total\": 25252724736}, \"elapsed_ns\": 646802, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 6, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"verify\", \"owner\": null, \"result\": {\"bytes_verified\": 2097152}, \"stats\": {\"capacity\": 2097152, \"driver_calls\": 9, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 2097152, \"mapped\": 2097152, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, {\"at_ns\": 801658836582532, \"bytes\": 67108864, \"event\": \"allocation_begin\", \"id\": 7}, {\"at_ns\": 801658836651782, \"bytes\": 67108864, \"event\": \"allocation_end\", \"id\": 7, \"ok\": true}, {\"at_ns\": 801658836784992, \"driver\": {\"free\": 23116644352, \"total\": 25252724736}, \"elapsed_ns\": 202710, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 7, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"allocate\", \"owner\": null, \"result\": {\"bytes\": 67108864, \"ptr\": 12920553472, \"value\": 71}, \"stats\": {\"capacity\": 69206016, \"driver_calls\": 12, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 69206016, \"mapped\": 69206016, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, {\"at_ns\": 801658858541370, \"driver\": {\"free\": 23114547200, \"total\": 25252724736}, \"elapsed_ns\": 21622577, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 8, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"verify\", \"owner\": null, \"result\": {\"bytes_verified\": 67108864}, \"stats\": {\"capacity\": 69206016, \"driver_calls\": 12, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 69206016, \"mapped\": 69206016, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, {\"at_ns\": 801658858800305, \"driver\": {\"free\": 23114547200, \"total\": 25252724736}, \"elapsed_ns\": 8096, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 9, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"free\", \"owner\": null, \"result\": {\"freed\": \"full-readback\"}, \"stats\": {\"capacity\": 2097152, \"driver_calls\": 12, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 2097152, \"mapped\": 69206016, \"ooms\": 0, \"pending\": 67108864, \"pools\": 0}}, {\"at_ns\": 801658859133870, \"driver\": {\"free\": 23114547200, \"total\": 25252724736}, \"elapsed_ns\": 103795, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 10, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"publish\", \"owner\": null, \"result\": {\"physical\": 69206016, \"reclaimable\": 67108864, \"refreshed\": true}, \"stats\": {\"capacity\": 2097152, \"driver_calls\": 12, \"driver_physical_ooms\": 0, \"free\": 67108864, \"live\": 2097152, \"mapped\": 69206016, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, {\"driver\": {\"free\": 23169073152, \"total\": 25252724736}, \"event\": \"closed\", \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"stats\": {\"capacity\": 0, \"driver_calls\": 16, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 0, \"mapped\": 0, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}], \"sent\": [{\"at_ns\": 801658832977517, \"command\": {\"bytes\": 2097152, \"id\": 1, \"name\": \"warm\", \"op\": \"allocate\", \"value\": 17}}, {\"at_ns\": 801658833416159, \"command\": {\"id\": 2, \"name\": \"warm\", \"op\": \"verify\"}}, {\"at_ns\": 801658835066101, \"command\": {\"id\": 3, \"name\": \"warm\", \"op\": \"free\"}}, {\"at_ns\": 801658835273209, \"command\": {\"id\": 4, \"op\": \"trim\"}}, {\"at_ns\": 801658835504232, \"command\": {\"bytes\": 2097152, \"id\": 5, \"name\": \"canary\", \"op\": \"allocate\", \"value\": 29}}, {\"at_ns\": 801658835799806, \"command\": {\"id\": 6, \"name\": \"canary\", \"op\": \"verify\"}}, {\"at_ns\": 801658836573335, \"command\": {\"bytes\": 67108864, \"id\": 7, \"name\": \"full-readback\", \"op\": \"allocate\", \"value\": 71}}, {\"at_ns\": 801658836909906, \"command\": {\"id\": 8, \"name\": \"full-readback\", \"op\": \"verify\"}}, {\"at_ns\": 801658858768616, \"command\": {\"id\": 9, \"name\": \"full-readback\", \"op\": \"free\"}}, {\"at_ns\": 801658859017152, \"command\": {\"id\": 10, \"op\": \"publish\"}}, {\"at_ns\": 801659037984462, \"command\": {\"id\": 11, \"op\": \"quit\"}}], \"signals\": [], \"start_ticks\": 80165874, \"stderr\": \"\"}, {\"command\": [\"/var/lib/cozy/tensord/editable/ccfc2b9296e5e470/ci-varena-native-consumer/source-425469512912f0a68de8f9aebb19b1b39c2c34beedbfbf374c90bfcde3970041/tree/ci_varena_native_consumer/bin/varena-native-consumer\", \"plain\", \"/dev/shm/varena-native-consumers-ceuj0c6g\", \"GPU-18d960a8-2283-19c9-c060-ef8a22fabe35\", \"0\", \"47\"], \"executed_binary_sha256\": \"351d9fcbb8b36442191eedb2553ea0edc4b0daaaf10393258ad598ce18209476\", \"maps\": {\"cuda_loaded\": true, \"maps_sha256\": \"38da50a6e152acffff7fc5f290b720f8e09f6bf78dc1d797408e5d2854f1d387\", \"python_loaded\": false, \"torch_loaded\": false}, \"mode\": \"plain\", \"name\": \"plain\", \"pid\": 789, \"returncode\": 0, \"rows\": [{\"driver\": {\"free\": 22689546240, \"total\": 25252724736}, \"event\": \"ready\", \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"mode\": \"plain\", \"pid\": 789, \"row\": null, \"start_ticks\": 80165885, \"stats\": {\"capacity\": 0, \"driver_calls\": 1, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 0, \"mapped\": 0, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, {\"at_ns\": 801658949215201, \"bytes\": 2097152, \"event\": \"allocation_begin\", \"id\": 1}, {\"at_ns\": 801658949307884, \"bytes\": 2097152, \"event\": \"allocation_end\", \"id\": 1, \"ok\": true}, {\"at_ns\": 801658949339594, \"driver\": {\"free\": 22687449088, \"total\": 25252724736}, \"elapsed_ns\": 125375, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 1, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"allocate\", \"owner\": null, \"result\": {\"bytes\": 2097152, \"ptr\": 12918456320, \"value\": 17}, \"stats\": {\"capacity\": 2097152, \"driver_calls\": 4, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 2097152, \"mapped\": 2097152, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, {\"at_ns\": 801658950809358, \"driver\": {\"free\": 22687449088, \"total\": 25252724736}, \"elapsed_ns\": 1277574, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 2, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"verify\", \"owner\": null, \"result\": {\"bytes_verified\": 2097152}, \"stats\": {\"capacity\": 2097152, \"driver_calls\": 4, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 2097152, \"mapped\": 2097152, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, {\"at_ns\": 801658950979697, \"driver\": {\"free\": 22687449088, \"total\": 25252724736}, \"elapsed_ns\": 4218, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 3, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"free\", \"owner\": null, \"result\": {\"freed\": \"warm\"}, \"stats\": {\"capacity\": 0, \"driver_calls\": 4, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 0, \"mapped\": 2097152, \"ooms\": 0, \"pending\": 2097152, \"pools\": 0}}, {\"at_ns\": 801658951230988, \"driver\": {\"free\": 22689546240, \"total\": 25252724736}, \"elapsed_ns\": 88806, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 4, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"trim\", \"owner\": null, \"result\": {\"released\": 2097152}, \"stats\": {\"capacity\": 0, \"driver_calls\": 6, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 0, \"mapped\": 0, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, {\"at_ns\": 801658951384926, \"bytes\": 2097152, \"event\": \"allocation_begin\", \"id\": 5}, {\"at_ns\": 801658951455058, \"bytes\": 2097152, \"event\": \"allocation_end\", \"id\": 5, \"ok\": true}, {\"at_ns\": 801658951475095, \"driver\": {\"free\": 22687449088, \"total\": 25252724736}, \"elapsed_ns\": 90490, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 5, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"allocate\", \"owner\": null, \"result\": {\"bytes\": 2097152, \"ptr\": 12918456320, \"value\": 29}, \"stats\": {\"capacity\": 2097152, \"driver_calls\": 9, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 2097152, \"mapped\": 2097152, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, {\"at_ns\": 801658952265116, \"driver\": {\"free\": 22687449088, \"total\": 25252724736}, \"elapsed_ns\": 663664, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 6, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"verify\", \"owner\": null, \"result\": {\"bytes_verified\": 2097152}, \"stats\": {\"capacity\": 2097152, \"driver_calls\": 9, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 2097152, \"mapped\": 2097152, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, {\"at_ns\": 801658952416419, \"bytes\": 67108864, \"event\": \"allocation_begin\", \"id\": 7}, {\"at_ns\": 801658952491089, \"bytes\": 67108864, \"event\": \"allocation_end\", \"id\": 7, \"ok\": true}, {\"at_ns\": 801658952561681, \"driver\": {\"free\": 22620340224, \"total\": 25252724736}, \"elapsed_ns\": 145613, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 7, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"allocate\", \"owner\": null, \"result\": {\"bytes\": 67108864, \"ptr\": 12920553472, \"value\": 71}, \"stats\": {\"capacity\": 69206016, \"driver_calls\": 12, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 69206016, \"mapped\": 69206016, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, {\"at_ns\": 801658974042023, \"driver\": {\"free\": 22620340224, \"total\": 25252724736}, \"elapsed_ns\": 21353624, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 8, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"verify\", \"owner\": null, \"result\": {\"bytes_verified\": 67108864}, \"stats\": {\"capacity\": 69206016, \"driver_calls\": 12, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 69206016, \"mapped\": 69206016, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, {\"at_ns\": 801658974240354, \"driver\": {\"free\": 22620340224, \"total\": 25252724736}, \"elapsed_ns\": 3977, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 9, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"free\", \"owner\": null, \"result\": {\"freed\": \"full-readback\"}, \"stats\": {\"capacity\": 2097152, \"driver_calls\": 12, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 2097152, \"mapped\": 69206016, \"ooms\": 0, \"pending\": 67108864, \"pools\": 0}}, {\"driver\": {\"free\": 22689546240, \"total\": 25252724736}, \"event\": \"closed\", \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"stats\": {\"capacity\": 0, \"driver_calls\": 16, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 0, \"mapped\": 0, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}], \"sent\": [{\"at_ns\": 801658949188631, \"command\": {\"bytes\": 2097152, \"id\": 1, \"name\": \"warm\", \"op\": \"allocate\", \"value\": 17}}, {\"at_ns\": 801658949515904, \"command\": {\"id\": 2, \"name\": \"warm\", \"op\": \"verify\"}}, {\"at_ns\": 801658950959890, \"command\": {\"id\": 3, \"name\": \"warm\", \"op\": \"free\"}}, {\"at_ns\": 801658951127995, \"command\": {\"id\": 4, \"op\": \"trim\"}}, {\"at_ns\": 801658951368906, \"command\": {\"bytes\": 2097152, \"id\": 5, \"name\": \"canary\", \"op\": \"allocate\", \"value\": 29}}, {\"at_ns\": 801658951590211, \"command\": {\"id\": 6, \"name\": \"canary\", \"op\": \"verify\"}}, {\"at_ns\": 801658952404357, \"command\": {\"bytes\": 67108864, \"id\": 7, \"name\": \"full-readback\", \"op\": \"allocate\", \"value\": 71}}, {\"at_ns\": 801658952677719, \"command\": {\"id\": 8, \"name\": \"full-readback\", \"op\": \"verify\"}}, {\"at_ns\": 801658974216610, \"command\": {\"id\": 9, \"name\": \"full-readback\", \"op\": \"free\"}}, {\"at_ns\": 801658974422305, \"command\": {\"id\": 10, \"op\": \"quit\"}}], \"signals\": [], \"start_ticks\": 80165885, \"stderr\": \"\"}], \"cleanup_errors\": [], \"detail\": {\"cases\": [{\"full_readback\": {\"at_ns\": 801658742889895, \"driver\": {\"free\": 23656988672, \"total\": 25252724736}, \"elapsed_ns\": 22158702, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 8, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"verify\", \"owner\": {\"active\": true, \"active_recoveries\": 0, \"demand_clear_pending\": false, \"failed\": null, \"last_donation\": null, \"last_recovery\": null, \"last_withdrawn_round\": null, \"pending_withdrawals\": 0, \"physical_bytes\": 0, \"published\": 1, \"recoveries\": 0, \"retired\": false, \"serviced\": 1, \"stopping\": false, \"withdrawn_rounds\": 0}, \"result\": {\"bytes_verified\": 67108864}, \"stats\": {\"capacity\": 69206016, \"driver_calls\": 12, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 69206016, \"mapped\": 69206016, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, \"mode\": \"auto\", \"warm\": {\"allocation\": {\"at_ns\": 801658717287299, \"driver\": {\"free\": 23726194688, \"total\": 25252724736}, \"elapsed_ns\": 229971, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 1, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"allocate\", \"owner\": {\"active\": true, \"active_recoveries\": 0, \"demand_clear_pending\": false, \"failed\": null, \"last_donation\": null, \"last_recovery\": null, \"last_withdrawn_round\": null, \"pending_withdrawals\": 0, \"physical_bytes\": 0, \"published\": 1, \"recoveries\": 0, \"retired\": false, \"serviced\": 1, \"stopping\": false, \"withdrawn_rounds\": 0}, \"result\": {\"bytes\": 2097152, \"ptr\": 12918456320, \"value\": 17}, \"stats\": {\"capacity\": 2097152, \"driver_calls\": 4, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 2097152, \"mapped\": 2097152, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, \"verified\": {\"at_ns\": 801658718842794, \"driver\": {\"free\": 23726194688, \"total\": 25252724736}, \"elapsed_ns\": 1371830, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 2, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"verify\", \"owner\": {\"active\": true, \"active_recoveries\": 0, \"demand_clear_pending\": false, \"failed\": null, \"last_donation\": null, \"last_recovery\": null, \"last_withdrawn_round\": null, \"pending_withdrawals\": 0, \"physical_bytes\": 0, \"published\": 1, \"recoveries\": 0, \"retired\": false, \"serviced\": 1, \"stopping\": false, \"withdrawn_rounds\": 0}, \"result\": {\"bytes_verified\": 2097152}, \"stats\": {\"capacity\": 2097152, \"driver_calls\": 4, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 2097152, \"mapped\": 2097152, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}}}, {\"full_readback\": {\"at_ns\": 801658858541370, \"driver\": {\"free\": 23114547200, \"total\": 25252724736}, \"elapsed_ns\": 21622577, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 8, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"verify\", \"owner\": null, \"result\": {\"bytes_verified\": 67108864}, \"stats\": {\"capacity\": 69206016, \"driver_calls\": 12, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 69206016, \"mapped\": 69206016, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, \"mode\": \"manual\", \"warm\": {\"allocation\": {\"at_ns\": 801658833208259, \"driver\": {\"free\": 23183753216, \"total\": 25252724736}, \"elapsed_ns\": 194885, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 1, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"allocate\", \"owner\": null, \"result\": {\"bytes\": 2097152, \"ptr\": 12918456320, \"value\": 17}, \"stats\": {\"capacity\": 2097152, \"driver_calls\": 4, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 2097152, \"mapped\": 2097152, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, \"verified\": {\"at_ns\": 801658834911220, \"driver\": {\"free\": 23183753216, \"total\": 25252724736}, \"elapsed_ns\": 1476046, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 2, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"verify\", \"owner\": null, \"result\": {\"bytes_verified\": 2097152}, \"stats\": {\"capacity\": 2097152, \"driver_calls\": 4, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 2097152, \"mapped\": 2097152, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}}}, {\"full_readback\": {\"at_ns\": 801658974042023, \"driver\": {\"free\": 22620340224, \"total\": 25252724736}, \"elapsed_ns\": 21353624, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 8, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"verify\", \"owner\": null, \"result\": {\"bytes_verified\": 67108864}, \"stats\": {\"capacity\": 69206016, \"driver_calls\": 12, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 69206016, \"mapped\": 69206016, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, \"mode\": \"plain\", \"warm\": {\"allocation\": {\"at_ns\": 801658949339594, \"driver\": {\"free\": 22687449088, \"total\": 25252724736}, \"elapsed_ns\": 125375, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 1, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"allocate\", \"owner\": null, \"result\": {\"bytes\": 2097152, \"ptr\": 12918456320, \"value\": 17}, \"stats\": {\"capacity\": 2097152, \"driver_calls\": 4, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 2097152, \"mapped\": 2097152, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}, \"verified\": {\"at_ns\": 801658950809358, \"driver\": {\"free\": 22687449088, \"total\": 25252724736}, \"elapsed_ns\": 1277574, \"error\": null, \"error_class\": \"\", \"event\": \"reply\", \"id\": 2, \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"ok\": true, \"op\": \"verify\", \"owner\": null, \"result\": {\"bytes_verified\": 2097152}, \"stats\": {\"capacity\": 2097152, \"driver_calls\": 4, \"driver_physical_ooms\": 0, \"free\": 0, \"live\": 2097152, \"mapped\": 2097152, \"ooms\": 0, \"pending\": 0, \"pools\": 0}}}}], \"scope\": \"all native modes; complete byte readback, no Python/Torch maps\"}, \"parent_driver_after_children\": {\"free\": 24058920960, \"total\": 25252724736}, \"passed\": true, \"provenance\": {\"binary\": \"/var/lib/cozy/tensord/editable/ccfc2b9296e5e470/ci-varena-native-consumer/source-425469512912f0a68de8f9aebb19b1b39c2c34beedbfbf374c90bfcde3970041/tree/ci_varena_native_consumer/bin/varena-native-consumer\", \"build\": {\"archive_sha256\": \"b2f4b8393cfce262eca69c646c33ceb88f10aa652e23eb6cb9d3831774b222e1\", \"binary_sha256\": \"351d9fcbb8b36442191eedb2553ea0edc4b0daaaf10393258ad598ce18209476\", \"elf\": {\"class\": \"ELF64\", \"glibc_max\": [2, 28], \"glibc_versions\": [[2, 2], [2, 3], [2, 9], [2, 10], [2, 12], [2, 14], [2, 16], [2, 17], [2, 18], [2, 28]], \"machine\": \"x86_64\", \"needed\": [\"libdl.so.2\", \"libgcc_s.so.1\", \"libpthread.so.0\", \"libc.so.6\", \"ld-linux-x86-64.so.2\"]}, \"helper_source\": \"30c09e4b2fb1ac0e95ddb028deb766a168606536\", \"native_source\": \"c3bf579ae82b42b254aa30fe54c609fc8e89afcb\", \"native_tree\": \"92ff23ec866dec3712ecba4499a62a93e43160c4\", \"qualification\": \"corrected native withdrawal source/build evidence; GPU execution pending\", \"source_receipt_sha256\": \"6c256e14782a3a70e262d6f34fa06230b63c450a634bd1ab15a9c7ccd98065a5\"}, \"controller_pid\": 757, \"donor_bytes\": 536870912, \"gpu_uuid\": \"GPU-18d960a8-2283-19c9-c060-ef8a22fabe35\", \"helper_sha256\": \"351d9fcbb8b36442191eedb2553ea0edc4b0daaaf10393258ad598ce18209476\", \"helper_source\": \"30c09e4b2fb1ac0e95ddb028deb766a168606536\", \"ledger_directory\": \"/dev/shm/varena-native-consumers-ceuj0c6g\", \"margin_bytes\": 134217728, \"native_source\": \"c3bf579ae82b42b254aa30fe54c609fc8e89afcb\", \"parent_driver_before\": {\"free\": 24176427008, \"total\": 25252724736}, \"request_bytes\": 402653184, \"request_id\": \"17\", \"simultaneous_bytes\": 805306368, \"timeout_s\": 30.0}}",
+    "passed": true
+  },
+  "execution_ms": 1391,
+  "measurements": {
+    "attribution": {
+      "folded_names": 0,
+      "method": "perf_counter deltas accumulated in place: count/total/min/max/first/last and wall bounds per named span; step tracks keep up to 512 [end_unix_ms, ms] points",
+      "stages": {},
+      "steps": {}
+    },
+    "execution": {
+      "construction": {
+        "fill_ms": 0.0,
+        "legs_ms": {},
+        "prepare_ms": 0.0,
+        "prepared_unix_ms": 0,
+        "warm_ms": 0.0
+      },
+      "cuts": {
+        "levels": {},
+        "oom_floor": 0,
+        "sites": []
+      },
+      "degree": 1,
+      "executor": {
+        "legs_ms": {
+          "cuda_init": 793.5,
+          "package_import": 6.5,
+          "package_warmup": 0.0,
+          "torch_import": 0.0
+        },
+        "ms": 800.1,
+        "started_unix_ms": 1793542674584
+      },
+      "gpus": [
+        {
+          "arch": "sm_89",
+          "attention": {
+            "impl": "",
+            "observed": "",
+            "requested": ""
+          },
+          "end_us": 1793542675948711,
+          "gpu": 0,
+          "pid": 757,
+          "start_us": 1793542675406907,
+          "uuid": "GPU-18d960a8-2283-19c9-c060-ef8a22fabe35"
+        }
+      ],
+      "loops": [],
+      "on_demand": {},
+      "plan": {},
+      "plan_reports": {},
+      "reply_built_unix_ms": 1793542675963.9,
+      "reply_sent_unix_ms": 1793542675964.4,
+      "spread": {}
+    },
+    "memory": {
+      "driver": [
+        {
+          "before_bytes": 561119232,
+          "gpu": 0,
+          "peak_bytes": 2170486784,
+          "power_max_w": 68,
+          "sm_mhz_limit": 3120,
+          "sm_mhz_low": 2535,
+          "sm_mhz_mean": 2535,
+          "temperature_max_c": 30,
+          "throttled_share": 0.0,
+          "throttles": []
+        }
+      ],
+      "peak_allocated_bytes": 33223216,
+      "peak_reserved_bytes": 117440512,
+      "stats": {
+        "varena": [
+          {
+            "ceiling": {
+              "disk_gbps": 0.003659415327263091,
+              "h2d_gbps": 13.347251092972606
+            },
+            "gpu": 0,
+            "stats": {
+              "allocated": 17039360,
+              "allocator": {
+                "allocations": 1715,
+                "context_joins": 0,
+                "driver_memory_calls": 96,
+                "event_queries": 312,
+                "event_records": 260,
+                "event_waits": 0,
+                "frees": 1714,
+                "ooms": 0
+              },
+              "allocator_scope": "process",
+              "baked_pages": {
+                "bytes": 0,
+                "cap": 67061370880,
+                "pages": 0,
+                "pinned": true,
+                "room": -1,
+                "scope": "the host tier: every streamed page's bytes, pinned",
+                "wanted": 0
+              },
+              "cooperation": {
+                "active": true,
+                "active_recoveries": 0,
+                "deferred": 0,
+                "demand_clear_pending": false,
+                "failed": null,
+                "last_donation": null,
+                "last_recovery": null,
+                "last_withdrawn_round": null,
+                "pending_withdrawals": 0,
+                "physical_bytes": 117440512,
+                "published": 5,
+                "recoveries": 0,
+                "retired": false,
+                "serviced": 5,
+                "stopping": false,
+                "withdrawn_rounds": 0
+              },
+              "final_bindings": {
+                "fallback_blocks": 0,
+                "fills": 0,
+                "final_resident_bytes": 0,
+                "hits": 0,
+                "native_prefetch": true,
+                "raw_resident_bytes": 0,
+                "resident_scope": "process"
+              },
+              "gathered": 0,
+              "host": null,
+              "moved": {
+                "baked": {
+                  "bytes": 0,
+                  "fills": 0,
+                  "ns": 0
+                },
+                "store": {
+                  "bytes": 0,
+                  "ns": 0
+                }
+              },
+              "overlapping": false,
+              "peak": 33223216,
+              "peak_window": "Working high-water plus sampled native backing, carried across resets; other constructions' resident sets left out",
+              "phase_policy_supported": true,
+              "phases": [],
+              "prefetch": {
+                "canceled": 0,
+                "completed": 0,
+                "failed": 0,
+                "queued": [],
+                "released_cache": 0,
+                "scope": "one exact raw block; current demand precedes queued speculation",
+                "skipped_capacity": 0,
+                "started": 0,
+                "wait_ns": 0
+              },
+              "request": "17",
+              "reserved": 117440512,
+              "room_first_pass": null,
+              "sets": {},
+              "trace": [],
+              "trace_scope": "fills",
+              "weight_residency": {
+                "context_joins": 0,
+                "driver_physical_ooms": 0,
+                "event_waits": 0,
+                "evictions": 0,
+                "fills": 0,
+                "hits": 0,
+                "pinned_bytes": 0,
+                "poisoned": false,
+                "preferred_bytes": 0,
+                "ready_bytes": 0,
+                "reclaimable_bytes": 0,
+                "reclaimed_by_reason": {
+                  "allocator": 0,
+                  "requested": 0,
+                  "room": 0,
+                  "streaming_limit": 0,
+                  "weight_allocation": 0
+                },
+                "reclaimed_bytes": 0,
+                "regions": 0,
+                "reserved_bytes": 0,
+                "resident_bytes": 0,
+                "streaming_limit_bytes": 18446744073709551615
+              },
+              "working_allocator": {
+                "allocated_bytes": 17039360,
+                "allocated_capacity": 20971520,
+                "allocated_peak": 33223216,
+                "allocations": 1735,
+                "context_joins": 0,
+                "driver_memory_calls": 106,
+                "driver_physical_ooms": 0,
+                "event_handles": 87,
+                "event_queries": 317,
+                "event_records": 265,
+                "event_waits": 0,
+                "free_bytes": 94580224,
+                "frees": 1733,
+                "mapped_bytes": 117440512,
+                "mapped_peak": 117440512,
+                "ooms": 0,
+                "pending_bytes": 0,
+                "pools": 0,
+                "pools_bytes": 0,
+                "prefetch_admissions": 0,
+                "prefetch_attempts": 0,
+                "prefetch_declines": 0,
+                "reclaimable_bytes": 96468992,
+                "unassigned_bytes": 1888768
+              },
+              "working_phases": [],
+              "working_splits": []
+            },
+            "torch_peak": 33223216
+          }
+        ]
+      }
+    },
+    "models": [],
+    "observations": [],
+    "residency": {
+      "graphs": {},
+      "notes": {}
+    },
+    "software": {
+      "attempt_ordinal": 1,
+      "runtime": "0.36.21+dev.g4d5844f0",
+      "tensord": "0.15.4+dev.gafa6f922",
+      "tensord_commit": "afa6f9229153d1a7e93bbf72fc86f5543a4ac21c",
+      "tensorfs": "0.17.16+dev.gc3bf579a"
+    }
+  }
+}

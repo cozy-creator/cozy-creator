@@ -1,0 +1,78 @@
+{
+  "manifest": {
+    "helper_source": "30c09e4b2fb1ac0e95ddb028deb766a168606536",
+    "native_source": "c3bf579ae82b42b254aa30fe54c609fc8e89afcb",
+    "binary_sha256": "351d9fcbb8b36442191eedb2553ea0edc4b0daaaf10393258ad598ce18209476",
+    "source_receipt_sha256": "6c256e14782a3a70e262d6f34fa06230b63c450a634bd1ab15a9c7ccd98065a5",
+    "archive_sha256": "b2f4b8393cfce262eca69c646c33ceb88f10aa652e23eb6cb9d3831774b222e1",
+    "native_tree": "92ff23ec866dec3712ecba4499a62a93e43160c4",
+    "elf": {
+      "class": "ELF64",
+      "machine": "x86_64",
+      "needed": [
+        "libdl.so.2",
+        "libgcc_s.so.1",
+        "libpthread.so.0",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ],
+      "glibc_versions": [
+        [
+          2,
+          2
+        ],
+        [
+          2,
+          3
+        ],
+        [
+          2,
+          9
+        ],
+        [
+          2,
+          10
+        ],
+        [
+          2,
+          12
+        ],
+        [
+          2,
+          14
+        ],
+        [
+          2,
+          16
+        ],
+        [
+          2,
+          17
+        ],
+        [
+          2,
+          18
+        ],
+        [
+          2,
+          28
+        ]
+      ],
+      "glibc_max": [
+        2,
+        28
+      ]
+    },
+    "qualification": "corrected native withdrawal source/build evidence; GPU execution pending"
+  },
+  "project": "/home/fidika/cozy_v2/outputs/xs138-p3-native-consumer/30c09e4b2/controller-hitoshiki/project",
+  "files": {
+    "ci_varena_native_consumer/__init__.py": "7297d8eeae84207240068974b5cea547d3de4b4bb813fbb35cd6be78fd3bff5c",
+    "ci_varena_native_consumer/bin/provenance.json": "bbd4061b7188de928925974725c18fbf657217ce684d4b6b498243ec1886219b",
+    "ci_varena_native_consumer/bin/varena-native-consumer": "351d9fcbb8b36442191eedb2553ea0edc4b0daaaf10393258ad598ce18209476",
+    "pyproject.toml": "f310f5e545b820cb5591c8410ade8e6aa6a499ada465f6b8e4e98c103f9fc585",
+    "uv.lock": "56d6078d8afabcbc3006670fab869fc0e051c04bd6a712fd2d80a1ffacf3449a"
+  },
+  "gpu_uuid_bound": true,
+  "gpu_executed": false
+}
