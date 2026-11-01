@@ -49,6 +49,9 @@ impl Recipe {
 #[derive(Debug, Deserialize)]
 pub struct Callable {
     pub name: String,
+    /// Its docstring's first paragraph; empty in an interface written before Runtime had it.
+    #[serde(default, deserialize_with = "text")]
+    pub description: String,
     #[serde(default, deserialize_with = "or_default")]
     pub internal: bool,
     #[serde(default, deserialize_with = "or_default")]
@@ -377,5 +380,10 @@ impl Type {
 
 fn present<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Value>, D::Error> {
     Value::deserialize(d).map(Some)
+}
+
+/// A string, else empty: text for people never makes a callable unreadable.
+fn text<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Ok(Value::deserialize(d)?.as_str().unwrap_or_default().to_owned())
 }
 
