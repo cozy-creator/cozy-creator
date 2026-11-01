@@ -18,7 +18,7 @@ RENT_ARGS=--ssh
 FIX=$(cd "$(dirname "$0")/fixtures" && pwd)
 [ -f "$FIX/hub-outage/package.toml" ] || fail "no fixture checkout"
 MODEL=$(param model proomptengineer/balloon-lora-sdxl) OUTAGE=$(param outage_s 20) ABSENT=fidika/cl708-absent-$RANDOM
-quote "$(param traffic_gb 8)" 1800
+quote "$(param traffic_gb 8)" 1200
 rent
 
 sh() { cozy machine ssh "$NAME" -- "$*" < /dev/null 2>> "$OUT/ssh.err"; }
