@@ -599,6 +599,9 @@ impl Region {
     /// before success; every additional consumer stream must call Pin::order_on first.
     #[allow(unsafe_code)]
     pub unsafe fn prepare_on(self: &Arc<Self>, consumer_stream: u64) -> Result<StreamPreparation> {
+        if self.arena.pid != std::process::id() {
+            return Err(Error::Invalid("CUDA arenas cannot be used after fork"));
+        }
         {
             let captures = capture_counts()?;
             let mut state = self.arena.lock()?;
