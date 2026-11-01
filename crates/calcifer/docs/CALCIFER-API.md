@@ -83,8 +83,9 @@ resumable stream gives each durable event an `id:` and resumes after `Last-Event
 ended, or when Calcifer stops; a client reconnects from its last `id:`.
 
 **Files.** A file a resource serves answers `GET` and `HEAD` with `Content-Length`, `Content-Type`,
-`Accept-Ranges: bytes` and an `ETag`, and a single `Range: bytes=…` with `206` and `Content-Range` (`416` when
-unsatisfiable), so a `<video>` seeks it.
+`Accept-Ranges: bytes` and an `ETag`, a single `Range: bytes=…` with `206` and `Content-Range` (`416` when
+unsatisfiable), and `If-None-Match` naming its ETag with `304`, so a `<video>` seeks it and a browser caches it
+(`files.rs`, one responder for every route).
 
 ## Resources
 

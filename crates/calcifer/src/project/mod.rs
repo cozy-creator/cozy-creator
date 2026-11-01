@@ -1090,8 +1090,10 @@ impl Walk {
         };
         let picture = saved(&pending.field, 0)?;
         if let Then::Clean { approve } = pending.then {
-            // The render itself is never listed: only its clean is.
-            return Ok(Landed::Clean { made: Box::new(pending.made), picture, approve, hub: pending.hub });
+            // The render itself is never listed: only its clean is, made by both runs.
+            let mut made = pending.made;
+            made.runs.push(run.number);
+            return Ok(Landed::Clean { made: Box::new(made), picture, approve, hub: pending.hub });
         }
         let video = Video::load(folder)?;
         let Some(i) = video.graph.find(&node) else {
