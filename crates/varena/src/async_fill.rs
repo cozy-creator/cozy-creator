@@ -1,4 +1,5 @@
 //! Owned producer submission, event ordering and deferred native fill completion.
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::Duration;
@@ -139,6 +140,7 @@ impl Fill {
                 owners: Some(owners),
                 guard: None,
                 events: Vec::new(),
+                checked: Vec::new(),
                 writing: false,
                 sealed: false,
                 publish: false,
@@ -154,6 +156,16 @@ impl FillSession {
     }
 
     pub fn begin(&mut self) -> Result<FillDestination> {
+        let result = self.begin_inner();
+        if let Err(error) = &result {
+            if let Ok(mut observed) = self.control.lock() {
+                observed.facts.failure = Some(error.clone());
+            }
+        }
+        result
+    }
+
+    fn begin_inner(&mut self) -> Result<FillDestination> {
         self.control.check()?;
         let payload = self
             .payload
@@ -166,7 +178,7 @@ impl FillSession {
             return Err(Error::Invalid("fill session is not prepared"));
         }
         // Startup cannot lose writes: no destination has been exposed yet.
-        self.sender = Some(worker()?);
+        self.sender = Some(worker(payload.region().device())?);
         let owners = payload.owners.as_ref().expect("session owners");
         if owners.streams.is_empty() {
             return Err(Error::Invalid(
@@ -202,6 +214,7 @@ impl FillSession {
             // A failed pre-write attempt keeps every already-created event for eventual cleanup.
             while payload.events.len() < owners.streams.len() {
                 payload.events.push(region.arena.driver.create_event()?);
+                payload.checked.push(false);
             }
             Ok(())
         })();
@@ -339,7 +352,8 @@ impl Drop for FillSession {
         }
         // Prepared never exposed a destination. Deferred cleanup is allowed to prove that
         // there was no submitted work; failure to queue keeps the actual owners quarantined.
-        match self.sender.take().map(Ok).unwrap_or_else(worker) {
+        let device = payload.region().device();
+        match self.sender.take().map(Ok).unwrap_or_else(|| worker(device)) {
             Ok(sender) => {
                 if let Err(error) = sender.send(payload) {
                     let mut payload = error.0;
@@ -365,6 +379,7 @@ struct Payload {
     owners: Option<FillOwners>,
     guard: Option<ProducerGuard>,
     events: Vec<usize>,
+    checked: Vec<bool>,
     writing: bool,
     sealed: bool,
     publish: bool,
@@ -399,14 +414,13 @@ impl Payload {
                         "unsealed fill reached completion worker".into(),
                     ));
                 }
-                let mut completed = 0;
-                for &event in &self.events {
-                    if region.arena.driver.query(event)? {
-                        completed += 1;
+                for (index, &event) in self.events.iter().enumerate() {
+                    if !self.checked[index] && region.arena.driver.query(event)? {
+                        self.checked[index] = true;
+                        observed.facts.completed_count += 1;
                     }
                 }
-                observed.facts.completed_count = completed;
-                if completed != self.events.len() {
+                if observed.facts.completed_count != self.events.len() {
                     return Ok(false);
                 }
             }
@@ -425,6 +439,14 @@ impl Payload {
             observed.facts.completed = true;
             observed.facts.state = FillState::Completed;
         }
+        Ok(true)
+    }
+    fn retire(&mut self) -> Result<bool> {
+        self.control.check()?;
+        if !self.completed {
+            return Err(Error::Poisoned("fill retired before completion".into()));
+        }
+        let region = self.region();
         // All final GPU-owning drops are outside the capture/arena/control mutexes. The
         // retirement token excludes new capture/replay without retaining the capture lock.
         let _retirement = match enter_retirement(region.device()) {
@@ -476,8 +498,8 @@ impl Drop for Payload {
 }
 
 static PID: AtomicU32 = AtomicU32::new(0);
-static WORKER: OnceLock<Mutex<Option<mpsc::Sender<Payload>>>> = OnceLock::new();
-fn worker() -> Result<mpsc::Sender<Payload>> {
+static WORKER: OnceLock<Mutex<BTreeMap<i32, mpsc::Sender<Payload>>>> = OnceLock::new();
+fn worker(device: i32) -> Result<mpsc::Sender<Payload>> {
     let pid = std::process::id();
     let previous = PID
         .compare_exchange(0, pid, Ordering::AcqRel, Ordering::Acquire)
@@ -489,55 +511,79 @@ fn worker() -> Result<mpsc::Sender<Payload>> {
         .get_or_init(Mutex::default)
         .lock()
         .map_err(|_| Error::Poisoned("fill worker registry mutex".into()))?;
-    if let Some(sender) = &*slot {
+    if let Some(sender) = slot.get(&device) {
         return Ok(sender.clone());
     }
+    let (retire_sender, retire_receiver) = mpsc::channel::<Payload>();
+    std::thread::Builder::new()
+        .name(format!("varena-fill-retire-{device}"))
+        .spawn(move || run_worker(retire_receiver, None))
+        .map_err(|error| {
+            Error::Unsupported(format!("fill retirement worker could not start: {error}"))
+        })?;
     let (sender, receiver) = mpsc::channel::<Payload>();
     std::thread::Builder::new()
-        .name("varena-fill".into())
-        .spawn(move || {
-            let mut pending = Vec::new();
-            loop {
-                let received = if pending.is_empty() {
-                    receiver
-                        .recv()
-                        .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
+        .name(format!("varena-fill-{device}"))
+        .spawn(move || run_worker(receiver, Some(retire_sender)))
+        .map_err(|error| {
+            Error::Unsupported(format!("fill completion worker could not start: {error}"))
+        })?;
+    slot.insert(device, sender.clone());
+    Ok(sender)
+}
+
+fn run_worker(receiver: mpsc::Receiver<Payload>, retirement: Option<mpsc::Sender<Payload>>) {
+    let mut pending = Vec::new();
+    loop {
+        let received = if pending.is_empty() {
+            receiver
+                .recv()
+                .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
+        } else {
+            receiver.recv_timeout(Duration::from_millis(1))
+        };
+        match received {
+            Ok(payload) => pending.push(payload),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) if pending.is_empty() => return,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {}
+        }
+        pending.extend(receiver.try_iter());
+        let mut index = 0;
+        while index < pending.len() {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if retirement.is_some() {
+                    pending[index].tick()
                 } else {
-                    receiver.recv_timeout(Duration::from_millis(1))
-                };
-                match received {
-                    Ok(payload) => pending.push(payload),
-                    Err(mpsc::RecvTimeoutError::Timeout) => {}
-                    Err(mpsc::RecvTimeoutError::Disconnected) if pending.is_empty() => return,
-                    Err(mpsc::RecvTimeoutError::Disconnected) => {}
+                    pending[index].retire()
                 }
-                pending.extend(receiver.try_iter());
-                let mut index = 0;
-                while index < pending.len() {
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        pending[index].tick()
-                    }));
-                    match result {
-                        Ok(Ok(false)) => index += 1,
-                        Ok(Ok(true)) => {
-                            pending.swap_remove(index);
-                        }
-                        other => {
-                            let error = match other {
-                                Ok(Err(error)) => error,
-                                _ => Error::Poisoned("fill worker panicked".into()),
-                            };
-                            let mut payload = pending.swap_remove(index);
-                            payload.quarantine(error);
+            }));
+            match result {
+                Ok(Ok(false)) => index += 1,
+                Ok(Ok(true)) => {
+                    let payload = pending.swap_remove(index);
+                    if let Some(retirement) = &retirement {
+                        if let Err(error) = retirement.send(payload) {
+                            let mut payload = error.0;
+                            payload.quarantine(Error::Poisoned(
+                                "fill retirement worker stopped".into(),
+                            ));
                             std::mem::forget(payload);
                         }
-                    }
+                    } // Retired Payload owns no remaining GPU resources.
+                }
+                other => {
+                    let error = match other {
+                        Ok(Err(error)) => error,
+                        _ => Error::Poisoned("fill worker panicked".into()),
+                    };
+                    let mut payload = pending.swap_remove(index);
+                    payload.quarantine(error);
+                    std::mem::forget(payload);
                 }
             }
-        })
-        .map_err(|error| Error::Unsupported(format!("fill worker could not start: {error}")))?;
-    *slot = Some(sender.clone());
-    Ok(sender)
+        }
+    }
 }
 
 pub enum StreamPreparation {
@@ -583,6 +629,9 @@ impl Pin {
     #[allow(unsafe_code)]
     pub unsafe fn order_on(&self, consumer_stream: u64) -> Result<()> {
         let region = self.region();
+        if region.arena.pid != std::process::id() {
+            return Err(Error::Invalid("CUDA arenas cannot be used after fork"));
+        }
         let captures = capture_counts()?;
         let _state = region.arena.lock()?;
         if let Some(control) = &self.submission {

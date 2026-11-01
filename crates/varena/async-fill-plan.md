@@ -135,7 +135,7 @@ supply a `completed=true` flag or an arbitrary completion callback.
    also preserve last-consumer fences while Contents is Published: the current
    `record_fences` Ready-only test needs a generation-checked extension, not a silent
    fallback to treating producer completion as consumer completion.
-5. A native completion worker owns the submitted Fill, ProducerGuard, event set and all
+5. A per-device native completion worker owns the submitted Fill, ProducerGuard, event set and all
    source/staging/stream resources. It queries real events; successful completion of the
    entire set changes Published to Ready, or an aborted fill to Cold. Only then can source
    resources and the producer Pin retire. An ordinary consumer may still own independent
@@ -157,6 +157,10 @@ No CUDA wait/destructor occurs while holding capture/arena/working/ledger/ABI-re
 Every potentially final Region/Arena/resource owner leaves those guards before destruction;
 final ownership release uses retirement exclusion, or stays queued for a later legal attempt.
 Metadata observations cannot accidentally become the final GPU-owning Arc under a mutex.
+A separate per-device retirement queue performs potentially blocking final owner destruction;
+final Arena context joins cannot stop unrelated fill-event polling or another GPU's queue.
+Both workers start before destination exposure. These are genuine owner leases, not the
+Peer/CacheOwner observer Arena references covered by the separate native detach seam.
 The worker must progress without a Python callback or GIL; it only queries owned CUDA events
 and retires native owners. Completed reports GPU producer completion, not a promise that
 all external resource destructors succeeded. A Python Source's retained references need a separate GIL-safe
