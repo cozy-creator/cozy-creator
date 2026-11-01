@@ -1962,7 +1962,7 @@ pub fn phase_leave(
             String::new()
         }
     });
-    let published = reason.is_empty();
+    let published = reason.is_empty() && active.invalid.is_none();
     let definitions: Vec<_> = active.replay.as_ref().map_or_else(Vec::new, |trace| {
         trace
             .footprints
