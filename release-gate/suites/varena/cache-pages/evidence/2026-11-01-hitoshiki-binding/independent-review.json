@@ -1,0 +1,28 @@
+{
+  "independent_passed": true,
+  "run": 25373,
+  "source_file_sha256": "4268a6b51d06fc541d481d3037935baeda6e7b95820c8a013ecdf8e3f0d21365",
+  "native_extension_sha256": "070d70182056a6d202b28a92db49b078ec9f0239ee7337f829d894e7cafff5e6",
+  "runtime": "0.36.22+dev.g7adc1e82",
+  "tensorfs": "0.17.16+dev.ga96c7c3e",
+  "source_fixture": "e54525838aabe5ab3491cba5c03d50884198c0e4",
+  "controller_pid": 155942,
+  "full_readback": true,
+  "page": 2097152,
+  "live_cache_during": 6291456,
+  "released_middle_leaves": 4194304,
+  "final_cache_bytes": 0,
+  "working_live_before_after": [
+    9046016,
+    9046016
+  ],
+  "working_mapped_before_after": [
+    18874368,
+    18874368
+  ],
+  "working_pending_before_after": [
+    0,
+    2048
+  ],
+  "scope": "Cache wrapper and exact Cache cleanup; not all-working-pending-zero or asynchronous owner/graph retirement proof"
+}

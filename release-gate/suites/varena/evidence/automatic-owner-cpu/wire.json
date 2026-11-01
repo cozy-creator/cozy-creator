@@ -1,0 +1,8 @@
+{
+  "passed": true,
+  "typed_cooperation_roundtrip": true,
+  "old_start_defaults_none": true,
+  "typed_stale_is_deferred": true,
+  "cuda_library_loaded": false,
+  "extension_sha256": "079b497e7f78b3d643cca11a0e16fec65aa743757d8948272e2524162976ab9f"
+}

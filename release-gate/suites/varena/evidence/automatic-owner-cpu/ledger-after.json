@@ -1,0 +1,238 @@
+{
+  "passed": true,
+  "binary": "/proof/peer",
+  "binary_sha256": "84d36276aae61a5b9ad8791d490b48f204bb8502ac71d0ecf5124cb1e9753732",
+  "cuda_initialized": false,
+  "scope": "metadata/process proof only; published byte counts are fixture observations, not actual GPU releases",
+  "stale_samples": {
+    "early_sample": 8,
+    "completed_round": 7,
+    "pre_release_sample_refused": true,
+    "unfinished_round_joined": true,
+    "physical_publication_invalidates": true,
+    "in_flight_sample_commit_refused": true,
+    "concurrent_sample_commit_once": true,
+    "duplicate_acks_do_not_advance_capacity": true,
+    "pending_is_not_capacity": true,
+    "fresh_sample_opens_next_round": true,
+    "final": {
+      "capacity_epoch": 10,
+      "device": 172,
+      "generation": 23,
+      "inode": 4,
+      "round": {
+        "aborted": false,
+        "completed": 40,
+        "donors": [
+          {
+            "answer": "Complete",
+            "completed": 40,
+            "incarnation": 3,
+            "pending": 0,
+            "requested": 40,
+            "slot": 2
+          }
+        ],
+        "finished": true,
+        "id": 20,
+        "requested": 40,
+        "sample": 19
+      },
+      "rows": [
+        {
+          "idle": 0,
+          "incarnation": 1,
+          "live": 0,
+          "pending": 0,
+          "pid": 9,
+          "priority": 0,
+          "reclaimable": 0,
+          "slot": 0,
+          "start_ticks": 54525703
+        },
+        {
+          "idle": 0,
+          "incarnation": 2,
+          "live": 0,
+          "pending": 0,
+          "pid": 10,
+          "priority": 0,
+          "reclaimable": 0,
+          "slot": 1,
+          "start_ticks": 54525703
+        },
+        {
+          "idle": 50,
+          "incarnation": 3,
+          "live": 0,
+          "pending": 0,
+          "pid": 8,
+          "priority": 0,
+          "reclaimable": 50,
+          "slot": 2,
+          "start_ticks": 54525703
+        }
+      ],
+      "sample": {
+        "capacity_epoch": 8,
+        "id": 19,
+        "total": 10000,
+        "used": 950
+      }
+    }
+  },
+  "close_on_exec": {
+    "child_descriptions": 1,
+    "close_on_exec": true
+  },
+  "descriptor_bound": {
+    "bounded": 256,
+    "extra_connections": 254,
+    "recovered": true
+  },
+  "asks_and_liveness": {
+    "concurrent_round": 72,
+    "pending_not_credited": true,
+    "duplicate_acks_counted_once": true,
+    "stopped_owner_retained": true,
+    "reap_did_not_credit_memory": true,
+    "stale_incarnation_rejected": true,
+    "thread_publication": true,
+    "snapshot": {
+      "capacity_epoch": 74,
+      "device": 172,
+      "generation": 78,
+      "inode": 6,
+      "round": {
+        "aborted": false,
+        "completed": 50,
+        "donors": [
+          {
+            "answer": "OwnerGone",
+            "completed": 50,
+            "incarnation": 1,
+            "pending": 0,
+            "requested": 80,
+            "slot": 0
+          }
+        ],
+        "finished": true,
+        "id": 72,
+        "requested": 80,
+        "sample": 71
+      },
+      "rows": [
+        {
+          "idle": 0,
+          "incarnation": 2,
+          "live": 0,
+          "pending": 0,
+          "pid": 15,
+          "priority": 10,
+          "reclaimable": 0,
+          "slot": 1,
+          "start_ticks": 54525707
+        },
+        {
+          "idle": 0,
+          "incarnation": 3,
+          "live": 0,
+          "pending": 0,
+          "pid": 16,
+          "priority": 20,
+          "reclaimable": 0,
+          "slot": 2,
+          "start_ticks": 54525707
+        }
+      ],
+      "sample": {
+        "capacity_epoch": 70,
+        "id": 71,
+        "total": 10000,
+        "used": 1000
+      }
+    }
+  },
+  "round_owner_death": {
+    "aborted_round": 82,
+    "new_round": 86,
+    "no_release_invented": true,
+    "fresh_sample_required": true,
+    "stale_ask_keeps_exact_reap": true
+  },
+  "row_bound": {
+    "independent_processes": 64,
+    "next_registration_refused": true,
+    "all_closed": true
+  },
+  "fork": {
+    "parent_death_child_survives": true,
+    "reused_fd_not_double_closed": true,
+    "fresh_child_registration": true,
+    "live_parent_lock_not_unlocked": true,
+    "parent": {
+      "child": 86,
+      "fork_parent": 85,
+      "incarnation": 1,
+      "slot": 0
+    },
+    "child": {
+      "fd_reuse": true,
+      "fork_child": 86,
+      "incarnation": 2,
+      "inherited_rejected": true,
+      "slot": 1,
+      "snapshot": {
+        "capacity_epoch": 4,
+        "device": 172,
+        "generation": 4,
+        "inode": 10,
+        "round": null,
+        "rows": [
+          {
+            "idle": 123,
+            "incarnation": 1,
+            "live": 0,
+            "pending": 0,
+            "pid": 85,
+            "priority": 0,
+            "reclaimable": 123,
+            "slot": 0,
+            "start_ticks": 54525745
+          },
+          {
+            "idle": 0,
+            "incarnation": 2,
+            "live": 0,
+            "pending": 0,
+            "pid": 86,
+            "priority": 3,
+            "reclaimable": 0,
+            "slot": 1,
+            "start_ticks": 54525745
+          }
+        ],
+        "sample": null
+      }
+    }
+  },
+  "fork_after_single_threaded_initialization": {
+    "concurrent_opens": 210,
+    "departures_reaped": 0,
+    "fork_open_close_iterations": 32,
+    "passed": true
+  },
+  "interrupted_publication": {
+    "attempt": 2,
+    "generation": 5,
+    "committed_value": 3,
+    "uncommitted_value": 4,
+    "old_bank_retained": true,
+    "next_writer_recovered": true
+  },
+  "namespace_transition": {
+    "executed": false,
+    "reason": "unshare: unshare failed: Operation not permitted"
+  },
+  "layout_version_refused": true
+}
