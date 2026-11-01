@@ -731,6 +731,9 @@ pub struct StatusFrame {
     /// The executors' cozy-runtime.
     pub runtime: String,
     pub tensorfs: String,
+    /// The PyTorch its packages use (`2.15.0+cu132`): its image's, else the one its Hub names
+    /// (`/v1/software`); empty until a machine with no image installs one.
+    pub torch: String,
     /// The caller's held package installations.
     pub environments: Vec<Environment>,
     /// The filesystem holding the machine's store.

@@ -211,6 +211,7 @@ fn picture(identity: &MachineIdentity, held: Held) -> v1::StatusFrame {
             .collect(),
         runtime: software.runtime,
         tensorfs: software.tensorfs,
+        torch: identity.torch.as_ref().map(|torch| torch.version()).unwrap_or_default(),
         environments,
         warm,
         disk: identity.store.as_deref().and_then(disk),
