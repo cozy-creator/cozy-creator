@@ -25,6 +25,9 @@ use protocol::{
     machine::LogLines,
 };
 use reqwest::{RequestBuilder, Response, StatusCode, header};
+
+/// `calcifer::api::IGNORED_FIELDS`: the request fields Calcifer did not read.
+const IGNORED_FIELDS: &str = "cozy-ignored-fields";
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{Context, output};
@@ -137,7 +140,7 @@ impl Client {
     }
 
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, Error> {
-        decode(self.send(|c, base| c.get(format!("{base}{path}"))).await?).await
+        self.exchange(|c, base| c.get(format!("{base}{path}"))).await
     }
 
     pub async fn get_query<Q, T>(&self, path: &str, query: &Q) -> Result<T, Error>
@@ -145,8 +148,7 @@ impl Client {
         Q: Serialize + ?Sized,
         T: DeserializeOwned,
     {
-        let answer = self.send(|c, base| c.get(format!("{base}{path}")).query(query));
-        decode(answer.await?).await
+        self.exchange(|c, base| c.get(format!("{base}{path}")).query(query)).await
     }
 
     /// A POST; `key` is its `Idempotency-Key`, so a retry is the same ask.
@@ -155,28 +157,108 @@ impl Client {
         B: Serialize + ?Sized,
         T: DeserializeOwned,
     {
-        let answer = self.send(|c, base| {
+        self.exchange(|c, base| {
             let request = c.post(format!("{base}{path}")).json(body);
             match key {
                 Some(key) => request.header("Idempotency-Key", key),
                 None => request,
             }
-        });
-        decode(answer.await?).await
+        })
+        .await
     }
 
     pub async fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T, Error> {
-        decode(
-            self.send(|c, base| c.delete(format!("{base}{path}")))
-                .await?,
-        )
-        .await
+        self.exchange(|c, base| c.delete(format!("{base}{path}"))).await
     }
 
     /// A plain-text answer, such as a log.
     pub async fn text(&self, path: &str) -> Result<String, Error> {
-        let answer = ok(self.send(|c, base| c.get(format!("{base}{path}"))).await?).await?;
+        let answer = self.opened(|c, base| c.get(format!("{base}{path}"))).await?;
         answer.text().await.map_err(unreachable)
+    }
+
+    /// One request whose answer is read as `T`. An answer showing this Calcifer is older than this
+    /// cozy (a route it does not serve, or an answer without fields this cozy reads) restarts it
+    /// once, the normal way, and asks again: every request is safe to send again (reads, keyed
+    /// asks, cancels). One that still lacks it is refused as outdated, never as a bare 404. Request
+    /// fields it did not read (`Cozy-Ignored-Fields`) were an ask it carried out without them: said,
+    /// and Calcifer restarted for the next command, never sent again.
+    async fn exchange<T: DeserializeOwned>(
+        &self,
+        build: impl Fn(&reqwest::Client, &str) -> RequestBuilder,
+    ) -> Result<T, Error> {
+        let mut restarted = false;
+        loop {
+            let answer = self.send(&build).await?;
+            let ignored = answer.headers().get(IGNORED_FIELDS).and_then(|v| v.to_str().ok()).map(str::to_owned);
+            let lacks = match lacks(answer).await? {
+                Ok(body) => match serde_json::from_slice::<T>(&body) {
+                    Ok(value) => {
+                        if let Some(fields) = ignored {
+                            let lacks = format!("does not read {fields}");
+                            self.say(&format!("{}; it carried out the ask without them", self.lacking(&lacks)));
+                            self.restart(&lacks).await?;
+                        }
+                        return Ok(value);
+                    }
+                    Err(e) => format!("answers without what this cozy reads ({e})"),
+                },
+                Err(lacks) => lacks,
+            };
+            if restarted || !self.restart(&lacks).await? {
+                return Err(self.outdated(&lacks));
+            }
+            restarted = true;
+        }
+    }
+
+    /// One request whose answer is read as it comes (a stream, text): a route this Calcifer does
+    /// not serve restarts it once and asks again, as `exchange` does.
+    async fn opened(&self, build: impl Fn(&reqwest::Client, &str) -> RequestBuilder) -> Result<Response, Error> {
+        let mut restarted = false;
+        loop {
+            let answer = self.send(&build).await?;
+            if answer.status() != StatusCode::NOT_FOUND {
+                return ok(answer).await;
+            }
+            let lacks = match lacks(answer).await? {
+                Ok(_) => unreachable!("a 404 is never an answer"),
+                Err(lacks) => lacks,
+            };
+            if restarted || !self.restart(&lacks).await? {
+                return Err(self.outdated(&lacks));
+            }
+            restarted = true;
+        }
+    }
+
+    /// "Calcifer runs cozy X, which <lacks>".
+    fn lacking(&self, lacks: &str) -> String {
+        let version = self.holder().map_or_else(|| "?".into(), |h| h.version);
+        format!("Calcifer runs cozy {version}, which {lacks}")
+    }
+
+    /// Restarts Calcifer on the installed cozy because it `lacks` something this cozy asks for;
+    /// false when the restart brought back the same version, which would lack it still.
+    async fn restart(&self, lacks: &str) -> Result<bool, Error> {
+        let Some(holder) = self.holder() else { return Ok(false) };
+        self.say(&format!("{}; restarting it on the installed cozy", self.lacking(lacks)));
+        if let Err(e) = self.down(&holder).await {
+            self.say(&format!("Calcifer did not stop cleanly ({}); starting the installed one", e.message));
+        }
+        self.remember(None);
+        let started = self.endpoint().await?;
+        Ok(started.version != holder.version)
+    }
+
+    /// Calcifer is older than this cozy and the installed cozy is too.
+    fn outdated(&self, lacks: &str) -> Error {
+        Error::new(
+            Kind::Unavailable,
+            "calcifer_outdated",
+            format!("{}; this is cozy {}", self.lacking(lacks), env!("CARGO_PKG_VERSION")),
+        )
+        .remedy("update the installed cozy to this one (`cozy update`), or run the installed one")
     }
 
     pub async fn submit(&self, key: &str, run: &SubmitRun) -> Result<Submitted, Error> {
@@ -247,13 +329,13 @@ impl Client {
     /// answers: it carries no backlog, so a caller lists after it. It ends when its connection
     /// closes; the caller subscribes and lists again.
     pub async fn watch<T: DeserializeOwned>(&self, path: &str) -> Result<Watch<T>, Error> {
-        let answer = self.send(|c, base| {
+        let answer = self.opened(|c, base| {
             c.get(format!("{base}{path}"))
                 .header(header::ACCEPT, "text/event-stream")
         });
         Ok(Watch {
             client: self.clone(),
-            stream: ok(answer.await?).await?,
+            stream: answer.await?,
             sse: Sse::default(),
             heard: Instant::now(),
             quiet: false,
@@ -878,6 +960,19 @@ async fn ok(answer: Response) -> Result<Response, Error> {
         Ok(answer)
     } else {
         Err(envelope(answer).await)
+    }
+}
+
+/// An answer's body when it succeeded; `Err(lacks)` when it shows Calcifer is older than this cozy
+/// (a route it does not serve); any other refusal as the outer error.
+async fn lacks(answer: Response) -> Result<Result<Vec<u8>, String>, Error> {
+    if answer.status().is_success() {
+        return Ok(Ok(answer.bytes().await.map_err(unreachable)?.to_vec()));
+    }
+    let refusal = envelope(answer).await;
+    match refusal.code.as_str() {
+        "unknown_route" => Ok(Err(refusal.message.replacen("Calcifer serves", "serves", 1))),
+        _ => Err(refusal),
     }
 }
 
