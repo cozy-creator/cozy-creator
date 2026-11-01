@@ -182,8 +182,10 @@ fn capture(cuda: &Cuda, peer: &cooperative::Peer, cache: &Cache, device: i32) ->
 }
 
 pub(super) fn pages(cuda: &Cuda, peer: &cooperative::Peer, device: i32) -> Result<Value> {
-    let cache = Cache::new(device, 10 << 20)?;
-    let page = cache.granularity();
+    let seed = Cache::new(device, 1)?;
+    let page = seed.granularity();
+    seed.close()?;
+    let cache = Cache::new(device, 5 * page)?;
     require(
         cache.reserved_bytes() >= 5 * page,
         "fixture reservation covers five native pages",
