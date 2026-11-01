@@ -109,60 +109,59 @@ pub struct StagedInput {
 /// binds against its function's interface. Under one `Idempotency-Key` it is one run, whose integer
 /// `seed`, when the request omits one, derives from the key.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct RunRequest {
     /// `[org/]pkg/fn[@release]`, or local code: `./dir[/fn]`, `./script.py[/fn]`.
     pub target: String,
     /// `local` (the default), a machine's name, `any`, or `new[:sku]`.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on: Option<On>,
     /// The Tensorhub origin; empty: Calcifer's.
-    #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub hub: String,
     /// The payload as an object; `terms` override it. A file field holds a path or an uploaded
     /// file's `sha256:<hex>`.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input: Option<serde_json::Map<String, serde_json::Value>>,
     /// The payload from a JSON or YAML file on this computer; the files it names are relative to it.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_file: Option<PathBuf>,
     /// `key=value` (typed as the field is declared), `key:=<json>`, `model.<slot>=<ref>`, one
     /// positional value, and input files.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub terms: Vec<String>,
     /// Attached files, each into a named input, a labelled occurrence of the declared files, or
     /// those files.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<FileTerm>,
     /// `label-or-index=auto|low|medium|high`.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fidelities: Vec<String>,
     /// `[slot=]ref[,strength]`, in order.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub loras: Vec<String>,
     /// Where relative paths start; absent, a relative path is refused.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<PathBuf>,
     /// At most this many GPUs; absent: every GPU its slots support.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpus: Option<u32>,
     /// The main model's lane; absent: the Hub's pick for the machine.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lane: Option<String>,
     /// `KERNEL` or `[SLOT/]COMPONENT=KERNEL`.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attention_kernel: Option<String>,
     /// Keep the function at this level instead of running it (`off` takes it out).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warm: Option<crate::machine::WarmLevel>,
     /// Where outputs land; absent: `~/.cozy/outputs`.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub out: Option<PathBuf>,
     /// Calls a package's `quantize`, which `cozy run` refuses: `cozy model quantize` runs it.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub recipes: bool,
     /// The quote a `new` run's renter agreed to (`POST /v1/run-quotes`).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agreed: Option<Agreed>,
 }
 

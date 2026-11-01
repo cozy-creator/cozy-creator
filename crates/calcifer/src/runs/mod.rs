@@ -40,7 +40,9 @@ pub(crate) async fn submit(
     IdempotencyKey(key): IdempotencyKey,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<(StatusCode, Json<Submitted>), Refusal> {
-    let ask: RunRequest = parse(&body?)?;
+    let body = body?;
+    prebuilt(&body)?;
+    let ask: RunRequest = parse(&body)?;
     let submitted = request(&api, &key, ask).await.map_err(Refusal)?;
     let status = if submitted.replay { StatusCode::OK } else { StatusCode::ACCEPTED };
     Ok((status, Json(submitted)))
@@ -51,7 +53,9 @@ pub(crate) async fn quote(
     State(api): State<Arc<Api>>,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Json<RunQuote>, Refusal> {
-    let ask: RunRequest = parse(&body?)?;
+    let body = body?;
+    prebuilt(&body)?;
+    let ask: RunRequest = parse(&body)?;
     let bound = match local(&api, &ask) {
         // Local code rents with its install, which the call then follows to its machine.
         Some(found) => {
@@ -93,6 +97,24 @@ pub(crate) async fn describe(
     let hub = hub(&api, asked.hub.as_deref().unwrap_or_default());
     let resolved = target::describe(&api, &hub, &asked.target, asked.cwd.as_deref()).await.map_err(Refusal)?;
     Ok(Json(resolved))
+}
+
+/// A run whose spec an older cozy built (`SubmitRun`, its `spec`), which this Calcifer binds itself:
+/// refused as the client's age, never read as an unbound request missing its fields.
+fn prebuilt(body: &[u8]) -> Result<(), Refusal> {
+    let shape: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
+    if shape.get("spec").is_none() {
+        return Ok(());
+    }
+    let version = env!("CARGO_PKG_VERSION");
+    Err(Refusal(
+        Error::new(
+            Kind::Usage,
+            "client_outdated",
+            format!("this cozy sent a run its own way, as cozy before {version} did; Calcifer runs cozy {version}, which binds runs itself"),
+        )
+        .remedy(format!("run the installed cozy (~/.cozy/bin/cozy), or update this one to {version}")),
+    ))
 }
 
 /// The local code `ask` names, if it names local code.
