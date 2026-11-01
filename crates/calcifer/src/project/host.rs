@@ -265,6 +265,11 @@ impl Host {
         on.iter().min_by_key(|on| cost(on)).cloned().unwrap_or(On::Any)
     }
 
+    /// cozy's cache folder for this user (`platform::paths::cache`), else one in its home.
+    pub fn cache(&self) -> std::path::PathBuf {
+        platform::paths::cache().unwrap_or_else(|| self.api.machines.hubs.home().root().join("cache"))
+    }
+
     /// cozy's ffmpeg and ffprobe: the pinned build `cozy` fetched, else PATH's.
     pub async fn ffmpeg(&self) -> Result<(PathBuf, PathBuf), Error> {
         let home = self.api.machines.hubs.home();
