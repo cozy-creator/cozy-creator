@@ -7,6 +7,7 @@ import json
 import os
 from collections import Counter
 from contextlib import nullcontext
+from importlib import import_module
 from importlib.metadata import version
 from pathlib import Path
 
@@ -241,6 +242,20 @@ class Census(TorchDispatchMode):
         return result
 
 
+class FusedReference(TorchDispatchMode):
+    """Observe, then forward the actual opaque Kitchen fused operation unchanged."""
+
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+    def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+        if str(func).startswith('comfy_kitchen.int8_attention.'):
+            self.calls.append({'op': str(func), 'shape': list(args[0].shape),
+                               'dtype': str(args[0].dtype), 'device': str(args[0].device)})
+        return func(*args, **(kwargs or {}))
+
+
 def output_equal(actual, expected):
     from cozy_runtime.internal import prebuilt, verify
     error = verify.error(torch, actual, expected)
@@ -272,17 +287,22 @@ def gpu(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
     ready, = attention.pinned('kitchen-int8', measure_device(torch, device, 'cuda'))
     selected = ready.member
     from comfy_kitchen.backends import cuda as kitchen_cuda
+    kitchen_attention = import_module('comfy_kitchen.sage_attention')
     assert version('comfy-kitchen') == '0.2.40'
     assert callable(kitchen_cuda._C.sage_sdpa_quantize)
     assert callable(kitchen_cuda._C.sage_sdpa_prequantized)
+    kitchen_source = digest(kitchen_attention.__file__)
+    assert kitchen_source == '23447a19aa113722f9b0e9a3b1fcc30cec59c438fe652535b870922f50d0543a'
+    assert kitchen_attention._hip_backend is None
     provenance.update(launcher_key=launch.key, selected_backend=str(selected.value),
                       kitchen_version=version('comfy-kitchen'), kitchen_artifact=ready.artifact,
+                      kitchen_source_sha256=kitchen_source,
                       kitchen_extension_sha256=digest(kitchen_cuda._C.__file__))
     generator = torch.Generator().manual_seed(payload.seed)
     trim(vt, device)
     initial = vt.stats(device)
     initial_weights = request.memory.native.stats()
-    cases, keys, declined = [], [], []
+    cases, keys, declined, fused_references = [], [], [], []
     with torch.inference_mode():
         for tokens, heads, variants in (
             (ROWS, HEADS, (HEADS, 28, 7, 1)),
@@ -301,8 +321,13 @@ def gpu(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
             try:
                 operator = glue._Heads.of(attn.processor, attn, hidden, rotary, None)
                 assert type(operator) is glue._Heads
-                with quantize_once(hidden):
+                reference_calls = FusedReference()
+                with quantize_once(hidden), reference_calls:
                     reference_device = operator(operator)
+                assert len(reference_calls.calls) == 1, reference_calls.calls
+                assert reference_calls.calls[0]['op'] == 'comfy_kitchen.int8_attention.default'
+                assert reference_calls.calls[0]['shape'] == [1, heads, tokens, 128]
+                fused_references.append(reference_calls.calls[0])
                 reference, seed_reference = reference_device.cpu(), seed.cpu()
                 del reference_device
                 assert hook_reads == [0]
@@ -580,6 +605,7 @@ def gpu(payload: Probe, ctx: Context, tel: Telemetry) -> Report:
     keys = sorted(request.working_phase_keys)
     return Report(True, json.dumps({'passed': True, 'scope': 'instrumented real mechanism; not a timing benchmark',
                                    'provenance': provenance, 'cases': cases, 'declined': declined,
+                                   'fused_references': fused_references,
                                    'hook_factor_reads': 0,
                                    'initial': initial, 'final': final,
                                    'initial_weights': initial_weights, 'final_weights': final_weights,
