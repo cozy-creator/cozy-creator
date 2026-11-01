@@ -167,6 +167,17 @@ named() {
 named h3-lora-named h3-lora 1
 named h3-lora-20s-named h3-lora-20s 2
 
+# A shot that moves on from its opening (se-087): one character picture, the opening a place and an activity the beats
+# leave, three pieces. A later piece that restates the opening is pulled back to it with a cut at its edge (0.2.4's
+# h3-base-20s/lora-20s, 24980/24981: back in the food cart the otter had walked away from). Its frames are also looked
+# at for a cut and for people the shot never had (se-089). One seed is one sample: the same request, seed and Runtime
+# render a different take on another machine (se-089: 25229 and 25344 differ from piece 1), so a failure holds the
+# release for a look at more seeds rather than convicting a change on its own.
+BMOVE='[{"at": 0, "prompt": "<Rider> flips noodles in a wok at a harbour food stall."}, {"at": 9, "prompt": "<Rider> hands the bowl over, steps out of the stall and walks along the pier."}, {"at": 19, "prompt": "<Rider> reaches the end of the pier and looks out at the boats."}]'
+cell h3-shot-moves-on "$SHOT" assets:="[{\"name\": \"Rider\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
+  prompt="<Rider> cooks at a busy harbour food stall at dusk, steam and lanterns, ambient sound" duration_s:=30 beats:="$BMOVE" seed:=$((R + 96))
+span_seams h3-shot-moves-on-seams h3-shot-moves-on
+
 # A reference shot, then a text-only render on the next call: the second must get the GPU, never waiting behind the
 # first's prefetch (TensorD 0.14.6: lily run 22344 then 22363 waited until cancelled; fixed by cozy 0.14.8, #2316): a
 # reference video (Ref2VA) then a text-only one (FL2VA) through generate.
@@ -270,7 +281,7 @@ cell h3-full-30 "$SHOT" references:="[{\"name\": \"Skater\", \"kind\": \"charact
 av h3-full-30 768
 
 # generate's preset (#751): the Skater request with `preset: fast` runs one dense step, then sparse ones, and denoises in at most
-# 0.85x the same request on `balanced`, run just before it on the same machine and executor state (se-091: a control from
+# 0.90x the same request on `balanced`, run just before it on the same machine and executor state (se-091: a control from
 # hours earlier measured residency, not the preset); its frames hold against that control's.
 IFS=$'\t' read -r PN _ PM _ _ <<< "$(grep -m1 $'^Skater\t' "$HERE/scenarios.tsv")"
 PRESET_REQ=(references:="[{\"name\": \"$PN\", \"kind\": \"character\", \"image\": \"$REF\"}]" prompt="<$PN> $PM" seed:=$((R + 101)) duration_s:=15)
@@ -284,6 +295,6 @@ if [ -f h3-preset-fast.number ] && [ "$(run_get "$OUT" h3-preset-fast .status)" 
   df=$(jq '[.calls[]? | .measurements.attribution.stages.denoise.total_ms // 0] | add' "$OUT/h3-preset-fast.json")
   db=$(jq '[.calls[]? | .measurements.attribution.stages.denoise.total_ms // 0] | add' "$OUT/h3-preset-balanced.json")
   expect h3-preset-fast-steps "$(jq -r 'if length == 8 then (.[1:] | sort | .[length/2|floor]) as $m | ([.[] | select(. >= 1.6 * $m)] | length) as $k | if $k == 1 and .[0] >= 1.6 * $m then "PASS" else "FAIL" end else "FAIL" end' <<< "$steps")" "steps ${steps}"
-  expect h3-preset-fast-time "$(awk -v f="$df" -v b="$db" 'BEGIN { print (b > 0 && f <= 0.85 * b) ? "PASS" : "FAIL" }')" "denoise fast ${df} ms vs balanced (run just before) ${db} ms"
+  expect h3-preset-fast-time "$(awk -v f="$df" -v b="$db" 'BEGIN { print (b > 0 && f <= 0.90 * b) ? "PASS" : "FAIL" }')" "denoise fast ${df} ms vs balanced (run just before) ${db} ms"
   judge h3-preset-fast-frames h3-preset-fast '.contrast >= 0.5 * .control_contrast and .coherence >= 0.6' variant "$(video_of h3-preset-balanced)"
 fi

@@ -447,10 +447,6 @@ fn sku_refusal(sku: &str, gpus: u32, status: &RentalSkuStatus) -> Error {
             "sku_retry_in_progress",
             format!("{ask} {why} while another rental retries it; try again once that ends"),
         )),
-        Some(FUNDS_SHORT) => Some((
-            FUNDS_SHORT,
-            format!("{ask} is in stock, but the Hub can't buy machines right now; try again later"),
-        )),
         _ => None,
     };
     if let Some((code, message)) = held {
@@ -480,22 +476,11 @@ fn sku_refusal(sku: &str, gpus: u32, status: &RentalSkuStatus) -> Error {
     error.next("cozy machine rent")
 }
 
-/// The Hub's reason for stock it cannot buy now (a provider account it must fund; whose is the
-/// operator's).
-const FUNDS_SHORT: &str = "provider_funds_short";
-
-/// The catalog, cheapest first: each product's GPUs and what we charge for them an hour, then what
-/// is in stock but the Hub cannot buy now.
+/// The catalog, cheapest first: each product's GPUs and what we charge for them an hour.
 async fn catalog(ctx: &Context, hub: &Origin) -> Result<ExitCode, Error> {
-    let (mut skus, held): (Vec<RentalSku>, Vec<RentalSku>) =
-        hub_answer(ctx.hub_anonymous(hub).list_rental_skus().await)?
-            .into_iter()
-            .partition(|sku| !sku.widths.is_empty());
-    let held: Vec<&str> = held
-        .iter()
-        .filter(|sku| sku.unavailable_reason.as_deref() == Some(FUNDS_SHORT))
-        .map(|sku| sku.name.as_str())
-        .collect();
+    let mut skus: Vec<RentalSku> =
+        hub_answer(ctx.hub_anonymous(hub).list_rental_skus().await)?;
+    skus.retain(|sku| !sku.widths.is_empty());
     let hourly = |sku: &RentalSku| sku.widths[0].price_usd_micros_per_hour;
     skus.sort_by(|a, b| hourly(a).cmp(&hourly(b)).then_with(|| a.name.cmp(&b.name)));
     if ctx.json {
@@ -530,27 +515,13 @@ async fn catalog(ctx: &Context, hub: &Origin) -> Result<ExitCode, Error> {
             usd(width.price_usd_micros_per_hour),
         ]);
     }
-    if !skus.is_empty() {
-        table.print();
-    }
-    match (skus.is_empty(), held.join(", ")) {
-        (true, held) if held.is_empty() => {
-            output::say(ctx, "No machine is for rent on this Hub right now.")
-        }
-        (true, _) => output::say(
-            ctx,
-            "Machines are in stock, but the Hub can't buy them right now; try again later.",
-        ),
-        (false, held) => {
+    table.print();
+    match skus.is_empty() {
+        false => {
             output::say(ctx, "Prices are for the fewest GPUs, an hour.");
-            if !held.is_empty() {
-                output::say(
-                    ctx,
-                    &format!("Also in stock, but the Hub can't buy them right now: {held}."),
-                );
-            }
             output::next(ctx, &["cozy machine rent <name> [--gpus N]"]);
         }
+        true => output::say(ctx, "No machine is for rent on this Hub right now."),
     }
     Ok(ExitCode::SUCCESS)
 }

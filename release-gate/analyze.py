@@ -74,6 +74,8 @@ for name, target, number in cells:
         continue
     runs[name] = run
     obs, gemm, attn = run.observations, run.gemm, run.attention
+    for off in run.capabilities_off:
+        fails.append(f'{name}: the Runtime turned off {off}')
     for o in obs:
         text = f"{o.get('name')} {o.get('value')}"
         if fp8_weight_only(o):
@@ -109,7 +111,7 @@ for name, target, number in cells:
     if s and reads:
         notes.append(f'{name}: step 1 {s[0] / 1000:.1f} s, of which {reads / 1000:.1f} s weight reads (judged in execution time)')
         s = [s[0] - reads] + s[1:]
-    c = summary[name] = {'blocking': blocking, 'run': run.number, 'target': canonical(target), 'gemm': gemm, 'attention': attn,
+    c = summary[name] = {'blocking': blocking, 'run': run.number, 'target': canonical(target), 'gemm': gemm, 'attention': attn, 'graphs': run.graphs,
                          'execution_ms': run.execution_ms, 'step1_ms': round(s[0]) if s else None, 'step1_read_ms': round(reads),
                          'vram_mb': vram and vram['added'],
                          'steady_ms': round(sum(s[1:]) / len(s[1:])) if len(s) > 1 else None, 'files': list(run.outputs)}
@@ -188,6 +190,8 @@ for name, c in summary.items():
     last = good[-1]
     if (last['gemm'], last['attention']) != (c['gemm'], c['attention']):
         fails.append(f'{name}: kernels {last["gemm"]} / {last["attention"]} -> {c["gemm"]} / {c["attention"]}')
+    if last.get('graphs') == 'native' and c['graphs'] == 'eager':
+        fails.append(f'{name}: CUDA graphs native -> eager (its denoise ran no captured step)')
     for k, slack in SLACK.items():
         vals = [g[k] for g in good if g.get(k) is not None]
         if c.get(k) is None:
@@ -223,7 +227,7 @@ print('VERDICT', 'FAIL' if fails else 'PASS', f'({len(cells)} cells)', '' if not
 if not fails or accept:
     label = open(os.path.join(out, 'label')).read().strip()
     for name, c in summary.items():
-        entry = {k: c[k] for k in ('run', 'target', 'gemm', 'attention', 'execution_ms', 'step1_ms', 'steady_ms', 'vram_mb', 'blocking')}
+        entry = {k: c[k] for k in ('run', 'target', 'gemm', 'attention', 'graphs', 'execution_ms', 'step1_ms', 'steady_ms', 'vram_mb', 'blocking')}
         entry.update(label=label, at=time.strftime('%Y-%m-%dT%H:%MZ', time.gmtime()))
         base['cells'].setdefault(name, {'good': []})['good'].append(entry)
     json.dump(base, open(BASE, 'w'), indent=1)
