@@ -194,6 +194,8 @@ pub struct Sample {
     pub total: u64,
     pub driver_used: u64,
     pub observed_at: u64,
+    /// Largest qualified reserve observed for this table/device capacity. Unknown
+    /// publishers preserve a prior measured value; this is not an owner's live usage.
     pub reserve: Option<u64>,
     pub attributable: bool,
 }
@@ -637,11 +639,17 @@ impl Participant {
         if driver_used > total || reserve.is_some_and(|value| value > total) {
             return Err(Error::Invalid("inconsistent capacity observation"));
         }
+        if reserve.is_some() && !attributable {
+            return Err(Error::Invalid("reserve requires an attributable observation"));
+        }
         self.ledger.transaction(true, |data, generation| {
             self.own(data)?;
             if generation != expected_generation {
                 return Err(Error::StaleSample);
             }
+            let prior = data.sample.filter(|sample| sample.total == total && sample.attributable)
+                .and_then(|sample| sample.reserve);
+            let reserve = prior.into_iter().chain(reserve).max();
             let sample = Sample {
                 generation: generation + 1,
                 capacity_epoch: data.capacity_epoch,
@@ -649,7 +657,7 @@ impl Participant {
                 driver_used,
                 observed_at,
                 reserve,
-                attributable,
+                attributable: reserve.is_some(),
             };
             data.sample = Some(sample);
             Ok(sample)
@@ -660,11 +668,25 @@ impl Participant {
     /// newly completed release. Joining/repeating the same round does not spend it again.
     /// Donor requests are advisory; completed acknowledgements still require a driver retry.
     pub fn ask(&self, sample_generation: u64, wanted: u64) -> Result<Round> {
+        self.ask_inner(sample_generation, wanted, false)
+    }
+
+    /// One device-pressure request may return this Shared participant's own idle pages too.
+    /// It joins the same single round as other askers: no local release precedes coordination,
+    /// and requested/pending bytes remain advisory rather than capacity credit.
+    pub fn ask_device(&self, sample_generation: u64, wanted: u64) -> Result<Round> {
+        self.ask_inner(sample_generation, wanted, true)
+    }
+
+    fn ask_inner(&self, sample_generation: u64, wanted: u64, include_requester: bool) -> Result<Round> {
         // Commit exact dead-row removal independently. If that invalidates this sample,
         // returning StaleSample below must not roll the reap back and repeat it forever.
         self.ledger.reap_dead()?;
         self.ledger.transaction(true, |data, generation| {
             let mine = *self.own(data)?;
+            if include_requester && mine.sharing != Sharing::Shared {
+                return Err(Error::Invalid("device pressure requires a Shared participant"));
+            }
             self.own(data)?.want = wanted;
             if let Some(round) = &data.round
                 && (!round.finished() || round.sample_generation == sample_generation)
@@ -682,7 +704,8 @@ impl Participant {
                 .iter()
                 .flatten()
                 .filter(|row| {
-                    row.id != mine.id && row.sharing == Sharing::Shared && row.reclaimable != 0
+                    (include_requester || row.id != mine.id)
+                        && row.sharing == Sharing::Shared && row.reclaimable != 0
                 })
                 .copied()
                 .collect();

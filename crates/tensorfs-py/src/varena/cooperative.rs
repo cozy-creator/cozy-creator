@@ -252,6 +252,9 @@ impl PyOwner {
     #[classattr]
     const OWNER_PROTOCOL: u32 = 1;
 
+    #[classattr]
+    const PRESSURE_PROTOCOL: u32 = 1;
+
     #[new]
     fn new(
         py: Python<'_>,
@@ -287,10 +290,31 @@ impl PyOwner {
             .map_err(|e| raise(py, e))
     }
 
+    fn request_boundary(&self, py: Python<'_>, begin: bool) -> PyResult<()> {
+        let boundary = if begin {
+            cooperative::Boundary::RequestBegin
+        } else {
+            cooperative::Boundary::RequestEnd
+        };
+        py.detach(|| self.owner.boundary(boundary))
+            .map_err(|e| raise(py, e))
+    }
+
     fn facts(&self, py: Python<'_>) -> PyResult<String> {
         let facts = py.detach(|| self.owner.facts()).map_err(|e| raise(py, e))?;
+        let pressure = &facts.pressure;
         Ok(
             json!({"active":facts.active,"stopping":facts.stopping,"retired":facts.retired,
+                "pressure":{"samples":pressure.samples,"observed_at":pressure.observed_at,
+                    "free":pressure.free,"total":pressure.total,"own_opaque":pressure.own_opaque,
+                    "foreign":pressure.foreign,"attribution":pressure.attribution,
+                    "reserve":pressure.reserve,"measured_requests":pressure.measured_requests,
+                    "local_reserve":pressure.local_reserve,"process_signals":pressure.process_signals,
+                    "measurement":pressure.measurement,
+                    "process_signals_served":pressure.process_signals_served,
+                    "rejected_requests":pressure.rejected_requests,"new_processes":pressure.new_processes,
+                    "suppressed":pressure.suppressed,"round":pressure.round,"completed":pressure.completed,
+                    "budget_exhausted":pressure.budget_exhausted},
                 "published":facts.published,"serviced":facts.serviced,
             "deferred":facts.deferred,"physical_bytes":facts.physical_bytes,
                 "last_donation":facts.last_donation.map(service),"failed":facts.failed,

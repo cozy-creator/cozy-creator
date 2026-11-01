@@ -33,7 +33,7 @@ def toml(value):
 
 manifest = ['[package]', 'name = "varena"', f'version = "{package["version"]}"',
             f'edition = "{workspace["package"]["edition"]}"', '[dependencies]']
-for name in ('libloading', 'thiserror', 'libc'):
+for name in ('libloading', 'thiserror', 'libc', 'nvml-wrapper'):
     manifest.append(f'{name} = {toml(workspace["dependencies"][name])}')
 (fixture / 'Cargo.toml').write_text('\n'.join(manifest) + '\n')
 shutil.copy2(args.source / 'Cargo.lock', fixture / 'Cargo.lock')

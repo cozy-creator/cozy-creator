@@ -1,11 +1,13 @@
-//! Explicit native GPU participant. No allocation hook, daemon, byte budget or background
-//! policy is installed. Callers publish at owner boundaries and service advisory asks.
+//! Native GPU cooperation. Peer is the explicit publication/service mechanism; Owner runs
+//! that mechanism and sampled pressure on the library-owned thread. No daemon or hook.
 use crate::{Arena, Completion, Contents, ReclaimReason, ReclaimReport, ledger, working};
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, atomic::Ordering};
 
 mod owner;
+mod pressure;
 pub use owner::{Facts, Owner, RecoveryOutcome, RecoveryReport};
+pub use pressure::{Boundary, Facts as PressureFacts, initial_pid_namespace};
 pub(crate) use owner::{Participation, recover};
 
 fn deferred(error: &Error) -> bool {
@@ -157,7 +159,10 @@ impl Peer {
     }
 
     pub fn configure(&self, sharing: ledger::Sharing, priority: i32) -> Result<()> {
-        self.check()?;
+        // Serialize with the complete donor pass, including its captured assignment,
+        // physical effects and acknowledgement. Once Dedicated returns, an earlier
+        // Shared snapshot cannot start another release on this Peer.
+        let _state = self.lock()?;
         Ok(self.participant.configure(sharing, priority)?)
     }
 
@@ -175,6 +180,10 @@ impl Peer {
     /// Read actual CUDA free/total outside shared locks, then optimistically commit against
     /// the generation read before that observation. H/attribution remain unknown here.
     pub fn sample(&self, observed_at: u64) -> Result<ledger::Sample> {
+        self.sample_reserve(observed_at, None)
+    }
+
+    fn sample_reserve(&self, observed_at: u64, reserve: Option<u64>) -> Result<ledger::Sample> {
         self.check()?;
         // Commit exact departures first, separately from optimistic sample validation.
         self.ledger.reap_dead()?;
@@ -192,14 +201,20 @@ impl Peer {
             total as u64,
             used as u64,
             observed_at,
-            None,
-            false,
+            reserve,
+            reserve.is_some(),
         )?)
     }
 
     pub fn ask(&self, sample_generation: u64, wanted: u64) -> Result<ledger::Round> {
         self.check()?;
         Ok(self.participant.ask(sample_generation, wanted)?)
+    }
+
+    /// Coordinated device pressure, including this Shared owner's completed idle backing.
+    pub fn ask_device(&self, sample_generation: u64, wanted: u64) -> Result<ledger::Round> {
+        self.check()?;
+        Ok(self.participant.ask_device(sample_generation, wanted)?)
     }
 
     pub fn withdraw(&self, round: u64) -> Result<bool> {
@@ -244,6 +259,15 @@ impl Peer {
             .progress
             .filter(|(id, _)| *id == round.generation)
             .map_or(donor.completed, |(_, done)| done.max(donor.completed));
+        if table.rows.iter().find(|row| row.id == self.id())
+            .is_some_and(|row| row.sharing == ledger::Sharing::Dedicated) {
+            // Lifecycle configuration applies before any further native release. Preserve
+            // prior actual progress, but an old assignment is not ongoing Shared consent.
+            self.participant.acknowledge(round.generation, completed, 0, ledger::Answer::Refused)?;
+            result.completed = completed;
+            result.pending = 0;
+            return Ok(result);
+        }
         let maximum = donor.held_at_ask.saturating_sub(completed);
         let wanted = donor.requested.saturating_sub(completed);
         let mut released = 0;
@@ -291,6 +315,19 @@ impl Peer {
                 .iter()
                 .map(|arena| arena.driver.activity_calls())
                 .sum::<u64>())
+    }
+
+    fn memory_calls(&self) -> Result<u64> {
+        let state = self.lock()?;
+        Ok(working::peer::memory_calls(self.device)? + state.arenas.iter()
+            .map(|arena| arena.driver.calls().0).sum::<u64>())
+    }
+
+    fn observation<T>(&self, operation: impl FnOnce() -> T) -> Result<T> {
+        self.check()?;
+        let captures = crate::capture_counts()?;
+        crate::ensure_recovery_allowed(&captures, self.device)?;
+        Ok(operation())
     }
 
     fn native_tick(

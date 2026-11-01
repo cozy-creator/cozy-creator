@@ -129,7 +129,58 @@ pub fn lifecycle_proof() -> String {
     proof_inherited_control();
     let budget_ms = recovery_wait_proof();
     recovery_lifetimes_proof();
-    format!("{{\"passed\":true,\"native_thread_cancellations\":{},\"admitted_vs_queued\":true,\"drop_did_not_join\":true,\"poison_cancellation\":true,\"permanent_fault_close_returned\":true,\"fault_not_marked_retired\":true,\"fork_rejected_before_inherited_mutex\":true,\"coordination_budget_ms\":{},\"final_retry_instruction\":true,\"deadline_not_reset\":true,\"control_remained_active_after_budget\":true,\"capture_mutex_free_while_waiting\":true,\"local_waiter_drop_preserves_other_demand\":true,\"withdrawal_latched_across_new_demand\":true,\"stopped_control_cancels_recovery\":true,\"gpu_qualified\":false}}", rounds * 2, budget_ms)
+    pressure_lifetimes_proof();
+    format!("{{\"passed\":true,\"native_thread_cancellations\":{},\"admitted_vs_queued\":true,\"drop_did_not_join\":true,\"poison_cancellation\":true,\"permanent_fault_close_returned\":true,\"fault_not_marked_retired\":true,\"fork_rejected_before_inherited_mutex\":true,\"coordination_budget_ms\":{},\"final_retry_instruction\":true,\"deadline_not_reset\":true,\"control_remained_active_after_budget\":true,\"capture_mutex_free_while_waiting\":true,\"local_waiter_drop_preserves_other_demand\":true,\"withdrawal_latched_across_new_demand\":true,\"stopped_control_cancels_recovery\":true,\"pressure_withdrawal_preserves_allocation_owner\":true,\"queued_request_boundary_cancels\":true,\"no_nvml_or_cuda_loaded\":true,\"gpu_qualified\":false}}", rounds * 2, budget_ms)
+}
+
+fn pressure_lifetimes_proof() {
+    // Real host-control race: registering allocation demand must queue only the pressure
+    // generation, leaving a separately owned allocation generation alone. No Peer is faked.
+    let device = 93;
+    let control = proof_control();
+    {
+        let mut state = control.lock().unwrap();
+        state.pressure_round = Some(101);
+        state.owned_round = Some(102);
+        state.demands.insert(0, Instant::now() + COORDINATION_BUDGET);
+        state.next_demand = 1;
+    }
+    registry().unwrap().insert(device, Arc::downgrade(&control));
+    let (done, receive) = mpsc::sync_channel(1);
+    let caller = std::thread::spawn(move || {
+        let mut recovery = crate::Recovery::default();
+        done.send(recovery.next(device, 2 << 20).is_err()).unwrap();
+    });
+    let limit = Instant::now() + Duration::from_secs(1);
+    loop {
+        let state = control.lock().unwrap();
+        if state.demands.len() == 2 {
+            assert!(state.pressure_round.is_none());
+            assert!(state.withdrawals.contains(&101));
+            assert!(!state.withdrawals.contains(&102));
+            assert_eq!(state.owned_round, Some(102));
+            break;
+        }
+        assert!(Instant::now() < limit);
+        drop(state);
+        std::thread::yield_now();
+    }
+    control.stop();
+    assert!(receive.recv_timeout(Duration::from_secs(1)).unwrap());
+    caller.join().unwrap();
+    registry().unwrap().remove(&device);
+
+    let control = proof_control();
+    let waiting = Arc::clone(&control);
+    let caller = std::thread::spawn(move || {
+        let owner = Owner { device: 0, id: ledger::RowId { slot: 0, incarnation: 1 }, control: waiting };
+        assert!(owner.boundary(Boundary::RequestBegin).is_err());
+    });
+    proof_queued(&control, 1);
+    control.stop();
+    caller.join().unwrap();
+    let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
+    assert!(!maps.contains("libcuda.so") && !maps.contains("libnvidia-ml.so"));
 }
 
 fn recovery_wait_proof() -> u128 {
