@@ -1,0 +1,77 @@
+{
+  "passed": true,
+  "native_run": 25017,
+  "runtime_run": 25019,
+  "fixture_source": "f04438bb6df47fca394ac5705d95963fb42a8860",
+  "runtime_source": "9b8d74e69b15919ad77bb4b8dbcecd0eb76a335d",
+  "native_source": "9ccb36a24f9987ea1a9bfbddc746c7c26e497759",
+  "provenance": {
+    "extension_sha256": "06d4e992c985bbdb6c49b3076ce709623d6976fd6cd7ad2a8bcfd401d98da970",
+    "gpu_uuid": "GPU-74f2ac0a-1c52-2e52-a7a6-b207f1db7a89",
+    "residency_sha256": "b14e46f3bcc63772a3ccf03fbefb0bc1a451be47bee13c25fb3ba70515e52c68",
+    "runtime_version": "0.36.20+dev.g9b8d74e6",
+    "shim_sha256": "09684b61d0b909c39d56c7d129432e906ddb0a57f1b4b916b20bb2c4c8d7716e",
+    "tensorfs_version": "0.17.16+dev.g9ccb36a2"
+  },
+  "pid": 1018,
+  "native_clear_cases": [
+    "managed-capacity-still-reclaims",
+    "roomy-retains-after-clear",
+    "temporary-room-capacity-still-reclaims"
+  ],
+  "runtime_cases": [
+    "roomy_cold_then_warm",
+    "tight_capacity_reclaims_on_demand",
+    "prepared_graph_and_escaped_aliases",
+    "changed_fill_preserves_old_alias",
+    "failed_fill_then_healthy_demand",
+    "tied_parameter_identity"
+  ],
+  "roomy": {
+    "measured_working_peak_bytes": 39845888,
+    "weight_backing_bytes": 23068672,
+    "cap_bytes": 62914560,
+    "warm_additional_fills": 0,
+    "warm_additional_store_bytes": 0,
+    "warm_additional_host_bytes": 0,
+    "warm_hits": 6
+  },
+  "tight": {
+    "cap_bytes": 50331648,
+    "retained_weight_bytes": 10485760,
+    "allocator_eviction_bytes_each_pass": 12582912,
+    "streaming_limit_evictions": 0
+  },
+  "graph": {
+    "pinned_before_bytes": 23068672,
+    "pinned_after_owner_retirement_bytes": 4194304,
+    "actual_binding_replay_fence": true,
+    "escaped_output_and_weight_preserved": true
+  },
+  "cleanup": {
+    "live_baseline_bytes": 17039360,
+    "mapped_baseline_bytes": 20971520,
+    "retained_library_allocations": 2,
+    "pending_pools_events": 0,
+    "weight_residency_zero_asserted_inside_executed_fixture": true,
+    "additional_pid_call_required_for_advertised_contract": false,
+    "reason": "All fixture models/bindings/graphs/aliases retire inside entry; componentless phases publish no request-owned leaf key. This does not claim independent request-end metadata lifetime qualification."
+  },
+  "raw_receipts": {
+    "native-retention-result.json": {
+      "path": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p2-fork-guard-leg12-plan/attempt-003/native-retention-result.json",
+      "sha256": "a09a7c4435ba0ce3a06f574c23f3d5e0e2eaf5a8342c78aa725e4969a2f753ac"
+    },
+    "runtime-retention-result.json": {
+      "path": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p2-fork-guard-leg12-plan/attempt-003/runtime-retention-result.json",
+      "sha256": "fdaa5336ae8747f216813ce2adde8db25d378ff08690fdb97b6f1e97e91feed4"
+    }
+  },
+  "limits": [
+    "bounded consumer mechanism only",
+    "no full H3 or SDXL result",
+    "managed capacities are not smaller-GPU hardware qualification",
+    "no physical all-H2D or general performance claim",
+    "request phases remain execution_key_unknown; prefetch declines"
+  ]
+}

@@ -47,3 +47,39 @@ cozy run /absolute/frozen/native-retention/gpu --on OWNED_MACHINE --gpus=1 \
 
 Inspect both the CLI completion and the returned `passed` value. Preserve complete
 run records and failures. Source/static checks do not qualify GPU execution.
+
+
+## Actual GPU proof, 2026-11-01
+
+Run **25019** passes all six Runtime groups on RTX4090 columbina, driver595.91.07,
+Runtime **9b8d74e69 / 0.36.20+dev.g9b8d74e6**, TensorFS **9ccb36a24 /
+0.17.16+dev.g9ccb36a2**, and fixture **f04438bb6**. Native clear-limit run **25017**
+passes its three separate cells. Both full run records, structured results and an
+independent assertion audit are in `evidence/2026-11-01/`.
+
+- Actual measured working peak38MiB plus weight backing22MiB defines the60MiB
+  roomy cap. The warm call records six native hits, no new fills, no store or host
+  reads, and all22MiB weights stay resident at stable addresses.
+- At48MiB, each pass reclaims12MiB through actual allocator pressure and retains
+  10MiB. `streaming_limit` eviction remainszero; outputs remain exact.
+- Actual Binding preparation/replay retains22MiB despite pressure. After graph
+  and binding retirement, only the escaped4MiB weight remains pinned, and both
+  weight and captured-output aliases remain correct. Dropping aliases permits
+  complete ordinary weight reclaim.
+- Changed source identity preserves the old alias while healthy new storage is
+  filled. A failed Fill's escaped91-valued bytes stay unchanged through a healthy
+  refill, with no published failed region or poison. The tied model retains the
+  same Parameter object in both uses and its common owner.
+- Live bytes return exactly to17,039,360 and mapped bytes to20,971,520 (the same
+  two library workspace owners). Pending bytes, pool count and event handles are
+  zero. Fixture code asserts zero resident weights after owner closure. No library
+  handle reset/forced cleanup is used.
+
+No second PID/request cleanup call is required for this fixture's advertised
+contract: every model, binding, graph and escaped alias is retired within the
+entry, and its componentless phases publish no request-owned leaf measurement
+key. This does not claim independent request-end metadata lifetime qualification.
+
+This is bounded retention/ownership proof, not full-H3/SDXL quality or speed,
+smaller-GPU hardware, or complete P2/P3 qualification. The matched full-model arm
+is tracked separately and was not replaced with these small cases.
