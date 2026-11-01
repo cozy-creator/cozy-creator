@@ -33,6 +33,7 @@ mod proof {
                 json!({
                     "slot": row.id.slot, "incarnation": row.id.incarnation, "pid": row.pid,
                     "start_ticks": row.start_ticks, "priority": row.priority,
+                    "sharing": format!("{:?}", row.sharing), "want": row.want,
                     "live": row.physical.weights.live, "idle": row.physical.weights.idle,
                     "pending": row.physical.weights.pending, "reclaimable": row.reclaimable,
                 })
@@ -76,6 +77,12 @@ mod proof {
         let parts: Vec<_> = line.split_whitespace().collect();
         let n = |at: usize| parts[at].parse::<u64>().unwrap();
         match parts.first().copied().unwrap_or("") {
+            "configure" => {
+                peer.configure(if parts[1] == "shared" { Sharing::Shared } else { Sharing::Dedicated }, parts[2].parse().unwrap())?;
+                Ok(json!({"ok":true}))
+            }
+            "withdraw" => Ok(json!({"changed":peer.withdraw(n(1))?})),
+            "clear-want" => { peer.clear_want()?; Ok(json!({"ok":true})) }
             "publish" => {
                 published(peer, n(1), n(2), n(3), n(4), n(5))?;
                 Ok(json!({"ok":true}))

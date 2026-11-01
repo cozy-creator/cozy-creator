@@ -2,7 +2,7 @@
 //! Allocator lookup references contain host metadata only, never a GPU destructor or join.
 use super::{Peer, Result, Service, deferred};
 use crate::ledger;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak, mpsc};
 use std::time::{Duration, Instant};
@@ -108,6 +108,11 @@ pub struct Facts {
     pub failed: Option<String>,
     pub recoveries: u64,
     pub last_recovery: Option<RecoveryReport>,
+    pub active_recoveries: usize,
+    pub pending_withdrawals: usize,
+    pub withdrawn_rounds: u64,
+    pub last_withdrawn_round: Option<u64>,
+    pub demand_clear_pending: bool,
 }
 
 enum Command {
@@ -125,6 +130,37 @@ struct State {
     commands: VecDeque<Command>,
     facts: Facts,
     attempt: Option<Arc<Attempt>>,
+    next_demand: u64,
+    demands: BTreeMap<u64, Instant>,
+    owned_round: Option<u64>,
+    withdrawals: BTreeSet<u64>,
+    want_published: bool,
+    clear_want: bool,
+}
+
+fn queue_withdrawal(state: &mut State, round: u64) {
+    state.withdrawals.insert(round);
+    if state.owned_round == Some(round) {
+        state.owned_round = None;
+    }
+    state.generation = state.generation.wrapping_add(1);
+}
+
+fn retire_unused_round(state: &mut State) {
+    if !state
+        .demands
+        .values()
+        .any(|deadline| *deadline > Instant::now())
+    {
+        if state.want_published {
+            state.clear_want = true;
+            state.want_published = false;
+            state.generation = state.generation.wrapping_add(1);
+        }
+        if let Some(round) = state.owned_round {
+            queue_withdrawal(state, round);
+        }
+    }
 }
 
 // No Peer, Arena, Driver, Python reference or JoinHandle may be stored here.
@@ -132,6 +168,28 @@ struct Control {
     pid: u32,
     state: Mutex<State>,
     changed: Condvar,
+}
+
+/// A local recovery lifetime. Drop only queues host metadata; the worker owns ledger I/O.
+pub(crate) struct Participation {
+    control: Arc<Control>,
+    id: u64,
+}
+
+impl Drop for Participation {
+    fn drop(&mut self) {
+        if self.control.pid != std::process::id() {
+            return;
+        }
+        let mut state = self
+            .control
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.demands.remove(&self.id);
+        retire_unused_round(&mut state);
+        self.control.changed.notify_all();
+    }
 }
 
 impl Control {
@@ -213,6 +271,7 @@ pub(crate) fn recover(
     bytes: usize,
     deadline: &mut Option<Instant>,
     observed: &mut Option<(u64, u64)>,
+    participation: &mut Option<Participation>,
 ) -> crate::Result<crate::PeerProgress> {
     {
         let captures = crate::capture_counts()?;
@@ -229,6 +288,29 @@ pub(crate) fn recover(
     'attempt: loop {
         let mut state = control.lock().map_err(native)?;
         check(&state).map_err(native)?;
+        // Expired/finished demand cannot be revived by a new allocation arriving before
+        // the worker has committed the queued withdrawal.
+        retire_unused_round(&mut state);
+        let had_demand = state
+            .demands
+            .values()
+            .any(|deadline| *deadline > Instant::now());
+        if let Some(demand) = participation.as_ref() {
+            if !Arc::ptr_eq(&demand.control, &control) {
+                return Err(crate::Error::Invalid("recovery changed native owner"));
+            }
+        } else {
+            let id = state.next_demand;
+            state.next_demand = id
+                .checked_add(1)
+                .ok_or(crate::Error::Invalid("recovery identity overflow"))?;
+            state.demands.insert(id, *limit);
+            *participation = Some(Participation {
+                control: Arc::clone(&control),
+                id,
+            });
+        }
+        control.changed.notify_all();
         if Instant::now() >= *limit {
             state.facts.last_recovery = Some(report(
                 bytes,
@@ -241,7 +323,9 @@ pub(crate) fn recover(
         }
         let pending = match state.attempt.as_ref() {
             Some(attempt)
-                if attempt.deadline > Instant::now() && attempt.lock()?.result.is_none() =>
+                if had_demand
+                    && attempt.deadline > Instant::now()
+                    && attempt.lock()?.result.is_none() =>
             {
                 Some(Arc::clone(attempt))
             }
@@ -263,6 +347,10 @@ pub(crate) fn recover(
             control.changed.notify_all();
             attempt
         };
+        state.demands.insert(
+            participation.as_ref().expect("registered recovery").id,
+            *limit,
+        );
         loop {
             check(&state).map_err(native)?;
             if let Some(mut report) = attempt.lock()?.result {
@@ -386,6 +474,13 @@ impl Owner {
         let mut facts = state.facts.clone();
         facts.stopping = state.stopping;
         facts.retired = state.retired;
+        facts.active_recoveries = state
+            .demands
+            .values()
+            .filter(|deadline| **deadline > Instant::now())
+            .count();
+        facts.pending_withdrawals = state.withdrawals.len();
+        facts.demand_clear_pending = state.clear_want;
         Ok(facts)
     }
 
@@ -487,8 +582,84 @@ fn finish_attempt(control: &Control, attempt: &Attempt, report: RecoveryReport) 
     Ok(())
 }
 
+fn withdraw_tick(peer: &Peer, control: &Control) -> Result<()> {
+    let (pending, clear_want) = {
+        let mut state = control.lock()?;
+        retire_unused_round(&mut state);
+        (
+            state.withdrawals.iter().copied().collect::<Vec<_>>(),
+            state.clear_want,
+        )
+    };
+    if clear_want {
+        peer.clear_want()?;
+        let mut state = control.lock()?;
+        state.clear_want = false;
+        control.changed.notify_all();
+    }
+    for generation in pending {
+        let changed = peer.withdraw(generation)?;
+        let mut state = control.lock()?;
+        state.withdrawals.remove(&generation);
+        if changed {
+            state.facts.withdrawn_rounds += 1;
+            state.facts.last_withdrawn_round = Some(generation);
+        }
+        control.changed.notify_all();
+    }
+    Ok(())
+}
+
+fn own_round(
+    peer: &Peer,
+    control: &Control,
+    attempt: &Arc<Attempt>,
+    round: &ledger::Round,
+    asked: bool,
+) -> Result<bool> {
+    let mut state = control.lock()?;
+    if asked {
+        state.want_published = true;
+    }
+    let current = state
+        .attempt
+        .as_ref()
+        .is_some_and(|value| Arc::ptr_eq(value, attempt));
+    let wanted = current
+        && attempt.deadline > Instant::now()
+        && state
+            .demands
+            .values()
+            .any(|deadline| *deadline > Instant::now());
+    if !wanted && state.want_published {
+        state.clear_want = true;
+        state.want_published = false;
+        state.generation = state.generation.wrapping_add(1);
+        control.changed.notify_all();
+    }
+    if round.requester == peer.id() {
+        if wanted && !state.withdrawals.contains(&round.generation) {
+            state.owned_round = Some(round.generation);
+        } else {
+            // An ask may finish just after its last waiter expires or a new attempt replaces
+            // it. Record that exact generation for retirement, never give it to a new caller.
+            queue_withdrawal(&mut state, round.generation);
+            control.changed.notify_all();
+        }
+    }
+    Ok(state.withdrawals.is_empty() && !state.clear_want)
+}
+
 fn recover_tick(peer: &Peer, control: &Control) -> Result<()> {
-    let attempt = control.lock()?.attempt.clone();
+    let attempt = {
+        let mut state = control.lock()?;
+        retire_unused_round(&mut state);
+        if !state.withdrawals.is_empty() || state.clear_want {
+            control.changed.notify_all();
+            return Ok(());
+        }
+        state.attempt.clone()
+    };
     let Some(attempt) = attempt else {
         return Ok(());
     };
@@ -528,6 +699,9 @@ fn recover_tick(peer: &Peer, control: &Control) -> Result<()> {
         }
         peer.ask(sample.generation, attempt.requested as u64)?
     };
+    if !own_round(peer, control, &attempt, &round, observed.is_none())? {
+        return Ok(());
+    }
     if Instant::now() >= attempt.deadline {
         return finish_attempt(control, &attempt, expired());
     }
@@ -591,6 +765,12 @@ fn serve(peer: &Peer, control: &Control) -> Result<()> {
                 Some(value) => command(peer, value),
                 None => break,
             }
+        }
+        match withdraw_tick(peer, control) {
+            Err(error) if deferred(&error) => {
+                control.lock()?.facts.deferred += 1;
+            }
+            result => result?,
         }
         match tick(peer, control, used) {
             Err(error) if deferred(&error) => {

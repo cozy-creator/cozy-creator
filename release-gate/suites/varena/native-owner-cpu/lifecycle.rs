@@ -128,7 +128,8 @@ pub fn lifecycle_proof() -> String {
     caller.join().unwrap();
     proof_inherited_control();
     let budget_ms = recovery_wait_proof();
-    format!("{{\"passed\":true,\"native_thread_cancellations\":{},\"admitted_vs_queued\":true,\"drop_did_not_join\":true,\"poison_cancellation\":true,\"permanent_fault_close_returned\":true,\"fault_not_marked_retired\":true,\"fork_rejected_before_inherited_mutex\":true,\"coordination_budget_ms\":{},\"final_retry_instruction\":true,\"deadline_not_reset\":true,\"control_remained_active_after_budget\":true,\"capture_mutex_free_while_waiting\":true,\"gpu_qualified\":false}}", rounds * 2, budget_ms)
+    recovery_lifetimes_proof();
+    format!("{{\"passed\":true,\"native_thread_cancellations\":{},\"admitted_vs_queued\":true,\"drop_did_not_join\":true,\"poison_cancellation\":true,\"permanent_fault_close_returned\":true,\"fault_not_marked_retired\":true,\"fork_rejected_before_inherited_mutex\":true,\"coordination_budget_ms\":{},\"final_retry_instruction\":true,\"deadline_not_reset\":true,\"control_remained_active_after_budget\":true,\"capture_mutex_free_while_waiting\":true,\"local_waiter_drop_preserves_other_demand\":true,\"withdrawal_latched_across_new_demand\":true,\"stopped_control_cancels_recovery\":true,\"gpu_qualified\":false}}", rounds * 2, budget_ms)
 }
 
 fn recovery_wait_proof() -> u128 {
@@ -163,9 +164,61 @@ fn recovery_wait_proof() -> u128 {
     assert!(facts.facts.active && !facts.stopping && !facts.retired);
     assert_eq!(facts.facts.last_recovery.unwrap().outcome.as_str(), "peer_wait_budget_exhausted");
     assert_eq!(facts.facts.recoveries, 1);
+    assert!(facts.demands.is_empty());
     drop(facts);
     control.stop();
     registry().unwrap().remove(&device);
     assert!(!std::fs::read_to_string("/proc/self/maps").unwrap().contains("libcuda.so"));
     elapsed.as_millis()
+}
+
+fn recovery_lifetimes_proof() {
+    // Host lifetime markers only: the separate three-process ledger proof checks actual
+    // ownership/withdrawal publication. This creates no Peer and asserts no GPU release.
+    let control = proof_control();
+    let until = Instant::now() + COORDINATION_BUDGET;
+    {
+        let mut state = control.lock().unwrap();
+        state.demands.insert(0, until);
+        state.demands.insert(1, until);
+        state.next_demand = 2;
+        state.owned_round = Some(77);
+        state.want_published = true;
+    }
+    let first = Participation { control: Arc::clone(&control), id: 0 };
+    let second = Participation { control: Arc::clone(&control), id: 1 };
+    std::thread::spawn(move || drop(first)).join().unwrap();
+    {
+        let state = control.lock().unwrap();
+        assert_eq!(state.owned_round, Some(77));
+        assert!(state.withdrawals.is_empty() && !state.clear_want);
+    }
+    drop(second);
+    {
+        let state = control.lock().unwrap();
+        assert!(state.withdrawals.contains(&77) && state.clear_want);
+        assert!(state.demands.is_empty() && state.owned_round.is_none());
+    }
+    let device = 92;
+    registry().unwrap().insert(device, Arc::downgrade(&control));
+    let (done, result) = mpsc::sync_channel(1);
+    let caller = std::thread::spawn(move || {
+        let mut recovery = crate::Recovery::default();
+        done.send(recovery.next(device, 2 << 20).is_err()).unwrap();
+    });
+    let limit = Instant::now() + Duration::from_secs(1);
+    while control.lock().unwrap().demands.is_empty() {
+        assert!(Instant::now() < limit, "new requester did not register");
+        std::thread::yield_now();
+    }
+    {
+        let state = control.lock().unwrap();
+        assert!(state.withdrawals.contains(&77) && state.clear_want);
+        assert!(state.owned_round.is_none());
+    }
+    control.stop();
+    assert!(result.recv_timeout(Duration::from_secs(1)).unwrap());
+    caller.join().unwrap();
+    assert!(control.lock().unwrap().demands.is_empty());
+    registry().unwrap().remove(&device);
 }

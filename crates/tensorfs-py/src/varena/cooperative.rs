@@ -99,7 +99,7 @@ fn snapshot(owner: ledger::RowId, value: ledger::Snapshot) -> Value {
         "sample":value.sample.map(sample),"round":value.round.map(round),
         "rows":value.rows.into_iter().map(|r|json!({"id":row_id(r.id),"pid":r.pid,
             "start_ticks":r.start_ticks,"priority":r.priority,"sharing":format!("{:?}",r.sharing),
-            "last_use":r.last_use,"physical":physical(r.physical),"reclaimable":r.reclaimable})).collect::<Vec<_>>()})
+            "last_use":r.last_use,"want":r.want,"physical":physical(r.physical),"reclaimable":r.reclaimable})).collect::<Vec<_>>()})
 }
 
 #[pyclass(name = "_VarenaPeer", module = "tensorfs._ext", frozen)]
@@ -294,7 +294,10 @@ impl PyOwner {
                 "published":facts.published,"serviced":facts.serviced,
             "deferred":facts.deferred,"physical_bytes":facts.physical_bytes,
                 "last_donation":facts.last_donation.map(service),"failed":facts.failed,
-                "recoveries":facts.recoveries,"last_recovery":facts.last_recovery.map(|value|
+                "recoveries":facts.recoveries,"active_recoveries":facts.active_recoveries,
+                "pending_withdrawals":facts.pending_withdrawals,"withdrawn_rounds":facts.withdrawn_rounds,
+                "demand_clear_pending":facts.demand_clear_pending,
+                "last_withdrawn_round":facts.last_withdrawn_round,"last_recovery":facts.last_recovery.map(|value|
                     json!({"outcome":value.outcome.as_str(),"requested_bytes":value.requested_bytes,
                         "released_bytes":value.released_bytes,"round":value.round,
                         "completed_bytes":value.completed_bytes,"elapsed_ns":value.elapsed_ns}))})

@@ -64,3 +64,40 @@ The expected run result is failure carrying that original sentinel; native coope
 failure must also be reported/latched. A replacement cooperation exception is a red
 result. This worker must not serve another qualification cell afterward. The normal
 parity interval must not include this intentional owner closure.
+
+## Physical shortage cells (not GPU-qualified yet)
+
+`stage-shortage.py` archives a clean committed source tree into a new output
+directory, builds the tiny GIL gate there, verifies its GLIBC floor and exercises
+its real `PyGILState_Check`/pipe handshake without CUDA. Keep that fixture immutable.
+The standard payload generator binds the actual Runtime/TensorFS wheels; add
+`case` and `gil_gate_sha256` from the staged `fixture.json` for `/shortage`.
+
+Run these cells on the owned headless rental: physical setup intentionally holds
+most available VRAM in a live allocation. No managed cap substitutes for a real
+physical refusal in positive cells; native driver-refusal counters must increase.
+The fixture never manually asks or services a donation.
+
+| Case | Required result |
+|---|---|
+| `working` | Local working/weight reclaim precedes automatic peer recovery; real allocation and retained values survive. |
+| `weight` | Demand Region admission recovers after real driver refusals, with one successful fill and a valid phase sample. |
+| `gil` | Real Torch `UntypedStorage.resize_` recovers while the donor holds its GIL inside the checked native gate. |
+| `stopped` | A real SIGSTOPed/live donor remains Waiting with zero completed bytes; coordination expires, control stays active and exhaustion is clean. |
+| `renewal` | Precreate B Dedicated; stop A, expire the first actual allocation, observe automatic owner withdrawal, then make B Shared/lower priority. A stays stopped while a new real allocation uses B. |
+| `writer` | A separate process holds the actual OFD publication lock and is SIGSTOPed; physical recovery expires without declaring it dead or falling back. |
+| `cap`, `va` | Explicit local limit or oversized VA request refuses with zero physical-create OOMs and zero peer recovery. |
+| `limited` | No-reclaim Region admission refuses physical pressure without asking peers. |
+| `capture`, `replay` | Guarded allocation refuses with zero native driver calls and zero peer recovery. |
+
+Positive phase samples must publish without invalidation. FinalRetry means a
+final local admission pass with its normal finite local retries, not exactly one
+driver call. Allocation elapsed time includes CUDA work; the two-second bound is
+on coordination. The GIL gate's ten-second guard is a failing harness outcome,
+never evidence of donation. [`ctypes.PyDLL`](https://docs.python.org/3.12/library/ctypes.html#ctypes.PyDLL)
+retains the GIL during its native call; the helper also checks it before signalling.
+
+The frozen earlier `/gpu` and `/observe` remain the service-only parity control.
+Standalone Rust, observed donor death, overlapping roles, stopped publication and
+full initialized-GPU lifetime cases are separate required gates. These source and
+CPU fixture checks do not close P3 or qualify game coexistence/cache callbacks.

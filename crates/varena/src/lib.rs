@@ -90,6 +90,8 @@ struct Recovery {
     deadline: Option<std::time::Instant>,
     observed: Option<(u64, u64)>,
     terminal: bool,
+    #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
+    participation: Option<cooperative::Participation>,
 }
 
 impl Recovery {
@@ -97,10 +99,12 @@ impl Recovery {
     fn next(&mut self, device: i32, bytes: usize) -> Result<bool> {
         if self.terminal { return Ok(false); }
         #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
-        let progress = cooperative::recover(device, bytes, &mut self.deadline, &mut self.observed)?;
+        let progress = cooperative::recover(device, bytes, &mut self.deadline, &mut self.observed, &mut self.participation)?;
         #[cfg(not(all(target_os = "linux", target_has_atomic = "64")))]
         let progress = { let _ = (device, bytes, &mut self.deadline, &mut self.observed); PeerProgress::Unavailable };
         self.terminal = !matches!(progress, PeerProgress::Retry);
+        #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
+        if self.terminal { drop(self.participation.take()); }
         Ok(!matches!(progress, PeerProgress::Unavailable))
     }
 }
