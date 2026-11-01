@@ -407,6 +407,10 @@ fn rollback(
         owner.driver.release(page.handle)?;
         held.pages.remove(&at);
         owner.room.working.fetch_sub(owner.page, Ordering::AcqRel);
+        owner
+            .room
+            .released
+            .fetch_add(owner.page as u64, Ordering::AcqRel);
     }
     Ok(())
 }
@@ -481,6 +485,10 @@ pub(super) fn trim_ready(
             owner.driver.release(held.pages[&at].handle)?;
             held.pages.remove(&at);
             owner.room.working.fetch_sub(owner.page, Ordering::AcqRel);
+            owner
+                .room
+                .released
+                .fetch_add(owner.page as u64, Ordering::AcqRel);
             released += owner.page;
             *completed += owner.page;
         }
@@ -512,6 +520,14 @@ pub(super) fn working_stats(state: &State, page: usize, stats: &mut WorkingStats
         stats.cache_pending_bytes += cache.pending_bytes;
         stats.cache_ready_bytes += cache.ready_bytes;
     }
+}
+
+pub(super) fn ready_bytes(state: &State, page: usize) -> usize {
+    state
+        .caches
+        .values()
+        .map(|held| held.stats(page).ready_bytes)
+        .sum()
 }
 
 #[cfg(all(target_os = "linux", target_has_atomic = "64"))]

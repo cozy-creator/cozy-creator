@@ -38,6 +38,8 @@ def main():
     assert glibc and glibc[-1] <= (2, 28)
     assert 'GLIBC_ABI_' not in versions and 'GLIBC_PRIVATE' not in versions
     manifest = {'source_sha': source['source_sha'], 'native_base': source['native_base'],
+                'native_source': source['native_source'],
+                'mixed_sources': source.get('mixed_sources'),
                 'native_tree': source['native_tree'], 'binary_sha256': sha(args.binary),
                 'archive_sha256': source['archive_sha256'], 'source_receipt_sha256': sha(args.source_receipt),
                 'elf': {'class': 'ELF64', 'machine': 'x86_64', 'needed': needed,

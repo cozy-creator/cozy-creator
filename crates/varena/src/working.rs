@@ -1207,6 +1207,7 @@ impl Working {
             self.room
                 .working
                 .fetch_sub(bytes, std::sync::atomic::Ordering::AcqRel);
+            self.room.released.fetch_add(bytes as u64, Ordering::AcqRel);
             let blocks: Vec<_> = state
                 .blocks
                 .range(base..base + bytes as u64)
@@ -1831,6 +1832,21 @@ pub fn trim(device: i32) -> Result<usize> {
     owner
         .trim(&mut state, usize::MAX, None)
         .map_err(|error| owner.fail(&mut state, error))
+}
+
+/// A cache-owner action has returned. Reclaim only known completed native backing;
+/// no callback, future owner action or unknown-consumer context join is awaited here.
+pub(crate) fn reclaim_completed(device: i32, wanted: usize) -> Result<usize> {
+    let Some(owner) = existing(device)? else { return Ok(0); };
+    let captures = crate::capture_counts()?;
+    crate::ensure_recovery_allowed(&captures, device)?;
+    let mut state = owner.lock()?;
+    let _context = owner.driver.enter()?;
+    let result = (|| {
+        owner.poll_mode(&mut state, false)?;
+        owner.trim_ready(&mut state, wanted, None, &BTreeSet::new())
+    })();
+    result.map_err(|error| owner.fail(&mut state, error))
 }
 
 pub fn trim_all() -> Result<usize> {

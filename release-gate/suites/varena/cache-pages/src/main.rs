@@ -215,6 +215,8 @@ fn run() -> Result<Value> {
         "pages" => probes::pages(&cuda, &peer, device)?,
         "rollback" => probes::rollback(&cuda, &peer, device)?,
         "abandoned" => probes::abandoned(&cuda, &peer, device)?,
+        "choice" => probes::choice(&cuda, &peer, device)?,
+        "owners" => probes::owners(&cuda, &peer, device)?,
         _ => return Err(io::Error::other("unknown Cache proof mode").into()),
     };
     cuda.synchronize()?;

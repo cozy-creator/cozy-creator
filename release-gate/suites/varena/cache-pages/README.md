@@ -27,6 +27,14 @@ hash. It does not qualify an asynchronous owner callback or Runtime graph retire
   evidence for unproven ownership, not successful cleanup or reusable capacity.
 - `python_binding`: ordinary `tensorfs.varena.Cache` commit/release/poll/recommit,
   direct full-byte CUDA readback, fixed base and exact cache-accounting cleanup.
+- `split_choice` is a focused follow-up to the e545 primitive freeze: at a four-page
+  managed ceiling, two live Cache pages permit only a two-page choice. They remain
+  unavailable behind an actual blocked release fence. After observed completion,
+  those still-mapped Ready pages permit the four-page choice; native begin must
+  physically reclaim them before allocation, full readback and measured phase
+  completion. The selector reports reclaimable Cache bytes separately from working
+  slots. The helper emits the real before-selection comparison even on a failing
+  pre-fix core; a smaller successful operation cannot satisfy the larger-choice gate.
 
 Native Capture tests cover only the product Working driver's counters. The fixture's
 own CUDA capture/stream calls are explicit and outside that counter boundary. Error
