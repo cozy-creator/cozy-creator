@@ -423,11 +423,11 @@ impl Capability {
         let endpoint = match known {
             Some(endpoint) => endpoint,
             None => {
-                let endpoint = asked(&self.origin, || hub.token_endpoint())?;
+                let endpoint = asked(&self.origin, hub.token_endpoint())?;
                 self.endpoint.lock().unwrap().insert(endpoint).clone()
             }
         };
-        let token = asked(&self.origin, || hub.redeem(workload_key(), &endpoint, signed))?;
+        let token = asked(&self.origin, hub.redeem(workload_key(), &endpoint, signed))?;
         Ok(Token {
             access: token.access_token,
             expires_unix_ms: now_ms() + token.expires_in * 1000,
@@ -562,7 +562,7 @@ impl Catalog {
 
     /// A package and its releases.
     pub fn package(&self, org: &str, name: &str) -> Result<types::PackageCard, hub_client::Error> {
-        asked(&self.origin, || self.hub.get_package(org, name))
+        asked(&self.origin, self.hub.get_package(org, name))
     }
 
     /// The exact files of one committed release (`python_version` picks its project wheel):
@@ -574,35 +574,20 @@ impl Catalog {
         release: &str,
         python_version: Option<&str>,
     ) -> Result<types::PackageInstallPlan, hub_client::Error> {
-        asked(&self.origin, || self.hub.get_package_download_plan(org, name, release, python_version))
+        asked(&self.origin, self.hub.get_package_download_plan(org, name, release, python_version))
     }
 }
 
 /// The last resort (`design/stalls.md`): a catalog answer is one small JSON document, and the
-/// Hub gives no progress on it but the answer itself. Each ask gets `ANSWER`; a silent or failed
-/// ask is asked again with backoff, and the Hub's own refusal or `ASKS` failures in a row end it.
+/// Hub gives no progress on it but the answer itself, so each ask gets `ANSWER`. Its caller asks
+/// again: a run's preparation while it lives (`published::patiently`), the capability's renewal.
 const ANSWER: Duration = Duration::from_secs(60);
-const ASKS: u32 = 3;
 
-fn asked<T: Send, F: Future<Output = Result<T, hub_client::Error>> + Send>(
-    origin: &str,
-    ask: impl Fn() -> F + Send + Sync,
-) -> Result<T, hub_client::Error> {
+fn asked<T: Send>(origin: &str, ask: impl Future<Output = Result<T, hub_client::Error>> + Send) -> Result<T, hub_client::Error> {
     block(async {
-        let mut attempt = 0;
-        loop {
-            let failed = match tokio::time::timeout(ANSWER, ask()).await {
-                Ok(Ok(answer)) => return Ok(answer),
-                Ok(Err(error)) if !error.retry() => return Err(error),
-                Ok(Err(error)) => error,
-                Err(_) => hub_client::Error::Call(format!("{origin} gave no answer in {} s", ANSWER.as_secs())),
-            };
-            attempt += 1;
-            if attempt == ASKS {
-                return Err(failed);
-            }
-            tracing::warn!(%origin, attempt, "asking the Hub's catalog again: {failed}");
-            tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
+        match tokio::time::timeout(ANSWER, ask).await {
+            Ok(answered) => answered,
+            Err(_) => Err(hub_client::Error::Call(format!("{origin} gave no answer in {} s", ANSWER.as_secs()))),
         }
     })
 }

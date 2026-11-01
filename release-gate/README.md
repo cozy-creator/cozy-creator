@@ -145,6 +145,9 @@ its kernel compiles are up; it reads the executors' memory after each machine st
 `one-executor` (xs-113) runs `suites/tensord/idle-entrypoints.sh` once per TensorD arm on one pod (1 GPU or a
 `gpus` group): two constructions of one package on the same processes, then a cancel and a clean successor, with the
 pod's executor processes and GPU bytes after each cell, set side by side in `summary.tsv`.
+`hub-outage` (cl-708, one `cpu` pod with SSH) breaks the pod's resolver before a deviceless root's first child call
+resolves its model (`fixtures/hub-outage`): the call waits and its run says it retries until the resolver is mended, a
+later call of the same model asks the Hub nothing, and a model the Hub has not is refused at once. The run completes.
 
 ## More cells and checks
 
