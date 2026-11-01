@@ -58,8 +58,7 @@ def arguments(plan, x, weight, output, scratch, stream):
             0 if scratch is None else scratch.numel(), stream)
 
 
-@app.entrypoint(accelerator=True)
-def dense(payload: Probe, ctx: Context) -> Report:
+def _dense(payload: Probe, ctx: Context) -> Report:
     from cozy_runtime._kernels import _dense
 
     request, vt, provenance = actual(payload, ctx)
@@ -97,7 +96,9 @@ def dense(payload: Probe, ctx: Context) -> Report:
             result['policy'] = asdict(policy)
             for dtype in (torch.float32, torch.float16):
                 for name, module in zip(PATHS, linears, strict=True):
-                    module.to(dtype=dtype)
+                    # H3 rounds decoder matrices only; its biases remain FP32.
+                    module.weight.data = module.weight.data.to(dtype=dtype)
+                    assert module.bias.dtype is torch.float32
                     module.weight.copy_(torch.randn(module.weight.shape, generator=generator) * 0.02)
                     module.bias.copy_(torch.randn(module.bias.shape, generator=generator) * 0.01)
                     for tiles in (1, 3):
@@ -187,6 +188,7 @@ def dense(payload: Probe, ctx: Context) -> Report:
                         sample = request.working_phases[-1]
                         child = next(s for s in sample['split_observations'] if s['key'] == key)
                         case = {'case': 'actual-linear', 'module': name, 'source_dtype': str(dtype),
+                                'source_bias_dtype': str(module.bias.dtype),
                                 'tiles': tiles, 'query': info, 'allocations': allocations,
                                 'relative_l2': error, 'bit_exact': torch.equal(observed, reference),
                                 'phase': sample, **held}
@@ -324,4 +326,55 @@ def dense(payload: Probe, ctx: Context) -> Report:
         except Exception:  # noqa: BLE001 -- retain the first error as well as cleanup evidence.
             result['passed'] = False
             result['cleanup_error'] = traceback.format_exc()
+    return Report(result['passed'], json.dumps(result, sort_keys=True))
+
+
+@app.entrypoint(accelerator=True)
+def dense(payload: Probe, ctx: Context) -> Report:
+    from cozy_runtime.graphs.domain import Domain
+    from cozy_runtime.internal import accel
+
+    request, vt, provenance = actual(payload, ctx)
+    assert callable(accel.nonblocking_stream) and callable(accel.destroy_stream)
+    device = ctx.device.index or 0
+    parent = torch.cuda.current_stream(device)
+    # A caller event orders the new non-blocking stream explicitly. No framework
+    # submission is secretly redirected: all proof work enters a public stream scope.
+    admitted = torch.cuda.Event()
+    admitted.record(parent)
+    admitted.synchronize()
+    vt.trim(device)
+    before = vt.stats(device)
+    domain = Domain(torch, request.memory)
+    result = {'passed': False, 'provenance': provenance, 'pre_domain': before}
+    try:
+        domain.initialize()
+        assert domain.stream.cuda_stream != 0 and domain.control.cuda_stream != 0
+        assert domain.stream.cuda_stream != domain.control.cuda_stream
+        domain.stream.wait_event(admitted)
+        streams = {'work': int(domain.stream.cuda_stream), 'control': int(domain.control.cuda_stream),
+                   'parent': int(parent.cuda_stream),
+                   'creation': 'accel.nonblocking_stream / cuStreamCreate(CU_STREAM_NON_BLOCKING)'}
+        with torch.cuda.stream(domain.stream), domain.using():
+            answer = _dense(payload, ctx)
+            result = json.loads(answer.detail)
+            result.update(pre_domain=before, streams=streams)
+    except Exception:  # noqa: BLE001 -- preserve both execution and owner teardown evidence.
+        result['passed'] = False
+        result['error'] = traceback.format_exc()
+    finally:
+        try:
+            # Domain drains its events, resets the never-replayed library owner graph,
+            # retires allocator stream bookkeeping, then destroys these exact streams.
+            domain.finish()
+            vt.trim(device)
+            result['post_domain'] = vt.stats(device)
+            for name in ('allocated_bytes', 'allocated_capacity', 'mapped_bytes', 'pending_bytes',
+                         'pools', 'pools_bytes', 'event_handles'):
+                assert result['post_domain'][name] == before[name], (
+                    name, before[name], result['post_domain'][name])
+            result['owned_streams_retired'] = True
+        except Exception:  # noqa: BLE001
+            result['passed'] = False
+            result['domain_cleanup_error'] = traceback.format_exc()
     return Report(result['passed'], json.dumps(result, sort_keys=True))

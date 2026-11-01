@@ -16,7 +16,7 @@ app = App()
 MODULES = (
     '_kernels/_dense.abi3.so', '_kernels/__init__.py', 'internal/dense_linear.py',
     'internal/execution/phase.py', 'internal/residency.py', 'fusion/__init__.py',
-    'fusion/_kernels.py',
+    'fusion/_kernels.py', 'graphs/domain.py', 'internal/accel.py',
 )
 
 
@@ -73,10 +73,16 @@ def actual(payload, ctx):
 
 
 def settle(vt, device):
+    """Completion belongs to this caller's explicit stream, not unrelated GPU work."""
     gc.collect()
-    torch.cuda.synchronize(device)
+    stream = torch.cuda.current_stream(device)
+    assert stream.cuda_stream != 0, 'the successor fixture requires its owned work stream'
+    done = torch.cuda.Event()
+    done.record(stream)
+    done.synchronize()
     vt.trim(device)
-    torch.cuda.synchronize(device)
+    done.record(stream)
+    done.synchronize()
     vt.trim(device)
 
 

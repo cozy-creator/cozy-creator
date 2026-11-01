@@ -37,3 +37,19 @@ checks Request-owned key retirement.
 hashes from the actual Runtime/TensorFS wheels, including `_dense.abi3.so`. It accepts
 an explicitly unbound GPU UUID before rental. All native build, link and GPU checks
 remain pending. The complete fused-block entrypoint is the next implementation step.
+
+
+## Explicit-stream successor
+
+This successor preserves d87 and requires the new Runtime non-blocking owned-stream
+API. The ordinary entrypoint creates a real Domain with distinct non-blocking work and
+control streams, orders the work from a caller event, and passes that actual current
+stream into every query/validation/launch. Settling uses events on that stream, not
+device-wide synchronization. Domain teardown preserves its library-owner graph reset,
+allocator retirement and exact stream destruction order; both inside-domain and
+pre/post-domain allocator baselines are checked. cuBLASLt final handle destruction
+retains the vendor's documented teardown behavior after its borrowers have drained.
+
+The FP16 matrix arm now matches H3's actual checkpoint convention: decoder matrices
+are FP16 while biases remain FP32. The FP32 matrix arm also retains FP32 biases.
+Norms/gates are not cast. These are source corrections, not new GPU qualification.
