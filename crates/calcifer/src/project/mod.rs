@@ -7,7 +7,7 @@
 //! and watch; the runs go on without them.
 mod folder;
 mod graph;
-mod host;
+pub(crate) mod host;
 mod video;
 
 use std::{
@@ -37,7 +37,7 @@ use protocol::{
     error::{Error, Kind},
     ids::Digest,
     machine as v1,
-    project::{Approve, Approved, Edit, Event, LocalCode, Node as Row, Open, Opened, Runs, State as ProjectState},
+    project::{Approve, Approved, Edit, Event, Node as Row, Open, Opened, Runs, State as ProjectState},
 };
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
@@ -47,7 +47,7 @@ use tracing::warn;
 use crate::api::{Api, Refusal, parse};
 use folder::{Call, Folder, Lock, Made, MadeBy, Pending, Take, Target, Then};
 use graph::{Status, name_key};
-use host::Host;
+use host::{Host, Install};
 use video::{ALL, Canvas, Render, Video};
 
 /// The projects opened since Calcifer started, by id; one path is always one project.
@@ -180,7 +180,7 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
     let video = Video::load(&project.folder).map_err(Refusal)?;
     let lock = project.folder.lock().map_err(Refusal)?;
     let status = video.graph.status(&lock);
-    let (beatless, mut warnings) = match beatless(&Host::new(&api), "", &video, &lock.walk.local).await {
+    let (beatless, mut warnings) = match beatless(&Host::new(&api), "", &video, &project.folder.dir, &[]).await {
         Ok(beatless) => (beatless, video.warnings.clone()),
         Err(error) => (
             vec![],
@@ -260,7 +260,7 @@ async fn runs(
     let all = matches!(asked.names.as_slice(), [only] if name_key(only) == name_key(ALL));
     let mut takes = vec![];
     if all {
-        match beatless(&Host::new(&api), &target.hub, &video, &asked.local).await {
+        match beatless(&Host::new(&api), &target.hub, &video, &project.folder.dir, &target.on).await {
             Ok(beatless) if !beatless.is_empty() => {
                 return Err(Refusal(
                     Error::new(Kind::Validation, "beats_needed", beatless[0].clone())
@@ -285,8 +285,6 @@ async fn runs(
             lock.walk.preview = asked.preview;
         }
         lock.walk.takes.extend(takes.iter().cloned());
-        lock.walk.local.retain(|kept| !asked.local.iter().any(|code| code.with == kept.with && code.on == kept.on));
-        lock.walk.local.extend(asked.local.iter().cloned());
     }))
     .map_err(Refusal)?;
     walk(&api, &project);
@@ -465,16 +463,7 @@ impl Walk {
     /// this walker going or starts the next.
     fn over(&self) -> Result<bool, Error> {
         let mut walking = self.project.walking.lock().expect("walking lock");
-        let lock = self.folder().lock()?;
-        *walking = lock.owes();
-        // Local code is kept for the walk; an ask that came meanwhile keeps it for the next one.
-        if !*walking && !lock.walk.local.is_empty() {
-            self.folder().update_lock(|lock| {
-                if !lock.owes() {
-                    lock.walk.local.clear();
-                }
-            })?;
-        }
+        *walking = self.folder().lock()?.owes();
         Ok(!*walking)
     }
 
@@ -513,7 +502,9 @@ impl Walk {
                 let picture = (self.folder().path(&file), digest);
                 return self.clean(&key, &target.hub, &video.clean_render(), picture, made, Then::Attached, &settle).await;
             }
-            let renderer = self.host.renderer(&target.hub, video.render(i).target(), &lock.walk.local).await?;
+            let renderer = (self.host)
+                .renderer(&target.hub, video.render(i).target(), &self.folder().dir, &target.on, Install::Wait)
+                .await?;
             let request = video.request(self.folder(), lock, i, &renderer)?;
             request.warnings.iter().for_each(|message| self.say(Event::Warning { message: message.clone() }));
             let then = if video.cleans(i) { Then::Clean { approve } } else { Then::List { approve } };
@@ -650,7 +641,7 @@ impl Walk {
                 from: Some((made.file.clone(), latents)),
             };
             let lock = folder.lock()?;
-            let renderer = self.host.renderer(hub, video.render(i).target(), &lock.walk.local).await?;
+            let renderer = self.host.renderer(hub, video.render(i).target(), &folder.dir, on, Install::Wait).await?;
             let own = (made.outputs.iter())
                 .map(|(state, digest)| Ok((state.clone(), folder.find(digest)?)))
                 .collect::<Result<BTreeMap<_, _>, Error>>()?;
@@ -720,7 +711,7 @@ impl Walk {
         settle: &impl Fn(&mut Lock),
     ) -> Result<(), Error> {
         let target = render.target();
-        let renderer = self.host.renderer(&pending.hub, target, &self.folder().lock()?.walk.local).await?;
+        let renderer = self.host.renderer(&pending.hub, target, &self.folder().dir, on, Install::Wait).await?;
         let node = pending.made.node.clone();
         let named = |e: Error| Error { message: format!("{node}'s render: {}", e.message), ..e };
         let mut payload = payload.clone();
@@ -769,27 +760,18 @@ impl Walk {
             let digest: Digest = digest.parse().map_err(|why: &str| Error::new(Kind::Internal, "digest", why))?;
             staged.push(StagedInput { path, digest, length });
         }
-        // Local code goes to a machine it was made ready on, with its files and manifest each time.
-        let ready = |on: &&On| renderer.local.is_empty() || renderer.local.iter().any(|code| code.on == **on);
-        let on: Vec<On> = on.iter().filter(ready).cloned().collect();
-        if on.is_empty() {
-            let said = format!("{node}'s render: {target} was made ready on none of the machines it may go to");
-            return Err(Error::new(Kind::Unavailable, "renderer_local", said).next("cozy render again with --on"));
-        }
-        let placed = self.host.place(&on, &renderer);
-        let mut manifest = None;
-        let source = match renderer.local.iter().find(|code| code.on == placed) {
+        let placed = self.host.place(on, &renderer);
+        // Local code is made ready on the machine the call goes to, its files and manifest sent
+        // with every call: a machine that dropped them installs them in the call.
+        let source = match &renderer.local {
             None => v1::Source::Release(v1::Release {
                 package: renderer.package.clone(),
                 release: renderer.release.clone(),
             }),
-            Some(code) => {
-                let file = manifest.insert(manifest_file(code)?);
-                let digest = (code.source.manifest.parse())
-                    .map_err(|why: &str| Error::new(Kind::Internal, "digest", why))?;
-                staged.extend(code.files.iter().cloned());
-                staged.push(StagedInput { path: file.path().to_owned(), digest, length: code.manifest.len() as u64 });
-                v1::Source::Local(code.source.clone())
+            Some(path) => {
+                let prepared = self.host.ready(path, &placed, &pending.hub).await.map_err(named)?;
+                staged.extend(prepared.files);
+                v1::Source::Local(prepared.source)
             }
         };
         let spec = v1::RunSpec {
@@ -975,22 +957,15 @@ fn new_key() -> String {
     format!("project-{}", hex::encode(key))
 }
 
-/// Local code's manifest as a file, to send with a call.
-fn manifest_file(code: &LocalCode) -> Result<tempfile::NamedTempFile, Error> {
-    let io = |e: std::io::Error| Error::new(Kind::Unavailable, "project_io", format!("{}'s manifest: {e}", code.with));
-    let mut file = tempfile::NamedTempFile::new().map_err(io)?;
-    std::io::Write::write_all(&mut file, code.manifest.as_bytes()).map_err(io)?;
-    Ok(file)
-}
-
 /// Shots longer than their renderer's pieces with no beats, as lines naming each: each shot's own
 /// renderer states its longest piece (`max_piece_s`).
-async fn beatless(host: &Host, hub: &str, video: &Video, local: &[LocalCode]) -> Result<Vec<String>, Error> {
+async fn beatless(host: &Host, hub: &str, video: &Video, folder: &FsPath, on: &[On]) -> Result<Vec<String>, Error> {
     let mut lines = vec![];
     for (i, shot, seconds) in video.beatless() {
         let render = video.render(i);
         let target = render.target();
-        if let Some(max) = host.renderer(hub, target, local).await?.accepts.max_piece_s.filter(|max| seconds > *max) {
+        let renderer = host.renderer(hub, target, folder, on, Install::Never).await?;
+        if let Some(max) = renderer.accepts.max_piece_s.filter(|max| seconds > *max) {
             lines.push(format!("{shot} needs beats: {seconds} s, and {target} renders pieces of at most {max} s"));
         }
     }

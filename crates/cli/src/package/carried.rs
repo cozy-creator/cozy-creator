@@ -7,7 +7,9 @@ use protocol::error::{Error, Kind};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 
-use super::author::{Stage, refuse, run, uv};
+use calcifer::local_code::refuse;
+
+use super::author::{Stage, run, uv};
 use crate::Context;
 
 /// A git source as the lock spells it: `https://host/repo?rev=<rev>#<commit>`.

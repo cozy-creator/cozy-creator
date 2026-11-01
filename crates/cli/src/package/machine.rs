@@ -119,8 +119,10 @@ pub async fn install_directory(
     path: &Path,
     on: On,
 ) -> Result<ExitCode, Error> {
-    let local = super::local::source(ctx, path, &on).await?;
-    let ask = run::local::install_run(&ctx.home, ctx.hub(), on, &local);
+    let hub = ctx.hub();
+    let client = ctx.hub_signed_in(hub).ok();
+    let local = ::calcifer::local_code::source(&ctx.home, path, &on, client.as_ref().map(|client| (client, hub))).await?;
+    let ask = ::calcifer::local_code::install_run(&ctx.home, hub.as_str(), on, &local);
     let submitted = run::submit(ctx, ask, None).await?.run;
     installed(ctx, submitted, &local.package).await
 }

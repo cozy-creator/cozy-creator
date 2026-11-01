@@ -16,6 +16,7 @@ clap_complete.workspace = true
 comfy-table.workspace = true
 crossterm.workspace = true
 platform = { workspace = true, features = ["fetch"] }
+calcifer.workspace = true
 protocol.workspace = true
 ed25519-dalek.workspace = true
 futures-util = { workspace = true, features = ["alloc"] }
