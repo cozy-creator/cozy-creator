@@ -37,8 +37,31 @@ cozy run /absolute/frozen/eager-prefetch/gpu --on OWNED_MACHINE --gpus=1 \
   --input /absolute/results/payload.json --json
 ```
 
-Source/static checks only so far. No GPU, IO-admission success or performance
-qualification is claimed. The separate full H3 arm must compare complete workload
-quality, denoise time, H2D/store traffic, prefetch counters and cleanup against the
-frozen b222 cohort. Declining unknown speculation may lose overlap; it is not a
-prefetch performance improvement by itself.
+## GPU qualification: 2026-11-01
+
+Run **24961** passed all seven cases, PID **47629**, on RTX 4090. Tested fixture
+`d6c3b91eb` used Runtime `c05c3ac32` (`0.36.18+dev.gc05c3ac3`) and TensorFS
+`0e05a2539` (`0.17.16+dev.g0e05a253`). [Complete evidence](evidence/2026-11-01.json)
+includes exact source/extension/shim hashes and GPU UUID.
+
+| Case | Observed boundary |
+| --- | --- |
+| Unknown Runtime entry | One attempt/decline, zero admissions/starts; 8 MiB demand reads; no parent publication |
+| First fixed-program pass | Successful 8 MiB sample, no prefetch |
+| Second fixed-program pass | One admission/start/completion; 8 MiB total source bytes including demand reuse |
+| Queued invalidation | One admitted Fill canceled before start; zero source bytes; subsequent demand correct |
+| Kept-host source | No native attempt; demand consumes 8 MiB host bytes with zero store-byte growth |
+| Transforming source | No native attempt; real fill executes twice during demand |
+| Model retirement | Named phase key already forgotten when independently queried |
+
+Initial and final live working bytes were exactly **17,039,360**, with two executor
+library allocations, zero pending bytes and zero graph pools. The successful app
+also asserts correct outputs and zero resident weight pages; those assertions are
+not separate returned fields. The receipt audit independently checks all reported
+counters and lifecycle records.
+
+AST/Ruff, schema/import and offline-lock checks passed. The known entry key belongs
+to this fully specified program, not the adaptive production Runtime loops. This
+is Runtime IO/admission/ownership proof. The separately named full H3 arm remains
+the quality, denoise-time and H2D/store-traffic acceptance gate; losing speculative
+overlap may still regress performance.

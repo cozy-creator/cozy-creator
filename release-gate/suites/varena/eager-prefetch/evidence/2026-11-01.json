@@ -1,0 +1,327 @@
+{
+  "run": 24961,
+  "runtime_head": "c05c3ac32ebf067516fd8ca940cea3c97314fd1a",
+  "fixture_head": "d6c3b91ebeb3bcd935080c594981c2e8de2dc69d",
+  "tensorfs_head": "0e05a25396b894a0f7c35f78fe66d303bf58d544",
+  "result": {
+    "cases": [
+      {
+        "after": {
+          "canceled": 0,
+          "completed": 0,
+          "declined": 1,
+          "host_bytes": 0,
+          "prefetch_admissions": 0,
+          "prefetch_attempts": 1,
+          "prefetch_declines": 1,
+          "started": 0,
+          "store_bytes": 8388608,
+          "unsupported": {}
+        },
+        "before": {
+          "canceled": 0,
+          "completed": 0,
+          "declined": 0,
+          "host_bytes": 0,
+          "prefetch_admissions": 0,
+          "prefetch_attempts": 0,
+          "prefetch_declines": 0,
+          "started": 0,
+          "store_bytes": 0,
+          "unsupported": {}
+        },
+        "case": "runtime_unknown_entry",
+        "phase": {
+          "backing_peak_bytes": 10485760,
+          "cut_choices": 0,
+          "definitions": [],
+          "invalidated": false,
+          "key": null,
+          "mode": "eager",
+          "observation_id": 1,
+          "peak_bytes": 8389120,
+          "published": false,
+          "reason": "execution_key_unknown",
+          "split_observations": [],
+          "successful_backing_peak_bytes": 0,
+          "successful_passes": 0,
+          "successful_peak_bytes": 0,
+          "total_peak_bytes": 37749248
+        }
+      },
+      {
+        "after": {
+          "canceled": 0,
+          "completed": 0,
+          "declined": 2,
+          "host_bytes": 0,
+          "prefetch_admissions": 0,
+          "prefetch_attempts": 2,
+          "prefetch_declines": 2,
+          "started": 0,
+          "store_bytes": 16777216,
+          "unsupported": {}
+        },
+        "before": {
+          "canceled": 0,
+          "completed": 0,
+          "declined": 1,
+          "host_bytes": 0,
+          "prefetch_admissions": 0,
+          "prefetch_attempts": 1,
+          "prefetch_declines": 1,
+          "started": 0,
+          "store_bytes": 8388608,
+          "unsupported": {}
+        },
+        "case": "fixed_program_first_sample",
+        "phase": {
+          "backing_peak_bytes": 8388608,
+          "definitions": [],
+          "invalidated": false,
+          "key": "fixture.fixed-adds/1:c78fca52734ab7c66c9a427c37488446f7f7f66b81fcfddfec7b46b9d3e00750",
+          "mode": "eager",
+          "observation_id": 2,
+          "peak_bytes": 8388608,
+          "published": true,
+          "reason": "",
+          "split_observations": [],
+          "successful_backing_peak_bytes": 8388608,
+          "successful_passes": 1,
+          "successful_peak_bytes": 8388608,
+          "total_peak_bytes": 33554432
+        }
+      },
+      {
+        "after": {
+          "canceled": 0,
+          "completed": 1,
+          "declined": 2,
+          "host_bytes": 0,
+          "prefetch_admissions": 1,
+          "prefetch_attempts": 3,
+          "prefetch_declines": 2,
+          "started": 1,
+          "store_bytes": 25165824,
+          "unsupported": {}
+        },
+        "before": {
+          "canceled": 0,
+          "completed": 0,
+          "declined": 2,
+          "host_bytes": 0,
+          "prefetch_admissions": 0,
+          "prefetch_attempts": 2,
+          "prefetch_declines": 2,
+          "started": 0,
+          "store_bytes": 16777216,
+          "unsupported": {}
+        },
+        "case": "runtime_known_entry_read_and_use",
+        "phase": {
+          "backing_peak_bytes": 8388608,
+          "definitions": [],
+          "invalidated": false,
+          "key": "fixture.fixed-adds/1:c78fca52734ab7c66c9a427c37488446f7f7f66b81fcfddfec7b46b9d3e00750",
+          "mode": "eager",
+          "observation_id": 3,
+          "peak_bytes": 8388608,
+          "published": true,
+          "reason": "",
+          "split_observations": [],
+          "successful_backing_peak_bytes": 8388608,
+          "successful_passes": 2,
+          "successful_peak_bytes": 8388608,
+          "total_peak_bytes": 33554432
+        }
+      },
+      {
+        "after": {
+          "canceled": 1,
+          "completed": 1,
+          "declined": 2,
+          "host_bytes": 0,
+          "prefetch_admissions": 2,
+          "prefetch_attempts": 4,
+          "prefetch_declines": 2,
+          "started": 1,
+          "store_bytes": 25165824,
+          "unsupported": {}
+        },
+        "before": {
+          "canceled": 0,
+          "completed": 1,
+          "declined": 2,
+          "host_bytes": 0,
+          "prefetch_admissions": 1,
+          "prefetch_attempts": 3,
+          "prefetch_declines": 2,
+          "started": 1,
+          "store_bytes": 25165824,
+          "unsupported": {}
+        },
+        "case": "cancel_before_source_io_then_demand"
+      },
+      {
+        "after": {
+          "canceled": 1,
+          "completed": 1,
+          "declined": 3,
+          "host_bytes": 0,
+          "prefetch_admissions": 2,
+          "prefetch_attempts": 5,
+          "prefetch_declines": 3,
+          "started": 1,
+          "store_bytes": 33554432,
+          "unsupported": {
+            "kept_host": 1
+          }
+        },
+        "before": {
+          "canceled": 1,
+          "completed": 1,
+          "declined": 3,
+          "host_bytes": 0,
+          "prefetch_admissions": 2,
+          "prefetch_attempts": 5,
+          "prefetch_declines": 3,
+          "started": 1,
+          "store_bytes": 33554432,
+          "unsupported": {}
+        },
+        "case": "kept_host_declines_demand_uses_host",
+        "demand_after": {
+          "canceled": 1,
+          "completed": 1,
+          "declined": 3,
+          "host_bytes": 8388608,
+          "prefetch_admissions": 2,
+          "prefetch_attempts": 5,
+          "prefetch_declines": 3,
+          "started": 1,
+          "store_bytes": 33554432,
+          "unsupported": {
+            "kept_host": 2
+          }
+        },
+        "demand_before": {
+          "canceled": 1,
+          "completed": 1,
+          "declined": 3,
+          "host_bytes": 0,
+          "prefetch_admissions": 2,
+          "prefetch_attempts": 5,
+          "prefetch_declines": 3,
+          "started": 1,
+          "store_bytes": 33554432,
+          "unsupported": {
+            "kept_host": 1
+          }
+        }
+      },
+      {
+        "after": {
+          "canceled": 1,
+          "completed": 1,
+          "declined": 3,
+          "host_bytes": 8388608,
+          "prefetch_admissions": 2,
+          "prefetch_attempts": 5,
+          "prefetch_declines": 3,
+          "started": 1,
+          "store_bytes": 33554432,
+          "unsupported": {
+            "kept_host": 2,
+            "transform": 1
+          }
+        },
+        "before": {
+          "canceled": 1,
+          "completed": 1,
+          "declined": 3,
+          "host_bytes": 8388608,
+          "prefetch_admissions": 2,
+          "prefetch_attempts": 5,
+          "prefetch_declines": 3,
+          "started": 1,
+          "store_bytes": 33554432,
+          "unsupported": {
+            "kept_host": 2
+          }
+        },
+        "case": "transform_declines_demand_executes_fill",
+        "demand_transform_calls": 2
+      },
+      {
+        "already_retired": {
+          "fixture.fixed-adds/1:c78fca52734ab7c66c9a427c37488446f7f7f66b81fcfddfec7b46b9d3e00750": false
+        },
+        "case": "model_owner_retired_phase_keys"
+      }
+    ],
+    "final": {
+      "allocated_bytes": 17039360,
+      "allocated_capacity": 20971520,
+      "allocated_peak": 33816584,
+      "allocations": 1750,
+      "context_joins": 0,
+      "driver_memory_calls": 247,
+      "event_handles": 0,
+      "event_queries": 346,
+      "event_records": 279,
+      "event_waits": 0,
+      "free_bytes": 0,
+      "frees": 1748,
+      "mapped_bytes": 20971520,
+      "mapped_peak": 117440512,
+      "ooms": 0,
+      "pending_bytes": 0,
+      "pools": 0,
+      "pools_bytes": 0,
+      "prefetch_admissions": 2,
+      "prefetch_attempts": 5,
+      "prefetch_declines": 3,
+      "reclaimable_bytes": 0,
+      "unassigned_bytes": 0
+    },
+    "initial": {
+      "allocated_bytes": 17039360,
+      "allocated_capacity": 20971520,
+      "allocated_peak": 33223216,
+      "allocations": 1735,
+      "context_joins": 0,
+      "driver_memory_calls": 172,
+      "event_handles": 0,
+      "event_queries": 331,
+      "event_records": 264,
+      "event_waits": 0,
+      "free_bytes": 0,
+      "frees": 1733,
+      "mapped_bytes": 20971520,
+      "mapped_peak": 117440512,
+      "ooms": 0,
+      "pending_bytes": 0,
+      "pools": 0,
+      "pools_bytes": 0,
+      "prefetch_admissions": 0,
+      "prefetch_attempts": 0,
+      "prefetch_declines": 0,
+      "reclaimable_bytes": 0,
+      "unassigned_bytes": 0
+    },
+    "passed": true,
+    "pid": 47629,
+    "provenance": {
+      "extension_sha256": "a166a20190bab7996f78a30557a02e98a415b1b4f1aef0c924916ee47e7aa1cb",
+      "gpu_uuid": "GPU-2eb9e2ca-fca5-d50d-4344-7d0127c4ec68",
+      "residency_sha256": "f6a0da9d5e11a20653cf23c7a2f47faca9f92e12191edceee7ddc830bf279030",
+      "runtime_version": "0.36.18+dev.gc05c3ac3",
+      "shim_sha256": "09684b61d0b909c39d56c7d129432e906ddb0a57f1b4b916b20bb2c4c8d7716e",
+      "tensorfs_version": "0.17.16+dev.g0e05a253"
+    },
+    "request_id": "28",
+    "scope": "real executor Request + actual checkpoint/model hooks; explicitly keyed fixed program is separate from unknown adaptive Runtime phases"
+  },
+  "audit": "All seven returned cases independently checked. Correct outputs and zero resident weight bytes are also mandatory assertions in the successful fixture; they are not separately serialized.",
+  "scope": "Runtime IO/admission/ownership mechanism proof; full H3 timing/quality/transfer gate remains separate."
+}
