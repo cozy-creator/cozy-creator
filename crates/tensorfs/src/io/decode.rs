@@ -724,7 +724,11 @@ fn execute_into(
     // SAFETY: the producer streams just proved completion and all spans stay owned.
     unsafe { prepared.enqueue_after(&[]) }?;
     prepared.finish()?;
-    Ok(prepared.hold.output.take())
+    let output = prepared.hold.output.take();
+    // SAFETY: this synchronous call has no dependent consumer of its private scratch.
+    // The returned output keeps its separate allocation owner.
+    unsafe { prepared.release_completed() }?;
+    Ok(output)
 }
 
 fn join_producers(parts: &[Part<'_>], destination: Option<Dst>) -> Result<()> {

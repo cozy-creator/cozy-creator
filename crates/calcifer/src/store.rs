@@ -551,11 +551,11 @@ impl Store {
 
     /// Records `new` under `key`, once: the same key again answers the recorded run (`false`), and
     /// with another submission (`digest`) is a conflict.
-    /// Whether a run is recorded under `key`.
-    pub fn recorded(&self, key: &str) -> Result<bool> {
+    /// The run recorded under `key`, if one is.
+    pub fn keyed(&self, key: &str) -> Result<Option<RunRow>> {
         self.read(|db| {
-            let found = db.query_row("SELECT 1 FROM runs WHERE idempotency_key = ?1", [key], |_| Ok(()));
-            Ok(found.optional()?.is_some())
+            let id = db.query_row("SELECT id FROM runs WHERE idempotency_key = ?1", [key], |r| r.get::<_, String>(0));
+            id.optional()?.map_or(Ok(None), |id| run_in(db, &id))
         })
     }
 

@@ -1,14 +1,19 @@
 //! A project folder: `project.yaml` (people's), `versions.lock` (cozy's: what each version was
-//! made from, by file digest, and the runs still making one) and `files/<sha256>.<ext>`.
+//! made from, by file digest, the runs still making one, and what its walk still owes) and
+//! `files/<sha256>.<ext>`.
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
     io::Read,
     path::{Path, PathBuf},
+    sync::Mutex,
 };
 
 use platform::durable;
-use protocol::error::{Error, Kind};
+use protocol::{
+    calcifer::On,
+    error::{Error, Kind},
+};
 use saphyr::{LoadableYamlNode, MappingOwned, ScalarOwned, YamlOwned};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -46,11 +51,15 @@ pub struct Upstream {
     pub file: String,
 }
 
-/// A run making a version, recorded before it is followed: whatever stops the follow, the next
-/// command collects it.
+/// A run making a version, recorded before it is sent (under its idempotency key) and followed
+/// until it lands: whatever stops the walk, the next one follows it and never sends it again.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Pending {
+    /// What it makes, with its run's number once sent.
     pub made: Made,
+    /// The Hub it was sent for, which a picture's clean goes to too.
+    #[serde(default)]
+    pub hub: String,
     /// The result field holding the version (`image`, `video`).
     pub field: String,
     /// The states its `frames` are revisions of, in order.
@@ -76,12 +85,55 @@ pub struct Lock {
     /// By entity, then file digest: two entities may make the same file.
     #[serde(default)]
     pub versions: BTreeMap<String, BTreeMap<String, Made>>,
-    /// By run id.
+    /// By idempotency key.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pending: BTreeMap<String, Pending>,
+    #[serde(default, skip_serializing_if = "Owed::is_empty")]
+    pub walk: Owed,
+}
+
+/// What `cozy render` asked that the project's walk has not sent yet.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Owed {
+    /// `render all`: every entity up to date, then the edit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub all: Option<Target>,
+    /// What `all` sent this walk, made or failed, by name key: each is sent once.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub sent: BTreeSet<String>,
+    /// New versions of named entities, one each.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub takes: Vec<Take>,
+}
+
+impl Owed {
+    pub fn is_empty(&self) -> bool {
+        self.all.is_none() && self.sent.is_empty() && self.takes.is_empty()
+    }
+}
+
+/// The machines a version may be made on, and the Hub its renderer is read from.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Target {
+    pub on: Vec<On>,
+    pub hub: String,
+}
+
+/// One new version of `entity`, sent under `key`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Take {
+    pub key: String,
+    pub entity: String,
+    #[serde(flatten)]
+    pub target: Target,
 }
 
 impl Lock {
+    /// Whether its walk owes anything: asked and not sent, or sent and not landed.
+    pub fn owes(&self) -> bool {
+        self.walk.all.is_some() || !self.walk.takes.is_empty() || !self.pending.is_empty()
+    }
+
     /// `entity`'s version whose file has `digest`.
     pub fn made(&self, entity: &str, digest: &str) -> Option<&Made> {
         self.versions.get(&name_key(entity))?.get(digest)
@@ -98,6 +150,8 @@ pub type Locate = for<'a> fn(&'a mut YamlOwned, &str) -> Option<&'a mut MappingO
 
 pub struct Folder {
     pub dir: PathBuf,
+    /// Held across each write's read and swap, so no two of this Calcifer's writes lose one.
+    writing: Mutex<()>,
 }
 
 impl Folder {
@@ -111,7 +165,7 @@ impl Folder {
             )
             .next("cozy project new <name>"));
         }
-        Ok(Self { dir: dir.to_owned() })
+        Ok(Self { dir: dir.to_owned(), writing: Mutex::default() })
     }
 
     pub fn project(&self) -> PathBuf {
@@ -133,7 +187,7 @@ impl Folder {
 
     /// Applies `change` to versions.lock as it is now.
     pub fn update_lock(&self, change: impl Fn(&mut Lock)) -> Result<(), Error> {
-        rewrite(&self.dir.join(LOCK), |text| {
+        self.rewrite(&self.dir.join(LOCK), |text| {
             let mut lock: Lock = match text {
                 "" => Lock::default(),
                 text => serde_json::from_str(text)
@@ -165,7 +219,7 @@ impl Folder {
     /// `ours`, the newer write; that, and a change the splice cannot place, is said.
     pub fn write(&self, base: &YamlOwned, ours: &YamlOwned) -> Result<Vec<String>, Error> {
         let said = RefCell::new(vec![]);
-        rewrite(&self.project(), |now| {
+        self.rewrite(&self.project(), |now| {
             let theirs = document(now)?;
             let mut clashes = vec![];
             let merged = merge(Some(base), Some(ours), Some(&theirs), "", &mut clashes);
@@ -328,25 +382,28 @@ pub fn text(value: &str) -> YamlOwned {
     YamlOwned::Value(ScalarOwned::String(value.to_owned()))
 }
 
-/// Writes `change(what path holds)` over it: compare and swap on its bytes. A write that lands
-/// between the read and the swap (a person saving) is read again and the change applied to it, so
-/// that edit stands.
-fn rewrite(path: &Path, change: impl Fn(&str) -> Result<String, Error>) -> Result<(), Error> {
-    loop {
-        let before = match path.exists() {
-            true => read(path)?,
-            false => String::new(),
-        };
-        let after = change(&before)?;
-        if after == before {
-            return Ok(());
-        }
-        let now = match path.exists() {
-            true => read(path)?,
-            false => String::new(),
-        };
-        if now == before {
-            return durable::replace(path, after.as_bytes(), 0o644).map_err(io);
+impl Folder {
+    /// Writes `change(what path holds)` over it: compare and swap on its bytes. A write that lands
+    /// between the read and the swap (a person saving) is read again and the change applied to it,
+    /// so that edit stands.
+    fn rewrite(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>) -> Result<(), Error> {
+        let _held = self.writing.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            let before = match path.exists() {
+                true => read(path)?,
+                false => String::new(),
+            };
+            let after = change(&before)?;
+            if after == before {
+                return Ok(());
+            }
+            let now = match path.exists() {
+                true => read(path)?,
+                false => String::new(),
+            };
+            if now == before {
+                return durable::replace(path, after.as_bytes(), 0o644).map_err(io);
+            }
         }
     }
 }

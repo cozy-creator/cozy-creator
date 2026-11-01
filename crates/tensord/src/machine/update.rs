@@ -890,8 +890,11 @@ impl Updates {
         let (to, _activation) = prepared?;
         let staged = binary.as_ref().and_then(|b| b.staged.as_ref());
         if let (Some(b), Some(_)) = (&binary, staged) {
-            // Kept before the record names it: a rollback renames `.cozy-previous` back.
-            super::binary::keep(&b.launch, !self.dev())?;
+            // Kept before the record names it: a rollback renames `.cozy-previous` back. Over a
+            // binary `cozy update` placed, `.cozy-previous` already holds this image.
+            if !swapped() {
+                super::binary::keep(&b.launch, !self.dev())?;
+            }
         }
         let pending = Pending {
             status: self.status.lock().unwrap().clone().unwrap_or_default(),
@@ -971,16 +974,25 @@ impl Updates {
 
     /// A release the machine fetches, or a dev binary the caller staged, digest-checked; then
     /// refused before anything drains unless this machine runs it (`super::binary::check`) and it
-    /// is the release named.
+    /// is the release named. With a binary `cozy update` already renamed over the launch path, that
+    /// one activates when it is the release named, else the named one replaces it.
     fn staged_binary(&self, request: &Request, choice: &Choice) -> io::Result<Binary> {
         let coded = |code, message| io::Error::other(Coded { code, message });
         let launch = super::binary::launch()
             .ok_or_else(|| coded("binary_unsupported", "this machine was not started from a cozy binary".into()))?;
         if launch.swapped() {
-            return Err(coded(
-                "binary_mismatch",
-                format!("{} already holds a binary to activate; update without --tensord first", launch.path.display()),
-            ));
+            let previous = super::binary::previous(&launch.path);
+            if !previous.is_file() {
+                return Err(coded(
+                    "binary_unrecoverable",
+                    format!("{} is missing: nothing to roll back to", previous.display()),
+                ));
+            }
+            let placed = super::binary::version(&launch.path).ok();
+            let release = choice.file.is_empty() && choice.url.is_empty();
+            if let Some(version) = placed.filter(|placed| release && *placed == choice.version) {
+                return Ok(Binary { launch: launch.path.clone(), version, staged: None, dev: false });
+            }
         }
         self.set(|s| s.enter("preparing"))?;
         let staged = self.resolve("cozy", choice)?;

@@ -195,6 +195,7 @@ pub async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
         Ok(runs) => steps.done(&format!("resume ({runs} runs)")),
         Err(e) => warn!("resuming what an earlier Calcifer left: {e}"),
     }
+    crate::project::resume(&api);
 
     api.stopped().await;
     if let Ok(Err(e)) = server.await {
