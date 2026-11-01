@@ -342,8 +342,9 @@ impl Service {
             match weak.upgrade() {
                 Some(service) if !*service.stopped.lock().unwrap() => {
                     if let Some(pool) = service.gpu() { pool.relieve_pressure(&service.engine); }
-                    // The first once the machine is configured, so its disk is measured early.
-                    if swept.is_none_or(|at| at.elapsed() >= SWEEP_EVERY) {
+                    // The first once its packages are configured, so the disk is measured early.
+                    let due = swept.map_or_else(|| service.publisher.lock().unwrap().is_some(), |at| at.elapsed() >= SWEEP_EVERY);
+                    if due {
                         service.reclaim();
                         swept = Some(std::time::Instant::now());
                     }
