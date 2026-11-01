@@ -3,12 +3,14 @@
 //! construction it serves once. Runtime owns allocations and model residency in each executor.
 //! TensorD schedules calls with GPU permits, offloads idle executors, and observes exact process
 //! exit. Engine owns acceptance and run custody.
+mod memory_mode;
+use memory_mode::{Mode as MemoryMode, Modes as MemoryModes};
 use platform::contain::{host_memory, host_pressure::HostMode};
 use platform::process::{Birth, Exact};
 use crate::{
     catalog::HeldGeneration,
     device_executor::{
-        self, channel_lost, Activate, Answer, Binding, Cancellation, Command, Construction,
+        self, channel_lost, Activate, Answer, Binding, Cancellation, Command, Construction, Cooperation,
         DeviceExecutor, ExecutorConfig, Forked, Frame, Invoke, Load, Map, ModelLoad,
         InputFile, InputMetadata, PrepareRequest, Request, Room, Services, Start,
     },
@@ -502,6 +504,8 @@ struct Session {
     followers: Vec<platform::process::Exact>,
     /// Its Start ran: its devices, group and package are up.
     started: bool,
+    /// Immutable categorical device mode, negotiated before this executor opens CUDA.
+    cooperation: Option<Cooperation>,
     /// Each construction it loaded, and where TensorD last had its models brought (Runtime places
     /// them): `host` once loaded, `gpu` after a call or a `gpu` warming.
     loaded: BTreeMap<String, Level>,
@@ -831,6 +835,8 @@ pub struct Pool {
     devices: Vec<Device>,
     /// Observed foreign demand; our own offload cannot clear this latch.
     pressure: Mutex<Vec<Pressure>>,
+    /// Bound once from CPU-only Hello; no concurrent legacy/native byte controllers.
+    memory_modes: MemoryModes,
     /// Measured peaks, persisted per GPU model.
     peaks: memory::Peaks,
     /// Woken by memory events alongside the GPU permits' scheduling events.
@@ -1046,6 +1052,7 @@ impl Pool {
                 allocations: crate::gpu_allocation::Allocations::new(envelope.len()),
                 devices,
                 pressure: Mutex::new((0..envelope.len()).map(|_| Pressure::default()).collect()),
+                memory_modes: MemoryModes::new(envelope.len()),
                 peaks,
                 engine: Default::default(),
                 host,
@@ -1143,6 +1150,7 @@ impl Pool {
     /// `remove_background`) before every segment. Runtime reports no figure for the weights alone,
     /// so this reads the process itself.
     fn room_need(&self, lane: &std::ops::Range<usize>, construction: &str, held: &[u64]) -> Option<u64> {
+        if !self.memory_modes.legacy(lane.clone()) { return None; }
         let devices = self.devices.get(lane.clone())?;
         let mut need = None;
         for (rank, device) in devices.iter().enumerate() {
@@ -1169,6 +1177,9 @@ impl Pool {
     /// A session removed from the idle pool cannot be taken by a call while Map runs. Each of its
     /// constructions on the GPU goes to RAM. False when its executor refused or failed one.
     fn offload_idle(&self, engine: &Arc<Engine>, key: &str, reason: &str, need: Option<u64>) -> bool {
+        // All callers here are the legacy byte ladder, not explicit warm-level requests.
+        if self.sessions.lock().unwrap().get(key).is_some_and(|session|
+            !self.memory_modes.legacy(session.lane())) { return false; }
         let Some(mut session) = self.sessions.lock().unwrap().remove(key) else { return true };
         let lane = session.lane();
         let (pid, plan, began) = (session.executor.birth.pid, session.env.clone(), Instant::now());
@@ -1231,6 +1242,7 @@ impl Pool {
     /// one outside the warm sets. Running sessions are absent from the idle pool and are never
     /// stopped or awaited here.
     fn make_room(&self, engine: &Arc<Engine>, construction: &str, lane: std::ops::Range<usize>, held: Option<Vec<u64>>) {
+        if !self.memory_modes.legacy(lane.clone()) { return; }
         let need = self.room_need(&lane, construction, held.as_deref().unwrap_or(&[]));
         let covered = || need.zip(self.free(&lane)).is_some_and(|(need, free)| free >= need);
         for key in self.idle_on_lane(&lane, Level::Gpu) {
@@ -1265,6 +1277,7 @@ impl Pool {
     /// so the active call pages its own weights only after every idle neighbour has given its back.
     /// No driver attribution is needed: driver free bytes and the sessions.
     fn yield_to_call(&self, engine: &Arc<Engine>, index: usize, device: &Device) {
+        if !self.memory_modes.legacy(index..index + 1) { return; }
         let calling = || self.lanes.lock().unwrap().values().any(|lane| lane.contains(&index));
         let (Some(gpu), Some(row)) = (device.memory.as_ref(), memory::row(&device.entry, &self.config.inventory)) else { return };
         let headroom = Pressure::call_headroom(row.memory_bytes);
@@ -1290,6 +1303,7 @@ impl Pool {
     pub(crate) fn relieve_pressure(&self, engine: &Arc<Engine>) {
         let shared = self.config.host.mode == HostMode::Shared;
         for (index, device) in self.devices.iter().enumerate() {
+            if !self.memory_modes.legacy(index..index + 1) { continue; }
             let reading = device.memory.as_ref().and_then(|gpu| gpu.usage_by(&self.tenants));
             let observed = {
                 let mut pressure = self.pressure.lock().unwrap();
@@ -1329,6 +1343,7 @@ impl Pool {
 
     /// Dedicated with no other program: every room left on GPU `index` lifts.
     fn lift(&self, index: usize, device: &Device) {
+        if !self.memory_modes.legacy(index..index + 1) { return; }
         let lines: BTreeMap<u32, device_executor::Line> = self.leaders.lock().unwrap().iter()
             .filter_map(|(pid, leader)| Some((*pid, leader.room.clone()?))).collect();
         let mut pressure = self.pressure.lock().unwrap();
@@ -1347,6 +1362,7 @@ impl Pool {
     /// binds it, so its first fills are not refused. Dedicated with no other program it lifts;
     /// otherwise it may hold what it holds plus what is free, less the band.
     fn open_room(&self, index: usize, pid: u32) {
+        if !self.memory_modes.legacy(index..index + 1) { return; }
         // Most calls go to an executor held to no room: that costs one map lookup, no driver reading.
         if !self.pressure.lock().unwrap().get(index).is_some_and(|state| state.limited.contains_key(&pid)) { return }
         let Some(line) = self.leaders.lock().unwrap().get(&pid).and_then(|leader| leader.room.clone()) else { return };
@@ -1395,6 +1411,7 @@ impl Pool {
     /// an executor's first GPU only (a group's other GPUs are not yielded).
     fn room(&self, engine: &Arc<Engine>, index: usize, device: &Device, now: &memory::DeviceUse,
         by: &BTreeMap<u32, u64>, (blocked, pressing): (bool, bool)) {
+        if !self.memory_modes.legacy(index..index + 1) { return; }
         const SLACK: u64 = 64 << 20;
         let headroom = Pressure::headroom(now.total);
         let running: std::collections::BTreeSet<u32> = engine.active(usize::MAX).unwrap_or_default().into_iter()
@@ -1654,6 +1671,8 @@ impl Pool {
         let free_vram = devices.iter().enumerate().filter_map(|(index, d)| {
             let gpu = d.memory.as_ref()?;
             let free = gpu.free()?;
+            // Only legacy make_room promises to attempt the inferred idle-weight release.
+            if !self.memory_modes.legacy(index..index + 1) { return Some(free); }
             // Attribution unknown: the driver's free bytes alone, as before.
             let Some((_, by)) = gpu.usage_by(&self.tenants) else { return Some(free) };
             let weights: u64 = idle.iter().filter(|(start, _, _)| *start == index)
@@ -3322,6 +3341,7 @@ impl Pool {
                     import_only: true,
                     memo: executor.memo_settings(),
                     gpu_memory_limit: None,
+                    cooperation: None,
                 }),
                 &mut device_executor::Baseline,
             )?;
@@ -3577,7 +3597,6 @@ impl Pool {
         start: usize,
         on_birth: impl Fn(&Birth, &Cancellation) -> io::Result<()>,
     ) -> io::Result<Session> {
-        if plan.degree > 0 { self.make_room(engine, &plan.construction, start..start + plan.degree as usize, Some(vec![])); }
         let launched = Instant::now();
         let (root, socket, directory) = self.executor_endpoint()?;
         let config = self.executor_config(held, root, socket, start, plan.degree)?;
@@ -3625,6 +3644,20 @@ impl Pool {
                 "spawn",
             ),
         };
+        // Hello is CPU-only. Bind the one device policy BEFORE any GPU byte fallback or
+        // CUDA Start. The old Runtime path still makes room before it opens its device.
+        let cooperation = if plan.degree == 0 { None } else {
+            let lane = start..start + plan.degree as usize;
+            let capable = cfg!(target_os = "linux") && plan.degree == 1 && executor.hello.cooperative_owner;
+            let selected = self.memory_modes.bind(lane.clone(), capable)?;
+            let settings = self.cooperation_settings(start, selected)?;
+            self.notes.note(serde_json::json!({"event":"gpu_memory_policy", "pid":executor.birth.pid,
+                "gpus":lane.clone().collect::<Vec<_>>(), "mode":format!("{selected:?}")}));
+            if selected == MemoryMode::Legacy {
+                self.make_room(engine, &plan.construction, lane, Some(vec![]));
+            }
+            settings
+        };
         let launch = Launch {
             mode,
             ms: launched.elapsed().as_secs_f64() * 1e3,
@@ -3642,7 +3675,7 @@ impl Pool {
             self.leaders.lock().unwrap().insert(executor.birth.pid, Leader {
                 birth: executor.birth.clone(), env: plan.executor.clone(), constructions: Default::default(), start,
                 lookahead: (plan.degree == 1 && executor.hello.request_lookahead).then(|| executor.lookahead()),
-                room: executor.hello.room.then(|| executor.line()),
+                room: (cooperation.is_none() && executor.hello.room).then(|| executor.line()),
             });
         }
         let selections = plan.selections();
@@ -3665,6 +3698,7 @@ impl Pool {
             degree: plan.degree,
             followers: vec![],
             started: false,
+            cooperation,
             loaded: BTreeMap::new(),
             active: String::new(),
             executor,
@@ -3673,6 +3707,25 @@ impl Pool {
             invoked: Default::default(),
             serving: id,
         })
+    }
+
+    fn cooperation_settings(&self, start: usize, mode: MemoryMode) -> io::Result<Option<Cooperation>> {
+        if mode != MemoryMode::Cooperative { return Ok(None); }
+        let gpu = self.devices.get(start).and_then(|d| self.inventory(&d.entry))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "cooperative GPU identity is unavailable"))?;
+        if !gpu.device_uuid.starts_with("GPU-") && !gpu.device_uuid.starts_with("MIG-") {
+            return Err(io::Error::new(io::ErrorKind::Unsupported, "cooperation requires the actual GPU/MIG UUID"));
+        }
+        let directory = PathBuf::from(format!("/dev/shm/cozy-varena-{}", crate::launch_identity::euid()));
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)] {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(&directory)?;
+        Ok(Some(Cooperation { uuid: gpu.device_uuid.clone(), directory,
+            shared: self.config.host.mode == HostMode::Shared, priority: 0 }))
     }
 
     /// Start the process once, load the plan's construction into it once and invoke it, active
@@ -3748,9 +3801,14 @@ impl Pool {
                     constructions: constructions(&plan),
                     memo: session.executor.memo_settings(),
                     gpu_memory_limit: self.config.gpu_memory_limit,
+                    cooperation: session.cooperation.clone(),
                 }),
                 &mut callbacks,
             )?)?;
+            if started.cooperation_active != session.cooperation.is_some() {
+                return Err(io::Error::new(io::ErrorKind::Unsupported,
+                    "executor Start did not acknowledge its negotiated GPU memory policy"));
+            }
             session.launch.start_ms = starting.elapsed().as_secs_f64() * 1e3;
             session.launch.start =
                 serde_json::from_value(started.stages.clone()).unwrap_or_default();
