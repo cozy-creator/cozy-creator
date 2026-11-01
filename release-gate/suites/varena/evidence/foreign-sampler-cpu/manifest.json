@@ -1,0 +1,16 @@
+{
+  "scope": "source and real native CPU control/ledger proofs only; GPU and final wheel startup unqualified",
+  "sources_match_lifecycle_copy": true,
+  "files": {
+    "device-header-events.json": "db85b4c0e917859b94e28d9650e3ea327d6a0de6c4aa1f2a79ca4403c2d8c787",
+    "device-header.json": "3740f07ec26ebdb64ecad1b2f89353029a58f164d8c5c5c48ac0d42fa4ef8a1c",
+    "lifecycle-stderr": "486f74accb146fbe875d9aaf8064cc1539701c830c24473a153e2a0a9d223fdc",
+    "lifecycle-stdout": "7739f66cac47ca0d710302084f652d15bc107df83c02a3dc628a18d0f5696a19",
+    "lifecycle.json": "0488f756c90614dcc4049d7489bf1c19ece8f09dbe92c2f973f146d37f6a8b86",
+    "namespace.json": "2918ef76b5fe292743c3c6cfc9d41796bdd691b5784eaea6e3aa3626d0775f9f",
+    "native-check.log": "53814328ada673ce996c12ae0a6ea5f4805780f46ec767edcfdd9bb5ea8fe95d",
+    "runtime-mypy-comparison.json": "fe4d3c391082a7bf4be20c137389aa4c1689798aded49ac2c2050d3021a3c1a4",
+    "runtime-mypy.txt": "e8abcd133d827f86fd53b65d7f2fa5e96de9a968bf534bf3f522ff49da238a50",
+    "runtime-ruff-comparison.json": "d76b8c9bd4dcc4bfdf96e37d3efdd5ae57d426649b7aa72cb24c94b53fe37e05"
+  }
+}
