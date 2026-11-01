@@ -604,13 +604,9 @@ pub struct RentalSku {
     pub python_provisionable_minors: Vec<String>,
     #[serde(default, deserialize_with = "null_is_empty")]
     pub python_interpreters: Vec<RentalPythonInterpreter>,
-    /// The GPU counts buyable now, ascending; none on a product held back (`unavailable_reason`).
+    /// The GPU counts buyable now, ascending.
     #[serde(default, deserialize_with = "null_is_empty")]
     pub widths: Vec<RentalSkuWidth>,
-    /// Why a product listed with no width cannot be bought now: `provider_funds_short`, in stock but
-    /// the Hub cannot buy it. Absent from an older Hub, which lists only what is buyable.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub unavailable_reason: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -646,7 +642,7 @@ pub struct RentalSkuStatus {
     pub offered: bool,
     pub sku: Option<RentalSku>,
     pub last_seen_at: Option<String>,
-    /// Why compatible stock is held back (cooldown, retry_in_progress, provider_funds_short).
+    /// Why compatible stock is held back (cooldown, retry_in_progress).
     pub unavailable_reason: Option<String>,
     pub retry_after: Option<String>,
     /// Why the offer that frees first is held: no_capacity or failed_boot; absent from an older Hub.
