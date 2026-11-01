@@ -28,3 +28,12 @@ separate owned branches; this is neither P3 completion nor a supported P4 ABI.
 
 CPU receipts are under
 `release-gate/suites/varena/evidence/native-integrated-cpu/`.
+
+## Cache primitive checkpoint
+
+The independently frozen Cache implementation/helper/controller e54525838 is now
+included at merge 8b29b76d2. Its native source remains the same as checked 1ae0eeba8:
+page-addressed ownership, submitted release fences, rollback and separate cache
+accounting. It adds no shrink callback. Full TensorFS Python locked check passes
+in 15.99 seconds after the merge. Standalone Cache GPU tests and the thin Python
+binding check remain pending; retained artifacts from 74841c74d precede this change.
