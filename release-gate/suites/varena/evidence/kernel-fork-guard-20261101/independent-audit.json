@@ -1,0 +1,299 @@
+{
+  "audit_passed": true,
+  "source": "d1b314a836d39c506de265753e10d13d57e6b843",
+  "pairs": {
+    "guard0": {
+      "run": 25010,
+      "median_ns_per_pair": {
+        "native": 773.9236075,
+        "varena": 1688.8420675
+      },
+      "ratio": 2.182181873163754,
+      "raw_passed": false,
+      "qualification_eligible": true,
+      "guard": null,
+      "range_ns_per_pair": {
+        "native": [
+          771.7311725,
+          775.233915
+        ],
+        "varena": [
+          1686.419085,
+          1693.4209375
+        ]
+      },
+      "final": {
+        "allocated_bytes": 0,
+        "mapped_bytes": 0,
+        "pending_bytes": 0,
+        "pools": 0,
+        "event_handles": 0
+      },
+      "timed_native_driver_event_deltas": [
+        {
+          "driver_memory_calls": 0,
+          "event_records": 0,
+          "event_queries": 0,
+          "event_waits": 0,
+          "context_joins": 0
+        },
+        {
+          "driver_memory_calls": 0,
+          "event_records": 0,
+          "event_queries": 0,
+          "event_waits": 0,
+          "context_joins": 0
+        },
+        {
+          "driver_memory_calls": 0,
+          "event_records": 0,
+          "event_queries": 0,
+          "event_waits": 0,
+          "context_joins": 0
+        },
+        {
+          "driver_memory_calls": 0,
+          "event_records": 0,
+          "event_queries": 0,
+          "event_waits": 0,
+          "context_joins": 0
+        },
+        {
+          "driver_memory_calls": 0,
+          "event_records": 0,
+          "event_queries": 0,
+          "event_waits": 0,
+          "context_joins": 0
+        },
+        {
+          "driver_memory_calls": 0,
+          "event_records": 0,
+          "event_queries": 0,
+          "event_waits": 0,
+          "context_joins": 0
+        },
+        {
+          "driver_memory_calls": 0,
+          "event_records": 0,
+          "event_queries": 0,
+          "event_waits": 0,
+          "context_joins": 0
+        }
+      ],
+      "wheel_sha256": "75ed037cead2cefcf8c0247ca911ac067acc71c761caaf903e0e1fdb99c6f711",
+      "extension_sha256": "299b0524fc1e743ee2352f99d12617247398ea5cb39baafcd2ed7f459800783c",
+      "shim_sha256": "09684b61d0b909c39d56c7d129432e906ddb0a57f1b4b916b20bb2c4c8d7716e",
+      "provenance": {
+        "allocator_conf": null,
+        "capability": [
+          8,
+          9
+        ],
+        "cuda_allocator_conf": null,
+        "driver_free_total": [
+          24205787136,
+          25252724736
+        ],
+        "executable": "/var/lib/cozy/tensord/generations/f7630516efdd0549ce71f072ddb0aefc/env/bin/python",
+        "extension_path": "/opt/cozy/dependency-seed/uv-cache/archive-v0/LR50n0snfQTJ73eS/tensorfs/_ext.abi3.so",
+        "extension_sha256": "299b0524fc1e743ee2352f99d12617247398ea5cb39baafcd2ed7f459800783c",
+        "gpu": "NVIDIA GeForce RTX 4090",
+        "gpu_uuid": "74f2ac0a-1c52-2e52-a7a6-b207f1db7a89",
+        "platform": "Linux-6.8.0-147-generic-x86_64-with-glibc2.36",
+        "python": "3.12.12 (main, Feb 24 2026, 20:29:11) [GCC 12.2.0]",
+        "shim_sha256": "09684b61d0b909c39d56c7d129432e906ddb0a57f1b4b916b20bb2c4c8d7716e",
+        "tensorfs_version": "0.17.16+dev.gd1b314a8.guard0",
+        "torch": "2.14.0+cu130",
+        "torch_cuda": "13.0",
+        "torch_cxx11_abi": true,
+        "torch_distribution": "2.14.0",
+        "torch_git": "08187d9e0fba026dc8217405802ab5381dc88d90",
+        "visible_devices": "0"
+      }
+    },
+    "guard1": {
+      "run": 25012,
+      "median_ns_per_pair": {
+        "native": 810.845685,
+        "varena": 719.28701
+      },
+      "ratio": 0.8870824909181085,
+      "raw_passed": true,
+      "qualification_eligible": false,
+      "guard": {
+        "backend": "kernel_wipe",
+        "failure_errno": 0,
+        "failure_stage": 0,
+        "known_limit": "copied authenticated TLS with separate-TGID CLONE_VM is not covered",
+        "marker": 626,
+        "page_bytes": 4096,
+        "production_qualified": false,
+        "schema": "varena.kernel_fork_guard/experimental-1",
+        "thread_authenticated": true
+      },
+      "range_ns_per_pair": {
+        "native": [
+          808.8696525,
+          812.15989
+        ],
+        "varena": [
+          716.34975,
+          730.33533
+        ]
+      },
+      "final": {
+        "allocated_bytes": 0,
+        "mapped_bytes": 0,
+        "pending_bytes": 0,
+        "pools": 0,
+        "event_handles": 0
+      },
+      "timed_native_driver_event_deltas": [
+        {
+          "driver_memory_calls": 0,
+          "event_records": 0,
+          "event_queries": 0,
+          "event_waits": 0,
+          "context_joins": 0
+        },
+        {
+          "driver_memory_calls": 0,
+          "event_records": 0,
+          "event_queries": 0,
+          "event_waits": 0,
+          "context_joins": 0
+        },
+        {
+          "driver_memory_calls": 0,
+          "event_records": 0,
+          "event_queries": 0,
+          "event_waits": 0,
+          "context_joins": 0
+        },
+        {
+          "driver_memory_calls": 0,
+          "event_records": 0,
+          "event_queries": 0,
+          "event_waits": 0,
+          "context_joins": 0
+        },
+        {
+          "driver_memory_calls": 0,
+          "event_records": 0,
+          "event_queries": 0,
+          "event_waits": 0,
+          "context_joins": 0
+        },
+        {
+          "driver_memory_calls": 0,
+          "event_records": 0,
+          "event_queries": 0,
+          "event_waits": 0,
+          "context_joins": 0
+        },
+        {
+          "driver_memory_calls": 0,
+          "event_records": 0,
+          "event_queries": 0,
+          "event_waits": 0,
+          "context_joins": 0
+        }
+      ],
+      "wheel_sha256": "aec2f0818e7c12e30313e5fd01d5064d086d753f319fe3d46597f90fc871a332",
+      "extension_sha256": "fcc2fa460d052b58d85fa94af986e46b21bd1a271d6fb17ef591974841bc03ac",
+      "shim_sha256": "09684b61d0b909c39d56c7d129432e906ddb0a57f1b4b916b20bb2c4c8d7716e",
+      "provenance": {
+        "allocator_conf": null,
+        "capability": [
+          8,
+          9
+        ],
+        "cuda_allocator_conf": null,
+        "driver_free_total": [
+          24205787136,
+          25252724736
+        ],
+        "executable": "/var/lib/cozy/tensord/generations/89f5b8c5289cb0b8f31b518696ecf1d2/env/bin/python",
+        "extension_path": "/opt/cozy/dependency-seed/uv-cache/archive-v0/rNFTRmkPZ4AbRnjV/tensorfs/_ext.abi3.so",
+        "extension_sha256": "fcc2fa460d052b58d85fa94af986e46b21bd1a271d6fb17ef591974841bc03ac",
+        "gpu": "NVIDIA GeForce RTX 4090",
+        "gpu_uuid": "74f2ac0a-1c52-2e52-a7a6-b207f1db7a89",
+        "pid": 626,
+        "platform": "Linux-6.8.0-147-generic-x86_64-with-glibc2.36",
+        "process_guard": {
+          "backend": "kernel_wipe",
+          "failure_errno": 0,
+          "failure_stage": 0,
+          "known_limit": "copied authenticated TLS with separate-TGID CLONE_VM is not covered",
+          "marker": 626,
+          "page_bytes": 4096,
+          "production_qualified": false,
+          "schema": "varena.kernel_fork_guard/experimental-1",
+          "thread_authenticated": true
+        },
+        "python": "3.12.12 (main, Feb 24 2026, 20:29:11) [GCC 12.2.0]",
+        "shim_sha256": "09684b61d0b909c39d56c7d129432e906ddb0a57f1b4b916b20bb2c4c8d7716e",
+        "tensorfs_version": "0.17.16+dev.gd1b314a8.guard1",
+        "torch": "2.14.0+cu130",
+        "torch_cuda": "13.0",
+        "torch_cxx11_abi": true,
+        "torch_distribution": "2.14.0",
+        "torch_git": "08187d9e0fba026dc8217405802ab5381dc88d90",
+        "visible_devices": "0"
+      }
+    }
+  },
+  "regressions": {
+    "guard1-allocator": {
+      "run": 25013,
+      "cases": [
+        "allocator-reuse",
+        "capture-exhaustion",
+        "captured-reuse",
+        "cudnn-capture-shortfall",
+        "default-deferred-free",
+        "distinct-pools",
+        "dlpack-record-stream",
+        "empty-capture",
+        "external-stream-retirement",
+        "native-working-ownership",
+        "pool-variable-reuse",
+        "replay-after-remap",
+        "replay-hook-failure",
+        "retained-output",
+        "rng-capture",
+        "shared-managed-limit",
+        "shared-pool",
+        "side-stream"
+      ],
+      "passed": true
+    },
+    "guard1-fork": {
+      "run": 25014,
+      "cases": [
+        "explicit-check",
+        "stats-empty-registry",
+        "trim-empty-registry",
+        "zero-alloc",
+        "zero-free",
+        "zero-record-stream"
+      ],
+      "passed": true
+    }
+  },
+  "native_baseline_change_percent": 4.770765117150155,
+  "varena_change_percent": -57.40945682003507,
+  "production_qualified": false,
+  "known_counterexample": "Separate-TGID CLONE_VM|CLONE_VFORK child with parent-authenticated TLS passes experimental metadata checks; default/fallback reject. No child CUDA executed.",
+  "source_files": {
+    "guard-ab-summary.json": "9a6fdf9695443e768e7329bdddd1284849fbccd583c3eeedcfd0f3abbd5e877a",
+    "guard0-benchmark-25010.json": "e3d96afee6bcbbf69c6d6c19200a3c563f2077a80381f9b7c16f2a7ecd1f4f12",
+    "guard1-fork-result.json": "67fe86109871d62aa5e9a5c1a91b0789f1b41ba3d4998ca400f257050af749e7",
+    "guard0-benchmark-result.json": "ad43469c47bb3fa68ac214c528fde6608e7a633a84ac691ea95702da43d8f204",
+    "guard1-allocator-25013.json": "d32bb1386fd0bc12a2efd447610db49a3e0e4a23178d2402fdd24b765360c64f",
+    "guard1-fork-25014.json": "61f4b5d574f79b19c231b6fd08bdabac9a1e2cc986ffb82edd5395697786f0a3",
+    "guard1-allocator-result.json": "07f45edc379761cc35507b88e0b11cebaf118c8ca3d5f56335b13300cf4be53f",
+    "guard1-benchmark-25012.json": "cc873621bfb828ee8f4fcc4e0a9ee288085171b0ee397cc09a1f23fff0ef91d0",
+    "guard1-benchmark-result.json": "7bedb2bbabd6b2c27e05d27cd9de8e0a8fb7585123d4185b51e80ddd0ebe6ecb"
+  }
+}
