@@ -644,6 +644,9 @@ pub struct MachineStatus {
     pub runtime: String,
     #[serde(default)]
     pub tensorfs: String,
+    /// The PyTorch its packages use; empty from an older machine (`v1::StatusFrame::torch`).
+    #[serde(default)]
+    pub torch: String,
     pub started_at_ms: i64,
     /// When a rental releases itself, or this computer's machine exits, if it stays idle; none
     /// while it works or is kept up.

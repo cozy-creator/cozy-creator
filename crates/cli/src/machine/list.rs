@@ -271,7 +271,7 @@ pub fn status_fields(status: &MachineStatus) -> Vec<(String, String)> {
     let commit = [("commit", &status.commit)];
     for (key, value) in commit
         .into_iter()
-        .chain([("runtime", &status.runtime), ("tensorfs", &status.tensorfs)])
+        .chain([("runtime", &status.runtime), ("tensorfs", &status.tensorfs), ("torch", &status.torch)])
     {
         if !value.is_empty() {
             fields.push((key.into(), value.clone()));

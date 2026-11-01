@@ -258,6 +258,7 @@ impl LocalSources {
             "lock": held("uv.lock"), "project": held("pyproject.toml"), "beside": beside, "wheels": carried,
             "indexes": manifest.indexes, "sdk": self.publisher.sdk.requirements,
             "links": self.publisher.sdk.find_links, "python": self.publisher.sdk.python,
+            "torch": self.publisher.torch_pins(None),
         });
         sha256::hex_digest(key.to_string().as_bytes())
     }
@@ -337,6 +338,8 @@ impl LocalSources {
                 return Err(refused("local_source_invalid", format!("index {name:?} = {url:?} is not a named HTTP(S) index")));
             }
         }
+        // This machine's PyTorch first (its own, the first time): the environment is keyed on it.
+        self.publisher.layer(job, None).map_err(failed)?;
         let built_from = self.environment(&manifest);
         let environment = home.join(format!("env-{}", &built_from[..16]));
         let ready = environment.join(".ready");
@@ -470,7 +473,7 @@ impl LocalSources {
         // Like published installations, local aliases include the selected SDK. The source
         // digest alone cannot identify the environment after an update.
         let sdk = &self.publisher.sdk;
-        let key = serde_json::json!({"manifest": digest, "sdk": sdk.requirements, "links": sdk.find_links, "python": sdk.python});
+        let key = serde_json::json!({"manifest": digest, "sdk": sdk.requirements, "links": sdk.find_links, "python": sdk.python, "torch": self.publisher.torch_pins(None)});
         let alias = format!("local-{}", &tensorfs::sha256::hex_digest(key.to_string().as_bytes())[..32]);
         let _installing = match self.installing.try_lock() {
             Ok(installing) => installing,
