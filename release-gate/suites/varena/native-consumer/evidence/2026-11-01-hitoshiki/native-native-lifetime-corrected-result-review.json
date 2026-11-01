@@ -1,0 +1,122 @@
+{
+  "source": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-shortage-int8-leg15-plan/attempt-001/native-native-lifetime-corrected-result.json",
+  "sha256": "ce68cbe3e2f4d41c78f064e287c4f421aca35400e16347543587a8f5ea58dc38",
+  "case": "lifetime_case",
+  "fixture_passed": true,
+  "checks": [
+    {
+      "passed": true,
+      "check": "fixture returned a positive result"
+    },
+    {
+      "passed": true,
+      "check": "all owned native child exits observed"
+    },
+    {
+      "passed": true,
+      "check": "no native child cleanup errors"
+    },
+    {
+      "passed": true,
+      "check": "exact corrected native/helper/binary cohort"
+    },
+    {
+      "passed": true,
+      "check": "exact Hitoshiki device UUID"
+    },
+    {
+      "passed": true,
+      "check": "lifetime: executed ELF digest"
+    },
+    {
+      "passed": true,
+      "check": "lifetime: parent observed no Python/Torch maps"
+    },
+    {
+      "passed": true,
+      "check": "lifetime: expected CUDA mapping boundary"
+    },
+    {
+      "passed": true,
+      "check": "lifetime: native process repeated map checks"
+    },
+    {
+      "passed": true,
+      "check": "lifetime: controller issued no manual cooperation action"
+    },
+    {
+      "passed": true,
+      "check": "lifetime: clean native exit"
+    },
+    {
+      "passed": true,
+      "check": "lifetime: zero working/live/mapped/pending at close"
+    },
+    {
+      "passed": true,
+      "check": "actual post-CUDA fork has exact inherited refusals and parent survives"
+    },
+    {
+      "passed": true,
+      "check": "actual capture refuses close until capture ends"
+    },
+    {
+      "passed": true,
+      "check": "product working-driver calls/live/mapped unchanged during defined capture interval"
+    },
+    {
+      "passed": true,
+      "check": "full 2MiB canary survives both lifetime probes"
+    }
+  ],
+  "children": [
+    {
+      "name": "lifetime",
+      "mode": "auto",
+      "pid": 859,
+      "birth": 80167617,
+      "exit": 0,
+      "closed_stats": {
+        "capacity": 0,
+        "driver_calls": 11,
+        "driver_physical_ooms": 0,
+        "free": 0,
+        "live": 0,
+        "mapped": 0,
+        "ooms": 0,
+        "pending": 0,
+        "pools": 0
+      },
+      "signals": []
+    }
+  ],
+  "lifetime": {
+    "fork": {
+      "boundary": "actual post-CUDA fork; child uses exact Inherited guards, fixed pipe byte and _exit only",
+      "child_exit": 0,
+      "child_pid": 867,
+      "child_start_ticks": 80167626,
+      "close_inherited_rejected": true,
+      "facts_inherited_rejected": true,
+      "parent_owner_active": true
+    },
+    "capture": {
+      "active": false,
+      "actual_cuda_capture": true,
+      "boundary": "Owner close deferral and product working-driver calls only; no Arena weights, no last-Arena teardown or all-external-CUDA claim",
+      "close_refused": true,
+      "live_after": 2097152,
+      "live_before": 2097152,
+      "mapped_after": 2097152,
+      "mapped_before": 2097152,
+      "observation_ms": 600,
+      "product_working_driver_call_delta": 0,
+      "retired_after_capture": true,
+      "retired_during_capture": false,
+      "stopping": true,
+      "working_driver_calls_after": 30,
+      "working_driver_calls_before": 30
+    }
+  },
+  "independent_passed": true
+}

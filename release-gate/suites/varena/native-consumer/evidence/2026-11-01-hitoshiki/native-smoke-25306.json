@@ -1,0 +1,23 @@
+{
+  "id": "run-7a2248d679530c32e192aa8e",
+  "number": 25306,
+  "kind": "call",
+  "target": "local/ci-varena-native-consumer/smoke",
+  "hub": "https://tensorhub.com",
+  "machine": "hitoshiki",
+  "status": "failed",
+  "cancel_requested": false,
+  "machine_state": "running",
+  "reason": {
+    "code": "executor_invalidated",
+    "message": "device executor ended: executor Start did not acknowledge its negotiated GPU memory policy",
+    "origin": "machine",
+    "detail": "executor Start did not acknowledge its negotiated GPU memory policy; its group's stderr is empty"
+  },
+  "output": [],
+  "created_at_ms": 1793542515558,
+  "accepted_at_ms": 1793542515901,
+  "started_at_ms": 1793542516132,
+  "settled_at_ms": 1793542516238,
+  "execution_ms": 23
+}

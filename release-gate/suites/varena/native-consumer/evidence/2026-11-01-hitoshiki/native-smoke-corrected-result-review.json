@@ -1,0 +1,185 @@
+{
+  "source": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-shortage-int8-leg15-plan/attempt-001/native-smoke-corrected-result.json",
+  "sha256": "bf08fc1195a4ce449b52863d0c9ee73579ccc8cbaff70b4464bc2f4eeb69054a",
+  "case": "smoke_case",
+  "fixture_passed": true,
+  "checks": [
+    {
+      "passed": true,
+      "check": "fixture returned a positive result"
+    },
+    {
+      "passed": true,
+      "check": "all owned native child exits observed"
+    },
+    {
+      "passed": true,
+      "check": "no native child cleanup errors"
+    },
+    {
+      "passed": true,
+      "check": "exact corrected native/helper/binary cohort"
+    },
+    {
+      "passed": true,
+      "check": "exact Hitoshiki device UUID"
+    },
+    {
+      "passed": true,
+      "check": "auto: executed ELF digest"
+    },
+    {
+      "passed": true,
+      "check": "auto: parent observed no Python/Torch maps"
+    },
+    {
+      "passed": true,
+      "check": "auto: expected CUDA mapping boundary"
+    },
+    {
+      "passed": true,
+      "check": "auto: native process repeated map checks"
+    },
+    {
+      "passed": true,
+      "check": "auto: controller issued no manual cooperation action"
+    },
+    {
+      "passed": true,
+      "check": "auto: clean native exit"
+    },
+    {
+      "passed": true,
+      "check": "auto: zero working/live/mapped/pending at close"
+    },
+    {
+      "passed": true,
+      "check": "manual: executed ELF digest"
+    },
+    {
+      "passed": true,
+      "check": "manual: parent observed no Python/Torch maps"
+    },
+    {
+      "passed": true,
+      "check": "manual: expected CUDA mapping boundary"
+    },
+    {
+      "passed": true,
+      "check": "manual: native process repeated map checks"
+    },
+    {
+      "passed": true,
+      "check": "manual: controller issued no manual cooperation action"
+    },
+    {
+      "passed": true,
+      "check": "manual: clean native exit"
+    },
+    {
+      "passed": true,
+      "check": "manual: zero working/live/mapped/pending at close"
+    },
+    {
+      "passed": true,
+      "check": "plain: executed ELF digest"
+    },
+    {
+      "passed": true,
+      "check": "plain: parent observed no Python/Torch maps"
+    },
+    {
+      "passed": true,
+      "check": "plain: expected CUDA mapping boundary"
+    },
+    {
+      "passed": true,
+      "check": "plain: native process repeated map checks"
+    },
+    {
+      "passed": true,
+      "check": "plain: controller issued no manual cooperation action"
+    },
+    {
+      "passed": true,
+      "check": "plain: clean native exit"
+    },
+    {
+      "passed": true,
+      "check": "plain: zero working/live/mapped/pending at close"
+    },
+    {
+      "passed": true,
+      "check": "all three native modes executed"
+    },
+    {
+      "passed": true,
+      "check": "all three modes fully read back 64MiB"
+    }
+  ],
+  "children": [
+    {
+      "name": "auto",
+      "mode": "auto",
+      "pid": 774,
+      "birth": 80165863,
+      "exit": 0,
+      "closed_stats": {
+        "capacity": 0,
+        "driver_calls": 16,
+        "driver_physical_ooms": 0,
+        "free": 0,
+        "live": 0,
+        "mapped": 0,
+        "ooms": 0,
+        "pending": 0,
+        "pools": 0
+      },
+      "signals": []
+    },
+    {
+      "name": "manual",
+      "mode": "manual",
+      "pid": 782,
+      "birth": 80165874,
+      "exit": 0,
+      "closed_stats": {
+        "capacity": 0,
+        "driver_calls": 16,
+        "driver_physical_ooms": 0,
+        "free": 0,
+        "live": 0,
+        "mapped": 0,
+        "ooms": 0,
+        "pending": 0,
+        "pools": 0
+      },
+      "signals": []
+    },
+    {
+      "name": "plain",
+      "mode": "plain",
+      "pid": 789,
+      "birth": 80165885,
+      "exit": 0,
+      "closed_stats": {
+        "capacity": 0,
+        "driver_calls": 16,
+        "driver_physical_ooms": 0,
+        "free": 0,
+        "live": 0,
+        "mapped": 0,
+        "ooms": 0,
+        "pending": 0,
+        "pools": 0
+      },
+      "signals": []
+    }
+  ],
+  "readback_bytes": {
+    "auto": 67108864,
+    "manual": 67108864,
+    "plain": 67108864
+  },
+  "independent_passed": true
+}
