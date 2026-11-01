@@ -120,7 +120,8 @@ YAML
   else nice -n 19 ffmpeg -v error -y -f lavfi -i sine=frequency=220:duration=4 -ac 1 -ar 24000 "$P/voice.wav"; fi
   render project-voice "$P" hello
   v=$(approved "$P" hello); f=$(jq -r '.file // empty' <<< "$v")
-  sent=$([ -n "$f" ] && "$CLI" --json run show "$(jq -r .run <<< "$v")" --once 2>/dev/null | grep -o '"field": *"references\.[0-9]*\.voice"' | head -1)
+  # Sent: a piece's logged references name the character's voice (H3 attaches it as "<name>'s voice").
+  sent=$([ -n "$f" ] && "$CLI" run show "$(jq -r .run <<< "$v")" --once 2>/dev/null | grep -o "references=\"[^\"]*host's voice[^\"]*\"" | head -1)
   a=$([ -n "$f" ] && ffprobe -v error -select_streams a:0 -show_entries stream=duration -of csv=p=0 "$P/$f")
   expect project-voice "$([ -n "$sent" ] && [ -n "$a" ] && echo PASS || echo FAIL)" \
     "voice ${sent:-not sent}, sound ${a:-none} s${f:+ (run $(jq -r .run <<< "$v"))}"
