@@ -4,7 +4,7 @@
 # into wheel-data/scripts/ (pyproject `data`), so installers put it on PATH beside the
 # module.
 #
-#   scripts/build-wheel.sh [--out <dir>] [maturin build args...]
+#   scripts/build-wheel.sh [--out <dir>] [--torch-python <python>] [maturin build args...]
 #
 # Portable builds use the existing CI/release manylinux environment for BOTH
 # cargo and maturin. A host build can explicitly pass --compatibility linux.
@@ -13,10 +13,12 @@ cd "$(dirname "$0")/.."
 py="${PYTHON:-python3}"
 
 out=target/wheels
+torch_python=
 args=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --out) out="$2"; shift ;;
+        --torch-python) torch_python="$2"; shift ;;
         --plane|--no-default-features)
             echo "tensorfs ships one full Python+CLI wheel; $1 is not a supported wheel option" >&2
             exit 2 ;;
@@ -24,6 +26,10 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+
+if [ -n "$torch_python" ]; then
+    nice -n 19 "$torch_python" shim/build.py
+fi
 
 if [ "$(uname -s)" != Darwin ]; then
     if [ ! -f ../tensorfs/kernels/aot/catalog.rs ]; then

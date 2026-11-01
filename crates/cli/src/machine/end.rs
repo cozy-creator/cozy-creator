@@ -232,7 +232,17 @@ pub async fn update(
         "" => ctx.hub().clone(),
         origin => Origin::parse(origin)?,
     };
-    if asked.is_empty() && gpu_memory_limit.is_none() {
+    let flagless = asked.is_empty() && gpu_memory_limit.is_none();
+    // The cozy `cozy update` installed here and `local` has not moved to yet: the update activates
+    // it, unless `--tensord` names another binary.
+    let mut placed = placed(ctx, &m);
+    if let Some(version) = &placed {
+        asked.retain(|(member, _, c)| !(*member == "tensord" && matches!(c, Component::Release(v) if v == version)));
+        if asked.iter().any(|(member, _, _)| *member == "tensord") {
+            placed = None;
+        }
+    }
+    if flagless {
         let Some(status) = &m.status else {
             return Err(Error::new(
                 Kind::Unavailable,
@@ -244,7 +254,7 @@ pub async fn update(
         let target = hub_answer(ctx.hub_anonymous(&hub).get_software().await)?;
         // An unpinned target older than the machine's software is no reason to go back.
         let moves = |running: &str, wanted: &str| running != wanted && (target.pinned || newer(wanted, running));
-        let cozy = target.cozy.as_deref().filter(|cozy| moves(&status.version, cozy));
+        let cozy = target.cozy.as_deref().filter(|cozy| moves(&status.version, cozy) && placed.is_none());
         for (member, distribution, running, wanted) in [
             ("runtime", "cozy_runtime", status.runtime.as_str(), Some(target.runtime.as_str())),
             ("tensorfs", "tensorfs", status.tensorfs.as_str(), Some(target.tensorfs.as_str())),
@@ -254,7 +264,7 @@ pub async fn update(
                 asked.push((member, distribution, Component::Release(wanted.into())));
             }
         }
-        if asked.is_empty() {
+        if asked.is_empty() && placed.is_none() {
             return up_to_date(ctx, &m, status);
         }
     }
@@ -309,7 +319,13 @@ pub async fn update(
         payload.insert(member.into(), file.into());
         staged.push(input);
     }
-    let restarts = payload.contains_key("tensord");
+    if let Some(version) = placed {
+        // The guard every TensorD carries out: the binary at its launch path, that release, activates.
+        named.push(format!("cozy {version} (installed)"));
+        want.push(reports("tensord", &version));
+        payload.insert("cozy".into(), version.into());
+    }
+    let restarts = payload.contains_key("tensord") || payload.contains_key("cozy");
     if let Some(limit) = gpu_memory_limit {
         named.push(match limit {
             0 => "no GPU memory limit".into(),
@@ -359,6 +375,44 @@ pub async fn update(
         ));
     }
     Ok(crate::run::exit_code(&run))
+}
+
+/// The release of this computer's installed cozy when `m` is `local` and runs another: the binary
+/// `cozy update` renamed over its launch path, which it moves to at its next update.
+fn placed(ctx: &Context, m: &Machine) -> Option<String> {
+    let running = m.status.as_ref().filter(|_| m.kind == MachineKind::Local)?.version.as_str();
+    let installed = crate::calcifer_client::installed(&ctx.home).ok()?;
+    let said = std::process::Command::new(installed).arg("--version").stdin(std::process::Stdio::null()).output().ok()?;
+    let version = String::from_utf8_lossy(&said.stdout).trim().strip_prefix("cozy ")?.to_owned();
+    (said.status.success() && !version.is_empty() && version != running).then_some(version)
+}
+
+/// Asks `local` to move to the cozy `cozy update` just installed once its runs in flight end: an
+/// update run naming that release, submitted and not followed. Its number.
+pub(crate) async fn activate(ctx: &Context) -> Result<Option<u64>, Error> {
+    let m = machine(ctx, "local").await?;
+    let Some(version) = placed(ctx, &m) else { return Ok(None) };
+    let hub = match m.hub.as_str() {
+        "" => ctx.hub().clone(),
+        origin => Origin::parse(origin)?,
+    };
+    let spec = v1::RunSpec {
+        kind: v1::RunKind::Update,
+        payload: Some(v1::Json::parse(serde_json::json!({ "cozy": version }).to_string()).expect("JSON")),
+        ..Default::default()
+    };
+    let submit = SubmitRun {
+        agreed: None,
+        on: On::Machine(m.name.clone()),
+        hub: hub.into(),
+        kind: calcifer::Kind::Update,
+        target: format!("cozy {version} (installed)"),
+        spec,
+        inputs: vec![],
+        out: None,
+        warnings: vec![],
+    };
+    Ok(Some(crate::run::submit(ctx, submit, None).await?.run.number))
 }
 
 /// `distribution` `version`'s prerelease wheel for `platform` (`linux/x86_64`), when PyPI does not
