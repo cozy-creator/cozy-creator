@@ -113,10 +113,12 @@ Python and cozy-runtime its project locks; nothing runs to describe it.
 A project is a folder holding `project.yaml` (people's), `project.lock` (Calcifer's), `assets/`, and its cuts
 (`edit.mp4`, with `resolution:` also `preview.mp4`). Its id is fixed by its folder. Every file the project uses
 is in `assets/<sha256>.<ext>`, flat: what cozy makes as real files, and each file project.yaml names (relative,
-absolute or `~/…`) as a link to it, made on first use (a symlink; on Windows one if permitted, else a hard
-link on the same volume, else a copy, said once). project.lock records each file's path, size and sha256 under
-the path written; a changed one is taken in again (`reference changed`) and what read it goes out of date, a
-gone one is `reference missing: relink` and what reads it does not render. Names live only in project.yaml and
+absolute or `~/…`) taken in on first use, by the first method that works: a copy-on-write clone (reflink:
+Btrfs, XFS, ZFS 2.2+, APFS), else a symlink to the original, else (Windows without the right) a hard link on
+the same volume, else a copy, said once. project.lock records each file's path, size, sha256 and method under
+the path written. A changed original is taken in again and what read it goes out of date; for a link that is
+said (`reference changed`), and a gone original is `reference missing: relink`, what reads it not rendering.
+A clone or copy is the project's own: the original moving changes nothing. Names live only in project.yaml and
 project.lock. Calcifer deletes from `assets/` only what project.lock no longer names.
 
 A shot's and an upscale's alternatives are takes, every other node's versions: records carry one generic
