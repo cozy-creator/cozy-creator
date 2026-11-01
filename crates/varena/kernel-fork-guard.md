@@ -74,3 +74,11 @@ Experimental Python builds expose `_varena_kernel_fork_guard_status` as cold met
 The existing benchmark records the actual backend after warmup, validates an armed marker
 against its PID, and labels the feature's result `qualification_eligible=false`. The timed
 loop and 2× comparison are unchanged; a fallback result is not an armed-guard speed result.
+
+## GPU experiment and process-contract audit — 2026-11-01
+
+Frozen d1 artifacts were exercised in25010–25014. Default PID guard gives2.18218× native and fails the unchanged
+bar; experimental kernel guard gives0.88708× with actual `kernel_wipe` status. All18 GPU allocator and six
+ordinary-fork callback cases pass. This remains experimental, not production-qualified. The real shared-VM/TLS
+counterexample remains accepted by guard1 and rejected by guard0/fallback. See the
+[full evidence and primary-source contract review](kernel-fork-guard-review.md) before changing any default.
