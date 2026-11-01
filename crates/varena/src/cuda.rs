@@ -37,6 +37,9 @@ struct Access {
 // CUDAAPI is __stdcall on Windows and the C ABI elsewhere.
 type Init = unsafe extern "system" fn(c_uint) -> Status;
 type DeviceGet = unsafe extern "system" fn(*mut c_int, c_int) -> Status;
+#[repr(C)]
+struct Uuid { bytes: [u8; 16] }
+type DeviceUuid = unsafe extern "system" fn(*mut Uuid, c_int) -> Status;
 type Retain = unsafe extern "system" fn(*mut Context, c_int) -> Status;
 type Push = unsafe extern "system" fn(Context) -> Status;
 type Pop = unsafe extern "system" fn(*mut Context) -> Status;
@@ -62,6 +65,8 @@ pub(crate) struct Driver {
     // Keep a primary-context retain for the process lifetime. CUDA reset/fork is unsupported.
     context: usize,
     device: c_int,
+    device_uuid: DeviceUuid,
+    activity_calls: AtomicU64,
     push: Push,
     pop: Pop,
     synchronize: Synchronize,
@@ -112,6 +117,8 @@ impl Driver {
         let mut driver = Self {
             context: 0,
             device: ordinal,
+            device_uuid: symbol!("cuDeviceGetUuid_v2", DeviceUuid),
+            activity_calls: AtomicU64::new(0),
             push: symbol!("cuCtxPushCurrent_v2", Push),
             pop: symbol!("cuCtxPopCurrent_v2", Pop),
             synchronize: symbol!("cuCtxSynchronize", Synchronize),
@@ -177,6 +184,7 @@ impl Driver {
     }
 
     pub(crate) fn enter(&self) -> Result<ContextGuard<'_>> {
+        self.activity_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: the context is retained for the process lifetime. Push/pop is thread local.
         status("cuCtxPushCurrent", unsafe {
             (self.push)(self.context as Context)
@@ -185,11 +193,13 @@ impl Driver {
     }
 
     pub(crate) fn synchronize(&self) -> Result<()> {
+        self.activity_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: every caller enters this driver's primary context first.
         status("cuCtxSynchronize", unsafe { (self.synchronize)() })
     }
 
     pub(crate) fn memory_info(&self) -> Result<(usize, usize)> {
+        self.activity_calls.fetch_add(1, Ordering::Relaxed);
         let (mut free, mut total) = (0, 0);
         // SAFETY: valid output storage; the caller entered this driver's primary context.
         status("cuMemGetInfo", unsafe {
@@ -199,6 +209,7 @@ impl Driver {
     }
 
     pub(crate) fn reserve(&self, bytes: usize) -> Result<u64> {
+        self.activity_calls.fetch_add(1, Ordering::Relaxed);
         let mut ptr = 0;
         self.memory_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: valid output pointer; size is rounded to this driver's allocation granularity.
@@ -209,6 +220,7 @@ impl Driver {
     }
 
     pub(crate) fn free_address(&self, ptr: u64, bytes: usize) -> Result<()> {
+        self.activity_calls.fetch_add(1, Ordering::Relaxed);
         self.memory_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: only a successfully unmapped owned reservation reaches here.
         status("cuMemAddressFree", unsafe {
@@ -217,6 +229,7 @@ impl Driver {
     }
 
     pub(crate) fn create(&self, bytes: usize) -> Result<u64> {
+        self.activity_calls.fetch_add(1, Ordering::Relaxed);
         let mut handle = 0;
         self.memory_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: valid output pointer and properties; bytes satisfy granularity.
@@ -231,6 +244,7 @@ impl Driver {
     }
 
     pub(crate) fn map(&self, ptr: u64, bytes: usize, handle: u64) -> Result<()> {
+        self.activity_calls.fetch_add(1, Ordering::Relaxed);
         self.memory_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: an owned, unoccupied reservation and equally-sized owned allocation.
         status("cuMemMap", unsafe { (self.map)(ptr, bytes, 0, handle, 0) })?;
@@ -242,6 +256,7 @@ impl Driver {
             flags: 3, // CU_MEM_ACCESS_FLAGS_PROT_READWRITE
         };
         self.memory_calls.fetch_add(1, Ordering::Relaxed);
+        self.activity_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: the entire range just mapped above; one descriptor grants local device access.
         status("cuMemSetAccess", unsafe {
             (self.set_access)(ptr, bytes, &access, 1)
@@ -249,18 +264,21 @@ impl Driver {
     }
 
     pub(crate) fn unmap(&self, ptr: u64, bytes: usize) -> Result<()> {
+        self.activity_calls.fetch_add(1, Ordering::Relaxed);
         self.memory_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: owned whole mapping, no pins, and checked completion of all uses before call.
         status("cuMemUnmap", unsafe { (self.unmap)(ptr, bytes) })
     }
 
     pub(crate) fn release(&self, handle: u64) -> Result<()> {
+        self.activity_calls.fetch_add(1, Ordering::Relaxed);
         self.memory_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: owned allocation handle; caller has confirmed unmap before releasing.
         status("cuMemRelease", unsafe { (self.release)(handle) })
     }
 
     pub(crate) fn create_event(&self) -> Result<usize> {
+        self.activity_calls.fetch_add(1, Ordering::Relaxed);
         let mut event = std::ptr::null_mut();
         // SAFETY: valid output pointer; CU_EVENT_DISABLE_TIMING in the entered primary context.
         status("cuEventCreate", unsafe {
@@ -270,6 +288,7 @@ impl Driver {
     }
 
     pub(crate) fn record(&self, event: usize, stream: usize) -> Result<()> {
+        self.activity_calls.fetch_add(1, Ordering::Relaxed);
         self.event_records.fetch_add(1, Ordering::Relaxed);
         // SAFETY: an owned live event; the caller vouches for a live stream of this context.
         status("cuEventRecord", unsafe {
@@ -279,6 +298,7 @@ impl Driver {
 
     /// Whether all work captured by the event's latest record has completed.
     pub(crate) fn query(&self, event: usize) -> Result<bool> {
+        self.activity_calls.fetch_add(1, Ordering::Relaxed);
         self.event_queries.fetch_add(1, Ordering::Relaxed);
         // SAFETY: an owned live event; callers exclude CUDA graph capture.
         match unsafe { (self.event_query)(event as Object) } {
@@ -288,6 +308,7 @@ impl Driver {
     }
 
     pub(crate) fn wait_event(&self, event: usize) -> Result<()> {
+        self.activity_calls.fetch_add(1, Ordering::Relaxed);
         self.event_waits.fetch_add(1, Ordering::Relaxed);
         // SAFETY: an owned live event; callers exclude CUDA graph capture.
         status("cuEventSynchronize", unsafe {
@@ -296,6 +317,7 @@ impl Driver {
     }
 
     pub(crate) fn destroy_event(&self, event: usize) -> Result<()> {
+        self.activity_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: the sole owner destroys this event once and never uses it again.
         status("cuEventDestroy", unsafe {
             (self.event_destroy)(event as Object)
@@ -303,6 +325,7 @@ impl Driver {
     }
 
     pub(crate) fn is_capturing(&self, stream: usize) -> Result<bool> {
+        self.activity_calls.fetch_add(1, Ordering::Relaxed);
         let mut capture = 0;
         // SAFETY: valid output pointer; the caller vouches for a live stream of this context.
         status("cuStreamIsCapturing", unsafe {
@@ -312,6 +335,7 @@ impl Driver {
     }
 
     pub(crate) fn query_stream(&self, stream: usize) -> Result<bool> {
+        self.activity_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: retirement's caller still owns this live stream and has stopped submissions.
         match unsafe { (self.stream_query)(stream as Object) } {
             600 => Ok(false),
@@ -320,10 +344,25 @@ impl Driver {
     }
 
     pub(crate) fn copy_from_host(&self, ptr: u64, bytes: &[u8]) -> Result<()> {
+        self.activity_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: Fill owns the exclusive mapped destination; slice lives through synchronous copy.
         status("cuMemcpyHtoD", unsafe {
             (self.copy_host)(ptr, bytes.as_ptr().cast(), bytes.len())
         })
+    }
+
+    /// All calls through initialized driver wrappers, including context entry/pop and sampling.
+    /// Metadata reads of this counter perform no CUDA work.
+    pub(crate) fn activity_calls(&self) -> u64 {
+        self.activity_calls.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn uuid(&self) -> Result<[u8; 16]> {
+        self.activity_calls.fetch_add(1, Ordering::Relaxed);
+        let mut uuid = Uuid { bytes: [0; 16] };
+        // SAFETY: CUuuid is exactly sixteen bytes; the initialized device belongs to this driver.
+        status("cuDeviceGetUuid_v2", unsafe { (self.device_uuid)(&mut uuid, self.device) })?;
+        Ok(uuid.bytes)
     }
 
     pub(crate) fn calls(&self) -> (u64, u64, u64, u64) {
@@ -343,6 +382,7 @@ pub(crate) struct ContextGuard<'a> {
 impl Drop for ContextGuard<'_> {
     fn drop(&mut self) {
         let mut previous = std::ptr::null_mut();
+        self.driver.activity_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: one matching pop on the same thread for the push which constructed this guard.
         // A failing pop never triggers memory reuse; any subsequent operation must push afresh.
         let _ = unsafe { (self.driver.pop)(&mut previous) };

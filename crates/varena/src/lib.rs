@@ -14,6 +14,8 @@ mod cuda;
 pub mod working;
 #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
 pub mod ledger;
+#[cfg(all(target_os = "linux", target_has_atomic = "64"))]
+pub mod cooperative;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering};
@@ -252,6 +254,50 @@ impl State {
         }
     }
 
+    fn reclaim_candidates(&self, preferred: bool, exclude: Option<u64>, reason: ReclaimReason)
+        -> Vec<(u64, bool, (bool, u64))> {
+        let mut candidates: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|(id, entry)| {
+                Some(**id) != exclude
+                    && entry.uses.pins() == 0
+                    && entry.uses.state() != Contents::Loading
+                    && entry.handle.is_some()
+                    && (preferred || !entry.preferred())
+                    && (!matches!(reason, ReclaimReason::StreamingLimit) || !self.standby(entry))
+            })
+            .map(|(id, entry)| {
+                let preferred = entry.preferred();
+                let key = if preferred {
+                    (false, u64::MAX - id)
+                } else {
+                    self.eviction_key(entry)
+                };
+                (*id, preferred, key)
+            })
+            .collect();
+        candidates.sort_by_key(|(_, preferred, key)| (*preferred, *key));
+        candidates
+    }
+
+    fn contentless_candidates(&self, preferred: bool, exclude: Option<u64>) -> Vec<u64> {
+        let mut idle: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|(id, entry)| {
+                Some(**id) != exclude
+                    && entry.uses.pins() == 0
+                    && matches!(entry.uses.state(), Contents::Cold | Contents::Retired)
+                    && entry.handle.is_some()
+                    && (preferred || !entry.preferred())
+            })
+            .map(|(id, entry)| (entry.last_use, *id))
+            .collect();
+        idle.sort_unstable();
+        idle.into_iter().map(|(_, id)| id).collect()
+    }
+
     fn streaming_bytes(&self) -> usize {
         self.entries
             .values()
@@ -313,7 +359,8 @@ impl Room {
     }
 }
 
-static ARENAS: OnceLock<Mutex<Vec<Weak<Arena>>>> = OnceLock::new();
+type ArenaRegistry = Vec<(i32, Weak<Arena>)>;
+static ARENAS: OnceLock<Mutex<ArenaRegistry>> = OnceLock::new();
 #[derive(Default)]
 struct DeviceActivity {
     activity_epoch: u64,
@@ -321,6 +368,7 @@ struct DeviceActivity {
     captures: Arc<AtomicUsize>,
     replays: Arc<AtomicUsize>,
     producers: Arc<AtomicUsize>,
+    retirements: Arc<AtomicUsize>,
     room: Arc<Room>,
 }
 
@@ -374,7 +422,7 @@ fn ensure_not_capturing(counts: &BTreeMap<i32, DeviceActivity>, device: i32) -> 
 pub fn enter_capture(device: i32) -> Result<GlobalCaptureGuard> {
     let mut counts = capture_counts()?;
     let activity = counts.entry(device).or_default();
-    if activity.replays.load(Ordering::Acquire) != 0 {
+    if activity.replays.load(Ordering::Acquire) != 0 || activity.retirements.load(Ordering::Acquire) != 0 {
         return Err(Error::CaptureActive);
     }
     if activity.producers.load(Ordering::Acquire) != 0 {
@@ -411,6 +459,9 @@ pub fn enter_replay(device: i32) -> Result<GlobalCaptureGuard> {
     let mut counts = capture_counts()?;
     ensure_not_capturing(&counts, device)?;
     let activity = counts.entry(device).or_default();
+    if activity.retirements.load(Ordering::Acquire) != 0 {
+        return Err(Error::CaptureActive);
+    }
     activity.activity_epoch = activity.activity_epoch.wrapping_add(1);
     activity
         .replays
@@ -428,6 +479,17 @@ pub fn is_capturing(device: i32) -> Result<bool> {
     Ok(capture_counts()?
         .get(&device)
         .is_some_and(|entry| entry.captures.load(Ordering::Acquire) != 0))
+}
+
+/// Exclude new capture/replay through final owner destruction without holding the capture
+/// mutex that Arena::drop reacquires. Normal recovery/teardown remains allowed under it.
+fn enter_retirement(device: i32) -> Result<GlobalCaptureGuard> {
+    let mut counts = capture_counts()?;
+    ensure_recovery_allowed(&counts, device)?;
+    let activity = counts.entry(device).or_default();
+    activity.retirements.try_update(Ordering::AcqRel, Ordering::Acquire, |value| value.checked_add(1))
+        .map_err(|_| Error::Invalid("retirement count overflow"))?;
+    Ok(GlobalCaptureGuard { count: Arc::clone(&activity.retirements), pid: std::process::id() })
 }
 
 pub fn is_recovery_blocked(device: i32) -> Result<bool> {
@@ -517,8 +579,8 @@ impl Arena {
             .get_or_init(Mutex::default)
             .lock()
             .map_err(|_| Error::Poisoned("arena registry mutex".into()))?;
-        registry.retain(|entry| entry.strong_count() != 0);
-        registry.push(Arc::downgrade(&arena));
+        registry.retain(|(_, entry)| entry.strong_count() != 0);
+        registry.push((device, Arc::downgrade(&arena)));
         Ok(arena)
     }
 
@@ -723,28 +785,7 @@ impl Arena {
         if report.reclaimed_bytes >= bytes {
             return Ok(report);
         }
-        let mut candidates: Vec<_> = state
-            .entries
-            .iter()
-            .filter(|(id, entry)| {
-                Some(**id) != exclude
-                    && entry.uses.pins() == 0
-                    && entry.uses.state() != Contents::Loading
-                    && entry.handle.is_some()
-                    && (preferred || !entry.preferred())
-                    && (!matches!(reason, ReclaimReason::StreamingLimit) || !state.standby(entry))
-            })
-            .map(|(id, entry)| {
-                let preferred = entry.preferred();
-                let key = if preferred {
-                    (false, u64::MAX - id)
-                } else {
-                    state.eviction_key(entry)
-                };
-                (*id, preferred, key)
-            })
-            .collect();
-        candidates.sort_by_key(|(_, preferred, key)| (*preferred, *key));
+        let candidates = state.reclaim_candidates(preferred, exclude, reason);
         // The arena lock excludes new pins; each candidate already has zero physical pins.
         // Idle cache goes in `eviction_key` order, completed-first, then after its own events,
         // and joins the context only for unfenced releases. The preferred suffix keeps strict
@@ -869,21 +910,9 @@ impl Arena {
         reason: ReclaimReason,
         report: &mut ReclaimReport,
     ) -> Result<()> {
-        let mut idle: Vec<_> = state
-            .entries
-            .iter()
-            .filter(|(id, entry)| {
-                Some(**id) != exclude
-                    && entry.uses.pins() == 0
-                    && matches!(entry.uses.state(), Contents::Cold | Contents::Retired)
-                    && entry.handle.is_some()
-                    && (preferred || !entry.preferred())
-            })
-            .map(|(id, entry)| (entry.last_use, *id))
-            .collect();
-        idle.sort_unstable();
+        let idle = state.contentless_candidates(preferred, exclude);
         let mut unjoined = Vec::new();
-        for (_, id) in idle {
+        for id in idle {
             if report.reclaimed_bytes >= bytes {
                 return Ok(());
             }
@@ -959,8 +988,14 @@ impl Arena {
         reason: ReclaimReason,
         report: &mut ReclaimReport,
     ) -> Result<()> {
+        self.evict_counted(state, id, reason, report, &mut 0)
+    }
+
+    // Record the physical effect before any later fallible address retirement/reporting.
+    fn evict_counted(&self, state: &mut State, id: u64, reason: ReclaimReason,
+        report: &mut ReclaimReport, completed: &mut usize) -> Result<()> {
         let was_preferred = state.entries[&id].preferred();
-        let (size, retired) = self.release_backing(state, id)?;
+        let (size, retired) = self.release_backing_counted(state, id, completed)?;
         if was_preferred && !retired {
             // Pressure permanently shortens the retained prefix. Later scans cannot rebuild it.
             state.preferred_end = Some(state.preferred_end.map_or(id, |end| end.min(id)));
@@ -979,6 +1014,10 @@ impl Arena {
     /// Unmap and release a joined, unpinned region's physical pages; a retired region's
     /// address goes too. Returns its bytes and whether it was retired.
     fn release_backing(&self, state: &mut State, id: u64) -> Result<(usize, bool)> {
+        self.release_backing_counted(state, id, &mut 0)
+    }
+
+    fn release_backing_counted(&self, state: &mut State, id: u64, completed: &mut usize) -> Result<(usize, bool)> {
         let entry = state
             .entries
             .get(&id)
@@ -995,6 +1034,7 @@ impl Arena {
         if let Err(error) = self.driver.release(handle) {
             return Err(poison(state, error));
         }
+        *completed += size;
         self.room.pages.fetch_sub(size, Ordering::AcqRel);
         let entry = state.entries.get_mut(&id).expect("locked candidate");
         // Every event is complete here; a destroy failure only leaks the event.
@@ -1900,8 +1940,8 @@ fn reclaim_room(device: i32, room: &Room) -> Result<ReclaimReport> {
         .lock()
         .map_err(|_| Error::Poisoned("arena registry mutex".into()))?
         .iter()
-        .filter_map(Weak::upgrade)
-        .filter(|arena| arena.device == device)
+        .filter(|(ordinal, _)| *ordinal == device)
+        .filter_map(|(_, arena)| Weak::upgrade(arena))
         .collect();
     for arena in arenas {
         let need = room.over(0);
@@ -1940,8 +1980,8 @@ pub fn reclaim(device: i32, bytes: usize) -> Result<ReclaimReport> {
         .map_err(|_| Error::Poisoned("arena registry mutex".into()))?;
     for arena in registry
         .iter()
-        .filter_map(Weak::upgrade)
-        .filter(|arena| arena.device == device)
+        .filter(|(ordinal, _)| *ordinal == device)
+        .filter_map(|(_, arena)| Weak::upgrade(arena))
     {
         if report.reclaimed_bytes >= bytes {
             break;
@@ -1968,8 +2008,8 @@ pub fn resident_bytes(device: i32) -> Result<usize> {
         .map_err(|_| Error::Poisoned("arena registry mutex".into()))?;
     registry
         .iter()
-        .filter_map(Weak::upgrade)
-        .filter(|arena| arena.device == device)
+        .filter(|(ordinal, _)| *ordinal == device)
+        .filter_map(|(_, arena)| Weak::upgrade(arena))
         .try_fold(0usize, |bytes, arena| {
             bytes
                 .checked_add(arena.stats()?.resident_bytes)

@@ -90,6 +90,16 @@ def split_policy(payload: Probe, tel: Telemetry) -> Report:
     return _cuda_child(payload, tel, "split_policy.py", "varena-p2-split-policy")
 
 
+class CooperativeProbe(Probe):
+    gpu_uuid: str = ""
+
+
+@app.entrypoint(accelerator=True)
+def cooperative(payload: CooperativeProbe, tel: Telemetry) -> Report:
+    """Two fresh CUDA processes exercise the explicit same-domain native ledger."""
+    return _cuda_child(payload, tel, "cooperative.py", "varena-p3-cooperative")
+
+
 @app.entrypoint(accelerator=True)
 def native_cudnn(payload: Probe, tel: Telemetry) -> Report:
     """Fresh native-Torch cuDNN lifetime control, retaining the same strict sanitizer verdict."""

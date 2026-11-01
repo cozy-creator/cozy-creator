@@ -66,3 +66,8 @@ concurrent asks/duplicate acks, stale row identities, a stopped-but-live owner, 
 while its forked child survives, and descriptor-number reuse before dropping inherited Rust objects. Namespace
 proof is reported only when an actual namespace transition can run; a fabricated namespace ID is not that proof.
 No CUDA test, foreign-game latency or complete P3 acceptance is implied by these CPU checks.
+
+
+The separate [GPU integration checkpoint](cooperative-gpu.md) adds an explicit native participant
+on top of this metadata API. It does not change the metadata-only CPU proof into GPU evidence or
+activate TensorD/allocator policy automatically.

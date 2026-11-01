@@ -3,6 +3,9 @@
 //! A graph owner must call `pool_capture_complete` after CUDA capture actually ends and
 //! `pool_record_stream` after every replay/consumer submission before dropping its reference.
 
+#[cfg(all(target_os = "linux", target_has_atomic = "64"))]
+pub(crate) mod peer;
+
 use crate::{Error, GlobalCaptureGuard, Result, cuda};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -751,9 +754,14 @@ impl Working {
     }
 
     fn poll(&self, state: &mut State) -> Result<()> {
+        self.poll_mode(state, true)
+    }
+
+    // A peer response may query submitted fences, but never join unknown consumers.
+    fn poll_mode(&self, state: &mut State, join_unknown: bool) -> Result<()> {
         // The caller holds capture exclusion. Unknown foreign consumers require a context
         // completion proof, but their last-owner retirement itself never calls CUDA.
-        if state
+        if join_unknown && state
             .blocks
             .values()
             .any(|block| block.life == Life::Unjoined)
@@ -1133,6 +1141,13 @@ impl Working {
         exclude: Option<PoolId>,
         preserve: &BTreeSet<u64>,
     ) -> Result<usize> {
+        self.trim_ready_capped(state, limit, exclude, preserve, usize::MAX, &mut 0)
+    }
+
+    fn trim_ready_capped(
+        &self, state: &mut State, limit: usize, exclude: Option<PoolId>,
+        preserve: &BTreeSet<u64>, maximum: usize, completed: &mut usize,
+    ) -> Result<usize> {
         let mut released = 0usize;
         let mut candidates = Vec::new();
         for (base, segment) in &state.segments {
@@ -1165,8 +1180,10 @@ impl Working {
                 break;
             }
             let segment = &state.segments[&base];
+            if segment.bytes > maximum.saturating_sub(released) { continue; }
             self.driver.unmap(base, segment.bytes)?;
             self.driver.release(segment.handle)?;
+            *completed += segment.bytes;
             let bytes = segment.bytes;
             self.room
                 .working

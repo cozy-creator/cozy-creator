@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 from .. import _ext
+from .cooperative import Cooperation
 
 if TYPE_CHECKING:
     from torch import Tensor
