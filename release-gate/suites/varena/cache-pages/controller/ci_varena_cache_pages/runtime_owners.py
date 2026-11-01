@@ -141,8 +141,9 @@ def allocator_progress(payload, ctx):
 
 class ResizeResult(ctypes.Structure):
     _fields_ = [('gil_before', ctypes.c_int), ('gil_after', ctypes.c_int),
-                ('failed', ctypes.c_int), ('callback_marker', ctypes.c_int),
-                ('error', ctypes.c_char * 2048)]
+                ('failed', ctypes.c_int), ('expected_exception', ctypes.c_int),
+                ('callback_marker', ctypes.c_int), ('error', ctypes.c_char * 2048),
+                ('exception_type', ctypes.c_char * 256)]
 
 
 def held_gil(payload, ctx):
@@ -151,8 +152,11 @@ def held_gil(payload, ctx):
     path = Path(__file__).parent / 'bin/gil_resize.so'
     assert digest(path) == payload.gil_gate_sha256
     gate = ctypes.PyDLL(str(path))
+    abi = gate.resize_fixture_abi
+    abi.argtypes, abi.restype = [], ctypes.c_int
+    assert abi() == 2  # Refuse an old C result layout before committing any Cache pages.
     resize = gate.resize_holding_gil
-    resize.argtypes = [ctypes.py_object, ctypes.c_uint64, ctypes.POINTER(ctypes.c_int),
+    resize.argtypes = [ctypes.py_object, ctypes.c_uint64, ctypes.py_object, ctypes.POINTER(ctypes.c_int),
                        ctypes.POINTER(ResizeResult)]
     resize.restype = ctypes.c_int
     marker = ctypes.c_int(0)
@@ -175,16 +179,16 @@ def held_gil(payload, ctx):
     vt.set_limit(0, limit)
     try:
         first = ResizeResult()
-        assert resize(storage, 16 * MIB, ctypes.byref(marker), ctypes.byref(first)) == 0
+        assert resize(storage, 16 * MIB, torch.OutOfMemoryError, ctypes.byref(marker), ctypes.byref(first)) == 0
         assert first.gil_before == first.gil_after == 1
         assert first.failed and first.callback_marker == 0, (first.failed, first.callback_marker)
-        assert 'memory' in bytes(first.error).decode().lower(), bytes(first.error)
+        assert first.expected_exception == 1, (bytes(first.exception_type), bytes(first.error))
         assert storage.nbytes() == 2 * MIB
         # This wait deliberately releases the GIL only AFTER recording the original refusal.
         until(ctx, lambda: cache.stats()['mapped_bytes'] == 0, 'Python owner did not complete after GIL release')
         assert marker.value == 1 and owner.facts()['returned'] == 1
         second = ResizeResult()
-        assert resize(storage, 16 * MIB, ctypes.byref(marker), ctypes.byref(second)) == 0
+        assert resize(storage, 16 * MIB, torch.OutOfMemoryError, ctypes.byref(marker), ctypes.byref(second)) == 0
         assert second.gil_before == second.gil_after == 1 and not second.failed
         assert storage.nbytes() == 16 * MIB
         full_tensor_value(view, 7)
@@ -197,6 +201,8 @@ def held_gil(payload, ctx):
                                        'provenance': provenance, 'managed_limit': limit,
                                        'first': {'gil_before': first.gil_before, 'gil_after': first.gil_after,
                                                  'failed': bool(first.failed), 'callback_marker': first.callback_marker,
+                                                 'expected_exception': bool(first.expected_exception),
+                                                 'exception_type': bytes(first.exception_type).decode(),
                                                  'error': bytes(first.error).decode()},
                                        'later_allocation': {'gil_held': second.gil_after, 'bytes': storage.nbytes(),
                                                             'preserved_old_bytes': 2 * MIB},
