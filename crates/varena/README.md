@@ -43,8 +43,13 @@ CUDA library/context allocations. Stats on an unopened device do not initialize 
 after fork is rejected. No Python callback, background daemon or cross-process policy is added here.
 P0 qualification receipts are tracked in xs-138; P1 native ownership changes require fresh proof.
 Integrations call `working::bind_process` when registering callbacks, before CUDA initialization.
-Every core operation still checks the actual PID before inherited locks, including null alloc/free
-and record-stream callbacks; the integration need not repeat that syscall on the healthy hot path.
+The [one_process/1 host-process contract](process-contract.md) supports ordinary same-process TLS
+threads and rejects ordinary/private-VM fork descendants before inherited locks, including null
+alloc/free and record-stream callbacks. Linux defaults to a kernel-cleared fork marker with initial
+per-thread PID authentication; unavailable setup/non-Linux retain actual PID checks. The explicit
+`strict-pid-guard` build checks every operation's actual PID. Shared-VM children with copied
+TLS must exec/exit before allocator/CUDA use; the fast guard does not promise to diagnose that
+unsupported call pattern. This is an explicit contract revision, not universal different-PID detection.
 
 Default and Torch-pooled streams live for the process. A caller owning a destroyable stream must
 stop submissions, synchronize it, call `working::retire_stream(device, stream)`, then destroy it.

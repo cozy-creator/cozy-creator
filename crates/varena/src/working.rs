@@ -618,10 +618,14 @@ struct Working {
 
 static DEVICES: OnceLock<Mutex<BTreeMap<i32, Arc<Working>>>> = OnceLock::new();
 
-/// Bind integration registration to this process without initializing CUDA or taking a lock.
-/// Every later operation still checks the actual PID before accessing inherited state.
+/// Bind integration registration before CUDA under the one_process/1 contract. Linux's
+/// default kernel guard is armed here; strict/non-Linux/setup-failure paths check actual PID.
+/// A private-VM fork child rejects rather than arming inherited state.
 pub fn bind_process() -> Result<()> {
-    crate::check_process()
+    crate::check_process()?;
+    #[cfg(all(target_os = "linux", feature = "kernel-fork-guard", not(feature = "strict-pid-guard")))]
+    crate::fork_guard::arm()?;
+    Ok(())
 }
 
 fn devices() -> Result<MutexGuard<'static, BTreeMap<i32, Arc<Working>>>> {

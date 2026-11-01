@@ -17,6 +17,8 @@ pub mod working;
 pub mod ledger;
 #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
 pub mod cooperative;
+#[cfg(all(target_os = "linux", feature = "kernel-fork-guard", not(feature = "strict-pid-guard")))]
+pub mod fork_guard;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering};
@@ -442,7 +444,46 @@ struct DeviceActivity {
 static CAPTURES: OnceLock<Mutex<BTreeMap<i32, DeviceActivity>>> = OnceLock::new();
 static PROCESS: AtomicU32 = AtomicU32::new(0);
 
+/// Observed process-check backend. Reading this never initializes CUDA or arms a guard.
+#[derive(Debug)]
+pub struct ProcessGuardStatus {
+    pub backend: &'static str,
+    pub marker: u32,
+    pub thread_authenticated: bool,
+    pub page_address: usize,
+    pub page_bytes: usize,
+    pub failure_stage: u32,
+    pub failure_errno: i32,
+}
+
+pub fn process_guard_status() -> ProcessGuardStatus {
+    #[cfg(all(target_os = "linux", feature = "kernel-fork-guard", not(feature = "strict-pid-guard")))]
+    {
+        fork_guard::status()
+    }
+    #[cfg(not(all(target_os = "linux", feature = "kernel-fork-guard", not(feature = "strict-pid-guard"))))]
+    {
+        ProcessGuardStatus {
+            backend: "actual_pid",
+            marker: 0,
+            thread_authenticated: false,
+            page_address: 0,
+            page_bytes: 0,
+            failure_stage: 0,
+            failure_errno: 0,
+        }
+    }
+}
+
 fn check_process() -> Result<()> {
+    #[cfg(all(target_os = "linux", feature = "kernel-fork-guard", not(feature = "strict-pid-guard")))]
+    if let Some(result) = fork_guard::check() {
+        return result;
+    }
+    check_process_pid()
+}
+
+fn check_process_pid() -> Result<()> {
     let pid = std::process::id();
     let owner = match PROCESS.load(Ordering::Relaxed) {
         0 => PROCESS

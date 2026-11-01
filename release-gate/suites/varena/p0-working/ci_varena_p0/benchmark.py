@@ -110,6 +110,15 @@ def main(config):
     pairs(1024)  # one untimed warmup; leave the resulting cache/slabs intact for every sample
     torch.cuda.synchronize()
     warm = memory()
+    actual["process_guard"] = json.loads(_ext._varena_process_guard_status())
+    assert actual["process_guard"]["schema"] == "varena.process_guard/1"
+    assert actual["process_guard"]["contract"] == "one_process/1"
+    actual["pid"] = os.getpid()
+    if mode == "varena":
+        assert actual["process_guard"]["backend"] in ("kernel_wipe", "fallback_pid", "actual_pid")
+    if actual["process_guard"]["backend"] == "kernel_wipe":
+        assert actual["process_guard"]["marker"] == actual["pid"]
+        assert actual["process_guard"]["thread_authenticated"]
     emit({"benchmark_warmup": warm, "mode": mode, "pairs": 1024 * len(SIZES)})
     samples = []
     pair_count = config["rounds"] * len(SIZES)
