@@ -1244,6 +1244,103 @@ impl Region {
         })
     }
 
+    /// Atomically admit all missing regions of one immutable raw stage, without reclaim.
+    /// The source adapter has not issued writes or exported these new Fill pins yet.
+    #[allow(unsafe_code)]
+    pub fn prepare_replay_prefetch(
+        regions: &[Arc<Self>],
+        capability: &working::ReplayPrefetch,
+    ) -> Result<Option<Vec<Preparation>>> {
+        let Some(first) = regions.first() else {
+            return Ok(None);
+        };
+        if regions
+            .iter()
+            .any(|region| !Arc::ptr_eq(&region.arena, &first.arena))
+        {
+            return Ok(None); // Mixed arenas keep ordinary demand loading; no speculative partial group.
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        if regions.iter().any(|region| !ids.insert(region.id)) {
+            return Err(Error::Invalid("raw prefetch regions must be distinct"));
+        }
+        let captures = capture_counts()?;
+        if ensure_not_capturing(&captures, first.device()).is_err() {
+            return Ok(None);
+        }
+        let arena = &first.arena;
+        let mut state = arena.lock()?;
+        let _context = arena.driver.enter()?;
+        let mut missing = 0usize;
+        let mut cold = false;
+        for region in regions {
+            let entry = state
+                .entries
+                .get(&region.id)
+                .expect("source owns its region");
+            if entry.uses.state() == Contents::Ready {
+                continue;
+            }
+            if entry.uses.state() == Contents::Loading || entry.uses.pins() != 0 {
+                return Ok(None);
+            }
+            cold = true;
+            if entry.handle.is_none() {
+                let Some(total) = missing.checked_add(region.rounded) else {
+                    return Ok(None);
+                };
+                missing = total;
+            } else if arena.completion(&mut state, region.id)? != Completion::Done {
+                return Ok(None); // A speculative read never waits for an earlier writer/consumer.
+            }
+        }
+        if !cold {
+            return Ok(None);
+        }
+        working::admit_replay_prefetch(first.device(), capability, missing, || {
+            let mut prepared = Vec::with_capacity(regions.len());
+            let mut created = Vec::new();
+            for region in regions {
+                let fresh = state.entries[&region.id].handle.is_none();
+                match region.prepare_locked(Admission::Prefetch, &captures, &mut state) {
+                    Ok(value) => {
+                        if fresh {
+                            created.push(region.id);
+                        }
+                        prepared.push(value);
+                    }
+                    Err(error) => {
+                        // No producer or consumer has seen these pins. Abort the complete
+                        // admitted prefix before returning a decline; no partial IO starts.
+                        for value in prepared {
+                            match value {
+                                Preparation::Fill(fill) => {
+                                    // SAFETY: group admission has issued no writes or exports.
+                                    drop(unsafe { fill.abort_completed() });
+                                }
+                                Preparation::Resident(pin) => {
+                                    // SAFETY: this temporary pin was never handed to a consumer.
+                                    drop(unsafe { pin.into_completed_region() });
+                                }
+                            }
+                        }
+                        if matches!(
+                            error,
+                            Error::OutOfMemory { .. } | Error::Busy | Error::CaptureActive
+                        ) {
+                            for id in created {
+                                arena.release_backing(&mut state, id)?;
+                            }
+                        }
+                        // Ambiguous device faults retain tracked mappings in the poisoned arena.
+                        return Err(error);
+                    }
+                }
+            }
+            Ok(prepared)
+        })
+    }
+
     fn prepare_with_reclaim(self: &Arc<Self>, admission: Admission) -> Result<Preparation> {
         let result = (|| {
             let captures = capture_counts()?;

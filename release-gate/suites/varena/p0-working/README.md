@@ -224,3 +224,23 @@ Exact native execution module path/hash is included alongside TensorFS/Torch pro
 Run only on the owned rental after installing the paired candidate; this source checkpoint has
 not executed these CUDA cells. The existing 18 allocator cases, P2 eager/admission fixture and
 unchanged allocation-overhead gate remain independent required checks.
+
+## P2 production raw lookahead (source only until run)
+
+`/raw_prefetch` creates real immutable raw TensorFS groups, captures their readers at fixed
+addresses, detaches temporary input aliases, and runs two passes through actual native source
+and graph continuations. A small existing demand streaming limit forces second-pass misses;
+the new speculation path must leave that setting unchanged.
+
+The fitting case requires the first current definition's unknown sample to decline and its
+second pass to admit/read/use the complete 4 MiB successor. Three refusal cases require zero
+speculative issued bytes: complete-group physical room is insufficient even though its first
+region fits, the supplied semantic key is unrelated, or the supplied graph definition differs
+from the active current stage. The managed limit is set after linking, so link-time capacity
+cannot authorize later reads. All demand outputs must still contain the exact stored bytes.
+
+The fixture reports actual prefetch_started/used/skipped and issued/read bytes, native
+observation rows, unchanged streaming limit and final allocator/weight retirement. Delivered
+CLI completion is not sufficient; the fitting arm must have actual source lookahead and the
+refusal arms must not invalidate their successful demand measurements. These CUDA cells and
+full-model capture/denoise/H2D qualification remain pending at this source checkpoint.

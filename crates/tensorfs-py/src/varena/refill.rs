@@ -234,40 +234,64 @@ impl StageSource {
     }
 
     pub(super) fn prepare(&self) -> Result<Work, Failure> {
-        self.prepare_with_reclaim(true)
+        // Ordinary demand preserves its existing ready-pin-before-reclaim ownership.
+        let mut inputs = self.inputs();
+        for input in &mut inputs {
+            input.pin = input.region.try_pin().map_err(Failure::Native)?;
+        }
+        let producer = varena::enter_producer(self.device()).map_err(Failure::Native)?;
+        for input in &mut inputs {
+            if input.pin.is_none() {
+                match input.region.prepare().map_err(Failure::Native)? {
+                    varena::Preparation::Resident(pin) => input.pin = Some(pin),
+                    varena::Preparation::Fill(fill) => input.fill = Some(fill),
+                }
+            }
+        }
+        io::prepare_device(self.device()).map_err(cuda_failure)?;
+        Ok(self.work(inputs, producer))
     }
 
-    /// No allocation until the caller has explicitly admitted this bounded future stage.
-    /// Existing arena no-reclaim admission enforces its current streaming window as well.
-    pub(super) fn prepare_speculative(&self, budget: usize) -> Result<Option<Work>, Failure> {
-        if self.reservation_bytes() > budget {
-            return Ok(None);
-        }
-        if self
+    /// At the predecessor's actual graph-running point, admit one complete raw source group.
+    /// Identity and measured demand are native decisions; no caller byte window is accepted.
+    pub(super) fn prepare_speculative(
+        &self,
+        capability: &varena::working::ReplayPrefetch,
+    ) -> Result<Option<Work>, Failure> {
+        let producer = match varena::enter_producer(self.device()) {
+            Ok(producer) => producer,
+            Err(varena::Error::CaptureActive) => return Ok(None),
+            Err(error) => return Err(Failure::Native(error)),
+        };
+        let regions: Vec<_> = self
             .inputs
             .iter()
-            .try_fold(true, |ready, (region, _)| {
-                region.is_resident().map(|resident| ready && resident)
-            })
+            .map(|(region, _)| region.clone())
+            .collect();
+        let Some(prepared) = varena::Region::prepare_replay_prefetch(&regions, capability)
             .map_err(Failure::Native)?
-        {
-            return Ok(None); // Demand atomically pins ready inputs; do not add a no-op worker.
+        else {
+            return Ok(None);
+        };
+        let mut inputs = self.inputs();
+        for (input, prepared) in inputs.iter_mut().zip(prepared) {
+            match prepared {
+                varena::Preparation::Resident(pin) => input.pin = Some(pin),
+                varena::Preparation::Fill(fill) => input.fill = Some(fill),
+            }
         }
-        match self.prepare_with_reclaim(false) {
-            Ok(work) => Ok(Some(work)),
-            Err(Failure::Native(
-                varena::Error::OutOfMemory { .. }
-                | varena::Error::Busy
-                | varena::Error::CaptureActive,
-            )) => Ok(None),
-            Err(error) => Err(error),
+        // All allocator locks have been released. The existing source and producer owners
+        // carry the admitted Fill group through staging, read, cancellation and checked drain.
+        let work = self.work(inputs, producer);
+        if let Err(error) = io::prepare_device(self.device()) {
+            work.abandon();
+            return Err(cuda_failure(error));
         }
+        Ok(Some(work))
     }
 
-    fn prepare_with_reclaim(&self, reclaim: bool) -> Result<Work, Failure> {
-        // Keep ordinary/source-identity ownership: no new region or private bank exists.
-        let mut inputs: Vec<_> = self
-            .inputs
+    fn inputs(&self) -> Vec<Input> {
+        self.inputs
             .iter()
             .map(|(region, items)| Input {
                 region: region.clone(),
@@ -275,27 +299,11 @@ impl StageSource {
                 fill: None,
                 pin: None,
             })
-            .collect();
-        for input in &mut inputs {
-            input.pin = input.region.try_pin().map_err(Failure::Native)?;
-        }
-        let producer = varena::enter_producer(self.device()).map_err(Failure::Native)?;
-        for input in &mut inputs {
-            if input.pin.is_none() {
-                match (if reclaim {
-                    input.region.prepare()
-                } else {
-                    input.region.prepare_without_reclaim()
-                })
-                .map_err(Failure::Native)?
-                {
-                    varena::Preparation::Resident(pin) => input.pin = Some(pin),
-                    varena::Preparation::Fill(fill) => input.fill = Some(fill),
-                }
-            }
-        }
-        io::prepare_device(self.device()).map_err(cuda_failure)?;
-        Ok(Work {
+            .collect()
+    }
+
+    fn work(&self, inputs: Vec<Input>, producer: varena::ProducerGuard) -> Work {
+        Work {
             region: inputs[0].region.clone(),
             inputs,
             continuation: None,
@@ -309,7 +317,7 @@ impl StageSource {
             prepared_decode: None,
             lookahead: None,
             host: None,
-        })
+        }
     }
 }
 

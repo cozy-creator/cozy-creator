@@ -45,3 +45,28 @@ ownership supply the next cutover's evidence; they do not silently enable produc
 Omitted `footprints=None` preserves the original preference-only wrapper; explicit tuples,
 even empty tuples, opt into native observation. This avoids nesting a new observation inside
 an older Runtime's outer non-publishing replay scope. Missing traces still cannot publish.
+
+## Native raw-source lookahead
+
+A source edge now carries `execution_key` and ordered footprint tokens through
+`StageJob.link_next(next_job, ...)`; it carries no byte budget. At the actual graph-running
+lookahead point, Varena matches that identity to the active replay and the last successful
+sample for exactly those definitions. Unknown, retired, invalid or mismatched scopes decline.
+An active external-callback interval also declines speculation without invalidating CPU-only
+measurement. Current graph-trace pages are already backed and count once; remaining measured
+working headroom is protected beside all currently charged outside memory.
+
+The complete raw source group must use one arena. Under capture exclusion, arena state and
+working metadata locks, admission sums every missing mapping and checks driver-free and
+managed capacity for the entire group. It never reclaims, waits on consumers or changes the
+old streaming limit. If a foreign allocation causes a mid-group capacity refusal, newly
+admitted but never submitted fills are aborted and their fresh pages released; no partial IO
+starts. Ambiguous device faults retain tracked custody in the poisoned arena. Ordinary demand
+loading keeps its existing behavior.
+
+Only after locks drop does the existing TensorFS read worker receive the Fill group. Source,
+producer, cancellation, rearm and checked-drain ownership remain in that worker. Private
+encoded/decode scratch remains ineligible for this speculation path. The concrete
+`supports_measured_lookahead` capability distinguishes this identity-only API from the old
+max-byte API; a consumer without it may skip optional speculation, never restore that old
+budget as a competing fallback.

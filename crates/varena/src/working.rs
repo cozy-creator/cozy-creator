@@ -253,6 +253,37 @@ struct ReplayKey {
     definitions: Vec<u64>,
 }
 
+/// An ordered source edge carries identity only; capacity is checked at actual lookahead.
+#[derive(Clone)]
+pub struct ReplayPrefetch {
+    device: i32,
+    semantic: Option<String>,
+    footprints: Vec<Arc<GraphFootprint>>,
+}
+impl ReplayPrefetch {
+    pub fn new(
+        device: i32,
+        semantic: Option<String>,
+        footprints: Vec<Arc<GraphFootprint>>,
+    ) -> Result<Self> {
+        crate::check_process()?;
+        if semantic.as_ref().is_some_and(String::is_empty) {
+            return Err(Error::Invalid("replay prefetch key must not be empty"));
+        }
+        if footprints
+            .iter()
+            .any(|footprint| footprint.device != device)
+        {
+            return Err(Error::Invalid("replay prefetch definitions cross devices"));
+        }
+        Ok(Self {
+            device,
+            semantic,
+            footprints,
+        })
+    }
+}
+
 struct ReplayTrace {
     footprints: Vec<Arc<GraphFootprint>>,
     bytes: usize,
@@ -2059,6 +2090,71 @@ pub(crate) fn admit_prefetch<T>(
             ),
         )
     });
+    admit_with_gap(&owner, &mut state, bytes, gap, admit)
+}
+
+/// An adjacent source may use only the predecessor definition's current, qualified replay
+/// sample. Neither a same-name recapture nor an unrelated active phase authorizes this edge.
+pub(crate) fn admit_replay_prefetch<T>(
+    device: i32,
+    capability: &ReplayPrefetch,
+    bytes: usize,
+    admit: impl FnOnce() -> Result<T>,
+) -> Result<Option<T>> {
+    let Some(owner) = existing(device)? else {
+        return Ok(None);
+    };
+    let mut state = owner.lock()?;
+    state.stats.prefetch_attempts += 1;
+    let gap = (|| {
+        if capability.device != device || owner.external_callbacks.load(Ordering::Acquire) != 0 {
+            return None;
+        }
+        let key = capability.semantic.as_ref()?;
+        let active = state.phases.active.as_ref()?;
+        if active.mode != PhaseMode::Replay
+            || active.invalid.is_some()
+            || active.key.as_ref() != Some(key)
+        {
+            return None;
+        }
+        let trace = active.replay.as_ref()?;
+        let expected: Vec<_> = capability.footprints.iter().map(|f| f.id).collect();
+        let actual: Vec<_> = trace.footprints.iter().map(|f| f.id).collect();
+        if expected.is_empty()
+            || expected != actual
+            || capability
+                .footprints
+                .iter()
+                .any(|footprint| footprint.ranges(&state).is_err())
+        {
+            return None;
+        }
+        let sample = state.phases.replay_samples.get(&ReplayKey {
+            semantic: key.clone(),
+            definitions: expected,
+        })?;
+        if !sample.known {
+            return None;
+        }
+        // Actual trace pages are already backed by their graph owners. Exclusive current
+        // eager backing and completed whole eager segments cover additional measured demand.
+        let covered = trace
+            .backing
+            .saturating_add(state.exclusive_phase_backing())
+            .saturating_add(state.reusable_eager_pages());
+        Some(sample.backing_peak_bytes.saturating_sub(covered))
+    })();
+    admit_with_gap(&owner, &mut state, bytes, gap, admit)
+}
+
+fn admit_with_gap<T>(
+    owner: &Working,
+    state: &mut State,
+    bytes: usize,
+    gap: Option<usize>,
+    admit: impl FnOnce() -> Result<T>,
+) -> Result<Option<T>> {
     let Some(gap) = gap else {
         state.stats.prefetch_declines += 1;
         return Ok(None);

@@ -79,6 +79,12 @@ def replay_policy(payload: Probe, tel: Telemetry) -> Report:
 
 
 @app.entrypoint(accelerator=True)
+def raw_prefetch(payload: Probe, tel: Telemetry) -> Report:
+    """Real repeated raw stages exercise measured identity-only source lookahead."""
+    return _cuda_child(payload, tel, "raw_prefetch.py", "varena-p2-raw-prefetch")
+
+
+@app.entrypoint(accelerator=True)
 def native_cudnn(payload: Probe, tel: Telemetry) -> Report:
     """Fresh native-Torch cuDNN lifetime control, retaining the same strict sanitizer verdict."""
     return _cuda_child(payload, tel, "native_cudnn.py", "native-cudnn-lifetime")
