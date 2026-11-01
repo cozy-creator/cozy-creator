@@ -716,6 +716,32 @@ impl Participant {
             Ok(round)
         })
     }
+
+    /// End only this row's exact advisory round. Existing completed release is preserved;
+    /// withdrawal changes no holdings, driver sample or capacity epoch. False means no
+    /// unfinished round was aborted. A matching finished round still clears this row's want;
+    /// another requester's/stale round is a complete no-op.
+    pub fn withdraw(&self, round_id: u64) -> Result<bool> {
+        self.ledger.transaction(true, |data, _| {
+            self.own(data)?;
+            let Some(round) = data.round.as_mut().filter(|round|
+                round.generation == round_id && round.requester == self.row)
+            else { return Ok(false); };
+            let changed = !round.finished();
+            if changed { round.aborted = true; }
+            self.own(data)?.want = 0;
+            Ok(changed)
+        })
+    }
+
+    /// This row no longer has published demand, including after joining a foreign round.
+    /// The round, other rows, completed bytes and capacity observations are untouched.
+    pub fn clear_want(&self) -> Result<()> {
+        self.ledger.transaction(true, |data, _| {
+            self.own(data)?.want = 0;
+            Ok(())
+        })
+    }
     /// `completed` is cumulative actual physical release reported by this owner, not requested
     /// bytes. Pending release is never included by Round::completed(). Duplicate acks are inert.
     pub fn acknowledge(

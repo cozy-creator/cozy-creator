@@ -41,7 +41,8 @@ def main():
     assert int(warm[0]) == 7
     del warm
     torch.cuda.synchronize(); vt.trim(0)
-    owner = retry(lambda: varena.CooperationOwner(0, config['gpu_uuid'], config['directory'], shared=True, priority=-10))
+    owner = retry(lambda: varena.CooperationOwner(0, config['gpu_uuid'], config['directory'],
+                                                shared=config.get('shared', True), priority=config.get('priority', -10)))
     live = torch.full((8 << 20,), 23, dtype=torch.uint8, device='cuda')
     idle = torch.full((config['idle_bytes'],), 19, dtype=torch.uint8, device='cuda')
     torch.cuda.synchronize(); del idle; gc.collect()
@@ -71,6 +72,9 @@ def main():
                 table = retry(owner.snapshot)
                 mine = next(row for row in table['rows'] if row['id'] == table['owner'])
                 emit({'passed': True, 'row': mine, 'facts': owner.facts(), 'live_preserved': True})
+            elif command == 'share':
+                retry(lambda: owner.configure(shared=True, priority=config.get('priority', -10)))
+                emit({'shared': True})
             elif command == 'stop':
                 break
             else:

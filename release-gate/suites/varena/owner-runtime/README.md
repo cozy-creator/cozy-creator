@@ -84,6 +84,7 @@ The fixture never manually asks or services a donation.
 | `weight` | Demand Region admission recovers after real driver refusals, with one successful fill and a valid phase sample. |
 | `gil` | Real Torch `UntypedStorage.resize_` recovers while the donor holds its GIL inside the checked native gate. |
 | `stopped` | A real SIGSTOPed/live donor remains Waiting with zero completed bytes; coordination expires, control stays active and exhaustion is clean. |
+| `renewal` | Precreate B Dedicated; stop A, expire the first actual allocation, observe automatic owner withdrawal, then make B Shared/lower priority. A stays stopped while a new real allocation uses B. |
 | `writer` | A separate process holds the actual OFD publication lock and is SIGSTOPed; physical recovery expires without declaring it dead or falling back. |
 | `cap`, `va` | Explicit local limit or oversized VA request refuses with zero physical-create OOMs and zero peer recovery. |
 | `limited` | No-reclaim Region admission refuses physical pressure without asking peers. |

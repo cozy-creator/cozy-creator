@@ -40,3 +40,23 @@ and donor progress; overlapping requester/donor roles; real stopped/live/dead pe
 capture/retirement/fork; and a standalone native consumer. Cache callbacks and
 foreign-pressure control remain outside this increment. No new GPU qualification
 or release is claimed by this source checkpoint.
+
+An allocation's recovery interest also has a lifetime. A successful local retry,
+terminal coordination result, cancellation, or expired last local deadline queues
+withdrawal of this participant's exact owned round. The native worker performs the
+ledger transaction outside caller/control locks. A queued withdrawal stays queued
+if another caller arrives; it is drained before a new ask. Other valid local
+waiters retain their interest, and another requester's round cannot be withdrawn.
+An ask that completes after its initiating wait expired is retired the same way.
+
+The row's `want` is the most recently published current demand, not the sum of
+local waiters and never a grant. Ending the last local demand clears only this
+row's `want`, including when it joined a foreign round. Neither operation changes
+holdings, completed-release counts, driver samples or capacity epochs.
+
+The real three-process CPU regression preserves the pre-fix result: a stopped,
+live donor A leaves round 9 Waiting, and a fresh ask still joins it despite newly
+shared, higher-priority B. After exact owner withdrawal, a fresh round selects B.
+Wrong-owner/wrong-generation/duplicate withdrawal and foreign demand clearing are
+checked separately. This is a protocol proof with declared metadata bytes; the
+Runtime `renewal` cell must still establish actual GPU recovery while A stays stopped.

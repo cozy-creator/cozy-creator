@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, MutexGuard, atomic::Ordering};
 
 mod owner;
 pub use owner::{Facts, Owner, RecoveryOutcome, RecoveryReport};
-pub(crate) use owner::recover;
+pub(crate) use owner::{Participation, recover};
 
 fn deferred(error: &Error) -> bool {
     matches!(error,
@@ -200,6 +200,16 @@ impl Peer {
     pub fn ask(&self, sample_generation: u64, wanted: u64) -> Result<ledger::Round> {
         self.check()?;
         Ok(self.participant.ask(sample_generation, wanted)?)
+    }
+
+    pub fn withdraw(&self, round: u64) -> Result<bool> {
+        self.check()?;
+        Ok(self.participant.withdraw(round)?)
+    }
+
+    pub fn clear_want(&self) -> Result<()> {
+        self.check()?;
+        Ok(self.participant.clear_want()?)
     }
 
     /// One finite no-wait donor pass. Copies the assignment before CUDA; publishes and acks

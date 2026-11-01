@@ -3,6 +3,7 @@ import gc
 import os
 import signal
 import time
+from contextlib import ExitStack
 from pathlib import Path
 
 from . import MIB, Requester, current, eventually
@@ -11,7 +12,7 @@ from . import MIB, Requester, current, eventually
 def exercise(payload, ctx):
     from tensorfs import varena
 
-    cases = {'working', 'weight', 'gil', 'stopped', 'writer', 'cap', 'va', 'limited', 'capture', 'replay'}
+    cases = {'working', 'weight', 'gil', 'stopped', 'renewal', 'writer', 'cap', 'va', 'limited', 'capture', 'replay'}
     assert payload.case in cases
     torch, vt, memory, owner, provenance = current(payload, ctx)
     owner_row = eventually(owner._peer.snapshot)['owner']
@@ -19,7 +20,9 @@ def exercise(payload, ctx):
     assert 'driver_physical_ooms' in vt.stats(0) and 'recoveries' in owner.facts()
     target_bytes = 64 * MIB
     child = None
+    replacement = None
     holder = None
+    cleanups = ExitStack()
     gate = stopped = limited = False
     ballast = live = idle = storage = old_view = result = pinned = target_use = None
     arena = varena.Arena(0)
@@ -36,10 +39,11 @@ def exercise(payload, ctx):
         use.commit()
         use.consume_on(torch.cuda.current_stream().cuda_stream)
 
-    def tell(command):
-        child.process.stdin.write(command.encode() + b'\n')
-        child.process.stdin.flush()
-        return child.read()
+    def tell(command, actor=None):
+        actor = child if actor is None else actor
+        actor.process.stdin.write(command.encode() + b'\n')
+        actor.process.stdin.flush()
+        return actor.read()
 
     try:
         warm = torch.full((2 * MIB,), 7, dtype=torch.uint8, device='cuda')
@@ -51,9 +55,16 @@ def exercise(payload, ctx):
         config = {key: getattr(payload, key) for key in ('tensorfs_version', 'extension_sha256', 'shim_sha256', 'gpu_uuid', 'gil_gate_sha256')}
         config.update(directory=str(owner.config.directory), idle_bytes=target_bytes)
         child = Requester(config, 'donor.py')
+        cleanups.callback(child.close)
         ready = child.read()
         assert ready['ready'] and ready['before']['reclaimable'] >= target_bytes
         assert ready['pid'] != os.getpid()
+        if payload.case == 'renewal':
+            replacement = Requester({**config, 'shared': False, 'priority': -20}, 'donor.py')
+            cleanups.callback(replacement.close)
+            replacement_ready = replacement.read()
+            assert replacement_ready['before']['sharing'] == 'Dedicated'
+            setup['replacement_before'] = replacement_ready
 
         live = torch.full((8 * MIB,), 23, dtype=torch.uint8, device='cuda')
         pinned_weight = arena.reserve(8 * MIB)
@@ -75,7 +86,7 @@ def exercise(payload, ctx):
         eventually(lambda: True if arena.stats()['pinned_bytes'] == 8 * MIB else None)
         setup.update(working=vt.stats(0), weights=arena.stats(), owner=owner.facts(), donor=ready)
 
-        pressure = payload.case in {'working', 'weight', 'gil', 'stopped', 'writer', 'limited'}
+        pressure = payload.case in {'working', 'weight', 'gil', 'stopped', 'renewal', 'writer', 'limited'}
         if pressure:
             free, total = torch.cuda.mem_get_info(0)
             quantum = max(2 * MIB, arena.granularity)
@@ -96,7 +107,7 @@ def exercise(payload, ctx):
             held = tell('gil')
             assert held == {'gil_gate': True, 'gil_held': 1}, held
             gate = True
-        elif payload.case == 'stopped':
+        elif payload.case in {'stopped', 'renewal'}:
             os.kill(child.process.pid, signal.SIGSTOP)
             pid, status = os.waitpid(child.process.pid, os.WUNTRACED)
             assert pid == child.process.pid and os.WIFSTOPPED(status)
@@ -108,6 +119,7 @@ def exercise(payload, ctx):
             assert len(paths) == 1, paths
             holder = Requester({'path': str(paths[0]), 'device': table['backing_device'],
                                 'inode': table['backing_inode']}, 'publication_holder.py')
+            cleanups.callback(holder.close)
             held = holder.read()
             assert held['publication_held'] and held['pid'] == holder.process.pid
             os.kill(holder.process.pid, signal.SIGSTOP)
@@ -154,6 +166,25 @@ def exercise(payload, ctx):
                 assert int(result[0]) == int(result[-1]) == 29
         except (torch.OutOfMemoryError, MemoryError) as error:
             operation_error = f'{type(error).__name__}: {error}'
+        if payload.case == 'renewal':
+            assert operation_error is not None, 'first request must expire while only A is eligible'
+            first = {'error': operation_error, 'working': vt.stats(0), 'owner': owner.facts()}
+            assert first['owner']['last_recovery']['outcome'] == 'peer_wait_budget_exhausted'
+            first_round = first['owner']['last_recovery']['round']
+            assert first_round is not None
+            def withdrawn():
+                table = owner._peer.snapshot()
+                round_ = table['round']
+                return table if round_ and round_['generation'] == first_round and round_['aborted'] else None
+            first['withdrawn'] = eventually(withdrawn)
+            assert child.process.poll() is None and first['withdrawn']['round']['completed'] == 0
+            assert next(row for row in first['withdrawn']['rows'] if row['id'] == owner_row)['want'] == 0
+            setup['first_request'] = first
+            assert tell('share', replacement)['shared']  # Existing B changes category; no new CUDA context.
+            phase = vt.phase_enter(0, phase_key)
+            result = torch.full((target_bytes,), 29, dtype=torch.uint8, device='cuda')
+            assert int(result[0]) == int(result[-1]) == 29
+            operation_error = None
         elapsed_ns = time.monotonic_ns() - began
         if phase is not None:
             torch.cuda.synchronize()
@@ -168,10 +199,17 @@ def exercise(payload, ctx):
             assert child.process.poll() is None
             table = eventually(owner._peer.snapshot)
             assert any(row['id'] == ready['row'] and row['pid'] == child.process.pid for row in table['rows'])
-            donation = next(row for row in table['round']['donations'] if row['owner'] == ready['row'])
-            assert donation['completed'] == 0 and donation['answer'] == 'Waiting', donation
-            setup['stopped_donor_at_budget'] = {'pid': child.process.pid, 'row': ready['row'],
-                                               'alive': True, 'donation': donation}
+            if payload.case == 'renewal':
+                assert table['round']['generation'] != setup['first_request']['owner']['last_recovery']['round']
+                assert all(row['owner'] != ready['row'] for row in table['round']['donations'])
+                assert any(row['owner'] == replacement_ready['row'] for row in table['round']['donations'])
+                setup['replacement_round'] = table['round']
+                setup['a_remained_stopped_through_second_allocation'] = True
+            else:
+                donation = next(row for row in table['round']['donations'] if row['owner'] == ready['row'])
+                assert donation['completed'] == 0 and donation['answer'] == 'Waiting', donation
+                setup['stopped_donor_at_budget'] = {'pid': child.process.pid, 'row': ready['row'],
+                                                   'alive': True, 'donation': donation}
             os.kill(child.process.pid, signal.SIGCONT); stopped = False
         if holder is not None:
             assert holder.process.poll() is None
@@ -180,12 +218,14 @@ def exercise(payload, ctx):
             holder.process.stdin.write(b'stop\n'); holder.process.stdin.flush()
             assert holder.read()['publication_released']
             holder.process.wait(timeout=10)
-        if payload.case in {'working', 'weight', 'gil'}:
+        if payload.case in {'working', 'weight', 'gil', 'renewal'}:
             def donation_ready():
-                value = tell('facts')
+                value = tell('facts', replacement)
                 donation = value['facts']['last_donation']
                 return value if donation is not None and donation['completed'] >= target_bytes else None
             donor_after = eventually(donation_ready)
+            if replacement is not None:
+                setup['donor_a_after'] = tell('facts')
         else:
             donor_after = tell('facts')
         assert donor_after['live_preserved']
@@ -194,14 +234,18 @@ def exercise(payload, ctx):
         attempts = native_after['owner']['recoveries'] - native_before['owner']['recoveries']
         physical_working = native_after['working']['driver_physical_ooms'] - native_before['working']['driver_physical_ooms']
         physical_weights = native_after['weights']['driver_physical_ooms'] - native_before['weights']['driver_physical_ooms']
-        if payload.case in {'working', 'weight', 'gil'}:
+        if payload.case in {'working', 'weight', 'gil', 'renewal'}:
             assert operation_error is None, operation_error
             assert attempts >= 1 and physical_working + physical_weights >= 3
             assert native_after['owner']['last_recovery']['outcome'] == 'released'
             assert donor_after['facts']['last_donation']['completed'] >= target_bytes
             assert not idle_weight.resident, 'local idle weights were not reclaimed before asking'
-            assert native_after['working']['ooms'] == native_before['working']['ooms'], 'a recovered allocation counted as terminal OOM'
+            expected_ooms = native_before['working']['ooms'] + int(payload.case == 'renewal')
+            assert native_after['working']['ooms'] == expected_ooms, 'a recovered allocation counted as terminal OOM'
             assert phase_report['published'] and not phase_report['invalidated'], phase_report
+            if payload.case == 'renewal':
+                second_ooms = native_after['working']['driver_physical_ooms'] - setup['first_request']['working']['driver_physical_ooms']
+                assert second_ooms >= 3 and attempts >= 2
         elif payload.case in {'stopped', 'writer'}:
             assert operation_error is not None and attempts >= 1 and physical_working >= 3
             assert native_after['owner']['last_recovery']['outcome'] == 'peer_wait_budget_exhausted'
@@ -232,17 +276,18 @@ def exercise(payload, ctx):
             eventually(lambda: True if arena.stats()['pinned_bytes'] == 0 else None)
             arena.reclaim(1 << 30)
         finally:
-            if holder is not None:
-                holder.close()  # Even a stopped holder releases its OFD lock on owned kill.
-            if child is not None:
-                try:
-                    if not gate and not stopped and child.process.poll() is None:
-                        child.process.stdin.write(b'stop\n'); child.process.stdin.flush()
-                        assert child.read()['stopped']
-                        child.process.wait(timeout=10)
-                        assert child.process.returncode == 0
-                finally:
-                    child.close()
+            try:
+                safe_stop = holder is None or holder.process.poll() is not None
+                for actor in (replacement, child):
+                    if actor is None or (actor is child and (gate or stopped)):
+                        continue
+                    if safe_stop and actor.process.poll() is None:
+                        actor.process.stdin.write(b'stop\n'); actor.process.stdin.flush()
+                        assert actor.read()['stopped']
+                        actor.process.wait(timeout=10)
+                        assert actor.process.returncode == 0
+            finally:
+                cleanups.close()
     def settled():
         vt.trim(0)
         value = vt.stats(0)
