@@ -76,7 +76,9 @@ impl PyPlan {
         self.check()?;
         let result = PyDict::new(py);
         result.set_item("device", self.plan.device())?;
-        result.set_item("scope", "one_arena")?;
+        result.set_item("scope", "device")?;
+        result.set_item("inventory_generation", varena::plan::inventory_generation(self.plan.device())
+            .map_err(|error| super::raise(py, error))?)?;
         let phases = self
             .plan
             .facts()

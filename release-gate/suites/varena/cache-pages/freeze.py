@@ -11,6 +11,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repository', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--native-base', default='c3bf579ae82b42b254aa30fe54c609fc8e89afcb')
     args = parser.parse_args()
 
     def git(*values):
@@ -33,7 +34,7 @@ def main():
         assert data == git('show', f'{source_sha}:{name}'), name
         files[name] = hashlib.sha256(data).hexdigest()
     receipt = {'source_sha': source_sha, 'helper_source': source_sha, 'native_source': source_sha,
-               'native_base': 'c3bf579ae82b42b254aa30fe54c609fc8e89afcb',
+               'native_base': git('rev-parse', args.native_base).decode().strip(),
                'native_tree': git('rev-parse', f'{source_sha}:crates/varena').decode().strip(),
                'archive': str(archive.resolve()), 'archive_sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
                'source_directory': str(tree.resolve()), 'files': files,

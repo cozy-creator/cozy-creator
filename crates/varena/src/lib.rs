@@ -313,7 +313,6 @@ impl Entry {
 
 struct State {
     entries: BTreeMap<u64, Entry>,
-    next_id: u64,
     clock: u64,
     streaming_limit: usize,
     phase_boundary: Option<u64>,
@@ -413,6 +412,7 @@ impl State {
 
 /// A manager owned by one executor. It may serve multiple threads of that process.
 pub struct Arena {
+    id: u64,
     driver: cuda::Driver,
     device: i32,
     pid: u32,
@@ -461,8 +461,24 @@ impl Room {
     }
 }
 
-type ArenaRegistry = Vec<(i32, Weak<Arena>)>;
+struct RegisteredArena {
+    device: i32,
+    id: u64,
+    owner: Weak<Arena>,
+}
+
+type ArenaRegistry = Vec<RegisteredArena>;
 static ARENAS: OnceLock<Mutex<ArenaRegistry>> = OnceLock::new();
+
+// One process/core-wide namespace for reservation and Plan lifetimes. Never use
+// addresses or these identities in compute fingerprints or reusable measurements.
+static NEXT_IDENTITY: AtomicU64 = AtomicU64::new(1);
+
+fn next_identity() -> Result<u64> {
+    check_process()?;
+    NEXT_IDENTITY.try_update(Ordering::Relaxed, Ordering::Relaxed, |value| value.checked_add(1))
+        .map_err(|_| Error::Invalid("native object identity exhausted"))
+}
 
 /// Acquire matching GPU owners before capture/arena/working guards. No recovery or
 /// last-owner destruction runs under the registry; callers keep these leases outside
@@ -471,8 +487,8 @@ fn arena_leases(device: i32) -> Result<Vec<Arc<Arena>>> {
     check_process()?;
     let Some(registry) = ARENAS.get() else { return Ok(Vec::new()); };
     let registry = registry.lock().map_err(|_| Error::Poisoned("arena registry mutex".into()))?;
-    let leases = registry.iter().filter(|(ordinal, _)| *ordinal == device)
-        .filter_map(|(_, arena)| Weak::upgrade(arena)).collect();
+    let leases = registry.iter().filter(|entry| entry.device == device)
+        .filter_map(|entry| entry.owner.upgrade()).collect();
     drop(registry);
     Ok(leases)
 }
@@ -700,6 +716,7 @@ impl Drop for ProducerGuard {
 
 impl Arena {
     pub fn new(device: i32) -> Result<Arc<Self>> {
+        let id = next_identity()?;
         let mut captures = capture_counts()?;
         ensure_recovery_allowed(&captures, device)?;
         let driver = cuda::Driver::open(device)?;
@@ -707,6 +724,7 @@ impl Arena {
         let (capturing, room) = (Arc::clone(&activity.captures), Arc::clone(&activity.room));
         drop(captures);
         let arena = Arc::new(Self {
+            id,
             driver,
             device,
             pid: std::process::id(),
@@ -714,7 +732,6 @@ impl Arena {
             room,
             state: Mutex::new(State {
                 entries: BTreeMap::new(),
-                next_id: 1,
                 clock: 0,
                 streaming_limit: usize::MAX,
                 phase_boundary: None,
@@ -737,11 +754,13 @@ impl Arena {
             .get_or_init(Mutex::default)
             .lock()
             .map_err(|_| Error::Poisoned("arena registry mutex".into()))?;
-        registry.retain(|(_, entry)| entry.strong_count() != 0);
-        registry.push((device, Arc::downgrade(&arena)));
-        plan::arena_changed(device)?;
+        plan::inventory_changed(device)?;
+        registry.push(RegisteredArena { device, id, owner: Arc::downgrade(&arena) });
         Ok(arena)
     }
+
+    /// Never-reused lifetime identity within this process's one native core.
+    pub fn id(&self) -> u64 { self.id }
 
     pub fn device(&self) -> i32 {
         self.device
@@ -799,10 +818,10 @@ impl Arena {
         {
             state.preferred_end = None;
         }
-        let id = state.next_id;
-        state.next_id = id
-            .checked_add(1)
-            .ok_or(Error::Invalid("region id overflow"))?;
+        let id = next_identity()?;
+        // Advance before publication/driver work: failure may conservatively invalidate
+        // a selection, but no new reservation can be published with an old epoch.
+        plan::inventory_changed(self.device)?;
         let _context = self.driver.enter()?;
         let ptr = self.driver.reserve(rounded)?;
         let uses = Arc::new(Uses::new());
@@ -857,7 +876,7 @@ impl Arena {
         ensure_recovery_allowed(&captures, self.device)?;
         if incoming
             .iter()
-            .any(|region| !std::ptr::eq(self, Arc::as_ptr(&region.arena)))
+            .any(|region| self.id != region.arena.id)
         {
             return Err(Error::Invalid(
                 "phase regions must belong to the same arena",
@@ -880,7 +899,7 @@ impl Arena {
     }
 
     pub fn owns_region(&self, region: &Region) -> bool {
-        std::ptr::eq(self, Arc::as_ptr(&region.arena))
+        self.id == region.arena.id
     }
 
     /// Hold this guard over capture. Dependencies must already be prepared and separately pinned.
@@ -1315,9 +1334,29 @@ pub struct RetiredRegion {
 }
 
 impl Region {
+    /// Never-reused process/core-wide reservation identity; independent of its VA.
+    pub fn id(&self) -> u64 { self.id }
+    pub fn arena_id(&self) -> u64 { self.arena.id }
+
+    // Caller holds capture exclusion. Overflow latches the device epoch unusable,
+    // including on these destructor paths where an error cannot be returned.
+    fn retire_intent(&self) {
+        if self.uses.state() != Contents::Retired {
+            let _ = plan::inventory_changed(self.arena.device);
+            self.uses.set(Contents::Retired);
+        }
+    }
+
     pub fn retire(self) -> RetiredRegion {
         if self.arena.pid == std::process::id() {
-            self.uses.set(Contents::Retired);
+            // Frontends may call this while holding their GIL/owner lock, before
+            // handing RetiredRegion to deferred cleanup. Never wait on a GPU teardown
+            // that holds capture exclusion; its eventual Drop linearizes retirement.
+            if let Some(captures) = CAPTURES.get()
+                && let Ok(_captures) = captures.try_lock()
+            {
+                self.retire_intent();
+            }
         }
         RetiredRegion { _region: self }
     }
@@ -2045,10 +2084,10 @@ impl Drop for Region {
         if self.arena.pid != std::process::id() {
             return;
         }
-        self.uses.set(Contents::Retired);
         let Ok(captures) = capture_counts() else {
             return;
         };
+        self.retire_intent();
         let Ok(mut state) = self.arena.lock() else {
             return;
         };
@@ -2081,7 +2120,13 @@ impl Drop for Arena {
         let Ok(captures) = capture_counts() else {
             return;
         };
-        let _ = plan::arena_changed(self.device);
+        if let Some(registry) = ARENAS.get() {
+            let Ok(mut registry) = registry.lock() else { return; };
+            if let Some(index) = registry.iter().position(|entry| entry.id == self.id) {
+                let _ = plan::inventory_changed(self.device);
+                registry.remove(index);
+            }
+        }
         if ensure_recovery_allowed(&captures, self.device).is_err() {
             return;
         }

@@ -27,6 +27,7 @@ class Probe(msgspec.Struct, forbid_unknown_fields=True):
     native_extension_sha256: str
     gpu_uuid: str
     timeout_s: float = 60.0
+    expected_devices: int = 1
     runtime_version: str = ''
     runtime_modules: dict[str, str] = msgspec.field(default_factory=dict)
     gil_gate_sha256: str = ''
@@ -67,7 +68,8 @@ def setup(payload, ctx, *, cache_required=False):
         os.close(own_pidfd)
     assert 0 < payload.timeout_s <= 120
     assert ctx.device.type == 'cuda' and (ctx.device.index or 0) == 0
-    assert torch.cuda.device_count() == 1
+    assert payload.expected_devices in (1, 2)
+    assert torch.cuda.device_count() == payload.expected_devices
     uuid = str(torch.cuda.get_device_properties(0).uuid)
     assert uuid.removeprefix('GPU-').lower() == payload.gpu_uuid.removeprefix('GPU-').lower()
     return binary, {'input': msgspec.to_builtins(payload), 'manifest': manifest,
@@ -298,3 +300,15 @@ def graph_owner_retirement(payload: Probe, ctx: Context) -> Report:
 def graph_owner_replay_exclusion(payload: Probe, ctx: Context) -> Report:
     from .runtime_owners import graph_retirement
     return graph_retirement(payload, ctx, explicit_replay=True)
+
+
+@app.entrypoint(accelerator=True)
+def multi_arena_plan(payload: Probe, ctx: Context) -> Report:
+    assert payload.expected_devices == 1
+    return native(payload, ctx, 'multi_plan')
+
+
+@app.entrypoint(accelerator=True)
+def multi_arena_plan_cross_device(payload: Probe, ctx: Context) -> Report:
+    assert payload.expected_devices == 2, 'this case requires an actual second leased GPU'
+    return native(payload, ctx, 'multi_plan_cross_device')

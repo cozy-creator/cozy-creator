@@ -477,17 +477,14 @@ impl Peer {
         let refresh = crate::ensure_recovery_allowed(&captures, self.device).is_ok();
         // Filter before upgrading: never acquire/drop an unrelated device's last Arc here.
         if let Some(registry) = crate::ARENAS.get() {
-            for (_, weak) in registry
+            for entry in registry
                 .lock()
                 .map_err(|_| crate::Error::Poisoned("arena registry mutex".into()))?
                 .iter()
-                .filter(|(device, _)| *device == self.device)
+                .filter(|entry| entry.device == self.device)
             {
-                if !state
-                    .arenas
-                    .iter()
-                    .any(|arena| std::ptr::eq(Arc::as_ptr(arena), weak.as_ptr()))
-                    && let Some(arena) = weak.upgrade()
+                if !state.arenas.iter().any(|arena| arena.id() == entry.id)
+                    && let Some(arena) = entry.owner.upgrade()
                 {
                     state.arenas.push(arena);
                 }

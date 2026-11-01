@@ -1888,7 +1888,7 @@ pub(crate) fn reclaim_for_weights(device: i32, bytes: usize) -> Result<usize> {
 /// Begin one device-wide execution observation. None means the final configuration is not
 /// known yet: observe demand, but do not admit speculation from an earlier guessed key.
 pub fn phase_enter(device: i32, key: Option<String>, mode: PhaseMode) -> Result<u64> {
-    phase_enter_inner(device, key, mode, None)
+    phase_enter_inner(device, key, mode, None, None)
 }
 
 fn phase_enter_inner(
@@ -1896,12 +1896,18 @@ fn phase_enter_inner(
     key: Option<String>,
     mode: PhaseMode,
     committed_site: Option<(String, String)>,
+    expected_plan_generation: Option<u64>,
 ) -> Result<u64> {
     if key.as_ref().is_some_and(String::is_empty) {
         return Err(Error::Invalid("phase execution key must not be empty"));
     }
     let owner = initialize_owner(device)?;
     let captures = crate::capture_counts()?;
+    if let Some(expected) = expected_plan_generation
+        && crate::plan::generation(device)? != expected
+    {
+        return Err(Error::Invalid("committed phase-plan inventory changed before entry"));
+    }
     let mut state = owner.lock()?;
     if state.phases.active.is_some() {
         return Err(Error::Invalid(

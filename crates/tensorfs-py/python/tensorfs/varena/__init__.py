@@ -180,7 +180,7 @@ def supports_phase_plans() -> bool:
 
 
 class Plan:
-    """Copied native region intent for one arena; no fills, pins or prefetch promise.
+    """Copied native region intent across one device's arenas; no fills, pins or prefetch promise.
 
     Keep this owner while its phase can be used. deactivate retires active intent
     synchronously; dropping the owner then releases its reservation references safely.

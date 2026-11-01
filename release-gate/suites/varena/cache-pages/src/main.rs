@@ -8,6 +8,7 @@ use std::{
 };
 use varena::{Cache, cooperative, ledger, working};
 mod probes;
+mod multi_plan;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 type Ctx = *mut c_void;
 type Retain = unsafe extern "C" fn(*mut Ctx, i32) -> i32;
@@ -219,6 +220,8 @@ fn run() -> Result<Value> {
         "abandoned" => probes::abandoned(&cuda, &peer, device)?,
         "choice" => probes::choice(&cuda, &peer, device)?,
         "choice_plan" => probes::choice_plan(&cuda, &peer, device)?,
+        "multi_plan" => multi_plan::same_device(&cuda, &peer, device)?,
+        "multi_plan_cross_device" => multi_plan::mismatched_device(device)?,
         "owners" => probes::owners(&cuda, &peer, device)?,
         "arena_concurrency" => probes::arena_concurrency(&peer, device)?,
         _ => return Err(io::Error::other("unknown Cache proof mode").into()),
