@@ -6,13 +6,37 @@ use varena::cache_owner::{CacheCallback, CallbackResult, CallbackScope, Cause, R
 
 pyo3::create_exception!(tensorfs, CacheOwnerDeferredError, PyRuntimeError);
 
-fn owner_error(py: Python<'_>, error: varena::Error) -> PyErr {
+pub(super) fn owner_error(py: Python<'_>, error: varena::Error) -> PyErr {
     match error {
         varena::Error::CaptureActive | varena::Error::Busy => {
-            CacheOwnerDeferredError::new_err(error.to_string())
+            let reason = if matches!(error, varena::Error::CaptureActive) {
+                "capture"
+            } else {
+                "busy"
+            };
+            let exception = CacheOwnerDeferredError::new_err(error.to_string());
+            if let Err(error) = exception.value(py).setattr("reason", reason) {
+                return error;
+            }
+            exception
         }
         _ => raise(py, error),
     }
+}
+
+fn callback_error(py: Python<'_>, error: PyErr) -> varena::Error {
+    if error.is_instance_of::<CacheOwnerDeferredError>(py) {
+        let reason = error
+            .value(py)
+            .getattr("reason")
+            .and_then(|reason| reason.extract::<String>());
+        return if reason.is_ok_and(|reason| reason == "capture") {
+            varena::Error::CaptureActive
+        } else {
+            varena::Error::Busy
+        };
+    }
+    varena::Error::Callback(error.to_string())
 }
 
 struct PythonCallback {
@@ -32,13 +56,13 @@ impl CacheCallback for PythonCallback {
                 .ok_or(varena::Error::Invalid("cache callback is retired"))?
                 .bind(py)
                 .call0()
-                .map_err(|error| varena::Error::Callback(error.to_string()))?;
+                .map_err(|error| callback_error(py, error))?;
             if callback.is_none() {
                 return Ok(CallbackResult::Declined);
             }
             let value = callback
                 .call1((bytes,))
-                .map_err(|error| varena::Error::Callback(error.to_string()))?;
+                .map_err(|error| callback_error(py, error))?;
             Ok(
                 if value.is_instance_of::<PyBool>() && !value.is_truthy().unwrap_or(true) {
                     CallbackResult::Declined

@@ -40,7 +40,7 @@ pub enum CallbackResult {
 }
 
 /// Narrow foreign-runtime adapter. Implementations acquire their runtime/GIL first,
-/// then `scope.enter()` before touching opaque GPU owners. Retirement must empty owned
+/// then the appropriate scope before touching opaque GPU owners. Retirement must empty owned
 /// callback data before returning success, so destroying the adapter itself is host-only.
 #[doc(hidden)]
 pub trait CacheCallback: Send + 'static {
@@ -75,7 +75,7 @@ impl CallbackScope {
         })
     }
 
-    /// Python adapters call this only after acquiring the GIL, including retirement.
+    /// Full retirement exclusion for callbacks that can destroy their last GPU owner.
     pub fn enter(&self) -> Result<CallbackGuard> {
         if !self.current()? {
             return Err(Error::Busy);

@@ -377,7 +377,8 @@ class _VarenaCache:
     def stats(self) -> dict[str, int]: ...
     def close(self) -> None: ...
 
-class CacheOwnerDeferredError(RuntimeError): ...
+class CacheOwnerDeferredError(RuntimeError):
+    reason: str
 
 class _VarenaCacheOwner:
     CACHE_OWNER_PROTOCOL: int
