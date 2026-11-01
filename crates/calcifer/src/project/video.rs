@@ -839,7 +839,7 @@ impl Video {
         for key in &left {
             fields.remove(key);
             files.retain(|input| input.field.split('.').next() != Some(key.as_str()));
-            warnings.push(format!("{} takes no {key}: {}'s is left out", renderer.function, node.id));
+            warnings.push(format!("{} takes no {key}: {}'s is left out", self.render(i).target(), node.id));
         }
         Ok(Request { payload, made, field: self.field(i), call, files, render: self.render(i), warnings })
     }
