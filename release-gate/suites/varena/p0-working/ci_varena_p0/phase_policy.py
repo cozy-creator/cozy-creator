@@ -86,11 +86,15 @@ def raw_source():
             checkpoint.close()
 
 
-def decline(region, checkpoint, parts):
+def decline(arena, region, checkpoint, parts):
     before = vt.stats(DEVICE)
+    before_weights = arena.stats()
     result = region.prepare_prefetch(checkpoint, parts, threads=1)
     after = vt.stats(DEVICE)
-    assert result is None and not region.resident and region.allocated_bytes == 0
+    after_weights = arena.stats()
+    assert result is None and not region.resident, (result, after_weights)
+    # allocated_bytes is the stable rounded reservation, even when no pages are mapped.
+    assert after_weights["resident_bytes"] == before_weights["resident_bytes"] == 0, after_weights
     assert after["mapped_bytes"] == before["mapped_bytes"], (before, after)
     assert after["prefetch_admissions"] == before["prefetch_admissions"], (before, after)
     return {name: after[name] - before[name] for name in (
@@ -126,10 +130,10 @@ def samples_and_invalidation():
 
 def overlap_and_unknown():
     name = key("unknown-entry")
-    with raw_source() as (_, region, checkpoint, parts, _):
+    with raw_source() as (arena, region, checkpoint, parts, _):
         token = vt.phase_enter(DEVICE)
         try:
-            declined = decline(region, checkpoint, parts)
+            declined = decline(arena, region, checkpoint, parts)
             refused = False
             try:
                 vt.phase_enter(DEVICE, name)
@@ -240,12 +244,12 @@ def allocator_reclaim_success():
 def outside_live_reserve():
     name = key("outside-live")
     baseline = observe(name, [64 * MIB])
-    with raw_source() as (_, region, checkpoint, parts, _):
+    with raw_source() as (arena, region, checkpoint, parts, _):
         vt.set_limit(DEVICE, 96 * MIB)
         outside = torch.empty(32 * MIB, dtype=torch.uint8, device="cuda")
         outside.fill_(19)
         token = vt.phase_enter(DEVICE, name)
-        declined = decline(region, checkpoint, parts)
+        declined = decline(arena, region, checkpoint, parts)
         value = torch.empty(64 * MIB, dtype=torch.uint8, device="cuda")
         value.fill_(23)
         torch.cuda.synchronize()
@@ -292,10 +296,10 @@ def size_class_floor():
     name = key("size-class-floor")
     baseline = observe(name, [512, 1024])
     assert baseline["peak_bytes"] == 1536 and baseline["backing_peak_bytes"] == 4 * MIB, baseline
-    with raw_source() as (_, region, checkpoint, parts, _):
+    with raw_source() as (arena, region, checkpoint, parts, _):
         vt.set_limit(DEVICE, 4 * MIB)
         token = vt.phase_enter(DEVICE, name)
-        declined = decline(region, checkpoint, parts)
+        declined = decline(arena, region, checkpoint, parts)
         values = allocated(512, 1024)
         torch.cuda.synchronize()
         result = vt.phase_leave(DEVICE, token, completed=True)
@@ -309,13 +313,13 @@ def outside_shared_slab():
     name = key("outside-shared-slab")
     baseline = observe(name, [512, 512])
     assert baseline["backing_peak_bytes"] == 2 * MIB, baseline
-    with raw_source() as (_, region, checkpoint, parts, _):
+    with raw_source() as (arena, region, checkpoint, parts, _):
         vt.set_limit(DEVICE, 4 * MIB)
         outside = allocated(*([512] * ((2 * MIB // 512) - 1)))
         token = vt.phase_enter(DEVICE, name)
         first = torch.empty(512, dtype=torch.uint8, device="cuda")
         assert vt.stats(DEVICE)["mapped_bytes"] == 2 * MIB
-        declined = decline(region, checkpoint, parts)
+        declined = decline(arena, region, checkpoint, parts)
         second = torch.empty(512, dtype=torch.uint8, device="cuda")
         assert vt.stats(DEVICE)["mapped_bytes"] == 4 * MIB
         torch.cuda.synchronize()
