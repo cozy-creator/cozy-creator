@@ -7,7 +7,7 @@
 //! `GET /v1/runs/{id}/outputs/{name}` from the exported file.
 use std::{
     collections::HashMap,
-    io::{Read as _, Seek as _, SeekFrom},
+    io::{Read as _, SeekFrom},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -17,9 +17,8 @@ use std::{
 };
 
 use axum::{
-    body::Body,
     extract::{Path as Route, Query, State, rejection::QueryRejection},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    http::{HeaderMap, HeaderValue},
     response::Response,
 };
 use futures_util::StreamExt as _;
@@ -36,7 +35,7 @@ use protocol::{
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use tokio::{
-    io::{AsyncReadExt as _, AsyncSeekExt as _, AsyncWriteExt as _},
+    io::{AsyncSeekExt as _, AsyncWriteExt as _},
     sync::{Notify, broadcast::error::RecvError, watch},
 };
 use tracing::{info, warn};
@@ -505,7 +504,7 @@ pub async fn serve(
         let message = format!("output {name} of run {number} is a folder: open it on disk");
         return Err(api::refuse(Kind::Conflict, "output_is_a_tree", message));
     }
-    let (Some(mut file), Some(rev)) = (file, item.exported_rev) else {
+    let (Some(file), Some(rev)) = (file, item.exported_rev) else {
         if let Some(reason) = item.export_error {
             let message = format!("output {name} of run {number} will not land: {reason}");
             return Err(api::refuse(
@@ -524,61 +523,14 @@ pub async fn serve(
         return Err(Refusal(refusal.0.next(format!("cozy run show {number}"))));
     };
     let len = file.metadata().map(|m| m.len()).unwrap_or(0);
-    let octets = HeaderValue::from_static("application/octet-stream");
-    let media_type = HeaderValue::from_str(&item.media_type)
-        .ok()
-        .filter(|v| !v.is_empty());
-    let mut response = Response::builder()
-        .header(header::CONTENT_TYPE, media_type.unwrap_or(octets))
-        .header(header::ETAG, format!("\"r{rev}\""))
-        .header(header::ACCEPT_RANGES, "bytes");
-    if item.done && rev == item.rev {
-        response = response.header("x-cozy-digest", &item.digest);
-    }
-    let (status, first, count) = match ranged(headers.get(header::RANGE), len) {
-        Ok(None) => (StatusCode::OK, 0, len),
-        Ok(Some((first, last))) => {
-            let range = format!("bytes {first}-{last}/{len}");
-            response = response.header(header::CONTENT_RANGE, range);
-            (StatusCode::PARTIAL_CONTENT, first, last - first + 1)
-        }
-        Err(()) => {
-            return Ok(response
-                .status(StatusCode::RANGE_NOT_SATISFIABLE)
-                .header(header::CONTENT_RANGE, format!("bytes */{len}"))
-                .body(Body::empty())
-                .expect("a response"));
-        }
-    };
-    file.seek(SeekFrom::Start(first))
+    let mut response = crate::files::send(file, len, &item.media_type, &format!("\"r{rev}\""), &headers)
         .map_err(|e| api::refuse(Kind::Internal, "output_unreadable", e.to_string()))?;
-    let bytes = tokio::fs::File::from_std(file).take(count);
-    Ok(response
-        .status(status)
-        .header(header::CONTENT_LENGTH, count)
-        .body(Body::from_stream(tokio_util::io::ReaderStream::new(bytes)))
-        .expect("a response"))
-}
-
-/// The one range a `Range: bytes=…` header asks of `len` bytes, as (first, last): none for the
-/// whole (no header, or another unit), `Err` for several ranges or one not satisfiable.
-fn ranged(header: Option<&HeaderValue>, len: u64) -> Result<Option<(u64, u64)>, ()> {
-    let asked = header.and_then(|h| h.to_str().ok());
-    let Some(spec) = asked.and_then(|h| h.trim().strip_prefix("bytes=")) else {
-        return Ok(None);
-    };
-    let (first, last) = spec.split_once('-').ok_or(())?;
-    let number = |text: &str| text.trim().parse::<u64>().map_err(|_| ());
-    let end = len.checked_sub(1).ok_or(())?;
-    let (first, last) = match (first.trim(), last.trim()) {
-        ("", suffix) => (len.saturating_sub(number(suffix)?), end),
-        (first, "") => (number(first)?, end),
-        (first, last) => (number(first)?, number(last)?.min(end)),
-    };
-    if first > last {
-        return Err(());
+    if item.done && rev == item.rev
+        && let Ok(digest) = HeaderValue::from_str(&item.digest)
+    {
+        response.headers_mut().insert("x-cozy-digest", digest);
     }
-    Ok(Some((first, last)))
+    Ok(response)
 }
 
 /// Where a run that names no directory puts its outputs: its package's folder, `<org>-<name>` as

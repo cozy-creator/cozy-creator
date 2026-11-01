@@ -102,16 +102,60 @@ unsatisfiable), so a `<video>` seeks it.
 <!-- cl-716 D -->
 
 ### Local code
-<!-- cl-716 A -->
+Local code is a target like any other: `./dir/function` or `./script.py/function`, an absolute path once a
+client has resolved it (Runs). Calcifer reads the package or PEP 723 script, keeps its manifest under
+`~/.cozy/calcifer/local/`, and makes it ready on the machine a call goes to: an install run first when that
+machine lacks it, then the call with its files. Its interface comes from Runtime's static describer on the
+Python and cozy-runtime its project locks; nothing runs to describe it.
 
 ### Projects
-<!-- cl-716 A -->
+A project is a folder holding `project.yaml` (people's), `project.lock` (Calcifer's), `assets/` (everything
+made, `<sha256>.<ext>`), `references/` and `plates/` (people's own files), and its cuts (`edit.mp4`, with
+`resolution:` also `preview.mp4`). Its id is fixed by its folder. A shot's and an upscale's alternatives are
+takes, every other node's versions: records carry one generic field (`versions`, `version`) and a `noun`.
+
+- `POST /v1/projects` `{path, create?}`: the project holding `path` (the nearest folder up from it with a
+  project.yaml), or with `create` a new one made at `path` (`409 project_exists`). Answers `{id, path}` and
+  records it in the index as used now. `404 project_not_found` when no folder up from `path` is a project.
+- `GET /v1/projects?limit=&before=`: the index, last used first: `{projects: [{id, name, path, used_at_ms,
+  missing?, busy?}], older}`. `missing`: the folder no longer holds project.yaml.
+- `DELETE /v1/projects/{id}`: `204`, forgotten from the index; the folder is untouched. `409 project_busy`
+  while it renders.
+- `GET /v1/projects/{id}`: `{id, path, nodes, missing, stale: [{name, why}], busy, cuts: [{cut, path,
+  cut_at_ms?, skips}], warnings}`. Each node is `{name, kind, noun, versions, approved?, assets, made_by?,
+  status}`: `versions` counts them, `approved` is the approved one's number (1 first; absent for a file
+  attached by hand), `assets` what the node reads as now by output name, relative to the folder, and
+  `status` is for people, in the node's noun.
+- `GET /v1/projects/{id}/nodes/{name}`: `{node, versions: [{number, assets, made_by?, runs, approved?}]}`.
+- `POST /v1/projects/{id}/runs` `{names, n?, on, hub, preview?, approve?}` (`Idempotency-Key`): `n` new takes
+  or versions of each name, or `names: ["all"]`, everything missing or out of date, each approved, then the
+  cuts. `approve` approves the new one when it lands (`400 approve_one` with `n` > 1). `202 {id, path}`; the
+  work goes on in the project's walk and is followed on its events.
+- `POST /v1/projects/{id}/approve` `{name, version}`: `{name, noun, number, assets, stale, warnings}`. `stale`
+  names what this put out of date; the cuts are made again when a shot's take changed.
+- `GET /v1/projects/{id}/events`: `started {name, run, number}` (follow the run on `GET /v1/runs/{id}/events`),
+  `landed {name, noun, number, assets}`, `said {message}`, `warning {message}`, `cut {cut, seconds}` and
+  `ended {error?}` when the walk owes nothing more. Not resumable: a client reads `GET /v1/projects/{id}`
+  after reconnecting.
+- `GET|HEAD /v1/projects/{id}/assets/{asset}` (`<sha256>.<ext>`): the asset (Files). Its ETag is its digest.
+- `GET|HEAD /v1/projects/{id}/cuts/{cut}` (`edit.mp4`, `preview.mp4`): the cut as last made (Files), so a
+  `<video>` seeks it; `404 file_missing` before the first cut.
 
 ### Tools and Calcifer
-<!-- cl-716 A: tools, status, down -->
+Calcifer fetches the tools it runs on first need, pinned builds held to their sha256, into `~/.cozy/tools`:
+ffmpeg (cuts, frames, clips) and uv (local code). No route asks for them.
+
+- `POST /v1/down`: `{stopping: true, owed}`. Admission closes, mutations in flight finish, every stream ends,
+  then the server. Machines keep what they accepted; the next Calcifer resumes `owed`. Never refused.
 
 ## CLI verbs and their calls
 
 | Verb | Calls |
 |---|---|
+| `cozy project new <path>` | `POST /v1/projects {path, create: true}` |
+| `cozy project ls` | `GET /v1/projects` |
+| `cozy project render …` | `POST /v1/projects {path}`, `GET /v1/projects/{id}/events`, `POST /v1/projects/{id}/runs`; each `started` run followed on `GET /v1/runs/{id}/events` |
+| `cozy project approve <node> <n>` | `POST /v1/projects {path}`, `POST /v1/projects/{id}/approve` |
+| `cozy project status` | `POST /v1/projects {path}`, `GET /v1/projects/{id}` |
+| any verb, Calcifer of another version | `POST /v1/down`, then the installed cozy's Calcifer started |
 <!-- each PR adds its verbs' rows -->

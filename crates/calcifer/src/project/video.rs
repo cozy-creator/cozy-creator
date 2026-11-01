@@ -19,7 +19,7 @@ use super::{
 };
 
 pub const TYPE: &str = "video";
-/// The name `cozy run all` means: every node, brought up to date.
+/// The name `cozy project render all` means: every node, brought up to date.
 pub const ALL: &str = "all";
 
 /// Each node kind's function unless `defaults:` or the node's `render:` names another.
@@ -37,9 +37,11 @@ const RENDERERS: [(&str, &str); 6] = [
 /// A new project's project.yaml: each kind shown, commented out. Cozy never writes it again: each
 /// node's versions, and which is approved, are in project.lock.
 pub fn skeleton() -> String {
-    "# A video project (`cozy project --help`). Fill in the lists, then
-#   cozy render all --project <this folder> --on <machine>
-# makes everything missing or out of date, in order, and cuts edit.mp4 here.
+    "# A video project (`cozy project --help`). Fill in the lists, then, inside this folder,
+#   cozy project render all --on <machine>
+# makes everything missing or out of date, in order, and cuts edit.mp4 here. Paths are relative to
+# this folder: keep your own files in references/ (pictures, voices, videos that guide) and plates/
+# (footage to edit). Everything cozy makes goes to assets/.
 type: video
 style: \"\"   # the look, added to every picture and shot
 # defaults:   # each node kind's render block; a node's own render: wins
@@ -53,9 +55,9 @@ world_states:   # how a set stands; a shot that writes one changes it for the sh
 shots:   # in order; past its renderer's longest piece (15 s for minimax-h3) a shot needs beats
   # - {name: walk, setup: dock.a, prompt: \"<theo> crosses <dock>.\", duration_s: 8, writes: [{state: stage}],
   #    beats: [{at: 0, prompt: \"He walks to the edge.\"}, {at: 4, prompt: \"He looks out to sea.\"}],
-  #    references: [{name: stride, kind: video, video: refs/walk.mp4}]}   # also plate: {video: …}, first_frame, last_frame
+  #    references: [{name: stride, kind: video, video: references/walk.mp4}]}   # also plate: {video: plates/….mp4}, first_frame, last_frame
 # a node's render: {with: <function or ./dir/function>, models: {...}, lora: [...], options: {...}} renders it another way
-# image: (or a shot's video:) attaches your own file, used until you approve a version cozy made
+# image: (or a shot's video:) attaches your own file (references/theo.png), used until you approve one cozy made
 # resolution: 1440p   # the edit's short edge: shots below it are upscaled (their approved version), and
 # aspect_ratio: \"16:9\"   # the canvas every shot fills; both are the project's alone
 # edit: [{shot: walk, end: 6}]   # which shots and spans the edit cuts; absent: every shot, whole
@@ -90,7 +92,7 @@ struct Project {
 }
 
 /// How a node is rendered: `with` a function as `cozy run` takes it (`[org/]package/function[@release]`,
-/// or local code, `./dir/function`, which `cozy render` made ready), cozy run's model choices
+/// or local code, `./dir/function`, which Calcifer makes ready), cozy run's model choices
 /// (`models`, `lora`, as `cozy run --input` takes them) and the function's own `options`.
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct Render {
@@ -371,6 +373,19 @@ impl Video {
                 format!("{} is a {} project; this cozy makes {TYPE} projects", folder::PROJECT, project.kind),
             ));
         }
+        let outside: Vec<&str> = (inputs(&project).into_iter())
+            .filter(|path| {
+                let at = folder.path(path);
+                !std::fs::canonicalize(&at).unwrap_or(at).starts_with(&folder.dir)
+            })
+            .collect();
+        if !outside.is_empty() {
+            warnings.push(format!(
+                "{} reads files outside the project's folder ({}): the project is not self-contained; keep them in references/ or plates/",
+                folder::PROJECT,
+                outside.join(", ")
+            ));
+        }
         warnings.extend(
             (project.defaults.keys())
                 .filter(|kind| !RENDERERS.iter().any(|(k, _)| k == kind))
@@ -404,6 +419,7 @@ impl Video {
             nodes.push(Node {
                 id: entity.name.clone(),
                 kind,
+                noun: "version",
                 mentionable: true,
                 state: false,
                 order: None,
@@ -421,6 +437,7 @@ impl Video {
                 nodes.push(Node {
                     id,
                     kind: "setup",
+                    noun: "version",
                     mentionable: false,
                     state: false,
                     order: None,
@@ -458,6 +475,7 @@ impl Video {
             nodes.push(Node {
                 id: state.name.clone(),
                 kind: "world_state",
+                noun: "version",
                 mentionable: true,
                 state: true,
                 order: None,
@@ -498,6 +516,7 @@ impl Video {
             nodes.push(Node {
                 id: shot.name.clone(),
                 kind: "shot",
+                noun: "take",
                 mentionable: false,
                 state: false,
                 order: Some(k),
@@ -514,6 +533,7 @@ impl Video {
             nodes.push(Node {
                 id,
                 kind: "upscale",
+                noun: "take",
                 mentionable: false,
                 state: false,
                 order: None,
@@ -527,7 +547,7 @@ impl Video {
             items.push(Item::Upscale(k));
         }
         if let Some(all) = nodes.iter().find(|node| name_key(&node.id) == name_key(ALL)) {
-            let said = format!("{} is named `{ALL}`, which `cozy render {ALL}` means", all.id);
+            let said = format!("{} is named `{ALL}`, which `cozy project render {ALL}` means", all.id);
             return Err(invalid("name_reserved", said).remedy("rename it"));
         }
         let graph = Graph::new(nodes)?;
@@ -715,16 +735,16 @@ impl Video {
                     "upstream_empty",
                     format!("{} reads {}, which has no version yet", node.id, up.id),
                 )
-                .next(format!("cozy render {} --project …", up.id))
+                .next(format!("cozy project render {}", up.id))
             })?;
             let path = match (&edge.state, &up.file) {
                 (None, Some((file, _))) => folder.path(file),
                 _ => folder.path(&folder.find(&digest)?),
             };
-            upstream.push(Upstream { node: up.id.clone(), state: edge.state.clone(), file: digest.clone() });
+            upstream.push(Upstream { node: up.id.clone(), state: edge.state.clone(), asset: digest.clone() });
             reads.push(Read { edge, path, digest });
         }
-        upstream.extend(node.inputs.iter().map(|(key, file)| Upstream { node: key.clone(), state: None, file: file.clone() }));
+        upstream.extend(node.inputs.iter().map(|(key, file)| Upstream { node: key.clone(), state: None, asset: file.clone() }));
         let made = Made { node: node.id.clone(), upstream: Some(upstream), ..Default::default() };
         let styled = |text: String| match self.project.style.trim() {
             "" => text,
@@ -825,7 +845,7 @@ impl Video {
                 let made = lock.made(&shot.name, &reads[0].digest);
                 let same = made.and_then(|made| made.made_by.as_ref())
                     .is_some_and(|by| by.with.starts_with(&format!("{}/", renderer.package)));
-                if let Some(latents) = made.and_then(|made| made.latents.as_ref()).filter(|_| same) {
+                if let Some(latents) = made.and_then(|made| made.assets.get("latents")).filter(|_| same) {
                     let digest = digest_of(latents);
                     files.push(Input { field: "latents".into(), path: folder.path(latents), digest: digest.clone(), at: None });
                     payload["latents"] = Value::String(digest);
@@ -1100,9 +1120,12 @@ impl Video {
 /// Cuts `pieces` into `<project>/<name>` with cozy's ffmpeg, here, on `canvas` (its short edge, or
 /// the first piece's): every piece fills it and is center-cropped, never letterboxed or stretched.
 /// By fast join when every piece is already that size: each piece's span between keyframes is
-/// copied, only the GOPs at its ends are encoded (kept in `<project>/.cuts` by file and span, so a
-/// re-cut encodes only what changed), and the sound is encoded once. Pieces that differ in codec,
-/// size or frame rate are encoded whole.
+/// copied, only the GOPs at its ends are encoded (kept in `<project>/.cuts` by file and span while
+/// the latest edit or preview uses them, so a re-cut encodes only what changed), and the sound is
+/// encoded once. Pieces that differ in codec,
+/// size or frame rate are encoded whole. Nothing is encoded above or below its sources: an edge
+/// piece at its own take's video bitrate, a whole encode and the sound at the highest of the takes
+/// cut in (bitrate, sample rate, channels).
 pub fn cut(
     ffmpeg: &Path,
     ffprobe: &Path,
@@ -1123,6 +1146,7 @@ pub fn cut(
     let (cache, video) = (folder.dir.join(".cuts"), work.path().join("video.mp4"));
     std::fs::create_dir_all(&cache).map_err(io)?;
     let mut kept = BTreeSet::new();
+    let highest = probes.iter().filter_map(|probe| probe.video_bit_rate).max();
     let fits = |probe: &Probe| probe.size == (width, height);
     if probes.iter().all(|probe| probe.video == probes[0].video && probe.video.starts_with("h264 ") && fits(probe)) {
         let mut list = String::new();
@@ -1156,32 +1180,14 @@ pub fn cut(
                     )?;
                 } else if !part.exists() {
                     let staged = work.path().join(format!("{k}-{n}.ts"));
-                    run(
-                        ffmpeg,
-                        &[
-                            "-ss".as_ref(),
-                            from_s.as_ref(),
-                            "-i".as_ref(),
-                            source,
-                            "-t".as_ref(),
-                            to_s.as_ref(),
-                            "-map".as_ref(),
-                            "0:v:0".as_ref(),
-                            "-c:v".as_ref(),
-                            "libx264".as_ref(),
-                            "-preset".as_ref(),
-                            "veryfast".as_ref(),
-                            "-crf".as_ref(),
-                            "18".as_ref(),
-                            "-pix_fmt".as_ref(),
-                            probe.pix_fmt.as_ref(),
-                            "-r".as_ref(),
-                            probe.rate_text.as_ref(),
-                            "-f".as_ref(),
-                            "mpegts".as_ref(),
-                            staged.as_os_str(),
-                        ],
-                    )?;
+                    let mut args: Vec<std::ffi::OsString> = ["-ss", &from_s, "-i"].map(Into::into).into();
+                    args.push(source.to_owned());
+                    let encode = ["-t", &to_s, "-map", "0:v:0", "-c:v", "libx264", "-preset", "veryfast"];
+                    args.extend(encode.into_iter().chain(bit_rate(probe.video_bit_rate).iter().map(String::as_str)).map(Into::into));
+                    let format = ["-pix_fmt", &probe.pix_fmt, "-r", &probe.rate_text, "-f", "mpegts"];
+                    args.extend(format.map(Into::into));
+                    args.push(staged.clone().into_os_string());
+                    run(ffmpeg, &args.iter().map(|a| a.as_os_str()).collect::<Vec<_>>())?;
                     std::fs::rename(&staged, &part).map_err(io)?;
                 }
                 if !copy {
@@ -1221,30 +1227,15 @@ pub fn cut(
         }
         let _ = write!(filter, "{joined}concat=n={}:v=1:a=0[v]", pieces.len());
         let mut args: Vec<std::ffi::OsString> = inputs;
-        args.extend(
-            [
-                "-filter_complex",
-                &filter,
-                "-map",
-                "[v]",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "veryfast",
-                "-crf",
-                "18",
-                "-pix_fmt",
-                "yuv420p",
-                "-f",
-                "mp4",
-            ]
-            .map(Into::into),
-        );
+        let encode = ["-filter_complex", &filter, "-map", "[v]", "-c:v", "libx264", "-preset", "veryfast"];
+        args.extend(encode.into_iter().chain(bit_rate(highest).iter().map(String::as_str)).map(Into::into));
+        args.extend(["-pix_fmt", "yuv420p", "-f", "mp4"].map(Into::into));
         args.push(video.clone().into_os_string());
         run(ffmpeg, &args.iter().map(|a| a.as_os_str()).collect::<Vec<_>>())?;
     }
     let mut mux: Vec<std::ffi::OsString> = vec!["-i".into(), video.into_os_string()];
-    if probes.iter().all(|probe| probe.sound) {
+    let sounds: Vec<&Sound> = probes.iter().filter_map(|probe| probe.sound.as_ref()).collect();
+    if sounds.len() == probes.len() {
         // The sound once, over the whole edit.
         let (mut filter, mut joined, mut inputs) = (String::new(), String::new(), vec![]);
         for (k, (piece, (start, end))) in pieces.iter().zip(&ranges).enumerate() {
@@ -1255,7 +1246,12 @@ pub fn cut(
         let _ = write!(filter, "{joined}concat=n={}:v=0:a=1[a]", pieces.len());
         let sound = work.path().join("sound.m4a");
         let mut args: Vec<std::ffi::OsString> = inputs;
-        args.extend(["-filter_complex", &filter, "-map", "[a]", "-c:a", "aac", "-f", "mp4"].map(Into::into));
+        let most = |of: fn(&Sound) -> Option<u64>| sounds.iter().filter_map(|sound| of(sound)).max();
+        let mut encode = vec!["-filter_complex".to_owned(), filter, "-map".into(), "[a]".into(), "-c:a".into(), "aac".into()];
+        for (flag, value) in [("-b:a", most(|s| s.bit_rate)), ("-ar", most(|s| s.sample_rate)), ("-ac", most(|s| s.channels))] {
+            encode.extend(value.map(|value| [flag.to_owned(), value.to_string()]).into_iter().flatten());
+        }
+        args.extend(encode.into_iter().chain(["-f".into(), "mp4".into()]).map(Into::into));
         args.push(sound.clone().into_os_string());
         run(ffmpeg, &args.iter().map(|a| a.as_os_str()).collect::<Vec<_>>())?;
         mux.extend(["-i".into(), sound.into_os_string(), "-map".into(), "1:a".into()]);
@@ -1266,11 +1262,18 @@ pub fn cut(
     run(ffmpeg, &mux.iter().map(|a| a.as_os_str()).collect::<Vec<_>>())?;
     let out = folder.dir.join(name);
     std::fs::rename(&part, &out).map_err(io)?;
-    // The cache keeps what this edit used.
-    for entry in std::fs::read_dir(&cache).map_err(io)?.flatten() {
-        if !kept.contains(&entry.file_name()) {
-            let _ = std::fs::remove_file(entry.path());
-        }
+    // `.cuts` keeps only the pieces the latest of each cut used, listed beside them as `<cut>.used`.
+    let listed: String = kept.iter().map(|piece| format!("{}\n", piece.to_string_lossy())).collect();
+    std::fs::write(cache.join(format!("{name}.used")), listed).map_err(io)?;
+    let entries: Vec<_> = std::fs::read_dir(&cache).map_err(io)?.flatten().collect();
+    let used = |entry: &std::fs::DirEntry| entry.file_name().to_string_lossy().ends_with(".used");
+    let mut keep: BTreeSet<std::ffi::OsString> = BTreeSet::new();
+    for list in entries.iter().filter(|entry| used(entry)) {
+        let pieces = std::fs::read_to_string(list.path()).unwrap_or_default();
+        keep.extend(pieces.lines().map(std::ffi::OsString::from));
+    }
+    for entry in entries.iter().filter(|entry| !used(entry) && !keep.contains(&entry.file_name())) {
+        let _ = std::fs::remove_file(entry.path());
     }
     Ok(out)
 }
@@ -1304,9 +1307,29 @@ struct Probe {
     pix_fmt: String,
     rate: f64,
     rate_text: String,
-    sound: bool,
+    /// Its video's bitrate (bit/s): its stream's, else its whole file's.
+    video_bit_rate: Option<u64>,
+    sound: Option<Sound>,
     seconds: f64,
     keys: Vec<f64>,
+}
+
+/// A file's sound as ffprobe reads it.
+struct Sound {
+    bit_rate: Option<u64>,
+    sample_rate: Option<u64>,
+    channels: Option<u64>,
+}
+
+/// The encoder's bitrate flags for a source's `bit_rate`: the same average, capped at it over a
+/// two-second buffer; without one, the encoder's own quality.
+fn bit_rate(bit_rate: Option<u64>) -> Vec<String> {
+    match bit_rate {
+        Some(rate) => ["-b:v", &rate.to_string(), "-maxrate", &rate.to_string(), "-bufsize", &(2 * rate).to_string()]
+            .map(str::to_owned)
+            .into(),
+        None => vec!["-crf".into(), "18".into()],
+    }
 }
 
 /// A video's width and height, when ffprobe reads them.
@@ -1326,7 +1349,7 @@ fn probe(ffprobe: &Path, path: &Path) -> Result<Probe, Error> {
     };
     let read_json: Value = serde_json::from_slice(&read(&[
         "-show_entries",
-        "stream=codec_type,codec_name,width,height,pix_fmt,r_frame_rate:format=duration",
+        "stream=codec_type,codec_name,width,height,pix_fmt,r_frame_rate,bit_rate,sample_rate,channels:format=duration,bit_rate",
         "-of",
         "json",
     ])?)
@@ -1362,10 +1385,20 @@ fn probe(ffprobe: &Path, path: &Path) -> Result<Probe, Error> {
         pix_fmt,
         rate,
         rate_text,
-        sound: streams.iter().any(|s| s["codec_type"] == "audio"),
+        video_bit_rate: number(&video["bit_rate"]).or_else(|| number(&read_json["format"]["bit_rate"])),
+        sound: streams.iter().find(|s| s["codec_type"] == "audio").map(|audio| Sound {
+            bit_rate: number(&audio["bit_rate"]),
+            sample_rate: number(&audio["sample_rate"]),
+            channels: number(&audio["channels"]),
+        }),
         seconds: read_json["format"]["duration"].as_str().and_then(|d| d.parse().ok()).unwrap_or(0.0),
         keys,
     })
+}
+
+/// A number ffprobe wrote, as a string or a number.
+fn number(value: &Value) -> Option<u64> {
+    value.as_u64().or_else(|| value.as_str()?.parse().ok())
 }
 
 /// One ffmpeg run, refused with what it said when it fails.
@@ -1428,7 +1461,8 @@ fn current(
     cleans: bool,
 ) -> Result<Versions, Error> {
     let node = lock.node(id);
-    let versions: Vec<String> = node.map(|node| node.versions.iter().map(|made| made.file.clone()).collect()).unwrap_or_default();
+    let versions: Vec<String> =
+        (node.into_iter().flat_map(|node| &node.versions)).filter_map(|made| made.primary().cloned()).collect();
     if let Some(approved) = node.and_then(|node| node.approved.clone()) {
         let digest = digest_of(&approved);
         return Ok((Some((approved, digest)), versions));
@@ -1436,12 +1470,32 @@ fn current(
     let Some(file) = attached else { return Ok((None, versions)) };
     if !folder.path(file).is_file() {
         return Err(invalid("file_missing", format!("{id}'s {field}: {file} is not there"))
-            .remedy(format!("fix the path, or remove `{field}:` and `cozy render {id}` makes one")));
+            .remedy(format!("fix the path, or remove `{field}:` and `cozy project render {id}` makes one")));
     }
     let digest = folder.digest(file)?;
     let clean = (node.into_iter().flat_map(|node| &node.versions))
         .find(|made| cleans && made.clean_of.as_deref() == Some(digest.as_str()));
-    Ok((Some(clean.map_or((file.clone(), digest), |made| (made.file.clone(), digest_of(&made.file)))), versions))
+    let clean = clean.and_then(Made::primary).map(|asset| (asset.clone(), digest_of(asset)));
+    Ok((Some(clean.unwrap_or((file.clone(), digest))), versions))
+}
+
+/// Every file project.yaml names: attached pictures and videos, voices, shots' references, plates
+/// and frames.
+fn inputs(project: &Project) -> Vec<&str> {
+    let mut files: Vec<&str> = vec![];
+    for entity in &project.entities {
+        files.extend(entity.image.iter().chain(&entity.voice).map(String::as_str));
+        files.extend(entity.setups.iter().filter_map(|setup| setup.image.as_deref()));
+    }
+    files.extend(project.world_states.iter().filter_map(|state| state.image.as_deref()));
+    for shot in &project.shots {
+        let own = [&shot.video, &shot.upscale.video, &shot.first_frame, &shot.last_frame];
+        files.extend(own.into_iter().filter_map(Option::as_deref));
+        let plate = shot.plate.as_ref().and_then(|plate| plate.get("video"));
+        let references = shot.references.iter().flat_map(|entry| FILE_FIELDS.iter().filter_map(|field| entry.get(*field)));
+        files.extend(plate.into_iter().chain(references).filter_map(Value::as_str));
+    }
+    files
 }
 
 /// A list a person may leave empty as `key:` alone (a null).
