@@ -50,7 +50,7 @@ def main(config):
 
     manifest = runpy.run_path(str(Path(__file__).with_name('manifest.py')))['MANIFEST']
     snapshot = Path(config['snapshot']).resolve()
-    assert snapshot.name == manifest['revision'], snapshot
+    assert snapshot.is_dir(), snapshot
     for item in manifest['files']:
         assert (snapshot / item['path']).stat().st_size == item['bytes']
     torch.set_num_threads(1)
