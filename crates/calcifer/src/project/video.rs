@@ -393,12 +393,14 @@ impl Video {
         for file in named(&project) {
             let known = lock.inputs.get(file);
             match folder.take_in(file, known)? {
-                Some((input, copied)) => {
-                    if known.is_some_and(|known| known.asset.sha256 != input.asset.sha256) {
+                Some(input) => {
+                    // A link is the original: it changing changes the project. A clone or copy is taken in again.
+                    let changed = known.is_some_and(|known| known.asset.sha256 != input.asset.sha256);
+                    if changed && known.is_some_and(|known| known.method.linked()) {
                         warnings.push(format!("reference changed: {file}; what reads it is out of date"));
                     }
-                    if copied {
-                        warnings.push(format!("{file}: copied into {}/ (this computer allows it no link)", folder::ASSETS));
+                    if input.method == folder::Method::Copy && known.is_none_or(|known| known.method != folder::Method::Copy) {
+                        warnings.push(format!("{file}: copied into {}/, as this computer allows it no link", folder::ASSETS));
                     }
                     inputs.insert(file.to_owned(), input);
                 }
