@@ -3,6 +3,7 @@ import gc
 import os
 import signal
 import time
+from pathlib import Path
 
 from . import MIB, Requester, current, eventually
 
@@ -10,7 +11,7 @@ from . import MIB, Requester, current, eventually
 def exercise(payload, ctx):
     from tensorfs import varena
 
-    cases = {'working', 'weight', 'gil', 'stopped', 'cap', 'va', 'limited', 'capture', 'replay'}
+    cases = {'working', 'weight', 'gil', 'stopped', 'writer', 'cap', 'va', 'limited', 'capture', 'replay'}
     assert payload.case in cases
     torch, vt, memory, owner, provenance = current(payload, ctx)
     owner_row = eventually(owner._peer.snapshot)['owner']
@@ -18,6 +19,7 @@ def exercise(payload, ctx):
     assert 'driver_physical_ooms' in vt.stats(0) and 'recoveries' in owner.facts()
     target_bytes = 64 * MIB
     child = None
+    holder = None
     gate = stopped = limited = False
     ballast = live = idle = storage = old_view = result = pinned = target_use = None
     arena = varena.Arena(0)
@@ -73,7 +75,7 @@ def exercise(payload, ctx):
         eventually(lambda: True if arena.stats()['pinned_bytes'] == 8 * MIB else None)
         setup.update(working=vt.stats(0), weights=arena.stats(), owner=owner.facts(), donor=ready)
 
-        pressure = payload.case in {'working', 'weight', 'gil', 'stopped', 'limited'}
+        pressure = payload.case in {'working', 'weight', 'gil', 'stopped', 'writer', 'limited'}
         if pressure:
             free, total = torch.cuda.mem_get_info(0)
             quantum = max(2 * MIB, arena.granularity)
@@ -99,6 +101,19 @@ def exercise(payload, ctx):
             pid, status = os.waitpid(child.process.pid, os.WUNTRACED)
             assert pid == child.process.pid and os.WIFSTOPPED(status)
             stopped = True
+        elif payload.case == 'writer':
+            table = eventually(owner._peer.snapshot)
+            paths = [p for p in Path(owner.config.directory).iterdir() if p.is_file()
+                     and p.stat().st_dev == table['backing_device'] and p.stat().st_ino == table['backing_inode']]
+            assert len(paths) == 1, paths
+            holder = Requester({'path': str(paths[0]), 'device': table['backing_device'],
+                                'inode': table['backing_inode']}, 'publication_holder.py')
+            held = holder.read()
+            assert held['publication_held'] and held['pid'] == holder.process.pid
+            os.kill(holder.process.pid, signal.SIGSTOP)
+            pid, status = os.waitpid(holder.process.pid, os.WUNTRACED)
+            assert pid == holder.process.pid and os.WIFSTOPPED(status)
+            setup['publication_holder'] = held
 
         native_before = {'working': vt.stats(0), 'weights': arena.stats(), 'owner': owner.facts()}
         phase_key = f'xs138-physical:{payload.case}:{setup.get("ballast_bytes", 0)}'
@@ -158,6 +173,13 @@ def exercise(payload, ctx):
             setup['stopped_donor_at_budget'] = {'pid': child.process.pid, 'row': ready['row'],
                                                'alive': True, 'donation': donation}
             os.kill(child.process.pid, signal.SIGCONT); stopped = False
+        if holder is not None:
+            assert holder.process.poll() is None
+            setup['publication_holder_alive_at_budget'] = True
+            os.kill(holder.process.pid, signal.SIGCONT)
+            holder.process.stdin.write(b'stop\n'); holder.process.stdin.flush()
+            assert holder.read()['publication_released']
+            holder.process.wait(timeout=10)
         if payload.case in {'working', 'weight', 'gil'}:
             def donation_ready():
                 value = tell('facts')
@@ -180,7 +202,7 @@ def exercise(payload, ctx):
             assert not idle_weight.resident, 'local idle weights were not reclaimed before asking'
             assert native_after['working']['ooms'] == native_before['working']['ooms'], 'a recovered allocation counted as terminal OOM'
             assert phase_report['published'] and not phase_report['invalidated'], phase_report
-        elif payload.case == 'stopped':
+        elif payload.case in {'stopped', 'writer'}:
             assert operation_error is not None and attempts >= 1 and physical_working >= 3
             assert native_after['owner']['last_recovery']['outcome'] == 'peer_wait_budget_exhausted'
             assert native_after['owner']['active'] and native_after['owner']['failed'] is None
@@ -210,6 +232,8 @@ def exercise(payload, ctx):
             eventually(lambda: True if arena.stats()['pinned_bytes'] == 0 else None)
             arena.reclaim(1 << 30)
         finally:
+            if holder is not None:
+                holder.close()  # Even a stopped holder releases its OFD lock on owned kill.
             if child is not None:
                 try:
                     if not gate and not stopped and child.process.poll() is None:
