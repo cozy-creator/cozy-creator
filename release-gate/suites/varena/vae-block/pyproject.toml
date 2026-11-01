@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ci-varena-vae"
+version = "0.1.0"
+description = "Actual prepared dense and fused MiniMax H3 VAE consumers"
+requires-python = ">=3.12,<3.15"
+dependencies = ["cozy-runtime>=0.36.18,<0.37", "tensorfs>=0.17,<0.18", "msgspec>=0.19", "torch==2.14.0", "torchvision>=0.29", "diffusers>=0.41,<0.42", "transformers>=5.16.1"]
+
+[project.entry-points."cozy.application"]
+default = "ci_varena_vae:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ci_varena_vae"]
+
+[tool.uv]
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true

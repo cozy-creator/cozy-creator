@@ -1,0 +1,15 @@
+{
+  "ruff": true,
+  "python_syntax": true,
+  "offline_uv_lock": true,
+  "actual_meta_model_and_fixture_import": true,
+  "cuda_initialized": false,
+  "gpu_or_native_build": false,
+  "planned_cases": {
+    "actual-linear": 24,
+    "managed-minimum": 2,
+    "binding-refusal": 2,
+    "post-write-refusal": 2,
+    "retained-context-refusal": 1
+  }
+}
