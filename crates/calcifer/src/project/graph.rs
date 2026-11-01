@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use protocol::error::{Error, Kind};
 
-use super::folder::{Lock, digest_of};
+use super::folder::Lock;
 
 /// How a name matches a mention: any case, with `_`, `-` and space alike (xs-135).
 pub fn name_key(name: &str) -> String {
@@ -145,12 +145,15 @@ impl Graph {
         self.nodes.iter().position(|node| name_key(&node.id) == key)
     }
 
-    /// The digest of what `edge` reads now, if it has been made.
-    pub fn read(&self, lock: &Lock, edge: &Edge) -> Option<String> {
-        let (_, digest) = self.nodes[edge.node].file.as_ref()?;
+    /// What `edge` reads now, its path and sha256, if it has been made.
+    pub fn read(&self, lock: &Lock, edge: &Edge) -> Option<(String, String)> {
+        let (path, digest) = self.nodes[edge.node].file.as_ref()?;
         match &edge.state {
-            None => Some(digest.clone()),
-            Some(state) => lock.made(&self.nodes[edge.node].id, digest)?.writes.get(state).map(|asset| digest_of(asset)),
+            None => Some((path.clone(), digest.clone())),
+            Some(state) => {
+                let frame = lock.made(&self.nodes[edge.node].id, path)?.writes.get(state)?;
+                Some((frame.path.clone(), frame.sha256.clone()))
+            }
         }
     }
 
@@ -161,10 +164,10 @@ impl Graph {
         let mut status = vec![Status::Empty; self.nodes.len()];
         for &i in &self.order {
             let node = &self.nodes[i];
-            let Some((_, digest)) = &node.file else {
+            let Some((path, _)) = &node.file else {
                 continue;
             };
-            let Some(upstream) = lock.made(&node.id, digest).and_then(|made| made.upstream.as_ref()) else {
+            let Some(upstream) = lock.made(&node.id, path).and_then(|made| made.upstream.as_ref()) else {
                 status[i] = Status::Current;
                 continue;
             };
@@ -179,7 +182,7 @@ impl Graph {
                         Some(format!("{up} wrote no {}", edge.state.as_deref().unwrap_or("file")))
                     }
                     Status::Current => (!upstream.iter().any(|u| {
-                        name_key(&u.node) == name_key(up) && u.state == edge.state && Some(&u.asset) == read.as_ref()
+                        name_key(&u.node) == name_key(up) && u.state == edge.state && Some(&u.asset) == read.as_ref().map(|(_, sha)| sha)
                     }))
                     .then(|| format!("{up} changed")),
                 });
