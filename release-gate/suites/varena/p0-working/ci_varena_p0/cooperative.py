@@ -152,6 +152,7 @@ def child(role, config, directory):
         del idle
         torch.cuda.synchronize()
         owned.update(arena=arena, regions=regions, held=held, live=live, idle_pointer=idle_pointer)
+        peer.publish(used=True)
         return published(48 * MIB)
 
     def cleanup():
