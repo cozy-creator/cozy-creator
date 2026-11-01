@@ -414,6 +414,12 @@ fn _varena_split_select<'py>(
             varena::working::split_select(device, key, choices, preferred, stream)
         })
         .map_err(|error| split_error(py, error))?;
+    selection(py, &selected)
+}
+
+fn selection<'py>(
+    py: Python<'py>, selected: &varena::working::SplitSelection,
+) -> PyResult<Bound<'py, PyDict>> {
     let row = PyDict::new(py);
     row.set_item("stream", selected.stream)?;
     row.set_item(
@@ -430,15 +436,15 @@ fn _varena_split_select<'py>(
         "reclaimable_working_bytes",
         selected.reclaimable_working_bytes,
     )?;
-    row.set_item("choice_id", selected.choice_id)?;
-    row.set_item("eligible", selected.eligible)?;
+    row.set_item("choice_id", &selected.choice_id)?;
+    row.set_item("eligible", &selected.eligible)?;
     row.set_item("required_bytes", selected.required_bytes)?;
     row.set_item("available_bytes", selected.available_bytes)?;
     row.set_item("basis", selected.basis)?;
     row.set_item("reclaimed_working_bytes", selected.reclaimed_working_bytes)?;
     row.set_item("reclaimed_weight_bytes", selected.reclaimed_weight_bytes)?;
     row.set_item("plan_generation", selected.plan_generation)?;
-    row.set_item("phase", selected.phase)?;
+    row.set_item("phase", &selected.phase)?;
     row.set_item("phase_weight_bytes", selected.phase_weight_bytes)?;
     row.set_item("phase_missing_bytes", selected.phase_missing_bytes)?;
     row.set_item("phase_outside_reclaimable_bytes", selected.phase_outside_reclaimable_bytes)?;
@@ -501,6 +507,70 @@ fn split_observation<'py>(
     row.set_item("reason", &observed.reason)?;
     row.set_item("successful_passes", observed.successful_passes)?;
     Ok(row)
+}
+
+/// Owns one complete producer-declared execution. No Python callback enters native code.
+#[pyclass(name = "_VarenaExecution", module = "tensorfs._ext", frozen)]
+struct PyExecution {
+    execution: super::Deferred<varena::working::Execution>,
+}
+
+#[pymethods]
+impl PyExecution {
+    #[new]
+    #[pyo3(signature = (device, configuration, site, choices, *, preferred, stream))]
+    fn new(
+        py: Python<'_>, device: i32, configuration: &str, site: &str,
+        choices: Vec<(String, Vec<usize>)>, preferred: &str, stream: u64,
+    ) -> PyResult<Self> {
+        let execution = py.detach(|| {
+            check()?;
+            varena::working::Execution::commit(
+                device, configuration, site, choices, preferred, stream,
+            )
+        }).map_err(|error| split_error(py, error))?;
+        Ok(Self { execution: super::Deferred::new(execution) })
+    }
+
+    #[getter]
+    fn key(&self, py: Python<'_>) -> PyResult<String> {
+        self.execution.key().map(str::to_owned).map_err(|error| super::raise(py, error))
+    }
+
+    #[getter]
+    fn selection<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        selection(py, self.execution.selection().map_err(|error| super::raise(py, error))?)
+    }
+
+    fn enter(&self, py: Python<'_>) -> PyResult<u64> {
+        py.detach(|| { check()?; self.execution.enter() })
+            .map_err(|error| split_error(py, error))
+    }
+
+    fn begin(&self, py: Python<'_>) -> PyResult<()> {
+        py.detach(|| { check()?; self.execution.begin() })
+            .map_err(|error| split_error(py, error))
+    }
+
+    #[pyo3(signature = (*, submitted))]
+    fn end<'py>(&self, py: Python<'py>, submitted: bool) -> PyResult<Bound<'py, PyDict>> {
+        let observed = py.detach(|| self.execution.end(submitted))
+            .map_err(|error| super::raise(py, error))?;
+        split_observation(py, &observed)
+    }
+
+    #[pyo3(signature = (*, completed))]
+    fn finish<'py>(&self, py: Python<'py>, completed: bool) -> PyResult<Bound<'py, PyDict>> {
+        let observed = py.detach(|| self.execution.finish(completed))
+            .map_err(|error| super::raise(py, error))?;
+        observation(py, &observed)
+    }
+
+    fn abort<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        // Cleanup remains possible after the original allocation error was latched.
+        py.detach(|| self.execution.abort()).map_err(|error| super::raise(py, error))?
+            .as_ref().map(|observed| observation(py, observed)).transpose()
+    }
 }
 
 #[pyclass(name = "_VarenaCallbackScope", module = "tensorfs._ext", frozen)]
@@ -694,6 +764,7 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_split_end, module)?)?;
     module.add_class::<PyGraphFootprint>()?;
     module.add_class::<CallbackScope>()?;
+    module.add_class::<PyExecution>()?;
     module.add_function(wrap_pyfunction!(_varena_phase_enter, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_phase_leave, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_phase_invalidate, module)?)?;
