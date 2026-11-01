@@ -229,10 +229,10 @@ impl Calls {
     }
 
     /// Write roots no unfinished run needs (`objects::Objects::sweep`).
-    pub fn sweep_objects(&self) -> io::Result<usize> {
+    pub fn sweep_objects(&self) -> io::Result<(usize, u64)> {
         match self.runs.upgrade() {
             Some(runs) => runs.objects.sweep(),
-            None => Ok(0),
+            None => Ok((0, 0)),
         }
     }
 

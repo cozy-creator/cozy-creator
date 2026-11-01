@@ -306,6 +306,14 @@ pub fn status_fields(status: &MachineStatus) -> Vec<(String, String)> {
                 status.disk_total_bytes as f64 / (1u64 << 30) as f64
             ),
         ));
+        // What fills it, so a full machine says what: the rest is other (the image, runs' files).
+        let kinds = [("models", status.disk_models_bytes), ("package environments", status.disk_environments_bytes), ("Runtime", status.disk_runtime_bytes)];
+        let measured: u64 = kinds.iter().map(|(_, bytes)| bytes).sum();
+        if measured > 0 {
+            let other = (status.disk_total_bytes.saturating_sub(status.disk_free_bytes)).saturating_sub(measured);
+            let parts: Vec<String> = kinds.into_iter().chain([("other", other)]).map(|(kind, bytes)| format!("{kind} {}", crate::output::bytes(bytes))).collect();
+            fields.push(("disk use".into(), parts.join(" · ")));
+        }
     }
     fields.extend(status.runs.iter().map(live_run));
     if !status.mode.is_empty() {

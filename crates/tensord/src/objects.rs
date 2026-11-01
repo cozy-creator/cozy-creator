@@ -173,8 +173,8 @@ impl Objects {
     }
 
     /// Removes objects no unfinished run names and nothing used for the TTL, or for `IDLE`
-    /// while the disk is low.
-    pub fn sweep(&self) -> io::Result<usize> {
+    /// while the disk is low: how many, and their bytes.
+    pub fn sweep(&self) -> io::Result<(usize, u64)> {
         self.release(match Disk::measure(&self.engine.root)?.short() {
             Some(_) => crate::reclaim::IDLE,
             None => crate::reclaim::TTL,
@@ -183,16 +183,16 @@ impl Objects {
 
     /// `sweep` over objects unused for `unused`. One written just before a crash has no journal
     /// row yet: it ages from its own last use.
-    pub fn release(&self, unused: Duration) -> io::Result<usize> {
+    pub fn release(&self, unused: Duration) -> io::Result<(usize, u64)> {
         let _custody = self.guard();
         let before = SystemTime::now().checked_sub(unused).unwrap_or(UNIX_EPOCH);
         let since = before.duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
         let released = self.cas.sweep(unused, &mut |sha256| self.engine.with_journal(|j| j.object_releasable(sha256, since)))?;
-        for sha256 in &released {
+        for (sha256, _) in &released {
             // A memo answered from this file cannot be answered any more.
             self.engine.with_journal(|j| j.drop_held_memos(sha256))?;
         }
-        Ok(released.len())
+        Ok((released.len(), released.iter().map(|(_, length)| length).sum()))
     }
 
     /// The stored object this signer wrote, or None.

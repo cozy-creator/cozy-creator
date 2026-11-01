@@ -178,10 +178,10 @@ impl Cas {
     }
 
     /// Removes each unheld object unused for `age` that `doomed` agrees to, and temp files as
-    /// old: the digests removed. The gate is taken while the holds are read and again around
+    /// old: the digests removed, with their lengths. The gate is taken while the holds are read and again around
     /// each object's last check and removal, never across the walk: a hold written meanwhile
     /// renews its roots' use (`hold`), so they are young when their turn comes.
-    pub fn sweep(&self, age: Duration, doomed: &mut dyn FnMut(&str) -> io::Result<bool>) -> io::Result<Vec<String>> {
+    pub fn sweep(&self, age: Duration, doomed: &mut dyn FnMut(&str) -> io::Result<bool>) -> io::Result<Vec<(String, u64)>> {
         let mut held = BTreeSet::new();
         {
             let _gate = GATE.write().unwrap();
@@ -213,8 +213,9 @@ impl Cas {
                 if !old(&entry.path(), age) || !doomed(&sha256)? {
                     continue;
                 }
+                let length = entry.metadata().map_or(0, |m| m.len());
                 fs::remove_file(entry.path())?;
-                removed.push(sha256);
+                removed.push((sha256, length));
             }
         }
         Ok(removed)

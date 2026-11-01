@@ -1538,6 +1538,9 @@ fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
         stuck: frame.stuck.clone(),
         disk_total_bytes: frame.disk.as_ref().map_or(0, |d| d.total_bytes),
         disk_free_bytes: frame.disk.as_ref().map_or(0, |d| d.free_bytes),
+        disk_models_bytes: frame.disk.as_ref().map_or(0, |d| d.models_bytes),
+        disk_environments_bytes: frame.disk.as_ref().map_or(0, |d| d.environments_bytes),
+        disk_runtime_bytes: frame.disk.as_ref().map_or(0, |d| d.runtime_bytes),
         runs: vec![],
         models: frame
             .models

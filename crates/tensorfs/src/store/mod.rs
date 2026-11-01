@@ -33,7 +33,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
 use platform::durable::{self, DiskClass, FileId};
@@ -183,6 +183,19 @@ pub struct Store {
     unsynced: Arc<AtomicBool>,
     /// A cache: writes run its upkeep (expiry, eviction). An origin's (an endpoint's) never do.
     cache: bool,
+    /// The collections this handle ran (`maintain`), counted under the lock that serializes them.
+    collections: Arc<Mutex<u64>>,
+    /// What frees the machine's garbage before this store evicts a model (`on_short`).
+    reclaim: Arc<OnceLock<Reclaim>>,
+}
+
+/// What frees disk outside a store for bytes coming in, before it evicts a model.
+struct Reclaim(Box<dyn Fn(u64) + Send + Sync>);
+
+impl std::fmt::Debug for Reclaim {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Reclaim")
+    }
 }
 
 impl Store {
@@ -238,7 +251,15 @@ impl Store {
             root,
             unsynced: Arc::default(),
             cache: true,
+            collections: Arc::default(),
+            reclaim: Arc::default(),
         })
+    }
+
+    /// Frees the machine's own garbage before this handle (and its clones) evicts a model:
+    /// `reclaim(incoming)` runs when an admit of `incoming` bytes finds the disk short. Set once.
+    pub fn on_short(&self, reclaim: impl Fn(u64) + Send + Sync + 'static) {
+        let _ = self.reclaim.set(Reclaim(Box::new(reclaim)));
     }
 
     /// This store as an origin, a directory endpoint's: nothing it holds is cache, so its writes

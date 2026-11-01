@@ -53,8 +53,10 @@ enum Pair {
 }
 
 impl Publisher {
-    /// Builds `env` for `project` (an interrupted build there is gone first).
+    /// Builds `env` for `project` (an interrupted build there is gone first), holding the uv
+    /// cache throughout.
     pub(crate) fn build(&self, env: &Path, project: &Project, job: &Job) -> Result<Built, Failure> {
+        let _cache = self.uv_cache_hold().map_err(io_failure)?;
         let own_sdk = !self.sdk.requirements.is_empty();
         let editable_after = project.editable && project.locked.is_some();
         let steps = [true, project.locked.is_some() && project.wheels.is_some(), editable_after, own_sdk];

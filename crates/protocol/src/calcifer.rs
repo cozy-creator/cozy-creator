@@ -655,6 +655,13 @@ pub struct MachineStatus {
     pub disk_total_bytes: u64,
     #[serde(default)]
     pub disk_free_bytes: u64,
+    /// What fills the disk, by kind (`machine::Disk`); 0 from an older machine.
+    #[serde(default)]
+    pub disk_models_bytes: u64,
+    #[serde(default)]
+    pub disk_environments_bytes: u64,
+    #[serde(default)]
+    pub disk_runtime_bytes: u64,
     /// This controller's queued, preparing or running runs there, as the machine says.
     #[serde(default)]
     pub runs: Vec<LiveRun>,

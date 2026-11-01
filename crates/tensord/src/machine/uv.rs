@@ -23,7 +23,8 @@ pub struct Uv {
 #[derive(Clone, Debug)]
 enum Cache {
     /// An image's baked one, linked so overlayfs never copies its payload (Torch) into each
-    /// environment; nothing in it is ever removed.
+    /// environment. `reclaim` manages what the machine adds to it; the image's own entries,
+    /// which its interpreter hard-links, stay.
     Seeded(PathBuf),
     /// On a local machine its owner's, as the owner's own uv resolves it, so a package's Torch
     /// stack is fetched and kept once; uv and its owner manage it.
@@ -65,11 +66,11 @@ impl Uv {
         Ok(command)
     }
 
-    /// The cache the machine itself manages; none when an image's or the owner's serves.
+    /// The cache the machine manages, its own or an image's; none when the owner's serves.
     pub fn machine_cache(&self) -> Option<&Path> {
         match &self.cache {
-            Cache::Machine(cache) => Some(cache),
-            _ => None,
+            Cache::Machine(cache) | Cache::Seeded(cache) => Some(cache),
+            Cache::Owner(_) => None,
         }
     }
 
