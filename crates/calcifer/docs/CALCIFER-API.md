@@ -110,17 +110,18 @@ machine lacks it, then the call with its files. Its interface comes from Runtime
 Python and cozy-runtime its project locks; nothing runs to describe it.
 
 ### Projects
-A project is a folder holding `project.yaml` (people's), `project.lock` (Calcifer's), its cuts (`edit.mp4`,
-with `resolution:` also `preview.mp4`), and three folders: `references/` (people's own files, and the versions
-cozy makes of characters, props, environments, setups and world states), `plates/` (people's footage) and
-`renders/` (the takes cozy makes of shots and upscales). Its id is fixed by its folder.
+A project is a folder holding `project.yaml` (people's), `project.lock` (Calcifer's), `assets/`, and its cuts
+(`edit.mp4`, with `resolution:` also `preview.mp4`). Its id is fixed by its folder. Every file the project uses
+is in `assets/<sha256>.<ext>`, flat: what cozy makes as real files, and each file project.yaml names (relative,
+absolute or `~/…`) as a link to it, made on first use (a symlink; on Windows one if permitted, else a hard
+link on the same volume, else a copy, said once). project.lock records each file's path, size and sha256 under
+the path written; a changed one is taken in again (`reference changed`) and what read it goes out of date, a
+gone one is `reference missing: relink` and what reads it does not render. Names live only in project.yaml and
+project.lock. Calcifer deletes from `assets/` only what project.lock no longer names.
 
 A shot's and an upscale's alternatives are takes, every other node's versions: records carry one generic
-field (`versions`, `version`) and a `noun`. Each is a set of assets, real files in its node's folder, named
-by its number (1 first, never reused): `renders/fight/fight_take002.mp4` and `fight_take002.latents`,
-`references/theo/theo_v001.png` and `theo_v001_clean.png`. project.lock records each asset's path and
-sha256, and which version is approved; no file says it. Calcifer writes and removes only files it named,
-refuses to overwrite another (`409 asset_name_taken`), and never touches anything else.
+field (`versions`, `version`) and a `noun`. Each is numbered (1 first, never reused) and is a set of assets
+(`{path, sha256, original?}`, `original` the path project.yaml writes for a file it names).
 
 - `POST /v1/projects` `{path, create?}`: the project holding `path` (the nearest folder up from it with a
   project.yaml), or with `create` a new one made at `path` (`409 project_exists`). Answers `{id, path}` and
@@ -129,16 +130,21 @@ refuses to overwrite another (`409 asset_name_taken`), and never touches anythin
   missing?, busy?}], older}`. `missing`: the folder no longer holds project.yaml.
 - `DELETE /v1/projects/{id}`: `204`, forgotten from the index; the folder is untouched. `409 project_busy`
   while it renders.
-- `GET /v1/projects/{id}`: `{id, path, nodes, missing, stale: [{name, why}], busy, cuts: [{cut, path,
-  cut_at_ms?, skips}], warnings}`. Each node is `{name, kind, noun, versions, approved?, assets, made_by?,
-  status}`: `versions` counts them, `approved` is the approved one's number (1 first; absent for a file
-  attached by hand), `assets` what the node reads as now by output name, relative to the folder, and
-  `status` is for people, in the node's noun.
+- `GET /v1/projects/{id}`: `{id, path, nodes, missing, stale: [{name, why}], orphans: [{name, kind, versions,
+  renamed_to?}], busy, cuts: [{cut, path, cut_at_ms?, skips}], warnings}`. Each node is `{name, kind, noun,
+  versions, approved?, assets, path?, made_by?, status}`: `versions` counts them, `approved` is the approved
+  one's number (absent for a file attached by hand), `assets` what the node reads as now by output name,
+  `path` its primary file, and `status` is for people, in the node's noun. An orphan is a node project.lock
+  keeps versions of that project.yaml no longer names; `renamed_to` the one new node of its kind with none.
 - `GET /v1/projects/{id}/nodes/{name}`: `{node, versions: [{number, assets, made_by?, runs, approved?}]}`.
 - `POST /v1/projects/{id}/runs` `{names, n?, on, hub, preview?, approve?}` (`Idempotency-Key`): `n` new takes
   or versions of each name, or `names: ["all"]`, everything missing or out of date, each approved, then the
   cuts. `approve` approves the new one when it lands (`400 approve_one` with `n` > 1). `202 {id, path}`; the
   work goes on in the project's walk and is followed on its events.
+- `POST /v1/projects/{id}/rename` `{from, to}`: `{from, to, versions}`. What project.lock keeps of `from`
+  (versions, approval, what other versions read of it, what is owed) is kept as `to`, a node project.yaml names
+  now, of the same kind and with no versions (`409 rename_taken`, `400 rename_kind`, `409 project_busy` while it
+  renders). Nothing on disk moves.
 - `POST /v1/projects/{id}/approve` `{name, version}` (`version` its number): `{name, noun, number, assets, path,
   stale, warnings}`. `path` is its primary asset; `stale` names what this put out of date; the cuts are made
   again when a shot's take changed.
@@ -146,8 +152,7 @@ refuses to overwrite another (`409 asset_name_taken`), and never touches anythin
   `landed {name, noun, number, assets, path}`, `said {message}`, `warning {message}`, `cut {cut, seconds}` and
   `ended {error?}` when the walk owes nothing more. Not resumable: a client reads `GET /v1/projects/{id}`
   after reconnecting.
-- `GET|HEAD /v1/projects/{id}/assets/{path}` (`renders/fight/fight_take002.mp4`, any file under
-  `references/`, `plates/` or `renders/`): the file (Files). An asset's ETag is its sha256.
+- `GET|HEAD /v1/projects/{id}/assets/{sha256}.{ext}`: the asset (Files). Its ETag is its sha256.
 - `GET|HEAD /v1/projects/{id}/cuts/{cut}` (`edit.mp4`, `preview.mp4`): the cut as last made (Files), so a
   `<video>` seeks it; `404 file_missing` before the first cut. Its encoded edge pieces are kept in cozy's
   cache folder (`$XDG_CACHE_HOME/cozy/cuts`, `~/Library/Caches/cozy/cuts`, `%LOCALAPPDATA%\cozy\cache\cuts`) by
@@ -169,5 +174,6 @@ ffmpeg (cuts, frames, clips) and uv (local code). No route asks for them.
 | `cozy project render …` | `POST /v1/projects {path}`, `GET /v1/projects/{id}/events`, `POST /v1/projects/{id}/runs`; each `started` run followed on `GET /v1/runs/{id}/events` |
 | `cozy project approve <node> <n>` | `POST /v1/projects {path}`, `POST /v1/projects/{id}/approve` |
 | `cozy project status` | `POST /v1/projects {path}`, `GET /v1/projects/{id}` |
+| `cozy project rename <old> <new>` | `POST /v1/projects {path}`, `POST /v1/projects/{id}/rename` |
 | any verb, Calcifer of another version | `POST /v1/down`, then the installed cozy's Calcifer started |
 <!-- each PR adds its verbs' rows -->

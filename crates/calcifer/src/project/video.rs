@@ -40,10 +40,9 @@ const RENDERERS: [(&str, &str); 6] = [
 pub fn skeleton() -> String {
     "# A video project (`cozy project --help`). Fill in the lists, then, inside this folder,
 #   cozy project render all --on <machine>
-# makes everything missing or out of date, in order, and cuts edit.mp4 here. Paths are relative to
-# this folder: keep your own files in references/ (pictures, voices, videos that guide) and plates/
-# (footage to edit). cozy keeps the takes it renders in renders/<shot>/ and the versions of everything
-# else in references/<name>/, named <name>_take### and <name>_v###, and never touches another file.
+# makes everything missing or out of date, in order, and cuts edit.mp4 here. A file named here
+# (relative to this folder, or absolute) is linked into assets/ on first use; everything cozy makes
+# is kept there too, by content, and `cozy project status` prints each node's file.
 type: video
 style: \"\"   # the look, added to every picture and shot
 # defaults:   # each node kind's render block; a node's own render: wins
@@ -57,9 +56,9 @@ world_states:   # how a set stands; a shot that writes one changes it for the sh
 shots:   # in order; past its renderer's longest piece (15 s for minimax-h3) a shot needs beats
   # - {name: walk, setup: dock.a, prompt: \"<theo> crosses <dock>.\", duration_s: 8, writes: [{state: stage}],
   #    beats: [{at: 0, prompt: \"He walks to the edge.\"}, {at: 4, prompt: \"He looks out to sea.\"}],
-  #    references: [{name: stride, kind: video, video: references/walk.mp4}]}   # also plate: {video: plates/….mp4}, first_frame, last_frame
+  #    references: [{name: stride, kind: video, video: ~/footage/walk.mp4}]}   # also plate: {video: …}, first_frame, last_frame
 # a node's render: {with: <function or ./dir/function>, models: {...}, lora: [...], options: {...}} renders it another way
-# image: (or a shot's video:) attaches your own file (references/theo.png), used until you approve one cozy made
+# image: (or a shot's video:) attaches your own file (theo.png), used until you approve one cozy made
 # resolution: 1440p   # the edit's short edge: shots below it are upscaled (their approved version), and
 # aspect_ratio: \"16:9\"   # the canvas every shot fills; both are the project's alone
 # edit: [{shot: walk, end: 6}]   # which shots and spans the edit cuts; absent: every shot, whole
@@ -255,6 +254,10 @@ pub struct Piece {
 
 pub struct Video {
     project: Project,
+    /// Each file project.yaml names, by the path written there, as taken in.
+    inputs: BTreeMap<String, folder::Input>,
+    /// The files it names that are gone: what reads one cannot render.
+    missing: BTreeSet<String>,
     items: Vec<Item>,
     pub graph: Graph,
     pub warnings: Vec<String>,
@@ -377,30 +380,42 @@ impl Video {
                 format!("{} is a {} project; this cozy makes {TYPE} projects", folder::PROJECT, project.kind),
             ));
         }
-        let outside: Vec<&str> = (inputs(&project).into_iter())
-            .filter(|path| {
-                let at = folder.path(path);
-                !std::fs::canonicalize(&at).unwrap_or(at).starts_with(&folder.dir)
-            })
-            .collect();
-        if !outside.is_empty() {
-            warnings.push(format!(
-                "{} reads files outside the project's folder ({}): the project is not self-contained; keep them in references/ or plates/",
-                folder::PROJECT,
-                outside.join(", ")
-            ));
-        }
         warnings.extend(
             (project.defaults.keys())
                 .filter(|kind| !RENDERERS.iter().any(|(k, _)| k == kind))
                 .map(|kind| format!("{}: defaults.{kind} is no node kind; it is ignored", folder::PROJECT)),
         );
         let lock = folder.lock()?;
+        // Every file it names, linked as an asset on first use (and again when it changed), and
+        // recorded in project.lock with the path written. One that is gone keeps its record: what
+        // reads it cannot render until it is linked again.
+        let (mut inputs, mut missing) = (BTreeMap::new(), BTreeSet::new());
+        for file in named(&project) {
+            let known = lock.inputs.get(file);
+            match folder.take_in(file, known)? {
+                Some((input, copied)) => {
+                    if known.is_some_and(|known| known.asset.sha256 != input.asset.sha256) {
+                        warnings.push(format!("reference changed: {file}; what reads it is out of date"));
+                    }
+                    if copied {
+                        warnings.push(format!("{file}: copied into {}/ (this computer allows it no link)", folder::ASSETS));
+                    }
+                    inputs.insert(file.to_owned(), input);
+                }
+                None => {
+                    warnings.push(format!("reference missing: {file}: relink (put it back, or fix its path in {})", folder::PROJECT));
+                    missing.insert(file.to_owned());
+                    inputs.extend(known.map(|known| (file.to_owned(), known.clone())));
+                }
+            }
+        }
+        if inputs != lock.inputs {
+            folder.update_lock(|lock| lock.inputs = inputs.clone())?;
+        }
+        let input_file = |id: &str, field: &str, path: &str| input_file(&inputs, id, field, path);
         // Its current file and its versions' files: the approved version, else the file attached by
         // hand (there, or the node is named with the fix), or that picture's clean.
-        let versions = |id: &str, field: &str, attached: &Option<String>, cleans: bool| {
-            current(folder, &lock, id, field, attached, cleans)
-        };
+        let versions = |id: &str, attached: &Option<String>, cleans: bool| current(&inputs, &lock, id, attached, cleans);
         let mut nodes = vec![];
         let mut items = vec![];
         for (a, entity) in project.entities.iter().enumerate() {
@@ -412,13 +427,13 @@ impl Video {
                 ));
             }
             let cleans = entity.kind != EntityKind::Environment;
-            let (file, made) = versions(&entity.name, "image", &entity.image, cleans)?;
-            let mut inputs = vec![];
+            let (file, made) = versions(&entity.name, &entity.image, cleans)?;
+            let mut reads = vec![];
             if let Some(voice) = &entity.voice {
                 if entity.kind != EntityKind::Character {
                     return Err(invalid("voice_owner", format!("{} is a {kind}: only a character has a voice", entity.name)));
                 }
-                inputs.push(input_file(folder, &entity.name, "voice", voice)?);
+                reads.push(input_file(&entity.name, "voice", voice)?);
             }
             nodes.push(Node {
                 id: entity.name.clone(),
@@ -430,14 +445,14 @@ impl Video {
                 texts: vec![entity.description.clone()],
                 needs: vec![],
                 writes: vec![],
-                inputs,
+                inputs: reads,
                 file,
                 versions: made,
             });
             items.push(Item::Entity(a));
             for (s, setup) in entity.setups.iter().enumerate() {
                 let id = format!("{}.{}", entity.name, setup.name);
-                let (file, made) = versions(&id, "image", &setup.image, false)?;
+                let (file, made) = versions(&id, &setup.image, false)?;
                 nodes.push(Node {
                     id,
                     kind: "setup",
@@ -475,7 +490,7 @@ impl Video {
             }
         }
         for (w, state) in project.world_states.iter().enumerate() {
-            let (file, made) = versions(&state.name, "image", &state.image, false)?;
+            let (file, made) = versions(&state.name, &state.image, false)?;
             nodes.push(Node {
                 id: state.name.clone(),
                 kind: "world_state",
@@ -516,7 +531,7 @@ impl Video {
                     needs.push(format!("{}.{}", env.name, first.name));
                 }
             }
-            let (file, made) = versions(&shot.name, "video", &shot.video, false)?;
+            let (file, made) = versions(&shot.name, &shot.video, false)?;
             nodes.push(Node {
                 id: shot.name.clone(),
                 kind: "shot",
@@ -527,13 +542,13 @@ impl Video {
                 texts,
                 needs,
                 writes: shot.writes.iter().map(|write| write.state.clone()).collect(),
-                inputs: shot_inputs(folder, shot)?,
+                inputs: shot_inputs(&input_file, shot)?,
                 file,
                 versions: made,
             });
             items.push(Item::Shot(k));
             let id = format!("{}.upscale", shot.name);
-            let (file, made) = versions(&id, "video", &shot.upscale.video, false)?;
+            let (file, made) = versions(&id, &shot.upscale.video, false)?;
             nodes.push(Node {
                 id,
                 kind: "upscale",
@@ -589,7 +604,7 @@ impl Video {
                 lock.made(&node.id, path)?.size
             })
             .collect();
-        Ok(Self { project, items, graph, warnings, canvas, sizes })
+        Ok(Self { project, inputs, missing, items, graph, warnings, canvas, sizes })
     }
 
     /// Node `i`'s render block (`resolve`).
@@ -674,24 +689,27 @@ impl Video {
             .collect()
     }
 
-    /// Every node's name key, which project.lock keeps versions for.
-    pub fn keys(&self) -> BTreeSet<String> {
-        self.graph.nodes.iter().map(|node| name_key(&node.id)).collect()
-    }
-
-    /// Every file attached in project.yaml that is there, as written.
-    pub fn attached(&self, folder: &Folder) -> BTreeSet<String> {
-        let mut files: Vec<&String> = vec![];
-        for entity in &self.project.entities {
-            files.extend(&entity.image);
-            files.extend(entity.setups.iter().flat_map(|setup| &setup.image));
+    /// The files project.yaml names for node `i` that are gone: it cannot render until they are
+    /// linked again.
+    pub fn missing(&self, i: usize) -> Vec<&str> {
+        let mut files: Vec<&str> = vec![];
+        match self.items[i] {
+            Item::Entity(a) => {
+                let entity = &self.project.entities[a];
+                files.extend(entity.image.iter().chain(&entity.voice).map(String::as_str));
+            }
+            Item::Setup(a, s) => files.extend(self.project.entities[a].setups[s].image.as_deref()),
+            Item::State(w) => files.extend(self.project.world_states[w].image.as_deref()),
+            Item::Shot(k) => {
+                let shot = &self.project.shots[k];
+                files.extend([&shot.video, &shot.first_frame, &shot.last_frame].into_iter().filter_map(Option::as_deref));
+                files.extend(shot.plate.as_ref().and_then(|plate| plate.get("video")).and_then(Value::as_str));
+                let references = shot.references.iter().flat_map(|entry| FILE_FIELDS.iter().filter_map(|field| entry.get(*field)));
+                files.extend(references.filter_map(Value::as_str));
+            }
+            Item::Upscale(k) => files.extend(self.project.shots[k].upscale.video.as_deref()),
         }
-        files.extend(self.project.world_states.iter().flat_map(|state| &state.image));
-        for shot in &self.project.shots {
-            files.extend(&shot.video);
-            files.extend(&shot.upscale.video);
-        }
-        files.into_iter().filter(|file| folder.path(file).is_file()).cloned().collect()
+        files.into_iter().filter(|file| self.missing.contains(*file)).collect()
     }
 
     /// The request that makes a version of node `i`, from what it reads now, as its function
@@ -957,7 +975,10 @@ impl Video {
             }
             references.push(Value::Object(entry));
         };
-        let file = |path: &str| -> Result<(PathBuf, String), Error> { Ok((folder.path(path), folder.digest(path)?)) };
+        let file = |path: &str| -> Result<(PathBuf, String), Error> {
+            let input = self.inputs.get(path).ok_or_else(|| invalid("file_missing", format!("{}: {path} is not there", shot.name)))?;
+            Ok((folder.path(&input.asset.path), input.asset.sha256.clone()))
+        };
         for read in reads {
             let source = |field: &'static str| vec![(field, read.path.clone(), read.digest.clone())];
             match (self.items[read.edge.node], &read.edge.state) {
@@ -1433,31 +1454,30 @@ fn run(ffmpeg: &Path, args: &[&std::ffi::OsStr]) -> Result<(), Error> {
     }
 }
 
-/// A file a node reads that is no node's, as its key (`<node>.<field>`) and digest; it must be there.
-fn input_file(folder: &Folder, id: &str, field: &str, path: &str) -> Result<(String, String), Error> {
-    if !folder.path(path).is_file() {
-        return Err(invalid("file_missing", format!("{id}'s {field}: {path} is not there")).remedy("fix the path"));
-    }
-    Ok((format!("{id}.{field}"), folder.digest(path)?))
+/// A file a node reads that is no node's, as its key (`<node>.<field>`) and sha256 (`inputs`: the
+/// files project.yaml names, as taken in; one gone and never taken in reads as none).
+fn input_file(inputs: &BTreeMap<String, folder::Input>, id: &str, field: &str, path: &str) -> Result<(String, String), Error> {
+    let sha256 = inputs.get(path).map(|input| input.asset.sha256.clone()).unwrap_or_default();
+    Ok((format!("{id}.{field}"), sha256))
 }
 
 /// A shot's own files: its references', its plate's, its first and last frames.
-fn shot_inputs(folder: &Folder, shot: &Shot) -> Result<Vec<(String, String)>, Error> {
+fn shot_inputs(input_file: &impl Fn(&str, &str, &str) -> Result<(String, String), Error>, shot: &Shot) -> Result<Vec<(String, String)>, Error> {
     let mut found = vec![];
     for entry in &shot.references {
         let name = entry.get("name").and_then(Value::as_str).unwrap_or_default();
         for field in FILE_FIELDS {
             if let Some(path) = entry.get(field).and_then(Value::as_str) {
-                found.push(input_file(folder, &shot.name, &format!("{name}.{field}"), path)?);
+                found.push(input_file(&shot.name, &format!("{name}.{field}"), path)?);
             }
         }
     }
     if let Some(path) = shot.plate.as_ref().and_then(|plate| plate.get("video")).and_then(Value::as_str) {
-        found.push(input_file(folder, &shot.name, "plate", path)?);
+        found.push(input_file(&shot.name, "plate", path)?);
     }
     for (field, path) in [("first_frame", &shot.first_frame), ("last_frame", &shot.last_frame)] {
         if let Some(path) = path {
-            found.push(input_file(folder, &shot.name, field, path)?);
+            found.push(input_file(&shot.name, field, path)?);
         }
     }
     Ok(found)
@@ -1467,13 +1487,12 @@ fn shot_inputs(folder: &Folder, shot: &Shot) -> Result<Vec<(String, String)>, Er
 type Versions = (Option<(String, String)>, Vec<String>);
 
 /// A node's current file and its versions' files (`Node::file`, `Node::versions`): the version
-/// project.lock approves; else the file attached in project.yaml as `field` (refused, with the fix,
-/// when it is not there), or that picture's clean when the node `cleans`.
+/// project.lock approves; else the file attached in project.yaml (its asset; none when it is gone and
+/// was never taken in), or that picture's clean when the node `cleans`.
 fn current(
-    folder: &Folder,
+    inputs: &BTreeMap<String, folder::Input>,
     lock: &Lock,
     id: &str,
-    field: &str,
     attached: &Option<String>,
     cleans: bool,
 ) -> Result<Versions, Error> {
@@ -1485,20 +1504,17 @@ fn current(
         return Ok((Some((approved.path.clone(), approved.sha256.clone())), versions));
     }
     let Some(file) = attached else { return Ok((None, versions)) };
-    if !folder.path(file).is_file() {
-        return Err(invalid("file_missing", format!("{id}'s {field}: {file} is not there"))
-            .remedy(format!("fix the path, or remove `{field}:` and `cozy project render {id}` makes one")));
-    }
-    let digest = folder.digest(file)?;
+    let Some(input) = inputs.get(file) else { return Ok((None, versions)) };
+    let asset = &input.asset;
     let clean = (node.into_iter().flat_map(|node| &node.versions))
-        .find(|made| cleans && made.clean_of.as_deref() == Some(digest.as_str()));
-    let clean = clean.and_then(Made::primary).map(|asset| (asset.path.clone(), asset.sha256.clone()));
-    Ok((Some(clean.unwrap_or((file.clone(), digest))), versions))
+        .find(|made| cleans && made.clean_of.as_deref() == Some(asset.sha256.as_str()));
+    let clean = clean.and_then(Made::primary).unwrap_or(asset);
+    Ok((Some((clean.path.clone(), clean.sha256.clone())), versions))
 }
 
 /// Every file project.yaml names: attached pictures and videos, voices, shots' references, plates
 /// and frames.
-fn inputs(project: &Project) -> Vec<&str> {
+fn named(project: &Project) -> Vec<&str> {
     let mut files: Vec<&str> = vec![];
     for entity in &project.entities {
         files.extend(entity.image.iter().chain(&entity.voice).map(String::as_str));
