@@ -1,0 +1,32 @@
+{
+  "control": "9ccb36a24f9987ea1a9bfbddc746c7c26e497759",
+  "candidate": "b20f699cab2416c6ff3d6e458376c29efbcf448a",
+  "unchanged_trees": [
+    "crates/tensorfs",
+    "crates/tensorfs-py",
+    "crates/platform"
+  ],
+  "native_memory_path_diff": "diff --git a/crates/varena/src/working.rs b/crates/varena/src/working.rs\nindex aab5399ec..6a2a77e61 100644\n--- a/crates/varena/src/working.rs\n+++ b/crates/varena/src/working.rs\n@@ -1400,9 +1400,8 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) ->\n         };\n         match result {\n             Err(Error::OutOfMemory { .. }) if attempt == 0 => {\n-                // Retry the mapping after completed working pages return. Do not evict\n-                // weights when that release alone already makes this allocation fit.\n-                trim(device)?;\n+                // The next attempt trims only the mapping's need from completed working\n+                // pages. Keep other cached classes, and ask weights only if that retry fails.\n             }\n             Err(Error::OutOfMemory { .. }) if attempt == 1 => {\n                 crate::reclaim(device, class)?;\n",
+  "upstream_protocol_additions": "diff --git a/crates/protocol/src/calcifer.rs b/crates/protocol/src/calcifer.rs\nindex 769711d75..f0433b633 100644\n--- a/crates/protocol/src/calcifer.rs\n+++ b/crates/protocol/src/calcifer.rs\n@@ -167,6 +167,9 @@ pub struct Run {\n     pub result: Option<serde_json::Value>,\n     #[serde(default, skip_serializing_if = \"Option::is_none\")]\n     pub execution_ms: Option<u64>,\n+    /// A memoizable run's computation, once settled.\n+    #[serde(default, skip_serializing_if = \"Option::is_none\")]\n+    pub memo: Option<Memo>,\n     /// With `?detail=full`: what the machine measured (stages, steps, GPUs, attention).\n     #[serde(default, skip_serializing_if = \"Option::is_none\")]\n     pub measurements: Option<serde_json::Value>,\n@@ -178,6 +181,19 @@ pub struct Run {\n /// One request field a run's executor served other than as sent (`Outcome.adjustments`).\n pub use crate::machine::Adjustment;\n \n+/// A memoizable run's or call's computation.\n+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]\n+#[serde(default)]\n+pub struct Memo {\n+    /// `sha256:<hex>`.\n+    pub computation: String,\n+    /// Answered from a result its machine held: nothing ran.\n+    pub memoized: bool,\n+    /// What keyed its code (`machine::Outcome::memo_basis`); empty from a machine that predates it.\n+    #[serde(skip_serializing_if = \"String::is_empty\")]\n+    pub basis: String,\n+}\n+\n /// One settled call of a run (the run's own function or a child call).\n #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]\n pub struct Call {\n@@ -195,6 +211,9 @@ pub struct Call {\n     pub reason: Option<Reason>,\n     #[serde(default)]\n     pub memoized: bool,\n+    /// What keyed a memoizable call's code (`Memo::basis`).\n+    #[serde(default, skip_serializing_if = \"String::is_empty\")]\n+    pub memo_basis: String,\n }\n \n /// Why a run or call did not succeed, as its machine said it (with its traceback) or as\ndiff --git a/crates/protocol/src/machine.rs b/crates/protocol/src/machine.rs\nindex 954f8cf92..beadaefcc 100644\n--- a/crates/protocol/src/machine.rs\n+++ b/crates/protocol/src/machine.rs\n@@ -618,6 +618,11 @@ pub struct Outcome {\n     pub memoized: bool,\n     /// Why it was neither looked up nor held (its author's condition unmet, e.g. \"seed not given\").\n     pub unmemoized: String,\n+    /// What keyed a memoizable callable's code: `closure` (its module and the modules of its\n+    /// package it imports), `package` (its package's whole source) or `identity` (another\n+    /// package's declared operation identity). Empty from a machine that predates it.\n+    #[serde(skip_serializing_if = \"String::is_empty\")]\n+    pub memo_basis: String,\n     /// How its executor served the request other than as sent, in the executor's order. Advisory.\n     #[serde(skip_serializing_if = \"Vec::is_empty\")]\n     pub adjustments: Vec<Adjustment>,\n@@ -678,6 +683,9 @@ pub struct Call {\n     pub computation_digest: String,\n     /// Why a memoizable call was neither looked up nor held (\"seed not given\").\n     pub unmemoized: String,\n+    /// As [`Outcome::memo_basis`].\n+    #[serde(skip_serializing_if = \"String::is_empty\")]\n+    pub memo_basis: String,\n }\n \n // ---- Status ---------------------------------------------------------------------------------\n",
+  "workspace_version_changes": [
+    "calcifer",
+    "cli",
+    "cozy",
+    "hub-client",
+    "platform",
+    "protocol",
+    "tensord"
+  ],
+  "third_party_dependency_changes": false,
+  "portable_same_fields": [
+    "python_members_verified",
+    "shim_sha256",
+    "torch_build",
+    "aot_unique_full_images_verified_in_extension"
+  ],
+  "source_receipts": {
+    "outputs/xs138-p2-retention-candidate-9ccb36a24/candidate.json": "183936e172cfe0721da3d3e8d33f94f7d7776bb1d502c2ccf1390c200d6b4bbf",
+    "outputs/xs138-bounded-trim-candidate-b20f699ca/candidate.json": "153013013938b5b1c62533e1fbdfb3d4ade8ab4abc5f0ee3f463a44b1ff7adff"
+  },
+  "boundary": "Fresh-master cohort includes additive protocol memo fields and workspace version bumps, disclosed here; TensorFS/Python/shim/quantization sources are unchanged, and the only Varena source change is the bounded trim. No GPU result inferred."
+}

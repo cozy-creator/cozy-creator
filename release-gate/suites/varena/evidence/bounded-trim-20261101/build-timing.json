@@ -1,0 +1,32 @@
+{
+  "source_commit": "b20f699cab2416c6ff3d6e458376c29efbcf448a",
+  "command": [
+    "bash",
+    "/home/fidika/cozy_v2/outputs/xs138-bounded-trim-candidate-b20f699ca/build-manylinux-one-job.sh",
+    "b20f699cab2416c6ff3d6e458376c29efbcf448a"
+  ],
+  "driver_sha256": "d99c63e07275dd6cecc02e43fd5a8b34f9c1ede29037bf103cb6ed5b93337a11",
+  "start_utc": "2026-11-01T11:32:25.937802+00:00",
+  "load_before": [
+    6.58984375,
+    6.75732421875,
+    6.12255859375
+  ],
+  "parallelism": {
+    "cargo_jobs": 1,
+    "docker_cpus": 1,
+    "nice": 19
+  },
+  "boundary": "first changed-source P2 build using existing persistent portable dependency cache; includes container startup, shim compilation, native CLI/extension compilation, Maturin and auditwheel; excludes source staging and load waiting",
+  "qualified_p0_wheel": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p0-torch/.task/wheels-manylinux/tensorfs-0.17.15+dev.g3f3d83ae-cp311-abi3-manylinux_2_28_x86_64.whl",
+  "qualified_p0_sha256_before": "acc8d121b69be8b87a8e4fa5da02c88e910dfa2e1c7e5c91b380fad6cfe76c8c",
+  "wall_seconds": 349.2163515400025,
+  "returncode": 0,
+  "load_after": [
+    4.0419921875,
+    6.451171875,
+    6.32177734375
+  ],
+  "end_utc": "2026-11-01T11:38:15.152568+00:00",
+  "qualified_p0_sha256_after": "acc8d121b69be8b87a8e4fa5da02c88e910dfa2e1c7e5c91b380fad6cfe76c8c"
+}
