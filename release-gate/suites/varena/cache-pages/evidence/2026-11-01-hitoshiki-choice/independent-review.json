@@ -1,0 +1,59 @@
+{
+  "independent_passed": true,
+  "gpu_uuid": "GPU-18d960a8-2283-19c9-c060-ef8a22fabe35",
+  "source_comparison": {
+    "fixture_source": "c7f1b214a67a3f400e176bbb717a3fcc32b1bf24",
+    "before_native": "e54525838aabe5ab3491cba5c03d50884198c0e4",
+    "after_native": "d3a91fe8a160edb47e7fca9d766d4d0b7bb4e3fc",
+    "changed_files": [
+      "crates/varena/src/working/cache.rs",
+      "crates/varena/src/working/split.rs"
+    ],
+    "fixture_files_equal": true
+  },
+  "cases": [
+    {
+      "run": 25401,
+      "arm": "red-e545",
+      "source_file_sha256": "58a9dbb799690afa996b59e1cbab5131c49678d2821a1ddc18ae9a22db29f36b",
+      "native_source": "e54525838aabe5ab3491cba5c03d50884198c0e4",
+      "fixture_source": "c7f1b214a67a3f400e176bbb717a3fcc32b1bf24",
+      "binary_sha256": "a8c5eb4ef1427e9b049bcf9365d499d7ba4d617c4ea511bf18bb95c190a230bf",
+      "parent_extension_sha256": "070d70182056a6d202b28a92db49b078ec9f0239ee7337f829d894e7cafff5e6",
+      "parent_versions": {
+        "cozy-runtime": "0.36.22+dev.g7adc1e82",
+        "tensorfs": "0.17.16+dev.ga96c7c3e",
+        "torch": "2.14.0"
+      },
+      "summary": {
+        "expected_failure_preserved": "completed Cache pages did not admit the larger declared choice",
+        "child_exit": 1,
+        "completed_cache_choice": "half",
+        "reported_available": 4194304
+      }
+    },
+    {
+      "run": 25403,
+      "arm": "green-d3",
+      "source_file_sha256": "2051159772dae38a59954713cee6955b26e320674e7eabf7179a651b7a564da3",
+      "native_source": "d3a91fe8a160edb47e7fca9d766d4d0b7bb4e3fc",
+      "fixture_source": "c7f1b214a67a3f400e176bbb717a3fcc32b1bf24",
+      "binary_sha256": "d71ab02e57f814d8237ff72817e0f38401ca2e62b62c250268c8a19a47490478",
+      "parent_extension_sha256": "070d70182056a6d202b28a92db49b078ec9f0239ee7337f829d894e7cafff5e6",
+      "parent_versions": {
+        "cozy-runtime": "0.36.22+dev.g7adc1e82",
+        "tensorfs": "0.17.16+dev.ga96c7c3e",
+        "torch": "2.14.0"
+      },
+      "summary": {
+        "child_exit": 0,
+        "completed_cache_choice": "whole",
+        "reported_available": 8388608,
+        "actual_full_readback": 8388608,
+        "published_working_peak": 8388608,
+        "final_managed_physical": 0
+      }
+    }
+  ],
+  "scope": "matched finite declared-choice regression; no callback or full-model performance claim"
+}

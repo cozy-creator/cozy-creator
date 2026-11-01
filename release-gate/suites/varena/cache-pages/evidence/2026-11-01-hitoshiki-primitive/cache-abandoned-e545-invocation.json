@@ -1,0 +1,25 @@
+{
+  "command": [
+    "cozy",
+    "run",
+    "/home/fidika/cozy_v2/outputs/xs138-p3-cache/e54525838/controller-hitoshiki/project/abandoned_live",
+    "--on",
+    "hitoshiki",
+    "--gpus=1",
+    "--input",
+    "/home/fidika/cozy_v2/outputs/xs138-p3-cache/e54525838/controller-hitoshiki/input-template.json",
+    "--json",
+    "--out",
+    "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-shortage-int8-leg15-plan/attempt-001/cache-abandoned-e545-artifacts"
+  ],
+  "input_sha256": "7605500e60897f473d67bf4114445c1c96dcca533987c4256014346f3b6d5caf",
+  "input": {
+    "source_sha": "e54525838aabe5ab3491cba5c03d50884198c0e4",
+    "helper_sha256": "76e0bcd23b48514b6ac8bebf836b19c2f53b2002206ab5a2e2bcd0de2a623ba8",
+    "native_extension_sha256": "8703a6cdeaf452aa0a7829526d65c60032459a9b41f02b0ee46baa97103a5c59",
+    "gpu_uuid": "GPU-18d960a8-2283-19c9-c060-ef8a22fabe35"
+  },
+  "started_at": "2026-11-01T14:57:49.342265+00:00",
+  "returncode": 0,
+  "finished_at": "2026-11-01T14:57:50.212201+00:00"
+}
