@@ -143,18 +143,28 @@ fn hash_file(path: &Path) -> io::Result<ObjectRef> {
     })
 }
 
+/// An optional's present type (`T | None`, `{"union": [T, "null"]}`: `T`), else `schema` itself.
+pub(crate) fn present(schema: &Value) -> &Value {
+    let null = |member: &Value| member.as_str() == Some("null");
+    match schema.get("union").and_then(Value::as_array).map(Vec::as_slice) {
+        Some([a, b]) if null(a) != null(b) => if null(a) { b } else { a },
+        _ => schema,
+    }
+}
+
 /// How a declared result field takes products: a single asset is SET, a list of assets grows
-/// by APPEND. Anything else is not a publishable output.
+/// by APPEND, optional or not. Anything else is not a publishable output.
 fn output_op(result: &Value, output: &str) -> Option<domain::RunProductOp> {
     let mut schema = result;
     for name in output.split('.') {
-        schema = schema
+        schema = present(schema)
             .get("fields")?
             .as_array()?
             .iter()
             .find(|field| field.get("name").and_then(Value::as_str) == Some(name))?
             .get("type")?;
     }
+    let schema = present(schema);
     if schema.get("asset").is_some() {
         Some(domain::RunProductOp::Set)
     } else if schema.get("list")?.get("asset").is_some() {

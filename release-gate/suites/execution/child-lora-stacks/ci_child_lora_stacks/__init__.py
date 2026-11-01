@@ -37,7 +37,7 @@ async def paint(
     return generate(ctx, payload, sdxl.resolve_generate(payload), model, out, tel, adj)
 
 
-app.entrypoint(internal=True)(paint)
+app.child_task(paint)
 
 
 class Compare(msgspec.Struct):

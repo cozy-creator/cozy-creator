@@ -16,6 +16,7 @@ mod history;
 mod list;
 pub(crate) mod live;
 mod local;
+pub(crate) use end::activate;
 pub(crate) use local::{Adopted, adopt};
 mod rent;
 
@@ -114,6 +115,9 @@ enum Verb {
     /// On this computer: let the controller with this public key use this machine, which then
     /// listens on every interface (every call still needs an authorized key).
     Authorize {
+        /// The controller's Ed25519 key (`cozy machine show local` on that computer). A base64url
+        /// key may begin with `-`: it is the key, never a flag.
+        #[arg(allow_hyphen_values = true)]
         public_key: String,
         /// Take the key back: its next call is refused.
         #[arg(long)]

@@ -88,6 +88,12 @@ pub fn in_kernel(pid: u32) -> Option<String> {
     sys::in_kernel(pid)
 }
 
+/// Its threads' names, states and wait channels, alike ones counted (`"call_0 S futex_wait_queue"`
+/// ×N): why a process makes no progress. Empty where the OS cannot say (macOS, Windows).
+pub fn threads(pid: u32) -> Vec<(String, usize)> {
+    sys::threads(pid)
+}
+
 /// This kernel's boot. Page cache and process starts belong to a boot.
 pub fn boot_id() -> Result<String> {
     sys::boot_id().map_err(Error::os("read the boot id"))

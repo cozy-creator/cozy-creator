@@ -4,7 +4,7 @@
 //! ignored, a missing one takes its default, a needed one fails by its path.
 use protocol::executor::{
     Activate, Adapter, Answer, Binding, ByteGrant, CallInterface, CallProgress, Cancel, Capability, CheckpointItem,
-    ChildCall, ChildCancel, ChildEvents, ChildForget, ChildPoll, Command, Construction, Fork,
+    ChildCall, ChildCancel, ChildEvents, ChildForget, ChildPoll, Command, Construction, Fork, Room,
     GpuRelease, InputFile, InputMetadata, Invoke, Load, Map, MemoSettings, ModelLoad, ModelPrefetch,
     PreparedUse, PrepareRequest, Probe, Publish, PublishPart, Start, StageMemoLookup, StageMemoStore, Unload, View,
 };
@@ -48,6 +48,7 @@ fn decode_command(py: Python<'_>, data: &[u8]) -> PyResult<Py<PyAny>> {
         Command::Probe(c) => c.into_py_any(py),
         Command::Fork(c) => c.into_py_any(py),
         Command::Capability(c) => c.into_py_any(py),
+        Command::Room(c) => c.into_py_any(py),
     }
 }
 
@@ -73,6 +74,7 @@ pub fn install(parent: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Probe>()?;
     m.add_class::<Fork>()?;
     m.add_class::<Capability>()?;
+    m.add_class::<Room>()?;
     m.add_class::<Adapter>()?;
     m.add_class::<Binding>()?;
     m.add_class::<View>()?;
