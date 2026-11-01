@@ -31,6 +31,7 @@ class Probe(msgspec.Struct, forbid_unknown_fields=True):
 
 class Cleanup(Probe, kw_only=True):
     expected_pid: int
+    keys: list[str] = msgspec.field(default_factory=list)
 
 
 class Report(msgspec.Struct):
@@ -55,12 +56,15 @@ def actual(payload, ctx):
     assert set(payload.runtime_modules) == {
         'author/kernels.py', 'internal/triton_kernels.py', 'internal/attention.py',
         'internal/kernel_sources.py', 'internal/kernel_ready.py',
+        'author/_split.py', 'internal/execution/native_sparse_producer.py',
+        'internal/execution/native_linear_split.py', 'internal/execution/phase.py',
+        'internal/residency.py', 'internal/producers.py',
     }
     for name, expected in payload.runtime_modules.items():
         assert digest(root / name) == expected, name
     root = Path(glue.__file__).resolve().parent
     assert set(payload.package_modules) == {
-        '__init__.py', 'glue.py', 'adaln_pruned.py', 'overlay.py', 'producer_kernels.py',
+        '__init__.py', 'glue.py', 'adaln_pruned.py', 'overlay.py', 'producer_kernels.py', 'producer.py',
     }
     for name, expected in payload.package_modules.items():
         assert digest(root / name) == expected, name
@@ -227,5 +231,11 @@ def cleanup(payload: Cleanup, ctx: Context) -> Report:
     request, vt, provenance = actual(payload, ctx)
     assert os.getpid() == payload.expected_pid and not request.working_phase_keys
     settle(vt, ctx.device.index or 0)
+    retired = {key: vt.phase_forget(ctx.device.index or 0, key) for key in payload.keys}
+    assert not any(retired.values()), retired
     return Report(True, json.dumps({'passed': True, 'provenance': provenance,
+                                   'prior_request_keys_already_retired': retired,
                                    'stats': vt.stats(ctx.device.index or 0)}, sort_keys=True))
+
+
+from .consumer import consumer as consumer

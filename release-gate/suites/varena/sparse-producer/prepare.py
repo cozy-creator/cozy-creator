@@ -12,8 +12,11 @@ from pathlib import Path
 MODULES = (
     'author/kernels.py', 'internal/triton_kernels.py', 'internal/attention.py',
     'internal/kernel_sources.py', 'internal/kernel_ready.py',
+    'author/_split.py', 'internal/execution/native_sparse_producer.py',
+    'internal/execution/native_linear_split.py', 'internal/execution/phase.py',
+    'internal/residency.py', 'internal/producers.py',
 )
-PACKAGE = ('__init__.py', 'glue.py', 'adaln_pruned.py', 'overlay.py', 'producer_kernels.py')
+PACKAGE = ('__init__.py', 'glue.py', 'adaln_pruned.py', 'overlay.py', 'producer_kernels.py', 'producer.py')
 
 
 def sha(data):
@@ -51,7 +54,8 @@ def main():
     assert kernels['cuda_initialized'] is False
     assert kernels['source_sha256'] == sha((root / 'minimax_h3/glue.py').read_bytes())
     project = args.output / 'project'
-    shutil.copytree(source, project, ignore=shutil.ignore_patterns('__pycache__', '.venv', '.task'))
+    shutil.copytree(source, project, ignore=shutil.ignore_patterns(
+        '__pycache__', '.venv', '.task', '.ruff_cache', '.pytest_cache'))
     package = project / 'minimax_h3'
     package.mkdir()
     package_hashes = {}
