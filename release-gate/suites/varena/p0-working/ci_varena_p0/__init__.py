@@ -214,7 +214,8 @@ def benchmark(payload: Benchmark, tel: Telemetry) -> Report:
         "passed": ratio <= 2.0, "host_pair_ratio": ratio,
         "completion_pair_ratio": completion_ratio, "host_pair_ratio_limit": 2.0,
         "comparison": "two fresh sequential children, native then Varena, same interpreter/device and identical raw alloc/free loop",
-        "qualification": "allocator host-pair microbenchmark only; Python dispatch included; not model latency",
+        "qualification": "RUSAGE_THREAD diagnostic only; Python dispatch included; not release qualification or model latency",
+        "qualification_eligible": False,
         "results": results,
     }
     tel.log(json.dumps({"allocator_benchmark": report}, sort_keys=True))

@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import resource
 import statistics
 import sys
 import time
@@ -40,6 +41,7 @@ def main(config):
     assert mode in ("native", "varena"), mode
     assert config["samples"] >= 5
     assert config["rounds"] >= 10_000
+    assert hasattr(resource, "RUSAGE_THREAD"), "this diagnostic requires per-thread usage accounting"
     installed = Path(tensorfs.__file__).resolve().parent
     actual = {
         "tensorfs_version": version("tensorfs"),
@@ -50,6 +52,8 @@ def main(config):
         "torch_distribution": version("torch"), "torch_cuda": torch.version.cuda,
         "torch_cxx11_abi": bool(torch._C._GLIBCXX_USE_CXX11_ABI),
         "python": sys.version, "executable": sys.executable, "platform": platform.platform(),
+        "pid": os.getpid(),
+        "perf_counter_clock": time.get_clock_info("perf_counter").implementation,
         "visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
         "allocator_conf": os.environ.get("PYTORCH_ALLOC_CONF"),
         "cuda_allocator_conf": os.environ.get("PYTORCH_CUDA_ALLOC_CONF"),
@@ -119,21 +123,36 @@ def main(config):
         for index in range(config["samples"]):
             torch.cuda.synchronize()
             before = memory()
+            usage_before = resource.getrusage(resource.RUSAGE_THREAD)
             start = time.perf_counter_ns()
             pairs(config["rounds"])
             submitted = time.perf_counter_ns()
+            usage_after = resource.getrusage(resource.RUSAGE_THREAD)
             torch.cuda.synchronize()
             completed = time.perf_counter_ns()
             after = memory()
             assert after["allocated_bytes"] == warm["allocated_bytes"], (warm, after)
             sample = {
                 "index": index, "pairs": pair_count,
+                "host_start_ns": start, "host_submitted_ns": submitted,
                 "host_ns": submitted - start,
                 "drain_ns": completed - submitted,
                 "completion_ns": completed - start,
                 "host_ns_per_pair": (submitted - start) / pair_count,
                 "completion_ns_per_pair": (completed - start) / pair_count,
                 "before": before, "after": after,
+            }
+            usage = {field: getattr(usage_after, field) - getattr(usage_before, field)
+                     for field in ("ru_utime", "ru_stime", "ru_nvcsw", "ru_nivcsw", "ru_minflt", "ru_majflt")}
+            sample["thread_usage"] = {
+                "scope": "RUSAGE_THREAD",
+                "delta": usage,
+                "user_ns_per_pair": usage["ru_utime"] * 1e9 / pair_count,
+                "system_ns_per_pair": usage["ru_stime"] * 1e9 / pair_count,
+                # May be slightly negative from accounting resolution/boundary overhead.
+                "wall_minus_cpu_ns_per_pair": (
+                    sample["host_ns"] - (usage["ru_utime"] + usage["ru_stime"]) * 1e9
+                ) / pair_count,
             }
             samples.append(sample)
             emit({"benchmark_sample": sample, "mode": mode})
@@ -145,6 +164,11 @@ def main(config):
     final = memory()
     emit({"result": {
         "passed": True, "mode": mode, "provenance": actual,
+        "diagnostic": "thread usage observations outside the unchanged timed loop; not release-gate closure",
+        "thread_usage_units": {"ru_utime": "seconds", "ru_stime": "seconds",
+                               "ru_nvcsw": "count", "ru_nivcsw": "count",
+                               "ru_minflt": "count", "ru_majflt": "count"},
+        "thread_usage_boundary": "RUSAGE_THREAD immediately before start and after submitted; includes fixed observation/clock boundary overhead; finite OS accounting resolution",
         "sizes": list(SIZES), "stream": handle, "warmup_pairs": 1024 * len(SIZES),
         "samples": samples, "sample_count": len(samples), "pairs_per_sample": pair_count,
         "median_host_ns_per_pair": statistics.median(row["host_ns_per_pair"] for row in samples),
