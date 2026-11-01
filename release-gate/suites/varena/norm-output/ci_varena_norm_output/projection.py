@@ -48,7 +48,7 @@ _OBSERVED = register_attention(replace(_ORIGINAL, produce=observed))
 
 def make_attention(on, generator, launch, stats, selected, heads):
     from cozy_runtime import lora
-    from cozy_runtime.internal import producers
+    from cozy_runtime.internal import attention_sol, producers
     from cozy_runtime.internal.encoding.formats import CONVROT_GROUP
     from cozy_runtime.internal.encoding.leaves import Int8ConvRotNativeLeaf
     from diffusers.models.transformers.transformer_minimax_h3 import MiniMaxH3Attention
@@ -89,6 +89,8 @@ def make_attention(on, generator, launch, stats, selected, heads):
     )
     processor._attention_backend, processor._parallel_config = selected, None
     attn.set_processor(processor)
+    _OBSERVED.validate(attn)
+    attention_sol.install_site(attn, 'fixture', 'attention')
     producers.install(attn, _OBSERVED, str(selected.value), 'comfy_kitchen', 'fixture', 'attention')
     return attn.eval(), reads
 

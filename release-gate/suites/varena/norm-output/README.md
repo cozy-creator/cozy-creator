@@ -42,3 +42,12 @@ Source evidence here includes the pinned Torch allocation implementation URLs/ha
 full25405 call inventory, CPU construction/normalization with CUDA uninitialized, and
 the redispatch TLS reproduction. Native CUDA census, output/refusal and cleanup results
 remain pending.
+
+
+Run25583 showed that the fixture's manual processor installation omitted Sol's actual
+module-forward site wrapper. The common constructor now validates the real module and
+installs the real site before the producer, matching production attention._install_sites
+for both reference and candidate. No private context variable is assigned and no Sol
+contract is bypassed. CPU construction verifies the registered component/path and actual
+forward wrapper; GPU projection qualification remains pending. The separate RMSNorm
+cell and same-PID cleanup passed25578/25582 on136/a96.
