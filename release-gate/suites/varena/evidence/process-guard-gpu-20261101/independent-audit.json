@@ -1,0 +1,201 @@
+{
+  "passed": true,
+  "source": "bacdb9db721dd4ceda3ffe279d1285bbea556708",
+  "wheel_sha256": "82036120d83083a9cc326714ea023ba47079049386fb2a89dfe0464c9805403c",
+  "extension_sha256": "7593e53c6edb79a9596d7f670f801e67dbdd47a7bbf54f980af7ec0ff67e467e",
+  "shim_sha256": "09684b61d0b909c39d56c7d129432e906ddb0a57f1b4b916b20bb2c4c8d7716e",
+  "benchmark_run": 25078,
+  "medians_ns_per_pair": {
+    "native": 806.5834675,
+    "varena": 729.864925
+  },
+  "ratio": 0.9048845586461267,
+  "limit": 2.0,
+  "samples": {
+    "native": [
+      861.83986,
+      808.3833975,
+      806.5834675,
+      803.8098775,
+      807.86857,
+      804.63543,
+      805.560935
+    ],
+    "varena": [
+      730.4311525,
+      729.284095,
+      732.109185,
+      729.6876475,
+      728.8449425,
+      729.864925,
+      731.40098
+    ]
+  },
+  "backend": {
+    "backend": "kernel_wipe",
+    "contract": "one_process/1",
+    "failure_errno": 0,
+    "failure_stage": 0,
+    "marker": 190351,
+    "page_bytes": 4096,
+    "schema": "varena.process_guard/1",
+    "shared_vm_child_use": "unsupported; inherited calls are not guaranteed to reject",
+    "thread_authenticated": true
+  },
+  "provenance": {
+    "allocator_conf": null,
+    "capability": [
+      8,
+      9
+    ],
+    "cuda_allocator_conf": null,
+    "driver_free_total": [
+      24205787136,
+      25252724736
+    ],
+    "executable": "/var/lib/cozy/tensord/generations/e2f188a0a594e8c83846c1c575ffece1/env/bin/python",
+    "extension_path": "/opt/cozy/dependency-seed/uv-cache/archive-v0/mxO8Jae6fT3XU9j3/tensorfs/_ext.abi3.so",
+    "extension_sha256": "7593e53c6edb79a9596d7f670f801e67dbdd47a7bbf54f980af7ec0ff67e467e",
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "gpu_uuid": "74f2ac0a-1c52-2e52-a7a6-b207f1db7a89",
+    "pid": 190351,
+    "platform": "Linux-6.8.0-147-generic-x86_64-with-glibc2.36",
+    "process_guard": {
+      "backend": "kernel_wipe",
+      "contract": "one_process/1",
+      "failure_errno": 0,
+      "failure_stage": 0,
+      "marker": 190351,
+      "page_bytes": 4096,
+      "schema": "varena.process_guard/1",
+      "shared_vm_child_use": "unsupported; inherited calls are not guaranteed to reject",
+      "thread_authenticated": true
+    },
+    "python": "3.12.12 (main, Feb 24 2026, 20:29:11) [GCC 12.2.0]",
+    "shim_sha256": "09684b61d0b909c39d56c7d129432e906ddb0a57f1b4b916b20bb2c4c8d7716e",
+    "tensorfs_version": "0.17.16+dev.gbacdb9db",
+    "torch": "2.14.0+cu130",
+    "torch_cuda": "13.0",
+    "torch_cxx11_abi": true,
+    "torch_distribution": "2.14.0",
+    "torch_git": "08187d9e0fba026dc8217405802ab5381dc88d90",
+    "visible_devices": "0"
+  },
+  "timed_driver_event_deltas": [
+    {
+      "driver_memory_calls": 0,
+      "event_records": 0,
+      "event_queries": 0,
+      "event_waits": 0,
+      "context_joins": 0
+    },
+    {
+      "driver_memory_calls": 0,
+      "event_records": 0,
+      "event_queries": 0,
+      "event_waits": 0,
+      "context_joins": 0
+    },
+    {
+      "driver_memory_calls": 0,
+      "event_records": 0,
+      "event_queries": 0,
+      "event_waits": 0,
+      "context_joins": 0
+    },
+    {
+      "driver_memory_calls": 0,
+      "event_records": 0,
+      "event_queries": 0,
+      "event_waits": 0,
+      "context_joins": 0
+    },
+    {
+      "driver_memory_calls": 0,
+      "event_records": 0,
+      "event_queries": 0,
+      "event_waits": 0,
+      "context_joins": 0
+    },
+    {
+      "driver_memory_calls": 0,
+      "event_records": 0,
+      "event_queries": 0,
+      "event_waits": 0,
+      "context_joins": 0
+    },
+    {
+      "driver_memory_calls": 0,
+      "event_records": 0,
+      "event_queries": 0,
+      "event_waits": 0,
+      "context_joins": 0
+    }
+  ],
+  "final": {
+    "allocated_bytes": 0,
+    "mapped_bytes": 0,
+    "pending_bytes": 0,
+    "pools": 0,
+    "event_handles": 0
+  },
+  "regressions": {
+    "allocator": {
+      "run": 25079,
+      "passed": true,
+      "cases": [
+        "allocator-reuse",
+        "capture-exhaustion",
+        "captured-reuse",
+        "cudnn-capture-shortfall",
+        "default-deferred-free",
+        "distinct-pools",
+        "dlpack-record-stream",
+        "empty-capture",
+        "external-stream-retirement",
+        "native-working-ownership",
+        "pool-variable-reuse",
+        "replay-after-remap",
+        "replay-hook-failure",
+        "retained-output",
+        "rng-capture",
+        "shared-managed-limit",
+        "shared-pool",
+        "side-stream"
+      ]
+    },
+    "fork": {
+      "run": 25080,
+      "passed": true,
+      "cases": [
+        "explicit-check",
+        "stats-empty-registry",
+        "trim-empty-registry",
+        "zero-alloc",
+        "zero-free",
+        "zero-record-stream"
+      ]
+    },
+    "split": {
+      "run": 25081,
+      "passed": true,
+      "cases": [
+        "caught-allocation-failure",
+        "caught-begin-refusal",
+        "caught-select-refusal",
+        "compatible-completed-cache",
+        "cross-stream-pending-exclusion",
+        "exact-choices",
+        "invalidation-without-detail",
+        "no-completion-owner",
+        "outside-holdings-and-slab-floor",
+        "ownership-and-abort",
+        "preexecution-exhaustion",
+        "same-stream-pending",
+        "unique-reusable-slot"
+      ]
+    }
+  },
+  "scope": "one_process/1 normal same-process and ordinary fork contract; not shared-VM child operation, full model performance, merge or release qualification",
+  "counterexample": "The separate-TGID shared-VM copied-TLS calls remain unsupported; experimental actual acceptance retained and strict profile rejects."
+}
