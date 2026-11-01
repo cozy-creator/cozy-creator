@@ -2,7 +2,6 @@
 //! See `ledger-foundation.md` for the supported namespace and fork contract.
 
 mod os;
-mod upgrade;
 
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -367,19 +366,15 @@ impl Ledger {
             u64::from_ne_bytes(*b"abcdefgh"),
             0,
         ];
-        loop {
         let file = os::Descriptor::open(&path)?;
         let _publication = file.lock(0, blocking)?.ok_or(Error::Busy)?;
         let (dev, ino, size) = file.identity()?;
         let named = fs::symlink_metadata(&path)?;
         if named.file_type().is_symlink() { return Err(Error::Incompatible("ledger path is a symlink")); }
         if (named.dev(), named.ino()) != (dev, ino) {
-            // Another opener replaced an empty older format while this FD waited.
-            continue;
-        }
-        if size == (upgrade::OLD_WORDS * 8) as u64 {
-            upgrade::Prepared::prepare(&file, &path, &expected)?.commit()?;
-            continue;
+            // The backing changed while this descriptor waited. Never join a detached
+            // table or replace/reinitialize live state; a later caller may try again.
+            return Err(Error::Busy);
         }
         if size == 0 {
             file.resize(WORDS * 8)?;
@@ -421,7 +416,7 @@ impl Ledger {
             }
         }
         drop(_publication);
-        return Ok(Self(Arc::new(Connection {
+        Ok(Self(Arc::new(Connection {
             path,
             file,
             map,
@@ -430,8 +425,7 @@ impl Ledger {
             pid: std::process::id(),
             scope,
             backing: (dev, ino),
-        })));
-        }
+        })))
     }
 
     pub fn path(&self) -> &Path {
