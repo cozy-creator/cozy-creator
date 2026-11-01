@@ -492,6 +492,8 @@ impl Publisher {
         };
         let pulled = Pulled { repository: named.repository.clone(), release: named.release.clone(), lane: named.lane.clone(), tree: tree.clone() };
         pulled.record(&self.store).map_err(io_failure)?;
+        // Held open while it lands: the store never evicts a commit a pull is fetching.
+        let _held = self.store.at_commit(&tree).map_err(|e| io_failure(storage::io_error(e)))?;
         if components == Some(&[]) {
             logged(&structure);
             return Ok(structure.landed);

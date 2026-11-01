@@ -3,7 +3,8 @@
 #   disk-envs  sdxl, qwen-image-2 and minimax-h3, each its previous release and then its newest (an update removes the
 #              previous environment, logged with its bytes): `machine show` says what fills the disk (models, package
 #              environments, Runtime, other)
-#   disk-held  a CPU SDXL call in flight while H3 int8 (68 GiB) and Qwen-Image int8 (17 GiB) land: none of SDXL is evicted
+#   disk-held  a CPU SDXL call running while H3 int8 (68 GiB) and Qwen-Image int8 (17 GiB) land: none of SDXL is evicted,
+#              and each download holds its own commit (canceled after: a CPU step takes minutes)
 #   disk-lru   H3, Qwen, SDXL and H3 again all land on 100 GB: each eviction logged (lane, bytes, idle); the uv cache
 #              entries the removed environments alone linked are reclaimed (logged) before any model
 T=$OUT/disk; mkdir -p "$T"
@@ -26,13 +27,16 @@ read -r _ free models envs runtime < <(tail -1 "$T/use.tsv"); removed=$(logs 're
 
 held=$(basename "$(mktemp -u "$T/run-XXXXXX")")
 run_submit "$T" "$held" run "$(pkg sdxl generate)" --on "$M" prompt="$OBJECT, held through a full disk" steps:=8 seed:=$((R + 700)) > /dev/null
+run_wait "$T" "$held" in_progress  # accepted: its preparation holds SDXL from here
 h3=$(step h3 model download minimaxai/minimax-h3 --lane int8 --on "$M" -y)
 qwen=$(step qwen model download qwen/qwen-image-2.1 --lane int8 --on "$M" -y)
-run_wait "$T" "$held"; sdxl_run=$(run_get "$T" "$held" .status)
+# On a CPU the call is minutes a step: it held SDXL while both landed, and it is canceled once they have.
+run_show "$T" "$held" "$(cat "$T/$held.number")"; during=$(run_get "$T" "$held" .status)
+"$CLI" run cancel "$(cat "$T/$held.number")" -y > "$T/held-cancel.log" 2>&1; run_wait "$T" "$held"
 evicted_sdxl=$(logs 'tensorfs: evicted stabilityai/sdxl')
-[ "$h3$qwen$sdxl_run" = completedcompletedcompleted ] && [ "$evicted_sdxl" = 0 ] \
-  && expect disk-held PASS "SDXL run $(cat "$T/$held.number") completed while H3 and Qwen landed; SDXL never evicted" \
-  || expect disk-held FAIL "h3 $h3, qwen $qwen, SDXL run $sdxl_run, SDXL evicted $evicted_sdxl times"
+[ "$h3$qwen$during" = completedcompletedin_progress ] && [ "$evicted_sdxl" = 0 ] \
+  && expect disk-held PASS "SDXL run $(cat "$T/$held.number") ran while H3 and Qwen landed; SDXL never evicted" \
+  || expect disk-held FAIL "h3 $h3, qwen $qwen $(run_get "$T" qwen .reason.message), SDXL run $during, SDXL evicted $evicted_sdxl times"
 
 sdxl=$(step sdxl model download stabilityai/sdxl --lane int8 --on "$M" -y)
 again=$(step h3-again model download minimaxai/minimax-h3 --lane int8 --on "$M" -y)
