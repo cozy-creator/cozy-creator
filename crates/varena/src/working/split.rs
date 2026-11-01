@@ -43,6 +43,37 @@ pub(super) struct Splits {
     pending: Vec<(u64, SplitObservation)>,
 }
 
+impl Splits {
+    pub(super) fn active_is_present(&self) -> bool {
+        self.active.is_some()
+    }
+}
+
+pub(super) fn matches_active(state: &State, key: &str, choice: &str, phase: u64) -> bool {
+    state.splits.active.as_ref().is_some_and(|active| {
+        active.owner == Some(phase) && active.key == key && active.choice == choice
+    })
+}
+
+pub(super) fn validate_committed(
+    owner: &Working, key: &str, choices: Vec<(String, Vec<usize>)>, preferred: &str,
+) -> Result<()> {
+    register(owner, key, choices, preferred)
+}
+
+fn committed_operation(
+    state: &State, key: &str, choice: &str, completion_owner: Option<u64>,
+) -> Result<()> {
+    if let Some(phase) = &state.phases.active
+        && let Some((expected_key, expected_choice)) = &phase.committed_site
+        && (phase.invalid.is_some() || expected_key != key || expected_choice != choice
+            || completion_owner != Some(phase.token))
+    {
+        return Err(Error::Invalid("operation differs from its committed execution"));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug)]
 pub struct SplitContext {
     pub eligible: bool,
@@ -490,6 +521,9 @@ fn split_select_inner(
     valid_stream(stream)?;
     context(device)?;
     let owner = initialize_owner(device)?;
+    if owner.lock()?.phases.active.as_ref().is_some_and(|phase| phase.committed_site.is_some()) {
+        return Err(Error::Invalid("a committed execution cannot select another choice"));
+    }
     register(&owner, key, choices, preferred)?;
     let plans = snapshot(device, &owner, key, stream)?;
     if let Some(choice) = decision(&plans, stream, None, 0, 0) {
@@ -558,6 +592,7 @@ fn split_begin_inner(
     let owner = owner(device)?;
     {
         let state = owner.lock()?;
+        committed_operation(&state, key, choice_id, completion_owner)?;
         if let Some(id) = completion_owner {
             if !state
                 .phases
@@ -603,6 +638,7 @@ fn split_begin_inner(
     let generation = lease.validate()?;
     let phase = crate::plan::snapshot(&lease)?;
     let mut state = owner.lock()?;
+    committed_operation(&state, key, choice_id, completion_owner)?;
     selected_generation(plan_generation, generation)?;
     let _context = owner.driver.enter()?;
     let (free, _) = owner.driver.memory_info()?;

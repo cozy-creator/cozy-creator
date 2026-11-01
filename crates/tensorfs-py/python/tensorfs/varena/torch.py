@@ -164,6 +164,24 @@ def split_select(device: DeviceLike, key: str, choices: Sequence[tuple[str, Sequ
     return _ext._varena_split_select(_device(device), key, [(name, list(sizes)) for name, sizes in choices], preferred=preferred, stream=stream)
 
 
+def commit_execution(
+    device: DeviceLike, configuration: str, site: str,
+    choices: Sequence[tuple[str, Sequence[int]]], *, preferred: str, stream: int,
+) -> Any:
+    """Copy one current closed producer declaration and fix its native choice before entry.
+
+    The returned owner exposes key/selection and one-use enter/begin/end/finish/abort.
+    The producer must cover every compute allocation, execute only this fixed choice,
+    and prove same-stream completion before finish(completed=True). Source preparation
+    precedes commit. An observed previous-pass key is not a current declaration.
+    """
+    _installed()
+    return _ext._VarenaExecution(
+        _device(device), configuration, site, [(name, list(sizes)) for name, sizes in choices],
+        preferred=preferred, stream=stream,
+    )
+
+
 def split_begin(device: DeviceLike, key: str, choice_id: str, *, stream: int, completion_owner: int | None = None, plan_generation: int | None = None) -> int:
     """Commit exactly this choice and open one nonnested leaf interval within its phase.
 

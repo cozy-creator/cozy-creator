@@ -13,7 +13,9 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 
 mod split;
 mod cache;
+mod execution;
 pub use cache::{Cache, CacheStats};
+pub use execution::Execution;
 pub use split::{
     SplitContext, SplitObservation, SplitSelection, split_begin, split_context, split_end,
     split_select,
@@ -367,6 +369,7 @@ struct ActivePhase {
     backing_peak: usize,
     invalid: Option<String>,
     replay: Option<ReplayTrace>,
+    committed_site: Option<(String, String)>,
 }
 
 #[derive(Default)]
@@ -540,9 +543,17 @@ impl State {
         next: Option<u64>,
         segment: u64,
     ) {
+        let undeclared = self.phases.active.as_ref().is_some_and(|phase| {
+            phase.committed_site.as_ref().is_some_and(|(key, choice)| {
+                !split::matches_active(self, key, choice, phase.token)
+            })
+        });
         let Some(active) = &mut self.phases.active else {
             return;
         };
+        if undeclared && next == Some(active.token) && after > before {
+            active.invalid.get_or_insert_with(|| "undeclared_working_allocation".into());
+        }
         active.charged = active.charged - before + after;
         active.peak = active.peak.max(active.charged);
         let was_owned = prior == Some(active.token) && before != 0;
@@ -1877,6 +1888,15 @@ pub(crate) fn reclaim_for_weights(device: i32, bytes: usize) -> Result<usize> {
 /// Begin one device-wide execution observation. None means the final configuration is not
 /// known yet: observe demand, but do not admit speculation from an earlier guessed key.
 pub fn phase_enter(device: i32, key: Option<String>, mode: PhaseMode) -> Result<u64> {
+    phase_enter_inner(device, key, mode, None)
+}
+
+fn phase_enter_inner(
+    device: i32,
+    key: Option<String>,
+    mode: PhaseMode,
+    committed_site: Option<(String, String)>,
+) -> Result<u64> {
     if key.as_ref().is_some_and(String::is_empty) {
         return Err(Error::Invalid("phase execution key must not be empty"));
     }
@@ -1887,6 +1907,9 @@ pub fn phase_enter(device: i32, key: Option<String>, mode: PhaseMode) -> Result<
         return Err(Error::Invalid(
             "execution phases cannot overlap on one device",
         ));
+    }
+    if committed_site.is_some() && state.splits.active_is_present() {
+        return Err(Error::Invalid("committed execution cannot overlap an active split"));
     }
     if !state.pressure_pending {
         state.prefetch_suppressed = false;
@@ -1917,6 +1940,7 @@ pub fn phase_enter(device: i32, key: Option<String>, mode: PhaseMode) -> Result<
         backing_peak: 0,
         invalid,
         replay: None,
+        committed_site,
     });
     state.refresh_phase();
     Ok(token)
