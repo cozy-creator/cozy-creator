@@ -109,6 +109,10 @@ pub(super) fn in_kernel(_pid: u32) -> Option<String> {
     None
 }
 
+pub(super) fn threads(_pid: u32) -> Vec<(String, usize)> {
+    Vec::new()
+}
+
 pub(super) fn usage(pid: u32) -> io::Result<super::Usage> {
     // SAFETY: plain-old-data the call fills.
     let mut task: libc::proc_taskinfo = unsafe { mem::zeroed() };
