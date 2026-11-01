@@ -30,6 +30,7 @@ class Probe(msgspec.Struct, forbid_unknown_fields=True):
     tensorfs_version: str
     extension_sha256: str
     gpu_uuid: str
+    expected_shared: bool | None = None
     prior: list[Prior] = msgspec.field(default_factory=list)
     expected_pid: int | None = None
     expected_parent: Birth | None = None
@@ -89,12 +90,17 @@ def probe(payload: Probe, ctx: Context) -> Report:
     torch.cuda.synchronize()
     CALLS += 1
     table = owner._peer.snapshot()
+    row = next(row for row in table['rows'] if row['id'] == table['owner'])
+    if payload.expected_shared is not None:
+        assert owner.config.shared == payload.expected_shared
+        assert row['sharing'] == ('Shared' if payload.expected_shared else 'Dedicated'), row
     maps = Path(f'/proc/{parent["pid"]}/maps').read_text()
     cmdline = Path(f'/proc/{parent["pid"]}/cmdline').read_bytes().replace(b'\0', b' ').decode(errors='replace')
     free, total = torch.cuda.mem_get_info()
     return Report(True, json.dumps({'tag': TAG, 'birth': own, 'parent': parent, 'prior': prior,
         'calls': CALLS, 'storage_ptr': HELD.data_ptr(), 'held_bytes': HELD.numel(),
         'owner_row': table['owner'], 'owner_active': owner.facts()['active'], 'rows': table['rows'],
+        'start_shared': owner.config.shared, 'start_priority': owner.config.priority,
         'parent_cmdline': cmdline, 'parent_cuda_loaded': 'libcuda.so' in maps,
         'runtime_version': payload.runtime_version, 'tensorfs_version': payload.tensorfs_version,
         'extension_sha256': payload.extension_sha256, 'driver_free': free, 'driver_total': total}, sort_keys=True))
