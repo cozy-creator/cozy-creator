@@ -299,6 +299,10 @@ def dense(payload: Probe, ctx: Context) -> Report:
             # The final context may not close while a real plan still retains it; normal cleanup
             # below drops all locals and drains their actual stream before explicit owner close.
         del marker, block, linears
+        assert Counter(case['case'] for case in result['cases']) == {
+            'actual-linear': 24, 'managed-minimum': 2, 'binding-refusal': 2,
+            'post-write-refusal': 2, 'retained-context-refusal': 1}
+        assert len(result['keys']) == len(set(result['keys'])) == 24
 
     try:
         run()
