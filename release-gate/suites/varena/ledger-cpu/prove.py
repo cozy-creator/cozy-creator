@@ -146,8 +146,24 @@ try:
             "duplicate_acks_counted_once": True, "stopped_owner_retained": True,
             "reap_did_not_credit_memory": True, "stale_incarnation_rejected": True,
             "thread_publication": True, "snapshot": reaped}
+        assert replacement.call("publish 0 25 0 25 3")["ok"]
+        next_sample = first.call("sample 10000 999 2")["sample"]
+        abandoned_round = first.call(f"ask {next_sample} 25")["round"]
+        first.process.kill()
+        first.process.wait(timeout=15)
+        assert second.call("reap")["reaped"] == [first.process.pid]
+        abandoned = second.call("snapshot")
+        assert abandoned["round"]["aborted"] and abandoned["round"]["completed"] == 0
+        assert abandoned["sample"]["used"] == 999
+        assert "stale" in replacement.call(f"ack {abandoned_round} 0 0 refused")["error"]
+        fresh_sample = second.call("sample 10000 800 3")["sample"]
+        resumed_round = second.call(f"ask {fresh_sample} 25")["round"]
+        assert resumed_round != abandoned_round
+        assert replacement.call(f"ack {resumed_round} 0 0 refused")["ok"]
+        assert second.call("snapshot")["round"]["finished"]
+        report["round_owner_death"] = {"aborted_round":abandoned_round,"new_round":resumed_round,
+                                       "no_release_invented":True,"fresh_sample_required":True}
         replacement.close()
-        first.close()
         second.close()
         assert inspected(basic)["rows"] == []
 

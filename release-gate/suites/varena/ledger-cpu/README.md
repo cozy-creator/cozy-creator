@@ -18,6 +18,8 @@ The proof uses actual library operations in independent processes and threads. I
   completed release;
 - a SIGSTOPped owner remaining registered, explicit owner death releasing its row, no fabricated returned bytes,
   and a new slot incarnation refusing the previous donor's acknowledgement;
+- death of an active round's requester aborting that round without invented release, followed by a fresh sample
+  and a new round; the old acknowledgement remains stale;
 - parent death while its forked child survives, inherited-handle refusal, and numeric FD **and registry-slot**
   reuse before old Rust objects are dropped; child cleanup never unlocks the live parent's OFD row;
 - 32 actual forks while another thread repeatedly opens/closes ledger connections, after single-threaded hook
