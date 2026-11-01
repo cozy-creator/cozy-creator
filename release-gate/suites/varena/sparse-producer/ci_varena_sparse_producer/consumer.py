@@ -176,6 +176,9 @@ def observed_produce(call, hidden, rotary=None, attention_mask=None):
             case['plan'] = varena.Plan(case['request'].memory.native, [('sparse-call', [region])])
             case['plan'].activate('sparse-call')
         if not case['complete']:
+            # This temporary definition belongs to the real Request. An unknown-key
+            # active phase cannot retire any site; Request exit runs after phase leave.
+            case['request'].memory.remember_working_phase(key, (case['request'],))
             selected = vt.split_select(device, key, [('target', case['allocations'])],
                                        preferred='target', stream=int(torch.cuda.current_stream(device).cuda_stream))
             if case['chunk'] is None:
@@ -193,7 +196,6 @@ def observed_produce(call, hidden, rotary=None, attention_mask=None):
             return output
     finally:
         vt.set_limit(device, None)
-        vt.phase_forget(device, key)
         if 'plan' in case:
             case['plan'].deactivate()
 

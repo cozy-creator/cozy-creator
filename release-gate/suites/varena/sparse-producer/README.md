@@ -20,3 +20,11 @@ It never converts a device Tensor to an integer, including under capture. The ac
 Runtime `_Loop.eager` CPU red/green proof reproduces the old constructor error and
 verifies both host phases with CUDA uninitialized. All26 cases, Runtime9b and packagefc4
 are unchanged. Original25515 is preserved; GPU retry is pending.
+
+
+Run25536 then exposed retirement of a capacity-probe key inside the active Loop phase.
+Native correctly returns Busy while that phase's key is still unknown; the generic Busy
+text mentions a Region even though this call only retires metadata. Each real probe now
+belongs to the Request and retires after phase leave through normal Request cleanup.
+The later same-PID check includes those keys. No native admission/retirement rule changed;
+the failed receipt is preserved and the underlying operation remains unqualified.
