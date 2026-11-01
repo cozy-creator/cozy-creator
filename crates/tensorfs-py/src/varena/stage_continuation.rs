@@ -2,8 +2,8 @@
 //! Runtime's sequence worker calls start outside its locks. That same worker performs
 //! native preparation/read/compute; no Python callback or additional scheduler is used.
 use std::ffi::c_void;
-use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 
 use pyo3::{
@@ -61,7 +61,7 @@ struct Stage {
     canceled: AtomicBool,
     retained_unsafe: AtomicBool,
     reads: Mutex<ReadLedger>,
-    next: Mutex<Option<(Weak<Stage>, usize)>>,
+    next: Mutex<Option<(Weak<Stage>, varena::working::ReplayPrefetch)>>,
     prefetch: Mutex<Prefetch>,
     prefetch_changed: Condvar,
     prefetch_control: Arc<tensorfs::io::ReadControl>,
@@ -131,7 +131,7 @@ fn failure(error: &Failure) -> Status {
 }
 
 impl Stage {
-    fn start_prefetch(&self, budget: usize) {
+    fn start_prefetch(&self, capability: &varena::working::ReplayPrefetch) {
         if self.canceled.load(Ordering::Acquire)
             || self.finished.load(Ordering::Acquire)
             || self.prefetch_control.canceled()
@@ -172,7 +172,7 @@ impl Stage {
             if self.canceled.load(Ordering::Acquire) {
                 return Ok(None);
             }
-            let Some(work) = self.source.prepare_speculative(budget)? else {
+            let Some(work) = self.source.prepare_speculative(capability)? else {
                 return Ok(None);
             };
             let read = Arc::new(PreparedRead::read_only(
@@ -355,10 +355,12 @@ impl Stage {
         if prefetched != 0 && work.missing_bytes() == 0 {
             self.prefetch_used.fetch_add(1, Ordering::Relaxed);
         }
-        if let Some((next, budget)) = self.next.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        if let Some((next, capability)) =
+            self.next.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        {
             work.set_lookahead(Arc::new(move || {
                 if let Some(next) = next.upgrade() {
-                    next.start_prefetch(budget);
+                    next.start_prefetch(&capability);
                 }
             }));
         }
@@ -738,16 +740,23 @@ impl StageJob {
         true
     }
 
+    #[classattr]
+    fn supports_measured_lookahead() -> bool {
+        true
+    }
+
     #[getter]
     fn reservation_bytes(&self) -> usize {
         self.owner.source.reservation_bytes()
     }
 
-    #[pyo3(signature = (next_job, *, max_prefetch_bytes))]
+    #[pyo3(signature = (next_job, *, execution_key, footprints))]
     fn link_next(
         &self,
+        py: Python<'_>,
         next_job: PyRef<'_, StageJob>,
-        max_prefetch_bytes: usize,
+        execution_key: Option<String>,
+        footprints: Vec<Py<super::working::PyGraphFootprint>>,
     ) -> PyResult<bool> {
         let current = &self.owner;
         let next = &next_job.owner;
@@ -765,16 +774,23 @@ impl StageJob {
                 "lookahead needs distinct unstarted source jobs on one device",
             ));
         }
-        if max_prefetch_bytes == 0 || next.source.reservation_bytes() > max_prefetch_bytes {
-            return Ok(false);
-        }
+        let footprints = footprints
+            .into_iter()
+            .map(|item| item.borrow(py).footprint.clone())
+            .collect();
+        let capability = varena::working::ReplayPrefetch::new(
+            current.source.device(),
+            execution_key,
+            footprints,
+        )
+        .map_err(|error| super::raise(py, error))?;
         let mut link = current.next.lock().unwrap_or_else(|e| e.into_inner());
         if link.is_some() {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "source job already has lookahead",
             ));
         }
-        *link = Some((Arc::downgrade(next), max_prefetch_bytes));
+        *link = Some((Arc::downgrade(next), capability));
         Ok(true)
     }
 

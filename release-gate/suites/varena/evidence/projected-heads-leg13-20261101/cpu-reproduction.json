@@ -1,0 +1,40 @@
+{
+  "torch": "2.14.0+cu130",
+  "torch_git": "08187d9e0fba026dc8217405802ab5381dc88d90",
+  "cuda_initialized": false,
+  "cases": [
+    {
+      "dispatch_mode": false,
+      "normal_owned_clone": false,
+      "inference_tensor": true,
+      "inference_mode": false,
+      "passed": false,
+      "error": "Inplace update to inference tensor outside InferenceMode is not allowed.You can make a clone to get a normal tensor before doing inplace update.See https://github.com/pytorch/rfcs/pull/17 for more details."
+    },
+    {
+      "dispatch_mode": false,
+      "normal_owned_clone": true,
+      "inference_tensor": false,
+      "inference_mode": false,
+      "passed": true,
+      "error": ""
+    },
+    {
+      "dispatch_mode": true,
+      "normal_owned_clone": false,
+      "inference_tensor": true,
+      "inference_mode": false,
+      "passed": false,
+      "error": "Inplace update to inference tensor outside InferenceMode is not allowed.You can make a clone to get a normal tensor before doing inplace update.See https://github.com/pytorch/rfcs/pull/17 for more details."
+    },
+    {
+      "dispatch_mode": true,
+      "normal_owned_clone": true,
+      "inference_tensor": false,
+      "inference_mode": false,
+      "passed": true,
+      "error": ""
+    }
+  ],
+  "conclusion": "Loop explicitly disables inference mode; writing an outer inference input fails with or without TorchDispatchMode. A normal owned clone succeeds with or without it."
+}

@@ -1,0 +1,877 @@
+{
+  "cases": [
+    {
+      "budget": 0.01,
+      "exact": true,
+      "phase": {
+        "backing_peak_bytes": 1048576000,
+        "cut_choices": 1,
+        "definitions": [],
+        "invalidated": false,
+        "key": null,
+        "mode": "eager",
+        "observation_id": 1,
+        "peak_bytes": 1044431360,
+        "published": false,
+        "reason": "execution_key_unknown",
+        "split_observations": [
+          {
+            "backing_peak_bytes": 1046478848,
+            "choice_id": "rows:8195/8195:0:5/8195:0:5/8195:0:5/8195:0:5",
+            "key": "runtime.split.residual_ffn/1:da9253a038f8c994f22da7fbead085a0fc58938f2f3d247773aa672acbcb2e0a",
+            "observation_id": 1,
+            "observed": true,
+            "peak_bytes": 1044430848,
+            "pending": false,
+            "published": true,
+            "reason": "",
+            "successful_passes": 1
+          }
+        ],
+        "successful_backing_peak_bytes": 0,
+        "successful_passes": 0,
+        "successful_peak_bytes": 0,
+        "total_peak_bytes": 1569183232
+      },
+      "query": {
+        "allocations": [
+          88112640,
+          469934080,
+          234967040,
+          88112640,
+          117483520,
+          32780,
+          33554944
+        ],
+        "full_rows": 8195,
+        "queries": {
+          "down": {
+            "config": 5,
+            "kind": 0,
+            "status": 0,
+            "workspace_bytes": 33554944
+          },
+          "down_tail": {
+            "config": 5,
+            "kind": 0,
+            "status": 0,
+            "workspace_bytes": 33554944
+          },
+          "up": {
+            "config": 5,
+            "kind": 0,
+            "status": 0,
+            "workspace_bytes": 33554944
+          },
+          "up_tail": {
+            "config": 5,
+            "kind": 0,
+            "status": 0,
+            "workspace_bytes": 33554944
+          }
+        },
+        "tail_rows": 8195,
+        "workspace_bytes": 33554944
+      },
+      "relative_l2": 0.0,
+      "row_chunk": 8195,
+      "rows": 8195,
+      "selection": {
+        "dispatch": {
+          "down": {
+            "config": 5,
+            "kind": 0,
+            "rows": 8195,
+            "workspace": 33554944
+          },
+          "down_tail": {
+            "config": 5,
+            "kind": 0,
+            "rows": 8195,
+            "workspace": 33554944
+          },
+          "up": {
+            "config": 5,
+            "kind": 0,
+            "rows": 8195,
+            "workspace": 33554944
+          },
+          "up_tail": {
+            "config": 5,
+            "kind": 0,
+            "rows": 8195,
+            "workspace": 33554944
+          }
+        },
+        "key": "runtime.split.residual_ffn/1:da9253a038f8c994f22da7fbead085a0fc58938f2f3d247773aa672acbcb2e0a",
+        "output_is_outside_live": true,
+        "row_chunk": 8195,
+        "selection": {
+          "allocation_backing_bytes": 1046478848,
+          "available_bytes": 1044381696,
+          "basis": "declared",
+          "choice_id": "rows:8195/8195:0:5/8195:0:5/8195:0:5/8195:0:5",
+          "eligible": [
+            "rows:8195/8195:0:5/8195:0:5/8195:0:5/8195:0:5",
+            "rows:4098/4098:0:5/4097:0:5/4098:0:5/4097:0:5",
+            "rows:2048/2048:0:0/3:1:-1/2048:0:0/3:1:-1",
+            "rows:1024/1024:0:0/3:1:-1/1024:0:1/3:1:-1",
+            "rows:512/512:0:1/3:1:-1/512:0:4/3:1:-1",
+            "rows:256/256:0:0/3:1:-1/256:0:4/3:1:-1",
+            "rows:128/128:0:6/3:1:-1/128:0:6/3:1:-1",
+            "rows:64/64:0:6/3:1:-1/64:0:6/3:1:-1",
+            "rows:32/32:0:6/3:1:-1/32:0:6/3:1:-1",
+            "rows:16/16:0:3/3:1:-1/16:0:3/3:1:-1",
+            "rows:8/8:0:3/3:1:-1/8:0:3/3:1:-1",
+            "rows:4/4:1:-1/3:1:-1/4:0:3/3:1:-1",
+            "rows:2/2:1:-1/1:1:-1/2:1:-1/1:1:-1"
+          ],
+          "measured_backing_peak_bytes": null,
+          "preserved_backing_bytes": 2097152,
+          "reclaimable_working_bytes": 0,
+          "reclaimed_weight_bytes": 0,
+          "reclaimed_working_bytes": 0,
+          "required_bytes": 1044381696,
+          "reused_capacity_bytes": 49152,
+          "stream": 0
+        },
+        "selections": 1,
+        "site": "residual-ffn-tail",
+        "submission": {
+          "backing_peak_bytes": 1046478848,
+          "choice_id": "rows:8195/8195:0:5/8195:0:5/8195:0:5/8195:0:5",
+          "key": "runtime.split.residual_ffn/1:da9253a038f8c994f22da7fbead085a0fc58938f2f3d247773aa672acbcb2e0a",
+          "observation_id": 1,
+          "observed": true,
+          "peak_bytes": 1044430848,
+          "pending": true,
+          "published": false,
+          "reason": "",
+          "successful_passes": 0
+        },
+        "workspace_bytes": 33554944
+      }
+    },
+    {
+      "budget": 0.01,
+      "exact": true,
+      "phase": {
+        "backing_peak_bytes": 549453824,
+        "cut_choices": 1,
+        "definitions": [],
+        "invalidated": false,
+        "key": null,
+        "mode": "eager",
+        "observation_id": 2,
+        "peak_bytes": 545284608,
+        "published": false,
+        "reason": "execution_key_unknown",
+        "split_observations": [
+          {
+            "backing_peak_bytes": 547356672,
+            "choice_id": "rows:4098/4098:0:5/4097:0:5/4098:0:5/4097:0:5",
+            "key": "runtime.split.residual_ffn/1:da9253a038f8c994f22da7fbead085a0fc58938f2f3d247773aa672acbcb2e0a",
+            "observation_id": 2,
+            "observed": true,
+            "peak_bytes": 545284096,
+            "pending": false,
+            "published": true,
+            "reason": "",
+            "successful_passes": 1
+          }
+        ],
+        "successful_backing_peak_bytes": 0,
+        "successful_passes": 0,
+        "successful_peak_bytes": 0,
+        "total_peak_bytes": 1569183232
+      },
+      "query": {
+        "allocations": [
+          44061696,
+          234995712,
+          117497856,
+          44061696,
+          58748928,
+          16392,
+          33554944
+        ],
+        "full_rows": 4098,
+        "queries": {
+          "down": {
+            "config": 5,
+            "kind": 0,
+            "status": 0,
+            "workspace_bytes": 33554944
+          },
+          "down_tail": {
+            "config": 5,
+            "kind": 0,
+            "status": 0,
+            "workspace_bytes": 33554944
+          },
+          "up": {
+            "config": 5,
+            "kind": 0,
+            "status": 0,
+            "workspace_bytes": 33554944
+          },
+          "up_tail": {
+            "config": 5,
+            "kind": 0,
+            "status": 0,
+            "workspace_bytes": 33554944
+          }
+        },
+        "tail_rows": 4097,
+        "workspace_bytes": 33554944
+      },
+      "relative_l2": 0.0,
+      "row_chunk": 4098,
+      "rows": 8195,
+      "selection": {
+        "dispatch": {
+          "down": {
+            "config": 5,
+            "kind": 0,
+            "rows": 4098,
+            "workspace": 33554944
+          },
+          "down_tail": {
+            "config": 5,
+            "kind": 0,
+            "rows": 4097,
+            "workspace": 33554944
+          },
+          "up": {
+            "config": 5,
+            "kind": 0,
+            "rows": 4098,
+            "workspace": 33554944
+          },
+          "up_tail": {
+            "config": 5,
+            "kind": 0,
+            "rows": 4097,
+            "workspace": 33554944
+          }
+        },
+        "key": "runtime.split.residual_ffn/1:da9253a038f8c994f22da7fbead085a0fc58938f2f3d247773aa672acbcb2e0a",
+        "output_is_outside_live": true,
+        "row_chunk": 4098,
+        "selection": {
+          "allocation_backing_bytes": 547356672,
+          "available_bytes": 545259520,
+          "basis": "declared",
+          "choice_id": "rows:4098/4098:0:5/4097:0:5/4098:0:5/4097:0:5",
+          "eligible": [
+            "rows:4098/4098:0:5/4097:0:5/4098:0:5/4097:0:5",
+            "rows:2048/2048:0:0/3:1:-1/2048:0:0/3:1:-1",
+            "rows:1024/1024:0:0/3:1:-1/1024:0:1/3:1:-1",
+            "rows:512/512:0:1/3:1:-1/512:0:4/3:1:-1",
+            "rows:256/256:0:0/3:1:-1/256:0:4/3:1:-1",
+            "rows:128/128:0:6/3:1:-1/128:0:6/3:1:-1",
+            "rows:64/64:0:6/3:1:-1/64:0:6/3:1:-1",
+            "rows:32/32:0:6/3:1:-1/32:0:6/3:1:-1",
+            "rows:16/16:0:3/3:1:-1/16:0:3/3:1:-1",
+            "rows:8/8:0:3/3:1:-1/8:0:3/3:1:-1",
+            "rows:4/4:1:-1/3:1:-1/4:0:3/3:1:-1",
+            "rows:2/2:1:-1/1:1:-1/2:1:-1/1:1:-1"
+          ],
+          "measured_backing_peak_bytes": null,
+          "preserved_backing_bytes": 2097152,
+          "reclaimable_working_bytes": 0,
+          "reclaimed_weight_bytes": 0,
+          "reclaimed_working_bytes": 0,
+          "required_bytes": 545259520,
+          "reused_capacity_bytes": 24576,
+          "stream": 0
+        },
+        "selections": 2,
+        "site": "residual-ffn-tail",
+        "submission": {
+          "backing_peak_bytes": 547356672,
+          "choice_id": "rows:4098/4098:0:5/4097:0:5/4098:0:5/4097:0:5",
+          "key": "runtime.split.residual_ffn/1:da9253a038f8c994f22da7fbead085a0fc58938f2f3d247773aa672acbcb2e0a",
+          "observation_id": 2,
+          "observed": true,
+          "peak_bytes": 545284096,
+          "pending": true,
+          "published": false,
+          "reason": "",
+          "successful_passes": 0
+        },
+        "workspace_bytes": 33554944
+      }
+    },
+    {
+      "budget": 0.01,
+      "exact": true,
+      "phase": {
+        "backing_peak_bytes": 255852544,
+        "cut_choices": 1,
+        "definitions": [],
+        "invalidated": false,
+        "key": null,
+        "mode": "eager",
+        "observation_id": 3,
+        "peak_bytes": 251666944,
+        "published": false,
+        "reason": "execution_key_unknown",
+        "split_observations": [
+          {
+            "backing_peak_bytes": 253755392,
+            "choice_id": "rows:2048/2048:0:0/3:1:-1/2048:0:0/3:1:-1",
+            "key": "runtime.split.residual_ffn/1:da9253a038f8c994f22da7fbead085a0fc58938f2f3d247773aa672acbcb2e0a",
+            "observation_id": 3,
+            "observed": true,
+            "peak_bytes": 251666432,
+            "pending": false,
+            "published": true,
+            "reason": "",
+            "successful_passes": 1
+          }
+        ],
+        "successful_backing_peak_bytes": 0,
+        "successful_passes": 0,
+        "successful_peak_bytes": 0,
+        "total_peak_bytes": 1070036480
+      },
+      "query": {
+        "allocations": [
+          22020096,
+          117440512,
+          58720256,
+          22020096,
+          29360128,
+          8192
+        ],
+        "full_rows": 2048,
+        "queries": {
+          "down": {
+            "config": 0,
+            "kind": 0,
+            "status": 0,
+            "workspace_bytes": 0
+          },
+          "down_tail": {
+            "config": -1,
+            "kind": 1,
+            "status": 0,
+            "workspace_bytes": 0
+          },
+          "up": {
+            "config": 0,
+            "kind": 0,
+            "status": 0,
+            "workspace_bytes": 0
+          },
+          "up_tail": {
+            "config": -1,
+            "kind": 1,
+            "status": 0,
+            "workspace_bytes": 0
+          }
+        },
+        "tail_rows": 3,
+        "workspace_bytes": 0
+      },
+      "relative_l2": 0.0,
+      "row_chunk": 2048,
+      "rows": 8195,
+      "selection": {
+        "dispatch": {
+          "down": {
+            "config": 0,
+            "kind": 0,
+            "rows": 2048,
+            "workspace": 0
+          },
+          "down_tail": {
+            "config": -1,
+            "kind": 1,
+            "rows": 3,
+            "workspace": 0
+          },
+          "up": {
+            "config": 0,
+            "kind": 0,
+            "rows": 2048,
+            "workspace": 0
+          },
+          "up_tail": {
+            "config": -1,
+            "kind": 1,
+            "rows": 3,
+            "workspace": 0
+          }
+        },
+        "key": "runtime.split.residual_ffn/1:da9253a038f8c994f22da7fbead085a0fc58938f2f3d247773aa672acbcb2e0a",
+        "output_is_outside_live": true,
+        "row_chunk": 2048,
+        "selection": {
+          "allocation_backing_bytes": 253755392,
+          "available_bytes": 253755392,
+          "basis": "declared",
+          "choice_id": "rows:2048/2048:0:0/3:1:-1/2048:0:0/3:1:-1",
+          "eligible": [
+            "rows:2048/2048:0:0/3:1:-1/2048:0:0/3:1:-1",
+            "rows:1024/1024:0:0/3:1:-1/1024:0:1/3:1:-1",
+            "rows:512/512:0:1/3:1:-1/512:0:4/3:1:-1",
+            "rows:256/256:0:0/3:1:-1/256:0:4/3:1:-1",
+            "rows:128/128:0:6/3:1:-1/128:0:6/3:1:-1",
+            "rows:64/64:0:6/3:1:-1/64:0:6/3:1:-1",
+            "rows:32/32:0:6/3:1:-1/32:0:6/3:1:-1",
+            "rows:16/16:0:3/3:1:-1/16:0:3/3:1:-1",
+            "rows:8/8:0:3/3:1:-1/8:0:3/3:1:-1",
+            "rows:4/4:1:-1/3:1:-1/4:0:3/3:1:-1",
+            "rows:2/2:1:-1/1:1:-1/2:1:-1/1:1:-1"
+          ],
+          "measured_backing_peak_bytes": null,
+          "preserved_backing_bytes": 0,
+          "reclaimable_working_bytes": 0,
+          "reclaimed_weight_bytes": 0,
+          "reclaimed_working_bytes": 0,
+          "required_bytes": 253755392,
+          "reused_capacity_bytes": 0,
+          "stream": 0
+        },
+        "selections": 3,
+        "site": "residual-ffn-tail",
+        "submission": {
+          "backing_peak_bytes": 253755392,
+          "choice_id": "rows:2048/2048:0:0/3:1:-1/2048:0:0/3:1:-1",
+          "key": "runtime.split.residual_ffn/1:da9253a038f8c994f22da7fbead085a0fc58938f2f3d247773aa672acbcb2e0a",
+          "observation_id": 3,
+          "observed": true,
+          "peak_bytes": 251666432,
+          "pending": true,
+          "published": false,
+          "reason": "",
+          "successful_passes": 0
+        },
+        "workspace_bytes": 0
+      }
+    },
+    {
+      "output_unchanged": true,
+      "phase": {
+        "backing_peak_bytes": 2097152,
+        "cut_choices": 0,
+        "definitions": [],
+        "invalidated": true,
+        "key": null,
+        "mode": "eager",
+        "observation_id": 4,
+        "peak_bytes": 512,
+        "published": false,
+        "reason": "split_select_error",
+        "split_observations": [],
+        "successful_backing_peak_bytes": 0,
+        "successful_passes": 0,
+        "successful_peak_bytes": 0,
+        "total_peak_bytes": 776418816
+      },
+      "refusal": {
+        "allocation_delta": 0,
+        "available_bytes": 2097151,
+        "no_retry": true,
+        "required_bytes": 2097152
+      }
+    },
+    {
+      "phase": {
+        "backing_peak_bytes": 8388608,
+        "cut_choices": 1,
+        "definitions": [],
+        "invalidated": false,
+        "key": null,
+        "mode": "eager",
+        "observation_id": 5,
+        "peak_bytes": 123392,
+        "published": false,
+        "reason": "execution_key_unknown",
+        "split_observations": [
+          {
+            "backing_peak_bytes": 6291456,
+            "choice_id": "rows:1/1:1:-1/1:1:-1/1:1:-1/1:1:-1",
+            "key": "runtime.split.residual_ffn/1:2fa10e6e3912e66f0304b9633e750c26da22961d3216d6057188902016845e64",
+            "observation_id": 4,
+            "observed": true,
+            "peak_bytes": 122880,
+            "pending": false,
+            "published": true,
+            "reason": "",
+            "successful_passes": 1
+          }
+        ],
+        "successful_backing_peak_bytes": 0,
+        "successful_passes": 0,
+        "successful_peak_bytes": 0,
+        "total_peak_bytes": 434710016
+      },
+      "relative_l2": 0.0,
+      "row_chunk": 1,
+      "rows": 1,
+      "selection": {
+        "dispatch": {
+          "down": {
+            "config": -1,
+            "kind": 1,
+            "rows": 1,
+            "workspace": 0
+          },
+          "down_tail": {
+            "config": -1,
+            "kind": 1,
+            "rows": 1,
+            "workspace": 0
+          },
+          "up": {
+            "config": -1,
+            "kind": 1,
+            "rows": 1,
+            "workspace": 0
+          },
+          "up_tail": {
+            "config": -1,
+            "kind": 1,
+            "rows": 1,
+            "workspace": 0
+          }
+        },
+        "key": "runtime.split.residual_ffn/1:2fa10e6e3912e66f0304b9633e750c26da22961d3216d6057188902016845e64",
+        "output_is_outside_live": true,
+        "row_chunk": 1,
+        "selection": {
+          "allocation_backing_bytes": 6291456,
+          "available_bytes": 24282660864,
+          "basis": "declared",
+          "choice_id": "rows:1/1:1:-1/1:1:-1/1:1:-1/1:1:-1",
+          "eligible": [
+            "rows:1/1:1:-1/1:1:-1/1:1:-1/1:1:-1"
+          ],
+          "measured_backing_peak_bytes": null,
+          "preserved_backing_bytes": 6291456,
+          "reclaimable_working_bytes": 90177536,
+          "reclaimed_weight_bytes": 0,
+          "reclaimed_working_bytes": 0,
+          "required_bytes": 0,
+          "reused_capacity_bytes": 122880,
+          "stream": 0
+        },
+        "selections": 1,
+        "site": "residual-ffn-tail",
+        "submission": {
+          "backing_peak_bytes": 6291456,
+          "choice_id": "rows:1/1:1:-1/1:1:-1/1:1:-1/1:1:-1",
+          "key": "runtime.split.residual_ffn/1:2fa10e6e3912e66f0304b9633e750c26da22961d3216d6057188902016845e64",
+          "observation_id": 4,
+          "observed": true,
+          "peak_bytes": 122880,
+          "pending": true,
+          "published": false,
+          "reason": "",
+          "successful_passes": 0
+        },
+        "workspace_bytes": 0
+      }
+    }
+  ],
+  "declined_before_write": [
+    "unbaked_hook",
+    "nonexclusive",
+    "output_alias",
+    "unaligned_index"
+  ],
+  "final": {
+    "allocated_bytes": 17039360,
+    "allocated_capacity": 20971520,
+    "allocated_peak": 7503256628,
+    "allocations": 2068,
+    "context_joins": 0,
+    "driver_memory_calls": 627,
+    "event_handles": 0,
+    "event_queries": 672,
+    "event_records": 484,
+    "event_waits": 0,
+    "free_bytes": 0,
+    "frees": 2066,
+    "mapped_bytes": 20971520,
+    "mapped_peak": 15491661824,
+    "ooms": 0,
+    "pending_bytes": 0,
+    "pools": 0,
+    "pools_bytes": 0,
+    "prefetch_admissions": 0,
+    "prefetch_attempts": 0,
+    "prefetch_declines": 0,
+    "reclaimable_bytes": 0,
+    "unassigned_bytes": 0
+  },
+  "hook_factor_reads": 0,
+  "initial": {
+    "allocated_bytes": 17039360,
+    "allocated_capacity": 20971520,
+    "allocated_peak": 17039360,
+    "allocations": 1735,
+    "context_joins": 0,
+    "driver_memory_calls": 172,
+    "event_handles": 0,
+    "event_queries": 315,
+    "event_records": 264,
+    "event_waits": 0,
+    "free_bytes": 0,
+    "frees": 1733,
+    "mapped_bytes": 20971520,
+    "mapped_peak": 117440512,
+    "ooms": 0,
+    "pending_bytes": 0,
+    "pools": 0,
+    "pools_bytes": 0,
+    "prefetch_admissions": 0,
+    "prefetch_attempts": 0,
+    "prefetch_declines": 0,
+    "reclaimable_bytes": 0,
+    "unassigned_bytes": 0
+  },
+  "passed": true,
+  "provenance": {
+    "extension_sha256": "ea131006d23325bee34be91d64bb6b92c5947738e967d6f3d91a0d7ccbc449b6",
+    "glue_identities": {
+      "minimax-h3-glue": "sha256:5296525747c8fa82b137f4a4425c1460e20b3f8a208b88ee4fd6c8cfac5a8314",
+      "minimax-h3-glue-fp8": "sha256:059472e0f4b204f848f178644281da6759fdd6c2691b1e3cbf4d99c40b48f573"
+    },
+    "gpu_uuid": "001d94d1-0a24-f46e-9917-aeacf408c95f",
+    "launcher_key": "dd6295c923737bf9246b739fb8016eb750394bd07a6edd716ef825c0b6b56c11",
+    "loaded_set": "minimax-h3-glue-fp8",
+    "package_modules": {
+      "__init__.py": "3d32fa69e16131aecce5b7422db4119f25d8a64c52b17001e1cecd88266ac925",
+      "adaln_pruned.py": "de3f09deea1af42b6e63635ac7c2a1be2004b6c16a8ed8690966c986b3c557d5",
+      "glue.py": "3d07e63c5ac68f11daa5d97984145d49fac54311c8111dc3d4f7e8858f8dd130",
+      "overlay.py": "1964cd5304648c204f09c4d01eff171e9aca1ac20b31b6a9c2ea6206cf5ffb44"
+    },
+    "pid": 667,
+    "request_id": "5",
+    "runtime_modules": {
+      "_kernels/_gemm.abi3.so": "9523c5070bd1646f43b505e0ce0bb05670d7b39f8d7e4be3a52846e2b7a81d3e",
+      "author/_split.py": "60870cce6b43ec9c75755b3ab4a38b3ec974da4a3eaa163c08cdb3f193153fec",
+      "author/kernels.py": "b63c5e57df0f76fcb88304ed1a7f8cb3d17646838f7bff92a278bc21287df262",
+      "internal/encoding/leaves.py": "c0aa697b9baa0f232b036783516790e75c85847559971ce3278507bd232e53f6",
+      "internal/execution/__init__.py": "c512e78d7e391136fdefdc87dbe21023f8fd311e1bebd0c52cdc9a23ecadae94",
+      "internal/execution/native_linear_split.py": "def2d5a1836bbc59d6492a88c0ce6925f7d6f680c84997a6f3c0b2665aa3f9bf",
+      "internal/execution/native_residual_ffn.py": "c0e8eb7c8a25f4eb1b2bbe1225e1fb8c3ca1736dd9db0c13d425997f92109702",
+      "internal/execution/native_split.py": "368cc0944ec6429a45f999c6646b97f943187b02593fc8f4dfcd3f441e59d4aa",
+      "internal/prebuilt.py": "3f5d32d9214de115049ee5a8016bf6f5ae1c909b2570327b9cb4e64edfa75eab",
+      "internal/triton_kernels.py": "81ba6fb73430d035c47b05bcb9caa132c1457af61fd0c0ef2dbd86bfc5236935",
+      "lora.py": "2908f3b3717a2b8565a256b0ba3d78ff70ac85038cd2e902ef23c860dc986a46"
+    },
+    "runtime_version": "0.36.21+dev.gdae97328",
+    "seed": 6479944039184333,
+    "shim_sha256": "09684b61d0b909c39d56c7d129432e906ddb0a57f1b4b916b20bb2c4c8d7716e",
+    "tensorfs_version": "0.17.16+dev.gb20f699c"
+  },
+  "query_execution": {
+    "down": [
+      {
+        "actual_workspace": [
+          33554944
+        ],
+        "channels": 5376,
+        "columns": 14336,
+        "query": {
+          "config": 5,
+          "kind": 0,
+          "status": 0,
+          "workspace_bytes": 33554944
+        },
+        "relative_l2": 0.0,
+        "rows": 8195
+      },
+      {
+        "actual_workspace": [
+          33554944
+        ],
+        "channels": 5376,
+        "columns": 14336,
+        "query": {
+          "config": 5,
+          "kind": 0,
+          "status": 0,
+          "workspace_bytes": 33554944
+        },
+        "relative_l2": 0.0,
+        "rows": 4098
+      },
+      {
+        "actual_workspace": [
+          33554944
+        ],
+        "channels": 5376,
+        "columns": 14336,
+        "query": {
+          "config": 5,
+          "kind": 0,
+          "status": 0,
+          "workspace_bytes": 33554944
+        },
+        "relative_l2": 0.0,
+        "rows": 4097
+      },
+      {
+        "actual_workspace": [],
+        "channels": 5376,
+        "columns": 14336,
+        "query": {
+          "config": 0,
+          "kind": 0,
+          "status": 0,
+          "workspace_bytes": 0
+        },
+        "relative_l2": 0.0,
+        "rows": 2048
+      },
+      {
+        "actual_workspace": [],
+        "channels": 5376,
+        "columns": 14336,
+        "query": {
+          "config": -1,
+          "kind": 1,
+          "status": 0,
+          "workspace_bytes": 0
+        },
+        "relative_l2": 0.0,
+        "rows": 3
+      },
+      {
+        "actual_workspace": [],
+        "channels": 5376,
+        "columns": 14336,
+        "query": {
+          "config": -1,
+          "kind": 1,
+          "status": 0,
+          "workspace_bytes": 0
+        },
+        "relative_l2": 0.0,
+        "rows": 2
+      },
+      {
+        "actual_workspace": [],
+        "channels": 5376,
+        "columns": 14336,
+        "query": {
+          "config": -1,
+          "kind": 1,
+          "status": 0,
+          "workspace_bytes": 0
+        },
+        "relative_l2": 0.0,
+        "rows": 1
+      }
+    ],
+    "up": [
+      {
+        "actual_workspace": [
+          33554944
+        ],
+        "channels": 28672,
+        "columns": 5376,
+        "query": {
+          "config": 5,
+          "kind": 0,
+          "status": 0,
+          "workspace_bytes": 33554944
+        },
+        "relative_l2": 0.0,
+        "rows": 8195
+      },
+      {
+        "actual_workspace": [
+          33554944
+        ],
+        "channels": 28672,
+        "columns": 5376,
+        "query": {
+          "config": 5,
+          "kind": 0,
+          "status": 0,
+          "workspace_bytes": 33554944
+        },
+        "relative_l2": 0.0,
+        "rows": 4098
+      },
+      {
+        "actual_workspace": [
+          33554944
+        ],
+        "channels": 28672,
+        "columns": 5376,
+        "query": {
+          "config": 5,
+          "kind": 0,
+          "status": 0,
+          "workspace_bytes": 33554944
+        },
+        "relative_l2": 0.0,
+        "rows": 4097
+      },
+      {
+        "actual_workspace": [],
+        "channels": 28672,
+        "columns": 5376,
+        "query": {
+          "config": 0,
+          "kind": 0,
+          "status": 0,
+          "workspace_bytes": 0
+        },
+        "relative_l2": 0.0,
+        "rows": 2048
+      },
+      {
+        "actual_workspace": [],
+        "channels": 28672,
+        "columns": 5376,
+        "query": {
+          "config": -1,
+          "kind": 1,
+          "status": 0,
+          "workspace_bytes": 0
+        },
+        "relative_l2": 0.0,
+        "rows": 3
+      },
+      {
+        "actual_workspace": [],
+        "channels": 28672,
+        "columns": 5376,
+        "query": {
+          "config": -1,
+          "kind": 1,
+          "status": 0,
+          "workspace_bytes": 0
+        },
+        "relative_l2": 0.0,
+        "rows": 2
+      },
+      {
+        "actual_workspace": [],
+        "channels": 28672,
+        "columns": 5376,
+        "query": {
+          "config": -1,
+          "kind": 1,
+          "status": 0,
+          "workspace_bytes": 0
+        },
+        "relative_l2": 0.0,
+        "rows": 1
+      }
+    ]
+  },
+  "request_owned_keys": [
+    "runtime.split.residual_ffn/1:2fa10e6e3912e66f0304b9633e750c26da22961d3216d6057188902016845e64",
+    "runtime.split.residual_ffn/1:da9253a038f8c994f22da7fbead085a0fc58938f2f3d247773aa672acbcb2e0a"
+  ]
+}
