@@ -1,0 +1,43 @@
+{
+  "scope": "native helpers built in one dependency cohort; no GPU execution",
+  "product": "569649a8cdcd4db8214624e4d08866e27700a954",
+  "artifacts": {
+    "varena-async-fill": {
+      "sha256": "2b846c39c6f9569095eed21a2e1108ef67a33cc777746619a166123cc20a8ab4",
+      "needed": [
+        "0x0000000000000001 (NEEDED)             Shared library: [libvarena.so]",
+        "0x0000000000000001 (NEEDED)             Shared library: [libstd-7e719de9c4abc98f.so]",
+        "0x0000000000000001 (NEEDED)             Shared library: [libgcc_s.so.1]",
+        "0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]"
+      ]
+    },
+    "varena-cache-pages": {
+      "sha256": "f56f1279b0c404e5c3e8e65bd39962a5a17d59de1088db33d3c8fad969261c1a",
+      "needed": [
+        "0x0000000000000001 (NEEDED)             Shared library: [libvarena.so]",
+        "0x0000000000000001 (NEEDED)             Shared library: [libstd-7e719de9c4abc98f.so]",
+        "0x0000000000000001 (NEEDED)             Shared library: [libgcc_s.so.1]",
+        "0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]"
+      ]
+    },
+    "varena-ledger-peer": {
+      "sha256": "af2a034a556c24d035567dbd869de70f5c56420ef2fc12dd184bac9503b1f99a",
+      "needed": [
+        "0x0000000000000001 (NEEDED)             Shared library: [libvarena.so]",
+        "0x0000000000000001 (NEEDED)             Shared library: [libstd-7e719de9c4abc98f.so]",
+        "0x0000000000000001 (NEEDED)             Shared library: [libgcc_s.so.1]",
+        "0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]"
+      ]
+    },
+    "deps/libvarena.so": {
+      "sha256": "895bcd67adfd4c0f9bf10d5371a870b82ebef22fb98a7c85641c802b11c26266",
+      "needed": [
+        "0x0000000000000001 (NEEDED)             Shared library: [libstd-7e719de9c4abc98f.so]",
+        "0x0000000000000001 (NEEDED)             Shared library: [libgcc_s.so.1]",
+        "0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]",
+        "0x0000000000000001 (NEEDED)             Shared library: [ld-linux-x86-64.so.2]"
+      ]
+    }
+  },
+  "same_core_as_previous_host_proof": true
+}
