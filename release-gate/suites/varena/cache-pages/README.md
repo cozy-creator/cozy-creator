@@ -38,8 +38,11 @@ of this first primitive; no GIL/shrink-success claim follows from these cells.
 `freeze.py` archives a clean exact commit. The build operator builds the helper and
 TensorFS from that source using the persistent manylinux cache. `prepare.py` verifies
 source/archive hashes, ELF64/x86_64, GLIBC <= 2.28, no Python/Torch linkage, and freezes
-the project plus input. Supply the actual built TensorFS extension SHA; the controller
-checks that installed file before entry. Inputs may remain GPU UNBOUND until rental.
+the project plus input. Supply the actual parent TensorFS extension SHA; the controller
+checks that installed file before entry and reports its versions separately. The three
+standalone Rust cells can use the current parent SDK because the child owns its new
+native Cache core. Only `python_binding` requires the new extension. It must be run and
+qualified separately after SDK installation. Inputs may remain GPU UNBOUND until rental.
 All failed receipts and earlier artifacts must remain preserved.
 
 Root owns native builds, SDK installation, GPU execution, rentals and settlement. The

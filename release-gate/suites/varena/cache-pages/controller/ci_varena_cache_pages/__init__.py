@@ -43,7 +43,7 @@ def birth(pid):
     return int(Path(f'/proc/{pid}/stat').read_text().rsplit(') ', 1)[1].split()[19])
 
 
-def setup(payload, ctx):
+def setup(payload, ctx, *, cache_required=False):
     import torch
     from tensorfs import _ext
 
@@ -55,7 +55,8 @@ def setup(payload, ctx):
     assert payload.native_extension_sha256 == digest(_ext.__file__)
     assert manifest['elf']['glibc_max'] <= [2, 28]
     assert not any('python' in name.lower() or 'torch' in name.lower() for name in manifest['elf']['needed'])
-    assert hasattr(_ext, '_VarenaCache')
+    if cache_required:
+        assert hasattr(_ext, '_VarenaCache'), 'python_binding requires the new Cache extension'
     own_pidfd = os.pidfd_open(os.getpid())
     try:
         signal.pidfd_send_signal(own_pidfd, 0)
@@ -71,6 +72,7 @@ def setup(payload, ctx):
                     'versions': {name: importlib.metadata.version(name)
                                  for name in ('tensorfs', 'cozy-runtime', 'torch')},
                     'native_extension': str(_ext.__file__),
+                    'parent_cache_binding_available': hasattr(_ext, '_VarenaCache'),
                     'driver_before': dict(zip(('free', 'total'), torch.cuda.mem_get_info(0), strict=True))}
 
 
@@ -169,7 +171,7 @@ def binding(payload, ctx):
     from tensorfs import varena
     from tensorfs.varena import torch as vt
 
-    _, provenance = setup(payload, ctx)
+    _, provenance = setup(payload, ctx, cache_required=True)
     before = vt.stats(0)
     cache = None
     try:
