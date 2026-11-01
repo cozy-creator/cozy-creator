@@ -1,0 +1,39 @@
+{
+  "matched_full_scope": true,
+  "arms": {
+    "control": {
+      "frames": 362,
+      "video_duration_s": 15.083333,
+      "audio_duration_s": 15.075,
+      "pcm_sha256": "7ed668d478765ef72cf3b5033e407332d670d210e8aee3c624e34cc867802520",
+      "interleaved_samples": 966656,
+      "rms_s16": 42.218284596041116,
+      "rms_dbfs": -57.79898703572964,
+      "peak_absolute_s16": 364.0,
+      "clip_samples": 0
+    },
+    "candidate": {
+      "frames": 362,
+      "video_duration_s": 15.083333,
+      "audio_duration_s": 15.075,
+      "pcm_sha256": "ff91550e5e34659c970efed41906765cce3141bce891fe7b201711a230317085",
+      "interleaved_samples": 966656,
+      "rms_s16": 49.65434665049049,
+      "rms_dbfs": -56.389853262426854,
+      "peak_absolute_s16": 315.0,
+      "clip_samples": 0
+    }
+  },
+  "audio_listening": "not performed; this model interface does not accept audio input",
+  "visual_sample_times_s": [
+    0,
+    2,
+    4,
+    6,
+    8,
+    10,
+    12,
+    14
+  ],
+  "visual_observation": "Both sampled clips retain a coherent golden-hour clockmaker workbench, tools and window scene. Composition and object placement differ. No clear candidate-only blackout, tiling, gross corruption or loss of scene detail appears in these eight samples. This does not rule out brief flicker or subtle motion defects between samples."
+}

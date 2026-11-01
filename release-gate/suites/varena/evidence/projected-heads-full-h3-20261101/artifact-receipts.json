@@ -1,0 +1,24 @@
+{
+  "control-run.json": {
+    "source": "/home/fidika/cozy_v2/outputs/xs138-heads-full-audit/control-run.json",
+    "sha256": "f2357ed0dfa24c4b0e5028df17caeb50ac801d4217cc620f07a47efd70b462c8",
+    "bytes": 2452784,
+    "compressed_file": "control-run.json.gz"
+  },
+  "candidate-run.json": {
+    "source": "/home/fidika/cozy_v2/outputs/xs138-heads-full-audit/candidate-run.json",
+    "sha256": "de6e9c64531e5f47e5e305e75b6063673e7aa82a1f90df2febc36ff69b33c12b",
+    "bytes": 2793652,
+    "compressed_file": "candidate-run.json.gz"
+  },
+  "paired-early.png": {
+    "source": "/home/fidika/cozy_v2/outputs/xs138-heads-full-audit/frames/paired-early.png",
+    "sha256": "fd14a99ae42c463c6122c8c78fd0078a0320aef71e41dbd410a62a5b02732a2b",
+    "bytes": 1998508
+  },
+  "paired-late.png": {
+    "source": "/home/fidika/cozy_v2/outputs/xs138-heads-full-audit/frames/paired-late.png",
+    "sha256": "8d7342691cf3aac60e0b1dfc13615368b562b119326a53024a4b793c405d3e06",
+    "bytes": 2089522
+  }
+}
