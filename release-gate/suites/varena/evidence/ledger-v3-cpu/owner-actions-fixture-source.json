@@ -1,0 +1,11 @@
+{
+  "passed": true,
+  "gpu_execution": false,
+  "scope": "new strict GPU fixture AST only",
+  "files": {
+    "release-gate/suites/varena/owner-runtime/ci_varena_owner/__init__.py": "1c0ccfe40fb491c202804cebac068ed13cf37fbdcbc9f64daa247e1634325897",
+    "release-gate/suites/varena/owner-runtime/ci_varena_owner/owner_actions.py": "7a1fe372c72287463e7c534437865161651cb9bfc231edb11c2d602fb39733a5",
+    "release-gate/suites/varena/owner-runtime/ci_varena_owner/action_requester.py": "95c261285dbb9aab9201c9498bbe85dfaf15621b00e0c57aed4bcda1ff2c8f03"
+  },
+  "case": "owner_actions: zero-ready requestability, decline then capped release, unrelated actual release, live readback and cleanup"
+}

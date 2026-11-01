@@ -1,0 +1,18 @@
+{
+  "native_product": "0657802458dfbf4fb7e66613e30c9baef1308e68",
+  "runtime": "6c8122412bf502f2913c35eaba6cf9d263d314b5",
+  "fixture": "6e85733ef6d3cea3697b30c10fb4eef1cf9c1297",
+  "gpu_qualified": false,
+  "files": {
+    "host-lifetimes.stderr": "1e24949b9dfe1e0debb11d43b70ee24067f054f80c1df7953e0b8d889c391f09",
+    "native-check.log": "b6101ad3a755d5770907d4aabde70fb89dd99a0093c416f10bfd5cd1674bc723",
+    "runtime-mypy-comparison.json": "33e138bec3522382ff51d3aa8b719ac8978730bc69455704990d09dde9471767",
+    "owner-actions-fixture-source.json": "24a2a1c2aca3c06c4c99e7313d3f8431a2128ecb0ab680f288e298f971053198",
+    "host-lifetimes.json": "e9de9775a51973d377ddfaec066d423832a560ef3783d4981c2a111b3d362404",
+    "metadata-builds.json": "35ba753c9a0beb73a192d19d9cf61faa15eee589d768e943e5df35eaf0ffd9d4",
+    "runtime-ruff-comparison.json": "d76b8c9bd4dcc4bfdf96e37d3efdd5ae57d426649b7aa72cb24c94b53fe37e05",
+    "metadata-protocol.json": "e74d60f1936a1caf103cd8158675a8cec1551dccf071a68aa087fd0f1b973727",
+    "host-lifetimes.stdout": "a9ef2d88d1b3d50aa1af054a0612005c894d612d0127b4cc14fe749c6b6de41d",
+    "metadata-events.json": "ca9bc4d32e8b7315267b1f15167d000730e0d7dd49e85bb506915cb7a36cfa56"
+  }
+}
