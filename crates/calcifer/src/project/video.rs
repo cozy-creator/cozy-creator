@@ -14,7 +14,7 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    folder::{self, Asset, Call, Folder, Lock, Made, Upstream},
+    folder::{self, Asset, Call, Folder, Lock, Made, Shape, Upstream},
     graph::{Edge, Graph, Node, mentions, name_key},
     host::{Accepts, Renderer},
 };
@@ -248,16 +248,54 @@ enum Item {
     Upscale(usize),
 }
 
-/// A piece of the edit: a shot's node, its file (here, its digest, and its asset's path in the
-/// project, `assets/<sha256>.<ext>`), and its frames from `start` to `end` (exclusive) at the
-/// project's rate.
+/// A piece of the edit: a shot's node, its file (here, its digest, its asset's path in the project,
+/// `assets/<sha256>.<ext>`, and its shape as project.lock records it), and its frames from `start`
+/// to `end` (exclusive) at the project's rate.
 pub struct Piece {
     pub node: String,
     pub path: PathBuf,
     pub digest: String,
     pub asset: String,
+    pub shape: Option<Shape>,
     pub start: u64,
     pub end: u64,
+}
+
+impl Piece {
+    /// Its frames at `fps` within its take, `end` at most the take's last; None before its take is
+    /// probed.
+    fn frames(&self, fps: f64) -> Option<(u64, u64)> {
+        let frames = available(&self.shape?, fps);
+        Some((self.start.min(frames), self.end.min(frames)))
+    }
+}
+
+/// Whether a take of `shape` is retimed to `fps`: it runs at another rate.
+fn retimed(shape: &Shape, fps: f64) -> bool {
+    (shape.fps - fps).abs() > 0.01
+}
+
+/// How many frames a take of `shape` has at `fps`: its own, else as many as retiming makes.
+fn available(shape: &Shape, fps: f64) -> u64 {
+    match retimed(shape, fps) {
+        false => shape.frames,
+        true => (shape.frames as f64 * fps / shape.fps).floor() as u64,
+    }
+}
+
+/// A cut: its length in frames, and the takes it retimes to the project's rate (`<node> (<fps> fps)`).
+pub struct Cutted {
+    pub frames: u64,
+    pub retimed: Vec<String>,
+}
+
+/// The cut `pieces` make at `fps`, as project.lock records their takes; None before each is probed.
+pub fn measure(pieces: &[Piece], fps: f64) -> Option<Cutted> {
+    let frames = pieces.iter().map(|piece| piece.frames(fps).map(|(start, end)| end - start)).sum::<Option<u64>>()?;
+    let retimed = (pieces.iter())
+        .filter_map(|piece| piece.shape.filter(|shape| retimed(shape, fps)).map(|shape| format!("{} ({} fps)", piece.node, shape.fps)))
+        .collect();
+    Some(Cutted { frames, retimed })
 }
 
 pub struct Video {
@@ -271,8 +309,8 @@ pub struct Video {
     pub warnings: Vec<String>,
     /// The project's canvas.
     pub canvas: Canvas,
-    /// Each node's current video's width and height, when project.lock records them.
-    sizes: Vec<Option<[u64; 2]>>,
+    /// Each node's current file's shape, when it is a video project.lock records one of.
+    shapes: Vec<Option<Shape>>,
 }
 
 /// The canvas the edit fills: its aspect, as W:H in whole numbers for a request and as a ratio,
@@ -399,7 +437,7 @@ impl Video {
                 .filter(|kind| !RENDERERS.iter().any(|(k, _)| k == kind))
                 .map(|kind| format!("{}: defaults.{kind} is no node kind; it is ignored", folder::PROJECT)),
         );
-        let lock = folder.lock()?;
+        let mut lock = folder.lock()?;
         // Every file it names, linked as an asset on first use (and again when it changed), and
         // recorded in project.lock with the path written. One that is gone keeps its record: what
         // reads it cannot render until it is linked again.
@@ -427,7 +465,10 @@ impl Video {
         }
         if inputs != lock.inputs {
             folder.update_lock(|lock| lock.inputs = inputs.clone())?;
+            lock.inputs = inputs;
         }
+        folder.shape_videos(&mut lock)?;
+        let inputs = lock.inputs.clone();
         let input_file = |id: &str, field: &str, path: &str| input_file(&inputs, id, field, path);
         // Its current file and its versions' files: the approved version, else the file attached by
         // hand (there, or the node is named with the fix), or that picture's clean.
@@ -614,13 +655,15 @@ impl Video {
             }
         }
         let canvas = Canvas::read(project.resolution.as_deref(), project.aspect_ratio.as_deref(), project.fps)?;
-        let sizes = (graph.nodes.iter())
+        let shapes = (graph.nodes.iter())
             .map(|node| {
                 let (path, _) = node.file.as_ref()?;
-                lock.made(&node.id, path)?.size
+                let made = lock.made(&node.id, path).and_then(Made::primary);
+                let attached = || inputs.values().map(|input| &input.asset).find(|asset| asset.path == *path);
+                made.or_else(attached)?.video
             })
             .collect();
-        Ok(Self { project, inputs, missing, items, graph, warnings, canvas, sizes })
+        Ok(Self { project, inputs, missing, items, graph, warnings, canvas, shapes })
     }
 
     /// Node `i`'s render block (`resolve`).
@@ -670,12 +713,12 @@ impl Video {
 
     /// Whether `render all` makes the node: every node but an upscale the edit does not need. A
     /// shot is upscaled when `resolution:` is set and its current version's short edge is below it
-    /// (a video attached by hand, whose size project.lock does not record, is upscaled).
+    /// (or not probed yet).
     pub fn wanted(&self, i: usize) -> bool {
         let Item::Upscale(k) = self.items[i] else { return true };
         let Some(short) = self.canvas.short else { return false };
         let shot = self.graph.find(&self.project.shots[k].name).expect("a shot is a node");
-        self.sizes[shot].is_none_or(|[w, h]| w.min(h) < short)
+        self.shapes[shot].is_none_or(|shape| shape.width.min(shape.height) < short)
     }
 
     /// Whether node `i`'s pictures are cleaned before use: a character's or a prop's.
@@ -1153,8 +1196,8 @@ impl Video {
             }
             match &node.file {
                 Some((file, digest)) => {
-                    let (node, path, asset) = (node.id.clone(), folder.path(file), file.clone());
-                    pieces.push(Piece { node, path, digest: digest.clone(), asset, start, end })
+                    let (node, path, asset, shape) = (node.id.clone(), folder.path(file), file.clone(), self.shapes[i]);
+                    pieces.push(Piece { node, path, digest: digest.clone(), asset, shape, start, end })
                 }
                 None if !skipped.contains(&node.id) => skipped.push(node.id.clone()),
                 None => {}
@@ -1171,12 +1214,6 @@ impl Video {
     pub fn cut_reads(&self, i: usize) -> bool {
         matches!(self.items[i], Item::Shot(_) | Item::Upscale(_))
     }
-}
-
-/// A cut made: its length in frames, and the pieces whose takes were retimed to the project's rate.
-pub struct Cutted {
-    pub frames: u64,
-    pub retimed: Vec<String>,
 }
 
 /// Cuts `pieces` into `<project>/<name>` with cozy's ffmpeg, here, on `canvas` (its short edge, or
@@ -1199,32 +1236,28 @@ pub fn cut(
     name: &str,
     cache: &Path,
 ) -> Result<Cutted, Error> {
-    let probes = pieces.iter().map(|piece| probe(ffprobe, &piece.path)).collect::<Result<Vec<_>, _>>()?;
+    let probes = pieces.iter().map(|piece| probe(ffprobe, &piece.path, true)).collect::<Result<Vec<_>, _>>()?;
     let (fps, rate) = (canvas.fps, canvas.fps.to_string());
     let (width, height) = canvas.size(canvas.short.unwrap_or_else(|| probes[0].size.0.min(probes[0].size.1)));
-    let native = |probe: &Probe| (probe.rate - fps).abs() <= 0.01;
-    // Each piece's frames at the project's rate, within its take.
-    let mut ranges: Vec<(u64, u64)> = vec![];
-    for (piece, probe) in pieces.iter().zip(&probes) {
-        let frames = available(probe, fps);
-        if piece.start >= frames {
-            let said = format!("the edit cuts {} from frame {}, and its take has {frames} frames at {fps} fps", piece.node, piece.start);
-            return Err(invalid("cut_past_end", said).remedy("start its edit entry before its take's last frame"));
-        }
-        ranges.push((piece.start, piece.end.min(frames)));
+    // Each piece's frames at the project's rate, within its take, as project.lock records it.
+    let Some(made) = measure(pieces, fps) else {
+        let unprobed: Vec<&str> = pieces.iter().filter(|piece| piece.shape.is_none()).map(|piece| piece.node.as_str()).collect();
+        return Err(failed(format!("no frame rate is recorded for {}'s file", unprobed.join(", "))));
+    };
+    let ranges: Vec<(u64, u64)> = pieces.iter().filter_map(|piece| piece.frames(fps)).collect();
+    if let Some((piece, _)) = pieces.iter().zip(&ranges).find(|(_, (start, end))| start >= end) {
+        let said = format!("the edit cuts {} from frame {}, past its take's end", piece.node, piece.start);
+        return Err(invalid("cut_past_end", said).remedy("start its edit entry before its take's last frame"));
     }
-    let retimed: Vec<String> = (pieces.iter().zip(&probes))
-        .filter(|(_, probe)| !native(probe))
-        .map(|(piece, probe)| format!("{} ({} fps)", piece.node, probe.rate))
-        .collect();
+    let native = |piece: &Piece| piece.shape.is_some_and(|shape| !retimed(&shape, fps));
     let io = |e: std::io::Error| failed(format!("{}: {e}", cache.display()));
     std::fs::create_dir_all(cache).map_err(io)?;
     let work = tempfile::tempdir_in(cache).map_err(io)?;
     let video = work.path().join("video.mp4");
     let highest = probes.iter().filter_map(|probe| probe.video_bit_rate).max();
     let os = |args: &[&str]| args.iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
-    let fast = (probes.iter())
-        .all(|p| p.video == probes[0].video && p.video.starts_with("h264 ") && p.size == (width, height) && native(p));
+    let fast = (pieces.iter().zip(&probes))
+        .all(|(piece, p)| p.video == probes[0].video && p.video.starts_with("h264 ") && p.size == (width, height) && native(piece));
     if fast {
         let mut list = String::new();
         for (k, ((piece, probe), &(start, end))) in pieces.iter().zip(&probes).zip(&ranges).enumerate() {
@@ -1288,11 +1321,11 @@ pub fn cut(
         )?;
     } else {
         let (mut filter, mut joined, mut inputs) = (String::new(), String::new(), vec![]);
-        for (k, ((piece, probe), (start, end))) in pieces.iter().zip(&probes).zip(&ranges).enumerate() {
+        for (k, (piece, (start, end))) in pieces.iter().zip(&ranges).enumerate() {
             inputs.extend(["-i".into(), piece.path.clone().into_os_string()]);
             // A take at another rate is retimed first (each frame its source's nearest in time), then
             // cut by frame like any other.
-            let retime = if native(probe) { String::new() } else { format!("fps={rate},") };
+            let retime = if native(piece) { String::new() } else { format!("fps={rate},") };
             let _ = write!(
                 filter,
                 "[{k}:v]{retime}trim=start_frame={start}:end_frame={end},setpts=PTS-STARTPTS,\
@@ -1343,30 +1376,7 @@ pub fn cut(
     let text = serde_json::to_string_pretty(&timeline).expect("a timeline serializes") + "\n";
     platform::durable::replace(&otio_path, text.as_bytes(), 0o644).map_err(|e| failed(format!("{}: {e}", otio_path.display())))?;
     prune(cache);
-    Ok(Cutted { frames: ranges.iter().map(|(start, end)| end - start).sum(), retimed })
-}
-
-/// How many frames `probe`'s take has at the project's `fps`: its own, else as many as retiming
-/// makes of them.
-fn available(probe: &Probe, fps: f64) -> u64 {
-    match (probe.rate - fps).abs() <= 0.01 {
-        true => probe.frames,
-        false => (probe.frames as f64 * fps / probe.rate).floor() as u64,
-    }
-}
-
-/// The latest `cut` (`edit.mp4`, `preview.mp4`) as its timeline beside it says: how many frames
-/// long, and its clips retimed (`<shot> (<fps> fps)`).
-pub fn timeline(folder: &Folder, cut: &str) -> Option<Cutted> {
-    let text = std::fs::read(folder.dir.join(Path::new(cut).with_extension("otio"))).ok()?;
-    let timeline: Value = serde_json::from_slice(&text).ok()?;
-    let video = timeline["tracks"]["children"].as_array()?.iter().find(|track| track["kind"] == "Video")?;
-    let clips = video["children"].as_array()?;
-    let frames = clips.iter().filter_map(|clip| clip["source_range"]["duration"]["value"].as_f64()).sum::<f64>();
-    let retimed = (clips.iter())
-        .filter_map(|clip| Some(format!("{} ({} fps)", clip["name"].as_str()?, clip["metadata"]["cozy"]["retimed_from_fps"].as_f64()?)))
-        .collect();
-    Some(Cutted { frames: frames.round() as u64, retimed })
+    Ok(made)
 }
 
 /// The edit as OpenTimelineIO's own JSON (`Timeline.1`, as OpenTimelineIO 0.18 writes it), written
@@ -1394,8 +1404,9 @@ fn otio(name: &str, pieces: &[Piece], probes: &[Probe], ranges: &[(u64, u64)], f
             if sound && probe.sound.is_none() {
                 return item("Gap.1", "", json!({}), range(0, end - start));
             }
-            let metadata = match (probe.rate - fps).abs() > 0.01 {
-                true => json!({"cozy": {"retimed_from_fps": probe.rate}}),
+            let shape = piece.shape.expect("a piece cut is probed");
+            let metadata = match retimed(&shape, fps) {
+                true => json!({"cozy": {"retimed_from_fps": shape.fps}}),
                 false => json!({}),
             };
             let mut clip = item("Clip.2", &piece.node, metadata, range(start, end - start));
@@ -1403,7 +1414,7 @@ fn otio(name: &str, pieces: &[Piece], probes: &[Probe], ranges: &[(u64, u64)], f
                 "OTIO_SCHEMA": "ExternalReference.1",
                 "metadata": {},
                 "name": piece.node,
-                "available_range": range(0, available(probe, fps)),
+                "available_range": range(0, available(&shape, fps)),
                 "available_image_bounds": null,
                 "target_url": piece.asset,
             }});
@@ -1504,12 +1515,14 @@ fn bit_rate(bit_rate: Option<u64>) -> Vec<String> {
     }
 }
 
-/// A video's width and height, when ffprobe reads them.
-pub fn size(ffprobe: &Path, path: &Path) -> Option<[u64; 2]> {
-    probe(ffprobe, path).ok().map(|probe| [probe.size.0, probe.size.1])
+/// A video's shape, when ffprobe reads it.
+pub fn shape(ffprobe: &Path, path: &Path) -> Option<Shape> {
+    let probe = probe(ffprobe, path, false).ok()?;
+    Some(Shape { width: probe.size.0, height: probe.size.1, fps: probe.rate, frames: probe.frames })
 }
 
-fn probe(ffprobe: &Path, path: &Path) -> Result<Probe, Error> {
+/// What the edit needs of the video at `path`; its keyframes only with `keys`.
+fn probe(ffprobe: &Path, path: &Path, keys: bool) -> Result<Probe, Error> {
     let read = |args: &[&str]| -> Result<Vec<u8>, Error> {
         let done = std::process::Command::new(ffprobe)
             .args(["-v", "error"])
@@ -1520,8 +1533,9 @@ fn probe(ffprobe: &Path, path: &Path) -> Result<Probe, Error> {
         Ok(done.stdout)
     };
     let read_json: Value = serde_json::from_slice(&read(&[
+        "-count_packets",
         "-show_entries",
-        "stream=codec_type,codec_name,width,height,pix_fmt,r_frame_rate,nb_frames,bit_rate,sample_rate,channels:format=duration,bit_rate,start_time",
+        "stream=codec_type,codec_name,width,height,pix_fmt,r_frame_rate,nb_frames,nb_read_packets,bit_rate,sample_rate,channels:format=duration,bit_rate,start_time",
         "-of",
         "json",
     ])?)
@@ -1540,27 +1554,22 @@ fn probe(ffprobe: &Path, path: &Path) -> Result<Probe, Error> {
     let codec = video["codec_name"].as_str().unwrap_or("");
     let seconds = read_json["format"]["duration"].as_str().and_then(|d| d.parse().ok()).unwrap_or(0.0);
     let start = read_json["format"]["start_time"].as_str().and_then(|d| d.parse::<f64>().ok()).unwrap_or(0.0);
-    let keys = String::from_utf8_lossy(&read(&[
-        "-select_streams",
-        "v:0",
-        "-skip_frame",
-        "nokey",
-        "-show_entries",
-        "frame=pts_time",
-        "-of",
-        "csv=p=0",
-    ])?)
-    .lines()
-    .filter_map(|line| line.trim().trim_end_matches(',').parse::<f64>().ok())
-    .map(|at| ((at - start) * rate).round().max(0.0) as u64)
-    .collect();
+    let keys = match keys {
+        true => read(&["-select_streams", "v:0", "-skip_frame", "nokey", "-show_entries", "frame=pts_time", "-of", "csv=p=0"])?,
+        false => vec![],
+    };
+    let keys = (String::from_utf8_lossy(&keys).lines())
+        .filter_map(|line| line.trim().trim_end_matches(',').parse::<f64>().ok())
+        .map(|at| ((at - start) * rate).round().max(0.0) as u64)
+        .collect();
     Ok(Probe {
         video: format!("{codec} {width}x{height} {pix_fmt} {rate_text}"),
         size: (width, height),
         pix_fmt,
         rate,
         rate_text,
-        frames: number(&video["nb_frames"]).unwrap_or_else(|| (seconds * rate).floor() as u64),
+        frames: (number(&video["nb_frames"]).or_else(|| number(&video["nb_read_packets"])))
+            .unwrap_or_else(|| (seconds * rate).floor() as u64),
         video_bit_rate: number(&video["bit_rate"]).or_else(|| number(&read_json["format"]["bit_rate"])),
         sound: streams.iter().find(|s| s["codec_type"] == "audio").map(|audio| Sound {
             bit_rate: number(&audio["bit_rate"]),

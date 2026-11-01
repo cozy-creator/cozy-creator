@@ -118,7 +118,8 @@ is in `assets/<sha256>.<ext>`, flat: what cozy makes as real files, and each fil
 absolute or `~/…`) taken in on first use, by the first method that works: a copy-on-write clone (reflink:
 Btrfs, XFS, ZFS 2.2+, APFS), else a symlink to the original, else (Windows without the right) a hard link on
 the same volume, else a copy, said once. project.lock records each file's path, size, sha256 and method under
-the path written. A changed original is taken in again and what read it goes out of date; for a link that is
+the path written, and with every video asset (made or named) its shape, probed once: `{width, height, fps,
+frames}`. A changed original is taken in again and what read it goes out of date; for a link that is
 said (`reference changed`), and a gone original is `reference missing: relink`, what reads it not rendering.
 A clone or copy is the project's own: the original moving changes nothing. Names live only in project.yaml and
 project.lock. Calcifer deletes from `assets/` only what project.lock no longer names.
@@ -136,7 +137,8 @@ field (`versions`, `version`) and a `noun`. Each is numbered (1 first, never reu
   while it renders.
 - `GET /v1/projects/{id}`: `{id, path, fps, nodes, missing, stale: [{name, why}], orphans: [{name, kind, versions,
   renamed_to?}], busy, cuts: [{cut, path, cut_at_ms?, frames?, retimed?, skips}], warnings}`. `fps` is the
-  edit's frame rate; a cut's `frames` its length at it, and `retimed` the takes it retimed (`<node> (<fps> fps)`). Each node is `{name, kind, noun,
+  edit's frame rate; a cut's `frames` its length at it and `retimed` the takes in it at another rate
+  (`<node> (<fps> fps)`), both from the shapes project.lock records. Each node is `{name, kind, noun,
   versions, approved?, assets, path?, made_by?, status}`: `versions` counts them, `approved` is the approved
   one's number (absent for a file attached by hand), `assets` what the node reads as now by output name,
   `path` its primary file, and `status` is for people, in the node's noun. An orphan is a node project.lock

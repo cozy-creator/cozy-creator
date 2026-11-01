@@ -123,7 +123,7 @@ impl Projects {
 
     /// The project in `dir` (canonical), opened once; its walk goes on when project.lock owes one.
     fn open(&self, api: &Arc<Api>, dir: &FsPath) -> Result<String, Error> {
-        let folder = Folder::open(dir)?;
+        let folder = Folder::open(dir, api.machines.hubs.home().tools())?;
         let id = project_id(dir);
         let project = (self.open.lock().expect("projects lock").entry(id.clone()))
             .or_insert_with(|| {
@@ -344,14 +344,15 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
             .and_then(|m| m.modified())
             .ok()
             .map(|at| at.duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_millis() as i64));
-        let skips = match video.cuts(&project.folder, preview) {
-            Ok((_, skips)) => skips,
+        let (pieces, skips) = match video.cuts(&project.folder, preview) {
+            Ok(cut) => cut,
             Err(error) => {
                 warnings.push(error.message);
-                vec![]
+                (vec![], vec![])
             }
         };
-        let made = video::timeline(&project.folder, name);
+        // What the cut is as project.lock records its takes: frames, and the takes retimed.
+        let made = video::measure(&pieces, video.canvas.fps);
         let (frames, retimed) = (made.as_ref().map(|made| made.frames), made.map(|made| made.retimed).unwrap_or_default());
         cuts.push(Cut { cut: name.into(), path, cut_at_ms, frames, retimed, skips });
     }
@@ -932,7 +933,7 @@ impl Walk {
         let preview_walk = self.folder().lock()?.walk.preview;
         let cuts = made_cuts(&video).into_iter().filter(|(_, native)| *native || !preview_walk);
         for (name, preview) in cuts {
-            let (pieces, skipped) = video.cuts(self.folder(), preview)?;
+            let (mut pieces, skipped) = video.cuts(self.folder(), preview)?;
             if !skipped.is_empty() {
                 self.say(Event::Said { message: format!("{name} skips {}: no version yet", skipped.join(", ")) });
             }
@@ -940,8 +941,12 @@ impl Walk {
                 continue;
             }
             let (ffmpeg, ffprobe) = self.host.ffmpeg().await?;
+            // A file taken in before this computer had an ffprobe is probed now.
+            if pieces.iter().any(|piece| piece.shape.is_none()) {
+                pieces = Video::load(self.folder())?.cuts(self.folder(), preview)?.0;
+            }
             let (folder, cutting, began) =
-                (Folder::open(&self.folder().dir)?, self.project.cutting.clone(), Instant::now());
+                (Folder::open(&self.folder().dir, self.folder().tools.clone())?, self.project.cutting.clone(), Instant::now());
             let canvas = Canvas { short: if preview { None } else { video.canvas.short }, ..video.canvas.clone() };
             let cache = self.host.cache().join("cuts");
             let made = tokio::task::spawn_blocking(move || {
@@ -1267,9 +1272,9 @@ impl Walk {
             }
             made.assets.insert(pending.field.clone(), folder.keep(&picture)?);
         }
-        if pending.field == "video" {
+        if let Some(asset) = made.assets.get_mut("video") {
             let (_, ffprobe) = self.host.ffmpeg().await?;
-            made.size = video::size(&ffprobe, &folder.path(&made.assets["video"].path));
+            asset.video = video::shape(&ffprobe, &folder.path(&asset.path));
         }
         let approve = matches!(pending.then, Then::List { approve: true } | Then::Clean { approve: true });
         if let Some(call) = pending.call.clone() {
