@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 mod access;
 pub mod api;
+mod files;
 mod kept;
 mod lanes;
 pub mod link;
