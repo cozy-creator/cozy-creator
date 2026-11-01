@@ -11,5 +11,9 @@ publish.workspace = true
 libloading.workspace = true
 thiserror.workspace = true
 
+[features]
+# Measurement-only build. No probe code or TLS exists in ordinary builds.
+allocator-probe = []
+
 [lints]
 workspace = true
