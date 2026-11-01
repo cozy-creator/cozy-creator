@@ -229,6 +229,14 @@ async fn watch(
                     view.done();
                     return Err(error);
                 }
+                Some(Ok(event)) if events.restarted() && !ctx.json => {
+                    view.line(&format!("  Calcifer restarted; following run {} again", view.number));
+                    let before = view.machine.clone();
+                    view.on(&event);
+                    if let Some(name) = view.machine.as_deref().filter(|_| view.machine != before) {
+                        placing = follow_placement(&calcifer, &view, name, &mut notices).await;
+                    }
+                }
                 Some(Ok(event)) if events_out && event.is_terminal() => {
                     terminal = event.sequence_number();
                 }
@@ -443,6 +451,8 @@ struct View {
     /// Off a terminal, what was last written: the status or stage, the tenth reached, and the
     /// minutes it had made no progress.
     shown: (String, i64, i64),
+    /// The run's number.
+    number: u64,
     machine: Option<String>,
     /// The run's own word for where it is (`queued`, the machine's state), and why it waits now
     /// (Calcifer's reason, as `cozy run ls` shows it): the status line says the reason first.
@@ -472,6 +482,7 @@ impl View {
         let mut view = Self {
             bar,
             shown: (String::new(), -1, 0),
+            number: run.number,
             machine: None,
             state: String::new(),
             waiting: None,
