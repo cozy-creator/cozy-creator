@@ -1,6 +1,7 @@
 //! A project folder: `project.yaml` (people's; cozy writes it only at `cozy project new`),
 //! `project.lock` (cozy's: each node's versions, what made each, which is approved, the runs still
-//! making one, and what its walk still owes), `assets/<sha256>.<ext>` (everything cozy makes), and
+//! making one, and what its walk still owes), `assets/` (everything cozy makes: kept by content in
+//! `assets/.store/<sha256>.<ext>`, and shown as a tree of links named for people, `links`), and
 //! people's inputs, which cozy never writes: `references/` (what guides) and `plates/` (footage to
 //! edit). `edit.mp4` is the film; `.cuts/` holds the pieces a re-cut reuses.
 use std::{
@@ -24,18 +25,21 @@ use super::graph::name_key;
 pub const PROJECT: &str = "project.yaml";
 pub const LOCK: &str = "project.lock";
 pub const ASSETS: &str = "assets";
+/// Where assets are kept, by content; project.lock names them here.
+const STORE: &str = "assets/.store";
 /// The folders `cozy project new` makes for people's own files: a convention, never enforced.
 pub const INPUTS: [&str; 2] = ["references", "plates"];
-/// A version's primary asset, the one its node reads as: its video, else its image.
-const PRIMARY: [&str; 2] = ["video", "image"];
+/// A version's primary asset, the one its node reads as: its video, else its clean (a cleaned
+/// picture's), else its image.
+const PRIMARY: [&str; 3] = ["video", "clean", "image"];
 
 /// One version of a node (a take, for a shot or its upscale): its assets, what made it and what it
 /// was made from.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Made {
     pub node: String,
-    /// By the run output's name (`video`, `image`, `latents`): `assets/<sha256>.<ext>`. Empty while
-    /// its run is pending.
+    /// By the run output's name (`video`, `image`, `latents`; a cleaned picture's `clean`):
+    /// `assets/.store/<sha256>.<ext>`. Empty while its run is pending.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub assets: BTreeMap<String, String>,
     /// The function, models, LoRAs and options that made it.
@@ -44,7 +48,7 @@ pub struct Made {
     /// What it was made from; None for the clean of an attached picture, which is never out of date.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream: Option<Vec<Upstream>>,
-    /// The frames it wrote for world states, by state: `assets/…`.
+    /// The frames it wrote for world states, by state: `assets/.store/…`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub writes: BTreeMap<String, String>,
     /// The runs that made it, in order: one per call of a shot made in consecutive calls.
@@ -230,7 +234,7 @@ impl Lock {
     }
 }
 
-/// The digest an asset (`assets/<sha256>.<ext>`) is named by.
+/// The digest an asset (`assets/.store/<sha256>.<ext>`) is named by.
 pub fn digest_of(file: &str) -> String {
     let stem = Path::new(file).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     format!("sha256:{stem}")
@@ -286,14 +290,14 @@ impl Folder {
         })
     }
 
-    /// `source` kept as `assets/<sha256>.<ext>`: its path relative to the project, and its digest.
+    /// `source` kept as `assets/.store/<sha256>.<ext>`: its path relative to the project, and its digest.
     pub fn keep(&self, source: &Path) -> Result<(String, String), Error> {
         let digest = hash(source)?;
         let ext = source.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
-        let name = format!("{ASSETS}/{}{ext}", digest.trim_start_matches("sha256:"));
+        let name = format!("{STORE}/{}{ext}", digest.trim_start_matches("sha256:"));
         let path = self.dir.join(&name);
         if !path.exists() {
-            std::fs::create_dir_all(self.dir.join(ASSETS)).map_err(|e| io_at(&self.dir.join(ASSETS), e))?;
+            std::fs::create_dir_all(self.dir.join(STORE)).map_err(|e| io_at(&self.dir.join(STORE), e))?;
             let bytes = std::fs::read(source).map_err(|e| io_at(source, e))?;
             durable::replace(&path, &bytes, 0o644).map_err(io)?;
         }
@@ -303,7 +307,7 @@ impl Folder {
     /// A file's digest: from its name when it is an asset, else its bytes (a file of people's).
     pub fn digest(&self, file: &str) -> Result<String, Error> {
         let stem = Path::new(file).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        match Path::new(file).parent() == Some(Path::new(ASSETS))
+        match Path::new(file).parent() == Some(Path::new(STORE))
             && stem.len() == 64
             && stem.bytes().all(|b| b.is_ascii_hexdigit())
         {
@@ -319,11 +323,11 @@ impl Folder {
     /// The asset with this digest, relative to the project.
     pub fn find(&self, digest: &str) -> Result<String, Error> {
         let hex = digest.trim_start_matches("sha256:");
-        let entries = std::fs::read_dir(self.dir.join(ASSETS)).into_iter().flatten().flatten();
+        let entries = std::fs::read_dir(self.dir.join(STORE)).into_iter().flatten().flatten();
         (entries.map(|entry| entry.file_name().to_string_lossy().into_owned()))
             .find(|name| Path::new(name).file_stem().is_some_and(|stem| stem == hex))
-            .map(|name| format!("{ASSETS}/{name}"))
-            .ok_or_else(|| Error::new(Kind::NotFound, "asset_missing", format!("{ASSETS}/ holds no {digest}")))
+            .map(|name| format!("{STORE}/{name}"))
+            .ok_or_else(|| Error::new(Kind::NotFound, "asset_missing", format!("{STORE}/ holds no {digest}")))
     }
 
     /// Forgets the lock's nodes the project no longer has (`nodes`, by name key), and deletes each
@@ -341,14 +345,114 @@ impl Folder {
             keep.insert(digest_of(video));
             keep.extend(latents.iter().map(|asset| digest_of(asset)));
         }
-        let entries = std::fs::read_dir(self.dir.join(ASSETS)).into_iter().flatten().flatten();
+        let entries = std::fs::read_dir(self.dir.join(STORE)).into_iter().flatten().flatten();
         for entry in entries {
-            let name = format!("{ASSETS}/{}", entry.file_name().to_string_lossy());
+            let name = format!("{STORE}/{}", entry.file_name().to_string_lossy());
             if entry.path().is_file() && !keep.contains(&self.digest(&name)?) {
                 std::fs::remove_file(entry.path()).map_err(|e| io_at(&entry.path(), e))?;
             }
         }
         Ok(())
+    }
+}
+
+/// The tree of links in `assets/` for people (Paul 11-01), from the store: one folder per node,
+/// `<node>/<node>_take###.<ext>` (a shot's and an upscale's takes) or `<node>_v###.<ext>` (every other
+/// node's versions) for each one's primary asset, a cleaned picture's clean beside it as
+/// `<node>_v###_clean.<ext>`, and `<node>_approved.<ext>` for the approved one. Symlinks into
+/// `.store`; on Windows, where a symlink needs a privilege, hard links (one volume).
+pub struct Linked<'a> {
+    /// Each node as project.yaml names it, and its noun (`take`, `version`).
+    pub nodes: Vec<(&'a str, &'a str)>,
+}
+
+/// `node`'s version `number`'s links: (its path in the project, the store path it names).
+pub fn links(node: &str, noun: &str, number: u32, made: &Made) -> Vec<(String, String)> {
+    let dir = node.replace(['/', '\\'], "_");
+    let tag = match noun {
+        "take" => format!("take{number:03}"),
+        _ => format!("v{number:03}"),
+    };
+    let named = |suffix: &str, asset: &String| {
+        let ext = Path::new(asset).extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+        (format!("{ASSETS}/{dir}/{dir}_{tag}{suffix}{ext}"), asset.clone())
+    };
+    match made.assets.get("clean") {
+        Some(clean) => std::iter::once(named("_clean", clean)).chain(made.assets.get("image").map(|image| named("", image))).collect(),
+        None => made.primary().map(|asset| named("", asset)).into_iter().collect(),
+    }
+}
+
+impl Folder {
+    /// The tree of links (`Linked`) made again from project.lock: each link it should hold made or
+    /// pointed again, each of its own it should not removed; anything else in it is left alone.
+    pub fn relink(&self, linked: &Linked) -> Result<(), Error> {
+        let lock = self.lock()?;
+        let mut wanted: BTreeMap<PathBuf, String> = BTreeMap::new();
+        for (node, noun) in &linked.nodes {
+            let Some(versions) = lock.node(node) else { continue };
+            for (n, made) in versions.versions.iter().enumerate() {
+                wanted.extend(links(node, noun, n as u32 + 1, made).into_iter().map(|(link, asset)| (link.into(), asset)));
+            }
+            if let Some(approved) = &versions.approved {
+                let dir = node.replace(['/', '\\'], "_");
+                let ext = Path::new(approved).extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+                wanted.insert(format!("{ASSETS}/{dir}/{dir}_approved{ext}").into(), approved.clone());
+            }
+        }
+        let ours = |dir: &str, name: &str| {
+            let rest = name.strip_prefix(&format!("{dir}_")).unwrap_or_default();
+            let tag = rest.split('.').next().unwrap_or_default();
+            let numbered = |tag: &str| tag.len() == 3 && tag.bytes().all(|b| b.is_ascii_digit());
+            tag == "approved"
+                || tag.strip_prefix("take").is_some_and(numbered)
+                || tag.strip_prefix('v').map(|tag| tag.strip_suffix("_clean").unwrap_or(tag)).is_some_and(numbered)
+        };
+        for dir in std::fs::read_dir(self.dir.join(ASSETS)).into_iter().flatten().flatten() {
+            let name = dir.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') || !dir.path().is_dir() {
+                continue;
+            }
+            for entry in std::fs::read_dir(dir.path()).into_iter().flatten().flatten() {
+                let file = entry.file_name().to_string_lossy().into_owned();
+                let at = Path::new(ASSETS).join(&name).join(&file);
+                if ours(&name, &file) && !wanted.contains_key(&at) {
+                    std::fs::remove_file(entry.path()).map_err(|e| io_at(&entry.path(), e))?;
+                }
+            }
+            let _ = std::fs::remove_dir(dir.path());
+        }
+        for (link, asset) in &wanted {
+            let (at, store) = (self.dir.join(link), self.dir.join(asset));
+            if same(&at, &store) {
+                continue;
+            }
+            let parent = at.parent().expect("a link is in a node's folder");
+            std::fs::create_dir_all(parent).map_err(|e| io_at(parent, e))?;
+            let part = parent.join(format!(".{}.part", link.file_name().expect("a name").to_string_lossy()));
+            let _ = std::fs::remove_file(&part);
+            #[cfg(unix)]
+            let made = std::os::unix::fs::symlink(Path::new("..").join(".store").join(store.file_name().expect("a name")), &part);
+            #[cfg(windows)]
+            let made = std::fs::hard_link(&store, &part);
+            made.and_then(|()| std::fs::rename(&part, &at)).map_err(|e| io_at(&at, e))?;
+        }
+        Ok(())
+    }
+}
+
+/// Whether the link at `at` already names `store`.
+fn same(at: &Path, store: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        std::fs::read_link(at).ok().and_then(|target| at.parent().map(|dir| dir.join(target))).and_then(|t| t.canonicalize().ok())
+            == store.canonicalize().ok()
+    }
+    // A hard link cannot be told from its file cheaply: it is made again.
+    #[cfg(windows)]
+    {
+        let _ = (at, store);
+        false
     }
 }
 
