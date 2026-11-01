@@ -21,7 +21,8 @@ using Filter = std::function<bool(Stream)>;
 
 namespace {
 struct Failure {
-    int32_t kind;
+    // Rust writes every field on error. Success reads only this discriminator.
+    int32_t kind = 0;
     int32_t cuda;
     char message[512];
 };
@@ -101,14 +102,14 @@ VR_EXPORT void* varena_torch_malloc(size_t bytes, int device, Stream stream) {
             pool = selected->pool;
             routed = true;
             if (std::find(selected->streams.begin(), selected->streams.end(), stream) == selected->streams.end()) {
-                Failure error{};
+                Failure error;
                 core.pool_begin(device, pool.first, pool.second, id, &error);
                 check(error);
                 selected->streams.push_back(stream);
             }
         }
     }
-    Failure error{};
+    Failure error;
     const uint64_t ptr = core.alloc(bytes, device, id, routed, pool.first, pool.second, &error);
     // cuDNN catches OutOfMemoryError and can switch and cache engines. A short prepared
     // pool must abort capture instead; the owning Python scope translates only after cleanup.
@@ -121,19 +122,19 @@ VR_EXPORT void* varena_torch_malloc(size_t bytes, int device, Stream stream) {
 }
 
 VR_EXPORT void varena_torch_free(void* ptr, size_t, int device, Stream stream) noexcept {
-    Failure error{};
+    Failure error;
     // Rust retains a destructor failure and raises it at the next allocator/Python boundary.
     core.free(device, reinterpret_cast<uintptr_t>(ptr), reinterpret_cast<uintptr_t>(stream), &error);
 }
 
 VR_EXPORT void varena_torch_record_stream(void* ptr, Stream stream) {
-    Failure error{};
+    Failure error;
     core.record_stream(reinterpret_cast<uintptr_t>(ptr), stream_id(stream), &error);
     check(error);
 }
 
 VR_EXPORT void varena_torch_reset() {
-    Failure error{};
+    Failure error;
     core.trim(&error);
     check(error);
 }
@@ -147,7 +148,7 @@ VR_EXPORT void varena_torch_begin_pool(int device, Pool pool, Filter filter) {
     }
     // Reserve routing storage before the native transition so bad_alloc cannot strand a capture.
     routes.reserve(routes.size() + 1);
-    Failure error{};
+    Failure error;
     core.pool_begin(device, pool.first, pool.second, 0, &error);
     check(error);
     routes.push_back({device, pool, std::move(filter), {}, std::this_thread::get_id()});
@@ -166,7 +167,7 @@ VR_EXPORT void varena_torch_end_pool(int device, Pool pool) {
     }
     routing.store(routes.size(), std::memory_order_release);
     if (!found) return; // An explicitly ended failed capture may still receive Torch's reset hook.
-    Failure error{};
+    Failure error;
     core.pool_end(device, pool.first, pool.second, &error);
     check(error);
 }
@@ -179,7 +180,7 @@ VR_EXPORT int varena_torch_abort_routing(int device, uint64_t a, uint64_t b) noe
             && route->thread == std::this_thread::get_id()) {
             routes.erase(route);
             routing.store(routes.size(), std::memory_order_release);
-            Failure error{};
+            Failure error;
             core.pool_end(device, a, b, &error);
             return error.kind == 0 ? 1 : -1;
         }
@@ -188,7 +189,7 @@ VR_EXPORT int varena_torch_abort_routing(int device, uint64_t a, uint64_t b) noe
 }
 
 VR_EXPORT void varena_torch_release_pool(int device, Pool pool) noexcept {
-    Failure error{};
+    Failure error;
     core.pool_release(device, pool.first, pool.second, &error);
 }
 } // extern "C"
