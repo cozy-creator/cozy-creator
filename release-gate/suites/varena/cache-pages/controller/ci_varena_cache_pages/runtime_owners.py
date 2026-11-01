@@ -229,8 +229,12 @@ def capture_close(payload, ctx):
             before = vt.stats(0)
             queued = varena.request_cache_shrink(0, cache.reserved_bytes)
             assert queued is not None
-            until(ctx, lambda: owner.facts()['deferred'] > 0,
-                  'actual capture did not defer the queued owner')
+            # The completed-only collector gates this allocation request before it can
+            # call an owner. Its capture refusal does not increment that owner's counter.
+            capture_gate = vt.split_context(0)
+            pending_request = queued.facts()
+            assert not capture_gate['eligible'] and capture_gate['reason'] == 'capture_active'
+            assert pending_request['queued'] > 0 and not pending_request['finished']
             failure = None
             try:
                 owner.close()
@@ -265,6 +269,7 @@ def capture_close(payload, ctx):
             assert final[name] == baseline[name], (name, baseline, final)
         return Report(True, json.dumps({'passed': True, 'case': 'python_owner_capture_close',
                                        'provenance': provenance, 'refusal': failure,
+                                       'capture_gate': capture_gate, 'queued_request': pending_request,
                                        'during': during, 'retired': retired, 'callback_calls': calls,
                                        'before': before, 'after': after, 'baseline': baseline,
                                        'final': final, 'live_cache_full_readback': True,
