@@ -1,13 +1,11 @@
-"""Process-local CUDA weight reservations with ordinary owned Torch tensor views.
+"""CUDA weight regions and shared process memory constraints.
 
-Installation preserves Torch's native caching allocator. Recovery covers its synchronous
-cudaMalloc imports on supported Linux ELF builds, from all threads. cudaMallocAsync,
-expandable segments, other CUDA libraries, and CUDA graph recovery are outside this contract.
+Install tensorfs.varena.torch for Torch working allocations; native TensorFS device buffers
+always use the same Varena working allocator.
 """
 
 from __future__ import annotations
 
-import os
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
@@ -25,57 +23,11 @@ except AttributeError as error:
         "TensorFS native Varena capability is missing: VarenaPoisonedError"
     ) from error
 
-_installed = False
-
-
-def install_allocator() -> None:
-    """Install native allocation recovery before Torch reserves CUDA memory."""
-    global _installed
-    if _installed:
-        return
-    required = (
-        "_VarenaArena",
-        "_VarenaAllocatorCapture",
-        "_varena_install_allocator",
-        "_varena_set_activation_limit",
-        "_varena_allocator_stats",
-    )
-    missing = [name for name in required if not hasattr(_ext, name)]
-    if missing:
-        raise RuntimeError(
-            "TensorFS native Varena capability is missing: " + ", ".join(missing)
-        )
-    import torch
-
-    if torch.cuda.get_allocator_backend() != "native":
-        raise RuntimeError("Varena requires Torch's native CUDA caching allocator")
-    config = os.environ.get(
-        "PYTORCH_ALLOC_CONF", os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
-    )
-    if "expandable_segments:true" in config.lower().replace(" ", ""):
-        raise RuntimeError(
-            "Varena's allocation hook does not cover expandable segments"
-        )
-    if torch.cuda.is_initialized() and any(
-        torch.cuda.memory_reserved(i) for i in range(torch.cuda.device_count())
-    ):
-        raise RuntimeError("install Varena before Torch reserves CUDA memory")
-    _ext._varena_install_allocator()
-    _installed = True
-
-
-def set_activation_limit(device: int, bytes: int | None = None) -> None:
-    """Bound admission of hooked Torch segments plus current resident weights.
-
-    Configure before Torch reserves memory. This is an activation-allocation admission
-    limit, not a hard process/device cap: later weight fills, contexts, and unhooked CUDA
-    allocations are not governed by it.
-    """
-    _ext._varena_set_activation_limit(device, bytes)
-
-
-def allocator_stats(device: int = 0) -> dict[str, int]:
-    return _ext._varena_allocator_stats(device)
+def make_room(device: int, limit: int | None) -> int:
+    """Hold this process's GPU bytes on `device` (resident weight pages plus mapped working allocations) to
+    `limit`, None for no limit; returns the pages taken back now. Fills and working allocations stay
+    inside it until it changes: what the machine asks when another program needs the GPU."""
+    return _ext._varena_make_room(device, limit)
 
 
 class Arena:
@@ -170,6 +122,23 @@ class Region:
         """
         native = self._native.pin()
         return None if native is None else Use(native)
+
+    def prepare_prefetch(
+        self,
+        checkpoint: _ext.Checkpoint,
+        parts: Sequence[tuple[str, int, int]],
+        *,
+        threads: int = 2,
+    ) -> PreparedRead | None:
+        """Opt into native no-reclaim admission for an immutable raw source.
+
+        None means no fill was admitted (unknown/unqualified key, insufficient room, or
+        already resident). An admitted read retains its source and Fill but starts no IO.
+        Existing production prefetch callers remain on prepare_read until a committed
+        execution key is available. Encoded decode/scratch is outside this first slice.
+        """
+        native = _ext._VarenaPreparedRead.prefetch(self._native, checkpoint, list(parts), threads)
+        return None if native is None else PreparedRead(native)
 
     def prepare_read(
         self,
@@ -305,6 +274,17 @@ def replay(device: int) -> Iterator[None]:
     protects the host replay call; it does not replace those owners.
     """
     guard = _ext._VarenaAllocatorCapture(device, replay=True)
+    try:
+        yield
+    finally:
+        guard.close()
+
+
+@contextmanager
+def no_capture(device: int) -> Iterator[None]:
+    """No CUDA capture is in progress on `device`, and none begins until it exits (one that
+    tries is refused). Raises if one is in progress."""
+    guard = _ext._VarenaNoCapture(device)
     try:
         yield
     finally:

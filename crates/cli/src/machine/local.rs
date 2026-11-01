@@ -34,12 +34,14 @@ fn lock(root: &Path) -> PathBuf {
 }
 
 /// What this computer's machine does with the binary `cozy update` installed: none runs, so the
-/// next use starts it; or the one running moves to it once idle.
+/// next use starts it; or the one running moves to it once its runs end (`run`, the update that
+/// moves it), else once idle.
 #[derive(Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub(crate) enum Adopted {
     NotRunning,
     MovesWhenIdle,
+    Moves { run: u64 },
 }
 
 pub(crate) fn adopt(ctx: &Context) -> Result<Adopted, Error> {

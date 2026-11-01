@@ -1,0 +1,483 @@
+//! Torch callbacks contain no Python; Rust owns allocation and completion state.
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+use pyo3::{prelude::*, types::PyDict};
+
+static OWNER: AtomicU32 = AtomicU32::new(0);
+static CALLBACK_ERROR: OnceLock<varena::Error> = OnceLock::new();
+
+#[repr(C)]
+struct Failure {
+    kind: i32,
+    cuda: i32,
+    message: [u8; 512],
+}
+
+impl Failure {
+    fn from_error(error: &varena::Error) -> Self {
+        let (kind, cuda) = match error {
+            varena::Error::OutOfMemory { .. } => (1, 0),
+            varena::Error::DeviceFault { code, .. } | varena::Error::Cuda { code, .. } => {
+                (2, *code)
+            }
+            _ => (3, 0),
+        };
+        let mut failure = Self {
+            kind,
+            cuda,
+            message: [0; 512],
+        };
+        let text = error.to_string();
+        let mut len = text.len().min(failure.message.len() - 1);
+        while !text.is_char_boundary(len) {
+            len -= 1;
+        }
+        failure.message[..len].copy_from_slice(&text.as_bytes()[..len]);
+        failure
+    }
+}
+
+pub(super) fn installed() -> bool {
+    OWNER.load(Ordering::Acquire) != 0
+}
+
+fn check() -> varena::Result<()> {
+    if !installed() {
+        return Err(varena::Error::Invalid(
+            "Torch allocator is not installed in this process",
+        ));
+    }
+    if let Some(error) = CALLBACK_ERROR.get() {
+        return Err(error.clone());
+    }
+    Ok(())
+}
+
+fn call<T: Default>(failure: *mut Failure, operation: impl FnOnce() -> varena::Result<T>) -> T {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        check()?;
+        operation()
+    }))
+    .unwrap_or_else(|_| {
+        Err(varena::Error::Poisoned(
+            "panic in allocator callback".into(),
+        ))
+    });
+    match result {
+        Ok(value) => value,
+        Err(error) => {
+            // SAFETY: the shim supplies a writable Failure for this synchronous call.
+            unsafe {
+                failure.write(Failure::from_error(&error));
+            }
+            T::default()
+        }
+    }
+}
+
+fn retire(failure: *mut Failure, operation: impl FnOnce() -> varena::Result<()>) -> i32 {
+    call(failure, || {
+        let result = catch_unwind(AssertUnwindSafe(operation)).unwrap_or_else(|_| {
+            Err(varena::Error::Poisoned(
+                "panic in allocator destructor".into(),
+            ))
+        });
+        if let Err(error) = result {
+            // Destructor callbacks cannot throw. Preserve the first failure for the next boundary.
+            // A fork rejection must not wait on an inherited OnceLock initializer.
+            varena::working::bind_process()?;
+            let _ = CALLBACK_ERROR.set(error.clone());
+            return Err(error);
+        }
+        Ok(1)
+    })
+}
+
+unsafe extern "C" fn alloc(
+    bytes: usize,
+    device: i32,
+    stream: u64,
+    routed: i32,
+    a: u64,
+    b: u64,
+    failure: *mut Failure,
+) -> u64 {
+    call(failure, || {
+        varena::working::alloc(device, bytes, stream, (routed != 0).then_some((a, b)))
+    })
+}
+
+unsafe extern "C" fn free(device: i32, ptr: u64, stream: u64, failure: *mut Failure) -> i32 {
+    retire(failure, || varena::working::free(device, ptr, stream))
+}
+
+unsafe extern "C" fn record_stream(ptr: u64, stream: u64, failure: *mut Failure) -> i32 {
+    call(failure, || {
+        varena::working::record_stream_any(ptr, stream).map(|()| 1)
+    })
+}
+
+unsafe extern "C" fn trim(failure: *mut Failure) -> i32 {
+    call(failure, || varena::working::trim_all().map(|_| 1))
+}
+
+unsafe extern "C" fn pool_begin(
+    device: i32,
+    a: u64,
+    b: u64,
+    stream: u64,
+    failure: *mut Failure,
+) -> i32 {
+    call(failure, || {
+        varena::working::pool_begin(device, (a, b), stream).map(|()| 1)
+    })
+}
+
+unsafe extern "C" fn pool_end(device: i32, a: u64, b: u64, failure: *mut Failure) -> i32 {
+    call(failure, || {
+        varena::working::pool_end(device, (a, b)).map(|()| 1)
+    })
+}
+
+unsafe extern "C" fn pool_release(device: i32, a: u64, b: u64, failure: *mut Failure) -> i32 {
+    retire(failure, || varena::working::pool_release(device, (a, b)))
+}
+
+#[repr(C)]
+struct Bindings {
+    abi: u32,
+    size: u32,
+    alloc: unsafe extern "C" fn(usize, i32, u64, i32, u64, u64, *mut Failure) -> u64,
+    free: unsafe extern "C" fn(i32, u64, u64, *mut Failure) -> i32,
+    record_stream: unsafe extern "C" fn(u64, u64, *mut Failure) -> i32,
+    trim: unsafe extern "C" fn(*mut Failure) -> i32,
+    pool_begin: unsafe extern "C" fn(i32, u64, u64, u64, *mut Failure) -> i32,
+    pool_end: unsafe extern "C" fn(i32, u64, u64, *mut Failure) -> i32,
+    pool_release: unsafe extern "C" fn(i32, u64, u64, *mut Failure) -> i32,
+}
+
+static BINDINGS: Bindings = Bindings {
+    abi: 1,
+    size: std::mem::size_of::<Bindings>() as u32,
+    alloc,
+    free,
+    record_stream,
+    trim,
+    pool_begin,
+    pool_end,
+    pool_release,
+};
+
+#[pyfunction]
+fn _varena_working_bindings() -> PyResult<usize> {
+    varena::working::bind_process()
+        .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?;
+    let pid = std::process::id();
+    let owner = OWNER.load(Ordering::Acquire);
+    if owner != 0 && owner != pid {
+        return Err(pyo3::exceptions::PyRuntimeError::new_err(
+            "Torch allocator cannot be installed after fork",
+        ));
+    }
+    let owner = OWNER
+        .compare_exchange(0, pid, Ordering::AcqRel, Ordering::Acquire)
+        .unwrap_or_else(|v| v);
+    if owner != 0 && owner != pid {
+        return Err(pyo3::exceptions::PyRuntimeError::new_err(
+            "Torch allocator cannot be installed after fork",
+        ));
+    }
+    Ok(&BINDINGS as *const Bindings as usize)
+}
+
+#[pyfunction]
+fn _varena_working_initialize(py: Python<'_>, device: i32) -> PyResult<()> {
+    py.detach(|| {
+        check()?;
+        varena::working::initialize(device)
+    })
+    .map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
+fn _varena_working_check(py: Python<'_>) -> PyResult<()> {
+    varena::working::bind_process()
+        .and_then(|()| check())
+        .map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
+fn _varena_working_stats(
+    py: Python<'_>,
+    device: i32,
+) -> PyResult<std::collections::BTreeMap<&'static str, u64>> {
+    let stats = py
+        .detach(|| {
+            check()?;
+            varena::working::stats(device)
+        })
+        .map_err(|e| super::raise(py, e))?;
+    Ok([
+        ("allocated_bytes", stats.allocated_bytes as u64),
+        ("allocated_peak", stats.allocated_peak as u64),
+        ("mapped_bytes", stats.mapped_bytes as u64),
+        ("mapped_peak", stats.mapped_peak as u64),
+        ("pending_bytes", stats.pending_bytes as u64),
+        ("pools_bytes", stats.pools_bytes as u64),
+        ("allocated_capacity", stats.allocated_capacity as u64),
+        ("free_bytes", stats.free_bytes as u64),
+        ("reclaimable_bytes", stats.reclaimable_bytes as u64),
+        ("unassigned_bytes", stats.unassigned_bytes as u64),
+        ("pools", stats.pools as u64),
+        ("event_handles", stats.event_handles as u64),
+        ("allocations", stats.allocations),
+        ("frees", stats.frees),
+        ("ooms", stats.ooms),
+        ("driver_memory_calls", stats.driver_memory_calls),
+        ("event_queries", stats.event_queries),
+        ("event_records", stats.event_records),
+        ("event_waits", stats.event_waits),
+        ("context_joins", stats.context_joins),
+        ("prefetch_attempts", stats.prefetch_attempts),
+        ("prefetch_admissions", stats.prefetch_admissions),
+        ("prefetch_declines", stats.prefetch_declines),
+    ]
+    .into())
+}
+
+#[pyfunction]
+fn _varena_working_reset_peak(py: Python<'_>, device: i32) -> PyResult<()> {
+    py.detach(|| {
+        check()?;
+        varena::working::reset_peak(device)
+    })
+    .map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
+fn _varena_working_trim(py: Python<'_>, device: i32) -> PyResult<usize> {
+    py.detach(|| {
+        check()?;
+        varena::working::trim(device)
+    })
+    .map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
+#[pyo3(signature = (device, limit = None))]
+fn _varena_working_set_limit(py: Python<'_>, device: i32, limit: Option<usize>) -> PyResult<usize> {
+    py.detach(|| {
+        check()?;
+        varena::set_limit(device, limit)
+    })
+    .map(|report| report.reclaimed_bytes)
+    .map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
+fn _varena_working_pool_reserve(
+    py: Python<'_>,
+    device: i32,
+    pool: (u64, u64),
+    bytes: usize,
+) -> PyResult<usize> {
+    py.detach(|| {
+        check()?;
+        varena::working::pool_reserve(device, pool, bytes)
+    })
+    .map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
+fn _varena_working_pool_record_stream(
+    py: Python<'_>,
+    device: i32,
+    pool: (u64, u64),
+    stream: u64,
+) -> PyResult<()> {
+    py.detach(|| {
+        check()?;
+        varena::working::pool_record_stream(device, pool, stream)
+    })
+    .map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
+fn _varena_working_capture_complete(py: Python<'_>, device: i32, pool: (u64, u64)) -> PyResult<()> {
+    py.detach(|| {
+        check()?;
+        varena::working::pool_capture_complete(device, pool)
+    })
+    .map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
+fn _varena_working_pool_cancel_preparation(
+    py: Python<'_>,
+    device: i32,
+    pool: (u64, u64),
+) -> PyResult<()> {
+    py.detach(|| {
+        check()?;
+        varena::working::pool_cancel_preparation(device, pool)
+    })
+    .map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
+fn _varena_working_pool_retain(py: Python<'_>, device: i32, pool: (u64, u64)) -> PyResult<()> {
+    py.detach(|| {
+        check()?;
+        varena::working::pool_retain(device, pool)
+    })
+    .map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
+fn _varena_working_retire_stream(py: Python<'_>, device: i32, stream: u64) -> PyResult<()> {
+    py.detach(|| {
+        check()?;
+        varena::working::retire_stream(device, stream)
+    })
+    .map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
+fn _varena_working_pool_release(py: Python<'_>, device: i32, pool: (u64, u64)) -> PyResult<()> {
+    py.detach(|| {
+        check()?;
+        varena::working::pool_release(device, pool)
+    })
+    .map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
+#[pyo3(signature = (device, key = None, *, mode = "eager"))]
+fn _varena_phase_enter(
+    py: Python<'_>,
+    device: i32,
+    key: Option<String>,
+    mode: &str,
+) -> PyResult<u64> {
+    use varena::working::PhaseMode;
+    let mode = match mode {
+        "eager" => PhaseMode::Eager,
+        "capture" => PhaseMode::Capture,
+        "replay" => PhaseMode::Replay,
+        "preparation" => PhaseMode::Preparation,
+        _ => {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "unknown execution phase mode",
+            ));
+        }
+    };
+    py.detach(|| {
+        check()?;
+        varena::working::phase_enter(device, key, mode)
+    })
+    .map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
+#[pyo3(signature = (device, token, *, completed, key = None))]
+fn _varena_phase_leave<'py>(
+    py: Python<'py>,
+    device: i32,
+    token: u64,
+    completed: bool,
+    key: Option<String>,
+) -> PyResult<Bound<'py, PyDict>> {
+    // Cleanup must remain possible after an allocator callback has latched its original error.
+    let observed = py
+        .detach(|| varena::working::phase_leave(device, token, completed, key))
+        .map_err(|e| super::raise(py, e))?;
+    let row = PyDict::new(py);
+    row.set_item("token", observed.token)?;
+    row.set_item("mode", observed.mode.name())?;
+    row.set_item("key", observed.key)?;
+    row.set_item("peak_bytes", observed.peak_bytes)?;
+    row.set_item("total_peak_bytes", observed.total_peak_bytes)?;
+    row.set_item("backing_peak_bytes", observed.backing_peak_bytes)?;
+    row.set_item("published", observed.published)?;
+    row.set_item("invalidated", observed.invalidated)?;
+    row.set_item("reason", observed.reason)?;
+    row.set_item("successful_peak_bytes", observed.successful_peak_bytes)?;
+    row.set_item(
+        "successful_backing_peak_bytes",
+        observed.successful_backing_peak_bytes,
+    )?;
+    row.set_item("successful_passes", observed.successful_passes)?;
+    Ok(row)
+}
+
+#[pyfunction]
+#[pyo3(signature = (device, token, reason = "execution_retry"))]
+fn _varena_phase_invalidate(py: Python<'_>, device: i32, token: u64, reason: &str) -> PyResult<()> {
+    py.detach(|| varena::working::phase_invalidate(device, token, reason))
+        .map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
+fn _varena_phase_stats<'py>(
+    py: Python<'py>,
+    device: i32,
+    key: &str,
+) -> PyResult<Bound<'py, PyDict>> {
+    let sample = py
+        .detach(|| {
+            check()?;
+            varena::working::phase_stats(device, key)
+        })
+        .map_err(|e| super::raise(py, e))?;
+    let row = PyDict::new(py);
+    row.set_item("known", sample.known)?;
+    row.set_item("peak_bytes", sample.peak_bytes)?;
+    row.set_item("total_peak_bytes", sample.total_peak_bytes)?;
+    row.set_item("backing_peak_bytes", sample.backing_peak_bytes)?;
+    row.set_item("successful_passes", sample.successful_passes)?;
+    row.set_item("aborted_passes", sample.aborted_passes)?;
+    row.set_item("aborted_peak_bytes", sample.aborted_peak_bytes)?;
+    row.set_item("aborted_total_peak_bytes", sample.aborted_total_peak_bytes)?;
+    row.set_item(
+        "aborted_backing_peak_bytes",
+        sample.aborted_backing_peak_bytes,
+    )?;
+    Ok(row)
+}
+
+#[pyfunction]
+fn _varena_phase_forget(py: Python<'_>, device: i32, key: &str) -> PyResult<bool> {
+    py.detach(|| varena::working::phase_forget(device, key))
+        .map_err(|e| super::raise(py, e))
+}
+
+pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(_varena_phase_enter, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_phase_leave, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_phase_invalidate, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_phase_stats, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_phase_forget, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_working_trim, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_working_set_limit, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_working_retire_stream, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_working_pool_retain, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_working_pool_release, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_working_bindings, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_working_initialize, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_working_check, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_working_stats, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_working_reset_peak, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_working_pool_reserve, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        _varena_working_pool_record_stream,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(_varena_working_capture_complete, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        _varena_working_pool_cancel_preparation,
+        module
+    )?)?;
+    Ok(())
+}

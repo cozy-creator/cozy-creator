@@ -104,6 +104,10 @@ cozy project approve theo 2 --project garden      # choose it: what is made from
 cozy project status --project garden              # what is missing, out of date and why, and the edit
 ```
 
+Each version is sent as soon as what it reads is made, so independent ones render at once and the
+machine's scheduler places them; `--on a,b` spreads them over machines (the least busy, one that holds
+the models first), and a `cozy render` asked while another goes joins it.
+
 `<name>` in a text names another entity, which it is then made from; a setup's camera is written in
 screen terms (what is near or far, left or right). A shot reads a world state it
 names and changes the ones it `writes`. Character and prop pictures are cleaned on this computer before
