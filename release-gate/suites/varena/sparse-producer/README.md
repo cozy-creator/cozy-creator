@@ -28,3 +28,22 @@ text mentions a Region even though this call only retires metadata. Each real pr
 belongs to the Request and retires after phase leave through normal Request cleanup.
 The later same-PID check includes those keys. No native admission/retirement rule changed;
 the failed receipt is preserved and the underlying operation remains unqualified.
+
+
+## Qualified bounded successor cohort
+
+Runs25622/25624 passed all26cases and same-PID cleanup on Sorata, Runtime167ffc828,
+TensorFSa96, packagefc4 and fixturef366. The original trainable Parameters were retained;
+the inference-export fix used zero-copy detached aliases. All18 declared allocation
+censuses match, including1,442 observed detach operations with zero allocations.
+There are16 whole/window cases,6 minimum refusals,2 real post-write refusals and2 full
+Processor cases. All18 carried means are exact. Twelve of18 complete outputs are exact;
+the maximum relativeL2 is0.000188590981 against the unchanged0.01 budget. Both post-write
+refusals preserve prior means/host carried state and the completed first output head.
+Both declared Plan Region lifetimes return to baseline.
+
+Working live17,039,360B/mapped20,971,520B returns exactly, with pending/pools/events zero.
+The later request in PID121758 confirms31 measurement keys already retired. Source/input,
+raw-result hashes and independent checks are in evidence/gpu-20261101. This is bounded
+consumer/ownership qualification; full-H3 numerical, perceptual and performance evidence
+is still a separate gate. Original failures25515/25536/25575 remain preserved.

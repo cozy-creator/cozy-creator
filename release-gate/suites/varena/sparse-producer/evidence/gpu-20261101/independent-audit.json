@@ -1,0 +1,36 @@
+{
+  "passed": true,
+  "consumer_run": 25622,
+  "cleanup_run": 25624,
+  "pid": 121758,
+  "runtime": "167ffc828e3f84062d43641fcf53dbda54892631",
+  "native": "a96c7c3e837314795d0d21b993df1246dc394aed",
+  "package": "fc4af2f2e5d075f04bde1d9803cae92a378c84f3",
+  "fixture": "f36652a37212c6a8c48db2a6c5d6a458d2707441",
+  "actual_seed": 3948336382721211,
+  "case_counts": {
+    "whole-or-head-window": 16,
+    "minimum-refusal": 6,
+    "post-write-refusal": 2,
+    "complete-processor": 2
+  },
+  "complete_outputs": 18,
+  "max_output_relative_l2": 0.0001885909810305026,
+  "exact_outputs": 12,
+  "all18_means_exact": true,
+  "exact_allocation_censuses": 18,
+  "observed_zero_allocation_detach_ops": 1442,
+  "same_pid_retired_keys": 31,
+  "baseline": {
+    "allocated_bytes": 17039360,
+    "mapped_bytes": 20971520,
+    "pending_bytes": 0,
+    "pools_bytes": 0,
+    "event_handles": 0
+  },
+  "raw_sha256": {
+    "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/attempt-002/sparse-167/consumer-result.json": "ee9b2cd29544e7bb63d41a768e68f653f5f399fe01566ffc88d2f23594158cd4",
+    "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/attempt-002/sparse-167/cleanup-result.json": "04f7e958f59976bc19ade7fd886abf4b3ba5cc70440fe379b4e5aa3e2475cd46"
+  },
+  "scope": "actual bounded producer/Loop allocation, output and atomic mean-commit proof including unchanged trainable Parameters; full-H3 quality/performance is separate"
+}
