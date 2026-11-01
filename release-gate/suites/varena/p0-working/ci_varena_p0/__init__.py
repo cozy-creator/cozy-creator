@@ -101,6 +101,12 @@ def cooperative(payload: CooperativeProbe, tel: Telemetry) -> Report:
 
 
 @app.entrypoint(accelerator=True)
+def retention_policy(payload: Probe, tel: Telemetry) -> Report:
+    """Real cache-window clearing, roomy retention and unchanged managed/Room capacity."""
+    return _cuda_child(payload, tel, "retention_policy.py", "varena-p2-retention-policy")
+
+
+@app.entrypoint(accelerator=True)
 def reclaim_sequence(payload: Probe, tel: Telemetry) -> Report:
     """Preserve the full executed result even when the weight-preservation regression is red."""
     executed = _cuda_child(payload, tel, "reclaim_sequence.py", "working-before-weights")
@@ -108,6 +114,17 @@ def reclaim_sequence(payload: Probe, tel: Telemetry) -> Report:
     result["execution_passed"] = result["passed"]
     result["passed"] = result["cases"]["working-before-weights"]["preserved_idle_weights"]
     result["qualification"] = "working trim must preserve already-ready weights; successful execution alone is not this gate"
+    return Report(result["passed"], json.dumps(result, sort_keys=True))
+
+
+@app.entrypoint(accelerator=True)
+def bounded_trim(payload: Probe, tel: Telemetry) -> Report:
+    """Keep the executed measurements and retirement proof when the trim regression is red."""
+    executed = _cuda_child(payload, tel, "bounded_trim.py", "bounded-working-trim")
+    result = json.loads(executed.detail)
+    result["execution_passed"] = result["passed"]
+    result["passed"] = result["cases"]["bounded-working-trim"]["bounded_trim_passed"]
+    result["qualification"] = "retain at least 24 MiB of other completed cache while the 24 MiB output is live"
     return Report(result["passed"], json.dumps(result, sort_keys=True))
 
 

@@ -2,6 +2,7 @@
 mod working;
 #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
 mod cooperative;
+mod plan;
 #[cfg(feature = "store")]
 mod continuation;
 #[cfg(feature = "store")]
@@ -142,6 +143,11 @@ impl PyArena {
     }
     fn set_streaming_limit(&self, py: Python<'_>, bytes: usize) -> PyResult<()> {
         py.detach(|| self.arena.set_streaming_limit(bytes))
+            .map_err(|e| raise(py, e))
+    }
+
+    fn clear_streaming_limit(&self, py: Python<'_>) -> PyResult<()> {
+        py.detach(|| self.arena.clear_streaming_limit())
             .map_err(|e| raise(py, e))
     }
 
@@ -648,6 +654,7 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     poisoned.setattr("sticky", true)?;
     module.add("VarenaPoisonedError", poisoned)?;
     module.add_class::<PyArena>()?;
+    module.add_class::<plan::PyPlan>()?;
     module.add_class::<PyRegion>()?;
     module.add_class::<PyUse>()?;
     module.add_class::<PyCapture>()?;

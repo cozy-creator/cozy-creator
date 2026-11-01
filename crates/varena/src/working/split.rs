@@ -116,6 +116,12 @@ pub struct SplitSelection {
     pub basis: &'static str,
     pub reclaimed_working_bytes: usize,
     pub reclaimed_weight_bytes: usize,
+    pub plan_generation: u64,
+    pub phase: Option<String>,
+    pub phase_weight_bytes: usize,
+    pub phase_missing_bytes: usize,
+    pub phase_outside_reclaimable_bytes: usize,
+    pub preserves_phase_weights: bool,
 }
 #[derive(Clone, Debug)]
 pub struct SplitObservation {
@@ -220,10 +226,18 @@ struct Fit {
     reclaimable: usize,
     now: usize,
     after_idle: usize,
+    generation: u64,
+    phase: Option<crate::plan::Snapshot>,
+    after_outside: usize,
+    phase_available: Option<usize>,
 }
 impl Fit {
     fn fits(&self) -> bool {
         self.missing <= self.after_idle
+    }
+    fn preserves_phase(&self) -> bool {
+        self.phase_available
+            .is_some_and(|available| self.missing <= available)
     }
 }
 
@@ -242,7 +256,15 @@ fn headroom(owner: &Working, free: usize, released: usize) -> usize {
         .min(limit.saturating_sub(owned.saturating_sub(released)))
 }
 
-fn fits(owner: &Working, state: &State, key: &str, stream: u64, free: usize) -> Result<Vec<Fit>> {
+fn fits(
+    owner: &Working,
+    state: &State,
+    key: &str,
+    stream: u64,
+    free: usize,
+    generation: u64,
+    phase: Option<&crate::plan::Snapshot>,
+) -> Result<Vec<Fit>> {
     let site = state
         .splits
         .sites
@@ -292,7 +314,7 @@ fn fits(owner: &Working, state: &State, key: &str, stream: u64, free: usize) -> 
             }
             let missing = backing(owner, &missing)?;
             let preserved_bytes = preserve.iter().map(|base| state.segments[base].bytes).sum();
-            let reclaimable = state
+            let reclaimable: usize = state
                 .segments
                 .iter()
                 .filter(|(base, segment)| {
@@ -307,6 +329,11 @@ fn fits(owner: &Working, state: &State, key: &str, stream: u64, free: usize) -> 
                 })
                 .map(|(_, segment)| segment.bytes)
                 .sum();
+            let after_outside = headroom(
+                owner,
+                free,
+                reclaimable.saturating_add(phase.map_or(0, |intent| intent.outside_reclaimable)),
+            );
             Ok(Fit {
                 id: choice.id.clone(),
                 basis: if sample.is_some() {
@@ -323,18 +350,26 @@ fn fits(owner: &Working, state: &State, key: &str, stream: u64, free: usize) -> 
                 reclaimable,
                 now: headroom(owner, free, 0),
                 after_idle: headroom(owner, free, reclaimable),
+                generation,
+                phase: phase.cloned(),
+                after_outside,
+                phase_available: phase.and_then(|intent| after_outside.checked_sub(intent.missing)),
             })
         })
         .collect()
 }
 
 fn snapshot(device: i32, owner: &Working, key: &str, stream: u64) -> Result<Vec<Fit>> {
+    // GPU-owning leases precede every guard, including on a rejected generation.
+    let lease = crate::plan::Lease::acquire(device)?;
     let captures = crate::capture_counts()?;
     crate::ensure_recovery_allowed(&captures, device)?;
+    let generation = lease.validate()?;
+    let phase = crate::plan::snapshot(&lease)?;
     let state = owner.lock()?;
     let _context = owner.driver.enter()?;
     let (free, _) = owner.driver.memory_info()?;
-    fits(owner, &state, key, stream, free)
+    fits(owner, &state, key, stream, free, generation, phase.as_ref())
 }
 
 fn decision(
@@ -344,16 +379,29 @@ fn decision(
     working: usize,
     weights: usize,
 ) -> Option<SplitSelection> {
-    let eligible: Vec<_> = plans.iter().filter(|plan| plan.fits()).collect();
-    let selected = preferred
-        .and_then(|id| eligible.iter().find(|plan| plan.id == id).copied())
+    let eligible: Vec<_> = plans
+        .iter()
+        .filter(|plan| plan.fits() || plan.preserves_phase())
+        .collect();
+    // Menu order is largest to smallest. Phase residency wins before a streaming
+    // preference; when no choice can preserve it, the existing actual-capacity
+    // selection remains. No efficient chunk is invented by this memory layer.
+    let selected = eligible
+        .iter()
+        .find(|plan| plan.preserves_phase())
+        .copied()
+        .or_else(|| preferred.and_then(|id| eligible.iter().find(|plan| plan.id == id).copied()))
         .or_else(|| eligible.first().copied())?;
     Some(SplitSelection {
         stream,
         choice_id: selected.id.clone(),
         eligible: eligible.iter().map(|plan| plan.id.clone()).collect(),
         required_bytes: selected.missing,
-        available_bytes: selected.after_idle,
+        available_bytes: if selected.preserves_phase() {
+            selected.after_outside
+        } else {
+            selected.after_idle
+        },
         allocation_backing_bytes: selected.full,
         measured_backing_peak_bytes: selected.measured,
         reused_capacity_bytes: selected.reused,
@@ -362,18 +410,30 @@ fn decision(
         basis: selected.basis,
         reclaimed_working_bytes: working,
         reclaimed_weight_bytes: weights,
+        plan_generation: selected.generation,
+        phase: selected.phase.as_ref().map(|p| p.name.clone()),
+        phase_weight_bytes: selected.phase.as_ref().map_or(0, |p| p.bytes),
+        phase_missing_bytes: selected.phase.as_ref().map_or(0, |p| p.missing),
+        phase_outside_reclaimable_bytes: selected
+            .phase
+            .as_ref()
+            .map_or(0, |p| p.outside_reclaimable),
+        preserves_phase_weights: selected.preserves_phase(),
     })
 }
 
 fn trim_for(device: i32, owner: &Working, key: &str, choice: &str, stream: u64) -> Result<usize> {
+    let lease = crate::plan::Lease::acquire(device)?;
     let captures = crate::capture_counts()?;
     crate::ensure_recovery_allowed(&captures, device)?;
+    let generation = lease.validate()?;
+    let phase = crate::plan::snapshot(&lease)?;
     let mut state = owner.lock()?;
     let _context = owner.driver.enter()?;
     let result = (|| {
         owner.poll(&mut state)?;
         let (free, _) = owner.driver.memory_info()?;
-        let plans = fits(owner, &state, key, stream, free)?;
+        let plans = fits(owner, &state, key, stream, free, generation, phase.as_ref())?;
         let plan = plans
             .iter()
             .find(|plan| plan.id == choice)
@@ -451,12 +511,29 @@ pub fn split_begin(
     choice_id: &str,
     completion_owner: Option<u64>,
     stream: u64,
+    plan_generation: Option<u64>,
 ) -> Result<u64> {
-    let result = split_begin_inner(device, key, choice_id, completion_owner, stream);
+    let result = split_begin_inner(
+        device,
+        key,
+        choice_id,
+        completion_owner,
+        stream,
+        plan_generation,
+    );
     if result.is_err() {
         let _ = invalidate_current_phase(device, "split_begin_error");
     }
     result
+}
+
+fn selected_generation(expected: Option<u64>, current: u64) -> Result<()> {
+    if expected == Some(current) || (expected.is_none() && current == 0) {
+        return Ok(());
+    }
+    Err(Error::Invalid(
+        "split begin requires its unchanged selected phase-plan generation",
+    ))
 }
 
 fn split_begin_inner(
@@ -465,6 +542,7 @@ fn split_begin_inner(
     choice_id: &str,
     completion_owner: Option<u64>,
     stream: u64,
+    plan_generation: Option<u64>,
 ) -> Result<u64> {
     valid_stream(stream)?;
     context(device)?;
@@ -489,8 +567,17 @@ fn split_begin_inner(
         .iter()
         .find(|plan| plan.id == choice_id)
         .ok_or(Error::Invalid("split choice is not declared"))?;
+    selected_generation(plan_generation, plan.generation)?;
     if plan.missing > plan.now {
         trim_for(device, &owner, key, choice_id, stream)?;
+        let plans = snapshot(device, &owner, key, stream)?;
+        let plan = plans
+            .iter()
+            .find(|plan| plan.id == choice_id)
+            .expect("copied choice");
+        if plan.missing > plan.now && plan.preserves_phase() {
+            crate::plan::reclaim_outside(device, plan.missing - plan.now)?;
+        }
         let plans = snapshot(device, &owner, key, stream)?;
         let plan = plans
             .iter()
@@ -500,12 +587,25 @@ fn split_begin_inner(
             crate::reclaim(device, plan.missing - plan.now)?;
         }
     }
+    // Keep GPU-owning leases outside and longer-lived than every exclusion guard.
+    let lease = crate::plan::Lease::acquire(device)?;
     let captures = crate::capture_counts()?;
     crate::ensure_recovery_allowed(&captures, device)?;
+    let generation = lease.validate()?;
+    let phase = crate::plan::snapshot(&lease)?;
     let mut state = owner.lock()?;
+    selected_generation(plan_generation, generation)?;
     let _context = owner.driver.enter()?;
     let (free, _) = owner.driver.memory_info()?;
-    let plans = fits(&owner, &state, key, stream, free)?;
+    let plans = fits(
+        &owner,
+        &state,
+        key,
+        stream,
+        free,
+        generation,
+        phase.as_ref(),
+    )?;
     let plan = plans
         .iter()
         .find(|plan| plan.id == choice_id)

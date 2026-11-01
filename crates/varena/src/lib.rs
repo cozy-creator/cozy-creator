@@ -11,6 +11,7 @@
 #![deny(unsafe_code)]
 
 mod cuda;
+pub mod plan;
 pub mod working;
 #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
 pub mod ledger;
@@ -641,12 +642,17 @@ impl Arena {
                 event_waits: 0,
             }),
         });
+        // Registration changes the bounded phase-plan arena inventory. This guard
+        // is declared after `arena`: every error drops it before the owning Arc.
+        let captures = capture_counts()?;
+        ensure_recovery_allowed(&captures, device)?;
         let mut registry = ARENAS
             .get_or_init(Mutex::default)
             .lock()
             .map_err(|_| Error::Poisoned("arena registry mutex".into()))?;
         registry.retain(|(_, entry)| entry.strong_count() != 0);
         registry.push((device, Arc::downgrade(&arena)));
+        plan::arena_changed(device)?;
         Ok(arena)
     }
 
@@ -742,6 +748,13 @@ impl Arena {
     /// (`State::eviction_key`); preferred groups survive.
     pub fn set_streaming_limit(&self, bytes: usize) -> Result<()> {
         self.lock()?.streaming_limit = bytes;
+        Ok(())
+    }
+
+    /// Clear only the legacy idle-cache window. This is intent metadata: no CUDA call or
+    /// reclaim occurs, and process managed/development/peer capacity limits remain in force.
+    pub fn clear_streaming_limit(&self) -> Result<()> {
+        self.lock()?.streaming_limit = usize::MAX;
         Ok(())
     }
 
@@ -1947,6 +1960,7 @@ impl Drop for Arena {
         let Ok(captures) = capture_counts() else {
             return;
         };
+        let _ = plan::arena_changed(self.device);
         if ensure_recovery_allowed(&captures, self.device).is_err() {
             return;
         }

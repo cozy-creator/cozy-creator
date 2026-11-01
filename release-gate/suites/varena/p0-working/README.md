@@ -299,3 +299,54 @@ failure 24917. The [full result and boundaries](../evidence/p3-cooperative-24919
 failure, numeric accounting, GC/capture proof and actual concurrent retirement refusal.
 This proves same-UID/user/PID/mount-namespace explicit service, not automatic policy or TensorD
 migration. Always check `Report.passed` and nested `child_exit_code`, not run completion alone.
+
+## P2 clearing the legacy cache window (source-only until run)
+
+`/retention_policy` uses the actual native allocator and two fixed-address 4 MiB
+weight regions. The roomy 8 MiB case first demonstrates the old 4 MiB streaming
+window evicting one region, then clears that window and requires both regions to
+remain resident without another eviction. The refilled region keeps its address.
+The two constrained cases require demand reclamation to remain effective: a 4 MiB
+managed limit, and a 4 MiB externally assigned room under an 8 MiB managed limit.
+These are capacity mechanisms, not claims about smaller GPU hardware.
+
+The clear method is called under real native capture and replay exclusion guards.
+All native arena statistics except the window itself must remain unchanged, and
+preferences remain unset. The fixture checks actual byte contents, fill/eviction
+counts and reasons, then releases every region and verifies zero managed working
+retirement through the common CUDA fixture. No borrowed library handle is reset.
+The external room control exercised here is the existing `make_room` interface;
+this does not qualify P3's cross-process table or automatic policy.
+
+The API changes only arena intent metadata. It does not query CUDA, reclaim
+backing, alter process/development/peer limits, change pins or choose a Runtime
+execution mode. The separately owned Runtime retention change must qualify its
+actual graph/cache ownership boundary before using it. Native source checks and
+fixture syntax pass; GPU execution remains pending.
+# Bounded working-cache trim regression
+
+`bounded_trim` creates 8 MiB of ready, unpinned weight bytes plus three completed idle
+working allocations (8, 16, and 32 MiB) under a 64 MiB managed limit. An actual 24 MiB
+allocation cannot reuse their exact size classes. Releasing at most 32 MiB of whole
+working segments suffices; the case requires at least 24 MiB of other completed free
+backing while its correctly filled 24 MiB output is live, and at least 48 MiB free after
+that output's stream completes and retires. It verifies every output and weight byte,
+unchanged weight fills/evictions, and final zero native working/weight ownership.
+
+The case does not assert segment ordering or pointer selection. It uses real drained
+stream retirement to establish completed cache without calling trim. `Report.passed`
+is the cache-preservation gate; `detail.execution_passed` separately records successful
+allocation, byte checks, and cleanup. A red preservation result retains the full report.
+The initial fixture `fa13b2ef8` ran against unchanged native `9ccb36a2` in actual GPU
+run **25143** and was red: while the 24 MiB output was live, other free working backing
+was **zero**; after output retirement, only 24 MiB was cached. All output and weight
+bytes were correct, weights had no eviction/refill, and final ownership was zero.
+The full report and independent audit are in `../evidence/bounded-trim-20261101/`.
+
+Product fix `bda123e7b` removes the first OOM arm's `trim(device)` call. The existing
+second attempt still trims only the requested mapping's bytes from completed whole
+segments. If that mapping fails, the unchanged third attempt follows weight reclaim
+and completion-wait handling. The three attempts, capture exclusions, fault poisoning,
+and working-before-weights order remain. Single-job `cargo check -p varena --lib --locked`
+passes; the fixed GPU run is pending. This demonstrates one unnecessary trim, not the
+cause or timing impact of all observed full-H3 driver churn.

@@ -164,14 +164,16 @@ def split_select(device: DeviceLike, key: str, choices: Sequence[tuple[str, Sequ
     return _ext._varena_split_select(_device(device), key, [(name, list(sizes)) for name, sizes in choices], preferred=preferred, stream=stream)
 
 
-def split_begin(device: DeviceLike, key: str, choice_id: str, *, stream: int, completion_owner: int | None = None) -> int:
+def split_begin(device: DeviceLike, key: str, choice_id: str, *, stream: int, completion_owner: int | None = None, plan_generation: int | None = None) -> int:
     """Commit exactly this choice and open one nonnested leaf interval within its phase.
 
     completion_owner is the active eager observation whose checked stream completion also
     covers this leaf. None permits declared selection but cannot train a successful sample.
+    Forward the opaque plan_generation returned by split_select. A stale generation refuses
+    before execution; omission is supported only before a Plan has participated on this GPU.
     """
     _installed()
-    return _ext._varena_split_begin(_device(device), key, choice_id, stream=stream, completion_owner=completion_owner)
+    return _ext._varena_split_begin(_device(device), key, choice_id, stream=stream, completion_owner=completion_owner, plan_generation=plan_generation)
 
 
 def split_end(device: DeviceLike, observation_id: int, *, submitted: bool) -> dict[str, Any]:
