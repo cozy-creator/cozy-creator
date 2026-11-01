@@ -1,0 +1,81 @@
+{
+  "passed": true,
+  "runs": {
+    "tail": 25084,
+    "tail_cleanup": 25085,
+    "standalone": 25086,
+    "standalone_cleanup": 25087
+  },
+  "cohort": {
+    "runtime": "fe5a783da98b61ad1b840c704bcf69c694d18052",
+    "tensorfs": "9ccb36a24f9987ea1a9bfbddc746c7c26e497759",
+    "package": "9e7490c04f14e6f69712778bb6c303da24d6d769",
+    "tested_tail_fixture": "3939db65f6ac35b66dc0e5f58277f0ee6eaedf83",
+    "standalone_fixture": "55759abf0",
+    "gpu_uuid": "74f2ac0a-1c52-2e52-a7a6-b207f1db7a89"
+  },
+  "tail": {
+    "pid": 190641,
+    "row_chunks": [
+      8195,
+      4098,
+      2048,
+      1
+    ],
+    "accepted_relative_l2": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "whole_half_quarter_exact": true,
+    "odd_tails": [
+      4097,
+      3
+    ],
+    "alignment": "all chunk starts preserve existing 16-byte Int64 pointer ABI; no index copy",
+    "automatic_workspace_checks": 14,
+    "workspace_bytes_large": 33554944,
+    "minimum": {
+      "allocation_delta": 0,
+      "available_bytes": 2097151,
+      "no_retry": true,
+      "required_bytes": 2097152
+    },
+    "minimum_output_unchanged": true,
+    "accepted_observations": "one completed/published native child and one parent choice per operation; no nested projection observation",
+    "parent": "componentless fixture parents remain execution_key_unknown and unpublished; native children publish on their actual completion",
+    "baseline": {
+      "allocated_bytes": 17039360,
+      "allocated_capacity": 20971520,
+      "mapped_bytes": 20971520,
+      "pending_bytes": 0,
+      "pools": 0,
+      "event_handles": 0
+    },
+    "same_pid_keys_already_retired": 2
+  },
+  "standalone": {
+    "pid": 190806,
+    "whole_half_quarter_exact": true,
+    "baked_and_unbaked_relative_l2": 0,
+    "unbaked_factor_reads": 3,
+    "same_pid_keys_already_retired": 2
+  },
+  "files": {
+    "tail-composite-result.json": "7d5e08611591a3ca76108b25be314ec37f0225333d81fdd11b011fd5559124f3",
+    "tail-cleanup-result.json": "00bc258e50b221f0ee36a4ed886125a1c420fb87a8f63cda8b6eb9d6f27206dc",
+    "tail-linear-regression-result.json": "a7222327ca96543510fc089d55e4cd948e1b06b7f9bb0dee3b10909061ddfad6",
+    "tail-linear-cleanup-result.json": "60aa7d806366c3c9606efcceb371a7c31826df3ff8f2fd4a22f41d54b0e5ecc2",
+    "tail-composite-25084.json": "fcc564fd9d2c3f3ab8f809f966eba972b7b9c062a83ad922c37609ddbaf036dd",
+    "tail-cleanup-25085.json": "965cbd758b3826e67d9339150545adade55e2dbbe5e215efc61f32917978e79e",
+    "tail-linear-regression-25086.json": "16ca4c178306315f12f93adac8be63c9681beb4fba366bcb8b23e838d6178720",
+    "tail-linear-cleanup-25087.json": "485e1f30a1692165cb7c0b0baa730437fa3af05049bafb53b0dda5e2a1d25314"
+  },
+  "boundaries": [
+    "Actual current package _Tail.run reference and existing compiled GLUE_FP8 launcher on one SM89 GPU.",
+    "No full new-package H3 performance/quality, smaller GPU, FP8 tail, graph/captured tail, or multi-rank qualification.",
+    "Incoming unrelated _RECENT ownership is outside-live and is not separately exercised.",
+    "Tested fixture3939 proved minimum required2MiB; subsequent source adds a fail-fast required>0 fixture precondition for future cohorts, without changing tested artifacts or product."
+  ]
+}

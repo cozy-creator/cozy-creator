@@ -1,0 +1,1820 @@
+{
+  "runs": {
+    "control": 25151,
+    "candidate": 25168
+  },
+  "same_input_package_models_worker": true,
+  "source_files_verified": 39,
+  "full_scope_passed": true,
+  "tail_adoption": {
+    "control": {
+      "selections_by_site": {
+        "residual-ffn-tail": 1500,
+        "int8-linear-rows": 1450
+      },
+      "observations_by_site_and_choice": {
+        "residual-ffn-tail": {
+          "rows:27280/27280:0:5/3:1:-1/27280:0:5/3:1:-1": 752,
+          "rows:54562/54562:0:5/54561:0:5/54562:0:5/54561:0:5": 543,
+          "rows:3410/3410:0:0/3:1:-1/3410:0:5/3:1:-1": 129,
+          "rows:6820/6820:0:5/3:1:-1/6820:0:5/3:1:-1": 41,
+          "rows:1704/1704:0:0/67:0:6/1704:0:1/67:0:6": 29,
+          "rows:109123/109123:0:5/109123:0:5/109123:0:5/109123:0:5": 6
+        },
+        "int8-linear-rows": {
+          "rows:109123/full:0:5/tail:109123:0:5": 1450
+        }
+      },
+      "tail_scope_count": 1500
+    },
+    "candidate": {
+      "selections_by_site": {
+        "residual-ffn-tail": 1500,
+        "int8-linear-rows": 1450
+      },
+      "observations_by_site_and_choice": {
+        "residual-ffn-tail": {
+          "rows:27280/27280:0:5/3:1:-1/27280:0:5/3:1:-1": 764,
+          "rows:54562/54562:0:5/54561:0:5/54562:0:5/54561:0:5": 530,
+          "rows:3410/3410:0:0/3:1:-1/3410:0:5/3:1:-1": 143,
+          "rows:6820/6820:0:5/3:1:-1/6820:0:5/3:1:-1": 30,
+          "rows:1704/1704:0:0/67:0:6/1704:0:1/67:0:6": 27,
+          "rows:109123/109123:0:5/109123:0:5/109123:0:5/109123:0:5": 6
+        },
+        "int8-linear-rows": {
+          "rows:109123/full:0:5/tail:109123:0:5": 1450
+        }
+      },
+      "tail_scope_count": 1500
+    },
+    "candidate_active": true
+  },
+  "metrics": {
+    "execution_ms": {
+      "control": 1002785,
+      "candidate": 991566,
+      "difference": -11219,
+      "percent": -1.1187841860418768
+    },
+    "denoise_stage_ms": {
+      "control": 970467.785,
+      "candidate": 958549.156,
+      "difference": -11918.629000000074,
+      "percent": -1.228132369174939
+    },
+    "denoise_device_ms": {
+      "control": 970431.921,
+      "candidate": 958513.453,
+      "difference": -11918.467999999993,
+      "percent": -1.2281611663926273
+    },
+    "recorded_store_bytes": {
+      "control": 467821356356,
+      "candidate": 468227295044,
+      "difference": 405938688,
+      "percent": 0.08677215832171292
+    },
+    "recorded_baked_bytes": {
+      "control": 0,
+      "candidate": 0,
+      "difference": 0,
+      "percent": null
+    },
+    "represented_weight_source_bytes": {
+      "control": 467821356356,
+      "candidate": 468227295044,
+      "difference": 405938688,
+      "percent": 0.08677215832171292
+    },
+    "working_driver_memory_calls": {
+      "control": 45094,
+      "candidate": 35314,
+      "difference": -9780,
+      "percent": -21.688029449594183
+    },
+    "working_allocations": {
+      "control": 406426,
+      "candidate": 406842,
+      "difference": 416,
+      "percent": 0.10235565638025967
+    },
+    "working_event_queries": {
+      "control": 163767,
+      "candidate": 167508,
+      "difference": 3741,
+      "percent": 2.2843429995053954
+    },
+    "working_event_records": {
+      "control": 31205,
+      "candidate": 32619,
+      "difference": 1414,
+      "percent": 4.531325108155748
+    },
+    "working_event_waits": {
+      "control": 941,
+      "candidate": 929,
+      "difference": -12,
+      "percent": -1.2752391073326264
+    },
+    "working_allocated_bytes": {
+      "control": 17309808,
+      "candidate": 17309808,
+      "difference": 0,
+      "percent": 0.0
+    },
+    "working_allocated_capacity": {
+      "control": 21308928,
+      "candidate": 21308928,
+      "difference": 0,
+      "percent": 0.0
+    },
+    "working_pending_bytes": {
+      "control": 774867456,
+      "candidate": 774867456,
+      "difference": 0,
+      "percent": 0.0
+    },
+    "driver_peak_bytes": {
+      "control": 25234112512,
+      "candidate": 25248792576,
+      "difference": 14680064,
+      "percent": 0.05817547176671933
+    },
+    "weight_fills": {
+      "control": 1192,
+      "candidate": 1193,
+      "difference": 1,
+      "percent": 0.0838926174496546
+    },
+    "weight_hits": {
+      "control": 1180,
+      "candidate": 1179,
+      "difference": -1,
+      "percent": -0.08474576271186862
+    },
+    "weight_evictions": {
+      "control": 1110,
+      "candidate": 1111,
+      "difference": 1,
+      "percent": 0.09009009009008917
+    },
+    "weight_reclaimed_bytes": {
+      "control": 456801648640,
+      "candidate": 457208496128,
+      "difference": 406847488,
+      "percent": 0.08906436507207793
+    },
+    "weight_ready_bytes": {
+      "control": 12144607232,
+      "candidate": 12144607232,
+      "difference": 0,
+      "percent": 0.0
+    },
+    "weight_reclaimed_allocator": {
+      "control": 223652872192,
+      "candidate": 217143312384,
+      "difference": -6509559808,
+      "percent": -2.9105639217598456
+    },
+    "weight_reclaimed_requested": {
+      "control": 229638144000,
+      "candidate": 236554551296,
+      "difference": 6916407296,
+      "percent": 3.0118721461187326
+    },
+    "weight_reclaimed_room": {
+      "control": 0,
+      "candidate": 0,
+      "difference": 0,
+      "percent": null
+    },
+    "weight_reclaimed_streaming_limit": {
+      "control": 0,
+      "candidate": 0,
+      "difference": 0,
+      "percent": null
+    },
+    "weight_reclaimed_weight_allocation": {
+      "control": 3510632448,
+      "candidate": 3510632448,
+      "difference": 0,
+      "percent": 0.0
+    }
+  },
+  "by_model_source_transfers": {
+    "text_encoder": {
+      "store_bytes": {
+        "control": 26318202624,
+        "candidate": 26318202624,
+        "difference": 0,
+        "percent": 0.0
+      },
+      "fills": {
+        "control": 52,
+        "candidate": 52,
+        "difference": 0,
+        "percent": 0.0
+      }
+    },
+    "transformer": {
+      "store_bytes": {
+        "control": 438410719232,
+        "candidate": 438816657920,
+        "difference": 405938688,
+        "percent": 0.09259323967059085
+      },
+      "fills": {
+        "control": 1081,
+        "candidate": 1082,
+        "difference": 1,
+        "percent": 0.09250693802034249
+      }
+    },
+    "audio_vae": {
+      "store_bytes": {
+        "control": 605306340,
+        "candidate": 605306340,
+        "difference": 0,
+        "percent": 0.0
+      },
+      "fills": {
+        "control": 22,
+        "candidate": 22,
+        "difference": 0,
+        "percent": 0.0
+      }
+    },
+    "vae": {
+      "store_bytes": {
+        "control": 2487128160,
+        "candidate": 2487128160,
+        "difference": 0,
+        "percent": 0.0
+      },
+      "fills": {
+        "control": 37,
+        "candidate": 37,
+        "difference": 0,
+        "percent": 0.0
+      }
+    }
+  },
+  "native_choice_scopes": {
+    "control": [
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:27280/27280:0:5/3:1:-1/27280:0:5/3:1:-1",
+        "rows": 27280,
+        "count": 752,
+        "published": 752,
+        "backing_peak_min": 3363831808,
+        "backing_peak_max": 3363831808,
+        "backing_peak_mean": 3363831808.0,
+        "charged_peak_max": 3361865728
+      },
+      {
+        "site": "int8-linear-rows",
+        "choice": "rows:109123/full:0:5/tail:109123:0:5",
+        "rows": 109123,
+        "count": 1450,
+        "published": 1450,
+        "backing_peak_min": 1994391552,
+        "backing_peak_max": 1994391552,
+        "backing_peak_mean": 1994391552.0,
+        "charged_peak_max": 1992818688
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:54562/54562:0:5/54561:0:5/54562:0:5/54561:0:5",
+        "rows": 54562,
+        "count": 543,
+        "published": 543,
+        "backing_peak_min": 6687817728,
+        "backing_peak_max": 6687817728,
+        "backing_peak_mean": 6687817728.0,
+        "charged_peak_max": 6685982720
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:3410/3410:0:0/3:1:-1/3410:0:5/3:1:-1",
+        "rows": 3410,
+        "count": 129,
+        "published": 129,
+        "backing_peak_min": 459276288,
+        "backing_peak_max": 459276288,
+        "backing_peak_mean": 459276288.0,
+        "charged_peak_max": 457195520
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:6820/6820:0:5/3:1:-1/6820:0:5/3:1:-1",
+        "rows": 6820,
+        "count": 41,
+        "published": 41,
+        "backing_peak_min": 872415232,
+        "backing_peak_max": 872415232,
+        "backing_peak_mean": 872415232.0,
+        "charged_peak_max": 870350848
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:1704/1704:0:0/67:0:6/1704:0:1/67:0:6",
+        "rows": 1704,
+        "count": 29,
+        "published": 29,
+        "backing_peak_min": 213909504,
+        "backing_peak_max": 213909504,
+        "backing_peak_mean": 213909504.0,
+        "charged_peak_max": 211820544
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:109123/109123:0:5/109123:0:5/109123:0:5/109123:0:5",
+        "rows": 109123,
+        "count": 6,
+        "published": 6,
+        "backing_peak_min": 13337886720,
+        "backing_peak_max": 13337886720,
+        "backing_peak_mean": 13337886720.0,
+        "charged_peak_max": 13336313856
+      }
+    ],
+    "candidate": [
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:27280/27280:0:5/3:1:-1/27280:0:5/3:1:-1",
+        "rows": 27280,
+        "count": 764,
+        "published": 764,
+        "backing_peak_min": 3363831808,
+        "backing_peak_max": 3363831808,
+        "backing_peak_mean": 3363831808.0,
+        "charged_peak_max": 3361865728
+      },
+      {
+        "site": "int8-linear-rows",
+        "choice": "rows:109123/full:0:5/tail:109123:0:5",
+        "rows": 109123,
+        "count": 1450,
+        "published": 1450,
+        "backing_peak_min": 1994391552,
+        "backing_peak_max": 1994391552,
+        "backing_peak_mean": 1994391552.0,
+        "charged_peak_max": 1992818688
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:54562/54562:0:5/54561:0:5/54562:0:5/54561:0:5",
+        "rows": 54562,
+        "count": 530,
+        "published": 530,
+        "backing_peak_min": 6687817728,
+        "backing_peak_max": 6687817728,
+        "backing_peak_mean": 6687817728.0,
+        "charged_peak_max": 6685982720
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:3410/3410:0:0/3:1:-1/3410:0:5/3:1:-1",
+        "rows": 3410,
+        "count": 143,
+        "published": 143,
+        "backing_peak_min": 459276288,
+        "backing_peak_max": 459276288,
+        "backing_peak_mean": 459276288.0,
+        "charged_peak_max": 457195520
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:6820/6820:0:5/3:1:-1/6820:0:5/3:1:-1",
+        "rows": 6820,
+        "count": 30,
+        "published": 30,
+        "backing_peak_min": 872415232,
+        "backing_peak_max": 872415232,
+        "backing_peak_mean": 872415232.0,
+        "charged_peak_max": 870350848
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:1704/1704:0:0/67:0:6/1704:0:1/67:0:6",
+        "rows": 1704,
+        "count": 27,
+        "published": 27,
+        "backing_peak_min": 213909504,
+        "backing_peak_max": 213909504,
+        "backing_peak_mean": 213909504.0,
+        "charged_peak_max": 211820544
+      },
+      {
+        "site": "residual-ffn-tail",
+        "choice": "rows:109123/109123:0:5/109123:0:5/109123:0:5/109123:0:5",
+        "rows": 109123,
+        "count": 6,
+        "published": 6,
+        "backing_peak_min": 13337886720,
+        "backing_peak_max": 13337886720,
+        "backing_peak_mean": 13337886720.0,
+        "charged_peak_max": 13336313856
+      }
+    ]
+  },
+  "legacy_tail_geometries": {
+    "control": [],
+    "candidate": []
+  },
+  "prefetch": {
+    "control": {
+      "canceled": 0,
+      "completed": 0,
+      "declined_native": 1136,
+      "failed": 0,
+      "queued": [],
+      "scope": "immutable stored RAW; native measured admission; unknown keys decline",
+      "started": 0,
+      "unsupported_sources": {},
+      "wait_ns": 0
+    },
+    "candidate": {
+      "canceled": 0,
+      "completed": 0,
+      "declined_native": 1136,
+      "failed": 0,
+      "queued": [],
+      "scope": "immutable stored RAW; native measured admission; unknown keys decline",
+      "started": 0,
+      "unsupported_sources": {},
+      "wait_ns": 0
+    },
+    "admission_boundary": "Runtime phase_enter(None); final fingerprint exists only at completion; native requires known active.key. No inference that two distinct final keys alone cause declines."
+  },
+  "phase_samples": {
+    "control": [
+      {
+        "backing_peak_bytes": 14388559872,
+        "cut_choices": 274,
+        "definitions": [],
+        "invalidated": false,
+        "key": "runtime.eager/1:6d6d42ff3ff9ad49733c8c7c2afd65f5c39f4d83859c2d8c99a7f5bf4f112bf7",
+        "mode": "eager",
+        "observation_id": 1,
+        "peak_bytes": 14370369024,
+        "published": true,
+        "reason": "",
+        "successful_backing_peak_bytes": 14388559872,
+        "successful_passes": 1,
+        "successful_peak_bytes": 14370369024,
+        "total_peak_bytes": 14753008640
+      },
+      {
+        "backing_peak_bytes": 20015218688,
+        "cut_choices": 5633,
+        "definitions": [],
+        "invalidated": false,
+        "key": "runtime.eager/1:4a9e2d82bb57629a2aa8d1bf3dcd4d496f41b072492be4feec283f03a1faade9",
+        "mode": "eager",
+        "observation_id": 2,
+        "peak_bytes": 19999660544,
+        "published": true,
+        "reason": "",
+        "successful_backing_peak_bytes": 20015218688,
+        "successful_passes": 1,
+        "successful_peak_bytes": 19999660544,
+        "total_peak_bytes": 20383086592
+      }
+    ],
+    "candidate": [
+      {
+        "backing_peak_bytes": 14388559872,
+        "cut_choices": 274,
+        "definitions": [],
+        "invalidated": false,
+        "key": "runtime.eager/1:6d6d42ff3ff9ad49733c8c7c2afd65f5c39f4d83859c2d8c99a7f5bf4f112bf7",
+        "mode": "eager",
+        "observation_id": 1,
+        "peak_bytes": 14370369024,
+        "published": true,
+        "reason": "",
+        "successful_backing_peak_bytes": 14388559872,
+        "successful_passes": 1,
+        "successful_peak_bytes": 14370369024,
+        "total_peak_bytes": 14753008640
+      },
+      {
+        "backing_peak_bytes": 20015218688,
+        "cut_choices": 5633,
+        "definitions": [],
+        "invalidated": false,
+        "key": "runtime.eager/1:5b3d1b54645c347115e845d1c5777db93f6668e666fedde975d65823310531c3",
+        "mode": "eager",
+        "observation_id": 2,
+        "peak_bytes": 19999660544,
+        "published": true,
+        "reason": "",
+        "successful_backing_peak_bytes": 20015218688,
+        "successful_passes": 1,
+        "successful_peak_bytes": 19999660544,
+        "total_peak_bytes": 20383086592
+      }
+    ]
+  },
+  "driver_thermal": {
+    "control": [
+      {
+        "before_bytes": 3997696,
+        "gpu": 0,
+        "peak_bytes": 25234112512,
+        "power_max_w": 463,
+        "sm_mhz_limit": 3105,
+        "sm_mhz_low": 2190,
+        "sm_mhz_mean": 2480,
+        "temperature_max_c": 80,
+        "throttled_share": 0.9248741269111633,
+        "throttles": [
+          "power_cap"
+        ]
+      }
+    ],
+    "candidate": [
+      {
+        "before_bytes": 3997696,
+        "gpu": 0,
+        "peak_bytes": 25248792576,
+        "power_max_w": 462,
+        "sm_mhz_limit": 3105,
+        "sm_mhz_low": 2190,
+        "sm_mhz_mean": 2475,
+        "temperature_max_c": 81,
+        "throttled_share": 0.9373155832290649,
+        "throttles": [
+          "power_cap"
+        ]
+      }
+    ]
+  },
+  "observed_no_worse": {
+    "denoise": true,
+    "store_source_bytes": false
+  },
+  "scope_limits": [
+    "One matched sample per arm; no timing distribution or confidence interval.",
+    "Native working counters cover the complete request, not individually attributed tail kernel calls.",
+    "Source store/kept-host counters are not complete physical PCIe/H2D traffic.",
+    "Worker is identical in Legacy contract for both; this pair does not qualify cooperative P3 ownership.",
+    "Cold processes and identical source do not prove reset OS/storage caches.",
+    "This third arm isolates bounded-trim on Runtimefe5/package9e against25151; TensorFSb20 also contains fresh-master protocol/version changes documented by root. The API-control25112 comparison remains separate."
+  ],
+  "comparison": {
+    "baseline": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p2-fork-guard-leg12-plan/attempt-003/tail-h3-candidate/media/25151-video.mp4",
+    "candidate": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p2-fork-guard-leg12-plan/attempt-003/tail-h3-bounded-trim/media/25168-video.mp4",
+    "baseline_sha256": "510517896da6ab8b294d82db9fefc13c2fcce1a5e35d6a810636213c5e4ac897",
+    "candidate_sha256": "21c83fb1739fdda2103a99af5f1c22c01d629a4f6a9eee6c037b3e0545b48812",
+    "file_exact": false,
+    "format_matched": true,
+    "baseline_probe": {
+      "streams": [
+        {
+          "index": 0,
+          "codec_name": "h264",
+          "codec_long_name": "H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10",
+          "profile": "High",
+          "codec_type": "video",
+          "codec_tag_string": "avc1",
+          "codec_tag": "0x31637661",
+          "width": 1344,
+          "height": 768,
+          "coded_width": 1344,
+          "coded_height": 768,
+          "closed_captions": 0,
+          "film_grain": 0,
+          "has_b_frames": 0,
+          "sample_aspect_ratio": "1:1",
+          "display_aspect_ratio": "7:4",
+          "pix_fmt": "yuv420p",
+          "level": 32,
+          "color_range": "tv",
+          "color_space": "bt709",
+          "color_transfer": "bt709",
+          "color_primaries": "bt709",
+          "chroma_location": "left",
+          "field_order": "progressive",
+          "refs": 1,
+          "is_avc": "true",
+          "nal_length_size": "4",
+          "id": "0x1",
+          "r_frame_rate": "24/1",
+          "avg_frame_rate": "24/1",
+          "time_base": "1/12288",
+          "start_pts": 0,
+          "start_time": "0.000000",
+          "duration_ts": 185344,
+          "duration": "15.083333",
+          "bit_rate": "4477810",
+          "bits_per_raw_sample": "8",
+          "nb_frames": "362",
+          "nb_read_frames": "362",
+          "extradata_size": 49,
+          "disposition": {
+            "default": 1,
+            "dub": 0,
+            "original": 0,
+            "comment": 0,
+            "lyrics": 0,
+            "karaoke": 0,
+            "forced": 0,
+            "hearing_impaired": 0,
+            "visual_impaired": 0,
+            "clean_effects": 0,
+            "attached_pic": 0,
+            "timed_thumbnails": 0,
+            "non_diegetic": 0,
+            "captions": 0,
+            "descriptions": 0,
+            "metadata": 0,
+            "dependent": 0,
+            "still_image": 0
+          },
+          "tags": {
+            "language": "und",
+            "handler_name": "VideoHandler",
+            "vendor_id": "[0][0][0][0]"
+          }
+        },
+        {
+          "index": 1,
+          "codec_name": "aac",
+          "codec_long_name": "AAC (Advanced Audio Coding)",
+          "profile": "LC",
+          "codec_type": "audio",
+          "codec_tag_string": "mp4a",
+          "codec_tag": "0x6134706d",
+          "sample_fmt": "fltp",
+          "sample_rate": "32000",
+          "channels": 2,
+          "channel_layout": "stereo",
+          "bits_per_sample": 0,
+          "initial_padding": 0,
+          "id": "0x2",
+          "r_frame_rate": "0/0",
+          "avg_frame_rate": "0/0",
+          "time_base": "1/32000",
+          "start_pts": 0,
+          "start_time": "0.000000",
+          "duration_ts": 482400,
+          "duration": "15.075000",
+          "bit_rate": "181532",
+          "nb_frames": "473",
+          "nb_read_frames": "472",
+          "extradata_size": 5,
+          "disposition": {
+            "default": 1,
+            "dub": 0,
+            "original": 0,
+            "comment": 0,
+            "lyrics": 0,
+            "karaoke": 0,
+            "forced": 0,
+            "hearing_impaired": 0,
+            "visual_impaired": 0,
+            "clean_effects": 0,
+            "attached_pic": 0,
+            "timed_thumbnails": 0,
+            "non_diegetic": 0,
+            "captions": 0,
+            "descriptions": 0,
+            "metadata": 0,
+            "dependent": 0,
+            "still_image": 0
+          },
+          "tags": {
+            "language": "und",
+            "handler_name": "SoundHandler",
+            "vendor_id": "[0][0][0][0]"
+          }
+        }
+      ]
+    },
+    "candidate_probe": {
+      "streams": [
+        {
+          "index": 0,
+          "codec_name": "h264",
+          "codec_long_name": "H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10",
+          "profile": "High",
+          "codec_type": "video",
+          "codec_tag_string": "avc1",
+          "codec_tag": "0x31637661",
+          "width": 1344,
+          "height": 768,
+          "coded_width": 1344,
+          "coded_height": 768,
+          "closed_captions": 0,
+          "film_grain": 0,
+          "has_b_frames": 0,
+          "sample_aspect_ratio": "1:1",
+          "display_aspect_ratio": "7:4",
+          "pix_fmt": "yuv420p",
+          "level": 32,
+          "color_range": "tv",
+          "color_space": "bt709",
+          "color_transfer": "bt709",
+          "color_primaries": "bt709",
+          "chroma_location": "left",
+          "field_order": "progressive",
+          "refs": 1,
+          "is_avc": "true",
+          "nal_length_size": "4",
+          "id": "0x1",
+          "r_frame_rate": "24/1",
+          "avg_frame_rate": "24/1",
+          "time_base": "1/12288",
+          "start_pts": 0,
+          "start_time": "0.000000",
+          "duration_ts": 185344,
+          "duration": "15.083333",
+          "bit_rate": "4687536",
+          "bits_per_raw_sample": "8",
+          "nb_frames": "362",
+          "nb_read_frames": "362",
+          "extradata_size": 49,
+          "disposition": {
+            "default": 1,
+            "dub": 0,
+            "original": 0,
+            "comment": 0,
+            "lyrics": 0,
+            "karaoke": 0,
+            "forced": 0,
+            "hearing_impaired": 0,
+            "visual_impaired": 0,
+            "clean_effects": 0,
+            "attached_pic": 0,
+            "timed_thumbnails": 0,
+            "non_diegetic": 0,
+            "captions": 0,
+            "descriptions": 0,
+            "metadata": 0,
+            "dependent": 0,
+            "still_image": 0
+          },
+          "tags": {
+            "language": "und",
+            "handler_name": "VideoHandler",
+            "vendor_id": "[0][0][0][0]"
+          }
+        },
+        {
+          "index": 1,
+          "codec_name": "aac",
+          "codec_long_name": "AAC (Advanced Audio Coding)",
+          "profile": "LC",
+          "codec_type": "audio",
+          "codec_tag_string": "mp4a",
+          "codec_tag": "0x6134706d",
+          "sample_fmt": "fltp",
+          "sample_rate": "32000",
+          "channels": 2,
+          "channel_layout": "stereo",
+          "bits_per_sample": 0,
+          "initial_padding": 0,
+          "id": "0x2",
+          "r_frame_rate": "0/0",
+          "avg_frame_rate": "0/0",
+          "time_base": "1/32000",
+          "start_pts": 0,
+          "start_time": "0.000000",
+          "duration_ts": 482400,
+          "duration": "15.075000",
+          "bit_rate": "184499",
+          "nb_frames": "473",
+          "nb_read_frames": "472",
+          "extradata_size": 5,
+          "disposition": {
+            "default": 1,
+            "dub": 0,
+            "original": 0,
+            "comment": 0,
+            "lyrics": 0,
+            "karaoke": 0,
+            "forced": 0,
+            "hearing_impaired": 0,
+            "visual_impaired": 0,
+            "clean_effects": 0,
+            "attached_pic": 0,
+            "timed_thumbnails": 0,
+            "non_diegetic": 0,
+            "captions": 0,
+            "descriptions": 0,
+            "metadata": 0,
+            "dependent": 0,
+            "still_image": 0
+          },
+          "tags": {
+            "language": "und",
+            "handler_name": "SoundHandler",
+            "vendor_id": "[0][0][0][0]"
+          }
+        }
+      ]
+    },
+    "video_summaries": [
+      "[Parsed_psnr_3 @ 0x5ea8a4be8840] PSNR y:13.207130 u:30.721082 v:33.929474 average:14.939696 min:12.570670 max:17.083961",
+      "[Parsed_ssim_2 @ 0x5ea8a4be85c0] SSIM Y:0.508457 (3.084387) U:0.917541 (10.837627) V:0.948580 (12.888664) All:0.649992 (4.559216)"
+    ],
+    "audio": {
+      "pcm_exact": false,
+      "interleaved_samples": 966656,
+      "max_absolute_delta": 675,
+      "reference_rms": 122.0624511239808,
+      "error_rms": 93.97642162499075,
+      "snr_db": 2.2712636504527324
+    },
+    "interpretation": "Full-request paired evidence. Model quality is reviewed separately; no byte-equality acceptance gate or statistical performance claim."
+  },
+  "latents-comparison": {
+    "control": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p2-fork-guard-leg12-plan/attempt-003/tail-h3-candidate/media/25151-latents",
+    "candidate": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p2-fork-guard-leg12-plan/attempt-003/tail-h3-bounded-trim/media/25168-latents",
+    "control_sha256": "50a725b3e5426c0dca8baaa54a9f25fb24d3710ff071129efc8ddb08dc51afb6",
+    "candidate_sha256": "c82e7b8630bd72ad27214bba02b5fd3a4c52f7e5a943cd9facefc363e8cc0a5d",
+    "file_exact": false,
+    "metadata_equal": true,
+    "metadata": {
+      "frames": "362",
+      "vae_space": "5f287ed42f910b24",
+      "format": "minimax-h3/latents/1",
+      "text": "integrated_multimodal_description: [Shot 1] A steady tracking shot beside a clockmaker's cluttered workbench at golden hour, the scene unfolding naturally over the whole clip. One continuous shot with no cuts.\n\naudio: birdsong and rustling leaves.\n\nnon_diegetic_music: N/A"
+    },
+    "tensor": {
+      "dtype": "F16",
+      "shape": [
+        1,
+        24,
+        107,
+        48,
+        84
+      ],
+      "data_offsets": [
+        0,
+        20708352
+      ]
+    },
+    "finite": true,
+    "values": 10354176,
+    "value_mismatches": 10350907,
+    "bit_mismatches": 10350907,
+    "relative_l2": 0.854353675572104,
+    "rmse": 0.9101789105454569,
+    "max_absolute_delta": 5.849609375,
+    "cosine": 0.6343890134555361,
+    "control_rms": 1.065342066838971,
+    "candidate_rms": 1.0634408336839816,
+    "per_latent_time": [
+      {
+        "latent_time_index": 0,
+        "relative_l2": 0.851874593242202,
+        "rmse": 0.8450508733901713,
+        "max_absolute_delta": 4.1884765625,
+        "control_rms": 0.9919897601053461,
+        "candidate_rms": 0.9909261315121025
+      },
+      {
+        "latent_time_index": 1,
+        "relative_l2": 0.9199417738274843,
+        "rmse": 0.898117898392719,
+        "max_absolute_delta": 4.67578125,
+        "control_rms": 0.9762768948474146,
+        "candidate_rms": 0.981747161961973
+      },
+      {
+        "latent_time_index": 2,
+        "relative_l2": 0.9138105572231701,
+        "rmse": 0.9646267240052867,
+        "max_absolute_delta": 5.392578125,
+        "control_rms": 1.055609082627075,
+        "candidate_rms": 1.0598071909350941
+      },
+      {
+        "latent_time_index": 3,
+        "relative_l2": 0.9170085567579878,
+        "rmse": 1.0043398737930078,
+        "max_absolute_delta": 5.80859375,
+        "control_rms": 1.0952350077776518,
+        "candidate_rms": 1.101128593979122
+      },
+      {
+        "latent_time_index": 4,
+        "relative_l2": 0.9169375692164795,
+        "rmse": 1.0517394103815254,
+        "max_absolute_delta": 4.8974609375,
+        "control_rms": 1.1470131072066703,
+        "candidate_rms": 1.156902357174911
+      },
+      {
+        "latent_time_index": 5,
+        "relative_l2": 0.8547147056592433,
+        "rmse": 0.8494941301089329,
+        "max_absolute_delta": 4.419921875,
+        "control_rms": 0.9938920255896571,
+        "candidate_rms": 0.9899731282732274
+      },
+      {
+        "latent_time_index": 6,
+        "relative_l2": 0.9232794255780796,
+        "rmse": 0.9039409421717335,
+        "max_absolute_delta": 4.470703125,
+        "control_rms": 0.9790545712699728,
+        "candidate_rms": 0.9770158815460557
+      },
+      {
+        "latent_time_index": 7,
+        "relative_l2": 0.9146791332761727,
+        "rmse": 0.9756396780005677,
+        "max_absolute_delta": 4.546875,
+        "control_rms": 1.0666469174890303,
+        "candidate_rms": 1.0608717519816038
+      },
+      {
+        "latent_time_index": 8,
+        "relative_l2": 0.9172382508384613,
+        "rmse": 1.0174883451468772,
+        "max_absolute_delta": 4.880859375,
+        "control_rms": 1.1092955883782385,
+        "candidate_rms": 1.1090559557895359
+      },
+      {
+        "latent_time_index": 9,
+        "relative_l2": 0.9202467468167785,
+        "rmse": 1.0743689531821692,
+        "max_absolute_delta": 5.501953125,
+        "control_rms": 1.1674792189143988,
+        "candidate_rms": 1.1693126492377608
+      },
+      {
+        "latent_time_index": 10,
+        "relative_l2": 0.8779424213800526,
+        "rmse": 0.8736094100253616,
+        "max_absolute_delta": 4.35400390625,
+        "control_rms": 0.9950645836797817,
+        "candidate_rms": 0.988984271112804
+      },
+      {
+        "latent_time_index": 11,
+        "relative_l2": 0.947012518868919,
+        "rmse": 0.9299934899470228,
+        "max_absolute_delta": 4.6943359375,
+        "control_rms": 0.9820287181185068,
+        "candidate_rms": 0.9763964104197452
+      },
+      {
+        "latent_time_index": 12,
+        "relative_l2": 0.9338958580275848,
+        "rmse": 0.99085702194869,
+        "max_absolute_delta": 4.998046875,
+        "control_rms": 1.060993057664276,
+        "candidate_rms": 1.0617335852833099
+      },
+      {
+        "latent_time_index": 13,
+        "relative_l2": 0.920268480412806,
+        "rmse": 1.0208278008412612,
+        "max_absolute_delta": 5.4248046875,
+        "control_rms": 1.1092717207736456,
+        "candidate_rms": 1.1138501546751423
+      },
+      {
+        "latent_time_index": 14,
+        "relative_l2": 0.9084034358704105,
+        "rmse": 1.0555314652767107,
+        "max_absolute_delta": 5.001953125,
+        "control_rms": 1.1619633123308541,
+        "candidate_rms": 1.1752309816891704
+      },
+      {
+        "latent_time_index": 15,
+        "relative_l2": 0.8427042210270196,
+        "rmse": 0.8309115055488004,
+        "max_absolute_delta": 5.0859375,
+        "control_rms": 0.9860061037028544,
+        "candidate_rms": 0.9858080747799991
+      },
+      {
+        "latent_time_index": 16,
+        "relative_l2": 0.9284013432757697,
+        "rmse": 0.9019312799891438,
+        "max_absolute_delta": 5.234375,
+        "control_rms": 0.9714885555925319,
+        "candidate_rms": 0.9680478363621392
+      },
+      {
+        "latent_time_index": 17,
+        "relative_l2": 0.9065407172561035,
+        "rmse": 0.9632159639653262,
+        "max_absolute_delta": 5.30078125,
+        "control_rms": 1.0625181479776946,
+        "candidate_rms": 1.055795904512044
+      },
+      {
+        "latent_time_index": 18,
+        "relative_l2": 0.9072486420482314,
+        "rmse": 1.0173566248159194,
+        "max_absolute_delta": 5.642578125,
+        "control_rms": 1.121364725902598,
+        "candidate_rms": 1.1084481913368462
+      },
+      {
+        "latent_time_index": 19,
+        "relative_l2": 0.88804293603529,
+        "rmse": 1.051386459260385,
+        "max_absolute_delta": 5.01953125,
+        "control_rms": 1.1839365154508743,
+        "candidate_rms": 1.1682928647003452
+      },
+      {
+        "latent_time_index": 20,
+        "relative_l2": 0.8926593175536996,
+        "rmse": 0.8744639545670352,
+        "max_absolute_delta": 4.26953125,
+        "control_rms": 0.9796166772374838,
+        "candidate_rms": 0.9789505292063884
+      },
+      {
+        "latent_time_index": 21,
+        "relative_l2": 0.9405902612951302,
+        "rmse": 0.919712028491499,
+        "max_absolute_delta": 4.48046875,
+        "control_rms": 0.9778030523355798,
+        "candidate_rms": 0.9567679256232807
+      },
+      {
+        "latent_time_index": 22,
+        "relative_l2": 0.8923653724441508,
+        "rmse": 0.9535499033941951,
+        "max_absolute_delta": 4.740234375,
+        "control_rms": 1.068564438781911,
+        "candidate_rms": 1.0378294034116287
+      },
+      {
+        "latent_time_index": 23,
+        "relative_l2": 0.8697482110585221,
+        "rmse": 0.9876448667590877,
+        "max_absolute_delta": 4.943359375,
+        "control_rms": 1.1355526279922787,
+        "candidate_rms": 1.0978967657177938
+      },
+      {
+        "latent_time_index": 24,
+        "relative_l2": 0.8425688173419889,
+        "rmse": 1.0087656197645,
+        "max_absolute_delta": 5.509765625,
+        "control_rms": 1.1972501224847178,
+        "candidate_rms": 1.1591851380104445
+      },
+      {
+        "latent_time_index": 25,
+        "relative_l2": 0.8570303737839379,
+        "rmse": 0.8502715895759123,
+        "max_absolute_delta": 4.951171875,
+        "control_rms": 0.9921137168357472,
+        "candidate_rms": 0.9814660419233078
+      },
+      {
+        "latent_time_index": 26,
+        "relative_l2": 0.89863655859578,
+        "rmse": 0.8853935852637711,
+        "max_absolute_delta": 5.064453125,
+        "control_rms": 0.9852632599849905,
+        "candidate_rms": 0.9653719173978921
+      },
+      {
+        "latent_time_index": 27,
+        "relative_l2": 0.8732190379533192,
+        "rmse": 0.9412899880958152,
+        "max_absolute_delta": 5.849609375,
+        "control_rms": 1.0779540380865298,
+        "candidate_rms": 1.0583767912153326
+      },
+      {
+        "latent_time_index": 28,
+        "relative_l2": 0.869223200259642,
+        "rmse": 0.983798426346145,
+        "max_absolute_delta": 5.634765625,
+        "control_rms": 1.131813354788826,
+        "candidate_rms": 1.1136688049947816
+      },
+      {
+        "latent_time_index": 29,
+        "relative_l2": 0.8620833723303618,
+        "rmse": 1.0210144679278323,
+        "max_absolute_delta": 5.201171875,
+        "control_rms": 1.1843569899368922,
+        "candidate_rms": 1.1766358828506782
+      },
+      {
+        "latent_time_index": 30,
+        "relative_l2": 0.8998428256991228,
+        "rmse": 0.8812377545743361,
+        "max_absolute_delta": 4.490234375,
+        "control_rms": 0.9793240879479906,
+        "candidate_rms": 0.985456871572746
+      },
+      {
+        "latent_time_index": 31,
+        "relative_l2": 0.9603084739345885,
+        "rmse": 0.9284297671664911,
+        "max_absolute_delta": 4.591796875,
+        "control_rms": 0.9668036806574416,
+        "candidate_rms": 0.9885730882819523
+      },
+      {
+        "latent_time_index": 32,
+        "relative_l2": 0.945019818616886,
+        "rmse": 0.9967316460728278,
+        "max_absolute_delta": 4.828125,
+        "control_rms": 1.0547203629354844,
+        "candidate_rms": 1.0874621000409965
+      },
+      {
+        "latent_time_index": 33,
+        "relative_l2": 0.9341566696960971,
+        "rmse": 1.0357090232066768,
+        "max_absolute_delta": 5.552734375,
+        "control_rms": 1.1087101947723788,
+        "candidate_rms": 1.1396713539983057
+      },
+      {
+        "latent_time_index": 34,
+        "relative_l2": 0.9162128850366683,
+        "rmse": 1.0720183113650226,
+        "max_absolute_delta": 5.033203125,
+        "control_rms": 1.1700537384628886,
+        "candidate_rms": 1.1966197930205633
+      },
+      {
+        "latent_time_index": 35,
+        "relative_l2": 0.9125180602433131,
+        "rmse": 0.895467428411315,
+        "max_absolute_delta": 5.359375,
+        "control_rms": 0.981314745893959,
+        "candidate_rms": 0.9841728617631954
+      },
+      {
+        "latent_time_index": 36,
+        "relative_l2": 0.98038651938317,
+        "rmse": 0.9530589342990193,
+        "max_absolute_delta": 4.8193359375,
+        "control_rms": 0.9721257029305704,
+        "candidate_rms": 0.9881802441560728
+      },
+      {
+        "latent_time_index": 37,
+        "relative_l2": 0.9608515974504256,
+        "rmse": 1.021609365549799,
+        "max_absolute_delta": 5.16015625,
+        "control_rms": 1.0632332487770135,
+        "candidate_rms": 1.0866542038493403
+      },
+      {
+        "latent_time_index": 38,
+        "relative_l2": 0.9304442553107122,
+        "rmse": 1.0481135752500068,
+        "max_absolute_delta": 4.9140625,
+        "control_rms": 1.1264657385627044,
+        "candidate_rms": 1.1460354385635647
+      },
+      {
+        "latent_time_index": 39,
+        "relative_l2": 0.8980268978338244,
+        "rmse": 1.067527982270319,
+        "max_absolute_delta": 5.330078125,
+        "control_rms": 1.1887483379900499,
+        "candidate_rms": 1.2025196818790478
+      },
+      {
+        "latent_time_index": 40,
+        "relative_l2": 0.8944610018920252,
+        "rmse": 0.8736282963288337,
+        "max_absolute_delta": 5.509765625,
+        "control_rms": 0.9767092075349011,
+        "candidate_rms": 0.9771793474488017
+      },
+      {
+        "latent_time_index": 41,
+        "relative_l2": 0.9333353324347983,
+        "rmse": 0.9020704859865983,
+        "max_absolute_delta": 5.580078125,
+        "control_rms": 0.966502021983204,
+        "candidate_rms": 0.9622948860667719
+      },
+      {
+        "latent_time_index": 42,
+        "relative_l2": 0.905357197773853,
+        "rmse": 0.9528655470415491,
+        "max_absolute_delta": 5.1396484375,
+        "control_rms": 1.0524747021225573,
+        "candidate_rms": 1.053782079024651
+      },
+      {
+        "latent_time_index": 43,
+        "relative_l2": 0.8881654961501676,
+        "rmse": 0.9854304293489844,
+        "max_absolute_delta": 5.17822265625,
+        "control_rms": 1.1095121726980166,
+        "candidate_rms": 1.0977428098609043
+      },
+      {
+        "latent_time_index": 44,
+        "relative_l2": 0.8615630387499842,
+        "rmse": 1.0208480385833871,
+        "max_absolute_delta": 4.857421875,
+        "control_rms": 1.1848791007382404,
+        "candidate_rms": 1.1666882229070055
+      },
+      {
+        "latent_time_index": 45,
+        "relative_l2": 0.8608960358857286,
+        "rmse": 0.846366839624854,
+        "max_absolute_delta": 4.3271484375,
+        "control_rms": 0.9831231697496129,
+        "candidate_rms": 0.9802568996075982
+      },
+      {
+        "latent_time_index": 46,
+        "relative_l2": 0.9107505131920197,
+        "rmse": 0.8943263393005263,
+        "max_absolute_delta": 4.572265625,
+        "control_rms": 0.9819663303466835,
+        "candidate_rms": 0.967687901838031
+      },
+      {
+        "latent_time_index": 47,
+        "relative_l2": 0.8976344658517451,
+        "rmse": 0.966484141367028,
+        "max_absolute_delta": 4.716796875,
+        "control_rms": 1.0767012387942936,
+        "candidate_rms": 1.060945513090746
+      },
+      {
+        "latent_time_index": 48,
+        "relative_l2": 0.8844992099431577,
+        "rmse": 1.0107689677049436,
+        "max_absolute_delta": 5.298828125,
+        "control_rms": 1.14275847433476,
+        "candidate_rms": 1.1141954718415505
+      },
+      {
+        "latent_time_index": 49,
+        "relative_l2": 0.869703563112059,
+        "rmse": 1.0539879061461965,
+        "max_absolute_delta": 5.0888671875,
+        "control_rms": 1.2118932827809892,
+        "candidate_rms": 1.1753429262219353
+      },
+      {
+        "latent_time_index": 50,
+        "relative_l2": 0.8728284633845194,
+        "rmse": 0.8654408231832466,
+        "max_absolute_delta": 4.8984375,
+        "control_rms": 0.9915359769861009,
+        "candidate_rms": 0.9809302208878934
+      },
+      {
+        "latent_time_index": 51,
+        "relative_l2": 0.9075803739482246,
+        "rmse": 0.9031278267980151,
+        "max_absolute_delta": 4.666015625,
+        "control_rms": 0.9950940464580126,
+        "candidate_rms": 0.9630972224724208
+      },
+      {
+        "latent_time_index": 52,
+        "relative_l2": 0.8771172543460257,
+        "rmse": 0.9479369570739106,
+        "max_absolute_delta": 5.451171875,
+        "control_rms": 1.0807414315212482,
+        "candidate_rms": 1.0538102613079463
+      },
+      {
+        "latent_time_index": 53,
+        "relative_l2": 0.8540289903073064,
+        "rmse": 0.9663135973637123,
+        "max_absolute_delta": 5.24609375,
+        "control_rms": 1.1314763413546445,
+        "candidate_rms": 1.1076936564849549
+      },
+      {
+        "latent_time_index": 54,
+        "relative_l2": 0.8350334870440035,
+        "rmse": 0.9922744048789085,
+        "max_absolute_delta": 5.2431640625,
+        "control_rms": 1.1883049246222852,
+        "candidate_rms": 1.1665941040264247
+      },
+      {
+        "latent_time_index": 55,
+        "relative_l2": 0.8207973661712523,
+        "rmse": 0.804220795061567,
+        "max_absolute_delta": 4.5986328125,
+        "control_rms": 0.9798043076246583,
+        "candidate_rms": 0.9796951841388429
+      },
+      {
+        "latent_time_index": 56,
+        "relative_l2": 0.8469500141806164,
+        "rmse": 0.833084456950652,
+        "max_absolute_delta": 4.6201171875,
+        "control_rms": 0.9836288364155956,
+        "candidate_rms": 0.9626107099839089
+      },
+      {
+        "latent_time_index": 57,
+        "relative_l2": 0.8230373810164988,
+        "rmse": 0.8823443981452167,
+        "max_absolute_delta": 4.541015625,
+        "control_rms": 1.0720587162826922,
+        "candidate_rms": 1.0546106464077123
+      },
+      {
+        "latent_time_index": 58,
+        "relative_l2": 0.8106959793694357,
+        "rmse": 0.9120455544585249,
+        "max_absolute_delta": 5.36328125,
+        "control_rms": 1.1250155146543583,
+        "candidate_rms": 1.1067086911787927
+      },
+      {
+        "latent_time_index": 59,
+        "relative_l2": 0.7803349769536282,
+        "rmse": 0.9314666788000382,
+        "max_absolute_delta": 5.3046875,
+        "control_rms": 1.193675416724773,
+        "candidate_rms": 1.1712327005511491
+      },
+      {
+        "latent_time_index": 60,
+        "relative_l2": 0.7737811433693019,
+        "rmse": 0.7634169566254652,
+        "max_absolute_delta": 4.7529296875,
+        "control_rms": 0.9866057904969,
+        "candidate_rms": 0.9876988409585478
+      },
+      {
+        "latent_time_index": 61,
+        "relative_l2": 0.8019332197864198,
+        "rmse": 0.7940244040861695,
+        "max_absolute_delta": 5.236328125,
+        "control_rms": 0.9901378125944741,
+        "candidate_rms": 0.9684648675092569
+      },
+      {
+        "latent_time_index": 62,
+        "relative_l2": 0.7745957256647661,
+        "rmse": 0.8371848115399285,
+        "max_absolute_delta": 4.9755859375,
+        "control_rms": 1.0808022608457435,
+        "candidate_rms": 1.054967535960962
+      },
+      {
+        "latent_time_index": 63,
+        "relative_l2": 0.7614534381928261,
+        "rmse": 0.8648927293743791,
+        "max_absolute_delta": 5.7509765625,
+        "control_rms": 1.1358445388690446,
+        "candidate_rms": 1.1142026878539588
+      },
+      {
+        "latent_time_index": 64,
+        "relative_l2": 0.7419481635781253,
+        "rmse": 0.8867146570013146,
+        "max_absolute_delta": 5.349609375,
+        "control_rms": 1.195116721800398,
+        "candidate_rms": 1.1629568061860285
+      },
+      {
+        "latent_time_index": 65,
+        "relative_l2": 0.7684033812714857,
+        "rmse": 0.7567822008695013,
+        "max_absolute_delta": 5.220703125,
+        "control_rms": 0.9848761982505144,
+        "candidate_rms": 0.9847664942691425
+      },
+      {
+        "latent_time_index": 66,
+        "relative_l2": 0.7799702374674227,
+        "rmse": 0.7741342817338736,
+        "max_absolute_delta": 5.0048828125,
+        "control_rms": 0.9925177199677533,
+        "candidate_rms": 0.9688700629083837
+      },
+      {
+        "latent_time_index": 67,
+        "relative_l2": 0.7585187748859988,
+        "rmse": 0.8204666372572919,
+        "max_absolute_delta": 4.751953125,
+        "control_rms": 1.0816695175153752,
+        "candidate_rms": 1.0566336771860563
+      },
+      {
+        "latent_time_index": 68,
+        "relative_l2": 0.7502683690483687,
+        "rmse": 0.8540480537159871,
+        "max_absolute_delta": 5.28515625,
+        "control_rms": 1.138323417258349,
+        "candidate_rms": 1.1083515975834644
+      },
+      {
+        "latent_time_index": 69,
+        "relative_l2": 0.7298625251752693,
+        "rmse": 0.8718907699278654,
+        "max_absolute_delta": 4.8115234375,
+        "control_rms": 1.1945958860108477,
+        "candidate_rms": 1.173460392954294
+      },
+      {
+        "latent_time_index": 70,
+        "relative_l2": 0.7832365062692538,
+        "rmse": 0.7666566292381537,
+        "max_absolute_delta": 4.5458984375,
+        "control_rms": 0.9788315829275195,
+        "candidate_rms": 0.9912054039430169
+      },
+      {
+        "latent_time_index": 71,
+        "relative_l2": 0.8159613462022771,
+        "rmse": 0.7956206754120977,
+        "max_absolute_delta": 4.7392578125,
+        "control_rms": 0.9750715265069223,
+        "candidate_rms": 0.9742896928044505
+      },
+      {
+        "latent_time_index": 72,
+        "relative_l2": 0.8034062130602673,
+        "rmse": 0.8506918908271179,
+        "max_absolute_delta": 5.134765625,
+        "control_rms": 1.0588564999849004,
+        "candidate_rms": 1.0610161930202902
+      },
+      {
+        "latent_time_index": 73,
+        "relative_l2": 0.7887458171578531,
+        "rmse": 0.8768448673363921,
+        "max_absolute_delta": 4.849609375,
+        "control_rms": 1.1116951092000626,
+        "candidate_rms": 1.1078738755591648
+      },
+      {
+        "latent_time_index": 74,
+        "relative_l2": 0.7706072914223079,
+        "rmse": 0.9052801669001523,
+        "max_absolute_delta": 5.041015625,
+        "control_rms": 1.1747620052092669,
+        "candidate_rms": 1.1723710279852984
+      },
+      {
+        "latent_time_index": 75,
+        "relative_l2": 0.7942370425434083,
+        "rmse": 0.776389013397699,
+        "max_absolute_delta": 4.34375,
+        "control_rms": 0.977528082688571,
+        "candidate_rms": 0.994753727056095
+      },
+      {
+        "latent_time_index": 76,
+        "relative_l2": 0.8234771294483714,
+        "rmse": 0.803686143043751,
+        "max_absolute_delta": 4.818359375,
+        "control_rms": 0.9759665621583468,
+        "candidate_rms": 0.9826812446236322
+      },
+      {
+        "latent_time_index": 77,
+        "relative_l2": 0.7931063743693393,
+        "rmse": 0.8419220529917836,
+        "max_absolute_delta": 4.806640625,
+        "control_rms": 1.0615499763966232,
+        "candidate_rms": 1.0758724908077715
+      },
+      {
+        "latent_time_index": 78,
+        "relative_l2": 0.7800706957807425,
+        "rmse": 0.8670230632726628,
+        "max_absolute_delta": 4.7763671875,
+        "control_rms": 1.111467291313761,
+        "candidate_rms": 1.1234356960865686
+      },
+      {
+        "latent_time_index": 79,
+        "relative_l2": 0.7724361232808434,
+        "rmse": 0.9037691732910015,
+        "max_absolute_delta": 4.98046875,
+        "control_rms": 1.170024479761944,
+        "candidate_rms": 1.1843945316822704
+      },
+      {
+        "latent_time_index": 80,
+        "relative_l2": 0.7778227539184037,
+        "rmse": 0.7536397944874609,
+        "max_absolute_delta": 4.7236328125,
+        "control_rms": 0.9689094214470875,
+        "candidate_rms": 0.9953454202533991
+      },
+      {
+        "latent_time_index": 81,
+        "relative_l2": 0.8108869326790833,
+        "rmse": 0.7792357292875391,
+        "max_absolute_delta": 4.68359375,
+        "control_rms": 0.9609671803601867,
+        "candidate_rms": 0.9799730266147025
+      },
+      {
+        "latent_time_index": 82,
+        "relative_l2": 0.8007388470465819,
+        "rmse": 0.8330702856384135,
+        "max_absolute_delta": 4.72265625,
+        "control_rms": 1.0403770076986794,
+        "candidate_rms": 1.0679052215138936
+      },
+      {
+        "latent_time_index": 83,
+        "relative_l2": 0.79598295479351,
+        "rmse": 0.8708470074856373,
+        "max_absolute_delta": 4.7978515625,
+        "control_rms": 1.094052331449168,
+        "candidate_rms": 1.1147355424505183
+      },
+      {
+        "latent_time_index": 84,
+        "relative_l2": 0.7817956945843081,
+        "rmse": 0.8997866022224441,
+        "max_absolute_delta": 5.08203125,
+        "control_rms": 1.1509229437505069,
+        "candidate_rms": 1.1744082240249336
+      },
+      {
+        "latent_time_index": 85,
+        "relative_l2": 0.7868019689080868,
+        "rmse": 0.7636749517902343,
+        "max_absolute_delta": 4.8583984375,
+        "control_rms": 0.9706063049766539,
+        "candidate_rms": 0.9922353818522244
+      },
+      {
+        "latent_time_index": 86,
+        "relative_l2": 0.8262165396935454,
+        "rmse": 0.7962963552444189,
+        "max_absolute_delta": 4.423828125,
+        "control_rms": 0.9637865099381523,
+        "candidate_rms": 0.9759173839534402
+      },
+      {
+        "latent_time_index": 87,
+        "relative_l2": 0.8084488236174807,
+        "rmse": 0.8518285724702769,
+        "max_absolute_delta": 4.9658203125,
+        "control_rms": 1.0536580023194164,
+        "candidate_rms": 1.071574154211215
+      },
+      {
+        "latent_time_index": 88,
+        "relative_l2": 0.7956933235290313,
+        "rmse": 0.8817981747258242,
+        "max_absolute_delta": 4.509765625,
+        "control_rms": 1.108213615284471,
+        "candidate_rms": 1.1198418676075386
+      },
+      {
+        "latent_time_index": 89,
+        "relative_l2": 0.77821884375308,
+        "rmse": 0.9101827744755149,
+        "max_absolute_delta": 4.728515625,
+        "control_rms": 1.1695717493629663,
+        "candidate_rms": 1.1832205620650393
+      },
+      {
+        "latent_time_index": 90,
+        "relative_l2": 0.7937466166030615,
+        "rmse": 0.7748763638152923,
+        "max_absolute_delta": 4.29150390625,
+        "control_rms": 0.976226351844463,
+        "candidate_rms": 0.9884366183141032
+      },
+      {
+        "latent_time_index": 91,
+        "relative_l2": 0.8366633103842965,
+        "rmse": 0.8081290357466214,
+        "max_absolute_delta": 4.5244140625,
+        "control_rms": 0.9658951524663264,
+        "candidate_rms": 0.9689608789551878
+      },
+      {
+        "latent_time_index": 92,
+        "relative_l2": 0.8108826237676612,
+        "rmse": 0.85173667923094,
+        "max_absolute_delta": 4.912109375,
+        "control_rms": 1.0503822060873074,
+        "candidate_rms": 1.06110583258781
+      },
+      {
+        "latent_time_index": 93,
+        "relative_l2": 0.8016651041214458,
+        "rmse": 0.8805168736035811,
+        "max_absolute_delta": 4.5537109375,
+        "control_rms": 1.0983599873273142,
+        "candidate_rms": 1.1090543875275534
+      },
+      {
+        "latent_time_index": 94,
+        "relative_l2": 0.784209952746896,
+        "rmse": 0.9108009282371436,
+        "max_absolute_delta": 5.19921875,
+        "control_rms": 1.1614248519122083,
+        "candidate_rms": 1.17659264340659
+      },
+      {
+        "latent_time_index": 95,
+        "relative_l2": 0.8164033169541001,
+        "rmse": 0.8011373849549,
+        "max_absolute_delta": 4.640625,
+        "control_rms": 0.9813009921907772,
+        "candidate_rms": 0.9909060965883536
+      },
+      {
+        "latent_time_index": 96,
+        "relative_l2": 0.8598400860557934,
+        "rmse": 0.8349221672385284,
+        "max_absolute_delta": 4.6171875,
+        "control_rms": 0.9710202871192398,
+        "candidate_rms": 0.9741332934739316
+      },
+      {
+        "latent_time_index": 97,
+        "relative_l2": 0.8364179596013904,
+        "rmse": 0.8832867613994405,
+        "max_absolute_delta": 4.443359375,
+        "control_rms": 1.0560351451807495,
+        "candidate_rms": 1.0727521615146873
+      },
+      {
+        "latent_time_index": 98,
+        "relative_l2": 0.8243920965303755,
+        "rmse": 0.9134155034730393,
+        "max_absolute_delta": 4.427734375,
+        "control_rms": 1.1079867302432147,
+        "candidate_rms": 1.1223507360465848
+      },
+      {
+        "latent_time_index": 99,
+        "relative_l2": 0.8158589473686046,
+        "rmse": 0.9528068435154136,
+        "max_absolute_delta": 4.849609375,
+        "control_rms": 1.1678573196856001,
+        "candidate_rms": 1.1848378891722677
+      },
+      {
+        "latent_time_index": 100,
+        "relative_l2": 0.8312511282211762,
+        "rmse": 0.8232791269343832,
+        "max_absolute_delta": 4.3056640625,
+        "control_rms": 0.9904096355287331,
+        "candidate_rms": 0.9892383473814399
+      },
+      {
+        "latent_time_index": 101,
+        "relative_l2": 0.8875748340478679,
+        "rmse": 0.8718985075944279,
+        "max_absolute_delta": 4.3564453125,
+        "control_rms": 0.9823380228324562,
+        "candidate_rms": 0.9730544471905177
+      },
+      {
+        "latent_time_index": 102,
+        "relative_l2": 0.8740507347434197,
+        "rmse": 0.9297552835046068,
+        "max_absolute_delta": 4.294921875,
+        "control_rms": 1.0637314821061725,
+        "candidate_rms": 1.066691225083373
+      },
+      {
+        "latent_time_index": 103,
+        "relative_l2": 0.8675371009430625,
+        "rmse": 0.9657756577792412,
+        "max_absolute_delta": 4.89453125,
+        "control_rms": 1.1132384502396355,
+        "candidate_rms": 1.1163229395909802
+      },
+      {
+        "latent_time_index": 104,
+        "relative_l2": 0.8572390949714257,
+        "rmse": 1.001114788504062,
+        "max_absolute_delta": 4.66015625,
+        "control_rms": 1.1678361315724082,
+        "candidate_rms": 1.176360178301286
+      },
+      {
+        "latent_time_index": 105,
+        "relative_l2": 0.839393732239212,
+        "rmse": 0.8341068437609448,
+        "max_absolute_delta": 4.4130859375,
+        "control_rms": 0.9937015392476619,
+        "candidate_rms": 0.9878618985359139
+      },
+      {
+        "latent_time_index": 106,
+        "relative_l2": 0.9048127036982992,
+        "rmse": 0.8984821806626189,
+        "max_absolute_delta": 4.8681640625,
+        "control_rms": 0.9930034989453561,
+        "candidate_rms": 0.9733157321478465
+      }
+    ],
+    "boundary": "Same final normalized video latent space and metadata; numerical differences are not by themselves a perceptual quality verdict. No audio latents are saved by this public format."
+  },
+  "decision": "Observed driver-call and denoise improvement; strict store-source no-worse remains false (+one transformer fill). Does not clear the full Tail/P2 acceptance blocker.",
+  "cohort": {
+    "runtime": "fe5a783da98b61ad1b840c704bcf69c694d18052",
+    "control_tensorfs": "9ccb36a24f9987ea1a9bfbddc746c7c26e497759",
+    "candidate_tensorfs": "b20f699cab2416c6ff3d6e458376c29efbcf448a",
+    "package": "9e7490c04f14e6f69712778bb6c303da24d6d769",
+    "worker": "afa6f9229153d1a7e93bbf72fc86f5543a4ac21c",
+    "gpu_uuid": "GPU-74f2ac0a-1c52-2e52-a7a6-b207f1db7a89",
+    "input_sha256": "fe62dc81e2830a0a40f967f785dbf3566fa152052c069d0b87bc556b09568341",
+    "models": [
+      {
+        "lane": "int8",
+        "manifest": "sha256:b80c5e41b487e5e8ede4638c4b00688c1763b48c8141d955845dd26268b865be",
+        "precision": "int8",
+        "release": "",
+        "repository": "minimaxai/minimax-h3",
+        "slot": "base_model"
+      },
+      {
+        "lane": "pdd8",
+        "manifest": "sha256:030ec3859fae0a1b599184d84690b77b922d8697887b24191cb71e12ba1aac98",
+        "precision": "bf16",
+        "release": "",
+        "repository": "alibaba-pai/minimax-h3-turbo-lora",
+        "slot": "turbo_lora"
+      }
+    ]
+  },
+  "source_diff_disclosure": {
+    "control": "9ccb36a24f9987ea1a9bfbddc746c7c26e497759",
+    "candidate": "b20f699cab2416c6ff3d6e458376c29efbcf448a",
+    "unchanged_trees": [
+      "crates/tensorfs",
+      "crates/tensorfs-py",
+      "crates/platform"
+    ],
+    "native_memory_path_diff": "diff --git a/crates/varena/src/working.rs b/crates/varena/src/working.rs\nindex aab5399ec..6a2a77e61 100644\n--- a/crates/varena/src/working.rs\n+++ b/crates/varena/src/working.rs\n@@ -1400,9 +1400,8 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) ->\n         };\n         match result {\n             Err(Error::OutOfMemory { .. }) if attempt == 0 => {\n-                // Retry the mapping after completed working pages return. Do not evict\n-                // weights when that release alone already makes this allocation fit.\n-                trim(device)?;\n+                // The next attempt trims only the mapping's need from completed working\n+                // pages. Keep other cached classes, and ask weights only if that retry fails.\n             }\n             Err(Error::OutOfMemory { .. }) if attempt == 1 => {\n                 crate::reclaim(device, class)?;\n",
+    "upstream_protocol_additions": "diff --git a/crates/protocol/src/calcifer.rs b/crates/protocol/src/calcifer.rs\nindex 769711d75..f0433b633 100644\n--- a/crates/protocol/src/calcifer.rs\n+++ b/crates/protocol/src/calcifer.rs\n@@ -167,6 +167,9 @@ pub struct Run {\n     pub result: Option<serde_json::Value>,\n     #[serde(default, skip_serializing_if = \"Option::is_none\")]\n     pub execution_ms: Option<u64>,\n+    /// A memoizable run's computation, once settled.\n+    #[serde(default, skip_serializing_if = \"Option::is_none\")]\n+    pub memo: Option<Memo>,\n     /// With `?detail=full`: what the machine measured (stages, steps, GPUs, attention).\n     #[serde(default, skip_serializing_if = \"Option::is_none\")]\n     pub measurements: Option<serde_json::Value>,\n@@ -178,6 +181,19 @@ pub struct Run {\n /// One request field a run's executor served other than as sent (`Outcome.adjustments`).\n pub use crate::machine::Adjustment;\n \n+/// A memoizable run's or call's computation.\n+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]\n+#[serde(default)]\n+pub struct Memo {\n+    /// `sha256:<hex>`.\n+    pub computation: String,\n+    /// Answered from a result its machine held: nothing ran.\n+    pub memoized: bool,\n+    /// What keyed its code (`machine::Outcome::memo_basis`); empty from a machine that predates it.\n+    #[serde(skip_serializing_if = \"String::is_empty\")]\n+    pub basis: String,\n+}\n+\n /// One settled call of a run (the run's own function or a child call).\n #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]\n pub struct Call {\n@@ -195,6 +211,9 @@ pub struct Call {\n     pub reason: Option<Reason>,\n     #[serde(default)]\n     pub memoized: bool,\n+    /// What keyed a memoizable call's code (`Memo::basis`).\n+    #[serde(default, skip_serializing_if = \"String::is_empty\")]\n+    pub memo_basis: String,\n }\n \n /// Why a run or call did not succeed, as its machine said it (with its traceback) or as\ndiff --git a/crates/protocol/src/machine.rs b/crates/protocol/src/machine.rs\nindex 954f8cf92..beadaefcc 100644\n--- a/crates/protocol/src/machine.rs\n+++ b/crates/protocol/src/machine.rs\n@@ -618,6 +618,11 @@ pub struct Outcome {\n     pub memoized: bool,\n     /// Why it was neither looked up nor held (its author's condition unmet, e.g. \"seed not given\").\n     pub unmemoized: String,\n+    /// What keyed a memoizable callable's code: `closure` (its module and the modules of its\n+    /// package it imports), `package` (its package's whole source) or `identity` (another\n+    /// package's declared operation identity). Empty from a machine that predates it.\n+    #[serde(skip_serializing_if = \"String::is_empty\")]\n+    pub memo_basis: String,\n     /// How its executor served the request other than as sent, in the executor's order. Advisory.\n     #[serde(skip_serializing_if = \"Vec::is_empty\")]\n     pub adjustments: Vec<Adjustment>,\n@@ -678,6 +683,9 @@ pub struct Call {\n     pub computation_digest: String,\n     /// Why a memoizable call was neither looked up nor held (\"seed not given\").\n     pub unmemoized: String,\n+    /// As [`Outcome::memo_basis`].\n+    #[serde(skip_serializing_if = \"String::is_empty\")]\n+    pub memo_basis: String,\n }\n \n // ---- Status ---------------------------------------------------------------------------------\n",
+    "workspace_version_changes": [
+      "calcifer",
+      "cli",
+      "cozy",
+      "hub-client",
+      "platform",
+      "protocol",
+      "tensord"
+    ],
+    "third_party_dependency_changes": false,
+    "portable_same_fields": [
+      "python_members_verified",
+      "shim_sha256",
+      "torch_build",
+      "aot_unique_full_images_verified_in_extension"
+    ],
+    "source_receipts": {
+      "outputs/xs138-p2-retention-candidate-9ccb36a24/candidate.json": "183936e172cfe0721da3d3e8d33f94f7d7776bb1d502c2ccf1390c200d6b4bbf",
+      "outputs/xs138-bounded-trim-candidate-b20f699ca/candidate.json": "153013013938b5b1c62533e1fbdfb3d4ade8ab4abc5f0ee3f463a44b1ff7adff"
+    },
+    "boundary": "Fresh-master cohort includes additive protocol memo fields and workspace version bumps, disclosed here; TensorFS/Python/shim/quantization sources are unchanged, and the only Varena source change is the bounded trim. No GPU result inferred."
+  },
+  "sampled_visual_review": {
+    "frames": [
+      0,
+      60,
+      120,
+      180,
+      240,
+      360
+    ],
+    "assessment": "Different workbench layout and pan, with comparable detailed tools, golden-hour lighting, bokeh and coherent continuity across samples; no obvious corruption, blank frames or banding.",
+    "full_motion_playback": false,
+    "human_audio_listening": false
+  },
+  "versus_original_api_control_25112": {
+    "denoise_percent": -0.34971526581112355,
+    "store_percent": 3.965952704835418,
+    "boundary": "Combined Tail+trim relative to original API control, not attribution of trim alone."
+  },
+  "raw_evidence_sha256": {
+    "tail-h3-bounded-trim/run.json": "b573e0503e41d8bd385d1331f075929227c7abc6ea29e5c94f6e61c4c0b190f0",
+    "tail-h3-bounded-trim/check.json": "6e0d2075687e60b04904b3d5211a86d2bb28da59a8b7dd71019d1eeefbd178ab",
+    "tail-h3-bounded-trim/analysis.json": "adf85e4b18882f41a97b83f6ceea2b1dce8d59f26cc115f03a2a0570f6dd0ce5",
+    "tail-h3-bounded-trim-invocation.json": "00e05f79f83aba23fbf633cbecdfe509bb788458d12717ff6531b4bf03afbc9d",
+    "tail-h3-trim-comparison/comparison.json": "8cd7adb91b36e090565126f6939142808e130254f1f63119e7dbe754f0fb48a5",
+    "tail-h3-trim-comparison/latents-comparison.json": "0926240b00b22e7cc5f0f127cc4a8ac573baf513ba921adf7085ded492dc58ed",
+    "tail-h3-trim-comparison/paired-frames-1.webp": "74400ac26cfb792eec9ddfa59a8089d10b1987a923e360553b95ec82000b6119",
+    "tail-h3-trim-comparison/paired-frames-2.webp": "9fd7d6ebf1532ce1a6279a28a88d6344b91bd0a774c74ca518483b101fd5ba2b"
+  },
+  "raw_evidence_root": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p2-fork-guard-leg12-plan/attempt-003"
+}

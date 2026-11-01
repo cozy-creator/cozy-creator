@@ -1,0 +1,15 @@
+{
+  "passed": true,
+  "sets": {
+    "minimax-h3-glue": 6,
+    "minimax-h3-glue-fp8": 9
+  },
+  "source_before_sha256": "a1a9f592d2837482c0dfe29e314dbd8b534eab004a0cded1cba9757ca32ec578",
+  "source_after_sha256": "3d07e63c5ac68f11daa5d97984145d49fac54311c8111dc3d4f7e8858f8dd130",
+  "torch": "2.14.0+cu130",
+  "torch_git": "08187d9e0fba026dc8217405802ab5381dc88d90",
+  "cuda_initialized": false,
+  "comparison": "Both GLUE identities and every original entry/source/signature/constexpr/options/alignments identical; no shaders built or GPU called",
+  "initial_mismatch": "An added module import shifted kernel starting line numbers, which Triton3.8 includes in cache_key; corrected by local import inside intent method after all kernels, no cache-key override. Original mismatch receipts preserved.",
+  "tooling_scope": "Same existing local H3 venv with Diffusers0.40 for import; validates kernel identities, not GPU/model execution."
+}

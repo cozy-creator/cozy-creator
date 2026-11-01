@@ -1,0 +1,17 @@
+{
+  "passed": true,
+  "cuda_initialized": false,
+  "up": [
+    28672,
+    5376
+  ],
+  "down": [
+    5376,
+    14336
+  ],
+  "actual_tail_type": "_Tail",
+  "actual_act_type": "FusedSwiGLU",
+  "norm_type": "Parameter",
+  "glue_identity": "sha256:5296525747c8fa82b137f4a4425c1460e20b3f8a208b88ee4fd6c8cfac5a8314",
+  "hook_factor_reads": 0
+}
